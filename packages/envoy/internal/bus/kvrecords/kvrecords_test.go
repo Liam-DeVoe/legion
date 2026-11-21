@@ -218,7 +218,7 @@ func TestARecordsCopyRoundTrips(t *testing.T) {
 	durable := kvrecords.DurableKeyPrefix + "d1"
 
 	t.Run("Read gives every stored message", func(t *testing.T) {
-		read, records, err := kvrecords.Read(dir, r.keys)
+		read, records, err := kvrecords.Read(dir, r.keys, manifest.ManifestSHA256)
 		require.NoError(t, err)
 		require.Equal(t, manifest, read)
 		require.Len(t, records, len(want), "the copy holds %d records of the %d messages stored", len(records), len(want))
@@ -239,7 +239,7 @@ func TestARecordsCopyRoundTrips(t *testing.T) {
 	})
 
 	t.Run("ForRestore keeps durables and undotted keys, skips system and named keys, refuses the rest", func(t *testing.T) {
-		_, records, err := kvrecords.Read(dir, r.keys)
+		_, records, err := kvrecords.Read(dir, r.keys, manifest.ManifestSHA256)
 		require.NoError(t, err)
 		restore, err := kvrecords.ForRestore(records, nil)
 		require.NoError(t, err)
@@ -266,7 +266,7 @@ func TestARecordsCopyRoundTrips(t *testing.T) {
 	})
 
 	t.Run("a restore gives the same keys, values and markers", func(t *testing.T) {
-		_, records, err := kvrecords.Read(dir, r.keys)
+		_, records, err := kvrecords.Read(dir, r.keys, manifest.ManifestSHA256)
 		require.NoError(t, err)
 		restore, err := kvrecords.ForRestore(records, nil)
 		require.NoError(t, err)
@@ -308,9 +308,9 @@ func TestARestoreTakesKeysWrittenWithARevision(t *testing.T) {
 	require.NoError(t, kv.Delete("s-deleted", nats.LastRevision(revision)))
 
 	dir := filepath.Join(t.TempDir(), "copy")
-	_, err = kvrecords.Write(t.Context(), r.operator, bucket, dir, r.key)
+	written, err := kvrecords.Write(t.Context(), r.operator, bucket, dir, r.key)
 	require.NoError(t, err)
-	_, records, err := kvrecords.Read(dir, r.keys)
+	_, records, err := kvrecords.Read(dir, r.keys, written.ManifestSHA256)
 	require.NoError(t, err)
 	expected := 0
 	for _, record := range records {
@@ -372,7 +372,7 @@ func TestAKeyRewrittenDuringTheWalkIsInTheCopy(t *testing.T) {
 	stored, err := r.js.GetLastMsg("KV_"+bucket, "$KV."+bucket+".s-01500")
 	require.NoError(t, err)
 	require.EqualValues(t, 2001, stored.Sequence)
-	_, records, err := kvrecords.Read(dir, r.keys)
+	_, records, err := kvrecords.Read(dir, r.keys, manifest.ManifestSHA256)
 	require.NoError(t, err)
 	last := slices.IndexFunc(records, func(record kvrecords.Record) bool { return record.Key == "s-01500" })
 	require.GreaterOrEqual(t, last, 0, "the copy holds no record of s-01500, rewritten during the walk (%d records, last_seq %d)", len(records), manifest.LastSeq)
@@ -425,7 +425,7 @@ func TestAMessageStoredUnderAForeignSubjectIsListedNotCopied(t *testing.T) {
 	manifest, err := kvrecords.Write(t.Context(), r.operator, bucket, dir, r.key)
 	require.NoError(t, err, "the walk stopped on the notification stored in the bucket's stream")
 	require.Equal(t, []kvrecords.ForeignMessage{{Seq: foreign, Subject: "notifications.roles.x"}}, manifest.Foreign)
-	read, records, err := kvrecords.Read(dir, r.keys)
+	read, records, err := kvrecords.Read(dir, r.keys, manifest.ManifestSHA256)
 	require.NoError(t, err)
 	require.Equal(t, manifest, read)
 	keys := make([]string, 0, len(records))
@@ -469,20 +469,30 @@ func TestAWalkThatCannotCatchTheStreamFailsNamingItsBound(t *testing.T) {
 
 // Read refuses a copy that is not what Write wrote, naming what failed, and Write refuses a
 // directory that exists already. Every row but the signature's re-signs the manifest it rewrites
-// with the operator's key, so it reaches the check after the signature; the signature's rows
+// with the operator's key, and is read under that manifest's own name, as if its caller had
+// recorded it, so it reaches the check after the name and the signature; the signature's rows
 // rewrite the three files so that they agree with each other, as anyone who can write the
 // directory can, and do not sign, or sign with another key.
 func TestARecordsCopyIsRefusedWhenItIsNotWhatWasWritten(t *testing.T) {
 	r := newRig(t)
 	r.fillBucket(t)
 	source := filepath.Join(t.TempDir(), "copy")
-	_, err := kvrecords.Write(t.Context(), r.operator, bucket, source, r.key)
+	copied, err := kvrecords.Write(t.Context(), r.operator, bucket, source, r.key)
 	require.NoError(t, err)
-	_, _, err = kvrecords.Read(source, r.keys)
+	_, _, err = kvrecords.Read(source, r.keys, copied.ManifestSHA256)
 	require.NoError(t, err, "the genuine copy")
 	_, err = kvrecords.Write(context.Background(), r.operator, bucket, source, r.key)
 	require.ErrorContains(t, err, "exists already")
 
+	// nameOf is the name a caller that recorded dir's manifest as it is now would pass, or the
+	// genuine copy's when there is no manifest.
+	nameOf := func(dir string) string {
+		data, err := os.ReadFile(filepath.Join(dir, kvrecords.ManifestFile))
+		if err != nil {
+			return copied.ManifestSHA256
+		}
+		return sha(data)
+	}
 	read := func(t *testing.T, dir, name string) []byte {
 		t.Helper()
 		data, err := os.ReadFile(filepath.Join(dir, name))
@@ -566,16 +576,16 @@ func TestARecordsCopyIsRefusedWhenItIsNotWhatWasWritten(t *testing.T) {
 			dropFirstLine(t, dir)
 			resign(t, dir, otherKey)
 		}},
-		{"another format", `the format "envoy-kv-records-v0"`, signed(func(t *testing.T, dir string) {
+		{"another format", `a format other than "envoy-kv-records-v1"`, signed(func(t *testing.T, dir string) {
 			manifest(t, dir, func(m *kvrecords.Manifest) { m.Format = "envoy-kv-records-v0" })
 		})},
-		{"a stream that is not the bucket's", `the stream "KV_envoy_sessions", not "KV_envoy_session_consumers"`, signed(func(t *testing.T, dir string) {
+		{"a stream that is not the bucket's", "a stream other than its bucket's", signed(func(t *testing.T, dir string) {
 			manifest(t, dir, func(m *kvrecords.Manifest) { m.Stream = "KV_envoy_sessions" })
 		})},
 		{"a record count that disagrees", "records, and records.jsonl holds", signed(func(t *testing.T, dir string) {
 			manifest(t, dir, func(m *kvrecords.Manifest) { m.Records++ })
 		})},
-		{"a records sum that disagrees", "gives records_sha256", signed(func(t *testing.T, dir string) {
+		{"a records sum that disagrees", "records_sha256", signed(func(t *testing.T, dir string) {
 			manifest(t, dir, func(m *kvrecords.Manifest) { m.RecordsSHA256 = strings.Repeat("0", 64) })
 		})},
 		{"a sequence outside first_seq..last_seq", "outside", signed(func(t *testing.T, dir string) {
@@ -598,8 +608,42 @@ func TestARecordsCopyIsRefusedWhenItIsNotWhatWasWritten(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), "copy")
 			require.NoError(t, os.CopyFS(dir, os.DirFS(source)))
 			row.tamper(t, dir)
-			_, _, err := kvrecords.Read(dir, r.keys)
+			_, _, err := kvrecords.Read(dir, r.keys, nameOf(dir))
 			require.ErrorContains(t, err, row.refusal)
+		})
+	}
+	t.Run("a copy read under another name", func(t *testing.T) {
+		_, _, err := kvrecords.Read(source, r.keys, strings.Repeat("0", 64))
+		require.ErrorContains(t, err, "is not the copy the caller names")
+	})
+	t.Run("a copy read under no name", func(t *testing.T) {
+		_, _, err := kvrecords.Read(source, r.keys, "")
+		require.ErrorContains(t, err, "names no manifest.json SHA-256")
+	})
+	// A line whose value does not decode, its value a canary, is refused naming the line and the
+	// field, and the error holds no part of the canary: a records line is the record's data and
+	// headers, which whatever logs the error must not get. The seq and time rows print the value at
+	// 535cc56f0f; the data and header rows did not, and pin it.
+	for _, row := range []struct {
+		name, canary, names string
+		value               any
+		field               string
+	}{
+		{"a seq out of range", "1844674407370955161600123456789", `"seq"`, json.Number("1844674407370955161600123456789"), "seq"},
+		{"a time that is no time", "CANARY-TIME-4f1c", `"time"`, "CANARY-TIME-4f1c", "time"},
+		{"data that is a number", "987654321987654", `"data"`, json.Number("987654321987654"), "data"},
+		{"data that is not base64", "CANARYDATA4f1c", `"data"`, "CANARYDATA4f1c!!", "data"},
+		{"a header value that is a number", "987654321987654", `header "X-Canary"`, map[string]any{"X-Canary": []any{json.Number("987654321987654")}}, "headers"},
+		{"a header value that is an object", "CANARY-HEADER-4f1c", `header "X-Canary"`, map[string]any{"X-Canary": []any{map[string]any{"CANARY-HEADER-4f1c": 1}}}, "headers"},
+	} {
+		t.Run("a line whose "+row.name+" prints no value", func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "copy")
+			require.NoError(t, os.CopyFS(dir, os.DirFS(source)))
+			signed(func(t *testing.T, dir string) { line(t, dir, func(f map[string]any) { f[row.field] = row.value }) })(t, dir)
+			_, _, err := kvrecords.Read(dir, r.keys, nameOf(dir))
+			require.ErrorContains(t, err, kvrecords.RecordsFile+" line 1")
+			require.ErrorContains(t, err, row.names)
+			require.NotContains(t, err.Error(), row.canary, "the error prints the line's value")
 		})
 	}
 	// A line is read strictly: a line that leaves out one of the six fields, or gives it as null, is
@@ -617,14 +661,14 @@ func TestARecordsCopyIsRefusedWhenItIsNotWhatWasWritten(t *testing.T) {
 				dir := filepath.Join(t.TempDir(), "copy")
 				require.NoError(t, os.CopyFS(dir, os.DirFS(source)))
 				signed(func(t *testing.T, dir string) { line(t, dir, absent.change) })(t, dir)
-				_, _, err := kvrecords.Read(dir, r.keys)
+				_, _, err := kvrecords.Read(dir, r.keys, nameOf(dir))
 				require.ErrorContains(t, err, kvrecords.RecordsFile+" line 1", "a line with %s %s was read", field, absent.how)
 				require.ErrorContains(t, err, `holds no "`+field+`"`)
 			})
 		}
 	}
 	t.Run("no public key", func(t *testing.T) {
-		_, _, err := kvrecords.Read(source, nil)
+		_, _, err := kvrecords.Read(source, nil, copied.ManifestSHA256)
 		require.ErrorIs(t, err, signedrecord.ErrBadSignature, "a copy read with no public key")
 	})
 	t.Run("Write with no private key", func(t *testing.T) {
@@ -632,6 +676,40 @@ func TestARecordsCopyIsRefusedWhenItIsNotWhatWasWritten(t *testing.T) {
 		require.Error(t, err)
 		require.False(t, errors.Is(err, fs.ErrExist))
 	})
+}
+
+// An older copy the operator signed, put in a newer copy's place, is refused: the bucket's one key
+// is copied as "old", then as "new", and the older copy's directory is moved over the newer's. Read
+// under the newer copy's name, the one its caller recorded, refuses it naming manifest.json; under
+// the older copy's own name it reads, since it is that copy.
+//
+// Run by hand, the control is the reader at bb2b623923, which names no copy: it reads the older
+// copy in the newer's place with err=<nil>, last_seq=1 and s-a="old".
+func TestAnOlderCopyInANewersPlaceIsRefused(t *testing.T) {
+	r := newRig(t)
+	kv, err := r.js.CreateKeyValue(&nats.KeyValueConfig{Bucket: bucket, History: 1})
+	require.NoError(t, err)
+	_, err = kv.PutString("s-a", "old")
+	require.NoError(t, err)
+	base := t.TempDir()
+	older, newer := filepath.Join(base, "older"), filepath.Join(base, "newer")
+	olderCopy, err := kvrecords.Write(t.Context(), r.operator, bucket, older, r.key)
+	require.NoError(t, err)
+	_, err = kv.PutString("s-a", "new")
+	require.NoError(t, err)
+	newerCopy, err := kvrecords.Write(t.Context(), r.operator, bucket, newer, r.key)
+	require.NoError(t, err)
+	require.NotEqual(t, olderCopy.ManifestSHA256, newerCopy.ManifestSHA256)
+	require.NoError(t, os.RemoveAll(newer))
+	require.NoError(t, os.Rename(older, newer))
+
+	read, records, err := kvrecords.Read(newer, r.keys, newerCopy.ManifestSHA256)
+	require.Error(t, err, "the older copy read in the newer's place, last_seq %d, %d records", read.LastSeq, len(records))
+	require.ErrorContains(t, err, kvrecords.ManifestFile+" is not the copy the caller names")
+	read, records, err = kvrecords.Read(newer, r.keys, olderCopy.ManifestSHA256)
+	require.NoError(t, err, "the older copy under its own name")
+	require.EqualValues(t, 1, read.LastSeq)
+	require.Equal(t, "old", string(records[0].Data))
 }
 
 // sha is data's hex SHA-256.

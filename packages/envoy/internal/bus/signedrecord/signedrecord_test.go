@@ -222,3 +222,17 @@ func TestParsePublicKeysReadsTheSettingsList(t *testing.T) {
 		}
 	}
 }
+
+// A record value that is not JSON is refused ErrBadField, naming the byte where it stops being
+// JSON and no character of it: the value is a record's, and json's message for a syntax error
+// quotes the character it stopped at. Run by hand, the control is Canonical at bb2b623923, whose
+// error ends `invalid character 'Q' looking for beginning of value`.
+func TestAValueThatIsNotJSONIsRefusedNamingNoPartOfIt(t *testing.T) {
+	_, err := signedrecord.Canonical([]byte(`{"a":Q7canary}`))
+	if !errors.Is(err, signedrecord.ErrBadField) {
+		t.Fatalf("Canonical of a value that is not JSON = %v, want ErrBadField", err)
+	}
+	if text := err.Error(); strings.Contains(text, "Q") || strings.Contains(text, "canary") || !strings.Contains(text, "byte 6") {
+		t.Errorf("Canonical's error is %q: it holds part of the value, or names no byte", text)
+	}
+}

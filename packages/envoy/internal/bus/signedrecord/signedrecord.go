@@ -93,13 +93,19 @@ func RecordsManifest(manifest []byte) []string {
 // Canonical is value's canonical JSON: decoded, then encoded with its object keys sorted, no
 // whitespace, no HTML escaping, and each number as the text it was written in. jsonb keeps the
 // meaning of a value and its number text for every integer, so a value written and the value
-// Postgres gives back have one canonical form.
+// Postgres gives back have one canonical form. Its error says where the value stops being JSON,
+// never what it holds: json's message for a syntax error holds a character of the input, and the
+// value is a record's.
 func Canonical(value []byte) ([]byte, error) {
 	decoder := json.NewDecoder(bytes.NewReader(value))
 	decoder.UseNumber()
 	var decoded any
 	if err := decoder.Decode(&decoded); err != nil {
-		return nil, fmt.Errorf("%w: the value is not JSON: %v", ErrBadField, err)
+		var syntax *json.SyntaxError
+		if errors.As(err, &syntax) {
+			return nil, fmt.Errorf("%w: the value is not JSON: a syntax error at byte %d", ErrBadField, syntax.Offset)
+		}
+		return nil, fmt.Errorf("%w: the value is not JSON", ErrBadField)
 	}
 	if decoder.More() {
 		return nil, fmt.Errorf("%w: the value holds more than one JSON value", ErrBadField)
@@ -108,7 +114,7 @@ func Canonical(value []byte) ([]byte, error) {
 	encoder := json.NewEncoder(&out)
 	encoder.SetEscapeHTML(false)
 	if err := encoder.Encode(decoded); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrBadField, err)
+		return nil, fmt.Errorf("%w: the value does not encode again", ErrBadField)
 	}
 	return bytes.TrimSuffix(out.Bytes(), []byte("\n")), nil
 }

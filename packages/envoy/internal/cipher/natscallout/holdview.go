@@ -91,7 +91,7 @@ func (v *HoldView) verified(ctx context.Context) (natsgrant.OperatorPhase, error
 	switch phase {
 	case natsgrant.OperatorPhaseReleased, natsgrant.OperatorPhasePrepare, natsgrant.OperatorPhaseHeld:
 	default:
-		return "", fmt.Errorf("natscallout: the writer hold's row holds the phase %q, none of the three", row.Phase)
+		return "", errors.New("natscallout: the writer hold's row holds a phase none of the three")
 	}
 	if err := signedrecord.Verify(v.keys, row.Sig, signedrecord.HoldRow(row.Gen, row.Phase, row.HoldID, row.SignedAt)); err != nil {
 		return "", fmt.Errorf("natscallout: the writer hold's row at gen %d: %w", row.Gen, err)
