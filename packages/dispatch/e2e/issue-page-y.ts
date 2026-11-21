@@ -329,6 +329,8 @@ export interface ModelRowsSeed extends WholeIssueSeed {
   readonly question: ModelNode;
   /** The planner's reading of alice's answer to it. */
   readonly questionReading: ModelNode;
+  /** The slug of the spec, which part G's row layouts read the statements of. */
+  readonly specSlug: string;
   readonly statementOne: ModelNode;
   readonly statementSeven: ModelNode;
   /** The first comment thread, by alice, and the first line of its words. */
@@ -626,6 +628,7 @@ export async function seedModelRows(): Promise<ModelRowsSeed> {
     decisionReading: specBlock(NAMES.decisionReading, BLOCKS.decisionReading),
     question: specBlock(NAMES.question, OPEN_QUESTION_BLOCK_ID),
     questionReading: specBlock(NAMES.questionReading, BLOCKS.questionReading),
+    specSlug: spec.slug,
     statementOne: specBlock(NAMES.statementOne, requirementBlockId(1)),
     statementSeven: specBlock(NAMES.statementSeven, requirementBlockId(7)),
     thread: {

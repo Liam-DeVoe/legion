@@ -51,6 +51,7 @@ import {
   treeReadServed,
   writeCriterionApi,
 } from "./issue-page-y";
+import { settledState } from "./settled";
 import { expect, test } from "./test";
 import { type ApiRequest, expectLoadSettled, type RouteCount, watchApiRequests } from "./traffic";
 
@@ -141,16 +142,21 @@ function readsTree(request: ApiRequest, key: string): boolean {
  *  that inside the one control's menu, which this opens and closes again. */
 async function presetCountOf(page: Page, preset: Preset): Promise<number> {
   const count = presetCount(page, preset);
-  const opened = (await count.count()) === 0;
-  if (opened) await presetChooser(page).click();
+  const where = await settledState(`the count of ${preset}`, [
+    ["beside", count.first()],
+    ["chooser", presetChooser(page)],
+  ]);
+  if (where === "chooser") await presetChooser(page).click();
   const drawn = Number.parseInt((await count.first().innerText()).trim(), 10);
-  if (opened) await page.keyboard.press("Escape");
+  if (where === "chooser") await page.keyboard.press("Escape");
   return drawn;
 }
 
 /** Presses `f` until it leaves the focus on `target`, a stop of the focused row. */
 async function stepTo(page: Page, target: Locator, what: string): Promise<void> {
   for (let pressed = 0; pressed < ROW_STOPS_AT_MOST; pressed += 1) {
+    // `f` moves the focus inside its own keydown handler, and the row was focused before the
+    // first read, so each read sees where the last press left the focus, and nothing moves later.
     if (await target.evaluate((element) => element === document.activeElement)) break;
     await page.keyboard.press("f");
   }
@@ -561,7 +567,7 @@ test("a reading stands under what it reads and a child's check under the stateme
       rowOf(rows, decisionReading.row)?.authorShape,
       "the decision's reading is not drawn as an agent's"
     ).toBe(GLYPH_TOKENS.authors.agent);
-    const layouts = await rowLayouts(page);
+    const layouts = await rowLayouts(page, seeded.specSlug);
     const readingLayout = layouts.find((layout) => layout.id === decisionReading.row);
     const agentTurn = layouts.find((layout) => layout.id === seeded.messages.root);
     expect(
