@@ -4800,7 +4800,9 @@ func TestSessionInfoKeysForASessionWithNoInterestRecordAreTheFixtureRowsKeys(t *
 			t.Errorf("the fixture row states %q, which listenerwire.SessionInfo does not always write", key)
 		}
 	}
-	mayLack := map[string]bool{"tmux_place": true, "plugin": true, "plugin_version": true, "client_instance_id": true}
+	// projects is answered only in the required privacy mode (projectsAnswer), so the all-public
+	// fixture row lacks it, as the merge base's rows do.
+	mayLack := map[string]bool{"tmux_place": true, "plugin": true, "plugin_version": true, "client_instance_id": true, "projects": true}
 	for key := range leftOutWhenEmpty {
 		if !mayLack[key] {
 			t.Errorf("listenerwire.SessionInfo leaves %q out when it is empty, which is not a key a fixture row may lack; capture the fixture again or name it here", key)
