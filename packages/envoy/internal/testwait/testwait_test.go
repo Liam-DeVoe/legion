@@ -120,6 +120,21 @@ func TestReceiveReturnsASentValueAndAClose(t *testing.T) {
 	}
 }
 
+// ReceiveInHelper returns a value a sender sends later with no error, and returns on a close with
+// the zero value and no error.
+func TestReceiveInHelperReturnsASentValueAndAClose(t *testing.T) {
+	sent := make(chan string)
+	go func() { sent <- "sent later" }()
+	if got, err := ReceiveInHelper("a helper", "a value a sender sends later", sent); got != "sent later" || err != nil {
+		t.Fatalf("ReceiveInHelper returned %q and %v, want the value sent and no error", got, err)
+	}
+	closed := make(chan string)
+	close(closed)
+	if got, err := ReceiveInHelper("a helper", "the close of a channel", closed); got != "" || err != nil {
+		t.Fatalf("ReceiveInHelper on a closed channel returned %q and %v, want the zero value and no error", got, err)
+	}
+}
+
 // Returns waits for its function, run on a goroutine of its own, to return, and what the function
 // wrote is the caller's to read once it has. Under a short -timeout a function that never returns
 // fails the test naming what, 30 s before the deadline and before Go's alarm, with the same line on
@@ -279,6 +294,7 @@ func TestAWaitGivesUpWithItsLineOnStderrAndTheSameFailure(t *testing.T) {
 		"testwait: " + name + "cleanup: gave up waiting for a condition a cleanup waits for" + ending,
 		"testwait: " + name + "span: gave up waiting for the end of a 1h0m0s span (a span past the margin)" + ending,
 		"testwait: TestMain: gave up waiting for a condition TestMain waits for" + ending,
+		"testwait: a helper: gave up waiting for a send no one makes to a helper" + ending,
 	}
 	written := strings.Split(stderr.String(), "\n")
 	for _, line := range want {
@@ -350,6 +366,11 @@ func TestTheWaitsGiveUpChild(t *testing.T) {
 	})
 	t.Run("in main", func(t *testing.T) {
 		if err := InMain("a condition TestMain waits for", func() bool { return false }); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("receive in helper", func(t *testing.T) {
+		if _, err := ReceiveInHelper("a helper", "a send no one makes to a helper", make(chan int)); err != nil {
 			t.Fatal(err)
 		}
 	})

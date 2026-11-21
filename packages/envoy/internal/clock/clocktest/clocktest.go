@@ -14,9 +14,12 @@
 // timers due together in the order they were armed. The fake reads each timer's deadline as that
 // timer fires, so a timer which the firing of another arms inside the span fires in the same move.
 // An AfterFunc's function runs on a goroutine of its own, and the move waits for it to return before
-// it fires the next timer, so what a timer's function did is done when Advance returns; a function
-// that waits for the test to act after the move holds the move for ever. A channel timer (After,
-// NewTimer, Sleep) is fired by a non-blocking send on its channel, whose buffer holds one.
+// it fires the next timer, so what a timer's function did is done when Advance returns. The move
+// waits through the wait the tests share (testwait.ReceiveInHelper): a function that never returns,
+// one that waits for the test to act after the move among them, holds the move until that wait
+// gives up, 30 s before the test binary's deadline, and the move then panics with the wait's text,
+// which names the timer's deadline and the move's target. A channel timer (After, NewTimer, Sleep)
+// is fired by a non-blocking send on its channel, whose buffer holds one.
 //
 // A timer armed for a moment the fake has already reached, a wait of zero or less, fires as it is
 // armed, as the real clock's does, and is never pending: an AfterFunc's function starts on a
@@ -198,7 +201,8 @@ func (c *Fake) moveLocked(target time.Time, back bool) {
 			c.mu.Unlock()
 			continue
 		}
-		f, own := next.f, next.own
+		// The deadline is read under the lock: the function may Reset its own timer once it runs.
+		f, own, due := next.f, next.own, next.at
 		c.mu.Unlock()
 		if !own {
 			f()
@@ -209,7 +213,11 @@ func (c *Fake) moveLocked(target time.Time, back bool) {
 			defer close(done)
 			f()
 		}()
-		<-done
+		what := fmt.Sprintf("the function of the AfterFunc due at %s, which a move to %s fired, to return",
+			due.Format(time.RFC3339Nano), target.Format(time.RFC3339Nano))
+		if _, err := testwait.ReceiveInHelper("clocktest", what, done); err != nil {
+			panic(err)
+		}
 	}
 }
 

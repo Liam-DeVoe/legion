@@ -1,9 +1,13 @@
 package clocktest_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"os"
+	"os/exec"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -13,6 +17,14 @@ import (
 )
 
 var epoch = time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+
+// childEnv tells the re-executed test binary to run TestAMoveWhoseFunctionNeverReturnsChild,
+// which skips in an ordinary run.
+const childEnv = "CLOCKTEST_CHILD"
+
+// childTimeout is the -timeout the parent gives the child: its move gives up 5 s into the run,
+// 30 s before its deadline.
+const childTimeout = "35s"
 
 // Advance fires every timer due by the moment it moves to, earliest first and the timers due
 // together in the order they were armed, each reading its own deadline as the fake's time; a
@@ -55,6 +67,34 @@ func TestAdvanceFiresTimersInDeadlineOrder(t *testing.T) {
 	}
 	if armed := c.Armed(); !slices.Equal(armed, []time.Time{epoch.Add(6 * time.Second)}) {
 		t.Errorf("armed after the move: %v, want only the timer due past it", armed)
+	}
+}
+
+// A move waits for each AfterFunc's function through the wait the tests share: under a short
+// -timeout a function that never returns ends the move 30 s before the deadline and before Go's
+// alarm, with a panic whose text, written to stderr at once as well, names the timer's deadline
+// and the move's target (TestAMoveWhoseFunctionNeverReturnsChild).
+func TestAMoveGivesUpNamingAFunctionThatNeverReturns(t *testing.T) {
+	// The child is waited for through Returns, and runs on testwait.Context, which ends it where
+	// that wait gives up, so this row cannot outlast its own binary's deadline.
+	child := exec.CommandContext(testwait.Context(t), os.Args[0], "-test.run=^TestAMoveWhoseFunctionNeverReturnsChild$", "-test.timeout="+childTimeout, "-test.v")
+	child.Env = append(os.Environ(), childEnv+"=1")
+	var stdout, stderr bytes.Buffer
+	child.Stdout, child.Stderr = &stdout, &stderr
+	var ran error
+	testwait.Returns(t, "the child under -timeout "+childTimeout+" to exit", func() { ran = child.Run() })
+	if ran == nil {
+		t.Fatalf("the child was meant to fail; it passed:\n%s\nstderr:\n%s", &stdout, &stderr)
+	}
+	if strings.Contains(stdout.String(), "panic: test timed out") || strings.Contains(stderr.String(), "panic: test timed out") {
+		t.Fatalf("the child's move ran into the binary's deadline rather than giving up before it:\n%s\nstderr:\n%s", &stdout, &stderr)
+	}
+	line := "testwait: clocktest: gave up waiting for the function of the AfterFunc due at 2026-09-22T12:00:01Z, which a move to 2026-09-22T12:00:05Z fired, to return 30s before the test binary's deadline"
+	if !slices.Contains(strings.Split(stderr.String(), "\n"), line) {
+		t.Errorf("the child wrote no stderr line %q; its stderr:\n%s", line, &stderr)
+	}
+	if !strings.Contains(stderr.String(), "panic: "+line) {
+		t.Errorf("the child's move did not panic with %q; its output:\n%s\nstderr:\n%s", line, &stdout, &stderr)
 	}
 }
 
@@ -413,4 +453,19 @@ func TestStepWallMovesNowAndFiresNoTimer(t *testing.T) {
 	if now := c.Now(); !now.Equal(stepped) {
 		t.Errorf("after the move the fake reads %s, want its moment plus the steps, %s", now, stepped)
 	}
+}
+
+// TestAMoveWhoseFunctionNeverReturnsChild is the child of
+// TestAMoveGivesUpNamingAFunctionThatNeverReturns, run under -timeout 35s: its move fires a
+// function that never returns, and gives up 5 s in. It runs only when the parent re-executes this
+// binary.
+func TestAMoveWhoseFunctionNeverReturnsChild(t *testing.T) {
+	if os.Getenv(childEnv) == "" {
+		t.Skip(childEnv + " is not set: this test is the child of TestAMoveGivesUpNamingAFunctionThatNeverReturns")
+	}
+	c := clocktest.New(epoch)
+	never := make(chan struct{})
+	c.AfterFunc(time.Second, func() { <-never })
+	c.Advance(5 * time.Second)
+	t.Fatal("the move returned, though the function it fired never does")
 }

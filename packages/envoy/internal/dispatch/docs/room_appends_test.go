@@ -709,6 +709,17 @@ func TestABatchStopsAtASuppressedUpdateAndAtAnotherRoomInstance(t *testing.T) {
 		retiredPeer, retiredUpdate := peerEdit(t, live, step("Retired", round))
 		retired := &roomCursor{}
 		service.queueUpdateClass(artifactID, retiredUpdate, documentUpdateClass{seq: 1, contentChanged: true, durable: true, cursor: retired}, false)
+		// The room counts the retired instance's update as a durable append until the update is
+		// stored, which only the row's own store below does, and the service's Shutdown and the
+		// package's leak check wait for that count to fall. The cleanup is registered after the
+		// service, so it runs before the service's Shutdown: for a row that failed before its own
+		// store, it makes that store, once, through the sync.OnceValue the row's own call shares.
+		storeRetired := sync.OnceValue(func() error {
+			return adapter.StoreUpdateContext(ctx, artifactID, retiredUpdate)
+		})
+		t.Cleanup(func() {
+			testwait.Returns(t, fmt.Sprintf("round %d: the store of the retired instance's update", round), func() { _ = storeRetired() })
+		})
 		fourth := typeInRoom(t, service, artifactID, 1, alice, step("Alice", 2*round+1))
 		gate.let()
 
@@ -718,10 +729,15 @@ func TestABatchStopsAtASuppressedUpdateAndAtAnotherRoomInstance(t *testing.T) {
 			defer state.mu.Unlock()
 			return len(state.updateClasses) == 1 && state.durableAppends.Load() == 1
 		})
+		// The cursor's lock is held over a read that can fail the row; a row that fails there lets
+		// it go in its cleanup, before the cleanup above stores the update, whose append reads the
+		// cursor.
+		unlockCursor := sync.OnceFunc(retired.mu.Unlock)
 		retired.mu.Lock()
+		t.Cleanup(unlockCursor)
 		retired.through = storedHead(t, database, artifactID)
-		retired.mu.Unlock()
-		if err := adapter.StoreUpdateContext(ctx, artifactID, retiredUpdate); err != nil {
+		unlockCursor()
+		if err := storeRetired(); err != nil {
 			t.Fatalf("round %d: store the retired instance's update: %v", round, err)
 		}
 		waitForLandedAppends(t, service, artifactID)

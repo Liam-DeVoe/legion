@@ -41,7 +41,8 @@
 // which returns only once every connection in use has come back. Context gives a call that takes
 // a context the same bound. InMain is Eventually for a wait in TestMain, which has no t: it takes
 // its deadline from the -timeout flag and the process's start, and returns an error where the
-// others fail the test.
+// others fail the test. InHelper and ReceiveInHelper are InMain and Receive for a helper whose
+// callers hand it no t, such as clocktest's fake, and name that helper where InMain names TestMain.
 //
 // A condition runs on the test goroutine, so a condition that reads a report which makes its fact
 // impossible (a process that exited, a daemon whose run returned) calls t.Fatalf itself and ends
@@ -107,20 +108,29 @@ func Receive[T any](t testing.TB, what string, ch <-chan T) T {
 	t.Helper()
 	expired, stop := expiry(t)
 	defer stop()
+	value, ok := received(ch, expired)
+	if !ok {
+		gaveUp(t, what, nil)
+	}
+	return value
+}
+
+// received waits for one receive from ch until expired receives, then takes a value that came
+// beside the timer, and reports whether it received one.
+func received[T any](ch <-chan T, expired <-chan time.Time) (T, bool) {
 	select {
 	case value := <-ch:
-		return value
+		return value, true
 	case <-expired:
 	}
 	// The margin has passed: ask once more, so a value that came beside the timer is taken.
 	select {
 	case value := <-ch:
-		return value
+		return value, true
 	default:
 	}
-	gaveUp(t, what, nil)
 	var zero T
-	return zero
+	return zero, false
 }
 
 // Returns runs fn on a goroutine of its own and waits for it to return. It is for a call that
@@ -302,6 +312,21 @@ func InHelper(helper, what string, holds func() bool) error {
 	return errors.New(announce(helper, what, nil))
 }
 
+// ReceiveInHelper is Receive for a helper that has no t because its callers hand it none, as
+// InHelper is InMain for one: it waits for one receive from ch and returns what it received and
+// nil. Its bound and its parse of the command line are InMain's. Once the margin has passed it
+// takes a value that came beside the timer, or writes "testwait: <helper>: gave up waiting for
+// <what> …" to stderr and returns the zero value and an error with the same text.
+func ReceiveInHelper[T any](helper, what string, ch <-chan T) (T, error) {
+	expired, stop := expiryAt(mainGiveUpAt())
+	defer stop()
+	value, ok := received(ch, expired)
+	if !ok {
+		return value, errors.New(announce(helper, what, nil))
+	}
+	return value, nil
+}
+
 // requireWhy fails t when why says nothing: a span with no reason is a sleep.
 func requireWhy(t testing.TB, function, why string) {
 	t.Helper()
@@ -336,7 +361,12 @@ func asked(end time.Time, bounded bool, holds func() bool) bool {
 // expiry is a channel that receives once the moment giveUpAt names for t has passed, nil (which
 // never receives) under -timeout 0, and the function that releases its timer.
 func expiry(t testing.TB) (<-chan time.Time, func() bool) {
-	end, bounded := giveUpAt(t)
+	return expiryAt(giveUpAt(t))
+}
+
+// expiryAt is a channel that receives once end has passed, nil (which never receives) when there
+// is no end (bounded false), and the function that releases its timer.
+func expiryAt(end time.Time, bounded bool) (<-chan time.Time, func() bool) {
 	if !bounded {
 		return nil, func() bool { return false }
 	}
