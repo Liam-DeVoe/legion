@@ -164,7 +164,7 @@
     "routes": [
       "POST /legion/v1/plans/register"
     ],
-    "since": 204,
+    "since": 211,
     "noBody": false
   }
 ]
