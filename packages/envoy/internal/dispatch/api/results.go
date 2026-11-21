@@ -531,74 +531,15 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	artifact, held, err := s.verificationDocument(r.Context(), s.deps.Store.Pool, issueKey, "")
+	body, held, err := s.answerIssueChecks(r.Context(), issueKey, at, s.readDisplayTrees(r.Context(), wantsDisplayTrees(r)))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	body := issueCheckResults{Checks: []model.CheckBlock{}, Issue: issueKey, VerificationArtifactID: artifact.ID}
 	if !held {
 		WriteJSON(w, http.StatusOK, body)
 		return
 	}
-	trees := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
-	checks, err := s.checkBlocksOf(r.Context(), s.deps.Store.Pool, artifact, trees)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	recorded, err := loadCheckResults(r.Context(), s.deps.Store.Pool, artifact.ID)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	retracted, err := loadCheckResultRetractions(r.Context(), s.deps.Store.Pool, artifact.ID)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	for index := range checks {
-		results := recorded[checks[index].BlockID]
-		if results == nil {
-			results = []model.CheckResult{}
-		}
-		for result := range results {
-			if retraction, held := retracted[results[result].ID]; held {
-				results[result].Retracted = &retraction
-			}
-		}
-		checks[index].Results = results
-	}
-	headCI, err := s.deriveCIResults(r.Context(), issueKey, checks)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	// Every head GitHub has to be asked for is learned before the first check is answered, so
-	// two `before_merge` checks of one issue name one list of bases and not two
-	// (comparisonReader.learn).
-	reader := newComparisonReader(s, at)
-	reader.headCI = headCI
-	reader.learn(r.Context(), checks)
-	for index := range checks {
-		reader.answer(r.Context(), &checks[index])
-	}
-	answerCompatibilityCurrency(checks, at)
-	keepFieldsOlderCommandsRead(checks)
-	// Each result's observed text is registered for its tree once no check's results are copied
-	// any more, since what is registered is a pointer into the row: deriveCIResults replaces a
-	// check's results, and keepFieldsOlderCommandsRead moves them into new lists, results and the
-	// recorded_results of a check CI proves, whose results take their trees as well.
-	for index := range checks {
-		for result := range checks[index].Results {
-			trees.text(&checks[index].Results[result].ObservedTree, checks[index].Results[result].Observed)
-		}
-		for result := range checks[index].RecordedResults {
-			trees.text(&checks[index].RecordedResults[result].ObservedTree, checks[index].RecordedResults[result].Observed)
-		}
-	}
-	body.Checks = checks
-	trees.resolve()
 	if s.stateHidden() {
 		hidden, err := withoutComputedState(body)
 		if err != nil {

@@ -842,6 +842,17 @@ RULES = {
         (f"{ENVOY}/scripts/fixtures/github/*", "internal/contracts/normalize_test.go:2078,2711")),
     f"{ENVOY}/internal/contracts/plan_rating_test.go": reads(
         (f"{FIX}/daemon-api/plan-rating-cases.json", "internal/contracts/plan_rating_test.go:21")),
+    f"{ENVOY}/internal/dispatch/api/check_states_test.go": reads(
+        (CONTRACTS_SRC,
+         "internal/dispatch/api/check_states_test.go:602 runs `bun -e` in ../../../../contracts (:598), importing "
+         "./src/index.ts to parse a stored check.state_changed payload with CheckStateChangedEventPayloadSchema"),
+        ("packages/contracts/package.json",
+         "internal/dispatch/api/check_states_test.go:602 runs bun in packages/contracts, which reads the package's manifest"),
+        ("packages/contracts/tsconfig.json",
+         "internal/dispatch/api/check_states_test.go:602 runs bun in packages/contracts, which reads its tsconfig"),
+        (f"{ENVOY}/cmd/dispatch/main.go",
+         "internal/dispatch/api/check_states_test.go:1194 parses ../../../cmd/dispatch/main.go for the lease pool's "
+         "reservations TestTheLeasePoolCountsTheCheckStatesLoop counts")),
     f"{ENVOY}/internal/dispatch/api/copy_lock_order_test.go": [
         run(ENVOY, ["./cmd/dispatch"], "internal/dispatch/api/copy_lock_order_test.go:264 go list -deps -export ./cmd/dispatch in packages/envoy", mode="build")],
     f"{ENVOY}/internal/dispatch/api/delivery_live_diff_test.go": reads((f"{FIX}/live/*", "internal/dispatch/api/delivery_live_diff_test.go:982,1016")),
@@ -3463,7 +3474,7 @@ GATES = [
         ]),
     ], reads=reads(
         (DATABASE_SKIPS_SCRIPT, f"{at('envoy-go-race-api', RACE_API.step)} runs the package through it"),
-    ) + ceiling_reads("envoy-go-race-api") + setup_go("envoy-go-race-api", f"{ENVOY}/go.mod")),
+    ) + ceiling_reads("envoy-go-race-api") + setup_go("envoy-go-race-api", f"{ENVOY}/go.mod") + bun_job("envoy-go-race-api")),
 
     gate("envoy_go_race_docs", "envoy-go-race-docs", runs=[ceiling_run("envoy-go-race-docs")], exact=[
         pinned_step("envoy-go-race-docs", RACE_DOCS_STEP, ENVOY, RACE_DOCS_SCRIPT, [

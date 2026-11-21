@@ -1035,7 +1035,7 @@ What the two processes share, and what each keeps to itself:
 
 - The embeddings `project_key` fill (lease `embeddings-project-key-fill`, `api.RunEmbeddingProjectKeyFill`) is leased and is no loop of a cadence: it is one pass of one to two hours that labels the rows stored before migration `20261109120000`, started once at boot, and it takes its lease with no period because the cursor row of `20261109120100` says when there is nothing left to do, so the process of a roll that finds the lease held logs the skip and fills nothing.
   That process then tries for the lease again every five minutes until that cursor row reads done, so a holder killed mid-pass costs the labelling one wait rather than lasting until something next boots, and each process's goroutine and its lease-pool connection go back for good once the rows are labelled.
-  Eighteen names are leased in all: the fourteen leased loops of the two items above and the Legion sampler, the CI reconcile among them, one per delivery durable for the intake's take-over, and the fill, and the lease pool holds a connection for each of those callers and for each of the four callers of the two intakes' holds, twenty-two (`store.LeasePoolSize`'s comment in `internal/dispatch/store/pool.go` lists the names; every caller reserves its connection by name at boot and `store.LeaseCallers.Complete` refuses to serve unless the reservations are exactly the pool's size).
+  Eighteen names are leased in all: the fourteen leased loops of the two items above and the Legion sampler, the CI reconcile among them, one per delivery durable for the intake's take-over, and the fill. The check states settler takes a lease of a name of its own for each issue it settles (`check-states:<issue>`), with no period, on one connection of its own (Background loops, below). The lease pool holds a connection for each of those callers and for each of the four callers of the two intakes' holds, twenty-three (`store.LeasePoolSize`'s comment in `internal/dispatch/store/pool.go` lists the names; every caller reserves its connection by name at boot and `store.LeaseCallers.Complete` refuses to serve unless the reservations are exactly the pool's size).
   The delivery live hub, the event-stream relay, the process's shared listener connection, with the document rooms' room sync and the woken loops' wakes on it, and the document rooms' timers stay per-process by design (below), the embedding queue and the task progress reconciliation claim their own work, and the outbox publishes under its hold (above);
   the embedding queue's coverage pass runs in every process with no lease, each of its steps safe beside another process's, and only the processes whose embedder has the one active identity embed or drop a vector (Search, below);
   `cmd/dispatch/main.go` says at the call site which loop is which and why.
@@ -1220,12 +1220,12 @@ During the roll that releases this behaviour, processes of the earlier build beh
 Every change this build writes still notifies `dispatch_doc_changed`, which the earlier build reads, and an issue that the earlier build closes still closes this build's rooms through the trigger.
 
 **Each process holds its own connections, so a second process doubles them.**
-Every pool's size is fixed in code (`internal/dispatch/store/pool.go`), and a serving process opens at most 64 + 22 + 8 + 4 + 2 + 2 + 1 + 2 + 2 + 1 + 5 = 113 connections to Postgres (`store.ConnectionsPerProcess`):
+Every pool's size is fixed in code (`internal/dispatch/store/pool.go`), and a serving process opens at most 64 + 23 + 8 + 4 + 2 + 2 + 1 + 2 + 2 + 1 + 5 = 114 connections to Postgres (`store.ConnectionsPerProcess`):
 
 | Pool | Connections | What takes them |
 | --- | --- | --- |
 | Shared (`sharedPoolSize`) | 64 | Requests, settlements, and the document writers that hold a room's lock on a connection of their own (`lockRoom` through `withRoomLock`: snapshots, prunes, deletions). |
-| Leases (`store.LeasePoolSize`) | 22 | The periodic maintenance loops' once-overall leases (`duty.Exclusive`) and the delivery intakes' holds (`duty.Hold`), the Legion sampler's read of each project's daemon, the embeddings `project_key` fill and the display tree fill among them, one per caller that can be inside a lease or a hold statement at once (`store.LeaseCallers`). |
+| Leases (`store.LeasePoolSize`) | 23 | The periodic maintenance loops' once-overall leases (`duty.Exclusive`) and the delivery intakes' holds (`duty.Hold`), the Legion sampler's read of each project's daemon, the embeddings `project_key` fill, the display tree fill and the check states settler's lease of each issue it settles among them, one per caller that can be inside a lease or a hold statement at once (`store.LeaseCallers`). |
 | Room appends (`roomAppendsPoolSize`) | 8 | The document rooms' batches of browser updates; `application_name=dispatch-room-appends`. |
 | Rooms (`RoomsPoolSize`) | 4 | Document loads; `application_name=dispatch-rooms`. |
 | Compaction (`compactionPoolSize`) | 2 | A document's compaction: the read transaction of the rows it folds, and its write back under the document's lock (`Pool.Compaction`); `application_name=dispatch-compaction`. |
@@ -1236,7 +1236,7 @@ Every pool's size is fixed in code (`internal/dispatch/store/pool.go`), and a se
 | Registry (`registryPoolSize`) | 1 | Held for the life of the process: the heartbeat that stamps its row in the registry of live server processes every 5 seconds (`processes.Register`). |
 | Listeners (`listenerConnections`) | 5 | What the process may hold at once, each on a connection of its own: the events outbox's `LISTEN` on `dispatch_events` and `dispatch_duty_holds`, the shared listener hub the document rooms' room sync and the woken background loops wait on, and the document rooms' NOTIFY sender, each held for the life of the process, and the delivery hub's and the event stream relay's, each held only while something subscribes to them. |
 
-Two processes at their ceiling hold 226, past a default Postgres's `max_connections` of 100, so size the database's limit for both, with whatever else uses that database counted in, before the second process starts.
+Two processes at their ceiling hold 228, past a default Postgres's `max_connections` of 100, so size the database's limit for both, with whatever else uses that database counted in, before the second process starts.
 
 **A connection is closed after its next response once it is 60 seconds old** (`maxConnAge`, `cmd/dispatch/conn_age.go`):
 the server stamps each connection's accept time and answers the first request it reads at that age or later with `Connection: close`, and a request carrying an `Upgrade` header, a websocket handshake, keeps its connection.
@@ -1486,6 +1486,13 @@ The four that run passes (`duty.RunWoken`) start two passes no closer together t
   Sweeps start at least 5 s apart, the period of the timer it replaced:
   a notice still due after a sweep (past a batch of 20, or one whose send failed) is swept again 5 s later, and a notice goes at most 5 s after its due time.
   A held window, which names nobody and has no due time, neither wakes it nor keeps a timer.
+
+- The check states settler (`api.Background.RunCheckStates`) is woken by `dispatch_check_states_owed`, which `check_states_owe` notifies each time a row trigger on `check_results`, `ci_check_results`, `check_result_retractions`, `ci_check_result_retractions`, `document_blocks` or `pull_request_heads` marks an issue owed (`20261121000327` to `20261121000333`), whichever build wrote the row.
+  A pass reads up to 20 issues holding a due mark, the oldest mark first, and settles each under the issue's own lease (`check-states:<issue>`, no period), so a lease another process holds is a skip and that process settles the issue.
+  A settle reads the issue's due marks, computes the issue's checks as `GET /api/v1/issues/{key}/results` does, compares the state of each `before_merge` check at each open pull request head with the one it last published (`check_states`), and in one transaction appends one `check.state_changed` event for each difference, with the set of checks at the head, or the set form where only the set moved, stores what it published and deletes the marks it read; it runs at most five rounds, each reading the marks the round before did not.
+  A state that reads `read_failed` keeps one mark due 30 s on, doubling with each failure to 10 minutes, with no notification.
+  Passes start at least 1 s apart, and one comes at most a minute after the one before it, so a mark whose notification no process received is settled within a minute; a pass that failed is retried 30 s later.
+  A `test` handoff waits up to 30 s, before its transaction opens, until every mark of its issue due when it began is settled, and stores the issue's serial (`handoffs.check_states_serial`); past that it answers `503 CHECK_STATES_UNSETTLED` and records nothing.
 
 - The suggestion outcome sweep (`api.RunSuggestionOutcomeSweep`) is woken by `dispatch_events` (`0107`), which every event commit notifies whichever process made it.
   Passes start at least 60 s apart.
@@ -2583,6 +2590,21 @@ Each writer that read GitHub writes them with the row's issue (`delivery.UpsertP
 A change of an issue's links judges each row it names again from these columns, in the PATCH's own transaction and with no read of GitHub (`delivery.LinksChanged`, `PATCH /api/v1/issues/{key}` below).
 Every row stored before it reads null in all five, and `delivery.AttributionRuleVersion` 4 has the reconcile's merged arm read each merged row once more to store them; an open row is read again within five minutes anyway.
 Nullable columns with no default rewrite no row; the ALTER holds ACCESS EXCLUSIVE on `pull_request_heads` for the catalog write alone, the previous release neither reads nor writes the columns, its census answers `0`, and `20261120144431_pull_request_heads_attribution_inputs.down.sql` is the by-hand script that drops them once no release that writes them serves.
+
+Migration `20261121000327_check_states` creates the check states settler's tables (Background loops, above): `check_states_owed`, one row per mark a write left, with its due time and the failed reads of GitHub behind a mark the settler kept, and no foreign key and no unique key, so a mark waits on no other mark and locks no issue row; `check_states`, the state of each `before_merge` check at each open pull request head the settler last published, keyed by issue, repository, head and check, with `''` for the head's set row; and `check_state_serials`, the count of each issue's `check.state_changed` events.
+It creates `check_states_owe(issue)`, which inserts one mark and notifies `dispatch_check_states_owed`, and the four trigger functions the next six migrations attach: `check_states_owe_result`, `check_states_owe_retraction`, `check_states_owe_check_block`, for a check block of a Verification document, and `check_states_owe_head`, which marks the issue a head belonged to and the issue it belongs to now.
+It touches no existing row; its census answers `0`.
+
+Migrations `20261121000328_check_states_owe_check_results`, `20261121000329_check_states_owe_ci_check_results`, `20261121000330_check_states_owe_check_result_retractions`, `20261121000331_check_states_owe_ci_check_result_retractions`, `20261121000332_check_states_owe_document_blocks` and `20261121000333_check_states_owe_pull_request_heads` attach those functions, each in its own migration so each transaction holds one table's `SHARE ROW EXCLUSIVE` alone (`0122`-`0125`'s precedent), so a write of that table waits behind it while a read does not.
+The update triggers of `document_blocks` and `pull_request_heads` fire only where a value a state reads moved (a block's type, digest or changed version; a head's commit, state or issue), since their writers rewrite every column on each write, a read-through included.
+A write of the release before this one fires them too, so its results, retractions and heads are marked as this build's are.
+Each touches no row; each census answers `0`.
+
+Migration `20261121000334_handoffs_check_states_serial` adds `handoffs.check_states_serial`, nullable `bigint` with no default, the issue's check states serial a `test` handoff stored once the states its results changed were published, and its check `check_states_serial >= 0` as `not valid` (`0120`'s form for a check added to a table that has rows).
+The ALTER holds ACCESS EXCLUSIVE on `handoffs` for the catalog write alone, the previous release neither reads nor writes the column, and its census answers `0`.
+
+Migration `20261121000335_check_states_backfill` marks owed every issue with an open attributed pull request head, after the triggers, so a write during the roll is marked by its own trigger and the settler's first pass publishes the states that exist.
+It reads `pull_request_heads` (`ACCESS SHARE`) and writes only `check_states_owed`, which holds no row at deploy; its census answers `0`.
 
 Migration `20261116163813_issue_role_holders` creates `issue_role_holders`, the session that holds each Legion role of an issue, which the Legion daemon publishes (`PUT /api/v1/issues/{key}/role-holders`, Routes below).
 The key is `(issue_key, role)`, and a unique index on `(issue_key, session)` keeps a session to one role of an issue.
@@ -4896,6 +4918,9 @@ Each item below names a path with its method and identity, then its purpose.
   `body` is one JSON object as a string of at most `contracts.DispatchHandoffBodyMax` (262,144) bytes, stored exactly as sent, and the record is the phase's next version from 1, numbered under the issue's owner lock.
   A cookie caller is `403 HANDOFF_FORBIDDEN`, an actor that is not a session `400 ACTOR_KIND`, a phase that is not a lowercase slug or a body that is not one JSON object `400 HANDOFF_INPUT`, an over-cap body `413 CAP_EXCEEDED` naming the cap, and a closed issue `409 ISSUE_CLOSED`.
   Answers `201 {id, issue_key, phase, version, author, created_at}` and appends `handoff.recorded` `{handoff_id, phase, version}` in the same transaction, which never carries the body and notifies no one.
+  A `test` handoff first waits, for at most 30 s, until every check state mark of its issue due when it began is settled (Background loops, the check states settler), and stores and answers the issue's serial then as `check_states_serial`: each `check.state_changed` event the tester's results caused carries a serial at or below it.
+  Past the 30 s it answers `503 CHECK_STATES_UNSETTLED` and records nothing, and the session writes the handoff again; a mark that waits for a later read of GitHub is not due and does not hold it.
+  Every other phase stores and answers no serial, and the handoff reads (below) answer `check_states_serial` where the handoff holds one.
   A keyed write: a retry under the same `Idempotency-Key` is answered the first call's `201` and records no second version.
 
 - `/api/v1/issues/{key}/handoffs` (GET; cookie, trusted header, or bearer)

@@ -3597,14 +3597,19 @@ type MessageAcceptedEventPayload struct {
 // HandoffSummary is one phase handoff without its body: what GET /api/v1/issues/{key}/handoffs
 // lists, newest first, and what POST /api/v1/issues/{key}/handoffs/{phase} answers. Phase is a
 // lowercase slug (Legion writes plan, implement, test and review), Version counts from 1 within
-// the issue and phase, and Author is the session that wrote it.
+// the issue and phase, and Author is the session that wrote it. CheckStatesSerial is set on a
+// `test` handoff alone: the issue's check states serial once every check state its results
+// changed was published, so each check.state_changed event those results caused carries a serial
+// at or below it. Absent on every other phase and on a test handoff written before Dispatch
+// stored it.
 type HandoffSummary struct {
-	ID        string    `json:"id"`
-	IssueKey  string    `json:"issue_key"`
-	Phase     string    `json:"phase"`
-	Version   int       `json:"version"`
-	Author    Actor     `json:"author"`
-	CreatedAt time.Time `json:"created_at"`
+	ID                string    `json:"id"`
+	IssueKey          string    `json:"issue_key"`
+	Phase             string    `json:"phase"`
+	Version           int       `json:"version"`
+	Author            Actor     `json:"author"`
+	CreatedAt         time.Time `json:"created_at"`
+	CheckStatesSerial *int64    `json:"check_states_serial,omitempty"`
 }
 
 // Handoff is one phase handoff with its body: Body is the exact text the session sent, one JSON
