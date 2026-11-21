@@ -3132,7 +3132,31 @@ It refuses:
   - a migration that does not parse, since the census cannot see whether it creates an event trigger.
 
   The report still prints the table's size beside the limit and says why the migration is exempt, and its lock holders refuse it as they refuse any other.
-  A trigger named only in a comment, a string literal or a function body exempts nothing, and one statement of any other kind beside it ends the exemption;
+  A trigger named only in a comment, a string literal or a function body exempts nothing, and one statement of any other kind beside it ends the exemption.
+
+  - A table above the limit is also admitted, table by table, for bounded writes (`boundedWrites` in `internal/pgmigrate/exempt.go`), when every statement of the migration that touches it, as the census reads touches, is one of these, as Postgres's own parser reads it:
+
+    - an `insert` into the table of a `values` list of at most 1,000 rows (`pgmigrate.BoundedWriteRows`), each value a literal, with no `with`, `returning` or `overriding`, and with no `on conflict` or with `on conflict … do nothing`, under any conflict target or none.
+      A conflict target only names the index Postgres checks, and Postgres evaluates none of it on a row, so a target of index expressions with a predicate (`on conflict (from_kind, from_id, kind, md5(to_id), source_event, asserted) where to_kind = 'value' and source_event <> 0 do nothing`) counts as no target does.
+
+    - an `update` of the table, under its name or an alias, with no `with`, `from` or `returning`, that sets columns to literals and names at most 1,000 rows by its primary key, in a `where` clause of `pk = v`, `pk in (v, …)`, `(pk1, pk2) in ((v, v), …)` or `pk1 = v and pk2 = v`, which names each column of the key once and nothing else.
+      It sets no column of the primary key and no column a foreign key references, since a change of such a key checks the table that references it.
+      Each key value is a string constant or `null`, which takes the column's type, an integer constant for a `smallint`, `integer` or `bigint` column, or a cast to the column's own type: a comparison Postgres searches the key's index by, where `seq = 1.5` casts a `bigint` column to `numeric` and scans the table.
+
+  - A literal is what Postgres stores as an added column's default without a rewrite, and none of them reads a table: a constant (a negative number and `null` among them), an `array[…]` of constants, a cast of one of those to a type the census admits for a column (`'{"a":1}'::jsonb`), a SQL value function (`current_timestamp`), or a call of no argument of a stable or immutable `pg_catalog` function under the rules for a default (`now()`).
+    A cast and a call need the catalog reads, so a migration without them has only the others.
+    An operator, a subquery, a call with arguments (`jsonb_build_object(…)`), a function outside `pg_catalog` and a column reference are not literals, and neither is `default`, since the census does not read the default it stands for.
+    Such a write takes ROW EXCLUSIVE, which holds off no read and no write of another row, and reads and writes only the rows it names, so its time grows with its rows and not with the table:
+    on this pod's PostgreSQL 18.6, over `graph_tuples` at 3,000,000 rows and 1.2 GiB, an insert of 1,000 literal rows took 63 to 194 ms and an update of 1,000 rows by `seq` 170 to 344 ms, where 10,000 took 1.0 s and 2.9 s (`pgmigrate.BoundedWriteRows` holds the measurement).
+
+  - The table is held to more, since each of these makes a write of one row able to read the whole table:
+    no rule (`pg_rewrite`), no row-level security (`relrowsecurity`), and, for an `update` without `only`, no child table.
+    The census reads the table's keys, rules and triggers as they stand before any pending migration applies, so no earlier pending migration may touch the table with more than bounded writes, and neither the migration nor an earlier pending one may hold a statement whose effect the census cannot read, the ones that take the exceptions above from every later migration.
+    Nor may the migration hold a statement after which its names can resolve to another table, a `set` of any setting but `lock_timeout` and `statement_timeout` among them.
+    An enabled trigger of the table, and the default of a column an insert leaves out, run for each row written, and the census reads neither, as it reads no function's body:
+    neither refuses, and the report prints the admission with the number of statements, the bound and the table's enabled triggers.
+    An enabled event trigger does not take the admission away either, since an `insert` and an `update` fire none.
+    A migration that writes rows of such a table any other way is refused with what is not bounded (`…, and lock table is not one`, `…, and an insert of 1,001 rows, above the 1,000 a bounded write may hold, is not one`), and one that writes none of its rows and is not exempt above is refused on the size alone;
 
 - a session holding a lock on a touched table whose transaction has been open at least a minute (`pgmigrate.CensusLongTransaction`):
   the migration would give up on that lock during the rollout;
@@ -3209,7 +3233,7 @@ Read-only does not stop `pg_terminate_backend` (which, as that role, ends the se
 `Load` finds the comments and literals as Postgres 18's lexer does (nested comments, `E'…'` escapes, continued and dollar-quoted literals), and the census runs with `standard_conforming_strings` on, `backslash_quote` at `safe_encoding` and `client_encoding` at `UTF8`, the settings the runner applies each migration with, so Postgres reads its literals the same way.
 Review is the control past that, since any non-zero integer a census answers is printed.
 
-**What the report prints:** counts, sizes (in KiB, MiB and GiB, or in bytes where a size above the limit would round to the limit's figure), versions, file names and session metadata (pid, role, application name, state, transaction age as Postgres measured it, to the microsecond, the figure the minute's bound is compared with;
+**What the report prints:** counts, sizes (in KiB, MiB and GiB, or in bytes where a size above the limit would round to the limit's figure), versions, file names, the names of the enabled triggers of a table admitted for bounded writes, and session metadata (pid, role, application name, state, transaction age as Postgres measured it, to the microsecond, the figure the minute's bound is compared with;
 never query text, "not visible" for a field Postgres hides, and "autovacuum worker" for one).
 For a census that fails, its file name and the SQLSTATE;
 Postgres's own message only when the error points into the census's own text (a position, which a parse or analysis error carries), since then it quotes that text and its identifiers.
