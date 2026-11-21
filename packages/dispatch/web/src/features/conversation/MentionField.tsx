@@ -328,9 +328,7 @@ export function MentionField({
       <label
         className={
           labelClassName ??
-          (look === undefined
-            ? `block text-sm font-medium ${textSecondaryOnSurface}`
-            : "contents")
+          (look === undefined ? `block text-sm font-medium ${textSecondaryOnSurface}` : "contents")
         }
       >
         {labelHidden ? null : label}
@@ -386,7 +384,9 @@ export function MentionField({
       {parties.length === 0 ? null : (
         <ul
           aria-label="Mention targets"
-          className={look === undefined ? `flex flex-wrap gap-2 text-xs ${textPrimaryOnSurface}` : "sr-only"}
+          className={
+            look === undefined ? `flex flex-wrap gap-2 text-xs ${textPrimaryOnSurface}` : "sr-only"
+          }
         >
           {parties.map((target) => (
             <li className="rounded-full border px-2 py-1" key={target}>
@@ -408,9 +408,7 @@ export function MentionField({
           box and the list that drives the browser rows cannot drift apart. */}
       <p
         className={
-          look === undefined
-            ? (hintClassName ?? `text-xs ${textMutedOnSurface}`)
-            : "sr-only"
+          look === undefined ? (hintClassName ?? `text-xs ${textMutedOnSurface}`) : "sr-only"
         }
         id={hintId}
       >
