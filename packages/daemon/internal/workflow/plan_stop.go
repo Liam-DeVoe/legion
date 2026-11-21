@@ -79,7 +79,7 @@ func (e *Engine) stopTask(ctx context.Context, tx pgx.Tx, issue record.Issue, w 
 // start (restartTask), and every other start of that role while the hold stands finishes without
 // acting where every start of a role is run (the daemon outbox's start).
 func StoppedStepRole(issue record.Issue) claim.Role {
-	if issue.Hold == nil || issue.Hold.Reason != record.HoldTaskStopped {
+	if !record.HeldFor(issue, record.HoldTaskStopped) {
 		return ""
 	}
 	if role := phase.RoleFor(issue.Hold.From); role != claim.RoleArchitect {
