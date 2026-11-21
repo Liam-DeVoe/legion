@@ -2015,6 +2015,7 @@ listener_server_change:
   - 'packages/envoy/internal/routing/*'
   - 'packages/envoy/infra/gcp/testdata/clustered-hub-listener-pod.golden'
   - 'packages/envoy/infra/gcp/testdata/dispatch-listener-pod.golden'
+  - 'packages/envoy/infra/gcp/testdata/dispatch-listener-pod-with-service-identity.golden'
   - 'packages/envoy/infra/README.md'
   - 'packages/envoy/infra/docs/nats-hub.md'
   - 'packages/envoy/infra/gcp/clusteredhub_listener.go'
