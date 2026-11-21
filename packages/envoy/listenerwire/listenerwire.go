@@ -67,6 +67,12 @@ type APIError struct {
 	Expected []string `json:"expected,omitempty"`
 }
 
+// CodeMaybeStored is the code of a send's or a publish's 503 whose publish went out and was never
+// acknowledged: the stream may hold the message, so a caller reads it as a receipt timeout - it may
+// have landed, and a repeat under the same idempotency key is recognised - and not as a send that
+// stored nothing. Every other 503 of those routes leaves the code out.
+const CodeMaybeStored = "maybe_stored"
+
 // EdgeRefusal is the body of an edge listener's refusal of a request its token's projects do not
 // cover (ENVOY_EDGE_PROJECTS). Reason names the rule: token_not_admitted, topic_not_in_project,
 // repository_not_in_project, repositories_unknown, topic_not_published, role_not_in_project,
@@ -83,12 +89,6 @@ type EdgeRefusal struct {
 	Refused  []string `json:"refused,omitempty"`
 	Expected []string `json:"expected,omitempty"`
 }
-
-// CodeMaybeStored is the code of a send's or a publish's 503 whose publish went out and was never
-// acknowledged: the stream may hold the message, so a caller reads it as a receipt timeout - it may
-// have landed, and a repeat under the same idempotency key is recognised - and not as a send that
-// stored nothing. Every other 503 of those routes leaves the code out.
-const CodeMaybeStored = "maybe_stored"
 
 // MessageBody is the message a send or a publish carries, which the listener builds the envelope
 // it puts on the bus from. A sender that leaves Source out speaks as an agent.
