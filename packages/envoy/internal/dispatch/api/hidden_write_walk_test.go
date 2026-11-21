@@ -36,6 +36,12 @@ var timeStamp = regexp.MustCompile(`\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(
 // maskTimes is body with every RFC 3339 time written as one placeholder.
 func maskTimes(body string) string { return timeStamp.ReplaceAllString(body, "<time>") }
 
+// ageSeconds is an answer's `"age_seconds":N` member, a count of whole seconds since a row was made.
+var ageSeconds = regexp.MustCompile(`"age_seconds":[0-9]+`)
+
+// maskAges is body with every age in seconds written as one placeholder.
+func maskAges(body string) string { return ageSeconds.ReplaceAllString(body, `"age_seconds":<age>`) }
+
 // hiddenPerson is a full member no list of PRIV names, so a caller that sees PRIV alone does not
 // see them (access.PersonClause), and an open viewer does.
 const hiddenPerson = "dana@example.com"
