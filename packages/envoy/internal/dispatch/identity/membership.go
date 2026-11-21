@@ -117,13 +117,14 @@ type RefreshOutcome int
 
 const (
 	// RefreshNone is no refresh: the confirmation was fresh, or a failure came before Google was
-	// asked. Under IAP identity it is also an Active Directory answer that wrote nothing, since
-	// another check recorded a hold after this one read the row (ConfirmDirectory).
+	// asked.
 	RefreshNone RefreshOutcome = iota
 	// RefreshConfirmed is Google's confirmation of the person, whether or not ConfirmSubject's
 	// guard missed.
 	RefreshConfirmed
-	// RefreshHeld is an end with auth.EndHold whose EndSubject answered true.
+	// RefreshHeld is an end with auth.EndHold whose EndSubject answered true. Under IAP identity it
+	// is a Held Directory outcome, and an Active one that wrote nothing because another check recorded
+	// a hold after this one read the row, so the person stays held (ConfirmDirectory).
 	RefreshHeld
 	// RefreshKept is an end with auth.EndKeep whose EndSubject answered true.
 	RefreshKept

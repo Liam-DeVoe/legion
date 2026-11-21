@@ -1,13 +1,17 @@
 package identity
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/identity/directorytest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // lateActive is the people store with the write of each Active outcome held until release is
@@ -30,9 +34,9 @@ func (s lateActive) RecordDirectoryActive(ctx context.Context, email, userID str
 // account at once. Process A reads her row and the Directory answers Active; then Google suspends
 // her, and process B reads her row, the Directory answers suspended, and B records Held. A's
 // Active outcome is written only after B's Held: it rests on a Directory read older than the
-// hold, so it writes nothing, A counts RefreshNone, and ada stays held. The order control writes
-// A's Active outcome before Google suspends her: A counts RefreshConfirmed, and B's Held then
-// holds her, so the test fails only on the order of the writes.
+// hold, so it writes nothing, ada stays held, and A counts RefreshHeld, what she is. The order
+// control writes A's Active outcome before Google suspends her: A counts RefreshConfirmed, and B's
+// Held then holds her, so the test fails only on the order of the writes.
 //
 // The same holds for a row that was already held when A read it: ada was suspended an hour ago,
 // her account was restored before A's Directory read, and she is suspended again before B's. B's
@@ -49,9 +53,9 @@ func TestIAPActiveAnswerFromAnEarlierReadReleasesNoLaterHold(t *testing.T) {
 		activeFirst bool
 		want        RefreshOutcome
 	}{
-		{"an Active outcome written after a later read's Held", false, false, RefreshNone},
+		{"an Active outcome written after a later read's Held", false, false, RefreshHeld},
 		{"order control: the Active outcome written before Google suspends her", false, true, RefreshConfirmed},
-		{"a row held before A's read: an Active outcome written after a later read's Held", true, false, RefreshNone},
+		{"a row held before A's read: an Active outcome written after a later read's Held", true, false, RefreshHeld},
 		{"a row held before A's read, order control: the Active outcome written before Google suspends her again", true, true, RefreshConfirmed},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -123,5 +127,64 @@ func TestIAPActiveAnswerFromAnEarlierReadReleasesNoLaterHold(t *testing.T) {
 					answer, stamp(row.heldSince), stamp(row.confirmedAt), stamp(row.notHeldUntil))
 			}
 		})
+	}
+}
+
+// TestIAPMembershipPassCountsAnUnwrittenActiveHeld: the membership pass claims ada's due row and
+// checks it, and the Directory answers Active; before its write lands, Google suspends her and
+// another process's check records Held. The pass's Active write writes nothing, ada stays held,
+// and the pass's line counts her held, not confirmed.
+//
+// Control: count an Active outcome that wrote nothing as RefreshNone, which the pass counts
+// confirmed; the line reads confirmed=1 held=0, and the test fails naming it.
+func TestIAPMembershipPassCountsAnUnwrittenActiveHeld(t *testing.T) {
+	var logged bytes.Buffer
+	logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
+	ctx := context.Background()
+	r := newDirectoryStandingRig(t)
+	adaActive(r.google)
+	r.record(directoryAda)
+	r.active(directoryAda, "u-ada", 2*time.Hour)
+	reader, err := NewDirectoryReader(t.Context(), directorySigner, directoryAdmin, r.google.ClientOptions()...)
+	if err != nil {
+		t.Fatalf("NewDirectoryReader: %v", err)
+	}
+	late := lateActive{PgPeopleStore: r.people, entered: make(chan struct{}), gate: make(chan struct{})}
+	release := sync.OnceFunc(func() { close(late.gate) })
+	pass := MembershipPass{Membership: &Membership{People: late, Rule: workspace, Directory: reader, Outliving: r.outliving}, People: r.people}
+	ran := make(chan error, 1)
+	go func() { ran <- pass.Run(ctx) }()
+	// A failure below leaves the pass's write held: release it and wait for the pass before the
+	// rig's database is dropped.
+	finished := false
+	t.Cleanup(func() {
+		release()
+		if !finished {
+			<-ran
+		}
+	})
+	<-late.entered
+	r.google.SetUser(directoryAda, directorytest.User{ID: "u-ada", PrimaryEmail: directoryAda, Suspended: true})
+	r.newProcess()
+	if outcome, err := r.membership.ConfirmDirectory(ctx, directoryAda); err != nil || outcome != RefreshHeld {
+		t.Fatalf("the other process's check of the suspended account = %v, %v; want RefreshHeld", outcome, err)
+	}
+	release()
+	err = <-ran
+	finished = true
+	if err != nil {
+		t.Fatalf("the pass: %v", err)
+	}
+	if answer := r.standing(directoryAda); !answer.Held {
+		t.Fatalf("ada after the pass's late Active outcome = %+v; want held", answer)
+	}
+	var line string
+	for candidate := range strings.Lines(logged.String()) {
+		if strings.Contains(candidate, `msg="dispatch: membership pass"`) {
+			line = strings.TrimSpace(candidate)
+		}
+	}
+	if !strings.Contains(line, "confirmed=0 held=1 kept=0 unasked=0 forgotten=0") {
+		t.Fatalf("the pass's line is %q; want ada counted held=1 and confirmed=0: her hold stood", line)
 	}
 }

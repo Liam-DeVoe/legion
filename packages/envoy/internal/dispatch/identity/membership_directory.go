@@ -83,10 +83,11 @@ func (m *Membership) directoryStanding(ctx context.Context, email string, read a
 // ConfirmDirectory checks email's Workspace account for the membership pass under IAP identity,
 // starting or joining the one check of this person in flight in this process, and waits for it.
 // Its RefreshOutcome is the pass's count: RefreshConfirmed for an Active outcome, RefreshHeld for a
-// Held one, RefreshFailed for a Failed check and for an outcome whose write failed or missed the
-// check's deadline, and RefreshNone when the row it read under the flight needed no check (an
-// Active answer younger than MembershipMaxAge, nil) or is gone (ErrNoIdentity), and for an Active
-// outcome that wrote nothing (nil): another check recorded a hold after this one read the row.
+// Held one and for an Active outcome that wrote nothing because another check recorded a hold after
+// this one read the row (the person stays held), RefreshFailed for a Failed check and for an
+// outcome whose write failed or missed the check's deadline, and RefreshNone when the row it read
+// under the flight needed no check (an Active answer younger than MembershipMaxAge, nil) or is gone
+// (ErrNoIdentity).
 func (m *Membership) ConfirmDirectory(ctx context.Context, email string) (RefreshOutcome, error) {
 	return outcomeOf(<-m.directoryFlight(ctx, email))
 }
@@ -120,9 +121,9 @@ func (m *Membership) directoryFlight(ctx context.Context, email string) <-chan s
 // one person in other processes run beside this one, so a check that read the Directory later may
 // have recorded Held before this one writes. The Active writes are guarded by that ReadAt: one that
 // finds a hold recorded at or after it writes nothing, so the later read's Held stands, and the
-// check counts RefreshNone, as one that needed no check does. Every Held outcome stamps the hold
-// with its own time (RecordDirectoryHeld), so this holds as well for a row that was already held
-// when this check read it and is held again by the later check.
+// check counts RefreshHeld, since the person stays held (activeUnwritten). Every Held outcome stamps
+// the hold with its own time (RecordDirectoryHeld), so this holds as well for a row that was already
+// held when this check read it and is held again by the later check.
 //
 // An answer for the address itself under another account (DirectoryRecreated: the address deleted
 // and created again for another person) is the earlier person's row, keyed by the address, so every
@@ -203,12 +204,14 @@ func (m *Membership) checkDirectory(ctx context.Context, email string) (outcome 
 	return RefreshFailed, err
 }
 
-// activeUnwritten is the outcome of an Active answer whose write wrote nothing: the row is gone, or
-// another check recorded a hold after this one read the row, a Held outcome resting on a later
-// Directory read than this answer, which stands. It counts RefreshNone.
+// activeUnwritten is the outcome of an Active answer whose write wrote nothing. The check found the
+// person's row before it asked the Directory, and no statement deletes a people row, so the write
+// found the row holding a hold another check recorded at or after this one's read: a Held outcome
+// resting on a later Directory read than this answer, which stands. The person stays held, so it
+// counts RefreshHeld, which the membership pass counts held.
 func activeUnwritten(email string) RefreshOutcome {
-	slog.Info("dispatch: a Workspace Directory check answered Active, and wrote nothing: the person's row is gone, or holds a hold another check recorded after this one read it", "email", email)
-	return RefreshNone
+	slog.Info("dispatch: a Workspace Directory check answered Active, and wrote nothing: the person's row holds a hold another check recorded after this one read it; they stay held", "email", email)
+	return RefreshHeld
 }
 
 // directoryFresh reports whether read's last Active Directory answer is younger than

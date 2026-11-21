@@ -84,7 +84,8 @@ type passCounts struct {
 // cannot claim ends, and the other still runs; Run answers both failures.
 //
 // Under IAP identity Run runs checkDirectoryDue alone, since IAP keeps no refresh token to forget
-// or refresh, and counts an Active outcome confirmed, a Held one held, and a Failed one unasked.
+// or refresh, and counts an Active outcome confirmed, a Held one held, an Active one whose write
+// found a later check's hold (the person stays held) held, and a Failed one unasked.
 func (p MembershipPass) Run(ctx context.Context) error {
 	began := time.Now()
 	var counts passCounts
