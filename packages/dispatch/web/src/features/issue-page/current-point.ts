@@ -8,11 +8,10 @@ import type { DrawnRow } from "./tree-fold";
 import { rowKeyOf } from "./tree-keys";
 
 /**
- * The conversation's current point on the issue page's outline (dispatch://INFRA-3949 R12,
- * decision 354 of dispatch://INFRA-1196/artifact/part-decisions-md): the one node the reader's
- * next turn answers, and the drawn rows that carry its mark. Pure but for `useCurrentPoint`, over
- * the tree `issue-tree.ts` builds and the rows `tree-fold.ts` draws, so the rows and a unit test
- * ask the same question of the same model.
+ * The conversation's current point on the issue page's outline: the one node the reader's next
+ * turn answers, and the drawn rows that carry its mark. Pure but for `useCurrentPoint`, over the
+ * tree `issue-tree.ts` builds and the rows `tree-fold.ts` draws, so the rows and a unit test ask
+ * the same question of the same model.
  *
  * The point is, in this order: what the line at the foot is aimed at, while the reader has aimed
  * it (`OutlineWriter`); else the first open question that waits on the reader, which is the row

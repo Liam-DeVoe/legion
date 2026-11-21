@@ -1,6 +1,5 @@
 /**
- * The draft matrix, the new issue page's box (INFRA-1503; part L of the new issue page, decision
- * 357 of INFRA-1196's part decisions).
+ * The draft matrix, the new issue page's box.
  *
  * Every composer host is held to one rule (`.dispatch/architecture/dispatch-web.md`, "A composer's
  * draft - typed, refused or stopped - goes where the person takes it, and stays where the host
@@ -95,6 +94,7 @@ import {
   REFUSED_NOTE,
   signedInAsReader,
 } from "../../__tests__/draft-matrix-fixture";
+import { nextFrame } from "../../__tests__/frames";
 import { sentRequest, stopSend } from "../../__tests__/stop-late-write";
 import { api } from "../../api/client";
 import {
@@ -294,11 +294,7 @@ async function openBox(
  *  inside `act`: every aim and every end of a target asks for one, and the field taking the caret
  *  is a state of the page's that no row may leave to land after it has read the page. */
 async function writerFocused(): Promise<void> {
-  await act(() => {
-    const { promise, resolve } = Promise.withResolvers<void>();
-    requestAnimationFrame(() => resolve());
-    return promise;
-  });
+  await act(() => nextFrame());
 }
 
 /** The field of the line that edits the reader's comment. */

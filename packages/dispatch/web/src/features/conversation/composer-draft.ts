@@ -81,20 +81,31 @@ export function seededDraft(
   return [prefix, body].filter((part) => part !== "").join(" ");
 }
 
-/** What a new reply to `replyTo` starts with: the parties its parent was delivered to, each
- *  mentioned once, as the links that name them. The reply's own mentions are its words, and the
- *  reader edits them as words. A mention the parent was delivered to twice is one party, and the
+/** A mention the issue page's box wrote into a reply's draft: the party, and the link written for
+ *  it (`partyMention`), as its send keeps it (`SentRequest.seeds`). */
+export type SeededMention = { readonly target: string; readonly text: string };
+
+/** The mentions a new reply to `replyTo` starts with: the parties its parent was delivered to,
+ *  each mentioned once, as the link that names it. A mention the parent was delivered to twice is
+ *  one party. The issue page's box remembers exactly these, for the reader's own move off the
+ *  reply to take out (`useKeptDrafts`' `seeds`). */
+export function prefillMentions(replyTo: ReplyTarget): readonly SeededMention[] {
+  const carried = replyTo.mentions ?? [];
+  return carried.flatMap((mention, index) => {
+    if (carried.findIndex((candidate) => candidate.target === mention.target) !== index) return [];
+    const text = partyMention(mention.target, mention.title);
+    return text === undefined ? [] : [{ target: mention.target, text }];
+  });
+}
+
+/** What a new reply to `replyTo` starts with: its mentions (`prefillMentions`), as the links that
+ *  name them. The reply's own mentions are its words, and the reader edits them as words. The
  *  draft they are written into is empty, which is what a channel's own seed is written into
  *  (`seededDraft`). */
 export function replyPrefill(replyTo: ReplyTarget): Draft {
-  const carried = replyTo.mentions ?? [];
-  const deduplicated = carried.filter(
-    (mention, index) =>
-      carried.findIndex((candidate) => candidate.target === mention.target) === index
-  );
   return {
-    body: deduplicated
-      .flatMap((mention) => partyMention(mention.target, mention.title) ?? [])
+    body: prefillMentions(replyTo)
+      .map((seed) => seed.text)
       .join(" "),
   };
 }

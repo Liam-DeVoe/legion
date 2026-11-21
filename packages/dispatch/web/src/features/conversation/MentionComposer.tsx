@@ -69,7 +69,7 @@ import { ASK_URGENCIES_ASCENDING, URGENCY_LABELS } from "../inbox/ask-urgency";
 import { useComposerRegistry } from "../margin/margin-context";
 import { useAgentText } from "../refs/AgentName";
 import { mentionOptions } from "../refs/party-options";
-import { draftParties, partyMention } from "../refs/party-references";
+import { draftParties } from "../refs/party-references";
 import { isCompositionKey } from "../refs/ref-picker";
 import { textSourceOf } from "../refs/text-references";
 import { SendStoppedError } from "../writes/keyed-write";
@@ -80,7 +80,9 @@ import {
   type AskOptionDraft,
   type Draft,
   emptyAskOption,
+  prefillMentions,
   replyPrefill,
+  type SeededMention,
   seededDraft,
   submittedAskOptions,
 } from "./composer-draft";
@@ -106,6 +108,7 @@ import {
   DELIVERY_COMMANDS,
   type DeliveryPlan,
   deliveryPlan,
+  heldSeeds,
   KEYED_SEND_LATE_TEXT,
   requestFor,
   type SaveCommentEdit,
@@ -120,26 +123,6 @@ import { useAgents } from "./useAgents";
 import { useComposerSend } from "./useComposerSend";
 import { useDraftHomes } from "./useDraftHomes";
 import { composerNameOf, mountDraft, type OfferedDraft, useKeptDrafts } from "./useKeptDrafts";
-
-/** A mention the issue page's line wrote into its draft for a reply's target: the party, and the
- *  link written for it (`partyMention`), as its send keeps it (`SentRequest.seeds`). */
-type SeededMention = NonNullable<SentRequest["seeds"]>[number];
-
-/** The mentions the issue page's line writes as the draft of a new reply to a target whose
- *  parent was delivered to `mentions`: one for each party, as the link that names it, as
- *  `replyPrefill` writes them, so the line remembers exactly what it wrote, for the reader's own
- *  move off the reply to take out (`useKeptDrafts`' `seeds`). */
-function mentionsSeeded(
-  mentions: readonly { readonly target: string; readonly title: string }[]
-): SeededMention[] {
-  const named = new Set<string>();
-  return mentions.flatMap((mention) => {
-    if (named.has(mention.target)) return [];
-    named.add(mention.target);
-    const text = partyMention(mention.target, mention.title);
-    return text === undefined ? [] : [{ target: mention.target, text }];
-  });
-}
 
 /** Whether Send takes the draft now: nothing refuses it (`draftRefusal`, the one rule for what an
  *  empty draft is) and no save or upload it waits on is in flight. */
@@ -581,9 +564,7 @@ export function MentionComposer({
   // reply takes the ones its send keeps (`SentRequest.seeds`), so an end takes out what the mount
   // that wrote them would have, and no link the reader wrote. A held send that answers no reply -
   // one the line let go of, its mentions taken out as it went - leaves none to take out.
-  const replySeeds = useRef<readonly SeededMention[]>(
-    outgoing.held?.request.replyTo ? (outgoing.held.request.seeds ?? []) : []
-  );
+  const replySeeds = useRef<readonly SeededMention[]>(heldSeeds(outgoing.held?.request));
   const [body, setBody] = useState(initial.body);
   const [replacement, setReplacement] = useState(initial.replacement);
   /** The edited comment's blocks as the field's edits moved them, while the blocks route has
@@ -744,9 +725,9 @@ export function MentionComposer({
       return;
     }
     const prefill = replyPrefill(replyTo);
-    // The issue page's line remembers the very mentions the prefill writes (`mentionsSeeded`),
+    // The issue page's line remembers the very mentions the prefill writes (`prefillMentions`),
     // so the reader's own end of the reply takes out those and no others.
-    if (outlined) replySeeds.current = mentionsSeeded(replyTo.mentions ?? []);
+    if (outlined) replySeeds.current = prefillMentions(replyTo);
     prefilled.current = prefill.body;
     replaceDraft(prefill);
     takeFocus();
@@ -782,10 +763,12 @@ export function MentionComposer({
   cancelReplyNow.current = cancelReply;
   /** The issue page's line ends its target - the target line's control, and Escape - with its
    *  host's `end`, which is the line's Cancel reply: a move of the address with the composer's own
-   *  control, counted as Cancel reply is, so the draft and its refusal go with it. The line stays
-   *  mounted, so nothing is handed over and nothing kept away. */
+   *  control, counted as Cancel reply is, so the draft and its refusal go with it. With no target
+   *  shown there is no address to move, so nothing is counted and nothing is carried onto the
+   *  address the line already writes to. The line stays mounted, so nothing is handed over and
+   *  nothing kept away. */
   const endTarget = () => {
-    setCancels((count) => count + 1);
+    if (outline?.target !== undefined) setCancels((count) => count + 1);
     outline?.end();
   };
   // The Escape listener below reads it as it stands, as it reads `cancelReplyNow`.
@@ -991,7 +974,7 @@ export function MentionComposer({
     // mounts again over it takes those out and no others (`replySeeds`); never sent (`attempt`).
     ...(replySeeds.current.length === 0 ? {} : { seeds: replySeeds.current }),
     // Only the issue page's line names a statement; no other send carries the field.
-    ...(outline?.anchor === undefined ? {} : { statement: outline.anchor }),
+    ...(statement === undefined ? {} : { statement }),
   });
   /** The send as it stands, for `sendRequest`: the fields' own text, read once, since a keystroke
    *  in Send's task may not have rendered yet and the field holds its own line endings, and every

@@ -17,11 +17,10 @@ import type { NodeType } from "./page-words";
 import { NARROW_LEVELS, NOTHING_OPENED, type OpenedBranches, treeRows } from "./tree-fold";
 
 /**
- * The conversation's current point (dispatch://INFRA-3949 R12, decision 354 of
- * dispatch://INFRA-1196/artifact/part-decisions-md): the node the reader's next turn answers, and
- * the drawn rows that carry its mark. Each tree is built by hand, as `issue-tree.ts` places nodes,
- * and each set of rows by the real fold (`treeRows`), so every trail a mark is matched by is the
- * one the page draws.
+ * The conversation's current point: the node the reader's next turn answers, and the drawn rows
+ * that carry its mark. Each tree is built by hand, as `issue-tree.ts` places nodes, and each set
+ * of rows by the real fold (`treeRows`), so every trail a mark is matched by is the one the page
+ * draws.
  */
 
 const KEY = "CORE-1";

@@ -14,6 +14,7 @@ import { MarginProvider } from "../margin/margin-context";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
+import { KEY, node, SPEC_SOURCE, STATEMENT_WORDS } from "./composer-fixture";
 import { IssueTree } from "./IssueTree";
 import type { TreeNode } from "./issue-tree";
 import {
@@ -24,7 +25,6 @@ import {
   type StatementTarget,
   useOutlineWriter,
 } from "./outline-writer";
-import type { NodeType } from "./page-words";
 
 /**
  * A statement as a target of the page's writer: `r` on a focused
@@ -32,31 +32,6 @@ import type { NodeType } from "./page-words";
  * target stands beside it. The tree is drawn under the writer as `slots/body.tsx` draws it, so
  * the key is the tree's own `r` (`useTreeKeymap.ts`) and not a call made for it.
  */
-
-const KEY = "CORE-1";
-
-/** The record a statement's words are a block of: the issue's spec (`tree-drafts.ts`). */
-const SPEC_SOURCE = { id: "artifact-spec", issue: KEY, kind: "artifact" } as const;
-
-/** A statement of two paragraphs, one word of it marked, as the spec stores it. */
-const STATEMENT_WORDS = "The page draws **one** box.\n\nIt sits at the foot.";
-
-function node(partial: Partial<TreeNode> & { id: string; type: NodeType }): TreeNode {
-  return {
-    alsoUnder: [],
-    children: [],
-    chips: [],
-    facts: [],
-    gaps: [],
-    held: 0,
-    question: false,
-    replaced: false,
-    text: partial.id,
-    transcluded: false,
-    waiting: false,
-    ...partial,
-  };
-}
 
 /** The question `id` as the asks read sends it: the record `changeAnswer` reads the reader's own
  *  answer from. */

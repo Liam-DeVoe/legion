@@ -1,7 +1,7 @@
 /**
- * The draft matrix's coverage list, the new issue page's box (INFRA-1503): each composer census
- * item that `draft-matrix.issue-page-outline.test.tsx` answers for, held to one of its tests or to
- * one of the numbered reasons below, as `__tests__/composer-census/coverage.ts` says.
+ * The draft matrix's coverage list, the new issue page's box: each composer census item that
+ * `draft-matrix.issue-page-outline.test.tsx` answers for, held to one of its tests or to one of
+ * the numbered reasons below, as `__tests__/composer-census/coverage.ts` says.
  */
 import { answers, type CoverageEntry, cells } from "../../__tests__/composer-census/coverage";
 

@@ -22,6 +22,8 @@ import {
 import type { UploadResult } from "../artifacts/ArtifactUpload";
 import { heldSends } from "../conversation/held-sends";
 import { KEYED_SEND_LATE_TEXT } from "../conversation/send-request";
+import { unsentDraftsOf } from "../conversation/unsent-drafts";
+import { composerNameOf } from "../conversation/useKeptDrafts";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { nodeRouteFromHref, shortForm } from "../refs/routes";
 import { SEND_DEADLINE_MS } from "../writes/keyed-write";
@@ -32,6 +34,7 @@ import {
   askRecord,
   BOB,
   BOBS_COMMENT,
+  type BoxPage,
   type BoxReads,
   commentNode,
   commentRecord,
@@ -54,7 +57,6 @@ import {
 } from "./composer-fixture";
 import { FOOT_HEIGHT_PROPERTY } from "./identity-block";
 import type { TreeNode } from "./issue-tree";
-import type { OutlineWriter } from "./outline-writer";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 
 /**
@@ -302,8 +304,8 @@ test("under a view or a document the box is hidden until the reader asks to writ
   await page.press(user, "comment-1", "r");
   await waitFor(() => expect(writeField()).toHaveFocus());
   expect(composerBox()).not.toHaveAttribute("hidden");
-  // The Reply keeps the words the box held for the issue they were written for, and the box's
-  // own end of the reply brings them back (decision 357, #3125's one rule).
+  // The Reply, a move of the page's, carries nothing: it keeps the words the box held for the
+  // issue they were written for, and the box's own end of the reply brings them back.
   expect(writeField().value).toBe("");
   expect(keptLines()).toEqual([KEPT_FOR_ISSUE]);
   await user.keyboard("{Escape}");
@@ -329,10 +331,10 @@ test("under a view or a document the box is hidden until the reader asks to writ
   await waitFor(() => expect(composerBox()).toHaveAttribute("hidden"));
 });
 
-// The reviewer's finding 4593511272, which decision 357 moved onto #3125's one rule: a Reply
-// keeps what the reader has typed in the box at rest, for the issue it was written for. The box
-// says the comment is kept and the way back, and opens on the reply with that row's own start;
-// the box's own end of the reply, Escape, brings the comment back.
+// The reviewer's finding 4593511272: a Reply is a move of the page's, which carries nothing, so
+// it keeps what the reader has typed in the box at rest for the issue it was written for. The
+// box says the comment is kept and the way back, and opens on the reply with that row's own
+// start; the box's own end of the reply, Escape, brings the comment back.
 test("a Reply keeps a comment half-typed in the box at rest", async () => {
   const user = userEvent.setup();
   const page = renderPage();
@@ -350,11 +352,11 @@ test("a Reply keeps a comment half-typed in the box at rest", async () => {
   expect(keptLines()).toEqual([]);
 });
 
-// The same finding, which decision 357 moved onto #3125's one rule: a reply typed to one row is
-// kept for that row when the reader turns the box to another row with its Reply, or with `r` on a
-// statement, each named above the line. The box says whose comment the kept reply answers and
-// opens on each new target with that target's own start, and the first row's Reply brings the
-// reply back.
+// The same finding: a Reply on another row is a move of the page's, which carries nothing, so a
+// reply typed to one row is kept for that row when the reader turns the box to another row with
+// its Reply, or with `r` on a statement, each named above the line. The box says whose comment
+// the kept reply answers and opens on each new target with that target's own start, and the
+// first row's Reply brings the reply back.
 test("a Reply on another row keeps the reply typed for its own row, and that row's Reply brings it back", async () => {
   const user = userEvent.setup();
   const page = renderPage();
@@ -411,9 +413,9 @@ async function replyToPlanner(user: UserEvent, page: DrawnPage): Promise<void> {
 }
 
 // The reviewer's finding 5942007779: a Reply on an agent's comment writes the agent's mention into
-// the box, which is how the reply reaches the agent. A Reply on a person's comment opens the box
-// on that comment with its own start (decision 357, #3125's one rule), so a reply under a
-// person's comment is not delivered to the agent the reader no longer replies to.
+// the box, which is how the reply reaches the agent. A Reply on a person's comment is a move of
+// the page's, which carries nothing: it opens the box on that comment with its own start, so a
+// reply under a person's comment is not delivered to the agent the reader no longer replies to.
 test("a Reply on a person's comment after one on an agent's takes the agent's mention out of the send", async () => {
   const user = userEvent.setup();
   const createComment = stub(
@@ -460,8 +462,8 @@ test("ending a reply to an agent's comment takes the agent's mention out of the 
 
 /** Turns the box to bob's comment with `r` and back to the planner's with its `r`: moves of the
  *  host's, which keep the reply to the planner for the planner's comment, open the box on bob's
- *  with that comment's own start, and bring the reply back (decision 357). Answers what the box
- *  held on bob's row and the lines it drew there of what it keeps. */
+ *  with that comment's own start, and bring the reply back, since a move of the host's carries
+ *  nothing. Answers what the box held on bob's row and the lines it drew there of what it keeps. */
 async function toBobAndBack(
   user: UserEvent,
   page: DrawnPage
@@ -479,11 +481,11 @@ async function toBobAndBack(
  *  keeps for the planner's comment. */
 const KEPT_FOR_PLANNER = { held: "", kept: [keptReplyLine("Planner")] };
 
-// The same finding, which decision 357 moved onto #3125's one rule: the words the reader typed
-// after the agent's mention are theirs. A Reply on a person's comment keeps them for the agent's
-// comment with the mention, and its Reply brings them back as they were; the reader's own end of
-// the reply then keeps them on the issue and takes out the mention the box wrote, even with the
-// words typed straight after its link and no space between them.
+// The same finding: the words the reader typed after the agent's mention are theirs. A Reply on
+// a person's comment is a move of the page's, which carries nothing: it keeps them for the
+// agent's comment with the mention, and its Reply brings them back as they were; the reader's own
+// end of the reply then keeps them on the issue and takes out the mention the box wrote, even
+// with the words typed straight after its link and no space between them.
 test("ending a reply to an agent's comment keeps the words typed straight after the agent's mention, and takes the mention out", async () => {
   const user = userEvent.setup();
   const page = renderWithPlannerComment();
@@ -498,8 +500,8 @@ test("ending a reply to an agent's comment keeps the words typed straight after 
   expect(writeField().value).toBe("please look again");
 });
 
-// The same finding, which decision 357 moved onto #3125's one rule: a mention of the agent the
-// reader wrote themself is their own aim. A Reply on a person's comment keeps the reply to the
+// The same finding: a mention of the agent the reader wrote themself is their own aim. A Reply on
+// a person's comment is a move of the page's, which carries nothing: it keeps the reply to the
 // agent whole for the agent's comment, both mentions in it, and its Reply brings it back as it
 // was. The reader's own end of the reply then carries it to the issue, where the mention the box
 // wrote goes and the reader's own stays, so the comment reaches the agent the reader named.
@@ -534,12 +536,11 @@ test("a mention of the agent the reader wrote stays when the reader ends the rep
   });
 });
 
-// A finding of the reviewer's on the same rule, which decision 357 moved onto #3125's one rule:
-// the box takes out only the mention it wrote, while that mention still stands at the front of
-// the draft as written. A reader who empties the box and writes the planner's link after a word
-// of their own names the planner themself: the reply goes to bob's comment's row and back whole,
-// and the reader's own end of the reply keeps the link, so the comment on the issue still
-// reaches the planner.
+// A finding of the reviewer's on the same rule: the box takes out only the mention it wrote,
+// while that mention still stands at the front of the draft as written. A reader who empties the
+// box and writes the planner's link after a word of their own names the planner themself: the
+// reply goes to bob's comment's row and back whole, and the reader's own end of the reply keeps
+// the link, so the comment on the issue still reaches the planner.
 test("a link to the agent the reader writes after their own word, in place of the box's, stays through a new target", async () => {
   const user = userEvent.setup();
   const createComment = stub(
@@ -566,6 +567,29 @@ test("a link to the agent the reader writes after their own word, in place of th
     delivery: "steer",
   });
   expect(draft).toBe(`cc ${PLANNER_SEED}`);
+});
+
+// The mentions the box wrote for a reply are read where a draft is kept, as the box holds them
+// then. The reader's words in front of the agent's mention leave it no longer opening the draft,
+// so the reader's own end of the reply carries the draft to the issue whole, the mention the
+// reader's to keep, and lets go of what the box wrote. The draft the page keeps for the issue as
+// it goes then holds no mention of the box's, for the box drawn on the issue again to take out.
+test("a reply carried to the issue with the reader's words before the agent's mention keeps no mention of the box's as the page goes", async () => {
+  const user = userEvent.setup();
+  const page = renderWithPlannerComment();
+  await replyToPlanner(user, page);
+  await user.keyboard("{Home}cc ");
+  expect(writeField().value).toBe(`cc ${PLANNER_SEED}`);
+  await user.click(
+    within(composerBox()).getByRole("button", { name: CONTROL_LABELS.write_on_issue })
+  );
+  await waitFor(() => expect(targetWords()).toBeNull());
+  expect(writeField().value).toBe(`cc ${PLANNER_SEED}`);
+
+  page.view.unmount();
+  const kept = unsentDraftsOf(page.client).readAway(composerNameOf(["issue-composer", KEY]), null);
+  expect(kept?.draft.body).toBe(`cc ${PLANNER_SEED}`);
+  expect(kept?.seeds).toBeUndefined();
 });
 
 /** The draft of the refused reply to the planner's comment in the grid below, by who wrote its
@@ -690,14 +714,14 @@ async function afterRefusedPlannerReply(
 
 // The reviewer's findings 5945015185 and PRRT_kwDORFy7ds64qGzx on the same rule, as a grid: the
 // same box or one mounted again over the refused reply, times the planner's link written by the
-// box or by the reader, times a move, an end or a Retry. Decision 357 moved the grid onto #3125's
-// one rule: the reader's own end of the reply carries the draft and its refusal to the issue, and
-// takes out the link the box wrote, so a comment on the issue reaches no agent the reader did not
-// name; a Reply on bob's comment after it is the host's move, which leaves the refusal held for
-// the issue - the box on bob's row says so and sends nothing - and the issue's own Reply brings it
-// back; a Retry sends the refused reply as it was, the link the box wrote in it. The reader's own
-// link stays in every case: the box takes nothing out of the draft that it did not write, whether
-// or not it mounted again over the send (`SentRequest.seeds`).
+// box or by the reader, times a move, an end or a Retry. The reader's own end of the reply
+// carries the draft and its refusal to the issue, and takes out the link the box wrote, so a
+// comment on the issue reaches no agent the reader did not name; a Reply on bob's comment after
+// it is a move of the page's, which carries nothing: it leaves the refusal held for the issue -
+// the box on bob's row says so and sends nothing - and the issue's own Reply brings it back; a
+// Retry sends the refused reply as it was, the link the box wrote in it. The reader's own link
+// stays in every case: the box takes nothing out of the draft that it did not write, whether or
+// not it mounted again over the send (`SentRequest.seeds`).
 test("a refused reply let go stays on the issue through a Reply on bob's comment, without the agent's link the box wrote", async () => {
   const { away, draft, sent } = await afterRefusedPlannerReply("move with r", {
     ownLink: false,
@@ -1378,15 +1402,15 @@ test("a statement's target line names the issue its words cite, never its addres
   expect(summary).toHaveBeenCalledWith("CORE-2");
 });
 
-// The reviewer's finding 4593511280, which decision 357 moved onto #3125's one rule: a refusal
-// stays with the address it was written for, and the box's address names the statement it
-// comments on (`OutlineLook.anchor`), so at its own statement a refused comment is no draft
-// written elsewhere and its Retry sends it. A comment on a statement Dispatch refused holds the
-// box on the statement - a Reply on another row, or an Answer, puts the caret back in it on that
-// statement, its refused words and its Retry kept - and a box that mounts again over the refused
-// send, as one does when the reader leaves the issue and comes back, names the statement from the
-// send and sends the words to it again. The send keeps the statement's document, words and row,
-// so the line names it by those words, and a write to it lands under the statement's row.
+// The reviewer's finding 4593511280: a move of the page's carries nothing, so a refusal stays
+// with the address it was written for, and the box's address names the statement it comments on
+// (`OutlineLook.anchor`), so at its own statement a refused comment is no draft written elsewhere
+// and its Retry sends it. A comment on a statement Dispatch refused holds the box on the
+// statement - a Reply on another row, or an Answer, puts the caret back in it on that statement,
+// its refused words and its Retry kept - and a box that mounts again over the refused send, as
+// one does when the reader leaves the issue and comes back, names the statement from the send and
+// sends the words to it again. The send keeps the statement's document, words and row, so the
+// line names it by those words, and a write to it lands under the statement's row.
 test("a refused comment on a statement keeps its words and its statement, through a Reply elsewhere and a new mount", async () => {
   const user = userEvent.setup();
   const createComment = stub(
@@ -1445,13 +1469,13 @@ test("a refused comment on a statement keeps its words and its statement, throug
   });
 });
 
-// The reviewer's finding 5942007779, which decision 357 moved onto #3125's one rule: a comment on
-// a statement sent from a box that mounted again over its refused send - as a reload brings one
-// back - lands as every send from the box lands (R4). The box mounted again shows the statement
-// the refusal was written for, so Send there is that refusal's own and goes. The held send keeps
-// the statement's row beside its words, so once the read draws the reader's new comment under
-// the statement, the outline unfolds it, brings its row on screen and gives it the focus, rather
-// than giving the focus back to where the reader came from.
+// The reviewer's finding 5942007779: a comment on a statement sent from a box that mounted again
+// over its refused send - as a reload brings one back - lands as every send from the box lands
+// (R4). The box mounted again shows the statement the refusal was written for, so Send there is
+// that refusal's own and goes. The held send keeps the statement's row beside its words, so once
+// the read draws the reader's new comment under the statement, the outline unfolds it, brings its
+// row on screen and gives it the focus, rather than giving the focus back to where the reader
+// came from.
 test("a comment on a statement sent again from a box mounted over its refused send lands on its new row", async () => {
   const user = userEvent.setup();
   stub(
@@ -1631,10 +1655,7 @@ test("r on a statement keeps the box on a refused reply, and the send carries th
 });
 
 /** What the refused-reply helpers below use of a page `renderPage` drew. */
-interface DrawnPage {
-  readonly press: (user: UserEvent, nodeId: string, key: string) => Promise<void>;
-  readonly writer: () => OutlineWriter;
-}
+type DrawnPage = Pick<BoxPage, "press" | "writer">;
 
 /** Replies to bob's comment with "My reply to bob", which Dispatch refuses (400): the box then
  *  holds a refused reply, its words in the field. */
@@ -1981,12 +2002,11 @@ test("the box draws an upload's lines and a late send's in the page's colours", 
   }
 });
 
-// The conversation's current point (dispatch://INFRA-3949 R12): the outline marks on one row the
-// node the reader's next turn answers - the box's target while the reader holds one, else the open
-// question that waits on them, else the node of the newest act - with `aria-current="location"`
-// and a quiet ring on its bullet, and while that row is folded away a lighter ring on the bullet
-// of each row above it on its path. The outlines below carry the time of each act, so the newest
-// of them is known.
+// The conversation's current point: the outline marks on one row the node the reader's next turn
+// answers - the box's target while the reader holds one, else the open question that waits on
+// them, else the node of the newest act - with `aria-current="location"` and a quiet ring on its
+// bullet, and while that row is folded away a lighter ring on the bullet of each row above it on
+// its path. The outlines below carry the time of each act, so the newest of them is known.
 
 /** The time of an act of the cases below, `hours` into the day: the later act has more hours. */
 function hour(hours: number): string {

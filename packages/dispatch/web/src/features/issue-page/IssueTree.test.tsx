@@ -11251,15 +11251,15 @@ test("a comment the address landed on that leaves the tree leaves the outline dr
 
 // A read of the comments that answers without the comment whose row holds the focus takes that
 // row out of the tree, and the browser drops the focus to the page's body with it. Who caused the
-// loss decides where the focus goes (R13 of dispatch://INFRA-3949, decision 356 of the parts). A
-// read the reader did nothing toward - another session's change - leaves the focus on the page's
-// body and scrolls nothing. A loss the reader caused - a key or a press of theirs since the tree
-// was last drawn, or a write of theirs that landed on the row - hands the focus to the nearest
-// row still drawn, as a key's move gives it - the tab stop and the row's body go with it: the row
-// that now stands where the dropped one stood, or the last row where the tree now ends before
-// that place. The issue holds three comments, each a thread of its own, so each is a row of the
-// tree's top level; `focus` is the key that takes the reader from the first row to `dropped`'s,
-// and `then` what the reader does after it, before the read.
+// loss decides where the focus goes, since a place the page chose near the lost row would be the
+// page's choice and not the reader's. A read the reader did nothing toward - another session's
+// change - leaves the focus on the page's body and scrolls nothing. A loss the reader caused - a
+// key or a press of theirs since the tree was last drawn, or a write of theirs that landed on the
+// row - hands the focus to the nearest row still drawn, as a key's move gives it - the tab stop
+// and the row's body go with it: the row that now stands where the dropped one stood, or the last
+// row where the tree now ends before that place. The issue holds three comments, each a thread of
+// its own, so each is a row of the tree's top level; `focus` is the key that takes the reader
+// from the first row to `dropped`'s, and `then` what the reader does after it, before the read.
 const THREE_COMMENTS: readonly Comment[] = [
   readComment("first", 1),
   readComment("second", 2),
@@ -11311,7 +11311,7 @@ test("a read that drops the focused row with no act of the reader's since leaves
   ];
   try {
     let scrolledTo = Number.NaN;
-    const { container, unmount } = await dropFocusedComment("j", "second", async () => {
+    const { unmount } = await dropFocusedComment("j", "second", async () => {
       for (const spy of scrolls) spy.mockClear();
       scrolledTo = window.scrollY;
     });
@@ -11321,10 +11321,6 @@ test("a read that drops the focused row with no act of the reader's since leaves
       document.activeElement === document.body,
       "a read that dropped the focused row, with no act of the reader's since, took the focus off the page's body"
     ).toBe(true);
-    expect(
-      focusedRow(container),
-      "a read that dropped the focused row, with no act of the reader's since, gave the focus to a row"
-    ).toBeUndefined();
     expect(window.scrollY, "a read that dropped the focused row scrolled the page").toBe(
       scrolledTo
     );

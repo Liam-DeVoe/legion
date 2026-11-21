@@ -1517,10 +1517,10 @@ function glyphNames(): Readonly<Record<string, string>> {
 export const GLYPH_NAMES: Readonly<Record<string, string>> = freeze(glyphNames());
 
 /**
- * The value of `aria-current` on the row of the conversation's current point
- * (dispatch://INFRA-3949 R12). A screen reader says it in its own words for the current location,
- * so the page adds no hidden text and every row keeps its accessible name. It is no word the page
- * draws, so no list of the page's words below holds it.
+ * The value of `aria-current` on the row of the conversation's current point, the node the
+ * reader's next turn answers (`current-point.ts`). A screen reader says it in its own words for
+ * the current location, so the page adds no hidden text and every row keeps its accessible name.
+ * It is no word the page draws, so no list of the page's words below holds it.
  */
 export const CURRENT_POINT = "location" as const;
 

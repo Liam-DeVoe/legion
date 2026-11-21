@@ -1561,14 +1561,14 @@ test("today's docked composer lifts nothing at the foot of a short wide window",
   }
 });
 
-// (10) R12 of dispatch://INFRA-3949, decision 354 of the parts: the outline marks the
-// conversation's current point on one row - the node the reader's next turn answers - as the
-// current location for a screen reader and with a quiet ring on its bullet's dot. On this seed it
-// is the open question at load, whether that question waits on the reader or is only the newest
-// act, since the seed asks it last. A Reply moves the mark to the row the box is aimed at and
-// Escape moves it back, the focus staying the box's; while the point's own row is folded away no
-// row is the current location and the row above it on its path carries a lighter ring; and an
-// answer and then a new comment, each the newest act, take the mark with them.
+// (10) The outline marks the conversation's current point on one row - the node the reader's
+// next turn answers - as the current location for a screen reader and with a quiet ring on its
+// bullet's dot. On this seed it is the open question at load, whether that question waits on the
+// reader or is only the newest act, since the seed asks it last. A Reply moves the mark to the
+// row the box is aimed at and Escape moves it back, the focus staying the box's; while the
+// point's own row is folded away no row is the current location and the row above it on its path
+// carries a lighter ring; and an answer and then a new comment, each the newest act, take the
+// mark with them.
 // SLOW(>=2s): a seeded thread and three questions, the thread opened press by press twice, two
 // replies aimed and ended, and an answer and a comment written from the box, each waited on until
 // the outline marks it.
@@ -1724,14 +1724,16 @@ test("the outline marks the current point of the conversation on one row, and th
   });
 });
 
-// (11) R13 of dispatch://INFRA-3949, decision 356 of the parts, the half the reader causes: a
-// key of the reader's that takes the focused row out of the view hands the focus to the nearest
-// row still drawn, as a key's move gives it - the row now at the dropped row's place among the
-// rows the tree draws, or the last row where the tree now ends before that place. The key is
-// the cycle key `z`, pressed in its last state, which draws every branch, to go back to its
-// first, which draws the reader's own folds: the thread's fourth level, which holds the focus,
-// is folded away under the thread. The other half, a read the reader did nothing toward, is
-// the row of `issue-page-i.e2e.ts` that leaves the focus on the page's body.
+// (11) A row that holds the focus and leaves the tree hands the focus on only where the reader
+// caused it to leave, since the page would otherwise choose the reader's next place for them.
+// This row is the half the reader causes: a key of the reader's that takes the focused row out of
+// the view hands the focus to the nearest row still drawn, as a key's move gives it - the row now
+// at the dropped row's place among the rows the tree draws, or the last row where the tree now
+// ends before that place. The key is the cycle key `z`, pressed in its last state, which draws
+// every branch, to go back to its first, which draws the reader's own folds: the thread's fourth
+// level, which holds the focus, is folded away under the thread. The other half, a read the
+// reader did nothing toward, is the row of `issue-page-i.e2e.ts` that leaves the focus on the
+// page's body.
 // SLOW(>=2s): a seeded thread and three questions, the tree cycled to every branch and back.
 test("a key of the reader's that drops the focused row from the view hands the focus to the nearest row", async ({
   browser,

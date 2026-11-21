@@ -15,6 +15,10 @@ import { hearPresses } from "./focus-keeper";
 import { authorText } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 
+/** Edit title, the button laid over the title's heading (`IssueTitleRow`), as the header finds
+ *  it: the control its keeper falls back on and the one its `e` key clicks. */
+export const EDIT_TITLE_BUTTON = `button[aria-label="${CONTROL_LABELS.edit_title}"]`;
+
 /**
  * Row two of the header: the issue's title, which is the issue as a person names it, and the
  * editor it becomes when the reader asks for it: Edit title, a button laid over the heading,
@@ -23,16 +27,15 @@ import { CONTROL_LABELS } from "./page-words";
  *
  * The heading holds the title and takes no Tab stop and no press. The button laid over its box
  * is the control, and a screen reader reads it as "Edit title, button", with the title as its
- * description. The heading was the control before: it took a Tab stop and opened the editor on
- * a click, Enter or Space, with no role and no name that said it was a control (WCAG 2.2, 4.1.2
- * Name, Role, Value). The button shows no text of its own, since a button that showed the title
- * under the name "Edit title" would leave its visible words out of its name (WCAG 2.5.3, Label
- * in Name). It stands beside the heading in the row's one cell and not inside it, since a
- * heading's name is computed from what it holds, a button's `aria-label` included. It takes the
- * heading's whole box and draws what the heading drew there - the hover rule and the text
- * cursor - and the page's focus ring, so the row looks as the prototype draws it and the heading
- * keeps its box and its type to the pixel. A closed issue's title edits nothing, so it is the
- * heading alone.
+ * description. A heading that took a Tab stop and opened the editor would be a control with no
+ * role and no name (WCAG 2.2, 4.1.2), so the heading takes neither. The button shows no text of
+ * its own, since a button that showed the title under the name "Edit title" would leave its
+ * visible words out of its name (WCAG 2.5.3, Label in Name). It stands beside the heading in the
+ * row's one cell and not inside it, since a heading's name is computed from what it holds, a
+ * button's `aria-label` included. It takes the heading's whole box and draws what the heading
+ * drew there - the hover rule and the text cursor - and the page's focus ring, so the row looks
+ * as the prototype draws it and the heading keeps its box and its type to the pixel. A closed
+ * issue's title edits nothing, so it is the heading alone.
  *
  * The type is the prototype's `.title`: 600 weight, 22 px on 29 px from 761 px up, held to two
  * lines there, and 20 px on 26 px at 760 px and below, where nothing clamps it. It keeps that

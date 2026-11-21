@@ -4475,23 +4475,13 @@ test("a statement of a document the server admits read-only shows no cue that it
   });
 });
 
-/** Whether the element that holds the focus is a row of the outline's tree. */
-function focusOnATreeRow(page: Page): Promise<boolean> {
-  return page.evaluate(() => {
-    const active = document.activeElement;
-    return active?.matches("[data-node-row]") === true && active.closest('[role="tree"]') !== null;
-  });
-}
-
-// R13 of dispatch://INFRA-3949, decision 356 of the parts: when a read of the issue's comments no
-// longer holds the comment whose row has the focus, that row leaves the tree and the focus falls
-// to the page's body. The reader caused no loss - another session resolved a comment, which made
-// the page read the comments again, and the row had the focus by a script's hand, no act of
-// theirs - so the focus stays on the body, where the page's keys work, no row of the tree takes
-// it, and the page does not scroll: the page, and not the reader, would have chosen what stands
-// near the lost place (decision 351). The comments read is answered without that comment as the
-// server's answer reaches the page. The row asserted the opposite before R13, the tester's
-// finding at #4205's 2ff6850a: a row of the tree took the focus. The half the reader causes is
+// When a read of the issue's comments no longer holds the comment whose row has the focus, that
+// row leaves the tree and the focus falls to the page's body. The reader caused no loss - another
+// session resolved a comment, which made the page read the comments again, and the row had the
+// focus by a script's hand, no act of theirs - so the focus stays on the body, where the page's
+// keys work, no row of the tree takes it, and the page does not scroll: the page, and not the
+// reader, would have chosen what stands near the lost place. The comments read is answered
+// without that comment as the server's answer reaches the page. The half the reader causes is
 // the last row of `issue-page-l.e2e.ts`.
 // SLOW(>=2s): the whole issue seeded and loaded, then waited on until the read after the event
 // has drawn the outline without the comment.
@@ -4537,10 +4527,6 @@ test("a read that drops the focused row with no act of the reader's leaves the f
       await page.evaluate(() => document.activeElement === document.body),
       "a read that dropped the focused row, with no act of the reader's, took the focus off the page's body"
     ).toBe(true);
-    expect(
-      await focusOnATreeRow(page),
-      "a read that dropped the focused row, with no act of the reader's, gave the focus to a row of the tree"
-    ).toBe(false);
     expect(
       await page.evaluate(() => window.scrollY),
       "a read that dropped the focused row, with no act of the reader's, scrolled the page"

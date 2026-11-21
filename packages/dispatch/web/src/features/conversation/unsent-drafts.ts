@@ -27,7 +27,12 @@ import {
   keptStatement,
   restoredDraft,
 } from "./held-sends";
-import type { SentDraft, SentRequest, StatementAnchor } from "./send-request";
+import {
+  type SentDraft,
+  type SentRequest,
+  type StatementAnchor,
+  sameStatement,
+} from "./send-request";
 
 /**
  * A draft a composer whose address its host moves - the Conversation's docked composer, a phone
@@ -92,26 +97,21 @@ export function sameReply(a: ReplyTarget | null, b: ReplyTarget | null): boolean
   return (a?.id ?? null) === (b?.id ?? null);
 }
 
-/** Whether two drafts are on the same statement - the same document and the same words, as
- *  `sameAddress` compares them - or both on none. */
-export function sameStatement(
-  a: StatementAnchor | undefined,
-  b: StatementAnchor | undefined
+/** Whether two drafts are for the same target: they answer the same reply and are on the same
+ *  statement (`sameStatement`), or answer none or are on none. */
+export function sameTarget(
+  a: Pick<AwayAddress, "replyTo" | "statement">,
+  b: Pick<AwayAddress, "replyTo" | "statement">
 ): boolean {
-  return a?.artifact === b?.artifact && a?.quote === b?.quote;
+  return sameReply(a.replyTo, b.replyTo) && sameStatement(a.statement, b.statement);
 }
 
-/** Whether a draft kept at `away` is the one kept for `at`: the same reply, the same words and
- *  the same statement. */
+/** Whether a draft kept at `away` is the one kept for `at`: the same target and the same words. */
 function sameAway(
   away: Pick<AwayDraft, "anchor" | "replyTo" | "statement">,
   at: Pick<AwayDraft, "anchor" | "replyTo" | "statement">
 ): boolean {
-  return (
-    sameReply(away.replyTo, at.replyTo) &&
-    sameAnchor(away.anchor, at.anchor) &&
-    sameStatement(away.statement, at.statement)
-  );
+  return sameTarget(away, at) && sameAnchor(away.anchor, at.anchor);
 }
 
 /** Whether `a` and `b` name the same words of the same document: the same mark, or, where neither

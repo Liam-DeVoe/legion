@@ -18,6 +18,7 @@ import {
   type AskOptionDraft,
   type Draft,
   replyPrefill,
+  type SeededMention,
   seededDraft,
   submittedAskOptions,
 } from "./composer-draft";
@@ -32,6 +33,7 @@ import type { HeldSend, HeldSends } from "./held-sends";
 import {
   type Address,
   addressWords,
+  heldSeeds,
   movedSendNote,
   type SentDraft,
   type SentRequest,
@@ -42,7 +44,7 @@ import {
   awayDraftOf,
   sameAnchor,
   sameReply,
-  sameStatement,
+  sameTarget,
   type UnsentDrafts,
 } from "./unsent-drafts";
 import type { ComposerSend } from "./useComposerSend";
@@ -53,9 +55,6 @@ import type { DraftHomes } from "./useDraftHomes";
 interface ShownAddress extends Address {
   readonly edit: { readonly body: string; readonly id: string } | undefined;
 }
-
-/** A mention the issue page's box wrote in front of a reply's draft (`SentRequest.seeds`). */
-type SeededMention = NonNullable<SentRequest["seeds"]>[number];
 
 /**
  * What is left of `draft` once the seeds of `seeds` that still open it, as the issue page's box
@@ -490,7 +489,7 @@ export function useKeptDrafts({
     readonly seedMentions: readonly { readonly target: string; readonly title: string }[];
     /** The issue page's box's mentions written in front of the reply's draft the field shows
      *  (`SentRequest.seeds`), as the box remembers them; undefined for every other composer. */
-    readonly seeds?: { current: readonly SeededMention[] };
+    readonly seeds?: RefObject<readonly SeededMention[]>;
     /** The send the reader stopped at this compose's document, set aside for it, as its host
      *  offers it (`stoppedOfferOf`), or none. */
     readonly stoppedAside: OfferedDraft | undefined;
@@ -503,9 +502,7 @@ export function useKeptDrafts({
   // is drawn itself beside the field (`KeptDraftOffers`), and every other one with its line.
   const unlisted = (away: AwayDraft): away is GoneReplyDraft =>
     away.replyTo !== null && !listsReply(away.replyTo);
-  const keptElsewhere = keptByAddress.filter(
-    (away) => !(sameReply(away.replyTo, replyTo) && sameStatement(away.statement, statement))
-  );
+  const keptElsewhere = keptByAddress.filter((away) => !sameTarget(away, { replyTo, statement }));
   const goneAway = keptElsewhere.filter(unlisted);
   const keptAway = keptElsewhere.filter((away) => !unlisted(away));
   // Only a composer with an anchor keeps drafts by it, so only a margin compose offers one: the
@@ -615,8 +612,11 @@ export function useKeptDrafts({
     [discard]
   );
   /** The box's mentions written in front of the reply's draft the field shows, which a draft kept
-   *  for that reply keeps (`AwayDraft.seeds`); none for every other composer. */
-  const keptSeeds = seeds === undefined || seeds.current.length === 0 ? [] : seeds.current;
+   *  for that reply keeps (`AwayDraft.seeds`); none for every other composer. Read as the draft is
+   *  kept, not at the render: the reader's own move lets them go with no render after it where it
+   *  takes nothing out of the draft. */
+  const seedsField = () =>
+    seeds === undefined || seeds.current.length === 0 ? {} : { seeds: seeds.current };
   // What the reader wrote for this address and did not send waits for it once the composer leaves
   // the page (`awayName`): its host took the composer away - the issue the reader left, the Agents
   // page, the margin's document, a newer compose on that document, a comment's card - and the
@@ -647,7 +647,7 @@ export function useKeptDrafts({
         kind,
         owner,
         replyTo,
-        ...(keptSeeds.length === 0 ? {} : { seeds: keptSeeds }),
+        ...seedsField(),
         statement,
       });
     } else {
@@ -800,9 +800,7 @@ export function useKeptDrafts({
     // re-address the same compose. A newer compose on the document is a composer of its own
     // (`MarginSheet` keys the margin's composer by its compose), whose draft stays kept for its
     // own words.
-    const targetMoved =
-      !sameReply(before.address.replyTo, replyTo) ||
-      !sameStatement(before.address.statement, statement);
+    const targetMoved = !sameTarget(before.address, { replyTo, statement });
     const sendOut = holdsSend && heldRefusal === undefined;
     const kept =
       targetMoved && awayName !== undefined && !sendOut
@@ -835,7 +833,7 @@ export function useKeptDrafts({
           kind,
           owner: before.address.owner,
           replyTo: before.address.replyTo,
-          ...(keptSeeds.length === 0 ? {} : { seeds: keptSeeds }),
+          ...seedsField(),
           statement: before.address.statement,
         });
       } else {
@@ -853,11 +851,7 @@ export function useKeptDrafts({
         (offRefusal ? leaving : heldRefusal?.draft.draft) ??
         (replyTo === null ? { body: seededDraft(seedMentions, "", owner) } : undefined));
     if (seeds !== undefined) {
-      seeds.current = refusalHere
-        ? heldRefusal?.request.replyTo === null
-          ? []
-          : (heldRefusal?.request.seeds ?? [])
-        : (kept?.seeds ?? []);
+      seeds.current = refusalHere ? heldSeeds(heldRefusal?.request) : (kept?.seeds ?? []);
     }
     // Arriving at a reply that keeps nothing, with no refusal held, is a new reply: the prefill
     // fills the field.

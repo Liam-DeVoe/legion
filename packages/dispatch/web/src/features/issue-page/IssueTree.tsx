@@ -1026,12 +1026,11 @@ export function IssueTree({
 
   // A read can answer without the node whose row holds the focus - a comment deleted - and the
   // row then leaves the tree with the focus, which the browser drops to the page's body. Whether
-  // the reader caused that loss decides where the focus goes (decision 356 of the parts, R13 of
-  // dispatch://INFRA-3949, under decision 351's rule for the whole page). A loss the reader did
-  // not cause - another session's change, a version a collaborator wrote - leaves the focus on
-  // the page's body, where the page's keys work, and nothing scrolls, as Details does: the page,
-  // and not the reader, would have chosen what stands near the lost place. The tree lets go of
-  // the row there as it does where the focus leaves it by Tab (`leave`), and the panel draws the
+  // the reader caused that loss decides where the focus goes. A loss the reader did not cause -
+  // another session's change, a version a collaborator wrote - leaves the focus on the page's
+  // body, where the page's keys work, and nothing scrolls, as Details does: the page, and not the
+  // reader, would have chosen what stands near the lost place. The tree lets go of the row there
+  // as it does where the focus leaves it by Tab (`leave`), and the panel draws the
   // issue's own facts again (`setFocusedNode`). A loss the reader caused is handed on inside the
   // tree. They caused it with a key or a press of theirs since the render that last drew the row
   // (`presses`, `READER_PRESSES`) - a press on the fold control of a branch the row was in, a key
@@ -1096,26 +1095,26 @@ export function IssueTree({
     const openingLost = opening.current.lost === true;
     opening.current.lost = false;
     if (editingRow !== undefined && !order.includes(editingRow)) stopEditing();
-    if (held !== undefined && !order.includes(held.key)) {
+    if (
+      held !== undefined &&
+      !order.includes(held.key) &&
+      focusIsLoose(tree) &&
+      opening.current.done &&
+      landingAsked.current?.signal.aborted !== false
+    ) {
       const landed = landedOn.current;
       const caused =
         presses.current !== held.presses ||
         (landed !== undefined && landed.node === held.node && landed.presses === presses.current);
-      if (
-        focusIsLoose(tree) &&
-        opening.current.done &&
-        landingAsked.current?.signal.aborted !== false
-      ) {
-        if (caused || openingLost) {
-          // The nearest row is the one now at the dropped row's place, or the last where none is.
-          const key = order[Math.min(held.index, order.length - 1)];
-          const nearest =
-            key === undefined ? null : tree?.querySelector<HTMLElement>(rowSelectorOf(key));
-          if (nearest !== null && nearest !== undefined) moveToRow(nearest);
-        } else {
-          leave();
-          setFocusedNode(undefined);
-        }
+      if (caused || openingLost) {
+        // The nearest row is the one now at the dropped row's place, or the last where none is.
+        const key = order[Math.min(held.index, order.length - 1)];
+        const nearest =
+          key === undefined ? null : tree?.querySelector<HTMLElement>(rowSelectorOf(key));
+        if (nearest !== null && nearest !== undefined) moveToRow(nearest);
+      } else {
+        leave();
+        setFocusedNode(undefined);
       }
     }
     const holder = focusedRowIn(tree);

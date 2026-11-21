@@ -3,8 +3,8 @@ import { outsideAskCard } from "../inbox/ask-card";
 import type { IssuePriorityWrite } from "../issue/useIssuePriority";
 import { useKeymap } from "../shell/keymap";
 import { ACTION_WORDS, CHIP_ACTIONS, chipBox } from "./approval-chip-box";
+import { EDIT_TITLE_BUTTON } from "./IssueTitleRow";
 import { PROPERTY_LABELS } from "./page-structure";
-import { CONTROL_LABELS } from "./page-words";
 
 /**
  * What the header's keys act on. Every target is a control the header already renders - the
@@ -16,7 +16,6 @@ const HEADER = "[data-issue-header]";
 const PIN_TOGGLE = 'button[data-issue-action="pin"]';
 const PRIORITY_SELECT = 'select[aria-label^="Priority of "]';
 const STATUS_SELECT = `select[aria-label="${PROPERTY_LABELS.status}"]`;
-const TITLE_EDIT = `button[aria-label="${CONTROL_LABELS.edit_title}"]`;
 
 /** The header control `selector` names, or `null` when it is absent or refuses input (a closed
  *  issue, a save in flight): the one fact both the key's `run` and the `when` that offers it read,
@@ -135,8 +134,8 @@ export function useHeaderKeys(priorityWrite: IssuePriorityWrite): void {
       id: "title",
       keys: "e",
       label: "Edit the title",
-      run: () => usableControl(TITLE_EDIT)?.click(),
-      when: () => usableControl(TITLE_EDIT) !== null,
+      run: () => usableControl(EDIT_TITLE_BUTTON)?.click(),
+      when: () => usableControl(EDIT_TITLE_BUTTON) !== null,
     },
     {
       id: "pin",

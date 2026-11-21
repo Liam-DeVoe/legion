@@ -12,6 +12,7 @@ import { newSendKey } from "../../lib/send-key";
 import { draftParties } from "../refs/party-references";
 import { retriesUnderItsKey, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { carriedBlocks, type FollowedBlocks } from "./block-spans";
+import type { SeededMention } from "./composer-draft";
 import type { ComposerAnchor, ComposerKind, ComposerOwner, ReplyTarget } from "./composer-model";
 
 /** A send's own copy of the draft, taken when it starts: what the request is built from, and
@@ -58,6 +59,15 @@ export interface StatementAnchor {
    *  the issue - lands there too. It is the page's own: the anchor the server is sent names the
    *  document and the words alone (`attempt`). */
   readonly row: string;
+}
+
+/** Whether two sends or drafts are on the same statement - the same document and the same words,
+ *  which are what the server places a comment by - or both on none. */
+export function sameStatement(
+  a: StatementAnchor | undefined,
+  b: StatementAnchor | undefined
+): boolean {
+  return a?.artifact === b?.artifact && a?.quote === b?.quote;
 }
 
 /**
@@ -111,7 +121,7 @@ export interface SentRequest {
    *  the reader left the issue - takes these back out when the reply ends or moves, as the box
    *  that wrote them would, and never a link the reader wrote. They are the page's own: no
    *  request carries them (`attempt`). */
-  readonly seeds?: readonly { readonly target: string; readonly text: string }[];
+  readonly seeds?: readonly SeededMention[];
   /** The key that names this send to Dispatch (`Idempotency-Key`), so that every attempt of it,
    *  and a reload's, is that one write there. Minted when Send builds the request, and kept by a
    *  Retry of a send that ended without Dispatch's verdict (`requestFor`). */
@@ -120,6 +130,14 @@ export interface SentRequest {
    *  (`StatementAnchor`); absent from every other send. A send that carries one carries no
    *  `anchor` of its own. */
   readonly statement?: StatementAnchor;
+}
+
+/** The mentions the issue page's box wrote for the reply `request` answers (`SentRequest.seeds`),
+ *  which a box over that held send takes out when the reply ends or moves; none where it holds no
+ *  send, or holds one that answers no reply - one the box let go of, its mentions taken out as it
+ *  went. */
+export function heldSeeds(request: SentRequest | undefined): readonly SeededMention[] {
+  return request?.replyTo ? (request.seeds ?? []) : [];
 }
 
 /** The command, at the start of a body, that sends it in a mode other than the plain one (Send,
@@ -233,8 +251,7 @@ export function sameAddress(sent: Address, next: Address): boolean {
     sameOwner(sent.owner, next.owner) &&
     sent.anchor?.artifact === next.anchor?.artifact &&
     sent.anchor?.mark_id === next.anchor?.mark_id &&
-    sent.statement?.artifact === next.statement?.artifact &&
-    sent.statement?.quote === next.statement?.quote &&
+    sameStatement(sent.statement, next.statement) &&
     sent.replyTo?.id === next.replyTo?.id &&
     sent.edit?.id === next.edit?.id
   );
