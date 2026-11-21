@@ -15,7 +15,9 @@ package bus
 import (
 	"bytes"
 	"context"
+	"reflect"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -384,11 +386,8 @@ func (js *earlyAnswerJetStream) AddStream(cfg *nats.StreamConfig, opts ...nats.J
 // Whether the server answers the create sent again while the stream has no leader is the
 // cluster's: the meta leader can take the resend before the first create, and the first election
 // can end before the resend lands. Then this run tests nothing of the order, and passes, since
-// the start's answer is right either way; it says which order it got. A row that held the
-// election (two of the stream's members stopped on a cluster of five, started again after the
-// leaderless answer) takes an election on the members' timers inside the start's 36 s hang guard,
-// which a loaded machine can run past: a failure of a correct start. In 10 runs here, every run's
-// answer named no leader.
+// the start's answer is right either way; it says which order it got. The order itself is held by
+// the scripted row below, with no server. In 10 runs here, every run's answer named no leader.
 func TestAStartWhoseStreamCreateIsAnsweredEarlyAnswersOnceItHasALeader(t *testing.T) {
 	cluster := testnats.StartCluster(t, 3)
 	wait := rowWait(t)
@@ -430,6 +429,65 @@ func TestAStartWhoseStreamCreateIsAnsweredEarlyAnswersOnceItHasALeader(t *testin
 		}
 	}
 	t.Logf("a create's answer the start took named no leader: %t", early.leaderless)
+}
+
+// scriptedCreate is the start's JetStream context in the row below, with no server behind it. The
+// first read finds no stream; the first create's answer is lost (context.DeadlineExceeded, as a
+// send whose wait ran out); the second create is answered with a three-copy stream with no leader,
+// as a server answers an equal create while the stream's first election runs
+// (jetstream_cluster.go:6957-6979); and the reads after that answer find no leader once and then
+// one. Every other call panics on the nil JetStreamContext, so the start makes no call the script
+// does not name. It records each create's configuration and the reads made after the creates.
+type scriptedCreate struct {
+	nats.JetStreamContext
+	mu      sync.Mutex
+	creates []nats.StreamConfig
+	after   int
+}
+
+func (s *scriptedCreate) StreamInfo(stream string, _ ...nats.JSOpt) (*nats.StreamInfo, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.creates) < 2 {
+		return nil, nats.ErrStreamNotFound
+	}
+	s.after++
+	info := &nats.StreamInfo{Config: s.creates[1], Cluster: &nats.ClusterInfo{Leader: "n1"}}
+	if s.after == 1 {
+		info.Cluster.Leader = ""
+	}
+	return info, nil
+}
+
+func (s *scriptedCreate) AddStream(cfg *nats.StreamConfig, _ ...nats.JSOpt) (*nats.StreamInfo, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.creates = append(s.creates, *cfg)
+	if len(s.creates) == 1 {
+		return nil, context.DeadlineExceeded
+	}
+	return &nats.StreamInfo{Config: *cfg, Cluster: &nats.ClusterInfo{}}, nil
+}
+
+// A start whose create of the stream at three copies is answered with no leader reads the stream
+// until it has one before it answers, in the order a slow first election makes, forced on any
+// machine (scriptedCreate): the start sends the create again after the first answer is lost, the
+// resend is answered with no leader, and the start answers only after the read that names one. A
+// start that took the create's answer as the stream's made none of those reads.
+func TestAStartWhoseCreateIsAnsweredWithNoLeaderReadsTheStreamUntilItHasOne(t *testing.T) {
+	cfg := parseConnectOptions([]ConnectOption{WithReplicas(3)}).streamConfig()
+	script := &scriptedCreate{}
+	if _, err := ensureStreamWithConfig(rowWait(t), script, &cfg, capsAnUnsetStream, atStart); err != nil {
+		t.Fatalf("a start whose create was answered with no leader: %v", err)
+	}
+	script.mu.Lock()
+	defer script.mu.Unlock()
+	if len(script.creates) != 2 || !reflect.DeepEqual(script.creates[0], script.creates[1]) {
+		t.Fatalf("the start sent %d creates, %+v; want the lost one and an equal one again", len(script.creates), script.creates)
+	}
+	if script.after != 2 {
+		t.Fatalf("the start read the stream %d times after the create was answered with no leader, want 2: the read that found no leader and the one that found it", script.after)
+	}
 }
 
 // A run of the reconnect hooks that finds the stream with no leader, as one whose other members
