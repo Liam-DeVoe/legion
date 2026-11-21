@@ -2358,8 +2358,8 @@
       "capture": "envoy.build-unsubscribe",
       "mutation": {
         "file": "packages/envoy/internal/dispatch/envoy/client.go",
-        "preimage": "unsubscribe request: %v\", ErrUnavailable, redact.Cause(err, c.baseURL)",
-        "replacement": "unsubscribe request: %v\", ErrUnavailable, err"
+        "preimage": "\"%w: build %s request: %v\", ErrUnavailable, route, redact.Cause(err, c.baseURL)",
+        "replacement": "\"%w: build %s request: %v\", ErrUnavailable, route, err"
       }
     },
     {
@@ -2372,8 +2372,8 @@
       "capture": "envoy.Client.Unsubscribe",
       "mutation": {
         "file": "packages/envoy/internal/dispatch/envoy/client.go",
-        "preimage": "\"%w: POST /v1/interests/unsubscribe: %v\", ErrUnavailable, redact.Cause(err, c.baseURL)",
-        "replacement": "\"%w: POST /v1/interests/unsubscribe: %v\", ErrUnavailable, err"
+        "preimage": "\"%w: %s: %v\", ErrUnavailable, route, redact.Cause(err, c.baseURL)",
+        "replacement": "\"%w: %s: %v\", ErrUnavailable, route, err"
       }
     },
     {
@@ -4010,8 +4010,8 @@
       "capture": "githubapp.answer-echo",
       "mutation": {
         "file": "packages/envoy/internal/dispatch/githubapp/client.go",
-        "preimage": "[]byte(redact.Tokens(string(responseBody), -1, redact.Carried(response)...))",
-        "replacement": "[]byte(string(responseBody) + redact.Tokens(\"\", -1, redact.Carried(response)...))"
+        "preimage": "redact.ReadAnswer(response, limit)",
+        "replacement": "redact.ReadAnswer(&http.Response{StatusCode: response.StatusCode, Header: response.Header, Body: response.Body}, limit)"
       }
     },
     {
