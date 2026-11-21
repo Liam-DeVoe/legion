@@ -3992,16 +3992,20 @@ a subject nothing else uses, so the probe only shows whether the hub admits a co
 precondition for the `operator` entry, run again before go-live. It runs with the sign-ins of the
 shell it runs in, requests no credential, and lists each principal that is not a person and can
 mint the token of a guarded ServiceAccount (the operator's, the secrets broker's, and each
-`--guarded` pair), run or enter a pod as one, mint the operator's Google service account's token,
-make a guarded namespace on another cluster of the project or of the workload pool's fleet,
-register a cluster to that fleet, or write the writer hold's tables beside the broker's routes. On
-each cluster it reviews every ServiceAccount outside the system namespaces and each Google identity
-the cluster's bindings name; a Group other than Kubernetes' system groups is never a finding while
-GKE's Google Groups for RBAC is off. It reads code first (`--rbac-render`, `--iam-preview`), then
-the live grants, and exits 0 with nothing found, 1 naming each principal and right, or 2 naming
-each step it could not read. `--report <file>` writes the same as JSON.
-`scripts/operator-token-minters.test.sh` runs every plant and control against a fake `kubectl`,
-`gcloud`, `curl` and `agent-secrets`.
+`--guarded` pair), run or enter a pod as one, create a custom resource in a guarded namespace, mint
+the operator's Google service account's token, make a guarded namespace on another cluster of the
+project or of the workload pool's fleet, register a cluster to that fleet, set IAM policy over any
+of these, or write the writer hold's tables beside the broker's routes, and each principal that can
+become one of those: through IAM impersonation, reported as the chain, or in Kubernetes by running,
+entering or minting the token of a ServiceAccount that holds such a right. On each cluster it
+reviews every ServiceAccount outside the system namespaces, each Google identity the cluster's
+bindings name, and anyone unauthenticated; a Group other than Kubernetes' system groups is never a
+finding while GKE's Google Groups for RBAC is off. It reads code first (`--rbac-render`,
+`--iam-preview`), then the live grants, and exits 0 with nothing found, 1 naming each principal and
+right, or 2 naming each step it could not read, a run that stopped mid-way included.
+`--report <file>` writes the same as JSON, and is deleted when a run starts, so a report is that
+run's or none. `scripts/operator-token-minters.test.sh` runs every plant and control against a fake
+`kubectl`, `gcloud`, `curl` and `agent-secrets`.
 
 A plugin release builds the sets from Envoy's names at its own commit, so a listener built from a
 later commit that publishes or subscribes to a subject those names lacked needs a hub rendered by

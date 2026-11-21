@@ -58,25 +58,43 @@
 #                     system:serviceaccounts:<namespace>, system:authenticated), the groups of the
 #                     agent namespaces (--agent-namespace) each alone, the Google service account
 #                     each is bound to (its iam.gke.io/gcp-service-account annotation) with
-#                     system:authenticated, and the cluster's binding subjects (below). The rights
-#                     are the list below for each guarded pair. A review without the groups would
-#                     miss every grant made to a group. Its witness is a review for the group the
-#                     built-in cluster-admin binding names, system:masters, which must be allowed: an
-#                     API server whose answers cannot say yes proves nothing by saying no. An agent
-#                     namespace list that matches no ServiceAccount is UNKNOWN.
+#                     system:authenticated, the cluster's binding subjects (below), and anyone
+#                     unauthenticated (system:anonymous with system:unauthenticated), always. The
+#                     rights are the list below for each guarded pair, and create on each custom
+#                     resource the API server's discovery (`kubectl api-resources --namespaced
+#                     --verbs=create`) lists, in each guarded pair's namespace: a custom resource's
+#                     controller may make a pod from it, as an agent sandbox does; a discovery that
+#                     cannot be read whole is UNKNOWN. A review without the groups would miss every
+#                     grant made to a group. Its witness is a review for the group the built-in
+#                     cluster-admin binding names, system:masters, which must be allowed: an API
+#                     server whose answers cannot say yes proves nothing by saying no. Each
+#                     --agent-namespace pattern that matches no namespace holding a ServiceAccount
+#                     is UNKNOWN, so a mistyped one cannot drop its agents in silence. Then who can
+#                     become a ServiceAccount with a finding, in its namespace (create pods, create
+#                     or get pods/exec, get, list or watch secrets, and by its name create
+#                     serviceaccounts/token or impersonate), is a finding naming the chain, followed
+#                     in turn up to 5 steps.
 #   live: GKE IAM     GKE authorizes a Google identity's Kubernetes call through IAM beside RBAC, so
 #                     Policy Analyzer's holders of the container.* permission of each right, on the
-#                     project.
+#                     project, and of resourcemanager.projects.setIamPolicy and iam.roles.update
+#                     there, by which a holder grants itself any of them.
 #   live: minters     Policy Analyzer's holders, on --gsa or above it, of
 #                     iam.serviceAccounts.getAccessToken, getOpenIdToken, signJwt, signBlob, actAs,
-#                     implicitDelegation and iam.serviceAccountKeys.create. They must be people and
-#                     the Workload Identity member serviceAccount:<pool>.svc.id.goog[<namespace>/
-#                     <service account>], which is the witness: the answer must list it. The broker
-#                     needs roles/iam.serviceAccountTokenCreator on that account to mint the secret
-#                     ENVOY_OPERATOR's token, so --broker-account allows that one binding, on that
-#                     account and in that role alone, and then the broker account's own minters are
-#                     checked the same way, its Workload Identity member (--broker-workload) the
-#                     witness and the one non-person allowed.
+#                     implicitDelegation, iam.serviceAccountKeys.create and setIamPolicy. They must
+#                     be people and the Workload Identity member serviceAccount:<pool>.svc.id.goog[
+#                     <namespace>/<service account>], which is the witness: the answer must list it.
+#                     The broker needs roles/iam.serviceAccountTokenCreator on that account to mint
+#                     the secret ENVOY_OPERATOR's token, so --broker-account allows that one binding,
+#                     on that account and in that role alone, and then the broker account's own
+#                     minters are checked the same way, its Workload Identity member
+#                     (--broker-workload) the witness and the one non-person allowed.
+#   impersonation     Every IAM step analyses with --analyze-service-account-impersonation: who can
+#                     mint a holder's token, sign as it or act as it holds what the holder holds, so
+#                     the outermost principal of each such chain, through any number of service
+#                     accounts, is judged as a holder, its finding written as the chain
+#                     (serviceAccount:a -> impersonates serviceAccount:b (<role>) -> <b's role>).
+#                     The design's own links are no finding: a Workload Identity member acting as
+#                     the account it is bound to, and the broker minting --gsa's token.
 #   live: Workload    The Workload Identity member names the workload pool (<pool>.svc.id.goog,
 #     Identity        --pool-project, by default --project), the namespace and the ServiceAccount,
 #                     never the cluster, so every cluster that uses the pool can act as the Google
@@ -111,13 +129,16 @@
 #     registration    project, each judged as in the GKE IAM step: a cluster registered to the
 #                     pool's fleet shares the pool's Workload Identity, so its ServiceAccount
 #                     envoy-operator/envoy-operator is the operator's member there.
+#   live: IAM on      For each folder and organization above --project and the pool project (`gcloud
+#     ancestors       projects get-ancestors`), Policy Analyzer's holders of its setIamPolicy, and of
+#                     the organization's iam.roles.update: each can grant itself any role below it.
 #   live: hold        Who can write the writer hold's tables beside the broker's routes, each holder a
 #     writers         finding: the holders of cloudsql.users.create or update on --sql-instance, of
 #                     get on the Secret --db-secret (a SubjectAccessReview for each principal of the
 #                     RBAC step, and container.secrets.get through IAM), of storage.objects.get on the
-#                     bucket of --broker-state, and of secretmanager.versions.access on
-#                     --signing-secret, which the operator's Google service account alone may read and
-#                     must be listed on.
+#                     bucket of --broker-state, and of secretmanager.versions.access or setIamPolicy
+#                     on --signing-secret, which the operator's Google service account alone may read
+#                     and must be listed on.
 #   admin tag         `agent-secrets secret show <--secret> --json`, under the running session, must
 #                     show "admin": "true" and "tier": "human": the operator's credential is an
 #                     administrator's, released only when a person approves and never decided by a
@@ -169,22 +190,24 @@
 # Exit 0: no finding and no UNKNOWN. Exit 1: at least one finding, each line naming the principal
 # and the right (UNKNOWN lines may stand beside them). Exit 2: no finding, and at least one UNKNOWN,
 # each naming its step and why, such as the permission the running identity lacks; also a usage
-# error. --report <file> writes {"run_at": "<RFC 3339>", "findings": [{"principal", "right",
-# "role", "resource", "permissions", "granted_at"}], "unknown": [{"step", "reason"}]} beside the
-# text, run_at being when the run began. `right` is the sentence the text prints; the rest are its
-# parts, for a reader that matches a finding against an accepted entry by principal and role:
-#   role         the IAM role (roles/container.admin); for an RBAC finding the right's label
-#                (create serviceaccounts/token envoy-operator in envoy-operator); for the namespace
-#                and the secret's tags, what is wrong (namespace envoy-operator, admin, tier,
-#                secret);
+# error, and a run that stops before its end (a command failing under set -e), which prints the
+# UNKNOWN `run` and writes it to --report. --report is deleted when the run starts, so a report is
+# this run's or none. --report <file> writes {"run_at": "<RFC 3339>", "findings": [{"principal",
+# "right", "role", "resource", "permissions", "granted_at"}], "unknown": [{"step", "reason"}]} beside
+# the text, run_at being when the run began. `right` is the sentence the text prints; the rest are
+# its parts, for a reader that matches a finding against an accepted entry by principal and role:
+#   role         the IAM role (roles/container.admin), for an impersonation chain the role of its
+#                outermost link; for an RBAC finding the right's label (create
+#                serviceaccounts/token envoy-operator in envoy-operator); for the namespace and the
+#                secret's tags, what is wrong (namespace envoy-operator, admin, tier, secret);
 #   resource     what the right is on: the analysed resource's full name, `cluster:<name>` (the
-#                operator's cluster, `<project>/<location>/<name>` for another project's) or
+#                operator's cluster; `<project>/<location>/<name>` for every other) or
 #                `membership:<pool>/<location>/<id>`, or `secret:<name>`;
-#   permissions  the IAM permissions the role grants among those asked; for an RBAC finding the
-#                right's label; empty for the namespace and the secret's tags;
-#   granted_at   the resource the IAM binding is made on; for an RBAC finding the API server's
-#                reason (`RBAC: allowed by ClusterRoleBinding "x" of ...`) or, from code, the
-#                binding; empty where there is none.
+#   permissions  the IAM permissions the role grants among those asked, for a chain the holder's;
+#                for an RBAC finding the right's label; empty for the namespace and the secret's tags;
+#   granted_at   the resource the IAM binding is made on, for a chain its outermost link's; for an
+#                RBAC finding the API server's reason (`RBAC: allowed by ClusterRoleBinding "x" of
+#                ...`) or, from code, the binding; empty where there is none.
 #
 # The fixture testdata/operator-token-minters-report.json, beside this script, is this script's own
 # --report from a world of operator-token-minters.test.sh's, with run_at fixed: an IAM finding, RBAC
@@ -247,6 +270,17 @@ usage_error() {
   exit 2
 }
 
+# A run's report is this run's or none: an older one would be read as this run's if the run stopped
+# before writing its own, so it goes before anything, a usage error included, can stop the run.
+for ((arg = 1; arg <= $#; arg++)); do
+  case "${!arg}" in
+    --report)
+      next=$((arg + 1))
+      [ "$next" -gt "$#" ] || rm -f -- "${!next}"
+      ;;
+    --report=*) report_arg="${!arg}" && rm -f -- "${report_arg#--report=}" ;;
+  esac
+done
 PROJECT="" CLUSTER="" LOCATION="" POOL_PROJECT="" NAMESPACE=envoy-operator KSA=envoy-operator GSA="" BROKER="" BROKER_WORKLOAD=""
 SQL_INSTANCE="" DB_SECRET="" BROKER_STATE="" SIGNING_SECRET="" SECRET=ENVOY_OPERATOR ANALYSIS_SCOPE="" REPORT=""
 AGENT_NAMESPACES=() RBAC_RENDERS=() IAM_PREVIEWS=() CREDENTIALS_ARGS=() GUARDED_FLAGS=()
@@ -311,7 +345,21 @@ command -v jq >/dev/null || usage_error "jq is not on PATH"
 
 RUN_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/operator-token-minters.XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+# on_exit, the EXIT trap: a run that stops before its end (a command that failed under set -e)
+# reads as UNKNOWN, never as clean or as a finding. crash_report, below, prints the UNKNOWN naming
+# that, writes --report with it, and the run exits 2. The work directory goes either way.
+FINISHED=false
+on_exit() {
+  local status=$?
+  set +e
+  if [ "$FINISHED" != true ] && declare -F crash_report >/dev/null; then
+    crash_report "$status"
+    status=2
+  fi
+  rm -rf "$WORK"
+  exit "$status"
+}
+trap on_exit EXIT
 mkdir -p "$WORK/kube" "$WORK/roles"
 
 # --- What a run prints and reports. Each finding and each UNKNOWN is printed once, its fields with
@@ -346,6 +394,25 @@ unknown() {
   echo "UNKNOWN $step: $reason"
 }
 pass() { echo "PASS $1: $2"; }
+# write_report: --report, when it is named, from the findings and the UNKNOWNs so far.
+write_report() {
+  [ -n "$REPORT" ] || return 0
+  printf '%s\n' ${FINDINGS[@]+"${FINDINGS[@]}"} >"$WORK/findings"
+  printf '%s\n' ${UNKNOWNS[@]+"${UNKNOWNS[@]}"} >"$WORK/unknown"
+  jq -n --arg run_at "$RUN_AT" --rawfile findings "$WORK/findings" --rawfile unknown "$WORK/unknown" '{
+    run_at: $run_at,
+    findings: [$findings | split("\n")[] | select(length > 0) | split("\t")
+      | {principal: .[0], right: .[1], role: .[2], resource: .[3],
+         permissions: ((.[4] // "") | split("\u001f") | map(select(length > 0))), granted_at: (.[5] // "")}],
+    unknown: [$unknown | split("\n")[] | select(length > 0) | split("\t") | {step: .[0], reason: .[1]}]}' >"$WORK/report.json"
+  cp "$WORK/report.json" "$REPORT"
+}
+# crash_report STATUS: on_exit's work for a run that stopped before its end.
+crash_report() {
+  unknown run "the run stopped before its end (exit $1), so every step after the last it printed is unread"
+  write_report
+  echo "operator-token-minters: stopped before its end, ${#UNKNOWNS[@]} unknown: exit 2"
+}
 # mark, then unchanged: whether a step recorded no finding and no UNKNOWN since its mark, so it
 # prints PASS only then.
 mark() { MARK_F="${#FINDINGS[@]}" MARK_U="${#UNKNOWNS[@]}"; }
@@ -438,6 +505,11 @@ GSA_PERMISSIONS=(
   iam.serviceAccounts.signBlob iam.serviceAccounts.actAs iam.serviceAccounts.implicitDelegation
   iam.serviceAccountKeys.create
 )
+# Who can write IAM policy over the checked resources, or change a custom role a principal holds:
+# each can grant itself any permission below, so each is a holder of every one.
+IAM_WRITE_PERMISSIONS=(resourcemanager.projects.setIamPolicy resourcemanager.folders.setIamPolicy
+  resourcemanager.organizations.setIamPolicy iam.serviceAccounts.setIamPolicy secretmanager.secrets.setIamPolicy
+  iam.roles.update)
 SQL_PERMISSIONS=(cloudsql.users.create cloudsql.users.update)
 # Who can register a cluster to the pool project's fleet: a registered cluster shares the pool's
 # Workload Identity, so its ServiceAccount envoy-operator/envoy-operator is the operator's member.
@@ -447,6 +519,12 @@ FLEET_PERMISSIONS=(gkehub.memberships.create gkehub.memberships.update)
 granting_role() {
   case "$1" in
     container.*) GRANTING_ROLE=roles/container.admin ;;
+    resourcemanager.projects.setIamPolicy) GRANTING_ROLE=roles/resourcemanager.projectIamAdmin ;;
+    resourcemanager.folders.setIamPolicy) GRANTING_ROLE=roles/resourcemanager.folderIamAdmin ;;
+    resourcemanager.organizations.setIamPolicy) GRANTING_ROLE=roles/resourcemanager.organizationAdmin ;;
+    iam.serviceAccounts.setIamPolicy) GRANTING_ROLE=roles/iam.serviceAccountAdmin ;;
+    secretmanager.secrets.setIamPolicy) GRANTING_ROLE=roles/secretmanager.admin ;;
+    iam.roles.update) GRANTING_ROLE=roles/iam.roleAdmin ;;
     iam.serviceAccounts.actAs) GRANTING_ROLE=roles/iam.serviceAccountUser ;;
     iam.serviceAccountKeys.*) GRANTING_ROLE=roles/iam.serviceAccountKeyAdmin ;;
     iam.serviceAccounts.*) GRANTING_ROLE=roles/iam.serviceAccountTokenCreator ;;
@@ -502,14 +580,6 @@ GUARDED_TEXT="${GUARDED_TEXT%, }"
 # --- Principals. ---
 
 system_namespace() { case "$1" in kube-system | gke-* | gmp-*) return 0 ;; *) return 1 ;; esac; }
-agent_namespace() {
-  local pattern
-  for pattern in ${AGENT_NAMESPACES[@]+"${AGENT_NAMESPACES[@]}"}; do
-    # shellcheck disable=SC2053 # the pattern is a glob on purpose: legion-*-sessions
-    [[ "$1" == $pattern ]] && return 0
-  done
-  return 1
-}
 # service_agent: a Google-managed service agent, which no principal of the project can act as.
 service_agent() {
   [[ "$1" =~ ^serviceAccount:service-[0-9]+@(gcp-sa-[a-z0-9-]+|container-engine-robot|compute-system)\.iam\.gserviceaccount\.com$ ]]
@@ -582,7 +652,7 @@ project_name="the operator's project"
 [ -z "$PROJECT" ] || project_name="project $PROJECT"
 CHECK_STEP[gke]="live: GKE IAM on $project_name"
 CHECK_RESOURCE[gke]="$PROJECT_RES"
-CHECK_PERMS[gke]="${CONTAINER_PERMISSIONS[*]}"
+CHECK_PERMS[gke]="${CONTAINER_PERMISSIONS[*]} resourcemanager.projects.setIamPolicy iam.roles.update"
 # The names steps print: a flag's value, or what it would name. A default holding an apostrophe
 # cannot be written as ${NAME:-...} inside double quotes, where bash reads the apostrophe as a quote.
 operator_account="the operator's Google service account" sql_name="the broker's instance"
@@ -593,12 +663,12 @@ db_name="of the broker's database login" cluster_name="the operator's cluster"
 [ -z "$CLUSTER" ] || cluster_name="$CLUSTER"
 CHECK_STEP[gsa]="live: minters of $operator_account"
 CHECK_RESOURCE[gsa]="//iam.googleapis.com/projects/$GSA_PROJECT/serviceAccounts/$GSA"
-CHECK_PERMS[gsa]="${GSA_PERMISSIONS[*]}"
+CHECK_PERMS[gsa]="${GSA_PERMISSIONS[*]} iam.serviceAccounts.setIamPolicy"
 CHECK_WITNESS[gsa]="$WI_MEMBER"
 [ -n "$GSA" ] || CHECK_MISSING[gsa]="no --gsa: the operator's Google service account is not named"
 CHECK_STEP[broker]="live: minters of the broker account $BROKER"
 CHECK_RESOURCE[broker]="//iam.googleapis.com/projects/$BROKER_PROJECT/serviceAccounts/$BROKER"
-CHECK_PERMS[broker]="${GSA_PERMISSIONS[*]}"
+CHECK_PERMS[broker]="${GSA_PERMISSIONS[*]} iam.serviceAccounts.setIamPolicy"
 CHECK_WITNESS[broker]="$BROKER_WI_MEMBER"
 [ -n "$BROKER_WORKLOAD" ] || CHECK_MISSING[broker]="no --broker-workload: the broker account's Workload Identity member cannot be told from another's"
 CHECK_STEP[sql]="live: hold writers: Cloud SQL users of $sql_name"
@@ -616,7 +686,7 @@ CHECK_RESOURCE[state]="//storage.googleapis.com/projects/_/buckets/$BUCKET"
 CHECK_PERMS[state]="storage.objects.get"
 [ -n "$BUCKET" ] || CHECK_MISSING[state]="no --broker-state: where the broker program's state is kept is not named"
 CHECK_STEP[signing]="live: hold writers: the signing key ${SIGNING_SECRET:-of the writer hold}"
-CHECK_PERMS[signing]="secretmanager.versions.access"
+CHECK_PERMS[signing]="secretmanager.versions.access secretmanager.secrets.setIamPolicy"
 CHECK_WITNESS[signing]="serviceAccount:$GSA"
 if [ -z "$SIGNING_SECRET" ]; then
   CHECK_MISSING[signing]="no --signing-secret: the writer hold's signing key is not named"
@@ -626,6 +696,8 @@ fi
 CHECK_STEP[fleet]="live: who can register a cluster to the fleet of project ${POOL_PROJECT:-?}"
 CHECK_RESOURCE[fleet]="//cloudresourcemanager.googleapis.com/projects/$POOL_PROJECT"
 CHECK_PERMS[fleet]="${FLEET_PERMISSIONS[*]}"
+# The pool project's own IAM writers, when it is not --project's, whose are the GKE IAM step's.
+[ -z "$POOL_PROJECT" ] || [ "$POOL_PROJECT" = "$PROJECT" ] || CHECK_PERMS[fleet]+=" resourcemanager.projects.setIamPolicy"
 if [ -z "$PROJECT" ]; then
   for check in "${CHECKS[@]}"; do CHECK_MISSING[$check]="no --project: the project that runs the operator's cluster is not named"; done
 fi
@@ -707,7 +779,7 @@ role_perms() {
 step="permission names"
 mark
 checked_names=("${CONTAINER_PERMISSIONS[@]}" "${GSA_PERMISSIONS[@]}" "${SQL_PERMISSIONS[@]}" "${FLEET_PERMISSIONS[@]}"
-  secretmanager.versions.access storage.objects.get)
+  "${IAM_WRITE_PERMISSIONS[@]}" secretmanager.versions.access storage.objects.get)
 declare -A roles_used=() role_holds=()
 for permission in "${checked_names[@]}"; do
   granting_role "$permission"
@@ -1066,18 +1138,30 @@ principals_json() {
 # binding names, which every review must allow. An API server whose answers cannot say yes proves
 # nothing by saying no.
 WITNESS_RECORD=$'witness\x1f\x1fsystem:masters'
+# Anyone the API server cannot name: every cluster's reviews hold it, so a grant to the group
+# system:unauthenticated is a finding whether or not a binding names system:anonymous.
+ANONYMOUS_RECORD=$'user:system:anonymous\x1fsystem:anonymous\x1fsystem:unauthenticated'
+# FOUND_SAS: each ServiceAccount (<namespace>:<name>) with a finding on the cluster read last, and
+# the right of its first finding, for follow_becomes.
+declare -A FOUND_SAS=()
 # judge_reviews STEP SUFFIX RESOURCE: each review of $WORK/review.rec. The witness's must all be
 # allowed; every other allowed review is a finding on RESOURCE (the cluster), its right followed by
 # SUFFIX, granted where the API server's reason says. Returns 1 when the witness was refused.
 judge_reviews() {
   local principal label verdict error reason witness_refused=false
+  FOUND_SAS=()
   while IFS="$US" read -r -u 4 principal label verdict error reason; do
     if [ "$principal" = witness ]; then
       [ "$verdict" = allowed ] || witness_refused=true
       continue
     fi
     case "$verdict" in
-      allowed) finding "$principal" "$label$2" "$label" "$3" "$label" "$reason" ;;
+      allowed)
+        finding "$principal" "$label$2" "$label" "$3" "$label" "$reason"
+        if [[ "$principal" =~ ^system:serviceaccount:([^:]+):([^:]+)$ ]] && [ -z "${FOUND_SAS[${BASH_REMATCH[1]}:${BASH_REMATCH[2]}]:-}" ]; then
+          FOUND_SAS["${BASH_REMATCH[1]}:${BASH_REMATCH[2]}"]="$label"
+        fi
+        ;;
       error) unknown "$1" "the review of $principal for $label ended in an evaluation error, so its refusal proves nothing: $error" ;;
     esac
   done 4<"$WORK/review.rec"
@@ -1085,6 +1169,89 @@ judge_reviews() {
     unknown "$1" "the witness review, the cluster-admin binding's group system:masters, was not allowed, so a refusal from this API server proves nothing"
     return 1
   fi
+}
+# follow_becomes KUBECONFIG STEP SUFFIX RESOURCE: who can become a ServiceAccount with a finding
+# holds what it holds. In the ServiceAccount's namespace a principal becomes it by create pods (a
+# pod runs as any ServiceAccount of its namespace), create or get pods/exec (entering a pod that
+# runs as it), get, list or watch secrets (a token Secret of it), and, by its name, create
+# serviceaccounts/token or impersonate. Each principal of $WORK/principals.rec allowed one of these
+# is a finding naming the chain, and each ServiceAccount so found is followed in turn, up to 5
+# steps; one found in the fifth and not followed is UNKNOWN. A ServiceAccount that becomes only
+# itself is no finding.
+follow_becomes() {
+  local kube="$1" step="$2" suffix="$3" resource="$4" round sa rights label targets principal verdict error reason
+  local -A followed=() targets_of=()
+  for ((round = 0; round < 5; round++)); do
+    : >"$WORK/become.tsv"
+    while IFS= read -r sa; do
+      [ -z "${followed[$sa]:-}" ] || continue
+      followed[$sa]=1
+      printf '%s\t%s\t%s\n' "${sa%%:*}" "${sa#*:}" "${FOUND_SAS[$sa]}" >>"$WORK/become.tsv"
+    done < <(printf '%s\n' ${FOUND_SAS[@]+"${!FOUND_SAS[@]}"} | sed '/^$/d' | sort)
+    [ -s "$WORK/become.tsv" ] || return 0
+    rights="$(jq -R -s -c '
+      [split("\n")[] | select(length > 0) | split("\t") | {ns: .[0], name: .[1], why: .[2]}] as $sas
+      | def become($list): $list | map("system:serviceaccount:\(.ns):\(.name), which can \(.why)") | join(", or ");
+        def right($verb; $res; $sub; $ns; $name; $list):
+          {verb: $verb, group: "", resource: $res, sub: $sub, ns: $ns, name: $name,
+           key: ([$verb, "", $res, $sub, $ns, $name] | join("|")),
+           label: ("\($verb) \($res)\(if $sub != "" then "/" + $sub else "" end)\(if $name != "" then " " + $name else "" end) in \($ns), so it can become " + become($list)),
+           targets: [$list[] | "\(.ns):\(.name)"]};
+        [(([$sas[].ns] | unique)[] as $n | [$sas[] | select(.ns == $n)] as $in
+          | right("create"; "pods"; ""; $n; ""; $in), right("create"; "pods"; "exec"; $n; ""; $in), right("get"; "pods"; "exec"; $n; ""; $in),
+            right("get"; "secrets"; ""; $n; ""; $in), right("list"; "secrets"; ""; $n; ""; $in), right("watch"; "secrets"; ""; $n; ""; $in)),
+         ($sas[] | right("create"; "serviceaccounts"; "token"; .ns; .name; [.]), right("impersonate"; "serviceaccounts"; ""; .ns; .name; [.]))]' \
+      "$WORK/become.tsv")"
+    targets_of=()
+    while IFS=$'\t' read -r label targets; do targets_of[$label]="$targets"; done < <(jq -r '.[] | [.label, (.targets | join(" "))] | @tsv' <<<"$rights")
+    if ! review "$kube" "$(principals_json "$WORK/principals.rec")" "$rights"; then
+      unknown "$step" "$REVIEW_ERROR"
+      return 0
+    fi
+    while IFS="$US" read -r -u 4 principal label verdict error reason; do
+      [ "$principal" != witness ] || continue
+      case "$verdict" in
+        allowed)
+          [ "${targets_of[$label]:-}" != "${principal#system:serviceaccount:}" ] || continue
+          finding "$principal" "$label$suffix" "$label" "$resource" "$label" "$reason"
+          if [[ "$principal" =~ ^system:serviceaccount:([^:]+):([^:]+)$ ]] && [ -z "${FOUND_SAS[${BASH_REMATCH[1]}:${BASH_REMATCH[2]}]:-}" ]; then
+            FOUND_SAS["${BASH_REMATCH[1]}:${BASH_REMATCH[2]}"]="$label"
+          fi
+          ;;
+        error) unknown "$step" "the review of $principal for $label ended in an evaluation error, so its refusal proves nothing: $error" ;;
+      esac
+    done 4<"$WORK/review.rec"
+  done
+  for sa in ${FOUND_SAS[@]+"${!FOUND_SAS[@]}"}; do
+    [ -n "${followed[$sa]:-}" ] ||
+      unknown "$step" "who can become a ServiceAccount with a finding is followed 5 steps; system:serviceaccount:$sa, found in the fifth, is not followed further"
+  done
+}
+# custom_rights KUBECONFIG STYLE: sets CUSTOM_RIGHTS, the JSON array, as rights_json writes rights,
+# of create on each custom resource the API server's discovery lists as namespaced and creatable,
+# in each guarded pair's namespace: a custom resource's controller may make a pod from it (an agent
+# sandbox does), so create on one there is the same path as create pods. Custom is any API group
+# outside Kubernetes' own: not the core group, no dotless group (apps, batch), and no *.k8s.io
+# group other than a *.x-k8s.io one. STYLE `guard` labels each right as GUARD_RIGHTS does. Returns
+# 1 with CUSTOM_ERROR when the discovery could not be read whole; CUSTOM_RIGHTS holds what it listed.
+custom_rights() {
+  CUSTOM_ERROR=""
+  if ! kubectl --kubeconfig "$1" api-resources --namespaced=true --verbs=create -o name >"$WORK/api-resources" 2>"$WORK/api-resources.err"; then
+    CUSTOM_ERROR="the API server's discovery of namespaced resources could not be read whole, so create on a custom resource it leaves out is not reviewed: $(first_line "$WORK/api-resources.err")"
+  fi
+  CUSTOM_RIGHTS="$(printf '%s\n' "${GUARDED[@]}" | jq -R -s -c --rawfile names "$WORK/api-resources" --arg style "$2" '
+    [split("\n")[] | select(length > 0) | split("/") | {ns: .[0], sa: .[1]}] as $pairs
+    | [$names | split("\n")[] | select(contains("."))
+       | {resource: (split(".")[0]), group: (split(".")[1:] | join("."))}
+       | select(.group | contains("."))
+       | select(((.group | endswith(".k8s.io")) | not) or (.group | endswith(".x-k8s.io")))] as $custom
+    | [([$pairs[].ns] | unique)[] as $n
+       | ([$pairs[] | select(.ns == $n) | "\(.ns)/\(.sa)"] | join(", ")) as $guarding
+       | $custom[]
+       | {verb: "create", group, resource, sub: "", ns: $n, name: "",
+          label: ("create \(.resource).\(.group) in \($n)" + (if $style == "guard" then ", guarding \($guarding)" else "" end))}
+       | . + {key: ([.verb, .group, .resource, .sub, .ns, .name] | join("|"))}]')"
+  [ -z "$CUSTOM_ERROR" ]
 }
 # bound_subjects KUBECONFIG: the cluster's binding subjects (the header's "Binding subjects"), added
 # to $WORK/principals.rec: each User subject of its ClusterRoleBindings and RoleBindings that
@@ -1140,17 +1307,27 @@ else
   # Every guarded pair's rights and the other clusters' guard rights, each right once: where both
   # list one, the full list's label stays.
   rights="$(jq -c --argjson guard "$GUARD_RIGHTS" '. + $guard | reduce .[] as $r ([]; if any(.[]; .key == $r.key) then . else . + [$r] end)' <<<"$(rights_json db)")"
+  custom_rights "$KUBE" plain || unknown "$step" "$CUSTOM_ERROR"
+  rights="$(jq -c --argjson custom "$CUSTOM_RIGHTS" '. + $custom | reduce .[] as $r ([]; if any(.[]; .key == $r.key) then . else . + [$r] end)' <<<"$rights")"
   jq -r "$JQ_REC"'.items[]? | [.metadata.namespace, .metadata.name, (.metadata.annotations["iam.gke.io/gcp-service-account"] // "")] | rec' \
     "$WORK/serviceaccounts.json" >"$WORK/serviceaccounts.rec"
-  printf '%s\n' "$WITNESS_RECORD" >"$WORK/principals.rec"
-  declare -A seen_groups=() seen_accounts=()
+  printf '%s\n%s\n' "$WITNESS_RECORD" "$ANONYMOUS_RECORD" >"$WORK/principals.rec"
+  declare -A seen_groups=() seen_accounts=() pattern_matched=()
   accounts=0 agents=0
   while IFS="$US" read -r -u 3 ns name bound; do
     ! system_namespace "$ns" || continue
     accounts=$((accounts + 1))
     printf 'system:serviceaccount:%s:%s\x1fsystem:serviceaccount:%s:%s\x1fsystem:serviceaccounts,system:serviceaccounts:%s,system:authenticated\n' \
       "$ns" "$name" "$ns" "$name" "$ns" >>"$WORK/principals.rec"
-    if agent_namespace "$ns"; then
+    is_agent=false
+    for pattern in "${AGENT_NAMESPACES[@]}"; do
+      # shellcheck disable=SC2053 # the pattern is a glob on purpose: legion-*-sessions
+      if [[ "$ns" == $pattern ]]; then
+        is_agent=true
+        pattern_matched[$pattern]=1
+      fi
+    done
+    if [ "$is_agent" = true ]; then
       agents=$((agents + 1))
       seen_groups[system:serviceaccounts]=1 seen_groups[system:serviceaccounts:$ns]=1 seen_groups[system:authenticated]=1
     fi
@@ -1163,6 +1340,11 @@ else
   done 3<"$WORK/serviceaccounts.rec"
   [ "$agents" -gt 0 ] ||
     unknown "$step" "the cluster lists no ServiceAccount in the agent namespaces (${AGENT_NAMESPACES[*]}), so no agent's principal is among those reviewed"
+  # Each pattern alone: a mistyped one (legion-*-session) drops its namespaces while the others match.
+  for pattern in "${AGENT_NAMESPACES[@]}"; do
+    [ -n "${pattern_matched[$pattern]:-}" ] ||
+      unknown "$step" "--agent-namespace $pattern matches no namespace that holds a ServiceAccount, so the agents it was to name are not reviewed as agents"
+  done
   while IFS= read -r bound; do
     printf 'serviceAccount:%s\x1f%s\x1fsystem:authenticated\n' "$bound" "$bound" >>"$WORK/principals.rec"
   done < <(printf '%s\n' ${seen_accounts[@]+"${!seen_accounts[@]}"} | sed '/^$/d' | sort)
@@ -1176,8 +1358,9 @@ else
     unknown "$step" "$REVIEW_ERROR"
   elif judge_reviews "$step" "" "cluster:$CLUSTER"; then
     RBAC_OK=true
+    follow_becomes "$KUBE" "$step" "" "cluster:$CLUSTER"
     if unchanged; then
-      pass "$step" "$((accounts + ${#seen_accounts[@]} + ${#seen_groups[@]} + BOUND)) principals ($accounts ServiceAccounts outside the system namespaces, $agents of them in the agent namespaces, ${#seen_accounts[@]} Google service accounts, ${#seen_groups[@]} groups, $BOUND binding subjects), $(jq length <<<"$rights") rights each: none allowed"
+      pass "$step" "$((accounts + ${#seen_accounts[@]} + ${#seen_groups[@]} + BOUND + 1)) principals ($accounts ServiceAccounts outside the system namespaces, $agents of them in the agent namespaces, ${#seen_accounts[@]} Google service accounts, ${#seen_groups[@]} groups, $BOUND binding subjects, and anyone unauthenticated), $(jq length <<<"$rights") rights each: none allowed"
     fi
   fi
 fi
@@ -1217,25 +1400,68 @@ if [ -n "$POOL_PROJECT" ] && [ "$POOL_PROJECT" != "$PROJECT" ]; then
 fi
 
 # analyze RESOURCE PERMISSIONS_CSV SCOPE_FLAG SCOPE: Policy Analyzer's holders of any of the
-# permissions on the resource, one line per binding and identity: identity, role, the resource the
-# binding is made on, the permissions it grants (comma-separated) and `expanded` for a group whose
-# members the analysis lists. Written as records to $WORK/analysis.rec; returns 1 with
-# ANALYZE_ERROR.
+# permissions on the resource, with service account impersonation: a principal that can mint a
+# holder's token, sign as it, or act as it holds what the holder holds. Written as records to
+# $WORK/analysis.rec: a `row` per binding and identity (identity, role, the resource the binding is
+# made on, the permissions it grants, comma-separated, and `expanded` for a group whose members the
+# analysis lists), and a `chain` per impersonator of a service account holder, through any number
+# of service accounts (the outermost impersonator, its role and where that is granted, the holder's
+# permissions, `expanded`, `designed` for a link the design makes, the holder's role and where it
+# is granted, the holder, and the chain written out). Returns 1 with ANALYZE_ERROR, also for an
+# impersonation analysis not fully explored or naming no service account: an impersonator it did
+# not list would read as none.
+#
+# The designed links are a Workload Identity member acting as the account it is bound to (the
+# operator's member as --gsa, the broker's as --broker-account) and the broker minting --gsa's
+# token: its outermost principal is the account it acts as, already judged, so it is no finding.
 analyze() {
   ANALYZE_ERROR=""
   if ! gcloud asset analyze-iam-policy "$3" --full-resource-name="$1" --permissions="$2" \
-    --expand-groups --output-group-edges --expand-roles --show-response --format=json --quiet >"$WORK/analysis.json" 2>"$WORK/analysis.err"; then
+    --expand-groups --output-group-edges --expand-roles --analyze-service-account-impersonation \
+    --show-response --format=json --quiet >"$WORK/analysis.json" 2>"$WORK/analysis.err"; then
     ANALYZE_ERROR="Policy Analyzer refused the analysis (it needs cloudasset.assets.analyzeIamPolicy on $4): $(first_line "$WORK/analysis.err")"
     return 1
   fi
-  if ! jq -r "$JQ_REC"'if (.mainAnalysis | type) != "object" then ["error", "the answer holds no mainAnalysis"] | rec
+  if ! jq -r --arg wi "$WI_MEMBER" --arg gsa "$GSA" --arg bwi "$BROKER_WI_MEMBER" --arg broker "$BROKER" "$JQ_REC"'
+      def sa_email: if test("^serviceAccount:[^@\\[]+@") then sub("^serviceAccount:"; "") else empty end;
+      if (.mainAnalysis | type) != "object" then ["error", "the answer holds no mainAnalysis"] | rec
       elif .mainAnalysis.fullyExplored != true then
         ["error", "the analysis was not fully explored, so a holder it did not reach is not listed: \([.mainAnalysis.nonCriticalErrors[]?.cause // empty] | join("; "))"] | rec
-      else .mainAnalysis.analysisResults[]? as $r
-        | ([$r.identityList.groupEdges[]?.sourceNode]) as $expanded
-        | ([$r.accessControlLists[]?.accesses[]?.permission // empty] | unique | join(",")) as $perms
-        | $r.identityList.identities[]?.name as $id
-        | ["row", $id, ($r.iamBinding.role // ""), ($r.attachedResourceFullName // ""), $perms, (if any($expanded[]; . == $id) then "expanded" else "" end)] | rec
+      elif any((.serviceAccountImpersonationAnalysis // [])[]; .fullyExplored != true) then
+        ["error", "an impersonation analysis was not fully explored, so an impersonator it did not reach is not listed"] | rec
+      else
+        [(.serviceAccountImpersonationAnalysis // [])[]
+          | (((.analysisQuery.resourceSelector.fullResourceName // "") | capture("/serviceAccounts/(?<e>[^/]+)$").e) // "") as $target
+          | if $target == "" then {bad: true}
+            else .analysisResults[]? as $r
+              | ([$r.identityList.groupEdges[]?.sourceNode]) as $expanded
+              | $r.identityList.identities[]?.name as $id
+              | {target: $target, id: $id, role: ($r.iamBinding.role // ""), attached: ($r.attachedResourceFullName // ""),
+                 expanded: any($expanded[]; . == $id)}
+            end] as $imp
+        | if any($imp[]; .bad == true) then
+            ["error", "an impersonation analysis names no service account, so who impersonates which holder cannot be read"] | rec
+          else
+            def designed($l): ($l.id == $wi and $l.target == $gsa)
+              or ($bwi != "" and $l.id == $bwi and $l.target == $broker)
+              or ($broker != "" and $l.id == "serviceAccount:\($broker)" and $l.target == $gsa);
+            # chains(E; SEEN): each chain of impersonators of the service account E, innermost first,
+            # never through a principal twice.
+            def chains($email; $seen):
+              $imp[] | select(.target == $email) | . as $l | select(any($seen[]; . == $l.id) | not)
+              | [$l], (($l.id | sa_email) as $next | [$l] + chains($next; $seen + [$l.id]));
+            .mainAnalysis.analysisResults[]? as $r
+            | ([$r.identityList.groupEdges[]?.sourceNode]) as $expanded
+            | ([$r.accessControlLists[]?.accesses[]?.permission // empty] | unique | join(",")) as $perms
+            | $r.identityList.identities[]?.name as $id
+            | (["row", $id, ($r.iamBinding.role // ""), ($r.attachedResourceFullName // ""), $perms,
+                (if any($expanded[]; . == $id) then "expanded" else "" end)] | rec),
+              (($id | sa_email) as $email | chains($email; [$id]) as $c | ($c | last) as $o
+               | ["chain", $o.id, $o.role, $o.attached, $perms, (if $o.expanded then "expanded" else "" end),
+                  (if designed($o) then "designed" else "" end), ($r.iamBinding.role // ""), ($r.attachedResourceFullName // ""), $id,
+                  ($o.id + ([$c | reverse[] | " -> impersonates serviceAccount:\(.target) (\(.role))"] | join(""))
+                   + " -> " + ($r.iamBinding.role // ""))] | rec)
+          end
       end' "$WORK/analysis.json" >"$WORK/analysis.rec" 2>"$WORK/analysis.err"; then
     ANALYZE_ERROR="the analysis is not the JSON Policy Analyzer answers: $(first_line "$WORK/analysis.err")"
     return 1
@@ -1249,7 +1475,7 @@ analyze() {
 # live_iam CHECK [PASS_NOTE]: the check's analysis, each holder judged.
 live_iam() {
   local check="$1" step="${CHECK_STEP[$1]}" resource="${CHECK_RESOURCE[$1]}" witness_member="${CHECK_WITNESS[$1]:-}"
-  local holders _ identity role attached perms how
+  local holders what identity role attached perms how designed hattached text chains=0
   if [ -n "${CHECK_MISSING[$check]:-}" ]; then
     unknown "$step" "${CHECK_MISSING[$check]}"
     return
@@ -1281,18 +1507,30 @@ live_iam() {
   fi
   # Never `cut | grep -q` under pipefail: grep stops at its first match, and a long answer's next
   # write then fails the pipeline with SIGPIPE, reading a witness that is there as one that is not.
-  if [ -n "$witness_member" ] && ! grep -qxF -- "$witness_member" < <(cut -d"$US" -f2 "$WORK/analysis.rec"); then
+  if [ -n "$witness_member" ] && ! grep -qxF -- "$witness_member" < <(awk -F"$US" '$1 == "row" { print $2 }' "$WORK/analysis.rec"); then
     unknown "$step" "the analysis does not list $witness_member, which holds a permission on it by design, so it cannot be read as complete"
   fi
-  holders="$(cut -d"$US" -f2 "$WORK/analysis.rec" | sort -u | wc -l | tr -d ' ')"
-  while IFS="$US" read -r -u 3 _ identity role attached perms how; do
+  holders="$(awk -F"$US" '$1 == "row" { print $2 }' "$WORK/analysis.rec" | sort -u | wc -l | tr -d ' ')"
+  # A chain record's holder role and holder are in its written-out chain, the sentence's part.
+  while IFS="$US" read -r -u 3 what identity role attached perms how designed _ hattached _ text; do
+    if [ "$what" = chain ]; then
+      # The outermost impersonator, judged as a holder of what the holder holds; a designed link's
+      # principal is the account it acts as, already judged.
+      chains=$((chains + 1))
+      [ "$designed" != designed ] || continue
+      iam_verdict "$check" "$identity" "$role" "$attached" "$how"
+      [ "$VERDICT" != finding ] ||
+        finding "$identity" "$(held_text "$check" "$perms") on $resource: $text, granted at $hattached$NOTE" \
+          "$role" "$resource" "$(held_list "$check" "$perms")" "$attached"
+      continue
+    fi
     iam_verdict "$check" "$identity" "$role" "$attached" "$how"
     [ "$VERDICT" != finding ] ||
       finding "$identity" "$(held_text "$check" "$perms") on $resource through $role, granted at $attached$NOTE" \
         "$role" "$resource" "$(held_list "$check" "$perms")" "$attached"
   done 3<"$WORK/analysis.rec"
   if unchanged; then
-    pass "$step" "$holders holders listed, each a person, a group judged by its members, Google's service agent or the one allowed by name${2:+; $2}"
+    pass "$step" "$holders holders listed, each a person, a group judged by its members, Google's service agent or the one allowed by name, and $chains impersonation chains, each from such a principal or by design${2:+; $2}"
   fi
 }
 
@@ -1337,7 +1575,7 @@ read_other_cluster() {
     return
   fi
   jq -r "$JQ_REC"'.items[]? | [.metadata.namespace, .metadata.name] | rec' "$WORK/serviceaccounts.json" >"$WORK/serviceaccounts.rec"
-  printf '%s\n' "$WITNESS_RECORD" >"$WORK/principals.rec"
+  printf '%s\n%s\n' "$WITNESS_RECORD" "$ANONYMOUS_RECORD" >"$WORK/principals.rec"
   while IFS="$US" read -r -u 3 ns name; do
     ! system_namespace "$ns" || continue
     accounts=$((accounts + 1))
@@ -1345,12 +1583,16 @@ read_other_cluster() {
       "$ns" "$name" "$ns" "$name" "$ns" >>"$WORK/principals.rec"
   done 3<"$WORK/serviceaccounts.rec"
   bound_subjects "$KUBE" || unknown "$cstep" "$BOUND_ERROR"
+  custom_rights "$KUBE" guard || unknown "$cstep" "$CUSTOM_ERROR"
+  guard_rights="$(jq -c --argjson custom "$CUSTOM_RIGHTS" '. + $custom | reduce .[] as $r ([]; if any(.[]; .key == $r.key) then . else . + [$r] end)' <<<"$GUARD_RIGHTS")"
   if [ "$((accounts + BOUND))" -eq 0 ]; then
     unknown "$cstep" "the cluster lists no ServiceAccount outside its system namespaces and no binding subject to review, so there is no principal to review"
-  elif ! review "$KUBE" "$(principals_json "$WORK/principals.rec")" "$GUARD_RIGHTS"; then
+  elif ! review "$KUBE" "$(principals_json "$WORK/principals.rec")" "$guard_rights"; then
     unknown "$cstep" "$REVIEW_ERROR"
-  elif judge_reviews "$cstep" "$where" "$principal" && unchanged; then
-    pass "$cstep" "no guarded namespace ($GUARDED_TEXT), and none of its $accounts ServiceAccounts outside the system namespaces and $BOUND binding subjects may make a namespace, or a ServiceAccount or a pod in a guarded namespace"
+  elif judge_reviews "$cstep" "$where" "$principal"; then
+    follow_becomes "$KUBE" "$cstep" "$where" "$principal"
+    ! unchanged ||
+      pass "$cstep" "no guarded namespace ($GUARDED_TEXT), and none of its $accounts ServiceAccounts outside the system namespaces, $BOUND binding subjects and anyone unauthenticated may make a namespace, or a ServiceAccount, a pod or a custom resource in a guarded namespace"
   fi
 }
 
@@ -1528,6 +1770,47 @@ for other in $(printf '%s\n' ${OTHER_PROJECTS[@]+"${!OTHER_PROJECTS[@]}"} | sort
   live_iam "$check"
 done
 
+# --- live: who can set IAM on the projects' ancestors. A holder of a folder's or the organization's
+# setIamPolicy can grant itself any role below it, container.admin on the project included, and a
+# holder of the organization's iam.roles.update can add a permission to a custom role it holds. ---
+ancestor_projects=("$PROJECT")
+[ -z "$POOL_PROJECT" ] || [ "$POOL_PROJECT" = "$PROJECT" ] || ancestor_projects+=("$POOL_PROJECT")
+declare -A ANCESTORS_SEEN=()
+for anc_project in "${ancestor_projects[@]}"; do
+  step="live: who can set IAM on the ancestors of project ${anc_project:-?}"
+  if [ -z "$anc_project" ]; then
+    unknown "$step" "no --project: the project that runs the operator's cluster is not named"
+    continue
+  elif ! have gcloud; then
+    unknown "$step" "gcloud is not on PATH"
+    continue
+  elif ! gcloud projects get-ancestors "$anc_project" --format=json --quiet >"$WORK/ancestors.json" 2>"$WORK/ancestors.err"; then
+    unknown "$step" "gcloud projects get-ancestors $anc_project was refused (it needs resourcemanager.projects.get): $(first_line "$WORK/ancestors.err")"
+    continue
+  elif ! jq -r '.[] | select(.type == "folder" or .type == "organization") | "\(.type)s/\(.id)"' "$WORK/ancestors.json" \
+    >"$WORK/ancestors.list" 2>"$WORK/ancestors.err"; then
+    unknown "$step" "gcloud projects get-ancestors $anc_project answered no JSON list: $(first_line "$WORK/ancestors.err")"
+    continue
+  elif [ ! -s "$WORK/ancestors.list" ]; then
+    pass "$step" "the project has no folder or organization above it"
+    continue
+  fi
+  while IFS= read -r -u 8 anc; do
+    [ -z "${ANCESTORS_SEEN[$anc]:-}" ] || continue
+    ANCESTORS_SEEN[$anc]=1
+    check="ancestor:$anc"
+    CHECK_STEP[$check]="live: who can set IAM on $anc"
+    CHECK_RESOURCE[$check]="//cloudresourcemanager.googleapis.com/$anc"
+    case "$anc" in
+      folders/*) CHECK_PERMS[$check]="resourcemanager.folders.setIamPolicy" ;;
+      *) CHECK_PERMS[$check]="resourcemanager.organizations.setIamPolicy iam.roles.update" ;;
+    esac
+    scope_of "$anc_project"
+    CHECK_SCOPE[$check]="$SCOPE_OF" CHECK_SCOPE_FLAG[$check]="$SCOPE_OF_FLAG" CHECK_SCOPE_ERROR[$check]="$SCOPE_OF_ERROR"
+    live_iam "$check"
+  done 8<"$WORK/ancestors.list"
+done
+
 # --- live: who can register a cluster to the pool project's fleet. A registered cluster shares the
 # pool's Workload Identity, so whoever registers one makes the operator's member on it. ---
 live_iam fleet
@@ -1567,17 +1850,8 @@ fi
 # --- The result. ---
 findings="${#FINDINGS[@]}"
 unknowns="${#UNKNOWNS[@]}"
-if [ -n "$REPORT" ]; then
-  printf '%s\n' ${FINDINGS[@]+"${FINDINGS[@]}"} >"$WORK/findings"
-  printf '%s\n' ${UNKNOWNS[@]+"${UNKNOWNS[@]}"} >"$WORK/unknown"
-  jq -n --arg run_at "$RUN_AT" --rawfile findings "$WORK/findings" --rawfile unknown "$WORK/unknown" '{
-    run_at: $run_at,
-    findings: [$findings | split("\n")[] | select(length > 0) | split("\t")
-      | {principal: .[0], right: .[1], role: .[2], resource: .[3],
-         permissions: ((.[4] // "") | split("\u001f") | map(select(length > 0))), granted_at: (.[5] // "")}],
-    unknown: [$unknown | split("\n")[] | select(length > 0) | split("\t") | {step: .[0], reason: .[1]}]}' >"$WORK/report.json"
-  cp "$WORK/report.json" "$REPORT"
-fi
+write_report
+FINISHED=true
 if [ "$findings" -gt 0 ]; then
   echo "operator-token-minters: $findings finding(s), $unknowns unknown: exit 1"
   exit 1
