@@ -42,9 +42,21 @@ type freshSessions struct {
 	store *consumernames.KVStore
 	// observe is the counters' callback a caller set (ObserveNames), or nil.
 	observe atomic.Pointer[func(op, outcome string)]
-	// selection is the last refusal of a call for lost selection state or the cutover, nil once
-	// a call was admitted (SelectionHealth).
-	selection atomic.Pointer[error]
+	// storeRefusal is the refusal the bucket, its sentinel or the cutover marker last gave a call
+	// or a check (a missing bucket or sentinel, a marker that is not done), nil once one admitted a
+	// call; SelectionHealth reads the sentinel again while it is set, so a bucket created after
+	// the start clears it with no session call.
+	storeRefusal atomic.Pointer[error]
+	// key is the last refusal of one session's key (a key whose last write is a delete), kept
+	// until a call for that same session is admitted: another session's success says nothing of
+	// it.
+	key atomic.Pointer[keyRefusal]
+}
+
+// keyRefusal is a session whose key a call found lost, and what that call answered.
+type keyRefusal struct {
+	sessionID string
+	err       error
 }
 
 // clientRequester is a consumernames.Requester over the client's confirmed requests, so a read
@@ -73,7 +85,7 @@ func (v sessionNamesServer) Delete(ctx context.Context, name string) error {
 
 // newFreshSessions is the fresh mode of s.
 func newFreshSessions(s *SessionConsumers) *freshSessions {
-	fresh := &freshSessions{store: consumernames.NewKVStore(consumernames.SessionBucket, clientRequester{s.client})}
+	fresh := &freshSessions{store: s.client.SelectionStore()}
 	host, _ := os.Hostname()
 	fresh.names = consumernames.New(consumernames.Config{
 		Store:  fresh.store,
@@ -95,6 +107,13 @@ func newFreshSessions(s *SessionConsumers) *freshSessions {
 	return fresh
 }
 
+// SelectionStore is the selection bucket (consumernames.SessionBucket) through c's confirmed
+// requests, so a read or write c's user may not make answers ErrPublishDenied at once. The session
+// consumers keep their records in it, and the listener its own durable's (consumernames.DurableKey).
+func (c *Client) SelectionStore() *consumernames.KVStore {
+	return consumernames.NewKVStore(consumernames.SessionBucket, clientRequester{c})
+}
+
 // ConsumerNames is how c's session consumers are named (WithConsumerNames): consumernames.ModeFixed
 // unless c was connected in the fresh mode, and for a nil client.
 func (c *Client) ConsumerNames() consumernames.Mode {
@@ -102,6 +121,60 @@ func (c *Client) ConsumerNames() consumernames.Mode {
 		return consumernames.ModeFresh
 	}
 	return consumernames.ModeFixed
+}
+
+// ErrConvertedStore is RefuseConvertedStore's answer for a selection bucket the cutover converted.
+var ErrConvertedStore = errors.New("bus: the selection bucket says the cutover converted every session consumer to a fresh name")
+
+// RefuseConvertedStore is, in the fixed mode, the refusal of a selection bucket the cutover
+// converted (ErrConvertedStore, naming ENVOY_CONSUMER_NAMES): a bucket whose sentinel says the
+// cutover is done holds the sessions' fresh names, and today's fixed names must not run over it. A
+// bucket that does not exist, a sentinel that is missing, and a marker that is not done (none, or
+// rolled back) are no marker, and so is a read the connection's user may not make, which answers
+// ErrConsumerNotGranted for its caller to log: a hub whose listener grant has no read of the bucket
+// was never given the window's grants, which come before the bucket's creation, and the listener
+// beside Dispatch holds no such read at all. Any other failed read (no connection, a timeout) is its
+// error, which tells nothing, and the caller reads again rather than run today's names unread. In
+// the fresh mode it answers nil: that mode refuses every call until the marker says done.
+func (s *SessionConsumers) RefuseConvertedStore(ctx context.Context) error {
+	if s.fresh != nil {
+		return nil
+	}
+	state, err := s.client.SelectionStore().State(ctx)
+	switch {
+	case errors.Is(err, consumernames.ErrNoStore), errors.Is(err, consumernames.ErrNoSentinel):
+		return nil
+	case errors.Is(err, ErrPublishDenied):
+		return fmt.Errorf("%w: %w", ErrConsumerNotGranted, err)
+	case err != nil:
+		return fmt.Errorf("bus: read the session consumers' selection bucket %s before running fixed names: %w", consumernames.SessionBucket, err)
+	case state.Cutover == consumernames.CutoverDone:
+		return fmt.Errorf("%w: %s=%s runs today's fixed names, and the bucket %s holds fresh ones: set %s=%s", ErrConvertedStore, consumernames.ModeEnvVar, consumernames.ModeFixed, consumernames.SessionBucket, consumernames.ModeEnvVar, consumernames.ModeFresh)
+	}
+	return nil
+}
+
+// WatchConversion has, in the fixed mode, every NATS connection of s read the selection bucket's
+// marker again (RefuseConvertedStore) once it is made, a reconnect in place or a connection dialled
+// to replace a closed one, and calls converted with the refusal when the marker says done: a
+// conversion run while this process was cut off must not have today's names run over it once it is
+// back. No marker and a read the grant refuses change nothing; any other failed read fails the
+// connection's hook run, which the client's recovery runs again. It does nothing in the fresh mode.
+func (s *SessionConsumers) WatchConversion(converted func(error)) {
+	if s.fresh != nil || converted == nil {
+		return
+	}
+	s.client.AddReconnectHook(func(ctx context.Context, _ *nats.Conn) error {
+		err := s.RefuseConvertedStore(ctx)
+		switch {
+		case err == nil, errors.Is(err, ErrPublishDenied):
+			return nil
+		case errors.Is(err, ErrConvertedStore):
+			converted(err)
+			return nil
+		}
+		return err
+	})
 }
 
 // Fresh reports whether s runs in the fresh mode.
@@ -116,16 +189,23 @@ func (s *SessionConsumers) ObserveNames(observe func(op, outcome string)) {
 	}
 }
 
-// SelectionHealth is, in the fresh mode, the refusal the last session-consumer call met for lost
-// selection state (a missing bucket, sentinel or key) or for the cutover not having run, naming
-// what is missing; nil once a call was admitted, and always nil in the fixed mode. The listener's
-// /healthz names it.
-func (s *SessionConsumers) SelectionHealth() error {
+// SelectionHealth is, in the fresh mode, why session-consumer calls are refused, naming what is
+// missing: the selection bucket, its sentinel, or the cutover marker, read again here while one
+// of them refused the last check or call, so a bucket the operator creates after the listener
+// starts clears it at the next probe; else the last session whose key was found deleted, until a
+// call for that session is admitted. nil when neither stands, and always nil in the fixed mode.
+// The listener's /healthz names it, within ctx.
+func (s *SessionConsumers) SelectionHealth(ctx context.Context) error {
 	if s.fresh == nil {
 		return nil
 	}
-	if err := s.fresh.selection.Load(); err != nil {
-		return *err
+	if s.fresh.storeRefusal.Load() != nil {
+		if err := s.CheckSelection(ctx); err != nil {
+			return err
+		}
+	}
+	if refusal := s.fresh.key.Load(); refusal != nil {
+		return refusal.err
 	}
 	return nil
 }
@@ -140,21 +220,33 @@ func (s *SessionConsumers) CheckSelection(ctx context.Context) error {
 	if err == nil {
 		err = consumernames.Admit(state)
 	}
-	return s.freshAnswer("", err)
+	switch {
+	case err == nil:
+		s.fresh.storeRefusal.Store(nil)
+	case errors.Is(err, consumernames.ErrCutoverNotRun), consumernames.IsSelectionStateLost(err):
+		s.fresh.storeRefusal.Store(&err)
+	}
+	return err
 }
 
 // freshAnswer records err for SelectionHealth and returns it in this package's vocabulary.
 func (s *SessionConsumers) freshAnswer(sessionID string, err error) error {
 	switch {
-	case err == nil:
-		s.fresh.selection.Store(nil)
-		return nil
+	case errors.Is(err, consumernames.ErrRecordDeleted):
+		s.fresh.storeRefusal.Store(nil)
+		s.fresh.key.Store(&keyRefusal{sessionID: sessionID, err: err})
 	case errors.Is(err, consumernames.ErrCutoverNotRun), consumernames.IsSelectionStateLost(err):
-		s.fresh.selection.Store(&err)
+		s.fresh.storeRefusal.Store(&err)
 	case errors.Is(err, ErrPublishDenied):
 	default:
-		// Any other answer came after the store admitted the call.
-		s.fresh.selection.Store(nil)
+		// Any other answer, nil among them, came after the store admitted the call.
+		s.fresh.storeRefusal.Store(nil)
+		if refusal := s.fresh.key.Load(); refusal != nil && refusal.sessionID == sessionID {
+			s.fresh.key.CompareAndSwap(refusal, nil)
+		}
+	}
+	if err == nil {
+		return nil
 	}
 	switch {
 	case errors.Is(err, consumernames.ErrInvalidKey):
@@ -510,10 +602,13 @@ func (s *SessionConsumers) SessionConsumerSets(ctx context.Context) (map[string]
 			return nil, fmt.Errorf("bus: list the consumers of %s: %w", Stream, page.Error)
 		}
 		for _, info := range page.Consumers {
+			// Only a session~ name that carries its session's id is a session's: the listener's own
+			// durable carries envoy.logical too, and a listing by that would take it for a session
+			// and the sweep would delete it.
 			if !strings.HasPrefix(info.Name, SessionConsumerNamePrefix+"~") {
 				continue
 			}
-			if sessionID := info.Config.Metadata[consumernames.LogicalMetadataKey]; sessionID != "" {
+			if sessionID := info.Config.Metadata[SessionIDMetadataKey]; sessionID != "" {
 				sets[sessionID] = append(sets[sessionID], info)
 			}
 		}

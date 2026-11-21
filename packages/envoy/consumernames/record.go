@@ -244,6 +244,40 @@ func Admit(state StoreState) error {
 // consumer name limit (nats-server JSMaxNameLen).
 const maxFixedNameKey = 253
 
+// durableKeyPrefix begins every key DurableKey makes. A '.' is in no session key (CheckKey), so a
+// durable's record never meets a session's, whatever the session's id.
+const durableKeyPrefix = "durable."
+
+// DurableKey is the selection key, in a bucket the session records share, of the durable consumer
+// named durable: "durable." and the name with each byte outside [-_a-zA-Z0-9] written as '=' and
+// two uppercase hex digits, so the key is in the KV key alphabet ([-/_=.a-zA-Z0-9]) and two names
+// never share one. The listener's own durable is kept so, under its name bus.ListenerDurable.
+func DurableKey(durable string) string {
+	var key strings.Builder
+	key.WriteString(durableKeyPrefix)
+	for i := range len(durable) {
+		switch c := durable[i]; {
+		case c == '-' || c == '_' || ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z') || ('0' <= c && c <= '9'):
+			key.WriteByte(c)
+		default:
+			fmt.Fprintf(&key, "=%02X", c)
+		}
+	}
+	return key.String()
+}
+
+// CheckDurableKey refuses a key DurableKey did not make (ErrInvalidKey): a family keyed by
+// DurableKey passes it as Config.CheckKey.
+func CheckDurableKey(key string) error {
+	name, ok := strings.CutPrefix(key, durableKeyPrefix)
+	if !ok || name == "" || strings.ContainsFunc(name, func(r rune) bool {
+		return !(r == '-' || r == '_' || r == '=' || ('a' <= r && r <= 'z') || ('A' <= r && r <= 'Z') || ('0' <= r && r <= '9'))
+	}) {
+		return fmt.Errorf("%w: %q is no durable's key", ErrInvalidKey, key)
+	}
+	return nil
+}
+
 // CheckKey refuses a logical name before anything is written, as the fixed names refused it at
 // their create: an empty name, one holding a '.', '*', '>', '/', '\' or any white space or control
 // character, which no consumer name or key token holds (ErrInvalidKey), and one of 254 bytes or

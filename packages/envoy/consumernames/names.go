@@ -81,6 +81,10 @@ type Config struct {
 	SettleAge time.Duration
 	// Poll is how often a call waiting on such an operation reads again: 50 ms when 0.
 	Poll time.Duration
+	// CheckKey refuses a logical name before anything is written: CheckKey when nil. A family
+	// whose keys are made by a rule of its own (DurableKey) passes that rule's check
+	// (CheckDurableKey).
+	CheckKey func(logical string) error
 	// Reserved, when set, runs after each write that reserves a candidate (a create, a replace,
 	// and Step 0's or a retry's fresh candidate), before any server call or create of that
 	// operation, with the operation as written. An error ends the call with the operation open
@@ -182,6 +186,13 @@ const maxConflicts = 16
 // errSettleLater says Step 0 met an open operation too young to settle, and the call reads again.
 var errSettleLater = errors.New("consumer names: an operation in flight is younger than the settle age")
 
+func (n *Names) checkKey(logical string) error {
+	if n.cfg.CheckKey != nil {
+		return n.cfg.CheckKey(logical)
+	}
+	return CheckKey(logical)
+}
+
 func (n *Names) observe(op Operation, outcome Outcome) {
 	if n.cfg.Observe != nil {
 		n.cfg.Observe(op, outcome)
@@ -219,7 +230,7 @@ func (n *Names) Resolve(ctx context.Context, logical string) (Selection, error) 
 }
 
 func (n *Names) selectRecord(ctx context.Context, logical string, create CreateFunc, readCurrent bool) (Selection, error) {
-	if err := CheckKey(logical); err != nil {
+	if err := n.checkKey(logical); err != nil {
 		return Selection{}, err
 	}
 	var waitingSince time.Time
@@ -540,8 +551,13 @@ func (n *Names) startFor(ctx context.Context, sel Selection, req CreateRequest) 
 	if err != nil {
 		return Start{}, err
 	}
-	if b := sel.State.Boundary; b > 0 && (start.Native != "" || start.Seq > b) {
-		start = Start{Seq: b}
+	if b := sel.State.Boundary; b > 0 {
+		switch {
+		case start.Native == NativeAll:
+			// Every message the stream holds starts no later than the boundary already.
+		case start.Native != "" || start.Seq > b:
+			start = Start{Seq: b}
+		}
 	}
 	return start, nil
 }

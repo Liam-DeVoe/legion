@@ -86,8 +86,8 @@ func TestTheFixedModeIsTheDefaultAndReadsNoSelectionBucket(t *testing.T) {
 	if _, err := owner.JS().StreamInfo("KV_" + consumernames.SessionBucket); !errors.Is(err, natsgo.ErrStreamNotFound) {
 		t.Fatalf("the selection bucket's stream: %v, want none", err)
 	}
-	if err := consumers.CheckSelection(context.Background()); err != nil || consumers.SelectionHealth() != nil {
-		t.Fatalf("the fixed mode's selection check = %v, health %v; want nothing read", err, consumers.SelectionHealth())
+	if err := consumers.CheckSelection(context.Background()); err != nil || consumers.SelectionHealth(context.Background()) != nil {
+		t.Fatalf("the fixed mode's selection check = %v, health %v; want nothing read", err, consumers.SelectionHealth(context.Background()))
 	}
 }
 
@@ -142,7 +142,7 @@ func TestTheFreshModeRefusesWithoutItsSelectionStateAndNeverUsesTheFixedName(t *
 			if _, err := consumers.RestartAtFloor(ctx, session, filters); err == nil {
 				t.Fatal("RestartAtFloor in the fresh mode was served")
 			}
-			if health := consumers.SelectionHealth(); health == nil {
+			if health := consumers.SelectionHealth(ctx); health == nil {
 				t.Fatal("SelectionHealth names nothing after a refusal")
 			}
 			if names := streamConsumers(t, owner); len(names) != 0 {
@@ -215,13 +215,19 @@ func TestTheFreshModeCreatesAFreshNameAtEachCreation(t *testing.T) {
 	if record := selectionRecord(t, store, session); record.Current != "" || record.Start != first+1 {
 		t.Fatalf("record after the delete %+v, want no current and start %d", record, first+1)
 	}
+	// The delete's resume record took the stream's next sequence, so the message stored after it
+	// is past the record's start, and the next create starts at that start, first+1, and delivers it.
 	second := publishStored(t, owner, agent, "two")
 	back, err := consumers.Ensure(ctx, session, filters, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !back.Created || back.Name == created.Name || back.Name == restarted.Name || back.StartSeq != second {
-		t.Fatalf("Ensure after the delete = %+v, want a third fresh name at %d", back, second)
+	if !back.Created || back.Name == created.Name || back.Name == restarted.Name || back.StartSeq != first+1 {
+		t.Fatalf("Ensure after the delete = %+v, want a third fresh name at the record's start %d", back, first+1)
+	}
+	pull = pullSessionNamed(t, consumers, back.Name)
+	if msg := next(t, pull); msg.StreamSeq != second {
+		t.Fatalf("the consumer after the delete first delivered %d, want %d", msg.StreamSeq, second)
 	}
 }
 
@@ -417,5 +423,202 @@ func TestTheFreshModeRefusesALongSessionIDAsTheFixedNameWasRefused(t *testing.T)
 	_, err = fixed.Ensure(ctx, long, []string{contracts.LegacyAgentSubject(long)}, 0)
 	if err == nil || !strings.Contains(err.Error(), "consumer name is too long, maximum allowed is 255") {
 		t.Fatalf("the fixed mode's 254-byte id: %v, want the server's 10102 answer", err)
+	}
+}
+
+// A fixed-mode start refuses a selection bucket the cutover converted, naming the setting, and
+// starts over every store the cutover did not convert: no bucket, a bucket with no sentinel, no
+// marker, or a rollback's marker. The rows that start are the controls: the check refuses only on
+// a converted store.
+func TestTheFixedModeRefusesAStoreTheCutoverConverted(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		state   *consumernames.StoreState
+		bucket  bool
+		refused bool
+	}{
+		{name: "converted", bucket: true, state: &consumernames.StoreState{Cutover: consumernames.CutoverDone, Boundary: 1}, refused: true},
+		{name: "no bucket"},
+		{name: "no sentinel", bucket: true},
+		{name: "not converted", bucket: true, state: &consumernames.StoreState{Boundary: 1}},
+		{name: "rolled back", bucket: true, state: &consumernames.StoreState{Cutover: consumernames.CutoverRolledBack, Boundary: 1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, consumers := sessionConsumersOnStream(t)
+			conn := testnats.Connect(t, testnats.URL(t))
+			t.Cleanup(conn.Close)
+			ctx := context.Background()
+			if tc.bucket {
+				js, _ := jetstream.New(conn)
+				if _, err := js.CreateKeyValue(ctx, consumernames.SessionBucketConfig(1)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.state != nil {
+				if _, err := consumernames.NewKVStore(consumernames.SessionBucket, consumernames.ConnRequester{Conn: conn}).WriteSentinel(ctx, *tc.state, 0); err != nil {
+					t.Fatal(err)
+				}
+			}
+			err := consumers.RefuseConvertedStore(ctx)
+			if tc.refused {
+				if err == nil || !strings.Contains(err.Error(), consumernames.ModeEnvVar) {
+					t.Fatalf("RefuseConvertedStore over a converted bucket = %v; want a refusal naming %s", err, consumernames.ModeEnvVar)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("RefuseConvertedStore over a store the cutover did not convert = %v; want the start to go on", err)
+			}
+		})
+	}
+}
+
+// A fresh-mode listener started before its selection bucket exists reports the missing bucket,
+// and clears it at the next health read once the operator has made the bucket, with no session
+// call between: the health read reads the sentinel again while a store refusal stands.
+func TestTheSelectionHealthClearsOnceTheBucketIsMade(t *testing.T) {
+	_, consumers, conn := freshSessionConsumersWithoutBucket(t)
+	ctx := context.Background()
+	if err := consumers.CheckSelection(ctx); !consumernames.IsSelectionStateLost(err) {
+		t.Fatalf("CheckSelection with no bucket = %v, want the missing bucket", err)
+	}
+	// Control: while the bucket is missing, the health read names it.
+	if err := consumers.SelectionHealth(ctx); err == nil || !strings.Contains(err.Error(), "KV_"+consumernames.SessionBucket) {
+		t.Fatalf("SelectionHealth with no bucket = %v, want the bucket named", err)
+	}
+	if _, err := consumernames.CreateSessionBucket(ctx, conn, 1, consumernames.StoreState{Cutover: consumernames.CutoverDone, Boundary: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := consumers.SelectionHealth(ctx); err != nil {
+		t.Fatalf("SelectionHealth once the bucket is made = %v, want nil with no session call", err)
+	}
+}
+
+// A session whose key was found deleted stays named by the health read after another session's
+// call is admitted: that success says nothing of the lost key.
+func TestASessionsLostKeyStaysNamedAfterAnotherSessionsSuccess(t *testing.T) {
+	owner, consumers, _ := freshSessionConsumersOnStream(t)
+	ctx := context.Background()
+	conn := testnats.Connect(t, testnats.URL(t))
+	t.Cleanup(conn.Close)
+	js, err := jetstream.New(conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kv, err := js.KeyValue(ctx, consumernames.SessionBucket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const lost, other = "ses_lost_key", "ses_other_key"
+	if err := kv.Delete(ctx, lost); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := consumers.Ensure(ctx, lost, []string{contracts.LegacyAgentSubject(lost)}, 0); !errors.Is(err, consumernames.ErrRecordDeleted) {
+		t.Fatalf("Ensure of the deleted key = %v, want ErrRecordDeleted", err)
+	}
+	publishStored(t, owner, contracts.LegacyAgentSubject(other), "one")
+	if _, err := consumers.Ensure(ctx, other, []string{contracts.LegacyAgentSubject(other)}, 0); err != nil {
+		t.Fatalf("Ensure of another session: %v", err)
+	}
+	if err := consumers.SelectionHealth(ctx); !errors.Is(err, consumernames.ErrRecordDeleted) || !strings.Contains(err.Error(), lost) {
+		t.Fatalf("SelectionHealth after another session's success = %v, want the lost key of %s named", err, lost)
+	}
+}
+
+// A fixed-mode start whose grant refuses every read of the selection bucket learns nothing of a
+// conversion: the refusal is the grant's (ErrConsumerNotGranted), on which the listener warns and
+// starts, since a hub that never gave its listener the window's grants holds no bucket the window
+// made. The control is the same converted bucket read with a grant that allows the read, which
+// refuses the start.
+func TestAFixedModeStartRefusedTheBucketsReadIsNoConversion(t *testing.T) {
+	seed, public := testnats.User(t)
+	stream := "KV_" + consumernames.SessionBucket
+	uri := testnats.StartNkeyDenied(t, public, "$JS.API.STREAM.MSG.GET."+stream, "$JS.API.DIRECT.GET."+stream+".>")
+	admin := WithEnvironment(func(string) (string, bool) { return "", false })
+	ctx := context.Background()
+	conn := testnats.Connect(t, uri)
+	t.Cleanup(conn.Close)
+	if _, err := consumernames.CreateSessionBucket(ctx, conn, 1, consumernames.StoreState{Cutover: consumernames.CutoverDone, Boundary: 1}); err != nil {
+		t.Fatal(err)
+	}
+	owner, err := ConnectOwningStream([]string{uri}, admin)
+	if err != nil {
+		t.Fatalf("connect the stream's owner: %v", err)
+	}
+	t.Cleanup(owner.Close)
+
+	// Control: a read the grant allows sees the conversion and refuses the start.
+	granted, err := ConnectSessionConsumers([]string{uri}, 0, nil, admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(granted.Close)
+	if err := granted.RefuseConvertedStore(ctx); err == nil || errors.Is(err, ErrConsumerNotGranted) || !strings.Contains(err.Error(), consumernames.ModeEnvVar) {
+		t.Fatalf("a granted read of a converted bucket = %v, want the start refused naming %s", err, consumernames.ModeEnvVar)
+	}
+
+	t.Setenv("NATS_NKEY_SEED", seed)
+	refused, err := ConnectSessionConsumers([]string{uri}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(refused.Close)
+	if err := refused.RefuseConvertedStore(ctx); !errors.Is(err, ErrConsumerNotGranted) || !errors.Is(err, ErrPublishDenied) {
+		t.Fatalf("a read the grant refuses = %v, want ErrConsumerNotGranted, on which the listener warns and starts", err)
+	}
+}
+
+// A fixed-mode process reads the selection bucket's marker again at every connection it makes, and
+// stops once the marker says the cutover converted the store. The control is the same reconnect
+// over a server that holds no bucket, which stops nothing.
+func TestAFixedModeReconnectReadsTheMarkerAgainAndStopsOnAConversion(t *testing.T) {
+	srv, uri := testnats.Start(t)
+	consumers, err := ConnectSessionConsumers([]string{uri}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(consumers.Close)
+	converted := make(chan error, 4)
+	consumers.WatchConversion(func(err error) { converted <- err })
+	// runs counts the reconnect hook runs, each after the conversion watch's hook of the same run.
+	runs := make(chan struct{}, 16)
+	consumers.client.AddReconnectHook(func(context.Context, *natsgo.Conn) error {
+		runs <- struct{}{}
+		return nil
+	})
+	awaitRun := func() {
+		t.Helper()
+		select {
+		case <-runs:
+		case <-time.After(30 * time.Second):
+			t.Fatal("no reconnect hook ran within 30 s of the restart")
+		}
+	}
+
+	// Control: a reconnect with no bucket on the server stops nothing.
+	srv.Stop(t)
+	srv.Start(t)
+	awaitRun()
+	select {
+	case err := <-converted:
+		t.Fatalf("a reconnect with no bucket stopped the process: %v", err)
+	default:
+	}
+
+	conn := testnats.Connect(t, uri)
+	if _, err := consumernames.CreateSessionBucket(context.Background(), conn, 1, consumernames.StoreState{Cutover: consumernames.CutoverDone, Boundary: 1}); err != nil {
+		t.Fatal(err)
+	}
+	conn.Close()
+	srv.Stop(t)
+	srv.Start(t)
+	awaitRun()
+	select {
+	case err := <-converted:
+		if !errors.Is(err, ErrConvertedStore) || !strings.Contains(err.Error(), consumernames.ModeEnvVar) {
+			t.Fatalf("the reconnect's refusal = %v, want ErrConvertedStore naming %s", err, consumernames.ModeEnvVar)
+		}
+	default:
+		t.Fatal("a reconnect over a converted bucket did not stop the process")
 	}
 }
