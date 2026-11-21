@@ -882,7 +882,8 @@ const FALLBACK_LINES = {
 // A comment id of the right shape that no comment of the issue has draws part I's line. A node
 // the view keeps but draws no row for - one the tree places under a statement that is no check,
 // such as a plan task that serves it, since the view draws a statement's checks alone - answers
-// false as that gone comment does, and the outline lands on it.
+// false as that gone comment does, and the outline lands on it. This row opens no such address;
+// a case of `web/src/features/issue-page/decisions-filter/view-decisions-slot.test.tsx` reads it.
 //
 // Then the Decisions view, with three such addresses, each opened by a load of its own: the gone
 // comment, a `#b-` fragment naming a block no node carries, and that comment id written short.

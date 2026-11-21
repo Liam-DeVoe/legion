@@ -27,13 +27,13 @@ import { ViewVerificationSlot } from "./view-verification";
  * spec, or a `#b-` fragment on it - is the outline's on that node (`issue-address.ts`). A view
  * whose part has not filled its slot draws nothing to land on, which left the reader on the
  * page's body: under such a view the stage draws the body, which lands on the node, or says in
- * the outline's place that the tree holds none. A view whose part has filled its slot lands on
- * the node in its own tree, and says once its reads are held whether its tree draws the node
- * (`ViewSlotProps.onAddressDrawn`). Where it does not - an item the issue holds none of, an
- * item of another issue, an id written short, an item whose read failed, a turn of a thread
- * only agents wrote in, a block no node carries - the stage draws the body in the view's place
- * for the rest of that following of the address (the location's own key), which lands as the
- * outline does; a new following draws the view again.
+ * the outline's place that the tree holds none. A view whose part has filled its slot draws the
+ * node in its own tree, with the focus on the row it lands on or on its tree's tab stop, and says
+ * once its reads are held whether its tree draws the node (`ViewSlotProps.onAddressDrawn`). Where
+ * it does not - an item the issue holds none of, an item of another issue, an id written short, an
+ * item whose read failed, a turn of a thread only agents wrote in, a block no node carries - the
+ * stage draws the body in the view's place for the rest of that following of the address (the
+ * location's own key), which lands as the outline does; a new following draws the view again.
  *
  * `DocumentStages` stands around the chosen slot: a document has one editor on the page, which
  * the row being edited in takes onto its own stage (`document-stage.tsx`). The outline is drawn
@@ -93,10 +93,10 @@ export interface ViewSlotProps extends SlotProps {
    * names a node beside the view's own address and opens no document, once every read its tree
    * is built from holds its answer: before that the node may not have arrived, and the outline's
    * fallback waits for those reads too (`useAddressFallback`). `drawn` says whether the view's
-   * tree draws the node. Given true, the stage keeps the view, which lands on the node itself;
-   * given false, it draws the body in the view's place for the rest of that following, as under
-   * a view whose part has not filled its slot, and the body lands on the node or says in the
-   * outline's place that the issue holds none of it, with the focus.
+   * tree draws the node. Given true, the stage keeps the view, with the focus on the view's tab
+   * stop or the row it lands on; given false, it draws the body in the view's place for the rest of
+   * that following, as under a view whose part has not filled its slot, and the body lands on the
+   * node or says in the outline's place that the issue holds none of it, with the focus.
    */
   readonly onAddressDrawn: (drawn: boolean) => void;
 }
@@ -120,7 +120,7 @@ export type SlotsFilled = Readonly<Record<Preset, boolean>>;
 /** Whether each slot's own part has filled it: a view whose part has not draws nothing, and an
  *  address naming a node beside it draws the outline (`StageSlot`). Each view's part sets its
  *  entry here when it fills its slot; from then the address is that view's, which is to land on
- *  the node in its own tree and to tell the stage where its tree draws none of it
+ *  its tab stop or the row its tree draws for the node, and to tell the stage where it draws none
  *  (`ViewSlotProps.onAddressDrawn`): the stage then draws the outline in the view's place. */
 export const SLOT_FILLED: SlotsFilled = {
   conversation: true,

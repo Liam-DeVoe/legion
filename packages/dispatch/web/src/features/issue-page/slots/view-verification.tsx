@@ -67,9 +67,7 @@ export function ViewVerificationSlot({ issue, onAddressDrawn, route }: ViewSlotP
     told.current = following;
     const { loose, others, statements } = verificationReading({ checks, view: view.root });
     const rows = [...statements, ...statements.flatMap((statement) => statement.checks), ...loose];
-    onAddressDrawn(
-      rows.some(({ node }) => named.has(node.id)) || others.some((node) => named.has(node.id))
-    );
+    onAddressDrawn([...rows.map(({ node }) => node), ...others].some(({ id }) => named.has(id)));
   }, [beside, checks, following, named, onAddressDrawn, readsHeld, view.root]);
   return (
     <NoTooltips>

@@ -12,23 +12,29 @@ import {
   referenceTargetsQuery,
   whoAmIQuery,
 } from "../../../api/queries";
-import type { IssueAskRow, IssueDetails } from "../../../api/types";
+import type { ArtifactBlock, IssueAskRow, IssueDetails } from "../../../api/types";
+import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { answeredAsk } from "../../inbox/ask-card-fixture";
 import { MarginProvider } from "../../margin/margin-context";
 import { buildDispatchReference, parseIssuePath } from "../../refs/routes";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { presetPath } from "../issue-address";
 import { TWO_THREADS, waitInAct } from "../outline-fixtures";
-import { EMPTY_STATE_LINES } from "../page-words";
+import { EMPTY_STATE_LINES, type Preset } from "../page-words";
 import { ProvidersSlot } from "../slots/providers";
 import { StageSlot } from "../slots/stage";
+import { blockNodeId } from "../tree-drafts";
+import { issueAsksQuery } from "../useIssueTree";
+import { check, VERIFICATION_SLUG } from "../verification-filter/verification-fixtures";
 import {
+  artifact,
   decision,
   decisionNode,
   decisionsRead,
   issueDetails,
   KEY,
   READER,
+  specRef,
 } from "./decisions-fixtures";
 
 /** Every read the page's tree is built from, answered with nothing, and who is reading. */
@@ -70,26 +76,56 @@ afterEach(() => {
   for (const stub of stubs) stub.mockRestore();
 });
 
-/** The page's stage at the issue's Decisions address with `after` after it, a search or a
- *  fragment, under the page's own providers, as the page's root draws it
- *  (`IssueOutlinePage.tsx`): the stage's own views, each slot filled as `SLOT_FILLED` has it. */
-function drawStage(after: string): RenderResult {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const route = parseIssuePath(`/issues/${KEY}/decisions`);
-  if (route === undefined) throw new Error("the Decisions address names no route");
-  const issue = issueDetails();
+/** The page's stage at the issue's address of `preset`, Decisions where none is given, with
+ *  `after` after it, a search or a fragment, under the page's own providers, as the page's root
+ *  draws it (`IssueOutlinePage.tsx`): the stage's own views, each slot filled as `SLOT_FILLED`
+ *  has it. The issue is `issueDetails()` and the client a fresh one where the case gives none,
+ *  and `held.navigate` moves the router once the stage is drawn (`AddressedStage`). */
+function drawStage(
+  after: string,
+  {
+    client = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+    held = {},
+    issue = issueDetails(),
+    preset = "decisions",
+  }: {
+    client?: QueryClient;
+    held?: { navigate?: NavigateFunction };
+    issue?: IssueDetails;
+    preset?: Preset;
+  } = {}
+): RenderResult {
   return render(
-    <MemoryRouter initialEntries={[`/issues/${KEY}/decisions${after}`]}>
+    <MemoryRouter initialEntries={[`${presetPath(KEY, preset)}${after}`]}>
       <QueryClientProvider client={client}>
         <KeymapProvider>
           <MarginProvider>
-            <ProvidersSlot issue={issue} route={route}>
-              <StageSlot issue={issue} route={route} />
-            </ProvidersSlot>
+            <AddressedStage held={held} issue={issue} />
           </MarginProvider>
         </KeymapProvider>
       </QueryClientProvider>
     </MemoryRouter>
+  );
+}
+
+/** The page's stage at the address the router holds, under the page's own providers, as the
+ *  page's root draws it (`IssueOutlinePage.tsx`): the route read from the address at every
+ *  render. `held.navigate` moves the router, as a press of a view's control does. */
+function AddressedStage({
+  held,
+  issue,
+}: {
+  held: { navigate?: NavigateFunction };
+  issue: IssueDetails;
+}): ReactNode {
+  const { pathname, search } = useLocation();
+  held.navigate = useNavigate();
+  const route = parseIssuePath(pathname, search);
+  if (route === undefined) throw new Error(`${pathname} names no route`);
+  return (
+    <ProvidersSlot issue={issue} route={route}>
+      <StageSlot issue={issue} route={route} />
+    </ProvidersSlot>
   );
 }
 
@@ -106,12 +142,13 @@ function focusedRow(): string | undefined {
   return document.activeElement?.closest<HTMLElement>("[data-node-row]")?.dataset.nodeId;
 }
 
-/** Which slot the stage drew, by each slot's own mark: the Decisions view's list, or the body
- *  that draws the outline or a line in its place. */
+/** Which slot the stage drew, by each slot's own mark: a view's body, the Decisions view's or the
+ *  Verification view's, or the body that draws the outline or a line in its place. */
 function drawnSlot(view: RenderResult): string {
   const { container } = view;
   if (container.querySelector("[data-issue-body]") !== null) return "the body";
-  return container.querySelector("[data-decisions-body]") === null ? "nothing" : "the view";
+  const drawn = container.querySelector("[data-decisions-body], [data-verification-body]");
+  return drawn === null ? "nothing" : "the view";
 }
 
 // The line the Decisions view's slot hands its body for an issue that holds no question and no
@@ -303,27 +340,6 @@ test("a write-up's address under words its question does not hold draws the outl
   }
 });
 
-/** The page's stage at the address the router holds, under the page's own providers, as the
- *  page's root draws it (`IssueOutlinePage.tsx`): the route read from the address at every
- *  render. `held.navigate` moves the router, as a press of a view's control does. */
-function AddressedStage({
-  held,
-  issue,
-}: {
-  held: { navigate?: NavigateFunction };
-  issue: IssueDetails;
-}): ReactNode {
-  const { pathname, search } = useLocation();
-  held.navigate = useNavigate();
-  const route = parseIssuePath(pathname, search);
-  if (route === undefined) throw new Error(`${pathname} names no route`);
-  return (
-    <ProvidersSlot issue={issue} route={route}>
-      <StageSlot issue={issue} route={route} />
-    </ProvidersSlot>
-  );
-}
-
 // The page's reads are refreshed by events, never by their age, and the stage draws the outline
 // anew as the reader comes back to Conversation from a view. Under the app's `staleTime` a read is
 // stale 30 s after it answered (`main.tsx`), each observer judging it by its own options: the
@@ -331,11 +347,9 @@ function AddressedStage({
 // more than 30 s after the page loaded unless they read it as the tree's own reads are kept fresh
 // (`useIssueTree.ts`'s `EVENT_FRESH`). Here every read the page asks answered 31 s ago.
 test("coming back to the outline from Decisions after the app's staleTime asks who is reading no second time", async () => {
-  const who = spyOn(api, "whoAmI").mockResolvedValue({
-    event_head: "0",
-    kind: "user",
-    login: READER,
-  });
+  // The stub of who is reading that `stubReads` set: `spyOn` hands back that same spy, which
+  // keeps its answer, and this counts its calls.
+  const who = spyOn(api, "whoAmI");
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
   });
@@ -356,8 +370,8 @@ test("coming back to the outline from Decisions after the app's staleTime asks w
     { checks: [], issue: KEY, verification_artifact_id: "" },
     answered
   );
-  client.setQueryData(["decisions", KEY], decisionsRead([]), answered);
-  client.setQueryData(["asks", KEY], [], answered);
+  client.setQueryData(issueDecisionsQuery(KEY, true).queryKey, decisionsRead([]), answered);
+  client.setQueryData(issueAsksQuery(KEY).queryKey, [], answered);
   // The issue holds two threads, so the outline draws rows.
   client.setQueryData(["comments", KEY], [...TWO_THREADS], answered);
   client.setQueryData(["issue-messages", KEY], [], answered);
@@ -372,32 +386,144 @@ test("coming back to the outline from Decisions after the app's staleTime asks w
   ];
   client.setQueryData(referenceTargetsQuery(named).queryKey, { targets: [] }, answered);
   const held: { navigate?: NavigateFunction } = {};
-  try {
-    const view = render(
-      <MemoryRouter initialEntries={[presetPath(KEY, "decisions")]}>
-        <QueryClientProvider client={client}>
-          <KeymapProvider>
-            <MarginProvider>
-              <AddressedStage held={held} issue={issue} />
-            </MarginProvider>
-          </KeymapProvider>
-        </QueryClientProvider>
-      </MemoryRouter>
-    );
-    expect(await emptyLineOf(view)).toBe(EMPTY_STATE_LINES.decisions);
-    expect(who, "the Decisions view asked who is reading").not.toHaveBeenCalled();
-    // The reader leaves the view for the outline, as a press of Conversation does.
-    await act(async () => held.navigate?.(presetPath(KEY, "conversation")));
+  const view = drawStage("", { client, held, issue });
+  expect(await emptyLineOf(view)).toBe(EMPTY_STATE_LINES.decisions);
+  expect(who, "the Decisions view asked who is reading").not.toHaveBeenCalled();
+  // The reader leaves the view for the outline, as a press of Conversation does.
+  await act(async () => held.navigate?.(presetPath(KEY, "conversation")));
+  await waitFor(() =>
+    expect(
+      view.container.querySelector('[data-issue-body] [data-node-id="head-b"]'),
+      `the stage drew ${drawnSlot(view)}, with no row of the issue's threads`
+    ).not.toBeNull()
+  );
+  // Long enough for a read the outline's mount started to have been sent.
+  await waitInAct(50);
+  expect(who, "the outline drawn again asked who is reading").not.toHaveBeenCalled();
+});
+
+/** The plan and the Verification document of the issue the Verification cases draw, beside its
+ *  spec and its decisions document. */
+const PLAN_DOCUMENT = artifact("artifact-plan", "plan-md");
+const VERIFICATION_DOCUMENT = artifact("artifact-verification", VERIFICATION_SLUG);
+
+/** The issue with its plan and its Verification document too, each in its role. */
+function verifiedIssue(): IssueDetails {
+  const issue = issueDetails();
+  return {
+    ...issue,
+    artifacts: [...(issue.artifacts ?? []), PLAN_DOCUMENT, VERIFICATION_DOCUMENT],
+    plan_artifact_id: PLAN_DOCUMENT.id,
+    verification_artifact_id: VERIFICATION_DOCUMENT.id,
+  };
+}
+
+/** The block ids of the spec's one statement, and of the plan task of the plan and the check of
+ *  the Verification document that each serve it. */
+const STATEMENT = "r1";
+const PLAN_TASK = "t1";
+const CHECK = "c1";
+
+/** One typed block of a document as the blocks read answers it, with the statement it serves
+ *  (`serves`, a `block[]` pointer) where it is given one. */
+function typedBlock(id: string, type: string, serves?: string): ArtifactBlock {
+  return {
+    attributes: serves === undefined ? [] : [{ kind: "block[]", name: "serves", value: serves }],
+    from: 0,
+    id,
+    references: { asks: 0, comments: 0 },
+    to: 1,
+    token: id,
+    type,
+  };
+}
+
+/** Each document's blocks, by its id: the spec's statement, and the plan's task and the
+ *  Verification document's check, whose `serves` places each under that statement
+ *  (`tree-drafts.ts`). */
+const BLOCKS: Readonly<Record<string, readonly ArtifactBlock[]>> = {
+  "artifact-spec": [typedBlock(STATEMENT, "requirement")],
+  [PLAN_DOCUMENT.id]: [typedBlock(PLAN_TASK, "plan_task", specRef(STATEMENT))],
+  [VERIFICATION_DOCUMENT.id]: [typedBlock(CHECK, "check", specRef(STATEMENT))],
+};
+
+/** Answers the reads the tree and the Verification view are drawn from for `verifiedIssue`: the
+ *  coverage read with the statement, each document's blocks, the results read with the check,
+ *  and the issue's two threads. Each spy is the one `stubReads` set, which `spyOn` hands back,
+ *  so the file's `afterEach` restores it. */
+function answerVerificationReads(): void {
+  spyOn(api, "getIssueCoverage").mockResolvedValue({
+    gaps: [],
+    has_plan: true,
+    issue: KEY,
+    requirements: [
+      {
+        block_id: STATEMENT,
+        checks: 1,
+        gaps: [],
+        plan_tasks: 1,
+        ref: specRef(STATEMENT),
+        text: "The page draws the plan.",
+      },
+    ],
+    spec_artifact_id: "artifact-spec",
+  });
+  spyOn(api, "getArtifactBlocks").mockImplementation(async (id: string) => [...(BLOCKS[id] ?? [])]);
+  spyOn(api, "getIssueResults").mockResolvedValue({
+    checks: [check({ block_id: CHECK })],
+    issue: KEY,
+    verification_artifact_id: VERIFICATION_DOCUMENT.id,
+  });
+  spyOn(api, "listComments").mockResolvedValue([...TWO_THREADS]);
+}
+
+// Under a statement the Verification view draws that statement's checks alone
+// (`verificationReading`), so a plan task that serves the statement, which the tree places under
+// it, is no row of the view, though the view keeps it as the address's node. The view tells the
+// stage so, and the stage draws the outline in the view's place, which lands on the task's row.
+test("a plan task under a statement, named on the Verification view's address, draws the outline in the view's place, with the focus on the task's row", async () => {
+  answerVerificationReads();
+  const task = blockNodeId(PLAN_DOCUMENT.slug, PLAN_TASK);
+  const view = drawStage(`#b-${PLAN_TASK}`, { issue: verifiedIssue(), preset: "verification" });
+  await waitFor(() =>
+    expect(
+      focusedRow(),
+      `the plan task's address left the focus on ${focusedRow() ?? document.activeElement?.tagName}; the stage drew ${drawnSlot(view)}`
+    ).toBe(task)
+  );
+  // Every read has answered, and the view has said whether it draws the task.
+  await waitInAct(20);
+  expect(drawnSlot(view), "the stage drew the view, which has no row for the plan task").toBe(
+    "the body"
+  );
+  expect(
+    view.container.querySelector("[data-verification-body]"),
+    "the Verification view was drawn beside the outline"
+  ).toBeNull();
+  expect(focusedRow(), "the focus left the plan task's row").toBe(task);
+});
+
+// A node the Verification view draws a row of keeps the view: a comment of the issue, which is
+// of no kind the view draws, as a row of its own after the statements, and a check as a row
+// under the statement it serves.
+test("a comment of the issue or a check, named on the Verification view's address, keeps the view, which draws it as a row", async () => {
+  answerVerificationReads();
+  for (const [after, row] of [
+    ["?comment=head-b", "head-b"],
+    [`#b-${CHECK}`, blockNodeId(VERIFICATION_SLUG, CHECK)],
+  ] as const) {
+    const view = drawStage(after, { issue: verifiedIssue(), preset: "verification" });
     await waitFor(() =>
       expect(
-        view.container.querySelector('[data-issue-body] [data-node-id="head-b"]'),
-        `the stage drew ${drawnSlot(view)}, with no row of the issue's threads`
+        view.container.querySelector(`[data-verification-body] [data-node-id="${row}"]`),
+        `the Verification view drew no row for ${after}; the stage drew ${drawnSlot(view)}`
       ).not.toBeNull()
     );
-    // Long enough for a read the outline's mount started to have been sent.
-    await waitInAct(50);
-    expect(who, "the outline drawn again asked who is reading").not.toHaveBeenCalled();
-  } finally {
-    who.mockRestore();
+    // Every read has answered, and the view has said whether it draws the node.
+    await waitInAct(20);
+    expect(drawnSlot(view), `the stage drew the outline in place of the view for ${after}`).toBe(
+      "the view"
+    );
+    cleanup();
   }
 });
