@@ -189,10 +189,12 @@ func TestOpenAPIDocumentMarksEveryTestHookAndNothingElse(t *testing.T) {
 }
 
 // The server answers for itself on top of what a handler writes: admission refuses a request it
-// has no room for, a read runs past its deadline, a pool has no connection free, a commit goes
-// unanswered. A client generated from the document is told which of those statuses each route
-// may give it and that the retryable ones carry Retry-After, since a client that sends the
-// request again without reading it is the load that caused the refusal (openAPIServerAnswers).
+// has no room for, a DPoP-bound token's decision refuses one no place came free for on every row
+// (decideBrokerToken, outside admission), a read runs past its deadline, a pool has no connection
+// free, a commit goes unanswered. A client generated from the document is told which of those
+// statuses each route may give it and that the retryable ones carry Retry-After, since a client
+// that sends the request again without reading it is the load that caused the refusal
+// (openAPIServerAnswers).
 func TestOpenAPIDescribesTheAnswersTheServerWritesForItself(t *testing.T) {
 	_, document := readOpenAPI(t)
 	for _, row := range []struct {
@@ -217,21 +219,21 @@ func TestOpenAPIDescribesTheAnswersTheServerWritesForItself(t *testing.T) {
 		{
 			what: "a test hook's read, which no deadline bounds", method: "GET",
 			pattern:   "/api/v1/artifacts/_test/rooms",
-			retryable: []string{"503"}, never: []string{"429", "500"},
+			retryable: []string{"429", "503"}, never: []string{"500"},
 		},
 		{
 			what: "a write, which commits", method: "POST", pattern: "/api/v1/issues",
 			retryable: []string{"429", "503"}, plain: []string{"500"},
 		},
 		{
-			what: "a stream, which takes no admission unit", method: "GET",
+			what: "a stream, which takes no admission unit and is still behind the token's decision", method: "GET",
 			pattern:   "/api/v1/going/requests/{id}/stream",
-			retryable: []string{"503"}, never: []string{"429"}, timesOut: true,
+			retryable: []string{"429", "503"}, never: []string{"500"}, timesOut: true,
 		},
 		{
-			what: "a test hook, which is neither admitted nor bounded", method: "POST",
+			what: "a test hook, which is neither admitted nor bounded and is still behind the token's decision", method: "POST",
 			pattern:   "/api/v1/agents/{session_id}/stream/_test/publish",
-			retryable: []string{"503"}, plain: []string{"500"}, never: []string{"429"},
+			retryable: []string{"429", "503"}, plain: []string{"500"},
 		},
 	} {
 		t.Run(row.what, func(t *testing.T) {

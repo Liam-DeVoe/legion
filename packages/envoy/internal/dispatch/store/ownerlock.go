@@ -196,20 +196,21 @@ func ownerLockArgs(keys []string) []any {
 // lock, docs.lockDocumentRoom). It bounds too every row lock a write takes on a row that some
 // other locker takes without an owner lock the write holds, so that no owner lock orders the two,
 // and every write of such a row, which takes the row in the bound first or runs in the bound
-// itself (LockWithinBound and LockWithinBoundAndRead, and WriteBatch.QueueWithinBound in a write
-// phase or in a write of its own sent on a pool: a step's node, a message's row and its delivery
-// attempts, a comment delivery's attempts, the Inbox's and agent state's own rows, an agent's read
-// mark, a person's row, a pull request's head, an architecture source's rows and an item's block
-// state). A wait that runs it out is refused as a pool that could not serve the call is refused
-// (ErrPoolBusy, leaveBoundedWait): a request answers 503 DATABASE_BUSY with Retry-After and its
-// client sends the write again; a background pass logs it and tries again at its next tick; a
-// settlement stops short and its pending row resumes it. Without it the wait ended only with its
-// holder: a write has no deadline once admitted (api's defaultReadDeadline), so a writer queued
-// behind a stalled holder held its pool connection, and a request its admission unit, for as long
-// as that holder stood. It is the request pool's lock_timeout too, on every connection and in every
-// transaction (configurePool, Pool.begin), so a request's statement that no bounded wait covers
-// waits no longer than this either, and is refused lock_not_available, which IsPoolBusy reads as
-// busy; a bounded wait still refuses inside its savepoint, leaving its transaction usable.
+// itself (LockRowsWithinBound and LockRowsWithinBoundAndRead, and WriteBatch.QueueWithinBound in a
+// write phase or in a write of its own sent on a pool: a step's node, a message's row and its
+// delivery attempts, a comment delivery's attempts, the Inbox's and agent state's own rows, an
+// agent's read mark, a person's row, a pull request's head, an architecture source's rows and an
+// item's block state). A wait that runs it out is refused as a pool that could not serve the call
+// is refused (ErrPoolBusy, boundedWait.refused): a request answers 503 DATABASE_BUSY with
+// Retry-After and its client sends the write again; a background pass logs it and tries again at
+// its next tick; a settlement stops short and its pending row resumes it. Without it the wait
+// ended only with its holder: a write has no deadline once admitted (api's defaultReadDeadline),
+// so a writer queued behind a stalled holder held its pool connection, and a request its admission
+// unit, for as long as that holder stood. It is the request pool's lock_timeout too, on every
+// connection and in every transaction (configurePool, Pool.begin), so a request's statement that
+// no bounded wait covers waits no longer than this either, and is refused lock_not_available,
+// which IsPoolBusy reads as busy; an advisory lock's bounded wait still refuses inside its
+// savepoint, leaving its transaction usable.
 //
 // It is the commit's bound (commitTimeout), because that is how long a holder that has not stalled
 // keeps such a lock past its read phase: it holds it through its write phase's statements and its
@@ -240,9 +241,10 @@ func lockTimeoutSetting(bound time.Duration) string {
 type lockWaitKey struct{}
 
 // WithLockWaitForTest returns ctx with bound in place of lockWait for every bounded lock wait made
-// under it (lockOwnersAt, LockWithinBound). It is for tests, which make a wait run out its bound
-// in milliseconds rather than in production's ten seconds; nothing in production calls it, and a
-// lock taken under a context carrying none waits under lockWait.
+// under it (lockOwnersAt, LockWithinBound, LockRowsWithinBound, and WriteBatch.Send's). It is for
+// tests, which make a wait run out its bound in milliseconds rather than in production's ten
+// seconds; nothing in production calls it, and a lock taken under a context carrying none waits
+// under lockWait.
 func WithLockWaitForTest(ctx context.Context, bound time.Duration) context.Context {
 	return context.WithValue(ctx, lockWaitKey{}, bound)
 }
@@ -255,22 +257,31 @@ func lockWaitSetting(ctx context.Context) string {
 	return lockWaitDefault
 }
 
-// The statements a bounded wait runs in: docs' lockSettlementCursor's form, a lock taken under
-// lock_timeout inside a savepoint. The savepoint opens, the transaction's own lock_timeout is kept
-// in a setting of the transaction's (dispatch.lock_timeout_outside_bounded_wait), and lock_timeout
-// is set to the bound (beginBoundedWait); after the lock's statements the kept value is set again
-// and the savepoint released (endBoundedWait), which moves every lock taken under it to the
-// transaction. A setting made with set_config's local flag outlives a released savepoint, as
-// lockSettlementCursor says, so the transaction's own is set again; it is kept in the database
-// rather than read back by the caller so that all of it goes in the lock's own batch, and a wait
-// that ends in time costs no round trip more than the lock alone. A savepoint, set_config and a
-// release write nothing, so they assign no transaction id, and a lock a read phase takes still
-// comes before the transaction's first.
+// The statements of a bounded wait: the transaction's own lock_timeout kept in a setting of the
+// transaction's (dispatch.lock_timeout_outside_bounded_wait), lock_timeout set to the bound, the
+// lock's statements, and the kept value set again (boundedWaitKeep, boundedWaitBound,
+// boundedWaitRestore), all in the lock's own batch, so a wait that ends in time costs no round
+// trip more than the lock alone; the kept value is kept in the database rather than read back by
+// the caller for that. A wait that runs out fails its lock statement with lock_not_available
+// (55P03), and the server skips the rest of the batch.
 //
-// A wait that runs out fails its lock statement with lock_not_available (55P03), and the server
-// skips the rest of the batch. leaveBoundedWait then rolls back to the savepoint, which gives back
-// every lock taken under it and both settings, and releases it, so the transaction is as it was
-// before the lock.
+// A row lock - a locking read, or the row's own write - waits so in its transaction itself
+// (rowLockWait, and WriteBatch.QueueWithinBound in a write phase): its refusal aborts the
+// transaction, which every caller rolls back, since it answers the refusal as a pool that could
+// not serve it. A savepoint around it would leave the row locked by the savepoint's
+// subtransaction, and the transaction's own write of the row behind the lock - the reason for most
+// such locks - would then make Postgres record the two as a MultiXact (compute_new_xmax_infomask)
+// on every such write.
+//
+// An advisory lock waits so inside a savepoint (advisoryLockWait), docs' lockSettlementCursor's
+// form: the savepoint opens before the kept value (boundedWaitBegin) and is released after it is
+// set again (boundedWaitRelease), which moves every lock taken under it to the transaction. A
+// setting made with set_config's local flag outlives a released savepoint, as lockSettlementCursor
+// says, so the transaction's own is set again. A wait that runs out is left (boundedWait.refused):
+// the transaction rolls back to the savepoint, which gives back every lock taken under it and both
+// settings, and releases it, so the transaction is as it was before the lock. A savepoint,
+// set_config, a release and an advisory lock write nothing, so none of them assigns a transaction
+// id, and a lock a read phase takes still comes before the transaction's first.
 const (
 	boundedWaitBegin   = `savepoint bounded_lock_wait`
 	boundedWaitKeep    = `select set_config('dispatch.lock_timeout_outside_bounded_wait', current_setting('lock_timeout'), true)`
@@ -280,25 +291,131 @@ const (
 	boundedWaitUndo    = `rollback to savepoint bounded_lock_wait`
 )
 
-// How many statements beginBoundedWait and endBoundedWait queue, whose answers the caller reads
-// past (skipResults).
-const (
-	boundedWaitBegun = 3
-	boundedWaitEnded = 2
-)
-
-// beginBoundedWait queues on batch the statements before a bounded wait's lock statements, wait
-// being its bound as lock_timeout's value (lockWaitSetting).
-func beginBoundedWait(batch *pgx.Batch, wait string) {
-	batch.Queue(boundedWaitBegin)
-	batch.Queue(boundedWaitKeep)
-	batch.Queue(boundedWaitBound, wait)
+// boundedWait is how a lock's statements wait (sendWithinBound): wait is the bound as
+// lock_timeout's value (lockWaitSetting), and savepoint whether they wait inside a savepoint of
+// their own, as an advisory lock does. Its zero value is no bounded wait, for a lock that never
+// waits (a level that skips).
+type boundedWait struct {
+	wait      string
+	savepoint bool
 }
 
-// endBoundedWait queues on batch the statements after a bounded wait's lock statements.
-func endBoundedWait(batch *pgx.Batch) {
+// advisoryLockWait is the bounded wait of a transaction advisory lock taken under ctx: inside a
+// savepoint, so a refusal leaves the transaction as it was before the lock.
+func advisoryLockWait(ctx context.Context) boundedWait {
+	return boundedWait{wait: lockWaitSetting(ctx), savepoint: true}
+}
+
+// rowLockWait is the bounded wait of a row lock taken under ctx: in the transaction itself, so a
+// refusal aborts it.
+func rowLockWait(ctx context.Context) boundedWait {
+	return boundedWait{wait: lockWaitSetting(ctx)}
+}
+
+// begin queues on batch the wait's statements before its lock's, and answers how many.
+func (w boundedWait) begin(batch *pgx.Batch) int {
+	if w.wait == "" {
+		return 0
+	}
+	queued := 2
+	if w.savepoint {
+		batch.Queue(boundedWaitBegin)
+		queued++
+	}
+	batch.Queue(boundedWaitKeep)
+	batch.Queue(boundedWaitBound, w.wait)
+	return queued
+}
+
+// end queues on batch the wait's statements after its lock's, and answers how many.
+func (w boundedWait) end(batch *pgx.Batch) int {
+	if w.wait == "" {
+		return 0
+	}
 	batch.Queue(boundedWaitRestore)
+	if !w.savepoint {
+		return 1
+	}
 	batch.Queue(boundedWaitRelease)
+	return 2
+}
+
+// refused answers err, the failure of a statement of the wait's batch, whose results the caller
+// has closed. A wait that ran out its bound (ranOutItsBound) is answered ErrPoolBusy
+// (heldPastItsBound), which every caller already answers as a pool that could not serve it, and
+// one in a savepoint is left first: the transaction rolls back to the savepoint and releases it.
+// Any other failure is returned as it is.
+//
+// The rollback and the release go in two round trips, the rollback first. The error has aborted
+// the transaction, and Postgres parses no statement in an aborted transaction but one that ends it
+// or rolls it back to a savepoint; pgx prepares every statement of a batch before it runs any, and
+// it dropped the release from its statement cache with the rest of the failed batch, so a batch of
+// the two would have the release refused (25P02) before the rollback ran.
+func (w boundedWait) refused(ctx context.Context, q OwnerLocker, err error) error {
+	if w.wait == "" || !ranOutItsBound(err) {
+		return err
+	}
+	if !w.savepoint {
+		return heldPastItsBound(w.wait, err)
+	}
+	undoErr := sendOne(ctx, q, boundedWaitUndo)
+	if undoErr == nil {
+		undoErr = sendOne(ctx, q, boundedWaitRelease)
+	}
+	if undoErr != nil {
+		return fmt.Errorf("%w: another transaction held the lock past its wait's bound of %s, and leaving the wait failed (%w): %w", ErrPoolBusy, w.wait, undoErr, err)
+	}
+	return heldPastItsBound(w.wait, err)
+}
+
+// boundedLock is one lock statement sendWithinBound sends: sql with args, and take, which reads its
+// answer, the next result of results.
+type boundedLock struct {
+	sql  string
+	args []any
+	take func(results pgx.BatchResults) error
+}
+
+// execLock is the take of a lock statement whose answer carries nothing its caller reads.
+func execLock(results pgx.BatchResults) error {
+	_, err := results.Exec()
+	return err
+}
+
+// sendWithinBound is every lock that waits in a bounded wait, and the one place its batch is
+// built: it sends on q, in one batch, locks in the bounded wait w, and after them read when it is
+// not nil, the statement the locks guard. It reads every answer before read's - past the wait's
+// own statements, and each lock's through its take - and answers results with read's answer next,
+// for the caller to read or close. A failure before read's answer closes results and is answered
+// as w answers it (boundedWait.refused). The server starts read, taking its snapshot, only once
+// the wait has ended and every lock is the transaction's, so read sees every commit of the locks'
+// previous holders and runs under the transaction's own lock_timeout again.
+func sendWithinBound(ctx context.Context, q OwnerLocker, w boundedWait, locks []boundedLock, read *guardedRead) (pgx.BatchResults, error) {
+	batch := &pgx.Batch{}
+	begun := w.begin(batch)
+	for _, lock := range locks {
+		batch.Queue(lock.sql, lock.args...)
+	}
+	ended := w.end(batch)
+	if read != nil {
+		batch.Queue(read.sql, read.args...)
+	}
+	results := q.SendBatch(ctx, batch)
+	err := skipResults(results, begun)
+	for _, lock := range locks {
+		if err != nil {
+			break
+		}
+		err = lock.take(results)
+	}
+	if err == nil {
+		err = skipResults(results, ended)
+	}
+	if err != nil {
+		_ = results.Close()
+		return nil, w.refused(ctx, q, err)
+	}
+	return results, nil
 }
 
 // skipResults reads the next n answers of results, which carry nothing the caller needs, and
@@ -310,32 +427,6 @@ func skipResults(results pgx.BatchResults, n int) error {
 		}
 	}
 	return nil
-}
-
-// leaveBoundedWait answers err, the failure of a bounded wait whose batch's results the caller has
-// closed, wait being its bound as lock_timeout's value. A wait that ran out its bound
-// (ranOutItsBound) is left - the transaction rolls back to the wait's savepoint and releases it -
-// and answered ErrPoolBusy, which every caller already answers as a pool that could not serve it:
-// nothing of the caller's can commit, since its transaction ends on the error, rolled back. Any
-// other failure is returned as it is.
-//
-// The rollback and the release go in two round trips, the rollback first. The error has aborted
-// the transaction, and Postgres parses no statement in an aborted transaction but one that ends it
-// or rolls it back to a savepoint; pgx prepares every statement of a batch before it runs any, and
-// it dropped the release from its statement cache with the rest of the failed batch, so a batch of
-// the two would have the release refused (25P02) before the rollback ran.
-func leaveBoundedWait(ctx context.Context, q OwnerLocker, wait string, err error) error {
-	if !ranOutItsBound(err) {
-		return err
-	}
-	undoErr := sendOne(ctx, q, boundedWaitUndo)
-	if undoErr == nil {
-		undoErr = sendOne(ctx, q, boundedWaitRelease)
-	}
-	if undoErr != nil {
-		return fmt.Errorf("%w: another transaction held the lock past its wait's bound of %s, and leaving the wait failed (%w): %w", ErrPoolBusy, wait, undoErr, err)
-	}
-	return heldPastItsBound(wait, err)
 }
 
 // ranOutItsBound reports whether err is a statement whose wait for a lock ran out its bound:
@@ -360,56 +451,64 @@ func sendOne(ctx context.Context, q OwnerLocker, sql string) error {
 	return q.SendBatch(ctx, batch).Close()
 }
 
-// LockWithinBound runs lock with args, a statement that takes a lock another writer may hold - a
-// transaction advisory lock, or a row lock on a row no owner lock of the caller's keeps every other
-// locker from, taken by a locking read or by the row's own write - and answers nothing its caller
-// reads, in a bounded wait (lockWait), as a read-phase owner lock waits: a lock still held when the
-// bound runs out is refused ErrPoolBusy, and the transaction is as it was before the statement
-// (leaveBoundedWait). It is how a request's write takes every advisory lock of its own besides the
-// owner lock (api's dependency, rank-allocation, upload and repository-mapping locks,
+// LockWithinBound runs lock with args, a statement that takes a transaction advisory lock another
+// writer may hold and answers nothing its caller reads, in a bounded wait (lockWait) inside a
+// savepoint (advisoryLockWait), as a read-phase owner lock waits: a lock still held when the bound
+// runs out is refused ErrPoolBusy, and the transaction is as it was before the statement
+// (boundedWait.refused). It is how a request's write takes every advisory lock of its own besides
+// the owner lock (api's dependency, rank-allocation, upload and repository-mapping locks,
 // prioritystore's priority-rank lock, delivery's session-groups lock, docs' copy and
-// conditional-edit queue locks, and a document's lock where a request waits for it) and every such
-// row lock, so no write waits on one without end. A caller that reads the locked row, or what its
-// write returned, reads it in a statement after this one, which finds the row already held, and
-// sends it in the same batch (LockWithinBoundAndRead). It is one round trip, as the statement
-// alone was.
+// conditional-edit queue locks, and a document's lock where a request waits for it), so no write
+// waits on one without end. It is one round trip, as the statement alone was. A row lock takes
+// LockRowsWithinBound instead.
 func LockWithinBound(ctx context.Context, q OwnerLocker, lock string, args ...any) error {
-	return LockWithinBoundAndRead(ctx, q, lock, args, "", nil, nil)
+	results, err := sendWithinBound(ctx, q, advisoryLockWait(ctx), []boundedLock{{sql: lock, args: args, take: execLock}}, nil)
+	if err != nil {
+		return err
+	}
+	return results.Close()
 }
 
-// LockWithinBoundAndRead is LockWithinBound followed by read with readArgs, the statement that
-// reads the row lock took, or writes it and returns what it wrote (an update, a delete or an
+// LockRowsWithinBound runs lock with args, a statement that takes a row lock on rows no owner lock
+// of the caller's keeps every other locker from - a locking read, or the rows' own write - and
+// answers nothing its caller reads, in a bounded wait (lockWait) in the transaction itself
+// (rowLockWait), as WriteBatch.QueueWithinBound waits: a row still held when the bound runs out is
+// refused ErrPoolBusy (heldPastItsBound), and the refusal aborts the transaction, which the caller
+// then rolls back. Every caller does: it answers the refusal as a pool that could not serve it. So
+// the lock takes no savepoint, which would make every later write of the rows in the transaction a
+// MultiXact of the savepoint's lock and that write. It is how a write takes every such row, so no
+// write waits on one without end. A caller that reads the locked rows, or what its write returned,
+// reads them in a statement after this one, which finds them already held, and sends it in the
+// same batch (LockRowsWithinBoundAndRead). It is one round trip, as the statement alone was.
+func LockRowsWithinBound(ctx context.Context, q OwnerLocker, lock string, args ...any) error {
+	return LockRowsWithinBoundAndRead(ctx, q, lock, args, "", nil, nil)
+}
+
+// LockRowsWithinBoundAndRead is LockRowsWithinBound followed by read with readArgs, the statement
+// that reads the row lock took, or writes it and returns what it wrote (an update, a delete or an
 // upsert, `returning` the row), whose one row scan reads. The two go in one batch, one round trip
 // and one statement of the transaction's as the locking read or the write alone was, and stay two
 // statements: the server starts read, taking its snapshot, only once the bounded wait has ended
-// and the row is the transaction's, so read sees every commit of the row's previous holder, waits
-// on nothing the lock took, and runs under the transaction's own lock_timeout again. The lock's
-// failure comes back as LockWithinBound's does, ErrPoolBusy at its bound, and scan is not called;
-// read's comes back as scan returned it, pgx.ErrNoRows included. An empty read sends none.
-func LockWithinBoundAndRead(
+// (sendWithinBound), so read sees every commit of the row's previous holder, waits on nothing the
+// lock took, and runs under the transaction's own lock_timeout again. The lock's failure comes back
+// as LockRowsWithinBound's does, ErrPoolBusy at its bound, and scan is not called; read's comes
+// back as scan returned it, pgx.ErrNoRows included, which leaves the transaction usable. An empty
+// read sends none.
+func LockRowsWithinBoundAndRead(
 	ctx context.Context, q OwnerLocker, lock string, lockArgs []any, read string, readArgs []any, scan func(pgx.Row) error,
 ) error {
-	wait := lockWaitSetting(ctx)
-	batch := &pgx.Batch{}
-	beginBoundedWait(batch, wait)
-	batch.Queue(lock, lockArgs...)
-	endBoundedWait(batch)
+	var guarded *guardedRead
 	if read != "" {
-		batch.Queue(read, readArgs...)
+		guarded = &guardedRead{sql: read, args: readArgs, scan: scan}
 	}
-	results := q.SendBatch(ctx, batch)
-	if err := skipResults(results, boundedWaitBegun+1+boundedWaitEnded); err != nil {
-		_ = results.Close()
-		return leaveBoundedWait(ctx, q, wait, err)
+	results, err := sendWithinBound(ctx, q, rowLockWait(ctx), []boundedLock{{sql: lock, args: lockArgs, take: execLock}}, guarded)
+	if err != nil {
+		return err
 	}
-	var err error
-	if read != "" {
-		err = scan(results.QueryRow())
+	if guarded == nil {
+		return results.Close()
 	}
-	if closeErr := results.Close(); err == nil {
-		err = closeErr
-	}
-	return err
+	return guarded.answer(results)
 }
 
 // The head of each kind's row lock (ownerLockLevel.rowLocks): the rows of kind's owners named by
@@ -607,7 +706,9 @@ func noteOwnerLockMode(legacy bool) {
 // takes the owner's row as beside an earlier build, so no owner lock waits on an arrival.
 //
 // Its wait for an owner another transaction holds is bounded (lockWait): one that runs out is
-// refused ErrPoolBusy and leaves the transaction as it was before the lock.
+// refused ErrPoolBusy. A wait for the advisory lock leaves the transaction as it was before the
+// lock; beside an earlier build, a wait for the owner's row aborts it (lockOwnerRows), and the
+// caller rolls it back, as every caller does on that refusal.
 //
 // The lock and the read it guards must be separate statements. Under READ COMMITTED a statement's
 // snapshot is taken when it starts, before it waits, so a statement that both took this lock and
@@ -658,58 +759,40 @@ func LockOwners(ctx context.Context, q OwnerLocker, owners ...Owner) error {
 // been writing them. So in that mode its answer is dropped unread, and the round trip that takes
 // the rows runs read again behind them: one more round trip, in that mode alone.
 //
-// At a level that waits, every wait is bounded (lockWait): the lock's statement runs in a
-// bounded wait (beginBoundedWait, endBoundedWait) sent in its batch, ahead of read, so read runs
-// under the transaction's own lock_timeout again, and the row locks beside an earlier build run in
-// one of their own (lockOwnerRows). A level that skips never waits, so its statement runs alone.
+// At a level that waits, every wait is bounded (lockWait): the lock's statement runs in an
+// advisory lock's bounded wait (advisoryLockWait, sendWithinBound) sent in its batch, ahead of
+// read, so read runs under the transaction's own lock_timeout again, and the row locks beside an
+// earlier build run in a row lock's (lockOwnerRows). A level that skips never waits, so its
+// statement runs alone.
 func lockOwnersAt(ctx context.Context, q OwnerLocker, level *ownerLockLevel, owners []Owner, read *guardedRead) ([]Owner, bool, error) {
 	keys := lockKeys(owners)
-	wait := ""
-	if !level.skips {
-		wait = lockWaitSetting(ctx)
-	}
 	var (
-		rows    pgx.Rows
+		held    []Owner
+		legacy  bool
 		results pgx.BatchResults
 		err     error
 	)
-	if wait == "" && read == nil {
-		rows, err = q.Query(ctx, level.statement, ownerLockArgs(keys)...)
+	if level.skips && read == nil {
+		var rows pgx.Rows
+		if rows, err = q.Query(ctx, level.statement, ownerLockArgs(keys)...); err == nil {
+			held, legacy, err = level.scan(rows, owners, keys)
+		}
 	} else {
-		batch := &pgx.Batch{}
-		if wait != "" {
-			beginBoundedWait(batch, wait)
+		var wait boundedWait
+		if !level.skips {
+			wait = advisoryLockWait(ctx)
 		}
-		batch.Queue(level.statement, ownerLockArgs(keys)...)
-		if wait != "" {
-			endBoundedWait(batch)
-		}
-		if read != nil {
-			batch.Queue(read.sql, read.args...)
-		}
-		results = q.SendBatch(ctx, batch)
-		if wait != "" {
-			err = skipResults(results, boundedWaitBegun)
-		}
-		if err == nil {
-			rows, err = results.Query()
-		}
-	}
-	var held []Owner
-	legacy := false
-	if err == nil {
-		held, legacy, err = level.scan(rows, owners, keys)
-	}
-	if err == nil && wait != "" {
-		err = skipResults(results, boundedWaitEnded)
+		lock := boundedLock{sql: level.statement, args: ownerLockArgs(keys), take: func(results pgx.BatchResults) error {
+			rows, err := results.Query()
+			if err != nil {
+				return err
+			}
+			held, legacy, err = level.scan(rows, owners, keys)
+			return err
+		}}
+		results, err = sendWithinBound(ctx, q, wait, []boundedLock{lock}, read)
 	}
 	if err != nil {
-		if results != nil {
-			results.Close()
-		}
-		if wait != "" {
-			err = leaveBoundedWait(ctx, q, wait, err)
-		}
 		return nil, false, level.failed(owners, err)
 	}
 	if legacy && len(held) > 0 {
@@ -720,12 +803,12 @@ func lockOwnersAt(ctx context.Context, q OwnerLocker, level *ownerLockLevel, own
 				return nil, legacy, err
 			}
 		}
-		held, err = lockOwnerRows(ctx, q, level, held, read, wait)
+		held, err = lockOwnerRows(ctx, q, level, held, read)
 		return held, legacy, err
 	}
 	switch {
 	case read != nil:
-		err = read.scan(results)
+		err = read.answer(results)
 	case results != nil:
 		err = results.Close()
 	}
@@ -746,22 +829,24 @@ func LockOwnerAndRead(ctx context.Context, tx pgx.Tx, owner Owner, read string, 
 // them, in one statement ahead of read. Beside an earlier build read runs again behind the
 // owners' rows, one round trip more (lockOwnersAt).
 func LockOwnersAndRead(ctx context.Context, tx pgx.Tx, owners []Owner, read string, args []any, dest ...any) error {
-	_, _, err := lockOwnersAt(ctx, tx, ownerLockExclusive, owners, &guardedRead{sql: read, args: args, dest: dest})
+	_, _, err := lockOwnersAt(ctx, tx, ownerLockExclusive, owners, &guardedRead{sql: read, args: args, scan: func(row pgx.Row) error {
+		return row.Scan(dest...)
+	}})
 	return err
 }
 
-// guardedRead is the read a read-phase owner lock guards when the lock sends it
-// (LockOwnersAndRead): its statement and arguments, and what its one row is scanned into.
+// guardedRead is the read a lock guards when the lock sends it (LockOwnersAndRead,
+// LockRowsWithinBoundAndRead): its statement and arguments, and what reads its one row.
 type guardedRead struct {
 	sql  string
 	args []any
-	dest []any
+	scan func(pgx.Row) error
 }
 
-// scan scans read's row, the next result of results, into its destinations and closes results.
-// Its failure comes back as Scan returned it, pgx.ErrNoRows included.
-func (read *guardedRead) scan(results pgx.BatchResults) error {
-	err := results.QueryRow().Scan(read.dest...)
+// answer reads read's row, the next result of results, with its scan and closes results. Its
+// failure comes back as scan returned it, pgx.ErrNoRows included.
+func (read *guardedRead) answer(results pgx.BatchResults) error {
+	err := read.scan(results.QueryRow())
 	if closeErr := results.Close(); err == nil {
 		err = closeErr
 	}
@@ -848,58 +933,39 @@ func (o Owner) rowKey() (string, bool) {
 // or at a level that skips, in owners' order, those whose row it took, so an owner whose row a
 // writer of that build holds, or that has no row, is left out.
 //
-// wait is the bound of a level that waits as lock_timeout's value (lockWaitSetting), empty at
-// one that skips: the row locks of a level that waits run in a bounded wait of their own, sent in
-// their batch ahead of read, so a row that build's writer holds past the bound is refused as an
-// advisory lock held past it is (leaveBoundedWait). The advisory locks lockOwnersAt took stay held
-// until the caller's transaction ends on that refusal. Unlike the advisory lock's, this wait's
-// savepoint takes a transaction id of its own as it locks the rows, beside the transaction's.
-func lockOwnerRows(ctx context.Context, q OwnerLocker, level *ownerLockLevel, owners []Owner, read *guardedRead, wait string) ([]Owner, error) {
-	locks := ownerRowLocks(owners, level)
+// The row locks of a level that waits run in a row lock's bounded wait (rowLockWait,
+// sendWithinBound), sent in their batch ahead of read, so a row that build's writer holds past
+// the bound is refused ErrPoolBusy, as an advisory lock held past it is; the refusal aborts the
+// caller's transaction, which then rolls back, and the advisory locks lockOwnersAt took stay held
+// until it does. The row locks assign the transaction its id, as LockOwner says, and are the
+// transaction's own, so its write phase's update of an owner's row (the append's last_seq, behind
+// events.lockEventOwner) makes no MultiXact of a savepoint's lock and that update.
+func lockOwnerRows(ctx context.Context, q OwnerLocker, level *ownerLockLevel, owners []Owner, read *guardedRead) ([]Owner, error) {
+	rowLocks := ownerRowLocks(owners, level)
 	var taken map[Owner]bool
 	if level.skips {
 		taken = make(map[Owner]bool, len(owners))
 	}
-	if len(locks) > 0 || read != nil {
-		bounded := wait != "" && len(locks) > 0
-		batch := &pgx.Batch{}
-		if bounded {
-			beginBoundedWait(batch, wait)
+	if len(rowLocks) > 0 || read != nil {
+		var wait boundedWait
+		if !level.skips && len(rowLocks) > 0 {
+			wait = rowLockWait(ctx)
 		}
-		for _, lock := range locks {
-			batch.Queue(lock.statement, lock.keys)
+		locks := make([]boundedLock, len(rowLocks))
+		for index, lock := range rowLocks {
+			locks[index] = boundedLock{sql: lock.statement, args: []any{lock.keys}, take: func(results pgx.BatchResults) error {
+				if err := lock.take(results, level, taken); err != nil {
+					return lock.failed(err)
+				}
+				return nil
+			}}
 		}
-		if bounded {
-			endBoundedWait(batch)
-		}
-		if read != nil {
-			batch.Queue(read.sql, read.args...)
-		}
-		results := q.SendBatch(ctx, batch)
-		var err error
-		if bounded {
-			err = skipResults(results, boundedWaitBegun)
-		}
-		for _, lock := range locks {
-			if err != nil {
-				break
-			}
-			if err = lock.take(results, level, taken); err != nil {
-				err = lock.failed(err)
-			}
-		}
-		if err == nil && bounded {
-			err = skipResults(results, boundedWaitEnded)
-		}
+		results, err := sendWithinBound(ctx, q, wait, locks, read)
 		if err != nil {
-			results.Close()
-			if bounded {
-				err = leaveBoundedWait(ctx, q, wait, err)
-			}
 			return nil, err
 		}
 		if read != nil {
-			err = read.scan(results)
+			err = read.answer(results)
 		} else {
 			err = results.Close()
 		}

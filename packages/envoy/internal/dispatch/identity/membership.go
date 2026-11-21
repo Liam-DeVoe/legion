@@ -101,7 +101,7 @@ func (m *Membership) Confirm(ctx context.Context, email string) error {
 // returns.
 func (m *Membership) refresh(ctx context.Context, place *admission.Place, email string) error {
 	defer place.Release()
-	if err := retake(ctx, place); err != nil {
+	if err := retake(ctx, place, "a sign-in's refresh"); err != nil {
 		return err
 	}
 	// Read again under the flight: a refresh that finished just before this one began has
@@ -128,7 +128,7 @@ func (m *Membership) refresh(ctx context.Context, place *admission.Place, email 
 	}
 	// What follows writes the person's row: the end of the sign-in the issuer refused, or the
 	// confirmation it gave.
-	if busy := retake(ctx, place); busy != nil {
+	if busy := retake(ctx, place, "a sign-in's refresh"); busy != nil {
 		return busy
 	}
 	if refused {
@@ -148,16 +148,18 @@ func (m *Membership) refresh(ctx context.Context, place *admission.Place, email 
 	return m.Rule.WriteConfirm(ctx, m.People, email, subject, session.RefreshToken)
 }
 
-// retake takes place again for the refresh's reads and writes of the person's row (refresh). A
-// place refused - every place held and none free within the wait, or the queue for one full - or
-// not free before the refresh's own bound passed is a bound of this server's own that ended the
-// refresh before it asked the database anything, so nothing of it was written. It is answered as
-// a pool with no connection free is (store.ErrPoolBusy): every request waiting on the flight is
-// told to try again as a busy pool tells it, and the next one refreshes. A refusal after the
-// issuer answered drops that answer, as a write the busy pool refused would.
-func retake(ctx context.Context, place *admission.Place) error {
+// retake takes place again for what, the work that reads and writes the person's row once the
+// place was given back for a wait outside the database: a lapsed sign-in's refresh after the
+// issuer's (refresh), an IAP person's record after the read of IAP's key set (IAPIdentity.Login).
+// A place refused - every place held and none free within the wait, or the queue for one full - or
+// not free before the work's own bound passed is a bound of this server's own that ended the work
+// before it asked the database anything, so nothing of it was written. It is answered as a pool
+// with no connection free is (store.ErrPoolBusy): a request told so tries again as a busy pool
+// tells it to - every request waiting on a refresh's flight, and the next one refreshes. A refusal
+// after the issuer answered drops that answer, as a write the busy pool refused would.
+func retake(ctx context.Context, place *admission.Place, what string) error {
 	if err := place.Retake(ctx); err != nil {
-		return fmt.Errorf("%w: no place of the request pool's share outside admission came free for a sign-in's refresh: %w", store.ErrPoolBusy, err)
+		return fmt.Errorf("%w: no place of the request pool's share outside admission came free for %s: %w", store.ErrPoolBusy, what, err)
 	}
 	return nil
 }

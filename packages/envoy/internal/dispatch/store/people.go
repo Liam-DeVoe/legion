@@ -123,11 +123,11 @@ func (s *PgPeopleStore) SignInSubject(ctx context.Context, email, subject, refre
 	if err != nil {
 		return fmt.Errorf("record sign-in of %q: %w", email, err)
 	}
-	// The row is taken in a bounded wait and read behind it (LockWithinBoundAndRead): its other
+	// The row is taken in a bounded wait and read behind it (LockRowsWithinBoundAndRead): its other
 	// writers are single statements and EndSubject, none under a lock that orders them against
 	// this one.
 	var stored string
-	if err := LockWithinBoundAndRead(ctx, tx,
+	if err := LockRowsWithinBoundAndRead(ctx, tx,
 		`select 1 from people where email = $1 for update`, []any{email},
 		`select coalesce(sub, '') from people where email = $1 for update`, []any{email},
 		func(row pgx.Row) error { return row.Scan(&stored) },
@@ -291,7 +291,7 @@ func (s *PgPeopleStore) EndSubject(ctx context.Context, email, subject string) (
 	}
 	defer tx.Rollback(ctx)
 	var stored string
-	err = LockWithinBoundAndRead(ctx, tx,
+	err = LockRowsWithinBoundAndRead(ctx, tx,
 		`select 1 from people where email = $1 for update`, []any{email},
 		`select coalesce(sub, '') from people where email = $1 for update`, []any{email},
 		func(row pgx.Row) error { return row.Scan(&stored) },

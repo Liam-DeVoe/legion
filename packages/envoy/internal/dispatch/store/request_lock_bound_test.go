@@ -27,18 +27,49 @@ func readLockBound(t *testing.T, ctx context.Context, q lockBoundReader) time.Du
 	return time.Duration(millis) * time.Millisecond
 }
 
+// expectLockBound fails the test unless q, read when, carries lock_timeout at want
+// (readLockBound).
+func expectLockBound(t *testing.T, ctx context.Context, q lockBoundReader, want time.Duration, when string) {
+	t.Helper()
+	if got := readLockBound(t, ctx, q); got != want {
+		t.Errorf("lock_timeout %s is %v, want %v", when, got, want)
+	}
+}
+
+// awaitBoundedWait waits up to ten seconds for answered, the answer of what, a lock wait bounded
+// at bound that began at started, and answers it. A wait still unanswered then lets its holder go
+// (release), takes the answer and fails the test: it waits until its holder lets go. One answered
+// inside its bound fails the test too.
+func awaitBoundedWait(t *testing.T, what string, answered <-chan error, started time.Time, bound time.Duration, release func()) error {
+	t.Helper()
+	var err error
+	select {
+	case err = <-answered:
+	case <-time.After(10 * time.Second):
+		waited := time.Since(started)
+		release()
+		<-answered
+		t.Fatalf("%s was still waiting %s after it began, past its bound of %s: it waits until its holder lets go",
+			what, waited.Round(time.Millisecond), bound)
+	}
+	if waited := time.Since(started); waited < bound {
+		t.Errorf("%s answered %s after it began, inside its bound of %s", what, waited.Round(time.Millisecond), bound)
+	}
+	return err
+}
+
 // Every lock wait of the request pool is bounded at the write lock bound (lockWait) unless a
 // bounded wait of its own sets another: the pool's connections carry it, so a statement outside a
 // transaction waits under it (configurePool), and each transaction the pool opens sets it for
 // itself in its BEGIN's message, at the test's bound where its context carries one (Pool.begin).
 // No other pool's connections carry it. A bounded wait inside a request transaction gives the
 // transaction's own value back, whether its lock was granted or ran out (boundedWaitKeep,
-// boundedWaitRestore, leaveBoundedWait). The migration runner's DISCARD ALL, run on a request-pool
-// connection before it goes back to the pool (pgmigrate.ResetSession), leaves the bound in place,
-// since a startup parameter is the session's reset value. A session that does not carry the bound
-// its pool asks for - one a pooler opened without the parameter - is refused at its connect
-// (requireLockBound). The one opt-out sets the transaction's own bound to the time its deadline
-// leaves, and leaves the write lock bound where its context has no deadline
+// boundedWaitRestore, boundedWait.refused). The migration runner's DISCARD ALL, run on a
+// request-pool connection before it goes back to the pool (pgmigrate.ResetSession), leaves the
+// bound in place, since a startup parameter is the session's reset value. A session that does not
+// carry the bound its pool asks for - one a pooler opened without the parameter - is refused at its
+// connect (requireLockBound). The one opt-out sets the transaction's own bound to the time its
+// deadline leaves, and leaves the write lock bound where its context has no deadline
 // (WaitForLocksUntilDeadline).
 func TestTheRequestPoolWaitsForALockNoLongerThanTheWriteLockBound(t *testing.T) {
 	database := openTestStore(t)
@@ -183,20 +214,22 @@ func TestTheRequestPoolWaitsForALockNoLongerThanTheWriteLockBound(t *testing.T) 
 // pool but the request pool asks for no bound (lockTimeoutNone), a startup parameter that outranks
 // the role's setting, and its connections wait for a lock as they did before the request pool had
 // a bound; the request pool's carry the write lock bound and are accepted (requireLockBound). The
-// setting is the role's in this test's own database alone, so no other test's session meets it.
+// role's setting is not the write lock bound, so the request pool's value is its own startup
+// parameter's and not the role's. The setting is the role's in this test's own database alone, so
+// no other test's session meets it.
 func TestARoleLockTimeoutReachesNoPoolButTheRequestPool(t *testing.T) {
 	ctx := context.Background()
 	own := openEmptyTestStore(t)
-	const roleSetting = "10s"
-	setRoleLockTimeout(t, ctx, own, roleSetting)
+	const roleBound = 7 * time.Second
+	setRoleLockTimeout(t, ctx, own, roleBound)
 	connString := own.Pool.Config().ConnString()
 	plain, err := pgx.Connect(ctx, connString)
 	if err != nil {
 		t.Fatalf("connect with no startup parameter of the store's: %v", err)
 	}
 	defer func() { _ = plain.Close(ctx) }()
-	if got := readLockTimeoutSetting(t, ctx, plain); got != roleSetting {
-		t.Fatalf("a session that asks for no lock_timeout carries %q, want the role's %q", got, roleSetting)
+	if got := readLockBound(t, ctx, plain); got != roleBound {
+		t.Fatalf("a session that asks for no lock_timeout carries %v, want the role's %v", got, roleBound)
 	}
 
 	database, err := Open(ctx, connString)
@@ -204,8 +237,8 @@ func TestARoleLockTimeoutReachesNoPoolButTheRequestPool(t *testing.T) {
 		t.Fatalf("open the store under the role's setting: %v", err)
 	}
 	t.Cleanup(database.Pool.Close)
-	if got, want := readLockTimeoutSetting(t, ctx, database.Pool), "10s"; got != want {
-		t.Errorf("the %s pool's connection carries lock_timeout = %q, want the write lock bound %q", RequestsPool, got, want)
+	if got := readLockBound(t, ctx, database.Pool); got != lockWait {
+		t.Errorf("the %s pool's connection carries lock_timeout = %v, want the write lock bound %v over the role's %v", RequestsPool, got, lockWait, roleBound)
 	}
 	pools := []struct {
 		name string
@@ -243,8 +276,8 @@ func TestARoleLockTimeoutReachesNoPoolButTheRequestPool(t *testing.T) {
 		if err != nil {
 			t.Fatalf("open the %s pool: %v", pool.name, err)
 		}
-		if got := readLockTimeoutSetting(t, ctx, q); got != lockTimeoutNone {
-			t.Errorf("the %s pool's connection carries lock_timeout = %q, want %q, no bound, over the role's %q", pool.name, got, lockTimeoutNone, roleSetting)
+		if got := readLockBound(t, ctx, q); got != 0 {
+			t.Errorf("the %s pool's connection carries lock_timeout = %v, want none (%s) over the role's %v", pool.name, got, lockTimeoutNone, roleBound)
 		}
 	}
 }
@@ -262,14 +295,14 @@ func TestARoleLockTimeoutReachesNoPoolButTheRequestPool(t *testing.T) {
 func TestTheBootProbeWaitsForTheVersionTablePastARoleLockTimeout(t *testing.T) {
 	ctx := context.Background()
 	own := openEmptyTestStore(t)
-	const roleSetting, held, bootBound, stored = "1s", 3 * time.Second, 30 * time.Second, 20261120000000
+	const roleBound, held, bootBound, stored = time.Second, 3 * time.Second, 30 * time.Second, 20261120000000
 	if _, err := own.Pool.Exec(ctx, `create table schema_migrations (version bigint primary key)`); err != nil {
 		t.Fatalf("create the version table: %v", err)
 	}
 	if _, err := own.Pool.Exec(ctx, `insert into schema_migrations (version) values ($1)`, stored); err != nil {
 		t.Fatalf("record a version: %v", err)
 	}
-	setRoleLockTimeout(t, ctx, own, roleSetting)
+	setRoleLockTimeout(t, ctx, own, roleBound)
 	own.Pool.DropLockTimeoutParameterForTest(HealthPool)
 
 	holder := connectForTest(t, ctx, own)
@@ -310,7 +343,7 @@ func TestTheBootProbeWaitsForTheVersionTablePastARoleLockTimeout(t *testing.T) {
 	}
 	select {
 	case got := <-answered:
-		t.Fatalf("the probe answered %d, %v while the version table was held, before %v and past the role's lock_timeout of %s; want it to wait until the table is free", got.version, got.err, held, roleSetting)
+		t.Fatalf("the probe answered %d, %v while the version table was held, before %v and past the role's lock_timeout of %v; want it to wait until the table is free", got.version, got.err, held, roleBound)
 	case <-time.After(held):
 	}
 	if err := gate.Rollback(ctx); err != nil {
@@ -332,18 +365,18 @@ func TestTheBootProbeWaitsForTheVersionTablePastARoleLockTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open the health pool: %v", err)
 	}
-	if setting := readLockTimeoutSetting(t, ctx, health); setting != roleSetting {
-		t.Errorf("the health pool's connection carries lock_timeout = %q, want the role's %q", setting, roleSetting)
+	if got := readLockBound(t, ctx, health); got != roleBound {
+		t.Errorf("the health pool's connection carries lock_timeout = %v, want the role's %v", got, roleBound)
 	}
 }
 
-// setRoleLockTimeout sets lock_timeout to setting on the test's role in own's database alone,
-// which is the test's own, so no other test's session meets it, and resets it when the test ends,
-// before the database is dropped.
-func setRoleLockTimeout(t *testing.T, ctx context.Context, own *Store, setting string) {
+// setRoleLockTimeout sets lock_timeout to bound on the test's role in own's database alone, which
+// is the test's own, so no other test's session meets it, and resets it when the test ends, before
+// the database is dropped.
+func setRoleLockTimeout(t *testing.T, ctx context.Context, own *Store, bound time.Duration) {
 	t.Helper()
 	if _, err := own.Pool.Exec(ctx, `do $$ begin
-		execute format('alter role current_user in database %I set lock_timeout = %L', current_database(), '`+setting+`');
+		execute format('alter role current_user in database %I set lock_timeout = %L', current_database(), '`+lockTimeoutSetting(bound)+`');
 	end $$`); err != nil {
 		t.Fatalf("set lock_timeout on the test's role in its own database: %v", err)
 	}
@@ -354,14 +387,4 @@ func setRoleLockTimeout(t *testing.T, ctx context.Context, own *Store, setting s
 			t.Errorf("reset the role's lock_timeout in the test's database: %v", err)
 		}
 	})
-}
-
-// readLockTimeoutSetting is lock_timeout as the session q runs on shows it (current_setting).
-func readLockTimeoutSetting(t *testing.T, ctx context.Context, q lockBoundReader) string {
-	t.Helper()
-	var setting string
-	if err := q.QueryRow(ctx, `select current_setting('lock_timeout')`).Scan(&setting); err != nil {
-		t.Fatalf("read lock_timeout: %v", err)
-	}
-	return setting
 }

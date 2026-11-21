@@ -70,8 +70,9 @@ func Traced(t testing.TB, pool *store.Pool, tracer pgx.QueryTracer, params map[s
 
 // StatementCounter counts every statement run on the pool it traces (Traced): each one sent on its
 // own as it starts, and each one a batch sends as pgx reports it (TraceBatchQuery), once it ran. A
-// batch carries much of a write since the bounded lock waits (store.LockWithinBound, an owner
-// lock's wait, store.WriteBatch), so a counter of the first kind alone would miss it.
+// batch carries much of a write since the bounded lock waits (store.LockWithinBound,
+// store.LockRowsWithinBound, an owner lock's wait, store.WriteBatch), so a counter of the first
+// kind alone would miss it.
 type StatementCounter struct{ count atomic.Int64 }
 
 func (c *StatementCounter) TraceQueryStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryStartData) context.Context {

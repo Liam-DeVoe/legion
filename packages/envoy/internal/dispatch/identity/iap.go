@@ -8,7 +8,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
-	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/oidc"
 )
 
@@ -63,11 +62,11 @@ type IAPIdentity struct {
 // oidc.Keys reads it for the first assertion, once the set's Lifetime is up, and for a key id the
 // set does not hold, a round trip of up to its FetchTimeout - so where the verifier says it will
 // read the set (oidc.IAPVerifier.WouldReadKeySet), Login gives the place back before it verifies,
-// as Membership.Confirm does before the sign-in issuer, and takes it again for the record,
-// answered as a busy pool (store.ErrPoolBusy) where none comes free; a refusal then returns with
-// the place given back. Every other verification - the set already read and fresh, as for nearly
-// every heartbeat - is answered from memory, and Login keeps the place through it rather than
-// give it back and wait for it again. A request inside admission carries no place.
+// as Membership.Confirm does before the sign-in issuer, and takes it again for the record
+// (retake), answered as a busy pool (store.ErrPoolBusy) where none comes free; a refusal then
+// returns with the place given back. Every other verification - the set already read and fresh,
+// as for nearly every heartbeat - is answered from memory, and Login keeps the place through it
+// rather than give it back and wait for it again. A request inside admission carries no place.
 func (i IAPIdentity) Login(r *http.Request) (string, error) {
 	raw := r.Header.Get(IAPAssertionHeader)
 	if raw == "" {
@@ -97,8 +96,8 @@ func (i IAPIdentity) Login(r *http.Request) (string, error) {
 		slog.Debug("dispatch: IAP assertion expired", "error", err)
 		return "", ErrCredentialExpired
 	}
-	if err := place.Retake(r.Context()); err != nil {
-		return "", fmt.Errorf("%w: no place of the request pool's share outside admission came free for an IAP person's record: %w", store.ErrPoolBusy, err)
+	if err := retake(r.Context(), place, "an IAP person's record"); err != nil {
+		return "", err
 	}
 	if err := i.People.Record(r.Context(), email); err != nil {
 		return "", err

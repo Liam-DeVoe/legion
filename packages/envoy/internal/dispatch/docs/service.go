@@ -390,13 +390,11 @@ type Service struct {
 	// Nil outside tests; tests use it to open a write, or to retire and reload the room, in that
 	// window.
 	afterRoomCloseReserved func(room string)
-	// afterRoomClosePinned runs once that close holds the room it checked in a Server.Apply, before
-	// it closes it (closeRoomInstance). Nil outside tests.
-	afterRoomClosePinned func(room string)
-	// budgetCloseHeld runs once the budget's close of a peerless room holds the instance it checked
-	// in a Server.Apply, before it closes it (closeBudgetRoom). Nil outside tests; tests use it to
-	// hold that close while ygo's idle sweep passes over the room.
-	budgetCloseHeld func(room string)
+	// roomCloseHeld runs once a close of a room's instance holds the instance it checked in a
+	// Server.Apply, before it closes it (closeRoomInstance): a forced close of a room whose stored
+	// history was replaced, or the budget's close of a peerless room. Nil outside tests; tests use
+	// it to hold that close while ygo's idle sweep passes over the room.
+	roomCloseHeld func(room string)
 	// afterRoomClosed runs once a forced close has closed the room and before the service settles
 	// the room's record (closeReservedRoom, and evictRoom and evictFailed through forgetEvicted,
 	// evictFailed's with the close gate still held): the window in which a browser's connect, the
@@ -2256,7 +2254,7 @@ func (s *Service) closeReservedRoom(ctx context.Context, reservation roomCloseRe
 	if s.afterRoomCloseReserved != nil {
 		s.afterRoomCloseReserved(reservation.room)
 	}
-	closed, err = s.closeRoomInstance(ctx, reservation.room, reservation.live)
+	closed, err = s.closeRoomInstance(ctx, reservation.room, reservation.live, true, s.srv.Apply)
 	if s.afterRoomClosed != nil {
 		s.afterRoomClosed(reservation.room)
 	}
@@ -2275,38 +2273,44 @@ func (s *Service) closeReservedRoom(ctx context.Context, reservation roomCloseRe
 }
 
 // closeRoomInstance closes live, room's instance, and never a room that replaced it, answering
-// whether it closed it. ygo's CloseRoom closes whatever room the name holds when it looks the name
-// up, and ygo's idle sweep retires a room without the close gate every other close the service
-// makes takes (roomServer), so a check of the instance made before the close can be stale by the
-// time ygo looks: the sweep retires live, a load replaces it, and the close drops the
-// replacement's browsers and the state a write on it holds. So the close runs inside a
-// Server.Apply on the room, which the idle sweep never retires while an Apply is in it (ygo's
-// evictIdleRoom: an Apply holds the room's in-flight count from entry until it returns, whatever
-// idle stamp a leaving browser puts on the room meanwhile), with the close gate held
+// whether it closed it: forced for a room whose stored history was replaced (closeReservedRoom),
+// without force for the budget (closeBudgetRoom), whose close a browser on the room or another
+// caller inside it refuses. ygo's CloseRoom closes whatever room the name holds when it looks the
+// name up, and ygo's idle sweep retires a room without the close gate every other close the
+// service makes takes (roomServer), so a check of the instance made before the close can be stale
+// by the time ygo looks: the sweep retires live, a load replaces it, and the close drops the
+// replacement's browsers and the state a write on it holds. So the close runs inside an Apply on
+// the room - apply, the service's own (roomServer.Apply), or ygo's (roomServer.Server.Apply) for a
+// close that is no use of the room - which the idle sweep never retires while an Apply is in it
+// (ygo's evictIdleRoom: an Apply holds the room's in-flight count from entry until it returns,
+// whatever idle stamp a leaving browser puts on the room meanwhile), with the close gate held
 // (roomServer.closeInstance): a room that still holds live once both are held is the room ygo then
 // closes, through CloseRoomWithin, the close of a caller inside its own Apply. Another caller
 // inside the room - a browser joining, another Apply - holds the close off, and it answers
 // websocket.ErrRoomInUse, closing nothing. A room already gone from the name is not loaded for the
 // check; one retired between that look and the Apply is loaded by the Apply at the head, and left
-// open. The Apply waits for no failed room's recovery (WithoutRecoveryWait): a failed room's own
-// eviction closes it. It is the service's own injection, not a caller's write, so it carries the
-// service's mark (withOwnerVerified): allowInject refuses an unmarked injection on a closed issue,
-// and this close has to run on one - a room loaded while the issue was open, whose stored history
-// another process then replaced, is closed whenever its issue closed, rather than kept resident
-// with text the store no longer holds until its idle minute runs out.
-func (s *Service) closeRoomInstance(ctx context.Context, room string, live *crdt.Doc) (closed bool, err error) {
+// open. The Apply runs under ctx and waits for no failed room's recovery (WithoutRecoveryWait): a
+// failed room's own eviction closes it. It is the service's own injection, not a caller's write,
+// so it carries the service's mark (withOwnerVerified): allowInject refuses an unmarked injection
+// on a closed issue, and this close has to run on one - a room loaded while the issue was open,
+// whose stored history another process then replaced, is closed whenever its issue closed, rather
+// than kept resident with text the store no longer holds until its idle minute runs out.
+func (s *Service) closeRoomInstance(
+	ctx context.Context, room string, live *crdt.Doc, force bool,
+	apply func(context.Context, string, func(*crdt.Doc, func(func(*crdt.Transaction)))) error,
+) (closed bool, err error) {
 	if s.srv.GetDoc(room) != live {
 		return false, nil
 	}
 	var closeErr error
-	err = s.srv.Apply(withOwnerVerified(WithoutRecoveryWait(ctx)), room, func(held *crdt.Doc, _ func(func(*crdt.Transaction))) {
+	err = apply(withOwnerVerified(WithoutRecoveryWait(ctx)), room, func(held *crdt.Doc, _ func(func(*crdt.Transaction))) {
 		if held != live {
 			return
 		}
-		if s.afterRoomClosePinned != nil {
-			s.afterRoomClosePinned(room)
+		if s.roomCloseHeld != nil {
+			s.roomCloseHeld(room)
 		}
-		closed, closeErr = s.srv.closeInstance(room, live, true)
+		closed, closeErr = s.srv.closeInstance(room, live, force)
 	})
 	if err != nil && !errors.Is(err, websocket.ErrNoChanges) {
 		return false, err

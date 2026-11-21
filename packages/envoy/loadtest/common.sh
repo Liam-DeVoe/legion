@@ -172,9 +172,9 @@ port_block() {
 
 # EPHEMERAL_RANGE_FILE is where the machine's ephemeral port range is read from: two numbers on
 # one line, "LOW HIGH", as net.ipv4.ip_local_port_range holds them. A test points
-# LOADTEST_EPHEMERAL_RANGE_FILE at a file of its own, for a range this machine does not have;
+# LOADTEST_PORT_RANGE_FILE at a file of its own, for a range this machine does not have;
 # nothing here ever writes the file.
-EPHEMERAL_RANGE_FILE=${LOADTEST_EPHEMERAL_RANGE_FILE:-/proc/sys/net/ipv4/ip_local_port_range}
+EPHEMERAL_RANGE_FILE=${LOADTEST_PORT_RANGE_FILE:-/proc/sys/net/ipv4/ip_local_port_range}
 
 # ephemeral_range: the machine's ephemeral port range as "LOW HIGH", or nothing when
 # EPHEMERAL_RANGE_FILE cannot be read or does not hold two numbers (a kernel or a container that

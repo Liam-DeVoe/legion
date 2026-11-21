@@ -865,8 +865,12 @@ var openAPIRetryAfterHeader = map[string]openapi31.HeaderOrReference{
 //
 // Which of them a row can give is read off the row itself, exactly as routeHandler reads it:
 //
-//   - 429 goes to every row admission admits, which is every row but a test hook, a test's own,
-//     and a stream, whose reader holds it open for the run behind it (apiRoute.Streams);
+//   - 429 goes to every row. Admission refuses one on every row it admits, which is every row but
+//     a test hook, a test's own, and a stream, whose reader holds it open for the run behind it
+//     (apiRoute.Streams). The decision of a presented DPoP-bound token, which routeHandler makes
+//     outside admission on every row, test hooks and streams included, refuses one where no place
+//     of the request pool's share outside admission came free for it (decideBrokerToken), as
+//     admission's own OVERLOADED, so the rows admission does not admit give that one alone;
 //   - 503 goes to every row: only a read servedAsRead bounds by a deadline can run past one, so
 //     REQUEST_TIMEOUT is named on a GET that is no test hook alone, and any row's statement can
 //     meet a pool with no connection free or a database that stops answering on the one it held;
@@ -874,18 +878,22 @@ var openAPIRetryAfterHeader = map[string]openapi31.HeaderOrReference{
 //     row that is not a GET. It is the one of these that carries no Retry-After: the write may
 //     have landed, so what to do next is the caller's to decide after a read.
 func openAPIServerAnswers(route apiRoute) []openAPIServerAnswer {
-	var answers []openAPIServerAnswer
-	if !route.TestHook && !route.Streams {
-		answers = append(answers, openAPIServerAnswer{
-			status: http.StatusTooManyRequests,
-			description: "Refused before anything ran: OVERLOADED, which admission writes for a " +
-				"request the server has no room for and for a heavy read whose lane is full, or " +
-				"EDIT_QUEUE_FULL, which a write of a live document whose writer queue is full is " +
-				"given before its transaction opens. Nothing of the request ran, and Retry-After " +
-				"says how long to wait before sending it again.",
-			retryAfter: true,
-		})
+	overloaded := "Refused before anything ran: OVERLOADED, which admission writes for a " +
+		"request the server has no room for and for a heavy read whose lane is full, or " +
+		"EDIT_QUEUE_FULL, which a write of a live document whose writer queue is full is " +
+		"given before its transaction opens. Nothing of the request ran, and Retry-After " +
+		"says how long to wait before sending it again."
+	if route.TestHook || route.Streams {
+		overloaded = "Refused before anything ran: OVERLOADED, which a request presenting a " +
+			"DPoP-bound token is given where no place came free for the token's decision, as " +
+			"admission refuses a request the server has no room for. Nothing of the request " +
+			"ran, and Retry-After says how long to wait before sending it again."
 	}
+	answers := []openAPIServerAnswer{{
+		status:      http.StatusTooManyRequests,
+		description: overloaded,
+		retryAfter:  true,
+	}}
 	busy := "DATABASE_BUSY, a bound of the server's own ended the request before the database " +
 		"answered it and before anything of it had committed: no connection of a pool came " +
 		"free within its acquire bound, so nothing ran, or the database stopped answering on " +

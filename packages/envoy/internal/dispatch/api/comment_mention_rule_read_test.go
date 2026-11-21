@@ -267,7 +267,7 @@ func (f *ruleReadFailer) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQuer
 // comment_deliveries the server sends, and the writes among those, since its last take. It counts
 // a statement a batch sends too, as pgx reports it once it ran (TraceBatchQuery), as
 // storetest.StatementRecorder records one: an attempt's claim, settle and record are written in
-// batches behind a bounded lock (store.WriteBatch, store.LockWithinBoundAndRead).
+// batches behind a bounded lock (store.WriteBatch, store.LockRowsWithinBoundAndRead).
 type ruleReadsFail struct {
 	failing                   atomic.Bool
 	mu                        sync.Mutex

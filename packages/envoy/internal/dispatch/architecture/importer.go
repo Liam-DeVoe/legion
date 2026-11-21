@@ -376,12 +376,12 @@ func (i *Importer) Sync(ctx context.Context, project, repo string) (model.Archit
 // version the sync began from, so neither a concurrent PUT nor another sync
 // that recorded since is overstamped. No event either way. The row is taken in
 // a bounded wait and written behind it, in one batch
-// (store.LockWithinBoundAndRead), as lockSourceRow's is: no owner lock orders
+// (store.LockRowsWithinBoundAndRead), as lockSourceRow's is: no owner lock orders
 // the source's writers.
 func (i *Importer) touch(ctx context.Context, source loadedSource, commit string) (model.ArchitectureSource, error) {
 	var updated model.ArchitectureSource
 	err := i.inTransaction(ctx, func(tx pgx.Tx) error {
-		return store.LockWithinBoundAndRead(ctx, tx, `
+		return store.LockRowsWithinBoundAndRead(ctx, tx, `
 			select 1 from architecture_sources
 			where project_key = $1 and id = $2 and repo = $3 and branch = $4 and last_error is null
 			  and xmin::text = $5
@@ -471,7 +471,7 @@ func (i *Importer) resolve(ctx context.Context, source *loadedSource) (owner, na
 		var version string
 		// Taken in a bounded wait and written behind it, as touch's row is.
 		err := i.inTransaction(ctx, func(tx pgx.Tx) error {
-			return store.LockWithinBoundAndRead(ctx, tx, `
+			return store.LockRowsWithinBoundAndRead(ctx, tx, `
 				select 1 from architecture_sources where project_key = $1 and id = $2 and xmin::text = $3
 				for update`,
 				[]any{source.Project, source.ID, source.version}, `
@@ -519,12 +519,12 @@ func (i *Importer) inTransaction(ctx context.Context, write func(pgx.Tx) error) 
 // version under the lock. moved reports that the source changed since this
 // sync's fetch began — the caller must abort without writing, because its
 // data describes the old configuration. The lock waits in a bounded wait, the
-// read behind it in the same batch (store.LockWithinBoundAndRead): a route's
+// read behind it in the same batch (store.LockRowsWithinBoundAndRead): a route's
 // sync runs this on the request's behalf, and no owner lock orders the
 // source's writers.
 func lockSourceRow(ctx context.Context, tx pgx.Tx, source loadedSource) (locked lockedSource, moved bool, err error) {
 	var repo, branch string
-	if err := store.LockWithinBoundAndRead(ctx, tx, `
+	if err := store.LockRowsWithinBoundAndRead(ctx, tx, `
 		select 1 from architecture_sources where project_key = $1 and id = $2 for update`,
 		[]any{source.Project, source.ID}, `
 		select repo, branch, last_commit, last_error, xmin::text <> $3
@@ -550,7 +550,7 @@ func lockSourceRow(ctx context.Context, tx pgx.Tx, source loadedSource) (locked 
 // here is never waited for while holding another order, so no cycle forms.
 // The locks are taken in a bounded wait first, as lockSourceRow's is.
 func lockProjectSources(ctx context.Context, tx pgx.Tx, source loadedSource) (locked lockedSource, repos map[int64]string, moved bool, err error) {
-	if err := store.LockWithinBound(ctx, tx, `
+	if err := store.LockRowsWithinBound(ctx, tx, `
 		select 1 from architecture_sources where project_key = $1 order by id for update`,
 		source.Project); err != nil {
 		return lockedSource{}, nil, false, fmt.Errorf("lock architecture sources: %w", err)

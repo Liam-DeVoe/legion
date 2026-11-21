@@ -179,7 +179,7 @@ const inboxReadMarkAgentReplies = `
 // matters because this transaction holds its owners' locks in shared mode: every comment, answer and
 // issue message on those owners waits behind a statement that hangs, so one that cannot finish
 // is better killed, which rolls the transaction back and frees them. It is longer than a lock's
-// bounded wait (store.LockWithinBound, ten seconds), because it is the bound of a statement that
+// bounded wait (store.LockRowsWithinBound, ten seconds), because it is the bound of a statement that
 // hangs: a statement waiting on a row another transaction holds is the lock bound's to end.
 const inboxReadStatementTimeout = "15s"
 
@@ -743,8 +743,8 @@ func writeInboxThreadMarks(
 	// Step 3 of that order: the update below locks what its plan reaches in the order it
 	// reaches it, which is not one order across two presses (markInboxReadThreads). Two presses
 	// of one login hold their owners shared, which orders nothing between them, so the pass waits
-	// in a bounded wait (store.LockWithinBound).
-	if err := store.LockWithinBound(ctx, tx, inboxReadLockThreads, login, threads); err != nil {
+	// in a bounded wait (store.LockRowsWithinBound).
+	if err := store.LockRowsWithinBound(ctx, tx, inboxReadLockThreads, login, threads); err != nil {
 		return moved, fmt.Errorf("lock the caller's threads: %w", err)
 	}
 	rows, err := tx.Query(ctx, query, inboxMarkArgs(login, mark, threads, seen...)...)
@@ -805,7 +805,7 @@ func (s *server) markInboxReadAgentReplies(
 		// dead (the insert above skips what the mark covers), so this clears only what an older
 		// write left behind; why the statement locks them in that order is written on
 		// pruneAgentReplies (api/state.go).
-		if err := store.LockWithinBound(ctx, tx, pruneAgentReplies, login, touched); err != nil {
+		if err := store.LockRowsWithinBound(ctx, tx, pruneAgentReplies, login, touched); err != nil {
 			return nil, 0, fmt.Errorf("prune the agent replies the read marks cover: %w", err)
 		}
 	}

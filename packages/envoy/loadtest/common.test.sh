@@ -552,26 +552,26 @@ check_ports_for() {
 # anything tries to bind it. The kernel gives such a port to an outbound connection, which is how
 # a root in the old 15000 base lost its Dispatch port to the load generator between two steps
 # ("bind: address already in use"); the default blocks now lie below every such range. The range
-# file is injected through LOADTEST_EPHEMERAL_RANGE_FILE, so the test writes nothing under /proc,
+# file is injected through LOADTEST_PORT_RANGE_FILE, so the test writes nothing under /proc,
 # and a file it cannot read or parse refuses nothing.
 case_ephemeral_ports() {
   out=""
   local range="${temporary_dir}/ip_local_port_range" root=/legion/scratch/tmp/lt-one
   printf '16000\t65535\n' >"$range"
 
-  check_ports_for "$root" LOADTEST_EPHEMERAL_RANGE_FILE="$range"
+  check_ports_for "$root" LOADTEST_PORT_RANGE_FILE="$range"
   ((rc == 0)) || { fail "(j) a root's default ports were refused against the ephemeral range 16000-65535"; return; }
   [ -z "$out" ] || { fail "(j) the check printed something for ports below the ephemeral range"; return; }
 
-  check_ports_for "$root" LOADTEST_EPHEMERAL_RANGE_FILE="$range" LOADTEST_DISPATCH_PORT=16255
+  check_ports_for "$root" LOADTEST_PORT_RANGE_FILE="$range" LOADTEST_DISPATCH_PORT=16255
   ((rc != 0)) || { out="" fail "(j) a Dispatch port of 16255 passed the ephemeral range 16000-65535"; return; }
   [[ $out == *16000-65535* && $out == *"dispatch 16255"* && $out == *LOADTEST_DISPATCH_PORT* ]] ||
     { fail "(j) the refusal names the range, the port and its variable"; return; }
 
-  check_ports_for "$root" LOADTEST_EPHEMERAL_RANGE_FILE="${temporary_dir}/no-such-range" LOADTEST_DISPATCH_PORT=16255
+  check_ports_for "$root" LOADTEST_PORT_RANGE_FILE="${temporary_dir}/no-such-range" LOADTEST_DISPATCH_PORT=16255
   ((rc == 0)) || { fail "(j) a port was refused with no readable range file"; return; }
   printf 'not a range\n' >"$range"
-  check_ports_for "$root" LOADTEST_EPHEMERAL_RANGE_FILE="$range" LOADTEST_DISPATCH_PORT=16255
+  check_ports_for "$root" LOADTEST_PORT_RANGE_FILE="$range" LOADTEST_DISPATCH_PORT=16255
   ((rc == 0)) || { fail "(j) a port was refused against a range file that holds no two numbers"; return; }
   out=""
   printf 'PASS: a port inside the machine ephemeral range is refused, naming the range, the port and its variable\n'
@@ -1043,7 +1043,7 @@ case_quiet_box() {
 }
 
 # range_file LOW HIGH: a file holding an ephemeral range as /proc/sys/net/ipv4/ip_local_port_range
-# does, for LOADTEST_EPHEMERAL_RANGE_FILE.
+# does, for LOADTEST_PORT_RANGE_FILE.
 range_file() {
   local file="${temporary_dir}/range-$1-$2"
   printf '%s\t%s\n' "$1" "$2" >"$file"
@@ -1059,26 +1059,26 @@ range_file() {
 case_ports_below_ephemeral_range() {
   out=""
   local root=/legion/scratch/tmp/lt-one ports low rc max linux gvisor unread pg
-  linux=$(ports_for "$root" LOADTEST_EPHEMERAL_RANGE_FILE="$(range_file 32768 60999)")
-  gvisor=$(ports_for "$root" LOADTEST_EPHEMERAL_RANGE_FILE="$(range_file 16000 65535)")
-  unread=$(ports_for "$root" LOADTEST_EPHEMERAL_RANGE_FILE="${temporary_dir}/no-such-range")
+  linux=$(ports_for "$root" LOADTEST_PORT_RANGE_FILE="$(range_file 32768 60999)")
+  gvisor=$(ports_for "$root" LOADTEST_PORT_RANGE_FILE="$(range_file 16000 65535)")
+  unread=$(ports_for "$root" LOADTEST_PORT_RANGE_FILE="${temporary_dir}/no-such-range")
   [ "$linux" = "$unread" ] && [ "$gvisor" = "$unread" ] ||
     { out="$linux"$'\n'"$gvisor"$'\n'"$unread" fail "(s) Linux's default range or a gVisor pod's moved the blocks from 10000"; return; }
   pg=$(awk '$1 == "postgres" {print $2}' <<<"$linux")
   ((pg % 10 == 0 && pg >= 10000 && pg < 12000)) ||
     { out="$linux" fail "(s) Linux's default range did not keep the blocks at 10000"; return; }
   for low in 11000 10500; do
-    ports=$(ports_for "$root" LOADTEST_EPHEMERAL_RANGE_FILE="$(range_file "$low" 65535)") ||
+    ports=$(ports_for "$root" LOADTEST_PORT_RANGE_FILE="$(range_file "$low" 65535)") ||
       { out="$ports" fail "(s) a range from $low refused the stack's ports"; return; }
     max=$(awk '{print $2}' <<<"$ports" | sort -n | tail -1)
     ((max < low)) || { out="$ports" fail "(s) a range from $low left port $max inside it"; return; }
     (($(awk '{print $2}' <<<"$ports" | sort -n | head -1) >= low - 2000)) ||
       { out="$ports" fail "(s) a range from $low put a port more than 2000 below it"; return; }
   done
-  out=$(ports_for "$root" LOADTEST_EPHEMERAL_RANGE_FILE="$(range_file 1500 65535)" 2>&1) && rc=0 || rc=$?
+  out=$(ports_for "$root" LOADTEST_PORT_RANGE_FILE="$(range_file 1500 65535)" 2>&1) && rc=0 || rc=$?
   ((rc != 0)) || { fail "(s) a range from 1500 left room for 2000 ports above 1023"; return; }
   [[ $out == *"1500-65535"* && $out == *"2000 ports"* ]] || { fail "(s) the refusal does not name the range and the ports the stack needs"; return; }
-  out=$(ports_for "$root" LOADTEST_EPHEMERAL_RANGE_FILE="$(range_file 1500 65535)" LOADTEST_PG_PORT=1100 \
+  out=$(ports_for "$root" LOADTEST_PORT_RANGE_FILE="$(range_file 1500 65535)" LOADTEST_PG_PORT=1100 \
     LOADTEST_PROXY_PORT=1101 LOADTEST_PROXY_STATS_PORT=1102 LOADTEST_NATS_PORT=1103 LOADTEST_NATS_MONITOR_PORT=1104 \
     LOADTEST_LISTENER_PORT=1105 LOADTEST_DISPATCH_PORT=1106 LOADTEST_PPROF_PORT=1107 LOADTEST_METRICS_PORT=1108 \
     LOADTEST_ENVOY_PROXY_PORT=1109 2>&1) ||

@@ -156,12 +156,12 @@ func (s *server) putArchitectureSource(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	// The source's row is taken in a bounded wait and written behind it, in one batch
-	// (store.LockWithinBoundAndRead): a sync holds it through its projection or its failure's
+	// (store.LockRowsWithinBoundAndRead): a sync holds it through its projection or its failure's
 	// record (architecture's lockProjectSources, lockSourceRow) under no lock this route takes. A
 	// source not saved yet locks nothing, and the insert can then wait only on another save's
 	// uncommitted insert of the same repository, a request whose every wait is bounded so.
 	var source model.ArchitectureSource
-	err = store.LockWithinBoundAndRead(r.Context(), tx,
+	err = store.LockRowsWithinBoundAndRead(r.Context(), tx,
 		`select 1 from architecture_sources where project_key = $1 and repo = $2 for update`,
 		[]any{key, owner + "/" + name}, `
 		insert into architecture_sources (project_key, repo, branch, enabled, installation_id, created_by)
@@ -250,7 +250,7 @@ func (s *server) deleteArchitectureSource(w http.ResponseWriter, r *http.Request
 	defer tx.Rollback(r.Context())
 	// Taken in a bounded wait and removed behind it, as the save's row is (putArchitectureSource).
 	var source model.ArchitectureSource
-	err = store.LockWithinBoundAndRead(r.Context(), tx,
+	err = store.LockRowsWithinBoundAndRead(r.Context(), tx,
 		`select 1 from architecture_sources where project_key = $1 and repo = $2 for update`,
 		[]any{key, repo}, `
 		delete from architecture_sources where project_key = $1 and repo = $2

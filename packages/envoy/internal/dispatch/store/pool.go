@@ -568,7 +568,7 @@ func requestBegin(ctx context.Context, options pgx.TxOptions) string {
 	if begin, ok := requestBegins[options]; ok && wait == lockWaitDefault {
 		return begin
 	}
-	return renderRequestBegin(options, wait)
+	return renderBegin(options, wait)
 }
 
 // requestBegins is requestBegin's statement at the production bound for every combination of
@@ -579,19 +579,21 @@ var requestBegins = func() map[pgx.TxOptions]string {
 		for _, accessMode := range []pgx.TxAccessMode{"", pgx.ReadWrite, pgx.ReadOnly} {
 			for _, deferrableMode := range []pgx.TxDeferrableMode{"", pgx.Deferrable, pgx.NotDeferrable} {
 				options := pgx.TxOptions{IsoLevel: isoLevel, AccessMode: accessMode, DeferrableMode: deferrableMode}
-				begins[options] = renderRequestBegin(options, lockWaitDefault)
+				begins[options] = renderBegin(options, lockWaitDefault)
 			}
 		}
 	}
 	return begins
 }()
 
-// renderRequestBegin is requestBegin's statement for options at wait, lock_timeout's value: the
-// caller's own BEGIN where options names one, else the one pgx renders from options (begin, then
-// the isolation level, the access mode and the deferrable mode options sets, in that order), then
-// SET LOCAL lock_timeout. wait is lockTimeoutSetting's whole milliseconds and their unit, so it is
+// renderBegin is the BEGIN of a transaction with options that sets its own lock_timeout at wait:
+// the caller's own BEGIN where options names one, else the one pgx renders from options (begin,
+// then the isolation level, the access mode and the deferrable mode options sets, in that order),
+// then SET LOCAL lock_timeout. It renders requestBegin's statement, and the BEGIN of a transaction
+// that waits for its locks without a bound (waitingForLocksBegin, readOnlyWaitingForLocksBegin).
+// wait is lockTimeoutSetting's whole milliseconds and their unit, or lockTimeoutNone, so it is
 // written into the text as a literal: the simple protocol takes no parameters.
-func renderRequestBegin(options pgx.TxOptions, wait string) string {
+func renderBegin(options pgx.TxOptions, wait string) string {
 	begin := options.BeginQuery
 	if begin == "" {
 		begin = "begin"
@@ -628,7 +630,7 @@ func WaitForLocksUntilDeadline(ctx context.Context, tx pgx.Tx) error {
 	if !ok {
 		return nil
 	}
-	if _, err := tx.Exec(ctx, `select set_config('lock_timeout', $1, true)`, lockTimeoutSetting(time.Until(deadline))); err != nil {
+	if _, err := tx.Exec(ctx, boundedWaitBound, lockTimeoutSetting(time.Until(deadline))); err != nil {
 		return fmt.Errorf("set the transaction's lock_timeout to its deadline: %w", err)
 	}
 	return nil

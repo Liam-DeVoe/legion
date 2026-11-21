@@ -362,14 +362,14 @@ func (s *server) claimCommentDeliveryAttempt(
 	}
 	// A bound call reads its own attempt, in whatever state; an unbound one the lowest pending.
 	// Either is taken in a bounded wait and read behind it in the same batch
-	// (store.LockWithinBoundAndRead): the mention sender writes its claims on these rows
+	// (store.LockRowsWithinBoundAndRead): the mention sender writes its claims on these rows
 	// (comment_mention_claims.go) without the comment's owner lock this transaction holds, so that
 	// lock orders nothing against it.
 	var takeable bool
 	if resume.attempt > 0 {
 		var stands, delivered bool
 		var bound model.CommentDelivery
-		err := store.LockWithinBoundAndRead(ctx, tx, `
+		err := store.LockRowsWithinBoundAndRead(ctx, tx, `
 			select 1 from comment_deliveries where comment_id = $1 and target = $2 and attempt = $3 for update
 		`, []any{stored.ID, target.Target, resume.attempt}, `
 			select `+commentDeliveryColumns+`, `+model.DeliveryClaimFreeSQL+` or `+model.DeliveryClaimSinceSQL("$4")+`,
@@ -416,7 +416,7 @@ func (s *server) claimCommentDeliveryAttempt(
 		return claimed, nil
 	}
 	var pending model.CommentDelivery
-	err = store.LockWithinBoundAndRead(ctx, tx, `
+	err = store.LockRowsWithinBoundAndRead(ctx, tx, `
 		select 1 from comment_deliveries
 		where comment_id = $1 and target = $2 and state = 'pending'
 		order by attempt
@@ -537,10 +537,10 @@ func (s *server) completeCommentDelivery(
 	return settleDeliveryAttempt(ctx, s, commentDeliveryReceipt(comment, actor, sent),
 		func(ctx context.Context, tx pgx.Tx) (settled model.CommentDelivery, err error) {
 			// The attempt row is taken in a bounded wait and written behind it, in one batch
-			// (store.LockWithinBoundAndRead): the comment's owner lock, which settleDeliveryAttempt
+			// (store.LockRowsWithinBoundAndRead): the comment's owner lock, which settleDeliveryAttempt
 			// takes, does not order the mention sender's claim statements, which take none
 			// (comment_mention_claims.go).
-			err = store.LockWithinBoundAndRead(ctx, tx, `
+			err = store.LockRowsWithinBoundAndRead(ctx, tx, `
 				select 1 from comment_deliveries
 				where comment_id = $1 and target = $2 and attempt = $3
 				  and state = 'pending' and claimed_at = $4
@@ -608,7 +608,7 @@ func (s *server) supersedeCommentDelivery(
 				where comment_id = $1 and target = $2 and attempt = $3 and state = 'pending'
 				  and (` + model.DeliveryClaimFreeSQL + ` or ` + model.DeliveryClaimSinceSQL("$4") + `)
 				  and ` + model.MentionAttemptDeliveredLaterSQL("comment_deliveries")
-			err = store.LockWithinBoundAndRead(ctx, tx,
+			err = store.LockRowsWithinBoundAndRead(ctx, tx,
 				`select 1 from comment_deliveries`+guard+` for update`,
 				[]any{comment.ID, bound.Target, claim.attempt, claim.claimedAt}, `
 				update comment_deliveries set state = 'failed', error = $5, claimed_at = null`+guard+`
@@ -718,10 +718,10 @@ func (s *server) recordCommentDeliveryResolution(
 	}
 	defer tx.Rollback(ctx)
 	// The attempt row is taken in a bounded wait and written behind it, in one batch
-	// (store.LockWithinBoundAndRead): this transaction takes no owner lock, and the row's other
+	// (store.LockRowsWithinBoundAndRead): this transaction takes no owner lock, and the row's other
 	// holders (the claim, the reply route, a settle) take it under none it holds.
 	var recorded model.CommentDelivery
-	err = store.LockWithinBoundAndRead(ctx, tx, `
+	err = store.LockRowsWithinBoundAndRead(ctx, tx, `
 		select 1 from comment_deliveries
 		where comment_id = $1 and target = $2 and attempt = $3
 		  and state = 'pending' and claimed_at = $4
@@ -1446,7 +1446,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	// missing delivery.
 	var attempt model.CommentDelivery
 	var readErr error
-	if err := store.LockWithinBoundAndRead(r.Context(), tx, `
+	if err := store.LockRowsWithinBoundAndRead(r.Context(), tx, `
 		select 1 from comment_deliveries where comment_id = $1 and target = $2 and attempt = $3 for update
 	`, []any{comment.ID, target, input.Attempt}, `
 		select `+commentDeliveryColumns+`

@@ -95,7 +95,7 @@
 # refused by start, not shared; setup moves a port stack.json recorded inside the machine's
 # ephemeral range to the root's default and refuses one a LOADTEST_*_PORT sets inside it
 # (common.sh: check_ephemeral_ports), which an outbound connection would take from the stack, and
-# start refuses a port inside it (check_port); LOADTEST_EPHEMERAL_RANGE_FILE reads the range from
+# start refuses a port inside it (check_port); LOADTEST_PORT_RANGE_FILE reads the range from
 # another file than /proc/sys/net/ipv4/ip_local_port_range, for a test; LOADTEST_PG_PORT,
 # LOADTEST_PROXY_PORT, LOADTEST_PROXY_STATS_PORT (the proxy's wire counts), LOADTEST_NATS_PORT,
 # LOADTEST_NATS_MONITOR_PORT, LOADTEST_LISTENER_PORT, LOADTEST_DISPATCH_PORT, LOADTEST_PPROF_PORT,

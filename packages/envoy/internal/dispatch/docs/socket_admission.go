@@ -612,7 +612,7 @@ func (w *socketAnswerWriter) refuseFailedLoad() bool {
 		refuseUnservedSocket(w.ResponseWriter, message, w.room, store.RoomsPool, err, context.Cause(w.socket))
 		return true
 	}
-	if failure := w.service.loadFailedSince(w.room, w.held, w.failedBefore); store.Unserved(w.socket, failure) || errors.Is(failure, errLoadReadsBound) {
+	if failure := w.service.loadFailedSince(w.room, w.held, w.failedBefore); loadEndedByOwnBound(w.socket, failure) {
 		refuseUnservedSocket(w.ResponseWriter, message, w.room, store.RoomsPool, failure, nil)
 		return true
 	}

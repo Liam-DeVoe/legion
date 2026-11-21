@@ -133,10 +133,10 @@ type settlement struct {
 	reads int
 	plan  *repairPlan
 	// stopShort is the outcome of the settlement stopping short with err having written nothing
-	// into the room (settleRoomWithin), its read of whether the document was removed
-	// (documentRemoved) made through removed: the settlements pool outside a pass, the pass's
-	// transaction inside one (stoppedShort).
-	stopShort func(removed Queryer, err error) settleOutcome
+	// into the room (settleRoomWithin), removed being its read of whether the document was removed
+	// since it started (stoppedShort: removedThroughPool outside a pass, removedThroughTransaction
+	// inside one).
+	stopShort func(removed func(context.Context) bool, err error) settleOutcome
 }
 
 // settlementPass is one pass of a settlement, and what that pass holds of the document: what it
@@ -295,7 +295,7 @@ func (s *Service) settleRoomWithin(parent context.Context, room string, generati
 	// failure against is the one the settlement stands at now, which its passes move as they read
 	// the room again. An err that is the append gate's refusal of an update the room took after its
 	// issue closed is no fault to retry: it ends the settlement (endOnRefusedUpdate).
-	settle.stopShort = func(removed Queryer, err error) settleOutcome {
+	settle.stopShort = func(removed func(context.Context) bool, err error) settleOutcome {
 		if errors.Is(err, ErrIssueClosed) {
 			return settle.endOnRefusedUpdate()
 		}
@@ -305,9 +305,9 @@ func (s *Service) settleRoomWithin(parent context.Context, room string, generati
 			next = settlePastDeadline
 		case parent.Err() != nil:
 			next = settleOutOfBudget
-		case store.Unserved(parent, err) || errors.Is(err, errLoadReadsBound):
+		case loadEndedByOwnBound(parent, err):
 			next = settleOverloaded
-		case settle.documentRemoved(parent, removed):
+		case removed(parent):
 			return settleOutcome{}
 		case s.shuttingDown(room) && errors.Is(err, ErrServiceUnavailable):
 			next = settleRefusedInShutdown
@@ -451,25 +451,35 @@ func (s *Service) settleRoomWithin(parent context.Context, room string, generati
 	}
 }
 
-// stoppedShort is the settlement stopping short with err outside a pass (stopShort): its read of
-// whether the document was removed goes through the settlements pool, and is not made before that
-// pool is open.
+// stoppedShort is the settlement stopping short with err outside a pass (stopShort), reading
+// whether the document was removed through the settlements pool (removedThroughPool).
 func (s *settlement) stoppedShort(err error) settleOutcome {
-	if s.settlements == nil {
-		return s.stopShort(nil, err)
-	}
-	return s.stopShort(s.settlements, err)
+	return s.stopShort(s.removedThroughPool, err)
+}
+
+// removedThroughPool is the read outside a pass of whether the document was removed
+// (documentRemoved): through the settlements pool, and none before that pool is open, since a
+// settlement never reads through the request pool; the document then stands.
+func (s *settlement) removedThroughPool(ctx context.Context) bool {
+	return s.settlements != nil && s.documentRemoved(ctx, s.settlements)
 }
 
 // stoppedShort is the settlement stopping short with err in this pass (stopShort): once the pass
-// holds its transaction, the read of whether the document was removed goes through it, since a
-// pooled read beside it would be a second connection of the pool that transaction holds one of,
-// and through the settlements pool before (settlement.stoppedShort).
+// holds its transaction, the read of whether the document was removed goes through it
+// (removedThroughTransaction), since a pooled read beside it would be a second connection of the
+// pool that transaction holds one of, and through the settlements pool before
+// (settlement.stoppedShort).
 func (p *settlementPass) stoppedShort(err error) settleOutcome {
 	if p.tx == nil {
 		return p.settlement.stoppedShort(err)
 	}
-	return p.stopShort(p.tx, err)
+	return p.stopShort(p.removedThroughTransaction, err)
+}
+
+// removedThroughTransaction is the read of whether the document was removed (documentRemoved) in
+// a pass that holds its transaction: through that transaction.
+func (p *settlementPass) removedThroughTransaction(ctx context.Context) bool {
+	return p.documentRemoved(ctx, p.tx)
 }
 
 // settlePass is one pass of the settlement over doc, the room instance it holds, and the outcome

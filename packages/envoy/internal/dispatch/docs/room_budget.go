@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/provider/websocket"
 )
 
@@ -265,11 +264,11 @@ func (s *Service) closeRoomOverBudget(room string) {
 // whether this close unloaded it. A close by name cannot say so: ygo's CloseRoom answers nil as
 // well where its idle sweep, which takes no close gate (roomServer), took the room out of its map
 // while the close was flushing it (sjawhar/ygo v1.55.1-sami.2, provider/websocket/inject.go:666-681),
-// and the budget would count a room the sweep unloaded. So the close is made as closeRoomInstance
-// makes its own: inside a Server.Apply on the room, whose in-flight count ygo's sweep evicts no
-// room under (idle_sweep.go:159-165 and 187-197), through closeInstance, which closes the room only
-// while the name holds the instance this close found. ygo's nil there is this close's own unload,
-// and every other ending - no room under the name, another instance there, a browser on it
+// and the budget would count a room the sweep unloaded. So the close is closeRoomInstance's: inside
+// a Server.Apply on the room, whose in-flight count ygo's sweep evicts no room under
+// (idle_sweep.go:159-165 and 187-197), through closeInstance, which closes the room only while the
+// name holds the instance this close found. ygo's nil there is this close's own unload, and every
+// other ending - no room under the name, another instance there, a browser on it
 // (websocket.ErrRoomHasPeers), the service refusing the Apply its entry (allowInject) - closed
 // nothing. The Apply is ygo's own (roomServer.Server.Apply), not the service's, which notes the
 // room used: a close is no use of the room, and a note would ask for another trim.
@@ -277,45 +276,23 @@ func (s *Service) closeRoomOverBudget(room string) {
 // A room already gone from the name is not loaded for the close; one that leaves between that
 // look and the Apply is loaded again by the Apply and left open, as closeRoomInstance leaves one.
 // Another caller inside the room holds the close off (websocket.ErrRoomInUse), and it is tried
-// again, a look at the instance first, until ctx ends between the tries, as closeWhenFree tries a
-// close by name; ctx does not bound a try once made, as it bounds none of closeWhenFree's, so a
-// load that a try starts is not cut short for every caller that waits on it.
+// again, a look at the instance first, until ctx ends between the tries (retryWhileInUse, as
+// closeWhenFree tries a close by name); ctx does not bound a try once made, so the Apply runs
+// under none of it, and a load that a try starts is not cut short for every caller that waits on
+// it.
 func (s *Service) closeBudgetRoom(ctx context.Context, room string) (bool, error) {
-	wait := roomInUseFirstWait
-	for {
-		if err := ctx.Err(); err != nil {
-			return false, err
-		}
+	var closed bool
+	err := retryWhileInUse(ctx, func() error {
+		closed = false
 		live := s.srv.GetDoc(room)
 		if live == nil {
-			return false, nil
+			return nil
 		}
-		var closed bool
-		var closeErr error
-		err := s.srv.Server.Apply(withOwnerVerified(WithoutRecoveryWait(context.Background())), room, func(held *crdt.Doc, _ func(func(*crdt.Transaction))) {
-			if held != live {
-				return
-			}
-			if s.budgetCloseHeld != nil {
-				s.budgetCloseHeld(room)
-			}
-			closed, closeErr = s.srv.closeInstance(room, live, false)
-		})
-		if err != nil && !errors.Is(err, websocket.ErrNoChanges) {
-			return false, err
-		}
-		if !errors.Is(closeErr, websocket.ErrRoomInUse) {
-			return closed, closeErr
-		}
-		timer := time.NewTimer(wait)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return false, ctx.Err()
-		case <-timer.C:
-		}
-		wait = min(2*wait, roomInUseLongestWait)
-	}
+		var err error
+		closed, err = s.closeRoomInstance(context.Background(), room, live, false, s.srv.Server.Apply)
+		return err
+	})
+	return closed, err
 }
 
 // peerlessRoom is one resident room with no browser connected: what the budget counts, when it

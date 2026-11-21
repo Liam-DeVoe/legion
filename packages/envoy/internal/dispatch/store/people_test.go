@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -736,6 +738,76 @@ func TestPgPeopleStoreEndSubjectEndsOnlyTheAccountItNames(t *testing.T) {
 	}
 }
 
+// A sign-in and the end of one each take the person's row in a bounded wait and then update it in
+// the same transaction, and the update ends the version it replaces with that transaction's own
+// id: the row lock is the transaction's, not a savepoint's, so Postgres has no second locker to
+// keep beside the updater and makes no MultiXact for it (compute_new_xmax_infomask), as it did on
+// every call while the lock was taken in a savepoint. The version each call replaced is read
+// through a snapshot taken before the call (watchRowVersion).
+func TestPgPeopleStoreSignInAndItsEndUpdateThePersonsRowWithoutAMultiXact(t *testing.T) {
+	ctx := context.Background()
+	database := migratedEmptyStore(t)
+	people := NewPgPeopleStore(database.Pool, testSigningKey, nil)
+	const email = "multixact.person@example.com"
+	if err := people.SignInSubject(ctx, email, "subject-1", "refresh-1"); err != nil {
+		t.Fatal(err)
+	}
+	replaced := watchRowVersion(t, ctx, database.Pool, "people", "email = $1", email)
+	if err := people.SignInSubject(ctx, email, "subject-1", "refresh-2"); err != nil {
+		t.Fatal(err)
+	}
+	replaced("a sign-in")
+	replaced = watchRowVersion(t, ctx, database.Pool, "people", "email = $1", email)
+	if ended, err := people.EndSubject(ctx, email, "subject-1"); err != nil || !ended {
+		t.Fatalf("EndSubject under the row's account: ended %t, %v; want true", ended, err)
+	}
+	replaced("an end of the sign-in")
+}
+
+// watchRowVersion takes a snapshot of the row of table that where names, args its arguments, and
+// answers the check to run once one write has replaced that version: the version the snapshot
+// still sees ends (xmax) with the transaction that wrote the row's live version (its xmin), not
+// with a MultiXact, whose members the check names when it does.
+func watchRowVersion(t *testing.T, ctx context.Context, pool *Pool, table, where string, args ...any) func(what string) {
+	t.Helper()
+	watcher, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
+	if err != nil {
+		t.Fatalf("begin the transaction whose snapshot keeps the row's version: %v", err)
+	}
+	t.Cleanup(func() { _ = watcher.Rollback(context.Background()) })
+	version := `select xmin::text, xmax::text from ` + table + ` where ` + where
+	var watched, ignored string
+	if err := watcher.QueryRow(ctx, version, args...).Scan(&watched, &ignored); err != nil {
+		t.Fatalf("read the version of the %s row: %v", table, err)
+	}
+	return func(what string) {
+		t.Helper()
+		var endedBy, live string
+		if err := watcher.QueryRow(ctx, version, args...).Scan(&ignored, &endedBy); err != nil {
+			t.Fatalf("read the version of the %s row %s replaced: %v", table, what, err)
+		}
+		if err := pool.QueryRow(ctx, version, args...).Scan(&live, &ignored); err != nil {
+			t.Fatalf("read the live version of the %s row: %v", table, err)
+		}
+		if live == watched {
+			t.Fatalf("%s did not replace the version of the %s row", what, table)
+		}
+		if endedBy == live {
+			return
+		}
+		rows, err := pool.Query(ctx, `select xid::text || ' ' || mode from pg_get_multixact_members($1::text::xid)`, endedBy)
+		if err != nil {
+			t.Fatalf("read the members of the %s row's xmax %s: %v", table, endedBy, err)
+		}
+		members, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			t.Fatalf("read the members of the %s row's xmax %s: %v", table, endedBy, err)
+		}
+		t.Errorf("%s ended the version of the %s row it replaced with %s rather than its own transaction %s: a MultiXact of %v",
+			what, table, endedBy, live, members)
+	}
+}
+
 // A sign-in and the end of one each lock the person's row before they read the subject it
 // records, and wait for a row another transaction holds no longer than a write waits for any lock
 // another writer holds (lockWait): at that bound they are refused ErrPoolBusy, which the identity
@@ -807,21 +879,9 @@ func TestPgPeopleStoreWaitsForAHeldPersonRowNoLongerThanItsBound(t *testing.T) {
 			answered := make(chan error, 1)
 			started := time.Now()
 			go func() { answered <- call.run(WithLockWaitForTest(ctx, bound)) }()
-			select {
-			case err = <-answered:
-			case <-time.After(10 * time.Second):
-				waited := time.Since(started)
-				_ = holder.Rollback(ctx)
-				<-answered
-				t.Fatalf("%s was still waiting on the held row %s after it began, past its bound of %s: "+
-					"it waits on a held row until its holder lets go", call.name, waited.Round(time.Millisecond), bound)
-			}
-			waited := time.Since(started)
+			err = awaitBoundedWait(t, call.name+" behind the held row", answered, started, bound, func() { _ = holder.Rollback(ctx) })
 			if !IsPoolBusy(err) {
 				t.Fatalf("%s behind the held row: %v, want ErrPoolBusy", call.name, err)
-			}
-			if waited < bound {
-				t.Fatalf("%s was refused %s after it began, inside its bound of %s", call.name, waited.Round(time.Millisecond), bound)
 			}
 			if err := holder.Rollback(ctx); err != nil {
 				t.Fatalf("let the row go: %v", err)

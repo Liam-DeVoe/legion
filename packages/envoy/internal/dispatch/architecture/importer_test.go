@@ -2402,7 +2402,7 @@ func TestASyncBehindItsSourcesHeldRowIsRefusedBusyAtItsBound(t *testing.T) {
 
 // A sync's other writes of its source's row wait for a row another transaction holds no longer
 // than that bound either, each taking the row in a bounded wait and writing behind it in the same
-// batch (store.LockWithinBoundAndRead): the freshness stamp of a head that has not moved (touch),
+// batch (store.LockRowsWithinBoundAndRead): the freshness stamp of a head that has not moved (touch),
 // and the record of an installation GitHub moved (resolve), whose refusal is a failure the sync
 // then records, refused at its own lock in turn (lockSourceRow). The sync answers
 // store.ErrPoolBusy with no row, which the sync routes answer 503 DATABASE_BUSY with Retry-After.

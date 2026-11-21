@@ -13,14 +13,11 @@ const documentRemovedStatement = `select not exists(select 1 from artifacts wher
 // removed since it started (settleRoomWithin), read through q: the transaction of the pass under
 // way once it has one, since a pooled read beside it is the second connection that deadlocks the
 // pool, and the settlements pool before (stoppedShort). It never reads through the request pool:
-// a settlement that could not open its own pool reads nothing here, a nil q, and answers false.
-// In that transaction it is a statement of its own, so it reads a removal that committed while an
-// earlier statement waited behind it. A read that fails, as every statement of a transaction an
-// error aborted does, answers false, and the settlement stops short as it would have.
+// a settlement that could not open its own pool makes no such read (removedThroughPool). In that
+// transaction it is a statement of its own, so it reads a removal that committed while an earlier
+// statement waited behind it. A read that fails, as every statement of a transaction an error
+// aborted does, answers false, and the settlement stops short as it would have.
 func (st *settlement) documentRemoved(ctx context.Context, q Queryer) bool {
-	if q == nil {
-		return false
-	}
 	var removed bool
 	if err := q.QueryRow(ctx, documentRemovedStatement, st.room).Scan(&removed); err != nil {
 		return false

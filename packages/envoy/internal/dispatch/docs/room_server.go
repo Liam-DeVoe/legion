@@ -97,7 +97,7 @@ func (r *roomServer) closeRoom(ctx context.Context, room string, force bool) err
 }
 
 // roomInUseFirstWait and roomInUseLongestWait bound how long a close waits before it tries again
-// a room a caller is inside (closeWhenFree): the wait doubles from the first to the longest. A
+// a room a caller is inside (retryWhileInUse): the wait doubles from the first to the longest. A
 // caller inside a room is a write's publish, a read that loads the room, a settlement's repair or
 // a browser's join, each of which leaves within milliseconds.
 const (
@@ -105,27 +105,18 @@ const (
 	roomInUseLongestWait = 50 * time.Millisecond
 )
 
-// closeWhenFree runs try, a close of room, holding room's gate exclusively, until try answers
-// anything but websocket.ErrRoomInUse or ctx ends between attempts. It checks ctx after taking
-// the gate, but cannot cancel the gate lock or try itself. It lets go of the gate between tries,
-// so the callers it waits for are not held behind it: a close of the service's own made from
-// inside an Apply on the room (closeInstance) waits for that gate, and a repair refuses to start
-// while a close holds it.
-func (r *roomServer) closeWhenFree(ctx context.Context, room string, try func() error) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	gate := r.acquireGate(room)
-	defer r.releaseGate(room, gate)
+// retryWhileInUse runs try, one try at a close of a room, until it answers anything but
+// websocket.ErrRoomInUse or ctx ends before a try, waiting between tries from roomInUseFirstWait
+// up to roomInUseLongestWait. It cannot cancel a try once made. Every close the service retries
+// while a caller is inside the room goes through it: a close by name (closeWhenFree) and the
+// budget's close of an instance (Service.closeBudgetRoom).
+func retryWhileInUse(ctx context.Context, try func() error) error {
 	wait := roomInUseFirstWait
 	for {
-		gate.Lock()
 		if err := ctx.Err(); err != nil {
-			gate.Unlock()
 			return err
 		}
 		err := try()
-		gate.Unlock()
 		if !errors.Is(err, websocket.ErrRoomInUse) {
 			return err
 		}
@@ -138,6 +129,28 @@ func (r *roomServer) closeWhenFree(ctx context.Context, room string, try func() 
 		}
 		wait = min(2*wait, roomInUseLongestWait)
 	}
+}
+
+// closeWhenFree runs try, a close of room, holding room's gate exclusively, until try answers
+// anything but websocket.ErrRoomInUse or ctx ends between attempts (retryWhileInUse). It checks
+// ctx after taking the gate, but cannot cancel the gate lock or try itself. It lets go of the gate
+// between tries, so the callers it waits for are not held behind it: a close of the service's own
+// made from inside an Apply on the room (closeInstance) waits for that gate, and a repair refuses
+// to start while a close holds it.
+func (r *roomServer) closeWhenFree(ctx context.Context, room string, try func() error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	gate := r.acquireGate(room)
+	defer r.releaseGate(room, gate)
+	return retryWhileInUse(ctx, func() error {
+		gate.Lock()
+		defer gate.Unlock()
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return try()
+	})
 }
 
 // closeHeld runs attempt, one try at closing room by a caller holding room's gate, after

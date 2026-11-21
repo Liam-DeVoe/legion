@@ -667,7 +667,7 @@ func (s *server) dismissInbox(w http.ResponseWriter, r *http.Request) {
 // same owners' locks in shared mode: every comment, answer and issue message on those owners waits
 // behind a statement that hangs, so one that cannot finish is better killed. A statement it ended
 // is answered as unserved (inboxStatementEnded), and each row lock waits in a bounded wait
-// (store.LockWithinBound), which ends before it.
+// (store.LockRowsWithinBound), which ends before it.
 func (s *server) dismissInboxThreads(
 	ctx context.Context, actor model.Actor, plan inboxDismissPlan, rows inboxDismissRows, scope inboxReadScope,
 ) (int, []model.Event, error) {
@@ -695,7 +695,7 @@ func (s *server) dismissInboxThreads(
 		// trigger of 20261105093507, so whichever of the two runs first the thread ends in the
 		// Inbox, and a `for update` held over the rest of the transaction would stop that
 		// thread's replies for nothing.
-		if err := store.LockWithinBound(ctx, tx, inboxDismissLockAgentRoots, read.agentRoots); err != nil {
+		if err := store.LockRowsWithinBound(ctx, tx, inboxDismissLockAgentRoots, read.agentRoots); err != nil {
 			return 0, nil, fmt.Errorf("lock the agent threads' roots: %w", err)
 		}
 		// Which of those roots the dismissal may still write, read once the lock has been given
@@ -861,7 +861,7 @@ func (read *inboxReadThreads) keepAgentRoots(keep map[string]struct{}) {
 func (s *server) dismissInboxAgentThreads(
 	ctx context.Context, tx pgx.Tx, login string, plan inboxDismissPlan, read inboxReadThreads,
 ) ([]string, int, error) {
-	if err := store.LockWithinBound(ctx, tx, inboxDismissLockAgentThreads, login, read.agentRoots); err != nil {
+	if err := store.LockRowsWithinBound(ctx, tx, inboxDismissLockAgentThreads, login, read.agentRoots); err != nil {
 		return nil, 0, fmt.Errorf("lock the caller's agent threads: %w", err)
 	}
 	args := inboxMarkArgs(login, plan.writeMark(), read.agentRoots)

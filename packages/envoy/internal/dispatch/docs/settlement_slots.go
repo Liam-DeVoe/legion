@@ -83,7 +83,8 @@ func finishInRoom(ctx context.Context) (context.Context, context.CancelFunc) {
 //   - two cold reads (store.ColdReadBound, coldReadTimeout): a cold room's load, which the
 //     settlement's warm-up runs and no deadline of the settlement's stops, reads the room's stored
 //     history under one bound (servicePersistenceAdapter.LoadDoc) and then the document's issue and
-//     pending-settlement row under another (onLoadDocument);
+//     pending-settlement row under another (onLoadDocument), each the bound withLoadReadsBound
+//     makes, a cold read's;
 //   - settlementFinishBound: what a pass that has written into its room has left to do, which runs
 //     past the deadline.
 //

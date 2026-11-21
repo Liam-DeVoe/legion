@@ -285,7 +285,7 @@ func TestTheTrimKeepsTheRoomCapsHeadroomFreeOfPeerlessRooms(t *testing.T) {
 // no close gate, and a close by name answers nil where the sweep took the room out of ygo's map
 // while the close was flushing it (sjawhar/ygo v1.55.1-sami.2, provider/websocket/inject.go:666-681),
 // so the budget's close holds the room in a Server.Apply of its own, under which the sweep evicts
-// nothing (closeBudgetRoom). Here that close is held there (budgetCloseHeld) until ygo's sweep has
+// nothing (closeBudgetRoom). Here that close is held there (roomCloseHeld) until ygo's sweep has
 // evicted a room left idle after this one: the sweep takes the rooms past their idle timeout oldest
 // first (sweepIdleRooms, idle_sweep.go:107-129), so it tried this room before that one, and left
 // it. Let go, the close unloads the room once, and the budget and the service's own close count
@@ -566,7 +566,7 @@ func countUnloads(service *Service) func(room string) int {
 
 // holdBudgetClose loads room and starts the budget's close of it (closeRoomOverBudget) on a
 // goroutine, which it holds once the close holds the room in its own Server.Apply, before it
-// closes it (budgetCloseHeld). The room is loaded by an Apply of the test's own that stays inside
+// closes it (roomCloseHeld). The room is loaded by an Apply of the test's own that stays inside
 // it until the close holds it in turn, so ygo's idle sweep takes nothing from the room before the
 // close does: it answers once that Apply has left, with the room's instance and a release that lets
 // the close go on and waits for it to return.
@@ -593,7 +593,7 @@ func holdBudgetClose(t *testing.T, service *Service, room string) (*crdt.Doc, fu
 	}
 	held, release := make(chan struct{}), make(chan struct{})
 	var holding sync.Once
-	service.budgetCloseHeld = func(closing string) {
+	service.roomCloseHeld = func(closing string) {
 		if closing == room {
 			holding.Do(func() { close(held) })
 			<-release
@@ -625,6 +625,6 @@ func holdBudgetClose(t *testing.T, service *Service, room string) (*crdt.Doc, fu
 		case <-time.After(roomWait(t)):
 			t.Fatalf("the budget's close of %s did not return within %v once let go", room, roomWait(t))
 		}
-		service.budgetCloseHeld = nil
+		service.roomCloseHeld = nil
 	}
 }

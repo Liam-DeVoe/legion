@@ -169,9 +169,9 @@ func (s *server) acceptDelivery(w http.ResponseWriter, r *http.Request) {
 	// the claim's, and not FOR UPDATE: the session's reply takes the attempt row first and then,
 	// through its insert's foreign key, this row FOR KEY SHARE, which FOR UPDATE would wait for
 	// while this transaction waits for the attempt row the reply holds. The wait is a bounded one
-	// (store.LockWithinBound): a direct message has no owner, so no owner lock orders the writers
+	// (store.LockRowsWithinBound): a direct message has no owner, so no owner lock orders the writers
 	// of its row, and a holder that stands is waited for no longer than any lock a write waits on.
-	if err := store.LockWithinBound(ctx, tx, `select 1 from messages where id = $1 for no key update`, message.ID); err != nil {
+	if err := store.LockRowsWithinBound(ctx, tx, `select 1 from messages where id = $1 for no key update`, message.ID); err != nil {
 		s.writeHandlerError(w, r, err)
 		return
 	}
@@ -252,10 +252,10 @@ func (s *server) acceptDelivery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The attempt row is taken in a bounded wait and written behind it, in one batch
-	// (store.LockWithinBoundAndRead): the session's reply, the settle and the claim's renewal
+	// (store.LockRowsWithinBoundAndRead): the session's reply, the settle and the claim's renewal
 	// hold it without the message's lock taken above, so that lock orders none of them.
 	var accepted model.MessageDelivery
-	err = store.LockWithinBoundAndRead(ctx, tx,
+	err = store.LockRowsWithinBoundAndRead(ctx, tx,
 		`select 1 from message_deliveries where message_id = $1 and attempt = $2 for update`,
 		[]any{message.ID, number}, `
 		update message_deliveries set accepted_at = now(), accepted_as = $3
@@ -391,9 +391,9 @@ func (s *server) recordPendingMessageDelivery(
 	// this row FOR KEY SHARE through its insert's foreign key, and FOR UPDATE would wait for that
 	// while this transaction waits below for the attempt row the reply holds. Taken in a bounded
 	// wait first, as the accept's is, and then read under the lock this transaction holds, in the
-	// same batch (store.LockWithinBoundAndRead).
+	// same batch (store.LockRowsWithinBoundAndRead).
 	var target string
-	if err := store.LockWithinBoundAndRead(ctx, tx,
+	if err := store.LockRowsWithinBoundAndRead(ctx, tx,
 		`select 1 from messages where id = $1 for no key update`, []any{message.ID},
 		`select target from messages where id = $1 for no key update`, []any{message.ID},
 		func(row pgx.Row) error { return row.Scan(&target) },
@@ -412,7 +412,7 @@ func (s *server) recordPendingMessageDelivery(
 		// resolution means a stale one.
 		var bound model.MessageDelivery
 		var free bool
-		err = store.LockWithinBoundAndRead(ctx, tx, `
+		err = store.LockRowsWithinBoundAndRead(ctx, tx, `
 			select 1 from message_deliveries
 			where message_id = $1 and attempt = $2 and state = 'pending'
 			for update
@@ -460,7 +460,7 @@ func (s *server) recordPendingMessageDelivery(
 	var stranded model.MessageDelivery
 	var strandedUrgency *string
 	var lapsed bool
-	err = store.LockWithinBoundAndRead(ctx, tx, `
+	err = store.LockRowsWithinBoundAndRead(ctx, tx, `
 		select 1 from message_deliveries
 		where message_id = $1 and state = 'pending'
 		order by attempt
@@ -722,10 +722,10 @@ func (s *server) completeMessageDelivery(
 	return settleDeliveryAttempt(ctx, s, receipt,
 		func(ctx context.Context, tx pgx.Tx) (settled model.MessageDelivery, err error) {
 			// The attempt row is taken in a bounded wait and written behind it, in one batch
-			// (store.LockWithinBoundAndRead): a direct message's receipt has no owner, so the owner
+			// (store.LockRowsWithinBoundAndRead): a direct message's receipt has no owner, so the owner
 			// lock settleDeliveryAttempt takes orders none of the row's other holders (the reply,
 			// the accept, the claim's renewal).
-			err = store.LockWithinBoundAndRead(ctx, tx, `
+			err = store.LockRowsWithinBoundAndRead(ctx, tx, `
 				select 1 from message_deliveries
 				where message_id = $1 and attempt = $2 and state = 'pending' and claimed_at = $3
 				for update`,
@@ -893,9 +893,9 @@ func (s *server) renewMessageDeliveryClaim(
 	}
 	defer tx.Rollback(ctx)
 	// The attempt row is taken in a bounded wait and written behind it, in one batch
-	// (store.LockWithinBoundAndRead): its other holders (the reply, the accept, another sender's
+	// (store.LockRowsWithinBoundAndRead): its other holders (the reply, the accept, another sender's
 	// settle) take it under no lock this transaction holds.
-	err = store.LockWithinBoundAndRead(ctx, tx, `
+	err = store.LockRowsWithinBoundAndRead(ctx, tx, `
 		select 1 from message_deliveries
 		where message_id = $1 and attempt = $2 and state = 'pending' and claimed_at = $3
 		for update`,
@@ -1078,7 +1078,7 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 	// attempts. The lock's failure is the handler's to answer; the read's is a missing delivery.
 	var attempt model.MessageDelivery
 	var readErr error
-	if err := store.LockWithinBoundAndRead(r.Context(), tx, `
+	if err := store.LockRowsWithinBoundAndRead(r.Context(), tx, `
 		select 1 from message_deliveries where message_id = $1 and attempt = $2 for update
 	`, []any{message.ID, input.Attempt}, `
 		select `+messageDeliveryColumns+`

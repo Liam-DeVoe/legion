@@ -157,7 +157,7 @@ same step before and after its change, and compares the two rows.
 | `LOADTEST_PPROF_PORT` | `B + 6 + 10k` | The Dispatch pprof port (`DISPATCH_PPROF_PORT`). |
 | `LOADTEST_METRICS_PORT` | `B + 7 + 10k` | The Dispatch metrics port. Dispatch gets `DISPATCH_METRICS_ADDR=127.0.0.1:<port>`, and the 5 s sampler scrapes its `/metrics` (Pools and admission, below). |
 | `LOADTEST_ENVOY_PROXY_PORT` | `B + 9 + 10k` | The port of `envoy_proxy`, the latency proxy in front of the listener (`--envoy-rtt`). |
-| `LOADTEST_EPHEMERAL_RANGE_FILE` | `/proc/sys/net/ipv4/ip_local_port_range` | The file the ephemeral range is read from, which decides `B` and the ports `stack.sh` refuses (below). Another file is for a test of a range this machine does not have. |
+| `LOADTEST_PORT_RANGE_FILE` | `/proc/sys/net/ipv4/ip_local_port_range` | The file the ephemeral range is read from, which decides `B` and the ports `stack.sh` refuses (below). Another file is for a test of a range this machine does not have. |
 | `LOADTEST_PROXY_RTT` | `1ms` | The round trip that the proxy adds, as a Go duration. Read when the proxy starts. |
 | `LOADTEST_PG_DIRECT` | unset (`1` for a `--replay` step) | `1` connects Dispatch to Postgres directly, without the proxy. Read when Dispatch starts, so set it on `run-step.sh`. `stack.json` and `meta.json` record it as `pg_direct`. |
 | `LOADTEST_ENVOY_RTT` | unset | A Go duration: Dispatch's `ENVOY_URL` goes through `envoy_proxy` with that round trip. Read when `stack.sh reset` starts Dispatch. `run-step.sh` sets it from `--envoy-rtt` and clears it otherwise. `stack.json` and `meta.json` record it as `envoy_rtt`. |

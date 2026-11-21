@@ -13,6 +13,7 @@ import (
 	"github.com/reearth/ygo/provider/websocket"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // connectionState is one document socket as its admission (ServeHTTP) found it and ygo's
@@ -225,11 +226,11 @@ type servicePersistenceAdapter struct {
 //
 // Its reads - the check of a socket's preload (takePreload) or the stored history - are bounded as
 // the hook's reads after them are (onLoadDocument): at coldReadTimeout, with errLoadReadsBound as
-// the cause (loadReadFailed). ygo hands the load no context, and a read the database left
-// unanswered - one waiting behind a table lock a migration or other DDL holds, or on a connection
-// that stopped answering - held the room's load, every join waiting on it and a settlement's
-// warm-up with no end; a settlement's lease on its document's pending-settlement row counts on
-// this bound (settlementLease).
+// the cause (withLoadReadsBound, loadReadFailed). ygo hands the load no context, and a read the
+// database left unanswered - one waiting behind a table lock a migration or other DDL holds, or on
+// a connection that stopped answering - held the room's load, every join waiting on it and a
+// settlement's warm-up with no end; a settlement's lease on its document's pending-settlement row
+// counts on this bound (settlementLease).
 func (a *servicePersistenceAdapter) LoadDoc(room string) (_ []byte, err error) {
 	load := a.service.beginRoomLoad(room)
 	defer func() {
@@ -241,7 +242,7 @@ func (a *servicePersistenceAdapter) LoadDoc(room string) (_ []byte, err error) {
 			a.service.failRoomLoad(room, load, err)
 		}
 	}()
-	reads, cancel := context.WithTimeoutCause(context.Background(), coldReadTimeout, errLoadReadsBound)
+	reads, cancel := withLoadReadsBound(context.Background())
 	defer cancel()
 	taken, err := a.service.takePreload(reads, room, load)
 	if err != nil {
@@ -658,10 +659,10 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 	// waiting on this load the load's error, so a read the joiner's own end cut short - its browser
 	// left, or the server ended its request - failed every other join with it. The reads below run
 	// detached from that end, keeping ctx's values, under the bound a cold read's fold of the same
-	// history runs under (coldReadTimeout), and each acquire under the rooms pool's own bound. A
+	// history runs under (withLoadReadsBound), and each acquire under the rooms pool's own bound. A
 	// read that bound ends fails the load as one a bound of this server's ended (loadReadFailed).
 	// A load that reads neither, both read already, holds the bound unused.
-	reads, cancel := context.WithTimeoutCause(context.WithoutCancel(ctx), coldReadTimeout, errLoadReadsBound)
+	reads, cancel := withLoadReadsBound(ctx)
 	defer cancel()
 	if !admitted {
 		if issue, err = s.readIssue(reads, rooms, room); err != nil {
@@ -866,6 +867,27 @@ func loadReadFailed(reads context.Context, err error) error {
 		return fmt.Errorf("%w: %w", errLoadReadsBound, err)
 	}
 	return err
+}
+
+// withLoadReadsBound is the context a room's load reads under, made from ctx: its values, detached
+// from its end, since the load is the room's and not its caller's, and bounded at a cold read's
+// bound (coldReadTimeout) with errLoadReadsBound as the cause, so a read the database left
+// unanswered fails the load as one a bound of this server's ended (loadReadFailed). A cold load
+// reads under two in turn, each with the bound whole: the preload check or the stored history
+// (servicePersistenceAdapter.LoadDoc), then the issue and the pending-settlement row
+// (onLoadDocument), which is why a settlement's lease counts two cold reads (settlementLease).
+func withLoadReadsBound(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeoutCause(context.WithoutCancel(ctx), coldReadTimeout, errLoadReadsBound)
+}
+
+// loadEndedByOwnBound reports whether err is a failure a bound of this server's own ended before
+// the database answered: a pool that could not serve the call (store.Unserved under ctx: no
+// connection came free within the pool's acquire bound, or the database stopped answering under
+// it), or a room load's reads' bound (errLoadReadsBound). It says nothing of the document, so a
+// settlement that stopped short on one is left to resume (settleRoomWithin) and a socket whose
+// room's load failed on one is refused as unserved (socketAnswerWriter.refuseFailedLoad).
+func loadEndedByOwnBound(ctx context.Context, err error) bool {
+	return store.Unserved(ctx, err) || errors.Is(err, errLoadReadsBound)
 }
 
 // onPeerUpdate stores what a peer's update parked, once ygo has applied it. ygo hands the room's

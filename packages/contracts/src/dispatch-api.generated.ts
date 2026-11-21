@@ -7305,6 +7305,17 @@ export interface operations {
           "application/json": components["schemas"]["TestHookOK"];
         };
       };
+      /** @description Refused before anything ran: OVERLOADED, which a request presenting a DPoP-bound token is given where no place came free for the token's decision, as admission refuses a request the server has no room for. Nothing of the request ran, and Retry-After says how long to wait before sending it again. */
+      429: {
+        headers: {
+          /** @description how many seconds to wait before sending the request again */
+          "Retry-After"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
       /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
@@ -7357,6 +7368,17 @@ export interface operations {
           "application/json": components["schemas"]["TestHookOK"];
         };
       };
+      /** @description Refused before anything ran: OVERLOADED, which a request presenting a DPoP-bound token is given where no place came free for the token's decision, as admission refuses a request the server has no room for. Nothing of the request ran, and Retry-After says how long to wait before sending it again. */
+      429: {
+        headers: {
+          /** @description how many seconds to wait before sending the request again */
+          "Retry-After"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
       /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
@@ -7407,6 +7429,17 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["ResidentRooms"];
+        };
+      };
+      /** @description Refused before anything ran: OVERLOADED, which a request presenting a DPoP-bound token is given where no place came free for the token's decision, as admission refuses a request the server has no room for. Nothing of the request ran, and Retry-After says how long to wait before sending it again. */
+      429: {
+        headers: {
+          /** @description how many seconds to wait before sending the request again */
+          "Retry-After"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
         };
       };
       /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
@@ -7644,6 +7677,17 @@ export interface operations {
         };
         content?: never;
       };
+      /** @description Refused before anything ran: OVERLOADED, which a request presenting a DPoP-bound token is given where no place came free for the token's decision, as admission refuses a request the server has no room for. Nothing of the request ran, and Retry-After says how long to wait before sending it again. */
+      429: {
+        headers: {
+          /** @description how many seconds to wait before sending the request again */
+          "Retry-After"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
       /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
@@ -7700,6 +7744,17 @@ export interface operations {
           "application/json": components["schemas"]["LiveWritePauseState"];
         };
       };
+      /** @description Refused before anything ran: OVERLOADED, which a request presenting a DPoP-bound token is given where no place came free for the token's decision, as admission refuses a request the server has no room for. Nothing of the request ran, and Retry-After says how long to wait before sending it again. */
+      429: {
+        headers: {
+          /** @description how many seconds to wait before sending the request again */
+          "Retry-After"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
       /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
@@ -7743,6 +7798,17 @@ export interface operations {
           [name: string]: unknown;
         };
         content?: never;
+      };
+      /** @description Refused before anything ran: OVERLOADED, which a request presenting a DPoP-bound token is given where no place came free for the token's decision, as admission refuses a request the server has no room for. Nothing of the request ran, and Retry-After says how long to wait before sending it again. */
+      429: {
+        headers: {
+          /** @description how many seconds to wait before sending the request again */
+          "Retry-After"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
       };
       /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
@@ -7799,6 +7865,17 @@ export interface operations {
           "application/json": components["schemas"]["LiveWritePauseState"];
         };
       };
+      /** @description Refused before anything ran: OVERLOADED, which a request presenting a DPoP-bound token is given where no place came free for the token's decision, as admission refuses a request the server has no room for. Nothing of the request ran, and Retry-After says how long to wait before sending it again. */
+      429: {
+        headers: {
+          /** @description how many seconds to wait before sending the request again */
+          "Retry-After"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
       /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
@@ -7850,6 +7927,17 @@ export interface operations {
           [name: string]: unknown;
         };
         content?: never;
+      };
+      /** @description Refused before anything ran: OVERLOADED, which a request presenting a DPoP-bound token is given where no place came free for the token's decision, as admission refuses a request the server has no room for. Nothing of the request ran, and Retry-After says how long to wait before sending it again. */
+      429: {
+        headers: {
+          /** @description how many seconds to wait before sending the request again */
+          "Retry-After"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
       };
       /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
@@ -7903,6 +7991,17 @@ export interface operations {
         };
         content?: never;
       };
+      /** @description Refused before anything ran: OVERLOADED, which a request presenting a DPoP-bound token is given where no place came free for the token's decision, as admission refuses a request the server has no room for. Nothing of the request ran, and Retry-After says how long to wait before sending it again. */
+      429: {
+        headers: {
+          /** @description how many seconds to wait before sending the request again */
+          "Retry-After"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
       /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
@@ -7955,6 +8054,17 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["RoomCounters"];
+        };
+      };
+      /** @description Refused before anything ran: OVERLOADED, which a request presenting a DPoP-bound token is given where no place came free for the token's decision, as admission refuses a request the server has no room for. Nothing of the request ran, and Retry-After says how long to wait before sending it again. */
+      429: {
+        headers: {
+          /** @description how many seconds to wait before sending the request again */
+          "Retry-After"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
         };
       };
       /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
@@ -12181,6 +12291,17 @@ export interface operations {
           "text/event-stream": unknown;
         };
       };
+      /** @description Refused before anything ran: OVERLOADED, which a request presenting a DPoP-bound token is given where no place came free for the token's decision, as admission refuses a request the server has no room for. Nothing of the request ran, and Retry-After says how long to wait before sending it again. */
+      429: {
+        headers: {
+          /** @description how many seconds to wait before sending the request again */
+          "Retry-After"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
       /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
@@ -15163,6 +15284,17 @@ export interface operations {
           "application/json": components["schemas"]["TestHookOK"];
         };
       };
+      /** @description Refused before anything ran: OVERLOADED, which a request presenting a DPoP-bound token is given where no place came free for the token's decision, as admission refuses a request the server has no room for. Nothing of the request ran, and Retry-After says how long to wait before sending it again. */
+      429: {
+        headers: {
+          /** @description how many seconds to wait before sending the request again */
+          "Retry-After"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
       /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
@@ -15213,6 +15345,17 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["TestHookOK"];
+        };
+      };
+      /** @description Refused before anything ran: OVERLOADED, which a request presenting a DPoP-bound token is given where no place came free for the token's decision, as admission refuses a request the server has no room for. Nothing of the request ran, and Retry-After says how long to wait before sending it again. */
+      429: {
+        headers: {
+          /** @description how many seconds to wait before sending the request again */
+          "Retry-After"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
         };
       };
       /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
@@ -16534,6 +16677,17 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["QueuedMessages"];
+        };
+      };
+      /** @description Refused before anything ran: OVERLOADED, which a request presenting a DPoP-bound token is given where no place came free for the token's decision, as admission refuses a request the server has no room for. Nothing of the request ran, and Retry-After says how long to wait before sending it again. */
+      429: {
+        headers: {
+          /** @description how many seconds to wait before sending the request again */
+          "Retry-After"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
         };
       };
       /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
@@ -19889,6 +20043,17 @@ export interface operations {
           "application/json": components["schemas"]["NewIssueSettings"];
         };
       };
+      /** @description Refused before anything ran: OVERLOADED, which a request presenting a DPoP-bound token is given where no place came free for the token's decision, as admission refuses a request the server has no room for. Nothing of the request ran, and Retry-After says how long to wait before sending it again. */
+      429: {
+        headers: {
+          /** @description how many seconds to wait before sending the request again */
+          "Retry-After"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
       /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {
         headers: {
@@ -20418,6 +20583,17 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["TestHookOK"];
+        };
+      };
+      /** @description Refused before anything ran: OVERLOADED, which a request presenting a DPoP-bound token is given where no place came free for the token's decision, as admission refuses a request the server has no room for. Nothing of the request ran, and Retry-After says how long to wait before sending it again. */
+      429: {
+        headers: {
+          /** @description how many seconds to wait before sending the request again */
+          "Retry-After"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
         };
       };
       /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */

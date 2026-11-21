@@ -120,12 +120,12 @@ func (r *RawPool) BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, e
 }
 
 // waitingForLocksBegin is the statement a transaction that waits for its locks without a bound
-// opens with (BeginWaitingForLocks): BEGIN, then SET LOCAL lock_timeout at none
-// (lockTimeoutNone). readOnlyWaitingForLocksBegin is the same for a read-only transaction: the
-// boot's probe of the database (Pool.HealthyWithin).
-const (
-	waitingForLocksBegin         = "begin; set local " + lockTimeoutParam + " = '" + lockTimeoutNone + "'"
-	readOnlyWaitingForLocksBegin = "begin read only; set local " + lockTimeoutParam + " = '" + lockTimeoutNone + "'"
+// opens with (BeginWaitingForLocks): BEGIN, then SET LOCAL lock_timeout at none (lockTimeoutNone),
+// as renderBegin renders a request-pool transaction's at its bound. readOnlyWaitingForLocksBegin
+// is the same for a read-only transaction: the boot's probe of the database (Pool.HealthyWithin).
+var (
+	waitingForLocksBegin         = renderBegin(pgx.TxOptions{}, lockTimeoutNone)
+	readOnlyWaitingForLocksBegin = renderBegin(pgx.TxOptions{AccessMode: pgx.ReadOnly}, lockTimeoutNone)
 )
 
 // BeginWaitingForLocks opens a transaction as Begin does, which waits for every lock it takes

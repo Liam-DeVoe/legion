@@ -430,11 +430,11 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if readThrough != nil {
-		// The upsert runs in a bounded wait itself (store.LockWithinBound; it answers nothing this
+		// The upsert runs in a bounded wait itself (store.LockRowsWithinBound; it answers nothing this
 		// handler reads), so a concurrent mark of the same login and session - another tab or
 		// device - holding the row, or an uncommitted first mark of it, is waited for no longer
 		// than any lock a write waits on: no owner lock orders the writers of this row.
-		if err := store.LockWithinBound(r.Context(), tx, `
+		if err := store.LockRowsWithinBound(r.Context(), tx, `
 			insert into user_agent_read (login, session_id, read_through)
 			values ($1, $2, least($3::timestamptz, now()))
 			on conflict (login, session_id) do update set
@@ -522,9 +522,9 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 		// The dead rows are locked in one order before the delete reaches them, for the reason
 		// written on pruneAgentReplies below, which this route and the Inbox's mark-all share
 		// (markInboxReadThreads names the lock order every writer here takes). The statement runs
-		// in a bounded wait (store.LockWithinBound): no owner lock orders the writers of these
+		// in a bounded wait (store.LockRowsWithinBound): no owner lock orders the writers of these
 		// rows, and this route, unlike the mark-all, sets no statement_timeout of its own.
-		if err := store.LockWithinBound(r.Context(), tx, pruneAgentReplies,
+		if err := store.LockRowsWithinBound(r.Context(), tx, pruneAgentReplies,
 			model.CanonicalLogin(actor.ID), []string{sessionID},
 		); err != nil {
 			s.writeHandlerError(w, r, err)

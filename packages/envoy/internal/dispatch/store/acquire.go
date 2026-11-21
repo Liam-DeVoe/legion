@@ -173,12 +173,14 @@ func defaultAcquireBound(name string) time.Duration {
 //     by closing the connection under the transaction, so that transaction commits nothing
 //     (RanOutTheRollbackBound);
 //   - a lapsed sign-in's refresh that gave its place of the request pool's share outside
-//     admission back for the issuer's wait and was refused a place again for its own reads and
-//     writes (identity.Membership's retake), before any of them ran;
-//   - a wait for a transaction advisory lock another transaction holds that ran out its bound
-//     (lockWait) - a read-phase owner lock's, or another lock a write takes (LockWithinBound) -
-//     which leaves its transaction as it was before the lock and fails the caller, whose
-//     transaction then rolls back (leaveBoundedWait).
+//     admission back for the issuer's wait, or an IAP person's record that gave it back for the
+//     read of IAP's key set, and was refused a place again for its own reads and writes
+//     (identity's retake), before any of them ran;
+//   - a wait for a lock another transaction holds that ran out its bound (lockWait) - a
+//     read-phase owner lock's, another advisory lock a write takes (LockWithinBound), or a row
+//     lock a write takes (LockRowsWithinBound, WriteBatch.QueueWithinBound) - which fails the
+//     caller, whose transaction then rolls back: an advisory lock's wait leaves its transaction
+//     as it was before the lock first, and a row lock's has aborted it (boundedWait.refused).
 //
 // The caller may retry; a request answers it as busy rather than as a failure. An acquire's
 // error wraps context.DeadlineExceeded too, so errors.Is finds both, and IsPoolBusy tells any
@@ -752,26 +754,20 @@ func BoundAcquires(config *pgxpool.Config, bound time.Duration) {
 // lockTimeoutRead reads a connection's lock_timeout in milliseconds, the unit pg_settings gives it.
 const lockTimeoutRead = `select setting from pg_settings where name = 'lock_timeout'`
 
-// requireLockBound refuses conn, a new connection of a pool whose configuration asks for a
-// lock_timeout bound (configurePool: the request pool's; every other pool asks for none,
+// requireLockBound refuses conn, a new connection of a pool whose configuration asks for the write
+// lock bound (lockWaitDefault, configurePool: the request pool's; every other pool asks for none,
 // lockTimeoutNone, and is not checked), unless its session waits for a lock under a bound no
-// longer than the one asked for. Postgres applies a startup parameter or refuses the
-// connection, but a pooler between this process and Postgres can drop the parameter and hand over
-// a session that waits without limit, and its statements outside a transaction would then wait for
-// as long as a lock's holder held it with nothing to say so. Such a connection is refused here, at
-// its connect, so every acquire that would have taken it fails with this error, unless the
-// database role or the database carries a bound of its own at or below the asked one (ALTER ROLE
-// ... SET lock_timeout, cmd/dispatch/README.md). It reads on pgconn, below pgx's query tracer, so a
-// test counting a request's statements never counts it, and it costs a round trip per connection,
-// not per request.
+// longer than lockWait. Postgres applies a startup parameter or refuses the connection, but a
+// pooler between this process and Postgres can drop the parameter and hand over a session that
+// waits without limit, and its statements outside a transaction would then wait for as long as a
+// lock's holder held it with nothing to say so. Such a connection is refused here, at its connect,
+// so every acquire that would have taken it fails with this error, unless the database role or the
+// database carries a bound of its own at or below lockWait (ALTER ROLE ... SET lock_timeout,
+// cmd/dispatch/README.md). It reads on pgconn, below pgx's query tracer, so a test counting a
+// request's statements never counts it, and it costs a round trip per connection, not per request.
 func requireLockBound(ctx context.Context, conn *pgx.Conn) error {
-	asked, ok := conn.Config().RuntimeParams[lockTimeoutParam]
-	if !ok || asked == lockTimeoutNone {
+	if conn.Config().RuntimeParams[lockTimeoutParam] != lockWaitDefault {
 		return nil
-	}
-	bound, err := time.ParseDuration(asked)
-	if err != nil {
-		return fmt.Errorf("read the %s this pool asks for (%q): %w", lockTimeoutParam, asked, err)
 	}
 	results, err := conn.PgConn().Exec(ctx, lockTimeoutRead).ReadAll()
 	if err != nil {
@@ -784,11 +780,11 @@ func requireLockBound(ctx context.Context, conn *pgx.Conn) error {
 	if err != nil {
 		return fmt.Errorf("read this connection's %s: %w", lockTimeoutParam, err)
 	}
-	if millis <= 0 || millis > bound.Milliseconds() {
+	if millis <= 0 || millis > lockWait.Milliseconds() {
 		return fmt.Errorf("this connection's session has %s = %dms (0 is no bound), where the pool asks for %s: "+
 			"the startup parameter did not reach Postgres, and nothing would bound a lock wait outside a transaction; "+
 			"let the parameter through, or set %s on the database role at or below %s",
-			lockTimeoutParam, millis, asked, lockTimeoutParam, asked)
+			lockTimeoutParam, millis, lockWaitDefault, lockTimeoutParam, lockWaitDefault)
 	}
 	return nil
 }

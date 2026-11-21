@@ -877,7 +877,7 @@ func TestACloseOfAReplacedRoomHoldsItAgainstTheIdleSweep(t *testing.T) {
 	const sweepBudget = 30 * time.Second
 	var holdErr error
 	var heldThrough bool
-	service.afterRoomClosePinned = func(room string) {
+	service.roomCloseHeld = func(room string) {
 		browser.Close()
 		// The service forgets the browser once ygo's teardown of it has returned, which is after
 		// that teardown stamped the room idle.
@@ -899,7 +899,7 @@ func TestACloseOfAReplacedRoomHoldsItAgainstTheIdleSweep(t *testing.T) {
 		}
 		heldThrough = service.srv.GetDoc(room) == live
 	}
-	closed, err := service.closeRoomInstance(context.Background(), artifactID, live)
+	closed, err := service.closeRoomInstance(context.Background(), artifactID, live, true, service.srv.Apply)
 	if err != nil {
 		t.Fatalf("close the room: %v", err)
 	}
