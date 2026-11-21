@@ -60,6 +60,7 @@ import { presetView } from "../presets";
 import { ReferenceNamesProvider, usePublishReferenceNames } from "../reference-names";
 import { ProvidersSlot } from "../slots/providers";
 import { StageSlot, ViewStage } from "../slots/stage";
+import { nodeRowSelectorOf } from "../tree-focus";
 import { decisionBehind } from "../tree-keys";
 import { issueAsksQuery, treeDocumentIds } from "../useIssueTree";
 import { check, checkNode, result } from "../verification-filter/verification-fixtures";
@@ -347,7 +348,7 @@ function textsOf(view: RenderResult, selector: string): string[] {
 }
 
 function rowOf(view: RenderResult, id: string): HTMLElement {
-  const row = view.container.querySelector<HTMLElement>(`[data-node-row][data-node-id="${id}"]`);
+  const row = view.container.querySelector<HTMLElement>(nodeRowSelectorOf(id));
   if (row === null) throw new Error(`the body draws no row for ${id}`);
   return row;
 }
@@ -896,7 +897,7 @@ test("with the Spec view's slot filled, a spec item's address lands on the item 
     const { container } = view;
     await waitFor(() => {
       const row = container.querySelector<HTMLElement>(
-        '[data-spec-tree] [data-node-row][data-node-id="reply-b"]'
+        `[data-spec-tree] ${nodeRowSelectorOf("reply-b")}`
       );
       expect(row, "the Spec view's tree drew no row for the item the address names").not.toBeNull();
       expect(

@@ -28,6 +28,7 @@ import { ContentsSlot } from "./slots/contents";
 import { ProvidersSlot } from "./slots/providers";
 import { specSummary } from "./spec-summary";
 import { blockNodeId, blockWords } from "./tree-drafts";
+import { nodeRowSelectorOf } from "./tree-focus";
 
 /**
  * The head of the page draws the issue in plain language: at most three bullets, each one spoken
@@ -760,7 +761,7 @@ function IssueScope(): ReactNode {
 
 /** Every row the outline drew for `nodeId`, in the order it drew them. */
 function rowsFor(container: HTMLElement, nodeId: string): HTMLElement[] {
-  return [...container.querySelectorAll<HTMLElement>(`[data-node-row][data-node-id="${nodeId}"]`)];
+  return [...container.querySelectorAll<HTMLElement>(nodeRowSelectorOf(nodeId))];
 }
 
 // R10, R22 and the person's ruling on helper text: a gap is drawn only where it tells a node
