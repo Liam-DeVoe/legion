@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // resendUnderClose serves one request through serve while the server behind closing stops
@@ -188,6 +189,11 @@ func TestADuplicateVerdictOnTheRequestsOwnCopyAnswersNoDuplicate(t *testing.T) {
 // sequence (bus.ErrDuplicateWithoutSequence, as a forward's Wait names it). The control is a role
 // forward the stream never acknowledges, which is tried again until the send's window ends and
 // answered 504 delivery_failed.
+//
+// A role send whose earlier forward failed with no refusal may have stored the copy a later
+// verdict names, so the stored-copy 503 that follows says maybe_stored, whether the verdict names
+// no sequence or a copy that cannot be read, as the send and topic routes' does after a resend.
+// The controls are the same two verdicts on a send's first forward, which carry no code.
 func TestADuplicateVerdictThatNamesNoCopyAnswers503AtOnce(t *testing.T) {
 	requireUnread := func(t *testing.T, what string, status int, retryAfter string, raw string, outcome any) {
 		t.Helper()
@@ -221,31 +227,86 @@ func TestADuplicateVerdictThatNamesNoCopyAnswers503AtOnce(t *testing.T) {
 	})
 
 	rig := newSenderLimitRig(t)
-	rig.limit(60, 5)
-	roleSend := func(t *testing.T, waitErr error) (limitedAnswer, int) {
+	rig.limit(60, 10)
+	// roleSend publishes one role message whose forwards the stream answers with verdict, handed
+	// each forward's number from 1, and returns the route's answer and the forwards it made.
+	roleSend := func(t *testing.T, verdict func(n int) (bus.StoredAck, error)) (limitedAnswer, int) {
 		t.Helper()
 		role := "no-copy-" + id.New()
 		claimRoleFor(t, rig.deps.registry, rig.deps.sessions, "ses_no_copy_holder_"+id.New(), role, nil)
 		saved := rig.deps.delivery
 		t.Cleanup(func() { rig.deps.delivery = saved })
-		forwards := rig.interceptForwards(func(int, func() (func() (bus.StoredAck, error), error)) (func() (bus.StoredAck, error), error) {
-			return func() (bus.StoredAck, error) { return bus.StoredAck{}, waitErr }, nil
+		forwards := rig.interceptForwards(func(n int, _ func() (func() (bus.StoredAck, error), error)) (func() (bus.StoredAck, error), error) {
+			return func() (bus.StoredAck, error) { return verdict(n) }, nil
 		})
 		answer := rig.publishFrom(t, "ses_no_copy_sender", contracts.RoleTopicPrefix+role, map[string]any{"idempotency_key": uuid.NewString()})
 		return answer, *forwards
 	}
+	// always answers every forward with err; unansweredThen answers the first forward with
+	// bus.ErrForwardNotStored, a forward that failed with no refusal, and every later one with
+	// ack and err.
+	always := func(err error) func(int) (bus.StoredAck, error) {
+		return func(int) (bus.StoredAck, error) { return bus.StoredAck{}, err }
+	}
+	unansweredThen := func(ack bus.StoredAck, err error) func(int) (bus.StoredAck, error) {
+		return func(n int) (bus.StoredAck, error) {
+			if n == 1 {
+				return bus.StoredAck{}, bus.ErrForwardNotStored
+			}
+			return ack, err
+		}
+	}
+	noSequence := fmt.Errorf("%w: %w", bus.ErrForwardNotStored, bus.ErrDuplicateWithoutSequence)
+	// unreadable is a duplicate verdict at a sequence the stream holds nothing at.
+	unreadable := bus.StoredAck{Sequence: 1 << 40, Duplicate: true}
+	// requireCode fails unless the answer's body carries code, "" for none.
+	requireCode := func(t *testing.T, what string, answer limitedAnswer, code string) {
+		t.Helper()
+		var body listenerwire.APIError
+		if err := json.Unmarshal([]byte(answer.raw), &body); err != nil || body.Code != code {
+			t.Fatalf("%s answered %s (%v), want the code %q", what, answer.raw, err, code)
+		}
+	}
 
 	t.Run("case: a role forward acknowledged as a duplicate with no sequence, which costs one", func(t *testing.T) {
-		answer, forwards := roleSend(t, fmt.Errorf("%w: %w", bus.ErrForwardNotStored, bus.ErrDuplicateWithoutSequence))
+		answer, forwards := roleSend(t, always(noSequence))
 		requireUnread(t, "a role forward acknowledged with no sequence", answer.status, answer.retryAfter, answer.raw, answer.line["outcome"])
 		if forwards != 1 {
 			t.Fatalf("the role send made %d forwards, want 1: answered at once, with no retry of the forward", forwards)
 		}
 		answer.requireNamed(t, "a role forward acknowledged with no sequence", "ses_no_copy_sender")
+		requireCode(t, "a first role forward acknowledged with no sequence", answer, "")
 	})
 
+	t.Run("control: a first role forward acknowledged as a duplicate whose copy cannot be read carries no code", func(t *testing.T) {
+		answer, forwards := roleSend(t, func(int) (bus.StoredAck, error) { return unreadable, nil })
+		requireUnread(t, "a first role forward whose duplicate cannot be read", answer.status, answer.retryAfter, answer.raw, answer.line["outcome"])
+		if forwards != 1 {
+			t.Fatalf("the role send made %d forwards, want 1", forwards)
+		}
+		requireCode(t, "a first role forward whose duplicate cannot be read", answer, "")
+	})
+
+	for _, row := range []struct {
+		name string
+		ack  bus.StoredAck
+		err  error
+	}{
+		{"case: a role forward unanswered once and then acknowledged as a duplicate with no sequence says maybe_stored", bus.StoredAck{}, noSequence},
+		{"case: a role forward unanswered once and then acknowledged as a duplicate whose copy cannot be read says maybe_stored", unreadable, nil},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			answer, forwards := roleSend(t, unansweredThen(row.ack, row.err))
+			requireUnread(t, "a role send whose first forward went unanswered", answer.status, answer.retryAfter, answer.raw, answer.line["outcome"])
+			if forwards != 2 {
+				t.Fatalf("the role send made %d forwards, want 2: the one unanswered and the one whose verdict names a copy", forwards)
+			}
+			requireCode(t, "a role send whose first forward went unanswered", answer, listenerwire.CodeMaybeStored)
+		})
+	}
+
 	t.Run("control: a role forward the stream never acknowledges is tried again and answered 504 when the window ends", func(t *testing.T) {
-		answer, forwards := roleSend(t, bus.ErrForwardNotStored)
+		answer, forwards := roleSend(t, always(bus.ErrForwardNotStored))
 		answer.requireStatus(t, "a role forward never acknowledged", http.StatusGatewayTimeout)
 		answer.requireOutcome(t, "a role forward never acknowledged", outcomeDeliveryFailed)
 		if forwards < 2 {

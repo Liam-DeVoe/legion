@@ -112,8 +112,8 @@ func (s requestSender) answer(held contracts.Envelope) contracts.Envelope {
 // under an earlier one (bus.ErrDuplicateInProcess), are an error wrapping errStoredCopyUnread,
 // with *item untouched, and the charge stays marked by the publish's own answer. A copy that
 // cannot be read after the bus sent the publish again (bus.StoredAck.Resent) may be the one this
-// request's first send stored, so that error is bus.ErrUnacknowledged too (resentUnread), and its
-// 503 says maybe_stored as every answer that may have stored the message does (mayHaveStored).
+// request's first send stored, so that error is bus.ErrUnacknowledged too (mayBeOwnUnread), and
+// its 503 says maybe_stored as every answer that may have stored the message does (mayHaveStored).
 func publishHeld(ctx context.Context, reader storedReader, publish storedPublish, record *requestRecord, sender requestSender, item *contracts.Envelope) (duplicate bool, err error) {
 	ack, err := publish(ctx, *item)
 	record.charge.published(ack, err)
@@ -126,7 +126,7 @@ func publishHeld(ctx context.Context, reader storedReader, publish storedPublish
 	held, err := storedCopy(ctx, reader, item.Topic, *item, ack.Sequence)
 	if err != nil {
 		if ack.Resent {
-			return false, resentUnread{err}
+			return false, mayBeOwnUnread{err}
 		}
 		return false, err
 	}
@@ -147,12 +147,14 @@ func (rec *requestRecord) answerStored(item *contracts.Envelope, held contracts.
 	return held.EventID != asked.EventID
 }
 
-// resentUnread is a stored copy that could not be read after a resend's duplicate verdict: the
-// read's own error, whose text it keeps, and bus.ErrUnacknowledged, since the first send of the
-// publish went unanswered and may have stored the copy the verdict names (publishHeld).
-type resentUnread struct{ error }
+// mayBeOwnUnread is a stored copy that could not be read when it may be the request's own: after a
+// resend's duplicate verdict (publishHeld), and after a role forward of the same send that failed
+// with no refusal (roleSend.deliveredHeld). It is the read's own error, whose text it keeps, and
+// bus.ErrUnacknowledged, since an earlier send went unanswered and may have stored the copy the
+// verdict names.
+type mayBeOwnUnread struct{ error }
 
-func (e resentUnread) Unwrap() []error { return []error{e.error, bus.ErrUnacknowledged} }
+func (e mayBeOwnUnread) Unwrap() []error { return []error{e.error, bus.ErrUnacknowledged} }
 
 // storedCopy reads, through reader, the copy a duplicate verdict on item's publish to subject
 // named at seq: the message the stream holds at seq on subject, item's own topic for a send or a

@@ -192,6 +192,13 @@ func TestARolePublishRepeatedUnderOneIdempotencyKeyAnswersTheStoredCopy(t *testi
 // holder the sender is now: never the new envelope the route built for the repeat, whose event_id
 // no stored message carries. The control is the holder's first publish to its own role, which no
 // forward stored: it answers its own envelope with no duplicate, as an echo always has.
+//
+// A second request under K that the route's record answers as a repeat of that forward, with no
+// forward of its own (another sender's to the same role, or the same sender's to another role the
+// same holder holds), is a request of its own too: once its sender takes that role and repeats,
+// the echo answers the same stored forward, short for another sender and whole with duplicate for
+// the forward's own. The controls clear the route's record of K before the second request, which
+// is then forwarded again and recorded through the stream's confirmation, as a forward always was.
 func TestARoleRepeatFromTheSenderThatTookTheRoleAnswersTheStoredForward(t *testing.T) {
 	rig := newSenderLimitRig(t)
 
@@ -242,4 +249,53 @@ func TestARoleRepeatFromTheSenderThatTookTheRoleAnswersTheStoredForward(t *testi
 		repeat := held(t, rig.publishFrom(t, alice, contracts.RoleTopicPrefix+roleA, map[string]any{"idempotency_key": key}))
 		repeat.requireHeld(t, "Alice's repeat to role A after she took it", heldForward(t, rig.harness.client, bob), true)
 	})
+
+	for _, row := range []struct {
+		name string
+		// other is whether the second request is another sender's to role A, rather than the
+		// first sender's to role B; forward is whether the route's record of the key is cleared
+		// first, so the second request is forwarded again rather than answered from the record.
+		other, forward bool
+	}{
+		{"case: another sender's repeat the record answered, repeated after it took the role, learns only that the key is taken", true, false},
+		{"case: the sender's request to a second role the record answered, repeated after it took that role, answers the stored forward with duplicate", false, false},
+		{"control: another sender's repeat forwarded again, repeated after it took the role, learns only that the key is taken", true, true},
+		{"control: the sender's request to a second role forwarded again, repeated after it took that role, answers the stored forward with duplicate", false, true},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			roleA, roleB := "role-echo-recorded-a-"+id.New(), "role-echo-recorded-b-"+id.New()
+			bob := "ses_role_echo_recorded_bob_" + id.New()
+			alice := "ses_role_echo_recorded_alice_" + id.New()
+			claimRoleFor(t, rig.deps.registry, rig.deps.sessions, bob, roleA, nil)
+			claimRoleFor(t, rig.deps.registry, rig.deps.sessions, bob, roleB, nil)
+			key := uuid.NewString()
+			words := "alice's own words " + id.New()
+			held(t, rig.publishFrom(t, alice, contracts.RoleTopicPrefix+roleA, map[string]any{"idempotency_key": key, "message": words})).
+				requireHeld(t, "Alice's publish to role A", heldForward(t, rig.harness.client, bob), false)
+			stored := heldForward(t, rig.harness.client, bob)
+			second, role, who := alice, roleB, "Alice's request to role B"
+			if row.other {
+				second, role, who = "ses_role_echo_recorded_mallory_"+id.New(), roleA, "Mallory's request to role A"
+			}
+			// answers fails unless answer is what second gets for the stored forward: the
+			// key taken for another sender, the whole forward with duplicate for its own.
+			answers := func(what string, answer heldAnswer) {
+				t.Helper()
+				if row.other {
+					answer.requireKeyTaken(t, what, http.StatusOK, stored, words)
+					return
+				}
+				answer.requireHeld(t, what, stored, true)
+			}
+			if row.forward {
+				rig.deps.confirmed.Clear(publishDedupePrefix+key, bob)
+			}
+			answers(who, held(t, rig.publishFrom(t, second, contracts.RoleTopicPrefix+role,
+				map[string]any{"idempotency_key": key, "message": "the second request's own body"})))
+			claimRoleFor(t, rig.deps.registry, rig.deps.sessions, second, role, nil)
+			answers(who+", repeated after it took the role", held(t, rig.publishFrom(t, second, contracts.RoleTopicPrefix+role,
+				map[string]any{"idempotency_key": key, "message": "the repeat's own body"})))
+			heldForward(t, rig.harness.client, bob)
+		})
+	}
 }

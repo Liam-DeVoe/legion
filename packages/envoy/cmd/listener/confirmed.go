@@ -187,6 +187,10 @@ type roleSend struct {
 	// sender is who the request speaks for, which decides how much of a copy the stream or the
 	// kept lane already held the 200 or the 202 may carry (requestSender.answer).
 	sender requestSender
+	// unanswered is set once a forward of this send failed with no refusal, which may have stored
+	// the message for the holder it went to (sendToRole), so a copy a later duplicate verdict names
+	// may be that forward's (deliveredHeld).
+	unanswered bool
 }
 
 // settle counts and logs the send's outcome, the one delivery line a send writes, once its answer
@@ -226,9 +230,15 @@ func (s *roleSend) delivered(outcome sendOutcome) {
 // acknowledgement was lost, carries this send's own. A copy that cannot be read, a sequence of 0
 // among them, is answered as a refused forward is (refused): the 503 refuseBusUnavailable writes
 // for errStoredCopyUnread, marking the charge with nothing more than the forward already did.
+// After a forward of this send that failed with no refusal (unanswered), the copy may be that
+// forward's, so the 503 says maybe_stored too (mayBeOwnUnread), as the send and topic routes'
+// does after a resend (publishHeld).
 func (s *roleSend) deliveredHeld(ctx context.Context, recipient string, seq uint64, outcome sendOutcome) {
 	held, err := storedCopy(ctx, s.d.client, contracts.LegacyAgentSubject(recipient), s.forwarded(), seq)
 	if err != nil {
+		if s.unanswered {
+			err = mayBeOwnUnread{err}
+		}
 		s.refused(err)
 		return
 	}
@@ -389,8 +399,11 @@ func (s *roleSend) timedOut() {
 // An echo is answered with its own envelope, which no forward stored, unless the route's record
 // names a forward the stream stored for another holder for the same request: the same sender,
 // role and dedupe key (forwardRequest, dedupe.Cache.Forward) - a session that sent to the role,
-// took it, and repeats. That record never names the echo's holder: the request names its source
-// session, which is that holder, and no send forwards to its own source session (beforeForward).
+// took it, and repeats. The record is written for each holder a send of the request was answered
+// for past the echo check: a forward the stream confirmed (confirm), and a repeat the route's
+// record answered (the forwardRepeat case below), such as another sender's under the same key,
+// or the same sender's to another role the same holder holds. So it never names the echo's
+// holder, which is the request's own source session (beforeForward).
 // The repeat is answered as that stored forward (deliveredHeld on the earlier holder's subject),
 // never with the new envelope built for the repeat, whose event_id no stored message carries.
 // The record is the listener's own and lasts 10 minutes; a repeat after that or on another
@@ -425,6 +438,9 @@ func (s *roleSend) settledBeforeForward(ctx context.Context, entry session.Sessi
 		if !recorded {
 			return false
 		}
+		// Recorded under this request too, as a forward the stream confirmed is (confirm), so
+		// its sender's repeat after it takes the role, an echo, answers the same copy.
+		s.d.confirmed.RecordForward(forwardRequest(s.item), s.holder, seq)
 		s.deliveredHeld(ctx, s.holder, seq, sendDedupe)
 	default:
 		s.record.holder = s.holder
@@ -550,8 +566,10 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecor
 				return
 			}
 			// A forward that failed with no refusal may have been stored for its holder, so it
-			// costs its sender one whatever this send answers next.
+			// costs its sender one whatever this send answers next, and a copy a later verdict
+			// names may be its own (deliveredHeld).
 			send.record.charge.stored()
+			send.unanswered = true
 		}
 		// Any resolution not answered above (a holder past the live window, which keeps its
 		// claim, or a read that failed) fails this attempt only.
