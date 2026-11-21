@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
@@ -531,7 +532,12 @@ func TestARepositoryWriteBesideTheSwitchIsSeen(t *testing.T) {
 	}
 	switched := make(chan *httptest.ResponseRecorder, 1)
 	go func() { switched <- switchToPrivate(t, handler, "PRIV") }()
-	awaitLockWaiters(t, database, 1)
+	// The switch must queue behind this write's own lock, not merely wait on some lock: background
+	// work after a create can wait on a lock of its own, which a count of every waiter would take
+	// for the switch (storetest.WaitForLockWaiters counts only the holder's).
+	if queued := storetest.WaitForLockWaiters(t, write, 1, 10*time.Second); queued < 1 {
+		t.Fatalf("PRIV's switch never queued behind the write naming acme/raced, which holds PRIV's owner lock shared")
+	}
 	select {
 	case early := <-switched:
 		t.Fatalf("PRIV's switch answered %d %s while a write naming acme/raced with no id held PRIV's lock, want it to wait",
@@ -555,7 +561,9 @@ func TestARepositoryWriteBesideTheSwitchIsSeen(t *testing.T) {
 	go func() {
 		patched <- dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+key, map[string]any{"repo": "acme/racedroute"}, "alice")
 	}()
-	awaitLockWaiters(t, database, 1)
+	if queued := storetest.WaitForLockWaiters(t, holder, 1, 10*time.Second); queued < 1 {
+		t.Fatalf("the PATCH naming acme/racedroute never queued behind PRIV's owner lock, held as a switch holds it")
+	}
 	select {
 	case early := <-patched:
 		t.Fatalf("the PATCH naming acme/racedroute answered %d %s while PRIV's owner lock was held, want it to wait",
