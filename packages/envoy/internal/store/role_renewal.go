@@ -34,9 +34,10 @@ import (
 // (RenewRoleClaims), which the registration route logs at DEBUG and the tests read to tell where
 // a renewal took a role from.
 type RoleRenewal struct {
-	// Set is every role whose claim record the renewal read, sorted and without repeats: the
-	// role topics of the interest record it was given (rolesOfTopics) and the roles the role
-	// claim copy names for the session (RolesHeldBy) while that copy can be served (weighedRoles).
+	// Set is every role whose claim record the renewal read to renew it, sorted and without
+	// repeats: the role topics of the interest record it was given (rolesOfTopics) and the roles
+	// the role claim copy names for the session (RolesHeldBy) while that copy can be served
+	// (weighedRoles), less the roles its hold refused (Released, RenewRoleClaimsHeldTo).
 	Set []string
 	// Renewed is the roles of Set whose claim the renewal wrote, sorted. A role of Set it did
 	// not renew is one whose claim record names another session, a process this registration is
@@ -44,6 +45,10 @@ type RoleRenewal struct {
 	// compare-and-swap, and one whose read or write failed, which the error RenewRoleClaims
 	// returns beside it names.
 	Renewed []string
+	// Released is the roles whose claim the session held and a held renewal freed, sorted:
+	// each a role the registration's hold refused (RenewRoleClaimsHeldTo). A plain renewal
+	// releases none.
+	Released []string
 }
 
 // RenewRoleClaims stamps the moment clientInstanceID's process last answered on every claim
@@ -106,11 +111,35 @@ type RoleRenewal struct {
 // context. A write ctx abandoned may still land after this answer, which is safe - it is
 // conditional on the revision it read and renews that claim alone.
 func (r *Registry) RenewRoleClaims(ctx context.Context, sessionID, clientInstanceID string, record Interest) (RoleRenewal, error) {
+	return r.RenewRoleClaimsHeldTo(ctx, sessionID, clientInstanceID, record, nil)
+}
+
+// RenewRoleClaimsHeldTo is RenewRoleClaims for a registration that holds its session to a rule of
+// its own: cmd/listener's edge listener, which holds a session to the projects of the broker token
+// that registered it, and so holds its roles as it holds a new claim (edgeRoleRefusal). A role of
+// the weighed set that holds refuses is not renewed, and the session's claim of it is freed
+// whatever process the claim names (releaseHeldRoleClaim), so a role another listener granted the
+// session, or one it held under a token that listed more, ends with the registration that may
+// not keep it rather than a live window later. Each freed role is in RoleRenewal.Released. A
+// claim of another session and a role no record claims are left alone. A release that failed is
+// in the error, and its claim, unrenewed, is freed by the role claim reaper once its renewal has
+// lapsed. A nil holds refuses nothing.
+func (r *Registry) RenewRoleClaimsHeldTo(ctx context.Context, sessionID, clientInstanceID string, record Interest, holds func(role string) bool) (RoleRenewal, error) {
 	// A view that cannot be served leaves the record's roles alone and is no failure of the renewal.
 	set, _ := r.weighedRoles(sessionID, record.Topics)
-	renewal := RoleRenewal{Set: set}
+	var renewal RoleRenewal
 	var failures []error
-	for _, role := range renewal.Set {
+	for _, role := range set {
+		if holds != nil && !holds(role) {
+			released, err := r.releaseHeldRoleClaim(ctx, sessionID, role)
+			if err != nil {
+				failures = append(failures, err)
+			} else if released {
+				renewal.Released = append(renewal.Released, role)
+			}
+			continue
+		}
+		renewal.Set = append(renewal.Set, role)
 		renewed, err := r.renewRoleClaim(ctx, role, sessionID, clientInstanceID)
 		if err != nil {
 			failures = append(failures, err)
@@ -121,6 +150,27 @@ func (r *Registry) RenewRoleClaims(ctx context.Context, sessionID, clientInstanc
 		}
 	}
 	return renewal, errors.Join(failures...)
+}
+
+// releaseHeldRoleClaim frees role's claim when it names sessionID, whatever process it names, and
+// reports whether it freed it: the release of a held renewal (RenewRoleClaimsHeldTo), which the
+// registration of that very session asks for, so the process a claim names does not decide it as
+// it decides a hand-back (RoleReleaseAuthority.Force). A claim of another session, a role no
+// record claims and a claim granted to another since the read are none of its business, and
+// none is an error.
+func (r *Registry) releaseHeldRoleClaim(ctx context.Context, sessionID, role string) (bool, error) {
+	claim, err := r.RoleClaim(ctx, role)
+	if err != nil {
+		return false, fmt.Errorf("read role %s's claim to release it from %s: %w", role, sessionID, err)
+	}
+	if claim.Revision == 0 || claim.HolderSessionID != sessionID {
+		return false, nil
+	}
+	stands, err := r.releaseReadRoleClaim(ctx, sessionID, role, claim, RoleReleaseAuthority{Force: true})
+	if err != nil {
+		return false, err
+	}
+	return !stands, nil
 }
 
 // weighedRoles is the roles an act on sessionID's claims weighs: the role topics of topics, an
@@ -161,14 +211,21 @@ func rolesOfTopics(topics []string) []string {
 	return slices.Compact(roles)
 }
 
-// roleOfTopic is the role whose lane topic (contracts.RoleTopicPrefix) topic is, and false for a
-// topic that is not a role lane's. The lane is read in either form: the new form names a project
-// before the role (contracts.RoleSubject), and its old form (contracts.LegacyTwin) is the role's
-// lane as a record of the old form holds it. A lane topic whose role is empty, or holds a
-// subscription wildcard (* or >), names no one role and answers false too. It is the one reading
-// of a topic's role, so a release of named topics (releaseRoleClaims) and a record's roles
+// roleOfTopic is the claim key of the role whose lane topic (contracts.RoleTopicPrefix) topic is,
+// and false for a topic that is not a role lane's. The lane is read in either form: the new form
+// names a project before the role (contracts.RoleSubject) and is keyed as a claim of that name is
+// (RoleClaimKeyOf), so a free-form role under a project key reads as that project's own claim;
+// its old form (contracts.LegacyTwin) is the role's lane as a record of the old form holds it,
+// which is also how a lane under every project (`*`) reads. A lane topic whose role is empty, or
+// holds a subscription wildcard (* or >), names no one role and answers false too. It is the one
+// reading of a topic's role, so a release of named topics (releaseRoleClaims) and a record's roles
 // (rolesOfTopics) read a topic the same way.
 func roleOfTopic(topic string) (string, bool) {
+	if lane, found := strings.CutPrefix(topic, contracts.RoleTopicPrefix); found && !strings.ContainsAny(lane, "*>") {
+		if _, _, legacy := contracts.CanonicalRole(lane); !legacy {
+			return RoleClaimKeyOf(lane), true
+		}
+	}
 	if twin, ok := contracts.LegacyTwin(topic); ok {
 		topic = twin
 	}

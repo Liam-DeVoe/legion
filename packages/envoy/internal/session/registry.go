@@ -93,6 +93,14 @@ type SessionEntry struct {
 	// held it, while another instance's live session keeps its role however it is named. Empty
 	// for a client that predates the field.
 	ClientInstanceID string `json:"client_instance_id,omitempty"`
+	// Projects is the projects the token that wrote this registration lists: the broker
+	// token's own list, sorted, each once, and [] for a registration that presented none or
+	// whose token lists none. Every listener that verifies broker tokens writes it at each
+	// registration (cmd/listener's sessionEntryFromSubscribe), and an entry an earlier build
+	// wrote decodes it as nil, which every reader takes as none. The edge listener reads it to
+	// hold a send and a read to the target's projects (cmd/listener's project_scope.go). It is
+	// the registry's own record: no answer of the listener's API carries it.
+	Projects []string `json:"projects"`
 }
 
 // TmuxPlace is a session's pane and the window and tmux session holding it, as the listener's

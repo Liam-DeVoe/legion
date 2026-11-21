@@ -225,7 +225,9 @@ func TestMatch_MultipleTopicsOnOneEntry(t *testing.T) {
 //
 // Regression coverage for a silent fallback: an Upsert that treats a transient error from the
 // interest bucket's Get as ErrKeyNotFound clobbers durable state with whatever the heartbeat sent
-// (only the agent topic), truncating the session's subscriptions to its own topic.
+// (only the agent topic), truncating the session's subscriptions to its own topic. Each test
+// builds its plan as a merging write does (upsertPlan, UpsertWithin), since mergeForUpsert
+// stores the complete set its plan holds.
 
 func TestMergeForUpsert_SuccessfulGetMergesTopics(t *testing.T) {
 	cur := Interest{
@@ -236,7 +238,7 @@ func TestMergeForUpsert_SuccessfulGetMergesTopics(t *testing.T) {
 	}
 	item := Interest{SessionID: "ses_x", MachineID: "m1", Dir: "/workspace"}
 
-	result, err := mergeForUpsert(cur, nil, item, 42, InterestPlan{Topics: []string{"topic.c"}})
+	result, err := mergeForUpsert(cur, nil, item, 42, upsertPlan(cur, nil, item, nil, []string{"topic.c"}))
 	if err != nil {
 		t.Fatalf("mergeForUpsert returned unexpected error: %v", err)
 	}
@@ -261,7 +263,7 @@ func TestMergeForUpsert_ErrKeyNotFoundCreatesNewEntry(t *testing.T) {
 		Dir:       "/workspace",
 	}
 
-	result, err := mergeForUpsert(Interest{}, natsgo.ErrKeyNotFound, item, 100, InterestPlan{Topics: []string{"topic.fresh"}})
+	result, err := mergeForUpsert(Interest{}, natsgo.ErrKeyNotFound, item, 100, upsertPlan(Interest{}, natsgo.ErrKeyNotFound, item, nil, []string{"topic.fresh"}))
 	if err != nil {
 		t.Fatalf("ErrKeyNotFound must be treated as new entry, not propagated: %v", err)
 	}
@@ -287,7 +289,7 @@ func TestMergeForUpsert_TransientErrorRefusesToWrite(t *testing.T) {
 		Dir:       "/workspace",
 	}
 
-	_, err := mergeForUpsert(Interest{}, transient, item, 99, InterestPlan{Topics: []string{"topic.heartbeat"}})
+	_, err := mergeForUpsert(Interest{}, transient, item, 99, upsertPlan(Interest{}, transient, item, nil, []string{"topic.heartbeat"}))
 	if err == nil {
 		t.Fatal("transient KV error MUST be returned, not silently swallowed")
 	}
@@ -308,7 +310,7 @@ func TestMergeForUpsert_PreservesMachineIDAndDirFromExistingEntry(t *testing.T) 
 	// listener config and matches cur, but heartbeat body sends only agent topic.
 	item := Interest{SessionID: "ses_x", MachineID: "example-host-mx", Dir: "/home/ubuntu/example-repo/rl-eval/default"}
 
-	result, err := mergeForUpsert(cur, nil, item, 200, InterestPlan{Topics: []string{"notifications.agent.ses_x"}})
+	result, err := mergeForUpsert(cur, nil, item, 200, upsertPlan(cur, nil, item, nil, []string{"notifications.agent.ses_x"}))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -363,7 +365,7 @@ func TestMergeForUpsert_DropsStoredTopicsReachingAPrivateStreamSubject(t *testin
 		"another project's":        {roles: []string{"legion-OTHER-controller"}, want: kept},
 		"the project's controller": {roles: []string{"legion-ACME-controller"}, want: append(slices.Clone(kept), "notifications.legion.ACME.controller")},
 	} {
-		result, err := mergeForUpsert(cur, nil, item, 7, InterestPlan{Roles: tc.roles, Topics: registered})
+		result, err := mergeForUpsert(cur, nil, item, 7, upsertPlan(cur, nil, item, tc.roles, registered))
 		if err != nil {
 			t.Fatalf("%s: mergeForUpsert returned unexpected error: %v", name, err)
 		}
@@ -389,7 +391,7 @@ func TestMergeForUpsertMovesTheRowToTheMachineAndDirectoryOfASecondRegistration(
 	// The listener's subscribe handler's call shape: its own machine id and the body's directory.
 	item := Interest{SessionID: "ses_moved", MachineID: "machine-second", Dir: "/work/second"}
 
-	result, err := mergeForUpsert(cur, nil, item, 300, InterestPlan{Topics: []string{"notifications.agent.ses_moved"}})
+	result, err := mergeForUpsert(cur, nil, item, 300, upsertPlan(cur, nil, item, nil, []string{"notifications.agent.ses_moved"}))
 	if err != nil {
 		t.Fatalf("mergeForUpsert returned unexpected error: %v", err)
 	}
@@ -413,7 +415,7 @@ func TestMergeForUpsertKeepsTheStoredDirectoryForARoleClaimThatCarriesNone(t *te
 	}
 	item := Interest{SessionID: "ses_claimant", MachineID: "machine-first"}
 
-	result, err := mergeForUpsert(cur, nil, item, 301, InterestPlan{Topics: []string{"notifications.role.reviewer"}})
+	result, err := mergeForUpsert(cur, nil, item, 301, upsertPlan(cur, nil, item, nil, []string{"notifications.role.reviewer"}))
 	if err != nil {
 		t.Fatalf("mergeForUpsert returned unexpected error: %v", err)
 	}
@@ -433,7 +435,7 @@ func TestMergeForUpsertKeepsTheStoredMachineIDForARequestThatCarriesNone(t *test
 	}
 	item := Interest{SessionID: "ses_machineless", Dir: "/work/first"}
 
-	result, err := mergeForUpsert(cur, nil, item, 302, InterestPlan{Topics: []string{"notifications.agent.ses_machineless"}})
+	result, err := mergeForUpsert(cur, nil, item, 302, upsertPlan(cur, nil, item, nil, []string{"notifications.agent.ses_machineless"}))
 	if err != nil {
 		t.Fatalf("mergeForUpsert returned unexpected error: %v", err)
 	}

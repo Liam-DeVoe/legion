@@ -312,8 +312,11 @@ func legionAgentSessionHandler(d *listenerDeps) http.HandlerFunc {
 			ctx, cancel := legionAgentReadContext(r)
 			defer cancel()
 			agent, err := registry.Get(ctx, sessionID)
+			projects, edge := heldProjects(r)
 			switch {
-			case errors.Is(err, legionagents.ErrNotFound):
+			case errors.Is(err, legionagents.ErrNotFound), err == nil && edge && !legionAgentOfProjects(agent, projects):
+				// At the edge an agent of another project's issue is answered as one the
+				// registry does not hold (legionAgentOfProjects).
 				writeJSONError(w, http.StatusNotFound, "unknown legion agent "+sessionID)
 			case err != nil:
 				writeLegionAgentError(w, err)
@@ -321,6 +324,10 @@ func legionAgentSessionHandler(d *listenerDeps) http.HandlerFunc {
 				writeJSON(w, http.StatusOK, answerLegionAgent(d.sessions, agent))
 			}
 		case http.MethodPut:
+			if refusal := edgeLegionWriteRefusal(r); refusal != nil {
+				refusal.write(w)
+				return
+			}
 			if err := legionagents.ValidateSessionID(sessionID); err != nil {
 				writeLegionAgentError(w, err)
 				return
@@ -373,6 +380,9 @@ func legionAgentRoleHandler(d *listenerDeps) http.HandlerFunc {
 			writeLegionAgentError(w, err)
 			return
 		}
+		if projects, edge := heldProjects(r); edge {
+			agents = legionAgentsOfProjects(agents, projects)
+		}
 		writeJSON(w, http.StatusOK, answerLegionAgents(d.sessions, agents))
 	}
 }
@@ -403,8 +413,15 @@ func legionAgentsHandler(d *listenerDeps) http.HandlerFunc {
 				writeLegionAgentError(w, err)
 				return
 			}
+			if projects, edge := heldProjects(r); edge {
+				agents = legionAgentsOfProjects(agents, projects)
+			}
 			writeJSON(w, http.StatusOK, answerLegionAgents(d.sessions, agents))
 		case http.MethodPut:
+			if refusal := edgeLegionWriteRefusal(r); refusal != nil {
+				refusal.write(w)
+				return
+			}
 			var body struct {
 				Entries []legionagents.Entry `json:"entries"`
 			}
