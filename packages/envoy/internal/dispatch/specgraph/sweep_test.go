@@ -152,9 +152,10 @@ func baseStates(t *testing.T, p *readerProcess, base fstest.MapFS) map[string]st
 // it built, drops one that it judged, writes an input's bytes otherwise, reads a base of other bytes,
 // or judges an input by another right. known holds the lines that the sweep reported of each of its
 // known positives (knownPositives), by its words, which no floor counts: a sweep whose judgment no
-// longer reports an input that moves a state toward true, of any kind of state, with no right or
-// beyond its right, whether it skips that judgment, counts such an input as read or computes it
-// blind, fails by name there (sweepAgainst).
+// longer reports an input that moves a state toward true, of any kind of state, with no right, or
+// beyond its right, at a place that the right names with another state or at a place that it leaves
+// out, whether it skips that judgment, counts such an input as read or computes it blind, fails by
+// name there (sweepAgainst).
 type sweepCount struct {
 	inputs, refused, same, moved, byRight int
 	rights                                []string
@@ -199,9 +200,10 @@ func (n *sweepCount) report(t *testing.T, in sweepInput, moved []string, failure
 }
 
 // knownRight is the right of the known positive that a sweep must report beyond its right
-// (knownPositives): the places that it allows hold the states that the base reads there, so each
-// move of the input is beyond it.
-const knownRight = "a right whose places each hold the state that the base reads there, so that each move is beyond it"
+// (knownPositives): it leaves out one place that the input moves and holds at each other place the
+// state that the base reads there, so each move of the input is beyond it, at a place that the right
+// leaves out or at one that it names with another state.
+const knownRight = "a right that leaves out one place that the input moves and holds at each other place the state that the base reads there, so that each move is beyond it"
 
 // knownPositives is each input that a sweep must report at the base name, with moves, the lines of
 // the states that it is built to move toward true, as towardTrue writes them, in their order: one for
@@ -210,12 +212,15 @@ const knownRight = "a right whose places each hold the state that the base reads
 // reads true at the third subject, where silent-leg reads it false (a row of
 // TestTakingOutAWholeRecordMovesAStateOnlyByItsRight), and its statement delivery-is-fast and that
 // statement's own state read met; and that result with the outcome pass, with the right knownRight,
-// which moves the same states, each beyond its right. At wait-cycle, the failing run of
-// a-restart-keeps-the-message (results.json /4) with the outcome pass: that check reads true,
-// a-message-survives-a-restart, its own state and envoy-delivers-messages read met, and the wait of
-// u-b on a-message-survives-a-restart ends. whole is the states of the base, which the right of the
-// second allows. So a judgment blind to checks, to statements or their own states, to waits, or to
-// the places of a right fails by the name of the known positive whose report then lacks a line.
+// whose places leave out that check's place at the third subject and hold the base's state at each
+// other place: so it moves the same states, each beyond its right, the check at a place that the
+// right leaves out, and the statement and its own state at places that the right names with another
+// state. At wait-cycle, the failing run of a-restart-keeps-the-message (results.json /4) with the
+// outcome pass: that check reads true, a-message-survives-a-restart, its own state and
+// envoy-delivers-messages read met, and the wait of u-b on a-message-survives-a-restart ends. whole
+// is the states of the base. So a judgment blind to checks, to statements or their own states, to
+// waits, or beyond a right to the places that it names or to those that it leaves out, fails by the
+// name of the known positive whose report then lacks a line.
 func knownPositives(t *testing.T, name string, base fstest.MapFS, whole map[string]string) []sweepInput {
 	t.Helper()
 	passed := func(i int) treeChange { return treeChange{place: []string{strconv.Itoa(i), "outcome"}, value: "pass"} }
@@ -226,6 +231,8 @@ func knownPositives(t *testing.T, name string, base fstest.MapFS, whole map[stri
 			`subject 3 own state of delivery-is-fast: "met", and "not_met" in the whole scenario`,
 			`subject 3 statement delivery-is-fast: "met", and "not_met" in the whole scenario`,
 		}
+		allowed := maps.Clone(whole)
+		delete(allowed, "subject 3 check production-delivery-takes-under-a-second")
 		return []sweepInput{{
 			what:  "the known positive with no right, results.json /5 (a failure of production-delivery-takes-under-a-second) taken out",
 			fsys:  changedFile(t, base, "results.json", treeChange{place: []string{"5"}, out: true}, leftOutAt),
@@ -233,7 +240,7 @@ func knownPositives(t *testing.T, name string, base fstest.MapFS, whole map[stri
 		}, {
 			what:  "the known positive beyond its right, results.json /5 (a failure of production-delivery-takes-under-a-second) with the outcome pass",
 			fsys:  changedFile(t, base, "results.json", passed(5), valueAt),
-			right: knownRight, allowed: maps.Clone(whole), known: true, moves: moves,
+			right: knownRight, allowed: allowed, known: true, moves: moves,
 		}}
 	case "wait-cycle":
 		return []sweepInput{{
