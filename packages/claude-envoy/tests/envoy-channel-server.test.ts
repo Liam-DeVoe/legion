@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
-import { BROKER_VARIABLES } from "@legion/broker-client/environment"
-import { METADATA_HOST_VAR } from "@legion/broker-client/metadata-identity"
+import { BROKER_VARIABLES } from "@legion/cipher-client/environment"
+import { METADATA_HOST_VAR } from "@legion/cipher-client/metadata-identity"
 import { NATS_AUTH_VAR } from "@legion/envoy-client/nats-credential"
 import { sessionConfigFile } from "@legion/envoy-client/session-settings"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
@@ -956,7 +956,8 @@ test("an envoy.json that turns Envoy off opens no NATS connection and calls no l
       join(configDirectory, "envoy.json"),
       JSON.stringify({ envoy: { enabled: false } }),
     )
-    const broker = new FakeNatsServer()
+    // An address of its own (fakeHost): the count below is the one a stray client inflates.
+    const broker = new FakeNatsServer({ host: "127.86.0.2" })
     stopBroker = () => broker.stop()
     const listenerCalls: string[] = []
     listener = Bun.serve({
@@ -1210,7 +1211,8 @@ test("a refused NATS seed leaves the listener tools on, opens no NATS connection
     await mkdir(configDirectory)
     const calls: string[] = []
     listener = recordingListener(calls)
-    const broker = new FakeNatsServer()
+    // An address of its own (fakeHost): the count below is the one a stray client inflates.
+    const broker = new FakeNatsServer({ host: "127.86.0.3" })
     stopBroker = () => broker.stop()
     const file = join(configDirectory, "envoy.json")
     await writeFile(

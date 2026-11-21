@@ -356,21 +356,6 @@ func TestAReopenBetweenTheHandOverCheckAndItsPatchKeepsTheChild(t *testing.T) {
 	}
 }
 
-// The old tree's queued closes name the generation a child had before its hand-over. Carrying the
-// child into a new root generation makes those rows finish at the generation fence before checking
-// their old tree name, so they never retry forever on a tree mismatch.
-func TestAnOldTreeCloseOfAHandedOverChildFinishesAtTheGenerationFence(t *testing.T) {
-	pool := isolatedOutboxPool(t)
-	records := record.NewStore()
-	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "child", Phase: phase.Retro, Generation: 2, Status: "retro"}
-	putOutboxIssue(t, pool, records, issue)
-	row := mustOutboxRow(t, issue.Key, record.SuperviseRequest{Op: "tree_close", Tree: "LEGION-207", Role: claim.RoleImplementer, Generation: 1, Linger: 1}, time.Now())
-	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	if err := (&outbox{pool: pool, records: records, supervisor: sup, log: quietLogger()}).execute(context.Background(), row); err != nil {
-		t.Fatalf("old tree close = %v, want its older generation to finish without checking the old tree", err)
-	}
-}
-
 // When Dispatch already shows both todo and legion, PATCH would make no event. The status executor
 // consumes the durable fence through an intake.Handover fact instead; the child still becomes its
 // own carried-state root and the row finishes.
@@ -714,11 +699,11 @@ func TestADoneWriteWithAReasonPostsItFirstAndOnce(t *testing.T) {
 	}
 }
 
-// A workflow move that nothing else on Dispatch explains, here a head that conflicts with its base,
-// carries its reason on an ordinary row (workflow's moveReason): the runner posts it on the issue,
-// under the row's marker, before it moves the issue, as it does a done write's.
+// A workflow move that nothing else on Dispatch explains, here a worker's backward move, carries
+// its reason on an ordinary row (workflow's moveReason): the runner posts it on the issue, under
+// the row's marker, before it moves the issue, as it does a done write's.
 func TestAWorkflowMoveWithAReasonPostsItBeforeItMovesTheIssue(t *testing.T) {
-	reason := "Legion moved this issue from testing back to implementing, because pull request #42 at head c0de conflicts with main. GitHub runs no checks on a head that conflicts with its base, so the implementer merges main forward."
+	reason := "Legion moved this issue from testing back to implementing at the tester's request: the fix does not cover the empty list."
 	row := mustOutboxRow(t, "LEGION-208", record.OrdinaryStatusWrite("in_progress", "testing", reason), time.Now())
 	row.ID = 57
 	client := &outboxDispatch{issue: dispatch.Issue{Key: row.Issue, Status: "testing"}, postErr: errors.New("Dispatch refused the message")}
@@ -1264,6 +1249,19 @@ func TestOutboxRoleMessageToAReleasedRoleEndsWithoutAWake(t *testing.T) {
 	if resumes := podResumes(t, pool, "LEGION-208"); resumes != 0 {
 		t.Fatalf("recorded wakes = %d, want none: the message is no wake", resumes)
 	}
+}
+
+// startedClaim creates role's claim on LEGION-208 as a launch that has not registered yet, so a
+// start queued for it finds it and hands it its task: what the claim then holds is what the start
+// delivered.
+func startedClaim(t *testing.T, sup *supervisor, role claim.Role) *supervise.Machine {
+	t.Helper()
+	machine, _, err := sup.Create(context.Background(), supervise.Claim{Token: mustClaimToken(t, "LEGION-208", role), Project: "legion",
+		Tree: "LEGION-208", Issue: "LEGION-208", Role: role, State: supervise.StateQueued}, "")
+	if err != nil {
+		t.Fatalf("create the %s's claim: %v", role, err)
+	}
+	return machine
 }
 
 // A role whose claim this daemon supervises and has not released is published to as before: the

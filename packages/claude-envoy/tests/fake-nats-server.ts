@@ -34,27 +34,65 @@ function matches(pattern: string, subject: string): boolean {
   return pattern === subject
 }
 
+/**
+ * The address a fake of these tests listens on: `literal`, a fixed loopback address of the fake's
+ * own, on Linux, where every address of 127.0.0.0/8 is the loopback; 127.0.0.1 elsewhere, the
+ * only loopback address such a system brings up by default. A client of an earlier test keeps
+ * dialing the address its own server had, and the kernel can give that server's port to a later
+ * listener on the same address, which the stray client then reaches: a count the later test
+ * asserts (`connections`, `liveConnections`) is the count it inflates. A fake on an address no
+ * other server of the run listens on is out of its reach. Each fake names its own literal rather
+ * than drawing one, so the tests carry no copy of the Go tests' address rule
+ * (internal/testport's LoopbackIP).
+ */
+export function fakeHost(literal: string): string {
+  return process.platform === "linux" ? literal : "127.0.0.1"
+}
+
+/** The address a FakeNatsServer listens on unless it is given another (its `host` option). */
+export const FAKE_NATS_HOST = "127.86.0.1"
+
 export class FakeNatsServer {
   /** SUB subjects in arrival order, across every client connection. */
   readonly subscribed: string[] = []
+  /** How many CONNECTs the hub had read when each SUB in `subscribed` arrived, by index: which
+   *  credential the connection that sent it presented is `connects[subscribedAfter[i] - 1]`. */
+  readonly subscribedAfter: number[] = []
   /** Subjects whose SUB was later UNSUBed, in arrival order. */
   readonly unsubscribed: string[] = []
   /** PUB frames from clients, in arrival order. */
   readonly published: PublishedFrame[] = []
   /** Each client's CONNECT options, in arrival order: an nkey sign-in carries `nkey` and `sig`. */
   readonly connects: Record<string, unknown>[] = []
-  /** Client connections accepted so far. */
+  /** The port each CONNECT came from (its socket's remote port), by index into `connects`. */
+  readonly connectPorts: number[] = []
+  /** Client connections accepted so far. A count a stray client inflates: the fake's address is
+   *  its own (`host`), so a client dialing 127.0.0.1 at its port never reaches it. */
   connections = 0
+  /** While false, a PING is left unanswered, so a flush waits on it: a path that stopped carrying
+   *  the hub's answers. A connection already open stays open. */
+  answerPings = true
+  /** PINGs read so far, answered or not: a flush the client sent is one. */
+  pings = 0
+  /** The nonce INFO carries, as a server that asks for nkey sign-in or runs an auth service sends
+   *  one; INFO carries none from the moment it is set to undefined. */
+  nonce: string | undefined
+  /** While set, each CONNECT is answered as nats-server refuses one: `-ERR 'Authorization
+   *  Violation'`, and the connection closed. */
+  refuseConnects = false
   private readonly clients = new Set<Socket<Client>>()
   private waiters: Waiter[] = []
   private readonly listener: TCPSocketListener<Client>
   /** Connections accepted while `holdNext()` is in force, with their INFO frames withheld. */
   private held: Socket<Client>[] | null = null
 
-  /** `nonce`, when given, goes in INFO, as a server that asks for nkey sign-in sends one. */
-  constructor(private readonly options: { readonly nonce?: string } = {}) {
+  /** `nonce`, when given, goes in INFO, as a server that asks for nkey sign-in sends one. `host` is
+   *  the loopback address it listens on (fakeHost of it): a test that asserts a count no other fake
+   *  may reach names one of its own, and every other fake takes FAKE_NATS_HOST. */
+  constructor(options: { readonly nonce?: string; readonly host?: string } = {}) {
+    this.nonce = options.nonce
     this.listener = Bun.listen<Client>({
-      hostname: "127.0.0.1",
+      hostname: fakeHost(options.host ?? FAKE_NATS_HOST),
       port: 0,
       socket: {
         open: (socket) => {
@@ -81,7 +119,7 @@ export class FakeNatsServer {
   }
 
   get url(): string {
-    return `nats://127.0.0.1:${this.listener.port}`
+    return `nats://${this.listener.hostname}:${this.listener.port}`
   }
 
   /** Send a message to every live subscription matching `subject`. */
@@ -159,14 +197,14 @@ export class FakeNatsServer {
       server_name: "fake",
       version: "2.10.22",
       go: "go1.22",
-      host: "127.0.0.1",
+      host: this.listener.hostname,
       port: this.listener.port,
       headers: true,
       max_payload: 1_048_576,
       proto: 1,
       client_id: this.connections,
-      client_ip: "127.0.0.1",
-      ...(this.options.nonce === undefined ? {} : { nonce: this.options.nonce }),
+      client_ip: this.listener.hostname,
+      ...(this.nonce === undefined ? {} : { nonce: this.nonce }),
     }
     socket.write(`INFO ${JSON.stringify(info)}\r\n`)
   }
@@ -180,6 +218,13 @@ export class FakeNatsServer {
     for (const socket of this.clients) {
       socket.write("-ERR 'Authorization Violation'\r\n-ERR 'Authorization Violation'\r\n")
     }
+    return this.until(() => this.clients.size === 0)
+  }
+
+  /** Drop every client connection without a word, as a hub that restarts does: nats.js
+   *  reconnects. Resolves once every client socket is gone. */
+  dropClients(): Promise<void> {
+    for (const socket of this.clients) socket.end()
     return this.until(() => this.clients.size === 0)
   }
 
@@ -219,12 +264,19 @@ export class FakeNatsServer {
 
   private command(socket: Socket<Client>, line: string): void {
     if (line === "PING") {
-      socket.write("PONG\r\n")
+      this.pings += 1
+      this.notify()
+      if (this.answerPings) socket.write("PONG\r\n")
       return
     }
     if (line === "PONG") return
     if (line.startsWith("CONNECT ")) {
       this.connects.push(JSON.parse(line.slice("CONNECT ".length)) as Record<string, unknown>)
+      this.connectPorts.push(socket.remotePort)
+      if (this.refuseConnects) {
+        socket.write("-ERR 'Authorization Violation'\r\n")
+        socket.end()
+      }
       this.notify()
       return
     }
@@ -232,6 +284,7 @@ export class FakeNatsServer {
     if (sub?.[1] !== undefined && sub[2] !== undefined) {
       socket.data.subscriptions.set(sub[2], sub[1])
       this.subscribed.push(sub[1])
+      this.subscribedAfter.push(this.connects.length)
       this.notify()
       return
     }

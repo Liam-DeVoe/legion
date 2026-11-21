@@ -3,6 +3,7 @@
 package core_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -65,7 +66,9 @@ func startHubOn(t *testing.T, rig *calloutRig, config string) (uri, monitor stri
 	t.Helper()
 	ctr, _ := testnats.StartImageConfig(t, testnats.HubImage, rig.render(t, false), []string{"-js", "-m", "8222"}, false)
 	uri = rig.reconfigure(t, ctr, config)
-	return uri, testnats.ImageEndpoint(t, ctr, "8222/tcp", "http")
+	monitor, err := ctr.PortEndpoint(context.Background(), "8222/tcp", "http")
+	require.NoError(t, err)
+	return uri, monitor
 }
 
 // hangOutcome is what a hung replica left: whether the server still listed A when the test stopped
