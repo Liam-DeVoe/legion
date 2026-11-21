@@ -88,7 +88,7 @@ func TestTheAgentRunsUnderSchedIdle(t *testing.T) {
 		// Each thread's policy and nice value as the kernel answers them for that thread
 		// (sched_getattr, getpriority, which answers 20 less the nice value). check c29 reads the
 		// same from /proc, which gVisor, where Legion's pods run this test, does not fill in.
-		attr, err := unix.SchedGetAttr(id, 0)
+		policy, err := threadPolicy(id)
 		if err != nil && !lowerPriorityRefused.Load() {
 			t.Fatalf("read the policy of the agent's thread %d: %v", id, err)
 		}
@@ -97,8 +97,8 @@ func TestTheAgentRunsUnderSchedIdle(t *testing.T) {
 			t.Fatalf("read the nice value of the agent's thread %d: %v", id, err)
 		}
 		switch {
-		case !lowerPriorityRefused.Load() && attr.Policy != unix.SCHED_IDLE:
-			t.Errorf("the agent's thread %d runs under policy %d, want SCHED_IDLE (%d)", id, attr.Policy, unix.SCHED_IDLE)
+		case !lowerPriorityRefused.Load() && policy != schedIdle:
+			t.Errorf("the agent's thread %d runs under policy %d, want SCHED_IDLE (%d)", id, policy, schedIdle)
 		case lowerPriorityRefused.Load() && 20-priority != agentNice:
 			t.Errorf("the kernel refused SCHED_IDLE, and the agent's thread %d runs at nice %d, want %d", id, 20-priority, agentNice)
 		}

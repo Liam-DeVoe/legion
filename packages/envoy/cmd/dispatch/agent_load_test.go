@@ -25,8 +25,6 @@ import (
 	"testing"
 	"time"
 
-	"golang.org/x/sys/unix"
-
 	"github.com/sjawhar/envoy/going/agent/agenttest"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 )
@@ -766,7 +764,7 @@ func spread(times []time.Duration) string {
 }
 
 // policyNames names the scheduling policies a thread's stat gives by number (sched(7)).
-var policyNames = map[int]string{0: "SCHED_OTHER", 1: "SCHED_FIFO", 2: "SCHED_RR", 3: "SCHED_BATCH", unix.SCHED_IDLE: "SCHED_IDLE", 6: "SCHED_DEADLINE"}
+var policyNames = map[int]string{0: "SCHED_OTHER", 1: "SCHED_FIFO", 2: "SCHED_RR", 3: "SCHED_BATCH", schedIdle: "SCHED_IDLE", 6: "SCHED_DEADLINE"}
 
 // threadPolicies is how many threads process pid runs under each scheduling policy, each read from
 // its /proc/<pid>/task/<tid>/stat, whose fields after the command's closing parenthesis start at
@@ -931,7 +929,7 @@ func TestTheAgentLeavesTheServerItsCPU(t *testing.T) {
 		procs, busyWindow.agent.waited.Round(time.Millisecond))
 	for _, threads := range []map[string]int{idleThreads, busyThreads} {
 		for policy, count := range threads {
-			if policy != policyNames[unix.SCHED_IDLE] {
+			if policy != policyNames[schedIdle] {
 				t.Errorf("%d of the agent's threads run under %s, want every one under SCHED_IDLE (threads by policy %v)", count, policy, threads)
 			}
 		}

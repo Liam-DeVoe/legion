@@ -558,14 +558,14 @@ func threadsOf(pid int) []int {
 // reports whether it changed the thread: one already there is left as it is.
 func lowerThread(id int, idle bool) (bool, error) {
 	if idle {
-		attr, err := unix.SchedGetAttr(id, 0)
+		policy, err := threadPolicy(id)
 		if err != nil {
 			return false, err
 		}
-		if attr.Policy == unix.SCHED_IDLE {
+		if policy == schedIdle {
 			return false, nil
 		}
-		return true, unix.SchedSetAttr(id, &unix.SchedAttr{Policy: unix.SCHED_IDLE}, 0)
+		return true, setThreadIdle(id)
 	}
 	// getpriority(2) answers 20 less the nice value.
 	if priority, err := unix.Getpriority(unix.PRIO_PROCESS, id); err != nil || 20-priority == agentNice {
