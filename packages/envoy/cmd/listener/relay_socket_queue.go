@@ -14,30 +14,19 @@ import (
 )
 
 // queuedFrame is one frame a socket holds for its client: the subscription's sid, the message, and
-// the bytes it is counted as (relayFrameBytes).
+// the bytes it is counted as, nats.go's size of the message (Msg.Size: its subject, its reply, its
+// encoded headers and its data).
 type queuedFrame struct {
 	sid   int64
 	msg   *nats.Msg
 	bytes int
 }
 
-// relayFrameBytes is what a held message is counted as: its subject, its reply, its headers and
-// its data, as nats.go counts a pending message.
-func relayFrameBytes(msg *nats.Msg) int {
-	bytes := len(msg.Subject) + len(msg.Reply) + len(msg.Data)
-	for name, values := range msg.Header {
-		for _, value := range values {
-			bytes += len(name) + len(value)
-		}
-	}
-	return bytes
-}
-
 // enqueue holds msg for the client, unless it would take the socket past what one socket holds
 // (pendingMsgs, pendingBytes) or the replica past what all of its sockets hold together (budget):
 // either closes the socket 1013 slow_consumer instead, and its client opens it again after 5 s.
 func (socket *relaySocket) enqueue(sid int64, msg *nats.Msg) {
-	bytes := relayFrameBytes(msg)
+	bytes := msg.Size()
 	sockets := socket.sockets
 	socket.queueMu.Lock()
 	if socket.ended.Load() {

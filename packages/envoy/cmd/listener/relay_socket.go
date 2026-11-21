@@ -43,9 +43,11 @@ package main
 //
 // While a socket is open it asks the broker again every relaySocketCheckEvery, on its ping tick,
 // and once at its token's expiry (watch), and closes with the code its client reopens by
-// (verdict). A subscription holds at most relaySocketPendingMsgs frames and relaySocketPendingBytes
-// for a client that reads slower than they come, past which the socket closes 1013 slow_consumer;
-// a replica holds at most relaySocketMaxPerListener sockets, past which an upgrade is refused 503.
+// (verdict). The socket's queue bounds what it holds for a client that reads slower than its
+// frames come, at relaySocketPendingMsgs frames and relaySocketPendingBytes, and what all of a
+// replica's sockets hold together, at relaySocketReplicaPendingBytes (relay_socket_queue.go); the
+// frame that would pass either closes its socket 1013 slow_consumer. A replica holds at most
+// relaySocketMaxPerListener sockets, past which an upgrade is refused 503.
 
 import (
 	"bytes"
@@ -553,7 +555,7 @@ func (socket *relaySocket) badFrame(sid *int64) {
 }
 
 // subscribe takes a sub: the socket's own relay subject alone, subscribed on the sockets'
-// connection under the socket's pending limits and flushed before the reader reads on.
+// connection and flushed before the reader reads on.
 func (socket *relaySocket) subscribe(frame relayClientFrame) {
 	if frame.SID == nil {
 		socket.badFrame(nil)
@@ -584,6 +586,8 @@ func (socket *relaySocket) subscribe(frame relayClientFrame) {
 		socket.endNATS("subscribe", err)
 		return
 	}
+	// nats.go's own buffer, ahead of forward, is capped at the socket's limits; a frame it drops
+	// there the owning relay sends again, since it hears no receipt for it.
 	if err := sub.SetPendingLimits(socket.sockets.pendingMsgs, socket.sockets.pendingBytes); err != nil {
 		_ = sub.Unsubscribe()
 		socket.endNATS("bound a subscription's pending frames", err)
@@ -655,9 +659,8 @@ func relayReceiptBody(data []byte) bool {
 }
 
 // forward takes one message of a subscription, on the subscription's own goroutine: a relay frame
-// alone, never the connection probe, is held for the client (enqueue), and the pump writes it. A
-// subscription that dropped frames past nats.go's pending limits closes the socket 1013
-// slow_consumer (lagging); with the pump taking each frame at once, that is a backstop.
+// alone, never the connection probe, is held for the client (enqueue), whose queue is the bound on
+// what the socket holds, and the pump writes it.
 func (socket *relaySocket) forward(sid int64, msg *nats.Msg) {
 	if _, probe := msg.Header[bus.ConnectionProbeHeader]; probe {
 		return
@@ -666,24 +669,7 @@ func (socket *relaySocket) forward(sid int64, msg *nats.Msg) {
 		socket.stray(msg)
 		return
 	}
-	if socket.lagging() {
-		socket.endSlowConsumer("its subscription dropped frames past nats.go's pending limits")
-		return
-	}
 	socket.enqueue(sid, msg)
-}
-
-// lagging reports whether a subscription of the socket dropped frames past nats.go's pending
-// limits: a backstop, since the pump takes each frame from the subscription at once.
-func (socket *relaySocket) lagging() bool {
-	socket.subsMu.Lock()
-	defer socket.subsMu.Unlock()
-	for _, sub := range socket.subs {
-		if dropped, err := sub.Dropped(); err == nil && dropped > 0 {
-			return true
-		}
-	}
-	return false
 }
 
 // endSlowConsumer ends the socket 1013 slow_consumer, for why: its client opens it again after 5 s,
@@ -814,13 +800,12 @@ func (socket *relaySocket) end(code int, reason string) {
 
 // watch is the socket's tick: every relaySocketCheckEvery, and once at the token's expiry, it asks
 // the broker about the socket's token and closes it on the verdict; it closes it 1013
-// slow_consumer once a subscription dropped frames past nats.go's pending limits (lagging, a
-// backstop), and 1013 nats_unavailable once a subscription has ended under it (its connection
-// closed and was replaced); and otherwise pings the client (ping). It writes nothing itself, so a
-// write blocked on a client that reads nothing never holds back a check. One ask is in flight at
-// a time: a tick's ask that is still waiting on the broker when the token's expiry passes holds
-// the expiry's check back until it returns, up to relaySocketCheckWait, so the 4401 can come that
-// much after the expiry.
+// nats_unavailable once a subscription has ended under it (its connection closed and was
+// replaced); and otherwise pings the client (ping). It writes nothing itself, so a write blocked on
+// a client that reads nothing never holds back a check. One ask is in flight at a time: a tick's
+// ask that is still waiting on the broker when the token's expiry passes holds the expiry's check
+// back until it returns, up to relaySocketCheckWait, so the 4401 can come that much after the
+// expiry.
 func (socket *relaySocket) watch() {
 	ticker := time.NewTicker(socket.sockets.relaySocketCheckEvery)
 	defer ticker.Stop()
@@ -842,10 +827,6 @@ func (socket *relaySocket) watch() {
 		}
 		if code, reason := socket.verdict(); code != 0 {
 			socket.end(code, reason)
-			return
-		}
-		if socket.lagging() {
-			socket.endSlowConsumer("its subscription dropped frames past nats.go's pending limits")
 			return
 		}
 		if !socket.subscribed() {

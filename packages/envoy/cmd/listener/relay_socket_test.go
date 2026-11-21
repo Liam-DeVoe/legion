@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -508,6 +509,50 @@ func TestARelaySocketWhoseSubscriptionFallsBehindClosesSlowConsumer(t *testing.T
 	case <-time.After(10 * time.Second):
 		t.Fatalf("the socket whose client reads one frame each 50 ms was still open 10s after 80 frames of 512 KiB came at once, want it closed %d %q", websocket.CloseTryAgainLater, relaySocketReasonSlowConsumer)
 	}
+}
+
+// A frame the NATS client drops ahead of the socket's queue, past nats.go's own pending limits on
+// the subscription, closes nothing: the queue is the bound on what a socket holds, and the owning
+// relay sends that frame again, since it hears no receipt for it. The row holds the queue's lock,
+// so the subscription's goroutine waits in enqueue with the first frame, lowers nats.go's limit on
+// the socket's subscription to 2 frames and sends 6: nats.go keeps 2, that one among them, and
+// drops 4. Once the lock is let go the client reads the 2 kept, and the socket stays open. Control:
+// the socket closing 1013 slow_consumer once its subscription dropped a frame (forward reading
+// Subscription.Dropped); the client reads the first frame and then that close, and the row fails
+// naming it.
+func TestARelaySocketStaysOpenWhenTheNATSClientDropsAFrameAheadOfItsQueue(t *testing.T) {
+	rig := newRelaySocketRig(t, withCheckEvery(time.Hour))
+	const session, sent = "ses_edge_nats_drops", 6
+	client, _ := rig.open(t, session)
+	client.sub(1, bus.DeliverSubject(session))
+	client.ping()
+	<-client.pongs
+	socket := rig.openSocket(t, session)
+	sub := socket.awaitSubscription(t)
+	if err := sub.SetPendingLimits(2, 1<<30); err != nil {
+		t.Fatalf("lower the subscription's pending limits: %v", err)
+	}
+	unlock := sync.OnceFunc(socket.queueMu.Unlock)
+	socket.queueMu.Lock()
+	defer unlock()
+	flood(t, rig.owner.url, session, sent)
+	var kept, dropped int
+	accounted := testwait.Holds(5*time.Second, 10*time.Millisecond, func() bool {
+		kept, _, _ = sub.Pending()
+		dropped, _ = sub.Dropped()
+		return kept+dropped == sent
+	})
+	unlock()
+	if !accounted || dropped == 0 {
+		t.Fatalf("nats.go kept %d and dropped %d of the %d frames sent, want all %d accounted for and some dropped", kept, dropped, sent, sent)
+	}
+	t.Logf("nats.go kept %d and dropped %d of the %d frames sent", kept, dropped, sent)
+	for i := range kept {
+		if frame := client.next(5 * time.Second); frame.Op != "msg" {
+			t.Fatalf("frame %d of the %d nats.go kept reached the client as %s, want a msg", i+1, kept, frame.raw)
+		}
+	}
+	client.stillOpen(time.Second, "frames nats.go dropped ahead of the queue")
 }
 
 // What a replica's sockets hold for their clients together stays within its budget
