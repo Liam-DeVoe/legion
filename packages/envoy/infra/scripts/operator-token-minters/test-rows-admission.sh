@@ -6,15 +6,24 @@
 # its world and helpers; its header says what the fakes model. The rows:
 #
 #   (ce) a mutating webhook whose selector can match a guarded namespace, backed by the Service
-#        hooks/hook: apps/deployer that may patch deployments in hooks exits 1 naming the webhook,
-#        on the operator's cluster or another; the same webhook whose namespaceSelector excludes the
-#        guarded namespaces by name exits 0; a webhook that calls a URL, and a refused list of
-#        webhook configurations, read UNKNOWN;
-#   (cf) Kyverno's ClusterPolicy, cluster-scoped: legion/worker that may create clusterpolicies
-#        exits 1 naming it; the CRD with no holder exits 0; a refused list of CRDs reads UNKNOWN;
+#        hooks/hook: apps/deployer that may patch deployments in hooks, or create jobs (rv16),
+#        cronjobs or replicationcontrollers, create pods/exec or pods/attach, or patch
+#        pods/ephemeralcontainers there (N2), exits 1 naming the webhook, on the operator's cluster or
+#        another; the same webhook whose namespaceSelector excludes the guarded namespaces by name
+#        exits 0; a webhook that calls a URL, and a refused list of webhook configurations, read
+#        UNKNOWN;
+#   (cf) Kyverno's ClusterPolicy and its MutatingPolicy of policies.kyverno.io (rv15), and
+#        Kubewarden's ClusterAdmissionPolicy of policies.kubewarden.io (N1), cluster-scoped:
+#        legion/worker that may create any exits 1 naming it; the CRD with no holder exits 0; a
+#        refused list of CRDs reads UNKNOWN;
 #   (cg) a MutatingAdmissionPolicy whose binding names the ConfigMap hooks/sidecar-params as its
 #        parameter: legion/worker that may update that ConfigMap by name exits 1 naming the policy;
-#        a parameter kind the discovery does not resolve reads UNKNOWN.
+#        a binding that names no namespace has it asked in each guarded namespace, and one with a
+#        selector has update asked unnamed, each exiting 1; a parameter kind the discovery does not
+#        resolve reads UNKNOWN;
+#   (ci) GKE Autopilot's workload allowlists on the operator's cluster: an installed one reads
+#        UNKNOWN, a refused list of them reads UNKNOWN, and legion/worker that may create
+#        allowlistsynchronizers exits 1.
 
 # --- (ce) A webhook's backend: whoever may write its Service, the workload behind it, its endpoints
 # or its TLS Secret decides what the webhook does to the operator's next pod. ---
@@ -46,6 +55,25 @@ backend_row() {
       want_line "FINDING system:serviceaccount:ci:runner: update services in hooks, backing the webhook MutatingWebhookConfiguration hook-config/pods.example.com on cluster $project/us-east1/other-cluster" \
         "ci/runner may update the webhook backend's Service on another cluster"
       ;;
+    jobs | cronjobs | replicationcontrollers | exec | attach | ephemeralcontainers)
+      # rv16 and N2: each pod-making or pod-entry right RIGHTS_TABLE asks a guarded namespace.
+      local grant right verb group resource sub
+      case "$1" in
+        jobs) grant="create|batch|jobs|" right="create jobs.batch" ;;
+        cronjobs) grant="create|batch|cronjobs|" right="create cronjobs.batch" ;;
+        replicationcontrollers) grant="create||replicationcontrollers|" right="create replicationcontrollers" ;;
+        exec) grant="create||pods|exec" right="create pods/exec" ;;
+        attach) grant="create||pods|attach" right="create pods/attach" ;;
+        ephemeralcontainers) grant="patch||pods|ephemeralcontainers" right="patch pods/ephemeralcontainers" ;;
+      esac
+      IFS='|' read -r verb group resource sub <<<"$grant"
+      hook_config "" "$service" >"$world/clusters/operator-cluster/webhooks.json"
+      subject_grant operator-cluster "$(sa_subject apps deployer)" "$verb" "$group" "$resource" "$sub" hooks ""
+      run
+      want_status 1 "apps/deployer may $right in the webhook backend's namespace"
+      want_line "FINDING system:serviceaccount:apps:deployer: $right in hooks, backing the webhook MutatingWebhookConfiguration hook-config/pods.example.com" \
+        "apps/deployer may $right in the webhook backend's namespace"
+      ;;
     excluded)
       hook_config exclude "$service" >"$world/clusters/operator-cluster/webhooks.json"
       subject_grant operator-cluster "$(sa_subject apps deployer)" patch apps deployments "" hooks ""
@@ -68,8 +96,8 @@ backend_row() {
   esac
 }
 if row ce; then
-  each backend_row backend other-cluster excluded url refused
-  passed "(ce) a write to a matching webhook's backend exits 1 naming the webhook, on the operator's cluster or another; an excluding selector exits 0; a URL webhook and a refused list read UNKNOWN"
+  each backend_row backend jobs cronjobs replicationcontrollers exec attach ephemeralcontainers other-cluster excluded url refused
+  passed "(ce) a write to a matching webhook's backend (a Deployment's patch, and N2's jobs, cronjobs, replicationcontrollers, pods/exec, pods/attach and pods/ephemeralcontainers) exits 1 naming the webhook, on the operator's cluster or another; an excluding selector exits 0; a URL webhook and a refused list read UNKNOWN"
 fi
 
 # --- (cf) A policy engine's cluster-scoped resources: Kyverno's ClusterPolicy mutates pods. ---
@@ -85,6 +113,24 @@ policy_crd_row() {
       want_line "FINDING system:serviceaccount:legion:worker: create clusterpolicies.kyverno.io cluster-wide, a policy engine's resource" \
         "legion/worker may create Kyverno ClusterPolicies"
       ;;
+    mutating-policy)
+      jq -n '[{spec: {group: "policies.kyverno.io", scope: "Cluster", names: {plural: "mutatingpolicies", kind: "MutatingPolicy"}}}]' \
+        >"$world/clusters/operator-cluster/crds.json"
+      subject_grant operator-cluster "$(sa_subject legion worker)" create policies.kyverno.io mutatingpolicies "" "" ""
+      run
+      want_status 1 "legion/worker may create Kyverno MutatingPolicies"
+      want_line "FINDING system:serviceaccount:legion:worker: create mutatingpolicies.policies.kyverno.io cluster-wide, a policy engine's resource" \
+        "legion/worker may create Kyverno MutatingPolicies"
+      ;;
+    kubewarden)
+      jq -n '[{spec: {group: "policies.kubewarden.io", scope: "Cluster", names: {plural: "clusteradmissionpolicies", kind: "ClusterAdmissionPolicy"}}}]' \
+        >"$world/clusters/operator-cluster/crds.json"
+      subject_grant operator-cluster "$(sa_subject legion worker)" create policies.kubewarden.io clusteradmissionpolicies "" "" ""
+      run
+      want_status 1 "legion/worker may create Kubewarden ClusterAdmissionPolicies"
+      want_line "FINDING system:serviceaccount:legion:worker: create clusteradmissionpolicies.policies.kubewarden.io cluster-wide, a policy engine's resource" \
+        "legion/worker may create Kubewarden ClusterAdmissionPolicies"
+      ;;
     no-holder)
       run
       want_status 0 "Kyverno's ClusterPolicy with no holder"
@@ -98,8 +144,8 @@ policy_crd_row() {
   esac
 }
 if row cf; then
-  each policy_crd_row holder no-holder refused
-  passed "(cf) a holder of create on Kyverno's ClusterPolicy exits 1, the CRD with no holder exits 0, and a refused list of CRDs reads UNKNOWN"
+  each policy_crd_row holder mutating-policy kubewarden no-holder refused
+  passed "(cf) a holder of create on Kyverno's ClusterPolicy or MutatingPolicy (rv15), or Kubewarden's ClusterAdmissionPolicy, exits 1; the CRD with no holder exits 0; a refused list of CRDs reads UNKNOWN"
 fi
 
 # --- (cg) An admission policy's parameter object, named by its binding's paramRef. ---
@@ -111,7 +157,9 @@ param_row() {
   jq -n --arg api "$([ "$1" = unresolved ] && echo example.com/v1 || echo v1)" --arg kind "$([ "$1" = unresolved ] && echo Widget || echo ConfigMap)" '[
     {kind: "MutatingAdmissionPolicy", metadata: {name: "inject-sidecar"}, spec: {paramKind: {apiVersion: $api, kind: $kind}}},
     {kind: "MutatingAdmissionPolicyBinding", metadata: {name: "inject-sidecar-binding"},
-     spec: {policyName: "inject-sidecar", paramRef: {name: "sidecar-params", namespace: "hooks"}}}]' >"$dir/admission-policies.json"
+     spec: {policyName: "inject-sidecar", paramRef: (if $ref == "no-namespace" then {name: "sidecar-params"}
+       elif $ref == "selector" then {namespace: "hooks", selector: {matchLabels: {app: "sidecar"}}}
+       else {name: "sidecar-params", namespace: "hooks"} end)}}]' --arg ref "$1" >"$dir/admission-policies.json"
   jq -n '{"/api/v1": {resources: [{name: "configmaps", kind: "ConfigMap", namespaced: true}]}}' >"$dir/raw.json"
   case "$1" in
     holder)
@@ -120,6 +168,20 @@ param_row() {
       want_status 1 "legion/worker may update the admission policy's parameter by name"
       want_line "FINDING system:serviceaccount:legion:worker: update configmaps sidecar-params in hooks, a parameter of the admission policy MutatingAdmissionPolicy inject-sidecar" \
         "legion/worker may update the admission policy's parameter by name"
+      ;;
+    no-namespace)
+      subject_grant operator-cluster "$(sa_subject legion worker)" update "" configmaps "" envoy-operator sidecar-params
+      run
+      want_status 1 "legion/worker may update the parameter by name in a guarded namespace"
+      want_line "FINDING system:serviceaccount:legion:worker: update configmaps sidecar-params in envoy-operator, a parameter of the admission policy MutatingAdmissionPolicy inject-sidecar" \
+        "legion/worker may update the parameter by name in a guarded namespace"
+      ;;
+    selector)
+      subject_grant operator-cluster "$(sa_subject legion worker)" update "" configmaps "" hooks ""
+      run
+      want_status 1 "legion/worker may update the parameters a selector picks"
+      want_line "FINDING system:serviceaccount:legion:worker: update configmaps in hooks, a parameter of the admission policy MutatingAdmissionPolicy inject-sidecar" \
+        "legion/worker may update the parameters a selector picks"
       ;;
     unresolved)
       run
@@ -130,6 +192,40 @@ param_row() {
   esac
 }
 if row cg; then
-  each param_row holder unresolved
-  passed "(cg) a holder of update on an admission policy's parameter object by name exits 1, and an unresolved parameter kind reads UNKNOWN"
+  each param_row holder no-namespace selector unresolved
+  passed "(cg) a holder of update on an admission policy's parameter, by the binding's name, in a guarded namespace when the binding names none, or unnamed for a selector, exits 1; an unresolved parameter kind reads UNKNOWN"
+fi
+
+# --- (ci) GKE Autopilot's workload allowlists: an installed one admits the privileged workloads it
+# names, which Autopilot otherwise refuses, and an AllowlistSynchronizer installs them. ---
+allowlist_row() {
+  local dir="$world/clusters/operator-cluster"
+  base_world
+  jq -n '[{spec: {group: "auto.gke.io", scope: "Cluster", names: {plural: "workloadallowlists", kind: "WorkloadAllowlist"}}}]' >"$dir/crds.json"
+  case "$1" in
+    installed)
+      echo '["example-node-agent"]' >"$dir/allowlists.json"
+      run
+      want_status 2 "an installed workload allowlist"
+      want_line "UNKNOWN live: RBAC on operator-cluster: the workload allowlist example-node-agent is installed, so Autopilot admits the privileged workloads it names, which this check does not read" \
+        "an installed workload allowlist"
+      ;;
+    refused)
+      : >"$dir/refuse-allowlists"
+      run
+      want_status 2 "a refused list of workload allowlists"
+      want_text "UNKNOWN live: RBAC on operator-cluster: the API server refused the list of workload allowlists" "a refused list of workload allowlists"
+      ;;
+    synchronizer)
+      subject_grant operator-cluster "$(sa_subject legion worker)" create auto.gke.io allowlistsynchronizers "" "" ""
+      run
+      want_status 1 "legion/worker may create allowlistsynchronizers"
+      want_line "FINDING system:serviceaccount:legion:worker: create allowlistsynchronizers.auto.gke.io cluster-wide, which install the workload allowlists Autopilot admits privileged pods by" \
+        "legion/worker may create allowlistsynchronizers"
+      ;;
+  esac
+}
+if row ci; then
+  each allowlist_row installed refused synchronizer
+  passed "(ci) an installed workload allowlist and a refused list of them read UNKNOWN, and a holder of create on allowlistsynchronizers exits 1"
 fi

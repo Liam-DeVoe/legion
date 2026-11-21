@@ -173,8 +173,8 @@ if row t; then
   run
   want_status 1 "grade-ci holding roles/container.admin on a fleet member's project"
   # roles/container.admin holds each member permission of the container.* kind; the line names them
-  # in the check's order, from the three that make a guarded namespace, ServiceAccount or pod.
-  want_text "FINDING serviceAccount:$grade_ci: container.namespaces.create, container.serviceAccounts.create, container.pods.create," \
+  # in the check's order, from the six that make or patch a guarded namespace, ServiceAccount or pod.
+  want_text "FINDING serviceAccount:$grade_ci: container.namespaces.create, container.namespaces.update, container.serviceAccounts.create, container.serviceAccounts.update, container.pods.create, container.pods.update," \
     "grade-ci holding roles/container.admin on a fleet member's project"
   want_text " on $grade_res through roles/container.admin, granted at $grade_res" "grade-ci holding roles/container.admin on a fleet member's project"
   passed "(t) a Google service account holding roles/container.admin on a fleet member's project exits 1 naming it"
@@ -257,7 +257,8 @@ if row ah; then
 fi
 
 # --- (at) A fleet member's own project's IAM: each member permission held alone by grade-ci. ---
-member_iam_permissions=(container.clusters.impersonate container.clusterRoles.bind container.clusterRoles.escalate
+member_iam_permissions=(container.namespaces.update container.serviceAccounts.update container.pods.update
+  container.clusters.impersonate container.clusterRoles.bind container.clusterRoles.escalate
   container.clusterRoleBindings.create container.clusterRoleBindings.update container.roles.bind container.roles.escalate
   container.roleBindings.create container.roleBindings.update container.nodes.proxy container.mutatingWebhookConfigurations.create
   container.mutatingWebhookConfigurations.update container.validatingWebhookConfigurations.create

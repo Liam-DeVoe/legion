@@ -282,15 +282,28 @@ type LogEntry struct {
 // the log's latest entry (nil for an empty log) before any gen is compared, and answers whether a
 // restore may judge by it at all: the route verifies its signature, since a database writer can
 // add or change a log row but not one that verifies. Admit sees it again once next's gen is the
-// one above it, with the done record of the hold it names (nil when there is none), and answers
-// whether next may be restored after it.
+// one above it, with journalOf, which reads a hold's done record in the same transaction (nil when
+// there is none), and answers whether next may be restored after it.
 type RestoreJudge struct {
 	Trust func(latest *LogEntry) error
-	Admit func(latest *LogEntry, journal *Record, next Row) error
+	Admit func(latest *LogEntry, journalOf func(holdID string) (*Record, error), next Row) error
 }
 
 // journalKey is the done record's one key, the hold's journal (internal/holdrecord's).
 const journalKey = "hold"
+
+// journalIn reads holdID's done record inside tx, nil when there is none.
+func (s Store) journalIn(ctx context.Context, tx pgx.Tx, holdID string) (*Record, error) {
+	rec, err := scanRecord(tx.QueryRow(ctx, `select `+recordColumns+` from `+s.table("nats_hold_records")+` where hold_id = $1 and kind = $2 and key = $3`,
+		holdID, KindDone, journalKey), holdID, KindDone)
+	switch {
+	case err == nil:
+		return &rec, nil
+	case errors.Is(err, pgx.ErrNoRows):
+		return nil, nil
+	}
+	return nil, fmt.Errorf("natshold: read the journal of hold %s: %w", holdID, err)
+}
 
 // Restore writes the hold row when it is absent, the first row or one a database admin deleted,
 // at next.Gen, which must be one above the highest gen nats_hold_log holds (1 for an empty log),
@@ -333,18 +346,8 @@ func (s Store) Restore(ctx context.Context, next Row, judge RestoreJudge) (Row, 
 		if want != next.Gen {
 			return &Conflict{Err: ErrGenMismatch, RestoreGen: want}
 		}
-		var journal *Record
-		if latest != nil {
-			rec, err := scanRecord(tx.QueryRow(ctx, `select `+recordColumns+` from `+s.table("nats_hold_records")+` where hold_id = $1 and kind = $2 and key = $3`,
-				latest.HoldID, KindDone, journalKey), latest.HoldID, KindDone)
-			switch {
-			case err == nil:
-				journal = &rec
-			case !errors.Is(err, pgx.ErrNoRows):
-				return fmt.Errorf("natshold: read the journal of hold %s: %w", latest.HoldID, err)
-			}
-		}
-		if err := judge.Admit(latest, journal, next); err != nil {
+		journalOf := func(holdID string) (*Record, error) { return s.journalIn(ctx, tx, holdID) }
+		if err := judge.Admit(latest, journalOf, next); err != nil {
 			return err
 		}
 		restored, err = scanRow(tx.QueryRow(ctx, `with restored as (
@@ -530,14 +533,9 @@ func (s Store) DeleteCohort(ctx context.Context, holdID, key string, gen uint64,
 		switch current.Phase {
 		case string(natsgrant.OperatorPhasePrepare):
 		case string(natsgrant.OperatorPhaseReleased):
-			var journal *Record
-			rec, err := scanRecord(tx.QueryRow(ctx, `select `+recordColumns+` from `+s.table("nats_hold_records")+` where hold_id = $1 and kind = $2 and key = $3`,
-				holdID, KindDone, journalKey), holdID, KindDone)
-			switch {
-			case err == nil:
-				journal = &rec
-			case !errors.Is(err, pgx.ErrNoRows):
-				return fmt.Errorf("natshold: read the journal of hold %s: %w", holdID, err)
+			journal, err := s.journalIn(ctx, tx, holdID)
+			if err != nil {
+				return err
 			}
 			if err := released(journal); err != nil {
 				return err

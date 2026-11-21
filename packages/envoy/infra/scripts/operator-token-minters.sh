@@ -39,8 +39,12 @@
 #                     rights) is a finding naming the names: impersonating the group system:masters
 #                     by name is cluster-admin, RBAC lets one who may bind a role by name write a
 #                     binding to it, and an update of one webhook configuration or a patch of one
-#                     Deployment by name is the unnamed right's path. RBAC never limits a create of
-#                     a whole object or a deletecollection by name. A binding to a
+#                     Deployment by name is the unnamed right's path. RBAC never limits a
+#                     deletecollection by name, and a create limited by name answers no create;
+#                     but a patch that finds no object creates it (server-side apply), authorized
+#                     as a create of that name, as is an update of an RBAC object, so a create
+#                     limited by name is a finding for a subject that may also patch (or there
+#                     update) that name, by any of its bindings. A binding to a
 #                     role the render does not hold (other than the
 #                     built-in cluster-admin, which gives every right, and view, which gives none)
 #                     or to an aggregated ClusterRole is UNKNOWN: its rights are not in the render.
@@ -127,9 +131,11 @@
 #                     below (a pod or a workload controller runs as it; exec, attach, an ephemeral
 #                     container or a pod patch enters one; a rolebinding, bind or escalate grants
 #                     those; a token Secret is read) or create on a custom resource there, and by
-#                     its name, create serviceaccounts/token or impersonate. A system namespace's
-#                     ServiceAccount is reviewed too, never a finding itself, but when it is allowed
-#                     a right asked, who can become it is followed the same way.
+#                     its name, create serviceaccounts/token or impersonate; each of those rights is
+#                     read in the cluster's live roles too, so one limited by name (a patch of one
+#                     Deployment sets its serviceAccountName) is a finding naming the chain. A
+#                     system namespace's ServiceAccount is reviewed too, never a finding itself, but
+#                     when it is allowed a right asked, who can become it is followed the same way.
 #   live: Workload    The Workload Identity member names the workload pool (<pool>.svc.id.goog,
 #     Identity        --pool-project, by default --project), the namespace and the ServiceAccount,
 #                     never the cluster, so every cluster that uses the pool can act as the Google
@@ -138,8 +144,9 @@
 #                     --guarded <namespace>/<service account>, such as a route password reader
 #                     reached the same way. On every cluster of the pool (the operator's, every other
 #                     cluster of the project, and every member cluster of the pool project's fleet)
-#                     no principal the step reviews may create a namespace cluster-wide, or a
-#                     ServiceAccount or a pod in a guarded pair's namespace, nor hold an escalation
+#                     no principal the step reviews may create or patch a namespace cluster-wide,
+#                     or a ServiceAccount or a pod in a guarded pair's namespace (a patch that finds
+#                     no object creates it), nor hold an escalation
 #                     right by which it grants itself one: impersonate users, groups and
 #                     serviceaccounts, escalate and bind clusterroles, and create, patch and update
 #                     clusterrolebindings, cluster-wide; bind and escalate roles and create, patch
@@ -250,15 +257,22 @@
 # Admission power outside the admission objects (admission-backends.sh), asked on every cluster of
 # the pool as the other rights are: for each mutating or validating webhook whose namespaceSelector
 # can match a guarded namespace (read against kubernetes.io/metadata.name alone, which no one can
-# change), the writes to its backend Service, its Endpoints and EndpointSlices, its Secrets (the TLS
-# key) and the pods and pod controllers in that Service's namespace; a webhook that calls a URL
-# outside the cluster is UNKNOWN. Create, update and patch of each cluster-scoped resource of a
-# policy engine (a CRD of kyverno.io, gatekeeper.sh or its subgroups, or a group whose name holds
-# "policy"), as a Kyverno ClusterPolicy or a Gatekeeper Assign mutates pods. And the writes to each
-# parameter object an admission policy's binding names (paramRef, of the policy's paramKind,
-# resolved through the API server's discovery): create, and update and patch by name. A refused
-# list of webhook configurations, CRDs or admission policies, and a parameter kind the discovery
-# does not resolve, is UNKNOWN.
+# change), in the namespace of the Service it calls every way to run or enter a pod that a guarded
+# namespace is asked (RIGHTS_TABLE's namespaced rows, jobs, cronjobs and replicationcontrollers,
+# exec, attach and ephemeral containers included, and each custom resource), since a pod there that
+# carries the Service's labels joins it and can mount its TLS Secret, and the writes to the Service,
+# its Endpoints, EndpointSlices and Secrets; a webhook that calls a URL outside the cluster is
+# UNKNOWN. Create, update and patch of each cluster-scoped resource of a policy engine (a CRD of
+# kyverno.io, gatekeeper.sh, kubewarden.io or a subgroup of one, or a group whose name holds
+# "policy" or "policies"), as Kyverno's ClusterPolicy and MutatingPolicy or Gatekeeper's Assign
+# mutate pods. The writes to each parameter object an admission policy's binding names (paramRef,
+# of the policy's paramKind, resolved through the API server's discovery): create, and update and
+# patch by its name, unnamed for a paramRef.selector, in each guarded namespace for a namespaced
+# kind whose paramRef names no namespace (the admitted object's is read then). And on the operator's
+# cluster, GKE Autopilot's workload allowlists: an installed WorkloadAllowlist admits the privileged
+# workloads it names, so it is UNKNOWN, and create, update and patch of AllowlistSynchronizers,
+# which install them, are asked. A refused list of webhook configurations, CRDs, admission policies
+# or allowlists, and a parameter kind the discovery does not resolve, is UNKNOWN.
 #
 # Cluster settings outside RBAC. Legacy ABAC authorizes requests by its own policies beside RBAC, and
 # the identity service for GKE takes users and groups from an outside identity provider, so no
@@ -315,9 +329,12 @@
 # which prints the UNKNOWN `run` and writes it to --report (a usage error writes none). --report is
 # deleted when the run starts, so a report is
 # this run's or none. --report <file> writes {"run_at": "<RFC 3339>", "findings": [{"principal",
-# "right", "role", "resource", "permissions", "granted_at"}], "unknown": [{"step", "reason"}]} beside
-# the text, run_at being when the run began. `right` is the sentence the text prints; the rest are
-# its parts, for a reader that matches a finding against an accepted entry by principal and role:
+# "right", "role", "resource", "permissions", "granted_at"}], "unknown": [{"step", "reason"}],
+# "allowances": [{"flag", "value"}]} beside the text, run_at being when the run began. `allowances`
+# names each allowance the run was given (each --service-agent, each --rbac-only-member, and
+# --fleet none), each of which lets a principal or a reading pass, so a reader holds each one to
+# what was accepted; it is [] when there is none. `right` is the sentence the text prints; the rest
+# are its parts, for a reader that matches a finding against an accepted entry by principal and role:
 #   role         the IAM role (roles/container.admin), for an impersonation chain the role of its
 #                outermost link; for an RBAC finding the right's label (create
 #                serviceaccounts/token envoy-operator in envoy-operator); for the namespace and the
@@ -370,8 +387,9 @@ usage: operator-token-minters.sh [flags]
                              cloud grants nothing beside its RBAC; repeatable (without it, such a
                              member is UNKNOWN)
   --service-agent EMAIL      a Google service agent the deployment needs beside GKE's, GKE Hub's
-                             and Compute Engine's, allowed in the IAM steps; repeatable (any other
-                             service-<number>@gcp-sa-* account is judged as any account is)
+                             and Compute Engine's (service-<number>@gcp-sa-<product>.iam.
+                             gserviceaccount.com and nothing else), allowed in the IAM steps and
+                             written into --report; repeatable
   --namespace NS             the operator's namespace (default envoy-operator)
   --service-account NAME     the operator's Kubernetes ServiceAccount (default envoy-operator)
   --guarded NS/NAME          one more namespace and ServiceAccount the pool's Workload Identity binds
@@ -465,6 +483,22 @@ while [ "$#" -gt 0 ]; do
 done
 [ -n "$POOL_PROJECT" ] || POOL_PROJECT="$PROJECT"
 case "$FLEET" in "" | none) ;; *) usage_error "--fleet takes none, not $FLEET" ;; esac
+# --service-agent allows a Google-managed service agent alone: an account any principal can act as
+# would turn a minter into a pass.
+for agent in ${SERVICE_AGENTS[@]+"${SERVICE_AGENTS[@]}"}; do
+  [[ "$agent" =~ ^service-[0-9]+@gcp-sa-[a-z0-9-]+\.iam\.gserviceaccount\.com$ ]] ||
+    usage_error "--service-agent takes a Google service agent, service-<number>@gcp-sa-<product>.iam.gserviceaccount.com, not $agent"
+done
+# allowances_json: the JSON array of each allowance the run was given, {flag, value}: each
+# --service-agent, each --rbac-only-member and --fleet none, which let a principal or a reading pass,
+# so a reader of --report can hold each one to what was accepted.
+allowances_json() {
+  {
+    for value in ${SERVICE_AGENTS[@]+"${SERVICE_AGENTS[@]}"}; do printf -- '--service-agent\t%s\n' "$value"; done
+    for value in ${RBAC_ONLY_MEMBERS[@]+"${RBAC_ONLY_MEMBERS[@]}"}; do printf -- '--rbac-only-member\t%s\n' "$value"; done
+    [ -z "${FLEET:-}" ] || printf -- '--fleet\t%s\n' "$FLEET"
+  } | jq -R -s -c '[split("\n")[] | select(length > 0) | split("\t") | {flag: .[0], value: .[1]}]'
+}
 # The guarded pairs: the operator's first, then the broker's (--broker-workload), then each
 # --guarded, each once.
 GUARDED=("$NAMESPACE/$KSA")
@@ -518,7 +552,8 @@ if [ -n "$missing" ]; then
   reason="the parts $missing of $LIB cannot be read, so no step runs"
   echo "UNKNOWN run: $reason"
   [ -z "$REPORT" ] ||
-    jq -n --arg run_at "$RUN_AT" --arg reason "$reason" '{run_at: $run_at, findings: [], unknown: [{step: "run", reason: $reason}]}' >"$REPORT"
+    jq -n --arg run_at "$RUN_AT" --arg reason "$reason" --argjson allowances "$(allowances_json)" \
+      '{run_at: $run_at, findings: [], unknown: [{step: "run", reason: $reason}], allowances: $allowances}' >"$REPORT"
   echo "operator-token-minters: no step ran, 1 unknown: exit 2"
   FINISHED=true
   exit 2

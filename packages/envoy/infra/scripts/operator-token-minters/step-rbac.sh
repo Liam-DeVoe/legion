@@ -28,7 +28,7 @@ else
   rights="$(with_rights "$rights" "$ADMISSION_RIGHTS")"
   # Admission power outside the admission objects: webhook backends, policy engines' resources and
   # admission policies' parameters (admission-backends.sh).
-  admission_power "$KUBE" "$step"
+  admission_power "$KUBE" "$step" operator
   rights="$(with_rights "$rights" "$POWER_RIGHTS")"
   # Each token Secret of a guarded namespace, by name: a review that names no Secret is refused for
   # a get limited to the name, and a Secret of type kubernetes.io/service-account-token holds its

@@ -34,7 +34,8 @@
 #   (ar) a kube-system ServiceAccount that may mint the operator's token is no finding, but
 #        legion/worker, which may create pods in kube-system, is one naming the chain (rv6); on
 #        another cluster, ci/runner, which may create pods in kube-system, becomes its namespace
-#        controller and is one too;
+#        controller and is one too; and legion/worker allowed, by name in kube-system, a patch of one
+#        Deployment, an exec of one pod or an ephemeral container of it is one naming the chain (N3);
 #   (aw) a User that is no email is reviewed: deployer-bot bound to cluster-admin on a non-GKE fleet
 #        member, a principal:// User allowed to create pods in envoy-operator, and a render binding
 #        deployer-bot to cluster-admin each exit 1 naming it;
@@ -82,8 +83,9 @@
 #        another; create of certificate signing requests, update of the approval of my-csr and
 #        approve of kubernetes.io/kube-apiserver-client; patch of the Deployment secrets-broker in
 #        secrets-broker; update of the CronJob nightly in envoy-operator; and create of pods/exec of
-#        secrets-broker-0: each exits 1 naming the name; create pods limited by name, which RBAC
-#        never allows, exits 0;
+#        secrets-broker-0: each exits 1 naming the name; create pods limited by name beside patch of
+#        that name, and rv14's create and patch of the namespace envoy-operator by name on another
+#        cluster, each exit 1 (server-side apply creates by patch); create limited by name alone exits 0;
 #   (bv) a refused list of roles, on the operator's cluster or another, reads UNKNOWN;
 #   (cc) legion/worker that may get, by name, a token Secret of envoy-operator that no ServiceAccount
 #        lists exits 1 naming it, and a refused list of the namespace's token Secrets reads UNKNOWN.
@@ -139,6 +141,7 @@ rbac_rights=(
   "list||secrets||envoy-operator|=list secrets in envoy-operator"
   "watch||secrets||envoy-operator|=watch secrets in envoy-operator"
   "create||secrets||envoy-operator|=create secrets in envoy-operator"
+  "patch||secrets||envoy-operator|=patch secrets in envoy-operator"
   "create||replicationcontrollers||envoy-operator|=create replicationcontrollers in envoy-operator"
   "patch||replicationcontrollers||envoy-operator|=patch replicationcontrollers in envoy-operator"
   "update||replicationcontrollers||envoy-operator|=update replicationcontrollers in envoy-operator"
@@ -384,6 +387,22 @@ if row ar; then
   want_line "FINDING system:serviceaccount:ci:runner: create pods in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster $project/us-east1/other-cluster" \
     "ci/runner may create pods in kube-system on another cluster"
   passed "(ar) on another cluster, who may create pods in kube-system becomes its namespace controller and is a finding"
+
+  # N3: a right limited by name in a seed's namespace becomes the seed too: a patch of one Deployment
+  # there sets its serviceAccountName, and an exec or ephemeral container of one pod enters it.
+  for named in "patch|apps|deployments||gc-controller=patch deployments.apps gc-controller" \
+    "create||pods|exec|gc-controller-0=create pods/exec gc-controller-0" \
+    "patch||pods|ephemeralcontainers|gc-controller-0=patch pods/ephemeralcontainers gc-controller-0"; do
+    IFS='|' read -r verb group resource sub name <<<"${named%%=*}"
+    base_world
+    subject_grant operator-cluster "$(sa_subject kube-system generic-garbage-collector)" create "" serviceaccounts token envoy-operator envoy-operator
+    subject_grant operator-cluster "$(sa_subject legion worker)" "$verb" "$group" "$resource" "$sub" kube-system "$name"
+    run
+    want_status 1 "legion/worker may ${named#*=} in kube-system, by name"
+    want_line "FINDING system:serviceaccount:legion:worker: ${named#*=} in kube-system, so it can become system:serviceaccount:kube-system:generic-garbage-collector, which can create serviceaccounts/token envoy-operator in envoy-operator" \
+      "legion/worker may ${named#*=} in kube-system, by name"
+  done
+  passed "(ar) a right limited by name in the seed's namespace (patch of one Deployment, exec or an ephemeral container of one pod) is a finding naming the chain (N3)"
 fi
 
 # --- (aw) A User that is no email is reviewed, not taken for a person. ---
@@ -820,10 +839,24 @@ name_limited_row() {
       subject_grant "$cluster" "$subject" create "" pods exec secrets-broker secrets-broker-0
       want="create pods/exec secrets-broker-0 in secrets-broker"
       ;;
+    create-patch)
+      subject_grant "$cluster" "$subject" create "" pods "" envoy-operator some-pod
+      subject_grant "$cluster" "$subject" patch "" pods "" envoy-operator some-pod
+      want="create pods some-pod in envoy-operator, which its patch or update of that name makes"
+      ;;
+    rv14)
+      add_cluster other-cluster us-east1
+      add_sa other-cluster ci runner
+      cluster=other-cluster subject="$(sa_subject ci runner)" who=system:serviceaccount:ci:runner
+      suffix=" on cluster $project/us-east1/other-cluster"
+      subject_grant "$cluster" "$subject" create "" namespaces "" "" envoy-operator
+      subject_grant "$cluster" "$subject" patch "" namespaces "" "" envoy-operator
+      want="create namespaces envoy-operator cluster-wide, which its patch or update of that name makes"
+      ;;
     create-named)
       subject_grant "$cluster" "$subject" create "" pods "" envoy-operator some-pod
       run
-      want_status 0 "create pods limited by name, which RBAC never allows"
+      want_status 0 "create pods limited by name alone, which no request is allowed"
       return
       ;;
   esac
@@ -832,8 +865,8 @@ name_limited_row() {
   want_line "FINDING $who: $want$suffix" "a right limited by name ($1)"
 }
 if row bu; then
-  each name_limited_row webhook-operator webhook-other csr deployment cronjob exec create-named
-  passed "(bu) each right a live role limits by name (a webhook configuration on two clusters, a CSR approval, a Deployment, a CronJob, a pod's exec) exits 1 naming the name; create limited by name exits 0"
+  each name_limited_row webhook-operator webhook-other csr deployment cronjob exec create-patch rv14 create-named
+  passed "(bu) each right a live role limits by name (a webhook configuration on two clusters, a CSR approval, a Deployment, a CronJob, a pod's exec, a create with its patch) exits 1 naming the name; create limited by name alone exits 0"
 fi
 
 # --- (bv) The roles' list, which the named rights are read from. ---

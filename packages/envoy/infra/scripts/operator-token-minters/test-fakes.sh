@@ -277,6 +277,12 @@ case "${args[*]}" in
     [ ! -e "$dir/refuse-crds" ] || forbidden customresourcedefinitions.apiextensions.k8s.io 'list resource "customresourcedefinitions" in API group "apiextensions.k8s.io"' container.customResourceDefinitions.list
     { if [ -e "$dir/crds.json" ]; then cat "$dir/crds.json"; else echo '[]'; fi; } | jq '{apiVersion: "v1", kind: "List", items: .}'
     ;;
+  "get workloadallowlists.auto.gke.io -o json")
+    # Autopilot's installed workload allowlists: the world's allowlists.json (names), or none.
+    [ ! -e "$dir/refuse-allowlists" ] || forbidden workloadallowlists.auto.gke.io 'list resource "workloadallowlists" in API group "auto.gke.io"' container.thirdPartyObjects.list
+    { if [ -e "$dir/allowlists.json" ]; then cat "$dir/allowlists.json"; else echo '[]'; fi; } |
+      jq '{apiVersion: "v1", kind: "List", items: [.[] | {apiVersion: "auto.gke.io/v1", kind: "WorkloadAllowlist", metadata: {name: .}}]}'
+    ;;
   "get "*admissionpolic*" -o json")
     # The cluster's admission policies and their bindings: the world's admission-policies.json, or none.
     { if [ -e "$dir/admission-policies.json" ]; then cat "$dir/admission-policies.json"; else echo '[]'; fi; } | jq '{apiVersion: "v1", kind: "List", items: .}'
