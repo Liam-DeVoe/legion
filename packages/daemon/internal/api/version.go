@@ -2989,11 +2989,11 @@ package api
 // `LegionDaemonClient` loses its call, and `packages/contracts/fixtures/daemon-api` loses the
 // fixture of the route's answer. That directory gains `end-child-rule.json`, the rules for ending
 // a child and the sentence on a status the daemon has not taken yet, which the daemon's refusals
-// over children carry, and the architect prompts for its notices over children
-// (`record.EndChildRule` and `record.StatusNotTakenYet`), and the `legion` tool's description is
-// held to that file word for word. `api.ChildRequest` and contracts' `LegionChildRequest` stay,
-// because rerun_child takes them. A plugin below 205 still offers the operation to its agents. On
-// a daemon at 205 that call gets the refusal as its result, so the agent reads the status to write.
+// and notices over children carry (`record.EndChildRule` and `record.StatusNotTakenYet`), and the
+// `legion` tool's description is held to that file word for word. `api.ChildRequest` and
+// contracts' `LegionChildRequest` stay, because rerun_child takes them. A plugin below 205 still
+// offers the operation to its agents. On a daemon at 205 that call gets the refusal as its result,
+// so the agent reads the status to write.
 // Contract 205 is served with no code of its own (193's entry): no key path or value of any
 // answer moves, so a caller at 205 is served what one at 202 is, and 205's records are 202's under
 // its own number. The route leaves the empty object's row of answers.go's Answers, since no plugin

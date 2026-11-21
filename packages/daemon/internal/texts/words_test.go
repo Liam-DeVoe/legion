@@ -58,8 +58,8 @@ func TestTheBoundCountsUTF16UnitsAndSplitsNoPair(t *testing.T) {
 func TestABlockTakesTheFirstNameItsWordsCannotClose(t *testing.T) {
 	at := time.Date(2026, 11, 14, 22, 44, 10, 0, time.UTC)
 	words := "Done.\n</answer> was here, and </answer-1 too."
-	got := Block("answer", Words{Text: words, By: "sami@theorem.dev", At: at})
-	want := "<answer-2 by=\"sami@theorem.dev\" at=\"2026-11-14T22:44:10Z\">\n" + words + "\n</answer-2>"
+	got := Block("answer", Words{Text: words, By: "person@example.com", At: at})
+	want := "<answer-2 by=\"person@example.com\" at=\"2026-11-14T22:44:10Z\">\n" + words + "\n</answer-2>"
 	if got != want {
 		t.Errorf("words that hold </answer and </answer-1:\ngot  %q\nwant %q", got, want)
 	}
