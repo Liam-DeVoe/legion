@@ -390,7 +390,8 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecor
 	// reads the same stamp this send's own 202 names.
 	send.item.Sender = senderStamp(ctx, d.registry, d.sessions, item.SourceSession)
 	firstCtx, cancelFirst := context.WithDeadline(ctx, arrived.Add(sendRequestBudget))
-	first, err := roles.ResolveHolder(firstCtx, d.registry, roleHolderSessions{d.sessions}, role)
+	project, name := contracts.ParseRoleClaimKey(role)
+	first, err := roles.ResolveHolder(firstCtx, d.claims(), roleHolderSessions{d.sessions}, project, name)
 	cancelFirst()
 	if err != nil {
 		send.unresolved(err)
@@ -411,7 +412,7 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecor
 	resolved := first
 	for pass := 0; ; pass++ {
 		if pass > 0 || !sessionIsLive(first.HolderState) {
-			resolved, err = roles.ResolveHolder(ctx, d.registry, roleHolderSessions{d.sessions}, role)
+			resolved, err = roles.ResolveHolder(ctx, d.claims(), roleHolderSessions{d.sessions}, project, name)
 			if err != nil && ctx.Err() != nil {
 				// The window ended under the resolution: what it read says nothing more.
 				break

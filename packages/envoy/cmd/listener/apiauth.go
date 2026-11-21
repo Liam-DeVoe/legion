@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/subtle"
 	"errors"
 	"fmt"
@@ -131,26 +132,38 @@ func (g *googleIdentities) admits(r *http.Request, raw string, logger *logging.L
 	return false
 }
 
-// admitsServiceAccount reports whether raw is a projected service-account token the verifier
-// verifies, of a subject accounts lists when it lists any, and logs the one line that says why
-// when it is not: oidc.Reason's class, or not_listed naming the subject, and the path, never the
-// token.
-func (a listenerAPIAuth) admitsServiceAccount(r *http.Request, raw string) bool {
+// admitsServiceAccount reports the subject of raw when it is a projected service-account token the
+// verifier verifies, of a subject accounts lists when it lists any, and logs the one line that
+// says why when it is not: oidc.Reason's class, or not_listed naming the subject, and the path,
+// never the token.
+func (a listenerAPIAuth) admitsServiceAccount(r *http.Request, raw string) (string, bool) {
 	claims, err := a.verifier.Verify(r.Context(), raw)
 	if err != nil {
 		a.logger.Warn("listener: service-account token rejected",
 			slog.String("reason", oidc.Reason(err)),
 			slog.String("path", r.URL.Path))
-		return false
+		return "", false
 	}
 	if len(a.accounts) > 0 && !slices.Contains(a.accounts, claims.Subject) {
 		a.logger.Warn("listener: service-account token rejected",
 			slog.String("reason", "not_listed"),
 			slog.String("path", r.URL.Path),
 			slog.String("account", claims.Subject))
-		return false
+		return "", false
 	}
-	return true
+	return claims.Subject, true
+}
+
+// serviceAccountKey is the context key the subject of an admitted projected service-account token
+// is carried under.
+type serviceAccountKey struct{}
+
+// serviceAccountCaller is the subject of the projected service-account token r was admitted on,
+// and whether it was admitted on one: what the required privacy mode reads an all-projects caller
+// by (ENVOY_ALL_PROJECTS_ACCOUNTS, scopeOf).
+func serviceAccountCaller(r *http.Request) (string, bool) {
+	subject, ok := r.Context().Value(serviceAccountKey{}).(string)
+	return subject, ok
 }
 
 // admissionWarnings logs an admission on the shared token or on no credential at all once a
@@ -344,8 +357,8 @@ func apiAuth(auth listenerAPIAuth, next http.Handler) http.Handler {
 					return
 				}
 			case auth.verifier != nil:
-				if auth.admitsServiceAccount(r, raw) {
-					admit(w, r, credentialOIDC)
+				if subject, admitted := auth.admitsServiceAccount(r, raw); admitted {
+					admit(w, r.WithContext(context.WithValue(r.Context(), serviceAccountKey{}, subject)), credentialOIDC)
 					return
 				}
 			}

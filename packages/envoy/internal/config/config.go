@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -46,6 +47,17 @@ type Service struct {
 	// whose projects are all among these (cmd/listener's EdgeAdmits); empty is every other
 	// listener, which reads nothing of it.
 	EdgeProjects []string
+	// PrivacyRequired is ENVOY_PROJECT_PRIVACY_REQUIRED=true, the listener's required mode: every
+	// decision a project's privacy turns on reads it afresh from PrivacyURL, a failed or incomplete
+	// read is unknown for every project and holds, and each bus client's connection name ends in
+	// the suffix a tagged hub admits (cmd/listener, project_scope.go). False is the all-public
+	// mode, set by leaving both variables unset: the listener makes no privacy read and every
+	// project is public, as before either variable existed. parsePrivacyMode refuses every other
+	// combination, so a failure never selects the all-public path.
+	PrivacyRequired bool
+	// PrivacyURL is ENVOY_PROJECT_PRIVACY_URL, the secrets broker's base URL, whose
+	// /v1/project-privacy the required mode reads; empty in the all-public mode.
+	PrivacyURL string
 }
 
 func (s Service) ListenAddress() string {
@@ -120,18 +132,70 @@ func Load(defaultPort int) (Service, error) {
 	if err != nil {
 		return Service{}, err
 	}
+	privacyRequired, privacyURL, err := parsePrivacyMode(os.Getenv)
+	if err != nil {
+		return Service{}, err
+	}
 	return Service{
-		AllowedHosts:   allowedHosts,
-		MachineID:      machine,
-		NATSURLs:       urls,
-		NATSReplicas:   replicas,
-		StreamMaxBytes: streamMaxBytes,
-		SessionMaxAge:  sessionMaxAge,
-		ListenHost:     listenHost,
-		Port:           port,
-		ListenSocket:   listenSocket,
-		EdgeProjects:   edgeProjects,
+		AllowedHosts:    allowedHosts,
+		MachineID:       machine,
+		NATSURLs:        urls,
+		NATSReplicas:    replicas,
+		StreamMaxBytes:  streamMaxBytes,
+		SessionMaxAge:   sessionMaxAge,
+		ListenHost:      listenHost,
+		Port:            port,
+		ListenSocket:    listenSocket,
+		EdgeProjects:    edgeProjects,
+		PrivacyRequired: privacyRequired,
+		PrivacyURL:      privacyURL,
 	}, nil
+}
+
+// The two variables of the listener's privacy modes (Service.PrivacyRequired, Service.PrivacyURL),
+// and the listener's two platform identities the required mode reads its privacy source as: the
+// names cmd/listener's broker-token settings read (brokerauth.go, EnvBrokerAccountTokenFile and
+// EnvBrokerGoogleAudience).
+const (
+	PrivacyRequiredEnvVar         = "ENVOY_PROJECT_PRIVACY_REQUIRED"
+	PrivacyURLEnvVar              = "ENVOY_PROJECT_PRIVACY_URL"
+	privacyAccountTokenFileEnvVar = "ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE"
+	privacyGoogleAudienceEnvVar   = "ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE"
+	privacyRequiredValue          = "true"
+)
+
+// parsePrivacyMode reads the listener's privacy mode: both variables unset (or blank) is the
+// all-public mode; ENVOY_PROJECT_PRIVACY_REQUIRED=true with ENVOY_PROJECT_PRIVACY_URL naming the
+// broker's absolute http(s) base URL and one of the listener's platform identities set is the
+// required mode. Every other combination is refused, naming the variable: the flag with a blank
+// URL, the flag with no platform identity to read the source as, a URL without the flag, and any
+// value of the flag but true. So a required-mode listener with an incomplete configuration exits
+// before it serves, and only both variables absent select the all-public path.
+func parsePrivacyMode(getenv func(string) string) (required bool, source string, err error) {
+	flag := strings.TrimSpace(getenv(PrivacyRequiredEnvVar))
+	source = strings.TrimSpace(getenv(PrivacyURLEnvVar))
+	switch {
+	case flag == "" && source == "":
+		return false, "", nil
+	case flag == "":
+		return false, "", fmt.Errorf("%s is set and %s is not: the privacy source is read only in the required mode, so set %s=%s or unset %s",
+			PrivacyURLEnvVar, PrivacyRequiredEnvVar, PrivacyRequiredEnvVar, privacyRequiredValue, PrivacyURLEnvVar)
+	case flag != privacyRequiredValue:
+		return false, "", fmt.Errorf("invalid %s %q: the one value is %s, and the all-public mode is both %s and %s unset",
+			PrivacyRequiredEnvVar, flag, privacyRequiredValue, PrivacyRequiredEnvVar, PrivacyURLEnvVar)
+	case source == "":
+		return false, "", fmt.Errorf("%s=%s needs %s, the secrets broker's base URL the listener reads each project's privacy from",
+			PrivacyRequiredEnvVar, privacyRequiredValue, PrivacyURLEnvVar)
+	}
+	parsed, parseErr := url.Parse(source)
+	if parseErr != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return false, "", fmt.Errorf("invalid %s %q: it names the secrets broker's base URL, an absolute http or https URL with no query", PrivacyURLEnvVar, source)
+	}
+	if strings.TrimSpace(getenv(privacyAccountTokenFileEnvVar)) == "" && strings.TrimSpace(getenv(privacyGoogleAudienceEnvVar)) == "" {
+		return false, "", fmt.Errorf("%s=%s needs %s or %s: the listener reads %s as its own platform identity",
+			PrivacyRequiredEnvVar, privacyRequiredValue, privacyAccountTokenFileEnvVar, privacyGoogleAudienceEnvVar, PrivacyURLEnvVar)
+	}
+	return true, source, nil
 }
 
 // hostEntry is an ENVOY_ALLOWED_HOSTS entry's shape: a name or an IPv4 address, or an IPv6

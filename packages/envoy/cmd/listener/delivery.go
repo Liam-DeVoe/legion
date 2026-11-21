@@ -45,6 +45,9 @@ func shouldNAKFanoutDelivery(sessionLive bool, err error) bool {
 
 type listenerDeliveryHandlerConfig struct {
 	client *bus.Client
+	// privacy is the listener's privacy mode (project_privacy.go): nil, or not required, is the
+	// all-public mode every test that builds the config by hand runs in, which reads nothing.
+	privacy *listenerPrivacy
 	// wakes publishes the wake reports an unplaceable agent delivery raises, off the delivery
 	// path and under the listener's own lifetime (wakeReporter); nil in a test that builds the
 	// handlers without it, which reports no wake.
@@ -464,7 +467,10 @@ func listenerDeliveryHandler(cfg listenerDeliveryHandlerConfig) func(deliveryMes
 			return
 		}
 		cfg.messagesReceived.Inc([2]string{"source", item.Source}, [2]string{"topic_prefix", metrics.TopicPrefix(item.Topic)})
-		cfg.logger.Info("listener received", slog.String("source", item.Source), slog.String("source_session", item.SourceSession), slog.String("topic", item.Topic), slog.String("event_id", item.EventID), slog.String("payload_summary", item.PayloadSummary))
+		// The line carries the message's body only where logPayload allows it: in the required
+		// privacy mode this line makes no privacy decision, so it carries none.
+		received := []slog.Attr{slog.String("source", item.Source), slog.String("source_session", item.SourceSession), slog.String("topic", item.Topic), slog.String("event_id", item.EventID)}
+		cfg.logger.LogEvent(slog.LevelInfo, "listener received", append(received, logPayload(cfg.privacy, nil, item.PayloadSummary)...)...)
 		switch {
 		case strings.HasPrefix(item.Topic, contracts.RoleTopicPrefix):
 			roleTopicDelivery(cfg, message, item)
@@ -477,20 +483,31 @@ func listenerDeliveryHandler(cfg listenerDeliveryHandlerConfig) func(deliveryMes
 }
 
 // roleLaneClaims is the claim side of the role lane's resolution (roles.ClaimStore): the claim
-// reads of claims, each bounded by roleHolderReadTimeout on its own. The lane resolves under no
-// deadline of its own (resolveCoreRoleHolder), so a bound on the claim read alone leaves the
+// and privacy reads of claims, each bounded by roleHolderReadTimeout on its own. The lane resolves
+// under no deadline of its own (resolveCoreRoleHolder), so a bound on each read alone leaves the
 // holder's session read the whole of its own bound (roleHolderSessions.Holder), where one bound
 // around the resolution would leave the session read only what the claim read had not spent: a
 // claim read answering late would fail a session read that would have answered in time, which
 // the lane reports delivery_failed with the message neither forwarded nor kept.
 type roleLaneClaims struct{ claims roles.ClaimStore }
 
-// RoleClaim reads role's claim within ctx and roleHolderReadTimeout, whichever ends first.
-func (c roleLaneClaims) RoleClaim(ctx context.Context, role string) (store.RoleClaim, error) {
+// RoleClaim reads role's claim under project within ctx and roleHolderReadTimeout, whichever ends
+// first.
+func (c roleLaneClaims) RoleClaim(ctx context.Context, project, role string) (store.RoleClaim, error) {
 	readCtx, cancel := context.WithTimeout(ctx, roleHolderReadTimeout)
 	defer cancel()
-	return c.claims.RoleClaim(readCtx, role)
+	return c.claims.RoleClaim(readCtx, project, role)
 }
+
+// Private reads project's privacy within ctx and roleHolderReadTimeout, whichever ends first.
+func (c roleLaneClaims) Private(ctx context.Context, project string) (bool, error) {
+	readCtx, cancel := context.WithTimeout(ctx, roleHolderReadTimeout)
+	defer cancel()
+	return c.claims.Private(readCtx, project)
+}
+
+// Mode is claims' mode.
+func (c roleLaneClaims) Mode() roles.Mode { return c.claims.Mode() }
 
 // resolveCoreRoleHolder resolves the current live holder for a role-lane delivery
 // (roles.ResolveHolder, which reads the role's claim record from the role bucket), applying the
@@ -526,7 +543,8 @@ func (c roleLaneClaims) RoleClaim(ctx context.Context, role string) (store.RoleC
 // context.Background(), and each of its two reads is bounded on its own by roleHolderReadTimeout:
 // the claim read by roleLaneClaims and the holder's session read by roleHolderSessions.Holder.
 func resolveCoreRoleHolder(cfg listenerDeliveryHandlerConfig, item contracts.Envelope, role string) (string, session.SessionEntry, bool) {
-	resolved, err := roles.ResolveHolder(context.Background(), roleLaneClaims{cfg.registry}, roleHolderSessions{cfg.sessions}, role)
+	project, name := contracts.ParseRoleClaimKey(role)
+	resolved, err := roles.ResolveHolder(context.Background(), roleLaneClaims{cfg.claims()}, roleHolderSessions{cfg.sessions}, project, name)
 	sessionID := resolved.Holder
 	// Every error the resolution returns is a *roles.ReadError naming the read that failed.
 	// One that is not would still be a read that failed, so it is logged as the claim read with
@@ -563,7 +581,7 @@ func resolveCoreRoleHolder(cfg listenerDeliveryHandlerConfig, item contracts.Env
 		return "", session.SessionEntry{}, false
 	}
 	switch failure.Step {
-	case roles.ClaimRead:
+	case roles.ClaimRead, roles.PrivacyRead:
 		if keepRoleLaneMessage(cfg, role, item, roleClaimUnread, "") {
 			cfg.logger.Warn("listener role holder lookup failed, so the message was kept until a claim read answers",
 				slog.String("role", role),
@@ -578,7 +596,7 @@ func resolveCoreRoleHolder(cfg listenerDeliveryHandlerConfig, item contracts.Env
 			},
 			exceptionReason: "delivery_failed",
 		})
-	case roles.SessionRead:
+	case roles.SessionRead, roles.HolderRead:
 		// The holder's record could not be read, so nothing is known about its state and nothing
 		// is taken from it.
 		applyDeliveryOutcome(cfg, item, deliveryOutcome{

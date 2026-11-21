@@ -97,10 +97,16 @@ type SessionEntry struct {
 	// token's own list, sorted, each once, and [] for a registration that presented none or
 	// whose token lists none. Every listener that verifies broker tokens writes it at each
 	// registration (cmd/listener's sessionEntryFromSubscribe), and an entry an earlier build
-	// wrote decodes it as nil, which every reader takes as none. The edge listener reads it to
-	// hold a send and a read to the target's projects (cmd/listener's project_scope.go). It is
-	// the registry's own record: no answer of the listener's API carries it.
+	// wrote decodes it as nil, which every reader takes as none. The listener's API answers it on
+	// every session object, and its required privacy mode holds every delivery, route and send
+	// to it (cmd/listener's project_privacy.go).
 	Projects []string `json:"projects"`
+	// Held is set while the listener relaying this session holds frames for it in its memory,
+	// because their project's privacy could not be read (cmd/listener's privacy_hold.go), and
+	// cleared once it holds none: a listener that starts and finds it set lost those frames with
+	// its predecessor, so it marks the session's first frame Envoy-Gap. It is written only by
+	// SetHeld, at the revision it read, and every registration carries it over.
+	Held bool `json:"held,omitempty"`
 }
 
 // TmuxPlace is a session's pane and the window and tmux session holding it, as the listener's
@@ -797,6 +803,52 @@ func (r *SessionRegistry) PutWithin(ctx context.Context, sessionID string, entry
 	}
 	if err != nil {
 		return err
+	}
+	r.mu.Lock()
+	r.cache.Put(r.watcher, epoch, sessionID, &cachedSession{entry: entry, expiresAt: r.expiryFor(time.Time{}, entry.UpdatedAt)}, revision)
+	r.unlockAndNotify()
+	return nil
+}
+
+// ErrHeldNotWritten is SetHeld's answer when the record moved between its read and its write, or
+// there is no record to mark: the marker was not written.
+var ErrHeldNotWritten = errors.New("the session's held marker was not written")
+
+// SetHeld writes held into sessionID's record as an update at the revision it read
+// (compare-and-set), leaving every other field, UpdatedAt included, as the record holds it, so the
+// marker never makes a session look registered. A record that moved in between, and one there is
+// not, is ErrHeldNotWritten; a bus that did not answer is that read's or write's error. A record
+// that already holds held is left as it is.
+func (r *SessionRegistry) SetHeld(ctx context.Context, sessionID string, held bool) error {
+	kv, epoch := r.watcher.Handle()
+	got, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.Get(sessionID) })
+	if !answered {
+		return fmt.Errorf("read session %s to mark it held: %w", sessionID, err)
+	}
+	if errors.Is(err, nats.ErrKeyNotFound) || errors.Is(err, bus.ErrRefused) {
+		return fmt.Errorf("%w: session %s has no record", ErrHeldNotWritten, sessionID)
+	}
+	if err != nil {
+		return err
+	}
+	var entry SessionEntry
+	if err := json.Unmarshal(got.Value(), &entry); err != nil {
+		return fmt.Errorf("%w: session %s's record does not decode: %w", ErrHeldNotWritten, sessionID, err)
+	}
+	if entry.Held == held {
+		return nil
+	}
+	entry.Held = held
+	buf, err := json.Marshal(entry)
+	if err != nil {
+		return err
+	}
+	revision, answered, err := bus.Bounded(ctx, func() (uint64, error) { return kv.Update(sessionID, buf, got.Revision()) })
+	if !answered {
+		return fmt.Errorf("mark session %s held: %w", sessionID, err)
+	}
+	if err != nil {
+		return fmt.Errorf("%w: session %s's record was not updated at revision %d: %w", ErrHeldNotWritten, sessionID, got.Revision(), err)
 	}
 	r.mu.Lock()
 	r.cache.Put(r.watcher, epoch, sessionID, &cachedSession{entry: entry, expiresAt: r.expiryFor(time.Time{}, entry.UpdatedAt)}, revision)

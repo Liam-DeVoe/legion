@@ -215,7 +215,7 @@ func edgeFollowRefusal(ctx context.Context, r *http.Request, repositories *edgeR
 		case strings.HasPrefix(topic, contracts.AgentTopicPrefix), strings.HasPrefix(topic, listenerLanePrefix):
 			verdicts[topic] = edgeTopicNotInProject
 		default:
-			if project, _, ok := contracts.SubjectProject(topic); !ok || !projectHeld(projects, project) {
+			if project, ok := contracts.SubjectProject(topic); !ok || !projectHeld(projects, project) {
 				verdicts[topic] = edgeTopicNotInProject
 			}
 		}

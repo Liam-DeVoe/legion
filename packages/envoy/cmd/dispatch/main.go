@@ -793,8 +793,9 @@ func main() {
 		}
 		// One reader of the role and session buckets serves both: a role route's holder is read
 		// straight from the buckets on the bus client's connection, with no watcher, and judged
-		// by the windows this deployment gave its listeners (roleHolderWindows).
-		holders := roles.NewBuckets(natsClient, boot.RoleHolderWindows)
+		// by the windows this deployment gave its listeners (roleHolderWindows). Every role the
+		// outbox resolves is a bare one, so no read of a project's privacy is made yet.
+		holders := roles.NewBuckets(natsClient, boot.RoleHolderWindows, nil, roles.AllPublic)
 		outboxPublisher = outbox.New(outbox.Deps{
 			Store:            &store.Store{Pool: outboxPool},
 			Publisher:        natsClient,

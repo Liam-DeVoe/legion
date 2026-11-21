@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -4815,12 +4816,22 @@ func TestSessionInfoKeysForASessionWithNoInterestRecordAreTheFixtureRowsKeys(t *
 
 // The fixture's before row is what the listener used to write for this session. The after row is
 // pinned to the listener itself by the two route tests above; no Go test pins the before row to a
-// listener, so this test holds it to the after row's values and to the one difference, topics,
-// which was null and is now the empty list.
+// listener, so this test holds it to the after row's values and to the two differences: topics,
+// which was null and is now the empty list, and projects (K6, the registering token's projects),
+// which the listener at the fixture's commit did not write and now writes as the empty list for a
+// registration whose token listed none.
 func TestFixtureBeforeRowForASessionWithNoInterestRecordDiffersOnlyInTopics(t *testing.T) {
 	fixture := readNoInterestRecordFixture(t)
 	before, after := fixture.BeforeThisChange, fixture.AfterThisChange
-	sameNoInterestRecordRowValues(t, "the before row", "the after row", before, after, map[string]bool{"topics": true})
+	if _, written := before["projects"]; written {
+		t.Errorf("the before row carries projects = %s, which the listener at the fixture's commit did not write", before["projects"])
+	}
+	if got := compactNoInterestRecordJSON(t, after["projects"]); got != "[]" {
+		t.Errorf("the after row's projects = %s, want [], the projects of a registration whose token listed none", got)
+	}
+	afterLessProjects := maps.Clone(after)
+	delete(afterLessProjects, "projects")
+	sameNoInterestRecordRowValues(t, "the before row", "the after row", before, afterLessProjects, map[string]bool{"topics": true})
 	if got := compactNoInterestRecordJSON(t, before["topics"]); got != "null" {
 		t.Errorf("the before row's topics = %s, want null, the value the listener used to write", got)
 	}
