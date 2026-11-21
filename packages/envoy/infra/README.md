@@ -465,17 +465,30 @@ split is for.
 
 ### The private hub's session listener
 
-With `privateProjects`, the session listener runs in its required mode: it reads each decision's
-private projects from the secrets broker's `GET /v1/project-privacy`, as the projected token of
-its own account, and refuses a decision whose privacy it cannot read. The hub then renders, in
-this order after the service identity:
+With `privateProjects`, the session listener is to run in its required mode: it reads each
+decision's private projects from the secrets broker's `GET /v1/project-privacy`, as the projected
+token of its own account, and refuses a decision whose privacy it cannot read. No listener release
+does that yet: that is plan C's listener change (t-c-8), and the broker settings rendered below
+turn broker tokens on in a listener, which a release before it admits under DPoP and holds to no
+project. So the hub refuses a private session listener unless its `image` names, as its tag, a
+release at or after `privateModeListenerFloor` (`<name>:v<major>.<minor>.<patch>@sha256:<digest>`,
+or a release name ending in that version); the floor is empty until t-c-8's release ships and
+names it, and empty refuses every image (`privateProjects needs a session listener release that
+enforces the required mode; none is named yet`). The hub then renders, in this order after the
+service identity:
 
 - the broker check in its token-file form: `ENVOY_AGENT_SECRETS_URL` from `<l>.agentSecretsUrl`,
   `ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE=/var/run/secrets/envoy-broker/token` and
-  `ENVOY_PUBLIC_URL` from `<l>.publicUrl`, and no `ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE`;
+  `ENVOY_PUBLIC_URL`, and no `ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE`. The listener checks every
+  caller's DPoP proof against that one origin, and the callers that present a broker token are the
+  tailnet's sessions, so with `tailnet` the origin is the Tailscale Service's,
+  `http://<serviceName>.<tailnetDnsName>:9020` (the hub's `tailnetEnvoyUrl`): `<l>.publicUrl`
+  unset takes it, and any other value is refused. Without `tailnet`, `<l>.publicUrl` is required
+  and is the origin;
 - the privacy settings: `ENVOY_PROJECT_PRIVACY_URL` from `<l>.privacySourceUrl`, the secrets
   broker's base URL (the same value as `agentSecretsUrl`), to which the listener appends
-  `/v1/project-privacy` itself, so the hub refuses one naming any path but `/`, naming the listener;
+  `/v1/project-privacy` itself, so the hub refuses one naming any path but `/`, naming the listener,
+  and one that is not `https`, since the listener presents its broker token there;
   `ENVOY_PROJECT_PRIVACY_REQUIRED=true` from the hub's own `privateProjects` and from no input of
   its own, and `ENVOY_ALL_PROJECTS_ACCOUNTS` from `<l>.allProjectsAccounts`, comma-joined.
 
@@ -495,7 +508,8 @@ Such a listener must require a token of every caller (it is `listener`, or a `ta
 with `clientNamespaces`), since its readiness route answers Dispatch's account by its projected
 token, and each `allProjectsAccounts` entry must be a subject `oidcAccounts` lists. The hub refuses,
 naming the input: a listener that requires no token (`privateProjects and tailnet.listener: …`);
-any of the five inputs missing (`<l>.publicUrl is required with privateProjects: …`); a
+any of the inputs missing (`<l>.publicUrl is required with privateProjects: …` without `tailnet`);
+a `publicUrl` other than the tailnet's origin beside `tailnet`; an image before the floor; a
 `brokerAudience` that is `natsAudience`'s; and an `allProjectsAccounts` entry that is no
 ServiceAccount subject or that `oidcAccounts` does not list. What it is about to render is then held
 to `core.CheckPrivacySource`, which refuses a render missing any piece, naming the listener and the

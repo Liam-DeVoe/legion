@@ -3,12 +3,67 @@ package gcp
 import (
 	"errors"
 	"net/url"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode"
 
 	"github.com/sjawhar/envoy/infra/core"
 )
+
+// privateModeListenerFloor is the first listener release, as major.minor.patch, that enforces the
+// required mode: whose listener reads ENVOY_PROJECT_PRIVACY_REQUIRED and the privacy route, and so
+// holds each broker-token caller to the projects it may see (plan C's t-c-8). A private hub's
+// session listener renders the broker check, which turns broker tokens on in the listener; a
+// listener of an earlier release admits every live broker token under DPoP and limits none of
+// them by project, so with privateProjects the listener's image must name a release at or after
+// this one (checkPrivateModeListenerImage). It is empty until t-c-8's release ships, which sets
+// it, and empty refuses every image: no private hub runs a session listener before then. A
+// package-level variable, so the tests set it to render the private listener (export_test.go).
+var privateModeListenerFloor = ""
+
+// imageReleaseTag is the release a listener image's tag names, <name>:<tag>@sha256:<digest>, the
+// tag ending in v<major>.<minor>.<patch> (a release's version, or its name, legion-envoy-v…).
+var imageReleaseTag = regexp.MustCompile(`:(?:[A-Za-z0-9._-]*-)?v([0-9]+)\.([0-9]+)\.([0-9]+)@sha256:[0-9a-f]{64}$`)
+
+// checkPrivateModeListenerImage refuses image, the session listener's of a hub with
+// privateProjects, unless it names a release at or after privateModeListenerFloor. With no floor
+// named it refuses every image, naming privateProjects; an image whose tag names no release, or an
+// earlier one, is refused naming <path>.image, since its digest alone says nothing the component
+// could compare.
+func checkPrivateModeListenerImage(path, image string) error {
+	if privateModeListenerFloor == "" {
+		return core.InputErrorf("privateProjects", "privateProjects needs a session listener release that enforces the required mode; none is named yet (privateModeListenerFloor): a %s of an earlier release admits every live broker token under DPoP and holds none of its callers to the projects they may see", path)
+	}
+	floor, ok := releaseVersion(":v" + privateModeListenerFloor + "@sha256:" + strings.Repeat("0", 64))
+	if !ok {
+		return errors.New("privateModeListenerFloor " + strconv.Quote(privateModeListenerFloor) + " is no major.minor.patch")
+	}
+	release, ok := releaseVersion(image)
+	if !ok || slices.Compare(release, floor) < 0 {
+		return core.InputErrorf(path+".image", "%s.image %q must name, as its tag, a listener release at or after v%s, the first that enforces the required mode, as <name>:v%s@sha256:<digest>: privateProjects turns broker tokens on in the listener, and an earlier one holds none of their callers to the projects they may see",
+			path, image, privateModeListenerFloor, privateModeListenerFloor)
+	}
+	return nil
+}
+
+// releaseVersion is the major, minor and patch numbers image's tag names, and whether it names any.
+func releaseVersion(image string) ([]int, bool) {
+	parts := imageReleaseTag.FindStringSubmatch(image)
+	if parts == nil {
+		return nil, false
+	}
+	version := make([]int, 3)
+	for i, part := range parts[1:] {
+		n, err := strconv.Atoi(part)
+		if err != nil {
+			return nil, false
+		}
+		version[i] = n
+	}
+	return version, true
+}
 
 // clusteredHubListener is the resolved session listener the hub runs as a workload of its own,
 // nil without one: the tailnet hosts forward the Tailscale Service's port 9020 to it, and the
@@ -29,13 +84,15 @@ type clusteredHubListener struct {
 	privacy                       *clusteredHubListenerPrivacy
 }
 
-// clusteredHubListenerPrivacy is the part of a private hub's listener its environment does not
-// say: the audience of the projected token of its own account it presents to the secrets broker,
-// mounted at clusteredHubListenerBrokerTokenFile, and the namespaces of its all-projects callers,
-// which the listener's NetworkPolicy admits at its port and which reach its replicas at the
-// headless Service clusteredHubListenerInstancesName names.
+// clusteredHubListenerPrivacy is what a private hub's listener reads privacy and proofs with that
+// its inputs do not say as they are: the audience of the projected token of its own account it
+// presents to the secrets broker, mounted at clusteredHubListenerBrokerTokenFile; the one origin
+// it checks every caller's DPoP proof against (ENVOY_PUBLIC_URL); and the namespaces of its
+// all-projects callers, which the listener's NetworkPolicy admits at its port and which reach its
+// replicas at the headless Service clusteredHubListenerInstancesName names.
 type clusteredHubListenerPrivacy struct {
 	brokerAudience string
+	origin         string
 	namespaces     []string
 }
 
@@ -86,8 +143,8 @@ func clusteredHubListenerArgs(args *ClusteredNatsHubArgs) (*ClusteredHubListener
 // Its NATS identity follows authCallout (listenerIdentity): without it, the user the hub renders
 // for the listener's seed, from the Secret the pod mounts; with it, the projected token of the
 // listener's own ServiceAccount for natsAudience, which the pod reads at
-// clusteredHubListenerTokenFile, while the hub renders no user for it. ENVOY_PRIVATE_PROJECTS=1 is
-// in its environment exactly when privateProjects is.
+// clusteredHubListenerTokenFile, while the hub renders no user for it. With privateProjects it also
+// renders the broker check and the privacy settings (newClusteredHubListenerPrivacy).
 func newClusteredHubListenerSettings(args *ClusteredNatsHubArgs, l *ClusteredHubListenerArgs, path string, s clusteredHubSettings) (*clusteredHubListener, *listenerUser, error) {
 	if l == nil {
 		if args.Tailnet != nil {
@@ -146,7 +203,7 @@ func newClusteredHubListenerSettings(args *ClusteredNatsHubArgs, l *ClusteredHub
 	if err != nil {
 		return nil, nil, err
 	}
-	privacy, err := newClusteredHubListenerPrivacy(args, l, path, credential)
+	privacy, err := newClusteredHubListenerPrivacy(args, l, path, credential, s.tailnet)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -203,7 +260,7 @@ func newClusteredHubListenerSettings(args *ClusteredNatsHubArgs, l *ClusteredHub
 	// for the flag, from the hub's privateProjects alone. Any other hub's listener renders none of
 	// them, whatever the inputs hold (R9).
 	if privacy != nil {
-		config.AgentSecretsURL, config.BrokerTokenFile, config.PublicURL = l.AgentSecretsUrl, clusteredHubListenerBrokerTokenFile, l.PublicUrl
+		config.AgentSecretsURL, config.BrokerTokenFile, config.PublicURL = l.AgentSecretsUrl, clusteredHubListenerBrokerTokenFile, privacy.origin
 		config.PrivacySourceURL, config.PrivacyRequired, config.AllProjectsAccounts = l.PrivacySourceUrl, args.PrivateProjects, l.AllProjectsAccounts
 	}
 	// What is about to be rendered is held to the hub's privacy mode before anything registers, so a
@@ -238,32 +295,50 @@ func prefixedInput(path string, err error) error {
 // nowhere. Such a listener requires a token of every caller (credential), since its readiness
 // route answers Dispatch's account by its projected token and a listener with no token check
 // serves every caller the same; a listener that requires none is refused, naming privateProjects
-// and path. agentSecretsUrl, publicUrl, brokerAudience, privacySourceUrl and allProjectsAccounts
-// are each required, by its path. brokerAudience is refused when it is natsAudience's: that token
-// is the auth service's, which the broker's routes do not accept. Each all-projects caller is a
-// subject the token check admits, since the listener verifies a caller before it serves it every
+// and path. agentSecretsUrl, brokerAudience, privacySourceUrl and allProjectsAccounts are each
+// required, by its path. brokerAudience is refused when it is natsAudience's: that token is the
+// auth service's, which the broker's routes do not accept. Each all-projects caller is a subject
+// the token check admits, since the listener verifies a caller before it serves it every
 // project's sessions, and its namespace is admitted at the listener's port. The values' shapes are
 // core's rules (core.ListenerConfig.Check, core.CheckBroker), named by path.
-func newClusteredHubListenerPrivacy(args *ClusteredNatsHubArgs, l *ClusteredHubListenerArgs, path string, credential *clusteredHubListenerCredential) (*clusteredHubListenerPrivacy, error) {
+//
+// The listener checks every DPoP proof against one origin, ENVOY_PUBLIC_URL, and the callers that
+// present a broker token to it are the tailnet's sessions, which reach it at the Tailscale
+// Service's name. So with tailnet its origin is that name's, http://<serviceName>.<tailnetDnsName>
+// :9020 (the hub's tailnetEnvoyUrl), whatever publicUrl says: an unset publicUrl takes it, and any
+// other value is refused, naming publicUrl, since a proof a caller signs for the tailnet name would
+// then be refused. Without tailnet, publicUrl is required, the one origin its callers reach it at.
+func newClusteredHubListenerPrivacy(args *ClusteredNatsHubArgs, l *ClusteredHubListenerArgs, path string, credential *clusteredHubListenerCredential, tailnet *clusteredHubTailnet) (*clusteredHubListenerPrivacy, error) {
 	if !args.PrivateProjects {
 		return nil, nil
 	}
 	if credential == nil {
 		return nil, core.InputErrorf("privateProjects", "privateProjects and %s: a listener of a hub that may make a project private requires a token of every caller (oidcIssuer, oidcAudience, oidcAccounts), since its readiness route answers Dispatch's account by its projected token; declare the listener as listener, or give it clientNamespaces", path)
 	}
+	if err := checkPrivateModeListenerImage(path, l.Image); err != nil {
+		return nil, err
+	}
 	for _, in := range []struct {
 		name string
 		set  bool
 	}{
 		{"agentSecretsUrl", l.AgentSecretsUrl != ""},
-		{"publicUrl", l.PublicUrl != ""},
+		{"publicUrl", l.PublicUrl != "" || tailnet != nil},
 		{"brokerAudience", l.BrokerAudience != ""},
 		{"privacySourceUrl", l.PrivacySourceUrl != ""},
 		{"allProjectsAccounts", len(l.AllProjectsAccounts) > 0},
 	} {
 		if !in.set {
-			return nil, core.InputErrorf(path+"."+in.name, "%s.%s is required with privateProjects: the listener of a hub that may make a project private reads each decision's privacy from the secrets broker (agentSecretsUrl, publicUrl, brokerAudience, privacySourceUrl) and serves every project's sessions to the callers allProjectsAccounts names", path, in.name)
+			return nil, core.InputErrorf(path+"."+in.name, "%s.%s is required with privateProjects: the listener of a hub that may make a project private reads each decision's privacy from the secrets broker (agentSecretsUrl, brokerAudience, privacySourceUrl), checks each caller's proof against its own origin (publicUrl, the tailnet's name with tailnet) and serves every project's sessions to the callers allProjectsAccounts names", path, in.name)
 		}
+	}
+	origin := l.PublicUrl
+	if tailnet != nil {
+		if l.PublicUrl != "" && strings.TrimSuffix(l.PublicUrl, "/") != tailnet.envoyURL {
+			return nil, core.InputErrorf(path+".publicUrl", "%s.publicUrl %q is not %s, the origin the tailnet's sessions reach the listener at: the listener checks every caller's DPoP proof against one origin, so a proof signed for the tailnet's name would be refused; leave publicUrl unset with tailnet",
+				path, l.PublicUrl, tailnet.envoyURL)
+		}
+		origin = tailnet.envoyURL
 	}
 	if err := core.CheckEnvValue(path+".brokerAudience", "the broker token's audience", l.BrokerAudience); err != nil {
 		return nil, err
@@ -276,7 +351,7 @@ func newClusteredHubListenerPrivacy(args *ClusteredNatsHubArgs, l *ClusteredHubL
 	for _, account := range credential.accounts {
 		admitted[account] = true
 	}
-	privacy := &clusteredHubListenerPrivacy{brokerAudience: l.BrokerAudience}
+	privacy := &clusteredHubListenerPrivacy{brokerAudience: l.BrokerAudience, origin: origin}
 	for i, account := range l.AllProjectsAccounts {
 		namespace, _, ok := core.ServiceAccountSubject(account)
 		if !ok || !dnsLabel(namespace) {

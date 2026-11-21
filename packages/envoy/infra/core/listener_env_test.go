@@ -398,6 +398,11 @@ func TestCheckPrivacySourceNamesTheListenerAndThePiece(t *testing.T) {
 	route.PrivacySourceURL += "/v1/project-privacy"
 	requireInputError(t, core.CheckPrivacySource("tailnet.listener", route, true), "tailnet.listener",
 		`tailnet.listener renders ENVOY_PROJECT_PRIVACY_URL "https://example-broker.internal.example/v1/project-privacy" with the path "/v1/project-privacy"`)
+	// The listener presents its broker token at the privacy URL, so another origin is refused.
+	foreign := privateListenerConfig()
+	foreign.PrivacySourceURL = "https://example-elsewhere.internal.example"
+	requireInputError(t, core.CheckPrivacySource("tailnet.listener", foreign, true), "tailnet.listener",
+		`tailnet.listener renders ENVOY_PROJECT_PRIVACY_URL "https://example-elsewhere.internal.example" at an origin other than ENVOY_AGENT_SECRETS_URL "https://example-broker.internal.example"`)
 	for _, row := range []struct {
 		name, piece string
 		edit        func(*core.ListenerConfig)
@@ -426,8 +431,10 @@ func TestListenerConfigCheckRefusesAHalfSetPrivacyMode(t *testing.T) {
 	}{
 		{"a URL without the flag", "privacyRequired", "privacySourceUrl is set without privacyRequired", func(c *core.ListenerConfig) { c.PrivacyRequired = false }},
 		{"the flag without a URL", "privacySourceUrl", "privacySourceUrl is required with privacyRequired", func(c *core.ListenerConfig) { c.PrivacySourceURL = "" }},
-		{"a URL with no scheme", "privacySourceUrl", "privacySourceUrl \"example-broker\" must be an http or https URL with a host",
+		{"a URL with no scheme", "privacySourceUrl", "privacySourceUrl \"example-broker\" must be an https URL with a host",
 			func(c *core.ListenerConfig) { c.PrivacySourceURL = "example-broker" }},
+		{"a plaintext URL", "privacySourceUrl", "privacySourceUrl \"http://example-broker.internal.example\" must be an https URL with a host",
+			func(c *core.ListenerConfig) { c.PrivacySourceURL = "http://example-broker.internal.example" }},
 		{"a caller that is no subject", "allProjectsAccounts", "allProjectsAccounts[0] \"dispatch\" must be system:serviceaccount:<namespace>:<name>",
 			func(c *core.ListenerConfig) { c.AllProjectsAccounts = []string{"dispatch"} }},
 		{"a repeated caller", "allProjectsAccounts", "allProjectsAccounts[1] \"system:serviceaccount:example-dispatch:example-dispatch\" repeats allProjectsAccounts[0]",

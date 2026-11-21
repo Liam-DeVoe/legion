@@ -2,6 +2,8 @@ package gcp_test
 
 import (
 	"encoding/json"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -16,9 +18,14 @@ import (
 // listener's own account carries, the listener's own origin, and Dispatch's account, the one
 // caller served every project's sessions.
 const (
-	privacyBrokerURL       = "https://example-broker.example-dispatch.svc.cluster.local:8443"
-	privacySourceURL       = privacyBrokerURL
-	privacyBrokerAudience  = "example-broker-audience"
+	privacyBrokerURL      = "https://example-broker.example-dispatch.svc.cluster.local:8443"
+	privacySourceURL      = privacyBrokerURL
+	privacyBrokerAudience = "example-broker-audience"
+	// privacyTailnetOrigin is the origin the tailnet's sessions reach clusteredArgs' session
+	// listener at, the Tailscale Service's name, which a private listener with tailnet checks
+	// every DPoP proof against; privacyPublicURL is its cluster Service's, which is its origin only
+	// without tailnet.
+	privacyTailnetOrigin   = "http://envoy-hub.example-tailnet.ts.net:9020"
 	privacyPublicURL       = "http://envoy-nats-listener.envoy.svc.cluster.local:9020"
 	privacyDispatchAccount = "system:serviceaccount:example-dispatch:example-dispatch"
 	// clusteredListenerInstances is the headless Service over the session listener's replicas.
@@ -27,24 +34,79 @@ const (
 
 // withPrivacySource gives l the inputs a private hub's listener reads privacy with, and lists
 // Dispatch's account among the subjects its token check admits, since an all-projects caller is
-// first a caller the listener verifies. It returns l.
+// first a caller the listener verifies. It sets no publicUrl: with tailnet the hub takes the
+// tailnet's origin. It returns l.
 func withPrivacySource(l *gcp.ClusteredHubListenerArgs) *gcp.ClusteredHubListenerArgs {
-	l.AgentSecretsUrl, l.PublicUrl, l.BrokerAudience = privacyBrokerURL, privacyPublicURL, privacyBrokerAudience
+	l.AgentSecretsUrl, l.BrokerAudience = privacyBrokerURL, privacyBrokerAudience
 	l.PrivacySourceUrl, l.AllProjectsAccounts = privacySourceURL, []string{privacyDispatchAccount}
 	l.OidcAccounts = append(l.OidcAccounts, privacyDispatchAccount)
 	return l
 }
 
+// privateModeFloor is the listener release the tests take as the first that enforces the required
+// mode (gcp.SetPrivateModeListenerFloor), and privateListenerImage a listener image whose tag names
+// it: the component names no such release yet, so without the seam every private listener is
+// refused.
+const privateModeFloor = "99.0.0"
+
+var privateListenerImage = strings.Replace(listenerImage, "@sha256:", ":v"+privateModeFloor+"@sha256:", 1)
+
 // privateListenerHub is a gcp:ClusteredNatsHub that may make a project private and runs a session
 // listener: the auth service's user alone behind the callout, no session user, and the listener
 // declared as the hub's own input, so it requires a token of every caller, connecting by its own
-// account's projected token, with the privacy inputs.
+// account's projected token, with the privacy inputs and an image that names privateModeFloor. A
+// test that resolves it sets the floor first (gcp.SetPrivateModeListenerFloor).
 func privateListenerHub() *gcp.ClusteredNatsHubArgs {
 	args := calloutClusteredHubWithTailnet()
 	args.Users, args.SessionUser = []gcp.NATSUserArgs{authServiceUser()}, nil
 	args.PrivateProjects = true
-	withPrivacySource(ownListener(args))
+	withPrivacySource(ownListener(args)).Image = privateListenerImage
 	return args
+}
+
+// TestAPrivateHubsListenerNeedsTheRequiredModeRelease: with privateProjects the session listener
+// renders the broker check, which turns broker tokens on in the listener, and a listener release
+// before the one that enforces the required mode holds none of their callers to the projects they
+// may see. So the hub refuses a private session listener unless its image names a release at or
+// after privateModeListenerFloor; with no floor named, as today, it refuses every image, naming
+// privateProjects, and registers nothing.
+//
+// Control: the empty-floor refusal removed; the first row's hub resolves, and the test fails.
+func TestAPrivateHubsListenerNeedsTheRequiredModeRelease(t *testing.T) {
+	gcp.SetPrivateModeListenerFloor(t, "")
+	_, err := gcp.ResolveClusteredNatsHub(privateListenerHub())
+	require.ErrorContains(t, err, "privateProjects needs a session listener release that enforces the required mode; none is named yet")
+	var input *core.InputError
+	require.ErrorAs(t, err, &input)
+	require.Equal(t, "privateProjects", input.Input)
+	m, err := runClustered(t, "example-clustered-hub", privateListenerHub(), nil)
+	require.ErrorContains(t, err, "none is named yet")
+	require.Empty(t, m.Registrations(), "nothing registered")
+
+	gcp.SetPrivateModeListenerFloor(t, privateModeFloor)
+	for _, row := range []struct {
+		name, image string
+		ok          bool
+	}{
+		{"the floor's own release", privateListenerImage, true},
+		{"a later release, as its name", strings.Replace(listenerImage, "@sha256:", ":legion-envoy-v99.1.0@sha256:", 1), true},
+		{"an earlier release", strings.Replace(listenerImage, "@sha256:", ":v98.9.9@sha256:", 1), false},
+		{"no release in the tag", listenerImage, false},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			args := privateListenerHub()
+			args.Listener.Image = row.image
+			_, err := gcp.ResolveClusteredNatsHub(args)
+			if row.ok {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, "listener.image "+strconv.Quote(row.image)+" must name, as its tag, a listener release at or after v"+privateModeFloor)
+			var input *core.InputError
+			require.ErrorAs(t, err, &input)
+			require.Equal(t, "listener.image", input.Input)
+		})
+	}
 }
 
 // withoutPrivacySource clears the listener's privacy inputs, which is args as a consumer wrote it
@@ -79,6 +141,7 @@ func podJSON(t *testing.T, args *gcp.ClusteredNatsHubArgs) string {
 // the piece. Render the broker settings with privateProjects false (v52's form); the all-public
 // row fails naming ENVOY_AGENT_SECRETS_URL.
 func TestTheClusteredSessionListenerFollowsItsHubsPrivacy(t *testing.T) {
+	gcp.SetPrivateModeListenerFloor(t, privateModeFloor)
 	t.Run("all-public: the listener is today's, the privacy inputs set or not", func(t *testing.T) {
 		public := privateListenerHub()
 		public.PrivateProjects = false
@@ -105,7 +168,7 @@ func TestTheClusteredSessionListenerFollowsItsHubsPrivacy(t *testing.T) {
 		for name, want := range map[string]any{
 			"ENVOY_AGENT_SECRETS_URL":                privacyBrokerURL,
 			"ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE": "/var/run/secrets/envoy-broker/token",
-			"ENVOY_PUBLIC_URL":                       privacyPublicURL,
+			"ENVOY_PUBLIC_URL":                       privacyTailnetOrigin,
 			"ENVOY_PROJECT_PRIVACY_URL":              privacySourceURL,
 			"ENVOY_PROJECT_PRIVACY_REQUIRED":         "true",
 			"ENVOY_ALL_PROJECTS_ACCOUNTS":            privacyDispatchAccount,
@@ -136,6 +199,19 @@ func TestTheClusteredSessionListenerFollowsItsHubsPrivacy(t *testing.T) {
 		}, instances.Inputs.Mappable())
 		rules := m.Named(t, networkPolicyType, clusteredListenerName).Inputs.Mappable()["spec"].(map[string]any)["ingress"].([]any)
 		require.Contains(t, rules, namespaceRule(9020, "example-dispatch"), "the policy admits Dispatch's namespace at the listener's port")
+
+		// A publicUrl that names the tailnet's origin is the same listener.
+		named := privateListenerHub()
+		named.Listener.PublicUrl = privacyTailnetOrigin
+		require.Equal(t, podJSON(t, privateListenerHub()), podJSON(t, named), "publicUrl set to the tailnet's origin changes nothing")
+	})
+
+	t.Run("private, without tailnet: the origin is publicUrl", func(t *testing.T) {
+		args := privateListenerHub()
+		standaloneListener(args).PublicUrl = privacyPublicURL
+		s, err := gcp.ResolveClusteredNatsHub(args)
+		require.NoError(t, err)
+		require.Contains(t, s.Listener.Env, "ENVOY_PUBLIC_URL="+privacyPublicURL)
 	})
 
 	t.Run("private: each missing or wrong input is refused, naming it", func(t *testing.T) {
@@ -145,8 +221,11 @@ func TestTheClusteredSessionListenerFollowsItsHubsPrivacy(t *testing.T) {
 		}{
 			{"no broker URL", "listener.agentSecretsUrl", "listener.agentSecretsUrl is required with privateProjects",
 				func(a *gcp.ClusteredNatsHubArgs) { a.Listener.AgentSecretsUrl = "" }},
-			{"no origin", "listener.publicUrl", "listener.publicUrl is required with privateProjects",
-				func(a *gcp.ClusteredNatsHubArgs) { a.Listener.PublicUrl = "" }},
+			{"no origin without tailnet", "listener.publicUrl", "listener.publicUrl is required with privateProjects",
+				func(a *gcp.ClusteredNatsHubArgs) { standaloneListener(a).PublicUrl = "" }},
+			{"an origin other than the tailnet's beside tailnet", "listener.publicUrl",
+				`listener.publicUrl "` + privacyPublicURL + `" is not ` + privacyTailnetOrigin + `, the origin the tailnet's sessions reach the listener at`,
+				func(a *gcp.ClusteredNatsHubArgs) { a.Listener.PublicUrl = privacyPublicURL }},
 			{"no broker audience", "listener.brokerAudience", "listener.brokerAudience is required with privateProjects",
 				func(a *gcp.ClusteredNatsHubArgs) { a.Listener.BrokerAudience = "" }},
 			{"no privacy URL", "listener.privacySourceUrl", "listener.privacySourceUrl is required with privateProjects",

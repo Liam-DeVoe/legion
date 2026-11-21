@@ -40,7 +40,7 @@
           },
           {
             "name": "ENVOY_PUBLIC_URL",
-            "value": "http://envoy-nats-listener.envoy.svc.cluster.local:9020"
+            "value": "http://envoy-hub.example-tailnet.ts.net:9020"
           },
           {
             "name": "NATS_SERVICE_TOKEN_FILE",
@@ -71,7 +71,7 @@
             "value": "system:serviceaccount:legion:legion-worker,system:serviceaccount:example-dispatch:example-dispatch"
           }
         ],
-        "image": "example.invalid/envoy@sha256:00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+        "image": "example.invalid/envoy:v99.0.0@sha256:00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
         "lifecycle": {
           "preStop": {
             "exec": {

@@ -305,9 +305,16 @@ func CheckPrivacySource(listener string, c ListenerConfig, hubPrivate bool) erro
 				listener, missing.variable)
 		}
 	}
-	if source, err := url.Parse(c.PrivacySourceURL); err == nil && source.Path != "" && source.Path != "/" {
+	source, err := url.Parse(c.PrivacySourceURL)
+	if err == nil && source.Path != "" && source.Path != "/" {
 		return InputErrorf(listener, "%s renders %s %q with the path %q: it is the secrets broker's base URL, to which the listener appends /v1/project-privacy itself",
 			listener, privacyVars[0].variable, c.PrivacySourceURL, source.Path)
+	}
+	// The listener presents its broker token at the privacy URL, so it is the broker's own origin
+	// and no other.
+	if broker, berr := url.Parse(c.AgentSecretsURL); err != nil || berr != nil || source.Scheme != broker.Scheme || source.Host != broker.Host {
+		return InputErrorf(listener, "%s renders %s %q at an origin other than %s %q: the listener presents its broker token there, so it is the secrets broker's own origin",
+			listener, privacyVars[0].variable, c.PrivacySourceURL, brokerVars[0].variable, c.AgentSecretsURL)
 	}
 	if c.AgentSecretsAudience != "" {
 		return InputErrorf(listener, "%s renders %s beside %s: in a pod the listener presents its own projected token to the broker, and refuses a second identity",
@@ -444,8 +451,9 @@ func (c ListenerConfig) checkPrivacy() error {
 		return InputErrorf(urlInput, "%s is required with %s: the listener's required mode reads each decision's privacy from it",
 			urlInput, flagInput)
 	case c.PrivacySourceURL != "":
-		if source, err := url.Parse(c.PrivacySourceURL); err != nil || (source.Scheme != "http" && source.Scheme != "https") || source.Host == "" {
-			return InputErrorf(urlInput, "%s %q must be an http or https URL with a host", urlInput, c.PrivacySourceURL)
+		// https alone: the listener presents its broker-audience token at this URL.
+		if source, err := url.Parse(c.PrivacySourceURL); err != nil || source.Scheme != "https" || source.Host == "" {
+			return InputErrorf(urlInput, "%s %q must be an https URL with a host: the listener presents its own broker token there", urlInput, c.PrivacySourceURL)
 		}
 	}
 	seen := make(map[string]int, len(c.AllProjectsAccounts))
