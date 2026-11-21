@@ -3340,7 +3340,9 @@ changed, and `hold abort` is every workflow's way out once a command has stopped
 pending, printing what each stop left. In hub-restore, after a done `hold prove`, abort is
 admitted only after a stop, and checks each claim against the newest done prove's disk; a proven
 disk that is gone (a 404, or another id under its name) is named in its stop, and a restore onto
-another disk and a new prove follow. Once `hold release` or `hold abort` is done, no command is
+another disk and a new prove follow. Before it releases, it reconciles each daemon store of the
+cutover rows' `daemon/<P>` families (`--daemon-database P=<file>`, repeat) and stops, naming each
+store, unless every one is changed, gone or already consistent. Once `hold release` or `hold abort` is done, no command is
 admitted in that hold. `hold restore --hold ID` puts a row lost in a set hold back held, and
 restores released for a hold that has ended or was lost in prepare, naming `hold abort` or a new
 `hold prepare` for the cohort record that stays; `hold restore` with neither flag writes the
