@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/textversions"
@@ -24,13 +25,13 @@ const eraseOwnerAttempts = 3
 
 // lockInStoreOrder opens a confirmed erase's transaction and takes its locks in the store's lock
 // order (api/inbox_read.go's markInboxReadThreads), whose first invariant is that a store write
-// takes the owner's lock first. The lock of every owner the erase writes under comes first
-// (ownerRows says which they are), then the node's row `for update`, then the node's own
-// projection rows (lockProjectionRows), and nothing the erase does after them takes an owner lock
-// it does not already hold: docs.ReadErasedLiveText takes a document's owner lock again and finds
-// this transaction holding it. A node no row projects - a person, a session, a role, a page -
-// stands under no owner, and the erase then starts at its node's row, which the order allows: a
-// writer may leave a step out.
+// takes the owner's lock first. Of the rows that order places, the lock of every owner the erase
+// writes under comes first (ownerRows says which they are), then the node's row `for update`, then
+// the node's own projection rows (lockProjectionRows), and nothing the erase does after them takes
+// an owner lock it does not already hold: docs.ReadErasedLiveText takes a document's owner lock
+// again and finds this transaction holding it. A node no row projects - a person, a session, a
+// role, a page - stands under no owner, and the erase then starts at its node's row, which the
+// order allows: a writer may leave a step out.
 //
 // Those owners are the node's own and its own document's, never another node's: a row that
 // holds the erased bytes and derives from another node is listed and left as it is, so the run
@@ -43,20 +44,37 @@ const eraseOwnerAttempts = 3
 // batches take their documents' owners in it too (graphcensus's lockBlockDocuments and
 // lockObjectOwners).
 //
-// After the node's projection rows, and before it reads anything under its locks, it takes the
-// keyword fill's cursor row `for share` (textversions.HoldFillBack): a batch of the fill in
-// flight, which may have read the node's text before the run took its locks, commits first, so
-// the read under the locks lists every keyword row that batch wrote, and no batch writes until the
-// run ends. The fill takes the cursor row first and alone in its batch, and takes no owner lock,
-// so the run waiting there while it holds its owners, its node's row and its projection rows can
-// meet no cycle.
+// Before the owner locks it takes two rows that a background pass holds for the whole of a
+// transaction of its own, so that the run waits for such a pass holding no owner lock, which no
+// writer of the node's issue or document then waits on, rather than under its owners, where every
+// comment create, reply, version write and ask transition of them would wait as long:
 //
-// Which owners those are is read before they are locked, so it is read again under them with the
-// rest of the listing (readDerived), and the run goes on with that second read. A write that,
-// between the two reads, moved the node under an owner the run did not take could go on writing
-// under that owner while the run does. The run then rolls back and starts again rather than take
-// that owner after the node's row, and after eraseOwnerAttempts it refuses, naming each owner it
-// found untaken, having removed nothing.
+//   - the term statistics totals row of each project of its owners and of the documents it read
+//     them through (ownerProjects), in project key order, its snapshot cleared
+//     (api.TakeErasedTermTotalsTx). A refresh pass of a project holds that row for its whole
+//     transaction, which production's logs show reaching 18.5 s. Under the locks
+//     api.ForgetErasedTermsTx waits on none of those rows, and on the row of any other project for
+//     100 ms at most;
+//   - then the keyword fill's cursor row `for share` (textversions.HoldFillBack). A batch of the
+//     fill in flight, which may have read the node's text before the run took its locks and which
+//     runs 0.6 to 1.3 s when full, commits first, so the read under the locks lists every keyword
+//     row a batch wrote, and no batch writes until the run ends. The totals rows come first so
+//     that the run does not hold the fill back while it waits for a pass.
+//
+// The store's lock order allows both before the owners because no writer that holds an owner lock
+// takes either, so no wait for one can close a cycle through an owner. The other takers of a
+// totals row are refresh passes (api's refreshSearchTermStats: the leased pass, the related-item
+// check's ensureSearchTermStats and the erase's own count after its commit), and the other takers
+// of the cursor row are the fill's batches, each of which takes it first and alone; none of them
+// takes an owner lock or waits on anything an owner's writer holds. Two runs take the totals rows
+// in one order, and the cursor row in share mode, which the two hold together.
+//
+// Which owners the run writes under is read before they are locked, so it is read again under
+// them with the rest of the listing (readDerived), and the run goes on with that second read. A
+// write that, between the two reads, moved the node under an owner the run did not take could go
+// on writing under that owner while the run does. The run then rolls back and starts again rather
+// than take that owner after the node's row, and after eraseOwnerAttempts it refuses, naming each
+// owner it found untaken, having removed nothing.
 //
 // Before it takes any lock, each try searches the database for the rows the run leaves
 // (searchLeft). That search sends one statement per text column of every base table, each a scan
@@ -175,15 +193,26 @@ func (e *Erasure) searchLeftAfterCommit(ctx context.Context, conn *pgx.Conn, rea
 }
 
 // lockOwnersThenNode is one try of lockInStoreOrder: it reads which owner rows the erase writes
-// under (ownerRows, which reads no node, tuple or event), takes them (events.LockOwnerRows), the
-// node's row and the node's projection rows (lockProjectionRows), holds the keyword fill back
-// (textversions.HoldFillBack), reads the rest of the listing under those locks (readDerived) -
-// the events about the node among those of the owners it took and those the try's search found
-// (eventsUnderLocks) - lists beside it the rows left that the search found (searchLeft), and
-// answers it with every owner it names that the try did not take.
+// under (ownerRows, which reads no node, tuple or event) and their projects (ownerProjects), takes
+// those projects' term statistics totals rows (api.TakeErasedTermTotalsTx), holds the keyword fill
+// back (textversions.HoldFillBack), takes the owners (events.LockOwnerRows), the node's row and
+// the node's projection rows (lockProjectionRows), reads the rest of the listing under those locks
+// (readDerived) - the events about the node among those of the owners it took and those the try's
+// search found (eventsUnderLocks) - lists beside it the rows left that the search found
+// (searchLeft), and answers it with every owner it names that the try did not take.
 func (e *Erasure) lockOwnersThenNode(ctx context.Context, tx pgx.Tx, found searchedBeforeLocks) (erasedRead, []string, error) {
-	before, err := e.ownerRows(ctx, tx)
+	before, documents, err := e.ownerRows(ctx, tx)
 	if err != nil {
+		return erasedRead{}, nil, err
+	}
+	projects, err := e.ownerProjects(ctx, tx, before, documents)
+	if err != nil {
+		return erasedRead{}, nil, err
+	}
+	if err := api.TakeErasedTermTotalsTx(ctx, tx, projects); err != nil {
+		return erasedRead{}, nil, err
+	}
+	if err := textversions.HoldFillBack(ctx, tx); err != nil {
 		return erasedRead{}, nil, err
 	}
 	if err := events.LockOwnerRows(ctx, tx, before); err != nil {
@@ -200,15 +229,13 @@ func (e *Erasure) lockOwnersThenNode(ctx context.Context, tx pgx.Tx, found searc
 	if err := lockProjectionRows(ctx, tx, e.Kind, e.ID); err != nil {
 		return erasedRead{}, nil, err
 	}
-	if err := textversions.HoldFillBack(ctx, tx); err != nil {
-		return erasedRead{}, nil, err
-	}
 	e.underLocks = &eventsUnderLocks{owners: before, ids: found.events}
 	locked, err := e.readDerived(ctx, tx)
 	if err != nil {
 		return erasedRead{}, nil, err
 	}
 	locked.listing.left = found.left
+	locked.termTotals = projects
 	e.list(&locked)
 	var untaken []string
 	for _, key := range slices.Sorted(maps.Keys(locked.owners)) {
