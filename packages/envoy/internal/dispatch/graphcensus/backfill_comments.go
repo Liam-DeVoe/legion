@@ -158,7 +158,10 @@ func writeCommentBatch(ctx context.Context, database *store.Store, batch []comme
 	if write.Comments() == 0 {
 		return 0, 0, 0, nil
 	}
-	if err := store.RunWrite(ctx, tx, write.Queue); err != nil {
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		write.Queue(b)
+		return nil
+	}); err != nil {
 		return 0, 0, 0, fmt.Errorf("write the nodes of a comment batch: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {

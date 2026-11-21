@@ -158,9 +158,9 @@ func (e *Erasure) list(read *erasedRead) {
 	e.Digest = digest(e.Listing)
 }
 
-// nodeProject is the project whose term statistics count the node's words, which the run counts
-// again once its items moved (api.RecountSearchTermStatsTx): a comment's issue's or document's
-// project, a block's document's, and empty for a node no project holds.
+// nodeProject is the project whose term statistics count the node's words, which the run takes
+// the erased words out of once its items moved (api.ForgetErasedTermsTx): a comment's issue's or
+// document's project, a block's document's, and empty for a node no project holds.
 func (e *Erasure) nodeProject(ctx context.Context, tx pgx.Tx, document *ownDocument) (string, error) {
 	project := ""
 	if document != nil {
@@ -564,9 +564,12 @@ func (e *Erasure) readAncestorExcerpts(ctx context.Context, tx pgx.Tx, read *era
 // blockStoodIn is the test of whether the node's block stood in one version of its document
 // holding an erased text, over the statement's own spellings of that document and that version's
 // number, with the erased texts bound as $2 and the block's id as $3. It is the one reading of
-// which versions held the block: the versions the run deletes (readVersions), and the versions of
-// a block holding it at which the run redacts that block's text and excerpt (readAncestorTexts,
-// readAncestorExcerpts).
+// which versions held the block: the versions the run deletes (readVersions), the versions of a
+// block holding it at which the run redacts that block's text and excerpt (readAncestorTexts,
+// readAncestorExcerpts), and the versions whose events the run redacts - each version an
+// artifact.version, an artifact.human_edited, an artifact.approved or an
+// artifact.changes_requested event of its document names, and the version an artifact.version's
+// diff is taken from (readEvents).
 //
 // The block stood in a version when its newest document_block_texts row at or before that
 // version holds the text. The indexer writes a block's row only at a version that made, changed,

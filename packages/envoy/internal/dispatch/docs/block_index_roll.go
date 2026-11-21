@@ -325,7 +325,10 @@ func (s *Service) readEventsAfterCursor(ctx context.Context, tick *BlockIndexTic
 		}
 	}
 	if commented.Comments() > 0 {
-		if err := write(queued, tx, commented.Queue); err != nil {
+		if err := write(queued, tx, func(b *store.WriteBatch) error {
+			commented.Queue(b)
+			return nil
+		}); err != nil {
 			return false, nil, fmt.Errorf("write the nodes of the comments the events after the cursor name: %w", err)
 		}
 		written = commented.Comments()
