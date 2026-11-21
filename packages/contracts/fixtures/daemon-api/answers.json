@@ -163,7 +163,7 @@
     "routes": [
       "POST /legion/v1/claims/relaunch"
     ],
-    "since": 198,
+    "since": 203,
     "noBody": false
   }
 ]

@@ -197,7 +197,7 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "and the checking role's report on a look of its closed issue's production check) reports this phase complete: `summary` (two sentences for the " +
   "architect), `verdict` pass|fail from the tester alone on a phase completion (the daemon refuses a verdict from " +
   "any other role there) and pass|pending|fail on a production check report (pending: production does not carry the merge " +
-  "yet, or carries it with a requirement only the deploy can show still unobserved and a look still to follow). " +
+  "yet, or carries it with a requirement only the deploy can show still unobserved and a look still to follow; on the check's last look, only for an issue with no such requirement). " +
   "A planning, implementing, testing or reviewing phase ends with a handoff record on the " +
   "Dispatch issue: write it with `dispatch handoff-write --issue <issue> --phase <plan|implement|test|review> --body-file <file>` before " +
   "calling. This call reads from Dispatch the newest record of the phase your role works or, once the issue has moved on, of the phase it left, " +
@@ -2104,7 +2104,7 @@ test("read_state's summary marks each claim Envoy cannot reach, and the controll
         generation: 1,
       },
     },
-    pluginContract: 198,
+    pluginContract: 203,
     lastTurnStart: "2026-11-12T15:45:39Z",
     ...(unreachable === undefined ? {} : { unreachable }),
   });
@@ -2114,7 +2114,7 @@ test("read_state's summary marks each claim Envoy cannot reach, and the controll
       external: true,
       sessionId: "ses_controller",
       registeredAt: "2026-11-12T10:00:00Z",
-      pluginContract: 198,
+      pluginContract: 203,
       unreachable: { since: "2026-11-12T18:20:00Z", lastSeen: "2026-11-12T17:59:00Z" },
     },
     issues: {

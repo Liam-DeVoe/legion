@@ -843,7 +843,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 					// leakCheckCauseContract and below recordFieldsContract too, so none of its
 					// callers is served the two keys contract 193 added to a claim view, the
 					// `leakCheckCause` contract 87 added, the six the decided record added or the
-					// `unreachable` contract 198 added.
+					// `unreachable` contract 203 added.
 					for _, key := range roundReportKeys {
 						delete(view, key)
 					}

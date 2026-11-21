@@ -369,7 +369,7 @@ const legionClaimView = z.object({
    * optional. */
   leakCheckCause: nonEmptyString.optional(),
   /** `api.ClaimView.Unreachable`: when the daemon found this claim's session out of Envoy's
-   * reach, and absent while the claim is reachable (contract 198). */
+   * reach, and absent while the claim is reachable (contract 203). */
   unreachable: legionUnreachableView.optional(),
 });
 
@@ -1063,7 +1063,7 @@ const legionControllerLocator = z.object({
   /** 0 = no contract recorded. */
   pluginContract: z.number().int().nonnegative().optional(),
   /** `api.ControllerLocator.Unreachable`: when the daemon found the controller's session out of
-   * Envoy's reach, as a claim view carries it, and absent while it is reachable (contract 198).
+   * Envoy's reach, as a claim view carries it, and absent while it is reachable (contract 203).
    * Nobody else can relaunch the controller, so the daemon relaunches it on its same session
    * itself, at most once in 6 hours; a controller this key still names after that is a person's
    * to recover. */
@@ -2151,7 +2151,7 @@ const ISSUE_RECORD_READS = [
   "workers{}.claim.state",
   "workers{}.claim.lastTurnStart",
   "workers{}.claim.lastTurnEnd",
-  // The `read_state` summary's mark of a claim Envoy cannot reach (contract 198): when the daemon
+  // The `read_state` summary's mark of a claim Envoy cannot reach (contract 203): when the daemon
   // found it so, and the token `relaunch` takes, which is its locator's. The summary reads them
   // off a claim view whichever path reached it, so each is named under every parent of its name.
   "architect.unreachable.since",
@@ -2274,7 +2274,7 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
     "lastPause.endedBy|0.kind",
     "lastPause.endedBy|1.kind",
     "lastPause.endedBy|0.session",
-    // The summary's line on a controller the daemon found out of Envoy's reach (contract 198).
+    // The summary's line on a controller the daemon found out of Envoy's reach (contract 203).
     "controllerLocator.unreachable",
     "controllerLocator.unreachable.since",
   ],
