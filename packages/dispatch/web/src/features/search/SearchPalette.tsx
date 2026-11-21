@@ -491,8 +491,13 @@ function SearchNarrowing({
               <input
                 className={`min-h-11 rounded-lg border px-3 py-2 text-sm ${inputClasses(true)}`}
                 onChange={(event) => {
-                  if (event.target.value !== "") {
-                    set({ updatedSince: event.target.value });
+                  // A date the reader types is taken once its year is whole: an engine reports a
+                  // valid date from the year's first digit (Chromium reads `2` as the year 0002),
+                  // and taking that would narrow to a year the reader is still typing and draw
+                  // the box away from under their next keys.
+                  const { value } = event.target;
+                  if (value !== "" && Number(value.slice(0, 4)) >= 1000) {
+                    set({ updatedSince: value });
                   }
                 }}
                 type="date"

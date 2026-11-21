@@ -1450,6 +1450,34 @@ test("a chip narrows the search, reads back in the person's words, and comes off
   }
 });
 
+test("a date typed in Updated since narrows the search only once its year is whole", async () => {
+  const user = userOnFakeClock();
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
+  const view = renderPalette();
+
+  try {
+    await searchFor(user, "astrolabe");
+    await openFilters(user);
+    const box = screen.getByLabelText("Updated since");
+    // An engine reports a valid date from the year's first typed digit, as Chromium does with
+    // `0002-11-22`. user-event cannot type into a date box's parts, so the value the engine
+    // reports is set as it would report it.
+    fireEvent.change(box, { target: { value: "0002-11-22" } });
+    expect(screen.getByLabelText("Updated since")).toBe(box);
+    expect(screen.queryByRole("button", { name: /^Remove Updated since/ })).toBeNull();
+    // The same box once the year's last digit is typed.
+    fireEvent.change(box, { target: { value: "2026-11-22" } });
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /^Remove Updated since/ })).not.toBeNull()
+    );
+    expect(screen.queryByLabelText("Updated since")).toBeNull();
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
 test("a project picked in the panel narrows the search and reads back as its chip", async () => {
   const user = userOnFakeClock();
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
