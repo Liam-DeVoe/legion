@@ -1,0 +1,554 @@
+#!/usr/bin/env bash
+# red-at-base.test.sh - Drives scripts/red-at-base.sh against a scratch git repository this test
+# makes in its own temporary directory: a base commit, and a change after it that fixes three faults
+# of the base (calc.Add adds one too many, lib's total of an empty list is -1, version.txt says 1)
+# and adds tests that prove each fix. The test runs the tool over lists of lines and reads what it
+# prints for each line and how it exits:
+#
+# - the three lines of the plan (a test red at its base, one green there, and a regex that matches
+#   nothing) read RED, GREEN and NO-TEST, and the tool exits 1;
+# - each kind reads each verdict it can give: go (a test that does not build at the base, a skip, a
+#   subtest, a parent that fails before its subtest starts, a base that does not build without the
+#   line's files, a file the checkout has not committed, GOFLAGS passed through), bun (a workspace
+#   package that must resolve to the base's copy, an installed package that must resolve at all, a
+#   skip, no match, an import the base lacks, a package nobody installed) and e2e (a case that fails
+#   in the worktree and would pass in the checkout, a case that passes, a case the script does not
+#   have, two cases in one line);
+# - a list whose every line is red, a BUILD-FAILED among them, exits 0;
+# - the tool leaves nothing behind in the checkout, in its git directory or in TMPDIR, even when a
+#   TERM stops it while a test runs;
+# - a bad list or argument exits 2 before any test runs, and so does a list that holds no line.
+set -euo pipefail
+
+# Hermetic: the developer's global and system git configuration (commit.gpgsign, core.hooksPath)
+# must not reach the scratch repository or the tool under test.
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly project_root
+readonly tool="${project_root}/scripts/red-at-base.sh"
+scratch="$(mktemp -d "${TMPDIR:-/tmp}/red-at-base-test.XXXXXX")"
+readonly scratch
+readonly repo="${scratch}/repo"
+# The TMPDIR of every run of the tool, so this test can read what a run left there.
+readonly tool_tmp="${scratch}/tool-tmp"
+background_pid=''
+
+# A run this test started in the background is stopped by the process id it recorded, and the
+# scratch directory, which holds the repository and every worktree the tool made of it, is removed
+# by its own path.
+cleanup() {
+  if [[ -n $background_pid ]]; then
+    kill "$background_pid" 2>/dev/null || true
+    wait "$background_pid" 2>/dev/null || true
+  fi
+  rm -rf -- "$scratch"
+}
+trap cleanup EXIT
+
+for program in git go bun awk realpath; do
+  command -v "$program" >/dev/null || {
+    echo "red-at-base.test.sh: $program is not on PATH, and the tool needs it" >&2
+    exit 1
+  }
+done
+
+scratch_git() {
+  git -C "$repo" -c user.name='Scratch' -c user.email='scratch@example.com' -c commit.gpgsign=false "$@"
+}
+
+# write <path> <text>: one file of the scratch repository.
+write() {
+  mkdir -p "$(dirname "${repo}/$1")"
+  printf '%s\n' "$2" >"${repo}/$1"
+}
+
+mkdir -p "$repo" "$tool_tmp"
+git init -q -b main "$repo"
+
+# ---- the base ------------------------------------------------------------------------------------
+write .gitignore 'node_modules/'
+write go.mod 'module example.com/scratch
+
+go 1.22'
+write calc/calc.go 'package calc
+
+// Add is wrong at the base: it adds one too many.
+func Add(a, b int) int { return a + b + 1 }
+
+func Neg(a int) int { return -a }'
+write calc/neg_test.go 'package calc
+
+import "testing"
+
+func TestNeg(t *testing.T) {
+	if Neg(2) != -2 {
+		t.Fatal("Neg(2) is not -2")
+	}
+}'
+# A package that does not build at the base by itself.
+write broken/half.go 'package broken
+
+func Half(a int) int { return a / two }'
+write package.json '{ "name": "scratch", "private": true }'
+write lib/package.json '{ "name": "@scratch/lib", "version": "1.0.0", "main": "index.ts" }'
+write lib/index.ts '// total is wrong at the base for an empty list.
+export function total(xs: number[]): number {
+  return xs.length === 0 ? -1 : xs.reduce((a, b) => a + b);
+}'
+write web/package.json '{ "name": "@scratch/web", "private": true }'
+write version.txt '1'
+scratch_git add -A
+scratch_git commit -q -m 'the base'
+base_commit="$(scratch_git rev-parse HEAD)"
+readonly base_commit
+
+# ---- the change: the fixes and the tests that prove them --------------------------------------------
+write calc/calc.go 'package calc
+
+func Add(a, b int) int { return a + b }
+
+func Neg(a int) int { return -a }
+
+func Mul(a, b int) int { return a * b }'
+write calc/add_test.go 'package calc
+
+import "testing"
+
+func TestAddOfTwoAndTwoIsFour(t *testing.T) {
+	if got := Add(2, 2); got != 4 {
+		t.Fatalf("Add(2, 2) = %d, want 4", got)
+	}
+}'
+write calc/neg_more_test.go 'package calc
+
+import "testing"
+
+func TestNegOfNegIsItself(t *testing.T) {
+	if Neg(Neg(3)) != 3 {
+		t.Fatal("Neg(Neg(3)) is not 3")
+	}
+}'
+write calc/mul_test.go 'package calc
+
+import "testing"
+
+func TestMulOfTwoAndThree(t *testing.T) {
+	if Mul(2, 3) != 6 {
+		t.Fatal("Mul(2, 3) is not 6")
+	}
+}'
+write calc/skip_test.go 'package calc
+
+import "testing"
+
+func TestNeedsADatabase(t *testing.T) {
+	t.Skip("no database was given")
+}'
+write calc/sub_test.go 'package calc
+
+import "testing"
+
+func TestTable(t *testing.T) {
+	t.Run("zero", func(t *testing.T) {
+		if Neg(0) != 0 {
+			t.Fatal("Neg(0) is not 0")
+		}
+	})
+	t.Run("two_and_two", func(t *testing.T) {
+		if Add(2, 2) != 4 {
+			t.Fatal("Add(2, 2) is not 4")
+		}
+	})
+}
+
+func TestWithSetup(t *testing.T) {
+	if Add(0, 0) != 0 {
+		t.Fatal("setup: Add(0, 0) is not 0")
+	}
+	t.Run("new", func(t *testing.T) {})
+}'
+write calc/tagged_test.go '//go:build scratchtag
+
+package calc
+
+import "testing"
+
+func TestTagged(t *testing.T) {
+	if Add(1, 1) != 2 {
+		t.Fatal("Add(1, 1) is not 2")
+	}
+}'
+write broken/half.go 'package broken
+
+func Half(a int) int { return a / 2 }'
+write broken/half_test.go 'package broken
+
+import "testing"
+
+func TestHalfOfFour(t *testing.T) {
+	if Half(4) != 2 {
+		t.Fatal("Half(4) is not 2")
+	}
+}'
+write lib/index.ts 'export function total(xs: number[]): number {
+  return xs.reduce((a, b) => a + b, 0);
+}
+
+export function count(xs: number[]): number {
+  return xs.length;
+}'
+write web/src/total.test.ts 'import { expect, test } from "bun:test";
+import { total } from "@scratch/lib";
+import { pad } from "pad-local";
+
+test("total of an empty list is zero", () => {
+  expect(total([])).toBe(0);
+});
+
+test("total of one and two is three", () => {
+  expect(total([1, 2])).toBe(3);
+});
+
+test("pads a number", () => {
+  expect(pad(7)).toBe("007");
+});
+
+test.skip("waits for a server", () => {});'
+write web/src/count.test.ts 'import { expect, test } from "bun:test";
+import { count } from "@scratch/lib";
+
+test("counts", () => {
+  expect(count([1, 2, 3])).toBe(3);
+});'
+write web/src/missing.test.ts 'import { expect, test } from "bun:test";
+import { nothing } from "not-installed-anywhere";
+
+test("imports", () => {
+  expect(nothing).toBeDefined();
+});'
+# shellcheck disable=SC2016 # the script's own expansions, run by its bash
+write scripts/e2e/scratch-cases.sh '#!/usr/bin/env bash
+# The cases of SCRATCH_CASES_E2E_CASES, commas between them, each read against the checkout it runs in.
+set -euo pipefail
+root=$(git rev-parse --show-toplevel)
+for case in ${SCRATCH_CASES_E2E_CASES//,/ }; do
+  case $case in
+  version-is-two)
+    echo "== $case"
+    version=$(<"$root/version.txt")
+    [[ $version == 2 ]] || { echo "FAIL $case: version.txt holds $version"; exit 1; }
+    echo "ok $case"
+    ;;
+  version-file-exists)
+    echo "== $case"
+    [[ -f $root/version.txt ]] || { echo "FAIL $case: no version.txt"; exit 1; }
+    echo "ok $case"
+    ;;
+  waits)
+    echo "== $case"
+    : >"$RED_AT_BASE_TEST_MARK"
+    sleep 3
+    echo "ok $case"
+    ;;
+  *)
+    echo "scratch-cases.sh: no case is named $case" >&2
+    exit 2
+    ;;
+  esac
+done'
+write version.txt '2'
+scratch_git add -A
+scratch_git commit -q -m 'the change'
+# A test the checkout has not committed: the tool copies what the working tree holds.
+write calc/wip_test.go 'package calc
+
+import "testing"
+
+func TestWorkInProgress(t *testing.T) {
+	if Add(5, 5) != 10 {
+		t.Fatal("Add(5, 5) is not 10")
+	}
+}'
+
+# ---- the installed packages, laid out as bun's isolated install lays them out -------------------------
+# An installed package lives in the root's store, node_modules/.bun, and each package's own
+# node_modules holds a relative link into the store, or to a workspace package of the repository.
+# Git ignores all of it, so a worktree of the base has none of it until the tool mirrors it.
+store_pad="node_modules/.bun/pad-local@1.0.0/node_modules/pad-local"
+mkdir -p "${repo}/${store_pad}" "${repo}/node_modules/@scratch" "${repo}/web/node_modules/@scratch"
+printf '%s\n' '{ "name": "pad-local", "version": "1.0.0", "type": "module", "main": "index.js" }' \
+  >"${repo}/${store_pad}/package.json"
+printf '%s\n' 'export function pad(n) { return String(n).padStart(3, "0"); }' >"${repo}/${store_pad}/index.js"
+ln -s ".bun/pad-local@1.0.0/node_modules/pad-local" "${repo}/node_modules/pad-local"
+ln -s "../../lib" "${repo}/node_modules/@scratch/lib"
+ln -s "../../node_modules/.bun/pad-local@1.0.0/node_modules/pad-local" "${repo}/web/node_modules/pad-local"
+ln -s "../../../lib" "${repo}/web/node_modules/@scratch/lib"
+
+# ---- the harness -------------------------------------------------------------------------------------
+# What the checkout holds, but its git directory: the tool must leave every entry as it found it.
+snapshot() {
+  (cd "$repo" && find . -path ./.git -prune -o -printf '%y %p %s %T@ %l\n' | LC_ALL=C sort)
+}
+checkout_before="$(snapshot)"
+readonly checkout_before
+
+status=0
+output=''
+# show: what the run just read printed, for the log of this test: its case, its exit status and
+# the tool's stdout.
+show() {
+  echo "-- ${case_name} (exit ${status})"
+  [[ -z $output ]] || while IFS= read -r printed; do echo "   $printed"; done <<<"$output"
+}
+
+# run_tool <list file> [NAME=value]...: the tool, at the top of the scratch repository, against the
+# base, with the variables given; its exit status in status, its stdout in output, its stderr in
+# ${scratch}/err.
+run_tool() {
+  local list=$1
+  shift
+  set +e
+  (cd "$repo" && env TMPDIR="$tool_tmp" "$@" bash "$tool" --base "$base_commit" --list "$list" \
+    >"${scratch}/out" 2>"${scratch}/err")
+  status=$?
+  set -e
+  output="$(<"${scratch}/out")"
+  show
+}
+
+# list <name> <line>...: a list file of the lines given.
+list() {
+  local file="${scratch}/$1.list"
+  shift
+  printf '%s\n' "$@" >"$file"
+  printf '%s' "$file"
+}
+
+failures=0
+case_name=''
+# fail <text>: one expectation the case did not meet, with what the tool printed.
+fail() {
+  failures=$((failures + 1))
+  {
+    echo "FAIL: ${case_name}: $1"
+    echo "  stdout:"
+    while IFS= read -r printed; do echo "    $printed"; done <<<"$output"
+    echo "  the last lines of stderr:"
+    tail -n 25 "${scratch}/err" 2>/dev/null | sed 's/^/    /'
+  } >&2
+}
+
+expect_status() {
+  [[ $status == "$1" ]] || fail "expected exit $1, got $status"
+}
+
+# expect_verdict <line number> <verdict> [text the line names]: the tool's line for that line of
+# the list reads that verdict, and names the text when one is given.
+expect_verdict() {
+  local line
+  line="$(grep -E "^[A-Z-]+ line $1: " <<<"$output" || true)"
+  [[ $line == "$2 line $1: "* ]] || fail "expected line $1 to read $2, got \"${line}\""
+  [[ -z ${3:-} || $line == *"$3"* ]] || fail "expected line $1 to name \"$3\", got \"${line}\""
+}
+
+# expect_lines <count>: the tool printed one line for each line of the list, and nothing else.
+expect_lines() {
+  local count=0
+  [[ -z $output ]] || count="$(wc -l <<<"$output")"
+  [[ $count == "$1" ]] || fail "expected $1 lines on stdout, got $count"
+}
+
+# expect_nothing_left: no worktree entry in the repository's git directory, no directory of the
+# tool in TMPDIR, and the checkout as it was.
+expect_nothing_left() {
+  local worktrees entries=()
+  worktrees="$(git -C "$repo" worktree list --porcelain | grep -c '^worktree ' || true)"
+  [[ $worktrees == 1 ]] || fail "expected the checkout alone in git worktree list, got $worktrees worktrees"
+  if [[ -d ${repo}/.git/worktrees ]]; then
+    shopt -s nullglob dotglob
+    entries=("${repo}/.git/worktrees"/*)
+    shopt -u nullglob dotglob
+  fi
+  ((${#entries[@]} == 0)) || fail "the repository's git directory still holds ${entries[*]##*/}"
+  if compgen -G "${tool_tmp}/red-at-base.*" >/dev/null; then
+    fail "TMPDIR still holds $(compgen -G "${tool_tmp}/red-at-base.*" | tr '\n' ' ')"
+  fi
+  [[ $(snapshot) == "$checkout_before" ]] ||
+    fail "the checkout changed: $(diff <(printf '%s\n' "$checkout_before") <(snapshot) | head -n 5 | tr '\n' ' ')"
+}
+
+# ---- the cases -----------------------------------------------------------------------------------------
+case_name='a red test, a green test and a regex that matches nothing read RED, GREEN and NO-TEST, and the tool exits 1'
+run_tool "$(list three \
+  'go calc ^TestAddOfTwoAndTwoIsFour$ calc/add_test.go' \
+  'go calc ^TestNegOfNegIsItself$ calc/neg_more_test.go' \
+  'go calc ^TestNoSuchTest$ calc/add_test.go')"
+expect_status 1
+expect_lines 3
+expect_verdict 1 RED 'TestAddOfTwoAndTwoIsFour'
+expect_verdict 2 GREEN 'TestNegOfNegIsItself'
+expect_verdict 3 NO-TEST 'no tests to run'
+expect_nothing_left
+
+case_name='go: each verdict of a go line'
+run_tool "$(list go \
+  'go calc ^TestMulOfTwoAndThree$ calc/mul_test.go' \
+  'go calc ^TestNeedsADatabase$ calc/skip_test.go' \
+  'go calc ^TestTable$/^two_and_two$ calc/sub_test.go' \
+  'go calc ^TestTable$/^zero$ calc/sub_test.go' \
+  'go calc ^TestWithSetup$/^new$ calc/sub_test.go' \
+  'go broken ^TestHalfOfFour$ broken/half_test.go' \
+  'go calc ^TestWorkInProgress$ calc/wip_test.go' \
+  'go calc ^TestTagged$ calc/tagged_test.go')"
+expect_status 1
+expect_lines 8
+expect_verdict 1 BUILD-FAILED 'undefined: Mul'
+expect_verdict 2 NO-TEST 'skipped'
+expect_verdict 3 RED 'TestTable/two_and_two'
+expect_verdict 4 GREEN 'TestTable/zero'
+# The parent fails before the subtest the regex names starts: no test it names ran.
+expect_verdict 5 NO-TEST 'before a test the regex names started: --- FAIL: TestWithSetup'
+# The base's own package does not build: no fault of the line's file, so no BUILD-FAILED.
+expect_verdict 6 NO-TEST 'does not build'
+expect_verdict 7 RED 'TestWorkInProgress'
+# With no build tag, the tagged file is no part of the build.
+expect_verdict 8 NO-TEST 'no tests to run'
+expect_nothing_left
+
+case_name='go: the caller GOFLAGS reaches go test'
+run_tool "$(list goflags 'go calc ^TestTagged$ calc/tagged_test.go')" GOFLAGS="${GOFLAGS:+$GOFLAGS }-tags=scratchtag"
+expect_status 0
+expect_lines 1
+expect_verdict 1 RED 'TestTagged'
+expect_nothing_left
+
+case_name='bun: each verdict of a bun line'
+run_tool "$(list bun \
+  'bun web total\sof\san\sempty\slist\sis\szero web/src/total.test.ts' \
+  'bun web ^total\sof\sone\sand\stwo\sis\sthree$ web/src/total.test.ts' \
+  'bun web ^pads\sa\snumber$ web/src/total.test.ts' \
+  'bun web ^waits\sfor\sa\sserver$ web/src/total.test.ts' \
+  'bun web ^no\ssuch\stest$ web/src/total.test.ts' \
+  'bun web ^counts$ web/src/count.test.ts' \
+  'bun web ^imports$ web/src/missing.test.ts')"
+expect_status 1
+expect_lines 7
+# Red only when @scratch/lib resolves to the base's lib, where the total of an empty list is -1.
+expect_verdict 1 RED 'total of an empty list is zero'
+expect_verdict 2 GREEN
+# Green only when pad-local, an installed package of the checkout, resolves at the base.
+expect_verdict 3 GREEN
+expect_verdict 4 NO-TEST
+expect_verdict 5 NO-TEST 'matched 0 tests'
+expect_verdict 6 BUILD-FAILED "Export named 'count' not found"
+# A package nobody installed is no fault of the test's code at the base.
+expect_verdict 7 NO-TEST 'not-installed-anywhere'
+expect_nothing_left
+
+case_name='e2e: each verdict of an e2e line'
+run_tool "$(list e2e \
+  'e2e scripts/e2e/scratch-cases.sh version-is-two scripts/e2e/scratch-cases.sh' \
+  'e2e scripts/e2e/scratch-cases.sh version-file-exists scripts/e2e/scratch-cases.sh' \
+  'e2e scripts/e2e/scratch-cases.sh no-such-case scripts/e2e/scratch-cases.sh' \
+  'e2e scripts/e2e/scratch-cases.sh version-file-exists,version-is-two scripts/e2e/scratch-cases.sh')"
+expect_status 1
+expect_lines 4
+# Red only when the script reads the base's version.txt, which holds 1; the checkout's holds 2.
+expect_verdict 1 RED 'version.txt holds 1'
+expect_verdict 2 GREEN
+expect_verdict 3 NO-TEST
+expect_verdict 4 RED 'version.txt holds 1'
+expect_nothing_left
+
+case_name='a list of red lines, a BUILD-FAILED among them, exits 0; comments and blank lines are passed over'
+run_tool "$(list red \
+  '# The tests of the change, each red at the base.' \
+  'go calc ^TestAddOfTwoAndTwoIsFour$ calc/add_test.go' \
+  '' \
+  'go calc ^TestMulOfTwoAndThree$ calc/mul_test.go' \
+  'bun web total\sof\san\sempty\slist web/src/total.test.ts' \
+  'bun web ^counts$ web/src/count.test.ts' \
+  'e2e scripts/e2e/scratch-cases.sh version-is-two scripts/e2e/scratch-cases.sh')"
+expect_status 0
+expect_lines 5
+expect_verdict 2 RED
+expect_verdict 4 BUILD-FAILED
+expect_verdict 5 RED
+expect_verdict 6 BUILD-FAILED
+expect_verdict 7 RED
+expect_nothing_left
+
+case_name='a TERM while a test runs leaves nothing behind'
+term_list="$(list term 'e2e scripts/e2e/scratch-cases.sh waits scripts/e2e/scratch-cases.sh')"
+(cd "$repo" && exec env TMPDIR="$tool_tmp" RED_AT_BASE_TEST_MARK="${scratch}/mark" \
+  bash "$tool" --base "$base_commit" --list "$term_list" >"${scratch}/out" 2>"${scratch}/err") &
+background_pid=$!
+for _ in $(seq 1 300); do
+  [[ -e ${scratch}/mark ]] && break
+  sleep 0.1
+done
+[[ -e ${scratch}/mark ]] || fail 'the case that waits never started'
+kill -TERM "$background_pid" 2>/dev/null || fail 'the run had ended before the TERM'
+set +e
+wait "$background_pid"
+status=$?
+set -e
+background_pid=''
+output="$(<"${scratch}/out")"
+show
+expect_status 143
+expect_lines 0
+expect_nothing_left
+
+# A refusal comes before any test runs, so it prints no line on stdout.
+refused() {
+  case_name=$1
+  shift
+  run_tool "$@"
+  expect_status 2
+  expect_lines 0
+  [[ -s ${scratch}/err ]] || fail 'expected a reason on stderr'
+}
+
+refused 'a list that holds no line proves nothing, and exits 2' "$(list empty '# nothing but a comment' '')"
+grep -q 'holds no line' "${scratch}/err" || fail 'expected stderr to say the list holds no line'
+refused 'a file the checkout does not have exits 2' \
+  "$(list nofile 'go calc ^TestAddOfTwoAndTwoIsFour$ calc/add_test.go' 'go calc ^TestX$ calc/absent_test.go')"
+grep -q 'calc/absent_test.go' "${scratch}/err" || fail 'expected stderr to name the absent file'
+refused 'a kind the tool does not have exits 2' "$(list kind 'rust calc ^TestX$ calc/add_test.go')"
+refused 'a path out of the checkout exits 2' "$(list parent 'go calc ^TestX$ ../outside_test.go')"
+refused 'a line of fewer than four fields exits 2' "$(list short 'go calc ^TestX$')"
+refused 'a bun line with no test file under its directory exits 2' "$(list nobuntest 'bun web ^x$ lib/index.ts')"
+refused 'an e2e line whose script is no .sh file of the checkout exits 2' \
+  "$(list noscript 'e2e scripts/e2e/absent.sh some-case scripts/e2e/scratch-cases.sh')"
+
+case_name='a base that names no commit exits 2'
+set +e
+(cd "$repo" && env TMPDIR="$tool_tmp" bash "$tool" --base no-such-ref --list "$(list one 'go calc ^TestX$ calc/add_test.go')" \
+  >"${scratch}/out" 2>"${scratch}/err")
+status=$?
+set -e
+output="$(<"${scratch}/out")"
+show
+expect_status 2
+expect_lines 0
+
+case_name='no arguments print the usage and exit 2'
+set +e
+(cd "$repo" && bash "$tool" >"${scratch}/out" 2>"${scratch}/err")
+status=$?
+set -e
+output="$(<"${scratch}/out")"
+show
+expect_status 2
+grep -q 'usage: ' "${scratch}/err" || fail 'expected the usage on stderr'
+
+case_name='after every case'
+expect_nothing_left
+
+if ((failures > 0)); then
+  echo "red-at-base.test.sh: ${failures} expectation(s) failed" >&2
+  exit 1
+fi
+echo 'red-at-base.test.sh: every case passed'
