@@ -944,7 +944,9 @@ export function ProofDocument({
                       // The margin owns the mark from here: it removes it when the composer ends
                       // unsaved and retypes it when the composer's kind changes. The anchor keeps
                       // the pending inserts the selected words lie in, whose comment's delete
-                      // takes them out of the document (`ComposerAnchor.insertMarks`).
+                      // takes them out of the document (`ComposerAnchor.insertMarks`): an empty
+                      // list where they lie in none, and none where the editor holds no document
+                      // to read them from, which leaves the words to a read of the text.
                       const doc = editor?.view.state.doc;
                       return marginRef.current.composeForMark({
                         anchor: {

@@ -38,13 +38,10 @@ export function markPlacements(
  * An insert's words are its comment's own, and the comment's delete takes them out of the
  * document, so words selected there are a deleted post's once that comment is deleted
  * (`ComposerAnchor.insertMarks`). An accept takes the insert's mark off its words, so every such
- * mark is a pending one. Undefined where the range holds none.
+ * mark is a pending one. Empty where the range holds none: the words lie in no insert. A draft an
+ * older build kept names no list at all, which says something else (`useQuoteInDocument`).
  */
-export function insertMarksIn(
-  doc: ProseMirrorNode,
-  from: number,
-  to: number
-): string[] | undefined {
+export function insertMarksIn(doc: ProseMirrorNode, from: number, to: number): string[] {
   const ids: string[] = [];
   doc.nodesBetween(from, to, (node) => {
     if (!node.isText) {
@@ -63,7 +60,7 @@ export function insertMarksIn(
     }
     return false;
   });
-  return ids.length === 0 ? undefined : ids;
+  return ids;
 }
 
 export function blockOffsets(root: HTMLElement): Map<string, number> {

@@ -10,7 +10,8 @@ import { liveTextQueryOptions } from "./live-text-query";
 
 /** The words of a document a draft was written for: the document, the words as the editor named
  *  the reader's selection of them, and the pending inserts they lie in (a margin compose's
- *  `ComposerAnchor`). */
+ *  `ComposerAnchor`): an empty list where they lie in none, and no list at all on a draft or held
+ *  send an older build kept, which never reads as an empty one. */
 export interface QuotedWords {
   readonly artifact: string;
   readonly insertMarks?: readonly string[];
@@ -89,8 +90,9 @@ function holdsDeletedInsert(
 
 /** What the page's comment lists say of the words: a list holds deleted the comment of an insert
  *  they lie in (`holdsDeletedInsert`); else the margin's own list, `margin`, holds an answer, so
- *  the page has read the comments and holds none of them deleted; its read failed with no answer,
- *  or there is no such list to read; or it holds no answer yet. */
+ *  the page has read the comments and holds none of them deleted; no list can answer for them -
+ *  the margin's read failed with no answer, there is no such list to read, or the words name no
+ *  inserts at all; or the list holds no answer yet. */
 type ListedWords = "deleted" | "failed" | "read" | "unread";
 
 function listedWords(
@@ -102,6 +104,10 @@ function listedWords(
   if (marks !== undefined && marks.length > 0 && holdsDeletedInsert(client, artifact, marks)) {
     return "deleted";
   }
+  // Words that name no inserts (`marks` undefined, not empty: a draft or held send an older build
+  // kept) may lie in one whose comment is deleted, and a list cannot show that it holds none of
+  // theirs deleted: only a read of the document's text checks them.
+  if (marks === undefined) return "failed";
   const state = margin === undefined ? undefined : client.getQueryState(margin);
   if (state?.data !== undefined) return "read";
   return margin === undefined || state?.status === "error" ? "failed" : "unread";
@@ -134,10 +140,14 @@ function listedWords(
  *
  * Until then the words are drawn only once the page holds an answer that can check them: that
  * text read, or the comment list the margin of the draft's `owner` reads (`useMarginItems`),
- * which holds none of the inserts deleted. A page that has just loaded - a reload, with drafts the
- * tab kept - holds neither, and a delete's correction drops the text read (`dropUnmarkedText`):
- * while the page reads them the words are loading, and once each read has failed with no answer
- * they cannot be checked now. Neither draws the words; the draft's own words stay.
+ * which holds none of the inserts deleted. The list answers only for words that name the inserts
+ * they lie in, an empty list too (`insertMarksIn`): a draft or held send an older build kept
+ * names none, and its words may lie in an insert whose comment is deleted, which no list can
+ * show, so for it only the text read answers. A page that has just loaded - a reload, with drafts
+ * the tab kept - holds neither, and a delete's correction drops the text read
+ * (`dropUnmarkedText`): while the page reads them the words are loading, and once each read that
+ * can answer has failed with no answer they cannot be checked now. Neither draws the words; the
+ * draft's own words stay.
  */
 export function useQuoteInDocument(
   { artifact, insertMarks, quote }: QuotedWords,

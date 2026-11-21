@@ -224,6 +224,7 @@ export const keptAnchor = shape.either(
     artifact: shape.string,
     // The pending inserts the words lie in, which say after a reload that they are a deleted
     // post's once the page holds the insert's comment deleted (`ComposerAnchor.insertMarks`).
+    // A draft or send an older build kept has none, and keeps none: absent is not empty.
     insertMarks: shape.optional(shape.array(shape.string)),
     mark_id: shape.string,
     // The words the reader had around their selection and how many readings of them their
