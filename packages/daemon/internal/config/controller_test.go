@@ -42,6 +42,9 @@ func TestTheControllerNeedsALoopbackListenerOrAMachineIdentity(t *testing.T) {
 		return clientRefusal + ": the controller's session cannot prove this machine's identity, so it trades nothing and presents the Envoy listener envoy.test no credential," +
 			" and a listener off loopback answers a caller that presents none 401; give the identity what it needs, or name a loopback listener"
 	}
+	const notPrintable = "AGENT_SECRETS_MACHINE_IDENTITY holds a character outside printable ASCII, which this check and the session's broker client trim differently," +
+		" so the session may read another kind, trade nothing and present the Envoy listener envoy.test no credential, and a listener off loopback answers a caller that presents none 401;" +
+		" write the kind in printable ASCII (kubernetes, metadata or pool), or name a loopback listener"
 	withKind := func(kind string, more map[string]string) map[string]string {
 		env := map[string]string{"AGENT_SECRETS_URL": "https://secrets.example.invalid", "AGENT_SECRETS_MACHINE_IDENTITY": kind}
 		for name, value := range more {
@@ -64,6 +67,13 @@ func TestTheControllerNeedsALoopbackListenerOrAMachineIdentity(t *testing.T) {
 		{"off loopback, a broker and no identity", "http://envoy.test:9020", map[string]string{"AGENT_SECRETS_URL": "https://secrets.example.invalid"}, refusal},
 		{"off loopback, an identity and no broker", "http://envoy.test:9020", map[string]string{"AGENT_SECRETS_MACHINE_IDENTITY": "metadata"}, refusal},
 		{"off loopback, a broker and a blank identity", "http://envoy.test:9020", withKind(" ", nil), refusal},
+		{"off loopback, a blank broker and an identity", "http://envoy.test:9020",
+			map[string]string{"AGENT_SECRETS_URL": " ", "AGENT_SECRETS_MACHINE_IDENTITY": "metadata", "AGENT_SECRETS_MACHINE_AUDIENCE": "example-audience"}, refusal},
+		// Go's strings.TrimSpace takes a NEL (U+0085) off the kind and leaves a BOM (U+FEFF) on it,
+		// and the session's TypeScript client, which trims with String.prototype.trim, does the
+		// opposite, so the two would read either value as different kinds.
+		{"off loopback, a kubernetes identity ending in a NEL", "http://envoy.test:9020", withKind("kubernetes\u0085", tokenFile), notPrintable},
+		{"off loopback, a kubernetes identity starting with a BOM", "http://envoy.test:9020", withKind("\ufeffkubernetes", tokenFile), notPrintable},
 		{"off loopback, a kubernetes identity and no token file", "http://envoy.test:9020", withKind("kubernetes", nil),
 			unproven("AGENT_SECRETS_MACHINE_TOKEN_FILE is required by AGENT_SECRETS_MACHINE_IDENTITY=kubernetes")},
 		{"off loopback, a pool identity and no token file", "http://envoy.test:9020", withKind("pool", nil),
@@ -76,6 +86,7 @@ func TestTheControllerNeedsALoopbackListenerOrAMachineIdentity(t *testing.T) {
 			unproven("AGENT_SECRETS_MACHINE_IDENTITY names no identity this machine can prove; it takes kubernetes, metadata or pool")},
 		{"control: off loopback, a metadata identity and its audience", "http://envoy.test:9020", withKind("metadata", audience), ""},
 		{"control: off loopback, a kubernetes identity and its token file", "http://envoy.test:9020", withKind("kubernetes", tokenFile), ""},
+		{"control: off loopback, a kubernetes identity in ASCII blanks and its token file", "http://envoy.test:9020", withKind(" kubernetes ", tokenFile), ""},
 		{"control: off loopback, a pool identity and its four variables", "http://envoy.test:9020", withKind("pool", wholePool), ""},
 		{"control: a loopback listener with a kubernetes identity and no token file", "http://127.0.0.1:9020", withKind("kubernetes", nil), ""},
 		{"control: a loopback listener with no identity", "http://127.0.0.1:9020", nil, ""},
