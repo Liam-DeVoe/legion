@@ -70,9 +70,10 @@ import { type ApiRequest, type ApiRequests, expectLoadSettled } from "./traffic"
  *   (`DecisionActions`), not the control that keeps the body open, nor any line that holds a
  *   control.
  *
- * `seedKeys` and `keyedRows` name each row by what the seed returned rather than by an id the
- * server minted (a comment's, an ask's, a result's, a block's UUID), and write each time as the
- * source it was drawn from rather than as an instant.
+ * `seedKeys` and `keyedRows` name each row by what the seed returned, or a check or a plan task
+ * no field names by the block id the seed wrote, rather than by an id the server minted (a
+ * comment's, an ask's, a result's, a block's UUID), and write each time as the source it was
+ * drawn from rather than as an instant.
  *
  * The rows of `e2e/issue-page-t.e2e.ts` read what the page received besides what it drew:
  * `treeAnswerOf` and `viewAnswerOf` keep each answer of the tree read
@@ -487,14 +488,22 @@ export interface KeyedRow {
   readonly words: string | null;
 }
 
+/** The kinds of row the outline draws again under each other statement a node's `serves` names
+ *  (root R4). Among a statement's rows such a node stands in the read's order of the nodes, not
+ *  in the order its document writes them, so its place there changes with the order of what the
+ *  read places under the statement; its block id does not. */
+const SERVING_KINDS: Readonly<Partial<Record<string, true>>> = { check: true, plan_task: true };
+
 /**
- * Names each reading: by what `keys` (`seedKeys`) calls its node, and a row whose node no field
- * names by its row path, `<parent key>/<kind>#<n>`, the `n`th (from 0) of the rows of that kind
- * under the same parent row; a row at the top has an empty parent key, so its path starts with
- * `/`. A node drawn under two parents (a check that serves two requirements) is two rows with one
- * key, so a row is named by its key and its parent's key together. The parent is the nearest row
- * before it one level up (`parentIndex`), so a view's rows, which draw no `data-row-key`, are
- * named the same way.
+ * Names each reading: by what `keys` (`seedKeys`) calls its node; a check or a plan task whose
+ * node no field names (`SERVING_KINDS`) by its node id, `<slug>#b-<block id>` (`blockNode`), the
+ * document's slug and the block id the seed wrote, with any id a field names in it written as
+ * that field's key; and any other row whose node no field names by its row path,
+ * `<parent key>/<kind>#<n>`, the `n`th (from 0) of the rows of that kind under the same parent
+ * row; a row at the top has an empty parent key, so its path starts with `/`. A node drawn under
+ * two parents (a check that serves two requirements) is two rows with one key, so a row is named
+ * by its key and its parent's key together. The parent is the nearest row before it one level up
+ * (`parentIndex`), so a view's rows, which draw no `data-row-key`, are named the same way.
  *
  * What a row reads that names a node by its id is written with the node's key in its place,
  * `{<key>}`: each chip's and other parent's address, the tag (a child's is its key) and a child's
@@ -519,7 +528,8 @@ export function keyedRows(
     const ordinal = ordinals.get(siblings) ?? 0;
     ordinals.set(siblings, ordinal + 1);
     const named = reading.id === null ? undefined : keys.get(reading.id);
-    const key = named ?? `${parentKey ?? ""}/${kind}#${ordinal}`;
+    const byId = reading.id !== null && SERVING_KINDS[kind] === true ? keyedText(reading.id) : null;
+    const key = named ?? byId ?? `${parentKey ?? ""}/${kind}#${ordinal}`;
     keyed.push({
       alsoUnder: reading.alsoUnder.map((other) => ({
         ...other,

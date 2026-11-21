@@ -16,10 +16,11 @@
  *  - `filters`: for Spec, Verification, Plan and Decisions, the keys of the rows the filter
  *    draws, in drawing order, and the count its control draws.
  *
- *  Each row is named by what the seed returned (`seedKeys` and `keyedRows`), never by an id
- *  the server minted, and its time by the read it came from, never as an instant. The recorder
- *  fails rather than write a UUID or an instant, and it fails where two rows of the outline have
- *  the same key and the same parent key, since a comparison by key could not tell them apart.
+ *  Each row is named by what the seed returned, or a check or a plan task no field names by the
+ *  block id the seed wrote (`seedKeys` and `keyedRows`), never by an id the server minted, and
+ *  its time by the read it came from, never as an instant. The recorder fails rather than write
+ *  a UUID or an instant, and it fails where two rows of the outline have the same key and the
+ *  same parent key, since a comparison by key could not tell them apart.
  *
  *  On which commit. The recording base: a commit that holds every part of the new page this
  *  branch holds, and neither the model's tree read nor any commit of this branch after R, the
