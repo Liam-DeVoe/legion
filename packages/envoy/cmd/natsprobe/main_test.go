@@ -219,6 +219,6 @@ func TestTheProbeRefusesAServerURLItCannotReadPrintingNoneOfIt(t *testing.T) {
 		"--subscribe", "notifications.envoy.deliver.ses_a"}, func(string) string { return "" }, &stdout, &stderr)
 	require.Equal(t, exitUsage, exit, "stdout:\n%s\nstderr:\n%s", stdout.String(), stderr.String())
 	require.Empty(t, stdout.String())
-	require.Contains(t, stderr.String(), "natsprobe: --servers: bus: NATS server URL 2 of 2 cannot be read")
+	require.Contains(t, stderr.String(), "natsprobe: --servers: NATS server URL 2 of 2 cannot be read")
 	require.NotContains(t, stderr.String(), madeUp, "the refusal quotes the password")
 }

@@ -34,6 +34,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/sjawhar/envoy/natsurl"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
@@ -686,7 +688,7 @@ func namesKey(value *yaml.Node, name string) bool {
 }
 
 // readNatsURLs is `nats_urls`: valid URLs, in order, each once. An entry holding a comma, where the
-// NATS client splits its list, and one with an "@" after its host (NATSUserinfoPastHost) are
+// NATS client splits its list, and one with an "@" after its host (natsurl.UserinfoPastHost) are
 // refused too, and every refusal names its entry by its position alone (`nats_urls entry 2`),
 // never by any of its text: a credential holding a "/", "?", "#", space or comma ends url.Parse's
 // authority early, so the entry does not parse, or parses with a part of the credential as its
@@ -699,14 +701,14 @@ func readNatsURLs(value *yaml.Node, key string) ([]string, error) {
 	urls := make([]string, 0, len(read))
 	for index, raw := range read {
 		if strings.Contains(raw, ",") {
-			return nil, fmt.Errorf("%s entry %d cannot be read: %s", key, index+1, NATSCommaReason)
+			return nil, fmt.Errorf("%s entry %d cannot be read: %s", key, index+1, natsurl.CommaReason)
 		}
 		parsed, err := endpointURL(raw, key)
 		if err != nil {
 			return nil, fmt.Errorf("%s entry %d%s", key, index+1, strings.TrimPrefix(err.Error(), key))
 		}
-		if NATSUserinfoPastHost(parsed) {
-			return nil, fmt.Errorf("%s entry %d cannot be read: %s", key, index+1, NATSUserinfoPastHostReason)
+		if natsurl.UserinfoPastHost(parsed) {
+			return nil, fmt.Errorf("%s entry %d cannot be read: %s", key, index+1, natsurl.UserinfoPastHostReason)
 		}
 		if !slices.Contains(urls, raw) {
 			urls = append(urls, raw)
@@ -970,45 +972,6 @@ func noQueryOrFragment(parsed *url.URL, key string) error {
 		return fmt.Errorf("%s must not include a query string or fragment", key)
 	}
 	return nil
-}
-
-// The reasons a NATS server URL is refused for, by readNatsURLs and by natsauth.Connect, each of
-// which names the URL by its position alone. They are fixed words, never url.Parse's, whose text
-// quotes the part of the URL it could not read (`invalid port ":abcdefghijKLMN" after host` for a
-// password holding a "/").
-const (
-	NATSUnparsedReason = `it does not parse as a URL; write a credential in it percent-encoded`
-	// NATSCommaReason is a comma's: the NATS client reads one as the end of a server URL, so an
-	// entry that holds one is a list of servers in one entry or a credential holding a comma, and
-	// the refusal says how to write each.
-	NATSCommaReason            = `it holds a comma, which the NATS client reads as a list of servers: list each server as its own nats_urls entry, and write a comma in a credential percent-encoded (%2C)`
-	NATSUserinfoPastHostReason = `an "@" stands after its host, as it does where a credential in its userinfo holds a "/", "?" or "#"; write such a credential percent-encoded`
-	NATSHandshakeReason        = `its path does not parse once decoded, as the NATS client's websocket handshake decodes it; write a "%" in its path as %2525`
-)
-
-// NATSUserinfoPastHost reports whether parsed, a NATS server URL that parsed, holds an "@" after
-// its host, in its path, query or fragment. That is where a credential holding a "/", "?" or "#"
-// ends url.Parse's authority before its "@": `nats://abcdefghijKLMN/opq@host:4222`, a token
-// written as the user, parses with abcdefghijKLMN as the host, so the URL's host is a part of the
-// credential and every line that names the host names it.
-func NATSUserinfoPastHost(parsed *url.URL) bool {
-	return strings.Contains(parsed.Path, "@") || strings.Contains(parsed.RawQuery, "@") || strings.Contains(parsed.Fragment, "@")
-}
-
-// NATSHandshakeURLParses reports whether parsed, a NATS server URL that parsed, is no websocket
-// URL or one whose handshake URL parses: nats.go v1.55.0's websocket handshake (ws.go
-// wsInitHandshake) builds a URL of the host, the decoded path and the raw query and parses it
-// again, and its error quotes that URL whole, its query included.
-func NATSHandshakeURLParses(parsed *url.URL) bool {
-	if !strings.EqualFold(parsed.Scheme, "ws") && !strings.EqualFold(parsed.Scheme, "wss") {
-		return true
-	}
-	rebuilt := "http://" + parsed.Host + parsed.Path
-	if parsed.RawQuery != "" {
-		rebuilt += "?" + parsed.RawQuery
-	}
-	_, err := url.Parse(rebuilt)
-	return err == nil
 }
 
 // baseURL is the shipped `normalizeBaseUrl` (config.ts): a URL a path is appended to, so

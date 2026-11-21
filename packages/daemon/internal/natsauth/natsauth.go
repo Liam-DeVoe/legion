@@ -7,13 +7,14 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"net/url"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
+
+	"github.com/sjawhar/envoy/natsurl"
 
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/redact"
@@ -181,39 +182,23 @@ func Connect(urls []string, seed string, name string, options ...nats.Option) (*
 	return nats.Connect(servers, options...)
 }
 
-// unreadableURL refuses the first of urls that nats.go would read other than as written, read as
-// nats.go reads it (trimmed, a scheme added where it has none): one holding a comma, which nats.go
-// reads as a list of servers once Connect joins the list; one that does not parse; one that parses
-// with an "@" after its host, in its path, query or fragment; and a websocket URL whose handshake
-// URL does not parse (config.NATSHandshakeURLParses). A credential that holds a "/", "?", "#",
-// space or comma ends url.Parse's authority early, is no userinfo it reads, or is split from the
-// rest of the URL: `nats://user:abcdefghijKLMN/opq@host:4222` reads abcdefghijKLMN as a port, which
-// does not parse, and `nats://abcdefghijKLMN/opq@host:4222`, a token written as the user, parses
-// with abcdefghijKLMN as the host. nats.go would refuse the first with url.Parse's error, which
-// quotes the URL whole, and dial the second, naming the token's head as its host.
-//
-// The refusal names the URL by its position in urls alone, as the configuration's refusal of a
-// nats_urls entry does (config.readNatsURLs), and gives a reason of fixed words: any text of such
-// a URL can be a part of the credential, and url.Parse's reason quotes the part it could not read
-// (`invalid port ":abcdefghijKLMN" after host`). A path, a query or a fragment with no "@" is
-// kept: nats.go sends a websocket URL's path and query in its handshake (ws.go), and the
-// configuration takes a path (config.endpointURL).
+// unreadableURL refuses the first of urls that nats.go would read other than as written: one
+// holding a comma, which nats.go reads as a list of servers once Connect joins the list, or one
+// the rules every NATS client of the two modules shares refuse (natsurl.Refusal: one that does not
+// parse, one with an "@" after its host, a websocket URL whose handshake URL does not parse), each
+// read trimmed, as nats.go reads it. It names the URL by its position in urls alone, as the
+// configuration's refusal of a nats_urls entry does (config.readNatsURLs), with natsurl's fixed
+// reason: any text of such a URL can be a part of the credential, and url.Parse's error quotes the
+// URL whole.
 func unreadableURL(urls []string) error {
 	for index, raw := range urls {
 		server := strings.TrimSpace(raw)
-		if !strings.Contains(server, "://") {
-			server = "nats://" + server
+		why := natsurl.Refusal(server)
+		if strings.Contains(server, ",") {
+			why = natsurl.CommaReason
 		}
-		parsed, err := url.Parse(server)
-		switch {
-		case strings.Contains(server, ","):
-			return fmt.Errorf("the NATS server URL %d of %d cannot be read: %s", index+1, len(urls), config.NATSCommaReason)
-		case err != nil:
-			return fmt.Errorf("the NATS server URL %d of %d cannot be read: %s", index+1, len(urls), config.NATSUnparsedReason)
-		case config.NATSUserinfoPastHost(parsed):
-			return fmt.Errorf("the NATS server URL %d of %d cannot be read: %s", index+1, len(urls), config.NATSUserinfoPastHostReason)
-		case !config.NATSHandshakeURLParses(parsed):
-			return fmt.Errorf("the NATS server URL %d of %d cannot be read: %s", index+1, len(urls), config.NATSHandshakeReason)
+		if why != "" {
+			return fmt.Errorf("the NATS server URL %d of %d cannot be read: %s", index+1, len(urls), why)
 		}
 	}
 	return nil

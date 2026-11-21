@@ -264,13 +264,20 @@ func TestTheBusCredentialPrintsNoSeedOrToken(t *testing.T) {
 		// The URLs these rules let through. A later URL that carries a user name and names a NATS
 		// scheme; the first URL of a list, which names none, with a user name (index 0 is no comma's
 		// tail); and a websocket URL whose path parses once decoded.
-		require.NoError(t, refuseUnreadableNATSURL([]string{"nats://127.0.0.1:4222", "tls://legion:" + plainPassword + "@127.0.0.1:4223"}))
-		require.NoError(t, refuseUnreadableNATSURL([]string{"legion:" + plainPassword + "@127.0.0.1:4222"}))
-		require.NoError(t, refuseUnreadableNATSURL([]string{"ws://127.0.0.1:4222/nats%2Fsub?compress=1"}))
+		for _, passes := range [][]string{
+			{"nats://127.0.0.1:4222", "tls://legion:" + plainPassword + "@127.0.0.1:4223"},
+			{"legion:" + plainPassword + "@127.0.0.1:4222"},
+			{"ws://127.0.0.1:4222/nats%2Fsub?compress=1"},
+		} {
+			_, err := checkedNATSURLs(passes)
+			require.NoError(t, err, "a list the rules let through was refused")
+		}
 		// The list is trimmed once, and the trimmed list is what every check and nats.go read: a URL
 		// with white space around it whose password parses is dialled, in the background, and no
 		// parse error quotes it.
-		require.Equal(t, []string{"nats://127.0.0.1:4222", "127.0.0.1:4223"}, trimmedNATSURLs([]string{" nats://127.0.0.1:4222 ", "\t127.0.0.1:4223\n"}))
+		trimmed, err := checkedNATSURLs([]string{" nats://127.0.0.1:4222 ", "\t127.0.0.1:4223\n"})
+		require.NoError(t, err)
+		require.Equal(t, []string{"nats://127.0.0.1:4222", "127.0.0.1:4223"}, trimmed)
 		untrimmed, err := Dial("credential-printed-test", []string{" " + withPassword(plainPassword) + " "}, lookupOf(nil), WithConnectInBackground())
 		require.NoError(t, err, "a URL with white space around it was refused")
 		untrimmed.Close()

@@ -36,10 +36,10 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/cipheraddr"
-	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/natscred"
+	"github.com/sjawhar/envoy/natsurl"
 )
 
 const (
@@ -88,12 +88,12 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		return usage("--wait must be positive")
 	}
 
-	// The bus's check, before any credential is read or dial made: nats.go's own refusal of a URL
-	// it cannot read quotes the URL whole, a credential in it included, and this one names the URL
-	// by its position.
-	urls, err := bus.CheckNATSURLs(strings.Split(*servers, ","))
-	if err != nil {
-		fmt.Fprintf(stderr, "natsprobe: --servers: %v\n", err)
+	// The rules Dial and Connect run, before any credential is read or dial made: nats.go's own
+	// refusal of a URL it cannot read quotes the URL whole, a credential in it included, and this
+	// one names the URL by its position.
+	urls, position, why := natsurl.Check(strings.Split(*servers, ","))
+	if why != "" {
+		fmt.Fprintf(stderr, "natsprobe: --servers: NATS server URL %d of %d cannot be read: %s\n", position, len(urls), why)
 		return exitUsage
 	}
 	option, name, err := credential(getenv, *tokenFile, *googleAudience, *none)
