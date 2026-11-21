@@ -2,7 +2,6 @@ package main
 
 import (
 	"cmp"
-	"context"
 	"errors"
 	"maps"
 	"os"
@@ -12,7 +11,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -1850,36 +1848,17 @@ func TestARevisionArgumentSendsTheCommitsItNamedBeforeTheStep(t *testing.T) {
 // trailerRunLimit's minute.
 const rolePushLongLimit = 10 * time.Minute
 
-// pushLong is push with rolePushLongLimit in place of trailerRunLimit: the push runs in a process
-// group of its own, which the limit kills whole, and a push that cannot start, or that runs past
-// the limit, fails the test.
+// pushLong is push with rolePushLongLimit in place of trailerRunLimit (trailerRunWithin): the push
+// runs in a process group of its own, which the limit kills whole, and a push that cannot start,
+// or that runs past the limit, fails the test.
 func (f *rolePushFixture) pushLong(as rolePushIdentity, args ...string) (code int, stderr string) {
 	f.t.Helper()
 	sh, err := exec.LookPath("sh")
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), rolePushLongLimit)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, sh, append([]string{"-c", `exec jj "$@"`, "jj"}, args...)...)
-	cmd.Dir, cmd.Env = f.repo, f.env(f.path, as)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
-	cmd.WaitDelay = 5 * time.Second
-	var out strings.Builder
-	cmd.Stderr = &out
-	err = cmd.Run()
-	if ctx.Err() != nil {
-		f.t.Fatalf("jj %q ran for %s", args, rolePushLongLimit)
-	}
-	var exit *exec.ExitError
-	if errors.As(err, &exit) {
-		return exit.ExitCode(), out.String()
-	}
-	if err != nil {
-		f.t.Fatalf("run jj %q: %v", args, err)
-	}
-	return 0, out.String()
+	code, _, stderr = trailerRunWithin(f.t, rolePushLongLimit, f.repo, f.env(f.path, as), strings.NewReader(""), sh, append([]string{"-c", `exec jj "$@"`, "jj"}, args...)...)
+	return code, stderr
 }
 
 // A push of a history that no remote holds and that is longer than one revset of the step's reads
@@ -1892,35 +1871,32 @@ func (f *rolePushFixture) pushLong(as rolePushIdentity, args ...string) (code in
 // author.
 func TestAPushOfALongHistorySetsEveryAuthor(t *testing.T) {
 	t.Parallel()
+	// jj alone runs no form of Legion's, so one twin stands for both forms.
+	twin := newRolePushFixture(t, rolePushPod, "")
+	twin.mutableHistory(rolePushHistory)
+	if code, _, stderr := twin.alone(rolePushImplementer, rolePushBookmark...); code != 0 {
+		t.Fatalf("jj alone exited %d:\n%s", code, stderr)
+	}
+	twin.checkHistory(rolePushReviewer, "")
 	rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
-		twin := newRolePushFixture(t, form, "")
-		twin.mutableHistory(rolePushHistory)
-		if code, _, stderr := twin.alone(rolePushImplementer, rolePushBookmark...); code != 0 {
-			t.Fatalf("jj alone exited %d:\n%s", code, stderr)
-		}
-		twin.checkHistory(rolePushReviewer, "")
-
 		f := newRolePushFixture(t, form, "")
 		f.mutableHistory(rolePushHistory)
 		divergent := f.divergence()
 		code, stderr := f.pushLong(rolePushImplementer, rolePushBookmark...)
-		lines := rolePushStepLines(stderr)
 		var rest []string
+		rewrites := 0
 		for line := range strings.SplitSeq(stderr, "\n") {
-			if !rolePushRewriteLine.MatchString(line) {
+			if rolePushRewriteLine.MatchString(line) {
+				rewrites++
+			} else {
 				rest = append(rest, line)
 			}
 		}
 		printed := strings.Join(rest, "\n")
-		if code != 0 {
-			t.Fatalf("the push exited %d, want 0; it printed %d rewrites and:\n%s", code, len(lines.rewrites), printed)
-		}
+		f.check(rolePushWant{others: true}, code, printed, divergent, 0)
 		f.checkHistory(rolePushImplementer, printed)
-		if len(lines.rewrites) != rolePushHistory || len(lines.cannotRead)+len(lines.cannotSet)+len(lines.table)+len(lines.unknown) != 0 {
-			t.Errorf("the push printed %d rewrites, want %d, and no other line of the step's; it printed beside them:\n%s", len(lines.rewrites), rolePushHistory, printed)
-		}
-		if after := f.divergence(); !maps.Equal(divergent, after) {
-			t.Errorf("the visible commits of each divergent change were %v before the push and %v after it, want no change made divergent", divergent, after)
+		if rewrites != rolePushHistory {
+			t.Errorf("the push printed %d rewrites, want %d; it printed beside them:\n%s", rewrites, rolePushHistory, printed)
 		}
 	})
 }

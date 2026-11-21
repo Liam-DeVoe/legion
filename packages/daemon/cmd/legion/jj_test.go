@@ -72,8 +72,9 @@ func TestTheStepsReadsOfAListOfIDsStayUnderTheBound(t *testing.T) {
 				if len(word) >= jjWordBound && !strings.Contains(word, long) {
 					t.Errorf("jjWords made a revset of %d bytes, want under %d", len(word), jjWordBound)
 				}
-				inner, ok := strings.CutPrefix(word, prefix)
-				if inner, ok = strings.CutSuffix(inner, suffix); !ok {
+				inner, prefixed := strings.CutPrefix(word, prefix)
+				inner, suffixed := strings.CutSuffix(inner, suffix)
+				if !prefixed || !suffixed {
 					t.Fatalf("jjWords made %.80q…, want each revset %q, the terms, then %q", word, prefix, suffix)
 				}
 				got = append(got, strings.Split(inner, " | ")...)
