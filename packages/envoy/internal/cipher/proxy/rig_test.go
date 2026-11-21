@@ -577,8 +577,8 @@ func newRig(t *testing.T, o Options, wrap ...func(net.Conn) net.Conn) *rig {
 		o.Rules = testRules()
 	}
 	// The fake grants, unless the row gives a grant source of its own: a real broker's
-	// requests.Machine (profile_test.go), whose reads no map a row writes stands in for. r.grants
-	// is then a fake nothing reads.
+	// requests.Machine (profile_test.go, and slack_test.go's newSlackBroker), whose reads no map a
+	// row writes stands in for. r.grants is then a fake nothing reads.
 	if o.Grants == nil {
 		o.Grants = r.grants
 	}

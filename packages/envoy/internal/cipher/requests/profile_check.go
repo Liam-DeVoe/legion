@@ -92,8 +92,9 @@ func gitHubProfile(served policy.Secret) bool {
 // checkProfiles is Create's whole verdict on the GitHub profiles a request names: the refusal
 // Create answers, and nil both for profiles the broker could mint and for any it could not
 // decide. names are the names the request asks for, set the snapshot Create evaluates them
-// against, reason the request object's own reason and target the target its signed locations
-// name (the zero record.Target for none), all as Create holds them. It runs
+// against, facts what Dispatch answered for them (projectFacts, resolved before this), reason
+// the request object's own reason and target the target its signed locations name (the zero
+// record.Target for none), all as Create holds them. It runs
 // after reuseLiveGrant, which asks nobody for a grant that already exists, and before the
 // transaction, so a refusal writes no request row, makes no credential-request record and
 // interrupts no person; it also holds no row lock while it waits on GitHub, which is the rule
@@ -114,7 +115,7 @@ func gitHubProfile(served policy.Secret) bool {
 // answers those in a moment, in the order a caller reads them today. A state that is not pending
 // skips it too, so an agent-tier request and the Legion daemon's own token command reach GitHub
 // for nothing.
-func (m *Machine) checkProfiles(ctx context.Context, enr enrollmentRow, names []string, set *policy.Set, reason string, target record.Target) error {
+func (m *Machine) checkProfiles(ctx context.Context, enr enrollmentRow, names []string, set *policy.Set, facts projectFacts, reason string, target record.Target) error {
 	profiled := false
 	for _, name := range names {
 		if gitHubProfile(set.Secrets[name]) {
@@ -125,7 +126,7 @@ func (m *Machine) checkProfiles(ctx context.Context, enr enrollmentRow, names []
 	if !profiled {
 		return nil
 	}
-	requester, err := m.requester(ctx, m.Store.Pool, enr)
+	requester, err := m.requester(ctx, m.Store.Pool, enr, facts)
 	if err != nil {
 		skippedNarrowingCheck(enr.ID, "", "the requester could not be read", err)
 		return nil

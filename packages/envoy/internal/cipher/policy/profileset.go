@@ -21,9 +21,10 @@ func profileKey(name string) string { return profileKeyPrefix + name }
 // out (withhold), with the profiles applied, which is the set Current makes live:
 //
 //   - each profile that passes against its source (serve) is served by its name, as a Secret made
-//     of its source, with its source's value version, so a mint the decoder refuses refuses that
-//     source (Current.RefuseValue); each that fails is refused, keyed profileKey, and serves
-//     nothing by its name, so a name a profile holds is never released as a stored value;
+//     of its source, its project tags included, with its source's value version, so a mint the
+//     decoder refuses refuses that source (Current.RefuseValue); each that fails is refused, keyed
+//     profileKey, and serves nothing by its name, so a name a profile holds is never released as a
+//     stored value;
 //   - a stored secret a profile of another source names is refused too
 //     (ReasonProfileNameTaken), by its own id;
 //   - a source profiles of other names use (Set.ProfilesOf) is served by its own name only where
@@ -115,20 +116,27 @@ func (p Profiles) serve(i int, set *Set, prefix string) (Secret, Refusal) {
 	if detail := blockMismatch(profile, source); detail != "" {
 		return refuse(ReasonProfileBlockMismatch, detail)
 	}
+	// The source's dispatch-project and project-channels tags are the profile's whatever its
+	// name, and no profile field can change them: a profile never widens what its source
+	// allows, so every reader of a served Secret's project — Evaluate, the release, the airlock,
+	// the judge and the person rule — holds a profile to its source's project, and the profile's
+	// line in Version moves when the source is tagged.
 	secret := Secret{
-		Name:           profile.Name,
-		Source:         source.Source,
-		Owner:          source.Owner,
-		ownership:      source.ownership,
-		Tier:           cmp.Or(profile.Tier, source.Tier),
-		MaxGrant:       cmp.Or(profile.MaxGrant, source.MaxGrant),
-		GitHubOwners:   source.GitHubOwners,
-		Requesters:     source.Requesters,
-		Scopes:         source.Scopes,
-		Admin:          source.Admin,
-		SessionDefault: source.SessionDefault,
-		ProfileDigest:  p.digests[i],
-		Profile:        profile,
+		Name:            profile.Name,
+		Source:          source.Source,
+		Owner:           source.Owner,
+		ownership:       source.ownership,
+		Tier:            cmp.Or(profile.Tier, source.Tier),
+		MaxGrant:        cmp.Or(profile.MaxGrant, source.MaxGrant),
+		GitHubOwners:    source.GitHubOwners,
+		Requesters:      source.Requesters,
+		Scopes:          source.Scopes,
+		Project:         source.Project,
+		ProjectChannels: source.ProjectChannels,
+		Admin:           source.Admin,
+		SessionDefault:  source.SessionDefault,
+		ProfileDigest:   p.digests[i],
+		Profile:         profile,
 	}
 	// Each list is sorted and each entry once (readProfiles), which is the form the tag parsers
 	// answer a tag in, so two spellings of one profile serve one Secret.

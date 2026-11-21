@@ -9,9 +9,16 @@ body: |-
   its source, or is looser than it, is refused alone (`profile:NAME` in the refused line, with
   `detail=`), and the first load writes one `broker: profiles applied` line with the counts. A
   source that profiles of other names use is served only through them, and a github-app secret
-  no profile names is refused. A session's operator who withholds a name withholds every name
+  no profile names is refused. A profile is served with its source's `dispatch-project` and
+  `project-channels` tags, which no profile field changes: a profile of a private project's
+  secret goes only to a credential that names the project, its requests and grants are hidden
+  from people outside the project and left to a person by the model judge, and a profile of a
+  `project-channels` secret goes to a credential naming a private project only behind the
+  airlock, which a profile with a `proxy` block is (`project-channels-need-airlock` otherwise).
+  A session's operator who withholds a name withholds every name
   of the same source, profiles of it and the source itself (withholding a read profile withholds
-  its write sibling): the grants the session got without asking end, and an approval a person
+  its write sibling), on every live or dormant box of the session: the grants the session got
+  without asking end, and an approval a person
   gives after the withhold stands, through the airlock's proxy too, even when a later revoke of
   another name of that source comes. A GitHub profile's token asks
   GitHub for the profile's permissions cut to what each installation holds, and each account's
