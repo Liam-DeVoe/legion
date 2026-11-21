@@ -600,50 +600,63 @@ printf '%s' ${JSON.stringify(answer)}
   return { gh, count };
 }
 
-test("a gh read that times out twice is tried again after a growing wait and answers", async () => {
+test("a gh read that times out twice is sent again after 5 s and 15 s, as copies.ts's reads are, and answers; the source counts both retries", async () => {
   const { gh, count } = standinGh("gh-twice", 2, "# Project");
   const waits: number[] = [];
-  const source = ghSource(gh, { sleep: async (ms) => void waits.push(ms) });
+  const said: string[] = [];
+  const source = ghSource(gh, {
+    sleep: async (ms) => void waits.push(ms),
+    err: (line) => void said.push(line),
+  });
   const bytes = await source.file("acme/project", COMMIT, "AGENTS.md");
   expect(new TextDecoder().decode(bytes)).toBe("# Project");
   expect(readFileSync(count, "utf8").trim()).toBe("3");
-  expect(waits).toEqual([2_000, 4_000]);
+  expect(waits).toEqual([5_000, 15_000]);
+  expect(said).toHaveLength(2);
+  expect(said[1]).toEndWith("sending it again in 15 s, retry 2 of 4");
+  expect(source.reads?.()).toMatchObject({ calls: 3, retries: { "i/o timeout": 2 } });
 });
 
-test("a gh read that always fails stops after its tries, naming the command, each try's error and the count", async () => {
+test("a gh read that always fails stops after 4 tries more, naming the command and each try's error", async () => {
   const { gh, count } = standinGh("gh-always", 99, "");
   const waits: number[] = [];
-  const source = ghSource(gh, { tries: 3, sleep: async (ms) => void waits.push(ms) });
+  const source = ghSource(gh, { sleep: async (ms) => void waits.push(ms), err: () => {} });
   const failed = await source
     .file("acme/project", COMMIT, "AGENTS.md")
     .then(() => "answered")
     .catch((error: unknown) => String(error));
   expect(failed).toContain(
-    `\`${gh} api --method GET -H Accept: application/vnd.github.raw repos/acme/project/contents/AGENTS.md?ref=${COMMIT}\` failed on each of 3 tries`
+    `\`${gh} api --method GET -H Accept: application/vnd.github.raw repos/acme/project/contents/AGENTS.md?ref=${COMMIT}\` failed: 5 tries: `
   );
-  for (const n of [1, 2, 3]) expect(failed).toContain(`try ${n}: exit 1: `);
-  expect(failed.match(/i\/o timeout/g)?.length).toBe(3);
-  expect(readFileSync(count, "utf8").trim()).toBe("3");
-  expect(waits).toEqual([2_000, 4_000]);
+  for (const n of [1, 2, 3, 4, 5]) expect(failed).toContain(`try ${n}: Get "https://`);
+  expect(failed.match(/i\/o timeout/g)?.length).toBe(5);
+  expect(readFileSync(count, "utf8").trim()).toBe("5");
+  expect(waits).toEqual([5_000, 15_000, 45_000, 135_000]);
 });
 
-test("a gh read that fails for good, such as a 404, is not tried again", async () => {
+test("a gh read that fails for good, such as a 404, is NoSuchFile at once: one call, no wait", async () => {
   const root = path.join(dir, "gh-missing");
-  writeTree(root, { gh: "#!/bin/sh\necho 'gh: Not Found (HTTP 404)' >&2\nexit 1\n" });
+  const count = path.join(root, "count");
+  writeTree(root, {
+    gh: `#!/bin/sh\necho x >> ${JSON.stringify(count)}\necho 'gh: Not Found (HTTP 404)' >&2\nexit 1\n`,
+  });
   chmodSync(path.join(root, "gh"), 0o755);
   const waits: number[] = [];
-  const failed = await ghSource(path.join(root, "gh"), {
+  const said: string[] = [];
+  const source = ghSource(path.join(root, "gh"), {
     sleep: async (ms) => void waits.push(ms),
-  })
+    err: (line) => void said.push(line),
+  });
+  const failed = await source
     .file("acme/project", COMMIT, "missing.md")
     .catch((error: unknown) => error);
   // A 404 is a file the commit does not hold, told apart from a read that failed.
   expect(failed).toBeInstanceOf(NoSuchFile);
-  expect(String(failed)).toContain(
-    "failed on its one try (not a transient failure, so not tried again)"
-  );
-  expect(String(failed)).toContain("try 1: exit 1: gh: Not Found (HTTP 404)");
+  expect(String(failed)).toContain("failed: gh: Not Found (HTTP 404)");
+  expect(readFileSync(count, "utf8")).toBe("x\n");
   expect(waits).toEqual([]);
+  expect(said).toEqual([]);
+  expect(source.reads?.()).toMatchObject({ calls: 1, retries: {} });
 });
 
 // Catches: a read of prompts.go that failed taken as a repository that holds none.
@@ -873,4 +886,48 @@ exec ${JSON.stringify(inner.gh)} "$@"
   expect(callsOf(inner.log)).toEqual({ tree: 1, graphql: 1, blob: 0, other: 0 });
   // The failed tree read, the tree read again and one GraphQL batch.
   expect(source.reads?.().calls).toBe(3);
+});
+
+// Catches: one transport error on a GitHub read failing the context, where copies.ts sends the
+// read again (a build-cases re-profile failed so on 2026-11-21).
+test("a tree read that fails once with a TLS handshake timeout is sent again 5 s later, as copies.ts's reads are, and the context record and the source count the retry", async () => {
+  const bytes = new TextEncoder().encode("---\nname: flaky\ndescription: Made-up flaky.\n---\n");
+  const inner = standinRepoGh("gh-flaky-inner", [{ path: "skills/flaky/SKILL.md", bytes }]);
+  const root = path.join(dir, "flaky");
+  const failedOnce = path.join(root, "tree-failed-once");
+  const timeout = `Get "https://api.example.test/repos/acme/batch/git/trees/${COMMIT}?recursive=1": net/http: TLS handshake timeout`;
+  // A gh whose first tree read fails as the real read did; every other call goes to the stand-in.
+  writeTree(root, {
+    gh: `#!/bin/sh
+case "$*" in *git/trees/*)
+  if [ ! -e ${JSON.stringify(failedOnce)} ]; then
+    : > ${JSON.stringify(failedOnce)}
+    echo ${JSON.stringify(timeout)} >&2
+    exit 1
+  fi;;
+esac
+exec ${JSON.stringify(inner.gh)} "$@"
+`,
+  });
+  chmodSync(path.join(root, "gh"), 0o755);
+  const { c, arm } = batchCase(root, ["skills/flaky"]);
+  const waits: number[] = [];
+  const said: string[] = [];
+  const source = ghSource(path.join(root, "gh"), {
+    sleep: async (ms) => void waits.push(ms),
+    err: (line) => void said.push(line),
+  });
+  const built = await buildContext(c, arm, {
+    source,
+    cacheDir: path.join(root, "cache"),
+    root: path.join(root, "scratch"),
+  });
+  expect([...readFileSync(path.join(built.skillsDir, "flaky/SKILL.md"))]).toEqual([...bytes]);
+  expect(waits).toEqual([5_000]);
+  expect(said).toEqual([
+    `context: a gh call failed (${timeout}); sending it again in 5 s, retry 1 of 4`,
+  ]);
+  expect(built.record.githubRetries).toEqual({ "TLS handshake timeout": 1 });
+  // The failed tree read, the tree read again and one GraphQL batch.
+  expect(source.reads?.()).toMatchObject({ calls: 3, retries: { "TLS handshake timeout": 1 } });
 });

@@ -28,14 +28,16 @@
  * which keeps only its hits. So the memory a run holds grows with the skills and manifests it
  * lists, not with the blobs it reads.
  *
- * A gh call that fails for a transient reason (TRANSIENT_FAILURES: gh's error is a TLS handshake
- * timeout, a connection reset or refused, an unexpected EOF, an i/o timeout, or an HTTP 502, 503
- * or 504) is sent again after 5, 15, 45 and 135 s, at most 4 times more (`Github.waitToRetry`): a
- * REST read, a GraphQL batch and a code search alike. But a GraphQL batch of more than one item
- * that GitHub answers 502 or 504, its answer to a batch too large, is split at once as before
- * (a batch of subtrees halved, of blobs or files each read alone), with no wait. A call that
- * fails on every try fails as it would on one, its error naming each try's. No other failure is
- * sent again: a 404, a 401 or 403 that is no rate limit, and an answer not of its shape fail at
+ * A gh call that fails for a transient reason (gh's error is a TLS handshake failure or timeout, a
+ * connection reset or refused, an unexpected EOF, an i/o timeout, an HTTP 5xx, a name that did
+ * not resolve, a broken pipe, or any other text that names a timeout) is sent again after 5, 15,
+ * 45 and 135 s, at most 4 times more, by the rule build.ts's and context.ts's GitHub reads share
+ * (common.ts's `GhRetries`): a REST read, a GraphQL batch and a code search alike. But a GraphQL
+ * batch of more than one item that GitHub answers as a batch too large (a 502, a 504, or its
+ * refusal of a query too costly, "This may be the result of a timeout") is split at once as
+ * before (a batch of subtrees halved, of blobs or files each read alone), with no wait. A call
+ * that fails on every try fails as it would on one, its error naming each try's. No other failure
+ * is sent again: a 404, a 401 or 403 that is no rate limit, and an answer not of its shape fail at
  * once. A call waiting to be sent again holds no read slot, and the summary line and
  * skill-copies.md count the retries by reason.
  *
@@ -186,7 +188,14 @@ import { createInterface } from "node:readline";
 import { parseArgs } from "node:util";
 import { z } from "zod";
 import { mapLimit } from "../skill-scenarios/production-dispatch";
-import { schemaFaults } from "./common";
+import {
+  firstLine,
+  GhRetries,
+  MAX_RATE_RETRIES,
+  RATE_LIMITED,
+  schemaFaults,
+  triesError,
+} from "./common";
 import { loadConfig, type SkillCutsConfig } from "./config";
 import { procPeakRssBytes, startPeakRssSampling } from "./memory";
 
@@ -246,31 +255,10 @@ function rethrowStop(error: unknown): void {
   if (error instanceof MemoryStop) throw error;
 }
 
-const RATE_LIMITED = /rate limit|HTTP 429/i;
 /** GitHub's refusal for its secondary rate limit, which has no reset to wait for (`rateWait`). */
 const SECONDARY_LIMITED = /secondary rate limit/i;
 /** The first wait after a refusal for the secondary rate limit, doubled at each refusal after. */
 const SECONDARY_WAIT_MS = 60_000;
-const MAX_RATE_RETRIES = 5;
-/** gh's error text for a failure the same call may not meet again, with its reason: the connection
- *  timed out, was reset or refused, or ended early, or GitHub's front end answered 502, 503 or 504.
- *  A call that fails so is sent again (`Github.waitToRetry`); no other failure is. */
-const TRANSIENT_FAILURES: readonly (readonly [reason: string, pattern: RegExp])[] = [
-  ["TLS handshake timeout", /TLS handshake timeout/i],
-  ["connection reset", /connection reset/i],
-  ["connection refused", /connection refused/i],
-  ["unexpected EOF", /unexpected EOF/i],
-  ["i/o timeout", /i\/o timeout/i],
-  ["HTTP 502", /HTTP 502\b/],
-  ["HTTP 503", /HTTP 503\b/],
-  ["HTTP 504", /HTTP 504\b/],
-];
-/** The reasons of TRANSIENT_FAILURES that are GitHub's answer to a GraphQL batch too large: a batch
- *  of more than one item that fails so is split by its caller at once, not sent again. */
-const BATCH_TOO_LARGE: Readonly<Record<string, true>> = { "HTTP 502": true, "HTTP 504": true };
-/** The waits before each try again of a call that failed for a transient reason: at most 4 tries
- *  more. */
-const TRANSIENT_WAITS_MS: readonly number[] = [5_000, 15_000, 45_000, 135_000];
 const REST_JOBS = 4;
 /** The repositories read at once, each its commit, tree and blobs, the slower of them sharing the
  *  read slots below with the rest. */
@@ -292,17 +280,6 @@ const TREE_BATCH = 50;
  *  the same). */
 export const BLOB_BATCH = 50;
 export const BLOB_BATCH_BYTES = 2_000_000;
-
-function firstLine(text: string): string {
-  return text.trim().split("\n")[0] ?? "";
-}
-
-/** The error of a call whose tries failed with `errors`, in their order: the one error, or each
- *  try's. */
-function triesError(errors: readonly string[]): string {
-  if (errors.length === 1) return errors[0] ?? "";
-  return `${errors.length} tries: ${errors.map((error, index) => `try ${index + 1}: ${error}`).join("; ")}`;
-}
 
 /** `text` as JSON, or undefined when it is none. */
 export function parseJson(text: string): unknown {
@@ -629,19 +606,22 @@ export class ReadSlots {
   }
 }
 
-/** gh's reads, each sent again after a transient failure (`waitToRetry`) and after the wait a rate
- *  limit asks for (`rateWait`), the run's memory limit checked before each call. It keeps no blob
- *  text: each read is handed to its caller. */
+/** gh's reads, each sent again after a transient failure and after the wait a rate limit asks for
+ *  (`rateWait`), as common.ts's `GhRetries` says, the run's memory limit checked before each call.
+ *  It keeps no blob text: each read is handed to its caller. */
 class Github {
   private readonly slots = new ReadSlots(READ_CALLS, READ_CALLS_PER_REPOSITORY);
   /** The largest peak resident memory read so far, in bytes. */
   peakBytes = 0;
-  /** The calls sent again after a transient failure, by reason, in TRANSIENT_FAILURES' order. */
-  readonly retries = new Map(TRANSIENT_FAILURES.map(([reason]): [string, number] => [reason, 0]));
+  /** The rule by which a call is sent again, with its count of the calls sent again after a
+   *  transient failure. */
+  readonly retries: GhRetries;
   constructor(
     readonly io: CopiesIo,
     private readonly peakRss: () => number
-  ) {}
+  ) {
+    this.retries = new GhRetries(io, "copies");
+  }
 
   /** The peak resident memory so far, in bytes, read again now. */
   readPeak(): number {
@@ -666,53 +646,22 @@ class Github {
     return this.slots.run(repository, read);
   }
 
-  /** Whether a call that failed with `stderr`, sent again `retried` times so far, is sent again:
-   *  when `stderr` names a transient failure (TRANSIENT_FAILURES), and not one of BATCH_TOO_LARGE
-   *  for a batch its caller `splits`, and fewer than 4 retries were made, this counts the retry by
-   *  its reason, says so on stderr and sleeps the next wait of TRANSIENT_WAITS_MS. Each caller
-   *  calls it outside `inSlot`, so the wait holds no read slot. */
-  async waitToRetry(stderr: string, retried: number, splits = false): Promise<boolean> {
-    const reason = TRANSIENT_FAILURES.find(([, pattern]) => pattern.test(stderr))?.[0];
-    const wait = TRANSIENT_WAITS_MS[retried];
-    if (
-      reason === undefined ||
-      wait === undefined ||
-      (splits && Object.hasOwn(BATCH_TOO_LARGE, reason))
-    )
-      return false;
-    this.retries.set(reason, (this.retries.get(reason) ?? 0) + 1);
-    this.io.err(
-      `copies: a gh call failed (${firstLine(stderr)}); sending it again in ${wait / 1000} s, retry ${retried + 1} of ${TRANSIENT_WAITS_MS.length}`
-    );
-    await this.io.sleep(wait);
-    return true;
-  }
-
   /** gh's answer to the call `send` makes, a read of the REST (`core`) or the GraphQL `resource`,
-   *  sent again while GitHub refuses it for that rate limit (RATE_LIMITED), after the wait
-   *  `rateWait` gives, at most MAX_RATE_RETRIES times (a GraphQL batch halved, or read alone over
-   *  REST, would spend the limit faster), and after a transient failure (`waitToRetry`, `splits`
-   *  when it is a GraphQL batch of more than one item, which its caller splits). `send` takes its
-   *  read slot itself, so no wait holds one. Any other failure, or the last try's, is its
-   *  caller's to handle; its error names each try's when there were several. */
-  async withRetries(
+   *  sent again as `GhRetries.send` says: while GitHub refuses it for that rate limit, after the
+   *  wait `rateWait` gives (a GraphQL batch halved, or read alone over REST, would spend the limit
+   *  faster), and after a transient failure (`splits` when it is a GraphQL batch of more than one
+   *  item, which its caller splits). `send` takes its read slot itself, so no wait holds one. Any
+   *  other failure, or the last try's, is its caller's to handle; its error names each try's when
+   *  there were several. */
+  withRetries(
     send: () => Promise<GhResult>,
     resource: "core" | "graphql",
     splits = false
   ): Promise<GhResult> {
-    const errors: string[] = [];
-    let limited = 0;
-    let transient = 0;
-    for (;;) {
-      const result = await send();
-      if (result.code === 0) return result;
-      errors.push(firstLine(result.stderr) || `gh exited ${result.code}`);
-      if (limited < MAX_RATE_RETRIES && RATE_LIMITED.test(result.stderr)) {
-        await this.io.sleep(await this.rateWait(result.stderr, limited, resource));
-        limited++;
-      } else if (await this.waitToRetry(result.stderr, transient, splits)) transient++;
-      else return errors.length === 1 ? result : { ...result, stderr: `${triesError(errors)}\n` };
-    }
+    return this.retries.send(send, {
+      splits,
+      rateWait: (stderr, refused) => this.rateWait(stderr, refused, resource),
+    });
   }
 
   /** The milliseconds to wait before a call GitHub refused for its rate limit is sent again, at
@@ -782,9 +731,9 @@ class Github {
    *  drops it. They are read in GraphQL batches (`graphqlArgs`), up to BLOB_BATCH blobs and
    *  BLOB_BATCH_BYTES bytes a call and one batch at a time, so at most one batch's texts are held
    *  at once; a blob a batch does not give whole (binary, truncated, missing, or in a batch that
-   *  fails for another reason than the rate limit or a transient failure, `withRetries`, a 502 or
-   *  504 on a batch of more than one blob among them) is read alone. Entries of one blob id are
-   *  read once. */
+   *  fails for another reason than the rate limit or a transient failure, `withRetries`, or that
+   *  GitHub answers as a batch too large when it holds more than one blob) is read alone. Entries
+   *  of one blob id are read once. */
   async readBlobs(
     repository: string,
     entries: readonly TreeEntry[],
@@ -839,8 +788,8 @@ class Github {
   /** The files `paths` of `repository` at `commit`, read by path in one GraphQL batch (routed as
    *  `readBlobs` is) and cached nowhere: a caller checks each and drops it. A file the batch does
    *  not give whole (truncated, or a batch that fails for another reason than the rate limit or a
-   *  transient failure, `withRetries`, a 502 or 504 on a batch of more than one file among them)
-   *  is read alone over REST. */
+   *  transient failure, `withRetries`, or that GitHub answers as a batch too large when it holds
+   *  more than one file) is read alone over REST. */
   async filesAt(
     repository: string,
     commit: string,
@@ -1094,19 +1043,19 @@ interface WalkLevels {
  *  end of JSON input"), is walked a level at a time: each level's subtrees are read in GraphQL
  *  batches of up to TREE_BATCH (`object(oid:)` fields, one level of entries each, routed as
  *  `graphqlArgs` says), READ_CALLS_PER_REPOSITORY batches at once under the read slots
- *  (`Github.inSlot`). A batch GitHub refuses (a node limit, a timeout, a 502 or 504 on a batch of
- *  more than one subtree) is halved at once, and a subtree refused alone is read over REST, one
- *  level; a batch refused for the GraphQL rate limit, or that fails for another transient reason,
- *  is sent again after the wait `Github.withRetries` gives instead, as a REST read that fails for
- *  a transient reason is. The entries and their count are the same whichever way a subtree is
- *  read. Each read keeps, as it parses its answer, only the entries `keep` keeps, the subtrees of
- *  a one-level read and a count of the entries: a data repository's tree holds millions of
- *  entries, so no read and no level holds them all, and a walk holds only the kept entries and the
- *  subtrees of its next level. Each level the walk finishes goes to `levels` (its kept entries,
- *  the next level's subtrees, its count and its gh calls), and a walk that finds its levels there
- *  replays them and reads on from the first it does not find, with no whole read once the first
- *  is there: the same entries, order, count and `reads`, the gh calls, those of the replayed
- *  levels included. */
+ *  (`Github.inSlot`). A batch GitHub refuses (a node limit, or its answer to a batch too large on
+ *  a batch of more than one subtree) is halved at once, and a subtree refused alone is read over
+ *  REST, one level; a batch refused for the GraphQL rate limit, or that fails for another
+ *  transient reason, is sent again after the wait `Github.withRetries` gives instead, as a REST
+ *  read that fails for a transient reason is. The entries and their count are the same whichever
+ *  way a subtree is read. Each read keeps, as it parses its answer, only the entries `keep` keeps,
+ *  the subtrees of a one-level read and a count of the entries: a data repository's tree holds
+ *  millions of entries, so no read and no level holds them all, and a walk holds only the kept
+ *  entries and the subtrees of its next level. Each level the walk finishes goes to `levels` (its
+ *  kept entries, the next level's subtrees, its count and its gh calls), and a walk that finds its
+ *  levels there replays them and reads on from the first it does not find, with no whole read
+ *  once the first is there: the same entries, order, count and `reads`, the gh calls, those of the
+ *  replayed levels included. */
 export async function readTree(
   github: Github,
   repository: string,
@@ -1161,8 +1110,8 @@ export async function readTree(
     return { part, truncated: flag === "true" };
   };
   /** One level of each of `trees`, in one GraphQL read; halved, then read over REST, where
-   *  GitHub refuses it for another reason than its rate limit or a transient failure, a 502 or 504
-   *  on more than one subtree among them. */
+   *  GitHub refuses it for another reason than its rate limit or a transient failure, or answers
+   *  it as a batch too large when it holds more than one subtree. */
   const levelOf = async (trees: readonly Subtree[]): Promise<TreePart> => {
     const fields = trees
       .map(
@@ -3391,7 +3340,8 @@ class CodeSearch {
   }
 
   /** One page of a search; undefined when the call budget is spent before it. A call that fails
-   *  for a transient reason is sent again (`Github.waitToRetry`), each try a call of the budget. */
+   *  for a transient reason is sent again (`GhRetries.waitToRetry`), each try a call of the
+   *  budget. */
   async page(
     job: SearchJob,
     q: string,
@@ -3460,7 +3410,9 @@ class CodeSearch {
         continue;
       }
       // gh's error names a 502, 503 or 504, and so does the answer's status line.
-      if (await this.github.waitToRetry(`${result.stderr}\nHTTP ${answer.status}`, retried)) {
+      if (
+        await this.github.retries.waitToRetry(`${result.stderr}\nHTTP ${answer.status}`, retried)
+      ) {
         retried++;
         continue;
       }
@@ -3994,7 +3946,7 @@ export interface CopiesResult {
   readonly forksNotScanned: string[];
   readonly failures: string[];
   readonly searchCalls: number;
-  /** The gh calls sent again after a transient failure, by reason, in TRANSIENT_FAILURES' order. */
+  /** The gh calls sent again after a transient failure, by reason (`GhRetries.counts`). */
   readonly retries: ReadonlyMap<string, number>;
   /** The run's peak resident memory, in bytes. */
   readonly peakBytes: number;
@@ -4782,7 +4734,7 @@ async function readAll(
     failures,
     // Each search's calls, those an earlier run made for a cached search included.
     searchCalls: records.reduce((sum, record) => sum + record.calls, 0),
-    retries: github.retries,
+    retries: github.retries.counts,
     peakBytes: github.readPeak(),
     budget: options.maxSearchCalls,
   };

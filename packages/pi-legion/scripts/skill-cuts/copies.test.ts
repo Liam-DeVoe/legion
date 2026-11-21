@@ -13,6 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { GithubReads } from "./build";
+import { GhRetries } from "./common";
 import { parseConfig } from "./config";
 import {
   CopyIndex,
@@ -2186,6 +2187,57 @@ describe("a truncated tree", () => {
       );
     }, 30_000);
 
+    test("a tree read GitHub answers 500 is sent again 5 s later, and its repository keeps its entries", async () => {
+      const calm = await run(restWorld(), LEGION_ONLY);
+      const serverError = `HTTP 500: Internal Server Error (${SKILLS_URL})`;
+      const w = failing(restWorld(), [serverError]);
+      const r = await run(w, LEGION_ONLY);
+      expect(r.code).toBe(0);
+      expect(r.table("repositories.tsv")[0]).toMatchObject({ error: "" });
+      for (const name of SAME) expect(r.text(name)).toBe(calm.text(name));
+      expect(w.sleeps).toEqual([5_000]);
+      expect(skillsReads(w)).toBe(2);
+      expect(r.text("skill-copies.md")).toContain(
+        "1 retry after a transient failure (other HTTP 5xx 1)."
+      );
+    }, 30_000);
+
+    test("a GraphQL batch of more than one item GitHub refuses as a timeout is split at once; a batch of one refused so is sent again", async () => {
+      const timedOut =
+        "gh: Something went wrong while executing your query. This may be the result of a timeout, or it could be a GitHub bug.";
+      /** How many subtrees a GraphQL tree batch asks for. */
+      const subtrees = (args: readonly string[]) =>
+        (args.find((arg) => arg.startsWith("query=")) ?? "").match(/t\d+: object\(/g)?.length ?? 0;
+      const read = async (flaky: boolean) => {
+        const w = truncatedWorld();
+        // The walk's first batch, its root alone, and its first batch of more than one subtree
+        // are each refused once.
+        const left = new Set(flaky ? ["root", "wide"] : []);
+        w.refuse = (args) => {
+          if (graphqlKind(args) !== "tree") return undefined;
+          if (subtrees(args) === 1 && left.delete("root")) return timedOut;
+          if (subtrees(args) > 1 && left.delete("wide")) return timedOut;
+          return undefined;
+        };
+        return { w, r: await run(w, LEGION_ONLY) };
+      };
+      const calm = await read(false);
+      const flaky = await read(true);
+      expect(flaky.r.code).toBe(0);
+      expect(flaky.r.table("repositories.tsv")[0]).toMatchObject({ error: "" });
+      for (const name of ["skill-copies.tsv", "manifests.tsv"]) {
+        expect(flaky.r.text(name)).toBe(calm.r.text(name));
+      }
+      // The root alone was sent again 5 s after it failed; the wider batch was halved at once.
+      expect(flaky.w.sleeps).toEqual([5_000]);
+      expect(
+        flaky.r.errors.filter((line) => line.startsWith("copies: a gh call failed ("))
+      ).toEqual([`copies: a gh call failed (${timedOut}); sending it again in 5 s, retry 1 of 4`]);
+      expect(flaky.r.text("skill-copies.md")).toContain(
+        "1 retry after a transient failure (timeout 1)."
+      );
+    }, 30_000);
+
     test("a tree read that fails five times fails its repository, naming each try's error", async () => {
       const lines = [
         `Get "${SKILLS_URL}": net/http: TLS handshake timeout`,
@@ -3398,7 +3450,12 @@ describe("build.ts's profile reads of a repository", () => {
         const answer = { sha: head.commit.tree.sha, tree: found.tree, truncated: false };
         return { code: 0, stdout: JSON.stringify(answer), stderr: "" };
       };
-      const at = await new GithubReads(gh, new Map()).at(repository, head.sha, config.excludePaths);
+      const retries = new GhRetries({ sleep: Bun.sleep, err: () => {} }, "build-cases");
+      const at = await new GithubReads(gh, new Map(), retries).at(
+        repository,
+        head.sha,
+        config.excludePaths
+      );
       // The same skill files...
       expect(at.copies.map((copy) => copy.file).sort()).toEqual(
         listed.copies

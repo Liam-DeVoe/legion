@@ -78,6 +78,7 @@ import { messageFor } from "@legion/envoy-client/errors";
 import { mapLimit } from "../skill-scenarios/production-dispatch";
 import type { Arm } from "./arms";
 import type { Case } from "./cases";
+import { firstLine, GhRetries } from "./common";
 import {
   BlobBatch,
   blobBatches,
@@ -111,9 +112,14 @@ export interface RepoSource {
   /** Reads ahead, in as few calls as it can, the files of `repo` at `commit` under each of `dirs`,
    *  so the `tree` calls for them that follow need no read of their own. Optional. */
   prefetch?(repo: string, commit: string, dirs: readonly string[]): Promise<void>;
-  /** The reads this source has made of GitHub so far: how many `gh` calls, and the milliseconds
-   *  in which at least one of them was running. Absent for a source that reads no GitHub. */
-  reads?(): { readonly calls: number; readonly ms: number };
+  /** The reads this source has made of GitHub so far: how many `gh` calls, the milliseconds in
+   *  which at least one of them was running, and the calls sent again after a transient failure,
+   *  by reason (common.ts's `GhRetries.record`). Absent for a source that reads no GitHub. */
+  reads?(): {
+    readonly calls: number;
+    readonly ms: number;
+    readonly retries: Readonly<Record<string, number>>;
+  };
 }
 
 /** What `RepoSource.file` throws when the repository holds no such file at the commit, as opposed
@@ -174,6 +180,10 @@ export interface ContextRecord {
   /** What of the real session's context the capture does not reproduce. */
   readonly leftOut: readonly string[];
   readonly builds: readonly Build[];
+  /** The source's gh calls sent again after a transient failure while this context was built, by
+   *  reason (`RepoSource.reads`; empty for a source that reads no GitHub). A context built at the
+   *  same time from the same source adds its own. */
+  readonly githubRetries: Readonly<Record<string, number>>;
 }
 
 /** A skill the context installs: its name, its directory, its frontmatter `description`, and
@@ -433,69 +443,21 @@ function writeBlob(file: string, mode: string, bytes: Uint8Array): void {
   if (mode === "100755") chmodSync(file, 0o755);
 }
 
-/** How many times one `gh` read is made before it fails, by default. */
-const GH_TRIES = 5;
 /** The most blobs, and the most bytes, one GraphQL read of blobs asks for. */
 const BLOB_BATCH = 50;
 const BLOB_BATCH_BYTES = 4_000_000;
-/** The wait before a read's second try; each try after waits twice the one before, at most
- *  GH_MAX_WAIT_MS. A rate limit waits until its reset instead, at most GH_MAX_RATE_WAIT_MS. */
-const GH_FIRST_WAIT_MS = 2_000;
-const GH_MAX_WAIT_MS = 60_000;
+/** The longest wait for a rate limit's reset. */
 const GH_MAX_RATE_WAIT_MS = 15 * 60_000;
-/** The longest one `gh` read may run: an API read, and a tarball. */
+/** The longest one `gh` read may run: an API read, and a tarball. A read ended at its limit is sent
+ *  again, as common.ts's `GhRetries` sends a read that failed for a transient reason. */
 const GH_READ_TIMEOUT_MS = 120_000;
 const GH_TARBALL_TIMEOUT_MS = 900_000;
-/** A failure worth another try: a network error (a timeout, a reset or refused connection, a
- *  name that did not resolve), or an HTTP 5xx, as gh reports them on stderr. */
-const TRANSIENT_GH =
-  /i\/o timeout|timed out|timeout|connection reset|connection refused|reset by peer|ECONNRESET|ECONNREFUSED|TLS handshake|no such host|temporary failure|broken pipe|unexpected EOF|HTTP 5\d\d/i;
-/** A rate limit, primary or secondary, as gh reports it. */
-const RATE_LIMITED_GH = /rate limit|HTTP 429/i;
 
-/** What `ghSource` takes beside the binary: how many tries a read gets, and the wait (a test's). */
+/** What `ghSource` takes beside the binary, each a test's when given: the wait before a read is
+ *  sent again, and where each retry is said (`Bun.sleep` and standard error by default). */
 export interface GhOptions {
-  readonly tries?: number;
   readonly sleep?: (ms: number) => Promise<void>;
-}
-
-/**
- * The value of the first try of `attempt` that exits 0. A try that fails transiently or on a rate
- * limit (`TRANSIENT_GH`, `RATE_LIMITED_GH`) is made again after a growing wait, or after the rate
- * limit's reset (gh prints no `retry-after` header on stderr, so `rateReset` reads the reset of
- * the call's own limit, REST's or GraphQL's, from `rate_limit`, and a limit whose reset cannot be
- * read waits a minute), at most `tries` times in all; any other failure, or the last try's,
- * throws naming `command`, each try's error and the count.
- */
-async function ghRetried<T>(
-  command: string,
-  attempt: () => Promise<{ readonly code: number; readonly stderr: string; readonly value: T }>,
-  options: GhOptions,
-  rateReset: () => Promise<number | undefined>
-): Promise<T> {
-  const tries = options.tries ?? GH_TRIES;
-  const sleep = options.sleep ?? Bun.sleep;
-  const errors: string[] = [];
-  for (let n = 1; ; n++) {
-    const ran = await attempt();
-    if (ran.code === 0) return ran.value;
-    const said = ran.stderr.trim().split("\n").slice(-4).join(" / ") || "no error text";
-    errors.push(`try ${n}: exit ${ran.code}: ${said}`);
-    const limited = RATE_LIMITED_GH.test(ran.stderr);
-    const transient = limited || TRANSIENT_GH.test(ran.stderr);
-    if (!transient || n >= tries) {
-      throw new Error(
-        `\`${command}\` failed on ${n === 1 ? "its one try" : `each of ${n} tries`}${transient ? "" : " (not a transient failure, so not tried again)"}: ${errors.join("; ")}`
-      );
-    }
-    let wait = Math.min(GH_FIRST_WAIT_MS * 2 ** (n - 1), GH_MAX_WAIT_MS);
-    if (limited) {
-      const reset = await rateReset();
-      const untilReset = reset === undefined ? 60_000 : reset * 1000 - Date.now() + 1_000;
-      wait = Math.min(Math.max(wait, untilReset), GH_MAX_RATE_WAIT_MS);
-    }
-    await sleep(wait);
-  }
+  readonly err?: (line: string) => void;
 }
 
 /**
@@ -510,10 +472,18 @@ async function ghRetried<T>(
  * does); a blob a batch does not give whole (binary, truncated, missing, in a batch that failed,
  * or a text whose bytes are not the blob's, checked by its git blob id) is read alone over REST.
  * A blob a batch gave is kept until each file of those directories that holds it is written. Each
- * read is tried again on a transient failure (`ghRetried`), so one network error stops no screen.
- * `reads()` counts the `gh` calls made and the time in which one ran.
+ * read is sent again after a transient failure, by the rule copies.ts's and build.ts's GitHub reads
+ * share (common.ts's `GhRetries`), so one network error stops no screen; a 404 is not.
+ * `reads()` counts the `gh` calls made, the time in which one ran, and the calls sent again.
  */
 export function ghSource(gh = "gh", options: GhOptions = {}): RepoSource {
+  const retries = new GhRetries(
+    {
+      sleep: options.sleep ?? Bun.sleep,
+      err: options.err ?? ((line) => process.stderr.write(`${line}\n`)),
+    },
+    "context"
+  );
   type Listing = { readonly entries: readonly BlobEntry[]; readonly truncated: boolean };
   const trees = new Map<string, Promise<Listing>>();
   // The gh calls made so far, and the milliseconds in which at least one was running.
@@ -546,26 +516,40 @@ export function ghSource(gh = "gh", options: GhOptions = {}): RepoSource {
       return undefined;
     }
   };
-  const restReset = () => rateReset("core");
+  // The milliseconds to wait before a call GitHub refused for the rate limit of `resource` is sent
+  // again: to the limit's reset (gh prints no `retry-after` header on stderr), at most
+  // GH_MAX_RATE_WAIT_MS; a minute when the reset cannot be read or is past.
+  const rateWait = async (resource: "core" | "graphql"): Promise<number> => {
+    const reset = await rateReset(resource);
+    const until = reset === undefined ? 0 : reset * 1000 + 1_000 - Date.now();
+    return until > 0 ? Math.min(until, GH_MAX_RATE_WAIT_MS) : 60_000;
+  };
+  // The first try of `attempt`, one try of the gh call `command`, that exits 0, the call sent
+  // again as `GhRetries.send` says (`splits`: a GraphQL batch of more than one blob); throws
+  // naming `command` and each try's error when none does.
+  const retried = async <T extends { readonly code: number; readonly stderr: string }>(
+    command: string,
+    attempt: () => Promise<T>,
+    resource: "core" | "graphql",
+    splits = false
+  ): Promise<T> => {
+    const ran = await retries.send(attempt, { splits, rateWait: () => rateWait(resource) });
+    if (ran.code !== 0) {
+      throw new Error(`\`${command}\` failed: ${firstLine(ran.stderr) || `gh exited ${ran.code}`}`);
+    }
+    return ran;
+  };
   const api = async (route: string, raw: boolean): Promise<Uint8Array> => {
     const accept = raw ? ["-H", "Accept: application/vnd.github.raw"] : [];
     const argv = [gh, "api", "--method", "GET", ...accept, route];
-    return ghRetried(
-      argv.join(" "),
-      async () => {
-        const ran = await ghRun(argv);
-        return { code: ran.code, stderr: ran.stderr, value: ran.stdout };
-      },
-      options,
-      restReset
-    );
+    return (await retried(argv.join(" "), () => ghRun(argv), "core")).stdout;
   };
   const tarball = async (repo: string, commit: string, dest: string): Promise<void> => {
     mkdirSync(dest, { recursive: true });
     const archive = `${dest}.tar.gz`;
     try {
       const argv = [gh, "api", "--method", "GET", `repos/${repo}/tarball/${commit}`];
-      await ghRetried(
+      await retried(
         argv.join(" "),
         () =>
           counted(async () => {
@@ -585,11 +569,9 @@ export function ghSource(gh = "gh", options: GhOptions = {}): RepoSource {
               stderr: limit.timedOut()
                 ? `${stderr}\ntimed out after ${GH_TARBALL_TIMEOUT_MS} ms`
                 : stderr,
-              value: undefined,
             };
           }),
-        options,
-        restReset
+        "core"
       );
       await mustRun(["tar", "-xzf", archive, "-C", dest, "--strip-components=1"]);
     } finally {
@@ -632,7 +614,11 @@ export function ghSource(gh = "gh", options: GhOptions = {}): RepoSource {
   const blobs = new Map<string, { readonly bytes: Uint8Array; waiting: number }>();
   return {
     name: "gh",
-    reads: () => ({ calls, ms: busyMs + (running > 0 ? performance.now() - busyFrom : 0) }),
+    reads: () => ({
+      calls,
+      ms: busyMs + (running > 0 ? performance.now() - busyFrom : 0),
+      retries: retries.record(),
+    }),
     file: async (repo, commit, file) => {
       const route = file.split("/").map(encodeURIComponent).join("/");
       try {
@@ -665,18 +651,16 @@ export function ghSource(gh = "gh", options: GhOptions = {}): RepoSource {
         const args = graphqlArgs(repo, blobQuery(batch));
         let answer: unknown;
         try {
-          const stdout = await ghRetried(
+          const ran = await retried(
             `${[gh, ...args.slice(0, -2)].join(" ")} -f query=<${batch.length} blobs>`,
-            async () => {
-              const ran = await ghRun([gh, ...args]);
-              return { code: ran.code, stderr: ran.stderr, value: ran.stdout };
-            },
-            options,
-            () => rateReset("graphql")
+            () => ghRun([gh, ...args]),
+            "graphql",
+            batch.length > 1
           );
-          answer = parseJson(new TextDecoder().decode(stdout));
+          answer = parseJson(new TextDecoder().decode(ran.stdout));
         } catch {
-          // The batch failed for good: each of its blobs is read alone, over REST, in `tree`.
+          // The batch failed for good, or GitHub answered it as a batch too large while it held
+          // more than one blob: each of its blobs is read alone, over REST, in `tree`.
           continue;
         }
         // An answer not of its shape gives no blob: each is read alone, over REST, in `tree`.
@@ -1050,6 +1034,19 @@ async function rolePrompt(
   );
 }
 
+/** The retries of `after` less those of `before`, two `RepoSource.reads` records: each reason with
+ *  at least one. */
+function retriesSince(
+  before: Readonly<Record<string, number>>,
+  after: Readonly<Record<string, number>>
+): Record<string, number> {
+  return Object.fromEntries(
+    Object.entries(after)
+      .map(([reason, count]): [string, number] => [reason, count - (before[reason] ?? 0)])
+      .filter(([, count]) => count > 0)
+  );
+}
+
 /** Writes the context of `c`'s arm `arm` under `options.root`, replacing one written there. */
 export async function buildContext(
   c: ContextCase,
@@ -1057,6 +1054,7 @@ export async function buildContext(
   options: ContextOptions
 ): Promise<CaseContext> {
   const { source, root } = options;
+  const retriedBefore = source.reads?.().retries ?? {};
   const builds = new Builds(options.cacheDir);
   const skillsDir = path.join(root, "skills");
   const pluginsDir = path.join(root, "plugins");
@@ -1213,6 +1211,7 @@ export async function buildContext(
       rolePrompt: roleRecord,
       leftOut,
       builds: builds.list,
+      githubRetries: retriesSince(retriedBefore, source.reads?.().retries ?? {}),
     },
   };
 }

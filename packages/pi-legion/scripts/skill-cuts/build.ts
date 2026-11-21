@@ -232,7 +232,12 @@
  *   its path is under, and that unit's copy is the one the session read.
  * - Commits: each repository at the last commit of its default branch (repositories.tsv, else
  *   GitHub's) at or before the session's start. Every GitHub read goes through `gh api`
- *   (io.gh): GET calls, and GraphQL queries that read a repository's files in batches.
+ *   (io.gh): GET calls, and GraphQL queries that read a repository's files in batches. A read
+ *   that fails for a transient reason is sent again by the rule copies.ts's and context.ts's reads
+ *   share (common.ts's `GhRetries`: after 5, 15, 45 and 135 s, each retry said on standard error;
+ *   a batch of more than one blob that GitHub answers as a batch too large is not sent again, and
+ *   its blobs are read alone), and a read that failed so on every try is not kept, so the next
+ *   case reads it again.
  * - Skills: what each unit ships at that commit, not what installers.tsv lists, which is what it
  *   ships at the later commit the copies output read. Each repository of a unit (its manifest's,
  *   and those of the copies installers.tsv lists for it) is read at its commit as copies.ts reads
@@ -294,7 +299,9 @@
  * with cases.ts's `loadCases` against `--old` at the end) and `<out>.summary.json`: the seed and
  * the order, the sessions tried, each session's outcome, model and the reader's dollars on it, the
  * cases built, the drops by reason, the sessions tried and the drops of each model (`byModel`), the
- * bounds, the pulls, the gateway's spend, and why the build stopped, if it did.
+ * bounds, the pulls, the gateway's spend, the GitHub reads sent again after a transient failure
+ * by reason (`githubRetries`, summed over the runs of one `--out`), and why the build stopped, if
+ * it did.
  *
  * **build-cases --reprofile** builds the profile of each case of a case file again, from the
  * case and its session's head: its store, the `[Skill file: …]` lines of its messages, its start,
@@ -308,8 +315,9 @@
  * profile holds none keeps its old evidence of why.
  * The new file's cases differ from the old ones only in `profile` (its skills, plugins and context
  * files; a recorded prompt and its tools stay) and in the profile's part of `evidence`.
- * `<out>.summary.json` lists, per case, the skills added and removed. A case whose profile cannot
- * be built, or no longer installs its skill, is left out and named, and the command exits 1.
+ * `<out>.summary.json` lists, per case, the skills added and removed, and the GitHub reads sent
+ * again after a transient failure by reason (`githubRetries`). A case whose profile cannot be
+ * built, or no longer installs its skill, is left out and named, and the command exits 1.
  *
  * **build-tasks** (the load test's tasks): the tasks reader reads the skill's name and description
  * (`--skill`'s SKILL.md frontmatter) with no messages and proposes search terms; tasks.sql runs
@@ -342,8 +350,9 @@
  * to `<dir>/<task id>.json` (load.ts's LoadProfile); the task line's `profile` is its path. A
  * written task takes the profile of `--context-session <store>:<hash>` (required in the reader's
  * mode; rebuilt before any reader call, and a session that gives none fails the build). The
- * summary's `profiles` records the context session, each task's profile and its evidence, and why
- * a task has none. A finished build gets no profiles from `--profiles-out` afterwards;
+ * summary's `profiles` records the context session, each task's profile and its evidence, why a
+ * task has none, and the GitHub reads sent again after a transient failure by reason
+ * (`githubRetries`). A finished build gets no profiles from `--profiles-out` afterwards;
  * `--reprofile` (below) builds them again from its tasks file.
  * A task whose context does not list the tested skill tests nothing (`listsSkill`: a subagent's
  * recorded listing lacks its line, or another context's profile does not install it), so with
@@ -360,7 +369,8 @@
  * (`<tasks.jsonl>.summary.json`) names. It writes each profile to `<new dir>/<task id>.json`, the
  * tasks again to `<new dir>/tasks.jsonl` with each `profile` naming its new file, and
  * `<new dir>/tasks.jsonl.summary.json`: per task, whether the profile's bytes changed
- * (`unchanged`, `changed`) and the evidence items added and removed against the old summary's.
+ * (`unchanged`, `changed`) and the evidence items added and removed against the old summary's,
+ * and in its `profiles` the GitHub reads sent again after a transient failure (`githubRetries`).
  * A task whose session its store holds no longer keeps its old profile (`kept`, with the evidence
  * item `no session in the store`). A session task whose rebuilt context no longer lists the skill
  * is left out and named, and the command exits 1; a store read, a pull or a rebuild that fails
@@ -448,7 +458,17 @@ import {
   Thinking,
   textLines,
 } from "./cases";
-import { configFrom, json, parse, Refused, required, schemaFaults, writeWhole } from "./common";
+import {
+  configFrom,
+  GhRetries,
+  json,
+  parse,
+  Refused,
+  required,
+  schemaFaults,
+  transientReason,
+  writeWhole,
+} from "./common";
 import { type SkillCutsConfig, storeNamed } from "./config";
 import {
   BLOB_BATCH,
@@ -459,6 +479,7 @@ import {
   CopyIndex,
   frontmatter,
   type Gh,
+  type GhResult,
   GitBlob,
   graphqlArgs,
   keepsEntry,
@@ -692,6 +713,9 @@ export interface BuildIo {
   /** Milliseconds on a clock that only goes forward (`performance.now()` in a real run): what
    *  build-tasks' candidate search measures its own time by. */
   now(): number;
+  /** Waits `ms` before a GitHub read that failed for a transient reason is sent again
+   *  (`Bun.sleep` when absent). */
+  sleep?(ms: number): Promise<void>;
 }
 
 /** The directory a build pulls transcripts into, `<out>.spool`, made empty: one file for each
@@ -1759,39 +1783,71 @@ interface RepositoryAt {
   readonly ompLevels: ReadonlySet<string>;
 }
 
-/** The GitHub reads the profile makes, each made once. Exported for copies.test.ts, which checks
- *  that it reads a repository's files as copies.ts does. */
+/** `cache`'s promise for `key`, made by `make` when it holds none. A promise that rejects for a
+ *  transient failure (common.ts's `transientReason`: each read it made was sent again until no
+ *  try was left) is dropped once it does, so a later caller reads again. */
+function readOnce<T>(
+  cache: Map<string, Promise<T>>,
+  key: string,
+  make: () => Promise<T>
+): Promise<T> {
+  const held = cache.get(key);
+  if (held !== undefined) return held;
+  const made = make();
+  cache.set(key, made);
+  made.catch((error: unknown) => {
+    if (transientReason(messageFor(error)) !== undefined && cache.get(key) === made) {
+      cache.delete(key);
+    }
+  });
+  return made;
+}
+
+/** The standard output of `result`, gh's answer to `args`; throws naming `args` and gh's first
+ *  error line (each try's, when the read was sent more than once) when it failed. */
+function ghAnswer(args: readonly string[], result: GhResult): string {
+  if (result.code !== 0) {
+    const line = result.stderr.split("\n").find((each) => each.trim() !== "") ?? "";
+    throw new Error(`gh ${args.join(" ")} failed: ${line}`);
+  }
+  return result.stdout;
+}
+
+/** The GitHub reads the profile makes, each made once, and each sent again after a transient
+ *  failure as common.ts's `GhRetries` says (`retries`, which counts them): a read that failed so
+ *  on every try is not kept, so a later caller reads it again. Exported for copies.test.ts, which
+ *  checks that it reads a repository's files as copies.ts does. */
 export class GithubReads {
-  private readonly made = new Map<
-    string,
-    Promise<{ code: number; stdout: string; stderr: string }>
-  >();
+  private readonly made = new Map<string, Promise<GhResult>>();
   private readonly held = new Map<string, Promise<RepositoryAt>>();
   private readonly projects = new Map<string, Promise<{ at: RepositoryAt; reads: number }>>();
   private readonly blobs = new Map<string, Promise<string>>();
 
   constructor(
     private readonly gh: Gh,
-    private readonly branches: ReadonlyMap<string, string>
+    private readonly branches: ReadonlyMap<string, string>,
+    readonly retries: GhRetries
   ) {}
 
-  private call(args: readonly string[]) {
+  /** gh's answer to `args`, sent again as `retries` says, the read made once: an answer that
+   *  failed for a transient reason on every try is dropped once it does. */
+  private call(args: readonly string[]): Promise<GhResult> {
     const key = args.join("\0");
-    let call = this.made.get(key);
-    if (call === undefined) {
-      call = this.gh(args);
-      this.made.set(key, call);
-    }
-    return call;
+    const held = this.made.get(key);
+    if (held !== undefined) return held;
+    const made = this.retries.send(() => this.gh(args));
+    this.made.set(key, made);
+    const drop = () => {
+      if (this.made.get(key) === made) this.made.delete(key);
+    };
+    made.then((result) => {
+      if (result.code !== 0 && transientReason(result.stderr) !== undefined) drop();
+    }, drop);
+    return made;
   }
 
   private async ok(args: readonly string[]): Promise<string> {
-    const result = await this.call(args);
-    if (result.code !== 0) {
-      const line = result.stderr.split("\n").find((each) => each.trim() !== "") ?? "";
-      throw new Error(`gh ${args.join(" ")} failed: ${line}`);
-    }
-    return result.stdout;
+    return ghAnswer(args, await this.call(args));
   }
 
   /** The default branch of `repo`: repositories.tsv's, else GitHub's. */
@@ -1841,7 +1897,7 @@ export class GithubReads {
     const result = await this.call(args);
     if (result.code === 0) return result.stdout;
     if (/\b404\b|Not Found/.test(result.stderr)) return undefined;
-    return this.ok(args);
+    return ghAnswer(args, result);
   }
 
   /** The entries of the tree `sha` of `repo` (a commit's id gives its root tree's): every entry
@@ -1854,12 +1910,8 @@ export class GithubReads {
     recursive: boolean
   ): Promise<{ entries: TreeEntry[]; truncated: boolean }> {
     const args = ["api", `repos/${repo}/git/trees/${sha}${recursive ? "?recursive=1" : ""}`];
-    const result = await this.gh(args);
-    if (result.code !== 0) {
-      const line = result.stderr.split("\n").find((each) => each.trim() !== "") ?? "";
-      throw new Error(`gh ${args.join(" ")} failed: ${line}`);
-    }
-    const tree = GitTree.safeParse(parseJson(result.stdout));
+    const stdout = ghAnswer(args, await this.retries.send(() => this.gh(args)));
+    const tree = GitTree.safeParse(parseJson(stdout));
     if (!tree.success) throw new Error(`gh ${args.join(" ")} gave no git tree`);
     return { entries: tree.data.tree, truncated: tree.data.truncated === true };
   }
@@ -1891,26 +1943,24 @@ export class GithubReads {
   /** The text of the blob `sha` of `repo`, read once: a blob's id is its content, so a file that
    *  two commits share is read for the first. */
   private blob(repo: string, sha: string): Promise<string> {
-    let text = this.blobs.get(sha);
-    if (text === undefined) {
-      text = this.ok(["api", `repos/${repo}/git/blobs/${sha}`]).then((answer) => {
+    return readOnce(this.blobs, sha, () =>
+      this.ok(["api", `repos/${repo}/git/blobs/${sha}`]).then((answer) => {
         const blob = GitBlob.safeParse(parseJson(answer));
         if (!blob.success || blob.data.encoding !== "base64") {
           throw new Error(`gh api repos/${repo}/git/blobs/${sha} gave no base64 blob`);
         }
         return Buffer.from(blob.data.content, "base64").toString("utf8");
-      });
-      this.blobs.set(sha, text);
-    }
-    return text;
+      })
+    );
   }
 
   /** Reads the blobs `entries` of `repo` that are not read yet, in GraphQL batches of up to
    *  BLOB_BATCH blobs and BLOB_BATCH_BYTES bytes (copies.ts's `blobBatches` and `blobQuery`), one
    *  call a batch where each blob alone would take one, with the owner and name as the fields
    *  `owner` and `name` (`graphqlArgs`), by which the pod's gh picks the owner's token. A blob a
-   *  batch does not give whole (binary, cut short, missing, or in a batch that fails) is left to
-   *  `blob`, which reads it alone. */
+   *  batch does not give whole (binary, cut short, missing, or in a batch that fails, a 502 or
+   *  504 on a batch of more than one blob among them, which is not sent again) is left to `blob`,
+   *  which reads it alone. */
   private async prefetch(repo: string, entries: readonly TreeEntry[]): Promise<void> {
     const wanted = new Map<string, TreeEntry>();
     for (const entry of entries) {
@@ -1919,7 +1969,9 @@ export class GithubReads {
       }
     }
     for (const batch of blobBatches([...wanted.values()], BLOB_BATCH, BLOB_BATCH_BYTES)) {
-      const result = await this.gh(graphqlArgs(repo, blobQuery(batch)));
+      const result = await this.retries.send(() => this.gh(graphqlArgs(repo, blobQuery(batch))), {
+        splits: batch.length > 1,
+      });
       const parsed = BlobBatch.safeParse(result.code === 0 ? parseJson(result.stdout) : undefined);
       if (!parsed.success) continue;
       for (const [index, entry] of batch.entries()) {
@@ -1940,13 +1992,7 @@ export class GithubReads {
     commit: string,
     excludePaths: SkillCutsConfig["excludePaths"]
   ): Promise<RepositoryAt> {
-    const key = `${repo}\0${commit}`;
-    let held = this.held.get(key);
-    if (held === undefined) {
-      held = this.readAt(repo, commit, excludePaths);
-      this.held.set(key, held);
-    }
-    return held;
+    return readOnce(this.held, `${repo}\0${commit}`, () => this.readAt(repo, commit, excludePaths));
   }
 
   private async readAt(
@@ -1973,13 +2019,9 @@ export class GithubReads {
     levels: readonly string[],
     excludePaths: SkillCutsConfig["excludePaths"]
   ): Promise<{ at: RepositoryAt; reads: number }> {
-    const key = [repo, commit, ...levels].join("\0");
-    let held = this.projects.get(key);
-    if (held === undefined) {
-      held = this.readProject(repo, commit, levels, excludePaths);
-      this.projects.set(key, held);
-    }
-    return held;
+    return readOnce(this.projects, [repo, commit, ...levels].join("\0"), () =>
+      this.readProject(repo, commit, levels, excludePaths)
+    );
   }
 
   private async readProject(
@@ -2097,6 +2139,20 @@ export class GithubReads {
     }
     return { copies, manifests, faults, contextSizes, ompLevels };
   }
+}
+
+/** The profile's GitHub reads with `io`'s gh: a read that failed for a transient reason waits with
+ *  `io.sleep` before it is sent again, and is said on `io.err` as `who`'s. */
+function githubReads(
+  io: BuildIo,
+  branches: ReadonlyMap<string, string>,
+  who: "build-cases" | "build-tasks"
+): GithubReads {
+  const retries = new GhRetries(
+    { sleep: (ms) => io.sleep?.(ms) ?? Bun.sleep(ms), err: (line) => io.err(line) },
+    who
+  );
+  return new GithubReads(io.gh, branches, retries);
 }
 
 /** The session repository: the repository the session's working directory is a checkout of
@@ -3854,7 +3910,7 @@ async function reprofileCases(
   const run: ProfileRun = {
     config,
     copies,
-    github: new GithubReads(io.gh, copies.branches),
+    github: githubReads(io, copies.branches, "build-cases"),
     placer: placing,
   };
   // Each case's session head, for its working directory.
@@ -3983,6 +4039,7 @@ async function reprofileCases(
       casesWritten: rebuilt.length,
       cases: records,
       leftOut,
+      githubRetries: run.github.retries.record(),
     })
   );
   // The file must load as the behaviour commands load it.
@@ -4069,6 +4126,8 @@ const CasesSummary = z.looseObject({
   cases: z.array(z.looseObject({ id: z.string() })),
   sessionQueries: z.number(),
   readerSpend: SpendRecord,
+  /** Absent from a summary written before build-cases counted its GitHub retries. */
+  githubRetries: z.record(z.string(), z.number()).optional(),
 });
 
 /** One session an earlier run decided: its summary record and, for a case, the case's summary
@@ -4078,12 +4137,13 @@ interface DecidedSession {
   readonly caseRecord?: Record<string, unknown>;
 }
 
-/** What an earlier run of the same inputs decided, by `<store>\0<hash>`, and what it spent and
- *  queried. */
+/** What an earlier run of the same inputs decided, by `<store>\0<hash>`, and what it spent,
+ *  queried, and sent again of its GitHub reads. */
 interface PriorBuild {
   readonly decided: ReadonlyMap<string, DecidedSession>;
   readonly spend: Spend;
   readonly sessionQueries: number;
+  readonly githubRetries: Readonly<Record<string, number>>;
 }
 
 /** Writes the cases file `out` again with only its lines of a case whose id `ids` holds (each
@@ -4155,7 +4215,12 @@ function priorBuild(out: string, summaryFile: string, inputs: CasesInputs): Prio
     const caseRecord = id === undefined || !lines.has(id) ? undefined : recorded.get(id);
     if (caseRecord !== undefined) decided.set(key, { record, caseRecord });
   }
-  return { decided, spend: summary.readerSpend, sessionQueries: summary.sessionQueries };
+  return {
+    decided,
+    spend: summary.readerSpend,
+    sessionQueries: summary.sessionQueries,
+    githubRetries: summary.githubRetries ?? {},
+  };
 }
 
 /** `skill-cuts build-cases`. */
@@ -4324,7 +4389,7 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
     old: given.old,
     files,
     copies,
-    github: new GithubReads(io.gh, copies.branches),
+    github: githubReads(io, copies.branches, "build-cases"),
     gateway: readerGateway(
       config,
       given["key-file"],
@@ -4386,6 +4451,7 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
         cases: caseRecords,
         sessionQueries,
         pullCalls: pulls,
+        githubRetries: run.github.retries.record(prior?.githubRetries),
         readerSpend: addSpend(priorSpend, run.gateway.spend()),
       })
     );
@@ -4769,7 +4835,7 @@ function profilesPlan(
     run: {
       config,
       copies,
-      github: new GithubReads(io.gh, copies.branches),
+      github: githubReads(io, copies.branches, "build-tasks"),
       placer: placing,
     },
   };
@@ -4989,7 +5055,8 @@ async function writeProfiles<T extends TaskLine>(
 }
 
 /** What a summary records of a run's profiles: where they are, the context session (with the
- *  evidence of its profile), each task's, and the sessions.sql queries for their paths. */
+ *  evidence of its profile), each task's, the sessions.sql queries for their paths, and the
+ *  GitHub reads sent again after a transient failure, by reason. */
 function profilesRecord(
   plan: ProfilesPlan,
   context: ContextProfile | undefined,
@@ -5010,6 +5077,7 @@ function profilesRecord(
           },
     tasks: written.notes,
     sessionQueries: written.queries,
+    githubRetries: plan.run.github.retries.record(),
   };
 }
 
@@ -5549,7 +5617,7 @@ async function reprofileTasks(
   const run: ProfileRun = {
     config,
     copies,
-    github: new GithubReads(io.gh, copies.branches),
+    github: githubReads(io, copies.branches, "build-tasks"),
     placer: placing,
   };
 
@@ -5685,6 +5753,7 @@ async function reprofileTasks(
               },
         tasks: records,
         sessionQueries,
+        githubRetries: run.github.retries.record(),
       },
     })
   );

@@ -4110,12 +4110,15 @@ test("build-tasks with no bound writes byte for byte what it wrote before the bo
   // digest has not changed. The profiles' is then that run's with `sessionRepository` (its
   // repository and commit) in each of the 8 profiles whose session was in a checkout of one:
   // that field taken out, it is 040bb4d5142a96ae518e1aabacb19f8557f5647e03d32edc88afbc0757b8b367.
+  // The profiles summary's is then that run's with `githubRetries: {}` (no GitHub read was sent
+  // again) last in its `profiles`: that line taken out, it is
+  // 548690d45d15c1ac9f85f4bf3f27fcbe8fa1cd233003c83ece74e7aa0f21c7bc.
   expect(digests).toEqual({
     "model tasks": "ffa3d7637184a555b27e1b14afee9b1dd58e697112f82f98d3819afda80652d9",
     "model summary": "fd2cf470c0eaa72f67f8a326ecfaeafd58a63ed82764f9aae296cfffc84bff8b",
     "model printed": "bf894d108dd96d68557fc836907c898f504618a57f906e073f786c51c1144dc3",
     "profiles tasks": "6978ce55a25eb77c1f126e1b0e35e0f4899d63975797aee26b9e32d53ff3dea0",
-    "profiles summary": "548690d45d15c1ac9f85f4bf3f27fcbe8fa1cd233003c83ece74e7aa0f21c7bc",
+    "profiles summary": "db45bf70ca2d151562b92543a0d81fce355e214eddbae7d288deaf3df5c29310",
     "profiles printed": "6e4a4b3f3da89a2faa7e4e21ab71ad7d844a05da52f0aa836ebc41b6baee1532",
     "profiles profiles": "26bf1079e50926d2c9e1bdc9482bca041b0a71392fb091f4352c437ab81932c4",
   });
@@ -4225,6 +4228,71 @@ test("a session repository whose whole tree GitHub cuts short is read one direct
       .sort()
   );
 }, 120_000);
+
+// Catches: one transport error on a GitHub read leaving a case out of a re-profile, as a commit
+// read's TLS handshake timeout did on 2026-11-21, where copies.ts sends the read again; and a name
+// that did not resolve, which context.ts's reads sent again before the rule was shared.
+test.each([
+  ["a TLS handshake timeout", "net/http: TLS handshake timeout", "TLS handshake timeout"],
+  ["no such host", "dial tcp: lookup api.github.com: no such host", "no such host"],
+])(
+  "build-cases --reprofile whose commit read fails once with %s sends it again 5 s later and writes the case, and its summary counts the retry",
+  async (_, error, reason) => {
+    const [c] = await profileCases();
+    const dir = path.join(scratch, `transient-commit-${reason.replaceAll(" ", "-")}`);
+    const from = path.join(dir, "old.jsonl");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(from, `${JSON.stringify(c)}\n`);
+    const fresh = path.join(dir, "reprofiled.jsonl");
+    const lines: string[] = [];
+    const waits: number[] = [];
+    const standin = io(lines);
+    let failed: string | undefined;
+    const flaky: BuildIo = {
+      ...standin,
+      // The first commit read fails with `error`; every other call goes to the stand-in.
+      gh: async (args) => {
+        const route = args.find((arg) => arg.startsWith("repos/")) ?? "";
+        if (failed !== undefined || !route.endsWith("/commits")) return standin.gh(args);
+        ghCalls.push([...args]);
+        failed = `Get "https://api.github.com/${route}?per_page=1": ${error}`;
+        return { code: 1, stdout: "", stderr: `${failed}\n` };
+      },
+      sleep: async (ms) => void waits.push(ms),
+    };
+    const code = await main(
+      [
+        "build-cases",
+        "--config",
+        config,
+        "--old",
+        old,
+        "--copies",
+        copiesDir,
+        "--count",
+        countDir,
+        "--reprofile",
+        from,
+        "--out",
+        fresh,
+      ],
+      flaky
+    );
+    expect(lines.join("")).not.toContain("left out");
+    expect(code).toBe(EXIT.ok);
+    expect(loadCases(fresh, old).map((each) => each.id)).toEqual([c?.id]);
+    expect(waits).toEqual([5_000]);
+    expect(lines).toContain(
+      `build-cases: a gh call failed (${failed}); sending it again in 5 s, retry 1 of 4`
+    );
+    expect(JSON.parse(readFileSync(`${fresh}.summary.json`, "utf8"))).toMatchObject({
+      casesWritten: 1,
+      leftOut: [],
+      githubRetries: { [reason]: 1 },
+    });
+  },
+  120_000
+);
 
 /** The tasks file a build-tasks run with --profiles-out wrote on the suite's store (t1 from the
  *  session /sessions/task-4.jsonl and t2 from another session, each F1 as the good session has
