@@ -743,8 +743,14 @@ pattern is needed through transport.ts (ci_job_reads.py's envoy_client_dep).
 ## envoy_e2e_local: The job reads no Markdown file: the listener, the renderer
 
 The job reads no Markdown file: the listener, the renderer and the contracts
-between them are its whole input, so a guide written under one of the directory
-patterns of the envoy_e2e_local filter (`'packages/envoy-client/src/**'`, `'packages/cipher-client/**'` and the rest) would start it for nothing.
+between them are its whole input, so a guide written under one of the tree
+patterns of the envoy_e2e_local filter (`'packages/envoy-client/src/**'`,
+`'packages/cipher-client/**'`, `'packages/contracts/src/**'` and the GitHub
+fixtures) would start it for nothing, and a `!` pattern per tree keeps Markdown
+there off it. A Go package directory the listener builds is held whole
+(`<dir>/*`): check-ci-filters.sh counts every file beside a package's Go files as
+read, so a package's README, such as `packages/envoy/consumernames/README.md`,
+stays on the filter, and no `!**/*.md` may exclude it.
 
 ## worker_image: Every file packages/daemon/docker/worker.Dockerfile builds
 
