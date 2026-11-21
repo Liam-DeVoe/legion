@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 )
 
 // The claim of a role's worker is the claim its row names while that row runs a step of the
@@ -125,6 +126,9 @@ func TestAPayloadRefusesAClaimThatIsNoClaimToken(t *testing.T) {
 		SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 1, Claim: "tester"},
 		IssueBundle{Tree: "LEGION-208", Generation: 1, TreeGeneration: 1, Role: claim.RoleTester, Claim: "tester"},
 		UpdateAsk{Role: claim.RoleTester, Round: "r1", Text: "Push.", Claim: "tester"},
+		HookPrompt{Hook: "back", Role: claim.RoleTester, Claim: "tester", From: phase.Testing, To: phase.Implementing, Count: 1, Prompt: "Read it."},
+		MergeForwardMessage{Role: claim.RoleImplementer, Claim: "tester", Step: MergeForwardAsk, Head: "c0de", Base: "main",
+			Phase: phase.Testing, PullRequest: 42, Why: ConflictMergeNext},
 	} {
 		if _, err := NewOutboxRow("LEGION-208", payload, time.Now()); err == nil {
 			t.Errorf("%T naming the claim %q was written, want it refused", payload, "tester")

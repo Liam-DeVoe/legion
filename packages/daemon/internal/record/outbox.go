@@ -2469,6 +2469,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if !claim.IsRole(value.Role) || value.Role == claim.RoleArchitect {
 			return fmt.Errorf("a hook prompt goes to a phase worker of the issue, never to an architect, whose own wake the daemon writes as a notice; %q is neither", value.Role)
 		}
+		if err := namedClaim(value.Claim); err != nil {
+			return err
+		}
 		// A move back is one by the order of the issue's task (workflow's Walk.MovesBack), which need
 		// not be today's, so the pair is any pair the daemon counts (phase.MovePairs): two different
 		// workflow phases, or step-step.
@@ -2515,6 +2518,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		}
 		if !MergeForwardReaches(value.Step, value.Role) {
 			return fmt.Errorf("a merge-forward ask goes to the implementer, a hold or a landed to the tester, the reviewer or the merger, and a review to the reviewer; a %s to %q is none of these", value.Step, value.Role)
+		}
+		if err := namedClaim(value.Claim); err != nil {
+			return err
 		}
 		if value.Head == "" || value.Base == "" || value.Phase == "" || value.PullRequest < 1 {
 			return fmt.Errorf("a merge-forward message names the head, the base branch, the phase the issue stays in and the pull request; it names %q, %q, %q and #%d", value.Head, value.Base, value.Phase, value.PullRequest)
