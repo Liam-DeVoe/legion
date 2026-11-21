@@ -22,9 +22,10 @@ const workSamples = 3
 // plain runs of the table at a load average of 138 to 310 (the race build claims no bound), the
 // worst growth was 28.7 (the row "many addresses of a pull request"); and with each walk that a
 // row is for made a walk for each pair in turn, the least growth of a broken row was 39.0 (the
-// ste-lint walk). With the four rows of the split and of the judge of the ways out, 10 more plain
-// runs at a load average of 155 to 318 gave a worst growth of 25.2 (the row "many short lines"),
-// and each of those four rows, its walk broken, grew 118.2 times or more in 5 of 5 runs.
+// ste-lint walk). With the five rows of the split and of the judge of the ways out, 10 more plain
+// runs at a load average of 414 to 978 gave a worst growth of 22.2 (the row "many claims that
+// refer to one long footnote of two verbs for one action"), and each of those five rows, a walk
+// that it guards broken, grew 60.5 times or more in 5 of 5 runs (the walks below).
 const (
 	workScale = 16
 	workBound = 32
@@ -106,13 +107,13 @@ func workRows(race bool) []workRow {
 // spans of code); its split of a sentence into one sentence for each instruction, read again from
 // each instruction to the end of the sentence (one sentence of many instructions, also after a
 // condition inside its first instruction, the two sentences of many instructions that it splits),
-// 93.3 times or more; its reading of the conditions of a sentence whose split could change what it
-// means, read again from each word (the same two rows), 63.6 times or more; its reading of the
+// 84.1 times or more; its reading of the conditions of a sentence whose split could change what it
+// means, read again from each word (the same two rows), 60.5 times or more; its reading of the
 // condition that opens a sentence as a sentence of its own, read again from each comma (one
-// sentence of many instructions after the condition that opens it, which it does not split), 92.2
+// sentence of many instructions after the condition that opens it, which it does not split), 85.1
 // times or more; and the judge of the ways out (wayJudge), made to read the ways out of every
 // finding of one sentence where it reads those of maxJudgedInSentence (8) findings at most (many
-// stops with no space in one sentence, many addresses of a person in one sentence), 207.4 times or
+// stops with no space in one sentence, many addresses of a person in one sentence), 206.8 times or
 // more. Each of those last four walks was broken in the code that this table reads. The bound of 8
 // keeps the work of a sentence's ways out at most 8 readings of the sentence for each way out a
 // finding can give, so the work of a judgment stays linear in its text, and each finding past it
