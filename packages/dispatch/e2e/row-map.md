@@ -198,6 +198,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/approval.e2e.ts` | approval currency and staleness are the server's computation over versions, with writes and reloads |
 | `e2e/architecture-sources.e2e.ts` | fake GitHub import, saves and a reload |
 | `e2e/architecture.e2e.ts` | a status write must move the server-computed bar; the server's import refusal is the assertion |
+| `e2e/artifact-dry-run.e2e.ts` | runs the real `dispatch artifact` with `--dry-run` and without against the server over every text an upload refuses for the text alone, and compares the two answers with what the server stored |
 | `e2e/artifacts.e2e.ts` | uploads, version compare, document sockets and a 503 refetch |
 | `e2e/ask-blocks.e2e.ts` | decision answers the server records, and pastes in the live document editor |
 | `e2e/ask-concurrent-edit.e2e.ts` | two editors crossing in one `/ws/doc` room |

@@ -1550,6 +1550,7 @@ dispatch_browser:
   - 'packages/cipher-client/**'
   # why: .github/ci-notes/ci.md#dispatch_browser-the-one-markdown-fixture-table-the-browser-row-each
   - 'packages/envoy/internal/dispatch/pmdoc/testdata/fixtures.json'
+  - 'packages/envoy/internal/dispatch/api/testdata/text-refusals.json'
   # why: .github/ci-notes/ci.md#dispatch_browser-what-stood-here-was-the-file-stores-own-image-declaration
   - 'packages/envoy/agentloop/*'
   - 'packages/envoy/cmd/cipherd/*'

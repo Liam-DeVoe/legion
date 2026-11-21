@@ -287,11 +287,11 @@ type roundTripReplaced struct {
 
 // textRefusalsFile is the list of the texts an upload refuses for the text alone, one JSON object
 // a row in a JSON array. roundTripRefusals reads it for the route tests here, and the end-to-end
-// specs of packages/dispatch/e2e read it by a relative path against a running Dispatch, so both
-// take their rows from one list. JSON takes no comments, so this is its description. A row is a
-// roundTripRefusal, its members named as that type's fields: name; text, a list of parts joined in
-// order; sent, ["inline", "file"] or ["file"]; status; code; words, "" where the row names none;
-// scope, "upload" or "new-document" (contracts.TextRefusalUpload and
+// spec packages/dispatch/e2e/artifact-dry-run.e2e.ts reads it by a relative path against a
+// running Dispatch, so both take their rows from one list. JSON takes no comments, so this is its
+// description. A row is a roundTripRefusal, its members named as that type's fields: name; text, a
+// list of parts joined in order; sent, ["inline", "file"] or ["file"]; status; code; words, ""
+// where the row names none; scope, "upload" or "new-document" (contracts.TextRefusalUpload and
 // contracts.TextRefusalNewDocument); and replaced, absent where it is the zero value, with
 // {status, code, words} or {rendering}, each id the parse mints written "minted". Every member but
 // replaced is written on every row. A part is one of these, so the large texts are generated
