@@ -61,7 +61,7 @@ func newRestrictedTokenRigWith(t *testing.T, access projectaccess.Access, option
 	options.signInOutside = true
 	options.brokerTokens = func(database *store.Store) *brokertoken.Verifier {
 		verifier, err := brokertoken.New(brokertoken.Options{
-			BrokerURL: broker.URL, Account: brokertoken.NewAccountToken(dispatchAccount), Origin: testServerURL,
+			BrokerURL: broker.URL, Account: brokertoken.NewAccountToken(dispatchAccount), Origins: []string{testServerURL},
 			Replay: store.NewDPoPProofs(database.Pool), Address: auth.ForwardedAddress,
 		})
 		if err != nil {
