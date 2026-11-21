@@ -254,10 +254,17 @@ const TABS = {
   backlog: /^Priority work in backlog or icebox \d+$/,
 } as const;
 
-/** Chooses one of the page's tabs, and waits for the address to name it. */
+/** Chooses one of the page's tabs, and waits for it to be selected and for the address to name
+ *  it. A click on the tab already chosen writes nothing, so the Priorities tab, which the page
+ *  opens on while the address names no tab, may also stand with no `tab=` in the address. */
 async function chooseTab(page: Page, tab: keyof typeof TABS): Promise<void> {
-  await page.getByRole("tab", { name: TABS[tab] }).click();
-  await expect(page).toHaveURL(new RegExp(`[?&]tab=${tab}(&|$)`));
+  const control = page.getByRole("tab", { name: TABS[tab] });
+  await control.click();
+  await expect(control).toHaveAttribute("aria-selected", "true");
+  await expect(page).toHaveURL(
+    (url) =>
+      url.searchParams.get("tab") === tab || (tab === "order" && !url.searchParams.has("tab"))
+  );
 }
 
 /** How far below the window's bottom edge the pager under a tab's table ends: at or above it,
@@ -1036,9 +1043,10 @@ test("a priority row opens its description, its title its page, and what is writ
     await expect(editor).toHaveClass(/\bProseMirror\b/);
     await expect(editor).toHaveAttribute("contenteditable", "true");
     // The row's column wraps the paragraph over several lines, and End and Shift+Home select one
-    // of them: a run of the paragraph's words, which is what a selection here is. The click does
-    // not wait for ProseMirror to place its caret, so the gesture is retried until the caret is
-    // placed and the run selected.
+    // of them: a run of the paragraph's words, which is what a selection here is. ProseMirror's
+    // focus handler (prosemirror-view `handlers.focus`) writes the editor's own selection back to
+    // the page 20 ms after the click focuses it, and undoes a run the keys selected before then
+    // (`editor.ts`'s `setEditorRange`), so the gesture is retried until the run is selected.
     await expect(async () => {
       await editor.getByText(finished).click();
       await page.keyboard.press("End");
@@ -1046,7 +1054,7 @@ test("a priority row opens its description, its title its page, and what is writ
       expect(
         await page.evaluate(() => String(window.getSelection()).trim().length)
       ).toBeGreaterThan(0);
-    }).toPass();
+    }).toPass({ timeout: 5_000 });
     const paragraph =
       "It is finished when no machine is left on the old build and nothing is waiting on one.";
     expect(paragraph).toContain((await page.evaluate(() => String(window.getSelection()))).trim());
@@ -1347,9 +1355,10 @@ test("a priority's own page writes its title and description and lists only its 
 
     // A selection in it offers no comment, suggestion or ask, since a priority takes none: the
     // documents' selection bar, which their editor draws as it is built, is not drawn at all.
-    // The selection is the keyboard's, made once the click has put the caret in the editor:
-    // ProseMirror writes its own selection back over the page's just after it takes the focus,
-    // so the gesture is retried until the run is selected.
+    // The selection is the keyboard's. ProseMirror's focus handler (prosemirror-view
+    // `handlers.focus`) writes the editor's own selection back to the page 20 ms after the click
+    // focuses it, and undoes a run the keys selected before then (`editor.ts`'s
+    // `setEditorRange`), so the gesture is retried until the run is selected.
     await expect(async () => {
       await editor.getByText("Nothing waits on the old build").click();
       await page.keyboard.press("End");
@@ -1357,15 +1366,26 @@ test("a priority's own page writes its title and description and lists only its 
       expect(await page.evaluate(() => String(window.getSelection()))).toBe(
         "Nothing waits on the old build"
       );
-    }).toPass();
+    }).toPass({ timeout: 5_000 });
     await expect(actionBar(page)).toHaveCount(0);
     await expect(page.getByRole("button", { name: /^(Comment|Suggest|Ask)$/ })).toHaveCount(0);
 
     // A line typed after the list, with one word made bold through the editor's own Mod-b, and
     // left: leaving it writes it at once.
     const line = "The roll-back is written down";
-    await editor.getByRole("listitem").last().click();
-    await page.keyboard.press("End");
+    // The run the previous step selected is still selected when this click lands, so an Enter
+    // pressed before the caret collapses replaces it.
+    const item = editor.getByRole("listitem").last();
+    await expect(async () => {
+      await item.click();
+      await page.keyboard.press("End");
+      expect(
+        await item.evaluate((node) => {
+          const selection = window.getSelection();
+          return selection?.isCollapsed === true && node.contains(selection.anchorNode);
+        })
+      ).toBe(true);
+    }).toPass({ timeout: 5_000 });
     await page.keyboard.press("Enter");
     await page.keyboard.type("The ");
     await page.keyboard.press("ControlOrMeta+b");

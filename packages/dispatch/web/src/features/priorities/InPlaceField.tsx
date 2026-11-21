@@ -9,6 +9,7 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
+import { inputMethodKey } from "../../lib/input-method-key";
 import {
   bgTransparent,
   borderStrongHover,
@@ -24,13 +25,13 @@ import {
   textSecondaryHoverToPrimary,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import { inputMethodKey } from "../issue-page/useNodeEditing";
 import { arrival, NOTHING_KEPT } from "./field-arrival";
 
 /** How long the reader may stop typing before what they wrote is saved. Nothing else in
  *  Dispatch asks a person to press Save, so a priority's fields are saved as they are written:
- *  once the typing rests, at once when the field is left, and as the page goes. The
- *  description's editor keeps the same rule (`PriorityDescription`). */
+ *  once the typing rests, at once when the field is left, and as the page goes, so far as the
+ *  page lets a write finish then (`api/client.ts`'s `pageGoing`). The description's editor keeps
+ *  the same rule (`PriorityDescription`). */
 export const SAVE_AFTER_MS = 500;
 
 /**
@@ -139,12 +140,13 @@ export const FIELD_CHIP = `inline-flex min-h-11 max-w-full items-center gap-1 ro
 /**
  * A one-line field edited where it is read: no edit mode, no Save button. What the reader types
  * is kept here until it rests, then written once; leaving the field writes it immediately, and
- * Enter does both, as do the page going (`pagehide`) and the field leaving the page. Only a text
- * that differs from the one the edit started from is written, so leaving a field the reader typed
- * nothing into writes nothing. The texts compared are trimmed, since every field drawn here is
- * stored trimmed (`internal/dispatch/api/priorities.go`), and what is written is trimmed. A
- * `required` field never writes an empty text: left empty, it shows the text it started from
- * again.
+ * Enter does both, as does the field leaving the page. The page going (`pagehide`) makes the
+ * write at once too, and `api/client.ts`'s `pageGoing` says what of it is let finish then. Only
+ * a text that differs from the one the edit started from is written, so leaving a field the
+ * reader typed nothing into writes nothing. The texts compared are trimmed, since every field
+ * drawn here is stored trimmed (`internal/dispatch/api/priorities.go`), and what is written is
+ * trimmed. A `required` field never writes an empty text: left empty, it shows the text it
+ * started from again.
  *
  * A change of `value` is the server's text moving under the field, which it reads as the
  * description's editor does (`arrival`). The round trip of one of its own writes changes nothing
@@ -258,9 +260,10 @@ export function InPlaceField({
   }, [value]);
 
   // Leaving the page, or the field leaving it, leaves the field: what the reader typed is
-  // written now rather than lost with the timer. A write made as the page goes is let finish as
-  // it goes (`keepalive`, `api/client.ts`'s `pageGoing`), so a tab that closes writes it, and the
-  // tab keeps it too, for a reload to make (`features/writes/write-storage.ts`).
+  // written now rather than lost with the timer. A small write that starts as the page goes is
+  // let finish as it goes (`keepalive`, `api/client.ts`'s `pageGoing`); one that waits behind a
+  // write of the same priority still out does not start before the page is gone. The tab keeps
+  // it too, for a reload to make (`features/writes/write-storage.ts`).
   useEffect(() => {
     const leave = () => saveNow.current();
     window.addEventListener("pagehide", leave);

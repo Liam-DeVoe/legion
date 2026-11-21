@@ -79,11 +79,13 @@ const maxKeepaliveBodyBytes = 30 * 1024;
 const utf8 = new TextEncoder();
 
 /** Whether the page is going: from its `pagehide` until the browser shows it again (`pageshow`,
- *  a page it kept and brings back). A write sent then is let finish as the page goes
- *  (`keepalive`), under its key or not: the write a field makes as the tab closes
- *  (`InPlaceField`, `PriorityDescription`) has no reload after it to make it again. This module
- *  listens as it loads, before any field adds its own `pagehide` listener, so a field's write
- *  finds the page going. */
+ *  a page it kept and brings back). A small write that starts then, its body under
+ *  `maxKeepaliveBodyBytes`, is let finish as the page goes (`keepalive`), under its key or not:
+ *  the write a field makes as the tab closes (`InPlaceField`, `PriorityDescription`) has no
+ *  reload after it to make it again. A larger one is not, and one that waits then behind a write
+ *  of the same target still out (`write-store.ts`'s `#advance`) does not start before the page is
+ *  gone. This module listens as it loads, before any field adds its own `pagehide` listener, so
+ *  a field's write finds the page going. */
 let pageGoing = false;
 if (typeof window !== "undefined") {
   window.addEventListener("pagehide", () => {
@@ -940,17 +942,19 @@ export class DispatchApiClient {
    * The one path every write to Dispatch takes. A `POST` or a `PATCH` goes under `bounds.key`, the
    * `Idempotency-Key` that names the person's action, so a repeat of it - a retry after a dropped
    * answer, a reload resuming it - is answered with what the first did rather than done twice; a
-   * `PUT` or a `DELETE` is the same however often it is made, so it carries none. One with a
-   * small body is let finish as the page goes (`keepalive`): a `PUT` or a `DELETE` always, and a
-   * `POST` or a `PATCH`, key and all, when it is sent as the page goes (`pageGoing`), as a field's
-   * write is as the tab closes; sent at any other time, a reload makes it again under its key. The
-   * key is the caller's, minted when the person acts (`Writes.run`), never here; so is
-   * `bounds.login` (`Dispatch-Login`), the person who pressed it. A JSON body goes as JSON and a
-   * multipart form as itself, through the upload transport; `bounds.sent` is told the request as
-   * it goes out. Answers what Dispatch answered (nothing for an empty body), as the request's
-   * builder names it (`WriteRequest`), or rejects with its refusal; a 2xx whose body is not JSON
-   * rejects with `UnreadableAnswerError`, a 2xx whose body stops part way with `NetworkError`, and
-   * a replay of an answer Dispatch did not keep with `AnswerNotKeptError`.
+   * `PUT` or a `DELETE` is the same however often it is made, so it carries none. A write that
+   * carries no body, or a JSON body under `maxKeepaliveBodyBytes`, is let finish as the page goes
+   * (`keepalive`): a `PUT` or a `DELETE` whenever it is sent, and a `POST` or a `PATCH`, key and
+   * all, only when it starts as the page goes (`pageGoing`). A larger one is not, and one that
+   * waits behind a write of the same target still out (`write-store.ts`'s `#advance`) does not
+   * start before the page is gone. A keyed write the page did not let finish is made again under
+   * its key by a reload. The key is the caller's, minted when the person acts (`Writes.run`),
+   * never here; so is `bounds.login` (`Dispatch-Login`), the person who pressed it. A JSON body
+   * goes as JSON and a multipart form as itself, through the upload transport; `bounds.sent` is
+   * told the request as it goes out. Answers what Dispatch answered (nothing for an empty body),
+   * as the request's builder names it (`WriteRequest`), or rejects with its refusal; a 2xx whose
+   * body is not JSON rejects with `UnreadableAnswerError`, a 2xx whose body stops part way with
+   * `NetworkError`, and a replay of an answer Dispatch did not keep with `AnswerNotKeptError`.
    */
   send<T>(
     request: WriteRequest<T>,

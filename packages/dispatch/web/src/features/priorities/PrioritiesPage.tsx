@@ -229,9 +229,12 @@ export function PrioritiesPage(): ReactNode {
             idPrefix={TABS_ID}
             // A tab chosen is a place the reader went, as a tab of the project page or of the
             // issue page is: it adds an entry to the history, so Back leads to the tab before.
-            onSelect={(next) =>
-              update((changed) => changed.set(TAB_PARAM, next), { replace: false })
-            }
+            // The tab already chosen is no place to go: a click on it, or Home or End onto it,
+            // writes nothing, so Back does not stay on it once for each.
+            onSelect={(next) => {
+              if (next !== tab)
+                update((changed) => changed.set(TAB_PARAM, next), { replace: false });
+            }}
             tabs={[
               { id: "order", label: TAB_LABELS.order, count: rows.length },
               { id: "none", label: TAB_LABELS.none, count: body.work_under_no_priority.count },

@@ -17,10 +17,10 @@ import { recordedEditors, writeAtEnd } from "../../__tests__/recorded-editors";
 import { answerPriorityPatches, PRIORITY_TITLE_CHANGED } from "../../__tests__/send-answers";
 import { api, priorityPatchRequest } from "../../api/client";
 import { prioritiesQuery } from "../../api/queries";
-import type { IssueSummary, Priorities, Priority, PriorityRow } from "../../api/types";
+import type { DisplayTree, IssueSummary, Priorities, Priority, PriorityRow } from "../../api/types";
 import { textMutedOnCanvas } from "../../theme/classes";
 import { DocumentRuntime } from "../doc/runtime";
-import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { loadedEngine, warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { writesOf } from "../writes/write-store";
 import { PrioritiesPage } from "./PrioritiesPage";
@@ -407,6 +407,23 @@ test("an address naming a tab the page does not have opens on the priorities, an
   ).toBeDefined();
   expect(screen.getByTestId("address").textContent).toBe("PUSH /priorities?p.q=linkage&tab=none");
   expect(window.history.length).toBe(entries + 1);
+});
+
+// The tab already chosen is no place to go: a click on it writes nothing, so the history gains
+// no entry, and Back leads where it did rather than staying on that tab once for each click.
+test("a click on the tab already chosen writes nothing to the address or the history", async () => {
+  const user = userEvent.setup();
+  const entries = window.history.length;
+  page(FIFTEEN, [], true, { at: "/priorities?tab=none", history: "window" });
+  expect(
+    await screen.findByRole("table", { name: "Active under no priority table" })
+  ).toBeDefined();
+  const chosen = screen.getByRole("tab", { name: "Active under no priority 0" });
+  expect(chosen).toHaveAttribute("aria-selected", "true");
+
+  await user.click(chosen);
+  expect(screen.getByTestId("address").textContent).toBe("POP /priorities?tab=none");
+  expect(window.history.length).toBe(entries);
 });
 
 test("each fault table asks the issue listing for its statuses, and the backlog-or-icebox one for the move", async () => {
@@ -827,6 +844,51 @@ test("a closed row runs a description's paragraphs together, a reference read by
     "Start with CORE-1. Every reader of this deployment reaches the same corpus."
   );
   expect(excerpt.className.split(" ")).toContain("line-clamp-2");
+});
+
+/** Emphasis nested one deeper than Go's display read takes (pmdoc's `maxInlineNesting`, 100),
+ *  607 characters. */
+const NESTED = `${"*a ".repeat(101)}b${" c*".repeat(101)}`;
+
+/** The server's reading of `NESTED`, as Go's display read writes it for marks nested past its
+ *  bound (`literalDocument`): one paragraph of the text's own characters, no mark among them,
+ *  where the page's parser reads the text as emphasis and drops every `*`. */
+const NESTED_TREE: DisplayTree = {
+  content: [{ content: [{ text: NESTED, type: "text" }], type: "paragraph" }],
+  type: "doc",
+};
+
+// A closed row's excerpt is drawn from the server's reading of its description
+// (`description_tree`), and nothing on the page parses the description: the excerpt reads the
+// tree's words, which the markdown parsed would not, cut at the row's 400 characters.
+test("a closed row's excerpt is drawn from the server's tree of its description, and nothing on the page parses it", async () => {
+  const engine = loadedEngine();
+  if (engine === undefined) throw new Error("the row needs the shared engine loaded");
+  const counted = engine as { parse: typeof engine.parse };
+  const parse = counted.parse;
+  const parsed: number[] = [];
+  counted.parse = (markdown, softBreaks) => {
+    parsed.push(markdown.length);
+    return parse.call(engine, markdown, softBreaks);
+  };
+  restores.push(() => {
+    counted.parse = parse;
+  });
+  page(
+    body({
+      priorities: [
+        priority("nested", {
+          description: NESTED,
+          description_tree: NESTED_TREE,
+          title: "Nested past the bound",
+        }),
+      ],
+    })
+  );
+  const row = await screen.findByRole("row", { name: "#1 Nested past the bound" });
+  const excerpt = await within(row).findByText(`${NESTED.slice(0, 400)}…`);
+  expect(excerpt.className.split(" ")).toContain("line-clamp-2");
+  expect(parsed).toEqual([]);
 });
 
 test("opening a row shows its description and no work: the work is on the priority's own page", async () => {
