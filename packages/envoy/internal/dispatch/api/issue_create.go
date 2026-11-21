@@ -154,11 +154,12 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// The one write whose project its address does not name, so withinProjectScope leaves it
 	// here by its class (scopeProjectInBody). It runs the moment that project is settled —
 	// read from the body above, or from the repository the external ref names — and so before
-	// the ref is resolved to an issue already imported: a caller whose credential lists other
-	// projects naming one imported into another project is refused rather than answered that
-	// project's issue, which respondWithExistingExternalIssue would also record a related-check
-	// outcome on. Nothing is written before this point. A credential that lists none is refused
-	// nothing here; a project it does not see is the project read's missing row below.
+	// the ref is resolved to an issue already imported: a caller whose credential's list does not
+	// cover that project (access.CredentialCovers), or a broker token scoped to another project,
+	// naming one imported into it is refused rather than answered that project's issue, which
+	// respondWithExistingExternalIssue would also record a related-check outcome on. Nothing is
+	// written before this point. A credential that lists none is refused nothing here; a project
+	// it does not see is the project read's missing row below.
 	if s.refuseOutsideCallerProjects(w, r, input.Project) {
 		return
 	}
@@ -378,6 +379,13 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// read before the locks did not find takes no lock; one it found is read again under the lock.
 	if !visible {
 		s.writeHandlerError(w, pgx.ErrNoRows)
+		return
+	}
+	// A repository the GitHub proxy hides from the creator is not theirs to name
+	// (refuseRepoHidden): read once the project and the parent are read as the creator reads them,
+	// before the project's owner lock and before anything is written.
+	if err := refuseRepoHidden(r.Context(), tx, who, repo); err != nil {
+		s.writeHandlerError(w, err)
 		return
 	}
 	var number int

@@ -214,7 +214,7 @@ seed_scenario() {
   give_repository main PRIV-1 acme/priv-repo
   send main carol PUT /api/v1/projects/PRIV/access/groups/priv-group
   expect_status 200 "main: carol names the group priv-group on PRIV's list"
-  # ses-priv-worker's history in PRIV, which shows it to bob and carol's PRIV token (confined). Only
+  # ses-priv-worker's history in PRIV, which shows it to bob and bob's PRIV token (confined). Only
   # a session its own credential proves records history (events.queueSessionProjects: a
   # broker-issued token's session; the shared token only names one), and this stack has no broker.
   # So the row is a stand-in for a broker-proven session's write, as --private-by-sql's store write
@@ -306,9 +306,11 @@ seed_scenario() {
   done
   mint_token main carol carol-priv-token '["PRIV"]'
   mint_token main alice alice-priv-token '["PRIV"]'
+  mint_token main bob bob-priv-token '["PRIV"]'
   # The twin's alice holds a token whose list names PRIV, which the twin never wrote: no route mints
   # a list naming a project nobody sees, so the list is written beside the mint, on the token the
-  # mint made. It sees what alice's PRIV token sees once PRIV is private: nothing.
+  # mint made. It sees what alice's PRIV token sees once PRIV is private: PUB alone, since a full
+  # member's list decides only which private projects it sees.
   mint_token twin alice alice-priv-token
   psql "$twin_database_url" -X -q -v ON_ERROR_STOP=1 \
     -c "update agent_tokens set projects = '{PRIV}' where id = '$(recalled twin "alice-priv-token id")'" >/dev/null ||
@@ -324,7 +326,7 @@ seed_scenario() {
 # The callers PRIV's list lets in, which project-access.sh's listed section reads as, and those it
 # does not, whom the walk reads as.
 # shellcheck disable=SC2034 # read by project-access.sh's listed section
-readonly listed_callers=(bob carol carol-priv-token)
+readonly listed_callers=(bob bob-priv-token carol carol-priv-token)
 readonly unseeing_callers=(alice alice-priv-token carol-token shared)
 # The object routes the listed callers read, each naming one object of {P}'s seed.
 # shellcheck disable=SC2034 # read by project-access.sh's listed and confined sections
@@ -424,8 +426,9 @@ logs_hold_own_writes() {
 # keeps, each with what its Probe (RouteProbe, read once from probes.json) says of it, one line a
 # row and its fields joined by the unit separator (\x1f), a byte no compact JSON holds: the method;
 # the path; 1 when a Probe names the row; its test_hook; its no_project; its body as compact JSON;
-# 1 when its Probe map is not null; and that map, each wildcard and its kind joined by \x1d and the
-# pairs by \x1e (read_probe). A field the Probe does not hold is empty.
+# 1 when its Probe map is not null; that map, each wildcard and its kind joined by \x1d and the
+# pairs by \x1e (read_probe); and its read classes, joined by commas. A field the Probe does not
+# hold is empty.
 route_rows() {
   jq -r --slurpfile probes "$work/probes.json" "$1"' | . as $row
     | (first($probes[0][] | select(.method == $row.method and .pattern == $row.path)) // null) as $entry
@@ -435,11 +438,13 @@ route_rows() {
        ($entry.no_project // ""),
        ((($entry.body // empty) | tojson) // ""),
        (if $entry.probe == null then "" else "1" end),
-       ([$entry.probe // {} | to_entries[] | "\(.key)\u001d\(.value // "")"] | join("\u001e"))]
+       ([$entry.probe // {} | to_entries[] | "\(.key)\u001d\(.value // "")"] | join("\u001e")),
+       ($entry.classes // [] | join(","))]
     | join("\u001f")' "$work/routes"
 }
 
-# read_probe PAIRS sets probe_kind to the kind of each wildcard PAIRS names (route_rows' last field).
+# read_probe PAIRS sets probe_kind to the kind of each wildcard PAIRS names (route_rows' eighth
+# field).
 declare -A probe_kind=()
 read_probe() {
   local pair
@@ -458,28 +463,34 @@ read_probe() {
 # A person, a personal token and a priority are no-project nodes, which spec v34 (Design, "A node
 # of no project") shows to an open viewer as it does today, and both servers hold the same ones: a
 # row whose every wildcard is one of them is filled alike on both servers and answered as the twin
-# answers it. The rows whose object no project owns (RouteProbe's no_project) are walked first:
-# each must be refused, which changes nothing, and a write walked before them would change the
-# callers they are refused to, as DELETE /api/v1/me/agent-tokens/{id} does, which carol's token
-# walks on carol's PRIV token.
+# answers it. A GET row whose only read class is none (RouteProbe's classes) reads no row a
+# caller's access decides, so it answers every caller alike, and its answer for PRIV's object can
+# rightly differ from its answer for a missing one, as GET
+# /api/v1/github/app-installation/{owner}/{repo} answers installed:true for PRIV's repository, the
+# App's, whoever asks: it is filled with PRIV's objects on both servers and answered as the twin,
+# which never held PRIV, answers it. The rows whose object no project owns (RouteProbe's
+# no_project) are walked first: each must be refused, which changes nothing, and a write walked
+# before them would change the callers they are refused to, as DELETE /api/v1/me/agent-tokens/{id}
+# does, which carol's token walks on carol's PRIV token.
 walk_rows() {
-  local method pattern has_entry test_hook no_project body has_probe pairs wildcards hidden none skip wildcard kind object caller target
+  local method pattern has_entry test_hook no_project body has_probe pairs classes wildcards hidden none skip wildcard kind object caller target
   walked=0 lists=0 refused=0
-  while IFS=$'\x1f' read -r method pattern has_entry test_hook no_project body has_probe pairs; do
+  while IFS=$'\x1f' read -r method pattern has_entry test_hook no_project body has_probe pairs classes; do
     if [ "$test_hook" = true ]; then
       note "left out: $method $pattern is a test hook, which only DISPATCH_TEST_HOOKS mounts"
       continue
     fi
     if [ -n "$no_project" ]; then
       # The object belongs to no project, so there is no object of PRIV to hide: the row is held
-      # to its class's refusal (scopeDeployment) of every caller that is not open.
+      # to its class's refusal (scopeDeployment) of every caller that is not open and of every
+      # credential whose writes a list holds, a full member's token that lists PRIV included.
       target=$(sed -E 's/\{[^}]+\}/project-access-walk/g' <<<"$pattern")
-      for caller in bob alice-priv-token carol-priv-token; do
+      for caller in bob bob-priv-token alice-priv-token carol-priv-token; do
         send main "$caller" "$method" "$target" "$body"
         refused=$((refused + 1))
         problem=''
         [ "$status" = 403 ] ||
-          problem="$caller $method $pattern ($no_project): HTTP $status, want 403 for a caller that is not open: $(head -c 300 "$work/body")"
+          problem="$caller $method $pattern ($no_project): HTTP $status, want 403 for a caller that is not open or whose writes a list holds: $(head -c 300 "$work/body")"
         judge "$status" "$problem"
       done
       continue
@@ -539,8 +550,9 @@ walk_rows() {
       fi
     done
     [ -z "$skip" ] || continue
-    if [ "$hidden" = "$none" ]; then
-      # Every wildcard is a no-project node: the path is the same on both servers.
+    if [ "$hidden" = "$none" ] || [ "$classes" = none ]; then
+      # Every wildcard is a no-project node, so the path is the same on both servers; or the row
+      # reads no row a caller's access decides, and both servers are read with PRIV's objects.
       for caller in "${unseeing_callers[@]}"; do
         compare_twin "$caller" "$hidden" "$method" "$body"
       done
@@ -563,7 +575,7 @@ walk_rows() {
 walk_pub_rows() {
   local pattern test_hook pairs wildcards wildcard kind object path of_project caller
   pub_walked=0
-  while IFS=$'\x1f' read -r _ pattern _ test_hook _ _ _ pairs; do
+  while IFS=$'\x1f' read -r _ pattern _ test_hook _ _ _ pairs _; do
     [ "$test_hook" != true ] || continue
     wildcards=$(grep -oE '\{[^}]+\}' <<<"$pattern" | tr -d '{}' || true)
     [ -n "$wildcards" ] || continue
@@ -647,9 +659,9 @@ query_fill() {
 }
 
 # walk_queries walks every query parameter of every GET row of the route index (query_kind). Of a
-# row whose path names an object, the path is filled with PUB's, which every unseeing caller but
-# alice's PRIV token sees; that token sees no project, so it is answered alike for the two fills
-# whatever the parameter names. carol, who sees PRIV, must be answered 2xx for PRIV's fill and
+# row whose path names an object, the path is filled with PUB's, which every unseeing caller sees,
+# alice's PRIV token included, since a full member's list decides only which private projects it
+# sees. carol, who sees PRIV, must be answered 2xx for PRIV's fill and
 # otherwise than for the missing one, each masked with its own fill: a refusal says the fill is no
 # value the parameter takes, and an answer alike says the fill selects nothing of PRIV, and either
 # way a hidden and a missing answer would be alike whatever the server hides, so the parameter did
@@ -663,7 +675,7 @@ walk_queries() {
     query_params[$pattern]+=$param$'\n'
   done < <(jq -r '.paths | to_entries[] | .key as $p | .value.get.parameters[]? | select(.in == "query") | [$p, .name] | join("\u001f")' \
     "$root/packages/contracts/schemas/dispatch-openapi.json")
-  while IFS=$'\x1f' read -r _ pattern _ test_hook _ _ _ pairs; do
+  while IFS=$'\x1f' read -r _ pattern _ test_hook _ _ _ pairs _; do
     [ "$test_hook" != true ] || continue
     read_probe "$pairs"
     path=$pattern
