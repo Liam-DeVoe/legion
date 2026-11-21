@@ -1,0 +1,728 @@
+package consumernames
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"maps"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
+	"github.com/stretchr/testify/require"
+
+	selection "github.com/sjawhar/envoy/consumernames"
+	"github.com/sjawhar/envoy/internal/holdrecord"
+	"github.com/sjawhar/envoy/natsgrant"
+)
+
+// enrollDispatchFilter is the filter of a daemon's Dispatch durable
+// (packages/daemon/internal/intake/consume.go, the Dispatch consumer's FilterSubjects).
+const enrollDispatchFilter = "notifications.dispatch.issue.>"
+
+// enrollDaemon is a Legion daemon in the fresh mode, as far as its consumer calls go: the
+// selection protocol over its store with the daemon's own configuration
+// (packages/daemon/internal/intake/durable_names.go, newDurableNames): the logical name as each
+// fresh name's prefix, the ack floor as its floor, a logical name with a checkpoint and no record
+// refused (missingRecord), a new project's first create at DeliverNew with the stream's end saved
+// (first), its create (create), and every call on a physical name on a connection of that name's
+// own, named as natsgrant.DaemonGenerationConnection names it, opened once the protocol reserved the
+// name (Config.Reserved), as the stack's auth service grants a daemon entry's generation. Its
+// stream identity, which it passes as Config.StreamID and tags each last floor with, is the store
+// sentinel's StoreState.StreamID, read through the store (durableNames.streamID as t-5 builds it),
+// never the stream's info. The daemon's module is its own, and its intake package is internal to
+// it, so the row cannot run the daemon's code itself.
+type enrollDaemon struct {
+	project string
+	connect func(name string) (*nats.Conn, error)
+	// js is the daemon's own connection, which reads the stream alone.
+	js    jetstream.JetStream
+	store *selection.PGStore
+	names *selection.Names
+
+	mu          sync.Mutex
+	generations map[string]jetstream.JetStream
+}
+
+// streamID is the stream identity the store's sentinel records.
+func (d *enrollDaemon) streamID(ctx context.Context) (string, error) {
+	state, err := d.store.State(ctx)
+	if err != nil {
+		return "", err
+	}
+	return state.StreamID, nil
+}
+
+// recordLastFloor writes the ack floor of kind's current, name, read on js, as its record's last
+// floor, tagged with the sentinel's stream identity (durableNames.recordLastFloor), once the floor
+// reads want.
+func (d *enrollDaemon) recordLastFloor(ctx context.Context, kind string, js jetstream.JetStream, name string, want uint64) error {
+	var floor uint64
+	for deadline := time.Now().Add(15 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+		consumer, err := js.Consumer(ctx, notifications, name)
+		if err != nil {
+			return err
+		}
+		if floor = consumer.CachedInfo().AckFloor.Stream; floor == want || time.Now().After(deadline) {
+			break
+		}
+	}
+	if floor != want {
+		return fmt.Errorf("%s's ack floor is %d, want %d", name, floor, want)
+	}
+	id, err := d.streamID(ctx)
+	if err != nil {
+		return err
+	}
+	return d.names.RecordLastFloor(ctx, daemonFixedPrefix+d.project+"-"+kind, name, floor, id)
+}
+
+// enrollNewDaemon is project's daemon over its store db, its connections made by connect, the
+// stack's daemon entry under the name it is given.
+func enrollNewDaemon(db *pgxpool.Pool, connect func(name string) (*nats.Conn, error), project string) (*enrollDaemon, error) {
+	own, err := connect("legion daemon " + project)
+	if err != nil {
+		return nil, err
+	}
+	js, err := jetstream.New(own)
+	if err != nil {
+		return nil, err
+	}
+	d := &enrollDaemon{project: project, connect: connect, js: js, store: selection.NewPGStore(db), generations: map[string]jetstream.JetStream{}}
+	d.names = selection.New(selection.Config{
+		Store:    d.store,
+		Server:   enrollDaemonServer{d: d},
+		Prefix:   func(logical string) string { return logical },
+		Floor:    func(info *jetstream.ConsumerInfo) uint64 { return info.AckFloor.Stream },
+		StreamID: d.streamID,
+		MissingRecord: func(ctx context.Context, logical string) error {
+			var seq int64
+			err := db.QueryRow(ctx, `select stream_seq from consumer_positions where consumer = $1`, logical).Scan(&seq)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			return fmt.Errorf("%s has a checkpoint at %d and no selection record", logical, seq)
+		},
+		Owner: "legion daemon " + project + " (test)",
+		Reserved: func(_ context.Context, _ string, op selection.Op) error {
+			_, err := d.on(op.Candidate)
+			return err
+		},
+	})
+	return d, nil
+}
+
+// on is JetStream on physical's own connection, opened once.
+func (d *enrollDaemon) on(physical string) (jetstream.JetStream, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if js, ok := d.generations[physical]; ok {
+		return js, nil
+	}
+	nc, err := d.connect(natsgrant.DaemonGenerationConnection(physical))
+	if err != nil {
+		return nil, err
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		return nil, err
+	}
+	d.generations[physical] = js
+	return js, nil
+}
+
+// enrollDaemonServer is the daemon's consumers, each on its own connection: info, and no delete,
+// which the daemon's grant does not hold.
+type enrollDaemonServer struct{ d *enrollDaemon }
+
+func (s enrollDaemonServer) Info(ctx context.Context, name string) (*jetstream.ConsumerInfo, error) {
+	js, err := s.d.on(name)
+	if err != nil {
+		return nil, err
+	}
+	consumer, err := js.Consumer(ctx, notifications, name)
+	if errors.Is(err, jetstream.ErrConsumerNotFound) {
+		return nil, fmt.Errorf("%w: %s", selection.ErrNotFound, name)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return consumer.CachedInfo(), nil
+}
+
+func (s enrollDaemonServer) Delete(context.Context, string) error {
+	return errors.New("the daemon's grant has no consumer delete")
+}
+
+// open is the daemon's open of its durable of kind filtering on filter (durableNames.open): the
+// current its record selects, or a fresh one the protocol creates, and JetStream on the current's
+// own connection, which the daemon consumes on.
+func (d *enrollDaemon) open(ctx context.Context, kind, filter string) (selection.Selection, jetstream.JetStream, error) {
+	logical := daemonFixedPrefix + d.project + "-" + kind
+	sel, _, err := d.names.Ensure(ctx, logical, selection.CreateRequest{
+		Create: func(ctx context.Context, name string, start selection.Start) (*jetstream.ConsumerInfo, error) {
+			js, err := d.on(name)
+			if err != nil {
+				return nil, err
+			}
+			config := jetstream.ConsumerConfig{
+				Durable:        name,
+				FilterSubjects: []string{filter},
+				AckPolicy:      jetstream.AckExplicitPolicy,
+				AckWait:        30 * time.Second,
+				Metadata:       map[string]string{selection.LogicalMetadataKey: logical},
+			}
+			switch start.Native {
+			case selection.NativeNew:
+				config.DeliverPolicy = jetstream.DeliverNewPolicy
+			case selection.NativeAll:
+				config.DeliverPolicy = jetstream.DeliverAllPolicy
+			default:
+				config.DeliverPolicy, config.OptStartSeq = jetstream.DeliverByStartSequencePolicy, start.Seq
+			}
+			consumer, err := js.CreateConsumer(ctx, notifications, config)
+			if err != nil {
+				return nil, err
+			}
+			return consumer.CachedInfo(), nil
+		},
+		First: func(ctx context.Context) (selection.Start, error) {
+			stream, err := d.js.Stream(ctx, notifications)
+			if err != nil {
+				return selection.Start{}, err
+			}
+			return selection.Start{Seq: stream.CachedInfo().State.LastSeq + 1, Native: selection.NativeNew}, nil
+		},
+	})
+	if err != nil {
+		return sel, nil, err
+	}
+	js, err := d.on(sel.Record.Current)
+	return sel, js, err
+}
+
+// enrollDaemonConnect connects as the stack's daemon entry under name, decided under the row's
+// phase now.
+func (h *stack) enrollDaemonConnect(name string) (*nats.Conn, error) {
+	nc, err := h.s.Connect(h.s.Cluster.URL(), h.s.DaemonCredential(), nats.Name(name))
+	if err == nil {
+		// A writer: h.run closes it before a held command, as the held re-read admits none.
+		h.mu.Lock()
+		h.conns = append(h.conns, nc)
+		h.mu.Unlock()
+	}
+	return nc, err
+}
+
+// enrollProjectConsumers are the consumers of the notification stream of project's logical names,
+// in any form.
+func enrollProjectConsumers(t *testing.T, nc *nats.Conn, project string) []string {
+	t.Helper()
+	listed, err := consumerNames(context.Background(), nc, notifications)
+	require.NoError(t, err)
+	logicals := enrollLogicalNames(project)
+	var out []string
+	for _, name := range listed {
+		for _, logical := range logicals {
+			if selection.LogicalOf(name) == logical {
+				out = append(out, name)
+			}
+		}
+	}
+	return out
+}
+
+// enrollWindow stands in for the window's cutover, which a store made after it missed: under a
+// cutover hold, the selection bucket made with its sentinel cutover done (create-bucket's and
+// convert's writes), and the session and Dispatch families' broker cutover records done, as convert
+// writes them, straight through the hold routes; the hold, whose journal holds hold set's entries
+// alone, is then released. Every later hold's held re-read finds the selection bucket present, as
+// it is after the window.
+func (h *stack) enrollWindow() {
+	h.t.Helper()
+	ctx := context.Background()
+	window := h.heldHold(holdrecord.WorkflowCutover)
+	nc, _ := h.operator()
+	_, err := selection.CreateSessionBucket(ctx, nc, 1, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 1})
+	require.NoError(h.t, err)
+	for _, family := range []string{familySession, familyDispatch} {
+		_, err := h.records().PutCutover(ctx, family, selection.CutoverDone, window)
+		require.NoError(h.t, err)
+	}
+	require.NoError(h.t, h.release(window))
+}
+
+// enrollCutover is the broker's cutover record of family, and whether there is one.
+func (h *stack) enrollCutover(family string) (holdrecord.CutoverRow, bool) {
+	h.t.Helper()
+	rows, err := h.records().Cutovers(context.Background())
+	require.NoError(h.t, err)
+	for _, row := range rows {
+		if row.Family == family {
+			return row, true
+		}
+	}
+	return holdrecord.CutoverRow{}, false
+}
+
+// enrollLast is the last journal entry of hold id.
+func (h *stack) enrollLast(id string) holdrecord.Operation {
+	h.t.Helper()
+	ops := h.journal(id).Ops
+	require.NotEmpty(h.t, ops)
+	return ops[len(ops)-1]
+}
+
+// enrollRun runs enroll of project under hold id, with the store flag the command requires (the
+// stack's env hands over the test's database whatever file it names).
+func (h *stack) enrollRun(id, project string) (int, string, string) {
+	h.t.Helper()
+	return h.run(actionEnroll, "--hold", id, "--daemon", project, "--daemon-database", project+"=/dev/null")
+}
+
+// enrollRequireStopped asserts that enroll of project under a hold of its own wrote a stop entry
+// naming want, wrote neither the store's marker nor the broker's cutover record, and left the hold
+// releasable: its release is admitted and moves the row to released.
+func (h *stack) enrollRequireStopped(project string, store *selection.PGStore, want ...string) {
+	h.t.Helper()
+	id := h.heldHold(holdrecord.WorkflowEnroll)
+	code, _, stderr := h.enrollRun(id, project)
+	require.Equal(h.t, 1, code, "enroll of %s refuses", project)
+	last := h.enrollLast(id)
+	require.Equal(h.t, enrollCommand, last.Command)
+	require.Equal(h.t, "stop", last.State, "enroll of %s ends in its stop entry", project)
+	for _, w := range want {
+		require.Contains(h.t, stderr, w)
+		require.Contains(h.t, last.Outputs["reason"], w, "the stop entry names what enroll found")
+	}
+	state, err := store.State(context.Background())
+	if err == nil {
+		require.NotEqual(h.t, id, state.Hold, "the stopped enroll wrote no marker")
+	}
+	if row, ok := h.enrollCutover(daemonFamily(project)); ok {
+		require.NotEqual(h.t, id, row.HoldID, "the stopped enroll wrote no cutover record")
+	}
+	require.NoError(h.t, h.release(id), "a hold whose enroll stopped is released")
+	require.Equal(h.t, "released", string(h.row().Phase))
+}
+
+// TestEnrollANewProjectAfterTheWindow: after the cutover, a Legion project's new daemon store,
+// which no cutover converted, is enrolled in a hold of the enroll workflow; the hold's record is
+// complete, its release is admitted, the daemon in the fresh mode then serves every message
+// published to its durable, and a later streams census reads the project's family done. Controls:
+// with no enroll, that daemon refuses every consumer call and the census refuses, naming the
+// family; a store holding a checkpoint, and a stream holding legion-go-<project>-dispatch, each make
+// enroll write a stop entry naming it, and hold release then releases. (With stopLeavesNothing
+// removed that release is refused: internal/holdrecord's model and its client row hold that control,
+// since the flag is the table's own.)
+func TestEnrollANewProjectAfterTheWindow(t *testing.T) {
+	h := newStack(t)
+	ctx := context.Background()
+	// Project keys of the shape a daemon entry's generations are granted for (natsgrant's
+	// daemonGeneration: an upper-case letter and up to nine upper-case letters or digits).
+	const project, checkpointed, listed = "ENRNEW", "ENRCKPT", "ENRLIST"
+	db := h.database(daemonFamily(project), daemonMigrations...)
+	checkpointDB := h.database(daemonFamily(checkpointed), daemonMigrations...)
+	listedDB := h.database(daemonFamily(listed), daemonMigrations...)
+	h.replaceNotificationStream()
+	h.enrollWindow()
+	censusArgs := []string{"--family", familySession, "--family", familyDispatch, "--family", daemonFamily(project),
+		"--daemon-consumer", daemonFixedPrefix + project + "-dispatch=" + enrollDispatchFilter}
+
+	// Control: the census, before any enroll, refuses naming the new project's family alone, and
+	// changes nothing.
+	census := h.heldHold(holdrecord.WorkflowStreamsCensus)
+	code, _, stderr := h.censusCommand(census, censusArgs...)
+	require.NotEqual(t, 0, code, "control: the census refuses before the family is enrolled")
+	require.Contains(t, stderr, "not done: "+daemonFamily(project)+" (no row)")
+	require.NoError(t, h.release(census))
+
+	// Control: a store holding a checkpoint stops enroll, naming it.
+	_, err := checkpointDB.Exec(ctx, `insert into consumer_positions (consumer, stream_seq, stream_time) values ($1, 42, now())`, daemonFixedPrefix+checkpointed+"-dispatch")
+	require.NoError(t, err)
+	h.enrollRequireStopped(checkpointed, selection.NewPGStore(checkpointDB), "consumer_positions holds a checkpoint of "+daemonFixedPrefix+checkpointed+"-dispatch")
+
+	// Control: a stream holding the project's fixed Dispatch durable stops enroll, naming it.
+	wc, _ := h.replaceWriter()
+	fixed := daemonFixedPrefix + listed + "-dispatch"
+	replaceMake(t, wc, jetstream.ConsumerConfig{Durable: fixed, FilterSubjects: []string{enrollDispatchFilter}, AckPolicy: jetstream.AckExplicitPolicy})
+	h.enrollRequireStopped(listed, selection.NewPGStore(listedDB), notifications+" lists consumer "+fixed)
+	wc, _ = h.replaceWriter()
+	require.NoError(t, deleteConsumer(ctx, wc, notifications, fixed))
+
+	// Control: with no enroll, the daemon in the fresh mode refuses every consumer call, and no
+	// consumer of the project is created.
+	daemon, err := enrollNewDaemon(db, h.enrollDaemonConnect, project)
+	require.NoError(t, err)
+	for _, kind := range daemonKinds {
+		_, _, err := daemon.open(ctx, kind, enrollDispatchFilter)
+		require.True(t, selection.IsSelectionStateLost(err) || errors.Is(err, selection.ErrCutoverNotRun), "control: the unenrolled daemon's %s call is refused, got %v", kind, err)
+	}
+	released, _ := h.operator()
+	require.Empty(t, enrollProjectConsumers(t, released, project), "control: no consumer of the unenrolled project exists")
+
+	// The enrolment, with messages on the stream before it, so its boundary is past 1.
+	_, wjs := h.replaceWriter()
+	replacePublish(t, wjs, 2)
+	identity, last := h.enrollStream()
+	id := h.heldHold(holdrecord.WorkflowEnroll)
+	code, stdout, _ := h.enrollRun(id, project)
+	require.Equal(t, 0, code)
+	require.Contains(t, stdout, daemonFamily(project)+": the store's marker and the broker's cutover record read done under hold "+id)
+	state, err := selection.NewPGStore(db).State(ctx)
+	require.NoError(t, err)
+	require.Equal(t, selection.StoreState{Cutover: selection.CutoverDone, Hold: id, Boundary: last + 1, StreamID: identity}, state,
+		"the marker records the boundary, the stream's last sequence + 1 at the enrolment, and the stream's identity")
+	row, ok := h.enrollCutover(daemonFamily(project))
+	require.True(t, ok)
+	require.Equal(t, selection.CutoverDone, row.State)
+	require.Equal(t, id, row.HoldID)
+	journal := h.journal(id)
+	require.True(t, journal.Complete, "enroll's done entry completes the hold's record")
+	wantOutputs := map[string]string{"family": daemonFamily(project), "cutover": selection.CutoverDone, "boundary": formatSeq(last + 1), "stream_id": identity}
+	require.Equal(t, holdrecord.Operation{Command: enrollCommand, State: "done", Outputs: wantOutputs},
+		holdrecord.Operation{Command: journal.Ops[len(journal.Ops)-1].Command, State: journal.Ops[len(journal.Ops)-1].State, Outputs: journal.Ops[len(journal.Ops)-1].Outputs})
+	require.NoError(t, h.release(id))
+
+	// The daemon in the fresh mode now serves: its Dispatch durable is created, and every message
+	// published to it arrives, in order.
+	_, wjs = h.replaceWriter()
+	daemon, err = enrollNewDaemon(db, h.enrollDaemonConnect, project)
+	require.NoError(t, err)
+	sel, djs, err := daemon.open(ctx, "dispatch", enrollDispatchFilter)
+	require.NoError(t, err)
+	current := sel.Record.Current
+	require.True(t, strings.HasPrefix(current, daemonFixedPrefix+project+"-dispatch~"), "the daemon's durable is a fresh name, got %q", current)
+	var published []uint64
+	for i := range 5 {
+		ack, err := wjs.Publish(ctx, fmt.Sprintf("notifications.dispatch.issue.enroll-%d", i), []byte("issue"))
+		require.NoError(t, err)
+		published = append(published, ack.Sequence)
+	}
+	consumer, err := djs.Consumer(ctx, notifications, current)
+	require.NoError(t, err)
+	batch, err := consumer.Fetch(len(published), jetstream.FetchMaxWait(10*time.Second))
+	require.NoError(t, err)
+	var delivered []uint64
+	for msg := range batch.Messages() {
+		meta, err := msg.Metadata()
+		require.NoError(t, err)
+		delivered = append(delivered, meta.Sequence.Stream)
+		require.NoError(t, msg.Ack())
+	}
+	require.NoError(t, batch.Error())
+	require.Equal(t, published, delivered, "the enrolled daemon serves every message published to its durable")
+
+	// A later census reads the family done, and keeps the daemon's durable.
+	census = h.heldHold(holdrecord.WorkflowStreamsCensus)
+	nc, _ := h.operator()
+	code, _, stderr = h.censusCommand(census, censusArgs...)
+	require.Equal(t, 0, code, "the census reads every family done, %s with them, and runs clean: %s", daemonFamily(project), stderr)
+	require.Equal(t, []string{current}, enrollProjectConsumers(t, nc, project), "the census keeps the enrolled daemon's durable")
+}
+
+// TestAnEnrollRerunAfterACrashCompletes: enroll killed after its store marker write, or after its
+// broker cutover record write too, is admitted again under the same hold, finds this hold's own
+// writes, keeps them and completes the record, and the hold is released. A rerun that finds this
+// hold's own writes beside something that would have stopped it (a checkpoint) writes no stop
+// entry, since a stop would let the hold be released over a half-made enrolment: it exits UNKNOWN
+// with its intent pending, so the release is refused and only its own rerun is admitted. Control:
+// the same checkpoint without any write of this hold makes enroll stop (TestEnrollANewProjectAfterTheWindow).
+func TestAnEnrollRerunAfterACrashCompletes(t *testing.T) {
+	h := newStack(t)
+	ctx := context.Background()
+	h.replaceNotificationStream()
+	h.enrollWindow()
+	_, wjs := h.replaceWriter()
+	replacePublish(t, wjs, 3)
+	identity, last := h.enrollStream()
+	// crashedBoundary is the boundary a crashed run of this build recorded, below the stream's last
+	// sequence + 1 now, so a rerun that kept it is told from one that wrote it again.
+	const crashedBoundary = 2
+	require.Greater(t, last+1, uint64(crashedBoundary))
+	crashed := func(project string, marker selection.StoreState, cutoverToo bool) (string, *pgxpool.Pool) {
+		t.Helper()
+		db := h.database(daemonFamily(project), daemonMigrations...)
+		id := h.heldHold(holdrecord.WorkflowEnroll)
+		_, err := h.records().Admit(ctx, id, holdrecord.Request{Command: enrollCommand}, map[string]string{"daemon": project})
+		require.NoError(t, err)
+		marker.Cutover, marker.Hold = selection.CutoverDone, id
+		_, err = selection.NewPGStore(db).WriteSentinel(ctx, marker, 0)
+		require.NoError(t, err)
+		if cutoverToo {
+			_, err = h.records().PutCutover(ctx, daemonFamily(project), selection.CutoverDone, id)
+			require.NoError(t, err)
+		}
+		return id, db
+	}
+	whole := selection.StoreState{Boundary: crashedBoundary, StreamID: identity}
+	requireCompleted := func(id, project string, db *pgxpool.Pool, boundary uint64) {
+		t.Helper()
+		code, _, _ := h.enrollRun(id, project)
+		require.Equal(t, 0, code)
+		state, err := selection.NewPGStore(db).State(ctx)
+		require.NoError(t, err)
+		require.Equal(t, selection.StoreState{Cutover: selection.CutoverDone, Hold: id, Boundary: boundary, StreamID: identity}, state)
+		row, ok := h.enrollCutover(daemonFamily(project))
+		require.True(t, ok)
+		require.Equal(t, holdrecord.CutoverRow{Family: daemonFamily(project), State: selection.CutoverDone, HoldID: id, HoldGen: row.HoldGen}, row)
+		require.True(t, h.journal(id).Complete)
+		require.NoError(t, h.release(id))
+	}
+
+	t.Run("killed after the store's marker", func(t *testing.T) {
+		id, db := crashed("ENRMARK", whole, false)
+		requireCompleted(id, "ENRMARK", db, crashedBoundary)
+	})
+	t.Run("killed after the broker's cutover record", func(t *testing.T) {
+		id, db := crashed("ENRBROK", whole, true)
+		requireCompleted(id, "ENRBROK", db, crashedBoundary)
+	})
+	t.Run("a marker of this hold without the boundary and identity is written whole", func(t *testing.T) {
+		id, db := crashed("ENRPART", selection.StoreState{}, false)
+		requireCompleted(id, "ENRPART", db, last+1)
+	})
+	t.Run("a finding beside this hold's own writes leaves the intent pending", func(t *testing.T) {
+		const project = "ENRHALF"
+		id, db := crashed(project, whole, false)
+		_, err := db.Exec(ctx, `insert into consumer_positions (consumer, stream_seq, stream_time) values ($1, 7, now())`, daemonFixedPrefix+project+"-wake")
+		require.NoError(t, err)
+		code, _, stderr := h.enrollRun(id, project)
+		require.Equal(t, 2, code)
+		require.Contains(t, stderr, "UNKNOWN")
+		require.Contains(t, stderr, "consumer_positions holds a checkpoint of "+daemonFixedPrefix+project+"-wake")
+		last := h.enrollLast(id)
+		require.Equal(t, enrollCommand, last.Command)
+		require.Equal(t, "intent", last.State, "no stop entry beside this hold's own writes")
+		require.ErrorIs(t, h.release(id), holdrecord.ErrBusy, "the release is refused while enroll's intent is pending")
+		_, err = db.Exec(ctx, `delete from consumer_positions`)
+		require.NoError(t, err)
+		requireCompleted(id, project, db, crashedBoundary)
+	})
+	t.Run("this hold's marker naming another stream identity leaves the intent pending", func(t *testing.T) {
+		const project = "ENRWRONG"
+		id, db := crashed(project, selection.StoreState{Boundary: crashedBoundary, StreamID: "another-stream"}, false)
+		code, _, stderr := h.enrollRun(id, project)
+		require.Equal(t, 2, code)
+		require.Contains(t, stderr, "this hold's marker records stream identity another-stream, and "+notifications+" carries "+identity)
+		require.Equal(t, "intent", h.enrollLast(id).State)
+		state, err := selection.NewPGStore(db).State(ctx)
+		require.NoError(t, err)
+		require.Equal(t, "another-stream", state.StreamID, "the refused rerun wrote nothing")
+		_, ok := h.enrollCutover(daemonFamily(project))
+		require.False(t, ok, "the refused rerun wrote no cutover record")
+	})
+}
+
+// enrollStream is the notification stream's identity and last sequence, read as the operator.
+func (h *stack) enrollStream() (string, uint64) {
+	h.t.Helper()
+	nc, _ := h.operator()
+	info, err := streamInfo(context.Background(), nc, notifications)
+	require.NoError(h.t, err)
+	identity := selection.StreamIdentity(info)
+	require.NotEmpty(h.t, identity, "%s carries a stream identity", notifications)
+	return identity, info.State.LastSeq
+}
+
+// TestEnrollStopsOnWhatItFinds: enroll stops, naming it, on each other sign that a store is not
+// new: a selection row, a fresh-form consumer of the project on the stream, a marker done or
+// rolled_back from another hold, a broker cutover record from another hold, and a store with no
+// intake_consumers table; and on a stream that carries no identity, which the daemon could never
+// count a last floor on. Each such hold is released. Control: a store with none of them, on a
+// stream with an identity, is enrolled (TestEnrollANewProjectAfterTheWindow).
+func TestEnrollStopsOnWhatItFinds(t *testing.T) {
+	h := newStack(t)
+	ctx := context.Background()
+	h.replaceNotificationStream()
+	h.enrollWindow()
+	var wc *nats.Conn
+
+	t.Run("a selection row", func(t *testing.T) {
+		const project = "ENRROW"
+		db := h.database(daemonFamily(project), daemonMigrations...)
+		store := selection.NewPGStore(db)
+		_, err := store.Write(ctx, daemonFixedPrefix+project+"-github", selection.Record{Start: 3}, 0)
+		require.NoError(t, err)
+		h.enrollRequireStopped(project, store, "intake_consumers holds the selection row of "+daemonFixedPrefix+project+"-github")
+	})
+	t.Run("a fresh-form consumer on the stream", func(t *testing.T) {
+		const project = "ENRFRESH"
+		db := h.database(daemonFamily(project), daemonMigrations...)
+		wc, _ = h.replaceWriter()
+		fresh := selection.FreshName(daemonFixedPrefix + project + "-github")
+		replaceMake(t, wc, jetstream.ConsumerConfig{Durable: fresh, FilterSubjects: []string{"notifications.github.>"}, AckPolicy: jetstream.AckExplicitPolicy})
+		h.enrollRequireStopped(project, selection.NewPGStore(db), notifications+" lists consumer "+fresh)
+		wc, _ = h.replaceWriter()
+		require.NoError(t, deleteConsumer(ctx, wc, notifications, fresh))
+	})
+	for marker, project := range map[string]string{selection.CutoverDone: "ENRMDONE", selection.CutoverRolledBack: "ENRMROLL"} {
+		t.Run("a marker "+marker+" from another hold", func(t *testing.T) {
+			db := h.database(daemonFamily(project), daemonMigrations...)
+			store := selection.NewPGStore(db)
+			_, err := store.WriteSentinel(ctx, selection.StoreState{Cutover: marker, Hold: "another-hold"}, 0)
+			require.NoError(t, err)
+			h.enrollRequireStopped(project, store, "the store's marker reads "+marker+" from hold another-hold")
+		})
+	}
+	t.Run("a broker cutover record from another hold", func(t *testing.T) {
+		const project = "ENROTHER"
+		db := h.database(daemonFamily(project), daemonMigrations...)
+		other := h.heldHold(holdrecord.WorkflowEnroll)
+		_, err := h.records().PutCutover(ctx, daemonFamily(project), selection.CutoverRolledBack, other)
+		require.NoError(t, err)
+		require.NoError(t, h.release(other))
+		h.enrollRequireStopped(project, selection.NewPGStore(db), "the broker holds the cutover record "+daemonFamily(project)+" rolled_back from hold "+other)
+	})
+	t.Run("a store with no intake_consumers table", func(t *testing.T) {
+		const project = "ENRNOTAB"
+		db := h.database(daemonFamily(project), daemonMigrations[0])
+		h.enrollRequireStopped(project, selection.NewPGStore(db), "the store has no intake_consumers table")
+	})
+	t.Run("a stream that carries no identity", func(t *testing.T) {
+		const project = "ENRNOID"
+		db := h.database(daemonFamily(project), daemonMigrations...)
+		update := h.heldHold(holdrecord.WorkflowStreamsUpdate)
+		nc, _ := h.operator()
+		info, err := streamInfo(ctx, nc, notifications)
+		require.NoError(t, err)
+		config := info.Config
+		config.Metadata = maps.Clone(config.Metadata)
+		delete(config.Metadata, selection.StreamIdentityMetadataKey)
+		_, err = apiRequest(ctx, nc, "$JS.API.STREAM.UPDATE."+notifications, config)
+		require.NoError(t, err)
+		require.NoError(t, h.release(update))
+		h.enrollRequireStopped(project, selection.NewPGStore(db), notifications+" carries no stream identity ("+selection.StreamIdentityMetadataKey+")")
+	})
+}
+
+// enrollFetch takes want messages from consumer name on js, acknowledging each once the server
+// confirms it, then checks no more is waiting, and answers their stream sequences in order.
+func enrollFetch(t *testing.T, js jetstream.JetStream, name string, want int) []uint64 {
+	t.Helper()
+	ctx := context.Background()
+	consumer, err := js.Consumer(ctx, notifications, name)
+	require.NoError(t, err)
+	var got []uint64
+	for deadline := time.Now().Add(20 * time.Second); len(got) < want && time.Now().Before(deadline); {
+		batch, err := consumer.Fetch(want-len(got), jetstream.FetchMaxWait(2*time.Second))
+		require.NoError(t, err)
+		for msg := range batch.Messages() {
+			meta, err := msg.Metadata()
+			require.NoError(t, err)
+			got = append(got, meta.Sequence.Stream)
+			require.NoError(t, msg.DoubleAck(ctx))
+		}
+	}
+	extra, err := consumer.Fetch(1, jetstream.FetchMaxWait(time.Second))
+	require.NoError(t, err)
+	for msg := range extra.Messages() {
+		meta, _ := msg.Metadata()
+		t.Fatalf("%s handed over %v and then %d, past the %d messages wanted", name, got, meta.Sequence.Stream, want)
+	}
+	return got
+}
+
+// TestAnEnrolledStoreLetsTheDaemonCountItsFloor: enroll records in the store's marker the
+// boundary, the stream's last sequence + 1 at the enrolment, and the stream's identity, which the
+// daemon tags each last floor with (t-5's durableNames.streamID reads it from the sentinel). So
+// after its current is removed (an inactivity delete, done here by a listener's connection), the
+// enrolled daemon's next open creates its fresh name at the sequence after its last floor and hands
+// over nothing it acknowledged, and its first create starts at the boundary, so a message published
+// between the enrolment and the daemon's first open arrives. Control: a store whose marker was
+// written without either, as enroll wrote it before it recorded them, leaves the daemon unable to
+// count its floor: its last floor carries no identity, so its next open falls back to the record's
+// saved start and hands over again the messages it acknowledged; and its first create, at
+// DeliverNew, misses the message published before it.
+func TestAnEnrolledStoreLetsTheDaemonCountItsFloor(t *testing.T) {
+	h := newStack(t)
+	ctx := context.Background()
+	const enrolled, bare = "ENRFLOOR", "ENRBARE"
+	enrolledDB := h.database(daemonFamily(enrolled), daemonMigrations...)
+	bareDB := h.database(daemonFamily(bare), daemonMigrations...)
+	h.replaceNotificationStream()
+	h.enrollWindow()
+	publish := func(n int) []uint64 {
+		t.Helper()
+		_, wjs := h.replaceWriter()
+		var seqs []uint64
+		for range n {
+			ack, err := wjs.Publish(ctx, "notifications.dispatch.issue.floor", []byte("issue"))
+			require.NoError(t, err)
+			seqs = append(seqs, ack.Sequence)
+		}
+		return seqs
+	}
+	before := publish(3)
+	identity, last := h.enrollStream()
+	require.Equal(t, before[2], last)
+
+	id := h.heldHold(holdrecord.WorkflowEnroll)
+	code, _, _ := h.enrollRun(id, enrolled)
+	require.Equal(t, 0, code)
+	require.NoError(t, h.release(id))
+	state, err := selection.NewPGStore(enrolledDB).State(ctx)
+	require.NoError(t, err)
+	require.Equal(t, selection.StoreState{Cutover: selection.CutoverDone, Hold: id, Boundary: last + 1, StreamID: identity}, state)
+	// Control: a store enrolled without the boundary and the identity.
+	_, err = selection.NewPGStore(bareDB).WriteSentinel(ctx, selection.StoreState{Cutover: selection.CutoverDone, Hold: "an-enrolment-without-them"}, 0)
+	require.NoError(t, err)
+
+	between := publish(1)[0]
+	type served struct {
+		daemon  *enrollDaemon
+		db      *pgxpool.Pool
+		js      jetstream.JetStream
+		current string
+	}
+	open := func(project string, db *pgxpool.Pool) served {
+		t.Helper()
+		daemon, err := enrollNewDaemon(db, h.enrollDaemonConnect, project)
+		require.NoError(t, err)
+		sel, js, err := daemon.open(ctx, "dispatch", enrollDispatchFilter)
+		require.NoError(t, err)
+		return served{daemon: daemon, db: db, js: js, current: sel.Record.Current}
+	}
+	e, b := open(enrolled, enrolledDB), open(bare, bareDB)
+	after := publish(3)
+	require.Equal(t, append([]uint64{between}, after...), enrollFetch(t, e.js, e.current, 4), "the enrolled daemon starts at the boundary and hands over the message published before its first create")
+	require.Equal(t, after, enrollFetch(t, b.js, b.current, 3), "control: the bare store's daemon starts at DeliverNew and misses the message published before its first create")
+
+	floor := after[2]
+	for project, s := range map[string]served{enrolled: e, bare: b} {
+		require.NoError(t, s.daemon.recordLastFloor(ctx, "dispatch", s.js, s.current, floor), project)
+		record, _, err := selection.NewPGStore(s.db).Read(ctx, daemonFixedPrefix+project+"-dispatch")
+		require.NoError(t, err)
+		want := ""
+		if project == enrolled {
+			want = identity
+		}
+		require.Equal(t, &selection.Floor{Floor: floor, Name: s.current, StreamID: want}, record.LastFloor, "%s's last floor carries the sentinel's identity", project)
+		wc, _ := h.replaceWriter()
+		require.NoError(t, deleteConsumer(ctx, wc, notifications, s.current), "the current's removal")
+	}
+
+	again := func(project string, db *pgxpool.Pool) served {
+		t.Helper()
+		s := open(project, db)
+		record, _, err := selection.NewPGStore(db).Read(ctx, daemonFixedPrefix+project+"-dispatch")
+		require.NoError(t, err)
+		require.Equal(t, s.current, record.Current)
+		return s
+	}
+	e2, b2 := again(enrolled, enrolledDB), again(bare, bareDB)
+	require.NotEqual(t, e.current, e2.current)
+	require.NotEqual(t, b.current, b2.current)
+	next := publish(1)[0]
+	require.Equal(t, []uint64{next}, enrollFetch(t, e2.js, e2.current, 1), "the enrolled daemon counts its last floor: its new consumer starts after it and hands over nothing it acknowledged")
+	require.Equal(t, append(append([]uint64{}, after...), next), enrollFetch(t, b2.js, b2.current, 4),
+		"control: the bare store's daemon cannot count its floor: its new consumer starts at the record's saved start and hands over again what it acknowledged")
+}
