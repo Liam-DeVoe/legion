@@ -757,6 +757,11 @@ The release that adds Dispatch's fresh consumer names adds to `DispatchPermissio
 bucket's stream info and stream message get and the write of its own listener's record, which changes the rendered
 user of every hub with a `dispatchMachineId` user: upgrading such a hub to it replaces its VM once,
 with the outage below, and a hub with none keeps its VM.
+The release that adds the fresh consumer names (`ENVOY_CONSUMER_NAMES`) adds the selection bucket
+`envoy_session_consumers`'s calls, with no create or update of its stream, to `ListenerPermissions`
+and `ListenerHostPermissions`, which changes the rendered users of every hub with a `listener` or a
+`listenerMachineId` user: upgrading such a hub to it replaces its VM once, with the outage below,
+and a hub with neither keeps its VM.
 The release that adds `listener.senderMessagesPerMinute` and `listener.senderMessageBurst` renders
 neither variable for a hub that sets neither input, so such a hub keeps its VM. Setting, changing
 or removing either input changes the listener's `docker run` command in the cloud-config, so it

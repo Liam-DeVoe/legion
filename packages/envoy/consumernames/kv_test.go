@@ -84,6 +84,12 @@ type liveStore struct {
 
 func newLiveStore(t *testing.T, uri string, state *StoreState) *liveStore {
 	t.Helper()
+	return newLiveStoreAt(t, uri, state, 1)
+}
+
+// newLiveStoreAt is newLiveStore with testStream and the bucket at replicas copies.
+func newLiveStoreAt(t *testing.T, uri string, state *StoreState, replicas int) *liveStore {
+	t.Helper()
 	conn := testnats.Connect(t, uri)
 	t.Cleanup(conn.Close)
 	js, err := jetstream.New(conn)
@@ -91,10 +97,10 @@ func newLiveStore(t *testing.T, uri string, state *StoreState) *liveStore {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if _, err := js.CreateStream(ctx, jetstream.StreamConfig{Name: testStream, Subjects: []string{"names.>"}}); err != nil {
+	if _, err := js.CreateStream(ctx, jetstream.StreamConfig{Name: testStream, Subjects: []string{"names.>"}, Replicas: replicas}); err != nil {
 		t.Fatalf("create %s: %v", testStream, err)
 	}
-	if _, err := js.CreateKeyValue(ctx, SessionBucketConfig(1)); err != nil {
+	if _, err := js.CreateKeyValue(ctx, SessionBucketConfig(replicas)); err != nil {
 		t.Fatalf("create %s: %v", SessionBucket, err)
 	}
 	live := &liveStore{conn: conn, js: js, store: NewKVStore(SessionBucket, ConnRequester{conn}), family: jsFamily{js}}
@@ -346,5 +352,105 @@ func TestNoConsumerNameIsCreatedTwice(t *testing.T) {
 	spy.awaitCreates(t, 6)
 	if repeated, fixed := spy.twice(); repeated != "" || len(fixed) != 0 {
 		t.Fatalf("the protocol sent %q to create twice, and created the fixed names %v", repeated, fixed)
+	}
+}
+
+// On a grant with no direct get of the bucket (the listener beside Dispatch holds none), KVStore
+// still reads and writes: it reads only from the stream's leader (STREAM.MSG.GET) and writes only
+// on the key's expected last sequence, never nats.go's kvs.Get or kvs.Create. Two writers racing on
+// one key at one revision end with one write and one ErrConflict. The control is nats.go's
+// kvs.Create on the same grant: over a key whose last message is a delete, its refused first write
+// falls back to a read of that marker (kv.go's Create) by direct get, which the grant refuses, so it
+// fails where the same call on a full grant recreates the key.
+func TestTheKVStoreRacesOnAGrantWithNoDirectGet(t *testing.T) {
+	seed, public := testnats.User(t)
+	stream := "KV_" + SessionBucket
+	uri := testnats.StartNkeyDenied(t, public, "$JS.API.DIRECT.GET."+stream, "$JS.API.DIRECT.GET."+stream+".>")
+	admin := testnats.Connect(t, uri)
+	t.Cleanup(admin.Close)
+	ctx := context.Background()
+	if _, err := CreateSessionBucket(ctx, admin, 1, StoreState{Cutover: CutoverDone}); err != nil {
+		t.Fatal(err)
+	}
+	writer := func() *KVStore {
+		conn, err := testnats.ConnectSeed(t, uri, seed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(conn.Close)
+		return NewKVStore(SessionBucket, ConnRequester{conn})
+	}
+	first, second := writer(), writer()
+	if _, err := first.Write(ctx, "ses-race", Record{Start: 1}, 0); err != nil {
+		t.Fatalf("the first write on the reduced grant: %v", err)
+	}
+	for round := range 20 {
+		_, revision, err := first.Read(ctx, "ses-race")
+		if err != nil {
+			t.Fatalf("round %d: the leader read on the reduced grant: %v", round, err)
+		}
+		results := make(chan error, 2)
+		for _, store := range []*KVStore{first, second} {
+			go func() {
+				_, err := store.Write(ctx, "ses-race", Record{Start: uint64(round + 2)}, revision)
+				results <- err
+			}()
+		}
+		var wrote, conflicts int
+		for range 2 {
+			switch err := <-results; {
+			case err == nil:
+				wrote++
+			case errors.Is(err, ErrConflict):
+				conflicts++
+			default:
+				t.Fatalf("round %d: a racing write answered %v, want a write or ErrConflict", round, err)
+			}
+		}
+		if wrote != 1 || conflicts != 1 {
+			t.Fatalf("round %d: %d writes and %d conflicts, want one of each", round, wrote, conflicts)
+		}
+	}
+	// Control: nats.go's Create over a deleted key reads the delete marker by direct get after its
+	// refused write. On a full grant it recreates the key; on this one the read is refused and the
+	// create fails.
+	adminJS, err := jetstream.New(admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminKV, err := adminJS.KeyValue(ctx, SessionBucket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"ses-deleted-full", "ses-deleted-reduced"} {
+		if _, err := adminKV.Put(ctx, key, []byte("{}")); err != nil {
+			t.Fatal(err)
+		}
+		if err := adminKV.Delete(ctx, key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := adminKV.Create(ctx, "ses-deleted-full", []byte("{}")); err != nil {
+		t.Fatalf("control: kvs.Create over a deleted key on a full grant = %v, want the key recreated", err)
+	}
+	conn, err := testnats.ConnectSeed(t, uri, seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(conn.Close)
+	js, err := jetstream.New(conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kv, err := js.KeyValue(ctx, SessionBucket)
+	if err != nil {
+		t.Fatalf("bind the bucket on the reduced grant: %v", err)
+	}
+	if _, err := kv.Create(ctx, "ses-deleted-reduced", []byte("{}")); err == nil {
+		t.Fatal("kvs.Create over a deleted key on a grant with no direct get recreated it: its fallback read was not refused")
+	}
+	// KVStore reads the same marker from the stream's leader, and refuses it as lost selection state.
+	if _, _, err := first.Read(ctx, "ses-deleted-reduced"); !errors.Is(err, ErrRecordDeleted) {
+		t.Fatalf("KVStore's read of the deleted key on the reduced grant = %v, want ErrRecordDeleted", err)
 	}
 }

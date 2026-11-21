@@ -85,7 +85,7 @@ func (v sessionNamesServer) Delete(ctx context.Context, name string) error {
 
 // newFreshSessions is the fresh mode of s.
 func newFreshSessions(s *SessionConsumers) *freshSessions {
-	fresh := &freshSessions{store: consumernames.NewKVStore(consumernames.SessionBucket, clientRequester{s.client})}
+	fresh := &freshSessions{store: s.client.SelectionStore()}
 	host, _ := os.Hostname()
 	fresh.names = consumernames.New(consumernames.Config{
 		Store:  fresh.store,
@@ -105,6 +105,13 @@ func newFreshSessions(s *SessionConsumers) *freshSessions {
 		},
 	})
 	return fresh
+}
+
+// SelectionStore is the selection bucket (consumernames.SessionBucket) through c's confirmed
+// requests, so a read or write c's user may not make answers ErrPublishDenied at once. The session
+// consumers keep their records in it, and the listener its own durable's (consumernames.DurableKey).
+func (c *Client) SelectionStore() *consumernames.KVStore {
+	return consumernames.NewKVStore(consumernames.SessionBucket, clientRequester{c})
 }
 
 // ConsumerNames is how c's session consumers are named (WithConsumerNames): consumernames.ModeFixed
@@ -133,7 +140,7 @@ func (s *SessionConsumers) RefuseConvertedStore(ctx context.Context) error {
 	if s.fresh != nil {
 		return nil
 	}
-	state, err := consumernames.NewKVStore(consumernames.SessionBucket, clientRequester{s.client}).State(ctx)
+	state, err := s.client.SelectionStore().State(ctx)
 	switch {
 	case errors.Is(err, consumernames.ErrNoStore), errors.Is(err, consumernames.ErrNoSentinel):
 		return nil
@@ -595,10 +602,13 @@ func (s *SessionConsumers) SessionConsumerSets(ctx context.Context) (map[string]
 			return nil, fmt.Errorf("bus: list the consumers of %s: %w", Stream, page.Error)
 		}
 		for _, info := range page.Consumers {
+			// Only a session~ name that carries its session's id is a session's: the listener's own
+			// durable carries envoy.logical too, and a listing by that would take it for a session
+			// and the sweep would delete it.
 			if !strings.HasPrefix(info.Name, SessionConsumerNamePrefix+"~") {
 				continue
 			}
-			if sessionID := info.Config.Metadata[consumernames.LogicalMetadataKey]; sessionID != "" {
+			if sessionID := info.Config.Metadata[SessionIDMetadataKey]; sessionID != "" {
 				sets[sessionID] = append(sets[sessionID], info)
 			}
 		}
