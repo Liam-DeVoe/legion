@@ -117,3 +117,40 @@ func TestARegistrationOverARepublishedRecordHealsAtItsTrueSequence(t *testing.T)
 		t.Fatalf("Refresh(%s) after the registration = %+v, %v; want the victim's own registration", victim, entry, err)
 	}
 }
+
+// A direct get (Refresh, the read bucketSessionEntry makes) and the leader read (StoredByWriter) are
+// two reads of one key, and a writer's write landing between them makes them return different
+// records. cmd/listener's role-claim refresh keeps the projects of the one record StoredByWriter
+// returns, never the direct get's, so such a write cannot leave a RePublished record's projects
+// standing. This forces the divergence with the registry's own read seam
+// (interleavingSessionGetKeyValue): the direct get reads [PRIV PUB], a writer's record of [PRIV]
+// lands after it, and the leader read returns [PRIV]. A decision made on the direct get keeps PUB;
+// the leader read does not.
+func TestADirectGetAndTheLeaderReadCanReturnDifferentProjects(t *testing.T) {
+	client := setupNATS(t)
+	r := openBindingRegistry(t, client)
+	const victim = "ses_two_read_race"
+	if err := r.Put(victim, SessionEntry{MachineID: "edge-a", Projects: []string{"PRIV", "PUB"}}); err != nil {
+		t.Fatalf("seed %s: %v", victim, err)
+	}
+	writer, err := json.Marshal(map[string]any{"session_id": victim, "machine_id": "edge-a",
+		"updated_at": time.Now().UnixMilli(), "projects": []string{"PRIV"}})
+	if err != nil {
+		t.Fatalf("encode the writer's record: %v", err)
+	}
+	useKV(t, r, &interleavingSessionGetKeyValue{KeyValue: r.watcher.KV().Legacy(), key: victim, value: writer, interleaves: 1})
+	refreshed, err := r.Refresh(context.Background(), victim)
+	if err != nil {
+		t.Fatalf("Refresh(%s): %v", victim, err)
+	}
+	if !slices.Equal(refreshed.Projects, []string{"PRIV", "PUB"}) {
+		t.Fatalf("the direct get read projects %v, want the seeded [PRIV PUB] before the interleaved write", refreshed.Projects)
+	}
+	confirmed, ok, err := r.StoredByWriter(context.Background(), victim)
+	if err != nil || !ok {
+		t.Fatalf("StoredByWriter(%s) = %+v, %t, %v; want a writer's record", victim, confirmed, ok, err)
+	}
+	if !slices.Equal(confirmed.Projects, []string{"PRIV"}) {
+		t.Errorf("StoredByWriter returned projects %v, want the leader's [PRIV]; the role-claim refresh keeps these, not the direct get's [PRIV PUB]", confirmed.Projects)
+	}
+}

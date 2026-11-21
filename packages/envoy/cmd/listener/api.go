@@ -2120,13 +2120,21 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 		keepProjects := entry.SessionID == body.SessionID
 		if keepProjects {
 			readCtx, readCancel := context.WithTimeout(ctx, roleHolderReadTimeout)
-			_, ok, storedErr := d.sessions.StoredByWriter(readCtx, body.SessionID)
+			confirmed, ok, storedErr := d.sessions.StoredByWriter(readCtx, body.SessionID)
 			readCancel()
 			if storedErr != nil {
 				writeStoreError(ctx, w, fmt.Errorf("confirm role claimant registration: %w", storedErr), http.StatusServiceUnavailable)
 				return
 			}
 			keepProjects = ok
+			if ok {
+				// Both "names its key" and "is a writer's" are judged on the one record the leader
+				// returns, and its projects are the ones kept: the earlier bucket read (a direct get
+				// through bucketSessionEntry) is a separate message, so a writer's write landing
+				// between the two reads would otherwise let that read's RePublished projects stand
+				// while the leader confirms a different record.
+				entry.Projects = confirmed.Projects
+			}
 		}
 		if !keepProjects {
 			entry.Projects = registeringProjects(r)
