@@ -244,7 +244,7 @@ type Status struct {
 // 7.55 minutes, read 7.6 on arm64 and 7.5 on amd64), so the quantile would differ by machine.
 // The arithmetic is quantileAt's, which SortedSamples' Quantile reads its ranks through too.
 func Quantile(sorted []float64, p float64) float64 {
-	return quantileAt(len(sorted), func(k int) float64 { return sorted[k] }, p)
+	return quantileAt(len(sorted), func(k int) float64 { return sorted[k] }, func(k int) (float64, float64) { return sorted[k], sorted[k+1] }, p)
 }
 
 // minutesBetween is b - a in minutes, one division of whole nanoseconds, so a duration the

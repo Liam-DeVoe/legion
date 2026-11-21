@@ -14,13 +14,14 @@ import (
 //
 // The stored figures fold one series' days into many ranges, each of up to 85 days (evals,
 // figures.go), so the fold sorts each day's samples once, and every range that holds the day
-// reads them sorted: a range's median and 90th percentile are four ranks selected across its
-// days' lists, where a merge and a sort of every sample is paid again for each range. k8
-// measured both on the bench's busiest quantile series (dispatch://INFRA-2916, k8 phase C,
-// qbench): for the ranges a change 60 days back rewrites, selection took 19-26 ms where the merge
-// and sort took 108-227 ms, and the two answered every range alike, bit for bit. A rank selected
-// is the value the sort puts at that rank: the lists hold no -0 and no NaN, and of the values
-// left no two that compare equal differ in their bits.
+// reads them sorted: a range's median and 90th percentile are two selections across its days'
+// lists, each of the two adjacent ranks a quantile reads (adjacent), where a merge and a sort of
+// every sample is paid again for each range. k8 measured selection on the bench's busiest quantile
+// series (dispatch://INFRA-2916, k8 phase C, qbench), one rank at a time: for the ranges a change
+// 60 days back rewrites, selection took 19-26 ms where the merge and sort took 108-227 ms, and the
+// two answered every range alike, bit for bit. A rank selected is the value the sort puts at that
+// rank: the lists hold no -0 and no NaN, and of the values left no two that compare equal differ in
+// their bits.
 type SortedSamples struct {
 	// merged is the sorted merge, nil where lists answers.
 	merged []float64
@@ -45,6 +46,17 @@ func (s SortedSamples) At(k int) float64 {
 		}
 		return largest
 	}
+	value, _ := kth(s.lists, k)
+	return value
+}
+
+// adjacent is the k-th and the (k+1)-th smallest samples (from 0) of s; k+1 is below Len. The
+// merged list answers both by index, and the lists by one selection (kth), where At would select
+// each rank across the lists again.
+func (s SortedSamples) adjacent(k int) (float64, float64) {
+	if s.lists == nil {
+		return s.merged[k], s.merged[k+1]
+	}
 	return kth(s.lists, k)
 }
 
@@ -52,7 +64,7 @@ func (s SortedSamples) At(k int) float64 {
 func (s SortedSamples) Max() float64 { return s.At(s.n - 1) }
 
 // Quantile is p's quantile of s, which holds at least one sample, by Quantile's rule.
-func (s SortedSamples) Quantile(p float64) float64 { return quantileAt(s.n, s.At, p) }
+func (s SortedSamples) Quantile(p float64) float64 { return quantileAt(s.n, s.At, s.adjacent, p) }
 
 // MergedSamples is every sample of series among parts in ascending order: the one list a quantile
 // reads. Where each part of series among parts holds samples that already ascend and hold no -0
@@ -108,70 +120,103 @@ func SortableSamples(samples []float64) bool {
 	return true
 }
 
-// quantileAt is p's quantile of the n ascending values at(0) to at(n-1), n at least 1, linear
-// between the two nearest ranks, each product converted to float64 before the sum it feeds, for
-// the reason Quantile gives.
-func quantileAt(n int, at func(int) float64, p float64) float64 {
+// quantileAt is p's quantile of n ascending values, n at least 1, linear between the two nearest
+// ranks, each product converted to float64 before the sum it feeds, for the reason Quantile gives:
+// at(k) is the value at rank k, and adjacent(k) the values at ranks k and k+1, which a selection
+// across lists answers from one search (SortedSamples' adjacent) where two reads of at search
+// twice.
+func quantileAt(n int, at func(int) float64, adjacent func(int) (float64, float64), p float64) float64 {
 	i := float64(float64(n-1) * p)
 	lo := int(math.Floor(i))
 	if lo+1 >= n {
 		return at(n - 1)
 	}
-	low := at(lo)
-	return low + float64((at(lo+1)-low)*(i-float64(lo)))
+	low, high := adjacent(lo)
+	return low + float64((high-low)*(i-float64(lo)))
 }
 
-// kth is the k-th smallest value (from 0) of the union of lists, each sorted ascending and
-// non-empty, exactly: each round counts every list's values below and equal to a pivot, the
-// weighted median of the lists' middle values (so a round leaves at least a quarter of what
-// remains behind), by binary search, and keeps the side that holds rank k.
-func kth(lists [][]float64, k int) float64 {
-	lo := make([]int, len(lists))
-	hi := make([]int, len(lists))
-	below := make([]int, len(lists))
-	through := make([]int, len(lists))
+// kth is the k-th and the (k+1)-th smallest values (from 0) of the union of lists, each sorted
+// ascending and non-empty, k+1 below their total length, exactly: each round counts every list's
+// values below and equal to a pivot, the weighted median of the lists' middle values (so a round
+// leaves at least a quarter of what remains behind), by binary search, and keeps the side that
+// holds rank k, until the pivot's values hold it.
+//
+// That round answers rank k+1 too. The windows' values equal to the pivot hold their ranks less to
+// less+equal-1, so where k+1 < less+equal rank k+1 is the pivot again. Otherwise it is the smallest
+// value of the lists above the pivot: the smallest list[through] of the lists whose through is
+// below their length, since the values of each list before through are at most the pivot and
+// those from through on are above it. Within the list's window (lo to hi) that is what through
+// counts. A value before lo was dropped by a round that raised lo, as at most that round's pivot,
+// and that round left only values above its pivot in the windows, this pivot among them. A value
+// at hi or beyond was dropped by a round that lowered hi, as at least that round's pivot, and that
+// round left only values below its pivot in the windows, this pivot among them. The value at rank
+// k+1 is the one the sort puts there, bit for bit, for the reason SortedSamples gives.
+func kth(lists [][]float64, k int) (float64, float64) {
+	// One allocation holds every list's window, which a round sorts by its middle value: a fold of
+	// a range's quantiles selects for each of them, and garbage collection was 13 % of the CPU of a
+	// pass that rewrites the stored figures (dispatch://INFRA-2916, phase H). A window names its
+	// list by index and holds no pointer, so the collector has nothing to scan in it and a sort
+	// moves it without a write barrier.
+	windows := make([]listWindow, len(lists))
 	for i, list := range lists {
-		hi[i] = len(list)
+		windows[i] = listWindow{list: i, hi: len(list)}
 	}
-	type candidate struct {
-		value  float64
-		weight int
-	}
-	candidates := make([]candidate, 0, len(lists))
 	for {
-		candidates = candidates[:0]
-		total := 0
-		for i, list := range lists {
-			if n := hi[i] - lo[i]; n > 0 {
-				candidates = append(candidates, candidate{list[lo[i]+n/2], n})
-				total += n
+		// The windows that hold values come first, in the order of their middle values.
+		live, total := 0, 0
+		for i := range windows {
+			if w := windows[i]; w.hi > w.lo {
+				w.middle = lists[w.list][w.lo+(w.hi-w.lo)/2]
+				windows[i], windows[live] = windows[live], w
+				live, total = live+1, total+w.hi-w.lo
 			}
 		}
-		slices.SortFunc(candidates, func(a, b candidate) int { return cmp.Compare(a.value, b.value) })
-		pivot, seen := candidates[len(candidates)-1].value, 0
-		for _, c := range candidates {
-			seen += c.weight
+		slices.SortFunc(windows[:live], func(a, b listWindow) int { return cmp.Compare(a.middle, b.middle) })
+		pivot, seen := windows[live-1].middle, 0
+		for i := range live {
+			seen += windows[i].hi - windows[i].lo
 			if 2*seen >= total {
-				pivot = c.value
+				pivot = windows[i].middle
 				break
 			}
 		}
 		less, equal := 0, 0
-		for i, list := range lists {
-			window := list[lo[i]:hi[i]]
-			below[i] = lo[i] + sort.SearchFloat64s(window, pivot)
-			through[i] = lo[i] + sort.Search(len(window), func(j int) bool { return window[j] > pivot })
-			less += below[i] - lo[i]
-			equal += through[i] - below[i]
+		for i := range windows {
+			w := &windows[i]
+			values := lists[w.list][w.lo:w.hi]
+			w.below = w.lo + sort.SearchFloat64s(values, pivot)
+			w.through = w.lo + sort.Search(len(values), func(j int) bool { return values[j] > pivot })
+			less += w.below - w.lo
+			equal += w.through - w.below
 		}
 		switch {
 		case k < less:
-			copy(hi, below)
+			for i := range windows {
+				windows[i].hi = windows[i].below
+			}
+		case k+1 < less+equal:
+			return pivot, pivot
 		case k < less+equal:
-			return pivot
+			next := math.Inf(1)
+			for _, w := range windows {
+				if list := lists[w.list]; w.through < len(list) {
+					next = min(next, list[w.through])
+				}
+			}
+			return pivot, next
 		default:
 			k -= less + equal
-			copy(lo, through)
+			for i := range windows {
+				windows[i].lo = windows[i].through
+			}
 		}
 	}
+}
+
+// listWindow is one list of a selection (kth), by its index among the lists: the values it still
+// holds (lo to hi), the ends of those below and up to the round's pivot (below, through), and its
+// middle value.
+type listWindow struct {
+	list, lo, hi, below, through int
+	middle                       float64
 }

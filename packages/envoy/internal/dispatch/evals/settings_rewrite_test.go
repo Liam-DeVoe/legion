@@ -1139,8 +1139,8 @@ func TestAStagingGateRenamedToAJobSomePushRunsHoldRewritesWhatAWholeWalkWrites(t
 // days, foldMovedDays folds the stored figures of every day of every eval and repository of a
 // project that holds a listed row, once on one worker and once on figureFoldWorkers, and the two
 // answer the same rows, byte for byte, in the order writeFigures sends them (sortByKey): a group's
-// folds share its rows and parts and write into neither (addGroup). Run it under -race, by name,
-// which fails a fold that writes into what the others read.
+// folds share its rows and parts and write into neither (figurePlan.fold). Run it under -race, by
+// name, which fails a fold that writes into what the others read.
 func TestAParallelFoldOfTheStoredFiguresWritesWhatOneWorkerWrites(t *testing.T) {
 	r := newRefresherRig(t)
 	deliveries := deliverytest.Seed(t, r.database.Pool, deliverytest.Spec{Days: 30})
