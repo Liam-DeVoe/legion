@@ -40,8 +40,8 @@ package main
 //     agent routes answer only sessions, roles and topics of the token's projects
 //     (edgeShownTopics); the interest list and another session's interests are 403, and the
 //     Legion agent registry is not written here.
-//   - The start: refused beside every other credential, beside webhooks, and without the
-//     broker-token settings (validateEdgeMode).
+//   - The start: refused beside every other credential, beside Dispatch's principal, beside
+//     webhooks, and without the broker-token settings (validateEdgeMode).
 //
 // A project is one of the token's by the bus's rule for a broker token
 // (projectscope.BrokerTokenAdmits, projectHeld), read as for a private project so that a token
@@ -609,9 +609,12 @@ func registeringProjects(r *http.Request) []string {
 }
 
 // The variables an edge listener refuses to start beside: each admits a caller by something other
-// than a broker token, or serves a route the edge does not.
+// than a broker token, or serves a route the edge does not. ENVOY_DISPATCH_PRINCIPAL is among
+// them: it names the one identity-token caller whose send may carry a role mark (sendHandler), and
+// Dispatch sends through a shared listener, as no session of the edge sends as Dispatch.
 var edgeRefusedSettings = []string{
 	"ENVOY_API_TOKEN",
+	"ENVOY_DISPATCH_PRINCIPAL",
 	"ENVOY_WEBHOOKS",
 	"ENVOY_GITHUB_WEBHOOK_SECRET",
 	"ENVOY_SLACK_SIGNING_SECRET",
@@ -624,10 +627,10 @@ var edgeRefusedSettings = []string{
 const edgeRefusedPrefix = "ENVOY_OIDC_"
 
 // validateEdgeMode is the edge's start rule: an edge listener, one serving edgeProjects, refuses
-// to start beside the shared token, any ENVOY_OIDC_* setting, the webhooks or a webhook secret, or
-// with the broker-token settings incomplete or unset, since it admits a broker token alone; each
-// refusal names the variable. environ is the process's environment as os.Environ writes it. A
-// listener serving no project is not checked.
+// to start beside the shared token, any ENVOY_OIDC_* setting, ENVOY_DISPATCH_PRINCIPAL, the
+// webhooks or a webhook secret, or with the broker-token settings incomplete or unset, since it
+// admits a broker token alone; each refusal names the variable. environ is the process's
+// environment as os.Environ writes it. A listener serving no project is not checked.
 func validateEdgeMode(edgeProjects []string, environ []string) error {
 	if len(edgeProjects) == 0 {
 		return nil
