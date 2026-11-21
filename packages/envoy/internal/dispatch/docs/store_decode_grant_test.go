@@ -56,18 +56,6 @@ func requireWeighedByItsStructs(t *testing.T, update []byte) {
 	}
 }
 
-// latestStoredUpdate is the update the document's head row stores.
-func latestStoredUpdate(t *testing.T, service *Service, artifactID string) []byte {
-	t.Helper()
-	var update []byte
-	if err := service.store.Pool.QueryRow(context.Background(), `
-		select update from doc_updates where artifact_id = $1 order by version desc limit 1
-	`, artifactID).Scan(&update); err != nil {
-		t.Fatalf("read the document's head row: %v", err)
-	}
-	return update
-}
-
 // A browser's update declaring more structs than an apply takes no slot for is decoded twice: by
 // its apply, under the grant the hook takes for it (weighPeerUpdate), and again by the room's
 // persistence worker, which reads the commit back into a fresh copy before it stores it
@@ -121,7 +109,11 @@ func TestAStoredBrowserUpdateHeavyInStructsIsCountedInThePoolWhileItIsReadBack(t
 		t.Fatal("the room stored the update without reaching the store's hook")
 	}
 
-	stored := latestStoredUpdate(t, service, artifactID)
+	rows := storedRows(t, service.store, artifactID)
+	if len(rows) == 0 {
+		t.Fatal("the document stores no row once the room stored the update")
+	}
+	stored := rows[len(rows)-1].update
 	requireWeighedByItsStructs(t, stored)
 	want := storedCopyWeight(stored)
 	switch grants := taken.all(); {

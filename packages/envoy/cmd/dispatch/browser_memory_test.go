@@ -3193,16 +3193,9 @@ func TestTheHeaviestApplyBesideAFullCopyBoundStaysUnderThePodsMemory(t *testing.
 	// its own sentence - the budget charged to its limit, the heaviest applies and the folds
 	// beside it, all inside the pod - and the distance between that charge and the heap is the
 	// over-charge departure 39 records, not slack in the drive.
-	stored := memory.storedStates(t, longEditedTypedTo(t, maxUpdateItemsForTest),
-		paddedToTheRoomsStateCap(t, longEditedTypedTo(t, nearTheStateCapStructs)))
-	longEdited := memory.storedShape(t, "the long-edited document at the decode cap", stored[0])
-	heaviest := memory.storedShape(t, "a document of few structs padded to the room's state cap", stored[1])
+	longEdited, heaviest := memory.heavyWriterShapes(t)
 	agent := memory.storedShape(t, "the agent-rewritten document", memory.agentRewrittenDocument(t))
-	requireAtTheDecodeCap(t, longEdited)
 	requireAtTheDecodeCap(t, agent)
-	if heaviest.stateBytes > maxRoomStateBytesForTest || heaviest.stateBytes+64<<10 < maxRoomStateBytesForTest {
-		t.Fatalf("the padded document stores %d bytes of state, want within 64 KiB under the room's state cap (%d)", heaviest.stateBytes, maxRoomStateBytesForTest)
-	}
 	cached, cacheWeight := memory.readCacheFill(t)
 	heavyRooms := memory.cloneDocuments(t, heaviest.id, 1)
 	typedIDs, _ := memory.smallDocuments(t, 1)
@@ -3229,18 +3222,7 @@ func TestTheHeaviestApplyBesideAFullCopyBoundStaysUnderThePodsMemory(t *testing.
 
 	server := memory.start(t)
 	requirePodGoMemoryLimit(t, server)
-	var held []*browser
-	t.Cleanup(func() {
-		for _, opened := range held {
-			opened.leave()
-		}
-	})
-	open := func(t *testing.T, room string) *browser {
-		t.Helper()
-		opened := server.openBrowser(t, room)
-		held = append(held, opened)
-		return opened
-	}
+	open := server.browsersHeld(t)
 
 	step := time.Now()
 	var handing []*browser
@@ -3273,23 +3255,10 @@ func TestTheHeaviestApplyBesideAFullCopyBoundStaysUnderThePodsMemory(t *testing.
 		t.Errorf("filling the cache left %d MiB more resident, want at least %d MiB, so the cache holds what the worst case counts", retained>>20, (documentReadBudgetForTest/2)>>20)
 	}
 
-	handoffs := make([][]byte, len(handing))
-	for index, handingBack := range handing {
-		handoffs[index] = typedHandoff(t, handingBack.state(t))
-		if len(handoffs[index]) > maxRoomStateBytesForTest || len(handoffs[index])+64<<10 < maxRoomStateBytesForTest {
-			t.Fatalf("handoff %d is %d bytes, want within 64 KiB under the room's state cap (%d)", index, len(handoffs[index]), maxRoomStateBytesForTest)
-		}
-	}
-	type outcome struct {
-		took    time.Duration
-		applied bool
-		opened  *browser
-		closed  *gws.CloseError
-		err     error
-	}
-	handed := make([]outcome, len(handing))
-	loaded := make([]outcome, len(lastRooms))
-	read := make([]outcome, len(folded))
+	handoffs := stateCapHandoffs(t, handing)
+	handed := make([]windowOutcome, len(handing))
+	loaded := make([]windowOutcome, len(lastRooms))
+	read := make([]windowOutcome, len(folded))
 	t.Cleanup(func() {
 		for _, last := range loaded {
 			if last.opened != nil {
@@ -3305,7 +3274,7 @@ func TestTheHeaviestApplyBesideAFullCopyBoundStaysUnderThePodsMemory(t *testing.
 			group.Go(func() {
 				result := &handed[index]
 				result.applied, result.closed, result.err = handingBack.send(handingBack.stateFrame(handoffs[index]))
-				result.took = time.Since(step)
+				result.answered = time.Now()
 			})
 		}
 		for index, room := range lastRooms {
@@ -3315,19 +3284,14 @@ func TestTheHeaviestApplyBesideAFullCopyBoundStaysUnderThePodsMemory(t *testing.
 				if errors.As(result.err, &result.closed) {
 					result.err = nil
 				}
-				result.took = time.Since(step)
+				result.answered = time.Now()
 			})
 		}
 		for index, room := range folded {
 			group.Go(func() {
 				result := &read[index]
-				var answer response
-				answer, result.err = server.trySend(http.MethodGet, "/api/v1/artifacts/"+room+"/text", "", nil, http.Header{"X-Dispatch-User": {"alice"}})
-				var text struct{ Markdown string }
-				if result.err == nil && (answer.status != http.StatusOK || json.Unmarshal(answer.body, &text) != nil || text.Markdown == "") {
-					result.err = fmt.Errorf("status %d body %.300s, want 200 and the document's text", answer.status, answer.body)
-				}
-				result.took = time.Since(step)
+				result.err = server.tryText(room)
+				result.answered = time.Now()
 			})
 		}
 		group.Wait()
@@ -3364,12 +3328,7 @@ func TestTheHeaviestApplyBesideAFullCopyBoundStaysUnderThePodsMemory(t *testing.
 		}
 	}
 
-	for index, result := range handed {
-		t.Logf("handoff %d of %d bytes: applied %v, closed %v, answered in %s", index, len(handoffs[index]), result.applied, result.closed, result.took.Round(time.Millisecond))
-		if result.err != nil || !result.applied || result.closed != nil {
-			t.Errorf("handoff %d of %d bytes at F: applied %v, closed %v, %v; want it applied and the socket open", index, len(handoffs[index]), result.applied, result.closed, result.err)
-		}
-	}
+	requireHandedBack(t, step, handoffs, handed)
 	refusals := budgetRefusalsByRoom(t, server)
 	admittedLast := 0
 	for index, result := range loaded {
@@ -3378,7 +3337,7 @@ func TestTheHeaviestApplyBesideAFullCopyBoundStaysUnderThePodsMemory(t *testing.
 			t.Errorf("the browser of agent-rewritten document %d: %v", index, result.err)
 		case result.opened != nil:
 			admittedLast++
-			t.Logf("the browser of agent-rewritten document %d was admitted and received its document in %s", index, result.took.Round(time.Millisecond))
+			t.Logf("the browser of agent-rewritten document %d was admitted and received its document in %s", index, result.answered.Sub(step).Round(time.Millisecond))
 			if err := result.opened.ping(); err != nil {
 				t.Errorf("the admitted browser of agent-rewritten document %d lost its room: %v", index, err)
 			}
@@ -3390,11 +3349,11 @@ func TestTheHeaviestApplyBesideAFullCopyBoundStaysUnderThePodsMemory(t *testing.
 			// meets, and which the production pod's ten make far rarer.
 			refusal, logged := refusals[lastRooms[index]]
 			if !logged {
-				t.Logf("the browser of agent-rewritten document %d was refused in %s with no budget line, which is the pod's %d load slots", index, result.took.Round(time.Millisecond), loadSlotsForTest)
+				t.Logf("the browser of agent-rewritten document %d was refused in %s with no budget line, which is the pod's %d load slots", index, result.answered.Sub(step).Round(time.Millisecond), loadSlotsForTest)
 				continue
 			}
 			t.Logf("the browser of agent-rewritten document %d was refused by the budget in %s at %d charged and %d reserved of %d bytes, asking %d, its own room weighed at %d",
-				index, result.took.Round(time.Millisecond), refusal.charged, refusal.reserved, refusal.limit, refusal.asks, agent.weight)
+				index, result.answered.Sub(step).Round(time.Millisecond), refusal.charged, refusal.reserved, refusal.limit, refusal.asks, agent.weight)
 			if refusal.charged+refusal.reserved+refusal.asks <= refusal.limit {
 				t.Errorf("the browser of agent-rewritten document %d was refused with %+v, which fits the %d-byte limit: refused earlier than the budget's arithmetic allows",
 					index, refusal, roomBudgetBytesForTest)
@@ -3404,26 +3363,7 @@ func TestTheHeaviestApplyBesideAFullCopyBoundStaysUnderThePodsMemory(t *testing.
 	if admittedLast != 1 {
 		t.Errorf("%d of the two agent-rewritten documents were admitted, want the one the budget's arithmetic has room for", admittedLast)
 	}
-	// A cold read behind the handoffs waits for the pod's one slot and is answered 503
-	// DOC_SERVICE_UNAVAILABLE at its own deadline where the wait outlasts it (docs' loadSlots,
-	// errWriteBusy). That is the load concurrency working, not a failure: one slot is what makes
-	// A3's arithmetic true at a 4 GiB pod, and the production pod's limit gives ten, where
-	// a read waits behind at most a tenth of this. So the drive counts the two answers and
-	// holds only that no read failed any other way.
-	coldRead, coldBusy := 0, 0
-	for index, result := range read {
-		t.Logf("cold read %d answered in %s (%v)", index, result.took.Round(time.Millisecond), result.err)
-		switch {
-		case result.err == nil:
-			coldRead++
-		case strings.Contains(result.err.Error(), "DOC_SERVICE_UNAVAILABLE"):
-			coldBusy++
-		default:
-			t.Errorf("cold read %d of a struct-dense document: %v", index, result.err)
-		}
-	}
-	t.Logf("%d of the %d cold reads folded their document and %d waited for one of the pod's %d load slots until their own deadline and were answered 503",
-		coldRead, len(read), coldBusy, loadSlotsForTest)
+	tallyColdReads(t, step, read)
 
 	holds := loadSlotHolds(t, window)
 	var longestWait, longestHold time.Duration
@@ -3459,6 +3399,192 @@ func TestTheHeaviestApplyBesideAFullCopyBoundStaysUnderThePodsMemory(t *testing.
 	} {
 		requireUnderThePod(t, measured.peak, measured.step)
 	}
+}
+
+// windowOutcome is how one request of a drive's window was answered: when it was sent and when
+// answered, whether the frame it sent applied, the browser it opened, the close its socket met, and
+// any other error.
+type windowOutcome struct {
+	sent, answered time.Time
+	applied        bool
+	opened         *browser
+	closed         *gws.CloseError
+	err            error
+}
+
+// heavyWriterShapes stores the documents of the heaviest-apply drive's heavy work, which the
+// store-decode and the gate-fold drives hold the pod's load pool full with too: the long-edited
+// document at the decode cap, which the cold reads fold, and a document of few structs padded to
+// the room's state cap, whose browsers hand its whole state back. It fails the test unless each
+// stands at its cap.
+func (h *memoryHarness) heavyWriterShapes(t *testing.T) (longEdited, heaviest storedShape) {
+	t.Helper()
+	stored := h.storedStates(t, longEditedTypedTo(t, maxUpdateItemsForTest),
+		paddedToTheRoomsStateCap(t, longEditedTypedTo(t, nearTheStateCapStructs)))
+	longEdited = h.storedShape(t, "the long-edited document at the decode cap", stored[0])
+	heaviest = h.storedShape(t, "a document of few structs padded to the room's state cap", stored[1])
+	requireAtTheDecodeCap(t, longEdited)
+	if heaviest.stateBytes > maxRoomStateBytesForTest || heaviest.stateBytes+64<<10 < maxRoomStateBytesForTest {
+		t.Fatalf("the padded document stores %d bytes of state, want within 64 KiB under the room's state cap (%d)", heaviest.stateBytes, maxRoomStateBytesForTest)
+	}
+	return longEdited, heaviest
+}
+
+// browsersHeld answers what opens a browser of a room on p (openBrowser) and holds it until the
+// test ends, when every browser it opened leaves.
+func (p *memoryServer) browsersHeld(t *testing.T) (open func(t *testing.T, room string) *browser) {
+	t.Helper()
+	var held []*browser
+	t.Cleanup(func() {
+		for _, opened := range held {
+			opened.leave()
+		}
+	})
+	return func(t *testing.T, room string) *browser {
+		t.Helper()
+		opened := p.openBrowser(t, room)
+		held = append(held, opened)
+		return opened
+	}
+}
+
+// stateCapHandoffs is the whole-state handoff each browser of handing sends: its room's state with
+// a few words typed (typedHandoff). It fails the test unless each is within 64 KiB under the room's
+// state cap.
+func stateCapHandoffs(t *testing.T, handing []*browser) [][]byte {
+	t.Helper()
+	handed := make([][]byte, len(handing))
+	for index, handingBack := range handing {
+		handed[index] = typedHandoff(t, handingBack.state(t))
+		if len(handed[index]) > maxRoomStateBytesForTest || len(handed[index])+64<<10 < maxRoomStateBytesForTest {
+			t.Fatalf("handoff %d is %d bytes, want within 64 KiB under the room's state cap (%d)", index, len(handed[index]), maxRoomStateBytesForTest)
+		}
+	}
+	return handed
+}
+
+// tryText reads room's text cold as alice, from a goroutine other than the test's (trySend): nil
+// once the server answers 200 with the document's text, and otherwise the request's error or the
+// status and body it answered.
+func (p *memoryServer) tryText(room string) error {
+	answer, err := p.trySend(http.MethodGet, "/api/v1/artifacts/"+room+"/text", "", nil, http.Header{"X-Dispatch-User": {"alice"}})
+	if err != nil {
+		return err
+	}
+	var text struct{ Markdown string }
+	if answer.status != http.StatusOK || json.Unmarshal(answer.body, &text) != nil || text.Markdown == "" {
+		return fmt.Errorf("status %d body %.300s, want 200 and the document's text", answer.status, answer.body)
+	}
+	return nil
+}
+
+// requireHandedBack fails the test unless each handoff of handed was applied and left its socket
+// open (handedBack), logging how far into the window, which began at step, each was answered.
+func requireHandedBack(t *testing.T, step time.Time, handed [][]byte, handedBack []windowOutcome) {
+	t.Helper()
+	for index, result := range handedBack {
+		t.Logf("handoff %d of %d bytes: applied %v, closed %v, answered %s into the window", index, len(handed[index]), result.applied, result.closed, result.answered.Sub(step).Round(time.Millisecond))
+		if result.err != nil || !result.applied || result.closed != nil {
+			t.Errorf("handoff %d of %d bytes at the state cap: applied %v, closed %v, %v; want it applied and the socket open", index, len(handed[index]), result.applied, result.closed, result.err)
+		}
+	}
+}
+
+// tallyColdReads logs how far into the window, which began at step, each cold read of read was
+// answered, and counts those that folded their document and those answered 503. A cold read
+// behind the heavy work waits for the pod's one slot and is answered 503 DOC_SERVICE_UNAVAILABLE
+// at its own deadline where the wait outlasts it (docs' loadSlots, errWriteBusy). That is the load
+// concurrency working, not a failure: one slot is what makes A3's arithmetic true at a 4 GiB pod,
+// and the production pod's limit gives ten, where a read waits behind at most a tenth of this. So
+// it fails the test only where a read failed any other way.
+func tallyColdReads(t *testing.T, step time.Time, read []windowOutcome) {
+	t.Helper()
+	coldRead, coldBusy := 0, 0
+	for index, result := range read {
+		t.Logf("cold read %d answered %s into the window (%v)", index, result.answered.Sub(step).Round(time.Millisecond), result.err)
+		switch {
+		case result.err == nil:
+			coldRead++
+		case strings.Contains(result.err.Error(), "DOC_SERVICE_UNAVAILABLE"):
+			coldBusy++
+		default:
+			t.Errorf("cold read %d of a document at the decode cap: %v", index, result.err)
+		}
+	}
+	t.Logf("%d of the %d cold reads folded their document and %d waited for one of the pod's %d load slots until their own deadline and were answered 503",
+		coldRead, len(read), coldBusy, loadSlotsForTest)
+}
+
+// heavyWriters is the heavy work the store-decode and the gate-fold drives hold the pod's load
+// pool full with, the heaviest-apply drive's: the browsers of handing hand the room at the state
+// cap's whole state back with a few words typed (handed), each apply granted its state's weight,
+// and a cold read of each document of folded, at the decode cap, folds it under a whole slot.
+// handedBack and read are how each was answered.
+type heavyWriters struct {
+	handing          []*browser
+	handed           [][]byte
+	folded           []string
+	handedBack, read []windowOutcome
+}
+
+// newHeavyWriters makes the handoff of each browser of handing (stateCapHandoffs).
+func newHeavyWriters(t *testing.T, handing []*browser, folded []string) *heavyWriters {
+	t.Helper()
+	return &heavyWriters{handing: handing, handed: stateCapHandoffs(t, handing), folded: folded,
+		handedBack: make([]windowOutcome, len(handing)), read: make([]windowOutcome, len(folded))}
+}
+
+// fillPool sends every handoff and every cold read to server, each on a goroutine of group's, and
+// returns once the server has given back a grant a holder waited for (loadSlotLine), logged past
+// mark in its output: the heavy work is queuing for the pool by then. It fails the test, once
+// group's work has returned, where no holder waited within poolQueuedWithin.
+func (w *heavyWriters) fillPool(t *testing.T, server *memoryServer, group *sync.WaitGroup, mark int) {
+	t.Helper()
+	for index, handingBack := range w.handing {
+		group.Go(func() {
+			result := &w.handedBack[index]
+			result.sent = time.Now()
+			result.applied, result.closed, result.err = handingBack.send(handingBack.stateFrame(w.handed[index]))
+			result.answered = time.Now()
+		})
+	}
+	for index, room := range w.folded {
+		group.Go(func() {
+			result := &w.read[index]
+			result.sent = time.Now()
+			result.err = server.tryText(room)
+			result.answered = time.Now()
+		})
+	}
+	for deadline := time.Now().Add(poolQueuedWithin); len(loadSlotHolds(t, server.output.String()[mark:])) == 0; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			group.Wait()
+			t.Fatalf("no holder of the pool waited for it within %s of the heavy writers and the folds starting: the pool was never full", poolQueuedWithin)
+		}
+	}
+}
+
+// requireUnderThePodWithHeadroom is requireUnderThePod, and logs too how far each reading of the
+// step stood under its bound, where the server's memory trace sampled the step.
+func requireUnderThePodWithHeadroom(t *testing.T, peak podPeak, step string) {
+	t.Helper()
+	requireUnderThePod(t, peak, step)
+	if peak.samples > 0 {
+		t.Logf("%s: a pod's kernel would charge %d MiB, %d MiB under the pod's %d; the runtime held %d bytes, %d under the %d-byte limit and its %d-byte margin",
+			step, peak.charged>>20, (podMemory-peak.charged)>>20, podMemory>>20, peak.held, peak.limit+podGoMemoryLimitMargin-peak.held, peak.limit, podGoMemoryLimitMargin)
+	}
+}
+
+// storedHead is the document's durable head, the version its stored history stands at.
+func (h *memoryHarness) storedHead(t *testing.T, artifactID string) int64 {
+	t.Helper()
+	var head int64
+	if err := h.database.Pool.QueryRow(context.Background(),
+		`select coalesce(max(version), 0) from doc_updates where artifact_id = $1`, artifactID,
+	).Scan(&head); err != nil {
+		t.Fatalf("read the head of document %s: %v", artifactID, err)
+	}
+	return head
 }
 
 const (
@@ -3567,15 +3693,7 @@ func TestStoreDecodesWaitForAFullPoolAndStayUnderThePodsMemory(t *testing.T) {
 	building := time.Now()
 	memory := newMemoryHarness(t)
 	memory.env = append(memory.env, podServerEnv()...)
-	// The heavy writers' room and the folds' documents, as the heaviest-apply drive builds them.
-	stored := memory.storedStates(t, longEditedTypedTo(t, maxUpdateItemsForTest),
-		paddedToTheRoomsStateCap(t, longEditedTypedTo(t, nearTheStateCapStructs)))
-	longEdited := memory.storedShape(t, "the long-edited document at the decode cap", stored[0])
-	heaviest := memory.storedShape(t, "a document of few structs padded to the room's state cap", stored[1])
-	requireAtTheDecodeCap(t, longEdited)
-	if heaviest.stateBytes > maxRoomStateBytesForTest || heaviest.stateBytes+64<<10 < maxRoomStateBytesForTest {
-		t.Fatalf("the padded document stores %d bytes of state, want within 64 KiB under the room's state cap (%d)", heaviest.stateBytes, maxRoomStateBytesForTest)
-	}
+	longEdited, heaviest := memory.heavyWriterShapes(t)
 	// A3's document, copied as many times as A3's arithmetic holds rooms of it, which is more than
 	// this drive opens.
 	fleet := memory.mebibyteFleet(t, func(weight int64) int { return int(roomBudgetBytesForTest / weight) })
@@ -3622,18 +3740,7 @@ func TestStoreDecodesWaitForAFullPoolAndStayUnderThePodsMemory(t *testing.T) {
 
 	server := memory.start(t)
 	requirePodGoMemoryLimit(t, server)
-	var held []*browser
-	t.Cleanup(func() {
-		for _, opened := range held {
-			opened.leave()
-		}
-	})
-	open := func(t *testing.T, room string) *browser {
-		t.Helper()
-		opened := server.openBrowser(t, room)
-		held = append(held, opened)
-		return opened
-	}
+	open := server.browsersHeld(t)
 	step := time.Now()
 	var handing, stepping []*browser
 	filledPeak := server.peakResident(t, func() {
@@ -3646,72 +3753,30 @@ func TestStoreDecodesWaitForAFullPoolAndStayUnderThePodsMemory(t *testing.T) {
 	})
 	t.Logf("the rooms are open: the room at the state cap held by %d browsers and %d rooms of a mebibyte of prose, in %s; %d MiB resident now",
 		len(handing), len(stepping), time.Since(step).Round(time.Second), server.resident(t, "VmRSS")>>20)
-	handed := make([][]byte, len(handing))
-	for index, handingBack := range handing {
-		handed[index] = typedHandoff(t, handingBack.state(t))
-		if len(handed[index]) > maxRoomStateBytesForTest || len(handed[index])+64<<10 < maxRoomStateBytesForTest {
-			t.Fatalf("handoff %d is %d bytes, want within 64 KiB under the room's state cap (%d)", index, len(handed[index]), maxRoomStateBytesForTest)
-		}
-	}
+	writers := newHeavyWriters(t, handing, folded)
 	// The head each room loaded at, past which its worker stores the step 2's commit.
 	loadedHeads := make([]int64, rooms)
 	for index, room := range fleet.copies[:rooms] {
-		if err := memory.database.Pool.QueryRow(context.Background(),
-			`select coalesce(max(version), 0) from doc_updates where artifact_id = $1`, room,
-		).Scan(&loadedHeads[index]); err != nil {
-			t.Fatalf("read the head room %d loaded at: %v", index, err)
-		}
+		loadedHeads[index] = memory.storedHead(t, room)
 	}
 
-	type outcome struct {
-		took    time.Duration
-		applied bool
-		closed  *gws.CloseError
-		err     error
-	}
-	handedBack := make([]outcome, len(handing))
-	read := make([]outcome, len(folded))
-	stepped := make([]outcome, len(stepping))
+	stepped := make([]windowOutcome, len(stepping))
 	mark := len(server.output.String())
 	var sent time.Time
 	step = time.Now()
 	peak := server.peakResident(t, func() {
 		var group sync.WaitGroup
-		for index, handingBack := range handing {
-			group.Go(func() {
-				result := &handedBack[index]
-				result.applied, result.closed, result.err = handingBack.send(handingBack.stateFrame(handed[index]))
-				result.took = time.Since(step)
-			})
-		}
-		for index, room := range folded {
-			group.Go(func() {
-				result := &read[index]
-				var answer response
-				answer, result.err = server.trySend(http.MethodGet, "/api/v1/artifacts/"+room+"/text", "", nil, http.Header{"X-Dispatch-User": {"alice"}})
-				var text struct{ Markdown string }
-				if result.err == nil && (answer.status != http.StatusOK || json.Unmarshal(answer.body, &text) != nil || text.Markdown == "") {
-					result.err = fmt.Errorf("status %d body %.300s, want 200 and the document's text", answer.status, answer.body)
-				}
-				result.took = time.Since(step)
-			})
-		}
 		// The step 2s go once the pool is full: once the server has given back a grant a holder
 		// waited for, the heavy writers and the folds are queuing for it, and the step 2s queue
 		// behind those still waiting.
-		for deadline := time.Now().Add(poolQueuedWithin); len(loadSlotHolds(t, server.output.String()[mark:])) == 0; time.Sleep(10 * time.Millisecond) {
-			if time.Now().After(deadline) {
-				group.Wait()
-				t.Fatalf("no holder of the pool waited for it within %s of the heavy writers and the folds starting: the pool was never full", poolQueuedWithin)
-			}
-		}
+		writers.fillPool(t, server, &group, mark)
 		sent = time.Now()
 		t.Logf("a holder of the pool had waited for it %s after the heavy writers and the folds started; the step 2s go now", sent.Sub(step).Round(time.Millisecond))
 		for index, sending := range stepping {
 			group.Go(func() {
 				result := &stepped[index]
 				result.applied, result.closed, result.err = sending.send(sending.stateFrame(frame))
-				result.took = time.Since(sent)
+				result.answered = time.Now()
 			})
 		}
 		group.Wait()
@@ -3720,35 +3785,14 @@ func TestStoreDecodesWaitForAFullPoolAndStayUnderThePodsMemory(t *testing.T) {
 	window := server.output.String()[mark:]
 
 	for index, result := range stepped {
-		t.Logf("the step 2 into room %d: applied %v, closed %v, answered in %s", index, result.applied, result.closed, result.took.Round(time.Millisecond))
+		t.Logf("the step 2 into room %d: applied %v, closed %v, answered in %s", index, result.applied, result.closed, result.answered.Sub(sent).Round(time.Millisecond))
 		if result.err != nil || !result.applied || result.closed != nil {
 			t.Errorf("the step 2 into room %d: applied %v, closed %v, %v; want it applied and stored within %s (browserAnswerWithin), and the socket open",
 				index, result.applied, result.closed, result.err, browserAnswerWithin)
 		}
 	}
-	for index, result := range handedBack {
-		t.Logf("handoff %d of %d bytes: applied %v, closed %v, answered in %s", index, len(handed[index]), result.applied, result.closed, result.took.Round(time.Millisecond))
-		if result.err != nil || !result.applied || result.closed != nil {
-			t.Errorf("handoff %d of %d bytes at the state cap: applied %v, closed %v, %v; want it applied and the socket open", index, len(handed[index]), result.applied, result.closed, result.err)
-		}
-	}
-	// A cold read behind the heavy work waits for the pod's one slot and is answered 503
-	// DOC_SERVICE_UNAVAILABLE at its own deadline where the wait outlasts it, as in the
-	// heaviest-apply drive: the load concurrency working, not a failure.
-	coldRead, coldBusy := 0, 0
-	for index, result := range read {
-		t.Logf("cold read %d answered in %s (%v)", index, result.took.Round(time.Millisecond), result.err)
-		switch {
-		case result.err == nil:
-			coldRead++
-		case strings.Contains(result.err.Error(), "DOC_SERVICE_UNAVAILABLE"):
-			coldBusy++
-		default:
-			t.Errorf("cold read %d of a document at the decode cap: %v", index, result.err)
-		}
-	}
-	t.Logf("%d of the %d cold reads folded their document and %d waited for one of the pod's %d load slots until their own deadline and were answered 503",
-		coldRead, len(read), coldBusy, loadSlotsForTest)
+	requireHandedBack(t, step, writers.handed, writers.handedBack)
+	tallyColdReads(t, step, writers.read)
 
 	holds := loadSlotHolds(t, window)
 	logLoadSlots(t, "the store decodes waiting for the full pool", holds)
@@ -3811,7 +3855,7 @@ func TestStoreDecodesWaitForAFullPoolAndStayUnderThePodsMemory(t *testing.T) {
 	var order []int
 	queued := make([]bool, rooms)
 	for index := range rooms {
-		queued[index] = poolQueuedThrough(holds, sent, sent.Add(stepped[index].took))
+		queued[index] = poolQueuedThrough(holds, sent, stepped[index].answered)
 		if queued[index] && readWeights[index] > 0 {
 			order = append(order, index)
 		}
@@ -3823,12 +3867,12 @@ func TestStoreDecodesWaitForAFullPoolAndStayUnderThePodsMemory(t *testing.T) {
 	}
 	windows := make([]grantWindow, len(order))
 	for position, index := range order {
-		windows[position] = grantWindow{bytes: readWeights[index], from: firstGiven.Add(-logTimeGrain), to: sent.Add(stepped[index].took)}
+		windows[position] = grantWindow{bytes: readWeights[index], from: firstGiven.Add(-logTimeGrain), to: stepped[index].answered}
 	}
 	waitedReads, roomyReads := 0, 0
 	for position, matched := range matchGrants(windows, holds) {
 		index := order[position]
-		answeredAfter := stepped[index].took
+		answeredAfter := stepped[index].answered.Sub(sent)
 		switch {
 		case matched >= 0:
 			waitedReads++
@@ -3848,11 +3892,7 @@ func TestStoreDecodesWaitForAFullPoolAndStayUnderThePodsMemory(t *testing.T) {
 		took.Round(time.Second), waitedReads, rooms, roomyReads, stepGrants)
 
 	requireUnderThePod(t, filledPeak, "the rooms opened")
-	requireUnderThePod(t, peak, "the store decodes waiting for the full pool")
-	if peak.samples > 0 {
-		t.Logf("the store decodes waiting for the full pool: a pod's kernel would charge %d MiB, %d MiB under the pod's %d; the runtime held %d bytes, %d under the %d-byte limit and its %d-byte margin",
-			peak.charged>>20, (podMemory-peak.charged)>>20, podMemory>>20, peak.held, peak.limit+podGoMemoryLimitMargin-peak.held, peak.limit, podGoMemoryLimitMargin)
-	}
+	requireUnderThePodWithHeadroom(t, peak, "the store decodes waiting for the full pool")
 }
 
 // heaviestStepTwo is the heaviest step 2 a browser of a room holding state sends that the hook
@@ -4034,14 +4074,15 @@ var replacedCloseLine = regexp.MustCompile(`time=(\S+) level=INFO msg="dispatch:
 // pool is full, so no more can close in the window than the budget holds at this state, and no
 // more of them fold at once than the bufferedFolds.
 //
-// E's heaviest step 2 (heaviestStepTwo) runs in no room of the window. Another room of A3's prose
-// with its step 2 does not fit what the fold rooms leave of the budget, which the drive computes,
-// and fails on should it ever fit; and trading a fold room for one would take a fold of hundreds of
-// MB out of the window to add a read-back of tens. A fold room's own step 2, whatever its caps and
-// the budget would take, declares more than unslottedApplyStructsForTest, so its apply takes a
-// grant and waits in the room's hook for as long as the pool is full: sent after the keystroke it
-// meets a room the keystroke's store closes, and sent before it, the socket's keystroke waits
-// behind it, so the gate would fold only once the pool's queue had reached the step 2.
+// The store-decode drive's heaviest step 2 (heaviestStepTwo) runs in no room of the window.
+// Another room of A3's prose with its step 2 does not fit what the fold rooms leave of the budget,
+// which the drive computes, and fails on should it ever fit; and trading a fold room for one would
+// take a fold of hundreds of MB out of the window to add a read-back of tens. A fold room's own
+// step 2, whatever its caps and the budget would take, declares more than
+// unslottedApplyStructsForTest, so its apply takes a grant and waits in the room's hook for as long
+// as the pool is full: sent after the keystroke it meets a room the keystroke's store closes, and
+// sent before it, the socket's keystroke waits behind it, so the gate would fold only once the
+// pool's queue had reached the step 2.
 //
 // The window runs from the first of the heavy requests to the last room's close. The drive reads
 // its peak both ways A3 reads one (requireUnderThePod) - what a pod's kernel would charge, under
@@ -4062,16 +4103,9 @@ func TestGateFoldsWaitForAFullPoolAndStayUnderThePodsMemory(t *testing.T) {
 	building := time.Now()
 	memory := newMemoryHarness(t)
 	memory.env = append(memory.env, podServerEnv()...)
-	// The heavy writers' room and the cold reads' documents, as the store-decode drive builds them.
-	stored := memory.storedStates(t, longEditedTypedTo(t, maxUpdateItemsForTest),
-		paddedToTheRoomsStateCap(t, longEditedTypedTo(t, nearTheStateCapStructs)))
-	longEdited := memory.storedShape(t, "the long-edited document at the decode cap", stored[0])
-	heaviest := memory.storedShape(t, "a document of few structs padded to the room's state cap", stored[1])
-	requireAtTheDecodeCap(t, longEdited)
-	if heaviest.stateBytes > maxRoomStateBytesForTest || heaviest.stateBytes+64<<10 < maxRoomStateBytesForTest {
-		t.Fatalf("the padded document stores %d bytes of state, want within 64 KiB under the room's state cap (%d)", heaviest.stateBytes, maxRoomStateBytesForTest)
-	}
-	// A3's document, for A3's count of rooms and E's heaviest step 2. No copy of it is opened.
+	longEdited, heaviest := memory.heavyWriterShapes(t)
+	// A3's document, for A3's count of rooms and the store-decode drive's heaviest step 2. No copy
+	// of it is opened.
 	fleet := memory.mebibyteFleet(t, func(int64) int { return 0 })
 	a3Rooms := int(roomBudgetBytesForTest / fleet.weight)
 	fleetStructs, err := docs.StateStructsForTest(fleet.state)
@@ -4105,7 +4139,7 @@ func TestGateFoldsWaitForAFullPoolAndStayUnderThePodsMemory(t *testing.T) {
 	left := roomBudgetBytesForTest - heaviest.weight - handedGrowth - int64(rooms)*roomCharge
 	withStepTwo := roomWeightForTest(int64(len(fleet.state)+len(frame)), fleetStructs+chained)
 	if left >= withStepTwo {
-		t.Fatalf("beside the %d rooms of the run the budget leaves %d bytes, room for a room of a mebibyte of prose with E's heaviest step 2 (%d): this drive weighs the gate's folds without E's decodes because the budget held no such room beside them, and must now send them in the same window",
+		t.Fatalf("beside the %d rooms of the run the budget leaves %d bytes, room for a room of a mebibyte of prose with the store-decode drive's heaviest step 2 (%d): this drive weighs the gate's folds without that drive's decodes because the budget held no such room beside them, and must now send them in the same window",
 			rooms, left, withStepTwo)
 	}
 	stepGrowth := roomWeightForTest(int64(run.stateBytes+len(frame)), run.structs+chained) - run.weight
@@ -4121,24 +4155,13 @@ func TestGateFoldsWaitForAFullPoolAndStayUnderThePodsMemory(t *testing.T) {
 	}
 	t.Logf("the budget: a room of the run (%d bytes of state, %d structs) is charged %d bytes and %d more for its keystroke; beside the room at the state cap (%d) and its handoffs' words (%d), the %d-byte budget holds %d such rooms, where A3's arithmetic holds %d rooms of a mebibyte of prose; the documents took %s to build",
 		run.stateBytes, run.structs, run.weight, int64(keystrokeChargeForTest), heaviest.weight, handedGrowth, roomBudgetBytesForTest, rooms, a3Rooms, time.Since(building).Round(time.Second))
-	t.Logf("E's heaviest step 2, %d bytes chaining %d structs, runs in no room of the window: the budget leaves %d bytes beside the %d rooms of the run, short of the %d a room of a mebibyte of prose (%d structs) is charged with it; in a room of the run it would add %d to the room's charge, which %d of them would have room for, but it is applied under a grant of %d bytes (copyWeightForTest), for which it waits while the pool is full",
+	t.Logf("the store-decode drive's heaviest step 2, %d bytes chaining %d structs, runs in no room of the window: the budget leaves %d bytes beside the %d rooms of the run, short of the %d a room of a mebibyte of prose (%d structs) is charged with it; in a room of the run it would add %d to the room's charge, which %d of them would have room for, but it is applied under a grant of %d bytes (copyWeightForTest), for which it waits while the pool is full",
 		len(frame), chained, left, rooms, withStepTwo, fleetStructs, stepGrowth, left/stepGrowth, copyWeightForTest(int64(len(frame)), chained))
 	t.Logf("the drive's %d documents owe the server no block index, so the only reads of them are the drive's own", memory.oweNoBlockIndex(t))
 
 	server := memory.start(t)
 	requirePodGoMemoryLimit(t, server)
-	var held []*browser
-	t.Cleanup(func() {
-		for _, opened := range held {
-			opened.leave()
-		}
-	})
-	open := func(t *testing.T, room string) *browser {
-		t.Helper()
-		opened := server.openBrowser(t, room)
-		held = append(held, opened)
-		return opened
-	}
+	open := server.browsersHeld(t)
 	step := time.Now()
 	var handing, typing []*browser
 	filledPeak := server.peakResident(t, func() {
@@ -4161,12 +4184,7 @@ func TestGateFoldsWaitForAFullPoolAndStayUnderThePodsMemory(t *testing.T) {
 	foldedRows := make([]int, rooms)
 	step = time.Now()
 	for index, room := range foldRooms {
-		var head int64
-		if err := memory.database.Pool.QueryRow(ctx,
-			`select coalesce(max(version), 0) from doc_updates where artifact_id = $1`, room,
-		).Scan(&head); err != nil {
-			t.Fatalf("read the head room %d loaded at: %v", index, err)
-		}
+		head := memory.storedHead(t, room)
 		if _, err := memory.database.Pool.Exec(ctx,
 			`insert into doc_updates (artifact_id, version, update, content_changed) values ($1, $2, $3, false)`, room, head+1, writtenPast,
 		); err != nil {
@@ -4197,13 +4215,7 @@ func TestGateFoldsWaitForAFullPoolAndStayUnderThePodsMemory(t *testing.T) {
 			index, head, deleted, head+1, foldedRows[index], gateFoldRun, head+2)
 	}
 	t.Logf("the %d rooms' histories were replaced past their cursors in %s", rooms, time.Since(step).Round(time.Second))
-	handed := make([][]byte, len(handing))
-	for index, handingBack := range handing {
-		handed[index] = typedHandoff(t, handingBack.state(t))
-		if len(handed[index]) > maxRoomStateBytesForTest || len(handed[index])+64<<10 < maxRoomStateBytesForTest {
-			t.Fatalf("handoff %d is %d bytes, want within 64 KiB under the room's state cap (%d)", index, len(handed[index]), maxRoomStateBytesForTest)
-		}
-	}
+	writers := newHeavyWriters(t, handing, folded)
 	// The keystroke, typed at the head of the document's first text: it builds on the seed's items
 	// alone, which every room holds and the replaced history keeps, so one update applies to each.
 	typist := newBrowserDocument(t, seed, crdt.WithClientID(gateFoldTypist))
@@ -4222,49 +4234,15 @@ func TestGateFoldsWaitForAFullPoolAndStayUnderThePodsMemory(t *testing.T) {
 		t.Fatalf("age the rooms' replaced rows past the tail: %v", err)
 	}
 
-	type outcome struct {
-		sent, answered time.Time
-		applied        bool
-		closed         *gws.CloseError
-		err            error
-	}
-	handedBack := make([]outcome, len(handing))
-	read := make([]outcome, len(folded))
-	typed := make([]outcome, len(typing))
+	typed := make([]windowOutcome, len(typing))
 	var closes map[string]time.Time
 	mark := len(server.output.String())
 	step = time.Now()
 	peak := server.peakResident(t, func() {
 		var group sync.WaitGroup
-		for index, handingBack := range handing {
-			group.Go(func() {
-				result := &handedBack[index]
-				result.sent = time.Now()
-				result.applied, result.closed, result.err = handingBack.send(handingBack.stateFrame(handed[index]))
-				result.answered = time.Now()
-			})
-		}
-		for index, room := range folded {
-			group.Go(func() {
-				result := &read[index]
-				result.sent = time.Now()
-				var answer response
-				answer, result.err = server.trySend(http.MethodGet, "/api/v1/artifacts/"+room+"/text", "", nil, http.Header{"X-Dispatch-User": {"alice"}})
-				var text struct{ Markdown string }
-				if result.err == nil && (answer.status != http.StatusOK || json.Unmarshal(answer.body, &text) != nil || text.Markdown == "") {
-					result.err = fmt.Errorf("status %d body %.300s, want 200 and the document's text", answer.status, answer.body)
-				}
-				result.answered = time.Now()
-			})
-		}
 		// The keystrokes go once the pool is full: once the server has given back a grant a holder
 		// waited for, the heavy writers and the folds are queuing for it.
-		for deadline := time.Now().Add(poolQueuedWithin); len(loadSlotHolds(t, server.output.String()[mark:])) == 0; time.Sleep(10 * time.Millisecond) {
-			if time.Now().After(deadline) {
-				group.Wait()
-				t.Fatalf("no holder of the pool waited for it within %s of the heavy writers and the folds starting: the pool was never full", poolQueuedWithin)
-			}
-		}
+		writers.fillPool(t, server, &group, mark)
 		t.Logf("a holder of the pool had waited for it %s after the heavy writers and the folds started; the keystrokes go now", time.Since(step).Round(time.Millisecond))
 		for index, typingIn := range typing {
 			group.Go(func() {
@@ -4280,29 +4258,8 @@ func TestGateFoldsWaitForAFullPoolAndStayUnderThePodsMemory(t *testing.T) {
 	took := time.Since(step)
 	window := server.output.String()[mark:]
 
-	for index, result := range handedBack {
-		t.Logf("handoff %d of %d bytes: applied %v, closed %v, answered %s into the window", index, len(handed[index]), result.applied, result.closed, result.answered.Sub(step).Round(time.Millisecond))
-		if result.err != nil || !result.applied || result.closed != nil {
-			t.Errorf("handoff %d of %d bytes at the state cap: applied %v, closed %v, %v; want it applied and the socket open", index, len(handed[index]), result.applied, result.closed, result.err)
-		}
-	}
-	// A cold read behind the heavy work waits for the pod's one slot and is answered 503
-	// DOC_SERVICE_UNAVAILABLE at its own deadline where the wait outlasts it, as in the
-	// heaviest-apply drive: the load concurrency working, not a failure.
-	coldRead, coldBusy := 0, 0
-	for index, result := range read {
-		t.Logf("cold read %d answered %s into the window (%v)", index, result.answered.Sub(step).Round(time.Millisecond), result.err)
-		switch {
-		case result.err == nil:
-			coldRead++
-		case strings.Contains(result.err.Error(), "DOC_SERVICE_UNAVAILABLE"):
-			coldBusy++
-		default:
-			t.Errorf("cold read %d of a document at the decode cap: %v", index, result.err)
-		}
-	}
-	t.Logf("%d of the %d cold reads folded their document and %d waited for one of the pod's %d load slots until their own deadline and were answered 503",
-		coldRead, len(read), coldBusy, loadSlotsForTest)
+	requireHandedBack(t, step, writers.handed, writers.handedBack)
+	tallyColdReads(t, step, writers.read)
 
 	holds := loadSlotHolds(t, window)
 	logLoadSlots(t, "the gate folds and the closing compactions waiting for the full pool", holds)
@@ -4371,11 +4328,7 @@ func TestGateFoldsWaitForAFullPoolAndStayUnderThePodsMemory(t *testing.T) {
 		took.Round(time.Second), waited["gate fold"], waited["closing compaction"], rooms, closed, int64(gateFoldMeasuredFold), int64(rooms)*gateFoldMeasuredFold)
 
 	requireUnderThePod(t, filledPeak, "the rooms opened")
-	requireUnderThePod(t, peak, "the gate folds and the closing compactions waiting for the full pool")
-	if peak.samples > 0 {
-		t.Logf("the gate folds and the closing compactions waiting for the full pool: a pod's kernel would charge %d MiB, %d MiB under the pod's %d; the runtime held %d bytes, %d under the %d-byte limit and its %d-byte margin",
-			peak.charged>>20, (podMemory-peak.charged)>>20, podMemory>>20, peak.held, peak.limit+podGoMemoryLimitMargin-peak.held, peak.limit, podGoMemoryLimitMargin)
-	}
+	requireUnderThePodWithHeadroom(t, peak, "the gate folds and the closing compactions waiting for the full pool")
 }
 
 // keystrokeRunDocument is a stored document of gateFoldSeed whose history then took the run of
@@ -4388,12 +4341,7 @@ func (h *memoryHarness) keystrokeRunDocument(t *testing.T) (string, []byte) {
 	t.Helper()
 	ctx := context.Background()
 	artifactID, seed := h.storedDocument(t, gateFoldSeed)
-	var head int64
-	if err := h.database.Pool.QueryRow(ctx,
-		`select coalesce(max(version), 0) from doc_updates where artifact_id = $1`, artifactID,
-	).Scan(&head); err != nil {
-		t.Fatalf("read the seed's head: %v", err)
-	}
+	head := h.storedHead(t, artifactID)
 	origin := paragraphEnd(t, seed)
 	versions := make([]int64, 0, gateFoldRowsBatch)
 	updates := make([][]byte, 0, gateFoldRowsBatch)

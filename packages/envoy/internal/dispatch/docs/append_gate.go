@@ -269,12 +269,13 @@ func updateAge(observed time.Time) time.Duration {
 // can wait for bytes that transaction holds while the transaction waits for the worker's lock.
 // Nothing in that pair gives way; Join's WriteRequestBound ends the transaction's wait for a
 // caller's request, which is answered 503 and gives its grant back, the transaction's own deadline
-// ends it for the close's sweep and the ask repair, which roll back, and the worker then takes its
-// bytes (loadSlots, TestAJoinedTransactionsWaitForItsSecondDocumentsLockEndsAtTheWriteBound). No
-// other holder waits for the lock or the connection: a heavy apply gives its grant back before its
-// commit reaches the room's queue of updates to store, which this worker alone reads
-// (weighPeerUpdate). The fold takes no slot of the buffered folds (foldSlots), so the pool is what
-// bounds how many such folds a process holds at once.
+// ends it at the latest for the close's sweep and the ask repair, which roll back, and the worker
+// then takes its bytes (loadSlots,
+// TestAJoinedTransactionsWaitForItsSecondDocumentsLockEndsAtTheWriteBound). No other holder waits
+// for the lock or the connection: a heavy apply gives its grant back before its commit reaches the
+// room's queue of updates to store, which this worker alone reads (weighPeerUpdate). The fold
+// takes no slot of the buffered folds (foldSlots), so the pool is what bounds how many such folds a
+// process holds at once.
 func gateAppend(ctx context.Context, q Queryer, room string, through int64, kind appendKind, updates []BrowserUpdate, read appendGateRead, maxPending int) (latest int64, admitted int, replaced bool, err error) {
 	if len(updates) == 0 {
 		return 0, 0, false, fmt.Errorf("append document updates: no update to append")

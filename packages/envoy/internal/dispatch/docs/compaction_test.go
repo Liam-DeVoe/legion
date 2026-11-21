@@ -127,32 +127,21 @@ func TestARoomCloseCompactionLeavesABusyDocumentForALaterCompaction(t *testing.T
 	requireCompactedFrom(t, service.store, artifactID, before, foldPoint, cursor)
 }
 
-// Cycle (iii). A room's persistence worker compacts the room as it exits
-// (servicePersistenceAdapter.Compact), its fold waiting for its bytes of the pod's load
-// concurrency, and a commit made once the worker has retired waits for it to finish (ygo's
-// persistStranded): at ygo's shutdown a browser's read loop can still commit a heavy apply. With
-// the pool full but for that apply's grant, the room's close at the shutdown finishes, its rows
-// older than the tail folded, and the apply returns, because the apply gave its grant back before
-// its commit's persistence observer ran (weighPeerUpdate, roomApplies.releaseGrant): the
-// compaction's fold gets what the apply gave back. Held through that observer, the grant is what
-// the fold waited for while the apply waited for the fold's worker to exit. The compaction took
-// only free bytes before, under a mark on its context this change deleted.
+// A room's persistence worker compacts the room as it exits (servicePersistenceAdapter.Compact),
+// its fold waiting for its bytes of the pod's load concurrency, and a commit made once the worker
+// has retired waits for it to finish (ygo's persistStranded): at ygo's shutdown a browser's read
+// loop can still commit a heavy apply. With the pool full but for that apply's grant, the room's
+// close at the shutdown finishes, its rows older than the tail folded, and the apply returns,
+// because the apply gave its grant back before its commit's persistence observer ran
+// (weighPeerUpdate, roomApplies.releaseGrant): the compaction's fold gets what the apply gave back.
+// Held through that observer, the grant is what the fold waited for while the apply waited for
+// the fold's worker to exit.
 func TestARoomsClosingCompactionWaitsForAPoolAHeavyApplyGaveBack(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	foldPoint := writeRoomRows(t, service, artifactID)
 	ageUpdatesThrough(t, service.store, artifactID, foldPoint, time.Hour)
-	live := roomDocument(t, service, artifactID)
-	update, grant := heavyRoomUpdate(t, live)
-	pool, waited := poolOfOneSlot(t, nil)
-	fillPoolBut(t, pool, grant)
-
-	closed, heavy := closeBehindAHeavyApply(t, service, artifactID, live, update, nil)
-	wait := min(roomWait(t), besideAFullPoolWait)
-	deadline := time.After(wait)
-	requireAnswered(t, closed, deadline, "the room's close at ygo's shutdown", wait, waited)
-	requireAnswered(t, heavy, deadline, "the heavy apply", wait, waited)
-	requireFoldedThrough(t, service, artifactID, foldPoint)
+	requireClosesBesideAFullPool(t, service, artifactID, foldPoint, nil)
 }
 
 // A failed room's eviction waits for the document's lock and compacts under the tail rule before

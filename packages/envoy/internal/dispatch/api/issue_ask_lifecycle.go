@@ -257,10 +257,11 @@ func (s *server) recordRestoredAsksTx(ctx context.Context, ledger *docs.Ledger, 
 // request's mark (docs.WithCallerRequest), so with the deadline's Done the document service holds
 // the sweep to a caller's bounds, measured from the request's start: its document work to
 // docs.WriteRequestBound and its waits at the write limiter and the pool to docs.WriteWaitBound, as
-// a keyed close's sweep, on the keyed run's context, already was. A sweep a bound ends rolls back
-// and is logged so, naming the issue. Every document a browser wrote after the close's fork owes a
-// settlement, and the ask repair's pass sweeps a closed issue while one of its documents owes one
-// (RunIssueAskRepair).
+// a keyed close's sweep, on the keyed run's context, already was. A sweep that
+// docs.WriteRequestBound ends rolls back and is logged so, naming the issue; one that the write
+// limiter or the pool refuses at docs.WriteWaitBound is logged with that refusal, also naming the
+// issue. Either way, the ask repair's pass sweeps the issue while one of its documents owes a
+// settlement, as each document a browser wrote after the close's fork does (above).
 func (s *server) sweepClosedIssueAsks(ctx context.Context, issueKey string, withdrawn []model.Ask, actor model.Actor) {
 	if err := s.sweepClosedIssueAsksTx(ctx, issueKey, withdrawn, actor); err != nil {
 		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {

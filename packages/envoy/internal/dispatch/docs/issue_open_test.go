@@ -363,6 +363,29 @@ func foldHistoryPastRoom(t *testing.T, holder pgx.Tx, artifactID string, head in
 	}
 }
 
+// foldPastAHeldKeystroke begins a transaction that holds artifactID's document lock, has alice type
+// "first keystroke" over "before", so that her append waits on the lock, and folds the history past
+// head, her room's cursor, in that transaction (foldHistoryPastRoom). It answers the transaction,
+// still holding the lock, for the test to commit; one the test leaves open rolls back as it ends.
+func foldPastAHeldKeystroke(t *testing.T, database *store.Store, alice *docstest.Peer, artifactID string, head int64) pgx.Tx {
+	t.Helper()
+	ctx := context.Background()
+	holder, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the transaction that holds the document's lock: %v", err)
+	}
+	t.Cleanup(func() { _ = holder.Rollback(ctx) })
+	if err := lockDocumentRoom(ctx, holder, artifactID); err != nil {
+		t.Fatalf("hold the document's lock: %v", err)
+	}
+	typeOver(t, alice, "before", "first keystroke")
+	if waiting := storetest.WaitForLockWaiters(t, holder, 1, roomWait(t)); waiting < 1 {
+		t.Fatal("alice's append never came to wait on the document's lock")
+	}
+	foldHistoryPastRoom(t, holder, artifactID, head)
+	return holder
+}
+
 // The notification may not reach a process in time: one wait between its listener's redials can
 // last up to 45 seconds (pglisten.RedialBackoff). Here no room sync runs at all, so nothing tells
 // the room the issue closed, and the issue closed longer ago than closeMargin before alice types:

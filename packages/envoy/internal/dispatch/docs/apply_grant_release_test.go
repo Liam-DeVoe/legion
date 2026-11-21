@@ -31,17 +31,14 @@ import (
 
 // heavyRoomUpdate is an update a browser could send live, a room's document: a chain of
 // chainStructs characters under the margin (marginChain), declaring more structs than an apply
-// takes no slot for, and the grant the peer update hook takes for its apply (copyWeight). The
-// commit the room makes of it declares the same structs, so its stored copy weighs that grant too.
+// takes no slot for, and the grant the peer update hook takes for its apply (storedCopyWeight).
+// The commit the room makes of it declares the same structs, so its stored copy weighs that grant
+// too.
 func heavyRoomUpdate(t *testing.T, live *crdt.Doc) (update []byte, grant int64) {
 	t.Helper()
-	writer := newDocumentCopy()
-	if err := crdt.ApplyUpdateV1(writer, crdt.EncodeStateAsUpdateV1(live, nil), nil); err != nil {
-		t.Fatalf("copy the room for the heavy update: %v", err)
-	}
-	update = marginChain(t, writer, chainStructs)
+	update = marginChain(t, copyOf(t, crdt.EncodeStateAsUpdateV1(live, nil)), chainStructs)
 	requireWeighedByItsStructs(t, update)
-	return update, copyWeight(int64(len(update)), int64(declaredStructs(update)))
+	return update, storedCopyWeight(update)
 }
 
 // applyHeavy hands update to the peer update hook for live, artifactID's room, on a goroutine of
@@ -58,14 +55,16 @@ func applyHeavy(service *Service, artifactID string, live *crdt.Doc, update []by
 }
 
 // fillPoolBut takes every byte of pool but leave, and gives them back as the test ends, before
-// its service shuts down.
-func fillPoolBut(t *testing.T, pool *loadSlots, leave int64) {
+// its service shuts down. It answers the holder of those bytes, which the test may give back
+// sooner.
+func fillPoolBut(t *testing.T, pool *loadSlots, leave int64) *loadSlot {
 	t.Helper()
 	filler := newLoadSlot()
 	if take := pool.poolBytes() - pool.held.Load() - leave; !filler.tryTake(take) {
 		t.Fatalf("the pool refused %d of its %d bytes with %d held", take, pool.poolBytes(), pool.held.Load())
 	}
 	t.Cleanup(filler.release)
+	return filler
 }
 
 // observerGate is the first commit of a room to reach the room's update observer once the gate
@@ -132,11 +131,7 @@ type roomCommitter struct {
 
 func newRoomCommitter(t *testing.T, live *crdt.Doc) *roomCommitter {
 	t.Helper()
-	writer := newDocumentCopy()
-	if err := crdt.ApplyUpdateV1(writer, crdt.EncodeStateAsUpdateV1(live, nil), nil); err != nil {
-		t.Fatalf("copy the room for its committer: %v", err)
-	}
-	return &roomCommitter{live: live, writer: writer}
+	return &roomCommitter{live: live, writer: copyOf(t, crdt.EncodeStateAsUpdateV1(live, nil))}
 }
 
 // commit makes one commit of one margin key (commitKeys).
@@ -208,18 +203,35 @@ func awaitHeavyApply(t *testing.T, observer *observerGate, heavy <-chan error) {
 	}
 }
 
-// requireAnswered waits until deadline for what answered sends, failing the test with what names
-// the wait where nothing comes by then, and fails it where the answer is an error.
-func requireAnswered(t *testing.T, answered <-chan error, deadline <-chan time.Time, what string, wait time.Duration, waited *atomic.Bool) {
+// fullPoolWait is a test's wait for the work a pool that a heavy apply's grant fills holds up: it
+// lasts wait and ends at end, when deadline fires, and waited reports whether a taker began to wait
+// for the pool (poolOfOneSlot).
+type fullPoolWait struct {
+	end      time.Time
+	deadline <-chan time.Time
+	wait     time.Duration
+	waited   *atomic.Bool
+}
+
+// waitBesideAFullPool begins a fullPoolWait now, bounded by besideAFullPoolWait.
+func waitBesideAFullPool(t *testing.T, waited *atomic.Bool) fullPoolWait {
+	t.Helper()
+	wait := min(roomWait(t), besideAFullPoolWait)
+	return fullPoolWait{end: time.Now().Add(wait), deadline: time.After(wait), wait: wait, waited: waited}
+}
+
+// requireAnswered waits until within's deadline for what answered sends, failing the test with
+// what names the wait where nothing comes by then, and fails it where the answer is an error.
+func requireAnswered(t *testing.T, answered <-chan error, what string, within fullPoolWait) {
 	t.Helper()
 	select {
 	case err := <-answered:
 		if err != nil {
 			t.Fatalf("%s: %v", what, err)
 		}
-	case <-deadline:
+	case <-within.deadline:
 		t.Fatalf("%s did not finish within %s while a heavy apply's grant filled the pool (a taker began to wait for the pool: %t)",
-			what, wait, waited.Load())
+			what, within.wait, within.waited.Load())
 	}
 }
 
@@ -237,20 +249,20 @@ func loadedRoom(t *testing.T, service *Service, artifactID, text string) (live *
 	return live, update, grant
 }
 
-// poolOfOneSlot gives the process a load concurrency of one slot for the rest of t, whose takers
-// call waiting as they begin to wait, set before any taker can reach it, and reports whether one
-// has begun to wait.
+// poolOfOneSlot gives the process a load concurrency of one slot for the rest of t
+// (UseOneLoadSlotForTest), whose takers call waiting as they begin to wait, set before any taker
+// can reach it, and reports whether one has begun to wait.
 func poolOfOneSlot(t *testing.T, waiting func()) (*loadSlots, *atomic.Bool) {
 	t.Helper()
-	slots := newLoadSlots(1)
 	waited := new(atomic.Bool)
-	slots.waiting = func() {
+	pool, restore := UseOneLoadSlotForTest(func() {
 		waited.Store(true)
 		if waiting != nil {
 			waiting()
 		}
-	}
-	return useLoadSlots(t, slots), waited
+	})
+	t.Cleanup(restore)
+	return pool.slots, waited
 }
 
 // holdWorkerBehindAFullQueue holds artifactID's persistence worker at its store of a commit made
@@ -299,10 +311,10 @@ const heapGivenBackTolerance = 1 << 20
 //
 // The apply's goroutine is held, until the worker has read the pool, in an update observer of the
 // test's own, which ygo runs after the persistence observer since the test registers it once the
-// room has loaded, so the worker reads the pool before the hook returns. Given back as the commit's
-// observers began (crdt.ApplyBudget.Integrated), the grant left the replica's decode outside the
-// pool; given back as the hook returned, it was held through the persistence observer, which
-// waits while the room's queue of updates to store is full.
+// room has loaded, so the worker reads the pool before the hook returns. Given back at
+// crdt.ApplyBudget.Integrated, as the commit's observers begin, the grant would leave the
+// replica's decode outside the pool; given back as the hook returns, it would be held through the
+// persistence observer, which waits while the room's queue of updates to store is full.
 func TestAHeavyApplysGrantCoversTheReplicasDecodeAndGoesBackBeforeThePersistenceObserver(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour // no settlement takes a grant or charges the room beside the apply
@@ -498,10 +510,9 @@ func TestTheRoomsUpdateObserverRunsBeforeThePersistenceObserverSoTheWorkersReadB
 	// The worker goes on to read the first commit back with every byte of the pool held but what
 	// the apply gave back, if it did.
 	releaseWorker()
-	wait := min(roomWait(t), besideAFullPoolWait)
-	end := time.Now().Add(wait)
-	requireAnswered(t, heavy, time.After(time.Until(end)), "the heavy apply", wait, waited)
-	waitFor(t, time.Until(end), "the room to store the first commit", func() bool {
+	within := waitBesideAFullPool(t, waited)
+	requireAnswered(t, heavy, "the heavy apply", within)
+	waitFor(t, time.Until(within.end), "the room to store the first commit", func() bool {
 		return storedHead(t, service.store, artifactID) > before
 	})
 	if steps := order.recorded(); !slices.Equal(steps, []string{roomObserver, persistenceObserver}) {
@@ -509,24 +520,23 @@ func TestTheRoomsUpdateObserverRunsBeforeThePersistenceObserverSoTheWorkersReadB
 	}
 }
 
-// heldCommitKeys is how many margin keys the commit the worker is held at sets in cycle (i) and in
-// the test of the observers' order above: each key a struct of its own, so the commit declares
-// more structs than an update may and still be stored with no grant (heavyUpdateWeight), and its
-// read-back waits for the pool, while what it takes stays within the heavy apply's grant, which
-// declares chainStructs.
+// heldCommitKeys is how many margin keys the commit the worker is held at sets in
+// TestTheWorkersReadBackWaitsForAPoolAHeavyApplyGaveBack and in
+// TestTheRoomsUpdateObserverRunsBeforeThePersistenceObserverSoTheWorkersReadBackGetsTheGrant: each
+// key a struct of its own, so the commit declares more structs than an update may and still be
+// stored with no grant (heavyUpdateWeight), and its read-back waits for the pool, while what it
+// takes stays within the heavy apply's grant, which declares chainStructs.
 const heldCommitKeys = 2 * unslottedApplyStructs
 
-// Cycle (i). The room's persistence worker decodes each heavy update it stores into a fresh copy
-// before it stores it (StoreUpdateStored, holdServerLoad, heavyUpdateWeight), waiting for its bytes
-// of the pod's load concurrency. A heavy apply's commit hands its update to that worker through the
+// The room's persistence worker decodes each heavy update it stores into a fresh copy before it
+// stores it (StoreUpdateStored, holdServerLoad, heavyUpdateWeight), waiting for its bytes of the
+// pod's load concurrency. A heavy apply's commit hands its update to that worker through the
 // room's queue of updates to store and waits while the queue is full. With the queue full behind a
 // heavy commit the worker holds, and the pool full but for the apply's own grant, the worker's
 // decode of that commit waits for the pool, and the room stores it, and the apply returns, because
 // the apply gave its grant back before its commit's persistence observer ran. Held through that
 // observer, the grant is what the decode waited for while the apply waited for the decode's
-// worker. The decode took only free bytes before (holdFreeLoad), which held no apply and worker
-// against each other but let it run beside a full pool counted by nothing. A lighter commit's
-// decode takes nothing, so the worker the test holds holds a heavy one.
+// worker. A lighter commit's decode takes nothing, so the worker the test holds holds a heavy one.
 func TestTheWorkersReadBackWaitsForAPoolAHeavyApplyGaveBack(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
@@ -546,24 +556,23 @@ func TestTheWorkersReadBackWaitsForAPoolAHeavyApplyGaveBack(t *testing.T) {
 	// The worker goes on to decode the first commit's update with every byte of the pool held
 	// but what the apply gave back, if it did.
 	releaseWorker()
-	wait := min(roomWait(t), besideAFullPoolWait)
-	end := time.Now().Add(wait)
-	requireAnswered(t, heavy, time.After(time.Until(end)), "the heavy apply", wait, waited)
-	waitFor(t, time.Until(end), "the room to store the first commit", func() bool {
+	within := waitBesideAFullPool(t, waited)
+	requireAnswered(t, heavy, "the heavy apply", within)
+	waitFor(t, time.Until(within.end), "the room to store the first commit", func() bool {
 		return storedHead(t, service.store, artifactID) > before
 	})
 }
 
-// Cycle (vi). A live write takes the document's advisory lock before its fork's grant
-// (headUnderDocumentLock, coverFork), and the room's persistence worker stores a room's updates
-// under that same lock (AppendRoomFlush). So a write of the server's own, which waits for its
-// fork's bytes with no deadline, held the lock the worker waited for while it waited for bytes a
-// heavy apply held through its commit's persistence observer, and the apply waited there for that
-// worker to read the room's full queue of updates to store. With the pool full but for half the
-// apply's grant, the write commits and the room stores its updates and the apply returns, because
-// the apply gave its grant back before its commit's persistence observer ran: the write's fork, a
-// copy of the room the apply grew, fits in what the apply gave back and the half beside it, and in
-// the half alone it does not.
+// A live write takes the document's advisory lock before its fork's grant (headUnderDocumentLock,
+// coverFork), and the room's persistence worker stores a room's updates under that same lock
+// (AppendRoomFlush). So a write of the server's own, which waits for its fork's bytes with no
+// deadline, held the lock the worker waited for while it waited for bytes a heavy apply held
+// through its commit's persistence observer, and the apply waited there for that worker to read
+// the room's full queue of updates to store. With the pool full but for half the apply's grant,
+// the write commits and the room stores its updates and the apply returns, because the apply gave
+// its grant back before its commit's persistence observer ran: the write's fork, a copy of the
+// room the apply grew, fits in what the apply gave back and the half beside it, and in the half
+// alone it does not.
 func TestTheWorkersWaitForTheDocumentsLockEndsOnceAHeavyApplyGaveItsGrantBack(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
@@ -584,12 +593,7 @@ func TestTheWorkersWaitForTheDocumentsLockEndsOnceAHeavyApplyGaveItsGrantBack(t 
 	// The write of the server's own takes the document's lock while the worker is held short of
 	// it, and then waits for its fork's bytes if the apply still holds its grant.
 	committed := make(chan struct{})
-	var committedOnce sync.Once
-	service.afterLiveCommit = func(room string) {
-		if room == artifactID {
-			committedOnce.Do(func() { close(committed) })
-		}
-	}
+	service.afterLiveCommit = onFirst(artifactID, func() { close(committed) })
 	written := make(chan error, 1)
 	go func() {
 		written <- cancelWrite(context.Background(), service, artifactID, "First.", "First, rewritten.", nil)
@@ -608,10 +612,9 @@ func TestTheWorkersWaitForTheDocumentsLockEndsOnceAHeavyApplyGaveItsGrantBack(t 
 
 	// The worker goes on to store the first commit under the document's lock.
 	releaseWorker()
-	wait := min(roomWait(t), besideAFullPoolWait)
-	deadline := time.After(wait)
-	requireAnswered(t, heavy, deadline, "the heavy apply", wait, waited)
-	requireAnswered(t, written, deadline, "the write of the server's own", wait, waited)
+	within := waitBesideAFullPool(t, waited)
+	requireAnswered(t, heavy, "the heavy apply", within)
+	requireAnswered(t, written, "the write of the server's own", within)
 	if moved := storedHead(t, service.store, artifactID); moved <= before {
 		t.Fatalf("the document stands at update %d once the write and the apply returned, want past %d", moved, before)
 	}
@@ -629,12 +632,7 @@ func TestTheWorkersWaitForTheDocumentsLockEndsOnceAHeavyApplyGaveItsGrantBack(t 
 func closeBehindAHeavyApply(t *testing.T, service *Service, artifactID string, live *crdt.Doc, update []byte, beforeClose func()) (closed, applied <-chan error) {
 	t.Helper()
 	compacting := make(chan struct{})
-	var compactingOnce sync.Once
-	service.beforeClosingCompaction = func(room string) {
-		if room == artifactID {
-			compactingOnce.Do(func() { close(compacting) })
-		}
-	}
+	service.beforeClosingCompaction = onFirst(artifactID, func() { close(compacting) })
 	observer := holdNextObserver(t, service, artifactID, true)
 	heavy := applyHeavy(service, artifactID, live, update)
 	awaitHeavyApply(t, observer, heavy)
@@ -661,14 +659,31 @@ func requireFoldedThrough(t *testing.T, service *Service, artifactID string, fol
 	}
 }
 
-// Cycle (iv). The compaction a room's persistence worker runs as it exits folds rows read into
-// memory, and a fold of those takes one of the process's buffered folds first (foldRead,
-// foldSlots), whose holders then wait for their bytes of the pod's load concurrency. A commit made
-// once the worker has retired waits for it to exit (ygo's persistStranded). With the only buffered
-// fold held by a holder waiting for the pool, and the pool full but for a heavy apply's grant,
-// the room's close finishes and the apply returns, because the apply gave its grant back before
-// its commit's persistence observer ran. Held through that observer, the grant kept the holder
-// waiting, the holder kept the compaction waiting, and the compaction kept the apply waiting.
+// requireClosesBesideAFullPool fills the pool but for the grant of a heavy apply into artifactID's
+// room and shuts ygo's server down behind that apply, with beforeClose (closeBehindAHeavyApply),
+// and fails the test unless the room's close and the apply each return within besideAFullPoolWait
+// and the close's compaction folded the rows below foldPoint into it.
+func requireClosesBesideAFullPool(t *testing.T, service *Service, artifactID string, foldPoint int64, beforeClose func()) {
+	t.Helper()
+	live := roomDocument(t, service, artifactID)
+	update, grant := heavyRoomUpdate(t, live)
+	pool, waited := poolOfOneSlot(t, nil)
+	fillPoolBut(t, pool, grant)
+	closed, heavy := closeBehindAHeavyApply(t, service, artifactID, live, update, beforeClose)
+	within := waitBesideAFullPool(t, waited)
+	requireAnswered(t, closed, "the room's close at ygo's shutdown", within)
+	requireAnswered(t, heavy, "the heavy apply", within)
+	requireFoldedThrough(t, service, artifactID, foldPoint)
+}
+
+// The compaction a room's persistence worker runs as it exits folds rows read into memory, and a
+// fold of those takes one of the process's buffered folds first (foldRead, foldSlots), whose
+// holders then wait for their bytes of the pod's load concurrency. A commit made once the worker
+// has retired waits for it to exit (ygo's persistStranded). With the only buffered fold held by a
+// holder waiting for the pool, and the pool full but for a heavy apply's grant, the room's close
+// finishes and the apply returns, because the apply gave its grant back before its commit's
+// persistence observer ran. Held through that observer, the grant kept the holder waiting, the
+// holder kept the compaction waiting, and the compaction kept the apply waiting.
 func TestTheClosingCompactionsWaitForABufferedFoldEndsOnceAHeavyApplyGaveItsGrantBack(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
@@ -679,12 +694,7 @@ func TestTheClosingCompactionsWaitForABufferedFoldEndsOnceAHeavyApplyGaveItsGran
 		t.Fatalf("the service appends through %T, which has no buffered folds", service.persistence)
 	}
 	appends.foldSlots = make(chan struct{}, 1)
-	live := roomDocument(t, service, artifactID)
-	update, grant := heavyRoomUpdate(t, live)
-	pool, waited := poolOfOneSlot(t, nil)
-	fillPoolBut(t, pool, grant)
-
-	closed, heavy := closeBehindAHeavyApply(t, service, artifactID, live, update, func() {
+	requireClosesBesideAFullPool(t, service, artifactID, foldPoint, func() {
 		// A fold holding the only buffered fold, waiting for a byte of the pool.
 		appends.foldSlots <- struct{}{}
 		go func() {
@@ -695,22 +705,17 @@ func TestTheClosingCompactionsWaitForABufferedFoldEndsOnceAHeavyApplyGaveItsGran
 			}
 		}()
 	})
-	wait := min(roomWait(t), besideAFullPoolWait)
-	deadline := time.After(wait)
-	requireAnswered(t, closed, deadline, "the room's close at ygo's shutdown", wait, waited)
-	requireAnswered(t, heavy, deadline, "the heavy apply", wait, waited)
-	requireFoldedThrough(t, service, artifactID, foldPoint)
 }
 
-// Cycle (v). The compaction a room's persistence worker runs as it exits reads the rows it folds
-// through one of the compaction pool's connections, and a fold of rows past foldBufferBytes holds
-// its connection while it waits for its bytes of the pod's load concurrency (foldRead). A commit
-// made once the worker has retired waits for it to exit (ygo's persistStranded). With every
-// connection of the compaction pool held by a fold waiting for the pool, and the pool full but
-// for a heavy apply's grant, the room's close finishes and the apply returns, because the apply
-// gave its grant back before its commit's persistence observer ran. Held through that observer,
-// the grant kept those folds waiting, they kept the compaction waiting for a connection, and the
-// compaction kept the apply waiting.
+// The compaction a room's persistence worker runs as it exits reads the rows it folds through one
+// of the compaction pool's connections, and a fold of rows past foldBufferBytes holds its
+// connection while it waits for its bytes of the pod's load concurrency (foldRead). A commit made
+// once the worker has retired waits for it to exit (ygo's persistStranded). With every connection
+// of the compaction pool held by a fold waiting for the pool, and the pool full but for a heavy
+// apply's grant, the room's close finishes and the apply returns, because the apply gave its grant
+// back before its commit's persistence observer ran. Held through that observer, the grant kept
+// those folds waiting, they kept the compaction waiting for a connection, and the compaction kept
+// the apply waiting.
 func TestTheClosingCompactionsWaitForACompactionConnectionEndsOnceAHeavyApplyGaveItsGrantBack(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
@@ -720,12 +725,7 @@ func TestTheClosingCompactionsWaitForACompactionConnectionEndsOnceAHeavyApplyGav
 	if err != nil {
 		t.Fatalf("open the compaction pool: %v", err)
 	}
-	live := roomDocument(t, service, artifactID)
-	update, grant := heavyRoomUpdate(t, live)
-	pool, waited := poolOfOneSlot(t, nil)
-	fillPoolBut(t, pool, grant)
-
-	closed, heavy := closeBehindAHeavyApply(t, service, artifactID, live, update, func() {
+	requireClosesBesideAFullPool(t, service, artifactID, foldPoint, func() {
 		// A fold on each of the compaction pool's connections, waiting for a byte of the pool.
 		for range compaction.Stat().MaxConns() {
 			conn, err := compaction.Acquire(context.Background())
@@ -741,11 +741,6 @@ func TestTheClosingCompactionsWaitForACompactionConnectionEndsOnceAHeavyApplyGav
 			}()
 		}
 	})
-	wait := min(roomWait(t), besideAFullPoolWait)
-	deadline := time.After(wait)
-	requireAnswered(t, closed, deadline, "the room's close at ygo's shutdown", wait, waited)
-	requireAnswered(t, heavy, deadline, "the heavy apply", wait, waited)
-	requireFoldedThrough(t, service, artifactID, foldPoint)
 }
 
 // joinedWriteBoundMargin is how far past Join's WriteRequestBound a caller's write may be answered
@@ -780,19 +775,7 @@ func TestAJoinedTransactionsWaitForItsSecondDocumentsLockEndsAtTheWriteBound(t *
 
 	// Alice's keystroke reaches the second room's worker, which waits for the document's lock
 	// while a compaction of another process folds the history past the room's cursor under it.
-	holder, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the transaction that holds the document's lock: %v", err)
-	}
-	defer holder.Rollback(ctx)
-	if err := lockDocumentRoom(ctx, holder, second); err != nil {
-		t.Fatalf("hold the document's lock: %v", err)
-	}
-	typeOver(t, alice, "before", "first keystroke")
-	if waiting := storetest.WaitForLockWaiters(t, holder, 1, roomWait(t)); waiting < 1 {
-		t.Fatal("alice's append never came to wait on the document's lock")
-	}
-	foldHistoryPastRoom(t, holder, second, head)
+	holder := foldPastAHeldKeystroke(t, database, alice, second, head)
 
 	foldWaits := make(chan struct{})
 	pool, _ := poolOfOneSlot(t, sync.OnceFunc(func() { close(foldWaits) }))

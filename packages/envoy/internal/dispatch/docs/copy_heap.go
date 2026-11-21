@@ -203,13 +203,13 @@ const loadSlotsName = "load"
 // lock (joinLiveWrite, readFork), so the worker can wait for bytes that transaction holds while
 // the transaction waits for the worker's lock. Nothing in that pair gives way; Join's
 // WriteRequestBound ends the transaction's wait for a caller's request, which is answered 503 and
-// gives its grant back, the transaction's own deadline ends it for the server's two such
-// transactions, and the worker then takes its bytes (above). No other holder waits on the worker:
-// an apply holds no grant by the time its commit reaches that queue, a live write publishes once
-// its transaction has given its grant back (Ledger.publish), and a server write's decode-cap copy
-// gives its grant back before the write commits (structsAfter). Before it gives its grant back,
-// the room's observer waits for the replica's lock, and no holder of that lock waits for the pool
-// (renderedReplica.start, holdFreeLoad, above), so that wait ends.
+// gives its grant back, the transaction's own deadline ends it at the latest for the server's two
+// such transactions, and the worker then takes its bytes (above). No other holder waits on the
+// worker: an apply holds no grant by the time its commit reaches that queue, a live write
+// publishes once its transaction has given its grant back (Ledger.publish), and a server write's
+// decode-cap copy gives its grant back before the write commits (structsAfter). Before it gives
+// its grant back, the room's observer waits for the replica's lock, and no holder of that lock
+// waits for the pool (renderedReplica.start, holdFreeLoad, above), so that wait ends.
 //
 // No holder takes a second grant: a decode under a context carrying one covers itself on that one
 // (withLoadSlot), so a room load's fold, its copy's decode and the load hook's decode into the

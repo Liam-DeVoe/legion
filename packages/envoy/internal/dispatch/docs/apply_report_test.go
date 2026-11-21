@@ -412,11 +412,7 @@ func TestAFrameTheRoomAlreadyHoldsKeepsNoReportForADrain(t *testing.T) {
 		t.Fatalf("the keystroke was answered %v, want it taken", err)
 	}
 	applies := room.replica.applies()
-	reports := func() int {
-		applies.mu.Lock()
-		defer applies.mu.Unlock()
-		return len(applies.unpaired)
-	}
+	reports := func() int { return len(applies.reportsMade()) }
 	before := reports()
 	const resends = 64
 	for resend := range resends {

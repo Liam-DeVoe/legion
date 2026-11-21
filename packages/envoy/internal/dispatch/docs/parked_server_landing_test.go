@@ -316,6 +316,19 @@ func TestAServerWritesDiscardedDrainLeavesTheQueueFigureReadingTheQueue(t *testi
 	}
 }
 
+// soleConnected is the one browser connected to state's room. It fails the test where none or
+// several are.
+func soleConnected(t *testing.T, state *roomState) model.Actor {
+	t.Helper()
+	state.mu.Lock()
+	connected := slices.Collect(maps.Values(state.connected))
+	state.mu.Unlock()
+	if len(connected) != 1 {
+		t.Fatalf("task A's room has %v connected, want alice's page alone", connected)
+	}
+	return connected[0]
+}
+
 // Content a server write's drain lands is credited to the browsers connected as the room took it,
 // as a browser's commit is (classifyDrained): alice's frame, parked behind bob's clocks, lands in
 // the catch-up or the publish that supplies them, and alice, the one browser connected, is among
@@ -325,14 +338,7 @@ func TestContentAServerWritesDrainLandsIsCreditedToTheBrowsersConnected(t *testi
 	for _, server := range serverLandings() {
 		t.Run(server.name, func(t *testing.T) {
 			drive := parkBehindAServerWrite(t, server, " Alice's ending.")
-			state := drive.pair.taskA.room(drive.pair.artifactID)
-			state.mu.Lock()
-			connected := slices.Collect(maps.Values(state.connected))
-			state.mu.Unlock()
-			if len(connected) != 1 {
-				t.Fatalf("task A's room has %v connected, want alice's page alone", connected)
-			}
-			alice := connected[0]
+			alice := soleConnected(t, drive.pair.taskA.room(drive.pair.artifactID))
 			drive.land(t, drive.room)
 			owed := pendingAuthors(t, drive.pair.taskA, drive.pair.artifactID)
 			if !slices.ContainsFunc(owed, func(author model.Actor) bool { return actorKey(author) == actorKey(alice) }) {
@@ -368,13 +374,7 @@ func TestAnAskBlockAServerWritesDrainLandsIsTheConnectedBrowsers(t *testing.T) {
 		t.Run(server.name, func(t *testing.T) {
 			drive := parkChangesBehindAServerWrite(t, server, addAsk)
 			state := drive.pair.taskA.room(drive.pair.artifactID)
-			state.mu.Lock()
-			connected := slices.Collect(maps.Values(state.connected))
-			state.mu.Unlock()
-			if len(connected) != 1 {
-				t.Fatalf("task A's room has %v connected, want alice's page alone", connected)
-			}
-			alice := connected[0]
+			alice := soleConnected(t, state)
 			drive.land(t, drive.room)
 			if parked := drive.room.PendingStats(); parked.Items != 0 {
 				t.Fatalf("task A's room still parks %+v after %s supplied bob's clocks", parked, server.name)

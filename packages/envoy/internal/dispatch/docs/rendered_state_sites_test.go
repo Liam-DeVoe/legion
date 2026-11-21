@@ -475,11 +475,7 @@ func TestASettlementAfterARefusedDrainVersionsAWholeRenderOfTheRoom(t *testing.T
 			// the generation before the arming writes no version (applyStamp), and the armed one, which
 			// the socket's departure runs (settleLastPeer), may not have committed when the version is
 			// read. So the settlement below starts once the socket has ended.
-			select {
-			case <-sender.Ended:
-			case <-time.After(roomWait(t)):
-				t.Fatal("the socket that sent the newlines is still connected, though the check refused their drain")
-			}
+			requireEnds(t, sender, "the check refused the newlines' drain and left the socket that sent them connected")
 			if row.serverWrite {
 				if err := service.srv.Apply(ctx, artifactID, func(doc *crdt.Doc, transact func(func(*crdt.Transaction))) {
 					text := allTexts(doc.GetXmlFragment(fragmentName))[1]

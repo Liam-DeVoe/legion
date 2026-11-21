@@ -26,7 +26,7 @@ import (
 // roomWaitCap's two minutes or the binary's timeout.
 const besideAFullPoolWait = 30 * time.Second
 
-// Cycle (ii). The room's persistence worker's gate decodes a history replaced under its room
+// The room's persistence worker's gate decodes a history replaced under its room
 // (storedHistoryHolds), waiting for its bytes of the pod's load concurrency while it holds the
 // document's lock and a connection of the room-appends pool, and it is the one reader of the
 // room's queue of updates to store, on which a heavy apply's commit waits while the queue is full
@@ -35,9 +35,7 @@ const besideAFullPoolWait = 30 * time.Second
 // stored, and the apply returns, because the apply gave its grant back before its commit's
 // persistence observer ran (weighPeerUpdate, roomApplies.releaseGrant): the gate's fold waits for
 // the pool and gets what the apply gave back. Held through that observer, the grant is what the
-// fold waited for while the apply waited for the fold's worker. The fold took only free bytes
-// before, under a mark on the worker's context this change deleted, so a fold of every room whose
-// history was replaced ran beside a full pool, counted by nothing and bounded by nothing.
+// fold waited for while the apply waited for the fold's worker.
 //
 // The history past the cursor is one folded row, which the gate decodes as one run
 // (runsDocument), or that row and one written after it, which the gate folds and reads back
@@ -82,19 +80,7 @@ func TestTheWorkersGateFoldWaitsForAPoolAHeavyApplyGaveBack(t *testing.T) {
 			// one, reearth/ygo#350), so her keystroke is the first append to commit from here.
 			head := storedHead(t, database, artifactID)
 
-			holder, err := database.Pool.Begin(ctx)
-			if err != nil {
-				t.Fatalf("begin the transaction that holds the document's lock: %v", err)
-			}
-			defer holder.Rollback(ctx)
-			if err := lockDocumentRoom(ctx, holder, artifactID); err != nil {
-				t.Fatalf("hold the document's lock: %v", err)
-			}
-			typeOver(t, alice, "before", "first keystroke")
-			if waiting := storetest.WaitForLockWaiters(t, holder, 1, roomWait(t)); waiting < 1 {
-				t.Fatal("alice's append never came to wait on the document's lock")
-			}
-			foldHistoryPastRoom(t, holder, artifactID, head)
+			holder := foldPastAHeldKeystroke(t, database, alice, artifactID, head)
 			replacedHead := head + 1
 			if history.writtenAfter {
 				replacedHead++
@@ -118,15 +104,14 @@ func TestTheWorkersGateFoldWaitsForAPoolAHeavyApplyGaveBack(t *testing.T) {
 				t.Fatalf("release the document's lock: %v", err)
 			}
 
-			wait := min(roomWait(t), besideAFullPoolWait)
-			deadline := time.After(wait)
+			within := waitBesideAFullPool(t, waited)
 			select {
 			case <-stored:
-			case <-deadline:
+			case <-within.deadline:
 				t.Fatalf("alice's keystroke on the folded history was not stored within %s while a heavy apply's grant filled the pool (a taker began to wait for the pool: %t): the worker's gate waits for the pool holding the document's lock",
-					wait, waited.Load())
+					within.wait, within.waited.Load())
 			}
-			requireAnswered(t, heavy, deadline, "the heavy apply", wait, waited)
+			requireAnswered(t, heavy, "the heavy apply", within)
 			if got := held.Load(); got < 1 {
 				t.Fatal("no append was admitted on the folded history: nothing here is tested")
 			}
@@ -140,22 +125,10 @@ func TestTheWorkersGateFoldWaitsForAPoolAHeavyApplyGaveBack(t *testing.T) {
 // writeAfterTheFold writes artifactID once more as another process would, in holder, which holds
 // the document's lock, at version at, the row after the one foldHistoryPastRoom folded the
 // history into: a key of a map of its own, so the history still holds every item a room's browser
-// updates build on, now in two rows.
+// updates build on, now in two rows (writeMapKeyAt).
 func writeAfterTheFold(t *testing.T, holder pgx.Tx, artifactID string, at int64) {
 	t.Helper()
-	ctx := context.Background()
-	through := persistence.Version(at - 1)
-	stored, err := documentThrough(ctx, artifactID, through, storedUpdates(ctx, holder, artifactID, through), maxUpdateItems)
-	if err != nil {
-		t.Fatalf("read the folded document: %v", err)
-	}
-	before := stored.StateVector()
-	written := stored.GetMap("written-after-the-fold")
-	stored.Transact(func(txn *crdt.Transaction) {
-		written.Set(txn, "key", "value")
-	})
-	if _, err := holder.Exec(ctx, `insert into doc_updates (artifact_id, version, update, content_changed) values ($1, $2, $3, false)`,
-		artifactID, at, crdt.EncodeStateAsUpdateV1(stored, before)); err != nil {
+	if err := writeMapKeyAt(context.Background(), holder, artifactID, at, "written-after-the-fold"); err != nil {
 		t.Fatalf("write the document after the fold: %v", err)
 	}
 }

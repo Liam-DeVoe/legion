@@ -840,8 +840,8 @@ type LoadPoolForTest struct {
 }
 
 // UseOneLoadSlotForTest makes a load concurrency of one slot the process's until restore runs, as
-// this package's own tests make one (poolOfOneSlot), and calls waiting, set before any taker can
-// reach the pool, as each taker finds too little of it free and starts to wait. A grant taken
+// this package's own tests make one too (poolOfOneSlot), and calls waiting, set before any taker
+// can reach the pool, as each taker finds too little of it free and starts to wait. A grant taken
 // before the call is given back to the pool it was taken from.
 func UseOneLoadSlotForTest(waiting func()) (pool *LoadPoolForTest, restore func()) {
 	slots := newLoadSlots(1)
@@ -856,8 +856,9 @@ func (p *LoadPoolForTest) HeldForTest() int64 {
 }
 
 // FillForTest takes every byte of the pool its holders do not hold now, as this package's tests
-// fill one (fillPoolBut), and answers what gives them back. It answers false, holding nothing,
-// where a holder took some of them between the read and the take.
+// fill one (fillPoolBut), and answers what gives them back. That release may run more than once:
+// once it has given them back it gives back nothing. It answers false, holding nothing, where a
+// holder took some of them between the read and the take.
 func (p *LoadPoolForTest) FillForTest() (release func(), filled bool) {
 	filler := &loadSlot{slots: p.slots}
 	if !filler.tryTake(p.slots.poolBytes() - p.slots.held.Load()) {
@@ -875,19 +876,8 @@ func (p *LoadPoolForTest) FillForTest() (release func(), filled bool) {
 // them (storedHistoryHolds). Tests here and in package api make that worker wait in its gate's
 // fold with it.
 func FoldHistoryPastRoomForTest(ctx context.Context, holder pgx.Tx, artifactID string, head int64) error {
-	through := persistence.Version(head)
-	stored, err := documentThrough(ctx, artifactID, through, storedUpdates(ctx, holder, artifactID, through), maxUpdateItems)
-	if err != nil {
-		return fmt.Errorf("read the stored document: %w", err)
-	}
-	before := stored.StateVector()
-	written := stored.GetMap("written-by-task-b")
-	stored.Transact(func(txn *crdt.Transaction) {
-		written.Set(txn, "key", "value")
-	})
 	writtenAt := head + 1
-	if _, err := holder.Exec(ctx, `insert into doc_updates (artifact_id, version, update, content_changed) values ($1, $2, $3, false)`,
-		artifactID, writtenAt, crdt.EncodeStateAsUpdateV1(stored, before)); err != nil {
+	if err := writeMapKeyAt(ctx, holder, artifactID, writtenAt, "written-by-task-b"); err != nil {
 		return fmt.Errorf("write the document as another process: %w", err)
 	}
 	folding := persistence.Version(writtenAt)
@@ -903,6 +893,26 @@ func FoldHistoryPastRoomForTest(ctx context.Context, holder pgx.Tx, artifactID s
 	}
 	if _, err := holder.Exec(ctx, `delete from doc_updates where artifact_id = $1 and version < $2`, artifactID, writtenAt); err != nil {
 		return fmt.Errorf("delete the folded rows: %w", err)
+	}
+	return nil
+}
+
+// writeMapKeyAt writes artifactID as another process would, in holder, which holds the document's
+// lock, at version at: one key of the map mapName, set on the document the rows through at-1 make.
+func writeMapKeyAt(ctx context.Context, holder pgx.Tx, artifactID string, at int64, mapName string) error {
+	through := persistence.Version(at - 1)
+	stored, err := documentThrough(ctx, artifactID, through, storedUpdates(ctx, holder, artifactID, through), maxUpdateItems)
+	if err != nil {
+		return fmt.Errorf("read the document through version %d: %w", through, err)
+	}
+	before := stored.StateVector()
+	written := stored.GetMap(mapName)
+	stored.Transact(func(txn *crdt.Transaction) {
+		written.Set(txn, "key", "value")
+	})
+	if _, err := holder.Exec(ctx, `insert into doc_updates (artifact_id, version, update, content_changed) values ($1, $2, $3, false)`,
+		artifactID, at, crdt.EncodeStateAsUpdateV1(stored, before)); err != nil {
+		return fmt.Errorf("insert the row at version %d: %w", at, err)
 	}
 	return nil
 }

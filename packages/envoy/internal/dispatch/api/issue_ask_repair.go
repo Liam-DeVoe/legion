@@ -225,14 +225,12 @@ func (s *server) repairIssueAsks(ctx context.Context, markedSince *time.Time, re
 // it commits through the document ledger before publishing the events it appended.
 //
 // The transaction ends docs.WriteRequestBound after it begins, inside the pass's own bound. It
-// writes the issue's documents in turn, and from its second document on it waits for each
-// document's writer slot and advisory lock holding the grant of the pod's load concurrency its
-// first document's fork took, and a room's persistence worker can hold that lock while its gate's
-// fold waits for the pool, so the two wait on each other (docs' loadSlots). The pass is the
-// server's own work, which carries no caller's mark, so Join puts no bound on it (docs'
-// boundCallerWrite), and the pass's bound alone would let one such issue spend every issue's time
-// after it. A transaction the bound ends rolls back, and the next pass repairs the issue
-// (repairIssueAsks). The publish after the commit runs under the pass's context.
+// writes the issue's documents in turn, so it can wait for a second document's lock whose holder
+// waits for the grant it holds (sweepClosedIssueAsks, docs' loadSlots). The pass is the server's
+// own work, which carries no caller's mark, so Join puts no bound on it (docs' boundCallerWrite),
+// and the pass's bound alone would let one such issue spend every issue's time after it. A
+// transaction the bound ends rolls back, and the next pass repairs the issue (repairIssueAsks).
+// The publish after the commit runs under the pass's context.
 func (s *server) repairIssueAsksOf(ctx context.Context, issueKey string) (IssueAskRepair, error) {
 	var repair IssueAskRepair
 	pass := ctx

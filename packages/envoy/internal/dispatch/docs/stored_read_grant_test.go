@@ -5,7 +5,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,30 +17,17 @@ import (
 // were held as each of its LoadDocument reads of room returned.
 type loadDocumentHeld struct {
 	VersionedStore
+	slotsHeld
 	room  string
 	slots *loadSlots
-	mu    sync.Mutex
-	held  []int64
 }
 
 func (s *loadDocumentHeld) LoadDocument(ctx context.Context, room string) (LoadedDocument, error) {
 	loaded, err := s.VersionedStore.LoadDocument(ctx, room)
 	if room == s.room {
-		s.mu.Lock()
-		s.held = append(s.held, s.slots.held.Load())
-		s.mu.Unlock()
+		s.record(s.slots.held.Load())
 	}
 	return loaded, err
-}
-
-// returned is how many bytes of the pool were held as each LoadDocument of room returned, and
-// forgets them.
-func (s *loadDocumentHeld) returned() []int64 {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	held := s.held
-	s.held = nil
-	return held
 }
 
 // A read of the stored document (storedWithUpdates) keeps the grant its load took: the load hands
@@ -59,10 +45,7 @@ func TestAStoredReadMergesAndBuildsItsTreeOnItsLoadsGrant(t *testing.T) {
 	state := proseState(t, 16<<10)
 	storeHistory(t, service, artifactID, state)
 
-	room := newDocumentCopy()
-	if err := crdt.ApplyUpdateV1(room, state, nil); err != nil {
-		t.Fatal(err)
-	}
+	room := copyOf(t, state)
 	stored := docMarkdown(room)
 	storedClocks := room.StateVector()
 	const typist crdt.ClientID = 0x7e57
@@ -89,7 +72,7 @@ func TestAStoredReadMergesAndBuildsItsTreeOnItsLoadsGrant(t *testing.T) {
 		{name: "the stored document alone (storedTree)", want: stored},
 		{name: "the stored document with a heavy share merged in", unstored: share, want: docMarkdown(room), raised: true},
 	} {
-		before := len(taken.all())
+		before, loadsBefore := len(taken.all()), len(loads.all())
 		tree, err := service.storedWithUpdates(ctx, artifactID, read.unstored)
 		if err != nil {
 			t.Fatalf("%s: %v", read.name, err)
@@ -98,7 +81,7 @@ func TestAStoredReadMergesAndBuildsItsTreeOnItsLoadsGrant(t *testing.T) {
 			t.Fatalf("%s rendered %d bytes (%v), want the %d the document holds", read.name, len(markdown), err, len(read.want))
 		}
 		grants := taken.all()[before:]
-		returned := loads.returned()
+		returned := loads.all()[loadsBefore:]
 		if len(grants) == 0 || grants[0] <= 0 {
 			t.Fatalf("%s took grants leaving %v held, want its load's", read.name, grants)
 		}
@@ -135,10 +118,7 @@ func storedJudgement(t *testing.T) (*Service, *liveWrite, int64) {
 	if err != nil {
 		t.Fatalf("read the stored state: %v", err)
 	}
-	written := newDocumentCopy()
-	if err := crdt.ApplyUpdateV1(written, loaded.Update, nil); err != nil {
-		t.Fatal(err)
-	}
+	written := copyOf(t, loaded.Update)
 	clocks := written.StateVector()
 	if len(clocks) != 1 {
 		t.Fatalf("the stored state names %d clients, want the one that wrote it", len(clocks))
@@ -162,19 +142,6 @@ func storedJudgement(t *testing.T) (*Service, *liveWrite, int64) {
 	return service, &liveWrite{artifactID: artifactID, loss: loss}, storedCopyWeight(loaded.Update)
 }
 
-// fullLoadSlots makes the process a load concurrency of one slot for the rest of t, all of it
-// held by the holder it answers until that holder gives it back.
-func fullLoadSlots(t *testing.T) (*loadSlots, *loadSlot) {
-	t.Helper()
-	slots := useLoadSlots(t, newLoadSlots(1))
-	holder := newLoadSlot()
-	if !holder.tryTake(loadSlotBytes) {
-		t.Fatal("the empty pool refused a whole slot")
-	}
-	t.Cleanup(holder.release)
-	return slots, holder
-}
-
 // A published write's judgement on the stored document (lostAtStoredHead), where no room of this
 // process holds it, decodes and walks that document under a grant of what its copy costs
 // (storedCopyWeight): with the pool full, the judgement waits rather than decoding beside the
@@ -183,10 +150,9 @@ func fullLoadSlots(t *testing.T) (*loadSlots, *loadSlot) {
 // given its own grant back.
 func TestAPublishedWritesJudgementOnTheStoredDocumentWaitsForAGrantOfItsCopy(t *testing.T) {
 	service, write, weight := storedJudgement(t)
-	slots, holder := fullLoadSlots(t)
 	waiting := make(chan struct{})
-	var waitOnce sync.Once
-	slots.waiting = func() { waitOnce.Do(func() { close(waiting) }) }
+	slots, _ := poolOfOneSlot(t, sync.OnceFunc(func() { close(waiting) }))
+	holder := fillPoolBut(t, slots, 0)
 	var taken slotsHeld
 	slots.taken = taken.record
 
@@ -228,10 +194,9 @@ func TestAPublishedWritesJudgementOnTheStoredDocumentWaitsForAGrantOfItsCopy(t *
 // A published write's judgement whose grant the pool does not give within publishedLossTimeout
 // ends there: the wait is the read's error, no decode of the stored document runs, the write is
 // left with no verdict, and its transaction's LostOps answers false, which the caller reports as
-// undetermined (LEGION-269), as after a flush or a load that fails. Before, the decode waited for
-// its grant without a deadline (holdServerLoad), holding the write's writer slot, which a joined
-// transaction of the server's own holding its first document's grant can wait for with no bound
-// of its own.
+// undetermined (LEGION-269), as after a flush or a load that fails. A wait with no deadline would
+// hold the write's writer slot, which a joined transaction of the server's own holding its first
+// document's grant can wait for with no bound of its own.
 func TestAPublishedWritesJudgementWhoseGrantOutwaitsItsBoundReachesNoVerdict(t *testing.T) {
 	bound := publishedLossTimeout
 	publishedLossTimeout = time.Second
@@ -239,9 +204,8 @@ func TestAPublishedWritesJudgementWhoseGrantOutwaitsItsBoundReachesNoVerdict(t *
 	logs := captureLogs(t)
 	service, write, _ := storedJudgement(t)
 	ledger := &Ledger{live: map[string]*liveWrite{write.artifactID: write}}
-	slots, holder := fullLoadSlots(t)
-	var waited atomic.Bool
-	slots.waiting = func() { waited.Store(true) }
+	slots, waited := poolOfOneSlot(t, nil)
+	holder := fillPoolBut(t, slots, 0)
 	var taken slotsHeld
 	slots.taken = taken.record
 

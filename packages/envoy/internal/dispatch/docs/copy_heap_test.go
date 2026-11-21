@@ -1125,9 +1125,8 @@ func TestConcurrentLoadsNeverHoldMoreOfThePoolThanItHas(t *testing.T) {
 		storeHistory(t, service, room, state)
 	}
 	// Each room's whole stored history is the one row storeHistory wrote, so each load takes
-	// exactly what that state's copy costs (loadDecodedHistory), which nothing has decoded when
-	// the grant is taken, so its state term alone.
-	each := copyWeight(int64(len(state)), 0)
+	// exactly what that state's copy costs (loadDecodedHistory, storedCopyWeight).
+	each := storedCopyWeight(state)
 	slots, test := loadSlotsWithRoomFor(t, 2, together*each)
 	var most atomic.Int64
 	slots.taken = func(held int64) {
@@ -1396,8 +1395,8 @@ func measureLoad(t *testing.T, load func() any) loadCost {
 // is read off its own accounting (loadSlots.held).
 func TestAHoldersHeavierCopyTakesTheDifferenceAndALighterOneTakesNothing(t *testing.T) {
 	// The measurement's two documents: the small one the transaction forked first, and the
-	// 2 MiB one it forked after it. Neither has been decoded where its grant is taken, so the
-	// state term alone weighs each (copyWeight).
+	// 2 MiB one it forked after it, weighed on their bytes alone, as a fork of few structs is
+	// (copyWeight).
 	small, large := copyWeight(256, 0), copyWeight(2<<20, 0)
 	if small >= large {
 		t.Fatalf("the two copies weigh %d and %d bytes of the pool, want the second the heavier", small, large)
@@ -1467,18 +1466,12 @@ func TestADecodeOfStoredStateIsGrantedWhatItsCopyHolds(t *testing.T) {
 			}
 			held := int64(math.MaxInt64)
 			for range 3 {
-				var before, after runtime.MemStats
-				runtime.GC()
-				runtime.GC()
-				runtime.ReadMemStats(&before)
+				before := liveHeap()
 				doc, err := site.decode()
 				if err != nil {
 					t.Fatalf("decode the history: %v", err)
 				}
-				runtime.GC()
-				runtime.GC()
-				runtime.ReadMemStats(&after)
-				held = min(held, int64(after.HeapAlloc)-int64(before.HeapAlloc))
+				held = min(held, int64(liveHeap())-int64(before))
 				runtime.KeepAlive(doc)
 			}
 			t.Logf("%d bytes of state declaring %d structs: granted %d bytes, against %d by its bytes alone; its copy holds %d, %.2f bytes a byte of state",

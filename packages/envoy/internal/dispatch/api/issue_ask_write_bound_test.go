@@ -24,13 +24,12 @@ import (
 // This file tests the deadline of the two transactions of the server's own that write an issue's
 // documents in turn on a context Join puts no bound on (docs' boundCallerWrite): the close's sweep
 // on the context an unkeyed close detaches from its request (outlivingTheClient), and each issue's
-// transaction of the ask repair's pass. From its second document on such a transaction waits for
-// each document's advisory lock holding the grant of the pod's load concurrency its first
-// document's fork took, and the second document's persistence worker can hold that lock while its
-// gate's fold waits for the pool, so the two wait on each other (docs' loadSlots). Each
-// transaction ends docs.WriteRequestBound after it begins and gives its grant back, and the worker
-// then stores what it held. Before, nothing ended that wait, and each test fails by its own
-// timeout, writeBoundMargin past the bound, with the transaction still waiting.
+// transaction of the ask repair's pass. Such a transaction can wait for its second document's lock
+// while the document's persistence worker, holding that lock, waits in its gate's fold for the
+// grant the transaction's first document's fork took (docs' loadSlots). Each transaction ends no
+// later than docs.WriteRequestBound after it begins and gives its grant back, and the worker then
+// stores what it held. Before, nothing ended that wait, and each test fails by its own timeout,
+// writeBoundMargin past the bound, with the transaction still waiting.
 
 // writeBoundMargin is how far past docs.WriteRequestBound a transaction the bound ends may answer:
 // the statement the bound cancels and the rollback after it.
@@ -64,14 +63,11 @@ var firstDocumentProse = strings.Repeat(strings.Repeat("Prose that weighs the fi
 // storedHistoryHolds). The process's load concurrency is one slot, pool, whose first taker to
 // wait closes foldWaits.
 type heldSecondDocument struct {
-	handler   http.Handler
-	database  *store.Store
-	deps      Deps
-	served    *server
-	documents *docs.Service
-	issue     string
-	first     string
-	second    string
+	repairFixture
+	served *server
+	issue  string
+	first  string
+	second string
 	// firstUpdates is how many updates first's stored history holds before the transaction under
 	// test, which a transaction that rolled back leaves as it is.
 	firstUpdates int
@@ -113,8 +109,11 @@ func newHeldSecondDocument(t *testing.T) *heldSecondDocument {
 		t.Fatalf("the issue's documents are %v (%v), want two", ids, err)
 	}
 	f := &heldSecondDocument{
-		handler: handler, database: database, deps: deps, served: served, documents: documents,
-		issue: issue.Key, first: ids[0], second: ids[1],
+		repairFixture: repairFixture{handler: handler, database: database, documents: documents, deps: deps},
+		served:        served,
+		issue:         issue.Key,
+		first:         ids[0],
+		second:        ids[1],
 	}
 	awaitSettled(t, database, f.first, f.second)
 
@@ -156,7 +155,7 @@ func newHeldSecondDocument(t *testing.T) *heldSecondDocument {
 	if _, err := database.Pool.Exec(ctx, `update issues set status = 'done', closed_at = now() where key = $1`, f.issue); err != nil {
 		t.Fatalf("close the issue: %v", err)
 	}
-	appendIssueEvent(t, repairFixture{database: database, deps: deps}, f.issue, "issue.closed", "done", model.Actor{Kind: "user", ID: "alice"})
+	appendIssueEvent(t, f.repairFixture, f.issue, "issue.closed", "done", model.Actor{Kind: "user", ID: "alice"})
 	if err := docs.FoldHistoryPastRoomForTest(ctx, holder, f.second, f.head); err != nil {
 		t.Fatalf("fold the second document's history past alice's room: %v", err)
 	}
@@ -201,8 +200,7 @@ func (f *heldSecondDocument) secondHead(t *testing.T) int64 {
 // of its own, on the context an unkeyed close hands it: its request's, marked as every request is
 // (trackTransactions) and detached from its client (outlivingTheClient), whose client has then
 // gone away. It answers when the sweep began, and answered, sent nil once the sweep has returned.
-func (f *heldSecondDocument) sweepAsAnUnkeyedClose(t *testing.T) (started time.Time, answered <-chan error) {
-	t.Helper()
+func (f *heldSecondDocument) sweepAsAnUnkeyedClose() (started time.Time, answered <-chan error) {
 	client, leave := context.WithCancel(context.Background())
 	var outliving context.Context
 	request := httptest.NewRequest(http.MethodPatch, "/api/v1/issues/"+f.issue, nil).WithContext(client)
@@ -250,11 +248,10 @@ func (f *heldSecondDocument) holdTheCycle(t *testing.T, what string, answered <-
 	if f.pool.HeldForTest() == 0 {
 		t.Fatalf("%s waits for the second document's lock holding nothing of the pool", what)
 	}
-	fill, filled := f.pool.FillForTest()
+	release, filled := f.pool.FillForTest()
 	if !filled {
 		t.Fatal("the pool refused the bytes its holders do not hold")
 	}
-	release = sync.OnceFunc(fill)
 	t.Cleanup(release)
 	if err := f.holder.Commit(ctx); err != nil {
 		t.Fatalf("let go of the second document's lock: %v", err)
@@ -319,10 +316,7 @@ func (f *heldSecondDocument) requireNextRepairSweeps(t *testing.T, logs *storete
 	testwait.Eventually(t, "the second document's room to close for its reload", func() bool {
 		return strings.Contains(logs.String(), closed)
 	})
-	repair, err := RepairIssueAsks(context.Background(), f.deps, nil)
-	if err != nil {
-		t.Fatalf("the next repair pass: %v", err)
-	}
+	repair := repairNow(t, f.repairFixture)
 	if repair.Swept != 1 || repair.Withdrawn != 0 || repair.Restored != 0 {
 		t.Fatalf("the next repair pass = %+v, want the first document's ask block swept", repair)
 	}
@@ -339,7 +333,7 @@ func (f *heldSecondDocument) requireNextRepairSweeps(t *testing.T, logs *storete
 func TestAnUnkeyedClosesSweepWaitingForItsSecondDocumentsLockEndsAtTheWriteBound(t *testing.T) {
 	f := newHeldSecondDocument(t)
 	logs := captureLogs(t)
-	started, answered := f.sweepAsAnUnkeyedClose(t)
+	started, answered := f.sweepAsAnUnkeyedClose()
 	f.holdTheCycle(t, "the close's sweep", answered)
 	requireEndedAtTheBound(t, "the close's sweep", started, answered)
 	logged := logs.String()
@@ -380,7 +374,7 @@ func TestAnAskRepairsTransactionWaitingForItsSecondDocumentsLockEndsAtTheWriteBo
 func TestASweepTheWriteBoundEndedIsFinishedByTheNextAskRepair(t *testing.T) {
 	f := newHeldSecondDocument(t)
 	logs := captureLogs(t)
-	started, answered := f.sweepAsAnUnkeyedClose(t)
+	started, answered := f.sweepAsAnUnkeyedClose()
 	release := f.holdTheCycle(t, "the close's sweep", answered)
 	requireEndedAtTheBound(t, "the close's sweep", started, answered)
 	f.requireGrantGivenBack(t)
