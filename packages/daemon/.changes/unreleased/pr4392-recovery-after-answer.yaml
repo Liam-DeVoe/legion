@@ -1,0 +1,10 @@
+kind: Fixed
+custom:
+  Issue: pr4392
+body: |-
+  An issue the daemon could not record while GitHub did not answer for its repository is now
+  recorded where Dispatch resolves it once GitHub answers. Before, the recovery pass whose own read
+  got GitHub's answer recorded the issue where that pass's earlier listing of Dispatch showed it,
+  which could be a repository Dispatch no longer gave the issue. The pass now reads GitHub for such
+  an issue and records nothing, and the next pass, whose listing is read after the answer, records
+  it.

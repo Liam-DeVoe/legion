@@ -528,7 +528,7 @@ Five clients that read configuration from elsewhere each take the flag, the vari
 `bun` and `omp` also read configuration from elsewhere, the `package.json` and `tsconfig.json` of the state directory's parents, and take nothing that stops it, since neither file holds a TLS setting of Bun's.
 So no credential file of the pod's reaches a test site either.
 The positive controls, which check before any client is probed that each compromised site's chain verifies against its pinned root alone, run the same way (`tlsPositiveControlSpec`).
-A command stopped by the probe's aggregate deadline (`--probe-budget`) has no verdict, and so has every check that deadline cut: the launch probes (`daemon.ProbeImage`, recorded as `launch probes: …`), a capability row checked after it (`unanswered`), a positive control, and a role's overlay read that returned after it.
+A command stopped by the probe's aggregate deadline (`--probe-budget`) has no verdict, and so has every check that deadline cut: the launch probes (`daemon.ProbeImage`, recorded as `launch probes: …`), a capability row checked after it (`unanswered`), a positive control, a role's overlay read that returned after it, and the reads of `omp --version` and `omp --help` for the OK line's two marks that failed after it (recorded as `omp-version: …` and `omp-session-id: …`).
 A failure seen before the deadline still fails, and a failure decides over a run with no verdict.
 Where nothing failed and something has no verdict, `legion probe-image` prints `legion probe-image: worker probe has no verdict: <client> <site>: <detail>; …` and exits 75, `EX_TEMPFAIL` (`bootprobe.NoVerdictExit`); every failure still exits 1.
 Each TLS line of a run that its bound, the deadline or a signal ended names which one ended it and after how long (`its 20s limit ended it after 20.0s: …`, `the probe's deadline ended it after …`, `signal: killed ended it after 0.3s, before its 20s limit: …`).
@@ -637,7 +637,8 @@ the build runs under no operator overlay, where a probe pod reads the operator's
 the mark reads `unread` when the probe could not read `retry.modelFallback` under the pod's Oh My Pi settings
 — the probe pod's log says why — and the daemon's report shows the row open).
 `omp-version` is the first non-blank line that the image's `omp --version` prints, with each run of whitespace in it written as `_`.
-`omp-session-id` says whether `omp --help` lists the `--session-id` flag: `taken`, `absent`, or `unread` when the probe could not read the help (the probe pod's log says why).
+`omp-session-id` says whether `omp --help` lists the `--session-id` flag: `taken`, `absent`, or `unread` when the read of the help failed before the probe's deadline (the probe pod's log says why); `omp-version` reads `unread` the same way.
+A read of either that fails after the deadline gives no mark: it has no verdict, as above, so the probe prints no OK line and exits 75.
 An image row the image carries prints `present` with its evidence (`codegraph`'s:
 the CLI on PATH and the plugin enabled in the profile's lock, which a pod's launch loads with extension discovery on).
 A live row prints `reported` (``a claimed session reports it while it runs, so the probe cannot check it; `legion state` renders it: <summary>``:
