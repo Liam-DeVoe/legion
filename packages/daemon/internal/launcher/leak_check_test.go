@@ -54,7 +54,7 @@ func pinLeakCheck(t *testing.T, tag string) {
 // packed as the daemon packs it (leakguard.PackTarballManifest).
 func packedLeakCheck(t *testing.T, launcher string) []byte {
 	t.Helper()
-	fixture := make([]byte, shimwire.LauncherBundlePayloadBytes+4096)
+	fixture := make([]byte, shimwire.LauncherSlicePayloadBytes+4096)
 	_, _ = rand.NewChaCha8([32]byte{}).Read(fixture)
 	raw := leakguardtest.GitHubTarball(t, map[string]leakguardtest.Member{
 		leakguardtest.CheckName:    {Body: "#!/bin/sh\n" + launcher, Mode: 0o755},

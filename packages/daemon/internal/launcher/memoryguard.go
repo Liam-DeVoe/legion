@@ -159,10 +159,10 @@ const (
 // (an `omp` or a `worker-shim` the agent's own command runs) is not spared for it.
 //
 // It spares, outside every role, the launcher itself, each process the launcher holds (pidGuard:
-// the test database's script, the restore's jj and git, the leak-check install's run of the check,
-// each cache trimmer sweep's deleter) with its descendants, and the test database's server with its
-// backends, since ending one backend makes the postmaster end and restart every backend, which
-// stops every role's test database at once. In each role it spares the role-init itself, not its
+// the test database's script, the leak-check install's run of the check, each cache trimmer
+// sweep's deleter) with its descendants, and the test database's server with its backends, since
+// ending one backend makes the postmaster end and restart every backend, which stops every role's
+// test database at once. In each role it spares the role-init itself, not its
 // descendants; the shim, the oldest direct child of the role-init that is this binary run as
 // `worker-shim` (an orphan the role leaves is adopted by the role-init too); every direct child of
 // the shim, which is the agent before and after its start wrapper execs it, the secrets renewer,
@@ -434,13 +434,12 @@ func (m *manager) sendMemoryKillsUntil(ctx context.Context) {
 
 // openMemoryReports makes writer, this role's new connection, the one the kill reports of this
 // role's processes go on, and sends the reports waiting for it. serve calls it after the
-// connection's state frame, as it calls reportRestore, so the daemon reads the role's state
-// first. carried is whether the connection's acknowledgement says the daemon behind it knows the
-// report (serve): guard settings for a gVisor pod's launcher, KernelKills for a microVM pod's. A
-// daemon that does not know the report may close a connection on a frame it does not know, or
-// tell a role of the kernel's kill in the guard's words, so where carried is false every report
-// waiting then, and each made while that connection is up, is dropped with a line rather than
-// sent.
+// connection's state frame, so the daemon reads the role's state first. carried is whether the
+// connection's acknowledgement says the daemon behind it knows the report (serve): guard settings
+// for a gVisor pod's launcher, KernelKills for a microVM pod's. A daemon that does not know the
+// report may close a connection on a frame it does not know, or tell a role of the kernel's kill
+// in the guard's words, so where carried is false every report waiting then, and each made while
+// that connection is up, is dropped with a line rather than sent.
 func (m *manager) openMemoryReports(writer *shimwire.Writer, carried bool) {
 	m.mu.Lock()
 	m.reportWriter, m.reportsCarried = writer, carried
@@ -449,9 +448,9 @@ func (m *manager) openMemoryReports(writer *shimwire.Writer, carried bool) {
 }
 
 // sendMemoryKills writes the reports waiting on this role's connection, oldest first, one at a
-// time. The writer is taken under the manager's lock and written outside it, as state and
-// reportRestore write theirs, and shimwire.Writer writes each frame whole under a lock of its own,
-// so a report never interleaves with a command's answer. A report leaves the queue only once it is
+// time. The writer is taken under the manager's lock and written outside it, as state writes its
+// own, and shimwire.Writer writes each frame whole under a lock of its own, so a report never
+// interleaves with a command's answer. A report leaves the queue only once it is
 // written, and stays at the queue's head while it is being written, since queueMemoryKill never
 // drops the report memorySending names; a write that fails leaves it, and the rest, for the next
 // connection. memorySend holds one send at a time, so serve's send at a connection's start and the

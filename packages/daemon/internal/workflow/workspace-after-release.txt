@@ -1,0 +1,1 @@
+The idle release takes a pod only when its workspace holds nothing that was not pushed. When the pod's disk goes with it, the next pod's workspace is made again from what was pushed to this issue's branch (the repository's default branch if nothing was), so it holds nothing that was not pushed.

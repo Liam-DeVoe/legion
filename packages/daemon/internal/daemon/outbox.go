@@ -194,22 +194,22 @@ type outbox struct {
 }
 
 // outboxTrees is the store's tree barrier (store.Store) as the outbox runs it: an issue close's
-// suspension, an idle release's own two decisions and the bundle it saves, a stop's wait for a
-// stored claim's machine, a workflow tree close's cleanup, a delivery wake and the open resume
-// that refuses one, a project pause's stop of a role and which pause stopped a role, and the end
-// of a pause's hold of a pod a deletion took.
+// suspension, an idle release's own two decisions, the check of its workspace and the decline
+// that check can record, a stop's wait for a stored claim's machine, a workflow tree close's
+// cleanup, a delivery wake and the open resume that refuses one, a project pause's stop of a role
+// and which pause stopped a role, and the end of a pause's hold of a pod a deletion took.
 type outboxTrees interface {
 	IssueSuspension(ctx context.Context, project string, closing store.IssueClose, outOfWorkflow func(status string) bool) (bool, error)
 	IssueRelease(ctx context.Context, project string, release store.IssueReleased, outOfWorkflow func(status string) bool) (store.ReleaseDecision, error)
 	IssueReleaseStop(ctx context.Context, project, issue string, row int64) (store.ReleaseDecision, error)
-	IssueReleaseSave(ctx context.Context, project, issue string, row int64) (store.ReleaseDecision, error)
+	IssueReleaseCheck(ctx context.Context, project, issue string, row int64) (store.ReleaseDecision, error)
 	ReleaseSuspendedClaim(ctx context.Context, project, issue string, role claim.Role, row int64) error
 	CancelIssueRelease(ctx context.Context, project, issue string, resume store.ReleaseResumeRow, outOfWorkflow func(status string) bool,
 		paused store.ReleaseCancelPause) (store.ReleaseCancelled, error)
+	DeclineIssueRelease(ctx context.Context, project, issue string, decline store.IdleReleaseDecline, resume store.ReleaseResumeRow,
+		outOfWorkflow func(status string) bool, paused store.ReleaseCancelPause) (store.ReleaseCancelled, error)
+	ForgetIdleDecline(ctx context.Context, project, issue string) error
 	ClearIssueRelease(ctx context.Context, project, issue string) error
-	PutWorkspaceBundle(ctx context.Context, issue string, release int64, bundle runtime.WorkspaceBundle) error
-	WorkspaceBundleSize(ctx context.Context, issue string) (int, bool, error)
-	DeleteWorkspaceBundle(ctx context.Context, issue string) error
 	StoredClaimMayRun(ctx context.Context, token claim.Token, row int64) (bool, error)
 	StoredClaimMayRunIn(ctx context.Context, token claim.Token, tree string) (bool, error)
 	ReserveWorkflowTreeCleanup(ctx context.Context, project, tree string, rootGeneration uint64) (treelifecycle.Lifecycle, bool, error)
@@ -925,8 +925,8 @@ func (r *outbox) run(ctx context.Context, row record.OutboxRow) error {
 		return r.linger(ctx, row, value)
 	case record.IssueSuspend:
 		return r.suspendIssue(ctx, row, value)
-	case record.IssueBundle:
-		return r.bundleIssueWorkspace(ctx, row, value)
+	case record.IssueWorkspaceCheck:
+		return r.checkIssueWorkspace(ctx, row, value)
 	case record.IssueRelease:
 		return r.releaseIssue(ctx, row, value)
 	case record.WorkspaceRemove:
@@ -2749,7 +2749,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// this drops the backstop the release left that role, so no later backstop acts on a
 		// claim this suspension now owns. Another role's backstop stays (decision 17 of
 		// dispatch://INFRA-3759): a worker waiting on a deploy has nothing else to bring it back.
-		// The bundle stays: the issue comes back.
+		// The decline of an idle release stays: the issue comes back.
 		r.takeOverRelease(ctx, row.Issue, payload.Role)
 		return nil
 	case "release":
@@ -2812,9 +2812,9 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		if err := machine.Handle(ctx, supervise.RequestIssueClose{Claim: token}); err != nil {
 			return fmt.Errorf("close the issue of claim %s: %w", token, err)
 		}
-		// The issue is done, so nothing will restore the bundle its release saved and nothing
-		// should: it goes with the backstop.
-		r.dropReleasedWork(ctx, row.Issue)
+		// The issue is done, so no idle release of its pod is coming: the decline of one goes
+		// with the backstop.
+		r.forgetIdleRelease(ctx, row.Issue)
 		return nil
 	case "tree_close":
 		if !found {
@@ -2838,8 +2838,8 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		if err := machine.Handle(ctx, supervise.RequestTreeClose{Claim: token}); err != nil {
 			return fmt.Errorf("close the tree of claim %s: %w", token, err)
 		}
-		// The tree is closing, so the bundle of this member's release goes with it.
-		r.dropReleasedWork(ctx, row.Issue)
+		// The tree is closing, so no idle release of this member's pod is coming.
+		r.forgetIdleRelease(ctx, row.Issue)
 		return nil
 	default:
 		return fmt.Errorf("outbox row %d has unknown supervise operation %q", row.ID, payload.Op)
@@ -3085,7 +3085,7 @@ func (r *outbox) reservedTreeClose(ctx context.Context, row record.OutboxRow, pa
 			return true, fmt.Errorf("close the tree of claim %s: %w", token, err)
 		}
 	}
-	r.dropReleasedWork(ctx, row.Issue)
+	r.forgetIdleRelease(ctx, row.Issue)
 	if err := r.trees.CleanupReservedTree(ctx, r.project, payload.Tree, lifecycle.Epoch, r.supervisor.deps.Runtime); err != nil {
 		return true, err
 	}
@@ -3262,91 +3262,161 @@ func (r *outbox) podDeleted(ctx context.Context, issue, why string) error {
 	return nil
 }
 
-// bundleIssueWorkspace is the first act of an idle pod's release: it asks the shim of the role
-// the release named — a process still running in the pod, because this row runs before the
-// `release` rows that stop them — for the git bundle of the unpushed work of the workspace every
-// role of the issue shares, and saves it in the daemon's own database. Only a shim can build it:
-// it runs the `jj` of the workspace it already works in, and it dies with its role's process.
+// checkIssueWorkspace is the first act of an idle pod's release: it asks the shim of the role the
+// release named — a process still running in the pod, because this row runs before the `release`
+// rows that stop them — to read whether the workspace every role of the issue shares holds work
+// that no branch or tag on origin holds (runtime.WorkspaceWorkReader, the shim's
+// workspaceWorkRevset): a commit under a working copy or a local bookmark that no remote branch or
+// tag reaches, or a change in the working copy. Only a shim can read it: it runs the `jj` of the
+// workspace it already works in, and it dies with its role's process. The daemon keeps no copy of
+// the workspace: a pod whose workspace holds such work is not released at all.
 //
-// A bundle that cannot be built, and one above runtime.MaxWorkspaceBundleBytes, stop the release:
-// the pod stays, nothing having been stopped yet, and the work a role has not pushed is kept at
-// the cost of a pod. A workspace with nothing unpushed bundles to nothing, and the row the
-// previous release stored goes with it, so the next pod never restores stale work.
+// A read that finds nothing lets the release go on to its role stops and its teardown, which
+// deletes the pod's disk: nothing on it is lost, since all of it is on origin. A read that finds
+// work declines the release, and so does a read that fails, since it cannot show that the
+// workspace holds nothing (declineRelease). The daemon pushes nothing on a role's behalf.
 //
-// A save of a release that is over stores nothing: the bundle of the issue belongs to whichever
-// release the store's mark names, never to a row of one that was cancelled and is still on the
-// lane (store.IssueReleaseSave).
-func (r *outbox) bundleIssueWorkspace(ctx context.Context, row record.OutboxRow, payload record.IssueBundle) error {
+// A check of a release that is over does nothing, and one that finds the project paused cancels
+// the release as before (store.IssueReleaseCheck).
+func (r *outbox) checkIssueWorkspace(ctx context.Context, row record.OutboxRow, payload record.IssueWorkspaceCheck) error {
 	if r.supervisor == nil {
-		return errors.New("issue bundle executor has no claim supervisor")
+		return errors.New("issue workspace check executor has no claim supervisor")
 	}
 	if _, ok := r.supervisor.deps.Runtime.(runtime.IssueReleaser); !ok {
-		// A runtime with no shared issue resources has no pod to release, so nothing to save.
+		// A runtime with no shared issue resources has no pod to release, so nothing to read.
 		return nil
 	}
-	decision, err := r.trees.IssueReleaseSave(ctx, r.project, row.Issue, row.ID)
+	decision, err := r.trees.IssueReleaseCheck(ctx, r.project, row.Issue, row.ID)
 	if err != nil {
 		return err
 	}
 	switch decision.Act {
 	case store.ReleaseOver:
-		r.log.Info("outbox release save finished without acting: the pod's release is over",
+		r.log.Info("outbox release workspace check finished without acting: the pod's release is over",
 			"row", row.ID, "issue", row.Issue)
 		return nil
 	case store.ReleaseCancel:
-		// The project is paused: the pause saves no workspace and deletes no pod, so the release
-		// is cancelled before its save, whatever reached its roles first (decision 12 and
-		// departure 4 of dispatch://INFRA-3759).
+		// The project is paused: the pause deletes no pod, so the release is cancelled before
+		// any role stops, whatever reached its roles first (decision 12 and departure 4 of
+		// dispatch://INFRA-3759).
 		hold, why := releaseHold(decision.Cause)
 		return r.cancelRelease(ctx, row.Issue, payload.Tree, hold, why)
 	}
-	bundler, ok := r.supervisor.deps.Runtime.(runtime.WorkspaceBundler)
+	reader, ok := r.supervisor.deps.Runtime.(runtime.WorkspaceWorkReader)
 	if !ok {
-		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, "the runtime bundles no workspace")
+		return r.declineRelease(ctx, row.Issue, payload, runtime.WorkspaceWork{}, errors.New("the runtime cannot read the issue workspace"))
 	}
-	bundle, err := bundler.BundleWorkspace(ctx, row.Issue, payload.Role)
-	if err != nil {
-		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, err.Error())
+	work, err := reader.WorkspaceWork(ctx, row.Issue, payload.Role)
+	if err != nil || work.HoldsWork() {
+		return r.declineRelease(ctx, row.Issue, payload, work, err)
 	}
-	switch size := bundle.Size(); {
-	case size > runtime.MaxWorkspaceBundleBytes:
-		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleTooLarge,
-			fmt.Sprintf("the workspace's unpushed work is %d bytes, over the %d a release carries", size, runtime.MaxWorkspaceBundleBytes))
-	case size == 0:
-		if err := r.trees.DeleteWorkspaceBundle(ctx, row.Issue); err != nil {
-			return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, err.Error())
-		}
-		return nil
-	}
-	// The bundle is stored under the release that took it, so the restore of the pod that
-	// replaces this one names the release whose work it put back (store.PutWorkspaceBundle).
-	if err := r.trees.PutWorkspaceBundle(ctx, row.Issue, decision.Release, bundle); err != nil {
-		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, err.Error())
-	}
+	r.log.Info("outbox: the idle release read the issue's workspace and found nothing that no branch or tag on origin holds; its roles stop next",
+		"issue", row.Issue, "role", payload.Role, "head", work.Head)
 	return nil
 }
 
-// releaseIssue is the last act of an idle pod's release, run once the save has stored the
-// workspace's unpushed work (bundleIssueWorkspace) and every role stop of the release has
-// suspended its claim: it asks the runtime's release (runtime.IssueReleaser), which suspends the
-// issue's Sandbox and waits its pod out. The issue stays in the workflow, so the runtime keeps a
-// Sandbox that owns the issue's kept volume, Suspended, with that volume, for the issue's next
-// pod, and deletes the Secrets that the next launch writes again. It deletes every other Sandbox
-// with the role Secrets it owns, and nothing of such a pod's disk survives that. That is why the
-// save runs first and never here.
+// declineRelease ends a release whose workspace check found work that no branch or tag on origin
+// holds (failed nil), or could not read the workspace (failed, the read's error). The release is
+// cancelled before any role stopped, so the pod stays exactly as it was, and in the cancel's own
+// transaction the store records the decline (store.DeclineIssueRelease), which the idle rule reads
+// to keep the pod under that reason with no new mark and no new read until a role of the issue
+// starts a turn or a process again (pods.IdleDecline.Stands). So a pod that keeps its work is
+// asked once, and its role is told once, rather than at every pass.
+//
+// The role the workspace was read through is told, in that same transaction, that the release
+// waits for its push (declineMessage): one declined release, one message. A read that failed
+// tells nobody, since there is nothing the role can push on its word; it is a log line and a hold
+// record, and the decline lets the pass ask again after an hour (pods.DeclineUnreadRetry). The
+// decline's reason is its hold's name (workflow's idleHoldNames spells the two by the reasons).
+func (r *outbox) declineRelease(ctx context.Context, issue string, payload record.IssueWorkspaceCheck, work runtime.WorkspaceWork, failed error) error {
+	hold, why := workflow.IdleHoldUnpushedWork, declineReason(work)
+	decline := store.IdleReleaseDecline{At: r.now().UTC(), Role: payload.Role, Reason: hold.String(),
+		Head: work.Head, Commits: work.Count, Changed: work.Changed}
+	if failed != nil {
+		hold, why = workflow.IdleHoldWorkspaceUnread, "the workspace could not be read: "+storetext.FarSideError(failed.Error())
+		decline = store.IdleReleaseDecline{At: decline.At, Role: payload.Role, Reason: hold.String()}
+	} else {
+		token, err := claim.NewToken(r.project, issue, payload.Role)
+		if err != nil {
+			return fmt.Errorf("name the role told of %s's declined release: %w", issue, err)
+		}
+		message, err := record.NewOutboxRow(issue, record.RoleMessage{Role: string(token), Body: declineMessage(issue, work)}, decline.At)
+		if err != nil {
+			return fmt.Errorf("encode the message of %s's declined release: %w", issue, err)
+		}
+		decline.Message = &store.IdleReleaseRow{Kind: string(message.Kind), Payload: message.Payload}
+	}
+	declined, err := r.trees.DeclineIssueRelease(ctx, r.project, issue, decline, r.releaseResume(issue, payload.Tree), record.OutOfWorkflow,
+		store.ReleaseCancelPause{At: r.now(), Backstop: r.backstop, OpenPhaseRole: workflow.OpenPhaseRole})
+	if err != nil {
+		return err
+	}
+	if !declined.Declined {
+		r.log.Info("outbox release workspace check finished without acting: the pod's release was over when it declined",
+			"issue", issue, "hold", hold.String(), "reason", why)
+		return nil
+	}
+	r.log.Info("outbox: the idle release of an issue's pod is declined, and the pod stays with its workspace; no release is asked again until a role of the issue starts a turn",
+		"issue", issue, "hold", hold.String(), "reason", why, "role", payload.Role, "told", failed == nil)
+	recordIdleHold(ctx, r.supervisor.store, r.project, issue, hold, why, r.now().UTC(), r.log)
+	return nil
+}
+
+// declineReason is what the hold record and the log line say a read that found work found: the
+// count of commits that no branch or tag on origin holds, and whether the working copy holds a
+// change, on the working-copy commit the read was made at.
+func declineReason(work runtime.WorkspaceWork) string {
+	return fmt.Sprintf("%d commit(s) not on origin, working-copy change %t, head %s", work.Count, work.Changed, work.Head)
+}
+
+// declineMessage is what the role is told when the release's check finds work in the workspace
+// that origin does not hold: what the read found, that the release waits for the role's push, and
+// that the daemon pushes nothing. The role reads it in its session; people read it in the role's
+// history, so it follows ASD-STE100.
+func declineMessage(issue string, work runtime.WorkspaceWork) string {
+	found := []string{"The daemon did not release this issue's idle pod. Its workspace holds work that no branch or tag on origin holds."}
+	if work.Changed {
+		found = append(found, fmt.Sprintf("The working copy holds a change (commit %s).", work.Head))
+	}
+	commits := strings.Join(work.Commits, ", ")
+	switch {
+	case work.Count > len(work.Commits):
+		found = append(found, fmt.Sprintf("The workspace holds %d commits that origin does not hold. The first %d of these commits are: %s.",
+			work.Count, len(work.Commits), commits))
+	case work.Count == 1:
+		found = append(found, fmt.Sprintf("The workspace holds one commit that origin does not hold: %s.", commits))
+	case work.Count > 1:
+		found = append(found, fmt.Sprintf("The workspace holds %d commits that origin does not hold: %s.", work.Count, commits))
+	}
+	found = append(found,
+		"The idle release takes a pod only when its workspace holds nothing that was not pushed, so the pod stays and the release waits for your push. "+
+			"The daemon does not push for you.",
+		fmt.Sprintf("Push the work that you keep to legion/%s, and abandon the work that you do not keep. "+
+			"After the next turn of a role of this issue, the release reads the workspace again.", issue))
+	return strings.Join(found, " ")
+}
+
+// releaseIssue is the last act of an idle pod's release, run once the workspace check has found
+// nothing in the workspace that origin does not hold (checkIssueWorkspace) and every role stop of
+// the release has suspended its claim: it asks the runtime's release (runtime.IssueReleaser),
+// which suspends the issue's Sandbox and waits its pod out. The issue stays in the workflow, so the
+// runtime keeps a Sandbox that owns the issue's kept volume, Suspended, with that volume, for the
+// issue's next pod, and deletes the Secrets that the next launch writes again. It deletes every
+// other Sandbox with the role Secrets it owns, and nothing of such a pod's disk survives that.
+// That is why the check runs first and the teardown waits for it (store.IssueRelease).
 //
 // It is the last act of the other release rule too, and that release's one row: the release of
 // a pod no role can use (workflow.UnownedPodRelease), whose every claim is already failed,
-// retired or suspended. Nothing ran before it there — no save, since no shim is left to build
-// a bundle, and no role stop, since no role is running — and its teardown is told from an idle
-// one by the kind its mark carries (store.ReleaseDecision.SuspendsNoRole). Such a release reads
-// no bundle size, records no roles and no bytes, arms no backstop, and logs a line of its own
+// retired or suspended. Nothing ran before it there — no check, since no shim is left to read
+// the workspace, and no role stop, since no role is running — and its teardown is told from an idle
+// one by the kind its mark carries (store.ReleaseDecision.SuspendsNoRole). Such a release
+// records no roles, arms no backstop, and logs a line of its own
 // naming the Sandbox it released and the state every claim of the issue stood in; each of those
 // is explained where it is done.
 //
 // A release the store no longer authorizes — one whose issue has left the workflow since, or one
-// whose pod has been given work again — is cancelled: the pod stays, the claims the release
-// suspended are resumed and the bundle the save stored goes with it. The authorization the
+// whose pod has been given work again — is cancelled: the pod stays and the claims the release
+// suspended are resumed. The authorization the
 // teardown acts on is the one the runtime took under its pod lock, not the one this row read
 // before it: a notice or a hook prompt runs on a lane of its own, and the wake it makes
 // can resume a role between the two reads. So the inner answer is what is carried out — a
@@ -3355,7 +3425,7 @@ func (r *outbox) bundleIssueWorkspace(ctx context.Context, row record.OutboxRow,
 //
 // A teardown of a release that is over acts on nothing and undoes nothing: a role stop that
 // cancelled this release has already resumed what it suspended, and a release that finished
-// left the pod gone and its bundle waiting for the pod that replaces it.
+// left the pod gone.
 func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload record.IssueRelease) error {
 	if r.supervisor == nil {
 		return errors.New("issue release executor has no claim supervisor")
@@ -3393,15 +3463,9 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 		decision = inner
 		return inner.Act == store.ReleaseActs, nil
 	}
-	// A release that suspends no role saved no bundle of its own, and the issue's bundle row,
-	// where there is one, belongs to an earlier release that nothing deletes here: a cancel
-	// deletes only the bundle of the release it cancels (workspace_bundles by issue and
-	// release_id), and this release's id owns no row. WorkspaceBundleSize reads per issue, so
-	// reading it here would report another release's bytes as this release's own. Such a
-	// release reads instead the two facts its own line carries — the Sandbox the teardown is
-	// about to release, and the state of every claim of the issue — and reads both before the
-	// teardown, because the pod and its claims are exactly what the teardown changes.
-	var savedBytes int
+	// A release that suspends no role reads the two facts its own line carries — the Sandbox the
+	// teardown is about to release, and the state of every claim of the issue — and reads both
+	// before the teardown, because the pod and its claims are exactly what the teardown changes.
 	var sandboxName string
 	var claims store.ClaimStates
 	if decision.SuspendsNoRole {
@@ -3409,8 +3473,6 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 		if claims, err = r.trees.ClaimStatesIn(ctx, r.project, row.Issue); err != nil {
 			return err
 		}
-	} else if savedBytes, _, err = r.trees.WorkspaceBundleSize(ctx, row.Issue); err != nil {
-		return err
 	}
 	if err := releaser.ReleaseIssue(ctx, row.Issue, payload.Tree, authorize); err != nil {
 		return err
@@ -3436,19 +3498,23 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 		r.log.Info("outbox: released the pod of an issue no role can use; the release suspended no role, so no session is waiting for a wake",
 			"issue", row.Issue, "tree", payload.Tree, "generation", payload.Generation,
 			"sandbox", sandboxName, "claims", claims)
-		// No role was suspended and no bundle was saved, so the record carries neither. No
+		// No role was suspended, so the record carries none. No
 		// backstop is armed either, which is the one act of the idle release this one must not
 		// make: armBackstops cancels the issue's open backstops before arming at most one of
 		// its own, and this release owes no wake. It
 		// suspended no claim, and a claim an earlier idle release left `released` must keep the
 		// backstop that release armed for it — the pod this teardown took down is not the pod
 		// that claim is waiting to come back to.
-		r.recordPodRelease(ctx, row.Issue, payload.Generation, nil, 0)
+		r.recordPodRelease(ctx, row.Issue, payload.Generation, nil)
 		return r.trees.ClearIssueRelease(ctx, r.project, row.Issue)
 	}
-	r.log.Info("outbox: released the idle pod of an issue; its roles resume in the same sessions at the next wake",
-		"issue", row.Issue, "tree", payload.Tree, "generation", payload.Generation, "bundle", savedBytes)
-	r.recordPodRelease(ctx, row.Issue, payload.Generation, decision.Suspended, savedBytes)
+	// The check before the role stops read the workspace and found nothing that origin does not
+	// hold, or this teardown would not run (store.IssueRelease waits for the check, and a check
+	// that found work cancelled the release): the line says so, which is what tells a reader of
+	// the log that every released pod held nothing unpushed.
+	r.log.Info("outbox: released the idle pod of an issue, whose workspace held nothing unpushed; its roles resume in the same sessions at the next wake",
+		"issue", row.Issue, "tree", payload.Tree, "generation", payload.Generation)
+	r.recordPodRelease(ctx, row.Issue, payload.Generation, decision.Suspended)
 	// The pod is gone, so the backstop is armed now and not before: a release that stopped short
 	// left the pod standing and needs none. Arming cancels the previous release's backstops too,
 	// since that pod is gone and its backstop has nothing left to bring back.
@@ -3478,9 +3544,9 @@ func (r *outbox) issueSandboxName(issue string) string {
 	return name
 }
 
-// cancelRelease undoes a release that did not finish: the bundle it may have stored is deleted,
-// and the resume of each claim it suspended and still holds is queued with the release's mark
-// deleted, all in one transaction (store.CancelIssueRelease). The resume is the start row a wake
+// cancelRelease undoes a release that did not finish: the resume of each claim it suspended and
+// still holds is queued with the release's mark deleted, in one transaction
+// (store.CancelIssueRelease). The resume is the start row a wake
 // writes, which the outbox resumes a suspended claim by, so a cancelled release leaves the pod
 // exactly as a wake would have left it — and leaves it durably: a resume the daemon cannot run
 // now is a row its lane runs later, where a resume held in memory alone was lost with the
@@ -3490,12 +3556,6 @@ func (r *outbox) issueSandboxName(issue string) string {
 // deletes the mark all the same (store.CancelIssueRelease): that pod is a close's to stop, and a
 // resume queued above the close's own rows would supersede them and leave the roles of a done
 // issue running in a Sandbox nothing deletes.
-//
-// The bundle goes in that same transaction and never in a call of its own, so a delete that
-// fails leaves the release marked and the lane runs the whole cancel again. A cancel that went
-// on without it left the pod standing with its roles resumed and a copy of their work waiting
-// in the database for the issue's next pod, which would restore it over everything they pushed
-// in between.
 //
 // A cancel while the project is paused queues no resume: the store records each role the release
 // had stopped as stopped by the pause, holds the pod, and arms the open phase's worker's backstop

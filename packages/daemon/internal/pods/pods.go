@@ -67,6 +67,12 @@ type IdleClaim struct {
 	// send started, zero for a claim holding no delivery. A session's report counts only when it
 	// was read at or after it (claim.ReadSessionWork).
 	LastTurnAt time.Time
+	// LastTurnStart is the newest turn the claim's agent started, as the daemon recorded it when
+	// the turn's start moved the claim to working (claims.last_turn_start, supervise.Claim's
+	// LastTurnStart), and zero for a claim that recorded none. A turn is what can change the
+	// workspace, so a turn that started after the idle release declined the pod ends that decline
+	// (IdleDecline.Stands).
+	LastTurnStart time.Time
 	// ActivityAt, ActivityBackground, ActivityKinds and ActivityNextReminderAt are the last
 	// activity report of the process the claim runs now (POST /legion/v1/claims/activity): when
 	// it read what it was doing, whether it found background work of its own running, what kinds
@@ -153,11 +159,13 @@ type IdleView struct {
 	// Releasing is whether a release of this pod is already marked in progress, which no second
 	// release starts behind.
 	Releasing bool
-	// BundleUnrestored is whether the issue holds a saved workspace bundle whose restore is not
-	// recorded: work a release took out of a pod that no pod has put back. Releasing such a pod
-	// again would store a bundle over it, taken from a workspace that never had that work, so
-	// the rule keeps it until the restore is confirmed.
-	BundleUnrestored bool
+	// Declined is the idle release the daemon last declined for this issue, and the zero
+	// IdleDecline where none stands: the release's check read the workspace and found work that no
+	// branch or tag on origin holds, or could not read it (store's idle_release_declines). The rule
+	// keeps the pod under that reason until a role of it starts a turn or a process again
+	// (IdleDecline.Stands), so the pass neither marks a release nor asks the pod again while
+	// nothing it reads has changed.
+	Declined IdleDecline
 	// Paused is whether the daemon's project is paused (a project_pauses row of that project
 	// stands open), read by the project's token whatever project the issue's key names (store's
 	// readOpenPauseByToken says why). A paused project's pods stay: the pause starts no release
@@ -238,4 +246,54 @@ func (v IdleView) QuietSince() (time.Time, bool) {
 		}
 	}
 	return newest, !newest.IsZero()
+}
+
+// The two reasons the idle release's check declines a release (store's idle_release_declines,
+// internal/daemon's checkIssueWorkspace): the workspace holds work that no branch or tag on origin
+// holds, or the check could not read the workspace and so cannot say that it holds none.
+const (
+	DeclineUnpushedWork    = "unpushed_work"
+	DeclineWorkspaceUnread = "workspace_unread"
+)
+
+// DeclineUnreadRetry is how long a decline whose check could not read the workspace stands with
+// no turn and no start of a role. A failed read can have a cause that clears by itself (a role's
+// connection that was down, a git lock a later command clears), so such a pod is asked again after
+// an hour rather than held until a role acts; unpushed work does not go away by itself, so a
+// decline for it waits for the role.
+const DeclineUnreadRetry = time.Hour
+
+// IdleDecline is the idle release the daemon last declined for an issue, as the idle view reads it:
+// when the check declined it (At, the daemon's clock), why (Reason, one of the two above), and the
+// newest start row of the issue's claims at that moment (StartedRow). The zero IdleDecline is no
+// decline.
+type IdleDecline struct {
+	At         time.Time
+	Reason     string
+	StartedRow int64
+}
+
+// Stands is whether the decline still holds the pod at now. It ends at the first of three facts the
+// pass reads without asking the pod anything. A live claim of the issue started a turn after the
+// decline: a turn is the only way a role changes the workspace, and a role told that the release
+// waits for its push answers in a turn. A claim's process was started again after it (a start row
+// above StartedRow): a new process can run in a new pod, whose workspace was made again. Or, for a
+// read that failed, DeclineUnreadRetry has passed. Until one of them, the pass marks no release, so
+// it writes no outbox row, asks no shim and sends no message.
+func (d IdleDecline) Stands(v IdleView, now time.Time) bool {
+	if d.At.IsZero() {
+		return false
+	}
+	if d.Reason == DeclineWorkspaceUnread && !now.Before(d.At.Add(DeclineUnreadRetry)) {
+		return false
+	}
+	for _, c := range v.Claims {
+		if c.LastStartRow > d.StartedRow {
+			return false
+		}
+		if c.Live() && c.LastTurnStart.After(d.At) {
+			return false
+		}
+	}
+	return true
 }

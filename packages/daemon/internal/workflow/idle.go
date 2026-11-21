@@ -58,15 +58,17 @@ const (
 	// word for "my release is already running", never a release that stopped short: a release
 	// cancelled at one of its own rows records IdleHoldOvertaken or IdleHoldUnauthorized.
 	IdleHoldReleasing
-	// IdleHoldBundleUnrestored: a release of this pod saved a bundle of unpushed work whose
-	// restore no pod has confirmed. Releasing the pod again would store a bundle of a workspace
-	// that never had that work over the one that does.
-	IdleHoldBundleUnrestored
-	// IdleHoldBundleTooLarge: the workspace's unpushed work does not fit the bundle a release
-	// carries (runtime.MaxWorkspaceBundleBytes), so the pod is kept and the work with it.
-	IdleHoldBundleTooLarge
-	// IdleHoldBundleSave: the bundle could not be built or could not be saved, so the pod is kept.
-	IdleHoldBundleSave
+	// IdleHoldUnpushedWork: the release's check read the issue's workspace and found work that no
+	// branch or tag on origin holds, a commit or a working-copy change, so the release was declined
+	// and the pod stays with the work in it. The daemon pushes nothing for a role: it tells the role
+	// once that the release waits for its push, and the pod stays until a role of it starts a turn
+	// or a process again (pods.IdleDecline.Stands).
+	IdleHoldUnpushedWork
+	// IdleHoldWorkspaceUnread: the release's check could not read the issue's workspace, so it
+	// could not show that the workspace holds nothing unpushed, and the release was declined. The
+	// pod stays until a role of it starts a turn or a process again, or until
+	// pods.DeclineUnreadRetry has passed.
+	IdleHoldWorkspaceUnread
 	// IdleHoldOvertaken: the pod was given work after its release was marked — a claim of it was
 	// started or resumed, or holds a process, at any of the release's role stops or at its
 	// teardown, or, at the first of the stops, before any role process was stopped, a task,
@@ -80,7 +82,7 @@ const (
 	// deleting the pod (store.ReleaseCauseUnauthorized).
 	IdleHoldUnauthorized
 	// IdleHoldNoLiveClaim: the record holds the issue, and every claim of it has failed, been
-	// retired or been suspended, so this rule finds no live role to ask for a bundle and no
+	// retired or been suspended, so this rule finds no live role to read the workspace through and no
 	// claim to suspend. The pod stands all the same, with nobody in it: that is the state the
 	// second rule acts on (UnownedPodRelease), which is why it is a hold of its own rather than
 	// IdleHoldNoPod, whose name says there is no pod.
@@ -127,7 +129,7 @@ const (
 
 	// The three holds below are a project's pause's (decision 12 of dispatch://INFRA-3759).
 	// IdleHoldPaused is both rules' (IdleRelease, UnownedPodRelease), and the daemon records it
-	// too for a release a pause cancelled at its save (releaseHold in internal/daemon);
+	// too for a release a pause cancelled at its workspace check (releaseHold in internal/daemon);
 	// IdleHoldPauseHeld is the idle rule's; and IdleHoldUnownedPauseHeld is the second rule's,
 	// whose name carries the unowned_ prefix as the nine above do.
 
@@ -143,26 +145,27 @@ const (
 )
 
 var idleHoldNames = map[IdleHold]string{
-	IdleHoldNone:             "none",
-	IdleHoldTreeNotLive:      "tree_not_live",
-	IdleHoldAwaitingPerson:   "awaiting_person",
-	IdleHoldImage:            "image",
-	IdleHoldPluginContract:   "plugin_contract",
-	IdleHoldUpdateRound:      "update_round",
-	IdleHoldInTurn:           "in_turn",
-	IdleHoldDelivery:         "delivery_waiting",
-	IdleHoldBackgroundWork:   "background_work",
-	IdleHoldUnreported:       "unreported",
-	IdleHoldReminder:         "reminder_due",
-	IdleHoldNotIdle:          "not_idle",
-	IdleHoldNoPod:            "no_pod",
-	IdleHoldReleasing:        "releasing",
-	IdleHoldBundleUnrestored: "bundle_unrestored",
-	IdleHoldBundleTooLarge:   "bundle_too_large",
-	IdleHoldBundleSave:       "bundle_save_failed",
-	IdleHoldOvertaken:        "overtaken",
-	IdleHoldUnauthorized:     "unauthorized",
-	IdleHoldNoLiveClaim:      "no_live_claim",
+	IdleHoldNone:           "none",
+	IdleHoldTreeNotLive:    "tree_not_live",
+	IdleHoldAwaitingPerson: "awaiting_person",
+	IdleHoldImage:          "image",
+	IdleHoldPluginContract: "plugin_contract",
+	IdleHoldUpdateRound:    "update_round",
+	IdleHoldInTurn:         "in_turn",
+	IdleHoldDelivery:       "delivery_waiting",
+	IdleHoldBackgroundWork: "background_work",
+	IdleHoldUnreported:     "unreported",
+	IdleHoldReminder:       "reminder_due",
+	IdleHoldNotIdle:        "not_idle",
+	IdleHoldNoPod:          "no_pod",
+	IdleHoldReleasing:      "releasing",
+	// The two decline holds are named by the reasons the decline records (store's
+	// idle_release_declines), so the daemon records a decline under its hold's own name.
+	IdleHoldUnpushedWork:    pods.DeclineUnpushedWork,
+	IdleHoldWorkspaceUnread: pods.DeclineWorkspaceUnread,
+	IdleHoldOvertaken:       "overtaken",
+	IdleHoldUnauthorized:    "unauthorized",
+	IdleHoldNoLiveClaim:     "no_live_claim",
 
 	IdleHoldUnownedClaimLive:         "unowned_claim_live",
 	IdleHoldUnownedNoClaim:           "unowned_no_claim",
@@ -219,11 +222,6 @@ type IdleDecision struct {
 //     pod it held stays after the resume until a role of it is ready again (decision 12 of
 //     dispatch://INFRA-3759);
 //
-//   - no bundle of the issue's unpushed work is waiting to be restored. A release saves that
-//     work out of the pod it deletes, and the pod that replaces it puts it back; until a
-//     restore is confirmed, a second release would take a bundle of a workspace that never had
-//     that work and store it over the one that does;
-//
 //   - the pod is not a root's that waits on an answer a person has not given. A root whose answer
 //     has come waits only for the pass that resumes it on its slot and qualifies, and the children of a root that waits on a
 //     person qualify whatever their root is waiting for;
@@ -256,7 +254,14 @@ type IdleDecision struct {
 //     phase worker's phase is open when the issue's current phase is that worker's role and its
 //     claim serves the current generation;
 //
-//   - the pod has done nothing the daemon recorded for the whole idle period.
+//   - the pod has done nothing the daemon recorded for the whole idle period;
+//
+//   - no decline of the issue's release stands (pods.IdleDecline.Stands). A release's check reads
+//     the workspace before any role stops, and declines where it finds work that no branch or tag
+//     on origin holds, or cannot read it (IdleHoldUnpushedWork, IdleHoldWorkspaceUnread). The
+//     decline holds the pod, with no new mark and no new read, until a role of it starts a turn
+//     or a process again, so a pod that keeps its work is asked once and not at every pass. It
+//     comes last, so a pod whose period has not passed reads not_idle rather than the decline.
 //
 // A pod round is a live claim's, as the claim records it, and a claim that left the round keeps
 // the round it left (supervise.Claim.UpdateRound): the round is over for every claim of it only
@@ -277,9 +282,6 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 	}
 	if view.PauseHeld {
 		return IdleDecision{Hold: IdleHoldPauseHeld}
-	}
-	if view.BundleUnrestored {
-		return IdleDecision{Hold: IdleHoldBundleUnrestored}
 	}
 	if view.IsRoot() && view.Root.AwaitingPerson && !view.Root.Answered {
 		return IdleDecision{Hold: IdleHoldAwaitingPerson}
@@ -338,6 +340,12 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 	if !ok || now.Sub(since) < idle {
 		return IdleDecision{Hold: IdleHoldNotIdle}
 	}
+	if view.Declined.Stands(view, now) {
+		if view.Declined.Reason == pods.DeclineWorkspaceUnread {
+			return IdleDecision{Hold: IdleHoldWorkspaceUnread}
+		}
+		return IdleDecision{Hold: IdleHoldUnpushedWork}
+	}
 	return IdleDecision{Release: true, Roles: roles}
 }
 
@@ -353,10 +361,9 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 // no turn and no reminder. Each of those is a fact about a live role — the image a released pod
 // would come back on, the contract a live claim speaks, the turn a process is in, the reminder
 // armed in a phase worker's session — and this rule acts only where there is no live role to
-// have one. The idle rule's bundle hold is not a conjunct here either, because this release
-// takes no bundle: it asks the pod for nothing and stores nothing, so an issue whose last
-// release saved work no pod has restored is still this rule's to release, with that bundle left
-// as it is for the pod a later start makes. Nor is the idle rule's hold for a root waiting on a
+// have one. The idle rule's decline is not a conjunct here either, and this release makes no
+// check of its own: the workspace read is made by a role's process (runtime.WorkspaceWorkReader),
+// and a pod this rule reads runs none. Nor is the idle rule's hold for a root waiting on a
 // person (IdleHoldAwaitingPerson): that hold keeps the pod of a root whose architect is live and
 // idle, so the answer reaches the session it is waiting in, and a root this rule reads has no
 // live architect to answer in any pod. The answer promotes the root and the daemon queues the
@@ -417,8 +424,8 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 // rule's yet, while every other hold names something true of a pod that has stood past it. The
 // pause's comes last, since a pause keeps only a pod this rule would release.
 //
-// The decision names no roles. There is no live claim to suspend and no bundle to ask the pod
-// for, so the release this answers changes no claim at all: it takes the Sandbox, the pod and
+// The decision names no roles. There is no live claim to suspend and no workspace to read through
+// one, so the release this answers changes no claim at all: it takes the Sandbox, the pod and
 // the disk, and every path that starts a claim of the issue again builds all three afresh.
 func UnownedPodRelease(view pods.IdleView, now time.Time, idle time.Duration, sandboxPresent bool) IdleDecision {
 	if !view.Found || len(view.Claims) == 0 {

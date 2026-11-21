@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	_ "embed"
 	"fmt"
 	"slices"
 	"strconv"
@@ -124,12 +125,31 @@ type WakeStop int
 
 const (
 	// StoppedByRelease: an idle release stopped the session and took its pod, which the wake
-	// brings back as a fresh pod with the workspace the release saved.
+	// brings back as a fresh pod. The release took the pod only because its workspace held nothing
+	// that was not pushed (WorkspaceAfterRelease).
 	StoppedByRelease WakeStop = iota
 	// StoppedByPause: a project's pause stopped the session and kept its pod, its workspace and
 	// its unpushed work as they were (decision 16 of dispatch://INFRA-3759).
 	StoppedByPause
 )
+
+// WorkspaceAfterRelease is what a role woken after an idle release is told of its workspace, in
+// the daemon's wake task (WakeTask) and in the notice the role's plugin writes when its launcher
+// finds the workspace made again (WORKSPACE_AFTER_RELEASE in
+// packages/pi-shared/src/workspace-recreated.ts). The two say it in the same words, so a woken
+// role reads one account of its workspace, and what they say is what the daemon knows: the
+// release's check took the pod only because the workspace held nothing that no branch or tag on
+// origin holds (internal/daemon's checkIssueWorkspace), and a pod whose disk went with it comes
+// back with a workspace that provisioning made from the issue's pushed branch. Neither says that
+// unpushed work was kept, since the daemon keeps none. A kept volume is the one disk that does not
+// go, which is why the second sentence is conditional. The text is the data file
+// workspace-after-release.txt beside this one, embedded here and read by the plugin's test
+// (packages/pi-shared/src/workspace-recreated.test.ts), which holds its copy to it byte for byte;
+// the file's one line ends in a newline, which the text does not carry.
+var WorkspaceAfterRelease = strings.TrimSuffix(workspaceAfterReleaseFile, "\n")
+
+//go:embed workspace-after-release.txt
+var workspaceAfterReleaseFile string
 
 // WakeTask is the one task a woken role is given, the sentence its first turn reads before
 // anything else: what stopped its session, which wake brought it back and what that wake was
@@ -150,7 +170,7 @@ const (
 // read only when its footer names the entry that stands. The text here names no entry itself.
 func WakeTask(kind, detail string, stop WakeStop) string {
 	preamble := "Your issue's pod had been released while it was idle, and this wake brought it back. " +
-		"Your session, your workspace and any work you had not pushed are as you left them. "
+		WorkspaceAfterRelease + " Your session is as you left it. "
 	away, backstop := "while your pod was gone", "the release's backstop"
 	if stop == StoppedByPause {
 		preamble = "Your project was paused, and its pause stopped your session. This wake started it again. " +

@@ -11,7 +11,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
@@ -68,7 +67,7 @@ func markReleaseOf(t *testing.T, store *Store, issue string, first, boundary, la
 // IssueSuspension, which authorizes one that has left it. It refuses or waits on the same fences
 // in the same order: generations unmoved, the pod not taken up again, the tree's cleanup
 // unreserved, a wait while one of the release's own role stops is unrun or a stored claim may
-// still hold a process. It then makes the release-only wait while its own workspace save is queued.
+// still hold a process. It then makes the release-only wait while its own workspace check is queued.
 func TestIssueReleaseAuthorizesAnIssueInTheWorkflowAndWaitsForAllStoredRoles(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -83,7 +82,7 @@ func TestIssueReleaseAuthorizesAnIssueInTheWorkflowAndWaitsForAllStoredRoles(t *
 		{name: "every role released", state: supervise.StateSuspended, want: ReleaseActs},
 		{name: "no mark: the release was cancelled or is over", state: supervise.StateSuspended, noMark: true, want: ReleaseOver},
 		// A claim holding a process is the pod being used again, which the teardown must not
-		// take: it is cancelled rather than waited on, since the bundle the save stored is
+		// take: it is cancelled rather than waited on, since the check's read of the workspace is
 		// already older than whatever that process is doing.
 		{name: "held turn", state: supervise.StateWorking, want: ReleaseCancel, wantCause: ReleaseCauseOvertaken},
 		{name: "uncertain launch", state: supervise.StateLaunchUncertain, want: ReleaseCancel, wantCause: ReleaseCauseOvertaken},
@@ -138,37 +137,37 @@ func TestIssueReleaseAuthorizesAnIssueInTheWorkflowAndWaitsForAllStoredRoles(t *
 				(9,'supervise','LEGION-208','{"op":"suspend","tree":"LEGION-208","role":"architect","generation":1}',0,now(),'')`,
 		},
 		{
-			// The release's own save, row 5 of its range, still in the outbox after failed
-			// attempts and under a lease that has expired: whatever its attempts, retry time or
-			// lease, the pod still holds the only copy of its workspace.
-			name: "the release's own workspace save is still queued", state: supervise.StateSuspended, wantWait: "workspace save",
+			// The release's own workspace check, row 5 of its range, still in the outbox after
+			// failed attempts and under a lease that has expired: whatever its attempts, retry time
+			// or lease, nobody has read the workspace the teardown would delete.
+			name: "the release's own workspace check is still queued", state: supervise.StateSuspended, wantWait: "workspace check",
 			change: `insert into outbox (id,kind,issue,payload,attempts,next_at,last_error,lease_token,lease_until) values
 				(5,'issue_bundle','LEGION-208','{"tree":"LEGION-208","generation":1,"treeGeneration":1,"role":"architect"}',
-				3,now() + interval '1 hour','the bundle could not be built','expired',now() - interval '1 minute')`,
+				3,now() + interval '1 hour','the workspace could not be read','expired',now() - interval '1 minute')`,
 		},
 		{
-			// A save below the mark's range is an earlier release's, and holds no pod of this one.
-			name: "an earlier release's save is still queued", state: supervise.StateSuspended, want: ReleaseActs,
+			// A check below the mark's range is an earlier release's, and holds no pod of this one.
+			name: "an earlier release's check is still queued", state: supervise.StateSuspended, want: ReleaseActs,
 			change: `insert into outbox (id,kind,issue,payload,attempts,next_at,last_error) values
 				(4,'issue_bundle','LEGION-208','{"tree":"LEGION-208","generation":1,"treeGeneration":1,"role":"architect"}',
-				2,now() + interval '1 hour','the bundle could not be built')`,
+				2,now() + interval '1 hour','the workspace could not be read')`,
 		},
 		{
-			// A pending save is a wait, and a wait never stands in for a cancel the store decides
+			// A pending check is a wait, and a wait never stands in for a cancel the store decides
 			// first: a reserved cleanup deletes the Sandbox itself.
-			name: "the tree's cleanup is reserved while the save is queued", state: supervise.StateSuspended, want: ReleaseCancel,
+			name: "the tree's cleanup is reserved while the check is queued", state: supervise.StateSuspended, want: ReleaseCancel,
 			wantCause: ReleaseCauseUnauthorized,
 			change: `update tree_lifecycles set cleanup_started = true where tree = 'LEGION-208';
 				insert into outbox (id,kind,issue,payload,attempts,next_at,last_error) values
 				(5,'issue_bundle','LEGION-208','{"tree":"LEGION-208","generation":1,"treeGeneration":1,"role":"architect"}',
-				1,now() + interval '1 hour','the bundle could not be built')`,
+				1,now() + interval '1 hour','the workspace could not be read')`,
 		},
 		{
-			name: "a role started again while the save is queued", state: supervise.StateSuspended,
+			name: "a role started again while the check is queued", state: supervise.StateSuspended,
 			lastStart: 7, want: ReleaseCancel, wantCause: ReleaseCauseOvertaken,
 			change: `insert into outbox (id,kind,issue,payload,attempts,next_at,last_error) values
 				(5,'issue_bundle','LEGION-208','{"tree":"LEGION-208","generation":1,"treeGeneration":1,"role":"architect"}',
-				1,now() + interval '1 hour','the bundle could not be built')`,
+				1,now() + interval '1 hour','the workspace could not be read')`,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -332,8 +331,8 @@ func TestTheReleasesBoundaryCancelsOnWorkThePodWasGivenAfterTheMark(t *testing.T
 
 // releaseThroughTheStore marks a release of issue's pod under project legion the way the idle
 // tick does — the three rows in one transaction with the mark that records them
-// (ReleaseIdleIssue) — and answers the ids the mark holds: the save, the role stop that is its
-// boundary, and the teardown.
+// (ReleaseIdleIssue) — and answers the ids the mark holds: the workspace check, the role stop that
+// is its boundary, and the teardown.
 func releaseThroughTheStore(t *testing.T, st *Store, issue string) (first, boundary, last int64) {
 	t.Helper()
 	ctx := context.Background()
@@ -358,8 +357,8 @@ func releaseThroughTheStore(t *testing.T, st *Store, issue string) (first, bound
 // written in one transaction, so every row the release queued has an id above the boundary and
 // a delivery that reaches the pod after the mark has one above them all. Until the first role
 // process of the pod is stopped, such a delivery — and a turn that started without one, which
-// shows as a claim holding a process — cancels the whole release, because the bundle the save
-// stored is older than what the pod has done since.
+// shows as a claim holding a process — cancels the whole release, because the check's read of the
+// workspace is older than what the pod has done since.
 func TestWorkThePodIsGivenAfterTheMarkCancelsTheReleaseAtItsBoundary(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -425,7 +424,7 @@ func TestWorkThePodIsGivenAfterTheMarkCancelsTheReleaseAtItsBoundary(t *testing.
 
 // A release's rows are still on the lane after it is cancelled, and the pod can be released
 // again before they run. Such a row names a release the mark is not, and acting on it would
-// suspend a claim of the live release, or tear its pod down and delete the bundle it saved. The
+// suspend a claim of the live release, or tear its pod down with the workspace on its disk. The
 // mark holds the ids of its own rows, and a row outside them does nothing at all.
 func TestARowOfACancelledReleaseNeitherActsNorCancelsTheReleaseRunningNow(t *testing.T) {
 	st := migratedStore(t)
@@ -593,48 +592,98 @@ func TestACancelKeepsTheMarkUntilItsResumesAreQueued(t *testing.T) {
 	}
 }
 
-// The bundle a cancelled release saved goes in the cancel's own transaction, with the resumes and
-// the mark. The pod that work came off is the pod the resumes bring back, with the work in its own
-// workspace, so the row is a second copy of a live disk's work: left behind it would hold the
-// issue's pod (workflow.IdleHoldBundleUnrestored) and wait for whatever pod the issue made next —
-// an eviction's, an update round's, a park and unpark's — to restore it over everything those
-// roles pushed in the meantime.
-//
-// One transaction is what makes that true of a cancel that fails too: a resume the store cannot
-// queue leaves the mark standing and the bundle with it, so the row's retry runs the whole cancel
-// again rather than going on with the bundle already gone or already kept.
-func TestACancelDeletesTheBundleItsReleaseSavedInTheSameTransaction(t *testing.T) {
+// A decline is the cancel and two writes more, all in the cancel's one transaction: the decline
+// row the idle rule reads (idle_release_declines, with the newest start row of the issue's claims)
+// and the one message that tells the role the release waits for its push. One transaction is what
+// makes "one declined release, one message" hold. A resume the store cannot queue leaves the mark
+// standing and writes neither, so the row's retry runs the whole decline again. And a decline that
+// finds no mark — the check of a release that is over, or the lane's retry of a check whose decline
+// already committed — writes nothing and answers Declined false, so no second row and no second
+// message is ever written for one release.
+func TestADeclineWritesItsRowAndItsMessageOnceWithTheCancel(t *testing.T) {
 	const first, boundary, last = 18, 20, 22
 	st := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, st)
 	markRelease(t, st, first, boundary, last, 0, claim.RoleArchitect)
 	releasedClaim(t, st, claim.RoleArchitect)
-	var release int64
-	if err := st.Pool().QueryRow(ctx, `select id from issue_releases where issue = $1`, rootIssue).Scan(&release); err != nil {
-		t.Fatalf("read the id of the release of %s: %v", rootIssue, err)
+	if _, err := st.Pool().Exec(ctx, `update claims set last_start_row = 9 where issue = $1`, rootIssue); err != nil {
+		t.Fatal(err)
 	}
-	saved := runtime.WorkspaceBundle{Bundle: []byte("PACK the work of the cancelled release"),
-		Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661", At: time.Now().UTC(), PodUID: "pod-being-released"}
-	if err := st.PutWorkspaceBundle(ctx, rootIssue, release, saved); err != nil {
-		t.Fatalf("save the release's bundle: %v", err)
+	at := time.Now().UTC().Truncate(time.Millisecond)
+	message := IdleReleaseRow{Kind: "role_message", Payload: []byte(`{"role":"legion-legion-legion-208-architect","body":"push your work"}`)}
+	decline := IdleReleaseDecline{At: at, Role: claim.RoleArchitect, Reason: pods.DeclineUnpushedWork,
+		Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661", Commits: 1, Message: &message}
+	counts := func() (declines, messages int) {
+		t.Helper()
+		if err := st.Pool().QueryRow(ctx, `select (select count(*) from idle_release_declines where issue = $1),
+			(select count(*) from outbox where issue = $1 and kind = 'role_message')`, rootIssue).Scan(&declines, &messages); err != nil {
+			t.Fatalf("count the decline rows of %s: %v", rootIssue, err)
+		}
+		return declines, messages
 	}
 
 	refused := errors.New("the resume could not be encoded")
-	if _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, func(claim.Role, uint64) (IdleReleaseRow, error) {
+	if _, err := st.DeclineIssueRelease(ctx, "legion", rootIssue, decline, func(claim.Role, uint64) (IdleReleaseRow, error) {
 		return IdleReleaseRow{}, refused
-	}, record.OutOfWorkflow, ReleaseCancelPause{At: time.Now()}); !errors.Is(err, refused) {
-		t.Fatalf("a cancel whose resume could not be built = %v, want %v", err, refused)
+	}, record.OutOfWorkflow, ReleaseCancelPause{At: at}); !errors.Is(err, refused) {
+		t.Fatalf("a decline whose resume could not be built = %v, want %v", err, refused)
 	}
-	if _, held, err := st.WorkspaceBundleSize(ctx, rootIssue); err != nil || !held {
-		t.Fatalf("after a cancel that failed the store holds the bundle = %t (%v), want it kept with the mark", held, err)
+	if !releaseMarked(t, st) {
+		t.Fatal("a decline that queued no resume still deleted the mark")
+	}
+	if declines, messages := counts(); declines != 0 || messages != 0 {
+		t.Fatalf("a decline that failed wrote %d decline rows and %d messages, want none", declines, messages)
 	}
 
-	if _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow, ReleaseCancelPause{At: time.Now()}); err != nil {
-		t.Fatalf("carry the cancel out: %v", err)
+	declined, err := st.DeclineIssueRelease(ctx, "legion", rootIssue, decline, resumeRow, record.OutOfWorkflow, ReleaseCancelPause{At: at})
+	if err != nil || !declined.Declined {
+		t.Fatalf("decline the release = %+v, %v; want it declined", declined, err)
 	}
-	if _, held, err := st.WorkspaceBundleSize(ctx, rootIssue); err != nil || held {
-		t.Fatalf("after the cancel the store holds the bundle = %t (%v), want it deleted with the mark", held, err)
+	if resumed := declined.Resumed; len(resumed) != 1 || resumed[0] != claim.RoleArchitect {
+		t.Fatalf("resumed = %v, want the one claim the release suspended", resumed)
+	}
+	if releaseMarked(t, st) {
+		t.Fatal("the decline left the release's mark standing")
+	}
+	if declines, messages := counts(); declines != 1 || messages != 1 {
+		t.Fatalf("after the decline the store holds %d decline rows and %d messages, want one of each", declines, messages)
+	}
+	var row struct {
+		at              time.Time
+		role, reason    string
+		head            string
+		commits         int
+		changed         bool
+		started         int64
+		messageRole     string
+		messageBodyRead string
+	}
+	if err := st.Pool().QueryRow(ctx, `select d.declined_at, d.role, d.reason, d.head, d.commits, d.changed, d.started_row,
+		o.payload->>'role', o.payload->>'body'
+		from idle_release_declines d, outbox o where d.issue = $1 and o.issue = $1 and o.kind = 'role_message'`, rootIssue).Scan(
+		&row.at, &row.role, &row.reason, &row.head, &row.commits, &row.changed, &row.started, &row.messageRole, &row.messageBodyRead); err != nil {
+		t.Fatalf("read the decline of %s: %v", rootIssue, err)
+	}
+	if !row.at.Equal(at) || row.role != "architect" || row.reason != pods.DeclineUnpushedWork || row.head != decline.Head ||
+		row.commits != 1 || row.changed || row.started != 9 {
+		t.Fatalf("decline row = %+v, want the check's own findings at %s with the claims' newest start row 9", row, at)
+	}
+	if row.messageRole != "legion-legion-legion-208-architect" || row.messageBodyRead != "push your work" {
+		t.Fatalf("message row = %q to %q, want the decline's own message to the architect", row.messageBodyRead, row.messageRole)
+	}
+
+	// The lane runs the check again — its row's first attempt committed the decline and failed to
+	// report it — and the mark is gone: nothing is written a second time.
+	again, err := st.DeclineIssueRelease(ctx, "legion", rootIssue, decline, resumeRow, record.OutOfWorkflow, ReleaseCancelPause{At: at.Add(time.Minute)})
+	if err != nil || again.Declined || len(again.Resumed) != 0 {
+		t.Fatalf("a decline of a release that is over = %+v, %v; want nothing declined and nothing resumed", again, err)
+	}
+	if declines, messages := counts(); declines != 1 || messages != 1 {
+		t.Fatalf("after the second decline the store holds %d decline rows and %d messages, want the first decline's one of each", declines, messages)
+	}
+	if queued := startRows(t, st); len(queued) != 1 {
+		t.Fatalf("starts queued = %v, want the first decline's one resume", queued)
 	}
 }
 
@@ -748,9 +797,9 @@ func TestAReleasesMarkRecordsTheClaimsItsStopsSuspended(t *testing.T) {
 		t.Fatalf("record a stale row's suspension: %v", err)
 	}
 
-	decision, err := st.IssueReleaseSave(ctx, "legion", rootIssue, first)
+	decision, err := st.IssueReleaseCheck(ctx, "legion", rootIssue, first)
 	if err != nil {
-		t.Fatalf("read the release's mark through its save: %v", err)
+		t.Fatalf("read the release's mark through its workspace check: %v", err)
 	}
 	if len(decision.Suspended) != 2 || decision.Suspended[0] != claim.RoleArchitect || decision.Suspended[1] != claim.RoleImplementer {
 		t.Fatalf("the mark's suspended roles = %v, want the architect and the implementer in the order their stops ran", decision.Suspended)
@@ -837,7 +886,7 @@ func TestAWakeTakenAfterTheMarkCancelsTheRelease(t *testing.T) {
 			if stop.Act != tc.want || stop.Cause != tc.cause {
 				t.Fatalf("the role stop = %s for %s, want %s for %s", stop.Act, stop.Cause, tc.want, tc.cause)
 			}
-			// The lane deleted the save and the role stop as it ran them, so the teardown is the
+			// The lane deleted the check and the role stop as it ran them, so the teardown is the
 			// release's one row left.
 			if _, err := st.Pool().Exec(ctx, `delete from outbox where issue = $1 and id between $2 and $3`,
 				rootIssue, first, boundary); err != nil {
@@ -862,7 +911,7 @@ func TestAWakeTakenAfterTheMarkCancelsTheRelease(t *testing.T) {
 // of an issue that has left run on in it with their launcher tokens and `gh` credentials.
 //
 // The sequence is the one production runs: the release's stops have suspended the pod's claims,
-// the root is parked while the save runs so the linger's rows are queued above the release's,
+// the root is parked while the check runs so the linger's rows are queued above the release's,
 // and the release's teardown is the next row of the lane.
 func TestACancelOfAnIssueOutOfTheWorkflowQueuesNoResumeSoItsCloseActs(t *testing.T) {
 	st := migratedStore(t)

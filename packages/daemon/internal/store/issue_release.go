@@ -37,9 +37,9 @@ const (
 	ReleaseOver ReleaseAct = iota
 	// ReleaseCancel: the release is cancelled. The caller carries the cancel out
 	// (CancelIssueRelease): the claims this release suspended are resumed and the mark goes, in
-	// one transaction, and the bundle it stored is deleted, so the pod is left as a wake would
-	// have left it. The mark stands until that call, so a cancel that does not finish is read
-	// again by the row's retry rather than lost.
+	// one transaction, so the pod is left as a wake would have left it. The mark stands until
+	// that call, so a cancel that does not finish is read again by the row's retry rather than
+	// lost.
 	ReleaseCancel
 	// ReleaseActs: the row acts.
 	ReleaseActs
@@ -75,9 +75,9 @@ const (
 	// left the workflow, its tree lingers, or its cleanup is reserved. None of those is a
 	// release's business, and each of them is a close's.
 	ReleaseCauseUnauthorized
-	// ReleaseCausePaused: the project is paused at the release's save. The pause saves no
-	// workspace and deletes no pod, so the release is cancelled before it stores a bundle
-	// (IssueReleaseSave, decision 12 and departure 4 of dispatch://INFRA-3759).
+	// ReleaseCausePaused: the project is paused at the release's workspace check. The pause deletes
+	// no pod, so the release is cancelled before any role stops (IssueReleaseCheck, decision 12 and
+	// departure 4 of dispatch://INFRA-3759).
 	ReleaseCausePaused
 )
 
@@ -98,11 +98,10 @@ func (c ReleaseCause) String() string {
 // ReleaseDecision is what the store decided about one row of a release: the act the row may
 // carry out, the cause of a cancel, the release's own id, the roles whose claims it has
 // suspended so far and the rule that decided the release. Release is the id the mark carries,
-// which the save puts on the bundle it stores, and Suspended is the set a cancel resumes and a
-// finished release records.
+// and Suspended is the set a cancel resumes and a finished release records.
 //
 // SuspendsNoRole is the mark's kind read back (issue_releases.kind, IdleReleaseMark): the
-// release of a pod no role can use suspends none and saves no bundle, so its rows must be able
+// release of a pod no role can use suspends none and reads no workspace, so its rows must be able
 // to tell what release they belong to. A decision that holds no mark — a row of a release that
 // is over — carries the zero of it, as it carries the zero of every other field.
 type ReleaseDecision struct {
@@ -165,7 +164,7 @@ func (m releaseMark) roles() []claim.Role {
 }
 
 // suspendsNoRole is whether this mark's release is the one that suspends no role: the release
-// of a pod no role can use, which saves no bundle and queues the teardown alone
+// of a pod no role can use, which reads no workspace and queues the teardown alone
 // (IdleReleaseMark.SuspendsNoRole). Its rows read the kind rather than the empty role, because
 // the kind is what the rule wrote and the empty role is only how the table spells it.
 func (m releaseMark) suspendsNoRole() bool { return m.kind == releaseKindUnowned }
@@ -296,28 +295,24 @@ func (s *Store) ReleaseSuspendedClaim(ctx context.Context, project, issue string
 	return nil
 }
 
-// IssueReleaseSave decides what the release's save of the workspace may do: it acts for a row the
-// release's mark holds, and is ReleaseOver for every other, which is a save of a release that is
-// over. The save reads no boundary — it stops nothing, so there is nothing yet to cancel — but it
-// does write the issue's one stored bundle, and a save of a finished release must not replace the
-// bundle the live one stored.
+// IssueReleaseCheck decides what the release's check of the workspace may do: it acts for a row
+// the release's mark holds, and is ReleaseOver for every other, which is a check of a release that
+// is over. The check reads no boundary — it stops nothing, so there is nothing yet to cancel — but
+// a check of a finished release must not decline, record a decline or tell a role anything about a
+// release that is not the live one.
 //
-// A save that finds the project paused cancels the release (ReleaseCausePaused): the pause saves
-// no workspace and deletes no pod, so a release whose save had not run when the pause began is
-// cancelled and keeps its pod, whatever reached its roles first (decision 12 and departure 4 of
-// dispatch://INFRA-3759). The pause is project's, read by its token (readOpenPauseByToken,
-// which says why). No production row reaches a save for another project's issue: the save runs
-// from the release's row, which is keyed by its issue, and the daemon's outbox runs only the rows
-// of its own project's keys (record's DueRows). A release that saved before the pause finishes
-// as it does while the project runs: its role stops and its teardown read no pause. The open
-// pause is the one fact this reads of it, in this transaction.
-//
-// The decision carries the release's id, which the save puts on the bundle it stores
-// (PutWorkspaceBundle): the restore of the pod that replaces the released one names the release
-// whose work it put back, so a late report deletes no newer release's bundle.
-func (s *Store) IssueReleaseSave(ctx context.Context, project, issue string, row int64) (ReleaseDecision, error) {
+// A check that finds the project paused cancels the release (ReleaseCausePaused): the pause
+// deletes no pod, so a release whose check had not run when the pause began is cancelled and keeps
+// its pod, whatever reached its roles first (decision 12 and departure 4 of
+// dispatch://INFRA-3759). The pause is project's, read by its token (readOpenPauseByToken, which
+// says why). No production row reaches a check for another project's issue: the check runs from
+// the release's row, which is keyed by its issue, and the daemon's outbox runs only the rows of its
+// own project's keys (record's DueRows). A release whose check ran before the pause finishes as it
+// does while the project runs: its role stops and its teardown read no pause. The open pause is the
+// one fact this reads of it, in this transaction.
+func (s *Store) IssueReleaseCheck(ctx context.Context, project, issue string, row int64) (ReleaseDecision, error) {
 	if project == "" || issue == "" || row <= 0 {
-		return ReleaseDecision{}, errors.New("a release's save requires its project, its issue and its outbox row")
+		return ReleaseDecision{}, errors.New("a release's workspace check requires its project, its issue and its outbox row")
 	}
 	var decision ReleaseDecision
 	err := s.Tx(ctx, func(tx pgx.Tx) error {
@@ -338,7 +333,7 @@ func (s *Store) IssueReleaseSave(ctx context.Context, project, issue string, row
 		return nil
 	})
 	if err != nil {
-		return ReleaseDecision{}, fmt.Errorf("authorize the save of %s's release: %w", issue, err)
+		return ReleaseDecision{}, fmt.Errorf("authorize the workspace check of %s's release: %w", issue, err)
 	}
 	return decision, nil
 }
@@ -346,15 +341,14 @@ func (s *Store) IssueReleaseSave(ctx context.Context, project, issue string, row
 // IssueRelease decides whether an idle release may now stop its issue's Sandbox, in one short
 // transaction under the shared serializer. It is ReleaseOver for a row the release's mark does
 // not hold, which is a teardown of a release that is over: one a role stop cancelled, having
-// already resumed what it suspended, and one that finished, whose pod is gone and whose saved
-// bundle the issue's next pod is owed.
+// already resumed what it suspended, and one that finished, whose pod is gone.
 //
-// It cancels the release — the pod stays, the claims it suspended are resumed and the bundle it
-// stored goes — when the run it released has moved on, the issue has left the workflow or its
+// It cancels the release — the pod stays and the claims it suspended are resumed — when the run
+// it released has moved on, the issue has left the workflow or its
 // tree lingers (each of which is a close's business, not a release's), when the tree's cleanup is
 // reserved, which deletes the Sandbox this release would, or when the pod went on working after
 // the mark: a claim started, resumed or holding a process now. It waits while the release's own
-// workspace save or one of its role stops is unfinished, or a stored claim of the issue may still
+// workspace check or one of its role stops is unfinished, or a stored claim of the issue may still
 // hold a process. outOfWorkflow is the workflow's rule for a status that takes an issue out of it
 // (record.OutOfWorkflow), which the store does not restate; the gate itself is the one every
 // other path that acts on a released pod reads (pods.InWorkflowNotLingering), down to the
@@ -437,16 +431,19 @@ func (s *Store) IssueRelease(ctx context.Context, project string, release IssueR
 		if !may {
 			return nil
 		}
-		// The release's own save is its issue_bundle row inside the mark's range, the range holds
-		// reads; a save below it is an earlier release's and holds no pod of this one.
-		var saving bool
+		// The release's own check is its workspace-check row inside the mark's range, the range
+		// holds reads; a check below it is an earlier release's and holds no pod of this one. The
+		// row's kind keeps the name of the save it replaced (record.OutboxKindIssueBundle
+		// says why). The teardown never runs ahead of the check: a pod whose workspace nobody read
+		// could hold work that no branch on origin has, and the teardown deletes its disk.
+		var checking bool
 		if err := tx.QueryRow(ctx, `select exists (
 			select 1 from outbox where issue = $1 and kind = 'issue_bundle' and id >= $2 and id <= $3)`,
-			release.Issue, mark.first, mark.last).Scan(&saving); err != nil {
+			release.Issue, mark.first, mark.last).Scan(&checking); err != nil {
 			return err
 		}
-		if saving {
-			return wait.Errorf("issue %s release waits for its workspace save", release.Issue)
+		if checking {
+			return wait.Errorf("issue %s release waits for its workspace check", release.Issue)
 		}
 		decision.Act, decision.Cause = ReleaseActs, ReleaseCauseNone
 		return nil

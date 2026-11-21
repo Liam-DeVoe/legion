@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+  The notice a resumed worker gets when its workspace was recreated says, in the daemon's own words,
+  that the idle release takes a pod only when its workspace holds nothing that was not pushed, and
+  that a workspace made again holds what was pushed to the issue's branch and nothing else. It no
+  longer has a variant that says unpushed work was saved and put back: the daemon keeps no copy of a
+  workspace, and `LEGION_WORKSPACE_RESTORED` is no longer read.
+time: 2026-11-21T16:00:02Z
+custom:
+  Issue: idle-release-keeps-no-workspace

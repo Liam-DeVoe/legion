@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
 // The three re-entrant helpers this test runs as processes of its own: the stage, which builds a
@@ -870,6 +871,13 @@ exit 0`
 	remount, rest, _ := strings.Cut(string(output), "\n")
 	swap, after, _ = strings.Cut(rest, "\n")
 	return remount, strings.TrimSpace(swap), oneLine(after)
+}
+
+// oneLine is a report as one line of the test's output carries it: its lines, each trimmed and
+// the empty ones dropped, joined with "; " (workspace.OutputLines), however many lines the file or
+// the command it came from wrote.
+func oneLine(report string) string {
+	return strings.Join(workspace.OutputLines(report), "; ")
 }
 
 // fileKind is what Lstat finds at path, never following a link: `regular` for a regular file, the

@@ -1,0 +1,19 @@
+kind: Changed
+body: |-
+  An idle release takes a pod only when the issue's workspace holds nothing unpushed: its first act
+  reads the workspace through a live role's shim (`workspace-work`) and declines when it finds a
+  commit that no branch or tag on origin holds or a change in the working copy, or cannot read it.
+  The pod stays, the role whose shim made the read (the open phase's worker where it is live) gets
+  one message that the release waits for its push, and the daemon pushes nothing. The decline holds
+  the pod under the new hold `unpushed_work` (or `workspace_unread`) with no new release mark, no
+  outbox row and no shim call until a role of the issue starts a turn or a process again; a failed
+  read is asked again after an hour. The read counts work against every remote branch and tag, so
+  the heads of branches the remote deleted after their merge and `main`'s newer commits no longer
+  read as unpushed. Before, every idle pass marked the release again, asked the shim and cancelled
+  on the same refusal (`bundle_save_failed`, "the workspace's unpushed work is N bytes"). The release
+  log line now says the released pod's workspace held nothing unpushed, the release records write
+  `bundleBytes` 0, and the wake task of a release says the release took the pod only because
+  nothing unpushed was in it, in the same words as the plugin's recreated-workspace notice.
+time: 2026-11-21T16:00:01Z
+custom:
+  Issue: idle-release-keeps-no-workspace

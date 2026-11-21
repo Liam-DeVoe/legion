@@ -41,8 +41,14 @@ const (
 	OutboxKindRoleMessage      OutboxKind = "role_message"
 	OutboxKindHookPrompt       OutboxKind = "hook_prompt"
 	OutboxKindUpdateAsk        OutboxKind = "update_ask"
-	OutboxKindIssueBundle      OutboxKind = "issue_bundle"
-	OutboxKindIssueRelease     OutboxKind = "issue_release"
+	// OutboxKindIssueBundle is the kind of the idle release's workspace check
+	// (IssueWorkspaceCheck). The check replaced the release's save of a bundle, and its kind keeps
+	// the save's stored name, which this identifier spells: a row either release queued reads as
+	// the first act of a release, so a row an earlier daemon queued before an upgrade runs as this
+	// check, and a row this daemon queued before a rollback runs as that release's save, with no
+	// migration of the outbox's kind check and no row left that one release cannot run.
+	OutboxKindIssueBundle  OutboxKind = "issue_bundle"
+	OutboxKindIssueRelease OutboxKind = "issue_release"
 	// OutboxKindGatedStepsPublish is the one kind whose row belongs to no issue: its issue column
 	// holds the bare project key (GatedStepsPublish).
 	OutboxKindGatedStepsPublish OutboxKind = "gated_steps_publish"
@@ -1279,37 +1285,40 @@ type IssueSuspend struct {
 
 func (IssueSuspend) OutboxKind() OutboxKind { return OutboxKindIssueSuspend }
 
-// IssueBundle is the first act of an idle pod's release: it asks the shim of Role — a role whose
-// process is still running in the pod, because this row runs before the `release` rows that stop
-// them — for the git bundle of the unpushed work of the workspace every role of the issue shares,
-// and saves it in the daemon's own database (runtime.WorkspaceBundler). Only a shim can build it:
-// it runs the `jj` of the workspace it already works in, and it dies with its role's process, so
-// the save has to happen while that process is there.
+// IssueWorkspaceCheck is the first act of an idle pod's release: it asks the shim of Role — a role
+// whose process is still running in the pod, because this row runs before the `release` rows that
+// stop them — to read whether the workspace every role of the issue shares holds work that no
+// branch or tag on origin holds (runtime.WorkspaceWorkReader). Only a shim can read it: it runs the
+// `jj` of the workspace it already works in, and it dies with its role's process, so the read has
+// to happen while that process is there. A read that finds work, or that fails, declines the
+// release: the pod stays with the work, and Role is told once that the release waits for its push
+// (internal/daemon's checkIssueWorkspace). The daemon pushes nothing for a role.
 //
-// It stops nothing, so a release cancelled here costs only the save, and it sits before the
+// It stops nothing, so a release cancelled here costs only the read, and it sits before the
 // release's boundary (the first `release` row), so a delivery queued while it runs still cancels
-// the whole release and takes the stored bundle with it (outbox.cancelRelease).
-type IssueBundle struct {
+// the whole release (outbox.cancelRelease). The teardown waits for it (store.IssueRelease).
+type IssueWorkspaceCheck struct {
 	Tree           string     `json:"tree"`
 	Generation     uint64     `json:"generation"`
 	TreeGeneration uint64     `json:"treeGeneration"`
 	Role           claim.Role `json:"role"`
 }
 
-func (IssueBundle) OutboxKind() OutboxKind { return OutboxKindIssueBundle }
+func (IssueWorkspaceCheck) OutboxKind() OutboxKind { return OutboxKindIssueBundle }
 
-// IssueRelease is the last act of an idle pod's release, queued behind the save (IssueBundle) and
-// the per-role `release` supervise rows that stopped the pod's role processes: it asks the
-// runtime's release (runtime.IssueReleaser), which suspends the issue's Sandbox and waits its pod
-// out, keeps a Sandbox that owns the issue's kept volume and deletes every other Sandbox with the
-// role Secrets it owns, and records the release with the size of the bundle the save stored.
-// Both workflow generations and this row's ID fence a start or a re-admission that came after, as
-// an IssueSuspend's do.
+// IssueRelease is the last act of an idle pod's release, queued behind the workspace check
+// (IssueWorkspaceCheck) and the per-role `release` supervise rows that stopped the pod's role
+// processes: it asks the runtime's release (runtime.IssueReleaser), which suspends the issue's
+// Sandbox and waits its pod out, keeps a Sandbox that owns the issue's kept volume and deletes
+// every other Sandbox with the role Secrets it owns, and records the release. Both workflow
+// generations and this row's ID fence a start or a re-admission that came after, as an
+// IssueSuspend's do.
 //
 // Unlike a close, the issue stays in the workflow: the claims keep their phase and their pending
-// task, and the next wake for one of the roles brings a new pod that restores the bundle before
-// any role starts. A new pod of a kept Sandbox mounts the volume the work was taken off, so it
-// restores nothing, and the daemon drops the bundle (runtime.HeldWorkspaceBundleDrop).
+// task, and the next wake for one of the roles brings a new pod, whose workspace provisioning makes
+// again from what was pushed to the issue's branch. The check took the pod only because the
+// workspace held nothing that was not pushed. A new pod of a kept Sandbox mounts the volume the
+// last pod used.
 type IssueRelease struct {
 	Tree           string `json:"tree"`
 	Generation     uint64 `json:"generation"`
@@ -2021,7 +2030,7 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 		}
 		payload = value
 	case OutboxKindIssueBundle:
-		value := IssueBundle{}
+		value := IssueWorkspaceCheck{}
 		if err := decoder.Decode(&value); err != nil {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
@@ -2203,9 +2212,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if value.Tree == "" || value.Generation == 0 || value.TreeGeneration == 0 {
 			return fmt.Errorf("issue suspension requires its tree and both workflow generations")
 		}
-	case IssueBundle:
+	case IssueWorkspaceCheck:
 		if value.Tree == "" || value.Generation == 0 || value.TreeGeneration == 0 || value.Role == "" {
-			return fmt.Errorf("a release's workspace save requires its tree, both workflow generations and the role whose shim is asked")
+			return fmt.Errorf("a release's workspace check requires its tree, both workflow generations and the role whose shim reads the workspace")
 		}
 	case IssueRelease:
 		if value.Tree == "" || value.Generation == 0 || value.TreeGeneration == 0 {
