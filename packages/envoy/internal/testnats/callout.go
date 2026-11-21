@@ -20,10 +20,13 @@ const CalloutAuthTimeout = 2
 // CalloutKeys are the three keys a server with an auth callout and its auth service share: the
 // service's own NATS user, which the server admits without a callout; the issuer, the account key
 // that signs every answer and every user it admits; and the curve key the server seals each
-// authorization request to.
+// authorization request to. ServerTags, when set, are the server's tags (server_tags), which
+// nats-server copies into every authorization request it sends (claims.Server.Tags): a test of a
+// hub rendered with private-project support sets natsgrant.PrivateProjectsServerTag here.
 type CalloutKeys struct {
 	ServiceSeed, IssuerSeed, XKeySeed       string
 	ServicePublic, IssuerPublic, XKeyPublic string
+	ServerTags                              []string
 }
 
 // NewCalloutKeys makes the three keys: the service a user key, the issuer an account key and the
@@ -80,7 +83,8 @@ type StaticUser struct {
 // user (the service's among them) as an auth user, and the curve key the requests are sealed to.
 // A client the configuration does not list is sent to the service. Keys with no XKeyPublic name
 // no curve key, so the server sends its requests in the clear: the control a test of the sealing
-// starts.
+// starts. Keys with ServerTags render them as the server's server_tags, ahead of the rest; keys
+// with none render no such line, so the configuration is the one it was before tags existed.
 func CalloutConfig(keys CalloutKeys, static ...StaticUser) string {
 	users := []string{
 		userEntry(keys.ServicePublic, []string{"$SYS._INBOX.>"}, []string{"$SYS.REQ.USER.AUTH"}),
@@ -94,7 +98,11 @@ func CalloutConfig(keys CalloutKeys, static ...StaticUser) string {
 	if keys.XKeyPublic != "" {
 		xkey = fmt.Sprintf("\n    xkey: %q", keys.XKeyPublic)
 	}
-	return fmt.Sprintf(`jetstream {}
+	tags := ""
+	if len(keys.ServerTags) > 0 {
+		tags = fmt.Sprintf("server_tags: [%s]\n", quoted(keys.ServerTags))
+	}
+	return fmt.Sprintf(`%sjetstream {}
 authorization {
   timeout: %d
   users = [
@@ -106,7 +114,7 @@ authorization {
     auth_users: [ %s ]%s
   }
 }
-`, CalloutAuthTimeout, strings.Join(users, "\n    "), keys.IssuerPublic, strings.Join(authUsers, ", "), xkey)
+`, tags, CalloutAuthTimeout, strings.Join(users, "\n    "), keys.IssuerPublic, strings.Join(authUsers, ", "), xkey)
 }
 
 // userEntry is one nkey user of a configuration, with its grant.

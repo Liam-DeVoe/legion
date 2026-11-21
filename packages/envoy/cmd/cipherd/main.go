@@ -796,10 +796,12 @@ func main() {
 		// A service held to its exchange projects is held by the exchange list this broker trades
 		// by and by Dispatch's answers about those projects, which the service reads in the
 		// background; with no Dispatch to ask (BROKER_PROJECT_ACCESS_URL unset), it refuses that
-		// service by name.
+		// service by name. PrivateProjects, the broker's private union, is left nil, an empty
+		// union that refuses nothing, until the configured private projects and Dispatch's
+		// privacy answers are wired into one function the auth service and the private list share.
 		deps := natscallout.Deps{
-			Introspect: provider.Introspect, ServiceToken: natsTokens.Verify, Exchange: exchangePolicy.MappedForAccount,
-			Log: slog.Default(), Metrics: natscallout.NewMetrics(registry),
+			Introspect: provider.Introspect, ServiceToken: natsTokens.Verify, HubAdmissionToken: natsTokens.VerifyHubAdmission,
+			Exchange: exchangePolicy.MappedForAccount, Log: slog.Default(), Metrics: natscallout.NewMetrics(registry),
 		}
 		if projectAccess != nil {
 			deps.Access = projectAccess.Access
