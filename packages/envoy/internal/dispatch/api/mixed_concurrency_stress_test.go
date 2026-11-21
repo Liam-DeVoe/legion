@@ -35,13 +35,15 @@ func pooledDocumentHandlerWith(
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		config := database.Pool.Config().Copy()
 		config.MaxConns = maxConns
-		database.Pool.Close()
+		testwait.Returns(t, "every connection of the test database's first pool to come back, so the pool closes", database.Pool.Close)
 		pool, err := pgxpool.NewWithConfig(context.Background(), config)
 		if err != nil {
 			t.Fatalf("open test pool: %v", err)
 		}
 		database.Pool = store.NewPool(pool)
-		t.Cleanup(pool.Close)
+		t.Cleanup(func() {
+			testwait.Returns(t, "every connection of the "+fmt.Sprint(maxConns)+"-connection pool to come back, so the pool closes", pool.Close)
+		})
 		service = docs.New(docs.Deps{Store: database, Settle: settle})
 		t.Cleanup(func() {
 			if err := service.Shutdown(testwait.Context(t)); err != nil {

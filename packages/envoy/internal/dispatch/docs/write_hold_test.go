@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A transaction renders its document once. The edit's own rendering is what the version
@@ -134,7 +135,9 @@ func countedService(t *testing.T) (*Service, string, *anchorQueryCounter) {
 		t.Fatalf("open counted pool: %v", err)
 	}
 	pool := store.NewPool(counted)
-	t.Cleanup(pool.Close)
+	t.Cleanup(func() {
+		testwait.Returns(t, "every connection of the counted pool to come back, so the pool closes", pool.Close)
+	})
 	service := newTestServiceWith(t, Deps{
 		Store:  &store.Store{Pool: pool},
 		Events: events.NewBroker(),

@@ -278,7 +278,7 @@ func TestTheEmbeddingProjectKeyFillIsFinishedByTheProcessThatSkippedWhenTheHolde
 	if !<-held {
 		t.Fatal("the other process never held the lease, so the tries above were free to label and this test proves nothing")
 	}
-	dying.Pool.Close()
+	testwait.Returns(t, "every connection of the dying holder's pool to come back, so the pool closes", dying.Pool.Close)
 
 	// Its next try takes the lease the dead holder left.
 	fake.Set(afterTheLastSkip[0])

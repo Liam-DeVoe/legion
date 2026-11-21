@@ -30,7 +30,9 @@ func TestMigrateFromSeveralProcessesAtOnceOnAnEmptyDatabase(t *testing.T) {
 		if err != nil {
 			t.Fatalf("open another process's store: %v", err)
 		}
-		t.Cleanup(another.Pool.Close)
+		t.Cleanup(func() {
+			testwait.Returns(t, "every connection of another process's pool to come back, so the pool closes", another.Pool.Close)
+		})
 		stores = append(stores, another)
 	}
 	set := fstest.MapFS{"migrations/0001_first.up.sql": {Data: []byte("create table guard_first (id integer)")}}

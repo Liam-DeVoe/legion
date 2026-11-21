@@ -111,7 +111,9 @@ func tracedStore(t *testing.T, database *store.Store, tracer pgx.QueryTracer) *s
 		t.Fatalf("open a traced pool: %v", err)
 	}
 	pool := store.NewPool(opened)
-	t.Cleanup(pool.Close)
+	t.Cleanup(func() {
+		testwait.Returns(t, "every connection of the traced pool to come back, so the pool closes", pool.Close)
+	})
 	return &store.Store{Pool: pool}
 }
 

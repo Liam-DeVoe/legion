@@ -1320,7 +1320,7 @@ func TestARefusedRoomAppendsRollbackIsBoundedOnAHalfOpenLink(t *testing.T) {
 	defer func() {
 		// The link goes first: a pool whose connection is parked on the proxy cannot close.
 		proxy.release()
-		proxied.Pool.Close()
+		testwait.Returns(t, "every connection of the pool through the proxy to come back, so the pool closes", proxied.Pool.Close)
 	}()
 	appends, err := proxied.Pool.RoomAppends()
 	if err != nil {

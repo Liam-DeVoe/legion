@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestMain gives the package's Postgres-backed tests a database each (storetest.Main).
@@ -40,7 +41,9 @@ func laggingDatabaseClock(t *testing.T, database *store.Store, lag time.Duration
 		t.Fatalf("open a pool on the lagging clock: %v", err)
 	}
 	pool := store.NewPool(opened)
-	t.Cleanup(pool.Close)
+	t.Cleanup(func() {
+		testwait.Returns(t, "every connection of the pool on the lagging clock to come back, so the pool closes", pool.Close)
+	})
 	return pool
 }
 

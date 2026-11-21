@@ -1052,7 +1052,7 @@ func TestAShutdownWithTheDatabaseUnansweringDecidesToExitInsideStopGrace(t *test
 	var pool *store.Pool
 	t.Cleanup(func() {
 		if pool != nil {
-			pool.Close()
+			testwait.Returns(t, "every connection of the pool through the relay to come back, so the pool closes", pool.Close)
 		}
 	})
 	relay := startDatabaseRelay(t, database.Pool.Config().ConnString())

@@ -450,7 +450,9 @@ func TestRelatedCheckMeaningFindsAProjectsItemBeyondOtherProjectsNearerVectors(t
 		t.Fatalf("open the index-preferring pool: %v", err)
 	}
 	indexStore := &store.Store{Pool: store.NewPool(opened)}
-	t.Cleanup(indexStore.Pool.Close)
+	t.Cleanup(func() {
+		testwait.Returns(t, "every connection of the index-preferring pool to come back, so the pool closes", indexStore.Pool.Close)
+	})
 	indexDeps := deps
 	indexDeps.Store = indexStore
 

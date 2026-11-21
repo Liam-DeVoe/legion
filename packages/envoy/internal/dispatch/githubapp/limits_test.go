@@ -917,7 +917,7 @@ func TestARedeliveryStrikeDoesNotHoldATokenMint(t *testing.T) {
 func TestAnUnreadableLimitLetsTheRequestGo(t *testing.T) {
 	fake := startLimitGitHub(t)
 	gone := storetest.SecondProcess(t, storetest.Open(t))
-	gone.Pool.Close()
+	testwait.Returns(t, "every connection of the second process's pool to come back, so the pool closes", gone.Pool.Close)
 	client := fake.newClient(t, WithLimits(ratelimit.New(gone.Pool)))
 	if _, err := client.Token(context.Background(), 7); err != nil {
 		t.Fatalf("token mint with the limits unreadable: %v", err)

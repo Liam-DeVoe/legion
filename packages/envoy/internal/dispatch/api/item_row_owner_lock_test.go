@@ -940,7 +940,9 @@ func oneConnectionStore(t *testing.T, deps Deps) (*store.Store, uint32) {
 	callStore := &store.Store{Pool: store.NewPool(opened)}
 	// Registered before anything the caller registers over this store - a server's wait, a
 	// document service's shutdown - so that those run first and the pool closes after them.
-	t.Cleanup(callStore.Pool.Close)
+	t.Cleanup(func() {
+		testwait.Returns(t, "every connection of the call's one-connection pool to come back, so the pool closes", callStore.Pool.Close)
+	})
 	conn, err := callStore.Pool.Acquire(context.Background())
 	if err != nil {
 		t.Fatalf("acquire the call's connection: %v", err)

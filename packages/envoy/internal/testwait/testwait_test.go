@@ -120,6 +120,45 @@ func TestReceiveReturnsASentValueAndAClose(t *testing.T) {
 	}
 }
 
+// Returns waits for its function, run on a goroutine of its own, to return, and what the function
+// wrote is the caller's to read once it has. Under a short -timeout a function that never returns
+// fails the test naming what, 30 s before the deadline and before Go's alarm, with the same line on
+// stderr (TestTheWaitsGiveUpChild's "returns").
+func TestReturnsWaitsForItsFunctionAndFailsNamingOneThatNeverReturns(t *testing.T) {
+	release := make(chan struct{})
+	go close(release)
+	wrote := ""
+	Returns(t, "a function let go by another goroutine", func() {
+		<-release
+		wrote = "written"
+	})
+	if wrote != "written" {
+		t.Fatalf("Returns returned before its function did: the function wrote %q, want %q", wrote, "written")
+	}
+
+	// The child is waited for through Returns itself, and runs on Context, which ends it where that
+	// wait gives up, so this row cannot outlast its own binary's deadline.
+	child := exec.CommandContext(Context(t), os.Args[0], "-test.run=^TestTheWaitsGiveUpChild$/^returns$", "-test.timeout="+childTimeout, "-test.v")
+	child.Env = append(os.Environ(), childEnv+"=1")
+	var stdout, stderr bytes.Buffer
+	child.Stdout, child.Stderr = &stdout, &stderr
+	var ran error
+	Returns(t, "the child under -timeout "+childTimeout+" to exit", func() { ran = child.Run() })
+	if ran == nil {
+		t.Fatalf("the child was meant to fail; it passed:\n%s\nstderr:\n%s", &stdout, &stderr)
+	}
+	if strings.Contains(stdout.String(), "panic: test timed out") || strings.Contains(stderr.String(), "panic: test timed out") {
+		t.Fatalf("the child's Returns ran into the binary's deadline rather than giving up before it:\n%s\nstderr:\n%s", &stdout, &stderr)
+	}
+	line := "testwait: TestTheWaitsGiveUpChild/returns: gave up waiting for a function that never returns 30s before the test binary's deadline"
+	if !slices.Contains(strings.Split(stderr.String(), "\n"), line) {
+		t.Errorf("the child wrote no stderr line %q; its stderr:\n%s", line, &stderr)
+	}
+	if !strings.Contains(stdout.String(), line+"\n") {
+		t.Errorf("the child failed no test with %q; its output:\n%s", line, &stdout)
+	}
+}
+
 // Context's deadline is the moment a wait gives up, and the context ends with the test that took it.
 func TestContextEndsWhereAWaitGivesUpAndWithTheTest(t *testing.T) {
 	var taken context.Context
@@ -236,6 +275,7 @@ func TestAWaitGivesUpWithItsLineOnStderrAndTheSameFailure(t *testing.T) {
 		"testwait: " + name + "next_on_an_empty_stream: gave up waiting for an item no one adds" + ending + "; last read: none",
 		"testwait: " + name + "next_past_unmatched_items: gave up waiting for an item that matches" + ending + `; last read: the latest\nitem`,
 		"testwait: " + name + "receive: gave up waiting for a send no one makes" + ending,
+		"testwait: " + name + "returns: gave up waiting for a function that never returns" + ending,
 		"testwait: " + name + "cleanup: gave up waiting for a condition a cleanup waits for" + ending,
 		"testwait: " + name + "span: gave up waiting for the end of a 1h0m0s span (a span past the margin)" + ending,
 		"testwait: TestMain: gave up waiting for a condition TestMain waits for" + ending,
@@ -297,6 +337,10 @@ func TestTheWaitsGiveUpChild(t *testing.T) {
 	})
 	t.Run("receive", func(t *testing.T) {
 		Receive(t, "a send no one makes", make(chan int))
+	})
+	t.Run("returns", func(t *testing.T) {
+		never := make(chan struct{})
+		Returns(t, "a function that never returns", func() { <-never })
 	})
 	t.Run("cleanup", func(t *testing.T) {
 		t.Cleanup(func() { Eventually(t, "a condition a cleanup waits for", func() bool { return false }) })

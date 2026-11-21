@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestSearchLatencyOnCorpus measures GET /api/v1/search against a real corpus copy
@@ -67,7 +68,9 @@ func newCorpusSearchHandler(t *testing.T, databaseURL string) http.Handler {
 	if err != nil {
 		t.Fatalf("open corpus database: %v", err)
 	}
-	t.Cleanup(database.Pool.Close)
+	t.Cleanup(func() {
+		testwait.Returns(t, "every connection of the corpus database's pool to come back, so the pool closes", database.Pool.Close)
+	})
 	if err := database.Migrate(ctx); err != nil {
 		t.Fatalf("migrate corpus database: %v", err)
 	}

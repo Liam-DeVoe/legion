@@ -1051,7 +1051,7 @@ func TestHealthzReportsWhetherThisProcessPublishesTheOutbox(t *testing.T) {
 // whatever the status resends a write its outage refused.
 func TestHealthzReportsThatWritesTakeIdempotencyKeys(t *testing.T) {
 	closed := storetest.Open(t)
-	closed.Pool.Close()
+	testwait.Returns(t, "every connection of the closed database's pool to come back, so the pool closes", closed.Pool.Close)
 	for name, probe := range map[string]struct {
 		database *store.Store
 		status   int
@@ -1121,7 +1121,9 @@ func TestHealthzAnswersWhileEveryPooledConnectionIsHeld(t *testing.T) {
 	}
 	acquires.pool.Store(shared)
 	database := &store.Store{Pool: store.NewPool(shared)}
-	t.Cleanup(database.Pool.Close)
+	t.Cleanup(func() {
+		testwait.Returns(t, "every connection of the four-connection shared pool to come back, so the pool closes", database.Pool.Close)
+	})
 	for held := int32(0); held < database.Pool.Config().MaxConns; held++ {
 		connection, err := database.Pool.Acquire(ctx)
 		if err != nil {
@@ -1237,7 +1239,7 @@ func TestHealthzAnswersWhilePostgresStopsAnswering(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		blackholed.Store(false)
-		database.Pool.Close()
+		testwait.Returns(t, "every connection of the store through the proxy to come back, so the pool closes", database.Pool.Close)
 	})
 
 	// The probe's bound is armed on a fake clock (healthzHandlerOn), so the row reads the bound the
@@ -1307,7 +1309,7 @@ func TestHealthzAnswersWhilePostgresAndTheBucketBothStopAnswering(t *testing.T) 
 	}
 	t.Cleanup(func() {
 		blackholed.Store(false)
-		database.Pool.Close()
+		testwait.Returns(t, "every connection of the store through the proxy to come back, so the pool closes", database.Pool.Close)
 	})
 	bucket := heldBucket{Memory: filestest.NewMemory(), reached: make(chan struct{}), release: make(chan struct{})}
 	began := time.Date(2026, time.November, 17, 9, 0, 0, 0, time.UTC)

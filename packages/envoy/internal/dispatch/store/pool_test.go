@@ -349,7 +349,9 @@ func TestListenerIsServedWhileTheSharedPoolIsFullyAcquired(t *testing.T) {
 		t.Fatalf("open a four-connection shared pool: %v", err)
 	}
 	database := &Store{Pool: NewPool(shared)}
-	t.Cleanup(database.Pool.Close)
+	t.Cleanup(func() {
+		testwait.Returns(t, "every connection of the four-connection shared pool to come back, so the pool closes", database.Pool.Close)
+	})
 	held := make([]*pgxpool.Conn, 0, database.Pool.Config().MaxConns)
 	for range database.Pool.Config().MaxConns {
 		conn, err := database.Pool.Acquire(ctx)
@@ -517,7 +519,9 @@ func TestHorizonIsServedWhileTheSharedPoolIsFullyAcquired(t *testing.T) {
 		t.Fatalf("open a four-connection shared pool: %v", err)
 	}
 	database := &Store{Pool: NewPool(shared)}
-	t.Cleanup(database.Pool.Close)
+	t.Cleanup(func() {
+		testwait.Returns(t, "every connection of the four-connection shared pool to come back, so the pool closes", database.Pool.Close)
+	})
 	held := make([]*pgxpool.Conn, 0, database.Pool.Config().MaxConns)
 	for range database.Pool.Config().MaxConns {
 		conn, err := database.Pool.Acquire(ctx)

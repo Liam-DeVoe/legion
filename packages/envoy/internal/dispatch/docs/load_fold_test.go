@@ -145,7 +145,9 @@ func withoutPoolHealthChecks(t *testing.T, database *store.Store) *store.Store {
 	if err != nil {
 		t.Fatalf("open a store with no pool health checks: %v", err)
 	}
-	t.Cleanup(quiet.Pool.Close)
+	t.Cleanup(func() {
+		testwait.Returns(t, "every connection of the store with no pool health checks to come back, so the pool closes", quiet.Pool.Close)
+	})
 	return quiet
 }
 

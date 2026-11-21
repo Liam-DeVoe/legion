@@ -5250,7 +5250,7 @@ func TestShutdownCompletesCompactionBeforeTestStoreCloses(t *testing.T) {
 	}
 
 	persistence.closed.Store(true)
-	database.Pool.Close()
+	testwait.Returns(t, "every connection of the test's database pool to come back, so the pool closes", database.Pool.Close)
 	testwait.Quiet(t, "a document compaction after the test store closed", persistence.compactionAfterClose, 100*time.Millisecond,
 		"Shutdown has returned, which says the compaction queue's worker and ygo's server stopped, but a compaction a defect left running leaves no state of this service the test can read (the package's parallel tests share the goroutine dump), no later action of a shut-down service reaches it, and synctest does not reach the real database")
 }

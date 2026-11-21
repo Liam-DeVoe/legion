@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // template is the database every Open clones: an empty one carrying every Dispatch migration and
@@ -59,13 +60,21 @@ func OpenFrom(t testing.TB, key string, migrate func(databaseURL string) error) 
 }
 
 // openClone opens a store on the clone databaseURL names, closed before the clone's drop runs.
+// The close goes through the shared wait (testwait.Returns), as every pool here does: store.Pool's
+// Close returns only once every connection in use has come back, and a row that failed, or the
+// defect it caught, can leave the code under test holding one for good, parked on a fake clock no
+// one moves or a gate no one opens. The wait then fails naming the pool, where Close alone would
+// hang the test binary to its timeout, and the clone's drop, which runs after it, ends the
+// connections still held (testdb's dropDatabase).
 func openClone(t testing.TB, databaseURL string) *store.Store {
 	t.Helper()
 	database, err := store.Open(context.Background(), databaseURL)
 	if err != nil {
 		t.Fatalf("open isolated database: %v", err)
 	}
-	t.Cleanup(database.Pool.Close)
+	t.Cleanup(func() {
+		testwait.Returns(t, "every connection of the test's database pool to come back, so the pool closes", database.Pool.Close)
+	})
 	return database
 }
 

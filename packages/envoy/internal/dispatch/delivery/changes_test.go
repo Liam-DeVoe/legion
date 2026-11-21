@@ -82,7 +82,9 @@ func laggingDatabaseClock(t *testing.T, ctx context.Context, pool *store.Pool, l
 		t.Fatalf("open a pool on the lagging clock: %v", err)
 	}
 	lagging := store.NewPool(opened)
-	t.Cleanup(lagging.Close)
+	t.Cleanup(func() {
+		testwait.Returns(t, "every connection of the pool on the lagging clock to come back, so the pool closes", lagging.Close)
+	})
 	return lagging
 }
 

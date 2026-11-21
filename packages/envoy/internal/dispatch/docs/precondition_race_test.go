@@ -35,13 +35,15 @@ func TestConditionalDocumentEditDoesNotOverwriteWriterDuringTableAnchorCheck(t *
 			database := storetest.Open(t)
 			config := database.Pool.Config().Copy()
 			config.MaxConns = 8
-			database.Pool.Close()
+			testwait.Returns(t, "every connection of the test database's first pool to come back, so the pool closes", database.Pool.Close)
 			pool, err := pgxpool.NewWithConfig(context.Background(), config)
 			if err != nil {
 				t.Fatalf("open dedicated table-race pool: %v", err)
 			}
 			database.Pool = store.NewPool(pool)
-			t.Cleanup(pool.Close)
+			t.Cleanup(func() {
+				testwait.Returns(t, "every connection of the dedicated table-race pool to come back, so the pool closes", pool.Close)
+			})
 			artifactID := createDocument(t, database, "")
 			service := New(Deps{Store: database, Settle: time.Hour})
 			t.Cleanup(func() {

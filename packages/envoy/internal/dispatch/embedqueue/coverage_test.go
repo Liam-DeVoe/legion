@@ -1493,7 +1493,7 @@ func TestRunsCoveragePassIsNotRefusedWhileTheScanLoopHoldsACursor(t *testing.T) 
 		t.Fatalf("open a pool through the proxy: %v", err)
 	}
 	proxied := &store.Store{Pool: store.NewPool(opened)}
-	defer proxied.Pool.Close()
+	defer testwait.Returns(t, "every connection of the pool through the proxy to come back, so the pool closes", proxied.Pool.Close)
 
 	// The pass's insert of the issue kind's missing rows waits on this one.
 	insert, err := database.Pool.Begin(ctx)

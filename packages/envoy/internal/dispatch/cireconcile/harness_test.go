@@ -384,10 +384,20 @@ func (h *harness) pagesAsked(from int, repository string) []int {
 	return asked
 }
 
-// pass runs one reconcile pass.
+// pass runs one reconcile pass of the harness's own Reconciler (passOf).
 func (h *harness) pass() {
 	h.t.Helper()
-	h.reconciler.Pass(h.ctx)
+	h.passOf(h.reconciler)
+}
+
+// passOf runs one reconcile pass of r, the harness's own Reconciler or another process's
+// (replica), and waits through the shared wait for it to return. A pass can wait on what nothing
+// in the test brings, such as a write held on the CI store's clock, which only a test moves: the
+// wait then fails naming the pass, where a pass run on the test's own goroutine would hang the
+// test binary to its timeout.
+func (h *harness) passOf(r *Reconciler) {
+	h.t.Helper()
+	testwait.Returns(h.t, "the reconcile pass to return", func() { r.Pass(h.ctx) })
 }
 
 // startPass runs one reconcile pass within ctx on a goroutine of its own, as the loop runs it,
@@ -623,7 +633,10 @@ func (h *harness) recordAt(repository string, number int64, sha string) (*cistor
 	return &state, entry.Revision()
 }
 
-// post sends the listener's real webhook handler one GitHub event, as GitHub sends it.
+// post sends the listener's real webhook handler one GitHub event, as GitHub sends it, and waits
+// through the shared wait for its answer. The listener records on ciClock, which only a test moves,
+// so a record that waits there (the backoff after a lost compare-and-swap) fails naming the
+// delivery, where a handler run on the test's own goroutine would hang the test binary.
 func (h *harness) post(event, body, delivery string) {
 	h.t.Helper()
 	request := httptest.NewRequest(http.MethodPost, "/webhook/github", strings.NewReader(body))
@@ -633,7 +646,9 @@ func (h *harness) post(event, body, delivery string) {
 	mac.Write([]byte(body))
 	request.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
 	recorder := httptest.NewRecorder()
-	h.webhook.ServeHTTP(recorder, request)
+	testwait.Returns(h.t, "the listener's webhook handler to answer the "+event+" delivery "+delivery, func() {
+		h.webhook.ServeHTTP(recorder, request)
+	})
 	if recorder.Code != http.StatusOK {
 		h.t.Fatalf("the webhook answered %d: %s", recorder.Code, recorder.Body.String())
 	}

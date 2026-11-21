@@ -37,7 +37,9 @@ func openEmptyTestStore(t *testing.T) *Store {
 	if err != nil {
 		t.Fatalf("open isolated database: %v", err)
 	}
-	t.Cleanup(store.Pool.Close)
+	t.Cleanup(func() {
+		testwait.Returns(t, "every connection of the isolated database's pool to come back, so the pool closes", store.Pool.Close)
+	})
 	return store
 }
 
@@ -92,7 +94,7 @@ func TestOpenRefusesAConnectionStringThatSetsThePoolSize(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			store, err := Open(context.Background(), tc.databaseURL)
 			if err == nil {
-				store.Pool.Close()
+				testwait.Returns(t, "every connection of the pool the parameter opened to come back, so the pool closes", store.Pool.Close)
 			}
 			refused := err != nil &&
 				strings.Contains(err.Error(), poolSizeParam) &&
@@ -114,7 +116,9 @@ func TestOpenRefusesAConnectionStringThatSetsThePoolSize(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open without %s: %v", poolSizeParam, err)
 	}
-	t.Cleanup(store.Pool.Close)
+	t.Cleanup(func() {
+		testwait.Returns(t, "every connection of the pool opened without "+poolSizeParam+" to come back, so the pool closes", store.Pool.Close)
+	})
 }
 
 // Dispatch's timestamps are UTC whatever zone the host runs in, because a time.Time marshals
@@ -684,7 +688,9 @@ func openIsolatedStoreWithPool(t *testing.T, maxConns int32) *Store {
 	if err != nil {
 		t.Fatalf("open the isolated pool: %v", err)
 	}
-	t.Cleanup(pool.Close)
+	t.Cleanup(func() {
+		testwait.Returns(t, "every connection of the isolated pool to come back, so the pool closes", pool.Close)
+	})
 	return &Store{Pool: NewPool(pool)}
 }
 

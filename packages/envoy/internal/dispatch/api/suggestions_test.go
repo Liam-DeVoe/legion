@@ -274,7 +274,9 @@ func suggestionsBehindLock(
 	}
 	callStore := &store.Store{Pool: store.NewPool(opened)}
 	// Registered before the lock's rollback, so the rollback runs first and this closes after.
-	t.Cleanup(callStore.Pool.Close)
+	t.Cleanup(func() {
+		testwait.Returns(t, "every connection of the call's one-connection pool to come back, so the pool closes", callStore.Pool.Close)
+	})
 	conn, err := callStore.Pool.Acquire(context.Background())
 	if err != nil {
 		t.Fatalf("acquire the call's connection: %v", err)

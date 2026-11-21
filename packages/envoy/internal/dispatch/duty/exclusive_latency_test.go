@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // slowWrites is a database connection whose every write waits delay first while slow is set: a
@@ -59,7 +60,9 @@ func TestExclusiveCountsATickStalledAfterItsMeasureInThePeriodItWasDueIn(t *test
 	if err != nil {
 		t.Fatalf("open the stalling leases pool: %v", err)
 	}
-	t.Cleanup(leases.Close)
+	t.Cleanup(func() {
+		testwait.Returns(t, "every connection of the stalling leases pool to come back, so the pool closes", leases.Close)
+	})
 
 	due := duty.PeriodBoundary(time.Now(), period).Add(-early)
 	slow.Store(true)

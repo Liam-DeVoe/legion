@@ -44,7 +44,9 @@ func TestARefreshWhoseAnswerIsLostAfterItCommitsLeavesTheClaimUnknownUntilRead(t
 			if err != nil {
 				t.Fatalf("open a pool through lossy connections: %v", err)
 			}
-			t.Cleanup(pool.Close)
+			t.Cleanup(func() {
+				testwait.Returns(t, "every connection of the pool through lossy connections to come back, so the pool closes", pool.Close)
+			})
 			listener, _ := newMentionListener(t)
 			handler, _, _, served := newRegisteredTestServer(t, testServerOptions{
 				store: &store.Store{Pool: store.NewPool(pool)}, envoyURL: listener.URL, outboxPublishes: true,
@@ -136,7 +138,9 @@ func TestALostRefreshNeverRevivesALapsedClaim(t *testing.T) {
 			if err != nil {
 				t.Fatalf("open a pool through lossy connections: %v", err)
 			}
-			t.Cleanup(pool.Close)
+			t.Cleanup(func() {
+				testwait.Returns(t, "every connection of the pool through lossy connections to come back, so the pool closes", pool.Close)
+			})
 			listener, state := newMentionListener(t)
 			handler, _, _, served := newRegisteredTestServer(t, testServerOptions{
 				store: &store.Store{Pool: store.NewPool(pool)}, envoyURL: listener.URL, outboxPublishes: true,

@@ -17,10 +17,10 @@ import (
 )
 
 // reopenedPool opens a second pool on pool's database, from the configuration pool was opened
-// with and whatever change configure makes to a copy of it, and closes it after t ends. The
-// production pool is built in store.Open and is not a seam a test may configure, so every test
-// that needs a pool of its own shape opens it here: Traced, Reopened, SingleConnection and
-// SecondProcess.
+// with and whatever change configure makes to a copy of it, and closes it after t ends through the
+// shared wait (openClone says why). The production pool is built in store.Open and is not a seam a
+// test may configure, so every test that needs a pool of its own shape opens it here: Traced,
+// Reopened, SingleConnection and SecondProcess.
 func reopenedPool(t testing.TB, pool *store.Pool, configure func(*pgxpool.Config)) *store.Pool {
 	t.Helper()
 	config := pool.Config()
@@ -30,7 +30,9 @@ func reopenedPool(t testing.TB, pool *store.Pool, configure func(*pgxpool.Config
 		t.Fatalf("open a second pool on the same database: %v", err)
 	}
 	reopened := store.NewPool(opened)
-	t.Cleanup(reopened.Close)
+	t.Cleanup(func() {
+		testwait.Returns(t, "every connection of a second pool on the test's database to come back, so the pool closes", reopened.Close)
+	})
 	return reopened
 }
 

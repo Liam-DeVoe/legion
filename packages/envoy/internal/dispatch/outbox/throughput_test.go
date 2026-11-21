@@ -47,7 +47,9 @@ func busySharedPool(t *testing.T, database *store.Store) *store.Store {
 		t.Fatalf("open the busy shared pool: %v", err)
 	}
 	busy := &store.Store{Pool: store.NewPool(pool)}
-	t.Cleanup(busy.Pool.Close)
+	t.Cleanup(func() {
+		testwait.Returns(t, "every connection of the busy shared pool to come back, so the pool closes", busy.Pool.Close)
+	})
 	ctx, cancel := context.WithCancel(context.Background())
 	var callers sync.WaitGroup
 	for range 2 * busyPoolSize {

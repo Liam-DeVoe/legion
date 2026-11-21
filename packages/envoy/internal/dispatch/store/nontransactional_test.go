@@ -94,7 +94,7 @@ func migrationKeyWaitingRunners(records []slog.Record) int {
 //
 // Its caller must have left the key releasable from a cleanup before it calls: the runners are
 // blocked on the key, pgxpool.Pool.Close waits for the connections they hold, and a failure here
-// that left the key held would hang the test in its own cleanup.
+// that left the key held would hold the test's own cleanup to the shared wait's end.
 func waitForWaitingRunners(t *testing.T, records *logtest.Recorder, want int) {
 	t.Helper()
 	testwait.Eventually(t, fmt.Sprintf("%d runners to say they are waiting for the migration key", want), func() bool {
@@ -651,7 +651,9 @@ func TestTwoBootsAtOnceOverAnInvalidLeftoverNeverDeadlock(t *testing.T) {
 			if err != nil {
 				t.Fatalf("open the second booting process's store: %v", err)
 			}
-			t.Cleanup(second.Pool.Close)
+			t.Cleanup(func() {
+				testwait.Returns(t, "every connection of the second booting process's pool to come back, so the pool closes", second.Pool.Close)
+			})
 			booted := make(chan error, 2)
 			release := make(chan struct{})
 			for _, booting := range []*Store{first, second} {
@@ -750,11 +752,13 @@ func TestABootAlreadyWaitingForTheKeyDoesNotDeadlockTheConcurrentBuild(t *testin
 	if err != nil {
 		t.Fatalf("open the second booting process's store: %v", err)
 	}
-	t.Cleanup(second.Pool.Close)
+	t.Cleanup(func() {
+		testwait.Returns(t, "every connection of the second booting process's pool to come back, so the pool closes", second.Pool.Close)
+	})
 	// The key goes back from a cleanup registered after the second store's, which therefore runs
 	// before it: both runners are blocked on the key, pgxpool.Pool.Close waits for the
-	// connections they hold, and a failure below that left the key held would hang this test in
-	// its own cleanup.
+	// connections they hold, and a failure below that left the key held would hold this test's
+	// own cleanup to the shared wait's end.
 	t.Cleanup(func() {
 		_, _ = holder.Exec(context.WithoutCancel(ctx), "select pg_advisory_unlock($1)", migrationLockKey)
 	})

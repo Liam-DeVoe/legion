@@ -714,7 +714,7 @@ func TestARelayDropPastTheBoundsEndsTheSubscriptionAsBehind(t *testing.T) {
 func TestAnEventsSubscriptionWhoseReadFailsEndsAsBehind(t *testing.T) {
 	fake := clocktest.New(time.Now())
 	_, database, _, served := newRegisteredTestServer(t, testServerOptions{clock: fake})
-	database.Pool.Close()
+	testwait.Returns(t, "every connection of the server's pool to come back, so the pool closes", database.Pool.Close)
 	ctx, err := store.ForConcurrentRead(store.WithTransactionTracking(t.Context()))
 	if err != nil {
 		t.Fatalf("mark the subscription's context for the pool: %v", err)

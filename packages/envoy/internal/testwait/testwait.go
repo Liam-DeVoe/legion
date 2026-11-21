@@ -36,9 +36,12 @@
 // of a captured log, and reads a stream in order: the items before the one it returns, which did
 // not match, are passed over, and no later Next reads them, so two calls prove their two items came
 // in that order. A test that waits for two items in either order matches both in its first Next
-// and waits for the other in its second. Context gives a call that takes a context the same bound.
-// InMain is Eventually for a wait in TestMain, which has no t: it takes its deadline from the
-// -timeout flag and the process's start, and returns an error where the others fail the test.
+// and waits for the other in its second. Returns waits for a call, run on a goroutine of its own,
+// to return: a call that waits on what the code under test holds, such as a database pool's Close,
+// which returns only once every connection in use has come back. Context gives a call that takes
+// a context the same bound. InMain is Eventually for a wait in TestMain, which has no t: it takes
+// its deadline from the -timeout flag and the process's start, and returns an error where the
+// others fail the test.
 //
 // A condition runs on the test goroutine, so a condition that reads a report which makes its fact
 // impossible (a process that exited, a daemon whose run returned) calls t.Fatalf itself and ends
@@ -118,6 +121,22 @@ func Receive[T any](t testing.TB, what string, ch <-chan T) T {
 	gaveUp(t, what, nil)
 	var zero T
 	return zero
+}
+
+// Returns runs fn on a goroutine of its own and waits for it to return. It is for a call that
+// waits on what the code under test holds or does, which a row that failed, or the defect it
+// caught, can leave held for good (a pool's Close waits for every connection in use to come back):
+// the wait then fails naming what, where the call made on the test goroutine would hang the test
+// binary to its timeout. What fn writes is the caller's to read once Returns has returned. fn
+// runs off the test goroutine, so it calls no method of t that ends the test.
+func Returns(t testing.TB, what string, fn func()) {
+	t.Helper()
+	returned := make(chan struct{})
+	go func() {
+		defer close(returned)
+		fn()
+	}()
+	Receive(t, what, returned)
 }
 
 // Stream holds items a producer adds (log lines, observed events); Next waits for the first unread

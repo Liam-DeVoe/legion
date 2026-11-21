@@ -149,7 +149,7 @@ func newLapsingHold(t *testing.T) *lapsingHold {
 		t.Fatalf("take the hold on the first process: hold %v, error %v", first, err)
 	}
 	// Closing the first process's pool waits for its renewal in flight and fails every later one.
-	dying.Pool.Close()
+	testwait.Returns(t, "the first process's renewal in flight and every other connection of its pool to come back, so the pool closes", dying.Pool.Close)
 	_, _, lapse := holdRow(t, database.Pool)
 
 	standby := uuid.New()

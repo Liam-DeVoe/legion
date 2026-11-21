@@ -241,7 +241,7 @@ func TestWhoamiRefusesWhenItCannotReadTheEventHead(t *testing.T) {
 		"a router with no store": func(*testing.T) AppContextOptions { return AppContextOptions{} },
 		"a database that stopped answering": func(t *testing.T) AppContextOptions {
 			database := storetest.Open(t)
-			database.Pool.Close()
+			testwait.Returns(t, "every connection of the test's database pool to come back, so the pool closes", database.Pool.Close)
 			return AppContextOptions{Store: database}
 		},
 	} {
