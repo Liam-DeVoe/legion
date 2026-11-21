@@ -1242,12 +1242,16 @@ Not refused: the upkeep that keeps a held credential alive (a machine login's re
 session's lease renewal), so no login lapses and no session ends because of a hold; the calls that
 only end access or list what to end (deleting an enrollment, the operator's lists of machines and
 grants, their revoke and retire, revoking a grant, cancelling a request); and a view of a record on
-the approval page. A pod's own enrollment and a service's machine login name no operator, so they
-are never asked about, even when a held person approved the login. A request that waits on a held
-approver stays pending, for another approver or until it expires. A person signed in on a machine
-(`agent-secrets login`) cannot renew that sign-in's one-hour credential while held, since its trade
-is refused; the sessions under it go on renewing, and the first trade after the release mints a new
-credential under the same sign-in.
+the approval page. A service's machine login names no operator, so it is never asked about, even
+when a held person approved the login, and neither is the enrollment of a pod whose Kubernetes
+account `BROKER_POD_OPERATORS` maps to no person. A pod whose account `BROKER_POD_OPERATORS` maps to
+a person logs in and enrolls with that person as its operator, so while the person is held its
+session routes, grant reads and airlock use are refused and its carried calls are cut; its token
+login still succeeds, and each use of that login is refused the same way. A request that waits on a
+held approver stays pending, for another approver or until it expires. A person signed in on a
+machine (`agent-secrets login`) cannot renew that sign-in's one-hour credential while held, since
+its trade is refused; the sessions under it go on renewing, and the first trade after the release
+mints a new credential under the same sign-in.
 
 **Asking Dispatch.** Each broker process keeps Dispatch's answer about a person for 30 seconds,
 asks again no sooner than 5 seconds after an ask failed, and shares one call among concurrent asks
