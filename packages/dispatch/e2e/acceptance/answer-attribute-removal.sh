@@ -58,11 +58,13 @@
 #
 # MEASURE_ONLY=1 reads no body. It does everything above up to the body, then prints the block
 # to paste into the pull request body, the lines of the forms just above with this run's
-# readings, and exits 0; the implementer runs it to take the readings.
+# readings, and last a `SKIP: body …` line, and exits 0; the implementer runs it to take the
+# readings. The check's run text refuses a run that prints a SKIP line, so a run with
+# MEASURE_ONLY set, exported or not, never passes c-attribute-removal-count.
 #
 # Each passing check prints `PASS: <section> <what>`; the first failing one prints
 # `FAIL: <section> <what>: <observed>` on stderr and the run exits 1, and a missing or bad input
-# exits 2. It prints no SKIP line.
+# exits 2. It prints a SKIP line under MEASURE_ONLY=1 alone.
 #
 # Every check is `cmd || fail …`, never part of an `&&` list: under `set -e` a failing command
 # anywhere but last in such a list does not stop the script.
@@ -79,7 +81,8 @@ Usage: DATABASE_URL=${LEGION_TEST_PG_DSN%/*}/infra_1150_answer_attribute_removal
          [MEASURE_ONLY=1] bash e2e/acceptance/answer-attribute-removal.sh
        (run from packages/dispatch; DATABASE_URL names a database on this machine whose name
        begins infra_1150_, which this run drops and creates again; without PR_BODY_FILE the
-       body is read with gh; MEASURE_ONLY=1 prints the body's lines and reads no body.
+       body is read with gh; MEASURE_ONLY=1 prints the body's lines and a SKIP line and reads no
+       body, so the check does not pass on it.
        BASELINE_SHA is required and has no default; BASELINE_BINARY must be the server built
        from it and stamped with it)
 USAGE
@@ -324,6 +327,8 @@ if [[ "$measure_only" == 1 ]]; then
     read -r table size size_at <<<"$reading"
     printf -- '- pg_total_relation_size table=%s bytes=%s at=%s\n' "$table" "$size" "$size_at"
   done
+  printf '\n'
+  skip body "the pull request body: MEASURE_ONLY=1 read none, so this run does not pass c-attribute-removal-count"
   exit 0
 fi
 

@@ -9,6 +9,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -67,13 +68,16 @@ func TestTheFleetGuardReadsAnotherBuildByTheSchemaVersionTheProcessesRegister(t 
 			for _, process := range test.fleet {
 				var err error
 				if process.version == nil {
+					// A build older than the fleet columns predates the owner lock protocol too: 0.
 					_, err = database.Pool.Exec(ctx, `
 						insert into server_processes (instance, commit, heartbeat_at)
 						values (gen_random_uuid(), $1, now() + interval '1 hour')`, process.commit)
 				} else {
+					// The base release, this one and the one after register this build's owner
+					// lock protocol.
 					_, err = database.Pool.Exec(ctx, `
-						insert into server_processes (instance, commit, schema_version, schema_creatable, heartbeat_at)
-						values (gen_random_uuid(), $1, $2, $2, now() + interval '1 hour')`, process.commit, *process.version)
+						insert into server_processes (instance, commit, schema_version, schema_creatable, heartbeat_at, owner_lock_protocol)
+						values (gen_random_uuid(), $1, $2, $2, now() + interval '1 hour', $3)`, process.commit, *process.version, store.OwnerLockProtocol)
 				}
 				if err != nil {
 					t.Fatalf("register a process of %s: %v", process.commit, err)
