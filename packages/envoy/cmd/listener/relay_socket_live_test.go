@@ -158,6 +158,14 @@ func newRelayLiveRig(t *testing.T, options relayLiveOptions) *relayLiveRig {
 	}
 	t.Cleanup(dispatch.Close)
 	rig.dispatch = dispatch
+	// The edge's grant creates and raises no bucket's stream, so each replica finds each bucket
+	// the shared listeners made at their start; Dispatch's user, whose grant holds each one's
+	// create, makes them here before either replica starts, as edge_live_test.go does.
+	for _, bucket := range bus.ListenerBuckets() {
+		if _, err := dispatch.JS().CreateKeyValue(&natsgo.KeyValueConfig{Bucket: bucket, Storage: natsgo.FileStorage}); err != nil {
+			t.Fatalf("Dispatch's user makes the %s bucket: %v", bucket, err)
+		}
+	}
 
 	account := filepath.Join(t.TempDir(), "account-token")
 	var brokerURL, accountToken string

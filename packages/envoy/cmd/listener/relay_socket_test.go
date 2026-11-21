@@ -20,12 +20,14 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/natsgrant"
 )
 
 // Row 1, in one process: a message to S is stored, the owning replica relays it, the socket's
 // replica forwards it to the session as a msg frame under the sid it subscribed with, carrying
-// the frame's headers and its receipt subject, which is an edge relay's (bus.RelayReplyPrefix) and
-// not a reply inbox; the session answers done over the socket, the socket's replica publishes it
+// the frame's headers and its receipt subject, which is under the owning machine's own receipt
+// family (natsgrant.EdgeRelayReplyPrefix) and not a reply inbox, since the edge's grant subscribes
+// that family alone; the session answers done over the socket, the socket's replica publishes it
 // on that subject, and the owner's consumer acks the message. Its control is the live row's
 // (relay_socket_live_test.go): the receipt not published, and the message is still pending.
 func TestARelaySocketForwardsAFrameAndPublishesItsReceipt(t *testing.T) {
@@ -42,8 +44,8 @@ func TestARelaySocketForwardsAFrameAndPublishesItsReceipt(t *testing.T) {
 	if frame.Op != "msg" || frame.sid(t) != 1 || frame.Subject != bus.DeliverSubject(session) {
 		t.Fatalf("the socket sent %s, want a msg of sid 1 on %s", frame.raw, bus.DeliverSubject(session))
 	}
-	if !strings.HasPrefix(frame.Reply, bus.RelayReplyPrefix) {
-		t.Fatalf("the frame's receipt subject is %q, want one under %s: an edge relay answers no reply inbox", frame.Reply, bus.RelayReplyPrefix)
+	if owned := natsgrant.EdgeRelayReplyPrefix(rig.owner.relays.machineID) + "."; !strings.HasPrefix(frame.Reply, owned) {
+		t.Fatalf("the frame's receipt subject is %q, want one under the owning machine's %s: the edge's grant subscribes no other receipt family and no reply inbox", frame.Reply, owned)
 	}
 	var item contracts.Envelope
 	if err := json.Unmarshal(frame.data(t), &item); err != nil || item.EventID != stored.EventID {
