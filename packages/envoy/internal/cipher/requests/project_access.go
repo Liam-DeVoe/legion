@@ -18,10 +18,12 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/cipher/dispatchread"
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/record"
+	"github.com/sjawhar/envoy/internal/cipher/store"
 )
 
 // ErrProjectAccessUnavailable is a request, release, decision or airlock connection that holds a
@@ -204,9 +206,11 @@ func (m *Machine) collectProjectFacts(ctx context.Context, e enrollmentRow, name
 // project's owner names a Slack channel: read from the public fence (privateChannels) only when a
 // name of names carries a project-channels tag and has no airlock entry, the one case Evaluate
 // reads it for (policy.Requester.PrivateChannelsNamed). Every other request asks nothing here. It
-// answers beside it when the list it read was asked, and zero when it read none. A fence the
-// broker could not read is ErrProjectAccessUnavailable: whether such a name may leave the airlock
-// is unknown, so nothing is decided until Dispatch answers.
+// answers beside it when the list it read was asked, and zero when it read none or answered from
+// the broker's stored private list after a failed read, which atDecision does not age: that answer
+// rests on the store's rules, not on its age. A fence the broker could not read (a store it could
+// not read, or a held row of unknown channels) is ErrProjectAccessUnavailable: whether such a name
+// may leave the airlock is unknown, so nothing is decided until it can.
 func (m *Machine) privateChannelsNamed(ctx context.Context, names []string, set *policy.Set) (bool, time.Time, error) {
 	outside := slices.ContainsFunc(names, func(name string) bool {
 		secret := set.Secrets[name]
@@ -386,10 +390,30 @@ type channelGrant struct {
 // the new list a channel the owner just named would be both postable here and readable there. A
 // zero time starts no wait, and a channel the owner removed needs none: the removal declassifies
 // what was posted there.
+//
+// The grant posts only to channels the broker's stored private list holds (store.Store's
+// KnownPrivateProjects): each project's live list is cut to its held row's channels, and a project
+// with no held row, or with unknown channels, limits the grant to no channel. A proxy serving a
+// credential that names no private project fences by that stored list while Dispatch's list cannot
+// be read, so a channel it does not hold could be read there. The wait therefore runs from the
+// later of Dispatch's time and the row's channels_stored_at too, the stored half decided on the
+// database's own clock (the row's ReadAt), never a pod's. The list is read, and kept, before the
+// store is (privateChannels), so a deployment whose only Slack releases are limited credentials
+// still keeps the stored list.
 func (m *Machine) channelsOf(ctx context.Context, facts projectFacts) (channelGrant, time.Time) {
 	none := channelGrant{channels: []string{}, limited: true}
 	if !facts.requester(policy.Requester{}).ListsPrivate() {
 		return channelGrant{}, time.Time{}
+	}
+	m.privateChannels(ctx)
+	known, err := m.Store.KnownPrivateProjects(ctx)
+	if err != nil {
+		m.logPrivateStore("read", err)
+		return none, time.Time{}
+	}
+	stored := make(map[string]storeRow, len(known))
+	for _, row := range known {
+		stored[row.Key] = storeRow{channels: row.SlackChannels, settles: row.ChannelsStoredAt.Add(slackChannelSettle), readAt: row.ReadAt}
 	}
 	now := m.now()
 	var allowed []string
@@ -411,12 +435,20 @@ func (m *Machine) channelsOf(ctx context.Context, facts projectFacts) (channelGr
 			m.logChannelsMissing(project)
 			return none, asked
 		}
+		row, held := stored[project]
+		if !held || row.channels == nil {
+			return none, asked
+		}
 		if changed := answer.SlackChannelsChangedAt; !changed.IsZero() {
 			if settles := changed.Add(slackChannelSettle); settles.After(now) && settles.After(settlesAt) {
 				settlesAt = settles
 			}
 		}
+		if row.settles.After(row.readAt) && row.settles.After(settlesAt) {
+			settlesAt = row.settles
+		}
 		listed := slices.Compact(slices.Sorted(slices.Values(answer.SlackChannels)))
+		listed = slices.DeleteFunc(listed, func(channel string) bool { return !slices.Contains(row.channels, channel) })
 		if first {
 			allowed, first = listed, false
 			continue
@@ -432,6 +464,13 @@ func (m *Machine) channelsOf(ctx context.Context, facts projectFacts) (channelGr
 	return channelGrant{channels: allowed, limited: true}, asked
 }
 
+// storeRow is channelsOf's read of one held row: its channels (nil while unknown), when the
+// stored set's last gain settles, and the database's time the row was read at.
+type storeRow struct {
+	channels        []string
+	settles, readAt time.Time
+}
+
 // logChannelsMissing writes ChannelsMissingMessage for project once per projectaccess.CacheTTL.
 func (m *Machine) logChannelsMissing(project string) {
 	if m.channelsMissingLogged.due(project) {
@@ -440,17 +479,41 @@ func (m *Machine) logChannelsMissing(project string) {
 }
 
 // PrivateChannelsUnreadMessage is the log line for a public fence the broker could not read:
-// Dispatch's list of private projects failed, or named a project with no slack_channels key. Every
-// request on a project-channels name released to a credential that names no private project is
-// then refused PRIVATE_CHANNELS_UNREAD by the proxy, failing closed, until a read answers.
+// Dispatch's list of private projects named a project with no slack_channels key, or the list
+// failed and the broker's stored private list could not be read or holds a project of unknown
+// channels. Every request on a project-channels name released to a credential that names no
+// private project is then refused PRIVATE_CHANNELS_UNREAD by the proxy, failing closed, until a
+// read answers.
 const PrivateChannelsUnreadMessage = "the broker could not read which Slack channels belong to private projects; a project-channels secret serves no call to a credential that names no private project until it can"
 
+// PrivateListFailedMessage is the log line for a failed read of Dispatch's list of private
+// projects: the airlock's public fence then falls back to the broker's stored private list.
+const PrivateListFailedMessage = "the broker could not read Dispatch's list of private projects; the airlock's Slack fence falls back to the broker's stored private list"
+
+// StoredFenceMessage is the log line for a public fence read from the broker's stored private list
+// because Dispatch's list could not be read: a credential that names no private project is fenced
+// from the held rows' channels until a read of Dispatch's list answers.
+const StoredFenceMessage = "the broker could not read Dispatch's private projects and fences the channels of its stored list"
+
+// KnownPrivateAddedMessage is the log line for a project a read of Dispatch's list added to the
+// broker's stored private list, or made held there again. Its project attribute names the key: an
+// owner who made a project private before its full switch names its channels once this line names
+// it (plan D's runbook step).
+const KnownPrivateAddedMessage = "the broker's stored private list names a project"
+
+// privateStoreFailedMessage is the log line for a stored private list the broker could not stamp,
+// keep or read: a stamp or keep that fails leaves the live answer deciding; a read that fails
+// leaves a failed list unread, and a limited grant with no channel.
+const privateStoreFailedMessage = "the broker could not use its stored private list"
+
 // privateFence is the public fence one AirlockValues call reads: every Slack channel id a private
-// project's owner named, sorted and each once, whether the broker could not read them, and when
-// the list it read was asked (zero when it read none).
+// project's owner named, sorted and each once, whether the broker could not read them, whether
+// they came from the broker's stored private list rather than from Dispatch, and when the list it
+// read was asked (zero when it read none or read the store).
 type privateFence struct {
 	excluded []string
 	unread   bool
+	stored   bool
 	asked    time.Time
 }
 
@@ -461,17 +524,31 @@ type privateFence struct {
 // settings declare, so a project Dispatch holds private is fenced from the first release on a pod
 // that has just started. While the list names no private project with a channel the fence is
 // empty, and the proxy reads no body. A broker with no PrivateList (no BROKER_PROJECT_ACCESS_URL)
-// reads nothing and fences nothing (R9). A list that fails, or that names a project with no
-// slack_channels key, is unread: the proxy refuses every request on the name until a read
-// answers, rather than take a list it could not read as one naming no channel.
+// reads nothing and fences nothing (R9). A list that names a project with no slack_channels key is
+// unread: the proxy refuses every request on the name until a read answers.
+//
+// Before it asks, it takes a stamp from the broker's stored private list (store.StampPrivateList)
+// and reads this pod's clock beside it; an answer asked no earlier than that clock read is a fresh
+// question rather than the client's cache, and is kept under the stamp (keepPrivateList), at most
+// once per CacheTTL a pod. A stamp or keep that fails is logged and the live answer still decides.
+// A read that fails, whatever the failure (a transport error, a 5xx, a 401 or 403, a 404 of any
+// code, an answer that is no list), fences by the stored list instead (storedFence).
 func (m *Machine) privateChannels(ctx context.Context) privateFence {
 	if m.PrivateList == nil {
 		return privateFence{}
 	}
+	stamp, stampErr := m.Store.StampPrivateList(ctx)
+	stampedAt := time.Now()
 	projects, asked, err := m.PrivateList.PrivateProjectsAsOf(ctx)
 	if err != nil {
-		m.logPrivateUnread("", err)
-		return privateFence{unread: true}
+		m.logPrivateListFailed(err)
+		return m.storedFence(ctx)
+	}
+	switch {
+	case stampErr != nil:
+		m.logPrivateStore("stamp", stampErr)
+	case !asked.Before(stampedAt):
+		m.keepPrivateList(ctx, stamp, projects)
 	}
 	var excluded []string
 	for _, project := range projects {
@@ -485,9 +562,60 @@ func (m *Machine) privateChannels(ctx context.Context) privateFence {
 	return privateFence{excluded: slices.Compact(excluded), asked: asked}
 }
 
+// keepPrivateList keeps a fresh answer of Dispatch's list in the broker's stored private list
+// under stamp, an entry with no slack_channels key with unknown channels, and logs
+// KnownPrivateAddedMessage for each project it added or made held again.
+func (m *Machine) keepPrivateList(ctx context.Context, stamp store.PrivateListStamp, projects []projectaccess.PrivateProject) {
+	listed := make([]store.KnownPrivateProject, len(projects))
+	for i, project := range projects {
+		listed[i] = store.KnownPrivateProject{Key: project.Key}
+		if project.SlackChannelsPresent {
+			listed[i].SlackChannels = slices.Concat([]string{}, project.SlackChannels)
+		}
+	}
+	added, err := m.Store.KeepPrivateProjects(ctx, stamp, listed)
+	if err != nil {
+		m.logPrivateStore("keep", err)
+		return
+	}
+	for _, key := range added {
+		slog.Info(KnownPrivateAddedMessage, "project", key)
+	}
+}
+
+// storedFence is the public fence a failed read of Dispatch's list falls back to: the broker's
+// stored private list's held rows (store.Store's KnownPrivateProjects). A store it cannot read, or
+// a held row of unknown channels, is unread, as a listed project with no slack_channels is. No held
+// row fences nothing and refuses nothing, today's answer (R9). Otherwise the held rows' channels
+// are excluded, read again within a minute (AirlockValues), and StoredFenceMessage is logged.
+func (m *Machine) storedFence(ctx context.Context) privateFence {
+	known, err := m.Store.KnownPrivateProjects(ctx)
+	if err != nil {
+		m.logPrivateStore("read", err)
+		m.logPrivateUnread("", err)
+		return privateFence{unread: true}
+	}
+	if len(known) == 0 {
+		return privateFence{}
+	}
+	var excluded []string
+	for _, project := range known {
+		if project.SlackChannels == nil {
+			m.logPrivateUnread(project.Key, nil)
+			return privateFence{unread: true}
+		}
+		excluded = append(excluded, project.SlackChannels...)
+	}
+	slices.Sort(excluded)
+	excluded = slices.Compact(excluded)
+	if m.privateStoreLogged.due("fence") {
+		slog.Warn(StoredFenceMessage, "channels", len(excluded), "projects", len(known))
+	}
+	return privateFence{excluded: excluded, stored: true}
+}
+
 // logPrivateUnread writes PrivateChannelsUnreadMessage once per projectaccess.CacheTTL for project,
-// the private project whose entry carried no slack_channels, or for the failed read err when
-// project is "".
+// the private project whose entry or held row carried no channels, or for err when project is "".
 func (m *Machine) logPrivateUnread(project string, err error) {
 	if !m.privateUnreadLogged.due(project) {
 		return
@@ -497,6 +625,28 @@ func (m *Machine) logPrivateUnread(project string, err error) {
 		return
 	}
 	slog.Warn(PrivateChannelsUnreadMessage, "err", err)
+}
+
+// logPrivateListFailed writes PrivateListFailedMessage for err once per projectaccess.CacheTTL,
+// naming BROKER_PROJECT_ACCESS_TOKEN_FILE when Dispatch refused the broker's own token or the
+// broker could not read it.
+func (m *Machine) logPrivateListFailed(err error) {
+	if !m.privateStoreLogged.due("list") {
+		return
+	}
+	if errors.Is(err, dispatchread.ErrBrokerRefused) {
+		slog.Warn(PrivateListFailedMessage, "err", err, "setting", "BROKER_PROJECT_ACCESS_TOKEN_FILE")
+		return
+	}
+	slog.Warn(PrivateListFailedMessage, "err", err)
+}
+
+// logPrivateStore writes privateStoreFailedMessage for step ("stamp", "keep" or "read") and err
+// once per step per projectaccess.CacheTTL.
+func (m *Machine) logPrivateStore(step string, err error) {
+	if m.privateStoreLogged.due(step) {
+		slog.Warn(privateStoreFailedMessage, "step", step, "err", err)
+	}
 }
 
 // now is the machine's clock (Machine.Now), the wall clock when none is set.

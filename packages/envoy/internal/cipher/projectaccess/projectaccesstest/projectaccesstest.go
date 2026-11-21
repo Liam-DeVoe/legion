@@ -82,10 +82,12 @@ type Server struct {
 	down   bool
 	answer *rawAnswer
 	stall  time.Duration
-	// privateCalls counts the private-projects route's requests alone, and privateDown fails
-	// that route alone (SetPrivateProjectsDown).
-	privateCalls int
-	privateDown  bool
+	// privateCalls counts the private-projects route's requests alone; privateDown fails that
+	// route alone (SetPrivateProjectsDown), and privateAnswer answers it alone in place of its
+	// rows (SetPrivateProjectsAnswer).
+	privateCalls  int
+	privateDown   bool
+	privateAnswer *rawAnswer
 }
 
 // rawAnswer is a status and body the stand-in answers every call with in place of its rows.
@@ -148,6 +150,29 @@ func (s *Server) SetPrivateProjectsDown(down bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.privateDown = down
+}
+
+// SetPrivateProjectsAbsent makes every later request of the private-projects route answer 404
+// NOT_FOUND (true) or be answered again (false), while the project and person routes go on
+// answering: a Dispatch build that does not serve the route, as during a roll.
+func (s *Server) SetPrivateProjectsAbsent(absent bool) {
+	if !absent {
+		s.SetPrivateProjectsAnswer(0, "")
+		return
+	}
+	s.SetPrivateProjectsAnswer(http.StatusNotFound, `{"code":"NOT_FOUND","error":"no such route"}`)
+}
+
+// SetPrivateProjectsAnswer makes every later request of the private-projects route that carries
+// the stand-in's bearer answer status and body, in place of its rows, while the project and person
+// routes go on answering; a status of 0 answers it from the rows again.
+func (s *Server) SetPrivateProjectsAnswer(status int, body string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.privateAnswer = nil
+	if status != 0 {
+		s.privateAnswer = &rawAnswer{status: status, body: body}
+	}
 }
 
 // PrivateProjectsCalls is how many requests of the private-projects route the stand-in has
@@ -238,8 +263,14 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	case r.URL.Path == privateProjectsPath:
 		s.mu.Lock()
 		s.privateCalls++
-		privateDown := s.privateDown
+		privateDown, privateAnswer := s.privateDown, s.privateAnswer
 		s.mu.Unlock()
+		if privateAnswer != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(privateAnswer.status)
+			_, _ = w.Write([]byte(privateAnswer.body))
+			return
+		}
 		if privateDown {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"code": "UNAVAILABLE", "error": "the stand-in's private-projects route is down"})
 			return

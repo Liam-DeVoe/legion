@@ -276,6 +276,9 @@ func TestEveryDecisionOnAnAgedProjectFactIsMadeOnAFreshOne(t *testing.T) {
 		team := privateTeam(fixtureOperator)
 		team.SlackChannels = []string{"C0TEAMONLY"}
 		dispatch.SetRow(teamProject, team)
+		// The broker's stored private list holds TEAM's channel from long ago (its switch's
+		// record), so the grant's channels are the owner's alone, past any settle.
+		storeAged(t, m.Store, map[string]projectaccesstest.Row{teamProject: team})
 		limit := m.channelLimit(t.Context(), checked)
 		channels, limited := limit.channels, limit.limited
 		if !limited || !slices.Equal(channels, []string{"C0TEAMONLY"}) {

@@ -19,11 +19,14 @@ import (
 const slackToken = "SLACK_TOKEN"
 
 // slackFixture is newProjectFixture, which serves slackToken beside the project secrets, with
-// PRIV_KEY and slackToken both behind the airlock and Dispatch answering rows.
+// PRIV_KEY and slackToken both behind the airlock and Dispatch answering rows. The broker's stored
+// private list holds every private row of rows with its channels, stored long enough ago that a
+// limited grant's settle has run (storeAged), as a broker's does once it has read the list.
 func slackFixture(t *testing.T, rows map[string]projectaccesstest.Row) (*Machine, string, *projectaccesstest.Server, func(names ...string) (map[string]AirlockSecret, *projectaccesstest.Server)) {
 	t.Helper()
 	rules := proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule(slackToken, ""), rule("PRIV_KEY", "")}}
 	m, enr, key, _ := newProjectFixture(t, rules, publicTeam)
+	storeAged(t, m.Store, rows)
 	dispatch := answerFrom(t, m, rows)
 	// release grants names to the session and reads them as the proxy does, answering the values
 	// and the stand-in Dispatch that answered the two, behind a client of its own so that no
@@ -82,9 +85,12 @@ func TestAPrivateProjectsSlackGrantCarriesItsOwnersChannels(t *testing.T) {
 		if expires.Before(read.Add(airlockProjectRecheck)) || expires.After(time.Now().Add(airlockProjectRecheck)) {
 			t.Fatalf("%s expires %v; want the read time plus %v, so a running proxy hears an owner's change", slackToken, expires, airlockProjectRecheck)
 		}
+		// The Slack release reads Dispatch's list of private projects once more, to keep the
+		// broker's stored private list (channelsOf), and asks nothing else beyond what PRIV's own
+		// secret asks.
 		_, own := release("PRIV_KEY")
-		if calls, ownCalls := fresh.Calls(), own.Calls(); calls != ownCalls {
-			t.Fatalf("releasing %s took %d calls to Dispatch, and PRIV's own secret %d; want the same", slackToken, calls, ownCalls)
+		if calls, lists, ownCalls := fresh.Calls(), fresh.PrivateProjectsCalls(), own.Calls(); lists != 1 || calls-lists != ownCalls {
+			t.Fatalf("releasing %s took %d calls to Dispatch, %d of them for the list of private projects, and PRIV's own secret %d; want the list once and otherwise the same", slackToken, calls, lists, ownCalls)
 		}
 	})
 

@@ -761,9 +761,10 @@ func (m *Machine) AirlockValues(ctx context.Context, grantID string) (map[string
 					fence, fenceRead = m.privateChannels(ctx), true
 				}
 				value.Excluded, value.ExcludedUnread = fence.excluded, fence.unread
-				// An unread list is read again within a minute rather than ten: the proxy drops
-				// a value AirlockMintAgainBefore before its expiry.
-				if fence.unread {
+				// An unread list, and a fence read from the broker's stored private list because
+				// Dispatch's list failed, are read again within a minute rather than ten: the
+				// proxy drops a value AirlockMintAgainBefore before its expiry.
+				if fence.unread || fence.stored {
 					bound = earlier(bound, readAt.Add(AirlockMintAgainBefore+time.Minute))
 				}
 			}

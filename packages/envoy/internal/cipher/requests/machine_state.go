@@ -370,7 +370,8 @@ type Machine struct {
 	// named (projectaccess.Client, BROKER_PROJECT_ACCESS_URL): the public fence's read, which
 	// AirlockValues makes for every project-channels name released to a credential that names no
 	// private project (privateChannels), through the client's CacheTTL cache; nil on a broker with
-	// no such client, which reads nothing and fences nothing.
+	// no such client, which reads nothing and fences nothing. Each fresh answer is kept in Store's
+	// stored private list (store.KeepPrivateProjects), and a failed read fences by its held rows.
 	PrivateList projectaccess.PrivateLister
 	// Now is the clock AirlockValues reads its values' expiry and a channel list's settle time by;
 	// nil is time.Now. A test sets it to a pod's own clock.
@@ -395,12 +396,14 @@ type Machine struct {
 	missRereads     *ratelimit.Keyed
 	missRereadsOnce sync.Once
 	// channelsMissingLogged throttles ChannelsMissingMessage to one line per project,
-	// privateUnreadLogged PrivateChannelsUnreadMessage to one per project or failed read, and
-	// rowsUnansweredLogged rowUnansweredMessage and fallbackUnreadMessage to one per listed row and
-	// fallbackCutMessage to one per reader, per projectaccess.CacheTTL: each machine's own, so one
-	// machine's lines never silence another's.
+	// privateUnreadLogged PrivateChannelsUnreadMessage to one per project or failed read,
+	// privateStoreLogged the stored private list's lines (StoredFenceMessage, the failed read and
+	// the failed keep) to one each, and rowsUnansweredLogged rowUnansweredMessage and
+	// fallbackUnreadMessage to one per listed row and fallbackCutMessage to one per reader, per
+	// projectaccess.CacheTTL: each machine's own, so one machine's lines never silence another's.
 	channelsMissingLogged logThrottle
 	privateUnreadLogged   logThrottle
+	privateStoreLogged    logThrottle
 	rowsUnansweredLogged  logThrottle
 	reasonsUnreadLogged   logThrottle
 	// narrowingChecks is NarrowingChecks' per-enrollment buckets, built on first use

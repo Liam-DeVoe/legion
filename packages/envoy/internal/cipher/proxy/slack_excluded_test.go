@@ -227,6 +227,9 @@ func TestAPublicSlackGrantNeverNamesAPrivateChannel(t *testing.T) {
 	unreadCalls := []slackPost{historyOf(pubChannel), jsonPost(postTo(pubChannel)), {method: http.MethodGet, path: "/api/auth.test"}}
 	t.Run("unread while Dispatch's list fails", func(t *testing.T) {
 		w := newFenceWorld(t, map[string]projectaccesstest.Row{privKey: privateRow([]string{privChannel}, slackPerson)}, true)
+		// The list fails over a stored private list holding PRIV with channels it never read,
+		// which the fallback cannot fence by.
+		storeList(t, w.st, store.KnownPrivateProject{Key: privKey})
 		w.dispatch.SetPrivateProjectsDown(true)
 		p := w.pod(t, "public")
 		for _, call := range unreadCalls {
@@ -305,6 +308,94 @@ func TestAPublicSlackGrantIsTodaysWithNoPrivateProject(t *testing.T) {
 	}
 }
 
+// switchKey and switchChannel are SWITCH, a project whose switch to private recorded it in the
+// broker's stored private list and did not commit, and its own channel.
+const (
+	switchKey     = "SWITCH"
+	switchChannel = "C0SWITCH002"
+)
+
+// TestAPublicSlackGrantKeepsTheStoredFenceWhileDispatchIsDown: through the proxy against the real
+// request machine, a session naming no project and Dispatch down. Over a stored private list
+// holding PRIV with C1, a read of C1 is refused PRIVATE_CHANNEL before Slack is called, while a
+// post to a public channel and auth.test are served. With every project public and only a
+// not-yet-forgotten record of SWITCH with C2 (a window of the R9 exception), conversations.replies
+// and chat.postMessage naming C2 are refused, the same two naming a public channel by its id and
+// auth.test are served, and conversations.history naming a public channel is refused by the method
+// rule. Over an empty store, or with SWITCH forgotten, and with Dispatch down or the list route
+// answering 404, every call is served as today with no body read, conversations.history of a
+// public channel included (the R9 rows).
+func TestAPublicSlackGrantKeepsTheStoredFenceWhileDispatchIsDown(t *testing.T) {
+	auth := slackPost{method: http.MethodGet, path: "/api/auth.test"}
+	t.Run("a store holding PRIV with C1, Dispatch down", func(t *testing.T) {
+		w := newFenceWorld(t, map[string]projectaccesstest.Row{privKey: privateRow([]string{privChannel}, slackPerson)}, true)
+		storeList(t, w.st, store.KnownPrivateProject{Key: privKey, SlackChannels: []string{privChannel}})
+		w.dispatch.SetDown(true)
+		p := w.pod(t, "public")
+		p.send(t, readOf(privChannel)).refusedAs(t, "a read of PRIV's channel with Dispatch down", readOf(privChannel), codePrivateChannel, privateChannel)
+		toPublic := jsonPost(postTo(pubChannel))
+		p.send(t, toPublic).served(t, "a post to a public channel with Dispatch down", toPublic, slackValue)
+		p.send(t, auth).served(t, "auth.test with Dispatch down", auth, slackValue)
+	})
+
+	public := map[string]projectaccesstest.Row{
+		pubKey:    {Visibility: "public", Owner: slackOwner, SlackChannels: []string{pubChannel}},
+		switchKey: {Visibility: "public", Owner: slackOwner, SlackChannels: []string{switchChannel}},
+	}
+	t.Run("every project public, SWITCH's record not yet forgotten, Dispatch down", func(t *testing.T) {
+		w := newFenceWorld(t, public, true)
+		if _, err := w.st.RecordPrivateProject(t.Context(), switchKey, []string{switchChannel}); err != nil {
+			t.Fatalf("RecordPrivateProject(%s): %v", switchKey, err)
+		}
+		w.dispatch.SetDown(true)
+		p := w.pod(t, "public")
+		for _, call := range []slackPost{readOf(switchChannel), jsonPost(postTo(switchChannel))} {
+			p.send(t, call).refusedAs(t, "a call naming SWITCH's channel in the window", call, codePrivateChannel, privateChannel)
+		}
+		for _, call := range []slackPost{readOf(pubChannel), jsonPost(postTo(pubChannel)), auth} {
+			p.send(t, call).served(t, "a call naming a public channel by its id in the window", call, slackValue)
+		}
+		p.send(t, historyOf(pubChannel)).refusedAs(t, "conversations.history of a public channel in the window, by the method rule", historyOf(pubChannel), codePrivateChannel, privateChannel)
+	})
+
+	// What a fence would refuse if it read it: a method the fence does not allow, and a body of
+	// no type it reads. Served, each proves the proxy read no body and applied no rule.
+	todays := []slackPost{
+		historyOf(pubChannel),
+		{method: http.MethodPost, path: slackPostPath, header: [][2]string{{"Content-Type", "text/plain; charset=utf-8"}}, body: "channel=" + pubChannel},
+		readOf(pubChannel),
+		auth,
+	}
+	for _, c := range []struct {
+		name   string
+		forget bool
+		fail   func(*projectaccesstest.Server)
+	}{
+		{"an empty store, Dispatch down", false, func(s *projectaccesstest.Server) { s.SetDown(true) }},
+		{"an empty store, the list route answering 404", false, func(s *projectaccesstest.Server) { s.SetPrivateProjectsAbsent(true) }},
+		{"SWITCH forgotten, Dispatch down", true, func(s *projectaccesstest.Server) { s.SetDown(true) }},
+		{"SWITCH forgotten, the list route answering 404", true, func(s *projectaccesstest.Server) { s.SetPrivateProjectsAbsent(true) }},
+	} {
+		t.Run("the R9 row: "+c.name, func(t *testing.T) {
+			w := newFenceWorld(t, public, true)
+			if c.forget {
+				record, err := w.st.RecordPrivateProject(t.Context(), switchKey, []string{switchChannel})
+				if err != nil {
+					t.Fatalf("RecordPrivateProject(%s): %v", switchKey, err)
+				}
+				if answer, err := w.st.ForgetPrivateProject(t.Context(), switchKey, &record); err != nil || answer.Outcome != store.ForgetForgotten {
+					t.Fatalf("ForgetPrivateProject(%s, %d) = %+v, %v; want forgotten", switchKey, record, answer, err)
+				}
+			}
+			c.fail(w.dispatch)
+			p := w.pod(t, "public")
+			for _, call := range todays {
+				p.send(t, call).served(t, "the R9 row ("+c.name+"): "+call.path, call, slackValue)
+			}
+		})
+	}
+}
+
 // TestAValueReleasedBeforeTheFirstPrivateChannelLearnsIt: a value the proxy holds from before the
 // fence could know of a private channel reads it again. Row 1: the token held before it carries
 // its tag is read again at the next call after the retag, which moves the policy version, and is
@@ -355,20 +446,21 @@ func TestAValueReleasedBeforeTheFirstPrivateChannelLearnsIt(t *testing.T) {
 	})
 }
 
-// TestAPrivateCredentialWaitsForTheSettleTime: pod P serves a session naming no private project and
-// read its fence just before T; pod Q serves a session naming the private project and first reads
-// at T+1 s. At every step from then until T+slackChannelSettle, either P refuses a read of the
-// channel the owner made private at T or Q refuses a post to it, and Q's refusal names when posting
-// reopens; after it, Q posts and P refuses. Row 1: PRIV's owner adds the channel at T. Row 2: PUB,
-// which named the channel at T0 while public, turns private at T, so Dispatch answers T as when its
-// list changed. Each row's control is a Dispatch that does not move slack_channels_changed_at at
-// T, as a broker with no settle rule reads every change: Q posts at T+1 s while P reads the
-// channel, and the test names it.
+// TestAPrivateCredentialWaitsForTheSettleTime: pods P and Q share one store, as a broker's pods do,
+// and the database's time follows the test's clock (proxyClock.db). P serves a session naming no
+// private project and reads the channel just before T. At T PRIV's owner adds the channel (row 1),
+// or PUB, which named it while public, turns private (row 2). Q, a session naming the project, is
+// released at T+1 s; its release reads and keeps Dispatch's list before it reads the stored list,
+// so the store holds the channel from S, the database's time of the first read that named it, which
+// the test reads from the store row. At every 30 s step until S + slackChannelSettle, P's read and
+// Q's post are never both carried, and Q's refusal names S + slackChannelSettle, the later of
+// Dispatch's time and S; after it, Q posts and P is refused. Its control is by hand: a channelsOf
+// that sets no SettlesAt finds Q posting at T+1 s while P reads the channel, naming it.
 func TestAPrivateCredentialWaitsForTheSettleTime(t *testing.T) {
 	for _, row := range []struct {
 		name string
 		// start is Dispatch's rows before T, given T0; change is the row the change at T makes,
-		// which the run stamps.
+		// which the run stamps T.
 		start  func(t0 time.Time) map[string]projectaccesstest.Row
 		change func() (string, projectaccesstest.Row)
 		// project is the private session's project.
@@ -396,32 +488,23 @@ func TestAPrivateCredentialWaitsForTheSettleTime(t *testing.T) {
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			overlap, _ := settleRun(t, row.start, row.change, row.project, false)
-			if overlap != "" {
+			if overlap := settleRun(t, row.start, row.change, row.project); overlap != "" {
 				t.Fatal(overlap)
-			}
-		})
-		t.Run(row.name+", control: Dispatch keeps the time of the earlier list", func(t *testing.T) {
-			overlap, at := settleRun(t, row.start, row.change, row.project, true)
-			if overlap == "" || !strings.Contains(overlap, addedChannel) || at != time.Second {
-				t.Fatalf("with slack_channels_changed_at left at the earlier list the run found %q at T+%v; want Q posting to %s at T+1s while P reads it", overlap, at, addedChannel)
 			}
 		})
 	}
 }
 
 // settleRun is one row of the settle test: Dispatch holds start's rows (T0 an hour before the run),
-// P reads addedChannel just before T, the row's change is made at T, stamped T (or, under control,
-// stamped as start had it), and Q, a session naming project, is released at T+1 s. It steps the
-// clock 30 s at a time to T+channelSettle, P reading the channel and Q posting to it at each step,
-// and answers the first step at which both reached Slack, naming the channel, with how long after
-// T it was; "" when none did, after which Q posts and P is refused.
-func settleRun(t *testing.T, start func(time.Time) map[string]projectaccesstest.Row, change func() (string, projectaccesstest.Row),
-	project string, control bool) (string, time.Duration) {
+// P reads addedChannel just before T, the row's change is made at T and stamped T, and Q, a session
+// naming project, is released at T+1 s. It reads S from the store, steps the clock 30 s at a time
+// to S + channelSettle, P reading the channel and Q posting to it at each step, and answers the
+// first step at which both reached Slack, naming the channel; "" when none did, after which Q posts
+// and P is refused.
+func settleRun(t *testing.T, start func(time.Time) map[string]projectaccesstest.Row, change func() (string, projectaccesstest.Row), project string) string {
 	t.Helper()
 	t0 := time.Now().Add(-time.Hour)
-	rows := start(t0)
-	w := newFenceWorld(t, rows, true)
+	w := newFenceWorld(t, start(t0), true)
 	p := w.pod(t, "public")
 	read := readOf(addedChannel)
 	p.send(t, read).served(t, "P's read of "+addedChannel+" just before T", read, slackValue)
@@ -430,42 +513,63 @@ func settleRun(t *testing.T, start func(time.Time) map[string]projectaccesstest.
 	at := w.clock.now()
 	key, changed := change()
 	changed.SlackChannelsChangedAt = at
-	if control {
-		changed.SlackChannelsChangedAt = rows[key].SlackChannelsChangedAt
-	}
 	w.dispatch.SetRow(key, changed)
 
 	w.clock.advance(time.Second)
 	q := w.pod(t, "private", project)
 	post := jsonPost(postTo(addedChannel))
-	settles := at.Add(channelSettle)
-	for step := time.Second; step < channelSettle; step += 30 * time.Second {
-		advanceTo(w.clock, at.Add(step))
-		pAnswer, qAnswer := p.send(t, read), q.send(t, post)
+	first, pFirst := q.send(t, post), p.send(t, read)
+	stored := storedAt(t, w.st, key, addedChannel)
+	settles := stored.Add(channelSettle)
+	if dispatchSettles := at.Add(channelSettle); dispatchSettles.After(settles) {
+		settles = dispatchSettles
+	}
+	check := func(step string, pAnswer, qAnswer slackAnswer) string {
 		pServed, qServed := pAnswer.status == http.StatusOK && len(pAnswer.seen) == 1, qAnswer.status == http.StatusOK && len(qAnswer.seen) == 1
 		if pServed && qServed {
-			return fmt.Sprintf("at T+%v, Q posted to %s while P read it: P answered %d, Q answered %d", step, addedChannel, pAnswer.status, qAnswer.status), step
-		}
-		if control {
-			continue
+			return fmt.Sprintf("at %s, Q posted to %s while P read it: P answered %d, Q answered %d", step, addedChannel, pAnswer.status, qAnswer.status)
 		}
 		if !pServed {
-			pAnswer.refusedAs(t, fmt.Sprintf("P's read of %s at T+%v", addedChannel, step), read, codePrivateChannel, privateChannel)
+			pAnswer.refusedAs(t, fmt.Sprintf("P's read of %s at %s", addedChannel, step), read, codePrivateChannel, privateChannel)
 		}
 		if !qServed {
-			qAnswer.refusedAs(t, fmt.Sprintf("Q's post to %s at T+%v", addedChannel, step), post, codeChannelNotAllowed, channelNotAllowed)
+			qAnswer.refusedAs(t, fmt.Sprintf("Q's post to %s at %s", addedChannel, step), post, codeChannelNotAllowed, channelNotAllowed)
 			if want := channelsSettle + settles.UTC().Format(time.RFC3339); !strings.Contains(qAnswer.body, want) {
-				t.Fatalf("Q's refusal at T+%v reads %q; want it to say posting reopens at %s", step, qAnswer.body, settles.UTC().Format(time.RFC3339))
+				t.Fatalf("Q's refusal at %s reads %q; want it to say posting reopens at %s, the later of Dispatch's time and the store's %v", step, qAnswer.body, settles.UTC().Format(time.RFC3339), stored)
 			}
 		}
+		return ""
 	}
-	if control {
-		return "", 0
+	if overlap := check("T+1s", pFirst, first); overlap != "" {
+		return overlap
+	}
+	for step := 30 * time.Second; stored.Add(step).Before(settles); step += 30 * time.Second {
+		advanceTo(w.clock, stored.Add(step))
+		if overlap := check(fmt.Sprintf("S+%v", step), p.send(t, read), q.send(t, post)); overlap != "" {
+			return overlap
+		}
 	}
 	advanceTo(w.clock, settles.Add(time.Second))
 	q.send(t, post).served(t, "Q's post to "+addedChannel+" once its list settled", post, slackValue)
 	p.send(t, read).refusedAs(t, "P's read of "+addedChannel+" once the list settled", read, codePrivateChannel, privateChannel)
-	return "", 0
+	return ""
+}
+
+// storedAt is when st's stored private list first held channel for key, on the database's clock,
+// failing t when it does not hold it.
+func storedAt(t *testing.T, st *store.Store, key, channel string) time.Time {
+	t.Helper()
+	known, err := st.KnownPrivateProjects(t.Context())
+	if err != nil {
+		t.Fatalf("KnownPrivateProjects: %v", err)
+	}
+	for _, project := range known {
+		if project.Key == key && slices.Contains(project.SlackChannels, channel) {
+			return project.ChannelsStoredAt
+		}
+	}
+	t.Fatalf("the stored private list does not hold %s for %s after Q's first release: %+v", channel, key, known)
+	return time.Time{}
 }
 
 // advanceTo moves c on to at, and leaves it where it is when it has passed at already.
@@ -487,10 +591,12 @@ type fenceWorld struct {
 }
 
 // newFenceWorld builds it, with Dispatch answering rows and the token tagged project-channels=slack
-// when tagged. It skips t when BROKER_TEST_DATABASE_URL is unset (storetest.Open).
+// when tagged; its clock moves the database's time with the proxy's. It skips t when
+// BROKER_TEST_DATABASE_URL is unset (storetest.Open).
 func newFenceWorld(t *testing.T, rows map[string]projectaccesstest.Row, tagged bool) *fenceWorld {
 	t.Helper()
-	w := &fenceWorld{st: storetest.Open(t), rules: slackRules(), dispatch: projectaccesstest.NewServer(t, rows, nil), clock: &proxyClock{}}
+	st := storetest.Open(t)
+	w := &fenceWorld{st: st, rules: slackRules(), dispatch: projectaccesstest.NewServer(t, rows, nil), clock: &proxyClock{db: &st.DatabaseClockOffset}}
 	w.local = secrets.NewLocal(slackToken(tagged))
 	loader := policytest.Loader(w.local)
 	loader.ProjectChecks = true

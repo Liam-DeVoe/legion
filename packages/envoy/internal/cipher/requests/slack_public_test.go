@@ -59,6 +59,9 @@ func TestAProjectChannelsSecretLeavesTheAirlockToNoCredentialWhilePrivateChannel
 
 	t.Run("undecided while the fence cannot be read", func(t *testing.T) {
 		b := newOutsideBroker(t, fenceRows())
+		// The list fails over a stored private list holding SYNTH with channels it never read,
+		// which the fallback cannot fence by.
+		storeUnknown(t, b.m.Store, synthProject)
 		b.dispatch.SetPrivateProjectsDown(true)
 		if request, err := b.create(t); !errors.Is(err, ErrProjectAccessUnavailable) {
 			t.Fatalf("Create(%s) while the private projects' list fails = %+v, %v; want ErrProjectAccessUnavailable", slackToken, request, err)
@@ -313,6 +316,9 @@ func TestAPublicSlackGrantCarriesEveryPrivateChannel(t *testing.T) {
 		t.Run("unread: "+c.name, func(t *testing.T) {
 			m, grantID, dispatch := publicGrant(t, c.rows, true)
 			if c.fail != nil {
+				// The list fails over a stored private list holding SYNTH with channels it never
+				// read: the fallback cannot fence by them, so the value stays unread.
+				storeUnknown(t, m.Store, synthProject)
 				c.fail(dispatch)
 			}
 			read := time.Now()
