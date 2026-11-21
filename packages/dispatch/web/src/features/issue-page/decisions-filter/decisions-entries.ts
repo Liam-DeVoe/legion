@@ -1,7 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useCallback, useMemo } from "react";
 
-import { api } from "../../../api/client";
 import { roleDocument } from "../../../api/issue-cache";
 import { artifactBlocksQuery } from "../../../api/queries";
 import type { IssueDetails } from "../../../api/types";
@@ -13,7 +12,7 @@ import { decisionChanges } from "../decision-review";
 import type { DocumentBlocks, TreeNode } from "../issue-tree";
 import { treeContext } from "../tree-drafts";
 import { nodesInOrder } from "../tree-keys";
-import { issueAsksQuery } from "../useIssueTree";
+import { issueAsksQuery, issueCommentsQuery } from "../useIssueTree";
 import {
   askIdOf,
   type DecisionsEntry,
@@ -139,12 +138,8 @@ export function useDecisionsEntries({
   const asksRead = useQuery({ ...issueAsksQuery(issue.key), ...EVENT_FRESH });
   const asks = asksRead.data;
   // The issue's comments, which hold the changes a person asked of a decision
-  // (`decision-review.ts`), under the key the tree reads them by.
-  const comments = useQuery({
-    queryFn: () => api.listComments(issue.key),
-    queryKey: ["comments", issue.key],
-    ...EVENT_FRESH,
-  }).data;
+  // (`decision-review.ts`), under the key the tree reads them by (`issueCommentsQuery`).
+  const comments = useQuery({ ...issueCommentsQuery(issue.key), ...EVENT_FRESH }).data;
   // The blocks of the decisions document, which name the section each Change's anchor stands
   // in and so the decision it changes, under the key the tree reads them by. An issue with no
   // decisions document reads none.
