@@ -50,28 +50,39 @@ import (
 //     ms there was 0.482 ms below main's lowest median, 5.197 ms, while two runs of main's own
 //     statement differed by 0.992 ms, so a strict pair could fail on a correct head.
 //   - The two index pairs on subjects.Issue, refs.BacklinkCounts over it and refs.Edges' in read
-//     of it, are bounded pairs whose text is the same on both sides and whose before side's Setup
-//     puts main's index of block_refs' targets back (mainsTargetIndex): block_refs_to_source
-//     dropped and block_refs_to built, in the transaction benchtime's explain opens for the run
-//     and rolls back, so one database holds both sides and they differ by that index alone.
-//     Each reads block_refs by to_kind and to_id, which block_refs_to keyed whole and the wider
-//     block_refs_to_source keys by its first two columns, so neither has a gain to show and each
-//     is held to no loss. subjects.Issue is linked by children and blockers rather than built so
-//     that documents mention it in their text and in their blocks, so the probe's gain does not
-//     hide that read's cost there, as it does on the probe fixture's issue.
+//     of it, are bounded pairs whose text is the same on both sides and whose sides differ by
+//     their index of block_refs' targets alone. Each reads block_refs by to_kind and to_id, which
+//     block_refs_to keyed whole and the wider block_refs_to_source keys by its first two columns,
+//     so neither has a gain to show and each is held to no loss. subjects.Issue is linked by
+//     children and blockers rather than built so that documents mention it in their text and in
+//     their blocks, so the probe's gain does not hide that read's cost there, as it does on the
+//     probe fixture's issue.
+//     Each side's Setup builds its index for the one read, in the transaction benchtime's explain
+//     opens for the run and rolls back, so one database holds both sides: the before side's puts
+//     main's index back (mainsTargetIndex: block_refs_to_source dropped and block_refs_to built),
+//     and the after side's builds the head's again (headsTargetIndex: block_refs_to_source
+//     dropped and built again). Both sides change the index, each in its own rolled-back
+//     transaction, because a side with no Setup runs just after the other side's rollback and
+//     reads slower whatever index it reads, so a pair with a Setup on one side alone measures the
+//     Setup, not the index: under such pairs refs.DocumentIsCited's after median reached 94% to
+//     98% of its bound in several rounds at --scale 1, and with a Setup on each side it was 0.095
+//     ms above the before median, inside main's own spread.
 //   - heldByABlock's probe of block_refs is a strict pair on the probe fixture (writeProbeFixture):
 //     the in read of an issue that 1,000 documents mention, each in its own row and in two of its
 //     blocks, the text the same on both sides, the before side under main's index and the after
-//     side through the head's. Through block_refs_to the probe read every block link into the
-//     issue and kept its document's by a filter; round 12 of the earlier measurement read 105.034
-//     ms against 10.661 ms.
+//     side under the head's, each built by its side's Setup as the index pairs build them.
+//     Through block_refs_to the probe read every block link into the issue and kept its
+//     document's by a filter; round 12 of the earlier measurement read 105.034 ms against 10.661
+//     ms.
 //   - refs.DocumentIsCited of the first of the fixture's documents, as api.artifactIsUntouched
-//     reads it, is a bounded pair on the same fixture, its text the same on both sides and the
-//     before side under main's index: its reads of block_refs use to_kind and to_id alone, and
-//     the new index is wider, so it is held to no loss rather than to a gain.
+//     reads it, is a bounded pair on the same fixture, its text the same on both sides, the
+//     before side under main's index and the after side under the head's, each built by its
+//     side's Setup as the index pairs build them: its reads of block_refs use to_kind and to_id
+//     alone, and the new index is wider, so it is held to no loss rather than to a gain.
 //
-// Before the first pair under main's index, and again once the fixture is written, the test reads
-// the plan that index gives and stops unless the plan reads it (requireMainsTargetIndexRead).
+// Before the index pairs, and again once the fixture is written, the test reads the plan under
+// each of the two Setups and stops unless it reads the index that Setup builds
+// (requireTargetIndexRead), so the after side is held to the same rule as the before side.
 //
 // The fixture is written after every other pair, so they measure the seed as it is, and through
 // a connection of its own, since the runner's connection is for reading (benchtime.Runner.Conn);
@@ -150,23 +161,26 @@ func TestStatementTimings(t *testing.T) {
 	}
 	runner.PairWithin(t, referencedBy.name, []benchtime.Statement{referencedByBefore}, []benchtime.Statement{referencedByAfter})
 
-	// The index pairs on subjects.Issue, after the plan under main's index is known to read it.
-	requireMainsTargetIndexRead(t, runner, subjects.Issue, false)
+	// The index pairs on subjects.Issue, after the plan under each side's Setup is known to read
+	// the index that Setup builds.
+	requireTargetIndexRead(t, runner, mainsTargetIndex, "block_refs_to", subjects.Issue, false)
+	requireTargetIndexRead(t, runner, headsTargetIndex, "block_refs_to_source", subjects.Issue, false)
 	issueEdges := []any{"issue", subjects.Issue}
 	runner.PairWithin(t, "refs.BacklinkCounts over an issue, under main's index of targets",
 		[]benchtime.Statement{{SQL: issueCount, Args: []any{issueIDs, nodeKinds}, Setup: mainsTargetIndex}},
-		[]benchtime.Statement{{SQL: issueCount, Args: []any{issueIDs, nodeKinds}}})
+		[]benchtime.Statement{{SQL: issueCount, Args: []any{issueIDs, nodeKinds}, Setup: headsTargetIndex}})
 	runner.PairWithin(t, "refs.Edges in, the issue, under main's index of targets",
 		[]benchtime.Statement{{SQL: mainEdgesInIssue, Args: issueEdges, Setup: mainsTargetIndex}},
-		[]benchtime.Statement{{SQL: mainEdgesInIssue, Args: issueEdges}})
+		[]benchtime.Statement{{SQL: mainEdgesInIssue, Args: issueEdges, Setup: headsTargetIndex}})
 
 	// The probe fixture's pairs, after every pair that measures the seed as it is.
 	fixture := writeProbeFixture(t)
-	requireMainsTargetIndexRead(t, runner, fixture.issue, true)
+	requireTargetIndexRead(t, runner, mainsTargetIndex, "block_refs_to", fixture.issue, true)
+	requireTargetIndexRead(t, runner, headsTargetIndex, "block_refs_to_source", fixture.issue, true)
 	probeEdges := []any{"issue", fixture.issue}
 	runner.Pair(t, "refs.Edges in, an issue 1,000 documents mention, under main's index of targets",
 		benchtime.Statement{SQL: mainEdgesInIssue, Args: probeEdges, Setup: mainsTargetIndex},
-		benchtime.Statement{SQL: mainEdgesInIssue, Args: probeEdges})
+		benchtime.Statement{SQL: mainEdgesInIssue, Args: probeEdges, Setup: headsTargetIndex})
 	recorder := &statementRecorder{Queryer: runner.Conn()}
 	if _, err := DocumentIsCited(context.Background(), recorder, fixture.documentID, fixture.documentRefKey); err != nil {
 		t.Fatalf("read whether %s is cited: %v", fixture.documentRefKey, err)
@@ -177,7 +191,7 @@ func TestStatementTimings(t *testing.T) {
 	cited := recorder.statements[0]
 	runner.PairWithin(t, "refs.DocumentIsCited, a document that mentions that issue, under main's index of targets",
 		[]benchtime.Statement{{SQL: cited.sql, Args: cited.args, Setup: mainsTargetIndex}},
-		[]benchtime.Statement{{SQL: cited.sql, Args: cited.args}})
+		[]benchtime.Statement{{SQL: cited.sql, Args: cited.args, Setup: headsTargetIndex}})
 }
 
 // askPageSubject is every ask of the issue that carries the most, the set the ask page counts
@@ -291,13 +305,32 @@ var mainsTargetIndex = []string{
 	`create index block_refs_to on block_refs (to_kind, to_id)`,
 }
 
-// requireMainsTargetIndexRead reads the analyzed plan of mainEdgesInIssue for the issue under
-// mainsTargetIndex, `explain (analyze, format json)` on the runner's connection in a transaction
-// of its own that it rolls back, and stops the test unless the scans of block_refs that ran read
-// block_refs_to. With probe false, at least one scan of block_refs that ran reads it and none
-// that ran reads block_refs sequentially; with probe true, at least one of heldByABlock's probes,
-// the scans of block_refs whose conditions name artifact_id, ran, and each probe that ran reads
-// it.
+// headsTargetIndex is the Setup that builds the head's index of block_refs' targets again for one
+// read: block_refs_to_source dropped and created again, by the text of migration 20261120222732's
+// statement. It is the after side's Setup of every pair whose before side's is mainsTargetIndex,
+// so each side changes the index in its own rolled-back transaction and the two differ by that
+// index alone (TestStatementTimings says why). It runs and rolls back as mainsTargetIndex does,
+// and at a head without block_refs_to_source its drop errors.
+var headsTargetIndex = []string{
+	`drop index block_refs_to_source`,
+	`create index block_refs_to_source on block_refs (to_kind, to_id, ((artifact_id)::text))`,
+}
+
+// requireTargetIndexRead reads the analyzed plan of mainEdgesInIssue for the issue under setup,
+// `explain (analyze, format json)` on the runner's connection in a transaction of its own that it
+// rolls back, and stops the test unless the scans of block_refs that ran read targetIndex, the
+// index of block_refs' targets setup builds: block_refs_to under mainsTargetIndex, the before
+// side's Setup of the pairs under main's index of targets, and block_refs_to_source under
+// headsTargetIndex, their after side's. With probe false, at least one scan of block_refs that
+// ran reads targetIndex and none that ran reads block_refs sequentially; with probe true, at
+// least one of heldByABlock's probes, the scans of block_refs whose conditions name artifact_id,
+// ran, and each probe that ran reads targetIndex.
+//
+// Both sides of those pairs change the index, each in its own rolled-back transaction, because a
+// side with no Setup runs just after the other side's rollback and reads slower whatever index it
+// reads, so a pair with a Setup on one side alone measures the Setup, not the index. The test
+// checks the plan under each of the two Setups, so the after side is held to the same rule as the
+// before side.
 //
 // A scan ran when its Actual Loops is above 0, a Bitmap Heap Scan by its own loops. It judges
 // only the scans that ran, as the Verification document judges every plan: a scan that the
@@ -309,39 +342,40 @@ var mainsTargetIndex = []string{
 // never ran as not judged.
 //
 // An index built in the same transaction over a broken HOT chain carries indcheckxmin, and the
-// planner may then not use it in that transaction: a pair under that Setup would time a
-// sequential read, or another index, in its place, and read as main's index when it is not. The
-// failure names indcheckxmin and its value, which says whether that is why.
-func requireMainsTargetIndexRead(t *testing.T, runner *benchtime.Runner, issue string, probe bool) {
+// planner may then not use it in that transaction: a side under that Setup would time a
+// sequential read, or another index, in its place, and read as targetIndex when it is not. The
+// failure names targetIndex's indcheckxmin and its value, which says whether that is why.
+func requireTargetIndexRead(t *testing.T, runner *benchtime.Runner, setup []string, targetIndex, issue string, probe bool) {
 	t.Helper()
 	ctx := context.Background()
+	under := "the Setup `" + strings.Join(setup, "; ") + "`"
 	tx, err := runner.Conn().Begin(ctx)
 	if err != nil {
-		t.Fatalf("begin the plan's transaction under main's index of targets: %v", err)
+		t.Fatalf("begin the plan's transaction under %s: %v", under, err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	for _, statement := range mainsTargetIndex {
+	for _, statement := range setup {
 		if _, err := tx.Exec(ctx, statement); err != nil {
 			t.Fatalf("%s: %v", statement, err)
 		}
 	}
 	var raw []byte
 	if err := tx.QueryRow(ctx, "explain (analyze, format json) "+mainEdgesInIssue, "issue", issue).Scan(&raw); err != nil {
-		t.Fatalf("explain the in read of %s under main's index of targets: %v", issue, err)
+		t.Fatalf("explain the in read of %s under %s: %v", issue, under, err)
 	}
 	var checkXmin bool
-	if err := tx.QueryRow(ctx, `select indcheckxmin from pg_index where indexrelid = 'block_refs_to'::regclass`).Scan(&checkXmin); err != nil {
-		t.Fatalf("read block_refs_to's indcheckxmin: %v", err)
+	if err := tx.QueryRow(ctx, `select indcheckxmin from pg_index where indexrelid = $1::text::regclass`, targetIndex).Scan(&checkXmin); err != nil {
+		t.Fatalf("read %s's indcheckxmin under %s: %v", targetIndex, under, err)
 	}
 	if err := tx.Rollback(ctx); err != nil {
-		t.Fatalf("roll back main's index of targets: %v", err)
+		t.Fatalf("roll back %s: %v", under, err)
 	}
 	scans := blockRefsScans(t, explaintest.OnePlan(t, raw))
 	ran := func(scan blockRefsScan) bool { return scan.node.Loops > 0 }
-	readsIt := func(scan blockRefsScan) bool { return slices.Contains(scan.indexes, "block_refs_to") }
+	readsIt := func(scan blockRefsScan) bool { return slices.Contains(scan.indexes, targetIndex) }
 	var failure, judged string
 	if probe {
-		judged = "heldByABlock's probe of block_refs ran, and each probe that ran reads block_refs_to"
+		judged = "heldByABlock's probe of block_refs ran, and each probe that ran reads " + targetIndex
 		probes := 0
 		for _, scan := range scans {
 			if !ran(scan) || !slices.ContainsFunc(scan.conds, namesSourceDocument.MatchString) {
@@ -349,21 +383,21 @@ func requireMainsTargetIndexRead(t *testing.T, runner *benchtime.Runner, issue s
 			}
 			probes++
 			if !readsIt(scan) {
-				failure = "heldByABlock's probe, " + scan.String() + ", ran and does not read block_refs_to"
+				failure = "heldByABlock's probe, " + scan.String() + ", ran and does not read " + targetIndex
 			}
 		}
 		if probes == 0 {
 			failure = "no scan of block_refs that names artifact_id ran, so the plan ran no probe of heldByABlock"
 		}
 	} else {
-		judged = "a scan of block_refs that ran reads block_refs_to and none that ran reads block_refs sequentially"
+		judged = "a scan of block_refs that ran reads " + targetIndex + " and none that ran reads block_refs sequentially"
 		for _, scan := range scans {
 			if ran(scan) && scan.node.Type == "Seq Scan" {
 				failure = scan.String() + " ran and reads block_refs sequentially"
 			}
 		}
 		if failure == "" && !slices.ContainsFunc(scans, func(scan blockRefsScan) bool { return ran(scan) && readsIt(scan) }) {
-			failure = "no scan of block_refs that ran reads block_refs_to"
+			failure = "no scan of block_refs that ran reads " + targetIndex
 		}
 	}
 	described := make([]string, len(scans))
@@ -375,11 +409,11 @@ func requireMainsTargetIndexRead(t *testing.T, runner *benchtime.Runner, issue s
 		described[index] = "  " + loops + ": " + scan.String()
 	}
 	if failure != "" {
-		t.Fatalf("main's index of targets, put back for the in read of %s: %s; block_refs_to's indcheckxmin is %t, and a pair under that Setup would time another read in its place. The analyzed plan's scans of block_refs:\n%s",
-			issue, failure, checkXmin, strings.Join(described, "\n"))
+		t.Fatalf("under %s, the in read of %s: %s; %s's indcheckxmin is %t, and a pair under that Setup would time another read in its place. The analyzed plan's scans of block_refs:\n%s",
+			under, issue, failure, targetIndex, checkXmin, strings.Join(described, "\n"))
 	}
-	t.Logf("main's index of targets, put back for the in read of %s: %s (block_refs_to's indcheckxmin is %t). The analyzed plan's scans of block_refs:\n%s",
-		issue, judged, checkXmin, strings.Join(described, "\n"))
+	t.Logf("under %s, the in read of %s: %s (%s's indcheckxmin is %t). The analyzed plan's scans of block_refs:\n%s",
+		under, issue, judged, targetIndex, checkXmin, strings.Join(described, "\n"))
 }
 
 // blockRefsScan is one scan of block_refs in a plan: its node, the indexes it reads through, and
