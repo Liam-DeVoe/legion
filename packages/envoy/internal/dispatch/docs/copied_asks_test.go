@@ -1414,8 +1414,16 @@ func TestACopyAndItsSourcesAnswerTakingTheCopyLockInEitherOrderBothFinish(t *tes
 			case "settlement first":
 				// The copy's settlement holds the copy lock, reconciled, while the answer waits on it.
 				reconciled, proceed := make(chan struct{}), make(chan struct{})
+				// The settlement waits in its hook on proceed, holding the copy lock, until the row
+				// lets it go; a row that fails before the release lets it go in its cleanup, which runs
+				// before the service's Shutdown. The hook holds the first settlement of the copy alone:
+				// on a row that failed it is still installed when the shutdown settles the copy again.
+				letSettlementGo := sync.OnceFunc(func() { close(proceed) })
+				t.Cleanup(letSettlementGo)
+				var holding atomic.Bool
+				holding.Store(true)
 				service.afterSettleReconcile = func(room string) {
-					if room == copied {
+					if room == copied && holding.CompareAndSwap(true, false) {
 						close(reconciled)
 						<-proceed
 					}
@@ -1425,7 +1433,7 @@ func TestACopyAndItsSourcesAnswerTakingTheCopyLockInEitherOrderBothFinish(t *tes
 				answered := make(chan error, 1)
 				go func() { answered <- answerSource(t, ctx, service, original, source, nil) }()
 				waitForLockWait(t, ctx, service.store, copyLockWait, answered)
-				close(proceed)
+				letSettlementGo()
 				awaitDone(t, "the copy's settlement", settled)
 				service.afterSettleReconcile = nil
 				awaitDone(t, "the answer", answered)

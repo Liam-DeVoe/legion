@@ -119,8 +119,13 @@ func TestARefreshDuringAParkedSendsTryLeavesTheSenderHoldingTheRowsClaim(t *test
 			})
 			served.mentions.wait()
 			var gated atomic.Bool
-			refreshEntered, refreshGo := make(chan struct{}), make(chan struct{})
-			tryEntered, tryGo := make(chan struct{}), make(chan struct{})
+			// The gated refresh and try each wait on their release until the row lets them go, and the
+			// server's cleanup waits for this sender (waitBackground). That cleanup lets both go first
+			// (heldUntilReleased, releaseHeld), so a row that fails while either is held fails by name
+			// rather than wait there to the shared wait's end.
+			refreshGo, letRefreshGo := heldUntilReleased(t)
+			tryGo, letTryGo := heldUntilReleased(t)
+			refreshEntered, tryEntered := make(chan struct{}), make(chan struct{})
 			sender := newMentionSender(served.lifetime, time.Hour, nil,
 				func(ctx context.Context, item mentionSend) (mentionSend, bool) {
 					if item.heldFor != "" && gated.Load() {
@@ -159,10 +164,10 @@ func TestARefreshDuringAParkedSendsTryLeavesTheSenderHoldingTheRowsClaim(t *test
 				testwait.Receive(t, "the refresh to take its snapshot", refreshEntered) // the refresh holds its snapshot, the parked send in it
 				go unpark()
 				testwait.Receive(t, "the lane to start the parked send's try", tryEntered) // the lane has started the send's try
-				close(refreshGo)
+				letRefreshGo()
 				testwait.Receive(t, "the refresh to write the row and record it", refreshed) // the refresh wrote the row and recorded what it wrote
 				gated.Store(false)
-				close(tryGo) // the try reads the rule alone and parks again
+				letTryGo() // the try reads the rule alone and parks again
 			} else {
 				sender.refreshHeldClaims(context.Background())
 				go unpark()
@@ -423,7 +428,12 @@ func TestAHandOffDuringASendsTryIsTriedAgainUnderItsClaim(t *testing.T) {
 			})
 			served.mentions.wait()
 			var gated atomic.Bool
-			tryEntered, tryGo := make(chan struct{}), make(chan struct{})
+			// The gated try waits on tryGo until the row lets it go, and the server's cleanup waits
+			// for this sender (waitBackground). That cleanup lets it go first (heldUntilReleased,
+			// releaseHeld), so a row that fails while the try is held fails by name rather than wait
+			// there to the shared wait's end.
+			tryGo, letTryGo := heldUntilReleased(t)
+			tryEntered := make(chan struct{})
 			// tried is the claim each try of the parked send carried, in order.
 			var mu sync.Mutex
 			var tried []time.Time
@@ -488,7 +498,7 @@ func TestAHandOffDuringASendsTryIsTriedAgainUnderItsClaim(t *testing.T) {
 				want = append(want, handedOver)
 				publishIssueEvents(t, database, issue.Key)
 			}
-			close(tryGo)
+			letTryGo()
 			if !tc.handOff {
 				unpark = testwait.Receive(t, "the send's park timer once its try read the rule", timers) // the try read the rule alone, waited and parked again
 				recorded, unsure := recordedClaim(sender, key)

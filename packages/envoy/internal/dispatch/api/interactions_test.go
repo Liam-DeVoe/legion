@@ -1565,6 +1565,11 @@ func TestConcurrentSuggestionAcceptAppliesReplacementExactlyOnce(t *testing.T) {
 		}
 		return gate
 	})
+	// The first accept waits at the gate in its transaction until the row lets it go. The server's
+	// and the document service's cleanups, registered before this one, run after it: a row that
+	// fails before the release below lets the accept go rather than leave it held.
+	letFirstGo := sync.OnceFunc(func() { close(gate.releaseFirst) })
+	t.Cleanup(letFirstGo)
 	issue := createInteractionIssue(t, handler, "TEST", "Concurrent accepts", "foo")
 	suggestion := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
 		"body": "Replace foo.", "anchor": map[string]any{"artifact": "spec", "quote": "foo"},
@@ -1583,7 +1588,7 @@ func TestConcurrentSuggestionAcceptAppliesReplacementExactlyOnce(t *testing.T) {
 		responses <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+commentID+"/accept", map[string]any{}, "alice")
 	}()
 	waitForSecondReplacementOrCommentLock(t, database, gate.secondEntered)
-	close(gate.releaseFirst)
+	letFirstGo()
 
 	var success, conflict int
 	for range 2 {

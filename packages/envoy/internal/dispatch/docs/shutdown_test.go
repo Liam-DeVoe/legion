@@ -311,9 +311,11 @@ func TestShutdownSettlesEveryOtherRoomWhileOneRoomsQueuedAppendIsHeld(t *testing
 	quiet := createIssueDocument(t, database, 1, "quiet")
 	held := createIssueDocument(t, database, 2, "held")
 	appends := &heldStore{VersionedStore: NewPgVersioned(database), room: held, entered: make(chan struct{}), release: make(chan struct{})}
-	t.Cleanup(appends.let)
 	drainClock := clocktest.New(time.Now())
 	service := newShutdownTestServiceOn(t, database, appends, drainClock)
+	// Registered after the service, so it runs before its shutdown: a row that fails while the held
+	// room's append is held lets it go rather than leave that shutdown waiting on it.
+	t.Cleanup(appends.let)
 	seedServiceText(t, service, quiet, "quiet")
 	settleCurrentGeneration(t, service, quiet)
 	seedServiceText(t, service, held, "held")
@@ -376,16 +378,18 @@ func TestShutdownSettlesABurstOfAppendsIncludingOneRecordedAfterItsScan(t *testi
 	first := &burstGate{entered: make(chan struct{}), release: make(chan struct{})}
 	second := &burstGate{entered: make(chan struct{}), release: make(chan struct{})}
 	appends := &burstStore{VersionedStore: NewPgVersioned(database), room: artifactID, gates: []*burstGate{first, second}}
-	t.Cleanup(func() {
-		first.let()
-		second.let()
-	})
 	drainClock := clocktest.New(time.Now())
 	service := newShutdownTestServiceOn(t, database, appends, drainClock)
 	seedServiceText(t, service, artifactID, "before")
 	settleCurrentGeneration(t, service, artifactID)
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	t.Cleanup(httpServer.Close)
+	// Registered after the service and the server, so it runs before both: a row that fails while
+	// an append is held at its gate lets it go rather than leave the shutdown waiting on it.
+	t.Cleanup(func() {
+		first.let()
+		second.let()
+	})
 	editor := connectPeer(t, httpServer.URL, artifactID, "alice")
 	if err := editor.WaitForText(t, peerMarkdown, "before\n"); err != nil {
 		t.Fatal(err)

@@ -765,7 +765,11 @@ func TestClaimIsOnEveryIssueRead(t *testing.T) {
 func TestClaimRedoesTheCycleWhenTheHolderChangesBeforeTheLock(t *testing.T) {
 	live := &liveRegistry{}
 	live.set("session-one", "session-two", "session-three")
-	release := make(chan struct{})
+	// The first lookup holds the listener's handler on release until the row lets it go, and the
+	// listener's cleanup (listener.Close) waits for every handler. The server's cleanup, which runs
+	// before that one, lets it go first (heldUntilReleased, releaseHeld), so a row that fails
+	// before the release below fails by name rather than hang in listener.Close.
+	release, letLookupGo := heldUntilReleased(t)
 	lookups := make(chan int, 8)
 	listener := claimListener(t, live, func(lookup int) {
 		lookups <- lookup
@@ -805,7 +809,7 @@ func TestClaimRedoesTheCycleWhenTheHolderChangesBeforeTheLock(t *testing.T) {
 		t.Fatalf("the third session takes the ended holder's claim: status=%d body=%s", moved.Code, moved.Body.String())
 	}
 	live.set()
-	close(release)
+	letLookupGo()
 
 	// The redo re-reads the holder and re-asks the listener: session-three has ended, so the
 	// contested claim lands as a takeover. With one attempt (no redo) this is a 409 instead,
@@ -836,7 +840,9 @@ func TestClaimRedoesTheCycleWhenTheHolderChangesBeforeTheLock(t *testing.T) {
 func TestClaimNeverTakesALiveHoldersClaimFoundAfterTheSnapshot(t *testing.T) {
 	live := &liveRegistry{}
 	live.set("session-one", "session-two")
-	release := make(chan struct{})
+	// As in TestClaimRedoesTheCycleWhenTheHolderChangesBeforeTheLock: a row that fails while the
+	// first lookup is held has it let go before listener.Close waits for its handler.
+	release, letLookupGo := heldUntilReleased(t)
 	lookups := make(chan int, 8)
 	listener := claimListener(t, live, func(lookup int) {
 		lookups <- lookup
@@ -872,7 +878,7 @@ func TestClaimNeverTakesALiveHoldersClaimFoundAfterTheSnapshot(t *testing.T) {
 	}); response.Code != http.StatusOK {
 		t.Fatalf("the third session claims the free issue: status=%d body=%s", response.Code, response.Body.String())
 	}
-	close(release)
+	letLookupGo()
 
 	response := testwait.Receive(t, "the contested claim to answer", contested)
 	if response.Code != http.StatusConflict {
@@ -953,11 +959,18 @@ func TestContendedClaimEndsTheCycleAtTheBound(t *testing.T) {
 	live := &liveRegistry{}
 	live.set("session-one", "session-two", "session-three", "session-nine")
 	lookups := make(chan int, 8)
+	// The server's cleanup closes abort before listener.Close, which waits for every handler, runs
+	// (heldUntilReleased, releaseHeld): a row that fails while an attempt's lookup is held lets it
+	// go, and fails by name rather than hang there.
+	abort, _ := heldUntilReleased(t)
 	gate := make(chan struct{})
 	listener := claimListener(t, live, func(lookup int) {
 		lookups <- lookup
 		if lookup <= len(changes) {
-			<-gate
+			select {
+			case <-gate:
+			case <-abort:
+			}
 		}
 	})
 	handler, _, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL})

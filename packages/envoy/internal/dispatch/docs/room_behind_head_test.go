@@ -1945,6 +1945,10 @@ func TestARoomLoadingWhileThisProcessesWriteCommitsStandsAtTheHead(t *testing.T)
 		}
 		return load(ctx, room, doc)
 	}
+	// The load waits on release until the row lets it go; a row that fails before the release lets
+	// it go in its cleanup, which runs before the service's Shutdown.
+	letLoadGo := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(letLoadGo)
 	loaded := make(chan error, 1)
 	go func() { loaded <- service.warmLiveDocument(context.Background(), artifactID) }()
 	testwait.Receive(t, "the room's load to reach the window it is held in", entered)
@@ -1976,7 +1980,7 @@ func TestARoomLoadingWhileThisProcessesWriteCommitsStandsAtTheHead(t *testing.T)
 		t.Fatalf("the document's head is %d after the write, want %d: the load read %d", head, read+1, read)
 	}
 
-	close(release)
+	letLoadGo()
 	if err := testwait.Receive(t, "the room's load to finish once let go", loaded); err != nil {
 		t.Fatalf("load the room while the write committed: %v", err)
 	}

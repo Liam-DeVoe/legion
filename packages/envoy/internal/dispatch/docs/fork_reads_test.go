@@ -779,6 +779,10 @@ func TestForkReadsAWritesRenderingDescribesItsForkAtTheCommitThatHandsItToTheRoo
 	t.Cleanup(func() { _, _ = service.ReleaseLiveWritePause(artifactID, PauseAfterCommit) })
 	var markErr error
 	operated, commit, done := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+	// The write waits on commit in its open transaction until the row lets it go; a row that fails
+	// before the release lets it go in its cleanup, which runs before the service's Shutdown.
+	letCommit := sync.OnceFunc(func() { close(commit) })
+	t.Cleanup(letCommit)
 	go func() {
 		done <- joinedWrite(service, func(ctx context.Context) error {
 			_, markErr = service.MarkQuote(ctx, artifactID, MarkSpec{Kind: MarkSuggestion, ID: "s-stored", By: reuseAlice}, "Step 44 one is taken first", nil)
@@ -795,7 +799,7 @@ func TestForkReadsAWritesRenderingDescribesItsForkAtTheCommitThatHandsItToTheRoo
 		t.Fatalf("mark the quote: %v", markErr)
 	}
 	editAsConnectedPeer(t, service, artifactID, 2, reuseBob, replaceRun("Paragraph 44 opens", "Paragraph 44 then opens"))
-	close(commit)
+	letCommit()
 	parked := make(chan error, 1)
 	go func() { parked <- service.AwaitLiveWriteParked(testwait.Context(t), artifactID, PauseAfterCommit) }()
 	ended := testwait.Until(t, "the write to park after its commit, or to end", func() (string, bool) {

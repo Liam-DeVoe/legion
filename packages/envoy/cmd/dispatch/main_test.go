@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1316,6 +1317,22 @@ func TestHealthzAnswersWhilePostgresAndTheBucketBothStopAnswering(t *testing.T) 
 	fake := clocktest.New(began)
 	server := httptest.NewServer(healthzHandlerOn(fake, database, nil, nil, bucket, "", nil, issuers{}, nil))
 	defer server.Close()
+	// The handler holds two probes while the row reads them: the bucket's, on its release, and the
+	// database's, on the bound it arms on fake, which only a move of fake ends. The deferred
+	// server.Close waits for the handler, and deferred calls run last first, so this one ends both
+	// before that Close - the bucket's by its release, the database's by moving fake past every
+	// bound armed on it: a row that fails before the release below fails by name rather than wait
+	// in that Close to the shared wait's end.
+	letBucketGo := sync.OnceFunc(func() { close(bucket.release) })
+	defer func() {
+		letBucketGo()
+		fake.SetWhen(func(_ time.Time, armed []time.Time) (time.Time, bool) {
+			if len(armed) == 0 {
+				return time.Time{}, false
+			}
+			return armed[len(armed)-1], true
+		})
+	}()
 
 	blackholed.Store(true)
 	answered := healthzAsync(t, server.URL)
@@ -1324,7 +1341,7 @@ func TestHealthzAnswersWhilePostgresAndTheBucketBothStopAnswering(t *testing.T) 
 	if bound := armed[0].Sub(began); bound >= tightestProber {
 		t.Fatalf("the database probe armed its bound %v after the poll came, while the bucket's probe was in flight beside it: at or past the tightest prober's %v", bound, tightestProber)
 	}
-	close(bucket.release)
+	letBucketGo()
 	fake.Set(armed[0])
 	health := testwait.Receive(t, "the health probe to answer once both probes ended", answered).decode(t)
 	if health.status != http.StatusServiceUnavailable || health.body["db"] != false || health.body["files"] != false {

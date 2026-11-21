@@ -219,8 +219,10 @@ func TestAWriteAfterItsTransactionStoredTheRoomsLingeringUpdateForksTheRoom(t *t
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
 	appends := &heldStore{VersionedStore: NewPgVersioned(database), room: artifactID, entered: make(chan struct{}), release: make(chan struct{})}
-	t.Cleanup(appends.let)
 	service := newShutdownTestService(t, database, appends)
+	// Registered after the service, so it runs before its shutdown: a row that fails while the
+	// room's batch is held lets it go rather than leave the service holding it past the test.
+	t.Cleanup(appends.let)
 	seedServiceText(t, service, artifactID, "First.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	waitForLandedAppends(t, service, artifactID)

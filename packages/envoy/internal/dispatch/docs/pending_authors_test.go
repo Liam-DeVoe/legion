@@ -1147,13 +1147,15 @@ func TestTwoVersionsBeforeAnAppendAsksForTheLockListItsAuthorOnce(t *testing.T) 
 		Settle:      time.Hour,
 	})
 	t.Cleanup(func() {
-		if persistence.released.CompareAndSwap(false, true) {
-			close(release)
-		}
-	})
-	t.Cleanup(func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
+		}
+	})
+	// Registered after the shutdown, so it runs first: a row that fails while bob's append is held
+	// lets it go rather than leave the service holding it past the test.
+	t.Cleanup(func() {
+		if persistence.released.CompareAndSwap(false, true) {
+			close(release)
 		}
 	})
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")

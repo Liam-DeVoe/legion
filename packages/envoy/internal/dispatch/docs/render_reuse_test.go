@@ -1814,12 +1814,16 @@ func TestRenderReuseAnUnreadableAskBlockKeepsTheRoomsAskAuthors(t *testing.T) {
 	// noteChangedTypes recorded for this transaction (renderedReplica.observe), so the keystroke
 	// below is still measured as touching its own block alone.
 	replica := service.replicaOf(service.srv.GetDoc(artifactID))
+	// The replica's lock is held over a read that can fail the row; a row that fails there lets
+	// it go in its cleanup, before the service's Shutdown, which takes it.
+	unlockReplica := sync.OnceFunc(replica.mu.Unlock)
 	replica.mu.Lock()
+	t.Cleanup(unlockReplica)
 	ask := topLevelAskElement(t, replica.fragment)
 	replica.doc.Transact(func(txn *crdt.Transaction) {
 		docstest.WriteDeepChain(txn, &ask.YXmlFragment, pmdoc.MaxTreeDepth+1, "deeper than the schema nests")
 	})
-	replica.mu.Unlock()
+	unlockReplica()
 
 	before := readRenderPaths(service)
 	text := browser.text("The last paragraph")

@@ -50,9 +50,11 @@ func TestShutdownsDrainWakesOnceWhenARoomsHeldAppendLands(t *testing.T) {
 		}
 	}
 	appends := &heldStore{VersionedStore: persist, room: artifactID, entered: make(chan struct{}), release: make(chan struct{})}
-	t.Cleanup(appends.let)
 	serviceClock := clocktest.Held()
 	service := newShutdownTestServiceOn(t, database, appends, serviceClock)
+	// Registered after the service, so it runs before its shutdown: a row that fails while the
+	// room's append is held lets it go rather than leave that shutdown waiting on it.
+	t.Cleanup(appends.let)
 	service.settlementWoke = func(room string) {
 		if room == artifactID && counting.Load() {
 			order.Add(1)

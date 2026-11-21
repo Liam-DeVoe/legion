@@ -629,7 +629,6 @@ func TestAPreloadOfferedWhileTheRoomLoadsIsReleasedAtThatLoad(t *testing.T) {
 	reading, release := make(chan struct{}), make(chan struct{})
 	var releaseOnce sync.Once
 	letLoad := func() { releaseOnce.Do(func() { close(release) }) }
-	t.Cleanup(letLoad)
 	// The load holds inside its own read of the store, once that read has returned and before
 	// Load hands it back, which is where LoadDoc makes it: after takePreload has found nothing.
 	store := &insideFirstLoadStore{VersionedStore: NewPgVersioned(database), room: artifactID, during: func() {
@@ -653,6 +652,10 @@ func TestAPreloadOfferedWhileTheRoomLoadsIsReleasedAtThatLoad(t *testing.T) {
 	})
 	server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	t.Cleanup(server.Close)
+	// Registered after the server, so it runs before its Close, which waits for the cold socket's
+	// handler: a row that fails while the room's load is held lets it go rather than leave that
+	// handler waiting on it until the socket's dial gives up.
+	t.Cleanup(letLoad)
 	offered := make(chan struct{})
 	var offeredOnce sync.Once
 	service.afterSocketPreload = func(room string, _ *persistence.LoadResult) {

@@ -229,6 +229,11 @@ func TestEntraTokenSourceStopsWaitingWhenItsContextEnds(t *testing.T) {
 	gate := make(chan struct{})
 	fake := &fakeEntra{expiresIn: "3600", gate: gate}
 	source, _, _ := testEntra(t, fake, "assertion")
+	// The first exchange waits in the fake on gate until the row lets it go, and the server's Close
+	// waits for that handler. This cleanup runs before that Close: a row that fails before the
+	// release lets the exchange go and fails by name rather than hang there.
+	letExchangeGo := sync.OnceFunc(func() { close(gate) })
+	t.Cleanup(letExchangeGo)
 	first := make(chan struct{})
 	go func() {
 		defer close(first)
@@ -246,7 +251,7 @@ func TestEntraTokenSourceStopsWaitingWhenItsContextEnds(t *testing.T) {
 	if err := testwait.Receive(t, "the queued caller to return once its context ended", queued); !errors.Is(err, context.Canceled) {
 		t.Errorf("Token while another exchange runs, context ending = %v, want context.Canceled", err)
 	}
-	close(gate)
+	letExchangeGo()
 	testwait.Receive(t, "the first caller's exchange to finish", first)
 }
 

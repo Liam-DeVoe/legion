@@ -864,13 +864,15 @@ func TestALoneUpdateAndABatchHoldingItStoreItOnce(t *testing.T) {
 				{entered: make(chan struct{}), release: make(chan struct{})},
 				{entered: make(chan struct{}), release: make(chan struct{})},
 			}
+			appends := &countingBurstStore{burstStore: burstStore{VersionedStore: NewPgVersioned(database), room: artifactID, gates: gates}}
+			service := newShutdownTestService(t, database, appends)
+			// Registered after the service, so it runs before its Shutdown: a row that fails with
+			// an append held at a gate lets it go rather than leave the shutdown waiting on it.
 			t.Cleanup(func() {
 				for _, gate := range gates {
 					gate.let()
 				}
 			})
-			appends := &countingBurstStore{burstStore: burstStore{VersionedStore: NewPgVersioned(database), room: artifactID, gates: gates}}
-			service := newShutdownTestService(t, database, appends)
 			seedServiceText(t, service, artifactID, "First.\n")
 			settleCurrentGeneration(t, service, artifactID)
 			if err := service.warmLiveDocument(ctx, artifactID); err != nil {
