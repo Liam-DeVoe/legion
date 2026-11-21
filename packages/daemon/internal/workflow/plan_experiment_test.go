@@ -60,7 +60,7 @@ func TestAPlanGivenBeforeTheDrawIsPassedOver(t *testing.T) {
 		firstStep(t, pool, engine, child)
 
 		assertDefaultPlan(t, planStandingOf(t, pool, engine, child, 1).plan, child, 1, todaysStoredSteps)
-		want := walkStanding{phase.Planning, record.TaskPlace{Kind: record.PlaceStep, Position: 1}, record.TaskRunning, []string{"0 default"}, todaysDefaultSteps}
+		want := walkStanding{phase.Planning, record.TaskPlace{Kind: record.PlaceStep, Position: 1}, record.TaskRunning, []string{"0 default"}, todaysStoredSteps}
 		if got := walkStandingOf(t, pool, engine, child, 1); !reflect.DeepEqual(got, want) {
 			t.Fatalf("%s after its first step stands at %+v, want %+v", child, got, want)
 		}
@@ -223,7 +223,7 @@ func TestTheGroupDefaultRunsTheDefaultSteps(t *testing.T) {
 		firstStep(t, pool, engine, root.Key)
 
 		assertDefaultPlan(t, planStandingOf(t, pool, engine, root.Key, root.Generation).plan, root.Key, root.Generation, todaysStoredSteps)
-		want := walkStanding{phase.Planning, record.TaskPlace{Kind: record.PlaceStep, Position: 1}, record.TaskRunning, []string{"0 default"}, todaysDefaultSteps}
+		want := walkStanding{phase.Planning, record.TaskPlace{Kind: record.PlaceStep, Position: 1}, record.TaskRunning, []string{"0 default"}, todaysStoredSteps}
 		if got := walkStandingOf(t, pool, engine, root.Key, root.Generation); !reflect.DeepEqual(got, want) {
 			t.Fatalf("%s after its first step stands at %+v, want %+v", root.Key, got, want)
 		}
@@ -336,28 +336,34 @@ func TestAnIssueWithNoGroupRunsAsBuilt(t *testing.T) {
 		{"a row of memory alone", drawnForMemory},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// The earlier owner's plan is the plan of LEGION-208's architect, given while the child
+			// stood in that tree; the child is then recorded as a root of its own, whose architect
+			// gives its plan at generation 0 (first_step_test.go's earlier owner, as built).
+			const child = "LEGION-209"
 			pool := migratedPool(t)
 			engine := returnEngine()
-			root := stepRoot(t, pool, phase.Admitted)
-			tc.drawn(t, pool, root.Key)
-			earlier := ownersPlan(t, root.Key, 0, 1, givenTask(t, "Build the widget.", "implementer", "tester"))
-			earlier.GivenBy = claim.Token(treeRoleToken(t, "LEGION-300", claim.RoleArchitect))
-			mustTake(t, "an earlier owner's version 1 at generation 0", applyFacts(t, pool, engine)(planID(root.Key, 0, 1), earlier))
+			owner := claim.Token(treeRoleToken(t, child, claim.RoleArchitect))
+			recordedAt(t, pool, child, "LEGION-208")
+			mustTake(t, "the earlier owner's version 1", applyFacts(t, pool, engine)(planID(child, 1, 1),
+				ownersPlan(t, child, 1, 1, givenTask(t, "Build the widget.", "implementer", "tester"))))
+			recordedAt(t, pool, child, child)
+			tc.drawn(t, pool, child)
+			given := ownersPlan(t, child, 0, 2, givenTask(t, "Build the widget.", "implementer", "reviewer"))
+			given.GivenBy = owner
+			mustTake(t, "the owner's version 2 at generation 0", applyFacts(t, pool, engine)(planID(child, 0, 2), given))
+			firstStep(t, pool, engine, child)
 
-			mustTake(t, "version 1", applyFacts(t, pool, engine)(planID(root.Key, root.Generation, 1),
-				ownersPlan(t, root.Key, root.Generation, 1, givenTask(t, "Build the widget.", "implementer", "reviewer"))))
-			firstStep(t, pool, engine, root.Key)
-
-			assertWalksAt(t, pool, engine, root.Key, phase.Implementing, record.TaskPlace{Kind: record.PlaceStep, Position: 1})
-			told := noticesOf(t, pool, root.Key, "plan-not-taken")
+			assertWalksAt(t, pool, engine, child, phase.Implementing, record.TaskPlace{Kind: record.PlaceStep, Position: 1})
+			told := noticesOf(t, pool, child, "plan-not-taken")
 			if len(told) != 1 || !strings.Contains(told[0].Reason, "took no plan of an earlier owner") ||
 				!strings.Contains(told[0].Reason, "give it again with register_plan as your own.") {
 				t.Fatalf("the plan-not-taken notices = %+v, want the one notice of an earlier owner's plan, as built", told)
 			}
-			if result := applyFacts(t, pool, engine)("stop", ownersStop(t, root, "a")); result.Refusal != nil {
+			stop := intake.TaskStopped{Issue: child, Task: "a", By: owner, Generation: 1}
+			if result := applyFacts(t, pool, engine)("stop", stop); result.Refusal != nil {
 				t.Fatalf("the owner's stop of a = %+v, want it taken", result.Refusal)
 			}
-			if got := walkStandingOf(t, pool, engine, root.Key, root.Generation).state; got != record.TaskStopped {
+			if got := walkStandingOf(t, pool, engine, child, 1).state; got != record.TaskStopped {
 				t.Fatalf("task a after its owner's stop is %s, want stopped", got)
 			}
 		})
