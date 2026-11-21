@@ -474,6 +474,83 @@ func TestACorrectionWhileAnImageRoundRunsNamesThePodsRepositoryWhenThePodGoes(t 
 	}
 }
 
+// A replacement that could not wait for a role writes on the issue what its read of the
+// workspace found (workspaceLostMessage), and that message says where the work is as the message
+// on a gone pod does. The round here opens for the image alone over a pod of podUpdateRepo, the
+// daemon suspended the planner, and the read through the implementer finds one commit that no
+// branch holds. Where Dispatch moves the issue to podUpdateCorrectedRepo while the round runs, the
+// message names that work by podUpdateRepo and not by origin, sends each role to the issue branch
+// of podUpdateRepo, names podUpdateCorrectedRepo as the new pod's origin and, on a kept volume,
+// names the workspace of podUpdateRepo: the round's repository and the record as it stands when
+// the message is written (roundMove). The control is the same round of an issue that never moved,
+// whose message is the text of every other such replacement, word for word.
+func TestAReplacementOverAPassedOverRoleNamesThePodsRepositoryWhereTheIssueMoved(t *testing.T) {
+	madeBefore := podUpdateStart.Add(-time.Hour)
+	const (
+		// atOrigin and ofThePods are the words the message names the work that no branch holds
+		// with, on an issue that never moved and on one that moved off the pod's repository.
+		atOrigin  = "Work that is not on a branch at origin"
+		ofThePods = "Work that is not on a branch of the repository `" + podUpdateRepo + "`"
+		// lost and kept are what the message says of the pod and its disk.
+		lost = "The pod and its disk are gone."
+		kept = "The pod is gone. Its disk is a kept volume, and the volume is still there."
+	)
+	for _, tc := range []struct {
+		name string
+		// keptVolumeAt is when the issue's Sandbox made the kept volume that is the pod's disk,
+		// nil for an ephemeral disk, and corrected is whether Dispatch moves the issue to
+		// podUpdateCorrectedRepo while the round runs.
+		keptVolumeAt *time.Time
+		corrected    bool
+		// gone, work and pushed are what the message says of the pod and its disk, of the work
+		// that no branch holds, and of the work each role pushed.
+		gone, work, pushed string
+	}{
+		{"an ephemeral disk of an issue that never moved", nil, false, lost, atOrigin + " is lost.", podUpdateAtOrigin},
+		{"a kept volume of an issue that never moved", &madeBefore, false, kept,
+			atOrigin + " is on that volume. The next pod of this issue mounts the volume.", podUpdateAtOrigin},
+		{"an ephemeral disk of an issue that moved", nil, true, lost, ofThePods + " is lost.", pushedMovedTo(podUpdateCorrectedRepo)},
+		{"a kept volume of an issue that moved", &madeBefore, true, kept,
+			keptWorkMovedTo(ofThePods, podUpdateCorrectedRepo), pushedMovedTo(podUpdateCorrectedRepo)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), suspendedRole(claim.RolePlanner, supervise.SuspendedByDaemon))
+			rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead, Commits: []string{passedOverCommit}, Count: 1})
+			if tc.keptVolumeAt != nil {
+				rig.rt.ScriptKeptVolume(podUpdateIssue, *tc.keptVolumeAt)
+			}
+			rig.drifts(podUpdateDrift)
+
+			rig.tick()
+			rig.awaitAsked(claim.RoleImplementer, podUpdateRound)
+			rig.awaitRound(claim.RolePlanner, podUpdateRound)
+			if tc.corrected {
+				rig.corrects(podUpdateCorrectedRepo, podUpdateCorrectedBranch)
+			}
+			rig.signal(claim.RoleImplementer, "a1b2c3d")
+			rig.settleAll()
+			rig.awaitReplacement(1, "once the implementer answered")
+
+			messages := rig.messages()
+			if len(messages) != 1 {
+				t.Fatalf("the issue was written %d messages, want one: %q", len(messages), messages)
+			}
+			want := "The daemon replaced the pod that ran this issue's roles. " +
+				"The daemon opened an update round over that pod (" + podUpdateRound + "). " +
+				"The reasons were: " + podUpdateDrift + ". " + tc.gone + "\n\n" +
+				"The round did not wait for these roles, because no process of these roles ran in the pod: " +
+				"planner (suspended).\n\n" +
+				"Before the replacement, the daemon read the issue workspace. " +
+				"The read found work that no branch or tag at origin holds. " +
+				"The workspace held one commit that no branch or tag at origin holds: " + passedOverCommit + ".\n\n" +
+				tc.work + " " + tc.pushed
+			if messages[0] != want {
+				t.Fatalf("the message on the issue =\n%s\nwant\n%s", messages[0], want)
+			}
+		})
+	}
+}
+
 // tokensOf is each claim's token, in the claims' order.
 func tokensOf(claims []supervise.Claim) []claim.Token {
 	tokens := make([]claim.Token, 0, len(claims))
