@@ -20,7 +20,7 @@
  */
 
 import { expect, test } from "bun:test";
-import { copyFileSync, mkdirSync, readFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -797,55 +797,75 @@ const asSubreaper = [
     "os.execvp(sys.argv[1], sys.argv[1:])",
 ] as const;
 
-/** Bash for the end of a driver that runs under `asSubreaper`: once what it started has ended, it
- *  lists every process still below it, which is every process its tree left, and prints each one
+/** Bash for a driver that runs under `asSubreaper`. Once what it started has ended, `count` lists
+ *  every process still below the driver, which is every process its tree left, and prints each one
  *  that nothing has killed or is ending as `left: <pid> <command line>`, then `left behind: <n>`.
  *  A process counts as ended once its state is Z or X, as killed once SIGKILL stands in its shared
  *  pending set (`ShdPnd`, where a kill of a process or a group puts it, and where it stays until
- *  the process is gone), and as ending once its flags carry PF_EXITING. One that is gone between
- *  two reads is gone. Each process left is then killed, so the row leaves nothing running. The walk
- *  reads with builtins only, so it starts no process that it would count itself, and it reads no
- *  process outside the driver's own tree. It reads `$1`, a pid the driver started, in its own list
- *  of children first: where the list does not show it, the list is no instrument, and the driver
- *  prints `left behind: unknown` and exits 2. */
+ *  the process is gone), and as ending once its flags carry PF_EXITING. One whose files are gone
+ *  between two reads is gone. Each process left is then killed, so the row leaves nothing running.
+ *  The walk reads with builtins only, so it starts no process that it would count itself, and it
+ *  reads no process outside the driver's own tree.
+ *
+ *  It fails closed, printing `left behind: unknown: <why>`, wherever it could not tell: `capable`,
+ *  before the driver starts anything, where the driver's own status has no `ShdPnd:` line, as
+ *  under gVisor, or its own children list is missing; `seen`, where that list does not show the
+ *  pid the driver started, as `$1`; and `count`, where a process's status reads with no `ShdPnd:`
+ *  line, which is unknown and not gone. `PROC_ROOT` (default `/proc`) and `WALK_ROOT` (default the
+ *  driver's own pid) are for the row that reads `count` over a stub process tree. */
 const leftBehind = `
+proc=\${PROC_ROOT:-/proc}
+root=\${WALK_ROOT:-$$}
+capable() {
+  local key value shd=no children=no t
+  while read -r key value; do [ "$key" = ShdPnd: ] && shd=yes; done <"$proc/$root/status" 2>/dev/null
+  for t in "$proc/$root"/task/*/children; do [ -r "$t" ] && children=yes; done
+  [ "$shd" = yes ] || { echo "left behind: unknown: no ShdPnd: line in $proc/$root/status"; return 1; }
+  [ "$children" = yes ] || { echo "left behind: unknown: no children list under $proc/$root/task"; return 1; }
+}
 seen() {
   local t c
-  for t in /proc/$$/task/*/children; do
+  for t in "$proc/$root"/task/*/children; do
     c=""; read -r c <"$t" 2>/dev/null
     case " $c " in *" $1 "*) return 0 ;; esac
   done
   return 1
 }
 walk() {
-  local queue=($$) p t c k
+  local queue=("$root") p t c k
   tree=()
   while ((\${#queue[@]})); do
     p=\${queue[0]}; queue=("\${queue[@]:1}")
-    for t in /proc/$p/task/*/children; do
+    for t in "$proc/$p"/task/*/children; do
       c=""; read -r c <"$t" 2>/dev/null
       for k in $c; do tree+=("$k"); queue+=("$k"); done
     done
   done
 }
 count() {
-  local p stat fields key value shd
+  local p stat fields key value shd found unknown=()
   left=()
   walk
   for p in "\${tree[@]}"; do
-    stat=""; read -r stat <"/proc/$p/stat" 2>/dev/null || continue
+    stat=""; read -r stat <"$proc/$p/stat" 2>/dev/null || continue
     fields=(\${stat##*) })
     case \${fields[0]} in Z | X) continue ;; esac
     ((fields[6] & 4)) && continue
-    shd=""
-    while read -r key value; do [ "$key" = ShdPnd: ] && { shd=$value; break; }; done <"/proc/$p/status" 2>/dev/null
-    [ -n "$shd" ] || continue
+    { exec 9<"$proc/$p/status"; } 2>/dev/null || continue
+    shd="" found=no
+    while read -r key value <&9; do [ "$key" = ShdPnd: ] && { shd=$value; found=yes; break; }; done
+    exec 9<&-
+    [ "$found" = yes ] || { unknown+=("$p"); continue; }
     ((0x$shd & 0x100)) && continue
     left+=("$p")
   done
-  for p in "\${left[@]}"; do echo "left: $p $(tr '\\0' ' ' <"/proc/$p/cmdline" 2>/dev/null)"; done
-  echo "left behind: \${#left[@]}"
-  for p in "\${left[@]}"; do kill -KILL "$p" 2>/dev/null; done
+  for p in "\${left[@]}" "\${unknown[@]}"; do echo "left: $p $(tr '\\0' ' ' <"$proc/$p/cmdline" 2>/dev/null)"; done
+  if ((\${#unknown[@]})); then
+    echo "left behind: unknown: no ShdPnd: line in the status of \${unknown[*]}"
+  else
+    echo "left behind: \${#left[@]}"
+  fi
+  for p in "\${left[@]}" "\${unknown[@]}"; do kill -KILL "$p" 2>/dev/null; done
 }
 `;
 
@@ -859,16 +879,35 @@ interface StoppedLeg {
   readonly left: readonly string[];
 }
 
-/** The processes a driver that ran `leftBehind` printed as left, or a throw where it printed no
- *  count, `unknown`, or a count that disagrees with its list. */
-function leftOf(stdout: string): string[] {
+/** The processes a driver that ran `leftBehind` printed as left, or a throw, with the driver's
+ *  output and its stderr, where it printed no count, `unknown`, or a count that disagrees with its
+ *  list. `asSubreaper` prints a refused `prctl` on stderr, before the driver prints anything. */
+function leftOf(stdout: string, stderr: string): string[] {
   const count = /^left behind: (\d+)$/m.exec(stdout);
   const left = [...stdout.matchAll(/^left: (.*)$/gm)].map((line) => line[1]);
   if (count === null || Number(count[1]) !== left.length) {
-    throw new Error(`the driver could not list what the leg left behind:\n${stdout}`);
+    throw new Error(
+      `the driver could not list what the leg left behind:\n${stdout}\nits stderr:\n${stderr}`
+    );
   }
   return left;
 }
+
+/** Whether this machine's `/proc/<pid>/status` has the `ShdPnd:` line `leftBehind` reads a kill
+ *  from. gVisor's has none. Where it has none, each row that runs a driver is skipped by name,
+ *  outside CI, and runs under `GITHUB_ACTIONS`, where its driver refuses by name
+ *  (`left behind: unknown: no ShdPnd: line …`) and the row fails with that line. */
+const shdPnd = (() => {
+  try {
+    return /^ShdPnd:/m.test(readFileSync("/proc/self/status", "utf8"));
+  } catch {
+    return false;
+  }
+})();
+
+/** A row that runs a driver over `leftBehind`: run wherever `ShdPnd` can be read, and under
+ *  `GITHUB_ACTIONS` in any case (`shdPnd`). */
+const driverRow = test.skipIf(!shdPnd && process.env.GITHUB_ACTIONS !== "true");
 
 /** Copies the tool and its preload into `directory` as a package of `files` under
  *  `e2e/__tests__`, with a `test:harness` of two workers whatever the machine's CPUs. Runs the
@@ -908,12 +947,13 @@ async function stoppedLeg(
   const out = join(directory, "out");
   const driver =
     leftBehind +
-    '"$@" & tool=$!; seen "$tool" || { echo "left behind: unknown: the driver\'s own children do not list the tool $tool"; exit 2; }; ' +
+    'capable || exit 2; "$@" & tool=$!; ' +
+    'seen "$tool" || { echo "left behind: unknown: the driver\'s own children do not list the tool $tool"; kill -KILL "$tool" 2>/dev/null; exit 2; }; ' +
     'ready() { for m in $MARKS; do [ -e "$m" ] || return 1; done; }; ' +
     'until ready || ! kill -0 "$tool" 2>/dev/null; do sleep 0.05; done; ' +
     'if [ -n "$KILL_FROM" ]; then kill -KILL "$(cat "$KILL_FROM")" 2>/dev/null; else kill -TERM "$tool" 2>/dev/null; fi; ' +
     'if [ -n "$RELEASE" ]; then : >"$RELEASE"; fi; wait "$tool"; code=$?; count; exit "$code"';
-  const { code, stdout } = await runBounded({
+  const { code, stdout, stderr } = await runBounded({
     argv: [
       ...asSubreaper,
       "bash",
@@ -947,11 +987,14 @@ async function stoppedLeg(
     },
     from: import.meta.url,
   });
+  // What the leg left is read first: a driver that could not tell fails here with its reason,
+  // before a report it may never have let the tool write.
+  const left = leftOf(stdout, stderr);
   return {
     code,
     stdout,
     report: JSON.parse(readFileSync(join(out, "report.json"), "utf8")),
-    left: leftOf(stdout),
+    left,
   };
 }
 
@@ -962,7 +1005,7 @@ function spinningRow(row: string, mark: string): string {
 
 const spinningHead = `import { afterAll, test } from "bun:test";\nimport { writeFileSync } from "node:fs";\n\n`;
 
-test(
+driverRow(
   "a leg stopped while rows never end names each of them and exits 1",
   async () => {
     // The lie: the leg that reaches its deadline is ended from outside and names nothing, as
@@ -1030,7 +1073,7 @@ test(
   rowLimit("stoppedLeg")
 );
 
-test(
+driverRow(
   "a names run that hangs in an afterAll is ended once it has printed the row's name, with its whole process group, and leaves no process behind",
   async () => {
     // The lie: the tool kills only the `bun run` it started, so Bun's test process and its worker
@@ -1070,7 +1113,7 @@ test(
   rowLimit("stoppedLeg")
 );
 
-test(
+driverRow(
   "a names run that never prints the row's name is killed at its bound with its whole process group",
   async () => {
     // The lie: a names run that hangs before it prints a name runs on past the tool, or keeps
@@ -1128,7 +1171,7 @@ function holdsTheReport(mark: string, release: string): string {
   );
 }
 
-test(
+driverRow(
   "a stop that comes after Bun has ended, while the tool writes its report, is named in the report",
   async () => {
     // The lie: the tool stops listening for the deadline's SIGTERM once Bun has ended, so a
@@ -1203,7 +1246,7 @@ function killedRow(pidFile: string, of: "process.pid" | "process.ppid"): string 
 /** The second file of a lane whose row kills a worker or Bun's test process. */
 const besideIt = 'import { test } from "bun:test";\n\ntest("beside it", () => {});\n';
 
-test(
+driverRow(
   "a worker killed in a row names its file and row, and the progress file stays",
   async () => {
     // The lie: a worker killed from outside Bun, as the out-of-memory killer kills one, leaves
@@ -1244,7 +1287,7 @@ test(
   rowLimit("stoppedLeg")
 );
 
-test(
+driverRow(
   "Bun's test process killed in a row names the file and row its worker was in",
   async () => {
     // The lie: when Bun's test process itself is killed from outside, Bun writes no junit file,
@@ -1287,7 +1330,7 @@ test(
  *  own work stays inside the 90 s `stoppedLeg` bound that the step's driver runs under. */
 const CANCELLED_DEADLINE_SECONDS = 40;
 
-test(
+driverRow(
   "a step the run cancels names its running row, as GitHub's runner signals it",
   async () => {
     // The lie: a leg that GitHub cancels, or ends at its step budget, is ended from outside and
@@ -1338,10 +1381,11 @@ test(
     // as its tree's subreaper, and lists what the step left once it has ended (`leftBehind`).
     const driver =
       leftBehind +
-      'set -m; bash -e step.sh & step=$!; set +m; seen "$step" || { echo "left behind: unknown: the driver\'s own children do not list the step $step"; exit 2; }; ' +
+      "capable || exit 2; set -m; bash -e step.sh & step=$!; set +m; " +
+      'seen "$step" || { echo "left behind: unknown: the driver\'s own children do not list the step $step"; kill -KILL -- "-$step" 2>/dev/null; exit 2; }; ' +
       'until [ -e "$MARK" ] || ! kill -0 "$step" 2>/dev/null; do sleep 0.05; done; ' +
       'kill -INT "$step" 2>/dev/null; wait "$step"; code=$?; count; exit "$code"';
-    const { code, stdout } = await runBounded({
+    const { code, stdout, stderr } = await runBounded({
       argv: [...asSubreaper, "bash", "-c", driver],
       bound: "stoppedLeg",
       cwd: directory,
@@ -1356,6 +1400,8 @@ test(
       },
       from: import.meta.url,
     });
+    // What the step left is read first, so a driver that could not tell fails with its reason.
+    const left = leftOf(stdout, stderr);
     const report = JSON.parse(
       readFileSync(join(runner, "unit-repeat", "report.json"), "utf8")
     ) as Report;
@@ -1372,7 +1418,84 @@ test(
     );
     // The step ends on the tool's own exit, not on the deadline's 124.
     expect(code).toBe(1);
-    expect(leftOf(stdout)).toEqual([]);
+    expect(left).toEqual([]);
   },
   rowLimit("stoppedLeg")
+);
+
+/** A stub `/proc` of one driver's tree for `leftBehind`, at `directory`: the driver `9000001`,
+ *  and below it processes that ended (Z), are ending (PF_EXITING), were killed (SIGKILL in
+ *  `ShdPnd`), were left (no mark), and one more below the one left. Each pid is past Linux's
+ *  largest, 4194304, so the kill `count` sends a process it names left reaches nothing. `status`
+ *  is what each process's status file holds, past its `Name:` line, or null for a file with no
+ *  `ShdPnd:` line; the driver's own is `driver`. */
+function stubTree(
+  directory: string,
+  status: { readonly driver: string | null; readonly below: string | null }
+): void {
+  const processes: [
+    pid: number,
+    state: string,
+    flags: number,
+    shd: string | null,
+    kids: number[],
+  ][] = [
+    [9_000_001, "S", 0, status.driver, [9_000_002, 9_000_003, 9_000_004, 9_000_005]],
+    [9_000_002, "Z", 0, "0000000000000000", []],
+    [9_000_003, "R", 4, "0000000000000000", []],
+    [9_000_004, "R", 0, "0000000000000100", []],
+    [9_000_005, "S", 0, "0000000000000000", [9_000_006]],
+    [9_000_006, "S", 0, status.below, []],
+  ];
+  for (const [pid, state, flags, shd, kids] of processes) {
+    const task = join(directory, String(pid), "task", String(pid));
+    mkdirSync(task, { recursive: true });
+    writeFileSync(join(task, "children"), kids.map((kid) => `${kid} `).join(""));
+    writeFileSync(
+      join(directory, String(pid), "stat"),
+      `${pid} (stub) ${state} 1 1 1 0 -1 ${flags} 0 0\n`
+    );
+    writeFileSync(
+      join(directory, String(pid), "status"),
+      `Name:\tstub\n${shd === null ? "" : `SigPnd:\t0000000000000000\nShdPnd:\t${shd}\n`}`
+    );
+    writeFileSync(join(directory, String(pid), "cmdline"), `stub\0${pid}\0`);
+  }
+}
+
+test(
+  "the walk names each process left, and reads a status with no ShdPnd: line as unknown, not as gone",
+  async () => {
+    // The lie: under gVisor a process's status has no `ShdPnd:` line, and a walk that reads that
+    // as gone counts 0 left whatever the leg left. Here `count` and `capable` read a stub tree,
+    // so the row holds each case on any kernel.
+    const run = async (stub: string, script: string) => {
+      const { stdout } = await runBounded({
+        argv: ["bash", "-c", `${leftBehind}${script}`],
+        bound: "short",
+        env: { PATH: process.env.PATH ?? "", PROC_ROOT: stub, WALK_ROOT: "9000001" },
+        from: import.meta.url,
+      });
+      return stdout;
+    };
+    const directory = scratch();
+    const marked = join(directory, "marked");
+    stubTree(marked, { driver: "0000000000000000", below: "0000000000000000" });
+    // The process ended, the one ending and the one killed are not left; the two unmarked are.
+    expect(leftOf(await run(marked, "count"), "")).toEqual([
+      "9000005 stub 9000005 ",
+      "9000006 stub 9000006 ",
+    ]);
+    const unmarked = join(directory, "unmarked");
+    stubTree(unmarked, { driver: "0000000000000000", below: null });
+    const unknown = await run(unmarked, "count");
+    expect(unknown).toContain("left behind: unknown: no ShdPnd: line in the status of 9000006\n");
+    expect(() => leftOf(unknown, "")).toThrow("could not list what the leg left behind");
+    const blind = join(directory, "blind");
+    stubTree(blind, { driver: null, below: "0000000000000000" });
+    expect(await run(blind, "capable || exit 2; echo capable")).toBe(
+      `left behind: unknown: no ShdPnd: line in ${blind}/9000001/status\n`
+    );
+  },
+  rowLimit("short", "short", "short")
 );

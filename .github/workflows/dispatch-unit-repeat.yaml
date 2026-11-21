@@ -85,7 +85,7 @@ name: Dispatch unit suite repeated
 # (https://docs.github.com/en/actions/concepts/billing-and-usage, which the runner pricing
 # reference, https://docs.github.com/en/billing/reference/actions-runner-pricing, links) says:
 # "GitHub Actions usage is free for standard GitHub-hosted runners in public repositories". In
-# runner minutes, each leg's job rounded up to a whole minute as GitHub bills it, the 28 runs that
+# runner minutes, each leg's job rounded up to a whole minute as GitHub bills it, the 30 runs that
 # the notes' measurement reads took 115 to 175 minutes each, and $0, since those minutes are free
 # here.
 
@@ -135,7 +135,7 @@ jobs:
         # Three legs a lane, each under a seed of its own. The head says why three.
         round: [1, 2, 3]
         # Each lane's reruns; its slowest test step and its slowest other steps, each the largest
-        # reading over the 28 runs the notes list, with the run and round that gave it (the harness
+        # reading over the 30 runs the notes list, with the run and round that gave it (the harness
         # slowest leaves out the legs of branches that add harness rows of their own, #4236's and
         # #4790's, as the notes say); and the deadline, the test step's budget and the job's budget
         # set from them, with a margin of twice the slowest, each line's arithmetic beside it. The
@@ -157,9 +157,9 @@ jobs:
             job_minutes: 70 # 68 + 2 x 37 s = 74 s, up to the next whole minute, 2
           - lane: web-cold
             reruns: 1
-            slowest_seconds: 174 # run 44926138389, round 3, estimated from its bun.log (the notes)
+            slowest_seconds: 175 # run 44956324879, round 3
             other_steps_seconds: 44 # run 44814644776, round 1
-            deadline_seconds: 360 # 2 x 174 = 348 s, up to the next whole minute
+            deadline_seconds: 360 # 2 x 175 = 350 s, up to the next whole minute
             step_minutes: 8 # 360 + 60 s kill-after + 60 s of slack = 480 s
             job_minutes: 10 # 8 + 2 x 44 s = 88 s, up to the next whole minute, 2
           - lane: harness
