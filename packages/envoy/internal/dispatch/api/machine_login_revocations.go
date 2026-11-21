@@ -55,7 +55,7 @@ var errRevocationWindowSpent = errors.New("the claim may start no more broker ca
 // machineLoginSettleAfter is how long after a removal recorded a machine-login revocation the
 // claim that settles it must come (store.MachineLoginRevocations.Settle): the broker's request
 // deadline and its write margin (wire.RequestDeadline, wire.RequestWriteMargin), the longest the
-// broker goes on with a request after its handler began. A removal's record waits for every
+// broker goes on with a request after its handler began. A removal waits for every
 // approval of the person's that Dispatch is relaying (store.HoldMachineLoginApprovals), but the
 // relay holds that lock only for its own call to the broker, which its client ends after five
 // seconds (cipher.New) and the person's browser may end sooner, while the broker decides the
@@ -127,7 +127,7 @@ func (s *server) revokeOwedMachineLogins(ctx context.Context) time.Time {
 // revokeMachineLoginsOf revokes at the broker every machine login revocation's person approved for
 // their own machines (ownMachineLogins) and answers how many it revoked. Every one the broker lists
 // was approved before the removal that owes it: an approval Dispatch relays for a restricted member
-// holds their approval lock until the broker answers, a removal's record waits for it, and while
+// holds their approval lock until the broker answers, the removal waits for it, and while
 // the revocation is owed no approval of theirs is relayed (store.HoldMachineLoginApprovals). So no
 // login's issued_at, the broker's clock, is compared with the record's, Dispatch's database's, and
 // a login approved in flight as the removal committed is revoked too. An approve Dispatch gave up on

@@ -111,7 +111,7 @@ func TestNoAccessErrorNamesAPerson(t *testing.T) {
 		}},
 		{"ReadGroup", func(tx pgx.Tx) error { _, err := ReadGroup(ctx, tx, "crew"); return err }},
 		{"ListGroups", func(tx pgx.Tx) error { _, err := ListGroups(ctx, tx, "", model.MaxGroupsPerOwner); return err }},
-		{"LockForAccessWrite", func(tx pgx.Tx) error { _, err := LockForAccessWrite(ctx, tx, "PRIV", "crew"); return err }},
+		{"LockForAccessWrite", func(tx pgx.Tx) error { _, err := LockForAccessWrite(ctx, tx, "PRIV", "crew", ""); return err }},
 		{"SetOwner", func(tx pgx.Tx) error { _, _, err := SetOwner(ctx, tx, broker, "PRIV", hiddenEmail, by); return err }},
 		{"SetVisibility", func(tx pgx.Tx) error {
 			_, _, err := SetVisibility(ctx, tx, broker, "PRIV", model.ProjectPublic, by)

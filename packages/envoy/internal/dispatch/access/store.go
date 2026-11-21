@@ -80,16 +80,17 @@ func MemberKind(ctx context.Context, q Querier, login string) (model.MemberKind,
 	return model.MemberKind(kind), nil
 }
 
-// The lock order every access write takes, so no two of them wait on each other in a cycle: a
-// group's name first (LockGroupName), then the project's owner lock (store.LockOwner), then the
-// rows a write appends events on. A write of a group (PutGroup, DeleteGroup) takes the name and
-// then the projects its delete sweeps; a write of a project's list that names a group takes the
-// same name before the project (LockForAccessWrite), so a delete of that group and the write are
-// ordered by the name: the delete waits for the write and then sweeps its row, or the write,
-// seeing the delete committed, finds no group. A removal of a person takes that person's
-// machine-login approval lock (store.LockMachineLoginApprovals) before any of these, since it may
-// wait there for an approve the secrets broker has not answered, and holds no project's lock while
-// it does; an approval of the person's takes that lock alone, so no cycle forms through it.
+// The lock order every access write takes, so no two of them wait on each other in a cycle: the
+// machine-login approval lock of the person a removal takes off the list
+// (store.LockMachineLoginApprovals), then a group's name (LockGroupName), then the project's owner
+// lock (store.LockOwner), then the rows a write appends events on. A removal of a person takes that
+// person's approval lock before any of the others, since it may wait there for an approve the
+// secrets broker has not answered, and so holds no project's lock while it does; an approval of the
+// person's takes that lock alone, so no cycle forms through it. A write of a group (PutGroup,
+// DeleteGroup) takes the name and then the projects its delete sweeps; a write of a project's list
+// that names a group takes the same name before the project (LockForAccessWrite), so a delete of
+// that group and the write are ordered by the name: the delete waits for the write and then sweeps
+// its row, or the write, seeing the delete committed, finds no group.
 
 // LockGroupName takes, for the rest of tx, the lock that orders every write of group name.
 func LockGroupName(ctx context.Context, tx pgx.Tx, name string) error {
@@ -100,12 +101,20 @@ func LockGroupName(ctx context.Context, tx pgx.Tx, name string) error {
 }
 
 // LockForAccessWrite takes, in the order above, the locks a write of project key's access takes:
-// the group's name when the write names a group (empty when it names none), then the project's
-// owner lock, the advisory lock every writer of a project takes (store.LockOwner), and never a
-// row lock on projects (TestNoForUpdateOnOwnerTables). It answers the project's owner as tx reads
-// it in the statement after that lock, nil for a project with none, and ErrProjectNotFound for an
-// unknown key. AddPrincipal and RemovePrincipal of a group are sound only after it.
-func LockForAccessWrite(ctx context.Context, tx pgx.Tx, key, group string) (*string, error) {
+// the approval lock of removed, the person the write takes off the list (empty for any other
+// write), then the group's name when the write names a group (empty when it names none), then the
+// project's owner lock, the advisory lock every writer of a project takes (store.LockOwner), and
+// never a row lock on projects (TestNoForUpdateOnOwnerTables). It answers the project's owner as tx
+// reads it in the statement after that lock, nil for a project with none, and ErrProjectNotFound
+// for an unknown key. AddPrincipal and RemovePrincipal of a group are sound only after it, and so is
+// the record of a removal's machine-login revocation (store.RecordMachineLoginRevocation), which
+// needs removed's approval lock held.
+func LockForAccessWrite(ctx context.Context, tx pgx.Tx, key, group, removed string) (*string, error) {
+	if removed != "" {
+		if err := store.LockMachineLoginApprovals(ctx, tx, removed); err != nil {
+			return nil, err
+		}
+	}
 	if group != "" {
 		if err := LockGroupName(ctx, tx, group); err != nil {
 			return nil, err

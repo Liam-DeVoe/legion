@@ -173,9 +173,10 @@ func TestARemovalRevokesALoginTheBrokersClockStampsAfterIt(t *testing.T) {
 // after the removal then lists it and revokes it, and the revocation settles once a pass's claim
 // comes machineLoginSettleAfter after the removal.
 //
-// Control: record the revocation without taking the person's approval lock, and the removal commits
-// while the approval is in flight; the first pass that follows lists no login, so the login the
-// approval then mints is not among its revokes, named.
+// Control: access.LockForAccessWrite taking no approval lock for the person a removal takes off,
+// the one lock the removal's path takes, and the removal commits while the approval is in flight;
+// the first pass that follows lists no login, so the login the approval then mints is not among its
+// revokes, named.
 func TestALoginApprovedInFlightAsTheRemovalCommitsIsRevoked(t *testing.T) {
 	rig := newFakeBrokerRig(t)
 	served, database, registered := newRegisteredAccessServer(t, testServerOptions{
@@ -540,8 +541,8 @@ func TestASecondApproveOfThePersonWhileOneIsInFlightIsRefused(t *testing.T) {
 // alice's removal of erin from ACC waits for it; alice's addition of carol to ACC's list meanwhile
 // answers 200 without waiting. Once the broker answers, the removal is 200.
 //
-// Control: take the person's approval lock after the project's owner lock (in the record alone), as
-// the head before this row did, and carol's addition waits behind the removal, named.
+// Control: access.LockForAccessWrite taking the approval lock of the person it removes after the
+// project's owner lock, and carol's addition waits behind the removal, named.
 func TestARemovalWaitingOnAnApprovalHoldsUpNoOtherWriteOfTheProject(t *testing.T) {
 	rig := newFakeBrokerRig(t)
 	served, database, _ := newRegisteredAccessServer(t, testServerOptions{
