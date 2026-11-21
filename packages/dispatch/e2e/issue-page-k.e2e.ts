@@ -253,8 +253,10 @@ async function expectChartAfterAFailedRead(page: Page, seeded: WholeIssueSeed): 
  *  (`tree-read/view-read.tsx`'s `TreeReadFailed`). The plan's blocks are the tree read's
  *  (`tree-read/tree-read.ts`'s `blocksOf`), as the outline's rows are, so the question that waits
  *  on the reader is refused with them and the page has none to open on. `t p` from the page then
- *  opens Plan, which says in the page's words that it could not load the plan, with a Retry that
- *  holds the focus, and draws no bar and no switch. `t p` pressed from a control that holds the
+ *  opens Plan. The plan's blocks and the spec's are that one read, so its refusal is one line,
+ *  the statements' where the issue names a spec, as this seed's does: Plan says in the page's
+ *  words that it could not load the spec, with a Retry that holds the focus, and draws no bar and
+ *  no switch. `t p` pressed from a control that holds the
  *  focus, the Spec control of the view row, puts the focus on that Retry too: the chord focuses
  *  the view's tree, and the stage the view is drawn in hands the focus on to the Retry
  *  (`web/src/features/issue-page/slots/stage.tsx`). With the read let through, Enter on that Retry
@@ -275,13 +277,17 @@ async function expectRetryAfterAFailedFirstRead(page: Page, seeded: WholeIssueSe
     await page.keyboard.press("t");
     await page.keyboard.press("p");
     await expect(page).toHaveURL(new RegExp(`${planPath(seeded.key)}$`));
-    const line = issuePage(page).locator('[data-plan-unreadable="plan"]');
+    const line = issuePage(page).locator('[data-plan-unreadable="statements"]');
     await expect(
       line,
-      "the Plan view whose first read of the plan's blocks failed does not say it could not load the plan"
-    ).toContainText(STATE_LINES.plan_unreadable);
+      "the Plan view whose first read of its blocks failed does not say it could not load the spec"
+    ).toContainText(STATE_LINES.spec_unreadable);
+    await expect(
+      issuePage(page).locator("[data-plan-unreadable]"),
+      "the Plan view draws more than one line for the one refused tree read"
+    ).toHaveCount(1);
     const retry = line.getByRole("button");
-    await expect(retry, "the line saying the plan could not be loaded draws no Retry").toHaveCount(
+    await expect(retry, "the line saying the spec could not be loaded draws no Retry").toHaveCount(
       1
     );
     await expect(
@@ -310,7 +316,7 @@ async function expectRetryAfterAFailedFirstRead(page: Page, seeded: WholeIssueSe
     await expect(page).toHaveURL(new RegExp(`${planPath(seeded.key)}$`));
     await expect(
       retry,
-      "t p from the Spec control with the plan's blocks refused does not put the focus on the plan's Retry"
+      "t p from the Spec control with the tree read refused does not put the focus on the Plan view's Retry"
     ).toBeFocused();
     // The chord shows the tree it focused from its own top (`useIssueKeymap.ts`'s `showPart`),
     // and the Retry stands over the tree, so the stage, which focuses the Retry, brings it on
@@ -328,7 +334,7 @@ async function expectRetryAfterAFailedFirstRead(page: Page, seeded: WholeIssueSe
     ).toHaveAttribute("aria-pressed", "true");
     const bars = planChart(page).locator("[data-plan-bar-row]");
     await expect(bars).toHaveCount(seeded.planTasks.length);
-    await expect(line, "the line saying the plan could not be loaded stays").toHaveCount(0);
+    await expect(line, "the line saying the spec could not be loaded stays").toHaveCount(0);
     const first = await bars.first().getAttribute("data-node-id");
     await expect
       .poll(() => focusedNodeId(page), {

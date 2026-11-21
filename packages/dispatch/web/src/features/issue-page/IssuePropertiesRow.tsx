@@ -2,7 +2,6 @@ import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
-import { api } from "../../api/client";
 import { issueCoverageQuery, projectsQuery, whoAmIQuery } from "../../api/queries";
 import type { Artifact, IssueChild, IssueDetails } from "../../api/types";
 import { approvalPillClassName } from "../../components/Pill";
@@ -30,6 +29,7 @@ import { PriorityEditor } from "../issue/PriorityControl";
 import { UnreachableRouteMarker } from "../issue/RouteReach";
 import type { IssuePriorityWrite } from "../issue/useIssuePriority";
 import { issueStatuses, openIssueStatuses, statusLabel } from "../project/board-model";
+import { EVENT_FRESH } from "../refs/reference-target";
 import { wordsOf } from "../refs/tree-fragment";
 import { APPROVAL_CHIP } from "./approval-chip-box";
 import { presetPath } from "./issue-address";
@@ -40,7 +40,7 @@ import { StatusGlyph } from "./StatusGlyph";
 import { treeContext } from "./tree-drafts";
 import { useTreeRead } from "./tree-read/tree-read";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
-import { EVENT_FRESH } from "./useIssueTree";
+import { issueCommentsQuery } from "./useIssueTree";
 import { type WaitingPress, waitingOnReader } from "./waiting";
 
 /**
@@ -86,7 +86,7 @@ export function IssuePropertiesRow({
   // What the count counts, read from what the outline already reads under the same keys - the
   // reader's login, the decisions, the coverage's statements, the comments a Change is written
   // as, and the decisions the tree read answers as nodes, with each Change it hangs under one -
-  // and kept fresh by the outline's own rule (`useIssueTree.ts`'s `EVENT_FRESH`), but for the
+  // and kept fresh by the outline's own rule (`reference-target.ts`'s `EVENT_FRESH`), but for the
   // tree read, which keeps its own (`TREE_FRESH`): events refresh them, never their age
   // (decision 180). Staleness is per observer, so each read here takes that rule too, and the
   // count costs no request of its own (`waiting.ts`). A Change of a decision no node holds is
@@ -95,8 +95,7 @@ export function IssuePropertiesRow({
   const decisions = useQuery({ ...issueDecisionsQuery(issue.key, true), ...EVENT_FRESH });
   const coverage = useQuery({ ...issueCoverageQuery(issue.key), ...EVENT_FRESH });
   const comments = useQuery({
-    queryFn: () => api.listComments(issue.key),
-    queryKey: ["comments", issue.key],
+    ...issueCommentsQuery(issue.key),
     ...EVENT_FRESH,
   });
   const tree = useTreeRead(issue).answer;

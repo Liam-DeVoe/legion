@@ -20,7 +20,7 @@ import type {
   IssueTreeTuple,
 } from "../../../api/types";
 import { issueDecisionsQuery } from "../../doc/spec-marks";
-import { refetchFailedOnFocus } from "../../refs/reference-target";
+import { EVENT_FRESH } from "../../refs/reference-target";
 import { writesOf } from "../../writes/write-store";
 import { blocksOfRole, mergeTreePages, type TreeBlock } from "./tree-nodes";
 
@@ -120,19 +120,6 @@ async function readTree(
   return mergeTreePages(pages);
 }
 
-/**
- * How the page's reads are kept fresh: by the events that can change them, never by age, so a
- * slot the stage mounts again past the app's 30 s `staleTime` sends no read; only a read whose
- * last answer failed is read again on focus (`refetchFailedOnFocus`), so a read that failed
- * recovers on the open page while a healthy one stays quiet. Every read of `useIssueTree` that an
- * event refreshes takes it, which names it `EVENT_FRESH`; the tree read and its views take it,
- * with the changes `TREE_FRESH` names.
- */
-export const REFRESHED_BY_EVENTS = {
-  refetchOnWindowFocus: refetchFailedOnFocus,
-  staleTime: Number.POSITIVE_INFINITY,
-} as const;
-
 /** Whether a new observer of the tree or of a view may read it (`TREE_FRESH`): where its last
  *  read was not refused, or where something asked for it again since that refusal - an event of
  *  the issue, a refresh of every query, the page's subscription - which marked it stale. The
@@ -170,7 +157,7 @@ function mayReadNow(query: Pick<Query, "state">): boolean {
   return query.state.status === "pending" && !droppedWhileHeld.has(query);
 }
 
-/** How the tree read and its views are kept fresh: as `REFRESHED_BY_EVENTS`, except that none of
+/** How the tree read and its views are kept fresh: as `EVENT_FRESH`, except that none of
  *  TanStack's own reads asks again for a read Dispatch refused, and none is sent for a refresh
  *  while a write of the issue holds it (`mayReadNow`). A refused read, whether it holds an answer
  *  or not, stays refused until the reader's Retry, an event of the issue, the live feed coming
@@ -187,7 +174,7 @@ function mayReadNow(query: Pick<Query, "state">): boolean {
  *  filter is next on. A read that holds an answer which a write or an event marked stale while
  *  nothing observed it is read when something next observes it, and a read never made is made. */
 const TREE_FRESH = {
-  ...REFRESHED_BY_EVENTS,
+  ...EVENT_FRESH,
   enabled: mayReadNow,
   refetchOnMount: mayReadOnMount,
   refetchOnReconnect: false,
