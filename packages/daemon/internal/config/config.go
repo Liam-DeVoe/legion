@@ -932,7 +932,22 @@ func validURL(value, key string) (*url.URL, error) {
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 		return nil, fmt.Errorf("%s must be a valid URL", key)
 	}
+	if userinfoPastHost(parsed) {
+		return nil, fmt.Errorf("%s cannot be read: %s", key, userinfoPastHostReason)
+	}
 	return parsed, nil
+}
+
+// userinfoPastHostReason is why validURL refuses a URL with an "@" after its host, in fixed words.
+const userinfoPastHostReason = `an "@" stands after its host, as it does where a credential in its userinfo holds a "/", "?" or "#"; write such a credential percent-encoded`
+
+// userinfoPastHost reports whether parsed holds an "@" after its host, in its path, query or
+// fragment. That is where a credential holding a "/", "?" or "#" ends url.Parse's authority before
+// its "@": a token written as the user of `https://<head>/<tail>@host` parses with the token's head
+// as the host, which every line that names the URL's host prints, and which no rule that drops a
+// URL's userinfo finds.
+func userinfoPastHost(parsed *url.URL) bool {
+	return strings.Contains(parsed.Path, "@") || strings.Contains(parsed.RawQuery, "@") || strings.Contains(parsed.Fragment, "@")
 }
 
 // endpointURL is validURL for a URL that names an endpoint, never a request: NATS and Envoy

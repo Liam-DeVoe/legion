@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -1141,7 +1142,15 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 		{
 			name: "session_store postgres with a key no Secret can hold",
 			body: kubernetesWith("    session_dsn_secret: SESSION_DSN\n", "    session_dsn_secret: sessions/dsn\n"),
-			want: `runtime.kubernetes.session_dsn_secret "sessions/dsn" is not a Secret data key ([-._a-zA-Z0-9]+)`,
+			want: `runtime.kubernetes.session_dsn_secret is not a Secret data key ([-._a-zA-Z0-9]+)`,
+		},
+		{
+			// A DSN pasted where the key's name goes, its made-up password among it: the refusal
+			// names the key alone and quotes none of the value.
+			name: "session_store postgres with a DSN where its key goes",
+			body: kubernetesWith("    session_dsn_secret: SESSION_DSN\n",
+				"    session_dsn_secret: \""+(&url.URL{Scheme: "postgres", User: url.UserPassword("legion", "madeUpSessionPassword"), Host: "db.internal.example:5432", Path: "/sessions"}).String()+"\"\n"),
+			want: `runtime.kubernetes.session_dsn_secret is not a Secret data key ([-._a-zA-Z0-9]+)`,
 		},
 		{
 			name: "session_database with the postgres store",
@@ -1421,7 +1430,14 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 		{
 			name: "a pod variable that is no variable name",
 			body: kubernetesFile + "    pod:\n      env: {1PASSWORD: vault}\n",
-			want: `runtime.kubernetes.pod.env key "1PASSWORD" must be an environment variable name (letters, digits, and underscores, not starting with a digit)`,
+			want: `runtime.kubernetes.pod.env entry 1: its key must be an environment variable name (letters, digits, and underscores, not starting with a digit)`,
+		},
+		{
+			// A credential pasted where a variable name goes, a made-up one: the refusal names the
+			// entry by its position and quotes none of it.
+			name: "a pod variable that is a credential pasted as its name",
+			body: kubernetesFile + "    pod:\n      env: {OPENAI_BASE_URL: https://api.example, \"madeUp-pod-credential-0123456789\": x}\n",
+			want: `runtime.kubernetes.pod.env entry 2: its key must be an environment variable name (letters, digits, and underscores, not starting with a digit)`,
 		},
 		{
 			name: "a pod variable whose value is no string",
@@ -2159,6 +2175,33 @@ func TestPluginsBlockRefusals(t *testing.T) {
 				t.Fatalf("err %v, want %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// A plugin source that carries a credential is refused naming the key alone: no refusal quotes
+// it. A source with userinfo and no http(s) scheme, one with a signed query and no host, and a
+// scheme-relative one with userinfo each carry a made-up credential here. The control is a dist-tag,
+// which carries none and is quoted.
+func TestAPluginSourceRefusalQuotesNoCredential(t *testing.T) {
+	const madeUp = "madeUpPluginCredential0123"
+	for name, source := range map[string]string{
+		"userinfo with another scheme":       "s3://legion:" + madeUp + "@bucket/pi-legion.tgz",
+		"a signed query with no host":        "https:///pi-legion.tgz?signature=" + madeUp,
+		"a scheme-relative source with user": "//legion:" + madeUp + "@cache/pi-legion.tgz",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := LoadForValidation(writeConfigFile(t, kubernetesFile+"    plugins:\n      pi_legion: \""+source+"\"\n      pi_envoy: 9.6.1\n"), noEnv)
+			if err == nil || !strings.Contains(err.Error(), "runtime.kubernetes.plugins.pi_legion") {
+				t.Fatalf("err %v, want a refusal naming runtime.kubernetes.plugins.pi_legion", err)
+			}
+			if strings.Contains(err.Error(), madeUp) {
+				t.Fatalf("the refusal quotes the source's credential: %v", err)
+			}
+		})
+	}
+	_, err := LoadForValidation(writeConfigFile(t, kubernetesFile+"    plugins:\n      pi_legion: latest\n      pi_envoy: 9.6.1\n"), noEnv)
+	if err == nil || !strings.HasSuffix(err.Error(), `; got "latest"`) {
+		t.Fatalf("err %v, want the dist-tag quoted", err)
 	}
 }
 

@@ -209,3 +209,34 @@ func TestProbeIsUnknown(t *testing.T) {
 		}
 	})
 }
+
+// Every line the probe logs names the lookup without envoy_url's userinfo, where a deployment
+// writes the listener's credential: a made-up token written as the user, and a made-up password
+// holding a "'", which a text rule stops reading at. The refused lookup logs its "url"; the
+// unreachable one also logs the HTTP client's error, which quoted the URL with its user name. The
+// control is the same probe logging p.lookup, whose lines hold both.
+func TestProbeLogsNoCredentialOfTheEnvoyURL(t *testing.T) {
+	const userToken, quotedUserinfo = "madeUpEnvoyToken0123", "legion:madeUpEnvoy'Password0123"
+	withUser := func(base, user string) string { return strings.Replace(base, "://", "://"+user+"@", 1) }
+	l := &listener{status: http.StatusInternalServerError, body: `{"error":"kv"}`}
+	served := l.serve(t)
+	unreached := httptest.NewServer(http.NotFoundHandler())
+	gone := unreached.URL
+	unreached.Close()
+	for name, base := range map[string]string{"refused": served, "unreachable": gone} {
+		for _, user := range []string{userToken, quotedUserinfo} {
+			var log bytes.Buffer
+			if got := newTestProber(withUser(base, user), "envoy-bearer", &log).Probe(context.Background(), "ses_ctl"); got != Unknown {
+				t.Fatalf("%s: Probe = %s, want unknown", name, got)
+			}
+			if !strings.Contains(log.String(), "url="+base+"/v1/roles/") {
+				t.Errorf("%s: the log %q does not name the lookup without its userinfo", name, log.String())
+			}
+			for _, secret := range []string{userToken, "madeUpEnvoy"} {
+				if strings.Contains(log.String(), secret) {
+					t.Errorf("%s: the log names the credential: %s", name, log.String())
+				}
+			}
+		}
+	}
+}

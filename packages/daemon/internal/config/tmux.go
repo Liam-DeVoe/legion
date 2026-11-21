@@ -114,7 +114,9 @@ func readPaneEnv(value *yaml.Node, key string) (map[string]string, error) {
 		name := nameNode.Value
 		switch {
 		case nameNode.Kind != yaml.ScalarNode || !envVarName.MatchString(name):
-			return nil, fmt.Errorf("%s key %q %s", key, name, envNameRule)
+			// By its position, not its text: what stands where a variable name goes can be a
+			// credential pasted into the wrong place, and this refusal is printed as it is.
+			return nil, fmt.Errorf("%s entry %d: its key %s", key, i/2+1, envNameRule)
 		case name == "PATH":
 			return nil, fmt.Errorf("%s names PATH, which the runtime composes for every pane (the daemon's own PATH behind its launcher directory)", key)
 		case runtime.HoldsSecretValue(name):

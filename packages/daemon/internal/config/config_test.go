@@ -1113,6 +1113,24 @@ func TestLoadRefuses(t *testing.T) {
 			body: minimalFile + "envoy_url: https://envoy.example#fragment\n",
 			want: "envoy_url must not include a query string or fragment; use URL userinfo or a secret for credentials",
 		},
+		// A made-up token holding a "/", written as the user: url.Parse ends the authority at the
+		// "/", so the token's head reads as the host and the "@" stands in the path. Each key refuses
+		// it, naming the key and quoting none of it.
+		{
+			name: "envoy_url naming a token that holds a / as its user",
+			body: minimalFile + "envoy_url: https://madeUpEnvoyToken/rest@envoy.example\n",
+			want: `envoy_url cannot be read: an "@" stands after its host, as it does where a credential in its userinfo holds a "/", "?" or "#"; write such a credential percent-encoded`,
+		},
+		{
+			name: "daemon_url naming a token that holds a / as its user",
+			body: minimalFile + "daemon_url: http://madeUpDaemonToken/rest@127.0.0.1:13370\n",
+			want: `daemon_url cannot be read: an "@" stands after its host, as it does where a credential in its userinfo holds a "/", "?" or "#"; write such a credential percent-encoded`,
+		},
+		{
+			name: "dispatch_url naming a token that holds a / as its user",
+			body: strings.Replace(minimalFile, "dispatch_url: http://127.0.0.1:8080\n", "dispatch_url: http://madeUpDispatchToken/rest@127.0.0.1:8080\n", 1),
+			want: `dispatch_url cannot be read: an "@" stands after its host, as it does where a credential in its userinfo holds a "/", "?" or "#"; write such a credential percent-encoded`,
+		},
 		{
 			name: "worker_stream_port zero",
 			body: minimalFile + "worker_stream_port: 0\n",
@@ -1410,7 +1428,14 @@ func TestLoadRefuses(t *testing.T) {
 		{
 			name: "runtime.tmux.pane_env naming something that is not a variable",
 			body: minimalFile + "runtime: {tmux: {pane_env: {1ELAN: /opt/elan}}}\n",
-			want: `runtime.tmux.pane_env key "1ELAN" must be an environment variable name (letters, digits, and underscores, not starting with a digit)`,
+			want: `runtime.tmux.pane_env entry 1: its key must be an environment variable name (letters, digits, and underscores, not starting with a digit)`,
+		},
+		{
+			// A credential pasted where a variable name goes, a made-up one: the refusal names the
+			// entry by its position and quotes none of it.
+			name: "runtime.tmux.pane_env with a credential pasted as a variable",
+			body: minimalFile + "runtime: {tmux: {pane_env: {ELAN_HOME: /opt/elan, \"madeUp-pane-credential-0123456789\": x}}}\n",
+			want: `runtime.tmux.pane_env entry 2: its key must be an environment variable name (letters, digits, and underscores, not starting with a digit)`,
 		},
 		{
 			// The runtime composes every pane's PATH: the daemon's own behind its launcher directory.

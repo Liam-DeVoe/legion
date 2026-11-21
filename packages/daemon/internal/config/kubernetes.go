@@ -560,7 +560,7 @@ func readPluginSource(value *yaml.Node, key string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	noHost := fmt.Errorf("%s names no host bun can fetch a tarball from: got %q", key, source)
+	noHost := fmt.Errorf("%s names no host bun can fetch a tarball from%s", key, sourceShown(source))
 	if strings.HasPrefix(source, "//") {
 		return "", noHost
 	}
@@ -574,9 +574,21 @@ func readPluginSource(value *yaml.Node, key string) (string, error) {
 		return u.String(), nil
 	}
 	if !pluginVersion.MatchString(source) {
-		return "", fmt.Errorf("%s must be an exact version (N.N.N), an absolute tarball path, or an http(s) URL — never an npm dist-tag or a range: the pair must be one release's exact versions; got %q", key, source)
+		return "", fmt.Errorf("%s must be an exact version (N.N.N), an absolute tarball path, or an http(s) URL — never an npm dist-tag or a range: the pair must be one release's exact versions%s", key, sourceShown(source))
 	}
 	return source, nil
+}
+
+// sourceShown is source quoted for a refusal of it, when it can hold no credential: a word or a
+// range, with no "/", ":", "@", "?" or "#". Otherwise it is nothing and the refusal names the key
+// alone: a source with userinfo or a signed query is a URL whose credential url.Parse may not read
+// as such (one with no scheme, or one url.Parse cannot parse), and `legion stop` prints this
+// refusal as it is.
+func sourceShown(source string) string {
+	if strings.ContainsAny(source, "/:@?#") {
+		return ""
+	}
+	return fmt.Sprintf("; got %q", source)
 }
 
 // isLoopbackHost is localhost, with or without the root's trailing dot, or a loopback IP address.
@@ -1379,7 +1391,9 @@ func readPodEnv(value *yaml.Node) (map[string]string, error) {
 		nameNode, entry := value.Content[i], value.Content[i+1]
 		name := nameNode.Value
 		if nameNode.Kind != yaml.ScalarNode || !envVarName.MatchString(name) {
-			return nil, fmt.Errorf("%s key %q %s", key, name, envNameRule)
+			// By its position, not its text: what stands where a variable name goes can be a
+			// credential pasted into the wrong place, and this refusal is printed as it is.
+			return nil, fmt.Errorf("%s entry %d: its key %s", key, i/2+1, envNameRule)
 		}
 		var text string
 		if entry.Kind != yaml.ScalarNode || entry.Tag == "!!null" || entry.Decode(&text) != nil {
@@ -1968,7 +1982,9 @@ func readSessionStore(store, dsnSecret, database *yaml.Node) (ompsessions.Store,
 			return ompsessions.Store{}, err
 		}
 		if !secretDataKey.MatchString(settled.DSNSecret) {
-			return ompsessions.Store{}, fmt.Errorf("%s %q is not a Secret data key ([-._a-zA-Z0-9]+)", sessionDSNKey, settled.DSNSecret)
+			// By the key alone, never its value: a DSN pasted where the key's name goes is the
+			// postgres URL itself, its password included, and `legion stop` prints this as it is.
+			return ompsessions.Store{}, fmt.Errorf("%s is not a Secret data key ([-._a-zA-Z0-9]+)", sessionDSNKey)
 		}
 	case ompsessions.StoreCloudSQLIAM:
 		if settled.Database, err = readSessionDatabase(database); err != nil {
