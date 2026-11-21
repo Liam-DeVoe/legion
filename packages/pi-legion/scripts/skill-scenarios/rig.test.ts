@@ -4599,6 +4599,41 @@ describe("health", () => {
     expect(verdict(stdout, messaging)).toBe("threads-closed-correct-base-14  healthy");
   });
 
+  // Catches: rule 16 declaring one person-scoped route of the class it holds, where an agent's
+  // dispatch command reaches four more, and production answers each 403 OAUTH_SCOPE_REQUIRED to a
+  // shared-token session, as it answered send-to-agent: `dispatch inbox` reads /api/v1/inbox,
+  // /api/v1/me/replies and /api/v1/credential-requests (packages/envoy-client's inboxCommand), and
+  // `dispatch review` posts /api/v1/artifacts/{id}/versions/{number}/reviews (reviewCommand), each
+  // `person`-scoped in packages/envoy/internal/dispatch/api/routes_table.go's routeScopes; the
+  // tester's own pod ran `dispatch inbox` under the shared token and was answered 403
+  // OAUTH_SCOPE_REQUIRED (2026-11-21T03:30:08Z). A run whose agent runs either is as healthy as
+  // the one above: the world answered as production does.
+  test("Dispatch's 403 to an agent's dispatch inbox and dispatch review, which production answers every shared-token session, is healthy", () => {
+    const reading = run("threads-closed-correct-base-15", [[], []], {
+      dispatch: [
+        handoffRead("2026-11-13T17:50:10.000Z", "plan", 200),
+        served("2026-11-13T17:51:10.000Z", "GET", "/api/v1/inbox", "/api/v1/inbox", 403),
+        served("2026-11-13T17:51:10.100Z", "GET", "/api/v1/me/replies", "/api/v1/me/replies", 403),
+        served(
+          "2026-11-13T17:51:10.200Z",
+          "GET",
+          "/api/v1/credential-requests",
+          "/api/v1/credential-requests",
+          403
+        ),
+        served(
+          "2026-11-13T17:51:20.000Z",
+          "POST",
+          "/api/v1/artifacts/{id}/versions/{number}/reviews",
+          "/api/v1/artifacts/0b2c0f5e-8d2a-4a51-9a0e-1f2b3c4d5e6f/versions/3/reviews",
+          403
+        ),
+      ],
+    });
+    const { stdout } = health(reading);
+    expect(verdict(stdout, reading)).toBe("threads-closed-correct-base-15  healthy");
+  });
+
   // Catches: production's 403 to `dispatch send-to-agent` declared for some scenarios and roles
   // alone, where production gives it every session of the shared agent token, whatever its
   // scenario and role: threads-closed's implementer, of a scenario that declares nothing for any
