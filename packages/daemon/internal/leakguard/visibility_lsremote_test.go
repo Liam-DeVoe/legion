@@ -186,15 +186,16 @@ func TestLsRemoteThatHangsEndsAtItsOwnBound(t *testing.T) {
 	bin := t.TempDir()
 	writeProgram(t, bin, "gh", graphQLRateLimited(filepath.Join(t.TempDir(), "graphql")))
 	writeProgram(t, bin, "git", "sleep 30\n")
-	started := time.Now()
-	_, err := New(Options{
+	guard := New(Options{
 		Clock: clock,
 		Env:   append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+t.TempDir()),
 		Visibility: func(context.Context, string) (Visibility, error) {
 			return "", &rateLimitError{reset: reset}
 		},
-	}).Visibility(bound(t), theRepo)
-	answeredWithin10s(t, started)
+	})
+	ctx := bound(t)
+	var err error
+	answered(t, "the visibility read whose git never answers", func() { _, err = guard.Visibility(ctx, theRepo) })
 	if err == nil {
 		t.Fatal("the visibility read passed while git never answered")
 	}
@@ -274,9 +275,8 @@ func TestLsRemoteStopsWithTheCallersContext(t *testing.T) {
 				},
 			})
 			ctx := tc.caller(t, started)
-			began := time.Now()
-			_, err := guard.Visibility(ctx, theRepo)
-			answeredWithin10s(t, began)
+			var err error
+			answered(t, "the visibility read whose git never answers", func() { _, err = guard.Visibility(ctx, theRepo) })
 			if err == nil {
 				t.Fatal("the visibility read passed while git never answered")
 			}

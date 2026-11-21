@@ -651,15 +651,15 @@ func TestVisibilityRefusesAGraphQLReadTheCallersBoundStops(t *testing.T) {
 		<-deadline.Done()
 		close(ctx.done)
 	})
-	began := time.Now()
-	_, err := New(Options{
+	guard := New(Options{
 		Clock: clock,
 		Env:   append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+t.TempDir()),
 		Visibility: func(context.Context, string) (Visibility, error) {
 			return "", &rateLimitError{reset: reset}
 		},
-	}).Visibility(ctx, theRepo)
-	answeredWithin10s(t, began)
+	})
+	var err error
+	answered(t, "the visibility read whose gh never answers", func() { _, err = guard.Visibility(ctx, theRepo) })
 	if err == nil {
 		t.Fatal("the visibility read passed while gh never answered")
 	}
