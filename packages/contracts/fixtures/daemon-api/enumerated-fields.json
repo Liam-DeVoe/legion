@@ -637,6 +637,32 @@
   },
   {
     "answer": "state",
+    "keyPath": "repositories.live.*.cache.state",
+    "values": [
+      {
+        "value": "cloning",
+        "since": 202
+      },
+      {
+        "value": "failing",
+        "since": 202
+      },
+      {
+        "value": "ready",
+        "since": 202
+      },
+      {
+        "value": "refused",
+        "since": 202
+      },
+      {
+        "value": "starting",
+        "since": 202
+      }
+    ]
+  },
+  {
+    "answer": "state",
     "keyPath": "repositories.caches.*.state",
     "values": [
       {
@@ -1057,7 +1083,7 @@
       },
       {
         "value": "children_before_retro",
-        "since": 201
+        "since": 208
       },
       {
         "value": "children_first",
@@ -1081,7 +1107,7 @@
       },
       {
         "value": "task_stopped",
-        "since": 201
+        "since": 208
       },
       {
         "value": "tree_closed",
@@ -1103,7 +1129,7 @@
     "values": [
       {
         "value": "children",
-        "since": 201
+        "since": 208
       },
       {
         "value": "escalated",
@@ -1111,7 +1137,7 @@
       },
       {
         "value": "task-stopped",
-        "since": 201
+        "since": 208
       }
     ]
   },
@@ -1947,7 +1973,7 @@
     "values": [
       {
         "value": "children",
-        "since": 201
+        "since": 208
       },
       {
         "value": "escalated",
@@ -1955,7 +1981,7 @@
       },
       {
         "value": "task-stopped",
-        "since": 201
+        "since": 208
       }
     ]
   },

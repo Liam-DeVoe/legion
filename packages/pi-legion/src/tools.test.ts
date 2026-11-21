@@ -1076,7 +1076,7 @@ test("register_gate takes the document reference the Dispatch tools take, and re
   ]);
 });
 
-// The owner's plan (contract 201): register_plan names its document as register_gate does, for any
+// The owner's plan (contract 208): register_plan names its document as register_gate does, for any
 // issue of the architect's tree, and answers the plan Legion took; each refusal of the call itself
 // comes before any lookup, grant or request, and the daemon's refusal reaches the agent with its
 // code. stop_task names the task to stop by its block's id.
@@ -1927,7 +1927,7 @@ function legionState(overrides: Record<string, unknown> = {}): LegionState {
     heldOutboxRows: [],
     strandedClaims: [],
     capabilities: [],
-    repositories: { owners: ["acme"], mapped: [], refused: [], withoutWebhookApp: [], caches: [] },
+    repositories: { live: [], withoutWebhookApp: [], caches: [] },
     consumers: [],
     settings: { review_round_cap: 3, worker_boot_timeout_seconds: 900 },
     ...overrides,
