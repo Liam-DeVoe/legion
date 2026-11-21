@@ -10,9 +10,6 @@ It also serves the web app's build, `packages/dispatch/web/dist`; the web app ha
 
 - A route is a row of `routes()` in `internal/dispatch/api/routes_table.go`.
 
-- Give every GET row a read class in `readClasses` (`internal/dispatch/api/read_classes.go`): a read, which a read-only token may call, or a GET that writes, with a `WriteNote` naming the write.
-  `register` refuses to mount a GET row with no class.
-
 - Two processes serve one database, and while a release rolls they are of two builds (README, "Running more than one process" and "Two builds at once").
   Remove a route only in the release after the one that stops calling it, expand a migration in one release and contract it in the next (README, "Database migrations"), and keep state a later request needs in Postgres or a signed cookie, never in one process's memory.
 

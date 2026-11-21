@@ -100,11 +100,11 @@ var processHolds = map[string][]string{
 //   - a read whose statement is not a constant or variable of the package, or is not reached from
 //     the read's function, or is reached from another exported function: a second entry point.
 //
-// Then, on a database of its own (a subtest, which skips where none is set), it runs each read on
-// a traced pool (storetest.Traced) with a request's answers, as foldQuestions asks the read, and
-// fails where the read sends more than one statement, or one that does not end with the read's
-// registered text (resultsHeadsRead.text): a statement only a read-only read sends, before or
-// beside its one, fails here.
+// Then, in each fold history (foldHistories), on a database of its own (a subtest, which skips
+// where none is set), it runs each read on a traced pool (storetest.Traced) with the history's
+// request's answers, as foldQuestions asks the read, and fails where the read sends more than one
+// statement, or one that does not end with the read's registered text (resultsHeadsRead.text): a
+// statement only a read-only read sends, before or beside its one, fails here.
 func TestEachHeadsReadOnTheResultsPathIsOneStatement(t *testing.T) {
 	source := parsePackageSource(t)
 
@@ -203,63 +203,31 @@ func TestEachHeadsReadOnTheResultsPathIsOneStatement(t *testing.T) {
 	}
 
 	t.Run("each read sends its one statement given a request's answers", func(t *testing.T) {
-		pool, ctx := deliveryTestPool(t)
-		seedFoldIssues(t, ctx, pool)
-		steps := statementTraceSteps()
-		var answers HeadAnswers
-		for _, step := range steps {
-			if step.writer == foldAnswered {
-				answers.Add(step.pulls)
-				continue
-			}
-			foldWrite(t, ctx, pool, step)
-		}
-		recorder := &storetest.StatementRecorder{}
-		traced := storetest.Traced(t, pool, recorder, nil)
 		reads := map[string]resultsHeadsRead{}
 		for _, read := range resultsHeadsReads {
 			reads[read.read] = read
 		}
-		for _, question := range foldQuestions(t, steps) {
-			before := len(recorder.Statements())
-			if _, err := foldRead(ctx, traced, answers, question); err != nil {
-				t.Errorf("%s, given the request's answers: %v", question, err)
-				continue
-			}
-			read := reads[question.read]
-			if sent := recorder.Statements()[before:]; len(sent) != 1 || !strings.HasSuffix(sent[0], read.text) {
-				t.Errorf("%s, given the request's answers, sent %d statements:\n\t%s\nwant one, the read's own, which ends with %s (resultsHeadsReads): "+
-					"both callers of a read run its one statement, and nothing beside it",
-					question, len(sent), strings.Join(sent, "\n\t"), read.statement)
-			}
+		for _, history := range foldHistories() {
+			t.Run(history.name, func(t *testing.T) {
+				pool, ctx, answers := foldSetup(t, history.steps)
+				recorder := &storetest.StatementRecorder{}
+				traced := storetest.Traced(t, pool, recorder, nil)
+				for _, question := range foldQuestions(t, history.steps) {
+					before := len(recorder.Statements())
+					if _, err := foldRead(ctx, traced, answers, question); err != nil {
+						t.Errorf("%s, given the request's answers: %v", question, err)
+						continue
+					}
+					read := reads[question.read]
+					if sent := recorder.Statements()[before:]; len(sent) != 1 || !strings.HasSuffix(sent[0], read.text) {
+						t.Errorf("%s, given the request's answers, sent %d statements:\n\t%s\nwant one, the read's own, which ends with %s (resultsHeadsReads): "+
+							"both callers of a read run its one statement, and nothing beside it",
+							question, len(sent), strings.Join(sent, "\n\t"), read.statement)
+					}
+				}
+			})
 		}
 	})
-}
-
-// statementTraceSteps is the history TestEachHeadsReadOnTheResultsPathIsOneStatement asks each
-// read about: a delivery's row of deliveryRepo's pull request 5, and a request's answers that lay
-// on it the pull request's merge, credited to foldIssue, beside an open pull request with no row
-// and an answer of a read asked under the name gadgetsRepo was renamed away from.
-func statementTraceSteps() []foldStep {
-	issue, linking := foldIssue, foldLinkingIssue
-	learned := time.Date(2026, 11, 20, 9, 20, 0, 0, time.UTC)
-	stored := foldHead(deliveryRepo, 5, strings.Repeat("1", 40))
-	stored.IssueKey, stored.AttributionSource = &issue, "title"
-	merged := foldHead(deliveryRepo, 5, strings.Repeat("2", 40))
-	merged.IssueKey, merged.AttributionSource = &issue, "title"
-	merged.State, merged.BaseRef, merged.MergeCommitSHA = "merged", "release", strings.Repeat("m", 40)
-	merged.EventAt, merged.CheckedAt = &learned, &learned
-	opened := foldHead(deliveryRepo, 6, strings.Repeat("6", 40))
-	opened.IssueKey, opened.AttributionSource = &issue, "title"
-	opened.EventAt, opened.CheckedAt = &learned, &learned
-	renamed := foldHead(gadgetsRepo, 9, strings.Repeat("8", 40))
-	renamed.IssueKey, renamed.AttributionSource = &linking, "title"
-	renamed.EventAt, renamed.CheckedAt = &learned, &learned
-	return []foldStep{
-		{writer: foldDelivery, pulls: CommitPulls{Heads: []PullRequestHead{stored}, storedUnder: deliveryRepo}},
-		{writer: foldAnswered, pulls: CommitPulls{Heads: []PullRequestHead{merged, opened}, storedUnder: deliveryRepo}},
-		{writer: foldAnswered, pulls: CommitPulls{Heads: []PullRequestHead{renamed}, storedUnder: gadgetsOldRepo}},
-	}
 }
 
 // packageSource is the package's non-test files as TestEachHeadsReadOnTheResultsPathIsOneStatement
@@ -521,104 +489,49 @@ func (q foldQuestion) String() string {
 }
 
 // TestTheReadOnlyFoldAnswersAsTheWritersPath holds the read-only form of each read of the results
-// path (resultsHeadsReads) to the writer's own path, history by history (plan D30). A history is
-// the writers' writes, each run through the writer's own statement on the history's database, and
-// then the answers one read-only request learned from GitHub, in the order it read them. The
-// oracle is the writer's own path (foldOracle): the request's answers stored on the rows the
-// writers left, as a writer's read-throughs store them, in a transaction rolled back once the
-// writer's read has run in it. The read-only form runs on the rows the writers left, with the
-// request's answers, and must give the oracle's answer to every question (foldQuestions). The
-// request must hold one answer for each run of equal answers (foldAnswerRuns, plan D33).
+// path (resultsHeadsReads) to the writer's own path, history by history (foldHistories, plan D30).
+// A history is the writers' writes, each run through the writer's own statement on the history's
+// database, and then the answers one read-only request learned from GitHub, in the order it read
+// them (foldSetup). The oracle is the writer's own path (foldOracle): the request's answers stored
+// on the rows the writers left, as a writer's read-throughs store them, in a transaction rolled
+// back once the writer's read has run in it. The read-only form runs on the rows the writers left,
+// with the request's answers, and must give the oracle's answer to every question (foldQuestions).
+// The request must hold one answer for each run of equal answers (foldAnswerRuns, plan D33).
 func TestTheReadOnlyFoldAnswersAsTheWritersPath(t *testing.T) {
-	at := func(minute int) time.Time { return time.Date(2026, 11, 20, 9, minute, 0, 0, time.UTC) }
-	read := func(minute int) *time.Time { moment := at(minute); return &moment }
-	sha := func(digit string) string { return strings.Repeat(digit, 40) }
-	// The heads a history writes or answers: deliveryRepo's pull request number at a commit, open,
-	// credited to nobody by a read of every source and carrying no time, then changed by the
-	// functions after it.
-	head := func(number int, commit string) PullRequestHead {
-		return foldHead(deliveryRepo, number, commit)
-	}
-	credited := func(head PullRequestHead, issue string) PullRequestHead {
-		head.IssueKey, head.AttributionSource = &issue, "title"
-		return head
-	}
-	incomplete := func(head PullRequestHead) PullRequestHead {
-		head.AttributionComplete = false
-		return head
-	}
-	timed := func(head PullRequestHead, event time.Time, readAt *time.Time) PullRequestHead {
-		head.EventAt, head.CheckedAt = &event, readAt
-		return head
-	}
-	merged := func(head PullRequestHead, base, commit string) PullRequestHead {
-		head.State, head.BaseRef, head.MergeCommitSHA = "merged", base, commit
-		return head
-	}
-	delivered := func(head PullRequestHead) foldStep {
-		return foldStep{writer: foldDelivery, pulls: CommitPulls{Heads: []PullRequestHead{head}, storedUnder: head.Repo}}
-	}
-	readThrough := func(head PullRequestHead) foldStep {
-		return foldStep{writer: foldReadThrough, pulls: CommitPulls{Heads: []PullRequestHead{head}, storedUnder: head.Repo}}
-	}
-	answeredUnder := func(under string, head PullRequestHead) foldStep {
-		return foldStep{writer: foldAnswered, pulls: CommitPulls{Heads: []PullRequestHead{head}, storedUnder: under}}
-	}
-	answered := func(head PullRequestHead) foldStep {
-		return answeredUnder(head.Repo, head)
-	}
-
-	// manyAnswers is a request whose read-throughs name gadgetsRepo's pull request 9 again and
-	// again, over the row kept under the name gadgetsRepo was renamed away from and the row a
-	// delivery stored under the canonical name: runs of answers equal in every column but
-	// checked_at, each run unlike the one before it in the name the read was asked under, the
-	// head, the state, the attribution or the event time, which moves forward and back.
-	manyAnswers := []foldStep{
-		delivered(timed(credited(foldHead(gadgetsOldRepo, 9, sha("7")), foldLinkingIssue), at(1), read(2))),
-		delivered(timed(foldHead(gadgetsRepo, 9, sha("1")), at(3), read(4))),
-	}
-	readMinute := 30
-	// run adds count answers equal to answer, each of a read asked under the name under: a
-	// complete one read at the next minute, and an incomplete one unstamped, as ReadCommitPulls
-	// answers them.
-	run := func(count int, under string, answer PullRequestHead) {
-		for range count {
-			readMinute++
-			answer.CheckedAt = nil
-			if answer.AttributionComplete {
-				answer.CheckedAt = read(readMinute)
+	for _, history := range foldHistories() {
+		t.Run(history.name, func(t *testing.T) {
+			pool, ctx, answers := foldSetup(t, history.steps)
+			if held, runs := len(answers.columns.repo), foldAnswerRuns(history.steps); held != runs {
+				t.Errorf("the request holds %d answers, want %d, one for each run of its answers for one pull request equal in every column "+
+					"but checked_at: the writer's upserts of a run leave the row as the upsert of its last answer alone does (plan D33)", held, runs)
 			}
-			manyAnswers = append(manyAnswers, answeredUnder(under, answer))
-		}
+			questions := foldQuestions(t, history.steps)
+			want := foldOracle(t, ctx, pool, history.steps, questions)
+			for _, question := range questions {
+				got, err := foldRead(ctx, pool, answers, question)
+				if err != nil {
+					t.Errorf("%s, the read-only read: %v", question, err)
+					continue
+				}
+				if got != want[question.String()] {
+					t.Errorf("%s: the read-only read answered\n\t%s\nwant the writer's path's\n\t%s", question, got, want[question.String()])
+				}
+			}
+		})
 	}
-	pull9 := func(commit string) PullRequestHead {
-		return credited(foldHead(gadgetsRepo, 9, commit), foldLinkingIssue)
-	}
-	closed := pull9(sha("3"))
-	closed.State = "closed"
-	run(5, gadgetsRepo, timed(pull9(sha("1")), at(5), nil))
-	run(4, gadgetsOldRepo, timed(pull9(sha("1")), at(5), nil))
-	run(3, gadgetsRepo, timed(pull9(sha("1")), at(5), nil))
-	run(6, gadgetsRepo, timed(pull9(sha("2")), at(6), nil))
-	// Older than the event the row holds: the guard refuses each.
-	run(4, gadgetsRepo, timed(pull9(sha("3")), at(4), nil))
-	run(5, gadgetsRepo, timed(incomplete(pull9(sha("3"))), at(7), nil))
-	run(4, gadgetsRepo, timed(closed, at(8), nil))
-	// Credited to nobody by a read of every source.
-	run(5, gadgetsRepo, timed(foldHead(gadgetsRepo, 9, sha("4")), at(9), nil))
-	run(3, gadgetsRepo, timed(pull9(sha("2")), at(8), nil))
-	// The event the row holds: the guard lets each through.
-	run(4, gadgetsRepo, timed(pull9(sha("4")), at(9), nil))
-	// No event time: the row keeps its own.
-	run(5, gadgetsRepo, pull9(sha("5")))
-	run(6, gadgetsRepo, timed(merged(pull9(sha("5")), "release", sha("m")), at(10), nil))
-	run(4, gadgetsOldRepo, timed(merged(pull9(sha("5")), "release", sha("m")), at(10), nil))
-	run(3, gadgetsRepo, timed(pull9(sha("6")), at(9), nil))
+}
 
-	for _, history := range []struct {
-		name  string
-		steps []foldStep
-	}{
+// foldHistory is one history of the fold tests: its name, and its steps in time order.
+type foldHistory struct {
+	name  string
+	steps []foldStep
+}
+
+// foldHistories is every history TestTheReadOnlyFoldAnswersAsTheWritersPath holds each read-only
+// read to the writer's path in, and TestEachHeadsReadOnTheResultsPathIsOneStatement traces each
+// read in. Each call builds them anew.
+func foldHistories() []foldHistory {
+	return []foldHistory{
 		{"a writer's row and no answer", []foldStep{
 			delivered(timed(credited(head(5, sha("1")), foldIssue), at(1), read(10))),
 		}},
@@ -689,7 +602,7 @@ func TestTheReadOnlyFoldAnswersAsTheWritersPath(t *testing.T) {
 			answered(timed(credited(head(5, sha("2")), foldIssue), at(1), read(25))),
 		}},
 		// 61 answers in 14 runs (manyAnswers).
-		{"many answers for one pull request", manyAnswers},
+		{"many answers for one pull request", manyAnswers()},
 		// Pull request 5 is stored at sha 1, and the request's read-through of another commit,
 		// sha 0, names it at sha 2. The writer's upsert of that answer moves the row off sha 1,
 		// so sha 1 heads no stored pull request: a HeadStoredAt given only the answers headed at
@@ -698,42 +611,149 @@ func TestTheReadOnlyFoldAnswersAsTheWritersPath(t *testing.T) {
 			delivered(timed(credited(head(5, sha("1")), foldIssue), at(1), read(10))),
 			answered(timed(credited(head(5, sha("2")), foldIssue), at(2), read(20))),
 		}},
-	} {
-		t.Run(history.name, func(t *testing.T) {
-			pool, ctx := deliveryTestPool(t)
-			seedFoldIssues(t, ctx, pool)
-			var answers HeadAnswers
-			answering := false
-			for index, step := range history.steps {
-				if step.writer == foldAnswered {
-					answering = true
-					answers.Add(step.pulls)
-					continue
-				}
-				if answering {
-					t.Fatalf("step %d, %s, comes after an answer of the request: the fold lays one request's answers "+
-						"on the rows stored when its statements run, so every writer's step comes first", index, step.writer)
-				}
-				foldWrite(t, ctx, pool, step)
-			}
-			if held, runs := len(answers.columns.repo), foldAnswerRuns(history.steps); held != runs {
-				t.Errorf("the request holds %d answers, want %d, one for each run of its answers for one pull request equal in every column "+
-					"but checked_at: the writer's upserts of a run leave the row as the upsert of its last answer alone does (plan D33)", held, runs)
-			}
-			questions := foldQuestions(t, history.steps)
-			want := foldOracle(t, ctx, pool, history.steps, questions)
-			for _, question := range questions {
-				got, err := foldRead(ctx, pool, answers, question)
-				if err != nil {
-					t.Errorf("%s, the read-only read: %v", question, err)
-					continue
-				}
-				if got != want[question.String()] {
-					t.Errorf("%s: the read-only read answered\n\t%s\nwant the writer's path's\n\t%s", question, got, want[question.String()])
-				}
-			}
-		})
 	}
+}
+
+// manyAnswers is a request whose read-throughs name gadgetsRepo's pull request 9 again and
+// again, over the row kept under the name gadgetsRepo was renamed away from and the row a
+// delivery stored under the canonical name: runs of answers equal in every column but
+// checked_at, each run unlike the one before it in the name the read was asked under, the
+// head, the state, the attribution or the event time, which moves forward and back.
+func manyAnswers() []foldStep {
+	steps := []foldStep{
+		delivered(timed(credited(foldHead(gadgetsOldRepo, 9, sha("7")), foldLinkingIssue), at(1), read(2))),
+		delivered(timed(foldHead(gadgetsRepo, 9, sha("1")), at(3), read(4))),
+	}
+	readMinute := 30
+	// run adds count answers equal to answer, each of a read asked under the name under: a
+	// complete one read at the next minute, and an incomplete one unstamped, as ReadCommitPulls
+	// answers them.
+	run := func(count int, under string, answer PullRequestHead) {
+		for range count {
+			readMinute++
+			answer.CheckedAt = nil
+			if answer.AttributionComplete {
+				answer.CheckedAt = read(readMinute)
+			}
+			steps = append(steps, answeredUnder(under, answer))
+		}
+	}
+	pull9 := func(commit string) PullRequestHead {
+		return credited(foldHead(gadgetsRepo, 9, commit), foldLinkingIssue)
+	}
+	closed := pull9(sha("3"))
+	closed.State = "closed"
+	run(5, gadgetsRepo, timed(pull9(sha("1")), at(5), nil))
+	run(4, gadgetsOldRepo, timed(pull9(sha("1")), at(5), nil))
+	run(3, gadgetsRepo, timed(pull9(sha("1")), at(5), nil))
+	run(6, gadgetsRepo, timed(pull9(sha("2")), at(6), nil))
+	// Older than the event the row holds: the guard refuses each.
+	run(4, gadgetsRepo, timed(pull9(sha("3")), at(4), nil))
+	run(5, gadgetsRepo, timed(incomplete(pull9(sha("3"))), at(7), nil))
+	run(4, gadgetsRepo, timed(closed, at(8), nil))
+	// Credited to nobody by a read of every source.
+	run(5, gadgetsRepo, timed(foldHead(gadgetsRepo, 9, sha("4")), at(9), nil))
+	run(3, gadgetsRepo, timed(pull9(sha("2")), at(8), nil))
+	// The event the row holds: the guard lets each through.
+	run(4, gadgetsRepo, timed(pull9(sha("4")), at(9), nil))
+	// No event time: the row keeps its own.
+	run(5, gadgetsRepo, pull9(sha("5")))
+	run(6, gadgetsRepo, timed(merged(pull9(sha("5")), "release", sha("m")), at(10), nil))
+	run(4, gadgetsOldRepo, timed(merged(pull9(sha("5")), "release", sha("m")), at(10), nil))
+	run(3, gadgetsRepo, timed(pull9(sha("6")), at(9), nil))
+	return steps
+}
+
+// foldSetup makes one history's database, which the test owns: the fold issues (seedFoldIssues)
+// and then each writer's step, run through the writer's own statement (foldWrite). It answers the
+// pool, the test's context, and the request's answers, added in the order the request read them.
+// It fails where a writer's step comes after an answer of the request.
+func foldSetup(t *testing.T, steps []foldStep) (*store.Pool, context.Context, HeadAnswers) {
+	t.Helper()
+	pool, ctx := deliveryTestPool(t)
+	seedFoldIssues(t, ctx, pool)
+	var answers HeadAnswers
+	answering := false
+	for index, step := range steps {
+		if step.writer == foldAnswered {
+			answering = true
+			answers.Add(step.pulls)
+			continue
+		}
+		if answering {
+			t.Fatalf("step %d, %s, comes after an answer of the request: the fold lays one request's answers "+
+				"on the rows stored when its statements run, so every writer's step comes first", index, step.writer)
+		}
+		foldWrite(t, ctx, pool, step)
+	}
+	return pool, ctx, answers
+}
+
+// at is minute minutes past 9:00 on 2026-11-20, in UTC: the times of the fold histories.
+func at(minute int) time.Time {
+	return time.Date(2026, 11, 20, 9, minute, 0, 0, time.UTC)
+}
+
+// read is at(minute) as a head's read time (checked_at).
+func read(minute int) *time.Time {
+	moment := at(minute)
+	return &moment
+}
+
+// sha is a commit of forty times digit.
+func sha(digit string) string {
+	return strings.Repeat(digit, 40)
+}
+
+// head is deliveryRepo's pull request number at commit, open, credited to nobody by a read of
+// every attribution source and carrying no time: a head a history writes or answers, which the
+// functions after it change.
+func head(number int, commit string) PullRequestHead {
+	return foldHead(deliveryRepo, number, commit)
+}
+
+// credited is head credited to issue by its title.
+func credited(head PullRequestHead, issue string) PullRequestHead {
+	head.IssueKey, head.AttributionSource = &issue, "title"
+	return head
+}
+
+// incomplete is head from a read that did not read every attribution source.
+func incomplete(head PullRequestHead) PullRequestHead {
+	head.AttributionComplete = false
+	return head
+}
+
+// timed is head carrying the event time event and the read time readAt, nil for none.
+func timed(head PullRequestHead, event time.Time, readAt *time.Time) PullRequestHead {
+	head.EventAt, head.CheckedAt = &event, readAt
+	return head
+}
+
+// merged is head merged into base by the merge commit commit.
+func merged(head PullRequestHead, base, commit string) PullRequestHead {
+	head.State, head.BaseRef, head.MergeCommitSHA = "merged", base, commit
+	return head
+}
+
+// delivered is a delivery's step that writes head.
+func delivered(head PullRequestHead) foldStep {
+	return foldStep{writer: foldDelivery, pulls: CommitPulls{Heads: []PullRequestHead{head}, storedUnder: head.Repo}}
+}
+
+// readThrough is a writer's read-through's step that stores head.
+func readThrough(head PullRequestHead) foldStep {
+	return foldStep{writer: foldReadThrough, pulls: CommitPulls{Heads: []PullRequestHead{head}, storedUnder: head.Repo}}
+}
+
+// answeredUnder is an answer of the request, head, of a read asked under the name under.
+func answeredUnder(under string, head PullRequestHead) foldStep {
+	return foldStep{writer: foldAnswered, pulls: CommitPulls{Heads: []PullRequestHead{head}, storedUnder: under}}
+}
+
+// answered is an answer of the request, head, of a read asked under its repository's own name.
+func answered(head PullRequestHead) foldStep {
+	return answeredUnder(head.Repo, head)
 }
 
 // foldHead is pull request number of repo at commit, open, credited to nobody by a read of every

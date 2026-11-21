@@ -243,7 +243,7 @@ func UpsertPullRequestHead(ctx context.Context, pool *store.Pool, broker *events
 		return err
 	}
 	var moved []model.Event
-	if records && applied && !sameIssue(left, head.IssueKey) {
+	if records && applied && !sameText(left, head.IssueKey) {
 		if moved, err = appendAttributionChange(ctx, tx, broker, head, left); err != nil {
 			return fmt.Errorf("%w: %w", ErrHeadNotStored, err)
 		}
@@ -356,19 +356,6 @@ func headIssueBefore(ctx context.Context, tx pgx.Tx, repoFull string, number int
 		return nil, fmt.Errorf("%w: read the issue of %s#%d: %w", ErrHeadNotStored, repoFull, number, err)
 	}
 	return issue, nil
-}
-
-// sameIssue reports whether two attributions name one issue, with nil "credited to nobody": the
-// test that decides whether a write moved the row at all.
-func sameIssue(left, right *string) bool {
-	switch {
-	case left == nil && right == nil:
-		return true
-	case left == nil || right == nil:
-		return false
-	default:
-		return *left == *right
-	}
 }
 
 // headWriteRollback bounds the rollback of that transaction, which runs on a context of its
@@ -577,9 +564,14 @@ const storedHeadsRelation = `pull_request_heads (repo, number, ` + headLaidColum
 //     a row holds in each text column the place of the answer whose value it is, or 0 for the
 //     stored row's (carried along beside it, as stored_head_sha and the like), and a step reads
 //     from the arrays only the columns the rules read: an element of an array whose elements have
-//     one size is found at once by its place, while one of a text array is found only by walking
-//     every element before it, so a step that read a text array would again make a long laying's
-//     time grow with the square of its answers.
+//     one size is found at once by its place only while the array holds no null, and one of a text
+//     array, or of an array that holds a null, is found only by walking every element before it,
+//     so a step that read a text array would again make a long laying's time grow with the square
+//     of its answers. checked_at holds a null for every answer whose attribution was incomplete,
+//     which ReadCommitPulls stamps with no time, so a request with one such answer walks that
+//     array at every step, and its laying's time grows faster than its answers of one pull request,
+//     toward their square (plan D33's measure with one such answer: 11 to 17 ms at 2,000 answers
+//     and 83 to 117 ms at 8,000, against 8 to 15 and 31 to 43 with none).
 //   - pull_request_heads is two arms of a `union all`, the stored rows and each pull request's last
 //     laid row, its text columns read at their places, less the stored rows an answer lands on or
 //     drops. An answer of a read asked under a name its repository was renamed away from drops the
@@ -591,14 +583,11 @@ const storedHeadsRelation = `pull_request_heads (repo, number, ` + headLaidColum
 //     arms, which the laid arm passes, `not in` the keys of the kept pull requests, each once, and
 //     the names their reads were asked under: a list PostgreSQL hashes once and which holds no null.
 func answeredHeadsRelation(first int, keeps string) string {
-	names := strings.Split(answerColumnNames, ", ")
-	parameters := make([]string, len(names))
-	arrayOf := make(map[string]string, len(names))
-	kindOf := make(map[string]string, len(names))
-	for index, kind := range answerColumnTypes {
-		parameters[index] = fmt.Sprintf("$%d::%s[] as %s", first+index, kind, names[index])
-		arrayOf[names[index]] = "(select answers." + names[index] + " from answers)"
-		kindOf[names[index]] = kind
+	parameters := make([]string, len(answerArrays))
+	arrayOf := make(map[string]answerArray, len(answerArrays))
+	for index, array := range answerArrays {
+		parameters[index] = fmt.Sprintf("$%d::%s[] as %s", first+index, array.kind, array.name)
+		arrayOf[array.name] = array
 	}
 	// Each of headLaidColumns as laid_heads' first row of a pull request holds it (started), as
 	// the answer a step lays gives it (excluded), as the step lays it (laying), and as the last
@@ -614,26 +603,26 @@ func answeredHeadsRelation(first int, keeps string) string {
 	for index, column := range columns {
 		laying[index] = fmt.Sprintf("case when not stored.found then excluded.%s when %s then %s else stored.%s end",
 			column, headWriteApplies, rules[index], column)
-		if kindOf[column] == "text" {
+		if arrayOf[column].kind == "text" {
 			started[index] = "0::bigint"
 			excluded[index] = "stored.next_place as " + column
 			laid[index] = fmt.Sprintf("case laid.%s when 0 then laid.stored_%s else %s[laid.%s] end",
-				column, column, arrayOf[column], column)
+				column, column, arrayOf[column].sql(), column)
 			storedNames = append(storedNames, "stored_"+column)
 			stored = append(stored, "stored."+column)
 			carried = append(carried, "stored.stored_"+column)
 			continue
 		}
 		started[index] = "stored." + column
-		excluded[index] = fmt.Sprintf("%s[stored.next_place] as %s", arrayOf[column], column)
+		excluded[index] = fmt.Sprintf("%s[stored.next_place] as %s", arrayOf[column].sql(), column)
 		laid[index] = "laid." + column
 	}
-	excluded = append(excluded, fmt.Sprintf("%s[stored.next_place] as complete", arrayOf["complete"]))
+	excluded = append(excluded, fmt.Sprintf("%s[stored.next_place] as complete", arrayOf["complete"].sql()))
 	// unnest is the answers as rows, with only the columns names lists, and their places.
 	unnest := func(names ...string) string {
 		arrays := make([]string, len(names))
 		for index, column := range names {
-			arrays[index] = arrayOf[column]
+			arrays[index] = arrayOf[column].sql()
 		}
 		return `unnest(` + strings.Join(arrays, ", ") + `) with ordinality as answer (` +
 			strings.Join(names, ", ") + `, place)`
@@ -725,12 +714,23 @@ type answerColumns struct {
 	eventAt, checkedAt            []*time.Time
 }
 
-// answerColumnNames and answerColumnTypes are the name and the type of each array HeadAnswers.args
-// answers, in its order.
-const answerColumnNames = `repo, number, head_sha, base_ref, state, issue_key, complete, event_at, checked_at, renamed_from`
+// answerArray is one array HeadAnswers.args answers: its name, which answeredHeadsRelation gives
+// the parameter, and the type of its elements.
+type answerArray struct {
+	name, kind string
+}
 
-var answerColumnTypes = [...]string{
-	"text", "integer", "text", "text", "text", "text", "boolean", "timestamptz", "timestamptz", "text",
+// answerArrays is each array HeadAnswers.args answers, in its order.
+var answerArrays = [...]answerArray{
+	{"repo", "text"}, {"number", "integer"}, {"head_sha", "text"}, {"base_ref", "text"}, {"state", "text"},
+	{"issue_key", "text"}, {"complete", "boolean"}, {"event_at", "timestamptz"}, {"checked_at", "timestamptz"},
+	{"renamed_from", "text"},
+}
+
+// sql is the array as answeredHeadsRelation's terms read it: from the one row of its answers
+// term.
+func (a answerArray) sql() string {
+	return "(select answers." + a.name + " from answers)"
 }
 
 // Add lays pulls, the answer of one read-through of the request, after the answers the request
@@ -813,7 +813,7 @@ func (a HeadAnswers) empty() bool {
 	return len(a.columns.repo) == 0
 }
 
-// args is the columns in answerColumnTypes' order, as answeredHeadsRelation numbers its
+// args is the columns in answerArrays' order, as answeredHeadsRelation numbers its
 // parameters.
 func (a HeadAnswers) args() []any {
 	c := a.columns
@@ -955,7 +955,10 @@ var newestPullRequestHeadRead = newHeadsStatement(newestPullRequestHeadQuery, fa
 // read-through of a read-only caller's request learned holds that read off GitHub, as the row a
 // writer's read-through stored holds the writer's off. Of them it lays only the answers of the
 // pull requests that can change its answer (headStoredAtAnswers), so a learn that reads many
-// commits through lays each commit's few pull requests and not every head learned before it.
+// commits through lays each commit's few pull requests and not every head learned before it. Each
+// call still unnests, sorts and aggregates every answer of the request to pick those
+// (answered_heads and answer_places in answeredHeadsRelation), so one learn of N commits costs N
+// times the request's answers.
 func HeadStoredAt(ctx context.Context, q refs.Queryer, repoFull, sha string, answers HeadAnswers) (bool, error) {
 	query, args := headStoredAtRead.query(answers, repoFull, sha)
 	var found bool
