@@ -7,6 +7,7 @@ import type { TreeNode } from "../issue-tree";
 import { NODE_TYPE_NAMES } from "../page-words";
 import { presetView } from "../presets";
 import { treeContext } from "../tree-drafts";
+import { treeParent } from "../tree-read/tree-fixtures";
 import type { TreeAnswerNode } from "../tree-read/tree-read";
 import { changesOf } from "./decisions-entries";
 import {
@@ -790,7 +791,7 @@ test("what waits is each open question of the reader's, then each decision to re
 // view draws them nowhere and none of them waits on the reader. The live decision beside it is
 // still on the review list, and the same tree with nothing overtaken holds all of them.
 test("an overtaken decision waiting for review is in no part", () => {
-  const tied = { links: [shaped(specRef("s1"))] };
+  const tied = { decision: { links: [shaped(specRef("s1"))] } };
   // The tree as the page stamps it (`node-states.ts`): the overtaken decision and each node
   // under it closed.
   const children = (overtaken: boolean) => {
@@ -806,7 +807,7 @@ test("an overtaken decision waiting for review is in no part", () => {
   };
   const made = [
     decision("old", tied),
-    decision("inner", { ...tied, parent: "old" }),
+    { ...decision("inner", tied), parent: treeParent("old") },
     decision("review", tied),
   ];
 

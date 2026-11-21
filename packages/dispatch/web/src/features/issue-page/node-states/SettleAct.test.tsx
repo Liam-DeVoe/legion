@@ -7,13 +7,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { jump, realClock } from "../../../__tests__/fake-clock";
 import { installFakeLiveSockets } from "../../../__tests__/live-socket-harness";
-import {
-  ApiError,
-  api,
-  type IssueTreeAnswer,
-  type WriteBounds,
-  type WriteRequest,
-} from "../../../api/client";
+import { ApiError, api, type WriteBounds, type WriteRequest } from "../../../api/client";
 import { liveSocketFor } from "../../../api/live-socket";
 import { issueCoverageQuery } from "../../../api/queries";
 import { MIN_REFETCH_INTERVAL_MS } from "../../../api/query-refresh";
@@ -22,7 +16,13 @@ import type { TreeNode } from "../issue-tree";
 import { NodeRow } from "../NodeRow";
 import { NoTooltips } from "../NoTooltips";
 import { CONTROL_LABELS, SETTLE_ANSWERS } from "../page-words";
-import { issueTreeQuery, subscribeTreeFreshness, viewQuery } from "../tree-read/tree-read";
+import { treeAnswer as fixtureAnswer } from "../tree-read/tree-fixtures";
+import {
+  issueTreeQuery,
+  subscribeTreeFreshness,
+  type TreeAnswer,
+  viewQuery,
+} from "../tree-read/tree-read";
 import { SettleIssueProvider } from "./settle-write";
 
 /**
@@ -78,8 +78,8 @@ const OTHER_SETTLE_PATH =
   "/api/v1/issues/CORE-2/nodes/dispatch%3A%2F%2FCORE-2%2Fartifact%2Fspec-md%23b-r7/settle";
 
 /** One page of the tree read or of a view, which is all of it. */
-function treeAnswer(): IssueTreeAnswer {
-  return { converted: true, cursor: null, nodes: [], tree: null, tuples: [], view_of: null };
+function treeAnswer(): TreeAnswer {
+  return fixtureAnswer([], [], { converted: true });
 }
 
 /** Dispatch's 200 to a settle. */
@@ -285,7 +285,7 @@ test("a 200 drops the held views and reads the open one again", async () => {
     expect(drawn.reads, "the view nobody reads now was read again").not.toContain("spec");
     expect(drawn.client.getQueryData(HELD_VIEW), "the held view stayed").toBeUndefined();
     await waitFor(() =>
-      expect(drawn.client.getQueryData<IssueTreeAnswer>(OPEN_VIEW)).toEqual(treeAnswer())
+      expect(drawn.client.getQueryData<TreeAnswer>(OPEN_VIEW)).toEqual(treeAnswer())
     );
     expect(drawn.onRowAtRead, "a read went out before the focus was on the row").not.toContain(
       false
@@ -428,7 +428,7 @@ test("each refusal says its sentence and leaves the mark", async () => {
       expect(drawn.settle().textContent).toBe(CONTROL_LABELS.settle);
       expect(drawn.row().querySelector('[data-node-mark="proposed"]')).not.toBeNull();
       expect(drawn.reads, "a refusal sent a read").toEqual([]);
-      expect(drawn.client.getQueryData<IssueTreeAnswer>(HELD_VIEW)).toEqual(treeAnswer());
+      expect(drawn.client.getQueryData<TreeAnswer>(HELD_VIEW)).toEqual(treeAnswer());
     }
   } finally {
     drawn.unmount();

@@ -1,8 +1,8 @@
 import { existsSync } from "node:fs";
 import { expect, type Locator, type Page, test } from "@playwright/test";
 
-import type { IssueTreeAnswer, IssueTreeNode } from "../web/src/api/client";
 import { type Body, type Result, routeUrl } from "../web/src/api/paths";
+import type { IssueTreeNode, IssueTreeRead } from "../web/src/api/types";
 import type { Preset } from "../web/src/features/issue-page/page-words";
 import { checkStanding } from "../web/src/features/issue-page/tree-drafts";
 import type { TreeIdReads } from "../web/src/features/issue-page/tree-read/tree-nodes";
@@ -135,9 +135,9 @@ export async function settleNodeApi(
 
 /** Issue `key`'s tree read with no view as `login` gets it, every page of it in order, merged
  *  into one answer. */
-export async function treeReadAs(key: string, login = "alice"): Promise<IssueTreeAnswer> {
+export async function treeReadAs(key: string, login = "alice"): Promise<IssueTreeRead> {
   const headers = await userHeaders(login);
-  const pageAt = async (cursor: string | null): Promise<IssueTreeAnswer> => {
+  const pageAt = async (cursor: string | null): Promise<IssueTreeRead> => {
     const path = routeUrl(
       "/api/v1/issues/{key}/tree",
       { key },
@@ -149,7 +149,7 @@ export async function treeReadAs(key: string, login = "alice"): Promise<IssueTre
         `GET ${path} as ${login} failed: ${response.status} ${await response.text()}`
       );
     }
-    return (await response.json()) as IssueTreeAnswer;
+    return (await response.json()) as IssueTreeRead;
   };
   const first = await pageAt(null);
   const pages = [first];
@@ -161,8 +161,8 @@ export async function treeReadAs(key: string, login = "alice"): Promise<IssueTre
   return {
     ...first,
     cursor: null,
-    nodes: pages.flatMap((one) => one.nodes),
-    tuples: pages.flatMap((one) => one.tuples),
+    nodes: pages.flatMap((one) => one.nodes ?? []),
+    tuples: pages.flatMap((one) => one.tuples ?? []),
   };
 }
 
@@ -178,20 +178,21 @@ export async function treeIdReads(key: string, login = "alice"): Promise<TreeIdR
 
 /** Whether `node` is a node of issue `key` itself that the read did not bring in as context. */
 function ownOf(node: IssueTreeNode, key: string): boolean {
-  return (node.issue === undefined || node.issue === key) && node.mark !== "context";
+  return (node.issue === undefined || node.issue === key) && node.role !== "context";
 }
 
-/** The node of issue `key` of kind `supertag` whose read id is `id`, which the seed named. Throws,
- *  naming `what`, where the answer holds none. */
+/** The node of issue `key` of kind `supertag` the seed named `id`: a typed block by its block id
+ *  (`block_id`), any other node by its read id. Throws, naming `what`, where the answer holds
+ *  none. */
 export function seededNode(
-  answer: IssueTreeAnswer,
+  answer: IssueTreeRead,
   key: string,
   supertag: string,
   id: string,
   what: string
 ): IssueTreeNode {
-  const node = answer.nodes.find(
-    (one) => one.id === id && one.supertag === supertag && ownOf(one, key)
+  const node = answer.nodes?.find(
+    (one) => (one.block_id ?? one.id) === id && one.supertag === supertag && ownOf(one, key)
   );
   if (node === undefined) throw new Error(`the tree read of ${key} holds no ${what} (${id})`);
   return node;
@@ -204,7 +205,7 @@ export function addressIn(node: IssueTreeNode, key: string): string {
     throw new Error(`the tree read names no document for ${node.supertag} ${node.id}`);
   }
   return buildDispatchReference({
-    block: { id: node.id },
+    block: { id: node.block_id ?? node.id },
     key: node.issue ?? key,
     kind: "artifact",
     slug: node.document.slug,
@@ -213,11 +214,11 @@ export function addressIn(node: IssueTreeNode, key: string): string {
 
 /** The first node of `answer` whose words or attributes hold `word`: one of the words a seed
  *  wrote into one node and no other. */
-export function nodeHolding(answer: IssueTreeAnswer, word: string): IssueTreeNode | undefined {
-  return answer.nodes.find(
+export function nodeHolding(answer: IssueTreeRead, word: string): IssueTreeNode | undefined {
+  return answer.nodes?.find(
     (node) =>
       node.text.includes(word) ||
-      Object.values(node.attributes).some(
+      Object.values(node.attributes ?? {}).some(
         (value) => typeof value === "string" && value.includes(word)
       )
   );
@@ -227,17 +228,17 @@ export function nodeHolding(answer: IssueTreeAnswer, word: string): IssueTreeNod
 type Children = ReadonlyMap<string, readonly IssueTreeNode[]>;
 
 /** Each tree read's `Children`, made once per answer. */
-const childrenByAnswer = new WeakMap<IssueTreeAnswer, Children>();
+const childrenByAnswer = new WeakMap<IssueTreeRead, Children>();
 
 /** The `Children` of `answer`, made at its first reading. */
-function childrenIn(answer: IssueTreeAnswer): Children {
+function childrenIn(answer: IssueTreeRead): Children {
   const made = childrenByAnswer.get(answer);
   if (made !== undefined) return made;
   const children = new Map<string, IssueTreeNode[]>();
-  for (const node of answer.nodes) {
+  for (const node of answer.nodes ?? []) {
     if (node.parent === null) continue;
-    const siblings = children.get(node.parent);
-    if (siblings === undefined) children.set(node.parent, [node]);
+    const siblings = children.get(node.parent.id);
+    if (siblings === undefined) children.set(node.parent.id, [node]);
     else siblings.push(node);
   }
   childrenByAnswer.set(answer, children);
@@ -246,7 +247,7 @@ function childrenIn(answer: IssueTreeAnswer): Children {
 
 /** Every node of issue `key` in `answer` under the node `readId`, at any depth, by the read's
  *  `parent`: the tree each count walks. */
-function underIn(answer: IssueTreeAnswer, key: string, readId: string): IssueTreeNode[] {
+function underIn(answer: IssueTreeRead, key: string, readId: string): IssueTreeNode[] {
   const children = childrenIn(answer);
   const found: IssueTreeNode[] = [];
   const seen = new Set<string>([readId]);
@@ -263,13 +264,13 @@ function underIn(answer: IssueTreeAnswer, key: string, readId: string): IssueTre
 }
 
 /** How many nodes the branch of `readId` holds in `answer`: what its row's folded count counts. */
-export function heldUnder(answer: IssueTreeAnswer, key: string, readId: string): number {
+export function heldUnder(answer: IssueTreeRead, key: string, readId: string): number {
   return underIn(answer, key, readId).length;
 }
 
 /** How many of the nodes `reserved` names stand in the branch of `readId` in `answer`. */
 export function reservedUnder(
-  answer: IssueTreeAnswer,
+  answer: IssueTreeRead,
   key: string,
   readId: string,
   reserved: ReadonlySet<string>
@@ -279,9 +280,10 @@ export function reservedUnder(
 
 /** How many tuples of `answer` reach the node `readId` from a node the read holds: what a
  *  reader of that read sees reference it. */
-export function referencesTo(answer: IssueTreeAnswer, readId: string): number {
-  const held = new Set(answer.nodes.map((node) => node.id));
-  return answer.tuples.filter((tuple) => tuple.to === readId && held.has(tuple.from)).length;
+export function referencesTo(answer: IssueTreeRead, readId: string): number {
+  const held = new Set((answer.nodes ?? []).map((node) => node.id));
+  return (answer.tuples ?? []).filter((tuple) => tuple.to.id === readId && held.has(tuple.from.id))
+    .length;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -358,7 +360,7 @@ export interface NodeStateSeed {
   /** Each node whose state it wrote, and statement 9, by its address in the tree read. */
   readonly addresses: Readonly<Record<StatedNode | "statement9", string>>;
   /** Alice's tree read once every state was written. */
-  readonly answer: IssueTreeAnswer;
+  readonly answer: IssueTreeRead;
   readonly ids: NodeStateIds;
   readonly lens: LensInvoked;
   readonly whole: WholeIssueSeed;
@@ -449,8 +451,8 @@ export async function seedNodeStates(whole: WholeIssueSeed): Promise<NodeStateSe
   const before = await readUntil(
     () => treeReadAs(key),
     (read) =>
-      read.nodes.some((node) => node.id === SHAPING_DECISION_ID) &&
-      read.nodes.some((node) => node.text.includes(STATEMENT_9_WORDS)),
+      (read.nodes ?? []).some((node) => (node.block_id ?? node.id) === SHAPING_DECISION_ID) &&
+      (read.nodes ?? []).some((node) => node.text.includes(STATEMENT_9_WORDS)),
     `the tree read of ${key} never holds statement 9's words and the decision that shapes statement 7`
   );
   expect(before.converted, "the seeded issue's tree read does not answer converted").toBe(true);
@@ -498,7 +500,7 @@ export async function seedNodeStates(whole: WholeIssueSeed): Promise<NodeStateSe
   for (const name of OVERTAKEN_NODES) await writeNodeState(key, addresses[name], "overtaken");
 
   const answer = await treeReadAs(key);
-  const stateOf = (id: string) => answer.nodes.find((one) => one.id === id)?.state;
+  const stateOf = (id: string) => answer.nodes?.find((one) => one.id === id)?.state;
   for (const name of PROPOSED_NODES) {
     expect(stateOf(nodes[name].id), `the tree read does not answer ${name} proposed`).toBe(
       "proposed"
@@ -509,15 +511,15 @@ export async function seedNodeStates(whole: WholeIssueSeed): Promise<NodeStateSe
       "overtaken"
     );
   }
-  const statement9 = answer.nodes.find((one) => one.id === nodes.statement9.id);
+  const statement9 = answer.nodes?.find((one) => one.id === nodes.statement9.id);
   expect(statement9?.text, "the tree read does not answer statement 9's words").toContain(
     STATEMENT_9_WORDS
   );
   expect(statement9?.state, "the tree read does not answer statement 9 live").toBe("live");
-  const lensNode = answer.nodes.find(
-    (one) => one.supertag === "lens" && one.attributes.verdict === STATEMENT_8_VERDICT
+  const lensNode = answer.nodes?.find(
+    (one) => one.supertag === "lens" && one.attributes?.verdict === STATEMENT_8_VERDICT
   );
-  expect(lensNode?.parent, "the tree read does not stand the lens under statement 8").toBe(
+  expect(lensNode?.parent?.id, "the tree read does not stand the lens under statement 8").toBe(
     nodes.statement8.id
   );
   return {

@@ -164,7 +164,7 @@ export function closeOvertaken(
   if (outline === undefined) return stampStates(root, states, heldBy);
   // The read id of each node and parent line of `root` that the view's answer holds no node for,
   // and of each parent line it does hold a node for.
-  const held = new Set(answer.nodes.map((node) => node.id));
+  const held = new Set((answer.nodes ?? []).map((node) => node.id));
   const missing = new Set<string>();
   const lines = new Set<string>();
   const walk = (node: TreeNode): void => {

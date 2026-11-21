@@ -454,7 +454,7 @@ export function statesOfRead({
  */
 export function nodeStatesOf(answer: TreeAnswer): ReadonlyMap<string, NodeStates> {
   const states = new Map<string, NodeStates>();
-  for (const node of answer.nodes) {
+  for (const node of answer.nodes ?? []) {
     const marks = statesOfRead(node);
     if (marks.life !== undefined || marks.onlyYou !== undefined) states.set(node.id, marks);
   }

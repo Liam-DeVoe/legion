@@ -20,7 +20,12 @@ import {
   issueResultsQuery,
   issueTreeKey,
 } from "../../../api/queries";
-import type { CheckBlock, IssueCheckResults, IssueDetails } from "../../../api/types";
+import type {
+  CheckBlock,
+  IssueCheckResults,
+  IssueDetails,
+  IssueTreeParent,
+} from "../../../api/types";
 import { pageFocusedRow } from "../../../theme/classes";
 import { MarginProvider } from "../../margin/margin-context";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
@@ -37,8 +42,10 @@ import {
   treeAnswer as decisionsAnswer,
   issueDetails as decisionsIssue,
   openAsk,
+  personDecision,
   READER,
   shaped,
+  shapedTuples,
   issueTree as specIssueTree,
   specRef,
   statement as specStatement,
@@ -92,10 +99,11 @@ import {
   statement,
 } from "../spec-filter/spec-fixtures";
 import { pathTo } from "../tree-fold";
+import { type TreeNodeExtra, treeAnswer, treeNode } from "../tree-read/tree-fixtures";
 import { statesOfRead } from "../tree-read/tree-nodes";
 import { type TreeAnswer, type TreeAnswerNode, viewKey } from "../tree-read/tree-read";
 import { useIssueKeymap } from "../useIssueKeymap";
-import { VerificationFilterBody } from "../verification-filter/VerificationFilterBody";
+import { queryTyped, VerificationFilterBody } from "../verification-filter/VerificationFilterBody";
 import {
   check,
   checkNode,
@@ -1034,8 +1042,9 @@ function drawVerification(
             context: preset.context,
             reads: { state: "answered" },
             view: preset.root,
-            whole:
-              query === "" ? preset.root : presetView(root, "verification", "", new Set()).root,
+            whole: queryTyped(query)
+              ? presetView(root, "verification", "", new Set()).root
+              : undefined,
           })
         )
       )
@@ -1944,8 +1953,8 @@ test("a press on the Spec view's overtaken line lets go of the statement the rea
 test("a key's report on the Spec view's overtaken line is drawn at the line", async () => {
   const user = userEvent.setup();
   const spec = readAnswer([
-    readBlock("r1", "requirement", "spec", 0, { mark: "query" }),
-    readBlock("r2", "requirement", "spec", 1, { mark: "query", state: "overtaken" }),
+    readBlock("r1", "requirement", "spec", 0, { role: "query" }),
+    readBlock("r2", "requirement", "spec", 1, { role: "query", state: "overtaken" }),
   ]);
   const view = drawSpec({ ...statementAndLine(), views: { spec } });
   try {
@@ -2178,8 +2187,8 @@ test("the Spec view draws no overtaken decision beside the statement it shaped",
     ...stamped(specIssueTree([statement("r1"), specDecisionNode("d1")]), states),
     views: {
       spec: specViewAnswer([
-        answerNode("spec#b-r1", "requirement", { mark: "query" }),
-        specDecision("d1", { links: [specShaped(specStatementRef("r1"))] }),
+        answerNode("spec#b-r1", "requirement", { role: "query" }),
+        specDecision("d1", { decision: { links: [specShaped(specStatementRef("r1"))] } }),
       ]),
     },
   });
@@ -2218,11 +2227,13 @@ test("a Spec run headed by a person's decision that waits on the asks read keeps
     ),
     views: {
       spec: specViewAnswer([
-        answerNode("spec#b-r1", "requirement", { mark: "query" }),
-        answerNode("spec#b-r2", "requirement", { mark: "query" }),
-        specDecision("d1", { kind: "person", links: [specShaped(specStatementRef("r1"))] }),
-        specDecision("d2", { links: [specShaped(specStatementRef("r1"))] }),
-        specDecision("d3", { links: [specShaped(specStatementRef("r2"))] }),
+        answerNode("spec#b-r1", "requirement", { role: "query" }),
+        answerNode("spec#b-r2", "requirement", { role: "query" }),
+        specDecision("d1", {
+          decision: { kind: "person", links: [specShaped(specStatementRef("r1"))] },
+        }),
+        specDecision("d2", { decision: { links: [specShaped(specStatementRef("r1"))] } }),
+        specDecision("d3", { decision: { links: [specShaped(specStatementRef("r2"))] } }),
       ]),
     },
   };
@@ -2252,10 +2263,12 @@ test("a Spec run waits on a person's decision that stands after an overtaken one
     ),
     views: {
       spec: specViewAnswer([
-        answerNode("spec#b-r1", "requirement", { mark: "query" }),
-        specDecision("d1", { links: [specShaped(specStatementRef("r1"))] }),
-        specDecision("d2", { kind: "person", links: [specShaped(specStatementRef("r1"))] }),
-        specDecision("d3", { links: [specShaped(specStatementRef("r1"))] }),
+        answerNode("spec#b-r1", "requirement", { role: "query" }),
+        specDecision("d1", { decision: { links: [specShaped(specStatementRef("r1"))] } }),
+        specDecision("d2", {
+          decision: { kind: "person", links: [specShaped(specStatementRef("r1"))] },
+        }),
+        specDecision("d3", { decision: { links: [specShaped(specStatementRef("r1"))] } }),
       ]),
     },
   };
@@ -2282,13 +2295,15 @@ test("a Spec run is not headed by a person's decision drawn by an overtaken ques
     ),
     views: {
       spec: specViewAnswer([
-        answerNode("spec#b-r1", "requirement", { mark: "query" }),
+        answerNode("spec#b-r1", "requirement", { role: "query" }),
         specDecision("d1", {
-          asks: ["ask-1"],
-          kind: "person",
-          links: [specShaped(specStatementRef("r1"))],
+          decision: {
+            asks: ["ask-1"],
+            kind: "person",
+            links: [specShaped(specStatementRef("r1"))],
+          },
         }),
-        specDecision("d2", { links: [specShaped(specStatementRef("r1"))] }),
+        specDecision("d2", { decision: { links: [specShaped(specStatementRef("r1"))] } }),
       ]),
     },
   };
@@ -2330,14 +2345,16 @@ test("an opened Spec line keeps a run that waits on the asks read", async () => 
     ),
     views: {
       spec: specViewAnswer([
-        answerNode("spec#b-r1", "requirement", { mark: "query" }),
+        answerNode("spec#b-r1", "requirement", { role: "query" }),
         // The view read's own state, which the view's rows carry.
         ...["r2", "r3", "r4"].map((block) =>
-          answerNode(`spec#b-${block}`, "requirement", { mark: "query", state: "overtaken" })
+          answerNode(`spec#b-${block}`, "requirement", { role: "query", state: "overtaken" })
         ),
-        specDecision("d1", { links: [specShaped(specStatementRef("r4"))] }),
-        specDecision("d2", { kind: "person", links: [specShaped(specStatementRef("r2"))] }),
-        specDecision("d3", { links: [specShaped(specStatementRef("r2"))] }),
+        specDecision("d1", { decision: { links: [specShaped(specStatementRef("r4"))] } }),
+        specDecision("d2", {
+          decision: { kind: "person", links: [specShaped(specStatementRef("r2"))] },
+        }),
+        specDecision("d3", { decision: { links: [specShaped(specStatementRef("r2"))] } }),
       ]),
     },
   };
@@ -2366,11 +2383,13 @@ test("a Spec run of one decision is one run across an overtaken statement", () =
     ),
     views: {
       spec: specViewAnswer([
-        answerNode("spec#b-r1", "requirement", { mark: "query" }),
-        answerNode("spec#b-r2", "requirement", { mark: "query", state: "overtaken" }),
-        answerNode("spec#b-r3", "requirement", { mark: "query" }),
+        answerNode("spec#b-r1", "requirement", { role: "query" }),
+        answerNode("spec#b-r2", "requirement", { role: "query", state: "overtaken" }),
+        answerNode("spec#b-r3", "requirement", { role: "query" }),
         specDecision("d1", {
-          links: [specShaped(specStatementRef("r1")), specShaped(specStatementRef("r3"))],
+          decision: {
+            links: [specShaped(specStatementRef("r1")), specShaped(specStatementRef("r3"))],
+          },
         }),
       ]),
     },
@@ -2747,25 +2766,36 @@ test("the lens a cut-short chain stopped at carries the tree's marks", async () 
   }
 });
 
-/** One node of the tree read's answer as the contract gives it (`answerNode`): live and visible
+/** What a case gives a node of the tree read beside its name and supertag: any member of the
+ *  generated node `treeNode` takes, and its parent, named as `treeNode` names one - under the
+ *  issue unless it names another. */
+type ReadExtra = TreeNodeExtra & { readonly parent?: string | IssueTreeParent | null };
+
+/** One node of the tree read's answer as the route sends it (`treeNode`): live and visible
  *  to every reader unless the case says otherwise, under the issue unless it names another
  *  parent, with words of its own. */
 function readNode(
   id: string,
   supertag: string,
-  extra: Partial<TreeAnswerNode> = {}
+  { parent = KEY, ...extra }: ReadExtra = {}
 ): TreeAnswerNode {
-  return answerNode(id, supertag, { text: `Words of ${id}.`, ...extra });
+  return treeNode(id, supertag, parent, { text: `Words of ${id}.`, ...extra });
+}
+
+/** The read's own id of the block `id` of the issue's document `slug`, as the route names a
+ *  typed block (`<KEY>/<slug>#<block id>`). */
+function blockReadId(slug: string, id: string): string {
+  return `${KEY}/${slug}#${id}`;
 }
 
 /** A typed block of the issue's document `slug`, at `position` in it, which the tree draws by a
- *  tree id (`<slug>#b-<id>`) that is not its read id. */
+ *  tree id (`<slug>#b-<id>`) that is not its read id (`blockReadId`). */
 function readBlock(
   id: string,
   supertag: string,
   slug: string,
   position: number,
-  extra: Partial<TreeAnswerNode> = {}
+  extra: ReadExtra = {}
 ): TreeAnswerNode {
   return readNode(id, supertag, {
     document: { artifact_id: `artifact-${slug}`, position, slug },
@@ -2776,16 +2806,10 @@ function readBlock(
 /** The issue's own node, which every node of a tree read hangs from. */
 const ISSUE_NODE = readNode(KEY, "issue", { parent: null });
 
-/** One answer of the tree read, or of one of its views, every page merged. */
+/** One answer of the tree read, or of one of its views, every page merged, each parent a node
+ *  names by name named as the route names it (`treeAnswer`). */
 function readAnswer(nodes: readonly TreeAnswerNode[]): TreeAnswer {
-  return {
-    converted: true,
-    cursor: null,
-    nodes: [...nodes],
-    tree: "artifact-tree",
-    tuples: [],
-    view_of: null,
-  };
+  return treeAnswer(nodes, [], { converted: true, tree: "artifact-tree" });
 }
 
 /** The issue the tree read is of, as `issueQuery` loads it, with the Verification document the
@@ -2831,7 +2855,8 @@ const READ_KINDS: readonly (readonly [NodeType, string | undefined])[] = [
 ];
 
 /** One node of each kind of `READ_KINDS` for each of `values`, under the issue: the node of the
- *  kind `kind` given the n-th values is read by the id `<kind>-<n>`. */
+ *  kind `kind` given the n-th values is named `<kind>-<n>`, and read by the id `kindReadId`
+ *  gives it. */
 function eachKind(values: readonly Partial<TreeAnswerNode>[]): TreeAnswerNode[] {
   return READ_KINDS.flatMap(([kind, slug], k) =>
     values.map((extra, n) =>
@@ -2840,6 +2865,13 @@ function eachKind(values: readonly Partial<TreeAnswerNode>[]): TreeAnswerNode[] 
         : readBlock(`${kind}-${n}`, kind, slug, k * values.length + n, extra)
     )
   );
+}
+
+/** The read's own id of the node of kind `kind` that `eachKind` gives the n-th values: a typed
+ *  block's id in its document (`blockReadId`), else its name. */
+function kindReadId(kind: NodeType, n: number): string {
+  const slug = READ_KINDS.find(([one]) => one === kind)?.[1];
+  return slug === undefined ? `${kind}-${n}` : blockReadId(slug, `${kind}-${n}`);
 }
 
 // A node of every kind the outline draws takes its life from the `state` the tree read
@@ -2856,15 +2888,15 @@ test("a node of any kind the tree read answers proposed or overtaken has that li
     ])
   );
   for (const [kind, slug] of READ_KINDS) {
-    const proposed = readNodeOf(root, `${kind}-0`);
-    const overtaken = readNodeOf(root, `${kind}-1`);
+    const proposed = readNodeOf(root, kindReadId(kind, 0));
+    const overtaken = readNodeOf(root, kindReadId(kind, 1));
     expect(proposed?.type, kind).toBe(kind);
     if (slug !== undefined) expect(proposed?.id, kind).toBe(`${slug}#b-${kind}-0`);
     expect(markKeys(proposed), kind).toEqual(["life"]);
     expect(proposed?.life, kind).toBe("proposed");
     expect(markKeys(overtaken), kind).toEqual(["closed", "life"]);
     expect(overtaken?.life, kind).toBe("overtaken");
-    for (const id of [`${kind}-2`, `${kind}-3`]) {
+    for (const id of [kindReadId(kind, 2), kindReadId(kind, 3)]) {
       expect(readNodeOf(root, id)?.type, id).toBe(kind);
       expect(markKeys(readNodeOf(root, id)), id).toEqual([]);
     }
@@ -2883,12 +2915,14 @@ test("a node of any kind whose visibility is author is marked Only you", () => {
     ])
   );
   for (const [kind] of READ_KINDS) {
-    expect(markKeys(readNodeOf(root, `${kind}-0`)), kind).toEqual(["onlyYou"]);
-    expect(readNodeOf(root, `${kind}-0`)?.onlyYou, kind).toBe(true);
-    expect(markKeys(readNodeOf(root, `${kind}-1`)), kind).toEqual(["life", "onlyYou"]);
-    expect(markKeys(readNodeOf(root, `${kind}-2`)), kind).toEqual([]);
+    expect(markKeys(readNodeOf(root, kindReadId(kind, 0))), kind).toEqual(["onlyYou"]);
+    expect(readNodeOf(root, kindReadId(kind, 0))?.onlyYou, kind).toBe(true);
+    expect(markKeys(readNodeOf(root, kindReadId(kind, 1))), kind).toEqual(["life", "onlyYou"]);
+    expect(markKeys(readNodeOf(root, kindReadId(kind, 2))), kind).toEqual([]);
   }
-  const drawn = render(createElement(NodeMarks, { marks: readNodeOf(root, "decision-0") ?? {} }));
+  const drawn = render(
+    createElement(NodeMarks, { marks: readNodeOf(root, kindReadId("decision", 0)) ?? {} })
+  );
   try {
     expect(
       [...drawn.container.querySelectorAll("[data-node-mark]")].map((mark) => mark.textContent)
@@ -2909,23 +2943,23 @@ test("a view's rows carry their own state", () => {
     readBlock("r3", "requirement", "spec", 2),
   ]);
   const spec = readAnswer([
-    readBlock("r1", "requirement", "spec", 0, { mark: "query", state: "proposed" }),
-    readBlock("r2", "requirement", "spec", 1, { mark: "query" }),
-    readBlock("r3", "requirement", "spec", 2, { mark: "query", visibility: "author" }),
+    readBlock("r1", "requirement", "spec", 0, { role: "query", state: "proposed" }),
+    readBlock("r2", "requirement", "spec", 1, { role: "query" }),
+    readBlock("r3", "requirement", "spec", 2, { role: "query", visibility: "author" }),
   ]);
-  expect(markKeys(readNodeOf(outline, "r1"))).toEqual([]);
-  expect(readNodeOf(outline, "r2")?.life).toBe("proposed");
+  expect(markKeys(readNodeOf(outline, blockReadId("spec", "r1")))).toEqual([]);
+  expect(readNodeOf(outline, blockReadId("spec", "r2"))?.life).toBe("proposed");
 
   const view = presetView({ ...outline, views: { spec } }, "spec", "").root;
   expect(view.children.map((row) => [row.readId, markKeys(row), row.life, row.onlyYou])).toEqual([
-    ["r1", ["life"], "proposed", undefined],
-    ["r2", [], undefined, undefined],
-    ["r3", ["onlyYou"], undefined, true],
+    [blockReadId("spec", "r1"), ["life"], "proposed", undefined],
+    [blockReadId("spec", "r2"), [], undefined, undefined],
+    [blockReadId("spec", "r3"), ["onlyYou"], undefined, true],
   ]);
 });
 
 // The Plan view answers a plan task's parent statement by its id, kind and first line
-// alone (`parent_line`), and nothing of its state. The parent line names the statement by its
+// alone (`parent`), and nothing of its state. The parent line names the statement by its
 // read id and takes the state the tree read with no view gives it, so statement 7 is marked on
 // plan task 7's line, though the view holds no node of it; the plan task itself carries the
 // view's own state, and a live statement's line carries nothing.
@@ -2936,18 +2970,15 @@ test("a parent line in a view takes its parent's state from the tree when the vi
     readBlock("r8", "requirement", "spec", 1),
     readBlock("t8", "plan_task", "plan-md", 1, { parent: "r8" }),
   ]);
-  const lineOf = (id: string) => ({ id, line: `Words of ${id}.`, supertag: "requirement" });
+  const lineOf = (id: string): IssueTreeParent => ({
+    first_line: `Words of ${id}.`,
+    id: blockReadId("spec", id),
+    kind: "block",
+    supertag: "requirement",
+  });
   const plan = readAnswer([
-    readBlock("t7", "plan_task", "plan-md", 0, {
-      mark: "query",
-      parent: "r7",
-      parent_line: lineOf("r7"),
-    }),
-    readBlock("t8", "plan_task", "plan-md", 1, {
-      mark: "query",
-      parent: "r8",
-      parent_line: lineOf("r8"),
-    }),
+    readBlock("t7", "plan_task", "plan-md", 0, { parent: lineOf("r7"), role: "query" }),
+    readBlock("t8", "plan_task", "plan-md", 1, { parent: lineOf("r8"), role: "query" }),
   ]);
 
   const rows = presetView({ ...outline, views: { plan } }, "plan", "").root.children;
@@ -2960,8 +2991,8 @@ test("a parent line in a view takes its parent's state from the tree when the vi
       row.parentLine?.onlyYou,
     ])
   ).toEqual([
-    ["t7", [], "r7", "proposed", true],
-    ["t8", [], "r8", undefined, undefined],
+    [blockReadId("plan-md", "t7"), [], blockReadId("spec", "r7"), "proposed", true],
+    [blockReadId("plan-md", "t8"), [], blockReadId("spec", "r8"), undefined, undefined],
   ]);
 });
 
@@ -2976,15 +3007,19 @@ test("a node the view holds live stays live whatever the outline says", () => {
     readBlock("r2", "requirement", "spec", 1),
   ]);
   const verification = readAnswer([
-    readBlock("r1", "requirement", "spec", 0, { mark: "context" }),
-    readBlock("c1", "check", "verification-md", 0, { mark: "query", parent: "r1" }),
-    readBlock("r2", "requirement", "spec", 1, { mark: "context" }),
+    readBlock("r1", "requirement", "spec", 0, { role: "context" }),
+    readBlock("c1", "check", "verification-md", 0, { parent: "r1", role: "query" }),
+    readBlock("r2", "requirement", "spec", 1, { role: "context" }),
   ]);
-  expect(markKeys(readNodeOf(outline, "r1"))).toEqual(["closed", "life"]);
-  expect(markKeys(readNodeOf(outline, "c1"))).toEqual(["closed"]);
+  expect(markKeys(readNodeOf(outline, blockReadId("spec", "r1")))).toEqual(["closed", "life"]);
+  expect(markKeys(readNodeOf(outline, blockReadId("verification-md", "c1")))).toEqual(["closed"]);
 
   const view = presetView({ ...outline, views: { verification } }, "verification", "").root;
-  for (const readId of ["r1", "c1", "r2"]) {
+  for (const readId of [
+    blockReadId("spec", "r1"),
+    blockReadId("verification-md", "c1"),
+    blockReadId("spec", "r2"),
+  ]) {
     expect(readNodeOf(view, readId), readId).toBeDefined();
     expect(markKeys(readNodeOf(view, readId)), readId).toEqual([]);
   }
@@ -3009,29 +3044,26 @@ test("a statement under an overtaken question a view draws no row for draws no N
       readBlock("r3", "requirement", "spec", 1, { parent: "ask-1" }),
       readBlock("c3", "check", "verification-md", 1, { parent: "r3" }),
     ]);
-    const asks = { id: "ask-1", line: "Words of ask-1.", supertag: "ask" };
+    const asks: IssueTreeParent = {
+      first_line: "Words of ask-1.",
+      id: "ask-1",
+      kind: "ask",
+      supertag: "ask",
+    };
     const spec = readAnswer([
-      readBlock("r1", "requirement", "spec", 0, { mark: "query" }),
-      readBlock("r3", "requirement", "spec", 1, {
-        mark: "query",
-        parent: "ask-1",
-        parent_line: asks,
-      }),
+      readBlock("r1", "requirement", "spec", 0, { role: "query" }),
+      readBlock("r3", "requirement", "spec", 1, { parent: asks, role: "query" }),
     ]);
     const verification = readAnswer([
-      readBlock("r1", "requirement", "spec", 0, { mark: "context" }),
-      readBlock("c1", "check", "verification-md", 0, { mark: "query", parent: "r1" }),
-      readBlock("r3", "requirement", "spec", 1, {
-        mark: "context",
-        parent: "ask-1",
-        parent_line: asks,
-      }),
-      readBlock("c3", "check", "verification-md", 1, { mark: "query", parent: "r3" }),
+      readBlock("r1", "requirement", "spec", 0, { role: "context" }),
+      readBlock("c1", "check", "verification-md", 0, { parent: "r1", role: "query" }),
+      readBlock("r3", "requirement", "spec", 1, { parent: asks, role: "context" }),
+      readBlock("c3", "check", "verification-md", 1, { parent: "r3", role: "query" }),
     ]);
     return { ...outline, views: { spec, verification } };
   };
   const closedIn = (root: TreeNode, preset: "spec" | "verification") =>
-    readNodeOf(presetView(root, preset, "").root, "r3")?.closed === true;
+    readNodeOf(presetView(root, preset, "").root, blockReadId("spec", "r3"))?.closed === true;
 
   const overtaken = rootWith({ state: "overtaken" });
   const detail = drawSpec(overtaken);
@@ -3100,22 +3132,22 @@ test("a words match lifted under a parent the outline holds under an overtaken n
     readBlock("r3", "requirement", "spec", 2, { parent: "r2", text: "A zebra crosses r3." }),
   ]);
   const spec = readAnswer([
-    readBlock("r1", "requirement", "spec", 0, { mark: "query", text: "The page draws r1." }),
+    readBlock("r1", "requirement", "spec", 0, { role: "query", text: "The page draws r1." }),
     readBlock("r2", "requirement", "spec", 1, {
-      mark: "query",
-      parent: "ask-1",
-      parent_line: { id: "ask-1", line: "Words of ask-1.", supertag: "ask" },
+      parent: { first_line: "Words of ask-1.", id: "ask-1", kind: "ask", supertag: "ask" },
+      role: "query",
       text: "The page draws r2.",
     }),
     readBlock("r3", "requirement", "spec", 2, {
-      mark: "query",
       parent: "r2",
+      role: "query",
       text: "A zebra crosses r3.",
     }),
   ]);
   const root = { ...outline, views: { spec } };
-  const r3Under = (query: string) => readNodeOf(presetView(root, "spec", query).root, "r3");
-  expect(readNodeOf(outline, "r3")?.closed).toBe(true);
+  const r3Under = (query: string) =>
+    readNodeOf(presetView(root, "spec", query).root, blockReadId("spec", "r3"));
+  expect(readNodeOf(outline, blockReadId("spec", "r3"))?.closed).toBe(true);
   expect(r3Under("")?.closed).toBe(true);
   expect(r3Under("zebra")?.parentLine?.id).toBe("spec#b-r2");
   expect(r3Under("zebra")?.closed).toBe(true);
@@ -3136,7 +3168,12 @@ test("a words match lifted under a parent the outline holds under an overtaken n
 // questions of one overtaken comment fold with that comment alone, though each carries its own
 // question as its parent line, so the line says "1 overtaken".
 test("the Verification issue's line counts the overtaken node its statements stand under once", () => {
-  const asked = (id: string) => ({ id, line: `Words of ${id}.`, supertag: "ask" });
+  const asked = (id: string): IssueTreeParent => ({
+    first_line: `Words of ${id}.`,
+    id,
+    kind: "ask",
+    supertag: "ask",
+  });
   const outline = outlineOf([
     readBlock("r1", "requirement", "spec", 0),
     readBlock("c1", "check", "verification-md", 0, { parent: "r1" }),
@@ -3149,20 +3186,12 @@ test("the Verification issue's line counts the overtaken node its statements sta
     readBlock("c4", "check", "verification-md", 2, { parent: "r4" }),
   ]);
   const verification = readAnswer([
-    readBlock("r1", "requirement", "spec", 0, { mark: "context" }),
-    readBlock("c1", "check", "verification-md", 0, { mark: "query", parent: "r1" }),
-    readBlock("r3", "requirement", "spec", 1, {
-      mark: "context",
-      parent: "ask-1",
-      parent_line: asked("ask-1"),
-    }),
-    readBlock("c3", "check", "verification-md", 1, { mark: "query", parent: "r3" }),
-    readBlock("r4", "requirement", "spec", 2, {
-      mark: "context",
-      parent: "ask-2",
-      parent_line: asked("ask-2"),
-    }),
-    readBlock("c4", "check", "verification-md", 2, { mark: "query", parent: "r4" }),
+    readBlock("r1", "requirement", "spec", 0, { role: "context" }),
+    readBlock("c1", "check", "verification-md", 0, { parent: "r1", role: "query" }),
+    readBlock("r3", "requirement", "spec", 1, { parent: asked("ask-1"), role: "context" }),
+    readBlock("c3", "check", "verification-md", 1, { parent: "r3", role: "query" }),
+    readBlock("r4", "requirement", "spec", 2, { parent: asked("ask-2"), role: "context" }),
+    readBlock("c4", "check", "verification-md", 2, { parent: "r4", role: "query" }),
   ]);
   const root = { ...outline, views: { verification } };
   const drawn = drawVerification(root, []);
@@ -3178,13 +3207,15 @@ test("the Verification issue's line counts the overtaken node its statements sta
   // node it stands under, in the outline and in the view alike.
   const comment = readNodeOf(outline, "com-1")?.id;
   expect(comment).toBeDefined();
-  expect(readNodeOf(outline, "r3")?.closedBy).toBe(comment);
+  expect(readNodeOf(outline, blockReadId("spec", "r3"))?.closedBy).toBe(comment);
   const view = presetView(root, "verification", "").root;
-  expect(["r3", "r4"].map((id) => readNodeOf(view, id)?.parentLine?.id)).toEqual([
-    "ask-1",
-    "ask-2",
+  expect(
+    ["r3", "r4"].map((id) => readNodeOf(view, blockReadId("spec", id))?.parentLine?.id)
+  ).toEqual(["ask-1", "ask-2"]);
+  expect(["r3", "r4"].map((id) => readNodeOf(view, blockReadId("spec", id))?.closedBy)).toEqual([
+    comment,
+    comment,
   ]);
-  expect(["r3", "r4"].map((id) => readNodeOf(view, id)?.closedBy)).toEqual([comment, comment]);
 });
 
 /** Where the page's address stands, drawn by a probe that runs `useOvertakenTarget` as the
@@ -3269,7 +3300,8 @@ function marksIn(element: Element | null | undefined): (string | undefined)[] {
 }
 
 /** The Decisions view over `root`, with `made` the nodes of the decisions view the page holds on
- *  the issue's node (`TreeNode.views`), drawn as its slot draws it
+ *  the issue's node (`TreeNode.views`), with the `shaped` tuples their links are, as the route
+ *  answers them (`shapedTuples`), drawn as its slot draws it
  *  (`DecisionsFilterBody.drawn.test.tsx`'s `renderBody`): no words, and an address that names
  *  the nodes `named`, which the view keeps whatever it draws. */
 function drawDecisions(
@@ -3280,7 +3312,7 @@ function drawDecisions(
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
-  const held = decisionsAnswer(made);
+  const held = decisionsAnswer(made, shapedTuples(made));
   client.setQueryData(issueTreeKey(KEY), held);
   client.setQueryData(viewKey(KEY, "decisions"), held);
   client.setQueryData(["asks", KEY], []);
@@ -3350,10 +3382,12 @@ test("the Decisions view marks a proposed decision and its parent line", () => {
   );
   const view = drawDecisions(root, [
     decision("under", {
-      links: [shaped(specRef("s7")), shaped(specRef("s1"))],
-      waiting_review: false,
+      decision: {
+        links: [shaped(specRef("s7")), shaped(specRef("s1"))],
+        waiting_review: false,
+      },
     }),
-    decision("waiting", { links: [shaped(specRef("s1"))] }),
+    decision("waiting", { decision: { links: [shaped(specRef("s1"))] } }),
   ]);
   try {
     // Waiting for the reader's review: the mark after the state's word, on the state's line.
@@ -3402,9 +3436,9 @@ test("the Decisions view marks a proposed decision and its parent line", () => {
   }
 });
 
-// A person's decision that restates an answer ties the answered question to the statements it
-// shaped: the question's row draws them, each with the marks of the statement itself, since the
-// question's own chips are none of the decision's ties.
+// A person's decision, which the read answers on the answered question itself, ties that question
+// to the statements it shaped: the question's row draws them, each with the marks of the statement
+// itself, since the question's own chips are none of the decision's ties.
 test("under Decisions a statement an answered question informs carries its own marks", () => {
   const root = stamped(
     node(KEY, "issue", [
@@ -3415,7 +3449,7 @@ test("under Decisions a statement an answered question informs carries its own m
     { [specStatement("s7").id]: { life: "proposed" } }
   );
   const view = drawDecisions(root, [
-    decision("restate", { asks: ["a-put"], kind: "person", links: [shaped(specRef("s7"))] }),
+    personDecision("a-put", { decision: { links: [shaped(specRef("s7"))] } }),
   ]);
   try {
     const informs = rowOf(view.container, "a-put")?.querySelector(
@@ -3441,7 +3475,9 @@ test("under Decisions an answered question draws no tie of an overtaken decision
     { [restate.id]: { life: "overtaken" } }
   );
   const view = drawDecisions(root, [
-    decision("restate", { asks: ["a-put"], kind: "person", links: [shaped(specRef("s1"))] }),
+    decision("restate", {
+      decision: { asks: ["a-put"], kind: "person", links: [shaped(specRef("s1"))] },
+    }),
   ]);
   try {
     const asked = rowOf(view.container, "a-put");
@@ -3470,8 +3506,8 @@ test("under Decisions `q` and `w` go past an overtaken question and decision", a
   const view = drawDecisions(
     root,
     [
-      decision("d-past", { links: [shaped(specRef("s1"))] }),
-      decision("d-live", { links: [shaped(specRef("s1"))] }),
+      decision("d-past", { decision: { links: [shaped(specRef("s1"))] } }),
+      decision("d-live", { decision: { links: [shaped(specRef("s1"))] } }),
     ],
     [statementId]
   );

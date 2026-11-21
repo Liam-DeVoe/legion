@@ -1,4 +1,4 @@
-import type { IssueTreeAnswer } from "../web/src/api/client";
+import type { IssueTreeRead } from "../web/src/api/types";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import { chipWords } from "../web/src/features/issue-page/node-row-chip";
 import {
@@ -266,8 +266,8 @@ function lineHolding(items: readonly TreeItem[], readId: string): TreeItem | und
 }
 
 /** The node `readId` of `answer`'s words, as the read holds them. */
-function wordsOf(answer: IssueTreeAnswer, readId: string): string {
-  return answer.nodes.find((node) => node.id === readId)?.text ?? "";
+function wordsOf(answer: IssueTreeRead, readId: string): string {
+  return answer.nodes?.find((node) => node.id === readId)?.text ?? "";
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -277,7 +277,7 @@ function wordsOf(answer: IssueTreeAnswer, readId: string): string {
 /** What row 1 reads its page with: the issue, its tree read, the id the page draws each node of
  *  that read under, and the page's one watcher of its requests, made before its first load. */
 interface ProposedPage {
-  readonly answer: IssueTreeAnswer;
+  readonly answer: IssueTreeRead;
   readonly key: string;
   readonly plain: string;
   readonly seeded: NodeStateSeed;
@@ -399,12 +399,12 @@ async function expectOvertakenFold(page: Page, read: ProposedPage): Promise<void
     "a path is open to an overtaken node on load"
   ).toBe(0);
 
-  const parent = answer.nodes.find((node) => node.id === ids.statement8)?.parent ?? null;
+  const parent = answer.nodes?.find((node) => node.id === ids.statement8)?.parent?.id ?? null;
   const parentId = parent === null ? key : treeId(parent);
   const parentRow = parentId === key ? null : items.find((item) => item.id === parentId);
-  const held = answer.nodes.filter(
+  const held = (answer.nodes ?? []).filter(
     (node) =>
-      node.parent === parent &&
+      (node.parent?.id ?? null) === parent &&
       node.state === "overtaken" &&
       (node.issue === undefined || node.issue === key)
   ).length;
@@ -594,8 +594,8 @@ async function expectProposedViews(page: Page, read: ProposedPage): Promise<void
     })
     .toBe(statements - 2);
   await expectNoRawValue(page, "under Verification");
-  const result = answer.nodes.find(
-    (node) => node.supertag === "result" && node.parent === ids.check2
+  const result = answer.nodes?.find(
+    (node) => node.supertag === "result" && node.parent?.id === ids.check2
   );
   expect(result?.text ?? "", "the tree read holds no words of check 2's result").not.toBe("");
   await gotoIssue(
@@ -779,7 +779,9 @@ test("a proposed node is marked and settled on the page, and an overtaken one fo
       "the load sends a request of the node state routes"
     ).toEqual([]);
     const answer = await heldTreeAnswer(tree, "the load", (held) =>
-      held.nodes.some((node) => node.id === seeded.ids.statement7 && node.state === "proposed")
+      (held.nodes ?? []).some(
+        (node) => node.id === seeded.ids.statement7 && node.state === "proposed"
+      )
     );
     const read: ProposedPage = {
       answer,
@@ -833,7 +835,9 @@ test("a refused settle says why and leaves the row as it was", async ({ browser 
     const traffic = watchApiRequests(page);
     await gotoIssue(page, presetPath(key, "conversation"));
     await heldTreeAnswer(tree, "the load", (held) =>
-      held.nodes.some((node) => node.id === seeded.ids.statement7 && node.state === "proposed")
+      (held.nodes ?? []).some(
+        (node) => node.id === seeded.ids.statement7 && node.state === "proposed"
+      )
     );
     await expectLoadSettled(traffic);
     const statement7 = await drawnRowId(page, seeded.ids.statement7, "statement 7");
@@ -889,7 +893,7 @@ test("a refused settle says why and leaves the row as it was", async ({ browser 
 /** What one reader's page draws of the issue, and the reads it drew it from. */
 interface ReaderReading {
   /** The reader's own tree read. */
-  readonly answer: IssueTreeAnswer;
+  readonly answer: IssueTreeRead;
   /** The read id of every row drawn with every body and every branch open. */
   readonly drawn: ReadonlySet<string>;
   /** Each filter control's count, read with that filter on. */
@@ -979,7 +983,7 @@ async function readAsReader(
 
 /** The read id of the node of `answer` that holds `word`; throws, naming `what`, where none
  *  does. */
-function readIdHolding(answer: IssueTreeAnswer, word: string, what: string): string {
+function readIdHolding(answer: IssueTreeRead, word: string, what: string): string {
   const node = nodeHolding(answer, word);
   if (node === undefined) throw new Error(`the tree read holds no ${what} (${word})`);
   return node.id;
@@ -1039,7 +1043,7 @@ async function statementTwoReferences(
   page: Page,
   key: string,
   statementTwo: string,
-  answer: IssueTreeAnswer,
+  answer: IssueTreeRead,
   who: string
 ): Promise<number | null> {
   if (!noteOwed(FOCUSED_FACTS_GATE)) return null;
@@ -1239,8 +1243,8 @@ test("a node reserved for its author is on its author's page and on nobody else'
         "her Referenced by of statement 2 is not bob's and the reserved nodes'"
       ).toBe(
         hisReferences +
-          her.answer.tuples.filter(
-            (tuple) => tuple.to === statementTwo && reservedIds.has(tuple.from)
+          (her.answer.tuples ?? []).filter(
+            (tuple) => tuple.to.id === statementTwo && reservedIds.has(tuple.from.id)
           ).length
       );
     }

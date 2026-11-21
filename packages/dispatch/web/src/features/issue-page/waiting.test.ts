@@ -628,6 +628,12 @@ test("a decision node no document holds waits on nobody", () => {
   expect(waits(tree, coverage)).toEqual([0, []]);
 });
 
+/** The parent a case names by `name`, as `tree-fixtures.ts`'s `treeParent` gives it, which
+ *  `treeAnswer` names as the route does. */
+function parentNamed(name: string): NonNullable<TreeAnswerNode["parent"]> {
+  return { first_line: "", id: name, kind: "", supertag: "" };
+}
+
 /** What the count of `about` over `tree` counts for alice, and the id of each node of the tree
  *  that waits on her: the two read the same open asks and the same decision nodes. */
 function countedAndDrawn(tree: TreeAnswer, about: IssueDetails) {
@@ -673,7 +679,7 @@ test("no reader is waited on for an overtaken ask", () => {
       answerOf([
         statement,
         decisionNode("old", [], { state: "overtaken" }),
-        ...mine({ parent: "old" }),
+        ...mine({ parent: parentNamed("old") }),
         askBlock(),
       ]),
       asking
@@ -698,7 +704,7 @@ test("an overtaken decision waits on nobody", () => {
     answerOf([
       statement,
       decisionNode("old", ["r1"], old),
-      decisionNode("under", ["r1"], { parent: "old" }),
+      { ...decisionNode("under", ["r1"]), parent: parentNamed("old") },
       decisionNode("waits", ["r1"]),
     ]);
 

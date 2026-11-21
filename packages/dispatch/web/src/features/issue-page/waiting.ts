@@ -4,7 +4,7 @@ import { decisionsOfAnswer } from "./decision-nodes/decision-nodes";
 import { decisionNodeChanges, inReviewList } from "./decision-review";
 import { isOvertaken } from "./issue-address";
 import { statesOfRead } from "./tree-read/tree-nodes";
-import type { TreeAnswer } from "./tree-read/tree-read";
+import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
 
 /**
  * What waits on the reader, as the header's count counts it: each open ask of the issue whose
@@ -67,7 +67,7 @@ export function waitingOnReader(
       { ...issue, open_asks: (issue.open_asks ?? []).filter((ask) => !askIn(closed, ask)) },
       viewer,
       isCoverageStatement,
-      { ...tree, nodes: tree.nodes.filter((node) => !closed.has(nodeKey(node))) }
+      { ...tree, nodes: (tree.nodes ?? []).filter((node) => !closed.has(nodeKey(node))) }
     );
   }
   const open =
@@ -103,10 +103,13 @@ function blockKey(documentId: string, blockId: string): string {
   return `${documentId}#${blockId}`;
 }
 
-/** A node of the tree read by where it stands: a typed block by its document and its id, since
- *  the read names a block by its id within its document, and any other node by its own id. */
-function nodeKey(node: TreeAnswer["nodes"][number]): string {
-  return node.document === undefined ? node.id : blockKey(node.document.artifact_id, node.id);
+/** A node of the tree read by where it stands: a typed block by its document and its block id
+ *  (`block_id`), since the read names a block by its id within its document, and any other node
+ *  by its own id. */
+function nodeKey(node: TreeAnswerNode): string {
+  return node.document === undefined
+    ? node.id
+    : blockKey(node.document.artifact_id, node.block_id ?? node.id);
 }
 
 /**
@@ -120,7 +123,7 @@ function closedKeys(tree: TreeAnswer | undefined): ReadonlySet<string> {
   // The read's own id of each, which is what a child's `parent` names.
   const parents = new Set<string>();
   for (const node of tree?.nodes ?? []) {
-    const under = node.parent !== null && parents.has(node.parent);
+    const under = node.parent !== null && parents.has(node.parent.id);
     if (!under && !isOvertaken(statesOfRead(node))) continue;
     parents.add(node.id);
     closed.add(nodeKey(node));
