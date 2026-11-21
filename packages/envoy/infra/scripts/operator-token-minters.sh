@@ -133,9 +133,10 @@
 #                     those; a token Secret is read) or create on a custom resource there, and by
 #                     its name, create serviceaccounts/token or impersonate; each of those rights is
 #                     read in the cluster's live roles too, so one limited by name (a patch of one
-#                     Deployment sets its serviceAccountName) is a finding naming the chain. A
-#                     system namespace's ServiceAccount is reviewed too, never a finding itself, but
-#                     when it is allowed a right asked, who can become it is followed the same way.
+#                     Deployment sets its serviceAccountName) is a finding naming the chain; a read
+#                     of them that fails is UNKNOWN. A system namespace's ServiceAccount is reviewed
+#                     too, never a finding itself, but when it is allowed a right asked, outright or
+#                     by name in a live role, who can become it is followed the same way.
 #   live: Workload    The Workload Identity member names the workload pool (<pool>.svc.id.goog,
 #     Identity        --pool-project, by default --project), the namespace and the ServiceAccount,
 #                     never the cluster, so every cluster that uses the pool can act as the Google
