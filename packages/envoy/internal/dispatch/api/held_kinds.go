@@ -288,6 +288,9 @@ func (c commentCreate) answer(_ reviewer.Kind, id string, actor model.Actor, at 
 		comment.Suggestion = &model.Suggestion{ReplaceWith: c.Input.Suggestion.ReplaceWith}
 	}
 	if wrote := dry.comment; wrote != nil {
+		// The post climbs a reply to the head of its thread, the root comment or the ask
+		// (threadHeadOf), and keeps the comment the request named as answers.
+		comment.ReplyTo, comment.AskID = wrote.ReplyTo, wrote.AskID
 		comment.Anchor, comment.Turn, comment.Answers = heldAnchor(wrote.Anchor), wrote.Turn, wrote.Answers
 		comment.ReplyBlock, comment.RepliesToBlock = wrote.ReplyBlock, wrote.RepliesToBlock
 		if wrote.Mentions != nil {

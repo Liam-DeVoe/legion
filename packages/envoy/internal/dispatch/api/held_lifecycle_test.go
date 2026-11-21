@@ -792,6 +792,51 @@ func TestAHeldCommentsAnswerStatesTheAnchorAndTurnItPosts(t *testing.T) {
 	}
 }
 
+// A held comment that replies inside a thread answers the thread its post writes it in: the post
+// climbs reply_to to the thread's head (threadHeadOf) and keeps the comment the request named as
+// answers. A reply to a reply answers reply_to the thread's root comment, and a reply to a comment
+// in an ask's thread answers no reply_to and ask_id that ask, each as the posted comment holds it.
+func TestAHeldCommentReplyingInsideAThreadAnswersTheThreadItPostsIn(t *testing.T) {
+	rig := newReviewRig(t, ReviewerConfig{Comments: ReviewHold, WriterWindow: time.Minute}, nil)
+	comments := "/api/v1/issues/" + rig.issue + "/comments"
+	alice := func(body map[string]any) string {
+		t.Helper()
+		response := dispatchRequest(t, rig.handler, http.MethodPost, comments, body, "alice")
+		if response.Code != http.StatusCreated {
+			t.Fatalf("alice's comment %v: %d %s", body, response.Code, response.Body.String())
+		}
+		return decodeBody[model.Comment](t, response).ID
+	}
+	asked := rig.asWriter(http.MethodPost, "/api/v1/issues/"+rig.issue+"/asks", map[string]any{"question": "Which port should the node use?"})
+	if asked.Code != http.StatusCreated {
+		t.Fatalf("the writer's ask: %d %s", asked.Code, asked.Body.String())
+	}
+	ask := decodeBody[model.Ask](t, asked).ID
+	root := alice(map[string]any{"body": "Is the node up?"})
+	reply := alice(map[string]any{"body": "And on which port?", "reply_to": root})
+	onAsk := alice(map[string]any{"body": "Port 8080, I think.", "ask_id": ask})
+	for _, test := range []struct {
+		name, repliesTo string
+		replyTo, askID  *string
+	}{
+		{name: "to a reply", repliesTo: reply, replyTo: &root},
+		{name: "to a comment in an ask's thread", repliesTo: onAsk, askID: &ask},
+	} {
+		response := rig.asWriter(http.MethodPost, comments, map[string]any{"body": "Status\nThe node answers on 8080. " + vacuousPhrase, "reply_to": test.repliesTo})
+		id := rig.held(response, "the held reply "+test.name).ID
+		answer := decodeBody[model.Comment](t, response)
+		rig.postedAsWritten(id)
+		posted := postedItem[model.Comment](t, rig.handler, "/api/v1/comments/"+id, id)
+		thread := func(comment model.Comment) string {
+			return jsonOf(t, map[string]any{"reply_to": comment.ReplyTo, "ask_id": comment.AskID, "answers": comment.Answers, "turn": comment.Turn})
+		}
+		want := jsonOf(t, map[string]any{"reply_to": test.replyTo, "ask_id": test.askID, "answers": &test.repliesTo, "turn": posted.Turn})
+		if thread(answer) != want || thread(posted) != want {
+			t.Errorf("%s: the held reply states %s and posted %s, want %s", test.name, thread(answer), thread(posted), want)
+		}
+	}
+}
+
 // A held message's answer states the block it replies to, as the posted message holds it.
 func TestAHeldMessagesAnswerStatesTheBlockItRepliesTo(t *testing.T) {
 	rig := newReviewRig(t, ReviewerConfig{Messages: ReviewHold, WriterWindow: time.Minute}, nil)
