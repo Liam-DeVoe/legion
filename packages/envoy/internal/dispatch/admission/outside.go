@@ -59,11 +59,13 @@ import (
 // QueueFull and WaitExceeded a class's queue refuses for), and work whose context ends while it
 // waits leaves the queue. A place is held for the whole of the work that reads the pool: a
 // decision's proof check and the row it writes, once the broker has answered, a check's whole
-// check, and a socket's three admission reads - all but the wait of a check, or of a socket,
-// whose caller's sign-in confirmation has lapsed, on the sign-in issuer's renewal of it: the work
-// gives its place back for that wait, and holds it again for the renewal's own reads and writes
-// and for what it reads after (Place, identity.Membership.Confirm), so an issuer slow to answer
-// holds none of the places, as a broker slow to answer holds none.
+// check, and a socket's three admission reads - all but a wait on another server inside them: the
+// sign-in issuer's renewal of a lapsed confirmation, and IAP's key set read where the caller's
+// assertion names a key the set in memory does not hold, or the set is due to be read again. The
+// work gives its place back for that wait and takes it again after, for the renewal's own reads
+// and writes and for what it reads next (GiveBack, Away.TakeBack: the one mechanism that gives an
+// admitted request's units back for the same waits), so an issuer slow to answer holds none of the
+// places, as a broker slow to answer holds none.
 
 // OutsideLimit is how many places the work outside admission may hold at once: the request
 // pool's connections admission does not hand out, unadmittedConnections, 8 of the 48. Admission's
@@ -196,14 +198,15 @@ func (o *Outside) Hold(ctx context.Context, user OutsideUser) (*Place, error) {
 }
 
 // Place is a place of Outside one work holds (Hold), which the work gives back for a wait inside
-// it that reads no pool and takes again for what reads the pool after. A document socket's
-// admission and a heartbeat check resolve a sign-in cookie, and a cookie whose person's
-// confirmation has lapsed is renewed with the sign-in issuer first (identity.Membership.Confirm),
-// a round trip of up to 15 s that reads nothing of the pool: a place held across it would let an
-// issuer slow to answer fill the share with no database work at all, as a place held across the
-// broker's answer would (api's decidedBrokerToken). The work carries its place on its context
-// (WithPlace) to the call that waits. One goroutine uses a Place at a time: the work's own, and
-// the calls it makes in turn.
+// it on another server and takes again for what reads the pool after (GiveBack, Away.TakeBack). A
+// document socket's admission and a heartbeat check resolve their caller, and the resolution may
+// wait on an issuer - a cookie whose person's confirmation has lapsed is renewed with the sign-in
+// issuer first (identity.Membership.Confirm), a round trip of up to 15 s, and an IAP assertion's
+// verification may read IAP's key set (identity.IAPIdentity.Login), one of up to 10 s - that reads
+// nothing of the pool: a place held across it would let an issuer slow to answer fill the share
+// with no database work at all, as a place held across the broker's answer would (api's
+// decidedBrokerToken). The work carries its place on its context (WithPlace) to the call that
+// waits. One goroutine uses a Place at a time: the work's own, and the calls it makes in turn.
 type Place struct {
 	outside *Outside
 	user    OutsideUser
@@ -213,12 +216,17 @@ type Place struct {
 // Release gives the place back where it is held, handing it to the work at the head of the queue
 // where any waits, and does nothing where it is not, so a caller may call it where its work ends
 // and defer it too. A nil Place holds nothing.
-func (p *Place) Release() {
+func (p *Place) Release() { p.release() }
+
+// release is Release, reporting whether it gave the place back: false for a nil Place, and for one
+// not held (GiveBack).
+func (p *Place) release() bool {
 	if p == nil || !p.held {
-		return
+		return false
 	}
 	p.held = false
 	p.outside.Release()
+	return true
 }
 
 // Retake takes the place again where it was given back, waiting for it as Take waits, behind every
@@ -238,14 +246,15 @@ func (p *Place) Retake(ctx context.Context) error {
 // placeKey is the context key a Place is carried under (WithPlace).
 type placeKey struct{}
 
-// WithPlace is ctx carrying place to a call that gives it back while it waits on what reads no
-// pool (PlaceFrom).
+// WithPlace is ctx carrying place to a call that gives it back while it waits on another server
+// (PlaceFrom, GiveBack).
 func WithPlace(ctx context.Context, place *Place) context.Context {
 	return context.WithValue(ctx, placeKey{}, place)
 }
 
 // PlaceFrom is the place ctx carries (WithPlace), and nil where it carries none: a request inside
-// admission holds an admission unit and no place.
+// admission holds a ticket (TicketFrom) and no place, and GiveBack gives back whichever of the two
+// it finds.
 func PlaceFrom(ctx context.Context) *Place {
 	place, _ := ctx.Value(placeKey{}).(*Place)
 	return place

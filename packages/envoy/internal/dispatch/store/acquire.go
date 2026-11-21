@@ -172,10 +172,10 @@ func defaultAcquireBound(name string) time.Duration {
 //   - a rollback that ran out its own bound before the database answered it, which pgconn ends
 //     by closing the connection under the transaction, so that transaction commits nothing
 //     (RanOutTheRollbackBound);
-//   - a lapsed sign-in's refresh that gave its place of the request pool's share outside
-//     admission back for the issuer's wait, or an IAP person's record that gave it back for the
-//     read of IAP's key set, and was refused a place again for its own reads and writes
-//     (identity's retake), before any of them ran;
+//   - work outside admission that gave its place of the request pool's share outside admission
+//     back for a wait on another server - a lapsed sign-in's refresh with the sign-in issuer, an
+//     IAP assertion's read of IAP's key set - and was refused a place again for what it reads and
+//     writes after (admission's Away.TakeBack), before any of it ran;
 //   - a wait for a lock another transaction holds that ran out its bound (lockWait) - a
 //     read-phase owner lock's, another advisory lock a write takes (LockWithinBound), or a row
 //     lock a write takes (LockRowsWithinBound, WriteBatch.QueueWithinBound) - which fails the

@@ -36,7 +36,16 @@ body: |-
   and a maximum of 5.8) and answered lane routes at twice their stated second. A lane's refusal
   now counts against the longest a refused read waited, as a class queue's does, where that
   figure - which nothing exports, so the admission's own tests are what read it - was blind to
-  every refusal the four heavy read routes got. A read has a deadline of 20 seconds, and a file version download 5
+  every refusal the four heavy read routes got. No admitted request holds its units across a wait
+  on another server: a request whose caller's resolution waits on IAP's key set (an assertion
+  under a key the set in memory lacks, or a set due to be read again), on the sign-in issuer
+  renewing a lapsed confirmation, or on a service-account issuer's discovery or key set gives its
+  units back for that wait, and a read its pinned connection with them, and asks for them again
+  after it, at the place it arrived and within what is left of its class's wait, where an IAP key
+  rotation or a slow issuer had every such request hold a unit for up to ten seconds and every
+  request whose caller resolves from memory refused `429 OVERLOADED` meanwhile; one that finds no
+  room once the issuer has answered is answered `429 OVERLOADED`, its handler cancelled so nothing
+  of it runs after. A read has a deadline of 20 seconds, and a file version download 5
   minutes for the work it does before its answer begins - reading its row and opening the file
   store - after which the answer's own bounds carry the file's bytes however long its reader
   takes; past either is `503 REQUEST_TIMEOUT`. A write has none and runs to completion

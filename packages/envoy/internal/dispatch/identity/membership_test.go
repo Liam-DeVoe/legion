@@ -429,7 +429,8 @@ func (s *placedPeopleStore) Confirm(ctx context.Context, email, refreshToken str
 // reads the person's row again and writes the renewed confirmation, and none while the issuer
 // answers, and another work that finds the same confirmation lapsed meanwhile holds none while it
 // waits on that refresh. Each read and write of the row is made under one place, and each Confirm
-// returns with its place given back; the issuer is asked once.
+// returns with its place taken back (admission.Away.TakeBack), holding what it was called holding,
+// for what the work reads next; the issuer is asked once.
 func TestALapsedConfirmationsRefreshHoldsAPlaceForThePersonsRowAlone(t *testing.T) {
 	rig := newMembershipRig(t)
 	rig.now = rig.now.Add(2 * time.Hour)
@@ -474,8 +475,8 @@ func TestALapsedConfirmationsRefreshHoldsAPlaceForThePersonsRowAlone(t *testing.
 			t.Fatalf("Confirm once the issuer renewed the confirmation: %v", err)
 		}
 	}
-	if held := outside.Stats().InUse; held != 0 {
-		t.Errorf("%d places held once both Confirms returned, want none: each gave its place back", held)
+	if held := outside.Stats().InUse; held != 2 {
+		t.Errorf("%d places held once both Confirms returned, want 2: each took its own place back after the refresh", held)
 	}
 	leader.Release()
 	follower.Release()

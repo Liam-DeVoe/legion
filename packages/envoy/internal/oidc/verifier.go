@@ -16,6 +16,7 @@ import (
 	"unicode"
 
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
+	jose "github.com/go-jose/go-jose/v4"
 )
 
 // The class of every Verify failure. A caller logs the class and answers 401;
@@ -107,6 +108,10 @@ type Verifier struct {
 	verifier *gooidc.IDTokenVerifier
 	issuer   string
 	audience string
+	// keys is the key cache verifier's key set reads (NewWithKeys, NewIAPVerifier), which
+	// WouldReadIssuer asks; nil for the sign-in's verifier, whose keys are go-oidc's own
+	// (newVerifier).
+	keys *Keys
 	// skipExpiry is set when verifier skips the exp check (gooidc.Config.SkipExpiryCheck), as
 	// IAPVerifier's does, which checks the verified exp itself. classify then reports no failure
 	// as ErrExpired: an exp it reads is from a payload whose signature, issuer or audience failed,
@@ -148,6 +153,7 @@ func NewWithKeys(issuer, audience string, keys *Keys) *Verifier {
 		}),
 		issuer:   issuer,
 		audience: audience,
+		keys:     keys,
 	}
 }
 
@@ -179,6 +185,28 @@ func newVerifier(provider *gooidc.Provider, issuer, audience string) *Verifier {
 func (v *Verifier) Verify(ctx context.Context, raw string) (Claims, error) {
 	_, claims, err := v.verify(ctx, raw)
 	return claims, err
+}
+
+// WouldReadIssuer reports whether Verify of raw, asked now, would read the issuer's key set or wait
+// for a read of it under way, before it answers (Keys.WouldRead for the key id and algorithm raw's
+// header names, which keySet.VerifySignature asks Keys.Key for, and so Keys.mayWaitLocked, the one
+// decision Key takes its course from): the first token, the first once the set's Lifetime is up,
+// and a key id the set does not hold while the miss window is open or a read is under way. It reads
+// the header without verifying it, and nothing else, so it costs no round trip. It answers true
+// where it cannot read that header, and for a verifier whose keys it cannot see (the sign-in's,
+// newVerifier), so a caller that holds something across Verify only where this answers false holds
+// it across no read and no wait for one: the API gives back the request's admission unit for such
+// a wait (admission.GiveBack).
+func (v *Verifier) WouldReadIssuer(raw string) bool {
+	if v.keys == nil {
+		return true
+	}
+	signed, err := jose.ParseSignedCompact(stripSpaces(raw), keySetAlgorithms)
+	if err != nil || len(signed.Signatures) != 1 {
+		return true
+	}
+	header := signed.Signatures[0].Header
+	return v.keys.WouldRead(header.KeyID, header.Algorithm)
 }
 
 // VerifyClaims is Verify that also unmarshals the verified token's payload into each of into: the

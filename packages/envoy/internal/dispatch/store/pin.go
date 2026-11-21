@@ -39,12 +39,32 @@ import (
 // connection of these pools held at once. A call after end, and one made before the pin's first
 // call, takes a connection for itself as without a pin, and a context already holding a
 // connection is returned as it is.
+//
+// A read that waits on the network between its statements - its caller's resolution waiting on an
+// issuer: IAP's key set, the sign-in issuer's renewal, a service-account issuer's discovery or key
+// set - gives its admission unit back for the wait, and the pinned connection with it
+// (LetGoOfPinnedConnection, admission.GiveBack): it is that unit's connection, and one held idle
+// across a wait of up to fifteen seconds is one the pool cannot hand to a read admission let in
+// meanwhile. The read's next statement takes a connection again.
 func PinConnection(ctx context.Context) (context.Context, func()) {
 	if ConnectionHeld(ctx) {
 		return ctx, func() {}
 	}
 	pin := &pinnedConnection{}
 	return context.WithValue(ctx, holdingKey{}, &holding{pin: pin}), pin.end
+}
+
+// LetGoOfPinnedConnection gives the connection ctx's pin holds back to the pool, for a wait of
+// the request's on what reads no pool (admission.GiveBack): the request's next call takes another,
+// as the first call took this one (pinnedConnection.take). It does nothing where ctx pins no
+// connection, where the pin holds none, and where a call is running on it, which a request waiting
+// on the network between its statements has not.
+func LetGoOfPinnedConnection(ctx context.Context) {
+	state, _ := ctx.Value(holdingKey{}).(*holding)
+	if state == nil || state.pin == nil {
+		return
+	}
+	state.pin.letGo()
 }
 
 // pinnedConnection is the connection a pinned context's calls run on (PinConnection).
@@ -150,6 +170,16 @@ func (c *pinnedConnection) end() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.ended = true
+	if !c.inUse {
+		c.releaseLocked()
+	}
+}
+
+// letGo gives the pinned connection back to the pool while no call runs on it
+// (LetGoOfPinnedConnection).
+func (c *pinnedConnection) letGo() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if !c.inUse {
 		c.releaseLocked()
 	}

@@ -269,9 +269,10 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// The caller's resolution carries the place (admission.WithPlace): where the caller's sign-in
 	// confirmation has lapsed, it is renewed with the sign-in issuer, and behind IAP the assertion's
 	// verification may read IAP's key set again; neither reads the pool, so the resolution gives
-	// the place back for that wait and holds it only for its own reads and writes
-	// (identity.Membership.Confirm, identity.IAPIdentity.Login). The issue's read takes it again
-	// below.
+	// the place back for that wait and takes it again after (admission.GiveBack,
+	// admission.Away.TakeBack; identity.Membership.Confirm, identity.IAPIdentity.Login). A
+	// resolution that answers a caller holds the place again for the issue's read below; one
+	// refused it answers a busy pool, which is refused here as an unserved read is.
 	actor, err := s.requestActor(r.WithContext(admission.WithPlace(r.Context(), place)))
 	if err != nil {
 		if errors.Is(err, identity.ErrSignInUnavailable) {
@@ -297,14 +298,6 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if id.String() != room {
 		http.Error(w, "document not found: a document's address is its id as Dispatch writes it, lower case with dashes, here "+id.String(), http.StatusNotFound)
-		return
-	}
-	// A resolution that renewed its caller's confirmation gave the place back (requestActor), and
-	// the socket takes it again for this read and the next, waiting for it as it waited first and
-	// refused as it would have been refused then; every other socket still holds its place, and
-	// takes nothing here.
-	if err := place.Retake(r.Context()); err != nil {
-		refuseAdmission(w, r, "dispatch: a document socket was refused: the request pool's places outside admission are all held", room, store.RequestsPool, err)
 		return
 	}
 	// Only a document that is not there is not found: the read finds no document row (no artifact

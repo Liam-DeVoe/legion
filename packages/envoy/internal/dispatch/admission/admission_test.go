@@ -6,6 +6,8 @@ import (
 	"runtime"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // patient is a wait no test reaches: a test that wants a waiter to stay queued gives it this, so
@@ -441,6 +443,100 @@ func TestAResumedTicketIsGrantedAheadOfLaterArrivals(t *testing.T) {
 	parked.Release()
 	if result := receive(t, later); result.err != nil {
 		t.Fatalf("the write that arrived after the parked one: %v, want it admitted after it", result.err)
+	}
+}
+
+// A unit given back for a wait on the network (GiveBack) is free for as long as the wait lasts and
+// taken back after it (Away.TakeBack): a ticket's units through its class's queue, waiting at most
+// its class's wait however long the network took, since that wait is no wait for room and is not
+// counted into the one wait the queue costs the request; a place as Retake takes one. A take-back
+// refused releases the ticket for good - no unit is counted for it, and nothing resumes it again -
+// and ends its request's context with the refusal as its cause; a place refused is answered as a
+// busy pool. Units parked already, by a body still arriving, are left parked.
+func TestAUnitGivenBackForAWaitOnTheNetworkIsTakenBackWithinItsClassesWait(t *testing.T) {
+	const (
+		wait  = 300 * time.Millisecond
+		slack = 250 * time.Millisecond
+	)
+	l := newLimiter(1, 1, wait)
+	ticket := admit(t, l, Read, 1)
+	defer ticket.Release()
+	ctx, refuse := context.WithCancelCause(WithTicket(context.Background(), ticket))
+	defer refuse(nil)
+	ticket.RefuseWith(refuse)
+
+	away := GiveBack(ctx)
+	if stats := classStats(l, Read); stats.InFlight != 0 {
+		t.Fatalf("in flight %d while the request waits on the network, want 0: its unit given back", stats.InFlight)
+	}
+	// The wait on the network, longer than the class's own wait.
+	time.Sleep(2 * wait)
+	if err := away.TakeBack(ctx); err != nil {
+		t.Fatalf("take back with the unit free: %v", err)
+	}
+	if stats := classStats(l, Read); stats.InFlight != 1 {
+		t.Fatalf("in flight %d once the unit was taken back, want 1", stats.InFlight)
+	}
+
+	away = GiveBack(ctx)
+	holder := admit(t, l, Read, 1)
+	started := time.Now()
+	err := away.TakeBack(ctx)
+	waited := time.Since(started)
+	holder.Release()
+	if refusalReason(err) != WaitExceeded {
+		t.Fatalf("take back while another request holds the unit: %v, want a wait_exceeded refusal", err)
+	}
+	if waited < wait-slack/2 || waited > wait+slack {
+		t.Errorf("the take-back was refused after %v, want after its class's %v wait: the network's wait is not counted into it, and it waits no longer", waited, wait)
+	}
+	var refusal *Refusal
+	if !errors.As(context.Cause(ctx), &refusal) || refusal.Reason != WaitExceeded {
+		t.Errorf("the refused request's context ended with %v, want the refusal as its cause", context.Cause(ctx))
+	}
+	if err := away.TakeBack(context.Background()); err != nil {
+		t.Fatalf("a second take-back of the refused ticket: %v, want nothing taken and no error", err)
+	}
+	if err := ticket.Resume(context.Background()); err != nil {
+		t.Fatalf("a resume of the refused ticket: %v, want nothing taken and no error", err)
+	}
+	if stats := classStats(l, Read); stats.InFlight != 0 {
+		t.Fatalf("in flight %d with the holder gone and the refused ticket asked again, want 0: a refused ticket is released for good", stats.InFlight)
+	}
+
+	writer := admit(t, l, Write, 1)
+	defer writer.Release()
+	writer.Park()
+	if err := GiveBack(WithTicket(context.Background(), writer)).TakeBack(context.Background()); err != nil {
+		t.Fatalf("give back and take back a ticket parked already: %v", err)
+	}
+	if stats := classStats(l, Write); stats.InFlight != 0 {
+		t.Fatalf("write in flight %d, want 0: the take-back left the units another wait parked to it", stats.InFlight)
+	}
+	if err := GiveBack(context.Background()).TakeBack(context.Background()); err != nil {
+		t.Fatalf("give back and take back with nothing held: %v", err)
+	}
+
+	outside := New(Limits{OutsideWait: wait}).Outside()
+	place, err := outside.Hold(context.Background(), HeartbeatCheck)
+	if err != nil {
+		t.Fatalf("a place: %v", err)
+	}
+	placed := WithPlace(context.Background(), place)
+	away = GiveBack(placed)
+	if held := outside.Stats().InUse; held != 0 {
+		t.Fatalf("%d places held while the work waits on the network, want none", held)
+	}
+	if err := away.TakeBack(placed); err != nil {
+		t.Fatalf("take the place back with every place free: %v", err)
+	}
+	if held := outside.Stats().InUse; held != 1 {
+		t.Fatalf("%d places held once the place was taken back, want 1", held)
+	}
+	away = GiveBack(placed)
+	takeEveryPlace(t, outside)
+	if err := away.TakeBack(placed); !store.IsPoolBusy(err) || outsideRefusalReason(err) != WaitExceeded {
+		t.Fatalf("take the place back with every place held: %v, want a busy pool wrapping the wait_exceeded refusal", err)
 	}
 }
 

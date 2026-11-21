@@ -182,6 +182,25 @@ func (v *LazyVerifier) Verify(ctx context.Context, raw string) (Claims, error) {
 	return verifier.Verify(ctx, raw)
 }
 
+// WouldReadIssuer reports whether Verify of raw, asked now, would read the issuer - its discovery
+// document or its key set - or wait for a read of either under way, before it answers: while the
+// issuer is undiscovered and an attempt is due or in flight (discovery.settled, the answer discover
+// takes its course from), and once it is discovered, where the verifier's key set would be read or
+// waited for (Verifier.WouldReadIssuer). The last attempt's failure, younger than
+// discoveryRetrySpacing, answers at once and reads nothing. It reads nothing itself, so it costs no
+// round trip; a caller asks it before Verify to decide what to give up for the read's length (the
+// API gives back the request's admission unit: admission.GiveBack).
+func (v *LazyVerifier) WouldReadIssuer(raw string) bool {
+	verifier, err, settled := v.discovery.settled()
+	switch {
+	case !settled:
+		return true
+	case err != nil:
+		return false
+	}
+	return verifier.WouldReadIssuer(raw)
+}
+
 // VerifyGoogleIdentity is Verifier.VerifyGoogleIdentity once the issuer is discovered, discovering
 // it first as Verify does; before that every error matches ErrIssuerUnavailable.
 func (v *LazyVerifier) VerifyGoogleIdentity(ctx context.Context, raw string) (Claims, error) {

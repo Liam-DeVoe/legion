@@ -166,8 +166,8 @@ func (k *Keys) Key(ctx context.Context, kid, alg string) (crypto.PublicKey, erro
 
 // lookup is Key's course for a lookup mayWaitLocked says may wait on a key-set read: the set read
 // first where it was never read or is past Lifetime, else a kid it does not hold read for while the
-// miss window is open, else the read under way joined (settleMiss). Each step reads the cache
-// again under its own hold of the lock, so a read another caller started or ended since the
+// miss window is open (missRead), else the read under way joined (settleMiss). Each step reads the
+// cache again under its own hold of the lock, so a read another caller started or ended since the
 // decision is joined or used, as it is found.
 func (k *Keys) lookup(ctx context.Context, kid, alg string) (crypto.PublicKey, error) {
 	set, fetched := k.state()
@@ -189,20 +189,21 @@ func (k *Keys) lookup(ctx context.Context, kid, alg string) (crypto.PublicKey, e
 	if err == nil {
 		return key, nil
 	}
-	if read || !errors.Is(err, ErrNoKey) || !k.openMissWindow() {
+	if read || !errors.Is(err, ErrNoKey) {
 		if fetchErr != nil {
 			return nil, fetchErr
 		}
-		if !read && errors.Is(err, ErrNoKey) {
-			if settling, key, missErr := k.settleMiss(ctx, kid, alg); settling {
-				return key, missErr
-			}
+		return nil, err
+	}
+	fresh, opened, missErr := k.missRead(ctx)
+	if !opened {
+		if settling, key, settleErr := k.settleMiss(ctx, kid, alg); settling {
+			return key, settleErr
 		}
 		return nil, err
 	}
-	fresh, err := k.fetch(ctx)
-	if err != nil {
-		return nil, err
+	if missErr != nil {
+		return nil, missErr
 	}
 	return selectKey(fresh, kid, alg)
 }
@@ -273,7 +274,7 @@ func (k *Keys) failureAnswersLocked() bool {
 }
 
 // missWindowOpenLocked reports whether a key id the cached set does not hold may prompt a read at
-// now: no window has opened yet, or the last one opened MinRefresh ago or more (openMissWindow,
+// now: no window has opened yet, or the last one opened MinRefresh ago or more (missRead,
 // mayWaitLocked). k.mu is held.
 func (k *Keys) missWindowOpenLocked(now time.Time) bool {
 	return k.missed.IsZero() || now.Sub(k.missed) >= k.MinRefresh
@@ -292,18 +293,27 @@ func (k *Keys) missFailure(kid string, failure error) error {
 	return fmt.Errorf("%w: key id %s is not in the cached set, and the last read of %s failed: %w", ErrKeySet, keyIDName(kid), k.jwksURI, failure)
 }
 
-// openMissWindow reports whether a key id the cached set does not hold may prompt a read now, and
-// opens the next MinRefresh window when it does. The window opens on the attempt rather than on
-// the answer, so an issuer that is failing is asked no more often than one that is rotating.
-func (k *Keys) openMissWindow() bool {
+// missRead is fetch for a key id the fresh set does not hold: where the miss window is open it
+// opens the next MinRefresh window and starts the read, or joins the one under way, in the same hold
+// of the lock, and it reports false, reading nothing, where the window is closed. The window opens
+// on the attempt rather than on the answer, so an issuer that is failing is asked no more often
+// than one that is rotating.
+//
+// The window's opening and the read's start are one step so that no lookup finds the window
+// closed and no read under way while a read is about to start (mayWaitLocked): WouldRead then
+// answered that a lookup of the same key id would not wait, and the Key that lookup's caller ran a
+// moment later joined the read - a caller that gave nothing up for the wait (admission.GiveBack)
+// waited holding it - or a Key run in that moment answered ErrNoKey, a verdict no read had reached.
+func (k *Keys) missRead(ctx context.Context) ([]jose.JSONWebKey, bool, error) {
 	k.mu.Lock()
-	defer k.mu.Unlock()
 	now := time.Now()
 	if !k.missWindowOpenLocked(now) {
-		return false
+		k.mu.Unlock()
+		return nil, false, nil
 	}
 	k.missed = now
-	return true
+	keys, err := k.fetchLocked(ctx)
+	return keys, true, err
 }
 
 // settleMiss answers a key id the cached set does not hold, once the miss window has closed, while
@@ -347,8 +357,13 @@ func (k *Keys) settleMiss(ctx context.Context, kid, alg string) (bool, crypto.Pu
 // caller with its failure and no new read starts, so a key set that fails at once is read at most
 // once per FailureSpacing however many tokens arrive.
 func (k *Keys) fetch(ctx context.Context) ([]jose.JSONWebKey, error) {
-	_, budgeted := keysDeadline(ctx)
 	k.mu.Lock()
+	return k.fetchLocked(ctx)
+}
+
+// fetchLocked is fetch with k.mu held, which it releases (fetch, missRead).
+func (k *Keys) fetchLocked(ctx context.Context) ([]jose.JSONWebKey, error) {
+	_, budgeted := keysDeadline(ctx)
 	inflight := k.inflight
 	if inflight == nil {
 		if k.failureAnswersLocked() {

@@ -12,6 +12,7 @@ package admission
 import (
 	"container/list"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"runtime"
@@ -439,8 +440,8 @@ func (l *Limiter) Totals() Totals {
 
 // Ticket is one admitted request's hold on its class. It rides on the request's context
 // (WithTicket), so whatever the request waits on elsewhere can give the units back while it
-// waits (Park) and take them back after (Resume). The methods of a nil Ticket do nothing, so a
-// caller need not ask whether its request was admitted at all.
+// waits (Park, GiveBack) and take them back after (Resume, Away.TakeBack). The methods of a nil
+// Ticket do nothing, so a caller need not ask whether its request was admitted at all.
 type Ticket struct {
 	// arrival is the place the request holds in the Limiter's arrival order, which it keeps
 	// for as long as it lives: a ticket that parks its units asks for them again there.
@@ -449,21 +450,58 @@ type Ticket struct {
 	mu       sync.Mutex
 	held     bool
 	released bool
+	// refuse ends the request's context with a refusal as its cause (RefuseWith), nil where its
+	// holder gave none.
+	refuse context.CancelCauseFunc
 }
 
 // Park gives the ticket's units back to its class, and to the combined cap, while its holder
 // waits for something else - a document's writer gate, where writers queued on one document
 // would otherwise hold every write unit from writers to other documents. Resume takes them back.
 // Parking a ticket that is parked or released does nothing.
-func (t *Ticket) Park() {
+func (t *Ticket) Park() { t.park() }
+
+// park is Park, reporting whether it gave units back: false for a nil ticket, and for one parked
+// or released already (GiveBack).
+func (t *Ticket) park() bool {
+	if t == nil {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.held {
+		return false
+	}
+	t.held = false
+	t.arrival.limiter.release(t.arrival.class, t.arrival.units)
+	return true
+}
+
+// RefuseWith gives the ticket refuse, the cancellation that ends its request's context with a
+// refusal as its cause, which a refused take-back after a wait on the network calls
+// (Away.TakeBack): the request then stops where it stands, whatever layer of it swallowed the
+// error its caller's resolution answered, and is answered the refusal (WriteUnserved). The API
+// gives every admitted request's ticket one (api's admitted).
+func (t *Ticket) RefuseWith(refuse context.CancelCauseFunc) {
 	if t == nil {
 		return
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.held {
-		t.held = false
-		t.arrival.limiter.release(t.arrival.class, t.arrival.units)
+	t.refuse = refuse
+}
+
+// refused ends the ticket's request on refusal, the units it asked back after a wait on the
+// network refused (Away.TakeBack): the ticket is released for good, so it counts nothing and
+// nothing resumes it again, and its request's context ends with the refusal as its cause where
+// its holder gave the cancellation (RefuseWith).
+func (t *Ticket) refused(refusal *Refusal) {
+	t.Release()
+	t.mu.Lock()
+	refuse := t.refuse
+	t.mu.Unlock()
+	if refuse != nil {
+		refuse(refusal)
 	}
 }
 
@@ -516,8 +554,11 @@ func (t *Ticket) Remaining() time.Duration {
 // Limiter's own queues cannot see. Remaining, the bound of whatever the request waits for next,
 // and the wait of the Resume that takes the parked units back then have only what is left, so a
 // write that parks for a document, resumes and gates again is answered within one wait of its
-// arrival rather than one per thing it waited for. Only the request's own goroutine calls it, as
-// with every other wait of its arrival: a request waits for one thing at a time.
+// arrival rather than one per thing it waited for. A wait on another server that a caller's
+// resolution gave the units back for (GiveBack) is not counted: it is no wait for room, and the
+// take-back after it has what is left of the class's queue wait, never more (Away.TakeBack). Only
+// the request's own goroutine calls it, as with every other wait of its arrival: a request waits
+// for one thing at a time.
 func (t *Ticket) Waited(waited time.Duration) {
 	if t == nil || waited <= 0 {
 		return
@@ -554,6 +595,91 @@ func WithTicket(ctx context.Context, ticket *Ticket) context.Context {
 func TicketFrom(ctx context.Context) *Ticket {
 	ticket, _ := ctx.Value(ticketKey{}).(*Ticket)
 	return ticket
+}
+
+// Away is what a request gave back of the server's room for a wait on the network (GiveBack),
+// which TakeBack takes again once the wait is over. The zero Away gave back nothing and takes
+// nothing back, so a caller that gives back only where its wait may come - where the verifier says
+// it may read or wait (oidc.IAPVerifier.WouldReadKeySet, oidc.LazyVerifier.WouldReadIssuer) -
+// takes back on every way out alike.
+type Away struct {
+	// ticket is the ticket whose units GiveBack parked, nil where it parked none.
+	ticket *Ticket
+	// place is the place GiveBack gave back, nil where it gave none.
+	place *Place
+}
+
+// GiveBack gives back, for a wait on the network that reads no pool, the unit of the server's room
+// ctx's request holds, and answers what it gave for TakeBack to take again once the wait is over.
+// It is the one mechanism of the rule that no admission unit is held across an outbound network
+// wait: IAP's key set read, or a wait for a read of it under way (identity.IAPIdentity.Login), the
+// sign-in issuer's renewal of a lapsed confirmation (identity.Membership.Confirm), and a
+// service-account issuer's discovery and key set read (api's serviceTokenActor), each up to ten or
+// fifteen seconds on another server. A unit held across one let an issuer slow to answer, or a key
+// rotation that sent every browser's assertion to the key set, fill a class with requests doing no
+// work, and every request whose caller resolves from memory was refused 429 OVERLOADED until it
+// answered.
+//
+// It gives back whichever unit the request holds:
+//
+//   - an admitted request's ticket (TicketFrom): its units go back to its class and the combined
+//     cap (Ticket.Park). Units parked already - a write's body still arriving (api's drainedBody) -
+//     are left to whoever parked them, and TakeBack takes nothing for them;
+//   - a place of the request pool's share outside admission (PlaceFrom): a document socket's
+//     admission, a heartbeat check (Place.Release);
+//   - and the request-pool connection a pinned read holds (store.LetGoOfPinnedConnection), which
+//     its unit stands for: the read's next statement takes one again.
+func GiveBack(ctx context.Context) Away {
+	var away Away
+	if ticket := TicketFrom(ctx); ticket.park() {
+		away.ticket = ticket
+	}
+	if place := PlaceFrom(ctx); place.release() {
+		away.place = place
+	}
+	store.LetGoOfPinnedConnection(ctx)
+	return away
+}
+
+// TakeBack takes back what GiveBack gave once the wait on the network is over, and answers nil
+// once the request holds it again; the request then runs its reads and writes under it, as it
+// would have had it never waited.
+//
+// A ticket's units come back as a parked ticket's do (Ticket.Resume): at the place the request
+// arrived, ahead of every request that arrived after it, waiting for what is left of the one wait
+// its class's queue costs it (Remaining) - its class's wait, a second for a read and two for a
+// write (DefaultReadWait, DefaultWriteWait), less what it already spent in admission's own queues.
+// The wait on the network is not counted into that (Ticket.Waited): it was a wait on another
+// server, not for room, and counted it would leave a request whose key-set read took its ten
+// seconds no time to take its units back in. So the take-back waits at most its class's queue
+// wait, and never longer, whatever the network took. Where no unit comes free in that time, or the
+// class's queue is full, the request is refused as admission refuses one: its ticket is released
+// for good, so no unit is counted for it and nothing resumes it again, its context ends with the
+// refusal as its cause (Ticket.RefuseWith), so whatever of it runs on fails where it stands and it
+// is answered 429 OVERLOADED with Retry-After as a request refused before it ran
+// (WriteUnserved), and TakeBack answers the *Refusal itself. A refusal after the issuer answered
+// drops that answer, as a write a busy pool refused would. A request whose context ends while it
+// waits is answered that context's error, holding nothing.
+//
+// A place comes back as Place.Retake takes one, waiting for it as Take waits. A place refused is a
+// bound of this server's own that ended the work before it asked the database anything, so nothing
+// of it was written, and it is answered as a pool with no connection free is (store.ErrPoolBusy,
+// wrapping the *OutsideRefusal or ctx's error): a heartbeat check counts it as a transient failure
+// (api's transientCheckFailure), a document socket refuses it as unserved, and a request waiting
+// on a sign-in's refresh another work leads tries again as a busy pool tells it to. The place
+// keeps that answer of its own rather than admission's 429, which none of its users answers.
+func (a Away) TakeBack(ctx context.Context) error {
+	if err := a.ticket.Resume(ctx); err != nil {
+		var refusal *Refusal
+		if errors.As(err, &refusal) {
+			a.ticket.refused(refusal)
+		}
+		return err
+	}
+	if err := a.place.Retake(ctx); err != nil {
+		return fmt.Errorf("%w: no place of the request pool's share outside admission came free after a wait on the network: %w", store.ErrPoolBusy, err)
+	}
+	return nil
 }
 
 // gate is one class's units, wait and wait queue: a weighted semaphore whose waiters are served

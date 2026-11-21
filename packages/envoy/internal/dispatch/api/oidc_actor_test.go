@@ -171,12 +171,15 @@ func TestServiceTokenForAnotherAudienceIsRejectedAsInvalidToken(t *testing.T) {
 }
 
 // issuerDownVerifier is a service-account token verifier whose issuer cannot be reached, as
-// *oidc.LazyVerifier answers before its issuer is discovered.
+// *oidc.LazyVerifier answers before its issuer is discovered once its last attempt has failed:
+// at once, waiting on nothing.
 type issuerDownVerifier struct{}
 
 func (issuerDownVerifier) Verify(context.Context, string) (oidc.Claims, error) {
 	return oidc.Claims{}, fmt.Errorf("%w: the test's issuer is down", oidc.ErrIssuerUnavailable)
 }
+
+func (issuerDownVerifier) WouldReadIssuer(string) bool { return false }
 
 // signInDownIdentity is a person whose lapsed confirmation the sign-in issuer could not renew,
 // as identity.Membership answers it: ErrSignInUnavailable with the issuer's own failure behind it.
