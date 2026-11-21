@@ -26,8 +26,9 @@ import (
 // typeMigrations are the files that write the type nodes, in the order the runner applies them:
 // the seed, then each migration that has changed a type since. The test runs them all a second
 // time, in that order and through the same path the migration runner runs each, to prove a second
-// run leaves the same nodes. The seed alone would not do: run again, it puts back the version and
-// the attributes it was written at, which every later type migration has moved on from.
+// run leaves the same nodes; one that guards no second run is run over a store without its own
+// rows (literalTypeMigrations). The seed alone would not do: run again, it puts back the version
+// and the attributes it was written at, which every later type migration has moved on from.
 var typeMigrations = []string{
 	"../../internal/dispatch/store/migrations/20261109051232_graph_supertags.up.sql",
 	"../../internal/dispatch/store/migrations/20261113230000_graph_supertags_check_ci_check.up.sql",
@@ -420,11 +421,39 @@ func (d *schemaDrift) report(t *testing.T) {
 		what, versions, typeMigrationExample)
 }
 
+// literalTypeMigrations are the type migrations that guard no second run, each with the writer
+// its rows carry. Each runs where graph_nodes and graph_tuples can be past
+// pgmigrate.CensusTableLimit, on which the pre-deploy census admits only an insert of literal rows
+// and an update of literals by primary key, so it has no `not exists` and no `on conflict` to skip
+// what an earlier run wrote: run again over its own rows, its insert into graph_nodes fails on the
+// primary key. The runner applies a version once, so no store runs one twice.
+var literalTypeMigrations = map[string]string{
+	"20261116082319_graph_supertags_decision_reading.up.sql": `{"kind": "system", "id": "block-schema-decision-reading"}`,
+}
+
 // requireASecondRunOfTheTypeMigrationsLeavesTheSameNodes runs every type migration again, in
 // order, and holds every node row and every tuple to being the one the first run left.
+//
+// A literal type migration (literalTypeMigrations) is not run over its own rows: the nodes it made
+// and the tuples it appended, each carrying its writer, are taken out first, and its run writes
+// them again. Its stamps are literals, so each row it writes is the one it wrote the first time.
+// What its updates moved is not taken out: the seed's second run puts back the value the seed
+// wrote, and the literal migration's run moves it again.
 func requireASecondRunOfTheTypeMigrationsLeavesTheSameNodes(t *testing.T, ctx context.Context, pool *store.Pool) {
 	t.Helper()
 	before, beforeTuples := schemaRows(t, ctx, pool)
+	for _, migration := range typeMigrations {
+		writer, literal := literalTypeMigrations[filepath.Base(migration)]
+		if !literal {
+			continue
+		}
+		if _, err := pool.Exec(ctx, `delete from graph_tuples where who = $1::jsonb`, writer); err != nil {
+			t.Fatalf("take out the tuples %s appended: %v", filepath.Base(migration), err)
+		}
+		if _, err := pool.Exec(ctx, `delete from graph_nodes where made_by = $1::jsonb`, writer); err != nil {
+			t.Fatalf("take out the nodes %s made: %v", filepath.Base(migration), err)
+		}
+	}
 	for _, migration := range typeMigrations {
 		text, err := os.ReadFile(filepath.Clean(migration))
 		if err != nil {
