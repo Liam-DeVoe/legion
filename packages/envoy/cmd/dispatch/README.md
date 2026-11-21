@@ -1693,9 +1693,12 @@ The stop's drain and unsubscribe, and the acknowledgements and hand-backs of the
 A hand-back publish NATS has not taken in that time is published once NATS takes it (`intakeDelivery.publishHandBack`).
 The run loop releases the hold only once every hand-back the stop published has reached the server, which a flush of up to 1 s confirms (`heldDurable.handBacksReached`).
 With one still pending at the stop's deadline, or a flush that does not answer, `Run` returns and the hold stays renewing on a goroutine of its own (`heldDurable.finalizeHandBacks`).
-It releases only once the hand-back has reached the server and a flush answers, or once the connection has closed.
-Dispatch shutdown closes that client, then waits for the finalizer to release the hold through the still-open pool.
-That normally finishes inside the shutdown reserve, but a write can hold nats.go's lock until its one-minute write deadline; `Client.Close` waits for that lock, then the finalizer can spend up to 5 s releasing the hold.
+It releases only once a flush, begun after the hand-back's publish ended, has answered: the server handles one connection's protocol in order, so by then the hand-back has reached it.
+A closed connection confirms nothing: `Close` writes nats.go's outbound buffer to the socket and then closes it, so a hand-back written then can still be on its way to the server.
+Dispatch shutdown waits for the finalizer with that client open, up to 5 s from the finalizer's start (`intakeFinalizerConfirmWait`), then closes the client and waits for the finalizer to end, before it closes the pool.
+A finalizer whose hand-back a flush confirmed releases the hold through the still-open pool.
+A finalizer whose client closed before a flush confirmed its hand-back does not release the hold: it stops renewing and leaves the row to lapse at its expiry (`duty.Hold.Abandon`), so the standby takes the durable over at most 17 s later, the hold's 15 s TTL and the standby's 2 s poll, rather than at once.
+That normally finishes inside the shutdown reserve, but a write can hold nats.go's lock until its one-minute write deadline; `Client.Close` waits for that lock while the finalizer keeps the hold renewing.
 A process killed before that ends the renewal with its connection, and the standby takes over at the lapse, up to the hold's TTL after its last renewal:
 a hand-back that reached the server after a standby had recreated the durable would move that message's pending entry on the standby's consumer.
 Every one of those answers, a given-up handler's, a held message's and one a refused acknowledgement makes alike, passes one rule (`intakeDelivery.handBack`).
@@ -1712,7 +1715,7 @@ The run loop then releases the durable's hold once its hand-backs have reached t
 A take-over under way when the context ends — a standby's poll
 — spends the same deadline rather than starting one of its own:
 its own bounds (`takeOverFinishWithin`, 10 s, and the hold's deadline) end it inside that budget, and no attempt starts once the context has ended.
-The server's shutdown waits for `Run`'s stop, which begins at the signal and gives handlers 15 s from it, then closes the intake client and waits each pending hand-back finalizer before it deregisters the process and closes the database pool.
+The server's shutdown waits for `Run`'s stop, which begins at the signal and gives handlers 15 s from it, then for each pending hand-back finalizer to confirm its hand-back with the intake client open, up to 5 s from the finalizer's start, then closes the intake client and waits for each finalizer to release its hold or leave it to lapse, before it deregisters the process and closes the database pool.
 That wait can outlive the usual shutdown reserve only while `Client.Close` waits for nats.go's one-minute write deadline; a kubelet kill then ends the client and renewal, and the hold lapses.
 
 **The Legion state intake** (`legion.Intake`, `internal/dispatch/legion/intake.go`) takes every Legion daemon's state events from the durable `legion-state-events` on `notifications.legion.*.state`, under a hold as the GitHub intake's is (`delivery.NewHeldDurable`), and runs whenever the process has NATS, with or without the GitHub App.

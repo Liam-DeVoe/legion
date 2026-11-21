@@ -67,6 +67,18 @@ type intakeDelivery struct {
 	// published is set once the publish of any hand-back of this delivery has begun
 	// (publishHandBack). handedBack reads it.
 	published bool
+	// ended counts the hand-back publishes of this delivery that have ended and may have queued
+	// their negative acknowledgement in nats.go's outbound buffer (endPublish), and confirmed is
+	// ended as it stood before the last flush of the connection that answered
+	// (heldDurable.handBacksSettled, confirmFlushed). Each publish counted in confirmed has reached
+	// the server. While ended is above confirmed, a hand-back may still be on its way to the
+	// server, also once the connection has closed.
+	ended, confirmed int
+	// endedOn is the connection of the client that the publishes counted in ended and not in
+	// confirmed ran on, and endedOnMany is set when they ran on more than one. Only a flush of
+	// that one connection can confirm them. confirmFlushed clears both.
+	endedOn     *natsgo.Conn
+	endedOnMany bool
 	// sealed is set once the stop is about to release the hold, with no hand-back taken and not
 	// settled (seal). From then on, no hand-back is taken: each is withheld (takeHandBack).
 	sealed bool
@@ -168,13 +180,19 @@ func subscribeDurable(client *bus.Client, wanted natsgo.ConsumerConfig, deliverS
 // context is cancelled, the negative acknowledgements and the unsubscribe, each waiting for NATS at
 // most bus.ConnLockWait, the drain's end, which the given-up handlers' cancelled context cuts short,
 // and the clients closing. The flush that confirms the hand-backs (up to intakeFlushWait, 1 s)
-// and the hold's release (up to intakeHoldRenew, 5 s) run before the close. Only a pending
-// hand-back's finalizer, with its release, follows the close: Client.Close waits for nats.go's
-// connection lock, which a write can hold until its one-minute write deadline; a kubelet kill
-// then ends the client and renewal. It is also well past what a handler GitHub answers
-// needs, a pull request and its commit pages with a page GitHub answered 502 asked again (after 1 s, then 2 s: githubPageRetryWait), so
-// an ordinary handler finishes and is acknowledged rather than redone. A call GitHub does not
-// answer holds one attempt for up to githubapp.RequestTimeout (20 s), and is then asked again,
+// and the hold's release (up to intakeHoldRenew, 5 s) run before Run returns. A hand-back still
+// pending at the deadline is left to its finalizer (heldDurable.finalizeHandBacks): the stop of
+// the process closes the intake's client only once the finalizer has ended or has had
+// intakeFinalizerConfirmWait (5 s) from the deadline to confirm the hand-back with a flush, and
+// the finalizer then releases the hold (up to intakeHoldRenew) or leaves it to lapse. So that
+// finalizer ends by 25 s after ctx ended, the document budget's latest end. Only Client.Close can
+// outlast that: it waits for nats.go's connection lock, which a write can hold until its
+// one-minute write deadline, while the finalizer keeps the hold renewing; a kubelet kill then ends
+// the client and the renewal, and the hold's row lapses at its expiry. It is also well past what
+// a handler GitHub answers needs, a pull request and its commit pages with a page GitHub answered
+// 502 asked again (after 1 s, then 2 s: githubPageRetryWait), so an ordinary handler finishes and
+// is acknowledged rather than redone. A call GitHub does not answer holds one attempt for up to
+// githubapp.RequestTimeout (20 s), and is then asked again,
 // which no budget inside stopGrace could wait out. A var so a test can shrink it.
 var intakeStopBudget = 15 * time.Second
 
@@ -215,9 +233,11 @@ func stopContext(ctx context.Context) (stopping context.Context, release func())
 // included -- waits for NATS at most bus.ConnLockWait (callNATS): nats.go holds its connection
 // lock, which every call to NATS waits for, through a reconnect's dial and handshake. A hand-back
 // NATS has not taken by then is published later. The hold is released only once every hand-back
-// the delivery took has settled and every one it published has reached the server, renewing until
-// then (takeHandBack, publishHandBack, heldDurable.stop). Once the hold is about to be released, a
-// hand-back is withheld rather than taken (seal).
+// the delivery took has settled and a flush of the connection, begun after each published one's
+// publish ended, has answered, so each has reached the server, renewing until then (takeHandBack,
+// publishHandBack, heldDurable.stop). A hold whose client closes before such a flush answers is
+// left to lapse at its expiry instead (heldDurable.finalizeHandBacks). Once the hold is about to be
+// released, a hand-back is withheld rather than taken (seal).
 //
 // run calls it as its ctx ends, under its stop deadline (stopContext), and when the hold is lost
 // or the durable no longer delivers here, under a budget of its own (stopDeliveringWithin). It is
@@ -601,12 +621,15 @@ func (d *intakeDelivery) settleHandBack(msg *natsgo.Msg) {
 // publishHandBack publishes msg's hand-back after after, for a caller that took it (takeHandBack),
 // waiting for NATS at most bus.ConnLockWait (callNATS). Before the publish, it marks this delivery
 // as one that published a hand-back (handedBack). A publish NATS has not taken by then goes on, on
-// a goroutine of its own, and the hand-back settles when that publish call ends (settleHandBack).
-// The hold's release waits for every hand-back the delivery it stopped took, and then for the
-// server to have those it published: under the stop's deadline, and past it on a goroutine that
-// keeps the hold renewing (heldDurable.finalizeHandBacks), so none reaches a durable a standby
-// recreated. On the hold-lost path, which the run takes when the hold is lost before the stop, no
-// such wait is made.
+// a goroutine of its own. When that publish call ends, it is counted as ended (endPublish), and
+// then the hand-back settles (settleHandBack). The hold's release waits for every hand-back the
+// delivery it stopped took, and then for a flush of the connection, begun after the publishes
+// ended, to answer, so the server has each one it published: under the stop's deadline, and past
+// it on a goroutine that keeps the hold renewing (heldDurable.finalizeHandBacks), so none reaches a
+// durable a standby recreated. A publish that has ended can still be on its way to the server once
+// its connection has closed, so when the client closes before such a flush answers, the finalizer
+// leaves the hold to lapse rather than release it. On the hold-lost path, which the run takes when
+// the hold is lost before the stop, no such wait is made.
 func (d *intakeDelivery) publishHandBack(msg *natsgo.Msg, after time.Duration) {
 	if hook := d.beforeHandBackPublish.Load(); hook != nil {
 		(*hook)()
@@ -620,12 +643,70 @@ func (d *intakeDelivery) publishHandBack(msg *natsgo.Msg, after time.Duration) {
 			slog.Debug(traceHandBackPublishing, d.traceHandBack(msg, "delay", after)...)
 			go d.traceConnection(msg)
 		}
+		// Read before the publish: a publish that endPublish counts ran on this connection.
+		on := d.nats.Connection()
 		err := msg.NakWithDelay(after)
+		d.endPublish(err, on)
 		if tracing() {
 			slog.Debug(traceHandBackPublished, d.traceHandBack(msg, "error", err)...)
 		}
 		return struct{}{}, err
 	}, "subject", msg.Subject, "delay", after)
+}
+
+// endPublish counts a hand-back's publish that ended with err in ended, before the hand-back
+// settles, so a stop that seals the delivery finds every publish that ended counted. A publish
+// that nats.go refused because its connection had closed (natsgo.ErrConnectionClosed) is not
+// counted: nats.go reads that under its connection lock before it queues a byte, so nothing of it
+// can reach the server. Every other publish is counted, whether it returned an error or not, since
+// a write that fails can have sent part of the message.
+//
+// on is the client's connection as the publish began. The client installs a new connection only
+// once the one before it has closed, and a message of a closed connection is refused as closed, so
+// a publish that is counted ran on on. endPublish records it in endedOn, and sets endedOnMany when
+// the publishes not yet confirmed ran on more than one connection.
+func (d *intakeDelivery) endPublish(err error, on *natsgo.Conn) {
+	if errors.Is(err, natsgo.ErrConnectionClosed) {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	switch {
+	case d.ended == d.confirmed:
+		d.endedOn, d.endedOnMany = on, false
+	case on != d.endedOn:
+		d.endedOnMany = true
+	}
+	d.ended++
+}
+
+// handBackPublishes is what publishCounts reads of a delivery's hand-back publishes: how many have
+// ended (endPublish) and how many of those a flush has confirmed (confirmFlushed). While ended is
+// above confirmed, a published hand-back may still be on its way to the server: on is the
+// connection those publishes ran on, and onMany reports that they ran on more than one.
+type handBackPublishes struct {
+	ended, confirmed int
+	on               *natsgo.Conn
+	onMany           bool
+}
+
+// publishCounts reads this delivery's hand-back publishes (handBackPublishes).
+func (d *intakeDelivery) publishCounts() handBackPublishes {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return handBackPublishes{ended: d.ended, confirmed: d.confirmed, on: d.endedOn, onMany: d.endedOnMany}
+}
+
+// confirmFlushed records that a flush of the connection, begun when ended publishes had ended
+// (publishCounts), has answered: each of those publishes has reached the server. Once that is every
+// publish that has ended, no publish is left unconfirmed, and it clears endedOn and endedOnMany.
+func (d *intakeDelivery) confirmFlushed(ended int) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.confirmed = max(d.confirmed, ended)
+	if d.confirmed == d.ended {
+		d.endedOn, d.endedOnMany = nil, false
+	}
 }
 
 // traceConnection logs the bus client's connection as msg's hand-back's publish begins, and

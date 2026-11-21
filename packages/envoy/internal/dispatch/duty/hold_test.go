@@ -261,6 +261,80 @@ func TestHoldLapseFreesAtOnceAndKeepsTheToken(t *testing.T) {
 	mustTakeHold(t, second.Pool, uuid.New(), opts)
 }
 
+// Abandon ends the hold as Release does - Lost closes - but sends nothing: the row keeps its
+// holder, its token and the expiry the last renewal wrote, and no renewal moves that expiry after
+// Abandon has returned. Another holder's every try before that expiry on the database's clock is
+// refused, and its first try after it takes the name.
+func TestHoldAbandonLeavesTheRowToLapseAtItsExpiry(t *testing.T) {
+	database := storetest.Open(t)
+	second := storetest.SecondProcess(t, database)
+	opts := duty.HoldOptions{TTL: 3 * time.Second, Renew: 500 * time.Millisecond, Margin: time.Second, Token: "deliver.abandoned"}
+	ctx := context.Background()
+	holder := uuid.New()
+	hold := mustTakeHold(t, database.Pool, holder, opts)
+	_, _, took := holdRow(t, database.Pool)
+	// The expiry Abandon leaves is then a renewal's, so the row shows that the renewal ran until
+	// Abandon stopped it.
+	for give := time.Now().Add(5 * opts.Renew); ; time.Sleep(20 * time.Millisecond) {
+		if _, _, expiresAt := holdRow(t, database.Pool); expiresAt.After(took) {
+			break
+		}
+		if time.Now().After(give) {
+			t.Fatalf("control: no renewal moved the hold's expiry within %s", 5*opts.Renew)
+		}
+	}
+
+	hold.Abandon()
+	select {
+	case <-hold.Lost():
+	default:
+		t.Error("Lost is open after Abandon")
+	}
+	named, token, expiry := holdRow(t, database.Pool)
+	if named != holder || token != opts.Token {
+		t.Fatalf("after Abandon the row names %s with token %q, want the holder %s with %q", named, token, holder, opts.Token)
+	}
+	if ahead := time.Until(hold.Deadline()); ahead > 0 {
+		t.Errorf("Lost is closed but the deadline is %s ahead", ahead)
+	}
+	time.Sleep(3 * opts.Renew)
+	if named, token, expiresAt := holdRow(t, database.Pool); named != holder || token != opts.Token || !expiresAt.Equal(expiry) {
+		t.Fatalf("%s after Abandon the row names %s with token %q and expiry %s, want it as Abandon left it: %s, %q, %s",
+			3*opts.Renew, named, token, expiresAt, holder, opts.Token, expiry)
+	}
+
+	standby := uuid.New()
+	refused := 0
+	var taken *duty.Hold
+	for give := time.Now().Add(2 * opts.TTL); taken == nil; time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(give) {
+			t.Fatalf("the standby did not take the abandoned hold within %s; the row expires at %s", 2*opts.TTL, expiry)
+		}
+		before := databaseNow(t, database)
+		var err error
+		if taken, err = duty.TryHold(ctx, second.Pool, holdName, standby, opts); err != nil {
+			t.Fatalf("the standby's try: %v", err)
+		}
+		if taken == nil {
+			if !before.Before(expiry) {
+				t.Fatalf("the standby's try made after %s on the database's clock was refused, but the abandoned row expires at %s", before, expiry)
+			}
+			refused++
+		}
+	}
+	t.Cleanup(func() { _ = taken.Release(context.Background()) })
+	if refused == 0 {
+		t.Fatal("control: the standby took the hold on its first try, so the row shows nothing of the tries before its expiry")
+	}
+	named, _, expiresAt := holdRow(t, database.Pool)
+	if named != standby {
+		t.Fatalf("the row names %s, want the standby %s", named, standby)
+	}
+	if at := expiresAt.Add(-opts.TTL); at.Before(expiry) {
+		t.Fatalf("the standby took the hold at %s on the database's clock, %s before the abandoned row's expiry %s", at, expiry.Sub(at), expiry)
+	}
+}
+
 // A renewal that affects no row - the row taken over by another holder after a lapse - closes Lost
 // at once, long before the loss deadline, and the holder's Release then leaves the new holder's
 // row alone.

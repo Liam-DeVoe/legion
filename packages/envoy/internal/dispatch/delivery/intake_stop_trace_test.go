@@ -76,12 +76,13 @@ const traceTime = "2006-01-02T15:04:05.000000000Z07:00"
 // other attributes after them, in the order of their keys.
 var traceKeys = []string{
 	"name", "delivery", "client", "conn", "conn_closed", "subject", "reply", "delay", "taken", "sealed",
-	"published", "lapse", "settled", "reason", "outcome", "answered", "connected", "stopping",
-	"hold_covers", "call", "waited", "error",
+	"published", "ended", "confirmed", "published_on", "published_on_many", "lapse", "settled",
+	"in_doubt", "outcome", "reason", "answered", "connected", "stopping", "hold_covers", "call",
+	"waited", "error",
 }
 
 // tracePointerKeys are the attributes whose value is a pointer that the row can name.
-var tracePointerKeys = map[string]bool{"delivery": true, "client": true, "conn": true}
+var tracePointerKeys = map[string]bool{"delivery": true, "client": true, "conn": true, "published_on": true}
 
 // traceStops starts the trace of t's stop row. It captures t's log (captureLogs), and when t has
 // failed by the time its cleanups run, it prints the trace. A row calls it before it starts the

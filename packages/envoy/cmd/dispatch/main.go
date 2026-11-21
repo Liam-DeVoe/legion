@@ -1054,11 +1054,14 @@ func main() {
 	// intakes and the Legion state intake. StartIntakes and legion.StartIntake each return their
 	// stop as a function a second call of which returns once the first has, so a second call of
 	// waitIntakes does too. The shutdown runs it before it closes the database pool: each stop
-	// closes its intakes' NATS clients after their Runs return, then waits for any hand-back
-	// finalizer to release its duty.Hold through that pool. A hold left in place for its TTL names
-	// the stopped process's deliver subject, which a process of the build before holds, binding by
-	// lookup, goes on delivering at, so the next holder would read that binding as a dead holder's
-	// and take it over. Every exit after the intakes start runs it too (exitAfterIntakes,
+	// waits for any hand-back finalizer to confirm its hand-back while its intake's NATS client is
+	// still open, for up to delivery's intakeFinalizerConfirmWait from the finalizer's start, then
+	// closes its intakes' NATS clients and waits for each finalizer to release its duty.Hold through
+	// that pool, or to leave it to lapse when its client closed before a flush confirmed the
+	// hand-back, which may then still be on its way to the server. A hold left in place for its TTL
+	// names the stopped process's deliver subject, which a process of the build before holds,
+	// binding by lookup, goes on delivering at, so the next holder would read that binding as a dead
+	// holder's and take it over. Every exit after the intakes start runs it too (exitAfterIntakes,
 	// stopIntakesOnExit, and the stop during the registry's admission wait), since each intake can
 	// hold its durable before this process serves anything. With no NATS client there is nothing
 	// to wait for.
@@ -1068,8 +1071,10 @@ func main() {
 		// intake a third, so each takes a client of its own (delivery.StartIntakes,
 		// legion.StartIntake). Their Runs begin stopping at the signal beside the HTTP drain and
 		// document shutdown, and return once a message in a handler has been acknowledged or given
-		// up at its stop budget and handed back. Each stop then closes its clients, waits for each
-		// pending hand-back's finalizer to release the hold through the pool, and returns. Each
+		// up at its stop budget and handed back. Each stop then waits for each pending hand-back's
+		// finalizer to confirm its hand-back with the client open, for its bound, closes its
+		// clients, waits for each finalizer to release the hold through the pool or leave it to
+		// lapse, and returns. Each
 		// connects in the background as the publisher does, and its poll takes the durable's hold
 		// once it has. While delivery settings are saved (the intake runs only then), the intake
 		// hands each push of a branch to the architecture importer the ticker and the routes share,
