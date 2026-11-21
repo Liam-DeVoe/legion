@@ -1,3 +1,4 @@
+import type { Result } from "../web/src/api/paths";
 import {
   createIssue,
   createIssueArtifact,
@@ -51,10 +52,12 @@ test("a root issue of a project gating three steps reads each step's own documen
 }) => {
   const gatethree = rowKey("GATETHREE");
   await createProject({ key: gatethree, name: "Three steps" });
+  // What the route answers, typed as it: a change of that answer is an error here, not only when
+  // the row runs.
   expect(await setGatedSteps(gatethree, ["decisions", "criteria", "spec"])).toEqual({
     project: gatethree,
     steps: ["decisions", "criteria", "spec"],
-  });
+  } satisfies Result<"/api/v1/projects/{key}/gated-steps", "put">);
   const issue = await createIssue({
     project: gatethree,
     spec: "The plan.",

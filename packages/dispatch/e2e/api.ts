@@ -17,7 +17,7 @@ import {
   repoParams,
   routeUrl,
 } from "../web/src/api/paths";
-import type { Actor, GatedStep } from "../web/src/api/types";
+import type { Actor } from "../web/src/api/types";
 import { harnessPorts } from "./harness-ports";
 import { type DispatchProcess, pinnedTo } from "./harness-processes";
 
@@ -410,13 +410,12 @@ export function listProjects(options: ApiOptions = {}) {
  *  deployment that gates nothing. */
 export function setGatedSteps(
   project: string,
-  steps: GatedStep[],
+  steps: Body<"/api/v1/projects/{key}/gated-steps", "put">["steps"],
   options: ApiOptions = { as: "agent" }
-): Promise<{ project: string; steps: GatedStep[] }> {
-  return request<{ project: string; steps: GatedStep[] }>(
-    `/api/v1/projects/${encodeURIComponent(project)}/gated-steps`,
-    "PUT",
-    { steps },
+) {
+  return put(
+    "/api/v1/projects/{key}/gated-steps",
+    { body: { steps }, params: { key: project } },
     options
   );
 }
@@ -514,15 +513,10 @@ export function getIssueResults(issue: string, options: ApiOptions = {}) {
  *  DISPATCH_TEST_HOOKS=1, see run-server.sh); the server starts with both unset, and no
  *  deployment setting can change while it runs. */
 export function setNewIssueSettings(
-  input: { label: string; session: string },
+  input: Body<"/api/v1/settings/new-issue/_test", "post">,
   options: ApiOptions = {}
-): Promise<{ label: string; session: string }> {
-  return request<{ label: string; session: string }>(
-    "/api/v1/settings/new-issue/_test",
-    "POST",
-    input,
-    options
-  );
+) {
+  return post("/api/v1/settings/new-issue/_test", { body: input }, options);
 }
 
 /** `GET /api/v1/issues/{key}/coverage`: what each requirement of the issue's spec lacks. */

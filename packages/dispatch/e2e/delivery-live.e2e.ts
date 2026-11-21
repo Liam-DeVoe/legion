@@ -1,6 +1,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
+import { type Query, type Result, routePath } from "../web/src/api/paths";
 import { seedDeliveryFixture, seedPipelineRows } from "./delivery-seed";
 import { seedDeliveryReconcileGithub } from "./fake-github-helpers";
 import { sql } from "./psql";
@@ -82,16 +83,11 @@ function snapshotCount(frame: LiveFrame, family: string, facet: string, value: s
 }
 
 /** The complete Delivery GET set, in its server order, for comparison with the resumed page. */
-function deliveryPRIDs(body: unknown): string[] {
-  if (!isLiveRecord(body) || !Array.isArray(body.prs)) {
+function deliveryPRIDs(body: Result<"/api/v1/delivery/timeline", "get">): string[] {
+  if (body.prs === null) {
     throw new Error("Delivery GET answered without a pull-request array");
   }
-  return body.prs.map((pr) => {
-    if (!isLiveRecord(pr) || typeof pr.id !== "string") {
-      throw new Error("Delivery GET answered a pull request without an id");
-    }
-    return pr.id;
-  });
+  return body.prs.map((pr) => pr.id);
 }
 
 /** Watches the page's real live socket before navigation: no test injects a frame or replaces the
@@ -208,8 +204,15 @@ async function insertMarkerDelta(
   return waitForFrame(live.frames, (frame) => deltaIncludesPR(frame, `acme/widgets#${number}`));
 }
 
-async function deliveryRequest(page: Page, path: string): Promise<unknown> {
-  const response = await page.request.get(path, { headers: { Authorization: "Bearer e2e-token" } });
+/** `GET /api/v1/delivery/timeline` over `query`, under the agent bearer. */
+async function deliveryTimeline(
+  page: Page,
+  query: Query<"/api/v1/delivery/timeline", "get">
+): Promise<Result<"/api/v1/delivery/timeline", "get">> {
+  const response = await page.request.get(
+    routePath("get", "/api/v1/delivery/timeline", {}, query),
+    { headers: { Authorization: "Bearer e2e-token" } }
+  );
   expect(response.status()).toBe(200);
   return response.json();
 }
@@ -371,9 +374,10 @@ test("after every socket is dropped, the page resumes and equals the GET answer 
     await insertMergedPR(delivery.number(693), "feat: before the reconnect");
     await expect(page.getByText("feat: before the reconnect", { exact: true })).toBeVisible();
 
-    const disconnected = await context.request.post("/api/v1/live/_test/disconnect", {
-      headers: { Authorization: "Bearer e2e-token" },
-    });
+    const disconnected = await context.request.post(
+      routePath("post", "/api/v1/live/_test/disconnect", {}),
+      { headers: { Authorization: "Bearer e2e-token" } }
+    );
     expect(disconnected.status()).toBe(200);
     await insertMergedPR(delivery.number(694), "feat: while the socket reconnects");
     await expect
@@ -386,13 +390,10 @@ test("after every socket is dropped, the page resumes and equals the GET answer 
       )
       .toBe(1);
 
-    const body = await deliveryRequest(
-      page,
-      "/api/v1/delivery/timeline?from=" +
-        encodeURIComponent(new Date(Date.now() - 28 * 24 * 60 * 60 * 1000).toISOString()) +
-        "&to=" +
-        encodeURIComponent(new Date().toISOString())
-    );
+    const body = await deliveryTimeline(page, {
+      from: new Date(Date.now() - 28 * 24 * 60 * 60 * 1000).toISOString(),
+      to: new Date().toISOString(),
+    });
     const rendered = await page
       .locator("tbody tr a[title]")
       .evaluateAll((links) => links.map((link) => link.getAttribute("title")));
@@ -424,10 +425,13 @@ test("an issue title change reaches the page", async ({ browser, delivery }) => 
   try {
     const live = await openLiveDelivery(page);
     await expect(page.getByText(`${acme}-690 · P1`, { exact: true })).toBeVisible();
-    const response = await context.request.patch(`/api/v1/issues/${acme}-690`, {
-      data: { title: "Renamed live issue title" },
-      headers: { Origin: new URL(page.url()).origin },
-    });
+    const response = await context.request.patch(
+      routePath("patch", "/api/v1/issues/{key}", { key: `${acme}-690` }),
+      {
+        data: { title: "Renamed live issue title" },
+        headers: { Origin: new URL(page.url()).origin },
+      }
+    );
     expect(response.status()).toBe(200);
     await waitForFrame(live.frames, (frame) =>
       deltaMapValue(frame, "issue_titles", `${acme}-690`, "Renamed live issue title")

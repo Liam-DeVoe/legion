@@ -1,3 +1,4 @@
+import { type Refusal, routePath } from "../web/src/api/paths";
 import { agentRow, type FakeSession, setInterests, setListsState, setLiveSessions } from "./agents";
 import {
   baseUrl,
@@ -129,10 +130,10 @@ async function agentsAnswer(): Promise<{
   retryAfter: string | null;
   status: number;
 }> {
-  const response = await fetch(new URL("/api/v1/agents", baseUrl), {
+  const response = await fetch(new URL(routePath("get", "/api/v1/agents", {}), baseUrl), {
     headers: await userHeaders(),
   });
-  const body = (await response.json()) as { code?: unknown };
+  const body = (await response.json()) as Refusal<"/api/v1/agents", "get">;
   return {
     code: body.code,
     retryAfter: response.headers.get("Retry-After"),

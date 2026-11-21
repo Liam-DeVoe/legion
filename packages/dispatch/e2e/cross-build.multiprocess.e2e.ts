@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { routePath } from "../web/src/api/paths";
 import type { BlockSchema, LiveClientFrame, LiveServerFrame } from "../web/src/api/types";
 import { schemaCreatable } from "../web/src/features/doc/schema-creatable";
 import {
@@ -448,13 +449,21 @@ test("a document holding newer content shows that state and no replace drop zone
   );
   // A /_test/ route goes to both processes (e2e/round-robin-proxy.ts).
   const injected = await fetch(
-    new URL(`/api/v1/artifacts/${issue.primary_artifact_id}/_test/newer-content`, baseUrl),
+    new URL(
+      routePath("post", "/api/v1/artifacts/{id}/_test/newer-content", {
+        id: issue.primary_artifact_id,
+      }),
+      baseUrl
+    ),
     { headers: { Authorization: `Bearer ${e2eAgentToken}` }, method: "POST" }
   );
   expect(injected.status, await injected.text()).toBe(204);
   for (const target of dispatchProcesses) {
     const text = await fetch(
-      new URL(`/api/v1/artifacts/${issue.primary_artifact_id}/text`, baseUrl),
+      new URL(
+        routePath("get", "/api/v1/artifacts/{id}/text", { id: issue.primary_artifact_id }),
+        baseUrl
+      ),
       { headers: { Authorization: `Bearer ${e2eAgentToken}`, ...pinnedTo(target) } }
     );
     expect(text.status).toBe(409);

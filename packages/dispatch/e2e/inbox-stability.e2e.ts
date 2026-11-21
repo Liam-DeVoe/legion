@@ -1,3 +1,4 @@
+import type { Result } from "../web/src/api/paths";
 import type { Ask, Issue } from "../web/src/api/types";
 import {
   answerAsk,
@@ -688,7 +689,7 @@ async function travelPointerAcrossIncomingRow(page: Page): Promise<void> {
   let hold = true;
   await page.route("**/api/v1/inbox", async (route) => {
     const response = await route.fetch();
-    const listed = (await response.json()) as Array<{ question?: string }>;
+    const listed = (await response.json()) as Result<"/api/v1/inbox", "get">;
     if (!hold || !listed.some((row) => row.question === "Travelling pointer arrival")) {
       await route.fulfill({ json: listed, response });
       return;

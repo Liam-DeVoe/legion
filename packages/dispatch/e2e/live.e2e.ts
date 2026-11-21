@@ -1,6 +1,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
+import type { PathsOf, Result } from "../web/src/api/paths";
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 import {
   createAsk,
@@ -377,9 +378,11 @@ test("live: new events on the open issue appear in Conversation and mark it read
     .poll(
       async () => {
         await page.clock.runFor(DWELL_MS);
+        // The read runs in the page, where no module of this file reaches, so its path and its
+        // answer are checked against the route table by type alone.
         return page.evaluate(async (key) => {
-          const response = await fetch("/api/v1/me/state");
-          const state = (await response.json()) as Record<string, { last_read_seq: number }>;
+          const response = await fetch("/api/v1/me/state" satisfies PathsOf<"get">);
+          const state = (await response.json()) as Result<"/api/v1/me/state", "get">;
           return state[key]?.last_read_seq ?? 0;
         }, issue.key);
       },

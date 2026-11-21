@@ -1,4 +1,5 @@
 import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
+import type { PathsOf } from "../web/src/api/paths";
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 import { DWELL_MS } from "../web/src/features/shell/useDwell";
 import {
@@ -1176,7 +1177,9 @@ test("on a phone, a thread over an older conversation holds the issue's read mar
     // page's own, which answers only once a `PUT` the dwell started had left the page, and the
     // read of the mark itself.
     await page.clock.runFor(DWELL_MS * 3);
-    await page.evaluate(() => fetch("/api/v1/me/state").then(({ status }) => status));
+    await page.evaluate(() =>
+      fetch("/api/v1/me/state" satisfies PathsOf<"get">).then(({ status }) => status)
+    );
     expect(await mark()).toBe(0);
     expect(marks).toEqual([]);
 

@@ -1,4 +1,4 @@
-import type { ArtifactUploadResponse } from "../web/src/api/types";
+import { type Result, routePath } from "../web/src/api/paths";
 import {
   REF_PREVIEW_CLOSE_DELAY_MS,
   REF_PREVIEW_OPEN_DELAY_MS,
@@ -436,19 +436,23 @@ test("a long-named picture in a comment draws, its link to a long-named document
   try {
     const page = await alice.newPage();
     const pictureName = `${"a".repeat(2600)}.png`;
-    const upload = await page.request.post(`/api/v1/issues/${issue.key}/artifacts`, {
-      headers: { Origin: dashboardOrigin },
-      multipart: {
-        file: {
-          buffer: Buffer.from(ONE_PIXEL_PNG, "base64"),
-          mimeType: "image/png",
+    const upload = await page.request.post(
+      routePath("post", "/api/v1/issues/{key}/artifacts", { key: issue.key }),
+      {
+        headers: { Origin: dashboardOrigin },
+        multipart: {
+          file: {
+            buffer: Buffer.from(ONE_PIXEL_PNG, "base64"),
+            mimeType: "image/png",
+            name: pictureName,
+          },
           name: pictureName,
         },
-        name: pictureName,
-      },
-    });
+      }
+    );
     expect(upload.status(), await upload.text()).toBeLessThan(300);
-    const pictureSlug = ((await upload.json()) as ArtifactUploadResponse).artifact.slug;
+    const uploaded = (await upload.json()) as Result<"/api/v1/issues/{key}/artifacts", "post">;
+    const pictureSlug = uploaded.artifact.slug;
     // Words, so the link's title - the document's name - wraps in the column.
     const design = await createIssueArtifact(issue.key, {
       content: "# Design\n\nThe long-named design.\n",

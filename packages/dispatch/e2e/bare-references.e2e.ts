@@ -4,6 +4,7 @@ import {
   MAX_REFERENCE_TARGET_BYTES,
 } from "@legion/contracts";
 
+import { routePath } from "../web/src/api/paths";
 import {
   answerAsk,
   baseUrl,
@@ -286,9 +287,12 @@ function standaloneKeys(body: string): string[] {
 
 /** What `GET /api/v1/issues/{key}` answers alice. */
 async function issueStatus(key: string): Promise<number> {
-  const response = await fetch(new URL(`/api/v1/issues/${encodeURIComponent(key)}`, baseUrl), {
-    headers: await userHeaders(),
-  });
+  const response = await fetch(
+    new URL(routePath("get", "/api/v1/issues/{key}", { key }), baseUrl),
+    {
+      headers: await userHeaders(),
+    }
+  );
   return response.status;
 }
 

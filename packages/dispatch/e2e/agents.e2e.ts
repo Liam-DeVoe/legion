@@ -1,5 +1,6 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
+import type { Result } from "../web/src/api/paths";
 import type { CreateBroadcastInput, Message } from "../web/src/api/types";
 import {
   agentGroupToggle,
@@ -310,7 +311,10 @@ test("Agents puts who needs you first, groups the rest by what each is doing, sh
       input: { body: sentBody, delivery: "btw" },
       key: expect.any(String),
     });
-    const message = (await request.json()) as { id: string };
+    const message = (await request.json()) as Result<
+      "/api/v1/agents/{session_id}/messages",
+      "post"
+    >;
     expect(await getSentMessages()).toMatchObject([{ target_session: planner.session_id }]);
 
     await replyToMessageDelivery(
@@ -412,10 +416,10 @@ test("a message to an agent no store knows any more is queued for it, and its ca
       input: { body, delivery: "steer" },
       key: expect.any(String),
     });
-    const message = (await response.json()) as {
-      deliveries: { delivery: string; state: string }[];
-      id: string;
-    };
+    const message = (await response.json()) as Result<
+      "/api/v1/agents/{session_id}/messages",
+      "post"
+    >;
     expect(message.deliveries).toEqual([
       expect.objectContaining({ delivery: "steer", state: "queued" }),
     ]);
@@ -503,8 +507,13 @@ test("Agents shows the newest exchange, folds the older ones, and lets the viewe
         response.ok()
     );
     await clearButton.click();
-    const state = (await (await saved).json()) as { cleared_before: string };
-    expect(Date.parse(state.cleared_before)).toBeLessThanOrEqual(Date.now());
+    const state = (await (await saved).json()) as Result<
+      "/api/v1/me/agents/{session_id}/state",
+      "put"
+    >;
+    // The route leaves `cleared_before` out of a state no Clear has set: absent, it parses to NaN,
+    // which no time is at or before.
+    expect(Date.parse(state.cleared_before ?? "")).toBeLessThanOrEqual(Date.now());
     await expect(conversation).toHaveCount(0);
     await expect(clearButton).toHaveCount(0);
     await expect(plannerCard.getByText(/^Cleared/)).toContainText("just now");

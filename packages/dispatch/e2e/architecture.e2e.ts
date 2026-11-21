@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+import { routePath } from "../web/src/api/paths";
 import {
   createIssue,
   createProject,
@@ -372,7 +373,9 @@ test("a project with no architecture source answers the read, so its pages make 
     });
 
     // The read itself: having no source is an answer, not a refusal.
-    const read = await page.request.get(`/api/v1/projects/${core}/architecture-sources`);
+    const read = await page.request.get(
+      routePath("get", "/api/v1/projects/{key}/architecture-sources", { key: core })
+    );
     expect(read.status()).toBe(200);
     expect(await read.json()).toEqual([]);
 

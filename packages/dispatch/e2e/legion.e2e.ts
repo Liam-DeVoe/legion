@@ -6,6 +6,7 @@
 // A project's daemon is named by `PUT /api/v1/projects/{key}/legion/daemon` and removed by its
 // DELETE, both deployment-scoped; the route stores a base URL and never calls the host, so these
 // specs need no daemon to be reachable.
+import { type Refusal, routePath } from "../web/src/api/paths";
 import { baseUrl, userHeaders } from "./api";
 import {
   legionDaemonsHeld,
@@ -73,13 +74,17 @@ test("the Settings page refuses a state URL that is not a daemon's, and its Remo
 
   try {
     // What the server says about this URL, so the page can be held to its wording.
-    const refusal = await fetch(new URL(`/api/v1/projects/${acme}/legion/daemon`, baseUrl), {
+    const daemonPath = routePath("put", "/api/v1/projects/{key}/legion/daemon", { key: acme });
+    const refusal = await fetch(new URL(daemonPath, baseUrl), {
       body: JSON.stringify({ state_url: bad }),
       headers: { "Content-Type": "application/json", ...(await userHeaders("alice")) },
       method: "PUT",
     });
     expect(refusal.status).toBe(400);
-    const refused = (await refusal.json()) as { code: string; error: string };
+    const refused = (await refusal.json()) as Refusal<
+      "/api/v1/projects/{key}/legion/daemon",
+      "put"
+    >;
     expect(refused.code).toBe("LEGION_SETTING_INPUT");
 
     await page.goto("/settings");

@@ -1,5 +1,6 @@
 import { writeFile } from "node:fs/promises";
 
+import { type Refusal, type Result, routePath } from "../web/src/api/paths";
 import {
   createIssue,
   createIssueArtifact,
@@ -58,11 +59,13 @@ test("a title the issue already holds is refused by the control, by its name and
 
   // The same title through the API, with no content: the write's own refusal names the document
   // that holds the title in the same way, and asks for no content at all.
-  const refused = await postAsPage(page, `/api/v1/issues/${issue.key}/artifacts`, {
-    name: "Launch notes",
-  });
+  const refused = await postAsPage(
+    page,
+    routePath("post", "/api/v1/issues/{key}/artifacts", { key: issue.key }),
+    { name: "Launch notes" }
+  );
   expect(refused.status()).toBe(400);
-  const body = await refused.json();
+  const body = (await refused.json()) as Refusal<"/api/v1/issues/{key}/artifacts", "post">;
   expect(body.code).toBe("ARTIFACT_INPUT");
   expect(body.error).toBe(
     '"Launch notes" names artifact launch-notes (Launch notes), which exists; a write with no ' +
@@ -115,13 +118,17 @@ test("a title whose slug is a role slug is refused, and the real plan.md is stil
   // content is taken, and writes a version of the issue's plan document. That write replaces the
   // plan whole, so it names the token of the version it replaces, as every replacement does.
   if (plan === undefined) throw new Error("the issue holds no plan document");
-  const accepted = await postAsPage(page, `/api/v1/issues/${issue.key}/artifacts`, {
-    content: "# Plan\n\nThe steps, in order, corrected.\n",
-    name: "plan.md",
-    precondition: await documentBase(plan.id),
-  });
+  const accepted = await postAsPage(
+    page,
+    routePath("post", "/api/v1/issues/{key}/artifacts", { key: issue.key }),
+    {
+      content: "# Plan\n\nThe steps, in order, corrected.\n",
+      name: "plan.md",
+      precondition: await documentBase(plan.id),
+    }
+  );
   expect(accepted.status()).toBe(201);
-  const made = await accepted.json();
+  const made = (await accepted.json()) as Result<"/api/v1/issues/{key}/artifacts", "post">;
   expect(made.artifact.slug).toBe("plan-md");
   expect(made.artifact.id).toBe(plan?.id);
 });

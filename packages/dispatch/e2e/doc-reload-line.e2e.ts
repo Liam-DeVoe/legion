@@ -1,3 +1,4 @@
+import type { Result } from "../web/src/api/paths";
 import type { Actor } from "../web/src/api/types";
 import { createIssue, createProject, patchIssue } from "./api";
 import { connectedDot, countDocumentSockets, documentEditor, reconnectedSockets } from "./editor";
@@ -75,7 +76,7 @@ test("a reconnect admitted read-only before the issue read names the reload @web
     await page.route(`**/api/v1/issues/${issue.key}`, async (route) => {
       if (route.request().method() !== "GET" || !hold) return route.fallback();
       const response = await route.fetch();
-      const read = (await response.json()) as { closed_at: string | null };
+      const read = (await response.json()) as Result<"/api/v1/issues/{key}", "get">;
       if (read.closed_at !== null) {
         await route.fulfill({ json: read, response });
         return;

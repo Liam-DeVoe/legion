@@ -13,7 +13,8 @@ written short answers the prefix layer's `409 ID_AMBIGUOUS` (`IDAmbiguousError`,
 `candidates` are `IDCandidate`s, Go's `idAmbiguousError` and `refs.Candidate`; `idRoute.refusals`
 attaches it). `DispatchRefusal` is the union of every refusal body of every route, and both
 clients read a refusal through it: `DispatchServiceErrorShape` in `@legion/contracts`, which the
-dashboard's `ApiError` and the CLI's `DispatchServiceError` take.
+dashboard's `ApiError` and the CLI's `DispatchServiceError` take. A test that reads a refusal body
+itself, rather than through a client, takes it as its own route's (`Refusal` in `paths.ts`).
 
 So a request or response shape written by hand here is a finding. This file is the list of what
 is left and, for each entry, the one reason it is not a shape of that kind, so a reader checks
@@ -47,9 +48,9 @@ generated.
   Not a response shape: it declares no field the generated row does not, and is a refinement of
   it, as `MyReplyThreadRow` is of `MyReplyRow`.
 - **`paths.ts`** — `PathsOf`, `Op`, `Json200`, `Json201`, `Answer`, `PathParams`, `QueryParams`,
-  `JsonBodyOf`, `RequestBody`, `FormBody`, `Query`, `Body`, `Result`. Not a response shape: these
-  are how a route method reads its own shapes **out of** the generated document; each is a
-  projection of `paths`, and none declares a field.
+  `JsonBodyOf`, `RequestBody`, `FormBody`, `Query`, `Body`, `Result`, `RefusalBody`, `Refusal`.
+  Not a response shape: these are how a route method reads its own shapes **out of** the
+  generated document; each is a projection of `paths`, and none declares a field.
 - **`live-socket.ts`** — `LiveSocketConnection`, `LiveSocketState`, `DeliveryLiveVerdict`,
   `EventsHandlers`, `AgentHandlers`, `LiveSocket`, `PendingLoad`, the three `*Subscription`s,
   `Subscription`, `LiveSocketPill`. Not a response shape: they are the socket's own state
@@ -59,6 +60,12 @@ generated.
   `DeferredCheck`, `SchedulerState` and `QueryOwner`, `queries.ts`'s `DeliveryLiveBodies`, and
   `reachability.ts`'s `Reachable`**. Not a response shape: they are the page's cache, its refresh
   scheduler and its reachability map, which hold answers rather than describe one.
+- **`query-client.ts`'s `ReadHold`, `EndReadHold`, `HeldReads` and `ReadHolds`, and
+  `write-events.ts`'s `WriteEvent`** — the holds a write keeps on the cache's reads while it is
+  out (`holdBackReads`): the queries it holds back, the live event that ends the hold, the call
+  that ends it, and the set of holds a client keeps. Not a response shape: they are the cache's
+  rule about when a held read may be asked again, and `WriteEvent` is a test of a `DispatchEvent`
+  (below), not a body.
 - **An imported or re-exported name is a hit of the grep and not a declaration of its own.**
   `IdempotencyLandedCode`, `InboxThreadKind`, `DispatchServiceErrorShape` and `Sleep` in
   `client.ts` are `@legion/contracts`', and the `paths.ts` names it imports are that file's; `Query`,
@@ -74,10 +81,11 @@ generated.
 
 ## `e2e`
 
-- **`api.ts`'s harness half** — `ApiOptions`, `CachedSession`, `CallArgs`, and
+- **`api.ts`'s harness half** — `ApiOptions`, `CachedSession`, `CallArgs`, `RowKey`, and
   `ApprovalRequested`, which is `Result<"/api/v1/artifacts/{id}/approval-requests", "post">`.
-  Not a response shape: the first three are the lane's base URL, the dev sign-in's cookie cache
-  and the argument record the typed call seam takes, and the last is read from the document.
+  Not a response shape: the first four are the lane's base URL, the dev sign-in's cookie cache,
+  the argument record the typed call seam takes and the branded project key `createProject` takes
+  (`rowKey`, `fixedKey`), and the last is read from the document.
 - **Every other declaration under `e2e/`** is a fixture or a harness type of the test that holds
   it (`FakeSession`, `Seeded`, `ProbeLine`, the Playwright re-exports). Not a response shape:
   none is a Dispatch request or response.

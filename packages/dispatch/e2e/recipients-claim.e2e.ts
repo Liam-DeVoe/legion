@@ -1,3 +1,4 @@
+import type { Result } from "../web/src/api/paths";
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 
 import { setLiveSessions } from "./agents";
@@ -288,7 +289,7 @@ test("unfollowing a follower while a role route's holder is unknown says the rou
   });
   await page.route("**/api/v1/inbox*", async (route) => {
     const response = await route.fetch();
-    const rows = (await response.json()) as { id: string; thread: Record<string, unknown> }[];
+    const rows = (await response.json()) as Result<"/api/v1/inbox", "get">;
     await route.fulfill({
       json: rows.map((row) =>
         row.id === ask.id ? { ...row, thread: { ...row.thread, ...unknownReach } } : row
@@ -448,7 +449,7 @@ test("a claim that lands while the Inbox is loading reaches the card that mounts
     inboxRequests += 1;
     if (inboxRequests === 1) {
       const response = await route.fetch();
-      const rows = (await response.json()) as { id: string; thread: { claimant: unknown } }[];
+      const rows = (await response.json()) as Result<"/api/v1/inbox", "get">;
       staleClaimant = rows.find((row) => row.id === ask.id)?.thread.claimant;
       firstFetched.resolve();
       await releaseFirst.promise;

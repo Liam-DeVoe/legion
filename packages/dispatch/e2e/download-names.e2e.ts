@@ -1,6 +1,12 @@
 import { readFile } from "node:fs/promises";
 
-import type { ArtifactUploadResponse } from "../web/src/api/types";
+import {
+  type Op,
+  type PathParams,
+  type PathsOf,
+  type Result,
+  routePath,
+} from "../web/src/api/paths";
 import { setLiveSessions } from "./agents";
 import {
   createIssue,
@@ -37,20 +43,22 @@ function pdf(name: string, text: string): UploadFile {
   return { buffer: Buffer.from(`%PDF-1.4\n% ${text}\n`), mimeType: "application/pdf", name };
 }
 
-/** Uploads `file` as the signed-in page through `path`, an owner's artifacts route, as a multipart
- *  write. `page.request` sends the page's session cookie and no `Origin`, and the server refuses a
- *  cookie-authenticated write whose `Origin` is not the dashboard's (enforceCookieOrigin). */
-async function upload(
+/** Uploads `file` as the signed-in page through `pattern`, an owner's artifacts route, as a
+ *  multipart write, and answers what the route answers. `page.request` sends the page's session
+ *  cookie and no `Origin`, and the server refuses a cookie-authenticated write whose `Origin` is
+ *  not the dashboard's (enforceCookieOrigin). */
+async function upload<P extends PathsOf<"post">>(
   page: Page,
-  path: string,
+  pattern: P,
+  params: PathParams<Op<P, "post">>,
   file: UploadFile
-): Promise<ArtifactUploadResponse["artifact"]> {
-  const answer = await page.request.post(path, {
+): Promise<Result<P, "post">> {
+  const answer = await page.request.post(routePath("post", pattern, params), {
     headers: { Origin: dashboardOrigin },
     multipart: { file, name: file.name },
   });
   expect(answer.status(), await answer.text()).toBeLessThan(300);
-  return ((await answer.json()) as ArtifactUploadResponse).artifact;
+  return answer.json();
 }
 
 /** Picks `file` in the Artifacts tab's own upload control and confirms it, as a person does:
@@ -94,8 +102,13 @@ test("each Download version link names the download address and each picture the
     mimeType: "image/png",
     name: "diagram.png",
   };
-  const diagram = await upload(page, `/api/v1/issues/${issue.key}/artifacts`, picture);
-  await upload(page, `/api/v1/issues/${issue.key}/artifacts`, picture);
+  const { artifact: diagram } = await upload(
+    page,
+    "/api/v1/issues/{key}/artifacts",
+    { key: issue.key },
+    picture
+  );
+  await upload(page, "/api/v1/issues/{key}/artifacts", { key: issue.key }, picture);
 
   await openArtifactsTab(page, issue.key);
   const row = page.getByTestId("artifact-diagram-png");
@@ -270,16 +283,31 @@ test("a project's file and a conversation's file save under their own names, an 
 }) => {
   const core = rowKey("CORE");
   await createProject({ key: core, name: "Core" });
-  const brief = await upload(page, `/api/v1/projects/${core}/artifacts`, pdf("brief.pdf", "brief"));
+  const { artifact: brief } = await upload(
+    page,
+    "/api/v1/projects/{key}/artifacts",
+    { key: core },
+    pdf("brief.pdf", "brief")
+  );
   await page.goto(`/projects/${core}/documents/${brief.slug}`);
   const projectFile = await saveFrom(page, page.getByRole("link", { name: "Download version 1" }));
   expect(projectFile.suggestedFilename()).toBe("brief.pdf");
 
   const planner = { session_id: sessionIds.planner, title: "Planner" };
   await setLiveSessions([planner]);
-  const conversation = `/api/v1/agents/${planner.session_id}/artifacts`;
-  const trace = await upload(page, conversation, pdf("trace.pdf", "first run"));
-  await upload(page, conversation, pdf("trace.pdf", "second run"));
+  const conversation = "/api/v1/agents/{session_id}/artifacts";
+  const { artifact: trace } = await upload(
+    page,
+    conversation,
+    { session_id: planner.session_id },
+    pdf("trace.pdf", "first run")
+  );
+  await upload(
+    page,
+    conversation,
+    { session_id: planner.session_id },
+    pdf("trace.pdf", "second run")
+  );
   await page.goto(`/agents/${planner.session_id}/artifacts/${trace.slug}`);
   const shown = page.getByRole("region", { exact: true, name: "trace.pdf version 2" });
   const current = await saveFrom(page, shown.getByRole("link", { name: "Download version 2" }));

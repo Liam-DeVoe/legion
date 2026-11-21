@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+import { routePath } from "../web/src/api/paths";
 import { QUERY_RETRY_DELAY_MS } from "../web/src/api/query-client";
 import {
   baseUrl,
@@ -481,7 +482,10 @@ test("a person sets and changes a project's default assignee, and no write clear
     // Unassigned option sent is a 400, and the project still names its person. The call is made
     // here rather than through `putProjectDefaultAssignee`, whose body the route table now types
     // as a person's email and which cannot express this one.
-    const refused = await fetch(new URL(`/api/v1/projects/${coreKey}/default-assignee`, baseUrl), {
+    const defaultAssignee = routePath("put", "/api/v1/projects/{key}/default-assignee", {
+      key: coreKey,
+    });
+    const refused = await fetch(new URL(defaultAssignee, baseUrl), {
       body: JSON.stringify({ assignee: null }),
       headers: { "Content-Type": "application/json", ...(await userHeaders("alice")) },
       method: "PUT",

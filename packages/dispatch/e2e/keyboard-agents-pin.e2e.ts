@@ -1,3 +1,4 @@
+import { type PathsOf, type Result, routePath } from "../web/src/api/paths";
 import {
   agentRow,
   agentSessions,
@@ -527,9 +528,11 @@ test.describe("agents page pins", () => {
       // The row is under `Needs you` while a reply is unread, and `Active` once reading it
       // makes Dispatch activity of its own.
       // What the navigation's badge shows, read from the server.
-      const unread = async () =>
-        (await (await page.request.get("/api/v1/me/agents/state")).json())[stale.session_id]
-          ?.unread_replies ?? 0;
+      const unread = async () => {
+        const read = await page.request.get(routePath("get", "/api/v1/me/agents/state", {}));
+        const states = (await read.json()) as Result<"/api/v1/me/agents/state", "get">;
+        return states[stale.session_id]?.unread_replies ?? 0;
+      };
 
       await staleRow.getByRole("button", { exact: true, name: "Stale" }).click();
       await expect(conversation).toContainText("First answer");
@@ -558,7 +561,9 @@ test.describe("agents page pins", () => {
       // reader's dwell (`DWELL_MS`), a page timer the jump fires; the round trip after it is
       // answered only once any `PUT` that jump started had left the page.
       await page.clock.runFor(DWELL_MS * 2);
-      await page.evaluate(() => fetch("/api/v1/me/agents/state").then(({ status }) => status));
+      await page.evaluate(() =>
+        fetch("/api/v1/me/agents/state" satisfies PathsOf<"get">).then(({ status }) => status)
+      );
       expect(readMarks).toHaveLength(marked);
       expect(await unread()).toBe(1);
 
@@ -602,9 +607,11 @@ test.describe("agents page pins", () => {
       await page.clock.install();
       await openAgents(page);
       const staleRow = agentRow(page, stale.session_id);
-      const unread = async () =>
-        (await (await page.request.get("/api/v1/me/agents/state")).json())[stale.session_id]
-          ?.unread_replies ?? 0;
+      const unread = async () => {
+        const read = await page.request.get(routePath("get", "/api/v1/me/agents/state", {}));
+        const states = (await read.json()) as Result<"/api/v1/me/agents/state", "get">;
+        return states[stale.session_id]?.unread_replies ?? 0;
+      };
 
       // Open, then hidden by a role filter it does not match.
       await staleRow.getByRole("button", { exact: true, name: "Stale" }).click();
@@ -631,7 +638,9 @@ test.describe("agents page pins", () => {
       // The hidden row's list has the reply: a row reading it would mark it now.
       await expect(staleRow.getByText("Yes, here")).toBeAttached();
       await page.clock.runFor(DWELL_MS * 2);
-      await page.evaluate(() => fetch("/api/v1/me/agents/state").then(({ status }) => status));
+      await page.evaluate(() =>
+        fetch("/api/v1/me/agents/state" satisfies PathsOf<"get">).then(({ status }) => status)
+      );
       expect(marks).toEqual([]);
       expect(await unread()).toBe(1);
 

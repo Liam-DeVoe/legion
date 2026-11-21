@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { type Op, type PathParams, type PathsOf, routePath } from "../web/src/api/paths";
 import { type FakeSession, setLiveSessions } from "./agents";
 import {
   baseUrl,
@@ -185,8 +186,13 @@ function badgeNumber(text: string): number {
 
 /** One write an agent makes for its person: the person's own token as the bearer, and `session=`
  *  naming the agent, which the server records as the act beside them (`actingPerson`). */
-function withToken(path: string, token: string, body: object): Promise<Response> {
-  const url = new URL(path, baseUrl);
+function withToken<P extends PathsOf<"post">>(
+  pattern: P,
+  params: PathParams<Op<P, "post">>,
+  token: string,
+  body: object
+): Promise<Response> {
+  const url = new URL(routePath("post", pattern, params), baseUrl);
   url.searchParams.set("session", cliSession);
   return fetch(url, {
     body: JSON.stringify(body),
@@ -472,11 +478,16 @@ test("dispatch inbox under the person's own token lists the Inbox page's own row
     // elsewhere (`features/inbox/pane-selection.ts`), which is where the Inbox shows this one.
     const card = await askCard(page, seeded.ordinaryAsk);
     await card.getByLabel("Your answer").fill("Drafting my own words here");
-    const answered = await withToken(`/api/v1/asks/${seeded.ordinaryAsk}/answer`, token, {
-      expected_edited_at: null,
-      selected: [],
-      text: "Read DISPATCH_INBOX_FLAG.",
-    });
+    const answered = await withToken(
+      "/api/v1/asks/{id}/answer",
+      { id: seeded.ordinaryAsk },
+      token,
+      {
+        expected_edited_at: null,
+        selected: [],
+        text: "Read DISPATCH_INBOX_FLAG.",
+      }
+    );
     expect(answered.status, await answered.text()).toBe(200);
     await expect(card).toContainText(`Answered by ${actingThrough(me)}`);
     await expect(card).toContainText("Read DISPATCH_INBOX_FLAG.");
@@ -496,7 +507,8 @@ test("dispatch inbox under the person's own token lists the Inbox page's own row
 
     // 4. A review made with the token is the person's review, with the agent beside it.
     const reviewed = await withToken(
-      `/api/v1/artifacts/${seeded.reviewedArtifact}/reviews`,
+      "/api/v1/artifacts/{id}/reviews",
+      { id: seeded.reviewedArtifact },
       token,
       { state: "approved" }
     );
@@ -509,10 +521,12 @@ test("dispatch inbox under the person's own token lists the Inbox page's own row
 
     // 5. A message sent with the token reaches the session, and the Agents page shows it as a
     // card naming the agent that sent it for her.
-    const sent = await withToken(`/api/v1/agents/${worker.session_id}/messages`, token, {
-      body: "Pause the backfill until the flag lands.",
-      delivery: "aside",
-    });
+    const sent = await withToken(
+      "/api/v1/agents/{session_id}/messages",
+      { session_id: worker.session_id },
+      token,
+      { body: "Pause the backfill until the flag lands.", delivery: "aside" }
+    );
     expect(sent.status, await sent.text()).toBe(201);
     await page.goto("/agents");
     const workerCard = page
@@ -543,7 +557,8 @@ test("dispatch inbox under the person's own token lists the Inbox page's own row
 
     const approvalBody = { expected_edited_at: null, selected: ["Approve"] };
     const refused = await withToken(
-      `/api/v1/asks/${seeded.approvalAsk}/answer`,
+      "/api/v1/asks/{id}/answer",
+      { id: seeded.approvalAsk },
       token,
       approvalBody
     );
@@ -562,7 +577,8 @@ test("dispatch inbox under the person's own token lists the Inbox page's own row
     await tokenApproveAgain.click();
     await expect(tokenApproveAgain).toBeChecked();
     const approvedNow = await withToken(
-      `/api/v1/asks/${seeded.approvalAsk}/answer`,
+      "/api/v1/asks/{id}/answer",
+      { id: seeded.approvalAsk },
       token,
       approvalBody
     );

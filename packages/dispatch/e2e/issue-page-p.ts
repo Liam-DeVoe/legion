@@ -1,6 +1,6 @@
 import { expect, type Locator, type Page, test } from "@playwright/test";
 
-import type { IssueDecisions } from "../web/src/api/types";
+import { type Result, routePath } from "../web/src/api/paths";
 import { ACTION_WORDS } from "../web/src/features/issue-page/approval-chip-box";
 import { CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
 import {
@@ -318,13 +318,15 @@ export function waitingCount(page: Page): Locator {
 /** The issue's decisions as the server reads them for alice, each with `waiting_review`
  *  (`GET /api/v1/issues/{key}/decisions`). `e2e/api.ts` wraps no read of the route, so this is a
  *  plain fetch with her sign-in, as `e2e/bare-references.e2e.ts` reads an issue. */
-export async function issueDecisions(key: string): Promise<IssueDecisions> {
-  const path = `/api/v1/issues/${encodeURIComponent(key)}/decisions`;
+export async function issueDecisions(
+  key: string
+): Promise<Result<"/api/v1/issues/{key}/decisions", "get">> {
+  const path = routePath("get", "/api/v1/issues/{key}/decisions", { key });
   const response = await fetch(new URL(path, baseUrl), { headers: await userHeaders("alice") });
   if (!response.ok) {
     throw new Error(`GET ${path} failed: ${response.status} ${await response.text()}`);
   }
-  return (await response.json()) as IssueDecisions;
+  return response.json();
 }
 
 /** Details, the drawer over the right of the page. */

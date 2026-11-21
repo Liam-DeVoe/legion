@@ -1,3 +1,4 @@
+import { type Result, routePath } from "../web/src/api/paths";
 import { mintAgentToken } from "./api";
 import { seedPipelineRows } from "./delivery-seed";
 import { sql } from "./psql";
@@ -121,20 +122,16 @@ test("the pipeline API gives an agent the same numbers", async ({ browser, deliv
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   const token = await mintAgentToken("pipeline-e2e", "alice");
-  const response = await page.request.get(`/api/v1/delivery/pipeline?at=${delivery.pipelineAt}`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
+  const response = await page.request.get(
+    routePath("get", "/api/v1/delivery/pipeline", {}, { at: delivery.pipelineAt }),
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
   expect(response.status()).toBe(200);
-  const body = (await response.json()) as {
-    days: string[];
-    staging_e2e: { days: { n: number; median_minutes: number | null }[] } | null;
-    pr_checks: { failing_jobs: { name: string; failures: number; results: number }[] };
-    production_apply: { total: { n: number } };
-  };
-  expect(body.days.at(-1)).toBe(delivery.pipelineAt.slice(0, 10));
-  expect(body.staging_e2e?.days[6]?.n).toBe(2);
-  expect(body.staging_e2e?.days[6]?.median_minutes).toBe(55);
-  expect(body.pr_checks.failing_jobs[0]).toEqual(
+  const body = (await response.json()) as Result<"/api/v1/delivery/pipeline", "get">;
+  expect(body.days?.at(-1)).toBe(delivery.pipelineAt.slice(0, 10));
+  expect(body.staging_e2e?.days?.[6]?.n).toBe(2);
+  expect(body.staging_e2e?.days?.[6]?.median_minutes).toBe(55);
+  expect(body.pr_checks.failing_jobs?.[0]).toEqual(
     expect.objectContaining({ name: "build / unit", failures: 2, results: 3 })
   );
   expect(body.production_apply.total.n).toBe(1);

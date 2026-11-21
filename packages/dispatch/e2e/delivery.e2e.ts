@@ -1,3 +1,4 @@
+import { type Result, routePath } from "../web/src/api/paths";
 import { mintAgentToken } from "./api";
 import {
   type DeliveryPlace,
@@ -681,11 +682,13 @@ test("the measures API gives an agent the numbers the panel shows", async ({
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   const token = await mintAgentToken("measures-e2e", "alice");
-  const response = await page.request.get(`/api/v1/delivery/measures?${delivery.measuresQuery}`, {
+  // The seed's own query string (`measuresQuery`), on the route's own path.
+  const measures = routePath("get", "/api/v1/delivery/measures", {});
+  const response = await page.request.get(`${measures}?${delivery.measuresQuery}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
   expect(response.status()).toBe(200);
-  const body = await response.json();
+  const body = (await response.json()) as Result<"/api/v1/delivery/measures", "get">;
   expect(body.measures.deploy_frequency.successful_deploys).toBe(5);
   expect(body.status.unowned_p0).toBe(false);
   await context.close();

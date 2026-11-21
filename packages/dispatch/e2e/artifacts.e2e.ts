@@ -2,6 +2,7 @@ import { writeFile } from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
+import { routePath } from "../web/src/api/paths";
 import { QUERY_RETRY_DELAY_MS } from "../web/src/api/query-client";
 import { scrollFadeTrailingPx } from "../web/src/theme/classes";
 
@@ -661,7 +662,7 @@ test("an out-of-schema document names its repair and uploads replacement markdow
   });
   const corrupted = await postAsPage(
     page,
-    `/api/v1/artifacts/${upload.artifact.id}/_test/outside-schema`
+    routePath("post", "/api/v1/artifacts/{id}/_test/outside-schema", { id: upload.artifact.id })
   );
   expect(corrupted.status()).toBe(204);
 
@@ -705,7 +706,7 @@ test("an out-of-schema document does not reconnect from cached text", async ({ p
   await expect(row).toBeVisible();
   const corrupted = await postAsPage(
     page,
-    `/api/v1/artifacts/${upload.artifact.id}/_test/outside-schema`
+    routePath("post", "/api/v1/artifacts/{id}/_test/outside-schema", { id: upload.artifact.id })
   );
   expect(corrupted.status()).toBe(204);
   await openDocument();
@@ -749,7 +750,7 @@ test("a mounted editor does not reconnect into a document made unreadable while 
   await transport.sever();
   const corrupted = await postAsPage(
     page,
-    `/api/v1/artifacts/${upload.artifact.id}/_test/outside-schema`
+    routePath("post", "/api/v1/artifacts/{id}/_test/outside-schema", { id: upload.artifact.id })
   );
   expect(corrupted.status()).toBe(204);
   await transport.release();
@@ -759,7 +760,9 @@ test("a mounted editor does not reconnect into a document made unreadable while 
 
   await expect(page.getByText("A person decides whether to replace the document")).toBeVisible();
   await expect(documentEditor(page)).toBeHidden();
-  const text = await page.request.get(`/api/v1/artifacts/${upload.artifact.id}/text`);
+  const text = await page.request.get(
+    routePath("get", "/api/v1/artifacts/{id}/text", { id: upload.artifact.id })
+  );
   expect(text.status()).toBe(409);
   await expect(text.text()).resolves.toContain(`"code":"DOC_SCHEMA"`);
   expect(sockets()).toBe(2);
@@ -850,7 +853,11 @@ test("a live document refuses a rebuild", async ({ page }) => {
 
   await page.goto(`/issues/${issue.key}/artifacts/${upload.artifact.slug}`);
   await expect(documentEditor(page)).toContainText("before");
-  const rebuilt = await postAsPage(page, `/api/v1/artifacts/${upload.artifact.id}/rebuild`, {});
+  const rebuilt = await postAsPage(
+    page,
+    routePath("post", "/api/v1/artifacts/{id}/rebuild", { id: upload.artifact.id }),
+    {}
+  );
   expect(rebuilt.status()).toBe(409);
   await expect(rebuilt.text()).resolves.toContain(`"code":"DOCUMENT_LIVE"`);
   await expect(documentEditor(page)).toContainText("before");
