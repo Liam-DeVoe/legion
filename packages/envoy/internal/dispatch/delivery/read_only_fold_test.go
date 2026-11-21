@@ -744,8 +744,8 @@ func timed(head PullRequestHead, event time.Time, readAt *time.Time) PullRequest
 	return head
 }
 
-// eventless is head carrying no event time, as envelopeTime answers an absent updated_at, and the
-// read time readAt, nil for none.
+// eventless is head carrying no event time, as headRow makes it where GitHub's answer has no
+// updated_at (pullRequestPayload.UpdatedAt is nil), and the read time readAt, nil for none.
 func eventless(head PullRequestHead, readAt *time.Time) PullRequestHead {
 	head.EventAt, head.CheckedAt = nil, readAt
 	return head
