@@ -323,8 +323,11 @@ def js_yaml_reading(text: str) -> dict:
         raise SystemExit(f"::error::the installed {JS_YAML_ALIAS} is js-yaml {installed}, and the dorny/paths-filter "
                          f"pins of workflow_paths.PATHS_FILTER_JS_YAML read their filters with js-yaml "
                          f"{', '.join(sorted(recorded))}: set package.json's alias to npm:js-yaml@<that version>")
+    # From js-yaml's own directory: Node reads the package.json nearest its working directory even
+    # for -e, and the repository being checked may hold one it cannot parse, which is that check's
+    # finding to report, not a reason the filters went unread.
     run = subprocess.run([node, "-e", JS_YAML_READER, str(JS_YAML_DIR)], input=text, capture_output=True,
-                         text=True, encoding="utf-8", check=False)
+                         text=True, encoding="utf-8", check=False, cwd=JS_YAML_DIR)
     try:
         answer = json.loads(run.stdout)
     except ValueError:
@@ -336,23 +339,25 @@ def js_yaml_reading(text: str) -> dict:
     return answer
 
 
-def _number(value) -> float:
-    """A number as a double, an int too large for one as the infinity Number() makes of it."""
-    try:
-        return float(value)
-    except OverflowError:
-        return math.copysign(math.inf, value)
+def _same_number(value, written: str) -> bool:
+    """Whether PyYAML's number `value` is js-yaml's double, written as String() writes it: exactly,
+    since Python compares an int with a float by their values (9007199254740993 is not the double
+    9007199254740992, and an int past the largest double is not Infinity), NaN with NaN."""
+    double = float(written)
+    if isinstance(value, float) and math.isnan(value):
+        return math.isnan(double)
+    return value == double
 
 
 def _instant(value) -> str | None:
-    """A PyYAML date or timestamp as JavaScript's Date.toISOString writes its instant, or None."""
+    """A PyYAML date or timestamp as an ISO instant to the microsecond, or None."""
     if isinstance(value, datetime.datetime):
         if value.tzinfo is not None:
             value = value.astimezone(datetime.timezone.utc)
         return (f"{value.year:04d}-{value.month:02d}-{value.day:02d}T{value.hour:02d}:{value.minute:02d}:"
-                f"{value.second:02d}.{value.microsecond // 1000:03d}Z")
+                f"{value.second:02d}.{value.microsecond:06d}Z")
     if isinstance(value, datetime.date):
-        return f"{value.year:04d}-{value.month:02d}-{value.day:02d}T00:00:00.000Z"
+        return f"{value.year:04d}-{value.month:02d}-{value.day:02d}T00:00:00.000000Z"
     return None
 
 
@@ -399,10 +404,10 @@ def reading_difference(tree: list, value, where: str = "the document") -> str | 
     same = {
         "null": lambda: value is None,
         "bool": lambda: isinstance(value, bool) and value == tree[1],
-        "num": lambda: (isinstance(value, (int, float)) and not isinstance(value, bool)
-                        and (_number(value) == float(tree[1]) or math.isnan(_number(value)) and math.isnan(float(tree[1])))),
+        "num": lambda: isinstance(value, (int, float)) and not isinstance(value, bool) and _same_number(value, tree[1]),
         "str": lambda: isinstance(value, str) and value == tree[1],
-        "date": lambda: _instant(value) == tree[1],
+        # js-yaml's Date holds milliseconds (toISOString writes three digits), PyYAML's microseconds.
+        "date": lambda: _instant(value) == re.sub(r"\.(\d{3})Z$", r".\g<1>000Z", tree[1]),
         "bytes": lambda: isinstance(value, bytes) and base64.b64encode(value).decode() == tree[1],
     }.get(kind, lambda: False)
     if same():

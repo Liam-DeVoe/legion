@@ -320,6 +320,14 @@ two_keys "null and a quoted ~ tagged ! are two keys to js-yaml, and one to PyYAM
   $'null: [x]\n? ! "~"\n: [y]\n' "null ~" "'null', '~'" None
 check "a value js-yaml reads as text and PyYAML as a boolean is refused, naming both" \
   "$(contains "$(filters_load $'app:\n  - yes\n')" "^refused: .* read it differently: the document > 'app' > item 1 is the text 'yes' to js-yaml and True (bool) to PyYAML; ")"
+check "an int past 2^53 js-yaml rounds to another double is refused, naming both" \
+  "$(contains "$(filters_load $'app: [9007199254740993]\n')" "^refused: .* the document > 'app' > item 1 is the number 9007199254740992 to js-yaml and 9007199254740993 (int) to PyYAML; ")"
+check "an int past the largest double is refused, not raised" \
+  "$(contains "$(filters_load "app: [1$(printf '0%.0s' $(seq 400))]")" "^refused: .* the document > 'app' > item 1 is the number Infinity to js-yaml and ")"
+check "a timestamp's microseconds js-yaml keeps only to the millisecond are refused" \
+  "$(contains "$(filters_load $'app: [2001-01-01T00:00:00.123456Z]\n')" "^refused: .* the document > 'app' > item 1 is the instant 2001-01-01T00:00:00.123Z to js-yaml and ")"
+check "an int js-yaml holds exactly, a float and a timestamp to the millisecond are read" \
+  "$(is "$(py 'print(type(wp.load_paths_filter(sys.argv[1])).__name__)' $'app: [9007199254740992, 1.5, 2001-01-01T00:00:00.123Z]\n')" dict)"
 check "the quoted on and yes are read as js-yaml reads them" \
   "$(is "$(filters_load $'"on": [x]\n"yes": [y]\n')" '{"on": ["x"], "yes": ["y"]}')"
 check "an alias as a value is read" \

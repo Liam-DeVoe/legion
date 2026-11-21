@@ -868,28 +868,45 @@ def check_filter_inputs(workflows: dict, problems: list[Annotation]) -> None:
     """Rule 21: every dorny/paths-filter step of every workflow of .github/workflows hands the
     action exactly .github/ci-filters.yaml. Every rule of this check reads that file, so a filter
     written into a workflow's own text instead would be read by none of them: it would gate its
-    job on patterns no coverage rule here has seen, and nothing would say so. And a step that pins
-    the action to a commit pins one whose js-yaml workflow_paths.PATHS_FILTER_JS_YAML records, since
-    the file is read with that js-yaml: a bump of the pin is refused until its js-yaml is recorded
-    and installed."""
+    job on patterns no coverage rule here has seen, and nothing would say so."""
     for path, document in workflows.items():
         jobs = document.get("jobs") if isinstance(document, dict) else None
         for job_id, job in (jobs if isinstance(jobs, dict) else {}).items():
             for step in filter_input_steps(job if isinstance(job, dict) else {}):
-                ref = str(step.get("uses", "")).partition("@")[2]
-                if re.fullmatch(r"[0-9a-f]{40}", ref) and ref not in PATHS_FILTER_JS_YAML:
-                    problems.append(error(path, f"the paths-filter step {step_label(step)} of job {job_id} pins "
-                                                f"dorny/paths-filter@{ref}, whose js-yaml "
-                                                f"workflow_paths.PATHS_FILTER_JS_YAML does not record; read that "
-                                                f"commit's package-lock.json (node_modules/js-yaml), record the pair "
-                                                f"there, and set package.json's js-yaml-paths-filter alias to that "
-                                                f"version, so this check reads the filters as the action does"))
                 if reads_filters_file(step):
                     continue
                 problems.append(error(path, f"the paths-filter step {step_label(step)} of job {job_id} passes a "
                                             f"`filters` input that is not exactly {FILTERS_FILE}; every filter is read "
                                             f"from that file, so one declared anywhere else is covered by no rule of "
                                             f"this check and gates its job on whatever it says, unread"))
+
+
+# A `uses:` of dorny/paths-filter pinned to a commit, in a workflow's or an action's text.
+PATHS_FILTER_PIN = re.compile(r"""^[ \t-]*uses:[ \t]*['"]?dorny/paths-filter@([0-9A-Fa-f]{40})\b""", re.M)
+
+
+def check_paths_filter_pins(files: list, problems: list[Annotation]) -> None:
+    """Rule 21's pin half: every dorny/paths-filter step pinned to a commit, in a workflow of
+    .github/workflows or in an action of any directory (a composite action's steps run as its
+    caller's do), pins one whose js-yaml workflow_paths.PATHS_FILTER_JS_YAML records. The filters
+    are read with that js-yaml (load_paths_filter), so a bump of the pin is refused until its
+    js-yaml is recorded and package.json's alias installs it. The text is read, not the parsed
+    steps, so a step in a file no other rule parses is not passed over."""
+    for path in files:
+        name = path.rsplit("/", 1)[-1]
+        workflow = path.startswith(".github/workflows/") and name.endswith((".yml", ".yaml"))
+        if not (workflow or name in ("action.yml", "action.yaml")):
+            continue
+        text = read_repository_text(REPO / path)
+        for match in PATHS_FILTER_PIN.finditer(text):
+            if match.group(1).lower() in PATHS_FILTER_JS_YAML:
+                continue
+            line = text.count("\n", 0, match.start()) + 1
+            problems.append(error(path, f"{path}:{line} pins dorny/paths-filter@{match.group(1)}, whose js-yaml "
+                                        f"workflow_paths.PATHS_FILTER_JS_YAML does not record; read that commit's "
+                                        f"package-lock.json (node_modules/js-yaml), record the pair there, and set "
+                                        f"package.json's js-yaml-paths-filter alias to that version, so this check "
+                                        f"reads the filters as the action does"))
 
 
 # A `steps.<id>.outputs.<name>` of an output of the changes job: which step's verdict it hands on.
@@ -2227,9 +2244,9 @@ def rule_required_files(data, filters: dict, gate_files: dict, selection: Select
     And .github/scripts/check-ts-filters.sh does it from outside: it writes into a filter a
     listed block (TS_LISTED below) of the files of a tree that a job's tsc programs compile or the
     entry it runs with Bun loads, and refuses a committed block that is not exactly that, in
-    ci.yaml's lint job, since this one has no Bun to run tsc or `bun build` with. Those files are
-    reads of the job this check cannot compute, so the patterns of such a block, one file each,
-    are passed over here; the filter's coverage of them is that check's to prove
+    ci.yaml's lint job, which every change starts; this check runs no tsc and no `bun build`. Those
+    files are reads of the job this check cannot compute, so the patterns of such a block, one file
+    each, are passed over here; the filter's coverage of them is that check's to prove
     (ci_ts_programs.py, LISTED).
 
     This widens to nothing else. A pattern is passed over only when every file it matches is in
@@ -2766,6 +2783,7 @@ def check() -> int:
     check_ci_ok(documents, problems)
     check_output_steps(document, filters, problems)
     check_filter_inputs(rules.directory_workflows(), problems)
+    check_paths_filter_pins(files, problems)
     rules.check_push_conditions(documents, problems)
     rules.check_rerun_guard(document, problems)
     rules.check_cache_round_trip(documents, problems)
@@ -2884,12 +2902,16 @@ def check() -> int:
 
 
 def main() -> int:
-    """Run the checker without allowing repository text into an unprotected workflow log."""
+    """Run the checker without allowing repository text into an unprotected workflow log. A
+    SystemExit is let through: workflow_paths.js_yaml_reading ends the check with one when what it
+    reads the filters with is missing, and its `::error::` line must stay an annotation."""
     try:
         return check()
     except RepositoryInputError as exc:
         print_annotation(exc.annotation())
         return 1
+    except SystemExit:
+        raise
     except BaseException:
         token = secrets.token_hex(16)
         print(f"::stop-commands::{token}", flush=True)
