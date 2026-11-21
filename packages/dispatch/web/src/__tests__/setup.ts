@@ -85,10 +85,12 @@ expect.extend(reportableJestDomMatchers());
 // `web/src/features/refs/fixture-table-readings.test.ts`: 30 s, as `WHOLE_TABLE_TIMEOUT_MS`, on
 // "every document of the table reads in a DOM as the table says it reads" and "no mark element
 // stands between an inline leaf and its paragraph, in any document of the table". The eight rows
-// of `web/src/features/issue/useIssueDrafts.test.ts` that read its sweep set more: 1,100 s, as
-// `explorationTimeout`, sized where it is set. The list is checked by nothing: a row added
-// tomorrow may set any number. What lowering the flag would cut is every row that sets none, and
-// what raising it would not reach is every row that sets one.
+// of `web/src/features/issue/useIssueDrafts.test.ts` that read its sweep set more: 510 s, as
+// `explorationTimeout`, because whichever of them runs first in a process computes the sweep,
+// which read up to 255 s in an issue pod beside its other roles' work; it is sized where it is
+// set. The list is checked by nothing: a row added tomorrow may set any number. What lowering the
+// flag would cut is every row that sets none, and what raising it would not reach is every row
+// that sets one.
 //
 // The wait budget is the line below. Testing Library's default `asyncUtilTimeout` is 1000 ms,
 // which a loaded run of this suite passes while a page is still rendering: it failed

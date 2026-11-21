@@ -329,6 +329,12 @@ The clock of a unit test:
 
 - The deadline of each `web/src` test is the `--timeout 60000` of `package.json`'s `test:web`
   script, and `web/src/__tests__/setup.ts` says how it was sized.
+  The one deadline above 60 s is the 510 s, `explorationTimeout`, of the eight rows of
+  `web/src/features/issue/useIssueDrafts.test.ts` that read its sweep of 186,538 sequences.
+  The reason is the sweep's first computation: whichever of the eight runs first in a process
+  computes the sweep, which took up to 255 s in an issue pod beside its other roles' work, and the
+  rest read its result.
+  The comment above `explorationTimeout` gives the readings and how 510 s was sized from them.
   A row sets a shorter one only with a comment that says what it bounds.
   The one shorter deadline left is `WHOLE_TABLE_TIMEOUT_MS` in
   `web/src/features/refs/fixture-table-readings.test.ts`, which two of its rows set.
