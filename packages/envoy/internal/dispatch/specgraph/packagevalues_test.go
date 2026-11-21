@@ -55,18 +55,25 @@ func pointeeOf(p any) pointee {
 	return pointee{v.Pointer(), c.Interface()}
 }
 
+// init builds the table of each *strings.Replacer of the package (pointerToken, valueReferences)
+// before any test runs. A Replacer builds it at its first Replace, under a sync.Once, and then only
+// reads it; so each copy of a Replacer that packageValuesNow takes is of the table that each later
+// call reads, and no copy reads the Replacer while a first call of a test beside it builds it.
+func init() {
+	pointerToken.Replace("")
+	valueReferences.Replace("")
+}
+
 // packageValuesNow is a copy of each variable of the package, of its code and of its tests, which
 // shares with the variable no object that code of the package can write through (sharedObject): a
 // value that holds no slice, map or pointer as it is, since a string cannot change through a copy
 // of it; a slice or a map cloned, with each list in it; a statement or a check with its lists and
 // its test copied; and a variable that holds a pointer as its address and a copy of its object
-// (pointee). pointerToken and valueReferences are each a *strings.Replacer, which builds its table
-// at its first Replace and then never changes it, so each is built before its copy, and the copy
-// is of the table that each later call reads. TestEachVariableOfThePackageIsGuarded fails for a
-// variable that the list does not name and for a copy that shares an object with the variable.
-// Each table that a sweep reads of its own is a function that gives a new value at each call
-// (sweepMaps, sweepPaths, namesOfNothing, addableMembers, recordKinds, sweepFloors,
-// scenarioFileTypes and the patterns of blockTexts), not a variable.
+// (pointee), pointerToken among them. TestEachVariableOfThePackageIsGuarded fails for a variable
+// that the list does not name and for a copy that shares an object with the variable. Each table
+// that a sweep reads of its own is a function that gives a new value at each call (sweepMaps,
+// sweepPaths, namesOfNothing, addableMembers, recordKinds, sweepFloors, scenarioFileTypes and the
+// patterns of blockTexts), not a variable.
 func packageValuesNow() []packageValue {
 	statement := func(s Statement) Statement {
 		s.Serves, s.About = slices.Clone(s.Serves), slices.Clone(s.About)
@@ -90,8 +97,6 @@ func packageValuesNow() []packageValue {
 	for i := range faults {
 		faults[i].retired = slices.Clone(faults[i].retired)
 	}
-	pointerToken.Replace("")
-	valueReferences.Replace("")
 	return []packageValue{
 		// The variables of the code.
 		{"backtickSpan", pointeeOf(backtickSpan)},
