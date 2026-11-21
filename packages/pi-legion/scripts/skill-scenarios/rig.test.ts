@@ -10972,6 +10972,41 @@ sleep() { command sleep 0.05; }`;
     expect(missed).toEqual([]);
   });
 
+  // Catches: a gh stand-in whose source carries a word of the measurement into the bundle every
+  // run's world holds. rig.sh's `standins` builds <run>/lib/gh.js from gh-standin.ts and every
+  // module it imports, and the launch guard reads that file (run-names.ts's COMPOSED), so one
+  // such word refuses every agent of every run. INFRA-764's round 30 at 9083afb5: gh-standin.ts
+  // came to import gh-routes.ts's `worldRouteOf`, the bundle took WORLD_ROUTES with each row's
+  // `evidence` (`round17-forty/reviewer-text-findings-text-only-head-2/calls.jsonl:26`), and the
+  // guard refused all ten runs of the world-health check: "the world of e486953180ff names
+  // \"reviewer-text-findings\" in <run>/lib/gh.js". The planted-word row above holds the guard;
+  // this one holds what the rig itself puts there, built with standins' own command.
+  test("the gh bundle rig.sh builds for a run names no word of the measurement", () => {
+    const out = path.join(freshDir("gh-bundle-words"), "gh.js");
+    const built = Bun.spawnSync(
+      [
+        "bun",
+        "build",
+        path.join(import.meta.dir, "gh-standin.ts"),
+        "--target=bun",
+        "--minify-whitespace",
+        "--outfile",
+        out,
+      ],
+      { stdout: "pipe", stderr: "pipe" }
+    );
+    expect({ code: built.exitCode, stderr: built.stderr.toString() }).toEqual({
+      code: 0,
+      stderr: "",
+    });
+    const text = readFileSync(out, "utf8");
+    const word = textWords(text, vocabulary(["head", "base"]));
+    const at = word === undefined ? -1 : text.toLowerCase().indexOf(word);
+    expect(
+      word === undefined ? undefined : `${word}: ${text.slice(Math.max(0, at - 80), at + 80)}`
+    ).toBe(undefined);
+  });
+
   // Catches: a guard that reads the reviewer's prompt of a threads-closed run as the rig's own
   // text. run_threads_closed builds that prompt from the implementer's own messages to the
   // reviewer (reviewer_wake, kept whole in <run>/reviewer-wake.json), and launch's own comment says
