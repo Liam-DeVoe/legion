@@ -975,3 +975,67 @@ func contains(names []string, name string) bool {
 	}
 	return false
 }
+
+func TestADurableKeyIsADotKeyNoSessionHoldsAndTwoNamesNeverShare(t *testing.T) {
+	for durable, key := range map[string]string{
+		"listener-host-a": "durable.listener-host-a",
+		"listener-a.b":    "durable.listener-a=2Eb",
+		"listener-a=b":    "durable.listener-a=3Db",
+		"listener-a b":    "durable.listener-a=20b",
+	} {
+		if got := DurableKey(durable); got != key {
+			t.Errorf("DurableKey(%q) = %q, want %q", durable, got, key)
+		}
+		if err := CheckDurableKey(key); err != nil {
+			t.Errorf("CheckDurableKey(%q) = %v, want it accepted", key, err)
+		}
+		// No session key is a durable's: a session id holds no '.'.
+		if err := CheckKey(key); !errors.Is(err, ErrInvalidKey) {
+			t.Errorf("CheckKey(%q) = %v, want ErrInvalidKey", key, err)
+		}
+	}
+	if DurableKey("listener-a=2Eb") == DurableKey("listener-a.b") {
+		t.Fatal("two durable names share a key")
+	}
+	for _, key := range []string{"listener-host-a", "durable.", "durable.a.b", "durable.a b", "envoy.bucket"} {
+		if err := CheckDurableKey(key); !errors.Is(err, ErrInvalidKey) {
+			t.Errorf("CheckDurableKey(%q) = %v, want ErrInvalidKey", key, err)
+		}
+	}
+}
+
+func TestAFamilysOwnKeyCheckReplacesTheSessionCheck(t *testing.T) {
+	h := newHarness()
+	names := h.names("p1")
+	names.cfg.CheckKey = CheckDurableKey
+	key := DurableKey("listener-host-a")
+	sel, _, err := names.Ensure(context.Background(), key, CreateRequest{Create: h.server.create(key), First: first(1)})
+	if err != nil {
+		t.Fatalf("Ensure of a durable key with the durable check = %v", err)
+	}
+	if !strings.HasPrefix(sel.Record.Current, "session~") {
+		t.Fatalf("current %q", sel.Record.Current)
+	}
+	// Control: the session check refuses the same key.
+	if _, _, err := h.names("p1").Ensure(context.Background(), key, CreateRequest{Create: h.server.create(key), First: first(1)}); !errors.Is(err, ErrInvalidKey) {
+		t.Fatalf("Ensure of a durable key with the session check = %v, want ErrInvalidKey", err)
+	}
+}
+
+// A first create at deliver policy all keeps it under the cutover boundary, since every message the
+// stream holds starts no later than the boundary; one at deliver policy new starts at the boundary.
+func TestANativeAllFirstCreateIsKeptUnderTheBoundary(t *testing.T) {
+	for native, want := range map[Native]Start{NativeAll: {Seq: 1, Native: NativeAll}, NativeNew: {Seq: 12}} {
+		h := newHarness()
+		h.store.state.Boundary = 12
+		sel, _, err := h.names("p1").Ensure(context.Background(), "ses-1", CreateRequest{Create: h.server.create("ses-1"), First: func(context.Context) (Start, error) {
+			return Start{Seq: 1, Native: native}, nil
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := h.server.startOf(sel.Record.Current); got != want {
+			t.Errorf("a %s first create under boundary 12 started at %+v, want %+v", native, got, want)
+		}
+	}
+}
