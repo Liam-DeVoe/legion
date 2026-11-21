@@ -11,6 +11,7 @@ import type { SlotProps } from "../slot-props";
 import { focusIsLoose, TAB_STOP_ROW } from "../tree-focus";
 import { BodySlot } from "./body";
 import { FAILED_READ_RETRY, FailedLineLeaves } from "./failed-read-line";
+import { useFollowing } from "./following";
 import { ViewDecisionsSlot } from "./view-decisions";
 import { ViewPlanSlot } from "./view-plan";
 import { ViewSpecSlot } from "./view-spec";
@@ -32,8 +33,9 @@ import { ViewVerificationSlot } from "./view-verification";
  * once its reads are held whether its tree draws the node (`ViewSlotProps.onAddressDrawn`). Where
  * it does not - an item the issue holds none of, an item of another issue, an id written short, an
  * item whose read failed, a turn of a thread only agents wrote in, a block no node carries - the
- * stage draws the body in the view's place for the rest of that following of the address (the
- * location's own key), which lands as the outline does; a new following draws the view again.
+ * stage draws the body in the view's place for the rest of that following of the address
+ * (`useFollowing`: the location's key with the address), which lands as the outline does; a new
+ * following draws the view again.
  *
  * `DocumentStages` stands around the chosen slot: a document has one editor on the page, which
  * the row being edited in takes onto its own stage (`document-stage.tsx`). The outline is drawn
@@ -52,7 +54,8 @@ export function StageSlot({
    *  stand-in view in a test, which reads the stage's rule apart from what each view draws. */
   readonly views?: ViewSlots;
 }): ReactNode {
-  const { hash, key: following, search } = useLocation();
+  const { hash, search } = useLocation();
+  const following = useFollowing();
   const address = issueAddress(props.route, search, hash, primarySpec(props.issue)?.slug);
   const { preset } = address;
   // The following of the address for which the view said its tree draws no node the address
@@ -89,7 +92,7 @@ export function StageSlot({
  *  how the view tells the stage whether its tree draws the node the address names. */
 export interface ViewSlotProps extends SlotProps {
   /**
-   * The view calls this once for each following of the address (the location's own key) that
+   * The view calls this once for each following of the address (`useFollowing`) that
    * names a node beside the view's own address and opens no document, once every read its tree
    * is built from holds its answer: before that the node may not have arrived, and the outline's
    * fallback waits for those reads too (`useAddressFallback`). `drawn` says whether the view's

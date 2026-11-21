@@ -16,6 +16,7 @@ import { type PlanFailedRead, PlanFilterBody, type PlanReads } from "../plan-fil
 import { presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
 import { standsFailed } from "../useIssueTree";
+import { useFollowing } from "./following";
 import type { ViewSlotProps } from "./stage";
 
 /**
@@ -32,11 +33,13 @@ export function ViewPlanSlot({
   onAddressDrawn,
   route,
 }: SlotProps & Partial<Pick<ViewSlotProps, "onAddressDrawn">>): ReactNode {
-  const { hash, key: following, search } = useLocation();
+  const { hash, search } = useLocation();
+  const following = useFollowing();
   const spec = primarySpec(issue);
   const address = issueAddress(route, search, hash, spec?.slug);
   // The tree, and whether every read its nodes come from holds its answer (`useOutlineReads`),
-  // each under the key and with the freshness the tree reads it by, so they cost no request.
+  // each under the key and with the freshness the tree reads it by, so they cost no request of
+  // their own.
   const { readsHeld, root } = useOutlineReads(issue);
   // The view waits on the reads of the two documents it draws from, and on no other: the plan's
   // blocks, which are its tasks, and the spec's, which are the statements a task serves. It is
@@ -123,12 +126,14 @@ export function ViewPlanSlot({
   );
   // Whether the view draws a row of the node an address beside it names, said to the stage once
   // for each following of the address, once every read the tree is built from holds its answer
-  // (`ViewSlotProps.onAddressDrawn`), and before the browser paints: before that the node may not
-  // have arrived. The view draws a row for a task alone - a step of the chart or of the steps, or
-  // the row of the cycle that holds it - and none for a statement, a comment or any other node,
-  // so it draws the node where the address names a task it keeps (`reveal`). Where it draws none,
-  // the stage draws the outline in the view's place, which lands on the node or says that the
-  // issue holds none of it. Drawn outside the stage, the slot is handed no call and tells no one.
+  // (`ViewSlotProps.onAddressDrawn`): before that the node may not have arrived. The view draws a
+  // row for a task alone - a step of the chart or of the steps, or the row of the cycle that holds
+  // it - and none for a statement, a comment or any other node, so it draws the node where the
+  // address names a task it keeps (`reveal`). Where it draws none, the stage draws the outline in
+  // the view's place, which lands on the node or says that the issue holds none of it. It is said
+  // before the browser paints, so where the reads were held as the view was drawn, as on Back to
+  // its address, no chart is painted in the outline's place. Drawn outside the stage, the slot is
+  // handed no call and tells no one.
   const beside = address.target !== undefined && address.document === undefined;
   const told = useRef<string | undefined>(undefined);
   useLayoutEffect(() => {

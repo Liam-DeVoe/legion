@@ -41,13 +41,15 @@ import { specSummary } from "../spec-summary";
 import { focusIsLoose } from "../tree-focus";
 import { abortOnReaderAct } from "../useNodeEditing";
 import { FailedReadLine } from "./failed-read-line";
+import { useFollowing } from "./following";
 
 /** Filled by INFRA-1196 part G, "A node's row", then part I, "The outline". */
 export function BodySlot({ issue, route }: SlotProps): ReactNode {
   // The outline: the issue's one tree as the Conversation view leaves it, folded to the
   // frontier, in place of the rows drawn with every branch open before it. The spec's summary
   // callout is no row of it: the Spec view draws it as the issue's three sentences.
-  const { hash, key: locationKey, search } = useLocation();
+  const { hash, search } = useLocation();
+  const locationKey = useFollowing();
   const specSlug = primarySpec(issue)?.slug;
   const address = issueAddress(route, search, hash, specSlug);
   // The tree, and whether every read its nodes come from holds its answer (`useOutlineReads`).

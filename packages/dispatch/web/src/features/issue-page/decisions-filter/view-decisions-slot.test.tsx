@@ -2,7 +2,15 @@ import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, type RenderResult, render, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { MemoryRouter, type NavigateFunction, useLocation, useNavigate } from "react-router-dom";
+import {
+  createPath,
+  MemoryRouter,
+  type NavigateFunction,
+  type Navigator,
+  Router,
+  useLocation,
+  useNavigate,
+} from "react-router-dom";
 
 import { ApiError, api } from "../../../api/client";
 import {
@@ -38,6 +46,7 @@ import {
   issueDetails,
   KEY,
   READER,
+  SPEC_SLUG,
   specRef,
 } from "./decisions-fixtures";
 
@@ -197,7 +206,10 @@ test("a comment the issue holds none of, named beside the Decisions view, draws 
         heading
       )
     );
-    expect(drawnSlot(view), "the view was drawn beside the line").toBe("the body");
+    expect(
+      view.container.querySelector("[data-decisions-body]"),
+      "the view was drawn beside the line"
+    ).toBeNull();
   } finally {
     read.mockRestore();
   }
@@ -224,7 +236,10 @@ test("a block no node carries, named on the Decisions view's address, draws the 
   expect(heading.parentElement?.textContent).toContain(
     `That link names no row of ${KEY}'s outline.`
   );
-  expect(drawnSlot(view), "the view was drawn beside the line").toBe("the body");
+  expect(
+    view.container.querySelector("[data-decisions-body]"),
+    "the view was drawn beside the line"
+  ).toBeNull();
 });
 
 // A comment the tree holds, named beside the Decisions view, is the view's to land on: it draws the
@@ -646,7 +661,10 @@ test("a comment the issue holds none of, named on the Plan view's address, draws
         ),
     });
     await waitFor(() => expect(heading).toHaveFocus());
-    expect(drawnSlot(view), "the Plan view was drawn beside the line").toBe("the body");
+    expect(
+      view.container.querySelector("[data-plan-body]"),
+      "the Plan view was drawn beside the line"
+    ).toBeNull();
   } finally {
     read.mockRestore();
   }
@@ -668,7 +686,10 @@ test("a comment of the issue, named on the Plan view's address, draws the outlin
     ).not.toBeNull();
     expect(row, `the comment's address left the focus on ${focusedRow()}`).toHaveFocus();
   });
-  expect(drawnSlot(view), "the Plan view was drawn beside the outline").toBe("the body");
+  expect(
+    view.container.querySelector("[data-plan-body]"),
+    "the Plan view was drawn beside the outline"
+  ).toBeNull();
 });
 
 // A task the Plan view draws keeps the view, which lands on the task's step by its own rule. The
@@ -692,4 +713,107 @@ test("a task of the plan, named on the Plan view's address, keeps the view, with
   await act(async () => commentsOut.resolve([...TWO_THREADS]));
   expect(drawnSlot(view), "the stage drew the outline in place of the view").toBe("the view");
   expect(view.container.querySelector(step), "the focus left the task's step").toHaveFocus();
+});
+
+/** A navigator that goes nowhere, for a router whose location the case sets itself. */
+const NO_NAVIGATION: Navigator = {
+  createHref: (to) => (typeof to === "string" ? to : createPath(to)),
+  go: () => {},
+  push: () => {},
+  replace: () => {},
+};
+
+/** The page's stage at `address` under the location the browser makes for it, as a load does or
+ *  a fragment typed in the address bar: its key is "default", the one key the router gives every
+ *  entry it did not make itself. `follow` draws the stage at another address under that same key,
+ *  as the browser changes the fragment alone, with no load. */
+function drawAtBrowserEntry(
+  address: string,
+  issue: IssueDetails
+): RenderResult & { readonly follow: (to: string) => void } {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const draw = (at: string): ReactNode => {
+    const { hash, pathname, search } = new URL(at, "http://dispatch.test");
+    const location = { hash, key: "default", pathname, search, state: null };
+    return (
+      <Router location={location} navigator={NO_NAVIGATION}>
+        <QueryClientProvider client={client}>
+          <KeymapProvider>
+            <MarginProvider>
+              <AddressedStage held={{}} issue={issue} />
+            </MarginProvider>
+          </KeymapProvider>
+        </QueryClientProvider>
+      </Router>
+    );
+  };
+  const view = render(draw(address));
+  return { ...view, follow: (to) => view.rerender(draw(to)) };
+}
+
+/** Waits for the row `selector` finds in `view` to hold the focus, saying what `what` drew
+ *  where it does not. */
+async function rowTakesFocus(view: RenderResult, selector: string, what: string): Promise<void> {
+  await waitFor(() => {
+    const row = view.container.querySelector(selector);
+    expect(row, `${what} drew no such row; the stage drew ${drawnSlot(view)}`).not.toBeNull();
+    expect(row, `${what} left the focus on ${focusedRow()}`).toHaveFocus();
+  });
+}
+
+/** The task's step in the Plan view's chart, and the statement's row of the outline. */
+const TASK_STEP = `[data-plan-body] [data-node-row][data-node-id="${blockNodeId(PLAN_DOCUMENT.slug, PLAN_TASK)}"]`;
+const STATEMENT_ROW = `[data-issue-body] [data-node-row][data-node-id="${blockNodeId(SPEC_SLUG, STATEMENT)}"]`;
+
+// Every entry the browser makes has the key "default", so each fragment it changes under the Plan
+// view's address is a following of its own though the key stays one. The task keeps the view;
+// the statement draws the outline in the view's place, which lands on the statement's row; and
+// the task again draws the view, which lands on the task's step.
+test("fragments the browser changes under one key each land under the Plan view: the task's step, the statement's row of the outline, then the step again", async () => {
+  answerVerificationReads();
+  const commentsOut = Promise.withResolvers<Comment[]>();
+  spyOn(api, "listComments").mockReturnValue(commentsOut.promise);
+  const plan = presetPath(KEY, "plan");
+  const view = drawAtBrowserEntry(`${plan}#b-${PLAN_TASK}`, verifiedIssue());
+  await rowTakesFocus(view, TASK_STEP, "the task's fragment");
+  // The comments read answers last, and with it every read is held and the view has told the
+  // stage whether it draws the task.
+  await act(async () => commentsOut.resolve([...TWO_THREADS]));
+  expect(drawnSlot(view), "the task's fragment drew the outline in place of the view").toBe(
+    "the view"
+  );
+  view.follow(`${plan}#b-${STATEMENT}`);
+  await rowTakesFocus(view, STATEMENT_ROW, "the statement's fragment under the same key");
+  expect(
+    view.container.querySelector("[data-plan-body]"),
+    "the statement's fragment drew the Plan view beside the outline"
+  ).toBeNull();
+  view.follow(`${plan}#b-${PLAN_TASK}`);
+  await rowTakesFocus(view, TASK_STEP, "the task's fragment again under the same key");
+  expect(
+    view.container.querySelector("[data-issue-body]"),
+    "the task's fragment again drew the outline beside the Plan view"
+  ).toBeNull();
+});
+
+// The outline decides each following of an address once: one whose tree has held the address's
+// node draws no line in the outline's place for the rest of it. A fragment the browser changes
+// under the one key "default", from a block the tree holds to one no node carries, is a following
+// of its own, so the outline says it has no row for the new block, with the focus on that line.
+test("a fragment the browser changes under one key, from a block the tree holds to one no node carries, draws the outline's line that says so, with the focus on it", async () => {
+  answerVerificationReads();
+  const conversation = presetPath(KEY, "conversation");
+  const view = drawAtBrowserEntry(`${conversation}#b-${STATEMENT}`, verifiedIssue());
+  await rowTakesFocus(view, STATEMENT_ROW, "the statement's fragment");
+  view.follow(`${conversation}#b-no-such-block`);
+  const heading = await waitFor(
+    () => view.getByRole("heading", { name: "No row for this block" }),
+    {
+      onTimeout: () =>
+        new Error(
+          `the fragment of a block no node carries, under the same key, drew no line saying so; the focus is on ${focusedRow() ?? document.activeElement?.tagName}`
+        ),
+    }
+  );
+  await waitFor(() => expect(heading).toHaveFocus());
 });

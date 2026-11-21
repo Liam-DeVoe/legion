@@ -15,6 +15,7 @@ import { EMPTY_STATE_LINES } from "../page-words";
 import { presetView } from "../presets";
 import { EVENT_FRESH } from "../useIssueTree";
 import { waitingPressOf } from "../waiting";
+import { useFollowing } from "./following";
 import type { ViewSlotProps } from "./stage";
 
 /** Filled by INFRA-1196 part Q, "The Decisions view". */
@@ -22,7 +23,8 @@ export function ViewDecisionsSlot({ issue, onAddressDrawn, route }: ViewSlotProp
   // The Decisions view (part Q's R1): the issue's asks and decisions as one list in parts, drawn
   // from the issue's one tree as the Decisions view leaves it. The stage draws this slot only
   // where the address opens Decisions (`slots/stage.tsx`).
-  const { hash, key: following, search, state } = useLocation();
+  const { hash, search, state } = useLocation();
+  const following = useFollowing();
   const specSlug = primarySpec(issue)?.slug;
   const address = issueAddress(route, search, hash, specSlug);
   // The tree, and whether every read its nodes come from holds its answer (`useOutlineReads`),

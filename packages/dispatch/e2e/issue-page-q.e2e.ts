@@ -90,9 +90,10 @@ import { expectLoadSettled, watchApiRequests } from "./traffic";
  *   the issue holds none of, and a plan task under a statement, which the view draws no row for
  *   and the outline lands on in its place; under Decisions a comment the issue holds none of, a
  *   block no node carries and a comment id written short that names none; under Plan a comment
- *   the issue holds none of, and a plan task, which the view draws as a step and lands on. Each
- *   is named on the view's address, and each that names nothing draws part I's line for it
- *   where the view was.
+ *   the issue holds none of, and a plan task, which the view draws as a step and lands on, then
+ *   the first statement's fragment and the task's again, each changed with no load. Each is
+ *   named on the view's address, and each that names nothing draws part I's line for it where
+ *   the view was.
  *
  * Each row's first reading waits out the page's load under a message of its own, before G's
  * `expectIssuePageDrawn`: on a build whose slot draws nothing, every row fails on what the view
@@ -897,18 +898,22 @@ const FALLBACK_LINES = {
 //
 // Then the Plan view, which draws a row for a plan task alone: the gone comment draws part I's
 // line, and the plan task under the statement keeps the view, which lands on the task's step as
-// its own address does, with the focus on that step's row once the page has gone quiet.
+// its own address does, with the focus on that step's row once the page has gone quiet. Then the
+// fragment alone changes, with no load, as a browser changes it, and the browser gives its entry
+// the key it gave the load's: the first statement's fragment draws the outline in the view's
+// place, with the focus on the statement's row, and the task's again draws the view, with the
+// focus on its step.
 //
 // Each view is read first at its own address, so each line is drawn where the view drew its
 // rows; its gone comment is the first address read whose node the view draws no row for, so a
 // stage that keeps the view fails on the words of that comment's line, and the Verification view
 // comes first, so such a stage fails there. Each project at its own width: `chromium` the
 // desktop's and `iphone` the phone's.
-// SLOW(>=2s): the whole issue seeded with three more writes, then eleven loads: one waited on
-// until the view settles, two until the view draws its rows, two until the page goes quiet, one
-// until the outline puts the focus on the plan task's row, one until the block's line is drawn,
-// and four until the item's read, which the page asks again before it says the item is missing,
-// has settled.
+// SLOW(>=2s): the whole issue seeded with three more writes, then eleven loads and two changes of
+// the fragment alone: one waited on until the view settles, two until the view draws its rows,
+// four until the page goes quiet, one until the outline puts the focus on the plan task's row,
+// one until the block's line is drawn, and four until the item's read, which the page asks again
+// before it says the item is missing, has settled.
 test("an address the view draws no row for draws the outline's line for it in the view's place, with the focus on that line @phone", async ({
   browser,
 }) => {
@@ -1053,6 +1058,31 @@ test("an address the view draws no row for draws the outline's line for it in th
     await expect(
       outlineRows(page),
       `a plan task under Plan draws the outline in the view's place ${at}`
+    ).toHaveCount(0);
+    // The first statement's fragment, then the task's again, each changed alone with no load, and
+    // each read once the page has gone quiet.
+    const statementBlock = seeded.requirements[0] ?? "";
+    const statement = blockNodeId(specSlug, statementBlock);
+    await gotoIssue(page, `${plan}#b-${statementBlock}`);
+    await expectLoadSettled(traffic);
+    await expect
+      .poll(() => focusedNodeId(page), {
+        message: `the first statement's fragment under Plan leaves the focus off its row of the outline ${at}`,
+      })
+      .toBe(statement);
+    await expect(
+      planBody(page),
+      `the first statement's fragment under Plan draws the view beside the outline ${at}`
+    ).toHaveCount(0);
+    await gotoIssue(page, `${plan}#b-${taskBlock}`);
+    await expectLoadSettled(traffic);
+    await expect(
+      planBody(page).locator(`[data-node-row][data-node-id="${task}"]`),
+      `the task's fragment again under Plan leaves the focus off the view's step for it ${at}`
+    ).toBeFocused();
+    await expect(
+      outlineRows(page),
+      `the task's fragment again under Plan draws the outline in the view's place ${at}`
     ).toHaveCount(0);
   });
 });

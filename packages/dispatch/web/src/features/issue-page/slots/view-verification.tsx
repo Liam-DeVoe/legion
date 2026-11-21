@@ -19,13 +19,15 @@ import {
   type VerificationRead,
   type VerificationReads,
 } from "../verification-filter/VerificationFilterBody";
+import { useFollowing } from "./following";
 import type { ViewSlotProps } from "./stage";
 
 /** Filled by INFRA-1196 part V, "The Verification view". */
 export function ViewVerificationSlot({ issue, onAddressDrawn, route }: ViewSlotProps): ReactNode {
   // The Verification view: the issue's one tree as the Verification view leaves it, each statement
   // with the checks that serve it and each check beside its newest result.
-  const { hash, key: following, search } = useLocation();
+  const { hash, search } = useLocation();
+  const following = useFollowing();
   const address = issueAddress(route, search, hash, primarySpec(issue)?.slug);
   // The tree, and whether every read its nodes come from holds its answer (`useOutlineReads`),
   // each under the key and with the freshness the tree reads it by, so they cost no request of
@@ -58,8 +60,7 @@ export function ViewVerificationSlot({ issue, onAddressDrawn, route }: ViewSlotP
   // the view. Where the view draws no row of the node - the tree holds none of it, or holds it
   // there - the stage draws the outline in the view's place, which lands on the node or says
   // that the issue holds none of it. It is said before the browser paints, so where the reads
-  // were held as the view was drawn, as on Back to its address, no table is painted in the
-  // outline's place.
+  // were held as the view was drawn, as on Back to its address, the table is never painted.
   const beside = address.target !== undefined && address.document === undefined;
   const told = useRef<string | undefined>(undefined);
   useLayoutEffect(() => {
