@@ -182,7 +182,7 @@ func (m *Machine) turnOpen() bool {
 // would stop the process the copy still asks. The failure is charged and runs no stop, and the
 // held stop runs as it would have with no failure: at the copy's end or the wait's bound where its
 // wait has begun (endTurnCopyWait), and otherwise once the decision it is held for has begun that
-// wait — the answer of the prompt a pause's stop waits for (stopAtResult), which the answer that
+// wait — the answer of the prompt a pause's stop waits for (stopAfterAnswer), which the answer that
 // charged this failure can itself be, or the end of the turn the stop was held for (turnEnded). A
 // failure that comes meanwhile is charged the same way.
 //

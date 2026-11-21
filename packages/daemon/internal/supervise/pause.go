@@ -359,7 +359,9 @@ func (m *Machine) pauseHoldAtResult() bool {
 // stop is held for the end of the turn the result is of, so it waits for the copy that end
 // started as every stop held for a turn's end does, at most the copy's budget and never past the
 // hold's own deadline, and a copy that fails or runs out of its budget lets it go
-// (waitForTurnCopy): the claim stays idle meanwhile, holding the stop and handed nothing.
+// (waitForTurnCopy): the claim stays idle meanwhile, holding the stop and handed nothing. It runs
+// at the end of each row that decides an answer of the prompt, its result or its refusal, and
+// nowhere else (stopAfterAnswer).
 func (m *Machine) stopAtResult(ctx context.Context) error {
 	if !m.pauseHoldAtResult() || m.waitForTurnCopy() {
 		return nil

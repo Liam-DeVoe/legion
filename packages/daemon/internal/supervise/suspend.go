@@ -92,7 +92,7 @@ func suspend(m *Machine, ctx context.Context, ev Event) error {
 		return m.suspendNow(ctx, request, false)
 	}
 	err = m.holdRequest(request, asked, heldForTurnCopy)
-	if !m.stopWaitsForTurnCopy() {
+	if !m.turnCopy.stopWaits {
 		m.waitForTurnCopy()
 	}
 	return err
@@ -385,7 +385,7 @@ func suspendAtTimeout(m *Machine, ctx context.Context, _ Event) error {
 			m.arm(TimerSuspend, m.deps.Timeouts.Probe, "")
 			return fmt.Errorf("take back the task of %s before its forced stop: %w", m.claim.Token, err)
 		}
-	} else if m.stopWaitsForTurnCopy() {
+	} else if m.turnCopy != nil && m.turnCopy.stopWaits {
 		m.log.Warn("supervise: the held suspension's deadline came before the copy of the turn's end ended; stopping the agent without it",
 			"by", m.held.By, "deadline", m.held.Deadline, "copy", m.turnCopy.seq)
 	} else {

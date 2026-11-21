@@ -115,7 +115,7 @@ func (m *Machine) freshRun() { m.claim.TurnOutcomes = nil }
 // a run at the limit while a stop is held and the copy its turn's end started is still being taken
 // (stopHeldOverTurnCopy): failed then, the claim's process would stop while the copy still asks it
 // (fail, endProcess), so the stop is left to the copy's end or the wait's bound, which runs it
-// (endTurnCopyWait), or to the prompt's result that a pause's stop waits for (stopAtResult).
+// (endTurnCopyWait), or to the prompt's answer that a pause's stop waits for (stopAfterAnswer).
 func turnOutcome(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestTurnOutcome)
 	m.recordTurnOutcome(TurnOutcome{Generation: r.Generation, Sequence: r.Sequence, Refused: r.Refused, Message: r.Message})

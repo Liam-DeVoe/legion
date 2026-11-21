@@ -1,39 +1,22 @@
 package supervise
 
 // An answer of the prompt that says its agent ran no turn, behind the turn's end a project pause's
-// stop was held for. That stop waits for the prompt's result (stopWaitsForResult), and each of the
+// stop was held for. That stop waits for the prompt's answer (stopWaitsForResult), and each of the
 // answers that end that wait with no turn run is a decision of its own: the result that says no
 // turn ran and a late refusal with no turn running are charged as a failed prompt (promptFailed,
-// chargePrompt), and the answer of a prompt whose wait for its turn had already run out takes back
+// chargePrompt); the answer of a prompt whose wait for its turn had already run out takes back
 // the confirmation a turn took for it, or nothing where no turn confirmed the task
-// (waitedOutAnswer). Before each ran the pause's stop (stopAtResult), nothing else did: the turn
+// (waitedOutAnswer); and a refusal the shim replays after a reconnect takes back the confirmation
+// a foreign turn took (refusedElsewhere, takesBackConfirmed). The row each answer comes in on runs
+// the pause's stop once its decision is over (stopAfterAnswer), and nothing else would: the turn
 // was over, so no turn's end was coming, and the copy's end runs only a stop whose wait for it has
-// begun (endTurnCopyWait). The pause then never stopped the role.
+// begun (endTurnCopyWait). The pause then never stopped the role until its stop row asked again.
 
 import (
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
-
-// pauseHeldForANoTurnResult is a claim in a turn of a task, whose project's pause holds its stop
-// for the turn's end, and whose turn has ended with the stop still waiting for the prompt's result
-// (turnEndedUnderAHold). copies is the claim's CopyTurnEnd, and nil gives it one that starts no
-// copy. It answers the delivery that result names.
-func pauseHeldForANoTurnResult(t *testing.T, copies *turnEndCopies, limits Limits) (*harness, string) {
-	t.Helper()
-	copyTurnEnd := func(Claim, TurnEndCopied) (time.Duration, bool) { return 0, false }
-	if copies != nil {
-		copyTurnEnd = copies.start
-	}
-	h, flag, _ := pauseHarness(t, queuedClaim(), func(d *Deps) { d.CopyTurnEnd, d.Limits = copyTurnEnd, limits })
-	task := turnEndedUnderAHold(t, h, copies, pausesStop(t, h, flag))
-	if n := processStops(h); n != 0 {
-		t.Fatalf("the process was stopped %d times at the turn's end, want none while the pause's stop waits for the prompt's result", n)
-	}
-	return h, task
-}
 
 // noTurnResult is the prompt's result for task saying its agent ran no turn.
 func noTurnResult(h *harness, task string) StreamPromptResult {
@@ -43,10 +26,10 @@ func noTurnResult(h *harness, task string) StreamPromptResult {
 // Below the prompt-failure limit, with no copy started at the turn's end, the result is charged
 // and the pause's stop then runs, once: the claim is suspended by the pause.
 //
-// The control is promptResulted without the stopAtResult after promptFailed: the claim is then
-// left idle holding the pause's stop, and the test fails at the first stop it wants.
+// The control is the result's row without stopAfterAnswer: the claim is then left idle holding the
+// pause's stop, and the test fails at the first stop it wants.
 func TestANoTurnResultBelowThePromptLimitRunsThePausesHeldStop(t *testing.T) {
-	h, task := pauseHeldForANoTurnResult(t, nil, testLimits())
+	h, task := pauseHeldForTheResult(t, nil, nil)
 
 	if err := h.handle(noTurnResult(h, task)); err != nil {
 		t.Logf("the prompt's result answered %v", err)
@@ -75,9 +58,8 @@ func TestANoTurnAnswerRunsThePausesHeldStopOnceTheTurnsCopyIsOver(t *testing.T) 
 		// At the prompt-failure limit the failure is charged and its retirement left to the
 		// pause's stop (chargePrompt), and the result begins that stop's wait for the copy.
 		//
-		// The control is promptResulted without the stopAtResult after promptFailed: no wait for
-		// the copy begins, the copy's end runs nothing, and the row fails at the stop it wants once
-		// the copy ended.
+		// The control is the result's row without stopAfterAnswer: no wait for the copy begins,
+		// the copy's end runs nothing, and the row fails at the stop it wants once the copy ended.
 		{name: "ANoTurnResultAtThePromptLimitWaitsForTheTurnsCopyAPausesHeldStopIsOver", promptFailures: 1,
 			answer: func(h *harness, task string) Event { return noTurnResult(h, task) }},
 		// The agent refuses the acknowledged prompt with no turn running, as Oh My Pi does when a
@@ -85,8 +67,8 @@ func TestANoTurnAnswerRunsThePausesHeldStopOnceTheTurnsCopyIsOver(t *testing.T) 
 		// prompt's answer, so it ends the pause's wait for the result as a result would: the prompt
 		// is charged, and the pause's stop begins its wait for the copy.
 		//
-		// The control is lateRefused without the stopAtResult after promptFailed, which fails the
-		// row the same way.
+		// The control is the late refusal's row without stopAfterAnswer, which fails the row the
+		// same way.
 		{name: "ALateRefusalWithNoTurnRunsThePausesHeldStopOnceTheTurnsCopyIsOver", promptFailures: testLimits().PromptFailures,
 			answer: func(h *harness, task string) Event {
 				return StreamLateRefusal{Claim: h.token, DeliveryID: task, Error: "No API key found for anthropic"}
@@ -94,15 +76,13 @@ func TestANoTurnAnswerRunsThePausesHeldStopOnceTheTurnsCopyIsOver(t *testing.T) 
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			copies := &turnEndCopies{}
-			limits := testLimits()
-			limits.PromptFailures = tc.promptFailures
-			h, task := pauseHeldForANoTurnResult(t, copies, limits)
+			h, task := pauseHeldForTheResult(t, copies, func(d *Deps) { d.Limits.PromptFailures = tc.promptFailures })
 
 			if err := h.handle(tc.answer(h, task)); err != nil {
 				t.Logf("the answer was answered %v", err)
 			}
 
-			stopsOnceAfterTheCopy(t, h, copies)
+			suspendedOnceAfterTheCopy(t, h, copies, SuspendedByReleased)
 		})
 	}
 }
@@ -122,17 +102,16 @@ func waitedOut(t *testing.T, h *harness, first *string) {
 // turn then starts, which is taken for that prompt's and confirms the task, and the pause's stop is
 // held for its end. The prompt's own answer, naming the id the wait took back, says it ran no turn
 // (waitedOutAnswer): the turn was another input's, and the task goes back to waiting. That answer
-// ends the pause's wait for the result, so the stop begins its wait for the copy of the turn's
-// end, and the copy's end runs it.
+// ends the pause's wait for the result, so waitedOutAnswer leaves the idle claim to the pause's
+// stop rather than to the turn's aftermath (afterTurn), the stop begins its wait for the copy of
+// the turn's end at the end of the result's row (stopAfterAnswer), and the copy's end runs it.
 //
-// The control is waitedOutAnswer handing the idle claim to afterTurn whatever stop it holds: no
-// wait for the copy begins, the copy's end runs nothing, and the test fails at the stop it wants
-// once the copy ended.
+// The control is the result's row without stopAfterAnswer: no wait for the copy begins, the copy's
+// end runs nothing, and the test fails at the stop it wants once the copy ended.
 func TestAWaitedOutPromptsNoTurnAnswerRunsThePausesHeldStopOnceTheTurnsCopyIsOver(t *testing.T) {
 	copies := &turnEndCopies{}
-	h, flag, _ := pauseHarness(t, queuedClaim(), func(d *Deps) { d.CopyTurnEnd = copies.start })
 	var first string
-	turnEndedUnderAHold(t, h, copies, pausesStop(t, h, flag), func() StreamTurnStart {
+	h, _ := pauseHeldForTheResult(t, copies, nil, func(h *harness) StreamTurnStart {
 		waitedOut(t, h, &first)
 		return StreamTurnStart{Claim: h.token}
 	})
@@ -144,7 +123,7 @@ func TestAWaitedOutPromptsNoTurnAnswerRunsThePausesHeldStopOnceTheTurnsCopyIsOve
 		t.Logf("the waited-out prompt's answer answered %v", err)
 	}
 
-	stopsOnceAfterTheCopy(t, h, copies)
+	suspendedOnceAfterTheCopy(t, h, copies, SuspendedByReleased)
 }
 
 // A turn start naming the prompt whose wait for its turn ran out, an id the task has moved off, is
@@ -182,8 +161,8 @@ func TestATurnStartNamingAWaitedOutPromptLeavesNoPausesStopWaitingForItsAnswer(t
 // pause's wait as the other no-turn answers do: the stop begins its wait for the copy of the turn's
 // end, and the copy's end runs it.
 //
-// The control is waitedOutAnswer's last branch without noTurnAnswered: no wait for the copy
-// begins, the copy's end runs nothing, and the test fails at the stop it wants once the copy ended.
+// The control is the result's row without stopAfterAnswer: no wait for the copy begins, the copy's
+// end runs nothing, and the test fails at the stop it wants once the copy ended.
 func TestAWaitedOutPromptsAnswerAfterABusyAnswerRunsThePausesHeldStopOnceTheTurnsCopyIsOver(t *testing.T) {
 	copies := &turnEndCopies{}
 	h, flag, _ := pauseHarness(t, queuedClaim(), func(d *Deps) { d.CopyTurnEnd = copies.start })
@@ -211,5 +190,52 @@ func TestAWaitedOutPromptsAnswerAfterABusyAnswerRunsThePausesHeldStopOnceTheTurn
 		t.Logf("the waited-out prompt's answer answered %v", err)
 	}
 
-	stopsOnceAfterTheCopy(t, h, copies)
+	suspendedOnceAfterTheCopy(t, h, copies, SuspendedByReleased)
+}
+
+// The agent starts a turn of its own while the task's prompt waits acknowledged, and the turn's
+// start is taken for that prompt's and confirms the task; the pause's stop is held for the turn's
+// end, which leaves the stop waiting for the prompt's answer. The shim reconnects, and its backlog
+// replays Oh My Pi's refusal of the prompt, busy with that turn: the turn was another input's
+// (refusedElsewhere, takesBackConfirmed), so the task goes back unread and charged nothing. That
+// refusal is the prompt's answer, so it ends the pause's wait as any answer does, and the stop
+// runs once the copy of the turn's end is over, or at once where the end started none. Before, the
+// replayed refusal took the confirmation back and ran no stop: the claim stayed idle holding the
+// pause's stop until the pause's stop row asked again.
+//
+// The control is the late refusal's row without stopAfterAnswer: each row then fails at the stop
+// it wants, the claim idle and holding the pause's stop.
+func TestAReplayedRefusalTakingBackAForeignTurnsConfirmationRunsThePausesHeldStop(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// copies is the claim's CopyTurnEnd; nil starts no copy.
+		copies *turnEndCopies
+	}{
+		{name: "AfterTheCopyOfTheTurnsEnd", copies: &turnEndCopies{}},
+		{name: "WithNoCopyStartedAtTheTurnsEnd"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, task := pauseHeldForTheResult(t, tc.copies, nil)
+			charged := h.claim().Budgets.PromptFailures
+			replacement := reconnect(h, false)
+
+			if err := h.handle(StreamLateRefusal{Claim: h.token, DeliveryID: task, Error: busyAnswer, Replayed: true,
+				ConnSequence: replacement.Sequence()}); err != nil {
+				t.Logf("the replayed refusal answered %v", err)
+			}
+
+			if p := h.pending(); !p.ConfirmedAt.IsZero() || !p.DeliveredAt.IsZero() {
+				t.Fatalf("pending after the replayed refusal = %+v, want the foreign turn's confirmation taken back unread", p)
+			}
+			if tc.copies != nil {
+				suspendedOnceAfterTheCopy(t, h, tc.copies, SuspendedByReleased)
+			} else if n := processStops(h); n != 1 {
+				t.Fatalf("the process was stopped %d times after the replayed refusal (state %s), want the pause's stop once", n, h.claim().State)
+			}
+			if c := h.claim(); c.State != StateSuspended || c.SuspendedBy != SuspendedByReleased || c.Budgets.PromptFailures != charged {
+				t.Fatalf("the claim is %s by %q with %d prompt failures charged, want it suspended by the pause and nothing charged",
+					c.State, c.SuspendedBy, c.Budgets.PromptFailures-charged)
+			}
+		})
+	}
 }

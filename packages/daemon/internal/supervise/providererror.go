@@ -66,8 +66,8 @@ func promptRetryDelay(attempt int) time.Duration {
 // (stopHeldOverTurnCopy) would stop the process that copy still asks (fail, endProcess). The run
 // and the task taken back are written, and the stop is left to the copy's end or the wait's bound,
 // which runs it (endTurnCopyWait); a pause's stop held for this result begins that wait at once
-// after this (promptResulted, stopAtResult). The held stop's suspension, not this failure, is what
-// the claim ends in.
+// after this, at the end of the result's row (stopAfterAnswer). The held stop's suspension, not
+// this failure, is what the claim ends in.
 func (m *Machine) providerErrored(ctx context.Context, r StreamPromptResult) error {
 	cause := providerErrorCause(r.HTTPStatus)
 	m.claim.ProviderErrorRun++
