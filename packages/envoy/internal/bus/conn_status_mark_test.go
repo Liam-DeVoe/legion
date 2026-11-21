@@ -52,7 +52,7 @@ var markedCalls = []struct {
 	}},
 	// A core request (RequestCore), the connection probe a send makes.
 	{"core request", func(ctx context.Context, client *Client, _ KeyValue) error {
-		_, err := client.RequestCore(ctx, "envoy.marked.request", nats.Header{ConnectionProbeHeader: []string{"1"}})
+		_, err := client.RequestCore(ctx, "envoy.marked.request", nats.NewInbox(), nats.Header{ConnectionProbeHeader: []string{"1"}})
 		return err
 	}},
 	// A stored message read (a handover's lane head and cursor reads, its walk's next copy):

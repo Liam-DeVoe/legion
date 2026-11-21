@@ -140,7 +140,7 @@ func TestARequestWhoseReplyTheDropLostFailsAtTheDrop(t *testing.T) {
 		}},
 		{"core request on a channel inbox", "envoy.lostreply.probe", withFlush, func(_ *testing.T, c *Client) func(context.Context) error {
 			return func(ctx context.Context) error {
-				_, err := c.RequestCore(ctx, "envoy.lostreply.probe", nats.Header{ConnectionProbeHeader: []string{"1"}})
+				_, err := c.RequestCore(ctx, "envoy.lostreply.probe", nats.NewInbox(), nats.Header{ConnectionProbeHeader: []string{"1"}})
 				return err
 			}
 		}},
