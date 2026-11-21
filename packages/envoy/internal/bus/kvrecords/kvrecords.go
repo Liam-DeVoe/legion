@@ -12,6 +12,10 @@
 // under a hold (envoy-infra buckets backup), since a snapshot delivers its chunks to a subject its
 // requester chooses, which outside a hold could be any protected key.
 //
+// The copy is signed with the operator's hold key (signedrecord.RecordsManifest): the manifest
+// names the records file's SHA-256, and the signature covers the manifest, so a copy that anyone
+// who can write its directory rewrites, all three files agreeing with each other, does not read.
+//
 // Every stored message is in the copy, whatever its key: the sentinel envoy.bucket, each hold's
 // hold.barrier.<hold id>, each listener durable's record durable.<name>, and any other key. A
 // restore writes back only ForRestore's entries.
@@ -21,6 +25,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -31,25 +36,40 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go"
+
+	"github.com/sjawhar/envoy/internal/bus/signedrecord"
 )
 
 // Format is the copy's format, which its manifest names.
 const Format = "envoy-kv-records-v1"
 
-// The three files a copy's directory holds.
+// The four files a copy's directory holds.
 const (
-	RecordsFile  = "records.jsonl"
-	ManifestFile = "manifest.json"
-	SumsFile     = "SHA256SUMS"
+	RecordsFile   = "records.jsonl"
+	ManifestFile  = "manifest.json"
+	SumsFile      = "SHA256SUMS"
+	SignatureFile = "manifest.sig"
 )
 
 // noMessageFound is the err_code nats-server answers a STREAM.MSG.GET of a sequence it no longer
 // stores with: a message deleted, replaced under a bucket's history, or rolled up by a purge.
 const noMessageFound = 10037
+
+// The walk's bounds. A pass walks to the last_seq the stream's info last answered; a put to an
+// existing key during it stores the key again above that last_seq and removes its old message, so
+// the walk reads the info again and walks on, until a pass ends with the last_seq it began with.
+// A bucket written faster than the walk reads it never gets there: the walk stops after
+// maxPasses passes, or once its passes after the first have taken maxCatchUp, and fails naming the
+// bound, writing nothing.
+const (
+	maxPasses  = 10
+	maxCatchUp = 30 * time.Second
+)
 
 // The keys ForRestore knows by name. SentinelKey and HoldBarrierKeyPrefix are the bucket's system
 // keys, which a restore skips: the bucket's re-creation writes its own sentinel, and a barrier key
@@ -62,25 +82,51 @@ const (
 	DurableKeyPrefix     = "durable."
 )
 
-// ForRestore is the records a restore writes back, in file order: every record but the system
-// keys, SentinelKey and each HoldBarrierKeyPrefix key, which it skips by name. It keeps each
-// DurableKeyPrefix key and every key holding no '.', and refuses any other key holding a '.',
+// ForRestore is the records a restore writes back, in file order, each with only the headers a
+// fresh stream takes (restorable). It skips every key skip names, which the restore's caller
+// chooses, and the system keys, SentinelKey and each HoldBarrierKeyPrefix key, by name. It keeps
+// each DurableKeyPrefix key and every key holding no '.', and refuses any other key holding a '.',
 // naming the key and its sequence: such a key may be a system key of a later build, and a restore
-// that guessed could drop a record or write a stale marker.
-func ForRestore(records []Record) ([]Record, error) {
+// that guessed could drop a record or write a stale marker. Any client that may send a JetStream
+// request can have the server store its answer under a key of its choosing, a dotted one among
+// them, so the caller that finds one names it in skip rather than lose the whole restore. It
+// decodes no value: each reader of the restored bucket decodes its values strictly and fails
+// closed on one that is not an exact record of its key's kind.
+func ForRestore(records []Record, skip []string) ([]Record, error) {
 	var restore []Record
 	for _, record := range records {
 		switch {
+		case slices.Contains(skip, record.Key):
+			continue
 		case record.Key == SentinelKey || strings.HasPrefix(record.Key, HoldBarrierKeyPrefix):
 			continue
 		case strings.HasPrefix(record.Key, DurableKeyPrefix) || !strings.Contains(record.Key, "."):
+			record.Headers = restorable(record.Headers)
 			restore = append(restore, record)
 		default:
-			return nil, fmt.Errorf("kvrecords: sequence %d holds the key %q, a dotted key this format does not know; a restore neither writes nor skips it unasked",
+			return nil, fmt.Errorf("kvrecords: sequence %d holds the key %q, a dotted key this format does not know; a restore neither writes nor skips it unless its caller names it to skip",
 				record.Seq, record.Key)
 		}
 	}
 	return restore, nil
+}
+
+// restorable is headers without those that bind a message to the stream it was first written to,
+// each matched by name whatever its case: every Nats-Expected-* header, which a write with a
+// revision sends (kv.Create, kv.Update, a delete at a revision) and the server stores, and which a
+// fresh stream refuses as "wrong last sequence"; Nats-Msg-Id, a duplicate window's id; and every
+// Nats-Batch-* header, an atomic batch's. KV-Operation, Nats-Rollup and every other header are
+// kept, in their order. headers is not changed.
+func restorable(headers Headers) Headers {
+	kept := Headers{}
+	for _, header := range headers {
+		name := strings.ToLower(header.Name)
+		if strings.HasPrefix(name, "nats-expected-") || name == "nats-msg-id" || strings.HasPrefix(name, "nats-batch-") {
+			continue
+		}
+		kept = append(kept, header)
+	}
+	return kept
 }
 
 // requestTimeout bounds each of Write's requests, inside its caller's context.
@@ -96,15 +142,30 @@ type Manifest struct {
 	// Bucket is the KV bucket and Stream its stream, KV_<bucket>.
 	Bucket string `json:"bucket"`
 	Stream string `json:"stream"`
-	// TakenAt is when the stream's info answered, in UTC. FirstSeq and LastSeq are its state then:
-	// the copy is the stream as of LastSeq, and a message stored after the read is not in it.
+	// TakenAt is when the stream's info first answered, in UTC, and FirstSeq its first_seq then.
+	// LastSeq is the last_seq the walk ended at, the one the stream's info answered twice in a row:
+	// the copy is the stream as of LastSeq, and a message stored after it is not in it.
 	TakenAt  time.Time `json:"taken_at"`
 	FirstSeq uint64    `json:"first_seq"`
 	LastSeq  uint64    `json:"last_seq"`
 	// Records is the number of lines of records.jsonl, and RecordsSHA256 its hex SHA-256, so the
-	// manifest alone names the records file it describes.
+	// manifest alone names the records file it describes, and its signature covers the records.
 	Records       int    `json:"records"`
 	RecordsSHA256 string `json:"records_sha256"`
+	// Foreign is each stored message whose subject is no key of the bucket, by sequence and
+	// subject, with no data: it has no record, and Read and ForRestore ignore it. A consumer's
+	// delivery to a reply or deliver subject the bucket's stream captures is stored under the
+	// delivered message's own subject (nats-server v2.15.1 stream.go:8620-8621, client.go:5358-5365),
+	// and any grant that may pull from ENVOY_NOTIFICATIONS (Daemon's) can send one, so a walk that
+	// stopped on it would let that grant block every copy. It is [] when there is none, and the
+	// manifest's signature covers it.
+	Foreign []ForeignMessage `json:"foreign"`
+}
+
+// ForeignMessage is a stored message of the bucket's stream whose subject is no key of the bucket.
+type ForeignMessage struct {
+	Seq     uint64 `json:"seq"`
+	Subject string `json:"subject"`
 }
 
 // Header is one NATS header of a stored message: its name, as the server sent it, and its values
@@ -133,43 +194,46 @@ type Record struct {
 	Data []byte
 }
 
-// recordJSON is a record's line as it is read.
-type recordJSON struct {
-	Seq     uint64          `json:"seq"`
-	Subject string          `json:"subject"`
-	Key     string          `json:"key"`
-	Time    string          `json:"time"`
-	Headers json.RawMessage `json:"headers"`
-	Data    *string         `json:"data"`
+// line is a record's line of records.jsonl, both as Write writes it and as Read reads it:
+// encoding/json writes its fields in this order, with no space between them, its time as
+// timeLayout writes it and its data as standard base64 with padding.
+type line struct {
+	Seq     uint64  `json:"seq"`
+	Subject string  `json:"subject"`
+	Key     string  `json:"key"`
+	Time    string  `json:"time"`
+	Headers Headers `json:"headers"`
+	Data    string  `json:"data"`
 }
 
-// MarshalJSON writes the record's line: seq, subject, key, time, headers and data, in that order.
-func (r Record) MarshalJSON() ([]byte, error) {
-	var out bytes.Buffer
-	field := func(name string, value any) error {
-		raw, err := json.Marshal(value)
-		if err != nil {
-			return err
-		}
-		if out.Len() > 0 {
-			out.WriteByte(',')
-		}
-		fmt.Fprintf(&out, "%q:", name)
-		out.Write(raw)
-		return nil
+// encodeLine is record's line, with no line feed.
+func encodeLine(record Record) ([]byte, error) {
+	headers := record.Headers
+	if headers == nil {
+		headers = Headers{}
 	}
-	for _, f := range []struct {
-		name  string
-		value any
-	}{
-		{"seq", r.Seq}, {"subject", r.Subject}, {"key", r.Key}, {"time", r.Time.UTC().Format(timeLayout)},
-		{"headers", r.Headers}, {"data", base64.StdEncoding.EncodeToString(r.Data)},
-	} {
-		if err := field(f.name, f.value); err != nil {
-			return nil, err
-		}
+	return json.Marshal(line{
+		Seq: record.Seq, Subject: record.Subject, Key: record.Key, Time: record.Time.UTC().Format(timeLayout),
+		Headers: headers, Data: base64.StdEncoding.EncodeToString(record.Data),
+	})
+}
+
+// decodeLine is the record raw, one line of records.jsonl, holds, its time and data decoded and
+// nothing else checked.
+func decodeLine(raw []byte) (Record, error) {
+	var entry line
+	if err := json.Unmarshal(raw, &entry); err != nil {
+		return Record{}, err
 	}
-	return append(append([]byte("{"), out.Bytes()...), '}'), nil
+	stored, err := time.Parse(time.RFC3339Nano, entry.Time)
+	if err != nil {
+		return Record{}, fmt.Errorf("its time: %w", err)
+	}
+	payload, err := base64.StdEncoding.DecodeString(entry.Data)
+	if err != nil {
+		return Record{}, fmt.Errorf("its data is not base64: %w", err)
+	}
+	return Record{Seq: entry.Seq, Subject: entry.Subject, Key: entry.Key, Time: stored, Headers: entry.Headers, Data: payload}, nil
 }
 
 // MarshalJSON writes the headers as an object of name to values, in their order.
@@ -303,17 +367,8 @@ func request(ctx context.Context, nc *nats.Conn, subject string, body []byte, ou
 	return nil, nil
 }
 
-// Write takes the copy of bucket's stream through nc into dir, which must not exist yet. It reads
-// the stream's info once, then asks STREAM.MSG.GET for every sequence from first_seq to last_seq
-// in order. A sequence answered 10037, no message found, is left out; any other error, or a
-// message whose subject is not one of the bucket's keys, stops the walk, and nothing is written. The
-// files are written into a directory of their own beside dir and moved to dir whole.
-func Write(ctx context.Context, nc *nats.Conn, bucket, dir string) (Manifest, error) {
-	if _, err := os.Lstat(dir); !errors.Is(err, fs.ErrNotExist) {
-		return Manifest{}, fmt.Errorf("kvrecords: %s exists already, or cannot be read (%v); a copy is written into a new directory", dir, err)
-	}
-	stream := "KV_" + bucket
-	prefix := "$KV." + bucket + "."
+// streamState is the first_seq and last_seq the stream's info answers now.
+func streamState(ctx context.Context, nc *nats.Conn, stream string) (first, last uint64, err error) {
 	var info struct {
 		State struct {
 			FirstSeq uint64 `json:"first_seq"`
@@ -322,57 +377,41 @@ func Write(ctx context.Context, nc *nats.Conn, bucket, dir string) (Manifest, er
 	}
 	refused, err := request(ctx, nc, "$JS.API.STREAM.INFO."+stream, nil, &info)
 	if err != nil {
-		return Manifest{}, err
+		return 0, 0, err
 	}
 	if refused != nil {
-		return Manifest{}, fmt.Errorf("kvrecords: the info of %s: %d %s", stream, refused.ErrCode, refused.Description)
+		return 0, 0, fmt.Errorf("kvrecords: the info of %s: %d %s", stream, refused.ErrCode, refused.Description)
 	}
-	manifest := Manifest{Format: Format, Bucket: bucket, Stream: stream, TakenAt: time.Now().UTC(),
-		FirstSeq: info.State.FirstSeq, LastSeq: info.State.LastSeq}
-	var records bytes.Buffer
-	// A stream that never stored a message has last_seq 0, and sequences start at 1.
-	for seq := max(manifest.FirstSeq, 1); seq <= manifest.LastSeq; seq++ {
-		body, _ := json.Marshal(map[string]uint64{"seq": seq})
-		var got struct {
-			Message struct {
-				Subject string    `json:"subject"`
-				Seq     uint64    `json:"seq"`
-				Header  []byte    `json:"hdrs"`
-				Data    []byte    `json:"data"`
-				Time    time.Time `json:"time"`
-			} `json:"message"`
-		}
-		refused, err := request(ctx, nc, "$JS.API.STREAM.MSG.GET."+stream, body, &got)
-		if err != nil {
-			return Manifest{}, err
-		}
-		if refused != nil {
-			if refused.ErrCode == noMessageFound {
-				continue
-			}
-			return Manifest{}, fmt.Errorf("kvrecords: %s sequence %d: %d %s", stream, seq, refused.ErrCode, refused.Description)
-		}
-		message := got.Message
-		if message.Seq != seq {
-			return Manifest{}, fmt.Errorf("kvrecords: %s sequence %d answered sequence %d", stream, seq, message.Seq)
-		}
-		key, ok := strings.CutPrefix(message.Subject, prefix)
-		if !ok || key == "" {
-			return Manifest{}, fmt.Errorf("kvrecords: %s sequence %d is stored under %q, which is no key of %s", stream, seq, message.Subject, bucket)
-		}
-		headers, err := parseBlock(message.Header)
-		if err != nil {
-			return Manifest{}, fmt.Errorf("kvrecords: %s sequence %d: %w", stream, seq, err)
-		}
-		line, err := json.Marshal(Record{Seq: seq, Subject: message.Subject, Key: key, Time: message.Time, Headers: headers, Data: message.Data})
-		if err != nil {
-			return Manifest{}, fmt.Errorf("kvrecords: %s sequence %d: %w", stream, seq, err)
-		}
-		records.Write(line)
-		records.WriteByte('\n')
-		manifest.Records++
+	return info.State.FirstSeq, info.State.LastSeq, nil
+}
+
+// Write takes the copy of bucket's stream through nc into dir, which must not exist yet, and signs
+// it with key, the operator's hold signing key. It reads the stream's info, asks STREAM.MSG.GET for
+// every sequence from first_seq to last_seq in order, then reads the info again and walks on to
+// the new last_seq, until a pass ends at the last_seq it began with, within the walk's bounds. A
+// sequence answered 10037, no message found, is left out, and a message whose subject is no key of
+// the bucket is listed in the manifest's Foreign and has no record; any other error, or a walk past
+// its bounds, stops the walk, and nothing is written. The files are written into a directory of
+// their own beside dir and moved to dir whole.
+func Write(ctx context.Context, nc *nats.Conn, bucket, dir string, key ed25519.PrivateKey) (Manifest, error) {
+	if len(key) != ed25519.PrivateKeySize {
+		return Manifest{}, fmt.Errorf("kvrecords: the signing key holds %d bytes, not an Ed25519 private key's %d", len(key), ed25519.PrivateKeySize)
 	}
-	recordsSum := sha256.Sum256(records.Bytes())
+	if _, err := os.Lstat(dir); !errors.Is(err, fs.ErrNotExist) {
+		return Manifest{}, fmt.Errorf("kvrecords: %s exists already, or cannot be read (%v); a copy is written into a new directory", dir, err)
+	}
+	stream := "KV_" + bucket
+	first, last, err := streamState(ctx, nc, stream)
+	if err != nil {
+		return Manifest{}, err
+	}
+	manifest := Manifest{Format: Format, Bucket: bucket, Stream: stream, TakenAt: time.Now().UTC(), FirstSeq: first, LastSeq: last,
+		Foreign: []ForeignMessage{}}
+	records, err := walk(ctx, nc, &manifest)
+	if err != nil {
+		return Manifest{}, err
+	}
+	recordsSum := sha256.Sum256(records)
 	manifest.RecordsSHA256 = hex.EncodeToString(recordsSum[:])
 	manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
@@ -381,6 +420,10 @@ func Write(ctx context.Context, nc *nats.Conn, bucket, dir string) (Manifest, er
 	manifestJSON = append(manifestJSON, '\n')
 	manifestSum := sha256.Sum256(manifestJSON)
 	sums := fmt.Sprintf("%s  %s\n%s  %s\n", hex.EncodeToString(manifestSum[:]), ManifestFile, manifest.RecordsSHA256, RecordsFile)
+	sig, err := signedrecord.Sign(key, signedrecord.RecordsManifest(manifestJSON))
+	if err != nil {
+		return Manifest{}, fmt.Errorf("kvrecords: sign the manifest: %w", err)
+	}
 
 	staging, err := os.MkdirTemp(filepath.Dir(dir), ".kvrecords-")
 	if err != nil {
@@ -390,7 +433,7 @@ func Write(ctx context.Context, nc *nats.Conn, bucket, dir string) (Manifest, er
 	for _, file := range []struct {
 		name string
 		data []byte
-	}{{RecordsFile, records.Bytes()}, {ManifestFile, manifestJSON}, {SumsFile, []byte(sums)}} {
+	}{{RecordsFile, records}, {ManifestFile, manifestJSON}, {SumsFile, []byte(sums)}, {SignatureFile, []byte(sig + "\n")}} {
 		if err := os.WriteFile(filepath.Join(staging, file.name), file.data, 0o600); err != nil {
 			return Manifest{}, fmt.Errorf("kvrecords: write %s: %w", file.name, err)
 		}
@@ -405,14 +448,90 @@ func Write(ctx context.Context, nc *nats.Conn, bucket, dir string) (Manifest, er
 	return manifest, nil
 }
 
-// Read reads and checks the copy in dir, refusing, naming what failed: a missing file; a
-// SHA256SUMS line that does not match its file; a format other than Format; a record count or
-// records sum the manifest gives that disagrees with records.jsonl; a sequence that does not
-// increase or falls outside first_seq..last_seq; a subject that is not one of the manifest's
-// bucket's keys, or whose key disagrees with the record's key; and data that is not base64.
-func Read(dir string) (Manifest, []Record, error) {
+// walk is records.jsonl's bytes for manifest's stream, walked from its FirstSeq to the last_seq
+// the walk ends at, which it writes into manifest.LastSeq with the number of records.
+func walk(ctx context.Context, nc *nats.Conn, manifest *Manifest) ([]byte, error) {
+	stream := manifest.Stream
+	prefix := "$KV." + manifest.Bucket + "."
+	var records bytes.Buffer
+	// A stream that never stored a message has last_seq 0, and sequences start at 1.
+	next := max(manifest.FirstSeq, 1)
+	var caughtUp time.Time
+	for pass := 1; ; pass++ {
+		for ; next <= manifest.LastSeq; next++ {
+			body, _ := json.Marshal(map[string]uint64{"seq": next})
+			var got struct {
+				Message struct {
+					Subject string    `json:"subject"`
+					Seq     uint64    `json:"seq"`
+					Header  []byte    `json:"hdrs"`
+					Data    []byte    `json:"data"`
+					Time    time.Time `json:"time"`
+				} `json:"message"`
+			}
+			refused, err := request(ctx, nc, "$JS.API.STREAM.MSG.GET."+stream, body, &got)
+			if err != nil {
+				return nil, err
+			}
+			if refused != nil {
+				if refused.ErrCode == noMessageFound {
+					continue
+				}
+				return nil, fmt.Errorf("kvrecords: %s sequence %d: %d %s", stream, next, refused.ErrCode, refused.Description)
+			}
+			message := got.Message
+			if message.Seq != next {
+				return nil, fmt.Errorf("kvrecords: %s sequence %d answered sequence %d", stream, next, message.Seq)
+			}
+			key, ok := strings.CutPrefix(message.Subject, prefix)
+			if !ok || key == "" {
+				manifest.Foreign = append(manifest.Foreign, ForeignMessage{Seq: next, Subject: message.Subject})
+				continue
+			}
+			headers, err := parseBlock(message.Header)
+			if err != nil {
+				return nil, fmt.Errorf("kvrecords: %s sequence %d: %w", stream, next, err)
+			}
+			encoded, err := encodeLine(Record{Seq: next, Subject: message.Subject, Key: key, Time: message.Time, Headers: headers, Data: message.Data})
+			if err != nil {
+				return nil, fmt.Errorf("kvrecords: %s sequence %d: %w", stream, next, err)
+			}
+			records.Write(encoded)
+			records.WriteByte('\n')
+			manifest.Records++
+		}
+		_, last, err := streamState(ctx, nc, stream)
+		if err != nil {
+			return nil, err
+		}
+		if last <= manifest.LastSeq {
+			return records.Bytes(), nil
+		}
+		if pass == 1 {
+			caughtUp = time.Now()
+		}
+		if pass >= maxPasses {
+			return nil, fmt.Errorf("kvrecords: %s's last_seq still moved after %d passes, the walk's bound (from %d to %d): the bucket is written faster than it is walked",
+				stream, maxPasses, manifest.LastSeq, last)
+		}
+		if spent := time.Since(caughtUp); spent > maxCatchUp {
+			return nil, fmt.Errorf("kvrecords: %s's last_seq still moved after %s of passes past the first, the walk's bound of %s (from %d to %d): the bucket is written faster than it is walked",
+				stream, spent.Round(time.Second), maxCatchUp, manifest.LastSeq, last)
+		}
+		manifest.LastSeq = last
+	}
+}
+
+// Read reads and checks the copy in dir against keys, the operator's public hold keys, refusing,
+// naming what failed: a missing file; a SHA256SUMS line that does not match its file; a signature
+// no key of keys verifies over the manifest; a format other than Format; a stream other than the
+// bucket's, KV_<bucket>; a record count or records sum the manifest gives that disagrees with
+// records.jsonl; a sequence that does not increase or falls outside first_seq..last_seq; a subject
+// that is not one of the manifest's bucket's keys, or whose key disagrees with the record's key; an
+// empty key; and data that is not base64.
+func Read(dir string, keys []ed25519.PublicKey) (Manifest, []Record, error) {
 	files := map[string][]byte{}
-	for _, name := range []string{SumsFile, ManifestFile, RecordsFile} {
+	for _, name := range []string{SumsFile, ManifestFile, RecordsFile, SignatureFile} {
 		data, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil {
 			return Manifest{}, nil, fmt.Errorf("kvrecords: read %s: %w", name, err)
@@ -422,12 +541,19 @@ func Read(dir string) (Manifest, []Record, error) {
 	if err := checkSums(files); err != nil {
 		return Manifest{}, nil, err
 	}
+	sig := strings.TrimSuffix(string(files[SignatureFile]), "\n")
+	if err := signedrecord.Verify(keys, sig, signedrecord.RecordsManifest(files[ManifestFile])); err != nil {
+		return Manifest{}, nil, fmt.Errorf("kvrecords: %s does not verify %s with any of the %d operator keys: %w", SignatureFile, ManifestFile, len(keys), err)
+	}
 	var manifest Manifest
 	if err := json.Unmarshal(files[ManifestFile], &manifest); err != nil {
 		return Manifest{}, nil, fmt.Errorf("kvrecords: %s: %w", ManifestFile, err)
 	}
 	if manifest.Format != Format {
 		return Manifest{}, nil, fmt.Errorf("kvrecords: %s names the format %q, not %q", ManifestFile, manifest.Format, Format)
+	}
+	if manifest.Bucket == "" || manifest.Stream != "KV_"+manifest.Bucket {
+		return Manifest{}, nil, fmt.Errorf("kvrecords: %s names the stream %q, not %q, the stream of the bucket %q", ManifestFile, manifest.Stream, "KV_"+manifest.Bucket, manifest.Bucket)
 	}
 	recordsSum := sha256.Sum256(files[RecordsFile])
 	if got := hex.EncodeToString(recordsSum[:]); got != manifest.RecordsSHA256 {
@@ -474,7 +600,7 @@ func readRecords(data []byte, manifest Manifest) ([]Record, error) {
 	var records []Record
 	var last uint64
 	reader := bufio.NewReader(bytes.NewReader(data))
-	for line := 1; ; line++ {
+	for number := 1; ; number++ {
 		raw, err := reader.ReadBytes('\n')
 		if errors.Is(err, io.EOF) {
 			return records, nil
@@ -482,34 +608,22 @@ func readRecords(data []byte, manifest Manifest) ([]Record, error) {
 		if err != nil {
 			return nil, err
 		}
-		var entry recordJSON
-		if err := json.Unmarshal(raw, &entry); err != nil {
-			return nil, fmt.Errorf("kvrecords: %s line %d: %w", RecordsFile, line, err)
+		record, err := decodeLine(raw)
+		if err != nil {
+			return nil, fmt.Errorf("kvrecords: %s line %d: %w", RecordsFile, number, err)
 		}
-		if entry.Seq <= last || entry.Seq < manifest.FirstSeq || entry.Seq > manifest.LastSeq {
+		if record.Seq <= last || record.Seq < manifest.FirstSeq || record.Seq > manifest.LastSeq {
 			return nil, fmt.Errorf("kvrecords: %s line %d holds sequence %d, after %d, outside %d..%d or not increasing",
-				RecordsFile, line, entry.Seq, last, manifest.FirstSeq, manifest.LastSeq)
+				RecordsFile, number, record.Seq, last, manifest.FirstSeq, manifest.LastSeq)
 		}
-		last = entry.Seq
-		key, ok := strings.CutPrefix(entry.Subject, prefix)
-		if !ok || key != entry.Key {
-			return nil, fmt.Errorf("kvrecords: %s line %d's subject %q is not the key %q of %s", RecordsFile, line, entry.Subject, entry.Key, manifest.Bucket)
+		last = record.Seq
+		if record.Key == "" {
+			return nil, fmt.Errorf("kvrecords: %s line %d holds an empty key, which no stored message has", RecordsFile, number)
 		}
-		stored, err := time.Parse(time.RFC3339Nano, entry.Time)
-		if err != nil {
-			return nil, fmt.Errorf("kvrecords: %s line %d's time: %w", RecordsFile, line, err)
+		key, ok := strings.CutPrefix(record.Subject, prefix)
+		if !ok || key != record.Key {
+			return nil, fmt.Errorf("kvrecords: %s line %d's subject %q is not the key %q of %s", RecordsFile, number, record.Subject, record.Key, manifest.Bucket)
 		}
-		var headers Headers
-		if err := headers.UnmarshalJSON(entry.Headers); err != nil {
-			return nil, fmt.Errorf("kvrecords: %s line %d: %w", RecordsFile, line, err)
-		}
-		if entry.Data == nil {
-			return nil, fmt.Errorf("kvrecords: %s line %d holds no data", RecordsFile, line)
-		}
-		payload, err := base64.StdEncoding.DecodeString(*entry.Data)
-		if err != nil {
-			return nil, fmt.Errorf("kvrecords: %s line %d's data is not base64: %w", RecordsFile, line, err)
-		}
-		records = append(records, Record{Seq: entry.Seq, Subject: entry.Subject, Key: key, Time: stored, Headers: headers, Data: payload})
+		records = append(records, record)
 	}
 }

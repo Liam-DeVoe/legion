@@ -83,10 +83,10 @@ func TestEachGrantMatchesTheSetItReplaces(t *testing.T) {
 	require.Equal(t, base.DispatchDurables, natsgrant.DispatchDurables())
 }
 
-// Measure is the measurement job's grant as the deployment repository deploys it
-// (envoy-cluster/hub.go, hubMeasurePublish and hubMeasureSubscribe, once the measurement user
-// configures no stream): eight JetStream reads and its own cutover inbox. The copy there goes when
-// the job moves to the auth service, and this test with it.
+// Measure is the measurement user's grant as the deployment renders it once its stream calls and
+// envoy-measure.> are removed and its cutover inbox is added, which is not yet deployed: eight
+// JetStream reads and its own cutover inbox. The copy there goes when the job moves to the auth
+// service, and this test with it.
 func TestMeasureMatchesTheDeployedList(t *testing.T) {
 	var deployed set
 	readJSON(t, "testdata/deployment-measure-grant.json", &deployed)
@@ -312,7 +312,7 @@ func operatorHeld() []string {
 // entry and in order, so a subject added to any phase, or a phase that grants another's entry, fails
 // here naming it. Every operator connection subscribes its own inbox prefix alone.
 func TestOperatorIsExactly(t *testing.T) {
-	inbox := []string{"_INBOX_envoy_operator.>"}
+	inbox := []string{"_INBOX_envoy._operator.>"}
 	for phase, want := range map[natsgrant.OperatorPhase][]string{
 		natsgrant.OperatorPhaseReleased: operatorReleased(),
 		natsgrant.OperatorPhasePrepare:  operatorPrepare(),
@@ -333,8 +333,21 @@ func TestOperatorIsExactly(t *testing.T) {
 		Publish:   []string{"_ENVOY_HOLD_PROBE.none"},
 		Subscribe: []string{"_ENVOY_HOLD_PROBE.none"},
 	}, natsgrant.HoldProbe())
-	require.Equal(t, "_INBOX_envoy_operator", natsgrant.OperatorInbox)
+	require.Equal(t, "_INBOX_envoy._operator", natsgrant.OperatorInbox)
 	require.Equal(t, "ENVOY_HOLD_BARRIER", natsgrant.HoldBarrierStream)
+}
+
+// The operator's inbox prefix sits under the one reply root, "_INBOX_envoy", as a token of its
+// own, so a render that moves JetStream into an account of its own and exports only the reply
+// root reaches the operator's replies through that one export. It fails when the operator's prefix
+// leaves the root, as "_INBOX_envoy_operator" did, which shares the root's characters but not its
+// token.
+func TestTheOperatorInboxIsUnderTheReplyRoot(t *testing.T) {
+	require.Equal(t, "_INBOX_envoy", natsgrant.ReplyRoot)
+	require.True(t, strings.HasPrefix(natsgrant.OperatorInbox, natsgrant.ReplyRoot+"."),
+		"OperatorInbox %q is not under the reply root %q", natsgrant.OperatorInbox, natsgrant.ReplyRoot)
+	require.True(t, natsserver.SubjectMatchesFilter(natsgrant.OperatorInbox+".x", natsgrant.ReplyRoot+".>"),
+		"the reply root's export %s.> does not reach an operator reply", natsgrant.ReplyRoot)
 }
 
 // No grant the package builds names the retired hold bucket, KV_envoy_maintenance or its keys:
@@ -349,25 +362,29 @@ func TestNoGrantNamesTheRetiredHoldBucket(t *testing.T) {
 	}
 }
 
-// No grant the package builds subscribes a subject a KV bucket's key can have, by NATS's own
-// wildcard rules (nats-server's SubjectMatchesFilter), so a $KV.>, a *.> or a > is caught as a
-// literal is. A push consumer of ENVOY_NOTIFICATIONS, which the prepare and held operator can
-// create, becomes active only while some client subscribes exactly its deliver subject
-// (nats-server v2.15.1 server/sublist.go:186-193), and then delivers each message under its own
-// subject to every matching subscriber (server/stream.go:8620-8621), the bucket's stream, which
+// No grant the package builds subscribes a subject any KV bucket's key can have: each subscribe
+// entry is held to $KV.> by NATS's own rule for two subjects that one literal subject could both
+// match (nats-server's SubjectsCollide), so a $KV.<bucket>.> of any bucket, a $KV.*.>, a *.> or a
+// > is caught as a literal key is. A push consumer of ENVOY_NOTIFICATIONS, which the prepare and
+// held operator can create, becomes active only while some client subscribes exactly its deliver
+// subject (nats-server v2.15.1 server/sublist.go:186-193), and then delivers each message under its
+// own subject to every matching subscriber (server/stream.go:8620-8621), the bucket's stream, which
 // captures $KV.<bucket>.>, among them: measured on one server, a notification was stored inside
 // KV_envoy_sessions. A subscribe of a key subject in any grant would be that client.
 func TestNoGrantSubscribesAKeySubject(t *testing.T) {
-	const key = "$KV.envoy_sessions.k"
+	const keys = "$KV.>"
 	for name, grant := range grantTable(t) {
 		for _, entry := range grant.Subscribe {
 			fields := strings.Fields(entry)
 			require.NotEmpty(t, fields, "%s subscribes a blank entry", name)
-			require.False(t, natsserver.SubjectMatchesFilter(key, fields[0]),
-				"%s subscribes %q, which matches the key subject %s", name, entry, key)
+			require.False(t, natsserver.SubjectsCollide(fields[0], keys),
+				"%s subscribes %q, which a key subject of some bucket (%s) matches", name, entry, keys)
 		}
 	}
-	for _, pattern := range []string{"$KV.>", "$KV.*.>", ">", "*.>", "$KV.envoy_sessions.*", key} {
-		require.True(t, natsserver.SubjectMatchesFilter(key, pattern), "the matcher misses %q", pattern)
+	for _, pattern := range []string{"$KV.envoy_roles.>", "$KV.envoy_sessions.k", "$KV.*.>", ">", "*.>", "$KV.envoy_sessions.*"} {
+		require.True(t, natsserver.SubjectsCollide(pattern, keys), "the rule misses %q", pattern)
+	}
+	for _, pattern := range []string{"_INBOX.>", "notifications.>", "$KV", "KV.envoy_roles.>"} {
+		require.False(t, natsserver.SubjectsCollide(pattern, keys), "the rule refuses %q, which no key subject matches", pattern)
 	}
 }

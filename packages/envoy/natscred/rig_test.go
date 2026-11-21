@@ -69,8 +69,9 @@ func newRig(t *testing.T, introspect func(context.Context, string) (oauthwire.In
 
 // newOperatorRig starts a callout hub and the auth service in front of it, deciding services with
 // serviceToken, the one service listed being the operator on operatorAccount, and the writer
-// hold's row reading held: HoldRead answers a row signed with a key of the rig's own, whose public
-// half is HoldKeys, so the operator is answered with natsgrant.Operator(OperatorPhaseHeld).
+// hold's row reading held: the hold view's read answers a row signed with a key of the rig's own,
+// whose public half it verifies against, so the operator is answered with
+// natsgrant.Operator(OperatorPhaseHeld).
 func newOperatorRig(t *testing.T, serviceToken func(context.Context, string) (string, bool, time.Time, time.Time, error)) *rig {
 	t.Helper()
 	public, private, err := ed25519.GenerateKey(rand.Reader)
@@ -82,10 +83,10 @@ func newOperatorRig(t *testing.T, serviceToken func(context.Context, string) (st
 	sig, err := signedrecord.Sign(private, signedrecord.HoldRow(1, held, "hold-1", signedAt))
 	require.NoError(t, err)
 	row := natshold.Reading{Gen: 1, Phase: held, HoldID: "hold-1", SignedAt: signedAt, Sig: sig}
+	read := func(context.Context) (natshold.Reading, bool, error) { return row, true, nil }
 	return startRig(t, "operator/-/*="+operatorAccount, natscallout.Deps{
 		ServiceToken: serviceToken,
-		HoldRead:     func(context.Context) (natshold.Reading, bool, error) { return row, true, nil },
-		HoldKeys:     []ed25519.PublicKey{public},
+		Hold:         natscallout.NewHoldView(read, []ed25519.PublicKey{public}, nil),
 	})
 }
 

@@ -42,10 +42,11 @@ var (
 
 // The tags each kind's lines open with.
 const (
-	holdRowTag      = "nats-hold-v1"
-	recordTag       = "nats-hold-record-v1"
-	recordDeleteTag = "nats-hold-record-delete-v1"
-	cutoverTag      = "nats-cutover-v1"
+	holdRowTag         = "nats-hold-v1"
+	recordTag          = "nats-hold-record-v1"
+	recordDeleteTag    = "nats-hold-record-delete-v1"
+	cutoverTag         = "nats-cutover-v1"
+	recordsManifestTag = "envoy-kv-records-manifest-v1"
 )
 
 // HoldRow is the hold row's lines: its gen, phase, hold id and the time it was signed, which the
@@ -77,6 +78,15 @@ func RecordDelete(holdID, kind, key string, gen uint64) []string {
 // under and the hold row's gen at that write.
 func Cutover(family, state, holdID string, holdGen uint64) []string {
 	return []string{cutoverTag, family, state, holdID, strconv.FormatUint(holdGen, 10)}
+}
+
+// RecordsManifest is the lines of a records-only copy's manifest (internal/bus/kvrecords): the hex
+// SHA-256 of the manifest file's bytes as written. The manifest names the records file's own
+// SHA-256, so one signature covers the whole copy, and a copy rewritten so that its three files
+// agree with each other still does not verify.
+func RecordsManifest(manifest []byte) []string {
+	sum := sha256.Sum256(manifest)
+	return []string{recordsManifestTag, hex.EncodeToString(sum[:])}
 }
 
 // Canonical is value's canonical JSON: decoded, then encoded with its object keys sorted, no

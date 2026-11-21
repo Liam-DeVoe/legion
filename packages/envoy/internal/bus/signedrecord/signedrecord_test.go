@@ -129,10 +129,11 @@ func TestAFieldHoldingALineBreakIsRefused(t *testing.T) {
 // another kind's.
 func TestEachKindOpensWithItsTag(t *testing.T) {
 	for want, lines := range map[string][]string{
-		"nats-hold-v1":               signedrecord.HoldRow(1, "released", "h", time.Unix(0, 0)),
-		"nats-hold-record-v1":        signedrecord.Record("h", "done", "hold", 1, []byte(`{}`)),
-		"nats-hold-record-delete-v1": signedrecord.RecordDelete("h", "cohort", "cohort", 1),
-		"nats-cutover-v1":            signedrecord.Cutover("session", "done", "h", 1),
+		"nats-hold-v1":                 signedrecord.HoldRow(1, "released", "h", time.Unix(0, 0)),
+		"nats-hold-record-v1":          signedrecord.Record("h", "done", "hold", 1, []byte(`{}`)),
+		"nats-hold-record-delete-v1":   signedrecord.RecordDelete("h", "cohort", "cohort", 1),
+		"nats-cutover-v1":              signedrecord.Cutover("session", "done", "h", 1),
+		"envoy-kv-records-manifest-v1": signedrecord.RecordsManifest([]byte("{}\n")),
 	} {
 		if lines[0] != want {
 			t.Errorf("lines open with %q, want %q", lines[0], want)
