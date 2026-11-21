@@ -352,15 +352,16 @@ that case the daemon writes no `jj` and removes one that an earlier boot wrote.
 runs every command but a `jj git push` through that `jj` unchanged.
 Before a `jj git push`, it runs the push step.
 The step decides from reads with `--ignore-working-copy`.
-Where it changes nothing of the push, no commit and no word, or where the push itself carries
-`--ignore-working-copy`, every jj command of the step runs with `--ignore-working-copy`, so it
-takes no snapshot and adds no operation; a role's own `--ignore-working-copy` goes to the real
-push alone.
+Where its first run finds nothing of the push to change, no commit and no word, or where the push
+itself carries `--ignore-working-copy`, every jj command of the step runs with
+`--ignore-working-copy`, so it takes no snapshot, and where it found nothing to change it adds no
+operation; a role's own `--ignore-working-copy` goes to the real push alone.
 Otherwise it first takes the one snapshot of the working copy that the push would take itself,
-with the push's own `-R` and `--config` arguments, and passes on what that snapshot prints, then
-reads what the push sends again and acts on no commit id it read before the snapshot: every id it
-reads then, `@` and each descendant of `@` included, stays valid through the push, whose own
-snapshot finds nothing new unless another process wrote the working copy in between.
+with the push's own `-R`, `--config` and `--quiet` arguments, and passes on what that snapshot
+prints, then reads what the push sends again and acts on no commit id it read before the
+snapshot: every id it reads then, `@` and each descendant of `@` included, stays valid through
+the push, whose own snapshot finds nothing new unless another process wrote the working copy in
+between.
 Each of its other commands runs with `--ignore-working-copy`.
 The daemon tells every workflow role's pane `LEGION_ROLE_IDENTITIES`, the git identity of each
 role of the issue as one JSON object (`docs/kubernetes.md`, daemon API contract 209).
@@ -401,7 +402,8 @@ already, so none passes Linux's 131,072-byte limit on one argument.
 Only where the push would then pass Linux's 2,097,152-byte limit on a command's arguments and
 environment together, with each revision argument counted at the larger of its own word and the
 ids of its whole set, does the step decide, before any rewrite other than the fill of an empty
-author that a dry run refused, and before its snapshot, to set no other author:
+author that a dry run refused, and, where no such fill ran, before its snapshot, to set no other
+author:
 it prints one `legion jj: could not set the author:` line that names the argument, the count and
 the limit, and the push runs as written, but where that fill ran, after which each revision
 argument is held to its set as above.
