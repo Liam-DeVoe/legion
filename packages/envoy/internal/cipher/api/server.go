@@ -64,8 +64,8 @@ type Deps struct {
 	// token verifies 403 not_listener, as a broker that runs no NATS auth service does.
 	PrivacyReaders PrivacyReaders
 	// ProjectPrivacy is Dispatch's list of every private project, read afresh on each call
-	// (projectaccess.Client.PrivateProjectsFresh), which GET /v1/project-privacy answers a
-	// listener. Nil is a broker with no BROKER_PROJECT_ACCESS_URL, which answers that route 502
+	// (projectaccess.Client.PrivateProjectsFresh), which GET /v1/project-privacy answers its
+	// readers. Nil is a broker with no BROKER_PROJECT_ACCESS_URL, which answers that route 502
 	// dispatch_unavailable.
 	ProjectPrivacy FreshPrivateProjects
 	// PodRegistrars is BROKER_POD_REGISTRARS, the registrar and pod account pairs POST
@@ -389,11 +389,11 @@ func (s *server) authenticate(w http.ResponseWriter, r *http.Request, route apiR
 
 // answerCaller is the caller class and identity the answer's record names for a request
 // authenticate let through on route (answer.Recorder.NoteCaller): the launcher credential, the
-// enrollment, the listed account, the service and the account it presented, the privacy reader
-// as <kind>/<machine id>, or the signed-in person. A route that takes no credential is public,
-// and a route of the approval page reached with no live sign-in unauthenticated; a handler that
-// authenticates its own caller notes its class over this one (tokenLogin, and rereadSecret for a
-// session's proof).
+// enrollment, the listed account, the service and the account it presented, the listener or the
+// privacy measurement as <kind>/<machine id>, or the signed-in person. A route that takes no
+// credential is public, and a route of the approval page reached with no live sign-in
+// unauthenticated; a handler that authenticates its own caller notes its class over this one
+// (tokenLogin, and rereadSecret for a session's proof).
 func (c caller) answerCaller(route routeHandler) (class, id string) {
 	switch route.auth {
 	case authLauncher:
@@ -405,7 +405,10 @@ func (c caller) answerCaller(route routeHandler) (class, id string) {
 	case authService:
 		return answer.CallerService, serviceIdentity(c.service)
 	case authListener:
-		return answer.CallerListener, c.listener.name
+		if c.listener.Measurement {
+			return answer.CallerPrivacyMeasure, c.listener.Name
+		}
+		return answer.CallerListener, c.listener.Name
 	case authSignIn:
 		if c.signIn.Login == "" {
 			return answer.CallerUnauthenticated, ""
@@ -488,13 +491,13 @@ func (s *server) accountCaller(w http.ResponseWriter, r *http.Request) (caller, 
 	return caller{account: listed}, true
 }
 
-// listenerCaller authenticates a listener's own identity token for authenticate, the credential
-// listenerAuth's routes take: platformAccount verifies it, with its refusals, as it does
-// accountCaller's, and the account it names must then be one Deps.PrivacyReaders holds:
-// natscallout's choice from BROKER_NATS_SERVICES of the entries that read project privacy. Any
-// other account, listed under another kind or scope or not at all, is 403 not_listener: the
-// credential is sound, and it is not a reader's. It answers the caller with the reader's name and
-// account.
+// listenerCaller authenticates the identity token of a listener, or of the privacy measurement,
+// for authenticate, the credential listenerAuth's routes take: platformAccount verifies it, with
+// its refusals, as it does accountCaller's, and the account it names must then be one
+// Deps.PrivacyReaders holds: natscallout's choice from BROKER_NATS_SERVICES of the entries that
+// read project privacy. Any other account, listed under another kind or scope or not at all, is
+// 403 not_listener: the credential is sound, and it is not a reader's. It answers the caller with
+// the reader and its account.
 func (s *server) listenerCaller(w http.ResponseWriter, r *http.Request) (caller, bool) {
 	account, google, ok := s.platformAccount(w, r)
 	if !ok {
@@ -504,12 +507,12 @@ func (s *server) listenerCaller(w http.ResponseWriter, r *http.Request) (caller,
 	if google {
 		readers = s.deps.PrivacyReaders.Google
 	}
-	name, reads := readers[account]
+	reader, reads := readers[account]
 	if !reads {
-		writeError(w, http.StatusForbidden, "not_listener", "BROKER_NATS_SERVICES binds this account to no listener that reads which projects are private")
+		writeError(w, http.StatusForbidden, "not_listener", "BROKER_NATS_SERVICES binds this account to no listener or privacy measurement with the whole grant, the readers of which projects are private")
 		return caller{}, false
 	}
-	return caller{listener: privacyReader{name: name, account: account}}, true
+	return caller{listener: privacyReader{PrivacyReader: reader, account: account}}, true
 }
 
 // platformAccount verifies a caller's own platform identity token, r's bearer, for accountCaller

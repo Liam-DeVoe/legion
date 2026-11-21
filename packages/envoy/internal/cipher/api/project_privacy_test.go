@@ -342,6 +342,25 @@ func TestOnlyAListenerReadsProjectPrivacy(t *testing.T) {
 	}
 }
 
+// TestTheMeasurementIsCountedApartFromListeners: a listener's read of the route is counted in
+// broker_answers_total under caller_class="listener", and the privacy measurement's under
+// caller_class="privacy-measure", so a measurement run's reads stay out of the listeners' series.
+func TestTheMeasurementIsCountedApartFromListeners(t *testing.T) {
+	stub := newPrivacyStub(t, answerWith(http.StatusOK, `{"projects":[]}`))
+	g := newPrivacyServer(t, dispatchAt(stub, nil))
+	const listened, measured = `outcome="served",code="HTTP_200",caller_class="listener"`, `outcome="served",code="HTTP_200",caller_class="privacy-measure"`
+	listenersBefore, measurementsBefore := g.answersCounted(t, listened), g.answersCounted(t, measured)
+	if got := g.privacy(t, g.accountToken(t, privacyListenerAccount, "", time.Hour)); got.status != http.StatusOK {
+		t.Fatalf("the listener's call = %d %s, want 200", got.status, got.body)
+	}
+	if got := g.privacy(t, g.accountToken(t, privacyMeasureAccount, "", time.Hour)); got.status != http.StatusOK {
+		t.Fatalf("the measurement's call = %d %s, want 200", got.status, got.body)
+	}
+	if listeners, measurements := g.answersCounted(t, listened)-listenersBefore, g.answersCounted(t, measured)-measurementsBefore; listeners != 1 || measurements != 1 {
+		t.Fatalf("a listener's call and the measurement's were counted %d under caller_class=listener and %d under caller_class=privacy-measure, want 1 and 1", listeners, measurements)
+	}
+}
+
 // TestOnlyTheReadersNatscalloutNamesReadProjectPrivacy: for every entry of the rig's
 // BROKER_NATS_SERVICES, every kind the auth service admits and a listener of either scope, the
 // route answers 200 exactly when natscallout decides the entry reads project privacy (its kind's

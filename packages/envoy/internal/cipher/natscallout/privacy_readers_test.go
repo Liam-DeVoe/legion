@@ -2,12 +2,13 @@ package natscallout
 
 import (
 	"go/ast"
+	"go/constant"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"maps"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -29,41 +30,48 @@ var privacyDecisions = map[Kind]bool{
 	KindPrivacyMeasure: true,
 }
 
-// declaredKinds is every Kind constant this package's own source declares, read from its non-test
-// files, so a kind added there is a kind this test sees.
+// declaredKinds is every constant of type Kind this package declares, by name, as the type checker
+// reads the package's own non-test files: a constant is one whatever way it is written (`X Kind =
+// "x"`, `X = Kind("x")`), so a kind added there is a kind this test sees. The package's imports are
+// not read: each resolves to an empty package and the checker's errors over them are dropped,
+// since Kind is a string type of this package and no constant of it depends on an import.
 func declaredKinds(t *testing.T) map[string]Kind {
 	t.Helper()
 	paths, err := filepath.Glob("*.go")
 	require.NoError(t, err)
 	files := token.NewFileSet()
-	kinds := map[string]Kind{}
+	var parsed []*ast.File
 	for _, path := range paths {
 		if strings.HasSuffix(path, "_test.go") {
 			continue
 		}
 		file, err := parser.ParseFile(files, path, nil, 0)
 		require.NoError(t, err)
-		for _, decl := range file.Decls {
-			gen, ok := decl.(*ast.GenDecl)
-			if !ok || gen.Tok != token.CONST {
-				continue
-			}
-			for _, spec := range gen.Specs {
-				value := spec.(*ast.ValueSpec)
-				if typ, ok := value.Type.(*ast.Ident); !ok || typ.Name != "Kind" {
-					continue
-				}
-				for i, ident := range value.Names {
-					literal, ok := value.Values[i].(*ast.BasicLit)
-					require.True(t, ok, "the Kind constant %s is no string literal", ident.Name)
-					text, err := strconv.Unquote(literal.Value)
-					require.NoError(t, err)
-					kinds[ident.Name] = Kind(text)
-				}
-			}
+		parsed = append(parsed, file)
+	}
+	config := types.Config{Importer: emptyImports{}, Error: func(error) {}}
+	pkg, _ := config.Check("natscallout", files, parsed, nil)
+	kind, ok := pkg.Scope().Lookup("Kind").(*types.TypeName)
+	require.True(t, ok, "the package declares no type Kind")
+	kinds := map[string]Kind{}
+	for _, name := range pkg.Scope().Names() {
+		value, ok := pkg.Scope().Lookup(name).(*types.Const)
+		if !ok || !types.Identical(value.Type(), kind.Type()) {
+			continue
 		}
+		require.Equal(t, constant.String, value.Val().Kind(), "the Kind constant %s has no string value", name)
+		kinds[name] = Kind(constant.StringVal(value.Val()))
 	}
 	return kinds
+}
+
+// emptyImports answers every import with an empty package, for declaredKinds.
+type emptyImports struct{}
+
+func (emptyImports) Import(path string) (*types.Package, error) {
+	pkg := types.NewPackage(path, filepath.Base(path))
+	pkg.MarkComplete()
+	return pkg, nil
 }
 
 // TestEveryKindHasAPrivacyDecision: every Kind constant the package declares has a row in
@@ -88,8 +96,8 @@ func TestEveryKindHasAPrivacyDecision(t *testing.T) {
 
 // TestOnlyWholeGrantReadersAreAnsweredTheRoute: PrivacyReaders keeps, from an entry of every kind
 // and a listener held to its exchange projects, exactly the whole-grant listener and the privacy
-// measurement, named as the auth service names its users; an account listed nowhere, a session
-// and a scoped listener are none.
+// measurement, each named by its entry and the measurement marked as one; an account listed
+// nowhere, a session and a scoped listener are none.
 func TestOnlyWholeGrantReadersAreAnsweredTheRoute(t *testing.T) {
 	services, err := ParseServices("listener/example-hub/*=" + listenerAccount +
 		" listener/example-scoped/-=system:serviceaccount:example-ns:example-scoped-listener" +
@@ -99,10 +107,10 @@ func TestOnlyWholeGrantReadersAreAnsweredTheRoute(t *testing.T) {
 		" privacy-measure/project-privacy-measure/*=" + privacyMeasureAccount)
 	require.NoError(t, err)
 	require.Equal(t, api.PrivacyReaders{
-		K8s: map[string]string{
-			listenerAccount:       "listener/example-hub",
-			privacyMeasureAccount: "privacy-measure/project-privacy-measure",
+		K8s: map[string]api.PrivacyReader{
+			listenerAccount:       {Name: "listener/example-hub"},
+			privacyMeasureAccount: {Name: "privacy-measure/project-privacy-measure", Measurement: true},
 		},
-		Google: map[string]string{},
+		Google: map[string]api.PrivacyReader{},
 	}, PrivacyReaders(services))
 }

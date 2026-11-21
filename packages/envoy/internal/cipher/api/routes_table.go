@@ -229,16 +229,17 @@ func signInAuth(h func(*approval.Page, http.ResponseWriter, *http.Request, appro
 	}}
 }
 
-// listenerAuth is a route for an Envoy listener, calling the broker with its own platform identity
-// token: a Kubernetes ServiceAccount's projected token in the cluster, or a Google identity token on
-// a VM, verified as accountAuth's caller's token is and with the same refusals. Its account must be
-// one Deps.PrivacyReaders holds, the entries of BROKER_NATS_SERVICES natscallout decides read
-// project privacy (natscallout.Kind.ReadsProjectPrivacy, the one list of such kinds); any other
-// account, listed under another kind or scope, in another setting or in none, is 403 not_listener
+// listenerAuth is a route for an Envoy listener, and for the privacy measurement that times the
+// listener's read, calling the broker with its own platform identity token: a Kubernetes
+// ServiceAccount's projected token in the cluster, or a Google identity token on a VM, verified as
+// accountAuth's caller's token is and with the same refusals. Its account must be one
+// Deps.PrivacyReaders holds, the entries of BROKER_NATS_SERVICES natscallout decides read project
+// privacy (natscallout.Kind.ReadsProjectPrivacy, the one list of such kinds); any other account,
+// listed under another kind or scope, in another setting or in none, is 403 not_listener
 // (listenerCaller). It spends its source address's bucket first, as accountAuth's routes do.
 //
 // It is a class of its own because its list is another authority: BROKER_NATS_SERVICES already
-// says which accounts are listeners for the NATS auth service, and a listener is no caller
+// says which accounts are listeners and which run the privacy measurement, and neither is a caller
 // BROKER_API_ACCOUNTS names for this. The handler is given the reader's account, which its slots
 // are counted by; its answer is the same for every reader.
 func listenerAuth(h func(*server, http.ResponseWriter, *http.Request, string)) routeHandler {
@@ -247,9 +248,12 @@ func listenerAuth(h func(*server, http.ResponseWriter, *http.Request, string)) r
 	}}
 }
 
-// privacyReader is the listener whose identity token authenticated a listenerAuth route: its name
-// in the answer's record, <kind>/<machine id>, and its account.
-type privacyReader struct{ name, account string }
+// privacyReader is the listener or privacy measurement whose identity token authenticated a
+// listenerAuth route: its BROKER_NATS_SERVICES reader (PrivacyReader) and its account.
+type privacyReader struct {
+	PrivacyReader
+	account string
+}
 
 type apiRoute struct {
 	Method  string
@@ -466,11 +470,13 @@ func routes() []apiRoute {
 		// reaches: the review reads the broker's record and changes nothing in it.
 		{http.MethodGet, "/v1/grant-log", accountAuth(readsGrantLog, (*server).listGrantLog)},
 		// Answer a listener every private project as Dispatch answers it at this call, for the
-		// listener's privacy decision: each project's key, the Slack channel ids its owner named and
+		// listener's privacy decision, and the privacy measurement the same, which times that read
+		// on the listener's path: each project's key, the Slack channel ids its owner named and
 		// when that list last changed, in key order, and an empty list when no project is private.
-		// Only an account BROKER_NATS_SERVICES binds to a listener with the whole grant (*) is
-		// answered, the readers natscallout names (Kind.ReadsProjectPrivacy); any other caller
-		// whose identity token verifies is 403 not_listener, and Dispatch is not asked. Each call
+		// Only an account BROKER_NATS_SERVICES binds to a listener or a privacy measurement
+		// (privacy-measure) with the whole grant (*) is answered, the readers natscallout names
+		// (Kind.ReadsProjectPrivacy); any other caller whose identity token verifies is 403
+		// not_listener, and Dispatch is not asked. Each call
 		// asks Dispatch once, with no cache and no older answer to fall back on, and a read that
 		// fails in any way (no answer in time, a refusal, an answer it cannot read, a project
 		// without its channels) is 502 dispatch_unavailable, never a list; so is every call to a

@@ -19,8 +19,8 @@ type Kind string
 // The kinds of service the auth service admits, each answered with its grant of
 // natsgrant: Dispatch's, a listener's, a Legion daemon's and the measurement job's. The privacy
 // measurement (plan C's measurement of a listener's GET /v1/project-privacy) is a kind of entry
-// too, so the broker answers that read for its account, and it takes no NATS user
-// (Kind.TakesNATSUser).
+// too, so the broker answers that read for its account; it has no grant, so the auth service
+// answers it no NATS user (serviceGrant).
 const (
 	KindDispatch       Kind = "dispatch"
 	KindListener       Kind = "listener"
@@ -106,26 +106,24 @@ func (k Kind) ReadsProjectPrivacy() bool {
 	return false
 }
 
-// TakesNATSUser reports whether the auth service answers a connection of this kind with a NATS
-// user. The privacy measurement does not: it reads the broker's GET /v1/project-privacy alone,
-// so its entry admits that read and no connection to the hub.
-func (k Kind) TakesNATSUser() bool { return k != KindPrivacyMeasure }
-
 // PrivacyReaders is services as GET /v1/project-privacy reads them (api.PrivacyReaders): each
-// entry whose kind reads project privacy and whose grant is whole (*), by its account, named as
-// the auth service names its user, <kind>/<machine id>. An entry held to its exchange projects (-)
-// is none, since the route answers every private project and such an entry's grant reaches only
-// its own.
+// entry whose kind reads project privacy and whose grant is whole (*), by its account. Each is
+// named by its entry, <kind>/<machine id>, which for a listener is also the name of the NATS user
+// the auth service gives it (the privacy measurement takes none), and the privacy measurement's
+// reads are told apart from a listener's (api.PrivacyReader.Measurement). An entry held to its
+// exchange projects (-) is none, since the route answers every private project and such an
+// entry's grant reaches only its own.
 func PrivacyReaders(services []ServiceEntry) api.PrivacyReaders {
-	readers := api.PrivacyReaders{K8s: map[string]string{}, Google: map[string]string{}}
+	readers := api.PrivacyReaders{K8s: map[string]api.PrivacyReader{}, Google: map[string]api.PrivacyReader{}}
 	for _, entry := range services {
 		if !entry.AllProjects || !entry.Kind.ReadsProjectPrivacy() {
 			continue
 		}
+		reader := api.PrivacyReader{Name: entry.name(), Measurement: entry.Kind == KindPrivacyMeasure}
 		if entry.Google {
-			readers.Google[entry.Account] = entry.name()
+			readers.Google[entry.Account] = reader
 		} else {
-			readers.K8s[entry.Account] = entry.name()
+			readers.K8s[entry.Account] = reader
 		}
 	}
 	return readers

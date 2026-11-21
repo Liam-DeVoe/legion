@@ -16,15 +16,25 @@ import (
 )
 
 // PrivacyReaders are the accounts GET /v1/project-privacy answers, as natscallout.PrivacyReaders
-// reads them from BROKER_NATS_SERVICES: each one's name in the answer's record, <kind>/<machine
-// id>, by its account, among the Kubernetes accounts or the Google ones as the token it presents
-// is. Which entries are readers is natscallout's to decide (Kind.ReadsProjectPrivacy), and this
-// package keeps no list of its own.
+// reads them from BROKER_NATS_SERVICES, by account, among the Kubernetes accounts or the Google
+// ones as the token it presents is. Which entries are readers is natscallout's to decide
+// (Kind.ReadsProjectPrivacy), and this package keeps no list of its own.
 type PrivacyReaders struct {
-	// K8s maps each Kubernetes ServiceAccount subject that reads project privacy to its name.
-	K8s map[string]string
-	// Google maps each Google account address that reads project privacy to its name.
-	Google map[string]string
+	// K8s maps each Kubernetes ServiceAccount subject that reads project privacy to its reader.
+	K8s map[string]PrivacyReader
+	// Google maps each Google account address that reads project privacy to its reader.
+	Google map[string]PrivacyReader
+}
+
+// PrivacyReader is one account GET /v1/project-privacy answers.
+type PrivacyReader struct {
+	// Name is its BROKER_NATS_SERVICES entry's, <kind>/<machine id>, which the answer's record
+	// names it by.
+	Name string
+	// Measurement is whether it is the privacy measurement rather than a listener, so its reads
+	// are counted under a caller class of their own (answer.CallerPrivacyMeasure), apart from a
+	// listener's.
+	Measurement bool
 }
 
 // FreshPrivateProjects is the one read GET /v1/project-privacy makes of Dispatch: every private
@@ -102,7 +112,8 @@ func (p *privacyReads) give(account string) {
 }
 
 // projectPrivacy answers a listener every private project as Dispatch answers it to this call
-// (projectaccess.Client.PrivateProjectsFresh), in key order. A listener reads which projects are
+// (projectaccess.Client.PrivateProjectsFresh), in key order, and the privacy measurement, which
+// times that read on the listener's path, the same. A listener reads which projects are
 // private only through this route, so the rule is here: one fresh PrivateProjectsFresh read per
 // call, never PrivateProjects' cache, and never a list for a read that failed. The read keeps
 // nothing between calls, and any failure of it is 502 dispatch_unavailable, never a list: an empty
