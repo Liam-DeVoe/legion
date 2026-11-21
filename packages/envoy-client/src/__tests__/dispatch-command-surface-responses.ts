@@ -28,7 +28,7 @@ export function issueBody(key = ISSUE) {
     rank: "0|hzzzzz:",
     labels: ["infra"],
     parent: null,
-    blocked_by: [],
+    needs: [],
     advances: [
       { id: "ship-the-daemon", inherited: false },
       { id: "legion-first", inherited: true },

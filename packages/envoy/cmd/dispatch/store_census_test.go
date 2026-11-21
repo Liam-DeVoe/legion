@@ -1750,17 +1750,22 @@ func compareTheOldReadWithTheNew(t *testing.T, ctx context.Context, older, datab
 // answer of that read holds none of. path is where it is: the names from the answer down to the
 // object holding it, joined by '.', a name ending in "[]" standing for each element of the list it
 // names, and a bare "[]" for each element of a list answer. want is the one value it may hold
-// there, as the older build's object at that place implies it.
+// there, as the older build's object at that place implies it. replaces names the member of the
+// older build's object at that place this member stands in for and this build answers no longer;
+// it is taken out of the older build's object once want has read it, and this build answering it
+// fails by name.
 type censusAddedMember struct {
-	path string
-	want func(was map[string]any) any
+	path     string
+	want     func(was map[string]any) any
+	replaces string
 }
 
 // censusNeeds is the member this build adds to an issue, and to each issue a listing answers, at
-// at (model.Issue's and model.IssueSummary's Needs): the issues it waits on, which blocked_by
-// names too, one relation answered under both spellings.
+// at (model.Issue's and model.IssueSummary's Needs): the issues it waits on, which the older
+// build answered as blocked_by, the spelling this build answers no longer (R27 of
+// dispatch://INFRA-1098).
 func censusNeeds(at string) censusAddedMember {
-	return censusAddedMember{path: at + "needs", want: func(was map[string]any) any { return was["blocked_by"] }}
+	return censusAddedMember{path: at + "needs", want: func(was map[string]any) any { return was["blocked_by"] }, replaces: "blocked_by"}
 }
 
 // censusNoneYet is a member this build adds to an issue that names the far end of a tuple of the
@@ -1828,6 +1833,12 @@ func holdTheAddedMembers(t *testing.T, read string, was, is any, added []censusA
 		places := 0
 		censusPlaces(was, is, strings.Split(member.path, "."), "", func(old, now map[string]any, name, place string) {
 			places++
+			if member.replaces != "" {
+				if _, kept := now[member.replaces]; kept {
+					t.Errorf("GET %s answers %s on this build beside %s, which replaces it", read, member.replaces, place)
+				}
+				defer delete(old, member.replaces)
+			}
 			if _, answered := old[name]; answered {
 				return
 			}

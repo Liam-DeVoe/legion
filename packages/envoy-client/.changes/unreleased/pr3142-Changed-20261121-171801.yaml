@@ -1,0 +1,5 @@
+kind: Changed
+body: The issue commands send needs alone; the --blocked-by flag is unchanged.
+time: 2026-11-21T17:18:01.16291871Z
+custom:
+    Issue: pr3142

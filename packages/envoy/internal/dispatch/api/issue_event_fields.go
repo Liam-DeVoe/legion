@@ -40,8 +40,6 @@ func issueChangedFields(before, after model.Issue) []string {
 	add("repo", !stringPointersEqual(before.Repo, after.Repo) || !stringPointersEqual(before.ResolvedRepo, after.ResolvedRepo))
 	add("components", !issueComponentsEqual(before.Components, after.Components))
 	add("advances", !slices.Equal(before.Advances, after.Advances))
-	// The issue's waits under both spellings, one relation answered by both (model.Issue.Needs).
-	add("blocked_by", !slices.Equal(before.BlockedBy, after.BlockedBy))
 	add("needs", !slices.Equal(before.Needs, after.Needs))
 	add("duplicate_of", !stringPointersEqual(before.DuplicateOf, after.DuplicateOf))
 	add("filed_from", !stringPointersEqual(before.FiledFrom, after.FiledFrom))

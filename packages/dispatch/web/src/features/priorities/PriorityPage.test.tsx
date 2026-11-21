@@ -39,7 +39,6 @@ function issue(key: string, advances: string[] = []): IssueSummary {
     rank: key,
     labels: [],
     parent: null,
-    blocked_by: [],
     assignee: null,
     claim: null,
     components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },

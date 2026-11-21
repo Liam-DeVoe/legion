@@ -21,7 +21,6 @@ const issue: IssueDetails = {
   advances_revision: 0,
   artifacts: [],
   assignee: "alice",
-  blocked_by: [],
   children: [],
   claim: null,
   closed_at: null,

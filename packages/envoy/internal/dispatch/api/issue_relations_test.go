@@ -87,16 +87,15 @@ func issueLinkMarker(t *testing.T, database *store.Store, issue, target string) 
 
 // TestNeedsCrossesAProjectAndRefusesAProjectScopedCaller is c-one-dependency's Go half
 // (dispatch://INFRA-1253 R10). An issue's wait is the needs tuple of the issue's node, which the
-// issue_links row of the pair projects, and the issue read answers it under needs and blocked_by
-// alike. Through the agent bearer, which names no project, a needs to an issue of another project
-// is taken, its tuple appended and its row naming the issue's node. A list past
-// contracts.MaxIssueBlockers is refused 400 NEEDS_INPUT when the request names needs and 400
-// BLOCKED_BY_INPUT when it names blocked_by. A request naming both with the same targets appends
-// one needs tuple for each target; one whose two lists differ is refused 400 NEEDS_INPUT naming
-// both members, and the issue keeps what it held. A wait that closes a ring through the waits is
-// refused 409 DEPENDENCY_CYCLE under either member. Last, a credential that names one project is
-// refused a target outside it 403 PROJECT_SCOPE, for needs as for blocked_by, naming the member
-// it used, and the issue keeps no wait.
+// issue_links row of the pair projects, and the issue read answers it under needs alone (R27 of
+// dispatch://INFRA-1098). Through the agent bearer, which names no project, a needs to an issue
+// of another project is taken, its tuple appended and its row naming the issue's node. A list past
+// contracts.MaxIssueBlockers is refused 400 NEEDS_INPUT, and a request naming blocked_by alone is
+// refused 400 BLOCKED_BY_INPUT naming needs. A request naming both is served from needs alone: one
+// with the same targets appends one needs tuple for each target, and one whose blocked_by names
+// another issue appends no tuple for it. A wait that closes a ring through the waits is refused
+// 409 DEPENDENCY_CYCLE. Last, a credential that names one project is refused a needs target
+// outside it 403 PROJECT_SCOPE, naming needs, and the issue keeps no wait.
 func TestNeedsCrossesAProjectAndRefusesAProjectScopedCaller(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	core := createListedIssues(t, handler, "CORE", 4)
@@ -107,8 +106,8 @@ func TestNeedsCrossesAProjectAndRefusesAProjectScopedCaller(t *testing.T) {
 		t.Fatalf("a needs to another project's issue through the agent bearer: status=%d body=%s", taken.Code, taken.Body.String())
 	}
 	issue := readRelationsIssue(t, handler, core[0])
-	if !slices.Equal(issue.Needs, []string{other[0]}) || !slices.Equal(issue.BlockedBy, []string{other[0]}) {
-		t.Errorf("%s reads needs %v and blocked_by %v, want both [%s]", core[0], issue.Needs, issue.BlockedBy, other[0])
+	if !slices.Equal(issue.Needs, []string{other[0]}) {
+		t.Errorf("%s reads needs %v, want [%s]", core[0], issue.Needs, other[0])
 	}
 	if got := relationEnds(currentRelations(t, database, core[0], graphstore.TupleNeeds)); !slices.Equal(got, []string{"issue:" + other[0]}) {
 		t.Errorf("%s's node states needs %v, want [issue:%s]", core[0], got, other[0])
@@ -123,8 +122,8 @@ func TestNeedsCrossesAProjectAndRefusesAProjectScopedCaller(t *testing.T) {
 	}
 	requireRelationRefused(t, "needs past the cap", dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+core[0],
 		map[string]any{"needs": tooMany}, "alice"), http.StatusBadRequest, codeNeedsInput, "needs")
-	requireRelationRefused(t, "blocked_by past the cap", dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+core[0],
-		map[string]any{"blocked_by": tooMany}, "alice"), http.StatusBadRequest, codeBlockedByInput, "blocked_by")
+	requireRelationRefused(t, "blocked_by alone", dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+core[0],
+		map[string]any{"blocked_by": tooMany}, "alice"), http.StatusBadRequest, codeBlockedByInput, "blocked_by", "needs")
 	requireRelationRefused(t, "a create's needs past the cap", dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues",
 		map[string]any{"project": "CORE", "title": "Waits on too much", "needs": tooMany, "force": true}, "alice"),
 		http.StatusBadRequest, codeNeedsInput, "needs")
@@ -148,18 +147,20 @@ func TestNeedsCrossesAProjectAndRefusesAProjectScopedCaller(t *testing.T) {
 		t.Errorf("the request naming both members appended %d needs tuples for its two targets, want one each", asserted)
 	}
 
-	differ := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+core[0], map[string]any{
-		"needs": []string{core[3]}, "blocked_by": []string{core[1]},
+	beside := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+core[0], map[string]any{
+		"needs": []string{core[1], core[2]}, "blocked_by": []string{core[3]},
 	}, "alice")
-	requireRelationRefused(t, "needs and blocked_by with different targets", differ, http.StatusBadRequest, codeNeedsInput, "needs", "blocked_by")
-	if got := readRelationsIssue(t, handler, core[0]).Needs; !slices.Equal(got, []string{core[1], core[2]}) {
-		t.Errorf("the refused request left needs %v, want [%s %s]", got, core[1], core[2])
+	if beside.Code != http.StatusOK {
+		t.Fatalf("needs with a blocked_by naming another issue: status=%d body=%s", beside.Code, beside.Body.String())
+	}
+	if got := relationEnds(currentRelations(t, database, core[0], graphstore.TupleNeeds)); !slices.Equal(got, []string{"issue:" + core[1], "issue:" + core[2]}) {
+		t.Errorf("the request served from needs left %s stating needs %v, want [issue:%s issue:%s] and none for %s", core[0], got, core[1], core[2], core[3])
 	}
 
 	requireRelationRefused(t, "a ring under needs", dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+core[1],
 		map[string]any{"needs": []string{core[0]}}, "alice"), http.StatusConflict, "DEPENDENCY_CYCLE")
-	requireRelationRefused(t, "a ring under blocked_by", dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+core[2],
-		map[string]any{"blocked_by": []string{core[0]}}, "alice"), http.StatusConflict, "DEPENDENCY_CYCLE")
+	requireRelationRefused(t, "a ring named by blocked_by alone", dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+core[2],
+		map[string]any{"blocked_by": []string{core[0]}}, "alice"), http.StatusBadRequest, codeBlockedByInput, "needs")
 
 	t.Run("a credential that names one project is refused a target outside it", func(t *testing.T) {
 		rig := newBrokerTokenRig(t)
@@ -181,18 +182,16 @@ func TestNeedsCrossesAProjectAndRefusesAProjectScopedCaller(t *testing.T) {
 		}
 		own := createIssue(brokerTestProject, "Its own project's issue")
 		outside := createIssue("OTH", "An issue of another project")
-		for _, member := range []string{"needs", "blocked_by"} {
-			refused := rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+own, token, map[string]any{member: []string{outside}}))
-			requireRelationRefused(t, "a scoped caller's "+member+" across projects", refused, http.StatusForbidden, codeProjectScope,
-				brokerTestProject, "OTH", member+" issue "+outside)
-		}
+		refused := rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+own, token, map[string]any{"needs": []string{outside}}))
+		requireRelationRefused(t, "a scoped caller's needs across projects", refused, http.StatusForbidden, codeProjectScope,
+			brokerTestProject, "OTH", "needs issue "+outside)
 		created := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
 			"project": brokerTestProject, "title": "Created waiting outside", "needs": []string{outside}, "force": true,
 		}))
 		requireRelationRefused(t, "a scoped caller's create waiting across projects", created, http.StatusForbidden, codeProjectScope, "needs issue "+outside)
 		read := rig.asPerson(t, http.MethodGet, "/api/v1/issues/"+own, nil)
-		if got := decodeBody[model.Issue](t, read); len(got.Needs) != 0 || len(got.BlockedBy) != 0 {
-			t.Errorf("the refused writes left needs %v and blocked_by %v, want neither", got.Needs, got.BlockedBy)
+		if got := decodeBody[model.Issue](t, read); len(got.Needs) != 0 {
+			t.Errorf("the refused writes left needs %v, want none", got.Needs)
 		}
 	})
 }

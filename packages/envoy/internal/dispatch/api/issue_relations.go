@@ -1,7 +1,7 @@
 // issue_relations.go is an issue's relations to other nodes as POST /api/v1/issues and PATCH
 // /api/v1/issues/{key} write them (dispatch://INFRA-1253 R9, R10): its parent (child_of), the
-// issues it waits on (needs, which the request may also name blocked_by), the issue of its project
-// it repeats (duplicate_of) and the ask, comment or message it was filed out of (filed_from). Each
+// issues it waits on (needs), the issue of its project it repeats (duplicate_of) and the ask,
+// comment or message it was filed out of (filed_from). Each
 // is a tuple out of the issue's node, which the write appends in its own transaction, caused by
 // the issue's own event, once that event is appended (stateIssueRelations); issues.parent_key and
 // the issue_links rows, which project child_of and needs, are written before that event in the
@@ -31,8 +31,8 @@ import (
 )
 
 // The codes an issue's relations are refused by, each a 400 naming the field and the value it
-// refuses. A wait's refusal takes the code of the member the request used (R10): blocked_by's for
-// a request that names blocked_by alone, needs' for one that names needs.
+// refuses. BLOCKED_BY_INPUT is the refusal of a wait a request names by blocked_by alone
+// (resolveIssueWaits).
 const (
 	codeNeedsInput       = "NEEDS_INPUT"
 	codeBlockedByInput   = "BLOCKED_BY_INPUT"
@@ -40,16 +40,19 @@ const (
 	codeFiledFromInput   = "FILED_FROM_INPUT"
 )
 
-// blockedByMember is the spelling of an issue's wait set a client of the release before reads and
-// writes, which this release takes beside needs (model.EdgeKindNeeds) and answers beside it.
+// blockedByMember is the request member a client from before dispatch://INFRA-1253 names an
+// issue's waits by. The create and the PATCH keep it declared so that they can refuse it by name
+// (R27 of dispatch://INFRA-1098): a route that stopped declaring it would ignore it
+// (decodeJSON), take the request and drop the wait without a word, and the daemon would then
+// start an issue that must wait.
 const blockedByMember = "blocked_by"
 
 // issueRelationsRule is what the issue create and the issue PATCH say of the relations they write,
 // in the route table's words.
-const issueRelationsRule = "needs is the issues the issue waits on, of any project, sorted; blocked_by is the same list under " +
-	"the spelling a client of the release before sends, and a body naming both names the same issues in each, else 400 " +
-	"NEEDS_INPUT naming both. A list refused for its count or its keys is 400 NEEDS_INPUT, or BLOCKED_BY_INPUT where the " +
-	"body named blocked_by alone; a wait that closes a ring through waits and parents is 409 DEPENDENCY_CYCLE; and a " +
+const issueRelationsRule = "needs is the issues the issue waits on, of any project, sorted; a list refused for its count " +
+	"or its keys is 400 NEEDS_INPUT. blocked_by is no longer taken: a body that names it and no needs is refused 400 " +
+	"BLOCKED_BY_INPUT, naming needs, and stores nothing, and a body that names both is served from needs alone. A wait " +
+	"that closes a ring through waits and parents is 409 DEPENDENCY_CYCLE; and a " +
 	"credential that names one project is refused a target outside it with 403 PROJECT_SCOPE. duplicate_of is the key of " +
 	"another issue of the issue's project, else 400 DUPLICATE_OF_INPUT; filed_from is the canonical reference of a public " +
 	"ask, comment or message of the issue's project, dispatch://<KEY>/<ask|comment|message>/<uuid> or " +
@@ -57,40 +60,31 @@ const issueRelationsRule = "needs is the issues the issue waits on, of any proje
 	"another project, one no row holds and one reserved for its author; a refused relation writes nothing."
 
 // issueWaits is the set of issues one create or PATCH says an issue waits on, sorted and each
-// once, with the member the request named it by and the code a refusal of it carries.
+// once.
 type issueWaits struct {
 	targets []string
-	member  string
-	code    string
 }
 
-// resolveIssueWaits reads the two members a write names an issue's waits by, each nil where the
-// request leaves it out. provided is false where it names neither. A request that names needs
-// alone is refused, where it is, under NEEDS_INPUT, and one that names blocked_by alone under
-// BLOCKED_BY_INPUT; one that names both with the same issues, which a CLI of this release sends so
-// that a Dispatch of the release before, which reads blocked_by alone, is served too, is served
-// from them, and one whose two lists name different issues is refused NEEDS_INPUT, naming both.
-// The cap counts what the request sent, before a key named twice is taken once, as the count the
-// field has always been held to.
+// resolveIssueWaits reads the two members a write could name an issue's waits by, each nil where
+// the request leaves it out or sends null. provided is false where it names neither. needs is the
+// one spelling: a request that names it is served from it alone, whatever blocked_by holds beside
+// it, and is refused, where it is, under NEEDS_INPUT. A request that names blocked_by and no needs
+// is a client of two releases before, and is refused under BLOCKED_BY_INPUT, naming the member and
+// needs, before anything is stored. The cap counts what the request sent, before a key named twice
+// is taken once, as the count the field has always been held to.
 func resolveIssueWaits(needs, blockedBy *[]string) (issueWaits, bool, error) {
-	if needs == nil && blockedBy == nil {
+	if needs == nil {
+		if blockedBy != nil {
+			return issueWaits{}, true, errorf(http.StatusBadRequest, codeBlockedByInput,
+				"%s is no longer taken: name the issues this issue waits on in %s; nothing was stored",
+				blockedByMember, model.EdgeKindNeeds)
+		}
 		return issueWaits{}, false, nil
 	}
-	waits := issueWaits{member: model.EdgeKindNeeds, code: codeNeedsInput}
-	named := needs
-	if needs == nil {
-		waits.member, waits.code, named = blockedByMember, codeBlockedByInput, blockedBy
+	if len(*needs) > contracts.MaxIssueBlockers {
+		return issueWaits{}, true, countExceededError(codeNeedsInput, model.EdgeKindNeeds, len(*needs), contracts.MaxIssueBlockers)
 	}
-	if needs != nil && blockedBy != nil && !slices.Equal(onceEach(*needs), onceEach(*blockedBy)) {
-		return issueWaits{}, true, errorf(http.StatusBadRequest, codeNeedsInput,
-			"needs [%s] and blocked_by [%s] name different issues: a request that names both names the same issues in each",
-			strings.Join(*needs, ", "), strings.Join(*blockedBy, ", "))
-	}
-	if len(*named) > contracts.MaxIssueBlockers {
-		return issueWaits{}, true, countExceededError(waits.code, waits.member, len(*named), contracts.MaxIssueBlockers)
-	}
-	waits.targets = onceEach(*named)
-	return waits, true, nil
+	return issueWaits{targets: onceEach(*needs)}, true, nil
 }
 
 // onceEach is keys sorted, each once, in a slice of its own.

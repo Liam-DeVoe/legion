@@ -607,7 +607,7 @@ func newIssueListFixture(t *testing.T) issueListFixture {
 		map[string]any{"status": "done"}, "alice"); response.Code != http.StatusOK {
 		t.Fatalf("finish %s: status=%d body=%s", done, response.Code, response.Body.String())
 	}
-	blocked := create(map[string]any{"title": "Blocked on two", "blocked_by": []string{root, child},
+	blocked := create(map[string]any{"title": "Blocked on two", "needs": []string{root, child},
 		"labels": []string{"frontend"}, "assignee": "bob"})
 	create(map[string]any{"title": "Not architectural", "components": map[string]any{"mode": "none", "reason": "process"}})
 	withSpec := create(map[string]any{"title": "Issue with a spec", "spec": "A spec\n"})

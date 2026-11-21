@@ -231,12 +231,12 @@ func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
 	pending := createUnhandedIssue(t, baseURL, cfg.Project, "Database index rollout")
 	setDispatchStatus(t, baseURL, pending, "in_progress")
 	var linked struct {
-		BlockedBy []string `json:"blocked_by"`
-		LastSeq   int64    `json:"last_seq"`
+		Needs   []string `json:"needs"`
+		LastSeq int64    `json:"last_seq"`
 	}
-	dispatchCall(t, baseURL, http.MethodPatch, "/api/v1/issues/"+free, map[string]any{"blocked_by": []string{pending}}, &linked)
-	if !slices.Equal(linked.BlockedBy, []string{pending}) {
-		t.Fatalf("Dispatch answered the link of %s to %s with blocked_by %v", free, pending, linked.BlockedBy)
+	dispatchCall(t, baseURL, http.MethodPatch, "/api/v1/issues/"+free, map[string]any{"needs": []string{pending}}, &linked)
+	if !slices.Equal(linked.Needs, []string{pending}) {
+		t.Fatalf("Dispatch answered the link of %s to %s with needs %v", free, pending, linked.Needs)
 	}
 	// The state names no root whose gate is closed in `blocked`, so the link's arrival is read off
 	// the daemon's own mirror of Dispatch, at the sequence Dispatch gave the link. Every state read
@@ -649,11 +649,11 @@ func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
 		t.Fatalf("release_children answered %s; want %s held on %s and nothing started", answer, unlinked, elsewhere)
 	}
 	var unlinking struct {
-		BlockedBy []string `json:"blocked_by"`
+		Needs []string `json:"needs"`
 	}
-	dispatchCall(t, baseURL, http.MethodPatch, "/api/v1/issues/"+unlinked, map[string]any{"blocked_by": []string{}}, &unlinking)
-	if len(unlinking.BlockedBy) != 0 {
-		t.Fatalf("Dispatch answered the removal of %s's links with blocked_by %v", unlinked, unlinking.BlockedBy)
+	dispatchCall(t, baseURL, http.MethodPatch, "/api/v1/issues/"+unlinked, map[string]any{"needs": []string{}}, &unlinking)
+	if len(unlinking.Needs) != 0 {
+		t.Fatalf("Dispatch answered the removal of %s's links with needs %v", unlinked, unlinking.Needs)
 	}
 	state, body = settled(t, d, "start the held child "+unlinked+" once its links were taken off", func(s api.State) bool {
 		recorded, ok := s.Issues[unlinked]
@@ -745,11 +745,11 @@ func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
 	ran := state.Issues[child].Generation
 	setDispatchStatus(t, baseURL, child, "in_progress")
 	var relinked struct {
-		BlockedBy []string `json:"blocked_by"`
+		Needs []string `json:"needs"`
 	}
-	dispatchCall(t, baseURL, http.MethodPatch, "/api/v1/issues/"+child, map[string]any{"blocked_by": []string{elsewhere}}, &relinked)
-	if !slices.Equal(relinked.BlockedBy, []string{elsewhere}) {
-		t.Fatalf("Dispatch answered the link of %s to %s with blocked_by %v", child, elsewhere, relinked.BlockedBy)
+	dispatchCall(t, baseURL, http.MethodPatch, "/api/v1/issues/"+child, map[string]any{"needs": []string{elsewhere}}, &relinked)
+	if !slices.Equal(relinked.Needs, []string{elsewhere}) {
+		t.Fatalf("Dispatch answered the link of %s to %s with needs %v", child, elsewhere, relinked.Needs)
 	}
 	setDispatchStatus(t, baseURL, child, "todo")
 	state, body = settled(t, d, "take "+child+" into a new run once a person set it back to todo", func(s api.State) bool {
@@ -766,9 +766,9 @@ func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
 	// work already under way and moves no phase (step 3), though an issue that holds a slot and now
 	// waits on it gives that slot back until the link's issue is done.
 	for _, key := range []string{unlinked, free} {
-		dispatchCall(t, baseURL, http.MethodPatch, "/api/v1/issues/"+key, map[string]any{"blocked_by": []string{elsewhere}}, &relinked)
-		if !slices.Equal(relinked.BlockedBy, []string{elsewhere}) {
-			t.Fatalf("Dispatch answered the link of %s to %s with blocked_by %v", key, elsewhere, relinked.BlockedBy)
+		dispatchCall(t, baseURL, http.MethodPatch, "/api/v1/issues/"+key, map[string]any{"needs": []string{elsewhere}}, &relinked)
+		if !slices.Equal(relinked.Needs, []string{elsewhere}) {
+			t.Fatalf("Dispatch answered the link of %s to %s with needs %v", key, elsewhere, relinked.Needs)
 		}
 	}
 	setDispatchStatus(t, baseURL, unlinked, "done")
@@ -1065,7 +1065,7 @@ func createBlockersIssue(t *testing.T, baseURL, project, title, parent string, w
 		body["parent"] = parent
 	}
 	if len(waits) > 0 {
-		body["blocked_by"] = waits
+		body["needs"] = waits
 	}
 	return createDispatchIssue(t, baseURL, title, body, asSession)
 }

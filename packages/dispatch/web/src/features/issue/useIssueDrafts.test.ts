@@ -22,7 +22,6 @@ const startIssue: Issue = {
   advances: [],
   advances_revision: 0,
   assignee: null,
-  blocked_by: [],
   claim: null,
   closed_at: null,
   components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },

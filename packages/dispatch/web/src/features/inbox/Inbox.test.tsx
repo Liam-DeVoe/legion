@@ -127,7 +127,6 @@ function narrowIssueOf(row: InboxRow, assignee: string | null): Issue {
     last_seq: 2,
     number: 3,
     parent: null,
-    blocked_by: [],
     plan_artifact_id: "artifact-plan",
     primary_artifact_id: "artifact-3",
     priority: null,

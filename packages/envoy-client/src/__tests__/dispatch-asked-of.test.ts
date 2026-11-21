@@ -49,7 +49,7 @@ const ISSUE = {
   assignee: null,
   route: null,
   parent: null,
-  blocked_by: [],
+  needs: [],
   components: [],
   repo: null,
   resolved_repo: null,

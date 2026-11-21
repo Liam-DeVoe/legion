@@ -458,7 +458,6 @@ export const NODE_REFERENCES_WORDS = freeze({
     anchored_to: "anchored item",
     answers: "answer",
     attached_to: "attached document",
-    blocked_by: "blocked issue",
     child_of: "child issue",
     followed_by: "follower",
     needs: "needed by",
@@ -739,9 +738,9 @@ export const DELIVERY_STATE_WORDS = freeze({
 /**
  * What the blocked-by editor says when Dispatch refuses the list it saved
  * (`BlockedByControl.tsx`), one sentence per refusal, in place of the server's message, which
- * names the field by its wire token (`blocked_by issue CORE-9 not found`, R21). Each sentence is
+ * names the field by its wire token (`needs issue CORE-9 not found`, R21). Each sentence is
  * cut where the issue it is about goes: that key is the server's detail and the reader's own
- * text, drawn between `before` and `after`. `BLOCKED_BY_INPUT` is three refusals, told apart by
+ * text, drawn between `before` and `after`. `NEEDS_INPUT` is three refusals, told apart by
  * the key it names: no issue, the issue itself, or none at all for a list over the limit; and
  * `DEPENDENCY_CYCLE` is two, the issue the list would make wait on itself, or none for a chain
  * longer than Dispatch follows (`packages/envoy/internal/dispatch/api/issue_parent.go`).

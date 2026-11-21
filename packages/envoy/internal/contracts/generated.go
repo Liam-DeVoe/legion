@@ -262,7 +262,7 @@ const GoingRequestTTL = 3600000 * time.Millisecond
 // server's check and every caller that sends the header name it once.
 const GoingRunHeader = "Dispatch-Going-Run"
 
-// MaxIssueBlockers bounds blocked_by input before deduplication. Generated from
+// MaxIssueBlockers bounds the needs input before deduplication. Generated from
 // MAX_ISSUE_BLOCKERS in packages/contracts so the server and tool schemas share the limit.
 const MaxIssueBlockers = 20
 

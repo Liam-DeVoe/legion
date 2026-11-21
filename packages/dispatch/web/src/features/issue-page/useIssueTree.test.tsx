@@ -73,7 +73,6 @@ const issue: IssueDetails = {
   advances_revision: 0,
   artifacts: [plan],
   assignee: null,
-  blocked_by: [],
   children: [],
   claim: null,
   closed_at: null,

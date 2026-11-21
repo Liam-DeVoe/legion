@@ -1117,7 +1117,7 @@ export async function seedRows(): Promise<RowSeed> {
     project: PROJECT,
     title: childTitle,
   });
-  await patchIssue(child.key, { blocked_by: [blocker.key] });
+  await patchIssue(child.key, { needs: [blocker.key] });
   await claimIssue(child.key, asPlanner);
 
   const notes = await createIssueArtifact(key, {

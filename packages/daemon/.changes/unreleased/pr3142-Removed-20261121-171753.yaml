@@ -1,0 +1,5 @@
+kind: Removed
+body: The daemon reads an issue's waits from needs alone, with no fallback to blocked_by.
+time: 2026-11-21T17:17:53.880831568Z
+custom:
+    Issue: pr3142

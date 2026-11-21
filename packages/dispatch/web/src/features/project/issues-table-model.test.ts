@@ -32,7 +32,6 @@ function issue(key: string, overrides: Partial<IssueSummary> = {}): IssueSummary
     priority: null,
     rank: key,
     parent: null,
-    blocked_by: [],
     assignee: null,
     claim: null,
     components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },

@@ -377,13 +377,13 @@ func reviewFor(ans *replayAskAnswer) (map[string]any, error) {
 
 // liveIssue is the part of GET /api/v1/issues/{key} the closing PATCH compares.
 type liveIssue struct {
-	Status    string   `json:"status"`
-	Priority  *int     `json:"priority"`
-	Labels    []string `json:"labels"`
-	Parent    *string  `json:"parent"`
-	BlockedBy []string `json:"blocked_by"`
-	Route     *string  `json:"route"`
-	Claim     *struct {
+	Status   string   `json:"status"`
+	Priority *int     `json:"priority"`
+	Labels   []string `json:"labels"`
+	Parent   *string  `json:"parent"`
+	Needs    []string `json:"needs"`
+	Route    *string  `json:"route"`
+	Claim    *struct {
 		Actor replayActor `json:"actor"`
 		At    time.Time   `json:"at"`
 	} `json:"claim"`
@@ -411,8 +411,8 @@ func issuePatch(cur liveIssue, want *replayIssue) map[string]any {
 	if !equalStrPtr(want.Parent, cur.Parent) {
 		body["parent"] = want.Parent
 	}
-	if !sameSet(want.BlockedBy, cur.BlockedBy) {
-		body["blocked_by"] = nonNil(want.BlockedBy)
+	if !sameSet(want.BlockedBy, cur.Needs) {
+		body["needs"] = nonNil(want.BlockedBy)
 	}
 	if want.Route != nil && !equalStrPtr(want.Route, cur.Route) {
 		body["route"] = *want.Route

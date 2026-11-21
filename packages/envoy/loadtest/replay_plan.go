@@ -808,8 +808,24 @@ type rpAsk struct {
 	} `json:"resolution"`
 }
 
-// replayPatchFields are the issue fields an issue.updated is re-sent with when they changed.
-var replayPatchFields = []string{"title", "status", "labels", "priority", "route", "assignee", "parent", "blocked_by", "repo", "external_links"}
+// replayPatchFields are the issue fields an issue.updated is re-sent with when they changed. An
+// issue's waits are needs, the one member Dispatch takes them in (recordedWaitsAsNeeds).
+var replayPatchFields = []string{"title", "status", "labels", "priority", "route", "assignee", "parent", "needs", "repo", "external_links"}
+
+// recordedWaitsAsNeeds names a recorded issue event's waits needs, the one member Dispatch takes
+// them in (R27 of dispatch://INFRA-1098): an event a Dispatch from before dispatch://INFRA-1253
+// wrote carries them as blocked_by alone, and the events table keeps that event as it was written.
+func recordedWaitsAsNeeds(payload map[string]json.RawMessage) {
+	if payload == nil {
+		return
+	}
+	if _, held := payload["needs"]; held {
+		return
+	}
+	if waits, held := payload["blocked_by"]; held {
+		payload["needs"] = waits
+	}
+}
 
 // --- writes ----------------------------------------------------------------------------------------
 
@@ -969,6 +985,7 @@ func (pl *replayPlanner) planWrite(ev replayEvent, offset time.Duration) (*repla
 		if err != nil {
 			return nil, "", err
 		}
+		recordedWaitsAsNeeds(cur)
 		prev := pl.snap[key]
 		if prev == nil {
 			prev = stateSnapshot(pl.stateIssue[key])
@@ -1063,6 +1080,7 @@ func (pl *replayPlanner) planWrite(ev replayEvent, offset time.Duration) (*repla
 		pl.bornAt[docID] = offset
 		var snap map[string]json.RawMessage
 		_ = json.Unmarshal(ev.Payload, &snap)
+		recordedWaitsAsNeeds(snap)
 		pl.snap[key] = snap
 		if is.Claim != nil {
 			pl.claim[key] = &is.Claim.Actor
@@ -1231,7 +1249,7 @@ func stateSnapshot(is *replayIssue) map[string]json.RawMessage {
 	put("priority", is.Priority)
 	put("labels", nonNil(is.Labels))
 	put("route", is.Route)
-	put("blocked_by", nonNil(is.BlockedBy))
+	put("needs", nonNil(is.BlockedBy))
 	return out
 }
 

@@ -109,7 +109,7 @@ func TestEachReadingKindWritesItsBlockers(t *testing.T) {
 		seedTickMirror(t, pool, blocker, "in_progress", 1)
 
 		applyCopyFact(t, w, "dispatch", "blocked-by", capturedDispatchEvent(t, waiter, 4,
-			eventEdit{`"labels":[]`, `"blocked_by":` + jsonOf(t, []string{blocker}) + `,"labels":["legion"]`}))
+			eventEdit{`"labels":[]`, `"needs":` + jsonOf(t, []string{blocker}) + `,"labels":["legion"]`}))
 
 		if got := copied(t, pool, waiter); !slices.Equal(got.blockers, []string{blocker}) || got.blockersSeq != 4 {
 			t.Fatalf("the copy holds %s waiting on %q at %d, want %s at the event's 4", waiter, got.blockers, got.blockersSeq, blocker)
@@ -320,7 +320,7 @@ func (b *copyBoard) serve(t *testing.T) http.HandlerFunc {
 // project's one repository.
 func boardSummary(key, status string, seq int64, labels []string, rank string, blockedBy ...string) map[string]any {
 	return map[string]any{"key": key, "title": key, "status": status, "rank": rank, "labels": labels, "parent": nil,
-		"blocked_by": append([]string{}, blockedBy...), "last_seq": seq, "claim": nil, "resolved_repo": "acme/widgets"}
+		"needs": append([]string{}, blockedBy...), "last_seq": seq, "claim": nil, "resolved_repo": "acme/widgets"}
 }
 
 // boardIssue is key as Dispatch's read of one issue, and its answer to a write, serve it

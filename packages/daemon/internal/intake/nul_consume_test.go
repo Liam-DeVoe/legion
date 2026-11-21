@@ -106,7 +106,7 @@ func TestAnIssueEventWhoseTitleHoldsNULIsAppliedOnceWithAReplacementCharacter(t 
 		"actor": map[string]string{"kind": "user", "id": "someone"}, "notify": true, "created_at": "2026-11-19T09:00:00Z",
 		"payload": map[string]any{
 			"key": nulIssue, "status": "in_progress", "title": "widgets\x00 renamed", "parent": nil, "rank": "M",
-			"labels": []string{"legion"}, "resolved_repo": nulRepo, "blocked_by": []string{}, "claim": nil,
+			"labels": []string{"legion"}, "resolved_repo": nulRepo, "needs": []string{}, "claim": nil,
 		},
 	})
 	sent, err := js.Publish(ctx, subject, drainJSON(map[string]any{

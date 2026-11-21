@@ -28,7 +28,7 @@ import (
 
 const (
 	// codeAdvancesInput refuses an `advances` input no relation can be written from, as
-	// BLOCKED_BY_INPUT refuses a blocker list beside it: more ids than the cap holds, an id no
+	// NEEDS_INPUT refuses a wait list beside it: more ids than the cap holds, an id no
 	// priority row names, a priority whose state is gone, and a relation whose issue does not
 	// exist. Each of the four is a 400 naming the key it refuses.
 	codeAdvancesInput = "ADVANCES_INPUT"
@@ -38,7 +38,7 @@ const (
 )
 
 // normalizeIssueAdvances bounds and deduplicates the priority ids of one write, before any row
-// lock is taken, as resolveIssueWaits does for needs and blocked_by. The cap counts the issue's own
+// lock is taken, as resolveIssueWaits does for needs. The cap counts the issue's own
 // relations alone: inheritance is read-side, so counting what an issue inherits would let an
 // issue five deep pass the cap without writing anything.
 func normalizeIssueAdvances(ids []string) ([]string, error) {

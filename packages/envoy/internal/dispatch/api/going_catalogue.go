@@ -74,6 +74,12 @@ type goingToolRoute struct {
 	// `action`. An empty WhenArgument is a row nothing guards.
 	WhenArgument string
 	WhenValue    any
+	// Body names, for a tool argument the row's route takes under another body member, that
+	// member. The issue tools' argument blocked_by is the flag a person types, and the route
+	// takes the issues an issue waits on as needs alone (R27 of dispatch://INFRA-1098), so the
+	// call sends the argument as needs, as the CLI does; a row that names nothing here sends
+	// each argument under its own name.
+	Body map[string]string
 	// Relations are the graph relations this row's write makes, each a structural edge kind
 	// (model.GraphEdgeKinds) or a `block[]` attribute of a typed block (pmdoc.LinkKinds).
 	Relations []string
@@ -96,11 +102,13 @@ type goingToolRoute struct {
 var goingToolRoutes = map[string][]goingToolRoute{
 	"dispatch_issue": {{
 		Method: http.MethodPost, Pattern: "/api/v1/issues", Path: map[string]string{},
+		Body:      map[string]string{blockedByMember: model.EdgeKindNeeds},
 		Relations: []string{"child_of", model.EdgeKindNeeds, "duplicate_of", "filed_from", "affects", "mentions"},
 	}},
 	"dispatch_issue_update": {{
 		Method: http.MethodPatch, Pattern: "/api/v1/issues/{key}",
 		Path:      map[string]string{"key": "issue"},
+		Body:      map[string]string{blockedByMember: model.EdgeKindNeeds},
 		Relations: []string{"child_of", model.EdgeKindNeeds, "duplicate_of", "filed_from", "affects"},
 	}},
 	"dispatch_claim": {
@@ -300,11 +308,12 @@ type GoingRoute struct {
 	Method  string `json:"method"`
 	Pattern string `json:"pattern"`
 
-	// path and the guard are how a call reaches this row (goingToolRoute); they are the
-	// caller's business rather than the reader's, so neither is served.
+	// path, the guard and the body members are how a call reaches this row (goingToolRoute);
+	// they are the caller's business rather than the reader's, so none is served.
 	path         map[string]string
 	whenArgument string
 	whenValue    any
+	body         map[string]string
 }
 
 // GoingAction is one action an agent may propose: a dispatch tool that writes, with the
@@ -457,6 +466,11 @@ func buildGoingCatalogue(routes []apiRoute) (GoingCatalogue, error) {
 			if row.WhenArgument != "" && !takes[row.WhenArgument] {
 				refusals = append(refusals, fmt.Sprintf("%s: %s is picked by %q, which is no argument of the tool", tool.Name, name, row.WhenArgument))
 			}
+			for argument := range row.Body {
+				if !takes[argument] {
+					refusals = append(refusals, fmt.Sprintf("%s: %s sends %q under another member, which is no argument of the tool", tool.Name, name, argument))
+				}
+			}
 			for _, relation := range row.Relations {
 				if !slices.Contains(families, relation) {
 					refusals = append(refusals, fmt.Sprintf("%s: relation %q is neither a structural edge kind (%s) nor a block[] attribute (%s)",
@@ -472,6 +486,7 @@ func buildGoingCatalogue(routes []apiRoute) (GoingCatalogue, error) {
 				path:         row.Path,
 				whenArgument: row.WhenArgument,
 				whenValue:    row.WhenValue,
+				body:         row.Body,
 			})
 		}
 		catalogue.byAction[tool.Name] = len(catalogue.actions)
@@ -557,7 +572,8 @@ func (e GoingArgumentError) Error() string {
 
 // Do performs one catalogue action with the arguments given: the action's first row the call
 // fills (chooseGoingRoute) takes its path from the arguments its placeholders name, and every
-// other argument becomes the request's JSON body. Nothing is sent until the catalogue holds the
+// other argument becomes the request's JSON body, under the member the row names for it
+// (goingToolRoute.Body) or else its own name. Nothing is sent until the catalogue holds the
 // action and the tool's own schema accepts the call. An argument naming a document by slug is
 // the caller's to resolve to the id a row's path takes. Every action of the catalogue writes, so
 // every request Do sends names the caller's Run, where it has one.
@@ -581,6 +597,9 @@ func (c GoingCaller) Do(ctx context.Context, action string, arguments map[string
 	for name, value := range arguments {
 		if inPath[name] {
 			continue
+		}
+		if member, renamed := route.body[name]; renamed {
+			name = member
 		}
 		body[name] = value
 	}

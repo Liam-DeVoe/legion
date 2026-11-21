@@ -189,8 +189,8 @@ type IssueSummary struct {
 	ResolvedRepo string
 	// BlockedBy is the keys of the issues that this issue waits on, in the order Dispatch lists
 	// them; none when it waits on nothing. A key may belong to another project. It is read from
-	// the answer's needs, and from its blocked_by where a Dispatch of the release before answers
-	// that alone (WaitsOf).
+	// the answer's needs alone, the one member Dispatch answers them in (R27 of
+	// dispatch://INFRA-1098).
 	BlockedBy []string
 	// ClaimedBy is who Dispatch shows holding the issue's claim, as Claim.Holder writes it, or
 	// empty for nobody. ClaimUnread says Dispatch showed a claim naming no actor: neither nobody

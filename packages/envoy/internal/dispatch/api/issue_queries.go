@@ -721,7 +721,7 @@ type issueSummaryRow struct {
 // targets are the row's scan targets, after leading, which a paged read fills with the columns
 // it carries ahead of the issue's own.
 func (r *issueSummaryRow) targets(leading ...any) []any {
-	targets := append(leading, &r.issue.Key, &r.issue.Title, &r.issue.Status, &r.issue.Priority, &r.issue.Rank, &r.issue.Labels, &r.issue.Parent, &r.issue.BlockedBy)
+	targets := append(leading, &r.issue.Key, &r.issue.Title, &r.issue.Status, &r.issue.Priority, &r.issue.Rank, &r.issue.Labels, &r.issue.Parent, &r.issue.Needs)
 	targets = append(targets, r.advances.targets()...)
 	targets = append(targets, &r.issue.MovedAt, &r.issue.MovedBy)
 	targets = append(targets, &r.issue.Assignee, &r.issue.Route, &r.issue.UpdatedAt, &r.issue.LastSeq, &r.issue.CreatedBy, &r.issue.CreatedAt, &r.issue.PrimaryArtifactID)
@@ -747,8 +747,6 @@ func (r *issueSummaryRow) resolve() (model.IssueSummary, error) {
 	}
 	issue.Claim = claim
 	issue.Advances = r.advances.resolve()
-	// One read of the issue_links rows answers both spellings of the issue's waits (Issue.Needs).
-	issue.Needs = issue.BlockedBy
 	issue.AdvancesRevision = r.advances.revision
 	issue.Progress = r.progress.resolve()
 	issue.Components = r.components.resolve(issue.Key)
@@ -1055,7 +1053,7 @@ func scanIssueRow(row pgx.Row) (model.Issue, model.IssueProgress, error) {
 	var advances advancesScan
 	targets := []any{
 		&issue.Key, &issue.Project, &issue.Number, &issue.Title, &issue.Status, &issue.Priority, &issue.Rank, &issue.Labels,
-		&issue.Parent, &issue.BlockedBy, &issue.DuplicateOf, &issue.FiledFrom,
+		&issue.Parent, &issue.Needs, &issue.DuplicateOf, &issue.FiledFrom,
 	}
 	targets = append(targets, advances.targets()...)
 	targets = append(targets,
@@ -1073,9 +1071,6 @@ func scanIssueRow(row pgx.Row) (model.Issue, model.IssueProgress, error) {
 		return model.Issue{}, model.IssueProgress{}, err
 	}
 	issue.Repo, issue.ResolvedRepo = own, resolvedRepo
-	// The issue_links rows project the issue's needs tuples, written in the transaction that
-	// appends them, so one read of them answers both spellings of its waits.
-	issue.Needs = issue.BlockedBy
 	issue.Advances = advances.resolve()
 	issue.AdvancesRevision = advances.revision
 	issue.Components = components.resolve(issue.Key)

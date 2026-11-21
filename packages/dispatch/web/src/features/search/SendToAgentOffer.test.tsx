@@ -51,7 +51,6 @@ function issueDetails(
     advances_revision: 0,
     artifacts: [],
     assignee: null,
-    blocked_by: [],
     children: [],
     claim,
     closed_at: null,

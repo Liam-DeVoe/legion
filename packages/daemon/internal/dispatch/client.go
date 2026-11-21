@@ -69,7 +69,7 @@ func (c *HTTPClient) ListIssues(ctx context.Context, project string, statuses []
 			Labels:       issue.Labels,
 			LastSeq:      issue.LastSeq,
 			ResolvedRepo: deref(issue.ResolvedRepo),
-			BlockedBy:    WaitsOf(issue.Needs, issue.BlockedBy),
+			BlockedBy:    issue.Needs,
 			ClaimedBy:    issue.Claim.holder(),
 			ClaimUnread:  issue.Claim.unread(),
 		})
@@ -592,6 +592,10 @@ func dispatchError(status int, statusText string, payload []byte) *Error {
 	return &Error{Status: status, Code: response.Code, Message: response.Error}
 }
 
+// issueSummaryResponse and issueResponse read an issue's waits from needs, the one member
+// Dispatch answers them in (R27 of dispatch://INFRA-1098), with no fallback to blocked_by: an
+// answer that holds only blocked_by, as a Dispatch from before dispatch://INFRA-1253 sends it,
+// reads as an issue waiting on nothing. Every Dispatch from that release on answers needs.
 type issueSummaryResponse struct {
 	Key          string         `json:"key"`
 	Title        string         `json:"title"`
@@ -601,20 +605,8 @@ type issueSummaryResponse struct {
 	Labels       []string       `json:"labels"`
 	LastSeq      int64          `json:"last_seq"`
 	ResolvedRepo *string        `json:"resolved_repo"`
-	Needs        *[]string      `json:"needs"`
-	BlockedBy    []string       `json:"blocked_by"`
+	Needs        []string       `json:"needs"`
 	Claim        *claimResponse `json:"claim"`
-}
-
-// WaitsOf is the issues an issue answer says the issue waits on: its needs, which a Dispatch of
-// dispatch://INFRA-1253's release on answers, and else its blocked_by, which the Dispatch of the
-// release before answers alone, since a new daemon can meet an old Dispatch. An answer holding
-// needs is read by it, whatever blocked_by holds beside it.
-func WaitsOf(needs *[]string, blockedBy []string) []string {
-	if needs != nil {
-		return *needs
-	}
-	return blockedBy
 }
 
 type issueResponse struct {
@@ -628,8 +620,7 @@ type issueResponse struct {
 	PrimaryArtifactID string         `json:"primary_artifact_id"`
 	LastSeq           int64          `json:"last_seq"`
 	ResolvedRepo      *string        `json:"resolved_repo"`
-	Needs             *[]string      `json:"needs"`
-	BlockedBy         []string       `json:"blocked_by"`
+	Needs             []string       `json:"needs"`
 	Claim             *claimResponse `json:"claim"`
 }
 
@@ -647,7 +638,7 @@ func (r issueResponse) issue() Issue {
 		PrimaryArtifactID: r.PrimaryArtifactID,
 		LastSeq:           r.LastSeq,
 		ResolvedRepo:      deref(r.ResolvedRepo),
-		BlockedBy:         WaitsOf(r.Needs, r.BlockedBy),
+		BlockedBy:         r.Needs,
 		Claim:             r.Claim.claim(),
 		ClaimUnread:       r.Claim.unread(),
 	}

@@ -119,12 +119,12 @@ var issueRouteXidWindows = []routeXidWindowCase{
 	// A create naming a blocker in another project (INFRA-3036) takes the dependency locks of both
 	// projects and the deployment's own before its project's owner lock, by plain reads and
 	// advisory locks (lockIssueDependencyWrite), so its read phase - the spec's seed, task count,
-	// reference index and the write advice - still holds no transaction id; writeBlockedBy reads
+	// reference index and the write advice - still holds no transaction id; writeIssueNeeds reads
 	// the target's project and walks the wait graph inside the write phase, under those locks,
 	// and the event it appends names the blocker among its changed references, which one more read
 	// resolves (refs.resolveIssueTargets). A window with one blocker and a wait graph one link deep.
 	{
-		name: "the issue create naming a blocker in another project", route: "POST /api/v1/issues naming a blocked_by target in another project (createIssue, lockIssueDependencyWrite, writeBlockedBy)",
+		name: "the issue create naming a blocker in another project", route: "POST /api/v1/issues naming a needs target in another project (createIssue, lockIssueDependencyWrite, writeIssueNeeds)",
 		ready: readyIssueCreateBlockedAcrossProjects, window: storetest.XidWindowOf(15,
 			"the create's inline steering writes - the project's next number, the rank lock, the rank read, the issue's node, the issue row, "+
 				"the target's project read, the wait walk, the blocked_by delete and insert and its artifact row - "+
@@ -132,9 +132,9 @@ var issueRouteXidWindows = []routeXidWindowCase{
 				"the queued batch and its COMMIT"),
 	},
 	// A patch naming a blocker in another project takes the same locks before the issue's owner
-	// lock, and its write phase is the row's update and writeBlockedBy's reads and writes.
+	// lock, and its write phase is the row's update and writeIssueNeeds' reads and writes.
 	{
-		name: "the issue patch naming a blocker in another project", route: "PATCH /api/v1/issues/{key} naming a blocked_by target in another project (patchIssue, lockIssueDependencyWrite, writeBlockedBy)",
+		name: "the issue patch naming a blocker in another project", route: "PATCH /api/v1/issues/{key} naming a needs target in another project (patchIssue, lockIssueDependencyWrite, writeIssueNeeds)",
 		ready: readyIssuePatchBlockedAcrossProjects, window: storetest.XidWindowOf(10,
 			"the issue row's own update, the target's project read, the wait walk, the blocked_by delete and insert, "+
 				"the two reads that load the issue it answers with, the read resolving the blocker its event names, "+
@@ -293,7 +293,7 @@ func readyIssuePatchStatingAdvances(t *testing.T, base routeFixture) lockedItemW
 
 // readyIssueCreateBlockedAcrossProjects drives POST /api/v1/issues by a session filing an issue of
 // the fixture's project with a spec of the harness's size, blocked by an issue of another project
-// (lockIssueDependencyWrite, writeBlockedBy).
+// (lockIssueDependencyWrite, writeIssueNeeds).
 func readyIssueCreateBlockedAcrossProjects(t *testing.T, base routeFixture) lockedItemWrite {
 	t.Helper()
 	fixture := base.issue(t, "Create blocked across projects")
@@ -303,21 +303,21 @@ func readyIssueCreateBlockedAcrossProjects(t *testing.T, base routeFixture) lock
 		func(handler http.Handler) *httptest.ResponseRecorder {
 			return sessionRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
 				"project": "LOCK", "title": "A second spec waiting on another project", "spec": spec,
-				"blocked_by": []string{target}, "force": true, "actor": sessionActor(),
+				"needs": []string{target}, "force": true, "actor": sessionActor(),
 			})
 		},
 		func(t *testing.T, answer *httptest.ResponseRecorder) {
 			if answer.Code != http.StatusCreated {
 				t.Fatalf("create the issue: status=%d body=%s", answer.Code, answer.Body.String())
 			}
-			if created := decodeBody[model.Issue](t, answer); len(created.BlockedBy) != 1 || created.BlockedBy[0] != target {
-				t.Fatalf("the created issue's blocked_by = %v, want [%s]", created.BlockedBy, target)
+			if created := decodeBody[model.Issue](t, answer); len(created.Needs) != 1 || created.Needs[0] != target {
+				t.Fatalf("the created issue's needs = %v, want [%s]", created.Needs, target)
 			}
 		})
 }
 
 // readyIssuePatchBlockedAcrossProjects drives PATCH /api/v1/issues/{key} naming an issue of another
-// project as the issue's one blocker (lockIssueDependencyWrite, writeBlockedBy).
+// project as the issue's one blocker (lockIssueDependencyWrite, writeIssueNeeds).
 func readyIssuePatchBlockedAcrossProjects(t *testing.T, base routeFixture) lockedItemWrite {
 	t.Helper()
 	fixture := base.issue(t, "Patch blocked across projects")
@@ -325,14 +325,14 @@ func readyIssuePatchBlockedAcrossProjects(t *testing.T, base routeFixture) locke
 	return fixture.routeWrite(t, "the issue's blocker in another project",
 		func(handler http.Handler) *httptest.ResponseRecorder {
 			return dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+fixture.issueKey,
-				map[string]any{"blocked_by": []string{target}}, "alice")
+				map[string]any{"needs": []string{target}}, "alice")
 		},
 		func(t *testing.T, answer *httptest.ResponseRecorder) {
 			if answer.Code != http.StatusOK {
 				t.Fatalf("patch the issue's blocker: status=%d body=%s", answer.Code, answer.Body.String())
 			}
-			if patched := decodeBody[model.Issue](t, answer); len(patched.BlockedBy) != 1 || patched.BlockedBy[0] != target {
-				t.Fatalf("the patched issue's blocked_by = %v, want [%s]", patched.BlockedBy, target)
+			if patched := decodeBody[model.Issue](t, answer); len(patched.Needs) != 1 || patched.Needs[0] != target {
+				t.Fatalf("the patched issue's needs = %v, want [%s]", patched.Needs, target)
 			}
 		})
 }

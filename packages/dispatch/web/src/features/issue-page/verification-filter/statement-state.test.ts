@@ -424,7 +424,6 @@ function issueTree(checks: readonly CheckBlock[]): TreeNode {
     advances_revision: 0,
     artifacts: [spec, verification],
     assignee: null,
-    blocked_by: [],
     children: [],
     claim: null,
     closed_at: null,

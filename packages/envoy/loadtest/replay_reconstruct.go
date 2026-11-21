@@ -40,7 +40,10 @@ type reconstruction struct {
 }
 
 // wireIssue is the issue snapshot of issue.created, issue.updated and issue.closed (Title set),
-// or the claim payload of issue.claimed and issue.released (Title nil).
+// or the claim payload of issue.claimed and issue.released (Title nil). Its waits are Needs, the
+// one member a Dispatch from dispatch://INFRA-1253's release on writes them in; an event a
+// Dispatch from before that release wrote carries them as BlockedBy alone, and the events table
+// keeps that event as it was written (waits).
 type wireIssue struct {
 	Title             *string      `json:"title"`
 	Status            string       `json:"status"`
@@ -49,10 +52,20 @@ type wireIssue struct {
 	Labels            []string     `json:"labels"`
 	Route             *string      `json:"route"`
 	Claim             *replayClaim `json:"claim"`
+	Needs             *[]string    `json:"needs"`
 	BlockedBy         []string     `json:"blocked_by"`
 	PrimaryArtifactID string       `json:"primary_artifact_id"`
 	CreatedAt         time.Time    `json:"created_at"`
 	CreatedBy         *replayActor `json:"created_by"`
+}
+
+// waits is the issues the recorded snapshot says the issue waits on: its needs, else, for an
+// event written before needs existed, its blocked_by.
+func (w wireIssue) waits() []string {
+	if w.Needs != nil {
+		return *w.Needs
+	}
+	return w.BlockedBy
 }
 
 // wireComment is the comment a comment.* event carries.
@@ -196,7 +209,7 @@ func replayIssueAt(lg issueLog, at, until time.Time, rec *reconstruction) (repla
 			if w.Title != nil {
 				is.Exists = true
 				is.Title, is.Status, is.Parent, is.Priority = *w.Title, w.Status, w.Parent, w.Priority
-				is.Labels, is.Route, is.Claim, is.BlockedBy = w.Labels, w.Route, w.Claim, w.BlockedBy
+				is.Labels, is.Route, is.Claim, is.BlockedBy = w.Labels, w.Route, w.Claim, w.waits()
 				is.PrimaryArtifactID, is.CreatedAt, is.CreatedBy = w.PrimaryArtifactID, w.CreatedAt, w.CreatedBy
 			} else if ev.Type == evIssueClaimed || ev.Type == evIssueReleased {
 				is.Claim = w.Claim

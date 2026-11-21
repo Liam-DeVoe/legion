@@ -587,19 +587,19 @@ func TestDecodeADequeuedPullRequest(t *testing.T) {
 	}
 }
 
-// Dispatch sends an issue's blocked_by keys on every issue event, already ordered: the decoder
+// Dispatch sends an issue's needs keys on every issue event, already ordered: the decoder
 // carries that order onto the fact, and an event retained from a Dispatch that sent no such field
 // decodes as an issue waiting on nothing does.
 func TestADispatchIssueEventCarriesTheKeysItIsBlockedBy(t *testing.T) {
 	subject := "notifications.dispatch.issue.CAPTURE-3.issue.updated"
 	original := string(capturedIssueUpdatedEnvelope(t))
-	blocked := strings.Replace(original, `\"labels\":[]`, `\"blocked_by\":[\"CAPTURE-9\",\"CAPTURE-2\"],\"labels\":[]`, 1)
+	blocked := strings.Replace(original, `\"labels\":[]`, `\"needs\":[\"CAPTURE-9\",\"CAPTURE-2\"],\"labels\":[]`, 1)
 	if blocked == original {
 		t.Fatal("captured issue.updated fixture has no empty labels field to widen")
 	}
 	got, err := decodeMessage(subject, "CAPTURE", capturedRepositories, []byte(blocked))
 	if err != nil {
-		t.Fatalf("decode issue.updated with blocked_by: %v", err)
+		t.Fatalf("decode issue.updated with needs: %v", err)
 	}
 	want := []string{"CAPTURE-9", "CAPTURE-2"}
 	if blockers := got.Fact.(DispatchIssue).Blockers; !reflect.DeepEqual(blockers, want) {
@@ -610,15 +610,14 @@ func TestADispatchIssueEventCarriesTheKeysItIsBlockedBy(t *testing.T) {
 		t.Fatalf("decode captured issue.updated: %v", err)
 	}
 	if blockers := got.Fact.(DispatchIssue).Blockers; len(blockers) != 0 {
-		t.Fatalf("blockers = %#v, want none: the payload carries no blocked_by", blockers)
+		t.Fatalf("blockers = %#v, want none: the payload carries no needs", blockers)
 	}
 }
 
-// A Dispatch of dispatch://INFRA-1253's release on sends an issue's waits as needs beside
-// blocked_by on every issue event, and one of the release before sends blocked_by alone, which a
-// retained event or a new daemon beside an old Dispatch still delivers. The decoder reads needs
-// where the event carries it, whatever blocked_by holds beside it, and blocked_by where it does
-// not (dispatch.WaitsOf).
+// needs is the one member a Dispatch from dispatch://INFRA-1253's release on writes an issue's
+// waits in on every issue event (R27 of dispatch://INFRA-1098). The decoder reads needs where the
+// event carries it, whatever blocked_by holds beside it, and reads no blockers from an event that
+// carries blocked_by alone: there is no fallback to it.
 func TestADispatchIssueEventReadsItsWaitsFromNeeds(t *testing.T) {
 	subject := "notifications.dispatch.issue.CAPTURE-3.issue.updated"
 	original := string(capturedIssueUpdatedEnvelope(t))
@@ -628,7 +627,7 @@ func TestADispatchIssueEventReadsItsWaitsFromNeeds(t *testing.T) {
 		want    []string
 	}{
 		{"needs alone", `\"needs\":[\"CAPTURE-9\",\"CAPTURE-2\"],`, []string{"CAPTURE-9", "CAPTURE-2"}},
-		{"blocked_by alone", `\"blocked_by\":[\"CAPTURE-9\",\"CAPTURE-2\"],`, []string{"CAPTURE-9", "CAPTURE-2"}},
+		{"blocked_by alone", `\"blocked_by\":[\"CAPTURE-9\",\"CAPTURE-2\"],`, nil},
 		{"both, naming different issues", `\"needs\":[\"CAPTURE-9\",\"CAPTURE-2\"],\"blocked_by\":[\"CAPTURE-7\"],`, []string{"CAPTURE-9", "CAPTURE-2"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

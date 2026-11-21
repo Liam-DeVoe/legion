@@ -59,9 +59,8 @@ type createIssueInput struct {
 	Project string  `json:"project"`
 	Title   string  `json:"title"`
 	Parent  *string `json:"parent"`
-	// Needs is the issues the new issue waits on, and BlockedBy the same list under the spelling
-	// a client of the release before sends; a body naming both names the same issues in each
-	// (resolveIssueWaits).
+	// Needs is the issues the new issue waits on. BlockedBy stays declared so that a body naming
+	// it and no needs is refused by name; beside needs it is ignored (resolveIssueWaits).
 	Needs     []string `json:"needs"`
 	BlockedBy []string `json:"blocked_by"`
 	// DuplicateOf is the key of an issue of the project the new issue repeats, and FiledFrom the

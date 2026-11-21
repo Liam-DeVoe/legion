@@ -1294,7 +1294,7 @@ So for each surface the two builds share, this is what build N+1 may change whil
   So a member whose loss changes what a request does (a precondition, a guard, a member that makes the request do something else) ships as a new route, never as a new member:
   build N would ignore it and do the request without it.
   A member a route stops taking stays declared and is refused by name, so a page or command that still sends it is told rather than silently served without it:
-  `primary` on the JSON upload, `idempotency_key` on a broadcast, whose key is the `Idempotency-Key` header.
+  `primary` on the JSON upload, `idempotency_key` on a broadcast, whose key is the `Idempotency-Key` header, and `blocked_by` on the issue create and PATCH, refused `400 BLOCKED_BY_INPUT` naming `needs` where the body names no `needs`, and ignored beside it.
   A test hook (`/_test/…`, mounted only under `DISPATCH_TEST_HOOKS`) refuses every member it does not declare (`decodeJSONTestHook`): no client of another build calls one.
 
 - **Routes.**
@@ -6019,7 +6019,7 @@ Each item below names a path with its method and identity, then its purpose.
   Serve the dashboard static files.
 
 An event's payload says what its write moved, so a reader can refresh only what it shows (the dashboard's rules are `packages/dispatch/web/src/api/event-refresh.ts`).
-`issue.created`, `issue.updated` and `issue.closed` carry `changed`, the fields whose value the write moved (`title`, `status`, `closed_at` for a close or a reopen, `rank`, `priority`, `assignee`, `parent`, `labels`, `route`, `repo`, `components`, `blocked_by` and `needs`, the one wait under both its spellings, `duplicate_of`, `filed_from`, `external_links`;
+`issue.created`, `issue.updated` and `issue.closed` carry `changed`, the fields whose value the write moved (`title`, `status`, `closed_at` for a close or a reopen, `rank`, `priority`, `assignee`, `parent`, `labels`, `route`, `repo`, `components`, `needs`, `duplicate_of`, `filed_from`, `external_links`;
 on `issue.created` every field the new issue holds a value in), and `ancestors`, the issue's parent chain, parent first up to the root (`[]` for a root).
 `thread_logins`, every login whose Inbox the write can have moved, is on `comment.created` and `comment.answered`, on `message.created` and `message.answered`, on `ask.opened`, `ask.answered`, `ask.resolved` and `ask.asked_of`, and on an `issue.updated` or `issue.closed` that moved the status or the assignee.
 On a comment, an ask or an issue message it is the logins with a Replies row on the write's thread once the write is in;
@@ -6044,7 +6044,7 @@ past the cap of a kind the event names none of that kind, lists it in `reference
 It also names a target whose edge the write kept but whose excerpt it moved:
 an edit of an ask's question or a comment's body that changes the head of its text names every target the text still cites, a document version names each target whose stored excerpt it changed and each target a block it changed still cites, and a retitle names the issue's parent and the issues it waits on, whose panels show its title.
 A document version also names each block it changed or deleted that something cites, since every link to the block shows its text, and a comment's or issue message's write names each target whose link it moved from one of the item's blocks to another.
-An issue write that adds or removes an issue it waits on (`needs`, or `blocked_by` beside it) names each issue it added or removed, whose `referenced_by_count` counts the edge;
+An issue write that adds or removes an issue it waits on (`needs`) names each issue it added or removed, whose `referenced_by_count` counts the edge;
 one that moves its `duplicate_of` or its `filed_from` names the issue or the item it moved off and the one it moved onto;
 and an `issue.created` names every issue the new issue waits on and the issue and the item its `duplicate_of` and `filed_from` name.
 A changed target that is an issue's own content (a document of the issue or a block of it, an ask of it or a part of it, a comment, a message, or a block of one) also names that issue, as a target of kind `issue`, once and after the other targets, unless the write names that issue already; a comment, a message and their blocks still name no target of their own.

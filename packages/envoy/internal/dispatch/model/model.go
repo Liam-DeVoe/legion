@@ -605,12 +605,11 @@ type Issue struct {
 	Rank     string   `json:"rank"`
 	Labels   []string `json:"labels"`
 	Parent   *string  `json:"parent"`
-	// BlockedBy and Needs are the issue keys this issue waits on, of any project, sorted: one
-	// relation, the needs tuples of the issue (dispatch://INFRA-1253 R10), answered by the
-	// issue_links rows that project them, under both spellings through this release, since a
-	// reader of the release before reads blocked_by.
-	BlockedBy []string `json:"blocked_by"`
-	Needs     []string `json:"needs" required:"false"`
+	// Needs is the issue keys this issue waits on, of any project, sorted: its needs relation, the
+	// needs tuples of the issue (dispatch://INFRA-1253 R10), answered by the issue_links rows that
+	// project them. It is the one spelling: the issue read answers no blocked_by (R27 of
+	// dispatch://INFRA-1098).
+	Needs []string `json:"needs" required:"false"`
 	// DuplicateOf is the key of the issue of this issue's project it repeats, and FiledFrom the
 	// canonical reference of the ask, comment or message it was filed out of
 	// (dispatch://INFRA-1253 R9), each the far end of the issue's duplicate_of or filed_from tuple
@@ -720,9 +719,8 @@ type IssueSummary struct {
 	Rank     string   `json:"rank"`
 	Labels   []string `json:"labels"`
 	Parent   *string  `json:"parent"`
-	// BlockedBy and Needs are Issue's: one relation under both spellings.
-	BlockedBy []string `json:"blocked_by"`
-	Needs     []string `json:"needs" required:"false"`
+	// Needs is Issue's.
+	Needs []string `json:"needs" required:"false"`
 	// Advances and AdvancesRevision are Issue's: every listing row answers the same entries and
 	// the same revision the issue's own read answers.
 	Advances         []IssueAdvance `json:"advances"`
@@ -1129,7 +1127,7 @@ type NearCopyChecksPage struct {
 // include the child itself, every status (icebox included); done is `status = 'done'`.
 // ActiveAt is the newest updated_at anywhere in the child's subtree. Needs and Claim are the
 // child's own, each left out when it has none: Needs the sorted keys of the issues it waits on,
-// the elements of Issue's blocked_by, and Claim the claim holding it, in Issue's shape.
+// the elements of Issue's needs, and Claim the claim holding it, in Issue's shape.
 type IssueChild struct {
 	Key           string         `json:"key"`
 	Title         string         `json:"title"`
@@ -2187,7 +2185,7 @@ type AskAnsweredEventPayload struct {
 // issue.created, issue.updated and issue.closed also say what the write changed, read in its own
 // transaction: Changed names each field whose value the write moved (title, status, closed_at
 // for a close or a reopen, rank, priority, assignee, parent, labels, route, repo, components,
-// advances, blocked_by and needs together, duplicate_of, filed_from, external_links; for
+// advances, needs, duplicate_of, filed_from, external_links; for
 // issue.created every field the new issue holds a value in),
 // Ancestors the issue's parent chain,
 // parent first up to the root ([] for a root), and ThreadLogins, only when the status or the
@@ -3830,14 +3828,15 @@ type GraphExcerpt struct {
 // behind them (graphstore.TupleChangedByRun and the four beside it, and graphstore.TupleAuthoredBy
 // of an interaction, a lens, a finding, a risk and a constraint), which the view answers from the
 // tuples alone, and an issue's duplicate_of and filed_from, which the store holds alone too
-// (dispatch://INFRA-1253 R9). blocked_by is the kind graph_edges names an issue's wait on an issue
-// by through this release, in its old arm and its tuple arm alike, the kind a process of the
-// release before reads that wait by; this build's references read answers the same wait as needs
-// (EdgeKindNeeds) and takes either spelling in its kind filter (R10). A typed block's `block[]`
-// attribute makes edges of a kind named by the attribute (pmdoc.LinkKinds), which is none of these
-// but needs: a schema name equal to one would merge silently with it in every reader, and needs is
-// the one relation the two families share, since an issue and a plan node wait by one relation.
-var GraphEdgeKinds = []string{"mentions", "child_of", "blocked_by", "attached_to", "anchored_to", "owned_by", "replies_to", "answers", "followed_by", "part_of", "depends_on", "affects",
+// (dispatch://INFRA-1253 R9). An issue's wait on an issue is needs (EdgeKindNeeds), the kind every
+// read answers it by, and no kind of this list is blocked_by (R27 of dispatch://INFRA-1098): until
+// the view is one select, graph_edges still stores that wait under the kind blocked_by, which the
+// references read takes under needs and answers as needs (api's answerIssueWaitsAsNeeds). A typed
+// block's `block[]` attribute makes edges of a kind named by the attribute (pmdoc.LinkKinds), which
+// is none of these but needs: a schema name equal to one would merge silently with it in every
+// reader, and needs is the one relation the two families share, since an issue and a plan node wait
+// by one relation.
+var GraphEdgeKinds = []string{"mentions", "child_of", "attached_to", "anchored_to", "owned_by", "replies_to", "answers", "followed_by", "part_of", "depends_on", "affects",
 	"changed_by_run", "has_kind", "triggered_by", "constrained_by", "prevented_by", "authored_by",
 	EdgeKindNeeds, "duplicate_of", "filed_from"}
 

@@ -657,8 +657,8 @@ function changesReferenceGraph(event: DispatchEvent): boolean {
       const changes = issueChanges(event);
       return (
         changes === undefined ||
-        ["parent", "needs", "blocked_by", "duplicate_of", "filed_from", "components", "title"].some(
-          (field) => changes.has(field)
+        ["parent", "needs", "duplicate_of", "filed_from", "components", "title"].some((field) =>
+          changes.has(field)
         )
       );
     }
@@ -781,18 +781,10 @@ function issueWriteTargets(
   // A `child_of` edge into the parent, a `needs` edge into each issue it waits on, a
   // `duplicate_of` edge into the issue it repeats and a `filed_from` edge into the item it was
   // filed out of are rows of their backlink panels: the new far ends are the payload's, the old
-  // ones are the panels that still list an edge from this issue. A Dispatch of the release before
-  // writes `blocked_by` alone, which is read where the payload holds no `needs`, and names the
-  // edge blocked_by.
-  if (
-    moved("parent") ||
-    moved("needs") ||
-    moved("blocked_by") ||
-    moved("duplicate_of") ||
-    moved("filed_from")
-  ) {
+  // ones are the panels that still list an edge from this issue.
+  if (moved("parent") || moved("needs") || moved("duplicate_of") || moved("filed_from")) {
     const parent = payloadString(event, "parent");
-    const waits = payloadStrings(event, "needs") ?? payloadStrings(event, "blocked_by") ?? [];
+    const waits = payloadStrings(event, "needs") ?? [];
     const duplicate = payloadString(event, "duplicate_of");
     const filed = payloadString(event, "filed_from")?.split("/").pop();
     targets.push(
@@ -813,13 +805,11 @@ function issueWriteTargets(
   return targets;
 }
 
-/** The kinds of edge an issue states out of its own node: its parent, its waits under both the
- *  spelling this Dispatch answers and the one a Dispatch of the release before answers, the
- *  issue it repeats and the item it was filed out of. */
+/** The kinds of edge an issue states out of its own node: its parent, its waits, the issue it
+ *  repeats and the item it was filed out of. */
 const ISSUE_RELATION_KINDS: Partial<Record<string, true>> = {
   child_of: true,
   needs: true,
-  blocked_by: true,
   duplicate_of: true,
   filed_from: true,
 };

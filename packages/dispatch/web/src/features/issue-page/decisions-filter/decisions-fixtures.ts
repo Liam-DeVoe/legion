@@ -69,7 +69,6 @@ export function issueDetails(): IssueDetails {
     advances_revision: 0,
     artifacts: [SPEC_DOCUMENT],
     assignee: null,
-    blocked_by: [],
     children: [],
     claim: null,
     closed_at: null,

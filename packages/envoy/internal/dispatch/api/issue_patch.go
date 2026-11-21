@@ -42,9 +42,9 @@ type updateIssueInput struct {
 	ExternalLinks *[]model.ExternalLink `json:"external_links"`
 	Assignee      json.RawMessage       `json:"assignee"`
 	Parent        json.RawMessage       `json:"parent"`
-	// Needs is the replacement list of the issues this issue waits on ([] clears it), and
-	// BlockedBy the same list under the spelling a client of the release before sends; a body
-	// naming both names the same issues in each (resolveIssueWaits).
+	// Needs is the replacement list of the issues this issue waits on ([] clears it). BlockedBy
+	// stays declared so that a body naming it and no needs is refused by name; beside needs it is
+	// ignored (resolveIssueWaits).
 	Needs     *[]string `json:"needs"`
 	BlockedBy *[]string `json:"blocked_by"`
 	// DuplicateOf and FiledFrom replace the issue's duplicate_of and filed_from, or clear either
@@ -685,9 +685,9 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		eventType = "issue.closed"
 	}
 	// What the write changed, the issue's ancestors, and, for a status or an assignee move, whose
-	// Inbox rows it can move. A retitle keeps the issue's child_of and blocked_by edges but moves
-	// the excerpt they show, so it names their targets; a blocked_by change moves the count of
-	// each blocker it added or removed, so it names those.
+	// Inbox rows it can move. A retitle keeps the issue's child_of and needs edges but moves the
+	// excerpt they show, so it names their targets; a needs change moves the count of each issue
+	// it added or removed, so it names those.
 	changedFields := issueChangedFields(before, after)
 	edgeChanges, err := issueEdgeChanges(r.Context(), tx, before, after, slices.Contains(changedFields, "title"))
 	if err != nil {

@@ -97,7 +97,6 @@ function issueDetails(artifacts: readonly Artifact[]): IssueDetails {
     advances_revision: 0,
     artifacts: [...artifacts],
     assignee: null,
-    blocked_by: [],
     children: [],
     claim: null,
     closed_at: null,
