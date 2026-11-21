@@ -320,7 +320,10 @@ type coldFold struct {
 // A fold binds no reader: it loads the history in a transaction of its own, after the stamp, and
 // every read missing that stamp shares it. So a read that waited on a fold is answered only once
 // its own stamp read, made again after the fold, still finds the document: one made hidden from who
-// between the stamp and the fold's load is pgx.ErrNoRows too, as at the first read.
+// between the stamp and the fold's load is pgx.ErrNoRows too, as at the first read. A reader that
+// reads every document (readsEveryDocument: the server's own, or an open viewer of a deployment
+// with no private project) makes no such read again, so its cold read costs the statements the
+// base made (TestAColdTextReadCostsTheStatementsTheBaseMade).
 //
 // The fold is the document's: it runs on a context no request's end cancels, bounded by the
 // cache's timeout, so a read whose request ends gets its own context's error at once and leaves
@@ -367,8 +370,10 @@ func (s *Service) coldRead(ctx context.Context, who model.Actor, artifactID stri
 			return nil, nil, fmt.Errorf("%w: %w", ErrServiceUnavailable, result.Err)
 		}
 		fold := result.Val.(coldFold)
-		if err := s.stillReads(ctx, artifactID, viewer); err != nil {
-			return nil, nil, err
+		if !readsEveryDocument(who) {
+			if err := s.stillReads(ctx, artifactID, viewer); err != nil {
+				return nil, nil, err
+			}
 		}
 		return fold.read, fold.tree, fold.treeErr
 	}

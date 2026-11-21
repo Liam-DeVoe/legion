@@ -91,6 +91,11 @@ var m19BindingFragments = map[string]bool{
 	"RoleProjectClause":       false,
 	"SessionClause":           false,
 	"VisibleProjectsSQL":      false,
+
+	// It holds the projects row it reads to the row's own project key and to the viewer: a private
+	// project the viewer does not see, whose issues the repository rule reads only to hide a
+	// repository, never to answer them (refs.RepositoryClause).
+	"HiddenPrivateProjectClause": true,
 }
 
 // m19Owner is what holds a row to the object whose visibility decides its own: the owner's table

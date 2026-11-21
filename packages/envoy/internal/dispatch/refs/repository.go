@@ -2,29 +2,28 @@ package refs
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"strconv"
-	"strings"
-	"time"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/access"
-	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
-	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // ProjectRepositoriesSQL is the server's one rule of which GitHub repositories each project owns,
-// as a query of the rows (project text, repo text): a project owns every repository an issue of it
-// resolves to by the server's one rule (IssueRepoTerms, IssueRepoJoin, IssueRepoResolved: the
-// issue's own repository, else its nearest parent's, else its project's default), whether the
-// issue is open or done. Issues are a repository's only owners: a repository mapping gives no
-// project a repository, and no recorded rename is read. An issue's own repository may name any
-// owner/name, so an issue of one project can make another project's repository its own as well:
-// ownership is then shared, never moved. An issue whose chain the walk cannot finish resolves to
-// its project's default, as the terms answer it. Every rule that hides a repository by the projects
-// that own it reads this query (RepositoryClause), so no two of them can come to different owners.
+// as a query of the rows (project text, issue text, number bigint, repo text), one for each issue
+// of the projects it passes that resolves to a repository: a project owns every repository an
+// issue of it resolves to by the server's one rule (IssueRepoTerms, IssueRepoJoin,
+// IssueRepoResolved: the issue's own repository, else its nearest parent's, else its project's
+// default), whether the issue is open or done. Issues are a repository's only owners: a repository
+// mapping gives no project a repository, and no recorded rename is read. An issue's own repository
+// may name any owner/name, so an issue of one project can make another project's repository its
+// own as well: ownership is then shared, never moved. Every rule that hides a repository by the
+// projects that own it reads this query (RepositoryClause), and so does ProjectRepositories, so no
+// two of them can come to different owners.
+//
+// An issue whose chain the walk cannot finish (IssueRepoTooDeep: deeper than IssueDepthCap links,
+// or a loop) answers a row whose repo is null: it resolves to no repository, so it owns none and
+// hides none, and RepositoryClause, comparing null with a name, never matches it. Only
+// ProjectRepositories refuses its project (*UnresolvedChainError), so a list of a project's
+// repositories never leaves out one its unread ancestors may name.
 //
 // repo is the resolved name lower-cased, as GitHub spells an owner and a name as their owners do,
 // so a caller compares it with lower() of the name it holds. A project that owns a repository
@@ -33,8 +32,8 @@ import (
 // projects narrows the rows to the projects it passes: a SQL boolean over the bare column
 // project_key, the project a row would answer, true or false and never null. Only the issues of
 // the projects it passes are walked, so a narrow filter costs a narrow walk. It may name the
-// embedding statement's placeholders, and any column it names other than project_key must be
-// qualified by an alias of the embedding statement.
+// embedding statement's placeholders and the bare column key, the issue's own; any other column
+// it names must be qualified by an alias of the embedding statement.
 //
 // The text is a whole query that begins `with recursive`, so a statement embeds it as a
 // parenthesized subquery, as this one answers the projects that own each repository of an array
@@ -50,211 +49,151 @@ func ProjectRepositoriesSQL(projects string) string {
 	return `with recursive subjects as (
 			select i.key from issues i where ` + projects + `
 		), ` + IssueRepoTerms + `
-		select i.project_key as project, lower(` + IssueRepoResolved + `) as repo
+		select i.project_key as project, i.key as issue, i.number as number,
+			case when ` + IssueRepoTooDeep + ` then null else lower(` + IssueRepoResolved + `) end as repo
 		from subjects s join issues i on i.key = s.key ` + IssueRepoJoin + `
-		where ` + IssueRepoResolved + ` is not null`
+		where ` + IssueRepoResolved + ` is not null or ` + IssueRepoTooDeep
 }
 
-// RepositoryClause passes the GitHub repository repoExpr names, as owner/name, whose GitHub id
-// idExpr answers (a bigint, null where it is not known), to the viewer bound at viewerParam
-// (VisibilityArg). A repository passes in two cases, and fails in every other:
+// UnresolvedChainError is ProjectRepositories' refusal of a project one of whose issues has a
+// parent chain the walk could not finish, deeper than IssueDepthCap links or a loop: Issue is the
+// first such issue by number. Its unread ancestors may name a repository, so no list is answered
+// rather than one that leaves that repository out.
+type UnresolvedChainError struct {
+	Project, Issue string
+}
+
+func (e *UnresolvedChainError) Error() string {
+	return fmt.Sprintf("the repositories of project %s are unresolved: the parent chain of %s is deeper than %d links or loops",
+		e.Project, e.Issue, IssueDepthCap)
+}
+
+// projectRepositoriesQuery is ProjectRepositoriesSQL over the project bound at $1, in one walk:
+// whether the project exists, the first issue by number whose chain the walk could not finish, and
+// the repositories the others resolve to, each once and sorted byte-wise (collate "C", the order
+// Go's sort.Strings gives, whatever the database's collation). The text is built once, at start.
+var projectRepositoriesQuery = `
+	select exists (select 1 from projects where key = $1), answer.unresolved, coalesce(answer.repositories, '{}')
+	from (
+		select (array_agg(owned.issue order by owned.number) filter (where owned.repo is null))[1] as unresolved,
+			array_agg(distinct owned.repo collate "C" order by owned.repo collate "C") filter (where owned.repo is not null) as repositories
+		from (` + ProjectRepositoriesSQL("project_key = $1") + `) owned
+	) answer`
+
+// ProjectRepositories is the repository each issue of project resolves to, open or done, read
+// through q: its own, else the nearest one above it on `child_of`, else its project's default. It
+// reads ProjectRepositoriesSQL, the text by which the GitHub proxy and Delivery hide a repository
+// (RepositoryClause), so a repository is in this list exactly when that rule counts the project
+// as its owner: issues alone own repositories, so a mapping the project holds adds nothing, and
+// no recorded rename is read. Each repository is named once, lower-cased, and the list is sorted
+// byte-wise; a project none of whose issues resolves to one answers [], never nil. An issue whose
+// chain the walk could not finish is an *UnresolvedChainError naming the first by number, never
+// the list of the others, and an unknown project is access.ErrProjectNotFound.
+func ProjectRepositories(ctx context.Context, q Queryer, project string) ([]string, error) {
+	var exists bool
+	var unresolved *string
+	repositories := []string{}
+	if err := q.QueryRow(ctx, projectRepositoriesQuery, project).Scan(&exists, &unresolved, &repositories); err != nil {
+		return nil, fmt.Errorf("resolve the repositories of project %s: %w", project, err)
+	}
+	if !exists {
+		return nil, fmt.Errorf("%w: %s", access.ErrProjectNotFound, project)
+	}
+	if unresolved != nil {
+		return nil, &UnresolvedChainError{Project: project, Issue: *unresolved}
+	}
+	return repositories, nil
+}
+
+// RepositoryClause passes the GitHub repository repoExpr names, as owner/name, to the viewer bound
+// at viewerParam (VisibilityArg). A repository passes in two cases, and fails in every other:
 //
-//   - an issue of a project the viewer sees resolves to it (ProjectRepositoriesSQL), by its name;
-//   - the viewer is open, and no project the viewer does not see owns it, by its name or by its id.
+//   - an issue of a project the viewer sees resolves to it (ProjectRepositoriesSQL), whatever other
+//     project, private ones included, owns it too: where issues of a private project and of a
+//     public project work in one repository, the public project's people read it whole;
+//   - the viewer is open, and no private project the viewer does not see owns it.
 //
-// A project owns a repository by its id when an issue of it resolves to a name repository_ids
-// records the same id for (LearnRepositoryIDs), which is how a private project's repository is
-// still its own after GitHub renames it or moves it to another owner. Only a private project the
-// viewer does not see is read for the id. Where such a project owns any repository, a repository
-// whose id is not known, or any repository at all while a name such a project owns has no id
-// repository_ids knows, fails for an open viewer whom no issue it sees gives the repository: the
-// clause cannot tell that repository from the hidden one, so it answers as hidden
-// (RepositoryIDNeededClause says when a caller must ask GitHub for the id).
+// So a viewer who is not open, a restricted member or a credential acting for one, reads only a
+// repository an issue of a project it sees resolves to; a full member's credential is open whatever
+// it lists (access.CredentialCovers). A repository is held by its name
+// alone: once GitHub renames a private project's repository or moves it to another owner, an open
+// viewer reads it under the new name until an issue of that project resolves to the new name.
 //
 // The server's own viewer passes every repository, and so does an open viewer of a deployment with
-// no private project, which reads no issue and no id for it (R9). For an open viewer the private
-// projects it does not see are read first, and those it sees only where one of the others could
-// hide the repository; for any other viewer only the projects it sees are read. It is in refs
-// rather than access because refs imports access. The GitHub proxy (routes) and delivery's pull
-// requests that name no issue and runs that name none (api, delivery) each hold a repository to it.
+// no private project, which reads no issue for it (R9). For an open viewer the private projects it
+// does not see are read first, and those it sees only where one of the others owns the repository;
+// for any other viewer only the projects it sees are read. It is in refs rather than access because
+// refs imports access. The GitHub proxy (routes), the App-installation route (api) and delivery's
+// pull requests that name no issue and runs that name none (api, delivery) each hold a repository
+// to it.
 //
-// repoExpr and idExpr are each spliced more than once, so each must be a column, a bound parameter
-// or another side-effect-free expression, and neither may be a bare column named repo or project,
-// nor name the aliases owned or learned; the clause answers true or false, never null.
-func RepositoryClause(repoExpr, idExpr, viewerParam string) string {
+// repoExpr is spliced more than once, so it must be a column, a bound parameter or another
+// side-effect-free expression, not a bare column named repo or project, nor name the aliases owned,
+// own_named, own_project, own_top, own_child or own_parent, nor repo_default; the clause answers
+// true or false, never null.
+func RepositoryClause(repoExpr, viewerParam string) string {
 	open := access.ViewerFlag(viewerParam, "open")
 	return `(` + access.ViewerFlag(viewerParam, "all") + ` or (` + open + ` and not ` + access.ViewerFlag(viewerParam, "private") + `) or case
-		when ` + open + ` and not ` + repositoryHeld(repoExpr, idExpr, viewerParam) + ` then true
+		when ` + open + ` and not ` + repositoryHeld(repoExpr, viewerParam) + ` then true
 		else ` + repositorySeen(repoExpr, viewerParam) + `
 	end)`
 }
 
-// RepositoryIDNeededClause is true when RepositoryClause's answer for the repository repoExpr names
-// turns on its GitHub id for the viewer bound at viewerParam: the viewer is open, sees not every
-// object, a project is private, no issue of a project the viewer sees resolves to the repository,
-// and a private project the viewer does not see owns repositories, none of them under this name.
-// Only then does the GitHub proxy ask GitHub for the repository's id (routes' repositoryHidden);
-// every other answer is decided by the name, and GitHub is asked nothing about a repository the
-// name hides.
-func RepositoryIDNeededClause(repoExpr, viewerParam string) string {
-	return `(not ` + access.ViewerFlag(viewerParam, "all") + ` and ` + access.ViewerFlag(viewerParam, "open") + ` and ` +
-		access.ViewerFlag(viewerParam, "private") + ` and not ` + repositorySeen(repoExpr, viewerParam) + ` and coalesce((
-		select bool_and(owned.repo <> lower((` + repoExpr + `)::text)) from (` + ProjectRepositoriesSQL(hiddenPrivateProjects(viewerParam)) + `) owned
-	), false))`
-}
-
-// RepositoryIDSQL is the GitHub id repository_ids records for the repository repoExpr names, null
-// where it records none, or records that the App reads no repository under that name: the id a
-// stored row of a repository, which carries none of its own, is held to RepositoryClause with.
-func RepositoryIDSQL(repoExpr string) string {
-	return `(select recorded.github_id from repository_ids recorded where recorded.repo = lower((` + repoExpr + `)::text))`
+// RepositoryHidden is RepositoryClause's negation: true where the GitHub proxy hides the
+// repository repoExpr names from the viewer bound at viewerParam, false where it shows it, never
+// null. A write that would give a repository to the people of a project its writer sees holds the
+// repository to it with the writer as the viewer (api's refuseRepoHidden: an issue's own
+// repository, a project's default), so a writer gives no project a repository the proxy would not
+// show the writer, and the write and the proxy cannot come to different answers. repoExpr is
+// spliced as RepositoryClause's.
+func RepositoryHidden(repoExpr, viewerParam string) string {
+	return `(not ` + RepositoryClause(repoExpr, viewerParam) + `)`
 }
 
 // repositorySeen is whether an issue of a project the viewer sees resolves to the repository
-// repoExpr names.
+// repoExpr names (ProjectRepositoriesSQL). It asks three questions, each cheaper than a walk of
+// every issue the viewer sees, and between them they find every such issue:
+//
+//   - is there a seen issue whose own repository is that name? It resolves to it. Issue
+//     repositories are stored lower-cased, so the issues_repo index answers first; a name stored
+//     under another case is read by a scan only when the index finds none.
+//   - is there a seen project whose default is that name and which holds an issue that names no
+//     repository and has no parent? That issue resolves to the default.
+//   - does ProjectRepositoriesSQL resolve to that name a seen issue that names no repository and
+//     whose parent is of another project? Those are the only issues the first two can miss: an
+//     issue whose chain stays in its own project resolves to the own repository of an issue above
+//     it in that project, which the first question finds, or to its project's default through a
+//     top issue of that project, which the second finds. An issue whose chain leaves its project
+//     resolves as the last issue of its project on the chain does, the one whose parent is of
+//     another project, so only those are walked. No API write gives an issue a parent of another
+//     project (api/issue_parent.go), so a deployment whose rows only the API wrote holds none, and
+//     the walk reads no issue.
+//
+// It sits under RepositoryClause's CASE, so each `exists` ends in `offset 0`, as every `exists` a
+// clause adds there does (#3178 at 0f8b389c).
 func repositorySeen(repoExpr, viewerParam string) string {
-	return `exists (select from (` + ProjectRepositoriesSQL(access.ProjectClause("project_key", viewerParam)) + `) owned
-		where owned.repo = lower((` + repoExpr + `)::text))`
+	named := `lower((` + repoExpr + `)::text)`
+	return `(case when exists (select from issues own_named where own_named.repo = ` + named + `
+			and ` + access.ProjectClause("own_named.project_key", viewerParam) + ` offset 0) then true
+		when exists (select from issues own_named where own_named.repo is not null and lower(own_named.repo) = ` + named + `
+			and ` + access.ProjectClause("own_named.project_key", viewerParam) + ` offset 0) then true
+		when exists (select from projects own_project where ` + access.ProjectClause("own_project.key", viewerParam) + `
+			and lower(` + projectDefaultRepoSQL("own_project.key") + `) = ` + named + `
+			and exists (select from issues own_top where own_top.project_key = own_project.key and own_top.parent_key is null and own_top.repo is null
+				and ` + access.ProjectClause("own_top.project_key", viewerParam) + ` offset 0)
+			offset 0) then true
+		else exists (select from (` + ProjectRepositoriesSQL(access.ProjectClause("project_key", viewerParam)+` and key in (
+				select own_child.key from issues own_child join issues own_parent on own_parent.key = own_child.parent_key
+				where own_child.repo is null and own_parent.project_key <> own_child.project_key
+					and `+access.ProjectClause("own_child.project_key", viewerParam)+`)`) + `) owned
+			where owned.repo = ` + named + `
+			offset 0) end)`
 }
 
 // repositoryHeld is whether a private project the viewer does not see owns the repository repoExpr
-// names, whose id idExpr answers, or may: an issue of it resolves to the name, or to a name
-// repository_ids records that id for, or it owns any repository while the id is not known, or
-// while a name it owns has no id repository_ids knows.
-func repositoryHeld(repoExpr, idExpr, viewerParam string) string {
-	return `coalesce((select bool_or(owned.repo = lower((` + repoExpr + `)::text) or learned.github_id is null or (` + idExpr + `)::bigint is null
-			or learned.github_id = (` + idExpr + `)::bigint)
-		from (` + ProjectRepositoriesSQL(hiddenPrivateProjects(viewerParam)) + `) owned
-		left join repository_ids learned on learned.repo = owned.repo), false)`
-}
-
-// hiddenPrivateProjects passes, over the bare column project_key, a private project the viewer does
-// not see.
-func hiddenPrivateProjects(viewerParam string) string {
-	return `not ` + access.ProjectClause("project_key", viewerParam) + ` and project_key in (select hiding.key from projects hiding where hiding.visibility = 'private')`
-}
-
-// RepositoryIDsPerLearn is how many names one LearnRepositoryIDs asks GitHub about at most, so a
-// request that learns pays for a bounded number of GitHub reads; the names left are learned by the
-// next call, and until then RepositoryClause answers as hidden what turns on them.
-const RepositoryIDsPerLearn = 10
-
-// RepositoryIDRecheck is how long GitHub's answer that the App reads no repository under a name
-// stands before LearnRepositoryIDs asks again, so a name the App cannot read costs one GitHub read
-// an hour rather than one a request. RepositoryClause reads such a name as one whose id it does not
-// know whatever its age.
-const RepositoryIDRecheck = time.Hour
-
-// repositoryIDsOwedQuery is every name an issue of a private project resolves to that
-// repository_ids holds no answer for, or holds an answer older than $1 seconds that the App reads no
-// repository under it, at most $2 of them, sorted.
-var repositoryIDsOwedQuery = `select distinct owned.repo
-	from (` + ProjectRepositoriesSQL(`project_key in (select owning.key from projects owning where owning.visibility = 'private')`) + `) owned
-	left join repository_ids learned on learned.repo = owned.repo
-	where learned.repo is null or (learned.github_id is null and learned.learned_at < now() - $1::bigint * interval '1 second')
-	order by owned.repo
-	limit $2`
-
-// LearnRepositoryIDs asks GitHub, through client, for the id of each repository an issue of a
-// private project resolves to that repository_ids holds no id for (repositoryIDsOwedQuery), and
-// records each answer: the id GitHub gives the repository it reads under the name (GET
-// /repos/{owner}/{repo}, with the token of the App installation covering it), with the name GitHub
-// gives that repository now beside it when that is another name (a name renamed away is answered by
-// GitHub under its new one), or no id where GitHub answers that the App reads no repository under
-// the name. A deployment with no private project owes no name, so GitHub is asked nothing (R9),
-// and so is one with no App key (a nil client), whose proxy reads no repository at all.
-//
-// The first other failure, a rate limit among them, ends the call and is returned: its name and the
-// names after it stay owed, and RepositoryClause answers as hidden what turns on them. The GitHub
-// proxy calls it before it judges a repository by its id (routes' repositoryHidden), and the
-// delivery intake on each pull-request envelope, so Delivery's reads find the ids they turn on.
-func LearnRepositoryIDs(ctx context.Context, pool *store.Pool, client *githubapp.Client) error {
-	if client == nil {
-		return nil
-	}
-	rows, err := pool.Query(ctx, repositoryIDsOwedQuery, int64(RepositoryIDRecheck/time.Second), RepositoryIDsPerLearn)
-	if err != nil {
-		return fmt.Errorf("read the repositories whose GitHub id is owed: %w", err)
-	}
-	names, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return fmt.Errorf("read the repositories whose GitHub id is owed: %w", err)
-	}
-	for _, name := range names {
-		owner, repo, _ := strings.Cut(name, "/")
-		identity, err := ReadRepositoryIdentity(ctx, client, owner, repo)
-		switch {
-		case errors.Is(err, ErrNoRepository):
-			if err := recordRepositoryID(ctx, pool, name, nil); err != nil {
-				return err
-			}
-			continue
-		case err != nil:
-			return fmt.Errorf("learn the GitHub id of %s: %w", name, err)
-		}
-		if err := RecordRepositoryID(ctx, pool, name, identity.ID); err != nil {
-			return err
-		}
-		if current := strings.ToLower(identity.FullName); current != name && strings.Contains(current, "/") {
-			if err := RecordRepositoryID(ctx, pool, current, identity.ID); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-// ErrNoRepository is GitHub's answer that the App reads no repository under a name: no installation
-// of the App covers it, or the installation's read of it is refused or not found.
-var ErrNoRepository = errors.New("the GitHub App reads no repository under this name")
-
-// ReadRepositoryIdentity is GitHub's GET /repos/{owner}/{repo} read with the token of the App
-// installation covering it: the id of the repository the App reads under the name, and the name
-// GitHub gives it now. It is ErrNoRepository where GitHub answers that the App reads none there,
-// and GitHub's own error, a rate limit among them, for any other failure. The GitHub proxy reads
-// the id of the repository it is asked for through it (routes' repositoryHidden), and
-// LearnRepositoryIDs the id of each name it learns.
-func ReadRepositoryIdentity(ctx context.Context, client *githubapp.Client, owner, repo string) (githubapp.RepositoryAnswer, error) {
-	if owner == "" || repo == "" || strings.Contains(repo, "/") {
-		return githubapp.RepositoryAnswer{}, ErrNoRepository
-	}
-	token, err := client.RepositoryToken(ctx, owner, repo)
-	if err == nil {
-		var answer githubapp.RepositoryAnswer
-		answer, err = client.RepositoryIdentity(ctx, token, owner, repo, "")
-		if err == nil && answer.ID == 0 {
-			err = fmt.Errorf("GitHub answered %s/%s with no id", owner, repo)
-		}
-		if err == nil {
-			return answer, nil
-		}
-	}
-	if errors.Is(err, githubapp.ErrNoInstallation) || errors.Is(err, githubapp.ErrRepositoryUnreadable) {
-		return githubapp.RepositoryAnswer{}, ErrNoRepository
-	}
-	return githubapp.RepositoryAnswer{}, err
-}
-
-// RecordRepositoryID records id as the GitHub id of the repository repo names (owner/name, in any
-// case), replacing what repository_ids held for the name: an answer GitHub gave just now, as the
-// delivery intake reads it from a pull request it fetched (its base repository's id) and
-// LearnRepositoryIDs from the repository itself.
-func RecordRepositoryID(ctx context.Context, pool *store.Pool, repo string, id int64) error {
-	return recordRepositoryID(ctx, pool, repo, &id)
-}
-
-// recordRepositoryID is RecordRepositoryID with no id for GitHub's answer that the App reads no
-// repository under the name.
-func recordRepositoryID(ctx context.Context, pool *store.Pool, repo string, id *int64) error {
-	if _, err := pool.Exec(ctx, `
-		insert into repository_ids (repo, github_id) values (lower($1), $2)
-		on conflict (repo) do update set github_id = excluded.github_id, learned_at = now()
-	`, repo, id); err != nil {
-		answer := "no id"
-		if id != nil {
-			answer = strconv.FormatInt(*id, 10)
-		}
-		return fmt.Errorf("record %s as the GitHub id of %s: %w", answer, repo, err)
-	}
-	return nil
+// names: an issue of it resolves to the name. It ends in `offset 0`, as repositorySeen does.
+func repositoryHeld(repoExpr, viewerParam string) string {
+	return `exists (select from (` + ProjectRepositoriesSQL(access.HiddenPrivateProjectClause("project_key", viewerParam)) + `) owned
+		where owned.repo = lower((` + repoExpr + `)::text)
+		offset 0)`
 }

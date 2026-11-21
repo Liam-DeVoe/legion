@@ -13,7 +13,7 @@ import (
 // path, acme/priv, which PRIV-1 names, ACME/Priv, the same in another case, acme/privdefault, PRIV's
 // default, and acme/oldname, which PRIV-6 names. Each answers, in status and bytes, what
 // acme/uninstalled answers, and GitHub sees no request for it at all: no installation lookup, no
-// token mint, no read of the repository or its id. carol, who sees PRIV, reads each as GitHub's
+// token mint, no read. carol, who sees PRIV, reads each as GitHub's
 // answer, so the hidden answer is the gate's.
 func TestTheGitHubProxyHidesARepositoryAHiddenProjectHolds(t *testing.T) {
 	database := seedProxyGate(t)
@@ -40,8 +40,8 @@ func TestTheGitHubProxyHidesARepositoryAHiddenProjectHolds(t *testing.T) {
 
 // TestTheGitHubProxyShowsEveryRepositoryWhereNoProjectIsPrivate (R9): with every project public,
 // each full member reads every repository as GitHub answers it, as before any project could be
-// private: alice and carol read each repository of seedProxyGate's rows and the ones PRIV maps, and
-// each read reaches GitHub, which is asked for no repository's id.
+// private: alice and carol read each repository of seedProxyGate's rows and the ones PRIV maps,
+// and each read reaches GitHub.
 func TestTheGitHubProxyShowsEveryRepositoryWhereNoProjectIsPrivate(t *testing.T) {
 	database := seedProxyGate(t)
 	if _, err := database.Pool.Exec(context.Background(), `
@@ -62,8 +62,5 @@ func TestTheGitHubProxyShowsEveryRepositoryWhereNoProjectIsPrivate(t *testing.T)
 				t.Errorf("with every project public, %s reads %s as %s, want GitHub's answer, read from GitHub", login, repository, got)
 			}
 		}
-	}
-	if ids := fake.identityReads(); len(ids) != 0 {
-		t.Errorf("with every project public, the proxy asked GitHub for repositories' ids: %q, want none", ids)
 	}
 }

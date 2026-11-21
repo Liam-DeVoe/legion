@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // The two halves of a repository GitHub could hold, copied from the daemon's own reading of the
@@ -76,7 +78,7 @@ func parseIssueRepo(raw json.RawMessage) (repo *string, provided bool, err error
 // acting for one, that names `repo` at all, a string or null, and answers whether it did. An issue's
 // own repository may name any owner/name, and every repository an issue resolves to is one its
 // project owns (refs.ProjectRepositoriesSQL), which a viewer that is not open reads through the
-// GitHub proxy and the App-installation route once a project it sees owns it
+// GitHub proxy, the App-installation route and the Delivery views once a project it sees owns it
 // (refs.RepositoryClause): a restricted member who named one could make any repository the App
 // reaches theirs to read. So their issues take the repository they resolve to, their nearest
 // parent's or their project's default, and a restricted member sets no issue's own, nor changes or
@@ -94,6 +96,47 @@ func refuseRepoOfRestrictedMember(w http.ResponseWriter, who model.Actor, raw js
 	writeError(w, codeRestrictedMember, http.StatusForbidden,
 		"a restricted member cannot set or clear an issue's repo; only a full member names an issue's own repository")
 	return true
+}
+
+// codeRepositoryNotAvailable is the code refuseRepoHidden refuses a write with.
+const codeRepositoryNotAvailable = "REPOSITORY_NOT_AVAILABLE"
+
+// repositoryHiddenFromWriterQuery is refs.RepositoryHidden over the repository bound at $1 for the
+// writer bound at $2: the GitHub proxy's gate (routes' repositoryVisibleQuery), negated. No
+// placeholder differs between writes, so the text is built once.
+var repositoryHiddenFromWriterQuery = `select ` + refs.RepositoryHidden("$1::text", "$2")
+
+// refuseRepoHidden refuses a write by who that makes repo, canonical, an issue's own repository or
+// a project's default, when the GitHub proxy hides that repository from who: refs.RepositoryHidden
+// with who as the viewer. Every repository an issue resolves to is one its
+// project owns, and the proxy shows a repository to everyone who sees an issue that resolves to
+// it, so a write that gave an issue of a project who sees a repository the proxy hides from who
+// would give who that repository to read, through the proxy and Delivery. The proxy's gate is the
+// one test, so the write and the read cannot come to different answers: a repository that only
+// issues of private projects who does not see resolve to is refused, and a repository an issue who
+// sees already resolves to, a shared one, is not. Clearing a repository (repo nil) is refused
+// nothing.
+//
+// It is 403 REPOSITORY_NOT_AVAILABLE in words that name no project and no issue, and do not say
+// why the repository is hidden, the same for every spelling of the name. It reads through q, the
+// write's transaction, after the write has read its issue or its project as who reads them, so an
+// object who does not see still answers as one nobody holds, and before anything is written. The
+// server's own viewer and every viewer of a deployment with no private project read nothing for
+// it and are refused nothing, as before (R9): there the clause hides nothing from an open viewer,
+// and a restricted member's repo is refused before this (refuseRepoOfRestrictedMember).
+func refuseRepoHidden(ctx context.Context, q queryer, who model.Actor, repo *string) error {
+	if repo == nil || (who.Viewer != nil && (who.Viewer.All || !who.Viewer.AnyPrivate)) {
+		return nil
+	}
+	var hidden bool
+	if err := q.QueryRow(ctx, repositoryHiddenFromWriterQuery, *repo, refs.VisibilityArg(who)).Scan(&hidden); err != nil {
+		return fmt.Errorf("read whether the writer may read %s: %w", *repo, err)
+	}
+	if hidden {
+		return errorf(http.StatusForbidden, codeRepositoryNotAvailable,
+			"this repository is not available to the caller: an issue's repo or a project's default repository must be one the caller can read through Dispatch")
+	}
+	return nil
 }
 
 // repoScan receives refs.IssueRepoColumns for one issue, the repository-resolution rule the

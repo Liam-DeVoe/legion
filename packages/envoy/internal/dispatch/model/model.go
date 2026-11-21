@@ -195,11 +195,12 @@ const (
 // that belongs to no project, as every caller did before projects could be private, whatever its
 // credential lists, since a list decides only which private projects a full member's credential
 // sees. All is ServerViewer alone. AnyPrivate is whether the deployment holds a private project at
-// all. Lists is the credential's own list of projects (Credential.Projects) where that list decides
-// what the credential reads - always for a restricted member's, and while some project is private
-// for every other - and nil otherwise: which projects it would see were its person to see them,
-// which tells a read whether the credential read a project before a change took it away (api:
-// eventGapSQL).
+// all. Lists is the credential's own list of projects (Credential.Projects) as its caller is told
+// it - every credential's but a broker token's, whose list is answered only while some project is
+// private or its person is a restricted member, as before projects could be private - and nil
+// otherwise: which projects it would see were its person to see them, which tells a read whether
+// the credential read a project before a change took it away (api: eventGapSQL), and which whoami
+// answers as projects.
 type Viewer struct {
 	Person, Session string
 	Restricted      bool

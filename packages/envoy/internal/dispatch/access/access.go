@@ -70,8 +70,8 @@ func PersonSeesProjectSQL(personExpr, memberExpr, projectAlias string) string {
 }
 
 // VisibleProjectsSQL answers one caller's viewer in one row: every project it sees as a sorted
-// jsonb array, whether it is a restricted member, whether any project is private, and whether its
-// list decides what it reads. Its parameters are $1 the person (null for a credential that names
+// jsonb array, whether it is a restricted member, whether any project is private, and whether
+// Resolve answers its list as Viewer.Lists. Its parameters are $1 the person (null for a credential that names
 // none), $2 whether the credential is a broker token, whose person reads as a full member when no
 // people row holds them (the broker signs in only people of its sign-in domain), $3 whether it is
 // an agent credential rather than a browser, and $4 its list of projects (null or empty for none).
@@ -80,10 +80,12 @@ func PersonSeesProjectSQL(personExpr, memberExpr, projectAlias string) string {
 // person's limit) and the credential's list covers it, which is CredentialCovers in SQL: a browser
 // is covered everywhere; a restricted member's credential that lists projects, for those alone; and
 // every other credential for each public project and each private one it lists.
-// TestTheListRuleIsOneInGoAndSQL holds the two equal over every combination. The list decides what
-// the caller reads, and Resolve answers it as Viewer.Lists, when its person is a restricted member,
-// whatever the deployment holds, and when some project is private; with no private project a full
-// member's list decides nothing, and the caller sees what a credential listing none sees (R9).
+// TestTheListRuleIsOneInGoAndSQL holds the two equal over every combination. With no private
+// project a full member's list decides nothing it reads, and the caller sees what a credential
+// listing none sees (R9). Resolve answers the list as Viewer.Lists for every credential but a
+// broker token in every state, and for a broker token while some project is private or its person
+// is a restricted member: a broker token's list existed before projects could be private, when its
+// caller was answered no list (R9), and a personal token's list is new with private projects.
 func VisibleProjectsSQL() string {
 	return fragment("VisibleProjectsSQL", `
 		with deployment as (
@@ -112,7 +114,7 @@ func VisibleProjectsSQL() string {
 					end)), '[]'::jsonb),
 			viewer.restricted,
 			viewer.private,
-			viewer.listed and (viewer.private or viewer.restricted)
+			viewer.listed and (not $2::boolean or viewer.private or viewer.restricted)
 		from viewer
 		left join projects p on true
 		group by viewer.person, viewer.member_kind, viewer.restricted, viewer.listed, viewer.private`)
@@ -151,6 +153,17 @@ func ListsClause(projectExpr, viewerParam string) string {
 func ProjectClause(projectExpr, viewerParam string) string {
 	return clause("ProjectClause", fmt.Sprintf(`(%s or (%s::jsonb->'sees') ? (%s))`,
 		ViewerFlag(viewerParam, "all"), viewerParam, projectExpr))
+}
+
+// HiddenPrivateProjectClause passes a row of the project keyExpr names when that project is
+// private and the viewer does not see it: the projects whose ownership of a repository hides it
+// from the viewer (refs.RepositoryClause). It probes the projects primary key once per row: its
+// `exists` ends in `offset 0`, without which Postgres hashes every private project once per
+// statement in its place (refs.TestRepositoryClauseProbesEachRepositoryWithoutAHashedSubplan).
+func HiddenPrivateProjectClause(keyExpr, viewerParam string) string {
+	return clause("HiddenPrivateProjectClause", `(not `+ProjectClause(keyExpr, viewerParam)+` and exists (
+		select from projects hiding where hiding.key = (`+keyExpr+`) and hiding.visibility = 'private'
+		offset 0))`)
 }
 
 // OpenClause passes an open viewer: one that is not a restricted member, whatever its credential
@@ -321,8 +334,10 @@ func PartyClause(partiesExpr, viewerParam string) string {
 // projects its list and its person both see; for every other credential, only which private
 // projects it sees, so with no private project it reads as a credential that lists none, exactly as
 // it read before (R9), and once one is private it sees each public project and the private ones it
-// lists. Viewer.Lists is the list where it decides something - a restricted member's, and every
-// other while some project is private - and Open is every viewer that is not a restricted member's.
+// lists. Viewer.Lists is the credential's list as the caller is told it (whoami) and as a resume
+// reads it: every credential's but a broker token's, whose list is answered only while some project
+// is private or its person is a restricted member, as it was before (R9). Open is every viewer that
+// is not a restricted member's.
 // What a broker token scoped to one project writes is api's too (namedProjectOf): the write scope
 // such a token had before projects could be private, which no list here decides.
 func Resolve(ctx context.Context, q Querier, actor model.Actor) (model.Viewer, error) {

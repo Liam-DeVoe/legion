@@ -75,9 +75,10 @@ func TestACredentialOfNoPersonSeesThePrivateProjectsItLists(t *testing.T) {
 // full member's token sees the public projects whatever it lists and only the private ones it
 // lists; a restricted member's token is held to its list, or with none to the public projects its
 // person sees; a credential of no person sees the public projects and the private ones it lists.
-// With no private project a full member's list decides nothing (R9): each of its tokens sees what
-// its token listing none sees, and Resolve answers no Lists, while a restricted member's list
-// still holds.
+// With no private project a full member's list decides nothing it reads (R9): each of its tokens
+// sees what its token listing none sees. Resolve still answers a personal token's list as Lists,
+// which is new with private projects, and no Lists for a full member's broker token, whose list it
+// answered as none before (R9); a restricted member's list holds in every state.
 func TestTheListRuleIsOneInGoAndSQL(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -198,10 +199,23 @@ func TestTheListRuleIsOneInGoAndSQL(t *testing.T) {
 			t.Fatalf("%s: Resolve: %v", c.name, err)
 		}
 		switch {
-		case c.restricted && !slices.Equal(viewer.Lists, c.listed):
-			t.Errorf("with no private project, %s resolves Lists %v, want its list %v: a restricted member's list holds in every state", c.name, viewer.Lists, c.listed)
-		case !c.restricted && (viewer.Lists != nil || !slices.Equal(viewer.Sees, unlisted[c.person].Sees)):
-			t.Errorf("with no private project, %s resolves %+v, want what its token listing none sees, %v, and no Lists (R9)", c.name, viewer, unlisted[c.person].Sees)
+		case !slices.Equal(viewer.Lists, c.listed):
+			t.Errorf("with no private project, %s resolves Lists %v, want its list %v: a token that is no broker token's is answered its list in every state", c.name, viewer.Lists, c.listed)
+		case !c.restricted && !slices.Equal(viewer.Sees, unlisted[c.person].Sees):
+			t.Errorf("with no private project, %s resolves %+v, want what its token listing none sees, %v (R9)", c.name, viewer, unlisted[c.person].Sees)
+		}
+		if c.person == "" || c.restricted {
+			continue
+		}
+		broker := model.Actor{Kind: "session", ID: "ses_broker", Owner: new(c.person),
+			Credential: &model.Credential{Scopes: model.Scopes, Session: "ses_broker", Projects: c.listed}}
+		brokered, err := Resolve(ctx, database.Pool, broker)
+		if err != nil {
+			t.Fatalf("%s's broker token listing %v: Resolve: %v", c.person, c.listed, err)
+		}
+		if brokered.Lists != nil || !slices.Equal(brokered.Sees, unlisted[c.person].Sees) {
+			t.Errorf("with no private project, %s's broker token listing %v resolves %+v, want what its token listing none sees, %v, and no Lists (R9)",
+				c.person, c.listed, brokered, unlisted[c.person].Sees)
 		}
 	}
 }
