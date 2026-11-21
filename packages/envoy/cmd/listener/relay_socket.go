@@ -230,26 +230,6 @@ type relaySockets struct {
 	stopped bool
 }
 
-// relayCaller is one caller's sockets on the replica: how many are open, under relaySockets.mu,
-// and the bytes they hold for their clients, which relaySockets.callerBudget bounds. It is
-// forgotten once its last socket is released. A frame such a socket's pump is still writing
-// then gives its bytes back to the record forgotten, and a socket the caller opens meanwhile is
-// counted under a fresh one: what that leaves out is the frame of each socket being closed, until
-// its write returns.
-type relayCaller struct {
-	sockets  int
-	buffered atomic.Int64
-}
-
-// relayCallerKey is the caller a socket's sockets and bytes are counted against: its person, or
-// the service its token names when it names no person (a Caller names one of the two).
-func relayCallerKey(caller ciphertoken.Caller) string {
-	if caller.Person != "" {
-		return "person " + caller.Person
-	}
-	return "service " + caller.Service
-}
-
 // newRelaySockets serves relay sockets on client's connection, admitting the callers brokers
 // admits and asking it about each one again while it is open.
 func newRelaySockets(client *bus.Client, brokers *brokerTokens, logger *logging.Logger) *relaySockets {
@@ -335,6 +315,7 @@ func (s *relaySockets) serve(w http.ResponseWriter, r *http.Request) {
 		subs:     map[int64]*nats.Subscription{},
 		replies:  map[string]time.Time{},
 		done:     make(chan struct{}),
+		pumped:   make(chan struct{}),
 		wake:     make(chan struct{}, 1),
 	}
 	if status, refusal := s.admit(socket); status != 0 {
@@ -368,61 +349,6 @@ func (s *relaySockets) attach(socket *relaySocket, conn *websocket.Conn) bool {
 	}
 	socket.conn = conn
 	return true
-}
-
-// admit records socket as open, counted against its session and its caller, or answers the status
-// it is refused with: 503 once the listener is stopping or holds its cap of sockets (maxSockets),
-// on which the client opens it on another replica, and 429 when its session already holds
-// relaySocketMaxPerSession or its caller relaySocketMaxPerCaller.
-func (s *relaySockets) admit(socket *relaySocket) (int, string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.stopped {
-		return http.StatusServiceUnavailable, "the listener is stopping; open the socket again on another replica"
-	}
-	held := s.open[socket.session]
-	if len(held) >= relaySocketMaxPerSession {
-		return http.StatusTooManyRequests, "this session already holds the most relay sockets a replica serves it"
-	}
-	key := relayCallerKey(socket.admitted)
-	caller := s.callers[key]
-	if caller != nil && caller.sockets >= relaySocketMaxPerCaller {
-		return http.StatusTooManyRequests, "this token's person or service already holds the most relay sockets a replica serves one"
-	}
-	if s.count >= s.maxSockets {
-		return http.StatusServiceUnavailable, "this replica holds the most relay sockets it serves; open the socket again on another replica"
-	}
-	if held == nil {
-		held = map[*relaySocket]struct{}{}
-		s.open[socket.session] = held
-	}
-	if caller == nil {
-		caller = &relayCaller{}
-		s.callers[key] = caller
-	}
-	held[socket] = struct{}{}
-	caller.sockets++
-	socket.caller = caller
-	s.count++
-	return 0, ""
-}
-
-// release forgets socket, whatever ended it.
-func (s *relaySockets) release(socket *relaySocket) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, held := s.open[socket.session][socket]; !held {
-		return
-	}
-	s.count--
-	delete(s.open[socket.session], socket)
-	if len(s.open[socket.session]) == 0 {
-		delete(s.open, socket.session)
-	}
-	socket.caller.sockets--
-	if socket.caller.sockets == 0 {
-		delete(s.callers, relayCallerKey(socket.admitted))
-	}
 }
 
 // stop closes every open socket with 1012, so each client opens it again at once on another
@@ -506,6 +432,8 @@ type relaySocket struct {
 
 	endOnce sync.Once
 	done    chan struct{}
+	// pumped is closed once the pump has returned, after its last settle.
+	pumped chan struct{}
 }
 
 // forwardedReply is one receipt subject and when its frame was forwarded.
@@ -546,7 +474,8 @@ func (s *relaySockets) pongWait() time.Duration {
 }
 
 // read is the socket's one reader: it handles each frame whole before it reads the next, and
-// returns once the connection ends.
+// returns once the connection ends and the pump has returned, so the socket's place is given back
+// (serve's release) only after its pump has given back the last frame it held (settle).
 func (socket *relaySocket) read() {
 	conn := socket.conn
 	conn.SetReadLimit(relaySocketReadLimit)
@@ -567,8 +496,11 @@ func (socket *relaySocket) read() {
 			// itself, end already ran and left the connection to its grace (relaySocketCloseGrace)
 			// for this answer; the answer is in, so the client is not kept waiting out the rest of
 			// that grace for its connection's end, which a client that reopens on it waits for.
+			// The closed connection fails a write the pump is in at once, and end has closed done,
+			// so the pump returns promptly.
 			socket.end(0, "")
 			_ = conn.Close()
+			<-socket.pumped
 			return
 		}
 		extend()

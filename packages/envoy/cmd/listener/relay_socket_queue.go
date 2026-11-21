@@ -81,6 +81,7 @@ func reserveBytes(count *atomic.Int64, bytes int, bound int64) bool {
 // its write returns, so a write blocked on a client that reads nothing stays counted; a write that
 // fails drops the connection (end).
 func (socket *relaySocket) pump() {
+	defer close(socket.pumped)
 	for {
 		select {
 		case <-socket.done:

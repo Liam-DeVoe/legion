@@ -37,9 +37,7 @@ func TestARelaySocketForwardsAFrameAndPublishesItsReceipt(t *testing.T) {
 	const session = "ses_edge_forward"
 	rig.owner.subscribe(t, consumerRegistration(session, "epoch-1"))
 	client, _ := rig.open(t, session)
-	client.sub(1, bus.DeliverSubject(session))
-	client.ping()
-	<-client.pongs
+	client.subscribeOwn(session)
 
 	stored, seq := rig.owner.storeEvent(t, contracts.LegacyAgentSubject(session))
 	frame := client.next(5 * time.Second)
@@ -71,9 +69,7 @@ func TestARelaySocketPublishesOnlyAReceiptsWord(t *testing.T) {
 	const session = "ses_edge_receipt_body"
 	rig.owner.subscribe(t, consumerRegistration(session, "epoch-1"))
 	client, _ := rig.open(t, session)
-	client.sub(1, bus.DeliverSubject(session))
-	client.ping()
-	<-client.pongs
+	client.subscribeOwn(session)
 	_, seq := rig.owner.storeEvent(t, contracts.LegacyAgentSubject(session))
 	frame := client.next(5 * time.Second)
 	if frame.Op != "msg" {
@@ -180,9 +176,7 @@ func TestAProbeOfASocketIsNeitherForwardedNorAnswered(t *testing.T) {
 	const session = "ses_edge_probed"
 	client, _ := rig.open(t, session)
 	held := rig.client.Connection().NumSubscriptions()
-	client.sub(1, bus.DeliverSubject(session))
-	client.ping()
-	<-client.pongs
+	client.subscribeOwn(session)
 
 	prober := rig.client
 	logger := logging.NewWithWriter("prober", &bytes.Buffer{})
@@ -521,9 +515,7 @@ func TestARelaySocketStaysOpenWhenTheNATSClientDropsAFrameAheadOfItsQueue(t *tes
 	rig := newRelaySocketRig(t, withCheckEvery(time.Hour))
 	const session, sent = "ses_edge_nats_drops", 6
 	client, _ := rig.open(t, session)
-	client.sub(1, bus.DeliverSubject(session))
-	client.ping()
-	<-client.pongs
+	client.subscribeOwn(session)
 	socket := rig.openSocket(t, session)
 	sub := socket.awaitSubscription(t)
 	if err := sub.SetPendingLimits(2, 1<<30); err != nil {
@@ -646,9 +638,7 @@ func TestARelaySocketClosesOnABinaryFrame(t *testing.T) {
 	rig := newRelaySocketRig(t)
 	const session = "ses_edge_binary"
 	client, _ := rig.open(t, session)
-	client.sub(1, bus.DeliverSubject(session))
-	client.ping()
-	<-client.pongs
+	client.subscribeOwn(session)
 	client.sendRaw(websocket.BinaryMessage, []byte(`{"op":"unsub","sid":1}`))
 	if code, text := client.closeCode(5 * time.Second); code != websocket.CloseUnsupportedData || text != relaySocketReasonTextOnly {
 		t.Fatalf("a binary frame closed the socket %d %q, want %d %q", code, text, websocket.CloseUnsupportedData, relaySocketReasonTextOnly)
@@ -662,9 +652,7 @@ func TestARelaySocketClosesWhenItsSubscriptionIsLost(t *testing.T) {
 	rig := newRelaySocketRig(t)
 	const session = "ses_edge_lost_subscription"
 	client, _ := rig.open(t, session)
-	client.sub(1, bus.DeliverSubject(session))
-	client.ping()
-	<-client.pongs
+	client.subscribeOwn(session)
 	rig.client.Close()
 	if code, text := client.closeCode(2 * time.Second); code != websocket.CloseTryAgainLater || text != relaySocketReasonNATSUnavailable {
 		t.Fatalf("a socket whose subscription was lost closed %d %q, want %d %q", code, text, websocket.CloseTryAgainLater, relaySocketReasonNATSUnavailable)
@@ -752,9 +740,7 @@ func TestARelaySocketOfAPromptClientTakesABacklogPastItsPendingLimits(t *testing
 		stored[item.EventID] = true
 	}
 	client, _ := rig.open(t, session)
-	client.sub(1, bus.DeliverSubject(session))
-	client.ping()
-	<-client.pongs
+	client.subscribeOwn(session)
 	rig.owner.subscribe(t, consumerRegistration(session, "epoch-2"))
 	seen := map[string]bool{}
 	deadline := time.After(60 * time.Second)

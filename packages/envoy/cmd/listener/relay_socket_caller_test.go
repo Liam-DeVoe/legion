@@ -2,9 +2,9 @@ package main
 
 // relay_socket_caller_test.go holds the relay socket's in-process rows of what one caller takes
 // from a replica and is handed: at most its cap of the replica's sockets (relaySocketMaxPerCaller)
-// and its share of the replica's byte budget (relaySocketCallerPendingBytes), and the frames of
-// its own session's receipts alone (relayReceiptOf). They run on the rig of
-// relay_socket_fixture_test.go.
+// and its share of the replica's byte budget (relaySocketCallerPendingBytes), each given back once
+// its sockets close, and the frames of its own session's receipts alone (relayReceiptOf). They run
+// on the rig of relay_socket_fixture_test.go.
 
 import (
 	"net/http"
@@ -42,10 +42,8 @@ func TestAReplicaServesOnePersonNoMoreSocketsThanTheirCap(t *testing.T) {
 	}
 
 	const other = "ses_edge_other_person"
-	client := rig.openAs(t, relaySocketOtherPerson, other)
-	client.sub(1, bus.DeliverSubject(other))
-	client.ping()
-	<-client.pongs
+	client, _ := rig.openAs(t, relaySocketOtherPerson, other)
+	client.subscribeOwn(other)
 	sent := publishRelayFrame(t, rig.owner.url, other, natsgo.Header{})
 	if frame := client.next(5 * time.Second); frame.Op != "msg" || frame.Reply != sent.Reply {
 		t.Fatalf("the other person's socket was sent %s, want the msg %s", frame.raw, sent.Reply)
@@ -65,19 +63,15 @@ func TestOnePersonsSocketsHoldNoMoreThanTheirShareOfTheBudget(t *testing.T) {
 	const budget, share = 8 << 20, 2 << 20
 	rig := newRelaySocketRig(t, withCheckEvery(time.Hour), withPendingLimits(1<<16, 1<<30), withReplicaBudget(budget), withCallerBudget(share))
 	const other = "ses_edge_share_other"
-	client := rig.openAs(t, relaySocketOtherPerson, other)
-	client.sub(1, bus.DeliverSubject(other))
-	client.ping()
-	<-client.pongs
+	client, _ := rig.openAs(t, relaySocketOtherPerson, other)
+	client.subscribeOwn(other)
 
 	sent := []int{4, 4, 4, 3}
 	sockets := make([]*relaySocket, len(sent))
 	for i := range sent {
 		session := "ses_edge_share_" + strconv.Itoa(i)
 		held, _ := rig.open(t, session)
-		held.sub(1, bus.DeliverSubject(session))
-		held.ping()
-		<-held.pongs
+		held.subscribeOwn(session)
 		sockets[i] = rig.openSocket(t, session)
 		sockets[i].writeMu.Lock()
 		t.Cleanup(sync.OnceFunc(sockets[i].writeMu.Unlock))
@@ -104,6 +98,106 @@ func TestOnePersonsSocketsHoldNoMoreThanTheirShareOfTheBudget(t *testing.T) {
 	}
 }
 
+// A person who opened their relaySocketMaxPerCaller sockets on a replica and closed them all gets
+// every place back (release), and opens another there; the replica keeps no record of them.
+// Control: release giving back no place of the person's; the next socket is refused 429, and the
+// row fails naming it.
+func TestAPersonsClosedSocketsGiveTheirPlacesBack(t *testing.T) {
+	rig := newRelaySocketRig(t, withCheckEvery(time.Hour))
+	sessionOf := func(i int) string { return "ses_edge_places_" + strconv.Itoa(i/relaySocketMaxPerSession) }
+	var clients []*relaySocketClient
+	for i := range relaySocketMaxPerCaller {
+		client, _ := rig.open(t, sessionOf(i))
+		clients = append(clients, client)
+	}
+	for _, client := range clients {
+		_ = client.conn.Close()
+	}
+	if !testwait.Holds(10*time.Second, 10*time.Millisecond, func() bool {
+		for i := range relaySocketMaxPerCaller {
+			if rig.holds(sessionOf(i)) != 0 {
+				return false
+			}
+		}
+		return true
+	}) {
+		t.Fatal("the replica still holds the person's sockets 10 s after their clients closed")
+	}
+	if records := rig.callerRecords(); records != 0 {
+		t.Errorf("the replica keeps %d caller records after the person's %d sockets closed, want 0", records, relaySocketMaxPerCaller)
+	}
+	rig.open(t, "ses_edge_places_after")
+}
+
+// A frame the replica's budget refuses leaves nothing on its person's count: enqueue gives back
+// the person's reservation of a frame the replica's count refused, so with the person's other
+// socket idle and open, the person's count is 0 once the refused socket has closed and given back
+// what it held. The refused socket's pump is held from writing (its write lock), so the frames it
+// takes stay counted until the replica's 2 MiB budget refuses one. Control: enqueue keeping the
+// person's reservation of a refused frame; the person's count stays at that frame's bytes, and the
+// row fails naming it.
+func TestAFrameTheReplicaRefusesLeavesNothingOnItsPerson(t *testing.T) {
+	rig := newRelaySocketRig(t, withCheckEvery(time.Hour), withPendingLimits(1<<16, 1<<30), withReplicaBudget(2<<20))
+	const idle, session = "ses_edge_refund_idle", "ses_edge_refund_held"
+	kept, _ := rig.open(t, idle)
+	kept.subscribeOwn(idle)
+	person := rig.openSocket(t, idle).caller
+
+	held, _ := rig.open(t, session)
+	held.subscribeOwn(session)
+	socket := rig.openSocket(t, session)
+	socket.writeMu.Lock()
+	unlock := sync.OnceFunc(socket.writeMu.Unlock)
+	t.Cleanup(unlock)
+	flood(t, rig.owner.url, session, 6)
+	if !testwait.Holds(10*time.Second, 10*time.Millisecond, socket.ended.Load) {
+		t.Fatalf("the held socket did not close within 10 s; the replica holds %d bytes", rig.sockets.buffered.Load())
+	}
+	unlock()
+	if !testwait.Holds(10*time.Second, 10*time.Millisecond, func() bool { return rig.sockets.buffered.Load() == 0 }) {
+		t.Fatalf("the replica still counts %d bytes 10 s after the held socket closed", rig.sockets.buffered.Load())
+	}
+	if got := person.buffered.Load(); got != 0 {
+		t.Fatalf("the person's count is %d bytes with only an idle socket open, want 0: a frame the replica refused stayed on it", got)
+	}
+}
+
+// A socket's place and its person's record are given back only once its pump has given back the
+// frame it holds, so the person's count never leaves a closed socket's frame on a record the
+// replica has forgotten. The row holds a socket's write lock, so its pump keeps one frame counted,
+// and closes the client: while the pump holds that frame the replica keeps the socket's place and
+// its person's record; once the pump lets the frame go, both are given back and the record holds
+// nothing. Control: release run as soon as the reader returns (read waiting for no pump); the
+// replica gives the socket's place back while the person's record still counts the frame, and the
+// row fails naming it.
+func TestARelaySocketGivesItsPlaceBackOnlyAfterItsPumpsLastFrame(t *testing.T) {
+	rig := newRelaySocketRig(t, withCheckEvery(time.Hour))
+	const session = "ses_edge_pump_last"
+	client, _ := rig.open(t, session)
+	client.subscribeOwn(session)
+	socket := rig.openSocket(t, session)
+	socket.writeMu.Lock()
+	unlock := sync.OnceFunc(socket.writeMu.Unlock)
+	t.Cleanup(unlock)
+	publishRelayFrame(t, rig.owner.url, session, natsgo.Header{})
+	if !testwait.Holds(5*time.Second, 10*time.Millisecond, func() bool { frames, _ := socket.held(); return frames == 1 }) {
+		t.Fatal("the socket took no frame within 5 s")
+	}
+	_ = client.conn.Close()
+	// The pump cannot let its frame go while the row holds the write lock, so with the fix no
+	// release can come in this window; without it the release comes as soon as the reader ends.
+	if testwait.Holds(time.Second, 10*time.Millisecond, func() bool { return rig.holds(session) == 0 }) {
+		t.Fatalf("the replica gave the socket's place back while its pump still held a frame; the person's record counts %d bytes and the replica keeps %d caller records", socket.caller.buffered.Load(), rig.callerRecords())
+	}
+	unlock()
+	if !testwait.Holds(5*time.Second, 10*time.Millisecond, func() bool { return rig.holds(session) == 0 }) {
+		t.Fatal("the replica still holds the socket 5 s after its pump let its frame go")
+	}
+	if got, records := socket.caller.buffered.Load(), rig.callerRecords(); got != 0 || records != 0 {
+		t.Fatalf("after the socket was given back its person's record counts %d bytes and the replica keeps %d caller records, want 0 and 0", got, records)
+	}
+}
+
 // A frame on a session's relay subject whose receipt names another session, or is no receipt of
 // the shape an edge relay names (relayReceiptOf), is not forwarded: the socket hands its client
 // only receipts of its own session's frames, so a frame anyone puts on the subject cannot have the
@@ -115,9 +209,7 @@ func TestARelaySocketForwardsNoFrameWhoseReceiptNamesAnotherSession(t *testing.T
 	rig := newRelaySocketRig(t)
 	const session, other = "ses_edge_own_receipts", "ses_edge_someone_else"
 	client, _ := rig.open(t, session)
-	client.sub(1, bus.DeliverSubject(session))
-	client.ping()
-	<-client.pongs
+	client.subscribeOwn(session)
 
 	publisher := testnats.Connect(t, rig.owner.url)
 	for _, reply := range []string{
