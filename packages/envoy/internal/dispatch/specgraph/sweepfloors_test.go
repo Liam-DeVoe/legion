@@ -12,8 +12,8 @@ import (
 // sweepFloors is, for each sweep and each base (sweepBases), the count of inputs that sweepAgainst
 // judged when the table was written, by what the reader did with each: read it, as the base or as
 // another state, or refused it, and the digest of the bytes that the reader read of the base and of
-// each judged input, with each input's kind and right, in the order of the inputs (sweepFloor,
-// sweepCount.judged). The sweeps are the tree sweep
+// each judged input, with each input's kind, its right and the places that the right allows, in the
+// order of the inputs (sweepFloor, sweepCount.judged). The sweeps are the tree sweep
 // (TestNoInputThatSaysNothingMovesAStateTowardTrue), the members added
 // (TestAddingAMemberMovesNoStateTowardTrue), the texts inside a block and the attributes left out
 // (TestNoNameOfNothingInsideABlockMovesAStateTowardTrue), and the refusals added
@@ -186,7 +186,8 @@ func sweepFloors() map[string]map[string]sweepFloor {
 // as another state, and the inputs that it refused, as sweepAgainst counted the inputs that it
 // judged (sweepCount), and digest, the hex sha256 of sweepCount.judged: the key of the base's line
 // (readerLine, the sha256 of the bytes that the reader's process read of the base), then each judged
-// input's key and kind, one byte, 'r' read and 'x' refused, in their order.
+// input's key, its kind, one byte, 'r' read and 'x' refused, its right and each place that the right
+// allows with the state that it allows there (counted), in their order.
 type sweepFloor struct {
 	read, refused int
 	digest        string
@@ -198,8 +199,8 @@ const markReadingsFloor = 82
 
 // atFloor fails the test unless, of the inputs of the base name that sweepAgainst judged (n), the
 // reader read at least the floor's count and refused at least the floor's count, and the base's
-// files and the files and kinds of those inputs, in their order, have the floor's digest
-// (sweepFloors). It counts no input that the sweep built and did not judge.
+// files and the files, kinds, rights and allowed places of those inputs, in their order, have the
+// floor's digest (sweepFloors). It counts no input that the sweep built and did not judge.
 func atFloor(t *testing.T, sweep, name string, n sweepCount) {
 	t.Helper()
 	floor, held := sweepFloors()[sweep][name]
