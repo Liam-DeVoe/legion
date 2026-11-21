@@ -374,9 +374,15 @@ type verdictDecision struct {
 	otherIssue string
 }
 
+// currentHead, as decideVerdict's head, asks it to decide the pull request at the head it stands at
+// now, which a merge group's write does (writeMergeGroup): the group's event names the pull request
+// and its own commit, not the head.
+const currentHead = ""
+
 // decideVerdict decides head of pull request number of repository, entry being the repository's
-// verdict entry. A pull request the project's records hold is a Legion head of the issue that owns
-// it, decided from the tester's completion, the reviewer's verdict at the head and the reviews
+// verdict entry, or, for currentHead, the head the pull request stands at now: the record's, or the
+// one GitHub shows. A pull request the project's records hold is a Legion head of the issue that
+// owns it, decided from the tester's completion, the reviewer's verdict at the head and the reviews
 // delivered at the head (legionInputs); one another project's records hold is that project's.
 // Every other pull request is an outside one, decided from its reviews and, where the entry takes
 // them, its side reviewer's verdict (outsideInputs). A pull request no record holds yet - one
@@ -404,15 +410,21 @@ func (w *workflowRuntime) decideVerdict(ctx context.Context, entry config.Verdic
 				decided.otherIssue = pr.Issue
 				return err
 			}
+			if head == currentHead {
+				head = pr.HeadSHA
+			}
 			in, err := w.legionInputs(ctx, tx, *issue, *pr, head)
 			decided = verdictDecision{conclusion: verdict.Decide(in), kind: headLegion, issue: issue.Key}
 			return err
 		}
-		_, found, err := store.OutsidePullRequestTx(ctx, tx, repository, number)
+		outside, found, err := store.OutsidePullRequestTx(ctx, tx, repository, number)
 		if err != nil || !found {
 			return err
 		}
 		known = true
+		if head == currentHead {
+			head = outside.Head
+		}
 		in, err := outsideInputs(ctx, tx, entry, repository, number, head)
 		decided = verdictDecision{conclusion: verdict.Decide(in), kind: headOutside}
 		return err
@@ -432,6 +444,9 @@ func (w *workflowRuntime) decideVerdict(ctx context.Context, entry config.Verdic
 		}
 		// A head of this project's issue that no record holds has no verdict here.
 		return verdictDecision{kind: headLegion}, nil
+	}
+	if head == currentHead {
+		head = pull.Head.SHA
 	}
 	err = pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
 		if _, err := store.RecordOutsidePullRequestTx(ctx, tx, store.OutsidePullRequest{Repository: repository, Number: number,

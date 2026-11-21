@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -192,6 +193,12 @@ func TestLegionVerdictAQueuedMergeGroupWriteDecidesThePullRequestAtItsHead(t *te
 		rig.w.queueMergeGroupWrite(widgets, 93, "group-93", false)
 		rig.written(t)
 		groupConcluded(t, rig.github, rig.pool, "group-92", "failure")
+		rig.github.mu.Lock()
+		reads := maps.Clone(rig.github.pullReads)
+		rig.github.mu.Unlock()
+		if reads[92] != 1 || reads[93] != 1 {
+			t.Fatalf("GitHub was asked for pull requests 92 and 93 %d and %d times, want once each: the read that finds the head decides it", reads[92], reads[93])
+		}
 		if err := pgx.BeginFunc(context.Background(), rig.pool, func(tx pgx.Tx) error {
 			pr, found, err := store.OutsidePullRequestTx(context.Background(), tx, widgets, 92)
 			if err == nil && (!found || pr.Head != "out-9") {
