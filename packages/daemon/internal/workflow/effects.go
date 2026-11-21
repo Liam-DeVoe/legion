@@ -268,17 +268,25 @@ func moveReason(trigger TriggerKind, from, to phase.Phase, reason string) string
 
 // backwardMoveReason is a worker's backward move as the issue shows it: the phase it left, the one
 // it went to, the role that asked (the role running the phase left, which backward holds the
-// requester to) and that role's own words, or that it gave none.
+// requester to) and that role's own words, or that it gave none. A person reads it on the issue as
+// a sentence, so words that end with no stop (endsWithStop) get a full stop of the daemon's own
+// after them; BackwardMoveOf, which reads the words back, drops it.
 func backwardMoveReason(from, to phase.Phase, reason string) string {
 	asked := backwardMoveAsked(from, to)
 	reason = strings.TrimSpace(reason)
 	if reason == "" {
 		return asked + ", which gave no reason."
 	}
-	if strings.HasSuffix(reason, ".") || strings.HasSuffix(reason, "!") || strings.HasSuffix(reason, "?") {
+	if endsWithStop(reason) {
 		return asked + ": " + reason
 	}
 	return asked + ": " + reason + "."
+}
+
+// endsWithStop says whether words end with a stop of a sentence: a full stop, an exclamation mark
+// or a question mark. backwardMoveReason adds a full stop of its own to words that end with none.
+func endsWithStop(words string) bool {
+	return strings.HasSuffix(words, ".") || strings.HasSuffix(words, "!") || strings.HasSuffix(words, "?")
 }
 
 // backwardMoveAsked is the daemon's own sentence that a backward move's reason opens with
@@ -289,7 +297,8 @@ func backwardMoveAsked(from, to phase.Phase) string {
 
 // AskedMove is a worker's backward move as the daemon's sentence that opens its reason states it
 // (backwardMoveReason): the phase it left, the phase it went to, the role that asked (the role
-// running the phase left), and that role's own words after the sentence, "" where it gave none.
+// running the phase left), and that role's own words after the sentence as BackwardMoveOf reads
+// them, "" where it gave none.
 type AskedMove struct {
 	From  phase.Phase
 	To    phase.Phase
@@ -299,10 +308,17 @@ type AskedMove struct {
 
 // BackwardMoveOf is the backward move that text states, for a text that opens with the daemon's
 // sentence of a move back the daemon counts (backwardMoveAsked, phase.BackwardPairs), such as the
-// first line of the reason a refused post quotes; false for a text that opens with no such
-// sentence. It reads the sentence with backwardMoveAsked itself, so it reads what
-// backwardMoveReason writes and nothing else: the words are what follows the sentence's ": ", and
-// a move that gave none, whose sentence the daemon closes on its own, has none.
+// whole reason a refused post quotes; false for a text that opens with no such sentence. It reads
+// the sentence with backwardMoveAsked itself, so it reads what backwardMoveReason writes and
+// nothing else: the words are what follows the sentence's ": " to the end of text, and a move that
+// gave none, whose sentence the daemon closes on its own, has none.
+//
+// The words hold only characters the asker wrote. backwardMoveReason adds a full stop to words
+// that end with none, so a final "." after words that end with no other stop is the daemon's or
+// the asker's, and the reader cannot tell the two apart: it drops that one final "." either way.
+// The words then lose at most the asker's own final stop, and never hold the daemon's. A final
+// "." alone or after another stop (".", "..", "!.") is the asker's, since the writer adds none
+// there, and stays.
 func BackwardMoveOf(text string) (AskedMove, bool) {
 	for _, pair := range phase.BackwardPairs() {
 		from, to, _ := phase.ParsePair(pair)
@@ -313,6 +329,9 @@ func BackwardMoveOf(text string) (AskedMove, bool) {
 		words, said := strings.CutPrefix(rest, ": ")
 		if !said {
 			words = ""
+		}
+		if stopless, stopped := strings.CutSuffix(words, "."); stopped && stopless != "" && !endsWithStop(stopless) {
+			words = stopless
 		}
 		return AskedMove{From: from, To: to, Asker: phase.RoleFor(from), Words: words}, true
 	}

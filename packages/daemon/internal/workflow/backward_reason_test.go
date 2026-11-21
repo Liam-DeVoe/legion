@@ -157,20 +157,31 @@ func TestABackwardMoveReasonReachesTheNextTaskInABlock(t *testing.T) {
 
 // R1 with R8: a message-refused notice gives the daemon's sentence that a refused backward move's
 // reason opens with as a field, and quotes the words of the role that asked alone. So
-// BackwardMoveOf reads off the first line of each reason backwardMoveReason writes, for every move
-// back the daemon counts, the phase the move left, the phase it went to, the role that asked and
-// that role's own words, and no words where the role gave none. It reads no move off a line that
+// BackwardMoveOf reads off each whole reason backwardMoveReason writes, for every move back the
+// daemon counts, the phase the move left, the phase it went to, the role that asked and that role's
+// own words, with none of the daemon's characters, and no words where the role gave none. The
+// writer's own full stop after words that end with no stop is dropped, and so, since the reader
+// cannot tell the two apart, is the asker's own one final "." after such words; a "." alone or after
+// another stop, and every other stop, is the asker's and stays. It reads no move off a line that
 // opens with no such sentence: a message of the daemon's own, a close's reason, and a move out of
 // admitted, which no backward row serves, where RoleFor names the architect.
 func TestBackwardMoveOfReadsTheMoveTheAskerAndTheWordsOfEveryBackwardReason(t *testing.T) {
 	const words = "The suite hangs on </reason> input: twice."
 	for _, pair := range phase.BackwardPairs() {
 		from, to, _ := phase.ParsePair(pair)
-		for _, reason := range []struct{ given, words string }{{words + "\nThe rest.", words}, {"", ""}} {
-			first, _, _ := strings.Cut(backwardMoveReason(from, to, reason.given), "\n")
+		for _, reason := range []struct{ given, words string }{
+			{words + "\nThe rest", words + "\nThe rest"},
+			{words, "The suite hangs on </reason> input: twice"},
+			{"The suite hangs?", "The suite hangs?"},
+			{"The suite hangs..", "The suite hangs.."},
+			{"The suite hangs!.", "The suite hangs!."},
+			{".", "."},
+			{"", ""},
+		} {
+			text := backwardMoveReason(from, to, reason.given)
 			want := AskedMove{From: from, To: to, Asker: phase.RoleFor(from), Words: reason.words}
-			if move, asked := BackwardMoveOf(first); !asked || move != want {
-				t.Errorf("%s: BackwardMoveOf(%q) = %+v, %v; want %+v", pair, first, move, asked, want)
+			if move, asked := BackwardMoveOf(text); !asked || move != want {
+				t.Errorf("%s: BackwardMoveOf(%q) = %+v, %v; want %+v", pair, text, move, asked, want)
 			}
 		}
 	}

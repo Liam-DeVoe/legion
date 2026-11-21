@@ -614,8 +614,9 @@ func (r *outbox) recordDropped(row record.OutboxRow, kind, id string, cause erro
 	}
 }
 
-// messageRefusedPreview is how much of a refused message's first line its notice quotes: enough to
-// know which message it was, short enough that the notice stays short whatever the message was.
+// messageRefusedPreview is how much of a refused message's first line its notice quotes, in UTF-16
+// units as every bound of carried words counts them (texts.Bound): enough to know which message it
+// was, short enough that the notice stays short whatever the message was.
 const messageRefusedPreview = 200
 
 // messagePostRefused is the architect's notice of a Dispatch message the daemon could not post:
@@ -639,33 +640,36 @@ func messagePostRefused(issue string, payload record.MessagePost, cause error) t
 // reason, beside its status or as a message of its own where the move writes none, whose words
 // are those of the role that asked, and a close's reason, whose words are the architect's. The
 // sentence is read with the workflow's own writer of it, the move's with workflow.BackwardMoveOf
-// and the close's lead with intake.CloseRootLead, and becomes a field (refused_move:
-// <from>-<to>, refused_close: before_first_phase), so the block holds the other author's words
-// alone, under that author's name. Every other first line, a move's sentence that gave no words
-// among them, is the daemon's own, whole, by texts.ByDaemon: every other body the outbox posts is
-// a message the workflow or the supervision writes of its own facts. The line's time is the
-// refused row's, which refusedNoticeRow gives it.
+// (given the whole body, since the writer's own stop, which it drops, ends the body) and the
+// close's lead with intake.CloseRootLead, and becomes a field (refused_move: <from>-<to>,
+// refused_close: before_first_phase), so the block holds the first line of the other author's
+// words alone, under that author's name. Every other first line, a move's sentence that gave no
+// words among them, is the daemon's own, whole, by texts.ByDaemon: every other body the outbox
+// posts is a message the workflow or the supervision writes of its own facts. A line past
+// messageRefusedPreview is cut with nothing added to it, and the words object gives the count of
+// what the cut left out (rest), as it does for every carried words. The line's time is the refused
+// row's, which refusedNoticeRow gives it.
 func quoteRefused(refused *texts.MessageRefusedRecord, body string) {
 	refused.Length = utf8.RuneCountInString(body)
 	line, _, _ := strings.Cut(body, "\n")
-	by := texts.ByDaemon
-	if move, asked := workflow.BackwardMoveOf(line); asked && move.Words != "" {
-		refused.RefusedMove, line, by = phase.Pair(move.From, move.To), move.Words, string(move.Asker)
+	quoted, by := line, texts.ByDaemon
+	if move, asked := workflow.BackwardMoveOf(body); asked && move.Words != "" {
+		refused.RefusedMove, quoted, by = phase.Pair(move.From, move.To), move.Words, string(move.Asker)
 	} else if words, closed := strings.CutPrefix(line, intake.CloseRootLead); closed && words != "" {
-		refused.RefusedClose, line, by = texts.BeforeFirstPhase, words, string(claim.RoleArchitect)
+		refused.RefusedClose, quoted, by = texts.BeforeFirstPhase, words, string(claim.RoleArchitect)
 	}
-	if refused.Begins = refusedPreview(line); refused.Begins != "" {
-		refused.Words = map[string]texts.WordsMeta{"begins": {By: by}}
+	begins := refusedPreview(quoted)
+	if refused.Begins = begins.Text; begins.Text != "" {
+		refused.Words = map[string]texts.WordsMeta{"begins": {By: by, Rest: begins.Rest}}
 	}
 }
 
-// refusedPreview is the first line of a text a notice quotes, cut to messageRefusedPreview.
-func refusedPreview(text string) string {
+// refusedPreview is the first line of a text a notice quotes, as the notice carries it: bounded to
+// messageRefusedPreview by texts.Carry, which adds nothing to the head it keeps and counts the rest
+// of the line it cut off.
+func refusedPreview(text string) texts.Words {
 	first, _, _ := strings.Cut(text, "\n")
-	if runes := []rune(first); len(runes) > messageRefusedPreview {
-		return string(runes[:messageRefusedPreview]) + "…"
-	}
-	return first
+	return texts.Carry(first, messageRefusedPreview, false)
 }
 
 // refusedNoticeRow is the outbox row of a message-refused notice (messagePostRefused,

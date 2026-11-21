@@ -164,6 +164,9 @@ var goldenMainFacts = []goldenFactsOf{
 	{kind: texts.MessageRefused, variants: []string{"status"}, from: "daemon/outbox.go:statusWriteRefused at a86c31c9 " +
 		"(the first line it quoted, whose daemon's sentence says that the architect closed the issue before its first phase: intake.CloseRootLead)",
 		keys: []string{"refused_close", "words.begins.by"}},
+	{kind: texts.MessageRefused, from: "daemon/outbox.go:refusedPreview at b4a566cb (the cut of the quoted first line at 200, which main marked with an ellipsis of its own; " +
+		"the words object's rest counts what the cut left out, as for every carried words)",
+		keys: []string{"words.begins.rest"}},
 	{kind: texts.DesignApproved, from: "workflow/gate.go:gateRegistered, applyArtifact (version, actor, ref)",
 		keys: []string{"issue", "version", "actor"}, links: []string{"ref"}},
 	{kind: texts.DesignChangesRequested, from: "workflow/gate.go:tellChanges (version, reason, actor, ref)",
@@ -419,6 +422,12 @@ var goldenKept = []goldenKeptOf{
 		keys:   []string{"launcher_lookup", "resumed_by_id"},
 		values: func(map[string]string) map[string]string {
 			return map[string]string{"launcher_lookup": "failed", "resumed_by_id": "false"}
+		}},
+	{kind: texts.CheckLook, what: "the rule of every look's verdict, the last among them: a requirement only the deploy can show that the look observes as not met is a fail, as main's task said on every look",
+		keptBy: "dispatch://INFRA-3686's R8 (a fact that it has the text give stays as a field) and dispatch://INFRA-4533's R1, which states dispatch://INFRA-904's R7",
+		keys:   []string{"not_met_requirement"},
+		values: func(map[string]string) map[string]string {
+			return map[string]string{"not_met_requirement": "fail"}
 		}},
 	{kind: texts.CheckLook, variants: []string{"bound-last"}, what: "the rule of the last look's verdict beside last: true: a requirement only the deploy can show that is still unobserved there is a fail, " +
 		"and its pending is only for an issue with no such requirement",

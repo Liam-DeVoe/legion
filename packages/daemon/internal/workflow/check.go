@@ -136,11 +136,12 @@ const retryOfLook = "the retry of a look nobody reported: "
 // names it and a resumed session tells the check from its last phase task by it. Then the facts of
 // the look: the look, what woke it, whether it is the last, the pull request, the merge commit
 // (left out where the record holds none, which the reader then reads from GitHub), and the
-// check's bound in whole days with the time of the look at that bound, the last. The last look
-// alone states the rule of its verdict, as dispatch://INFRA-4533's R1 has it state
-// dispatch://INFRA-904's R7, in two fields beside last: a requirement only the deploy can show
-// that is still unobserved there is a fail (unobserved_requirement), and its pending is only for an
-// issue with no such requirement (pending).
+// check's bound in whole days with the time of the look at that bound, the last. Every look states
+// the rule of its verdict as dispatch://INFRA-4533's R1 has it state dispatch://INFRA-904's R7, as
+// main's task said it on every look: a requirement only the deploy can show that the look observes
+// as not met is a fail (not_met_requirement). The last look also states, in two fields beside it
+// and last, that such a requirement still unobserved there is a fail (unobserved_requirement), and
+// that its pending is only for an issue with no such requirement (pending).
 //
 // What woke it is the cause (texts.WokenByMerge and the others): the merge that opened the check
 // (wakeMerge), its bound (wakeBound), or a check_wake row (wakeNamed), whose reason is either the
@@ -149,10 +150,10 @@ const retryOfLook = "the retry of a look nobody reported: "
 // a look nobody reported (endLook), whose cause is named. The rest of the rules of the check —
 // each requirement only the deploy can show observed as it names it, the three verdicts and what
 // each asks of the pull request, the wake a pending names, and nothing to wait for in the session
-// — are the checking role's prompt's, which also says what the two fields of the last look name.
+// — are the checking role's prompt's, which also says what the fields of the rule name.
 func CheckLook(issue record.Issue, check record.ProductionCheck, cause, detail string, last bool) texts.CheckLookRecord {
 	look := texts.CheckLookRecord{Issue: issue.Key, Title: issue.Title, Kind: texts.CheckLook, Look: check.Looks, Last: last,
-		PullRequest: texts.PullRequestRef(check.Repo, check.Number), MergeCommit: check.MergeSHA}
+		NotMetRequirement: texts.LookNotMetRequirement, PullRequest: texts.PullRequestRef(check.Repo, check.Number), MergeCommit: check.MergeSHA}
 	if last {
 		look.UnobservedRequirement, look.Pending = texts.LastLookUnobservedRequirement, texts.LastLookPending
 	}

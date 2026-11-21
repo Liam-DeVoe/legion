@@ -229,7 +229,9 @@ const BeforeFirstPhase = "before_first_phase"
 // such a sentence with no words after it among them, is the daemon's own, and Begins gives it
 // whole. Begins is a words field, which the words object names with its author, the role whose
 // words it holds (the asker of the move, the architect of the close) or ByDaemon for the
-// daemon's own line, and with the time the daemon queued the write.
+// daemon's own line, with the time the daemon queued the write, and, for a line past the
+// preview's bound, with the count of what the cut left out (rest): Begins holds the line's head
+// and nothing else.
 type MessageRefusedRecord struct {
 	NoticeHead
 	Refused        string               `json:"refused"`

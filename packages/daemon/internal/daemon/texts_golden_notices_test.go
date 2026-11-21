@@ -160,7 +160,8 @@ func (b *goldenBuild) notices(r goldenRendering) {
 	// daemon's sentence and goes on with another author's words, a worker's or the architect's: the
 	// notice gives that sentence as a field (refused_move, refused_close) and quotes those words
 	// alone in a block of their own, named by that author and the time the refused row was queued.
-	// The daemon's own line is quoted whole, by the daemon.
+	// The daemon's own line is quoted whole, by the daemon. Each quoted line is past the preview's
+	// bound, so the block holds its head with nothing added and the words object counts the rest.
 	{
 		from := []phase.Phase{phase.Implementing, phase.Merging}[r.n-1]
 		to := []phase.Phase{phase.Planning, phase.Retro}[r.n-1]
@@ -170,31 +171,36 @@ func (b *goldenBuild) notices(r goldenRendering) {
 		body := fmt.Sprintf("Legion moved this issue from %s back to %s at the %s's request: ", from, to, phase.RoleFor(from)) +
 			words + "\n" + r.words("refused/rest", 80)
 		refused := messagePostRefused(issue.Key, record.MessagePost{Body: body}, goldenErr("BODY_TOO_LONG: "+r.words("refused/answer", 40)))
+		begins := refusedPreview(words)
 		b.notice(r, "message", arch, refusedQuotedAt(refused, queued),
 			goldenWant("issue", issue.Key, "refused", texts.RefusedMessage, "length", len([]rune(body)), "refused_move", phase.Pair(from, to),
-				"begins", refusedPreview(words), "words.begins.by", phase.RoleFor(from), "words.begins.at", queued))
+				"begins", begins.Text, "words.begins.by", phase.RoleFor(from), "words.begins.at", queued, "words.begins.rest", begins.Rest))
 		own := r.words("refused/own", 300) + "\n" + r.words("refused/own-rest", 80)
 		refused = messagePostRefused(issue.Key, record.MessagePost{Body: own}, goldenErr("BODY_TOO_LONG: "+r.words("refused/own-answer", 40)))
+		begins = refusedPreview(own)
 		b.notice(r, "message-own", arch, refusedQuotedAt(refused, queued),
-			goldenWant("issue", issue.Key, "refused", texts.RefusedMessage, "length", len([]rune(own)), "begins", refusedPreview(own),
-				"words.begins.by", texts.ByDaemon, "words.begins.at", queued))
+			goldenWant("issue", issue.Key, "refused", texts.RefusedMessage, "length", len([]rune(own)), "begins", begins.Text,
+				"words.begins.by", texts.ByDaemon, "words.begins.at", queued, "words.begins.rest", begins.Rest))
 		// A close's reason, the daemon's sentence and then the architect's.
 		status := []string{"done", "icebox"}[r.n-1]
 		reason := r.words("refused/reason", 300)
 		refused = statusWriteRefused(issue.Key, record.StatusWrite{Status: status, Reason: intake.CloseRoot{Reason: reason}.Message()},
 			goldenErr("STATUS_REFUSED: "+r.words("refused/status", 30)), statusWrites{status: r.n == 1})
+		begins = refusedPreview(reason)
 		b.notice(r, "status", arch, refusedQuotedAt(refused, queued),
 			goldenWant("issue", issue.Key, "refused", texts.RefusedStatus, "status", status, "status_set", r.n == 1, "reason_posted", false,
-				"refused_close", texts.BeforeFirstPhase, "begins", refusedPreview(reason), "words.begins.by", arch, "words.begins.at", queued))
+				"refused_close", texts.BeforeFirstPhase, "begins", begins.Text, "words.begins.by", arch, "words.begins.at", queued,
+				"words.begins.rest", begins.Rest))
 		// A reviewer's backward move refused beside its status.
 		moved := r.words("refused/moved", 300)
 		refused = statusWriteRefused(issue.Key, record.StatusWrite{Status: status,
 			Reason: "Legion moved this issue from reviewing back to implementing at the reviewer's request: " + moved},
 			goldenErr("STATUS_REFUSED: "+r.words("refused/move-status", 30)), statusWrites{status: r.n == 2})
+		begins = refusedPreview(moved)
 		b.notice(r, "status-move", arch, refusedQuotedAt(refused, queued),
 			goldenWant("issue", issue.Key, "refused", texts.RefusedStatus, "status", status, "status_set", r.n == 2, "reason_posted", false,
-				"refused_move", phase.Pair(phase.Reviewing, phase.Implementing), "begins", refusedPreview(moved),
-				"words.begins.by", claim.RoleReviewer, "words.begins.at", queued))
+				"refused_move", phase.Pair(phase.Reviewing, phase.Implementing), "begins", begins.Text,
+				"words.begins.by", claim.RoleReviewer, "words.begins.at", queued, "words.begins.rest", begins.Rest))
 	}
 
 	// design-approved, design-changes-requested, carried-gate-opened.

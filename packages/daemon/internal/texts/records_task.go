@@ -161,12 +161,14 @@ const (
 	WokenByRetry = "retry"
 )
 
-// The rule of the last look's verdict, in the terms of dispatch://INFRA-904's R7, which
-// dispatch://INFRA-4533's R1 has the last look's task state: a requirement of the issue that only
-// the deploy can show and that is still unobserved at the last look is a fail
-// (CheckLookRecord.UnobservedRequirement), and the last look's pending is only for an issue with
-// no such requirement (CheckLookRecord.Pending).
+// The rule of a look's verdict, in the terms of dispatch://INFRA-904's R7, which
+// dispatch://INFRA-4533's R1 has every look's task state: a requirement of the issue that only the
+// deploy can show and that a look observes as not met is a fail, on every look, the last among them
+// (CheckLookRecord.NotMetRequirement); one that is still unobserved at the last look is a fail too
+// (CheckLookRecord.UnobservedRequirement); and the last look's pending is only for an issue with no
+// such requirement (CheckLookRecord.Pending).
 const (
+	LookNotMetRequirement         = "fail"
 	LastLookUnobservedRequirement = "fail"
 	LastLookPending               = "only_with_no_deploy_only_requirement"
 )
@@ -176,11 +178,12 @@ const (
 // description names it; the lead names the issue and its title, so they are no fields.
 //
 // The fields: the look, what woke it (one of the WokenBy words), the cause of a retried look
-// that nobody reported, whether it is the last look and, on the last look alone, the rule of its
-// verdict (UnobservedRequirement and Pending, the LastLook words), the pull request, the merge
-// commit (absent where the record holds none), and the check's bound in whole days with the time
-// of the last look. The pending summary that named the wake goes in the summary block, by the
-// checking role.
+// that nobody reported, whether it is the last look, the rule of every look's verdict
+// (NotMetRequirement, LookNotMetRequirement) and, beside it on the last look alone, the rule of
+// that look's verdict (UnobservedRequirement and Pending, the LastLook words), the pull request,
+// the merge commit (absent where the record holds none), and the check's bound in whole days with
+// the time of the last look. The pending summary that named the wake goes in the summary block, by
+// the checking role.
 type CheckLookRecord struct {
 	Issue                 string    `json:"-"`
 	Title                 string    `json:"-"`
@@ -189,6 +192,7 @@ type CheckLookRecord struct {
 	WokenBy               string    `json:"woken_by"`
 	RetryOf               string    `json:"retry_of,omitempty"`
 	Last                  bool      `json:"last,omitempty"`
+	NotMetRequirement     string    `json:"not_met_requirement,omitempty"`
 	UnobservedRequirement string    `json:"unobserved_requirement,omitempty"`
 	Pending               string    `json:"pending,omitempty"`
 	PullRequest           string    `json:"pull_request"`

@@ -15,10 +15,15 @@ body: |-
   named by its author: where that line is the daemon's sentence of a worker's backward move or of
   the architect's close and then that author's words, the notice gives the sentence as a field
   (`refused_move: <from>-<to>`, `refused_close: before_first_phase`) and the block holds the
-  worker's or the architect's words alone; any other line is the daemon's own, whole. A
-  session-forgotten notice says why the session was forgotten (`launcher_lookup: failed`,
-  `resumed_by_id: false`), and the task of a production check's last look states the rule of its
-  verdict beside `last: true` (`unobserved_requirement: fail`,
+  worker's or the architect's words alone; any other line is the daemon's own, whole. The block
+  holds no character the daemon added: a line past 200 UTF-16 units is cut with no ellipsis and the
+  words object counts the rest (`rest`), and a worker's words lose the full stop the daemon's
+  sentence adds after words that end with none, so words of one line that end with one `.` lose
+  that `.` too, since the two read alike. A session-forgotten notice says why the session was
+  forgotten (`launcher_lookup: failed`, `resumed_by_id: false`). The task of every look of a
+  production check states that a requirement only the deploy can show that the look observes as not
+  met is a fail (`not_met_requirement: fail`), and the last look's task also states the rest of the
+  rule of its verdict beside `last: true` (`unobserved_requirement: fail`,
   `pending: only_with_no_deploy_only_requirement`). A notice is published with its kind's urgency,
   and a `low` text wakes no released pod. Of the role messages to a role whose pod is released, only
   a `low` one is left unpublished; a `med` one, such as a design gate's move, is published and wakes
