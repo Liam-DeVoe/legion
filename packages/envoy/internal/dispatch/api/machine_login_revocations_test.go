@@ -396,12 +396,15 @@ func TestAPassBeforeTheBrokersDecisionBoundLeavesTheRevocationOwed(t *testing.T)
 // a pass settles that revocation, and alice puts erin back. erin's browser approve of a new machine
 // login reaches the broker, which has not answered it when an operator runs the block: the block
 // takes erin's approval lock as a removal does, so it waits for the approve, and records the debt
-// anew with its own moment as its removal. The pass after it lists the login the approve minted and
-// revokes it, and leaves the debt owed until a claim comes machineLoginSettleAfter after the block.
+// anew with its own moment as its removal. A block that commits while the approve is in flight
+// fails the row at once: an approve that read nothing owed just before such a block committed may
+// reach the broker after the block's moment, so its login could commit after a claim that settles
+// the debt. The pass after the block lists the login the approve minted and revokes it, and leaves
+// the debt owed until a claim comes machineLoginSettleAfter after the block.
 //
-// Control: the block as it was, with no approval lock and recorded_at kept, and it commits while
-// the approve is in flight; the pass that follows lists no login and settles the old removal's
-// debt, so the login the approve then mints is never revoked, named.
+// Controls: the block without its approval lock statement, or with that lock under another key
+// than store.LockMachineLoginApprovals', and the block commits while the approve is in flight,
+// named; the block keeping the debt's recorded_at, and the pass at once settles the debt, named.
 func TestAnApproveInFlightDuringTheBrokerRestoredBlockIsRevoked(t *testing.T) {
 	rig := newFakeBrokerRig(t)
 	served, database, registered := newRegisteredAccessServer(t, testServerOptions{
@@ -458,14 +461,10 @@ func TestAnApproveInFlightDuringTheBrokerRestoredBlockIsRevoked(t *testing.T) {
 			return tx.Commit(background)
 		}()
 	}()
-	finishedEarly, early := false, error(nil)
-	for giveUp := time.Now().Add(30 * time.Second); !finishedEarly && advisoryLockWaiters(t, database) == 0; time.Sleep(20 * time.Millisecond) {
+	for giveUp := time.Now().Add(30 * time.Second); advisoryLockWaiters(t, database) == 0; time.Sleep(20 * time.Millisecond) {
 		select {
-		case early = <-restored:
-			// The block did not wait: a pass now finds no login of erin's.
-			finishedEarly = true
-			claimable()
-			registered.revokeBrokerDebts(ctx)
+		case early := <-restored:
+			t.Fatalf("the runbook's block ended (error %v) while erin's approve was in flight, want it to wait on erin's approval lock", early)
 		default:
 			if time.Now().After(giveUp) {
 				t.Fatalf("the runbook's block neither finished nor waited on a lock within 30 s")
@@ -477,11 +476,8 @@ func TestAnApproveInFlightDuringTheBrokerRestoredBlockIsRevoked(t *testing.T) {
 	if code := <-approved; code != http.StatusOK {
 		t.Fatalf("erin's approve in flight answered %d, want 200: it was admitted before the block", code)
 	}
-	if !finishedEarly {
-		early = <-restored
-	}
-	if early != nil {
-		t.Fatalf("the runbook's block: %v", early)
+	if err := <-restored; err != nil {
+		t.Fatalf("the runbook's block: %v", err)
 	}
 
 	claimable()
