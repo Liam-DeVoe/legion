@@ -101,3 +101,72 @@ func TestAMappingWriteReachesNoMappingOfAProjectItsWriterDoesNotSee(t *testing.T
 		t.Errorf("alice's move of PRIV's mapping with no project private answers %s, want 200", got)
 	}
 }
+
+// TestAMappingWriteOfAHiddenProjectNeverWaitsOnItsLock: while a writer of PRIV holds PRIV's owner
+// lock, alice's PUT moving PRIV's mapping of acme/unowned to PUB and her DELETE of it answer without
+// queueing behind that writer (lockRepoProjectWrite decides the mapping's project before it takes
+// that project's locks), each with what a write naming no mapping of anybody answers: a PUT to a
+// project nobody holds, and a DELETE of a repository no mapping holds. A refusal that waited would
+// tell alice that someone writes PRIV. carol, who sees PRIV, still takes the lock: her move queues
+// behind the holder and lands once it lets go.
+//
+// Control: lockRepoProjectWrite asking no viewer (who nil) before the lock; alice's writes then
+// queue behind the holder, and the test fails naming the statement each waits at.
+func TestAMappingWriteOfAHiddenProjectNeverWaitsOnItsLock(t *testing.T) {
+	seed, _ := lockSeed(t)
+	seed.mustRequest(t, callerCarol, http.MethodPut, "/api/v1/settings/repo-projects/acme/unowned",
+		map[string]any{"project": seedPrivate}, http.StatusOK)
+	mapping := func(method, repository, body string) lockRow {
+		return lockRow{
+			name: method + " /api/v1/settings/repo-projects/" + repository, method: method,
+			target: func(lockKeys) (string, string) { return "/api/v1/settings/repo-projects/" + repository, body },
+			hold:   holdProjectOwner,
+		}
+	}
+	for _, row := range []struct {
+		write, missing lockRow
+	}{
+		{mapping(http.MethodPut, "acme/unowned", `{"project":"PUB"}`), mapping(http.MethodPut, "acme/other", `{"project":"NOPE"}`)},
+		{mapping(http.MethodDelete, "acme/unowned", ""), mapping(http.MethodDelete, "acme/unmapped", "")},
+	} {
+		t.Run(row.write.name, func(t *testing.T) {
+			row.write.caller, row.missing.caller = callerAlice, callerAlice
+			held := row.write.holdFor(t, seed, hiddenLockKeys)
+			answered := row.write.call(t, seed, hiddenLockKeys)
+			hidden, waiting := awaitAnswerOrWait(t, seed, held, answered)
+			if hidden == nil {
+				t.Errorf("alice's %s, a mapping of PRIV, queued behind the writer holding PRIV's lock, at %q; one naming no mapping of anybody never waits",
+					row.write.name, waiting)
+				hidden = held.letGo(t, answered)
+			}
+			missing := <-row.missing.call(t, seed, missingLockKeys)
+			if got, want := lockAnswer(hidden), lockAnswer(missing); got != want {
+				t.Errorf("alice's %s answers %s, and %s answers %s", row.write.name, got, row.missing.name, want)
+			}
+		})
+	}
+	if got := mappedProject(t, seed, "acme/unowned"); got != seedPrivate {
+		t.Errorf("after alice's refused writes acme/unowned's mapping is %s, want PRIV's", got)
+	}
+
+	move := mapping(http.MethodPut, "acme/unowned", `{"project":"PUB"}`)
+	move.caller = callerCarol
+	held := move.holdFor(t, seed, hiddenLockKeys)
+	answered := move.call(t, seed, hiddenLockKeys)
+	if early, _ := awaitAnswerOrWait(t, seed, held, answered); early != nil {
+		t.Fatalf("carol's move of PRIV's mapping answered %s while a writer held PRIV's lock, so it took no lock of PRIV", lockAnswer(early))
+	}
+	if response := held.letGo(t, answered); response.Code != http.StatusOK {
+		t.Errorf("carol's move of PRIV's mapping answered %s once the holder let go, want 200", lockAnswer(response))
+	}
+}
+
+// mappedProject is the project repository's mapping names, or "none".
+func mappedProject(t *testing.T, seed privateSeed, repository string) string {
+	t.Helper()
+	var project string
+	if err := seed.database.Pool.QueryRow(context.Background(), `select project from repo_projects where repo = $1`, repository).Scan(&project); err != nil {
+		return "none"
+	}
+	return project
+}
