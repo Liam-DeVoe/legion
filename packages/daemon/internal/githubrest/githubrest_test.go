@@ -197,6 +197,31 @@ func TestGetListPagesRefusesAnAnswerWithoutTheField(t *testing.T) {
 	}
 }
 
+// TestAListThatDoesNotDecodePrintsNoTokenItEchoes: a list GitHub answers as an object's field, or
+// a stand-in answers in its place, can echo the call's token into a time the items hold, and a
+// decoder's error quotes such a time whole; the error names the list as not the shape the call
+// reads and holds none of the token.
+func TestAListThatDoesNotDecodePrintsNoTokenItEchoes(t *testing.T) {
+	const token = "ghs_installation-token-RDX-5a9e03"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		echo := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		fmt.Fprintf(w, `{"total_count":1,"check_runs":[{"id":1,"started_at":%q}]}`, echo)
+	}))
+	defer server.Close()
+	client := Client{Token: token, API: server.URL + "/repos/acme/widgets"}
+	type checkRun struct {
+		ID        int       `json:"id"`
+		StartedAt time.Time `json:"started_at"`
+	}
+	runs, err := GetListPages[checkRun](context.Background(), client, "/commits/head/check-runs", "check_runs")
+	if err == nil || runs != nil || !strings.Contains(err.Error(), `"check_runs" list`) {
+		t.Fatalf("GetListPages of a list that does not decode = %+v, %v; want an error naming the check_runs list", runs, err)
+	}
+	if strings.Contains(err.Error(), token) {
+		t.Fatalf("the error holds the token the call carried:\n%s", err)
+	}
+}
+
 // GitHub's secondary rate limit can answer a 403 with only its message to say so: no retry-after,
 // and x-ratelimit-remaining well above 0. That answer is a rate limit, waited the minute GitHub's
 // documentation names for a limit that names no wait. A 403 whose message is anything else is not.

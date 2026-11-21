@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -427,5 +428,45 @@ func TestFetchCreatedSpecs(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(out, bundleRawDir, "versions", "spec-3", "1.unreadable")); err != nil {
 		t.Fatalf("unreadable spec not cached as such: %v", err)
+	}
+}
+
+// TestAnArtifactListingThatDoesNotDecodePrintsNoTokenItEchoes: Dispatch's artifact listing, or a
+// stand-in's in its place, can echo the fetch's bearer into a time the listing holds, and a
+// decoder's error quotes such a time whole; replay-fetch's error names the listing as not the
+// shape it reads and holds none of the bearer.
+func TestAnArtifactListingThatDoesNotDecodePrintsNoTokenItEchoes(t *testing.T) {
+	const token = "loadtest-token-RDX-2f6c9b"
+	raw := func(evs ...replayEvent) []byte {
+		var out []json.RawMessage
+		for _, ev := range evs {
+			out = append(out, ev.Raw)
+		}
+		b, _ := json.Marshal(out)
+		return b
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/issues":
+			_, _ = w.Write([]byte(`[{"key":"PRJ-1"}]`))
+		case "/api/v1/issues/PRJ-1/events":
+			_, _ = w.Write(raw(mkEvent(t, 1, "PRJ-1", "issue.created", mins(-100), sess("s0"), issueSnap("PRJ-1", "t", "open", nil))))
+		case "/api/v1/issues/PRJ-1/artifacts":
+			echo := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+			b, _ := json.Marshal([]map[string]any{{"id": "art-1", "name": "spec", "kind": "doc", "created_at": echo}})
+			_, _ = w.Write(b)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	out := t.TempDir()
+	f := &replayFetcher{api: newAPI(srv.URL, token, 2), raw: filepath.Join(out, bundleRawDir), conc: 2, lg: log.New(io.Discard, "", 0)}
+	_, err := f.run(context.Background(), "PRJ", tAt, tUntil, out, nil)
+	if err == nil || !strings.Contains(err.Error(), "PRJ-1 artifacts") {
+		t.Fatalf("replay-fetch over a listing that does not decode = %v, want an error naming PRJ-1's artifacts", err)
+	}
+	if strings.Contains(err.Error(), token) {
+		t.Fatalf("the error holds the bearer the fetch carried:\n%s", err)
 	}
 }

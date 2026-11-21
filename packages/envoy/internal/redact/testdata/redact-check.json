@@ -4025,6 +4025,27 @@
       "production": "agent-secrets client.RenewEnrollment: the renewal's answer decodes through redact.Answer.Decode, whose error quotes no value"
     },
     {
+      "id": "daemon-broker-decode-echo",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/cipher",
+      "test": "TestAnAcceptedBrokerAnswerThatDoesNotDecodePrintsNoCredentialItEchoes",
+      "production": "daemon cipher Client.do and doProof: an accepted answer decodes through oauth2call.Answer.Decode, whose error quotes no value"
+    },
+    {
+      "id": "githubrest-list-decode-echo",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
+      "test": "TestAListThatDoesNotDecodePrintsNoTokenItEchoes",
+      "production": "githubrest getPages: a list GitHub answers as an object's field that does not decode is named, and no value of it printed"
+    },
+    {
+      "id": "loadtest-listing-decode-echo",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAnArtifactListingThatDoesNotDecodePrintsNoTokenItEchoes",
+      "production": "loadtest replayFetcher.run: an artifact listing that does not decode is named, and no value of it printed"
+    },
+    {
       "id": "oidc-discovery-references",
       "requirement": "r1-fail-closed",
       "package": "./internal/oidc",
@@ -5701,6 +5722,21 @@
       "site": "agent-secrets RenewEnrollment: a 200 that does not decode printed the decoder's error, which quoted the pod token an answer echoed",
       "source": "the review of #4368 round 4, finding 1",
       "guard": "agentsecrets-decode-echo"
+    },
+    {
+      "site": "daemon broker client (login, pod session registration, enrollment, carried list): a 200 that does not decode printed the decoder's error, which quoted the token or proof an answer echoed into a time",
+      "source": "the search for the class of the review of #4368 round 4, finding 1, at the merge of main",
+      "guard": "daemon-broker-decode-echo"
+    },
+    {
+      "site": "daemon githubrest getPages: a list GitHub answered as an object's field that did not decode printed the decoder's error, which quoted the installation token an answer echoed into a time",
+      "source": "the search for the class of the review of #4368 round 4, finding 1, at the merge of main",
+      "guard": "githubrest-list-decode-echo"
+    },
+    {
+      "site": "loadtest replay-fetch: an artifact listing that did not decode printed the decoder's error, which quoted the bearer an answer echoed into a time",
+      "source": "the search for the class of the review of #4368 round 4, finding 1, at the merge of main",
+      "guard": "loadtest-listing-decode-echo"
     }
   ]
 }

@@ -268,7 +268,7 @@ func (c *Client) tokenLogin(ctx context.Context) (*credential, error) {
 	if err != nil {
 		return nil, fmt.Errorf("agent-secrets login: sign request object: %w", err)
 	}
-	status, body, cut, err := c.do(ctx, http.MethodPost, "/v1/launcher-credentials/token", map[string]string{"token": token, "request": request}, answerBytes, nil)
+	status, body, answered, cut, err := c.do(ctx, http.MethodPost, "/v1/launcher-credentials/token", map[string]string{"token": token, "request": request}, answerBytes, nil)
 	if err != nil {
 		if ctx.Err() == nil {
 			return nil, &brokerUnavailableError{err: err}
@@ -285,7 +285,7 @@ func (c *Client) tokenLogin(ctx context.Context) (*credential, error) {
 		CredentialID string    `json:"credential_id"`
 		ExpiresAt    time.Time `json:"expires_at"`
 	}
-	if err := json.Unmarshal(body, &answer); err != nil {
+	if err := answered.Decode(&answer); err != nil {
 		return nil, fmt.Errorf("broker answered %d with a body that is not the contract's shape: %w", status, err)
 	}
 	if answer.CredentialID == "" || answer.ExpiresAt.IsZero() {
@@ -485,14 +485,14 @@ func (c *Client) Enroll(ctx context.Context, e PodEnrollment) (Enrollment, error
 		session := e.Session
 		body.SessionID = &session
 	}
-	status, raw, cut, err := c.doProof(ctx, http.MethodPost, "/v1/enrollments", body, answerBytes)
+	status, raw, answered, cut, err := c.doProof(ctx, http.MethodPost, "/v1/enrollments", body, answerBytes)
 	if err != nil {
 		return Enrollment{}, err
 	}
 	if older := body.withoutNewFields(); older != body && refusesAnUnknownField(status, raw, cut) {
 		c.log().Warn("agent-secrets: the broker does not read an enrollment's claim; enrolling the pod without it, so its requests stay this enrollment's alone",
 			"pod_uid", e.PodUID, "slot", e.Slot)
-		status, raw, cut, err = c.doProof(ctx, http.MethodPost, "/v1/enrollments", older, answerBytes)
+		status, raw, answered, cut, err = c.doProof(ctx, http.MethodPost, "/v1/enrollments", older, answerBytes)
 		if err != nil {
 			return Enrollment{}, err
 		}
@@ -501,7 +501,7 @@ func (c *Client) Enroll(ctx context.Context, e PodEnrollment) (Enrollment, error
 		return Enrollment{}, refusal(status, raw, cut)
 	}
 	var answer enrollmentAnswer
-	if err := json.Unmarshal(raw, &answer); err != nil {
+	if err := answered.Decode(&answer); err != nil {
 		return Enrollment{}, fmt.Errorf("broker answered %d with a body that is not the contract's shape: %w", status, err)
 	}
 	if answer.EnrollmentID == "" {
@@ -513,7 +513,7 @@ func (c *Client) Enroll(ctx context.Context, e PodEnrollment) (Enrollment, error
 // Revoke is DELETE /v1/enrollments/{id}, authenticated with a launcher proof: 204 and 404 are
 // both "revoked" (the route is idempotent).
 func (c *Client) Revoke(ctx context.Context, id string) error {
-	status, raw, cut, err := c.doProof(ctx, http.MethodDelete, "/v1/enrollments/"+url.PathEscape(id), nil, answerBytes)
+	status, raw, _, cut, err := c.doProof(ctx, http.MethodDelete, "/v1/enrollments/"+url.PathEscape(id), nil, answerBytes)
 	if err != nil {
 		return err
 	}
@@ -570,7 +570,7 @@ func (*CarriedAnswerTooLargeError) UnlistedCarry() bool { return true }
 // CarriedAnswerTooLargeError. With no live launcher credential it answers the non-permanent
 // NO_MACHINE_CREDENTIAL, as Enroll does; any other refusal is an *APIError.
 func (c *Client) Carried(ctx context.Context, sessionIDs []string) ([]CarriedEnrollment, error) {
-	status, raw, cut, err := c.doProof(ctx, http.MethodPost, "/v1/enrollments/carried", carriedBody{SessionIDs: sessionIDs}, carriedAnswerBytes)
+	status, raw, answered, cut, err := c.doProof(ctx, http.MethodPost, "/v1/enrollments/carried", carriedBody{SessionIDs: sessionIDs}, carriedAnswerBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -581,7 +581,7 @@ func (c *Client) Carried(ctx context.Context, sessionIDs []string) ([]CarriedEnr
 		return nil, &CarriedAnswerTooLargeError{Limit: carriedAnswerBytes}
 	}
 	var answer carriedAnswer
-	if err := json.Unmarshal(raw, &answer); err != nil {
+	if err := answered.Decode(&answer); err != nil {
 		return nil, fmt.Errorf("broker answered %d with a body that is not the contract's shape: %w", status, err)
 	}
 	if answer.Carried == nil {
@@ -631,7 +631,7 @@ func (c *Client) RegisterPodSession(ctx context.Context, podUID, podToken, sessi
 	if err != nil {
 		return time.Time{}, fmt.Errorf("agent-secrets registration: %w", err)
 	}
-	status, raw, cut, err := c.do(ctx, http.MethodPost, "/v1/oauth/exchange/pod-sessions", podSessionBody{PodToken: podToken, Session: session, Thumbprint: thumbprint, Generation: generation}, answerBytes, func(req *http.Request) {
+	status, raw, answered, cut, err := c.do(ctx, http.MethodPost, "/v1/oauth/exchange/pod-sessions", podSessionBody{PodToken: podToken, Session: session, Thumbprint: thumbprint, Generation: generation}, answerBytes, func(req *http.Request) {
 		req.Header.Set("Authorization", "Bearer "+token)
 	})
 	if err != nil {
@@ -646,7 +646,7 @@ func (c *Client) RegisterPodSession(ctx context.Context, podUID, podToken, sessi
 		Generation int64     `json:"generation"`
 		ExpiresAt  time.Time `json:"expires_at"`
 	}
-	if err := json.Unmarshal(raw, &answer); err != nil {
+	if err := answered.Decode(&answer); err != nil {
 		return time.Time{}, fmt.Errorf("broker answered %d with a body that is not the contract's shape: %w", status, err)
 	}
 	if answer.PodUID != podUID {
@@ -720,30 +720,30 @@ func (*SupersededError) Permanent() bool { return true }
 // and answers NO_MACHINE_CREDENTIAL. A 401 (LAUNCHER_INVALID) clears the credential that failed,
 // wakes the login loop, and answers NO_MACHINE_CREDENTIAL; a 401 on a credential a login already
 // replaced clears nothing. It reads the answer as do does, and answers whether do's bound cut it.
-func (c *Client) doProof(ctx context.Context, method, path string, body any, limit int) (int, []byte, bool, error) {
+func (c *Client) doProof(ctx context.Context, method, path string, body any, limit int) (int, []byte, oauth2call.Answer, bool, error) {
 	cred := c.snapshot().cred
 	if !cred.live(time.Now()) {
 		c.wake()
-		return 0, nil, false, c.noCredentialError()
+		return 0, nil, oauth2call.Answer{}, false, c.noCredentialError()
 	}
 	proof, err := signLauncherProof(cred.key, cred.id, method, c.URL+path, time.Now())
 	if err != nil {
-		return 0, nil, false, err
+		return 0, nil, oauth2call.Answer{}, false, err
 	}
-	status, raw, cut, err := c.do(ctx, method, path, body, limit, func(req *http.Request) {
+	status, raw, answered, cut, err := c.do(ctx, method, path, body, limit, func(req *http.Request) {
 		req.Header.Set("Proof", proof)
 	})
 	if err != nil {
-		return 0, nil, false, err
+		return 0, nil, oauth2call.Answer{}, false, err
 	}
 	if status == http.StatusUnauthorized {
 		c.update(func(cur loginState) (loginState, bool) {
 			return loginState{failure: "the broker refused the daemon's launcher credential; logging in again"}, cur.cred == cred
 		})
 		c.wake()
-		return 0, nil, false, c.noCredentialError()
+		return 0, nil, oauth2call.Answer{}, false, c.noCredentialError()
 	}
-	return status, raw, cut, nil
+	return status, raw, answered, cut, nil
 }
 
 // backoff is a wait after failed consecutive logins: initial after the first, doubled for each one
@@ -881,23 +881,25 @@ const answerBytes = 1 << 16
 
 // do sends one broker call and reads its answer through oauth2call.ReadAnswer: its first limit
 // bytes, and whether the bound cut it, which a caller that must tell a whole answer from one cut
-// short reads (Carried), and so does refusal, which quotes a body that is not the contract's shape;
-// every other caller reads the cut body as its contract's shape or not. A read that fails is an
-// error. A refusal's body is answered as the rule prints it, with every credential the call
-// carried redacted, since the broker's words, or a stand-in's, can echo the call's token, and
-// every caller prints a refusal (refusal).
-func (c *Client) do(ctx context.Context, method, path string, body any, limit int, mutate func(*http.Request)) (int, []byte, bool, error) {
+// short reads (Carried), and so does refusal, which quotes a body that is not the contract's shape.
+// A 2xx answer comes back as the answer, which its caller decodes as its contract's shape or not
+// (Answer.Decode): the decode's error names the member that did not decode and quotes no value,
+// since the broker's answer, or a stand-in's, can echo the call's token into a field the decoder
+// quotes, a time's among them. A read that fails is an error. A refusal's body is answered as the
+// rule prints it, with every credential the call carried redacted, since the broker's words, or a
+// stand-in's, can echo the call's token, and every caller prints a refusal (refusal).
+func (c *Client) do(ctx context.Context, method, path string, body any, limit int, mutate func(*http.Request)) (int, []byte, oauth2call.Answer, bool, error) {
 	var payload io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
 		if err != nil {
-			return 0, nil, false, err
+			return 0, nil, oauth2call.Answer{}, false, err
 		}
 		payload = bytes.NewReader(encoded)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, c.URL+path, payload)
 	if err != nil {
-		return 0, nil, false, err
+		return 0, nil, oauth2call.Answer{}, false, err
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -911,20 +913,18 @@ func (c *Client) do(ctx context.Context, method, path string, body any, limit in
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, nil, false, fmt.Errorf("broker %s %s: %w", method, path, err)
+		return 0, nil, oauth2call.Answer{}, false, fmt.Errorf("broker %s %s: %w", method, path, err)
 	}
 	defer resp.Body.Close()
 	answer, err := oauth2call.ReadAnswer(resp, int64(limit))
 	cut := errors.Is(err, oauth2call.ErrAnswerTooLarge)
 	if err != nil && !cut {
-		return 0, nil, false, fmt.Errorf("broker %s %s: read the answer: %w", method, path, err)
+		return 0, nil, oauth2call.Answer{}, false, fmt.Errorf("broker %s %s: read the answer: %w", method, path, err)
 	}
 	if resp.StatusCode/100 != 2 {
-		return resp.StatusCode, []byte(answer.Words().String()), cut, nil
+		return resp.StatusCode, []byte(answer.Words().String()), answer, cut, nil
 	}
-	var raw bytes.Buffer
-	_, _ = answer.StreamTo(&raw)
-	return resp.StatusCode, raw.Bytes(), cut, nil
+	return resp.StatusCode, nil, answer, cut, nil
 }
 
 // refusal is the broker's error body as an *APIError; a body that is not the contract's shape
