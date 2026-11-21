@@ -3,8 +3,11 @@
 // pgx.BeginFunc; a statement method taken as a value; pgx's own PgConn under a connection; a
 // statement prepared on the connection and run on its PgConn; and a type loaded by name, which
 // runs a query under the login's own search_path. The last two are methods no list of statement
-// methods named, so they hold the check to denying by default. The check must name each line that
-// carries a want comment, and no other.
+// methods named, so they hold the check to denying by default. Then a caller's transaction used
+// inside a literal handed to the helper, which runs in the caller's unpinned transaction though it
+// sits in the helper's literal, and the raw network connection under a PgConn, on which any bytes
+// of the protocol can be written. The check must name each line that carries a want comment, and
+// no other.
 package fixture
 
 import (
@@ -75,5 +78,17 @@ func prepared(ctx context.Context, conn *pgx.Conn) error {
 
 func loaded(ctx context.Context, conn *pgx.Conn) error {
 	_, err := conn.LoadType(ctx, "session_kind") // want "conn.LoadType (a method of *pgx.Conn)"
+	return err
+}
+
+func callers(ctx context.Context, conn *pgx.Conn, caller pgx.Tx) error {
+	return inTransaction(ctx, conn, pgx.ReadOnly, func(pgx.Tx) error {
+		_, err := caller.Exec(ctx, "SELECT 1") // want "caller.Exec (a method of pgx.Tx)"
+		return err
+	})
+}
+
+func raw(conn *pgx.Conn) error {
+	_, err := conn.PgConn().Conn().Write([]byte{'Q'}) // want "conn.PgConn().Conn (a method of *pgconn.PgConn)"
 	return err
 }
