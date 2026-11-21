@@ -4974,7 +4974,7 @@ for form in hyphen dash honest; do
     case "$form" in
     hyphen)
         case_result "a symbol part 3-9 beside a name is read as a line range, both ends, and fails --citations in a file of three lines" \
-            "citation-our-code: f-our-1 cites the symbol 3-9, which packages/daemon/internal/api/handoff\\.go does not hold" "$out"
+            "citation-our-code: f-our-1 cites 3-9, and packages/daemon/internal/api/handoff\\.go holds 3 lines at [0-9a-f]+, so the range 3-9 runs past its end" "$out"
         ;;
     dash)
         case_result "a symbol part 3–9 written with a dash fails --citations, named as no line or line range the gate reads" \
@@ -5036,6 +5036,30 @@ grep -F '"id":"f-project-1"' "$claims_copy" | grep -qF '"repo":"ioc-projects/mas
 }
 case_result "a project-code row whose repository's owner is mistyped fails --citations, naming the row and the repository, and is not read as the clone of its last path element" \
     "citation-project-code: f-project-1 cites the repository .ioc-projects/mas-lab., which names no repository sources.json pins a clone of: a repository is written whole" \
+    "$(fixture_run "$dir" --citations)"
+
+# 171. Each part of a symbol is read against its own file, and a part that names no file
+# against the file before it (the architect's ruling of round 46 on check.sh:5632). At
+# 2b46c850 resolve_symbol read only the last line a symbol names, after its last colon, and
+# held it to the first path of the citation's file field, so a symbol naming two files read
+# the second file's line in the first, and the first file's line not at all, as the live row
+# d-28's 'merge-gate.md:81, pr-body.md:33-34' read as lines 33-34 of merge-gate.md. The case
+# writes the fixture's row f-our-1 as citing skills/legion-worker/references/pr-body.md, a
+# file of three lines, with the symbol 'pr-body.md:1, merge-gate.md:3', whose second part
+# names line 3 of merge-gate.md, a file of two lines beside it; at 2b46c850 line 3 was read
+# in pr-body.md and passed. --citations must fail citation-our-code, naming the part and
+# merge-gate.md.
+dir="$(fresh symbol-two-files)"
+claims_copy="$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+sed -i '/"id":"f-our-1"/s#"file":"packages/daemon/internal/api/handoff.go","symbol":"TesterVerdictRequired"#"file":"skills/legion-worker/references/pr-body.md","symbol":"pr-body.md:1, merge-gate.md:3"#' "$claims_copy"
+grep -F '"id":"f-our-1"' "$claims_copy" | grep -qF '"file":"skills/legion-worker/references/pr-body.md","symbol":"pr-body.md:1, merge-gate.md:3"' &&
+    [ "$(wc -l <"$dir/repo/skills/legion-worker/references/pr-body.md")" = 3 ] &&
+    [ "$(wc -l <"$dir/repo/skills/legion-worker/references/merge-gate.md")" = 2 ] || {
+    printf 'FAIL the two-file symbol could not be planted in the fixture row f-our-1\n'
+    exit 1
+}
+case_result "a symbol whose second part names a line its own file does not hold fails --citations, read against that file and not the first" \
+    "citation-our-code: f-our-1 cites merge-gate\\.md:3, and skills/legion-worker/references/merge-gate\\.md holds no such line at [0-9a-f]+, 2 lines" \
     "$(fixture_run "$dir" --citations)"
 
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====

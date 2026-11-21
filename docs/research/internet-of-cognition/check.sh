@@ -807,8 +807,8 @@ front-page|shape|the front page carries the ranking, the one thing to do first, 
 question-list|shape|every page's question is one word the gate reads, Q and its number, and is on the question list, and every question is answered by a page or named on the front page|a page whose question is not on the list
 triage-named|shape|every repository the triage dropped is named on the front page with its reason|a dropped repository the front page does not name
 order-of-work|shape|the commit that adds the question list is an ancestor of every commit that adds a deep-read evidence file|a question-list commit that is not an ancestor
-citation-our-code|citations|every path the file field of a citation into our own repository names stands at the commit it names, and every part of its symbol that is an identifier, a line, a line range whose end stands at or after its start and within the file, a prefixed name or a file name stands in that path, a part that starts with a digit being read whole as a line or a line range or failing by name; a part written in words, and every part of a citation whose file is written in words, is reported as not checked|a cited symbol no file holds
-citation-project-code|citations|every citation into one of the projects names, read whole, a repository sources.json pins, by its name or the owner and name of its url, every path its file field names is one the clone holds at the pinned commit, and every part of its symbol that is an identifier, a line, a line range whose end stands at or after its start and within the file, a prefixed name or a file name stands in that path, a part that starts with a digit being read whole as a line or a line range or failing by name; a part written in words, and every part of a citation whose file is written in words, is reported as not checked|a cited identifier the file does not hold
+citation-our-code|citations|every path the file field of a citation into our own repository names stands at the commit it names, and every part of its symbol that is an identifier, a line, a line range whose end stands at or after its start and within the file, a prefixed name or a file name stands in its own file, the file the part names or else the file before it, a part that starts with a digit being read whole as a line or a line range or failing by name; a part written in words, and every part of a citation whose file is written in words, is reported as not checked|a cited symbol no file holds
+citation-project-code|citations|every citation into one of the projects names, read whole, a repository sources.json pins, by its name or the owner and name of its url, every path its file field names is one the clone holds at the pinned commit, and every part of its symbol that is an identifier, a line, a line range whose end stands at or after its start and within the file, a prefixed name or a file name stands in its own file, the file the part names or else the file before it, a part that starts with a digit being read whole as a line or a line range or failing by name; a part written in words, and every part of a citation whose file is written in words, is reported as not checked|a cited identifier the file does not hold
 citation-published|citations|every citation of a published document names a committed copy whose checksum is the one sources.json recorded and whose text holds the sentence quoted|a byte appended to a committed copy
 citation-dispatch|citations|every dispatch:// reference resolves to a node Dispatch holds|a reference that resolves to no node
 citation-kinds|citations|every line of claims.jsonl is a row the one parse reads, and the extraction rule reads a citation of every kind it names, a number written in words among them|an extractor that reads digits alone
@@ -5605,54 +5605,66 @@ PYTHON
     esac
 }
 
+# symbol_file <repo root> <commit> <name> <path>...; prints the file a part of a symbol
+# names, read against the paths the citation names: a path among them that is the name or
+# ends with it after a slash, then the name beside one of them, in its directory or in a
+# directory it is, then the name as a path of the tree. It prints nothing and returns 1
+# when none of those is a file at the commit.
+symbol_file() {
+    local root="$1" commit="$2" name="$3" path dir
+    shift 3
+    for path in "$@"; do
+        case "$path" in ':(glob)'*) continue ;; esac
+        { [ "$path" = "$name" ] || [[ "$path" == */"$name" ]]; } &&
+            [ "$(git -C "$root" cat-file -t "$commit:$path" 2>/dev/null)" = blob ] && {
+            printf '%s' "$path"
+            return 0
+        }
+    done
+    for path in "$@"; do
+        case "$path" in ':(glob)'*) continue ;; esac
+        if [ "$(git -C "$root" cat-file -t "$commit:$path" 2>/dev/null)" = tree ]; then
+            dir="$path/"
+        else
+            dir="${path%/*}/"
+            [ "$dir" = "$path/" ] && dir=""
+        fi
+        [ "$(git -C "$root" cat-file -t "$commit:$dir$name" 2>/dev/null)" = blob ] && {
+            printf '%s' "$dir$name"
+            return 0
+        }
+    done
+    [ "$(git -C "$root" cat-file -t "$commit:$name" 2>/dev/null)" = blob ] || return 1
+    printf '%s' "$name"
+}
+
 # resolve_symbol <id> <repo root> <commit> <pathspec> <symbol>
 #
-# How a symbol is read, which is a reading of its own and so is written here. A symbol
-# ending in a line resolves when the file holds that line, and one ending in a line range
-# when the range ends at or after its start and the file holds its last line. Otherwise the
-# symbol is split on commas and on the word "and", and each part is looked for in the
-# paths the citation names: as literal text, as a line or a line range, read whole with
-# both ends, as a file name, as a prefixed name, as a path, as a regular expression where
-# the part holds `|` or `*`, and as the last element of a dotted name; a part that starts
-# with a digit and holds no space, and is neither text the paths hold nor a line or a line
-# range, fails by name. A part written in words that none of those finds names a
-# part of the file a reader judges, and this gate does not read it; nor does it read any
-# part of a symbol whose citation writes its file in words. Each such part is written to
-# $RUN_SCRATCH/unchecked-parts, which --citations prints, one line per part with its row,
-# so that a part nothing checked is never counted as checked. Any other part that no
-# search finds fails the citation.
+# How a symbol is read, which is a reading of its own and so is written here. The symbol
+# is split on commas and on the word "and", and each part is read against its own file: a
+# part that names a file, as `pr-body.md:33-34` or `pr-body.md`, is read against that file,
+# found by symbol_file, and a part that names no file against the file before it, the one
+# the last part that named a file named, or the paths the citation names for the parts
+# before any did, as citations.py continues a bare line range from the nearest file
+# citation before it. A part that is a line or a line range, written alone or after a
+# name and a colon, as `88-97`, `:188-196`, `name.py:88-97` or `askOnMessage:306`, is read
+# whole, with both ends: it resolves when its file holds that line, or the range's last
+# line, and a range whose end stands before its start names no lines and fails; a name
+# before the colon that is no file is a name its file holds. Every other part is looked for
+# in its file: as literal text, as a file name, as a prefixed name, as a path, as a regular
+# expression where the part holds `|` or `*`, and as the last element of a dotted name; a
+# part that starts with a digit and holds no space, and is neither text the file holds nor
+# a line or a line range, fails by name. A part written in words that none of those finds
+# names a part of the file a reader judges, and this gate does not read it; nor does it
+# read any part of a symbol whose citation writes its file in words. Each such part is
+# written to $RUN_SCRATCH/unchecked-parts, which --citations prints, one line per part with
+# its row, so that a part nothing checked is never counted as checked. Any other part that
+# no search finds fails the citation. A line names no line of a glob or a directory, so a
+# line read against one is a figure of the prose, as before any part named a file of a
+# citation of a set.
 resolve_symbol() {
     local id="$1" root="$2" commit="$3" file="$4" symbol="$5" family="${6:-citation-our-code}" part
-    # A symbol that is a line or a line range, written `name.py:88-97` or as the bare
-    # range the record writes beside a file, resolves when the file holds that line, or the
-    # range's last line: both ends of a range are read, never its start alone, which passed
-    # a range running past the file's end, and a range whose end stands before its start
-    # names no lines and fails.
-    local line_ref="" line_end="" lines
-    if [[ "$symbol" =~ (^|:)([0-9]+)(-([0-9]+))?[^0-9]*$ ]]; then
-        line_ref="${BASH_REMATCH[2]}" line_end="${BASH_REMATCH[4]:-${BASH_REMATCH[2]}}"
-    fi
-    if [ -n "$line_ref" ] && [ -z "${file##*[*/]}" ]; then
-        line_ref=""
-    fi
-    if [ -n "$line_ref" ]; then
-        if [ "$line_end" -lt "$line_ref" ]; then
-            fail "$family" "$id cites $symbol, a line range that ends before it starts"
-            return 1
-        fi
-        lines="$(git -C "$root" show "$commit:${file%%:*}" 2>/dev/null | wc -l)"
-        if [ "$lines" -ge "$line_end" ]; then
-            return 0
-        fi
-        if [ "$line_end" = "$line_ref" ]; then
-            fail "$family" "$id cites $symbol, and $file holds no such line at $commit"
-        else
-            fail "$family" "$id cites $symbol, and $file holds $lines lines at $commit, so the range $line_ref-$line_end runs past its end"
-        fi
-        return 1
-    fi
-    # A citation may name more than one file. Each part of the symbol is looked for in
-    # every path the citation names, because the record writes the two together.
+    # The paths the citation names, each part of its file field.
     local pathspec=()
     local fpart
     while IFS= read -r fpart; do
@@ -5676,38 +5688,63 @@ resolve_symbol() {
         done < <(printf '%s\n' "$symbol" | sed 's/ and /\n/g; s/,/\n/g')
         return 0
     fi
+    # here: the file each part is read against, the paths the citation names until a part
+    # names a file of its own; here_name: how a failure names it.
+    local here=("${pathspec[@]}") here_name="$file" named path lines most most_path held part_line part_end
+    local line_part='^(([^:[:space:]]*):)?([0-9]+)(-([0-9]+))?[]).,;:]*$'
     while IFS= read -r part; do
         part="$(printf '%s' "$part" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
         [ -n "$part" ] || continue
-        if git -C "$root" grep -qF -- "$part" "$commit" -- "${pathspec[@]}" 2>/dev/null; then
-            continue
-        fi
-        # A part that starts with a digit is a line, digits alone, or a line range, two lines
-        # joined by a hyphen, read whole, with any closing bracket or stop after it, as the
-        # "397-404)" a comma leaves of "(lines 330-349, 397-404)": it resolves when one of the
-        # files it names holds that line, or the range's last line, both ends read, and a range
-        # whose end stands before its start names no lines and fails. Any other part that
-        # starts with a digit and holds no space, as "3–9" written with a dash or "12a", and that
-        # no file it names holds as text, is no line this gate reads, and fails, naming the row
-        # and the part, rather than being read as the line its first digits name.
-        case "$part" in
-        [0-9]*)
-            local part_line part_end held=1 path line_part='^([0-9]+)(-([0-9]+))?[]).,;:]*$'
-            if [[ "$part" =~ $line_part ]]; then
-                part_line="${BASH_REMATCH[1]}" part_end="${BASH_REMATCH[3]:-${BASH_REMATCH[1]}}"
-                if [ "$part_end" -lt "$part_line" ]; then
-                    fail "$family" "$id cites $part, a line range that ends before it starts"
+        # A line or a line range, alone or after a name and a colon.
+        if [[ "$part" =~ $line_part ]]; then
+            named="${BASH_REMATCH[2]}" part_line="${BASH_REMATCH[3]}" part_end="${BASH_REMATCH[5]:-${BASH_REMATCH[3]}}"
+            if [ "$part_end" -lt "$part_line" ]; then
+                fail "$family" "$id cites $part, a line range that ends before it starts"
+                return 1
+            fi
+            if [ -n "$named" ]; then
+                if path="$(symbol_file "$root" "$commit" "$named" "${pathspec[@]}")"; then
+                    here=("$path") here_name="$path"
+                elif ! git -C "$root" grep -qF -- "$named" "$commit" -- "${here[@]}" 2>/dev/null; then
+                    fail "$family" "$id cites $part, and $named is neither a file beside the paths the citation names nor text the file before it, $here_name, holds at $commit"
                     return 1
                 fi
-                for path in "${pathspec[@]}"; do
-                    # A glob names many files and no line, so a number beside one is a figure
-                    # of the prose rather than a line of a file.
-                    case "$path" in *'*'*) held=0 ;; esac
-                    [ "$(git -C "$root" show "$commit:$path" 2>/dev/null | wc -l)" -ge "$part_end" ] && held=0
-                done
-                [ "$held" -eq 0 ] && continue
-            elif [[ "$part" != *[[:space:]]* ]]; then
-                fail "$family" "$id cites $part, which starts with a digit and is no line or line range this gate reads, nor text $file holds at $commit: a line is digits and a line range two lines joined by a hyphen, as 1 or 1-3"
+            fi
+            held=1 most=-1 most_path=""
+            for path in "${here[@]}"; do
+                case "$path" in ':(glob)'*) held=0 && break ;; esac
+                [ "$(git -C "$root" cat-file -t "$commit:$path" 2>/dev/null)" = tree ] && held=0 && break
+                lines="$(git -C "$root" show "$commit:$path" 2>/dev/null | wc -l)"
+                [ "$lines" -gt "$most" ] && most="$lines" most_path="$path"
+                [ "$lines" -ge "$part_end" ] && held=0 && break
+            done
+            [ "$held" -eq 0 ] && continue
+            if [ "$part_end" = "$part_line" ]; then
+                fail "$family" "$id cites $part, and $most_path holds no such line at $commit, $most lines"
+            else
+                fail "$family" "$id cites $part, and $most_path holds $most lines at $commit, so the range $part_line-$part_end runs past its end"
+            fi
+            return 1
+        fi
+        # A part that is a file name or a path and names a file beside the paths the
+        # citation names is read as that file, and the parts after it are read against it.
+        case "$part" in
+        *' '*) ;;
+        */* | *.[A-Za-z]*)
+            path="$(symbol_file "$root" "$commit" "$part" "${pathspec[@]}")" && here=("$path") here_name="$path" && continue
+            ;;
+        esac
+        if git -C "$root" grep -qF -- "$part" "$commit" -- "${here[@]}" 2>/dev/null; then
+            continue
+        fi
+        # Any other part that starts with a digit and holds no space, as "3–9" written with a
+        # dash or "12a", and that its file does not hold as text, is no line this gate reads,
+        # and fails, naming the row and the part, rather than being read as the line its
+        # first digits name.
+        case "$part" in
+        [0-9]*)
+            if [[ "$part" != *[[:space:]]* ]]; then
+                fail "$family" "$id cites $part, which starts with a digit and is no line or line range this gate reads, nor text $here_name holds at $commit: a line is digits and a line range two lines joined by a hyphen, as 1 or 1-3"
                 return 1
             fi
             ;;
@@ -5725,7 +5762,7 @@ resolve_symbol() {
         # part too: the prefix names a namespace and the file declares the local name.
         case "$part" in
         *:*)
-            git -C "$root" grep -qF -- "${part##*:}" "$commit" -- "${pathspec[@]}" 2>/dev/null && continue
+            git -C "$root" grep -qF -- "${part##*:}" "$commit" -- "${here[@]}" 2>/dev/null && continue
             ;;
         esac
         # A symbol that is itself a path resolves as a path does.
@@ -5736,7 +5773,7 @@ resolve_symbol() {
         esac
         case "$part" in
         *'|'* | *'*'*)
-            git -C "$root" grep -qE -- "$part" "$commit" -- "${pathspec[@]}" 2>/dev/null && continue
+            git -C "$root" grep -qE -- "$part" "$commit" -- "${here[@]}" 2>/dev/null && continue
             ;;
         esac
         case "$part" in
@@ -5751,10 +5788,10 @@ resolve_symbol() {
         # `Envelope.Validate` where the file declares `Validate` on a receiver.
         case "$part" in
         *.*)
-            git -C "$root" grep -qF -- "${part##*.}" "$commit" -- "${pathspec[@]}" 2>/dev/null && continue
+            git -C "$root" grep -qF -- "${part##*.}" "$commit" -- "${here[@]}" 2>/dev/null && continue
             ;;
         esac
-        fail "$family" "$id cites the symbol $part, which $file does not hold at $commit"
+        fail "$family" "$id cites the symbol $part, which $here_name does not hold at $commit"
         return 1
     done < <(printf '%s\n' "$symbol" | sed 's/ and /\n/g; s/,/\n/g')
     return 0
