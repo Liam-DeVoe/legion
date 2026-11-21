@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"unsafe"
 
 	"github.com/spf13/viper"
 	"github.com/zricethezav/gitleaks/v8/config"
@@ -87,17 +88,17 @@ func compile() (built *rules, err error) {
 	return &rules{detector: detector, names: names}, nil
 }
 
-// scan is the report of records: one line per refusal, naming the record and the class and
-// nothing else. The same class against the same record is one line however many times it
+// scan adds the report of records to rep: one line per refusal, naming the record and the class
+// and nothing else. The same class against the same record is one line however many times it
 // matches, since the report says what a record names rather than how often, and a record's
 // classes are sorted because the engine reads its rules out of a map and would otherwise order
-// two of them differently from one run to the next.
+// two of them differently from one run to the next. Past refusalLines, rep counts a line rather
+// than holding it, so a scan holds no more lines than that whatever the records.
 //
 // Each record is scanned on its own, with Detect of a fragment rather than DetectSource of a
 // source: the detector accumulates the findings of a source, and a scan of several records
 // through it would report the first record's finding against every record after it.
-func (r *rules) scan(ctx context.Context, records []Record) ([]string, error) {
-	var lines []string
+func (r *rules) scan(ctx context.Context, records []Record, rep *report) error {
 	for _, record := range records {
 		var of []string
 		seen := map[string]bool{}
@@ -109,15 +110,133 @@ func (r *rules) scan(ctx context.Context, records []Record) ([]string, error) {
 			}
 		}
 		slices.Sort(of)
-		lines = append(lines, of...)
+		for _, line := range of {
+			rep.add(line)
+		}
 		// A context that ended stops the detector's own scan loop and leaves it answering no
 		// findings, which would read as a record that holds nothing. A bound that ran out is a
 		// setup failure instead, so the write is refused rather than passed.
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return err
 		}
 	}
-	return lines, nil
+	return nil
+}
+
+// batchBytes is the most record text one batch of the rule pass holds, each record's header
+// counted at recordHeader bytes beside its text, so that a batch of short lines is bounded by its
+// records as well as by their bytes. A record longer than this is a batch of its own.
+const batchBytes = 64 << 20
+
+// recordHeader is what a record costs a batch beyond its text: its two string headers. The label
+// is not counted: every line record of one file carries the one path string its diff header was
+// read into.
+const recordHeader = int(unsafe.Sizeof(Record{}))
+
+// pass is one rule pass over records that arrive one at a time, as a push's diff is read: it
+// holds at most one batch of them (batchBytes, or the Guard's own bound in a test), scans a batch
+// once it is full, and keeps nothing of a scanned batch but its refusal lines. The lines come out
+// as scan answers them for all the records at once, since a batch is scanned in the order its
+// records arrived and scan reports each record on its own.
+//
+// Its memory is one batch, plus the detector's own cost of scanning one record of it, plus at most
+// refusalLines refusal lines; whatever reads the records holds one line of its own beside that.
+// None of it grows with the size of the push.
+type pass struct {
+	ctx    context.Context
+	engine *rules
+	limit  int
+	// scanned, where it is not nil, is handed each batch before it is scanned: a test's seam
+	// (Guard.onBatch), which reads what a batch held.
+	scanned func(batch []Record)
+	batch   []Record
+	size    int
+	report  report
+	// err is a scan that did not finish: the context ended under it. Every add after it answers
+	// it, so that the reader of the records stops.
+	err error
+}
+
+// add takes one record into the pass, scanning the batch first where the record would take it past
+// the bound, and scanning the record alone where it is past the bound by itself.
+func (p *pass) add(record Record) error {
+	if p.err != nil {
+		return p.err
+	}
+	cost := len(record.Text) + recordHeader
+	if len(p.batch) > 0 && p.size+cost > p.limit {
+		if err := p.flush(); err != nil {
+			return err
+		}
+	}
+	p.batch = append(p.batch, record)
+	p.size += cost
+	if p.size >= p.limit {
+		return p.flush()
+	}
+	return nil
+}
+
+// flush scans the batch and lets it go.
+func (p *pass) flush() error {
+	if len(p.batch) == 0 {
+		return p.err
+	}
+	if p.scanned != nil {
+		p.scanned(p.batch)
+	}
+	err := p.engine.scan(p.ctx, p.batch, &p.report)
+	// The records are let go whatever the scan answered: the slice is kept for the next batch,
+	// and its old entries would otherwise keep each scanned text alive.
+	clear(p.batch)
+	p.batch, p.size = p.batch[:0], 0
+	if err != nil {
+		p.err = err
+	}
+	return err
+}
+
+// end scans what is left and answers the pass as a write of what: nil where no record matched, a
+// refusal naming every record that did, and a setup failure where a scan did not finish.
+func (p *pass) end(what string) error {
+	if err := p.flush(); err != nil {
+		return &SetupFailure{What: what, Why: "the private-name rules did not finish", Err: err}
+	}
+	if len(p.report.lines) == 0 {
+		return nil
+	}
+	return &Refusal{What: what, By: byRules, Lines: p.report.all()}
+}
+
+// refusalLines is the most lines a refusal of the rule pass names. A push that adds a file at a
+// path a path rule refuses is refused once for each line it adds there, so the report of a push
+// of a million such lines would otherwise be a million lines, held in memory and printed. Past
+// this many, the report counts the lines it leaves out in a last line of its own; below it, the
+// report is every line, as it always was.
+const refusalLines = 1000
+
+// report is the lines of a refusal as the rule pass builds them: at most refusalLines of them,
+// and a count of the ones past that.
+type report struct {
+	lines   []string
+	leftOut int
+}
+
+// add is line added to the report, or counted where the report is full.
+func (r *report) add(line string) {
+	if len(r.lines) < refusalLines {
+		r.lines = append(r.lines, line)
+		return
+	}
+	r.leftOut++
+}
+
+// all is the report's lines, and a last line counting the lines left out where there are any.
+func (r *report) all() []string {
+	if r.leftOut == 0 {
+		return r.lines
+	}
+	return append(r.lines, fmt.Sprintf("(%d more lines left out: this report names the first %d)", r.leftOut, refusalLines))
 }
 
 // mask is label with each slash-separated component the repository or company rules match

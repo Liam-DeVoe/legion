@@ -270,12 +270,15 @@ func TestGhRepoGitConfigRefusalNamesWhatHandsTheTokenOn(t *testing.T) {
 // on the same PATH, so it runs none, and no configuration of one can send anything. With a git
 // older than 2.26, which knows no --show-scope, it reads as with any other: a repository that
 // sets sslVerify off is still refused, and a clean one passes. The old git here is the real one
-// behind a script that answers --show-scope as git 2.25 does.
+// behind a script that answers --show-scope as git 2.25 does. The real one is the first compiled
+// git on PATH (fixturegit.CompiledGit), never a wrapper script: the test's PATH holds the old git
+// alone, so a wrapper that finds its git on PATH would find the old git again and run itself until
+// the read's bound killed it.
 func TestGhRepoGitConfigRefusalWithNoGitOrAnOldGit(t *testing.T) {
-	git, err := exec.LookPath("git")
-	if err != nil {
+	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("no git on this machine")
 	}
+	git := fixturegit.CompiledGit(t)
 	off := repositoryWith(t, []string{"http.https://github.com/.sslVerify", "false"})
 	clean := repositoryWith(t, []string{"user.name", "Legion test"})
 	none := t.TempDir()

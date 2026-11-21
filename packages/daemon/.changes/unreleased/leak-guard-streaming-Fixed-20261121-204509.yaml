@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  The leak guard's private-name pass over a push no longer holds the push's whole diff and every
+  record of it before it scans them. It reads git's diff as git writes it and scans the records in
+  batches of at most 64 MiB of record text (a longer line alone), so its memory is about one
+  batch, one line and the engine's cost of one record, whatever the size of the push: a push
+  adding 25,000 files of 1.25 GB peaked at 6.1 GiB before and at a few hundred MiB now. The
+  report is the same, but a refusal now names at most 1000 lines and counts the rest in a last
+  line of its own, so a push of many lines at a path a rule refuses no longer prints one line for
+  each. A path holding a space is now reported without the tab git ends its `+++` line with.
+time: 2026-11-21T20:45:09Z
+custom:
+    Issue: leak-guard-streaming
