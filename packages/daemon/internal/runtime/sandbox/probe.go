@@ -733,17 +733,30 @@ func providersMountFailure(events []corev1.Event, secret string) string {
 // hold (pkg/volume/secret).
 const missingSecretKey = "references non-existent secret key: "
 
+// missingProvidersKey cuts message, a kubelet FailedMount message on the providers volume, at
+// missingSecretKey: the text before it, and the setting or settings that name the key it reports
+// missing (providersEntryOf), "" when no setting names it. missing is false when the message
+// reports no missing key. The key itself goes no further: it can be a provider's key pasted where
+// a provider_keys value goes. providersMountFault and the pod events (providersMountedKeyShown)
+// each word what it returns.
+func (r *Runtime) missingProvidersKey(message string) (before, setting string, missing bool) {
+	before, key, missing := strings.Cut(message, missingSecretKey)
+	if !missing {
+		return message, "", false
+	}
+	return before, r.providersEntryOf(strings.TrimSpace(key)), true
+}
+
 // providersMountFault is failure, the kubelet's message that providersMountFailure found, in the
 // refusal's own words: the Secret missing, or a key it names missing, named by the setting that
-// names that key (providersEntryOf). Neither quotes the message, whose key can be a provider's key
-// pasted where a provider_keys value goes.
+// names that key (missingProvidersKey). Neither quotes the message.
 func (r *Runtime) providersMountFault(failure string) string {
-	_, key, missingKey := strings.Cut(failure, missingSecretKey)
-	if !missingKey {
+	_, setting, missingKey := r.missingProvidersKey(failure)
+	switch {
+	case !missingKey:
 		return "the kubelet reports the Secret is not there"
-	}
-	if entry := r.providersEntryOf(strings.TrimSpace(key)); entry != "" {
-		return "the kubelet reports the Secret holds no key for " + entry
+	case setting != "":
+		return "the kubelet reports the Secret holds no key for " + setting
 	}
 	return "the kubelet reports the Secret lacks a key the pod mounts, one no setting names"
 }

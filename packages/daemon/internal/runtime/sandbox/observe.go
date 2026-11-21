@@ -743,21 +743,20 @@ func (r *Runtime) events(ctx context.Context, pod *corev1.Pod) string {
 
 // providersMountedKeyShown is event's message as events prints it: for a FailedMount on the
 // providers volume that names a missing key, the message up to the kubelet's missingSecretKey
-// wording, then the settings whose key it is (providersEntryOf), or "one no setting names"; any
+// wording, then the settings whose key it is, or "one no setting names" (missingProvidersKey); any
 // other message as written.
 func (r *Runtime) providersMountedKeyShown(event corev1.Event) string {
 	if event.Reason != "FailedMount" || !strings.Contains(event.Message, `volume "`+providersVolume+`"`) {
 		return event.Message
 	}
-	before, key, missing := strings.Cut(event.Message, missingSecretKey)
+	before, setting, missing := r.missingProvidersKey(event.Message)
 	if !missing {
 		return event.Message
 	}
-	entry := r.providersEntryOf(strings.TrimSpace(key))
-	if entry == "" {
-		entry = "one no setting names"
+	if setting == "" {
+		setting = "one no setting names"
 	}
-	return before + "references a key the Secret does not hold: the key of " + entry
+	return before + "references a key the Secret does not hold: the key of " + setting
 }
 
 // podEvents lists the events the API server holds for pod, this incarnation's only.
