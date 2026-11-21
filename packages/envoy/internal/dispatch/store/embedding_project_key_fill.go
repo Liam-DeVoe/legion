@@ -378,34 +378,39 @@ const embeddingsPartitionedQuery = `select relkind = 'p' from pg_class where oid
 // that statement working. The registry records each process's commit, not which release came
 // first, so the swap cannot tell an earlier build from a later one, and it waits for every build
 // of another commit the fleet shows (embeddingsSwapOtherCommitsQuery): one registered within the
-// registry's prune age, and one that published its dashboard within the hour, which an earlier
-// build does before its coverage pass runs and before it registers. It reads that before the
-// copy's count and again under the swap's own locks, so a build whose publish or registration
-// commits before the swap's locks are held holds it. What is left is a build of another commit
-// whose publish commits after the swap has taken them: a rollback begun as the swap commits,
-// which costs what a rollback past the swap costs, the same statement failing
-// (cmd/dispatch/README.md, "Database migrations", says what that build then does). An unstamped
-// process (the empty commit) serves a build no commit names: beside a stamped one it is another
-// commit and holds the swap, and an unstamped process swaps beside unstamped ones alone, which is
-// a test's or a local server's fleet, since an image build always stamps its commit
-// (packages/envoy/docker/Dockerfile refuses anything but a full sha).
+// registry's prune age, and one that published its dashboard within the hour, recorded under the
+// publishing build's own commit (dashboard_publishes, migration 20261121120653). An image build
+// always publishes its dashboard before its coverage pass runs and before it registers; a server
+// run with no web files (no index.html in its web dist) publishes nothing and is seen only once
+// it registers. It reads the fleet before the copy's count and again under the swap's own locks,
+// so a build whose publish or registration commits before the swap's locks are held holds it.
+// What is left is a build of another commit whose publish commits after the swap has taken them:
+// a rollback begun as the swap commits, which costs what a rollback past the swap costs, the same
+// statement failing (cmd/dispatch/README.md, "Database migrations", says what that build then
+// does). An unstamped process (the empty commit) serves a build no commit names: beside a stamped
+// one it is another commit and holds the swap, and an unstamped process swaps beside unstamped
+// ones alone, which is a test's or a local server's fleet, since an image build always stamps its
+// commit (packages/envoy/docker/Dockerfile refuses anything but a full sha).
 var ErrEmbeddingsSwapWaits = errors.New("the embeddings partition swap waits while the fleet holds a build of another commit")
 
 // embeddingsSwapOtherCommitsQuery is the commits of the builds the swap waits for, each once, an
 // unstamped build's empty one among them: every server_processes row of another commit than $1,
 // the swapping process's own, whose heartbeat is within $2 seconds, OwnerLockLegacyWindow (the
 // registry's prune age, so a process frozen or cut from the database counts until its row is
-// pruned), and every dashboard_builds row of another commit last started within $3 seconds,
+// pruned), and every dashboard_publishes row of another commit that published within $3 seconds,
 // OwnerLockMarkWindow (an earlier build's boot from its publish to its registration). These are
 // the owner lock's two windows of an earlier build (OwnerLockLegacyWindow says why each), read
-// by commit rather than by protocol.
+// by commit rather than by protocol. The publishes are read from dashboard_publishes, which a
+// publish writes under its own commit, and not from dashboard_builds, whose commit is the first
+// publisher's of that web build: two releases that ship one web dist share a row, and its commit
+// says nothing of whose boot last renewed it (migration 20261121120653).
 const embeddingsSwapOtherCommitsQuery = `
 	select coalesce(array_agg(distinct commit order by commit), '{}') from (
 		select commit from server_processes
 		 where commit <> $1 and heartbeat_at > now() - make_interval(secs => $2)
 		union all
-		select commit from dashboard_builds
-		 where commit <> $1 and last_started_at > now() - make_interval(secs => $3)
+		select commit from dashboard_publishes
+		 where commit <> $1 and published_at > now() - make_interval(secs => $3)
 	) others`
 
 // embeddingsSwapOtherCommits reads embeddingsSwapOtherCommitsQuery on q, a pool or the swap's
@@ -423,7 +428,7 @@ func embeddingsSwapOtherCommits(ctx context.Context, q interface {
 
 // errEmbeddingsSwapWaitsFor is ErrEmbeddingsSwapWaits naming the swapping build and the others.
 func errEmbeddingsSwapWaitsFor(buildCommit string, others []string) error {
-	return fmt.Errorf("%w: this process serves %q, and the fleet holds builds of %q (server_processes within %s, dashboard_builds within %s)",
+	return fmt.Errorf("%w: this process serves %q, and the fleet holds builds of %q (server_processes within %s, dashboard_publishes within %s)",
 		ErrEmbeddingsSwapWaits, buildCommit, others, OwnerLockLegacyWindow, OwnerLockMarkWindow)
 }
 
@@ -655,15 +660,11 @@ const copyEmbeddingsBatchQuery = `
 // changes nothing and answers ErrEmbeddingsSwapWaits. A build whose publish commits after this
 // read is the rollback past the swap ErrEmbeddingsSwapWaits describes.
 //
-// Once it has committed, it analyzes embeddings itself (ANALYZE ONLY). Autovacuum analyzes each
-// partition as its rows change, but never a partitioned table itself, so without this the planner
-// would cost every statement over the parent from no statistics of it for good, where the old
-// table had its own. ONLY leaves each partition's own statistics to autovacuum, so the ANALYZE
-// reads one sample of the parent's rows and no partition's on top. It takes SHARE UPDATE
-// EXCLUSIVE on embeddings, which no read or write of it waits for but which a project's
-// partition attach takes too (embeddings_add_project_partition), so a project created while it
-// runs waits for it. One that fails is logged and the swap stands, since a plan without the
-// parent's statistics is slower, not wrong.
+// Once it has committed, it analyzes embeddings itself (analyzeSwappedEmbeddings). Autovacuum
+// analyzes each partition as its rows change, but never a partitioned table itself, so without
+// this the planner would cost every statement over the parent from no statistics of it for good,
+// where the old table had its own. One that fails is logged and the swap stands, since a plan
+// without the parent's statistics is slower, not wrong.
 func (s *Store) swapInEmbeddingPartitions(ctx context.Context, buildCommit string) error {
 	ctx = WithTransactionTracking(ctx)
 	tx, err := s.Pool.Begin(ctx)
@@ -693,10 +694,32 @@ func (s *Store) swapInEmbeddingPartitions(ctx context.Context, buildCommit strin
 	}
 	slog.Info("dispatch: embeddings is partitioned by project: the copy is swapped in", "held", time.Since(started))
 	analyzed := time.Now()
-	if _, err := s.Pool.Exec(ctx, "analyze only embeddings"); err != nil {
+	if err := analyzeSwappedEmbeddings(ctx, s.Pool); err != nil {
 		slog.Warn("dispatch: analyzing the swapped-in embeddings failed; the planner reads its partitions' statistics alone until an ANALYZE of embeddings runs", "error", err)
 		return nil
 	}
 	slog.Info("dispatch: embeddings is analyzed after its swap", "duration", time.Since(analyzed))
+	return nil
+}
+
+// analyzeSwappedEmbeddings analyzes embeddings once it is partitioned: ANALYZE ONLY embeddings,
+// which reads one sample of the parent's rows and leaves each partition's own statistics to
+// autovacuum, and where the server takes no ONLY, ANALYZE embeddings, which reads the same sample
+// and each partition's too. ONLY is PostgreSQL 18 syntax: 16 and 17 refuse it (42601,
+// syntax_error), and a Cloud SQL instance may still run 16 (infra/README.md, databaseVersion). Both
+// take SHARE UPDATE EXCLUSIVE on embeddings, which no read or write of it waits for but which a
+// project's partition attach takes too (embeddings_add_project_partition), so a project created
+// while it runs waits for it.
+func analyzeSwappedEmbeddings(ctx context.Context, exec interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}) error {
+	_, err := exec.Exec(ctx, "analyze only embeddings")
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "42601" {
+		return err
+	}
+	if _, err := exec.Exec(ctx, "analyze embeddings"); err != nil {
+		return fmt.Errorf("analyze embeddings, after ANALYZE ONLY was refused as a syntax error (a server before PostgreSQL 18): %w", err)
+	}
 	return nil
 }

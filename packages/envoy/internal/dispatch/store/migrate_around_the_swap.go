@@ -9,10 +9,12 @@ import (
 )
 
 // EmbeddingsPartitionedThrough is the last migration of the release that partitions embeddings by
-// project: 20261120105818, which mirrors every write of embeddings into the partitioned table
-// 20261120105330 builds beside it. A deployment that ran it swaps that table in at its boot's fill
-// (FillEmbeddingProjectKeys), so every later release's migration runs on embeddings partitioned.
-const EmbeddingsPartitionedThrough int64 = 20261120105818
+// project: 20261121120653, which records each dashboard publish under its own commit for the
+// swap's fleet read, after 20261120105330 builds the partitioned table and 20261120105818 mirrors
+// every write of embeddings into it. A deployment that ran that release swaps the table in at its
+// boot's fill (FillEmbeddingProjectKeys), whose fleet read needs every one of them, so every later
+// release's migration runs on embeddings partitioned.
+const EmbeddingsPartitionedThrough int64 = 20261121120653
 
 // MigrateAroundTheSwap migrates the database in the order a deployment that ran this release
 // before a later one does: every migration through EmbeddingsPartitionedThrough, the fill that

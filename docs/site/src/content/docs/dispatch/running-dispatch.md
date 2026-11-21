@@ -891,12 +891,15 @@ before, at recall@20 0.988 and 0.993 against 0.960 and 0.949.
 
 The swap waits while the fleet holds a build of another commit than the process that runs it: a
 registered process of one whose heartbeat is within the registry's prune age (10 minutes, so one
-frozen or cut from the database still counts), or a dashboard of one published within the hour,
-which an earlier build writes when it boots, before its coverage pass runs and before it
-registers. It reads that again once it holds its locks. A build before this release inserts its
-coverage rows on the key the swap replaces and cannot run that insert once the swap is made, so
-the swap runs once the roll is over: a roll, or a rollback whose first process has published its
-dashboard, holds it. Each try while it waits logs `dispatch: embeddings stays unpartitioned for
+frozen or cut from the database still counts), or a dashboard publish by one within the hour. An
+image build publishes its dashboard when it boots, before its coverage pass runs and before it
+registers; a server run with no web files publishes nothing, and is seen only once it registers.
+Each publish is recorded under the publishing build's own commit (`dashboard_publishes`), so a
+release that ships the same web files as the one before is not taken for it. The swap reads the
+fleet again once it holds its locks. A build before this release inserts its coverage rows on the
+key the swap replaces and cannot run that insert once the swap is made, so the swap runs once the
+roll is over: a roll, or a rollback whose first process has published its dashboard or
+registered, holds it. Each try while it waits logs `dispatch: embeddings stays unpartitioned for
 now`, naming the commits it waits on, and is tried again about five minutes later. **After the
 swap, do not roll back past this release**, and a rollback begun in the moment the swap commits
 counts as one after it: a build before it fails its coverage pass on every tick (`SQLSTATE
@@ -909,7 +912,8 @@ The log says `dispatch: the embeddings partition copy began`, then `... is copyi
 seconds with the rows so far, then `... finished` with `rows` (read) and `inserted`, then
 `dispatch: embeddings is partitioned by project: the copy is swapped in` with `held`, how long the
 swap held the tables, and last `dispatch: embeddings is analyzed after its swap`: an `ANALYZE ONLY
-embeddings`, which a project created while it runs waits for. Before it takes any lock the fill
+embeddings`, or `ANALYZE embeddings` on a database before PostgreSQL 18, which refuses `ONLY`,
+and which a project created while it runs waits for. Before it takes any lock the fill
 counts both tables in one snapshot: counts that differ, a write that reached one table and not
 the other, log `... does not hold the rows embeddings holds, so it is emptied and copied again`
 with both counts, and the fill empties the copy and copies it again, with no lock a reader waits

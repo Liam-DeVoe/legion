@@ -350,7 +350,7 @@ func Census(ctx context.Context, conn *pgx.Conn, migrations []Migration, version
 				}
 				switch {
 				case partitioned:
-					entry.refuse("%s builds %s concurrently on %s, which is partitioned: Postgres builds no index concurrently on a partitioned table (SQLSTATE 0A000), so the boot would fail; build it ON ONLY the parent, then concurrently on each partition, then attach each (internal/dispatch/store/README.md)",
+					entry.refuse("%s builds %s concurrently on %s, which is partitioned: Postgres builds no index concurrently on a partitioned table (SQLSTATE 0A000), so the boot would fail; until a runner mode builds one partition by partition, an index on it is a plain CREATE INDEX on the parent, a stop-the-world migration that writes of the table wait for (internal/dispatch/store/README.md)",
 						migration.Name, index.Idxname, index.Relation.Relname)
 				case runsCode == "":
 					entry.ConcurrentIndex = true

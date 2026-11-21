@@ -555,15 +555,25 @@ func registerSwapProcess(t *testing.T, database *Store, commit string, age time.
 	return instance
 }
 
-// publishSwapDashboard writes a dashboard_builds row named build of commit last started age ago,
-// as a build's boot publishes its dashboard before it runs its coverage pass or registers.
+// publishSwapDashboard publishes a dashboard_builds row named build of commit with
+// dashboard.Publish's own statement, as a build's boot publishes its dashboard before it runs its
+// coverage pass or registers, and then dates the publish age ago: the row's last start, and the
+// commit's publish in dashboard_publishes, which migration 20261121120653's trigger recorded at
+// now() under the inserting row's commit.
 func publishSwapDashboard(t *testing.T, database *Store, build, commit string, age time.Duration) {
 	t.Helper()
-	if _, err := database.Pool.Exec(context.Background(), `
-		insert into dashboard_builds (build, entry, commit, first_started_at, last_started_at)
-		values ($1, 'index.html', $2, now() - make_interval(secs => $3), now() - make_interval(secs => $3))`,
-		build, commit, age.Seconds()); err != nil {
+	ctx := context.Background()
+	if _, err := database.Pool.Exec(ctx, `
+		insert into dashboard_builds (build, entry, commit, owner_lock_protocol) values ($1, 'index.html', $2, $3)
+		on conflict (build) do update set last_started_at = now()`, build, commit, OwnerLockProtocol); err != nil {
 		t.Fatalf("publish a dashboard of %q: %v", commit, err)
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		with aged as (select now() - make_interval(secs => $3) as at),
+		     build as (update dashboard_builds set first_started_at = (select at from aged), last_started_at = (select at from aged) where build = $1)
+		update dashboard_publishes set published_at = (select at from aged) where commit = $2`,
+		build, commit, age.Seconds()); err != nil {
+		t.Fatalf("date the publish of %q: %v", commit, err)
 	}
 }
 
@@ -603,7 +613,8 @@ func TestTheSwapWaitsForEveryBuildOfAnotherCommitTheFleetShows(t *testing.T) {
 
 	publishSwapDashboard(t, database, "booting", swapEarlierCommit, 30*time.Second)
 	waitsFor("an earlier build that published its dashboard and has not registered", swapEarlierCommit)
-	execAll(t, database, `delete from dashboard_builds where build = 'booting'`)
+	execAll(t, database, `delete from dashboard_builds where build = 'booting'`,
+		fmt.Sprintf(`delete from dashboard_publishes where commit = '%s'`, swapEarlierCommit))
 
 	if err := database.PartitionEmbeddings(ctx, swapOwnCommit); err != nil {
 		t.Fatalf("partition with no other build in the fleet = %v, want the swap", err)

@@ -40,7 +40,7 @@
 -- the leased pass the boot already starts (api.RunEmbeddingProjectKeyFill), copies the stored
 -- rows in committed batches and then, once the fleet holds no build of another commit
 -- (store.ErrEmbeddingsSwapWaits: server_processes within the registry's prune age, and
--- dashboard_builds published within the hour), calls embeddings_swap_in_partitioned, which drops
+-- dashboard_publishes, 20261121120653, within the hour), calls embeddings_swap_in_partitioned, which drops
 -- the old table and renames this one in one short transaction. Until the swap every reader reads
 -- the old table, by the same name, as before.
 create table embeddings_partitioned (
