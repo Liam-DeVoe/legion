@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -27,6 +28,10 @@ import (
 // reviewer for its verdict at the new head (askVerdict, and mergeForwardLanded for a merge
 // forward's landing).
 
+// heldVerdictApplied is the line the end of a hold logs when it applies the reviewer's verdict past
+// review that the issue took while held (applyHeldVerdict).
+const heldVerdictApplied = "workflow: the hold ended, and the reviewer's approve taken while it held carries no tester's pass; the issue goes back to testing"
+
 // reviewVerdict applies the verdict past review (intake.ReviewVerdict, which the review-verdict
 // route queues): the round's recorded reviewer's approve or changes at the head the pull request
 // moved to while the issue stands past its review (record.PastReview). It writes the round's
@@ -41,9 +46,9 @@ import (
 // refusal recording nothing: a claim that is not the one whose completion ended the round
 // (VERDICT_CALLER_FORBIDDEN), an issue no longer past its review (VERDICT_NOT_PAST_REVIEW), a
 // lingering tree (TREE_LINGERING), and a head the pull request has moved off
-// (VERDICT_HEAD_NOT_CURRENT). A held issue moves only on its hold's retry, so an approve that would
-// send it back to testing is refused while the hold stands (VERDICT_ISSUE_HELD), and the reviewer
-// sends it again after the retry; a verdict that moves nothing is taken while held.
+// (VERDICT_HEAD_NOT_CURRENT). A held issue moves only when its hold ends, so a verdict taken while
+// held is recorded and moves nothing then: the hold's end applies it (applyHeldVerdict), so the
+// reviewer sends it once, whatever becomes of its session meanwhile.
 func (e *Engine) reviewVerdict(ctx context.Context, tx pgx.Tx, fact intake.ReviewVerdict) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
@@ -88,11 +93,6 @@ func (e *Engine) reviewVerdict(ctx context.Context, tx pgx.Tx, fact intake.Revie
 		return intake.Result{}, err
 	}
 	back := uncarried(tester, fact.Verdict, fact.Commit, fact.TestedCommit)
-	if back && issue.Phase == phase.Held {
-		return refused("VERDICT_ISSUE_HELD", fmt.Sprintf(
-			"%s is held from %s, and this approve of %s carries no tester's pass to it, which sends the issue back to testing: a held issue moves only when its hold is retried, so send the verdict again once it is; nothing was recorded",
-			issue.Key, record.StandsAt(*issue), fact.Commit)), nil
-	}
 	reviewer.Decision = decision
 	if err := e.store.PutPhase(ctx, tx, reviewer); err != nil {
 		return intake.Result{}, err
@@ -107,10 +107,40 @@ func (e *Engine) reviewVerdict(ctx context.Context, tx pgx.Tx, fact intake.Revie
 	}
 	e.logOnCommit(ctx, "workflow: recorded the reviewer's verdict past review", "issue", issue.Key, "tree", issue.Tree,
 		"phase", record.StandsAt(*issue), "verdict", fact.Verdict, "commit", fact.Commit, "testedCommit", fact.TestedCommit)
-	if !back {
+	if !back || issue.Phase == phase.Held {
 		return intake.Result{}, nil
 	}
 	return intake.Result{}, e.moveBackToTesting(ctx, tx, *issue, record.PhaseRow{Issue: issue.Key, Role: claim.RoleReviewer}, pr, tester, fact.Commit, fact.TestedCommit)
+}
+
+// applyHeldVerdict applies, as issue's hold ends (retryPhase, with issue released to the phase it
+// was held from), the verdict past review it took while held (reviewVerdict), and says whether it
+// moved the issue: the newest verdict the store records at the head pr stands at (store.Verdict,
+// which recordVerdict wrote), where it is this issue's reviewer's approve that carries no tester's
+// pass to that head (uncarried), sends the issue back to testing at the reviewer's request, as it
+// would have the moment it came, and is logged. A verdict at a head the pull request has moved off
+// is of code the issue no longer stands on, and the push that moved it asked the reviewer again
+// (askVerdict). An issue in reviewing took no verdict while held: its reviewer's completion is
+// what decides that round, and its own approve is acted on as it lands (handoff).
+func (e *Engine) applyHeldVerdict(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest) (bool, error) {
+	if !record.PastReview(issue) || pr == nil {
+		return false, nil
+	}
+	repository, err := ghrepo.Parse("the repository of "+issue.Key+"'s pull request", pr.Repo)
+	if err != nil {
+		return false, err
+	}
+	given, found, err := store.VerdictTx(ctx, tx, repository, pr.Number, pr.HeadSHA)
+	if err != nil || !found || given.Issue != issue.Key {
+		return false, err
+	}
+	tester, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleTester)
+	if err != nil || !uncarried(tester, string(given.Verdict), pr.HeadSHA, given.TestedCommit) {
+		return false, err
+	}
+	e.logOnCommit(ctx, heldVerdictApplied, "issue", issue.Key, "tree", issue.Tree, "phase", issue.Phase,
+		"commit", pr.HeadSHA, "testedCommit", given.TestedCommit, "reviewer", given.Session)
+	return true, e.moveBackToTesting(ctx, tx, issue, record.PhaseRow{Issue: issue.Key, Role: claim.RoleReviewer}, pr, tester, pr.HeadSHA, given.TestedCommit)
 }
 
 // uncarried is whether word, a reviewer's verdict at commit carrying the tester's pass at tested,

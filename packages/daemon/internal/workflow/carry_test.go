@@ -1,6 +1,8 @@
 package workflow
 
 import (
+	"bytes"
+	"log/slog"
 	"slices"
 	"strings"
 	"testing"
@@ -174,9 +176,8 @@ func TestAReviewVerdictPastReviewMovesTheIssueOnlyWhereItCarriesNoPass(t *testin
 
 // The route reads the record before the fact's transaction, so the workflow holds the verdict to
 // the record again under the fact's lock: the round's recorded reviewer, an issue past its review
-// and the current head. A held issue moves only on its retry, so an approve that would send it
-// back to testing is refused while the hold stands; and a lingering tree records nothing. Each
-// refusal records nothing and asks for no write.
+// and the current head; and a lingering tree records nothing. Each refusal records nothing and asks
+// for no write.
 func TestAReviewVerdictTheRecordNoLongerTakesIsRefused(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -193,8 +194,6 @@ func TestAReviewVerdictTheRecordNoLongerTakesIsRefused(t *testing.T) {
 		}(), status: 403, code: "VERDICT_CALLER_FORBIDDEN"},
 		{name: "an issue sent back to testing", seed: func(t *testing.T, pool *pgxpool.Pool) { standsIn(t, pool, phase.Testing, "testing") },
 			fact: pastReviewVerdict("approve", headTwo, headOne), status: 409, code: "VERDICT_NOT_PAST_REVIEW"},
-		{name: "a held issue the approve would send back to testing", seed: holdFromRetro,
-			fact: pastReviewVerdict("approve", headTwo, ""), status: 409, code: "VERDICT_ISSUE_HELD"},
 		{name: "a lingering tree", seed: func(t *testing.T, pool *pgxpool.Pool) {
 			until := time.Date(2026, 9, 24, 0, 0, 0, 0, time.UTC)
 			seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
@@ -223,19 +222,88 @@ func TestAReviewVerdictTheRecordNoLongerTakesIsRefused(t *testing.T) {
 			}
 		})
 	}
+}
 
-	t.Run("a held issue still takes a verdict that moves nothing", func(t *testing.T) {
-		pool := seedPastReview(t, phase.Retro, "retro")
-		holdFromRetro(t, pool)
-		var asked []string
-		applyRefusingNothing(t, pool, writingEngine(&asked), pastReviewVerdict("changes", headTwo, ""))
-		if state, head, _ := storedDecision(t, pool); state != "changes_requested" || head != headTwo {
-			t.Fatalf("the round's decision = %q at %q, want changes_requested at %s", state, head, headTwo)
-		}
-		if got := issuePhase(t, pool); got != phase.Held {
-			t.Fatalf("after the verdict the issue is in %s, want held", got)
-		}
-	})
+// A held issue moves only when its hold ends, so the recorded reviewer's verdict past review taken
+// while it is held is recorded at its head and moves nothing then. When the hold ends - the
+// architect's retry, or the operator's restart of the phase's worker - the workflow applies that
+// verdict itself, with no second call: an approve at the head the pull request still stands at that
+// carries no tester's pass sends the issue back to testing, and says so in the log. A verdict that
+// carries the pass, a changes, and a verdict at a head the pull request has since moved off leave
+// the issue in the phase it is released to.
+func TestAVerdictTakenWhileHeldIsAppliedWhenTheHoldEnds(t *testing.T) {
+	retry := intake.RetryOrEscalate{Issue: "LEGION-208", Decision: intake.RetryDecision}
+	restart := intake.RestartPhase{Issue: "LEGION-208", Role: claim.RoleImplementer}
+	for _, tc := range []struct {
+		name     string
+		verdict  intake.ReviewVerdict
+		pushed   bool
+		ends     intake.Fact
+		want     phase.Phase
+		decision string
+	}{
+		{name: "an approve naming no testedCommit, then the architect's retry", verdict: pastReviewVerdict("approve", headTwo, ""), ends: retry,
+			want: phase.Testing, decision: "approved"},
+		{name: "an approve naming a commit the tester did not pass, then the operator's restart", verdict: pastReviewVerdict("approve", headTwo, headEarlier),
+			ends: restart, want: phase.Testing, decision: "approved"},
+		{name: "an approve carrying the tester's pass, then the architect's retry", verdict: pastReviewVerdict("approve", headTwo, headOne), ends: retry,
+			want: phase.Retro, decision: "approved"},
+		{name: "a changes, then the architect's retry", verdict: pastReviewVerdict("changes", headTwo, ""), ends: retry,
+			want: phase.Retro, decision: "changes_requested"},
+		{name: "an approve naming no testedCommit, a push, then the architect's retry", verdict: pastReviewVerdict("approve", headTwo, ""), pushed: true,
+			ends: retry, want: phase.Retro, decision: "approved"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := seedPastReview(t, phase.Retro, "retro")
+			holdFromRetro(t, pool)
+			var logs bytes.Buffer
+			engine := testEngine(config.DesignGateRootIssues, slog.New(slog.NewTextHandler(&logs, nil)))
+			var asked []string
+			engine.cfg.WriteVerdict = func(_, _ string, _ int, head string) { asked = append(asked, head) }
+
+			applyRefusingNothing(t, pool, engine, tc.verdict)
+			if got := issuePhase(t, pool); got != phase.Held {
+				t.Fatalf("after the verdict the issue is in %s, want held: a held issue moves only when its hold ends", got)
+			}
+			if state, head, _ := storedDecision(t, pool); state != tc.decision || head != headTwo {
+				t.Fatalf("the round's decision = %q at %q, want %s at %s", state, head, tc.decision, headTwo)
+			}
+			if given, found := recordedVerdict(t, pool, headTwo); !found || given.Verdict != store.VerdictWord(tc.verdict.Verdict) {
+				t.Fatalf("the store's verdict at %s = %+v (found %t), want the reviewer's %s", headTwo, given, found, tc.verdict.Verdict)
+			}
+			if !slices.Equal(asked, []string{headTwo}) {
+				t.Fatalf("the engine asked for writes on %v, want one on %s", asked, headTwo)
+			}
+			if tc.pushed {
+				applyRefusingNothing(t, pool, engine, intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42,
+					Branch: "legion/LEGION-208", Base: "main", Before: headTwo, HeadSHA: headThree})
+			}
+
+			applyRefusingNothing(t, pool, engine, tc.ends)
+			if got := issuePhase(t, pool); got != tc.want {
+				t.Fatalf("after the hold ended the issue is in %s, want %s", got, tc.want)
+			}
+			applied := strings.Contains(logs.String(), heldVerdictApplied)
+			if tc.want != phase.Testing {
+				if applied {
+					t.Fatalf("the log says %q, want no verdict applied at the hold's end", heldVerdictApplied)
+				}
+				return
+			}
+			if tester := roleRow(t, pool, claim.RoleTester); tester.Verdict != "" || tester.HandoffCommit != "" {
+				t.Fatalf("the tester's row = %+v, want its pass cleared", tester)
+			}
+			if task := startTask(t, pool, claim.RoleTester); !strings.Contains(task, "test "+headTwo) {
+				t.Fatalf("the tester's task %q, want it to name the head to test, %s", task, headTwo)
+			}
+			if want := "Legion moved this issue from retro back to testing at the reviewer's request: the reviewer's approve of " + headTwo; !strings.HasPrefix(movePost(t, pool), want) {
+				t.Fatalf("the move posts %q on the issue, want it to open %q", movePost(t, pool), want)
+			}
+			if !applied {
+				t.Fatalf("the log reads %q, want it to say %q", logs.String(), heldVerdictApplied)
+			}
+		})
+	}
 }
 
 // holdFromRetro holds LEGION-208 from retro, as its implementer's failed claim does.

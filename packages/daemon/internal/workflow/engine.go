@@ -1933,7 +1933,9 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 // completion of the same commit would be refused as not new. A round its reviewer completed that
 // nothing would end is stuck: the reviewer's task says why, so the restarted reviewer decides
 // it. The architect, who ordered the retry, is told nothing: a notice now would read as the
-// reviewer's answer to its request.
+// reviewer's answer to its request. Past the review, the reviewer's verdict the issue took while
+// held is applied first (applyHeldVerdict): an approve at the head that carries no tester's pass
+// sends the issue back to testing instead of releasing it to from's worker.
 //
 // freshSession is the operator's `--fresh-session`: the start it queues retries the claim in a
 // new session rather than the one it recorded. An architect's retry of a held phase asks for
@@ -1967,6 +1969,14 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
 	if err != nil {
 		return "", err
+	}
+	// A verdict past review the issue took while held moves it now, as it would have when it came
+	// (applyHeldVerdict), and no worker of the phase it left is started.
+	if moved, err := e.applyHeldVerdict(ctx, tx, issue, pr); err != nil || moved {
+		if err != nil {
+			return "", err
+		}
+		return e.phaseNow(ctx, tx, issue)
 	}
 	if from == phase.Reviewing {
 		reviewer, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
