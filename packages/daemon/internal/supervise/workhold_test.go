@@ -1124,12 +1124,14 @@ func TestWorkHoldStopDropLeavesAStoppedClaimForTheOpening(t *testing.T) {
 }
 
 // Spec step 3: a stop the daemon has not made when the gate opens again is not made. The opening
-// deletes the tree's work hold record in its own transaction, and the claim's first decision after
-// that commit reads it (Store.WorkHoldStands) and drops the stop held over the claim
-// (dropOpenedHoldStop), whatever the outbox's stop row has run since: the turn's end leaves the
-// claim idle and sends the task the stop held back, and the hold's deadline cuts no turn. A read
-// that fails keeps the stop held, so the turn's end makes it as before, and the stop's row is left
-// to drop it.
+// deletes the tree's work hold row in its own transaction, and each decision of a claim the hold's
+// stop is held over takes that row for share (Store.LockWorkHold, lockHoldStop). The first such
+// decision after the opening's commit reads no row and drops the stop, whatever the outbox's stop
+// row has run since: the turn's end leaves the claim idle and sends the task the stop held back,
+// and the hold's deadline cuts no turn. The hold's stop asked of an opened tree is answered
+// ErrWorkHoldEnded and makes no stop. A lock that is not granted keeps the stop held, so the
+// turn's end makes it as before, and the stop's row is left to drop it. Each lock granted is
+// released once its decision has run.
 func TestWorkHoldDropsItsStopAtTheFirstDecisionAfterTheOpening(t *testing.T) {
 	const dropped = `msg="supervise: the work hold ended before its stop was made; the stop is not made"`
 	heldInTurn := func(t *testing.T) *harness {
@@ -1209,10 +1211,10 @@ func TestWorkHoldDropsItsStopAtTheFirstDecisionAfterTheOpening(t *testing.T) {
 			t.Fatalf("the claim was sent %q, want the task the stop held back", prompts[1].Message)
 		}
 	})
-	t.Run("a read that fails keeps the stop held", func(t *testing.T) {
+	t.Run("a lock that is not granted keeps the stop held", func(t *testing.T) {
 		h := heldInTurn(t)
 		h.store.openHold(h.claim().Tree)
-		h.store.fail("WorkHoldStands", errors.New("the database did not answer"))
+		h.store.fail("LockWorkHold", errors.New("the database did not answer"))
 
 		h.must(StreamTurnEnd{Claim: h.token})
 
@@ -1221,10 +1223,109 @@ func TestWorkHoldDropsItsStopAtTheFirstDecisionAfterTheOpening(t *testing.T) {
 		h.wantPendingTask(laterTask)
 		h.wantPrompts(1)
 		if lines := h.logs.lines("level=WARN", "the hold's stop stays held", "the database did not answer"); len(lines) != 1 {
-			t.Fatalf("logged %q, want one warning that the stop stays held, naming the failed read", lines)
+			t.Fatalf("logged %q, want one warning that the stop stays held, naming the lock that failed", lines)
 		}
 		if lines := h.logs.lines(dropped); len(lines) != 0 {
 			t.Fatalf("logged %q, want no drop of the stop", lines)
 		}
 	})
+	t.Run("the hold's stop of an opened tree answers that the hold ended and makes no stop", func(t *testing.T) {
+		h := newHarness(t)
+		h.inPhaseTurn()
+		h.store.openHold(h.claim().Tree)
+		puts := len(h.store.history())
+
+		if err := h.handle(holdStop(h, h.clock.Now())); !errors.Is(err, ErrWorkHoldEnded) {
+			t.Fatalf("the hold's stop of a claim whose tree the opening opened answered %v, want %v", err, ErrWorkHoldEnded)
+		}
+
+		h.wantState(StateWorking)
+		if c := h.claim(); c.WorkHeld() || c.SuspensionHeld {
+			t.Fatalf("the claim reads WorkHeld %v, a stop held %v; want no stop held", c.WorkHeld(), c.SuspensionHeld)
+		}
+		h.wantCalls("Suspend", 0)
+		if got := len(h.store.history()); got != puts {
+			t.Fatalf("the store was written %d claims, want none: the stop changes nothing of the claim", got-puts)
+		}
+		h.must(StreamTurnEnd{Claim: h.token})
+		h.wantState(StateIdle)
+		h.wantCalls("Suspend", 0)
+	})
+	t.Run("a lock not granted to the hold's stop answers its error and makes no stop", func(t *testing.T) {
+		h := newHarness(t)
+		h.inPhaseTurn()
+		failed := errors.New("the lock waited past the claim-write deadline")
+		h.store.fail("LockWorkHold", failed)
+
+		if err := h.handle(holdStop(h, h.clock.Now())); !errors.Is(err, failed) || errors.Is(err, ErrSuspendHeld) {
+			t.Fatalf("the hold's stop whose lock was not granted answered %v, want the lock's error and no hold", err)
+		}
+
+		if c := h.claim(); c.WorkHeld() || c.SuspensionHeld {
+			t.Fatalf("the claim reads WorkHeld %v, a stop held %v; want no stop held", c.WorkHeld(), c.SuspensionHeld)
+		}
+		h.must(StreamTurnEnd{Claim: h.token})
+		h.wantState(StateIdle)
+		h.wantCalls("Suspend", 0)
+	})
+	t.Run("every lock taken is released", func(t *testing.T) {
+		h := heldInTurn(t)
+		h.store.openHold(h.claim().Tree)
+		h.must(StreamTurnEnd{Claim: h.token})
+		if err := h.handle(holdStop(h, h.clock.Now())); !errors.Is(err, ErrWorkHoldEnded) {
+			t.Fatalf("the hold's stop after the opening answered %v, want %v", err, ErrWorkHoldEnded)
+		}
+
+		taken, released := h.store.locks()
+		if taken < 4 || released != taken {
+			t.Fatalf("the store granted %d locks on the tree's work hold row and %d were released; want at least four, "+
+				"the stop's, the task's, the turn end's and the stop asked after the opening, each released once", taken, released)
+		}
+	})
+}
+
+// The lock a decision holds on its tree's work hold row ends before the daemon hears a durable
+// state that decision reports (Machine.report). The daemon applies a ready's or a failure's fact
+// at once, and that fact waits on the lock every fact takes, which the hold's opening holds while
+// it waits for the row. Here the decision is the start of the turn the close message starts: the
+// stop is held for that turn, so the decision takes the lock, and it reports the claim working.
+// The report's callback reads the store's counts: the lock was granted and released before the
+// callback ran, and the decision releases nothing after it.
+func TestWorkHoldLockEndsBeforeADurableStateReport(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateIdle)
+	if err := h.handle(holdStop(h, h.clock.Now())); !errors.Is(err, ErrSuspendHeld) {
+		t.Fatalf("the hold's stop of an idle claim answered %v, want it held for the turn its message starts", err)
+	}
+	before, settled := h.store.locks()
+	if settled != before {
+		t.Fatalf("before the turn the store granted %d locks and released %d, want each released", before, settled)
+	}
+	type heard struct {
+		state           ClaimState
+		taken, released int
+	}
+	var reports []heard
+	h.m.OnDurableState(func(_ Claim, state ClaimState) {
+		taken, released := h.store.locks()
+		reports = append(reports, heard{state: state, taken: taken, released: released})
+	})
+
+	h.must(StreamTurnStart{Claim: h.token})
+
+	h.wantState(StateWorking)
+	if c := h.claim(); !c.WorkHeld() {
+		t.Fatal("the claim reads no hold stop after the turn starts, want the stop held for that turn")
+	}
+	if len(reports) != 1 || reports[0].state != StateWorking {
+		t.Fatalf("the daemon heard %+v, want the one report of the claim working", reports)
+	}
+	if got := reports[0]; got.taken != before+1 || got.released != got.taken {
+		t.Fatalf("when the daemon heard the claim working, the store had granted %d locks and released %d; want the turn start's lock granted and released before the report",
+			got.taken, got.released)
+	}
+	if taken, released := h.store.locks(); taken != reports[0].taken || released != reports[0].released {
+		t.Fatalf("after the decision the store had granted %d locks and released %d, want %d and %d: nothing is released after the report",
+			taken, released, reports[0].taken, reports[0].released)
+	}
 }

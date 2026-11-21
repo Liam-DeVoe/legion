@@ -31,7 +31,17 @@ func (s *Postgres) PutWorkHold(ctx context.Context, tx pgx.Tx, hold WorkHold) er
 }
 
 func (s *Postgres) WorkHold(ctx context.Context, tx pgx.Tx, tree string) (*WorkHold, error) {
-	hold, err := scanWorkHold(tx.QueryRow(ctx, `select `+workHoldColumns+` from work_holds where tree = $1`, tree))
+	return readWorkHold(ctx, tx, tree, "")
+}
+
+func (s *Postgres) LockWorkHold(ctx context.Context, tx pgx.Tx, tree string) (*WorkHold, error) {
+	return readWorkHold(ctx, tx, tree, " for update")
+}
+
+// readWorkHold is tree's work hold read on tx with lock appended to the select (" for update",
+// or "" for none), nil for none.
+func readWorkHold(ctx context.Context, tx pgx.Tx, tree, lock string) (*WorkHold, error) {
+	hold, err := scanWorkHold(tx.QueryRow(ctx, `select `+workHoldColumns+` from work_holds where tree = $1`+lock, tree))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}

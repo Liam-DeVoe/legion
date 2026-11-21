@@ -157,8 +157,12 @@ type memStore struct {
 	holds map[Hold]claim.Token
 	// opened is each tree whose work hold an opening ended (openHold): its work_holds row is gone.
 	// Every other tree's hold stands, so no decision drops the hold stop of a tree the test did
-	// not open (dropOpenedHoldStop).
+	// not open (lockHoldStop).
 	opened map[string]bool
+	// locksTaken and locksReleased count the locks on a tree's work hold row the store granted
+	// (LockWorkHold) and the releases called on them, so a test sees that no lock outlives its
+	// decision (locks).
+	locksTaken, locksReleased int
 }
 
 func newMemStore() *memStore {
@@ -326,15 +330,29 @@ func (s *memStore) AdmitClaim(ctx context.Context, c Claim) (Claim, error) {
 
 func (s *memStore) CheckLaunch(context.Context, Claim) error { return nil }
 
-// WorkHoldStands is the store's read of the tree's work hold record: it stands unless the test
-// opened the tree (openHold), and a read the test fails (fail("WorkHoldStands")) answers its error.
-func (s *memStore) WorkHoldStands(_ context.Context, tree string) (bool, error) {
+// LockWorkHold is the store's lock on the tree's work hold row: the hold stands unless the test
+// opened the tree (openHold), and a lock the test fails (fail("LockWorkHold")) answers its error
+// and is not granted. Each lock granted is counted, and so is each call of its release (locks).
+func (s *memStore) LockWorkHold(_ context.Context, tree string) (bool, func(), error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.failures["WorkHoldStands"]; err != nil {
-		return false, err
+	if err := s.failures["LockWorkHold"]; err != nil {
+		return false, nil, err
 	}
-	return !s.opened[tree], nil
+	s.locksTaken++
+	return !s.opened[tree], func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.locksReleased++
+	}, nil
+}
+
+// locks is how many locks on a tree's work hold row the store granted, and how many releases of
+// them were called.
+func (s *memStore) locks() (taken, released int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.locksTaken, s.locksReleased
 }
 
 // openHold is the work hold's opening of tree as the store keeps it: the tree's work_holds row is

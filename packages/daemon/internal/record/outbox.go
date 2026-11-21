@@ -1263,10 +1263,12 @@ type SuperviseRequest struct {
 	// HoldVersion is the version of the gated document that closed the gate. Only the work hold's
 	// stop carries it. The workflow writes it on each stop of the close (workflow's workHoldClose),
 	// and the outbox keeps it when it posts the stop a close message carries (postHoldStop). The
-	// opening deletes the hold's record, which names the version too. So a stop row that finds its
-	// claim stopped after the opening gives this version to the fact of the hold's end
-	// (intake.WorkHoldOpened, the outbox's holdStopUnmade), and the log line of the start names
-	// it. A stop that names no version has 0. A negative version is refused.
+	// opening deletes the hold's record, which names the version too. So the outbox's line of a
+	// stop not made, whose decision found the record gone, names this version (holdStop). So does
+	// a stop row that finds its claim stopped after the opening: a stop a decision made without the
+	// lock on the tree's work hold row, which the opening did not see. It gives this version to the
+	// fact of the hold's end (intake.WorkHoldOpened, the outbox's holdStopUnmade), and the log line
+	// of the start names it. A stop that names no version has 0. A negative version is refused.
 	//
 	// The way back of migrations/20261121000254_work_holds.up.sql deletes each stop of the hold and
 	// takes `stop` off every role message, so no row that the release before reads carries this key.

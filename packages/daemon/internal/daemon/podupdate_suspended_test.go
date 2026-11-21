@@ -217,9 +217,9 @@ func TestWorkHoldAnUpdateRoundPassesOverAClaimTheHoldStopped(t *testing.T) {
 	if c := rig.claimOf(held); c.State != supervise.StateSuspended || !c.WorkHeld() {
 		t.Fatalf("the restored %s is %s, suspended by %q; want it held by the work hold", held, c.State, c.SuspendedBy)
 	}
-	// The tree's record of the hold, as the close writes it (workflow's workHoldClose). Each
-	// decision of the tester reads it while the stop waits for the turn, and drops the stop where
-	// no record stands (supervise's dropOpenedHoldStop).
+	// The tree's record of the hold, as the close writes it (workflow's workHoldClose). The hold's
+	// stop and each decision of the tester while the stop waits for the turn take its row for
+	// share, and a decision that finds no row makes no stop (supervise's lockHoldStop).
 	if err := pgx.BeginFunc(rig.ctx, rig.pool, func(tx pgx.Tx) error {
 		return rig.records.PutWorkHold(rig.ctx, tx, record.WorkHold{Project: "LEGION", Tree: podUpdateIssue, RootGeneration: 1,
 			Step: record.DesignStepSpec, ArtifactID: "artifact-484", Version: 2, ClosedAt: rig.clock.Now()})

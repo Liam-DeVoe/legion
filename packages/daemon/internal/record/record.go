@@ -2073,6 +2073,12 @@ type Store interface {
 	WorkHold(ctx context.Context, tx pgx.Tx, tree string) (*WorkHold, error)
 	WorkHolds(ctx context.Context, tx pgx.Tx, project string) ([]WorkHold, error)
 	DeleteWorkHold(ctx context.Context, tx pgx.Tx, tree string) error
+	// LockWorkHold is WorkHold read with tree's row locked for update until tx ends: the hold's
+	// end takes it before it reads the tree's claims (workflow's tellAndEndWorkHold). A claim's
+	// decision that may make the hold's stop holds the row for share (supervise.Store.LockWorkHold),
+	// so the end waits for that decision's commit, and a decision that asks while the end holds
+	// the row waits for the end's commit and then reads no row.
+	LockWorkHold(ctx context.Context, tx pgx.Tx, tree string) (*WorkHold, error)
 	// WorkHeldTrees is every tree of project, by the tree its issue stands in, that holds a claim
 	// stored suspended by the work hold (supervise.SuspendedByHold), in one read whatever the number
 	// of trees: the trees whose claims the boot's reconcile of the hold may start (workflow's

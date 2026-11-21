@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -27,6 +28,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -1109,84 +1111,255 @@ func TestWorkHoldMakesNoStopWhenTheTurnEndsAfterTheOpening(t *testing.T) {
 	}
 }
 
-// Spec step 3, H14: the hold's stop of a released tester is made at once, and its row reads the
-// gate once more before it finishes. The first attempt stops the tester and answers a wait, which
-// the outbox does not count as a failure. While the gate still holds work, the second attempt
-// finds the tester stopped by the hold and finishes the row without posting the stop again.
-func TestWorkHoldFinishesAStopMadeAtOnceOnItsSecondAttempt(t *testing.T) {
+// openingHeldOpen applies a person's approval of version at Dispatch's seq, as approve does, with
+// one more handler after the engine's and admission's. That handler holds the opening's
+// transaction open: when this returns, the opening took the tree's work hold row, read the tree's
+// claims and deleted the row, and it commits only once the test calls commit. opened answers the
+// apply's error once it has returned. The test's cleanup commits a transaction the test left open.
+func (r *workHoldRig) openingHeldOpen(version int, seq int64) (commit func(), opened <-chan error) {
+	r.t.Helper()
+	inside, release := make(chan struct{}), make(chan struct{})
+	held := applyFunc(func(context.Context, pgx.Tx, intake.Fact) (intake.Result, error) {
+		close(inside)
+		<-release
+		return intake.Result{}, nil
+	})
+	opened = r.inBackground(func() error {
+		result, err := intake.ApplyFact(r.ctx, r.pool, "test", fmt.Sprintf("approved-%d-held-open", version), r.approval(version, seq),
+			r.engine, r.admission, held)
+		if err == nil && result.Refusal != nil {
+			err = fmt.Errorf("the approval was refused: %+v", result.Refusal)
+		}
+		return err
+	})
+	commit = sync.OnceFunc(func() { close(release) })
+	r.t.Cleanup(commit)
+	select {
+	case <-inside:
+	case err := <-opened:
+		r.t.Fatalf("the approval returned %v before its transaction was held open", err)
+	}
+	return commit, opened
+}
+
+// inBackground runs call on a goroutine of its own and answers its error once it returns. The
+// test's cleanup waits for it, so no call outlives the rig's database.
+func (r *workHoldRig) inBackground(call func() error) <-chan error {
+	done, finished := make(chan error, 1), make(chan struct{})
+	go func() {
+		defer close(finished)
+		done <- call()
+	}()
+	r.t.Cleanup(func() { <-finished })
+	return done
+}
+
+// waitsOrReturns waits until a backend of the rig's database waits for a lock, or done answers
+// first. It reports whether done answered, and its error.
+func (r *workHoldRig) waitsOrReturns(what string, done <-chan error) (returned bool, err error) {
+	r.t.Helper()
+	testwait.Eventually(r.t, what+" to wait for a lock or return", func() bool {
+		select {
+		case err = <-done:
+			returned = true
+			return true
+		default:
+			return waitingOnARowLock(r.t, r.pool)
+		}
+	})
+	return returned, err
+}
+
+// Spec step 3 ("A stop that the daemon has not made when the gate opens again is not made"), row
+// H32, for a turn that ends while the opening's transaction is open. The close's stop is held for
+// the implementer's turn. The opening has taken the tree's work hold row, read the claims and
+// deleted the row, and it has not committed. The turn ends then: its decision waits for the row
+// until the opening commits, and then reads no row, so it makes no stop. The implementer ends its
+// turn idle with its process. It is never stopped and never started again.
+func TestWorkHoldMakesNoStopWhenTheTurnEndsWhileTheOpeningCommits(t *testing.T) {
 	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
-	logs := &testlog.Buffer{}
-	r.runner.log = slog.New(slog.NewJSONHandler(logs, nil))
-	r.released(claim.RoleTester)
+	machine, token := r.working(claim.RoleImplementer), r.token(claim.RoleImplementer)
+	launched := r.launches(claim.RoleImplementer)
 	r.close(4)
-
 	r.runOnce()
-	r.wantHeld(claim.RoleTester, 0, "after the stop's first attempt")
-	if stops := r.holdStops(claim.RoleTester); len(stops) != 1 {
-		t.Fatalf("after its first attempt the tester's stops are %+v, want its one row waiting to read the gate again", stops)
-	}
-	if waits := loggedMessages(t, logs.String(), "outbox row waits"); len(waits) != 1 || waits[0]["level"] != "INFO" ||
-		!strings.Contains(fmt.Sprint(waits[0]["error"]), "was made at once") {
-		t.Fatalf("the first attempt logged the waits %v, want one wait at INFO naming the stop made at once", waits)
-	}
-	if failed := loggedMessages(t, logs.String(), "outbox row failed"); len(failed) != 0 {
-		t.Fatalf("the first attempt logged %v, want no failure: the second read of the gate is a wait", failed)
+	r.runOnce()
+	if c := machine.Claim(); !c.WorkHeld() || c.State != supervise.StateWorking {
+		t.Fatalf("before the opening the implementer is %s, held %v; want its stop held for its turn", c.State, c.WorkHeld())
 	}
 
-	r.clock.advance(65 * time.Second)
-	r.runOnce()
-	r.wantHeld(claim.RoleTester, 0, "after the stop's second attempt")
-	if stops := r.holdStops(claim.RoleTester); len(stops) != 0 {
-		t.Fatalf("after its second attempt the tester's stops are %+v, want the row finished", stops)
+	commit, opened := r.openingHeldOpen(4, 12)
+	pending := machine.Claim().Pending
+	ended := r.inBackground(func() error {
+		if err := machine.Handle(r.ctx, supervise.StreamTurnEnd{Claim: token}); err != nil {
+			return err
+		}
+		if pending == nil || pending.ConfirmedAt.IsZero() {
+			return nil
+		}
+		return machine.Handle(r.ctx, supervise.StreamPromptResult{Claim: token, DeliveryID: pending.ID, AgentInvoked: true})
+	})
+	t.Cleanup(commit)
+	returned, err := r.waitsOrReturns("the implementer's turn end", ended)
+	if returned {
+		t.Errorf("the implementer's turn end returned (%v) while the opening's transaction held the tree's work hold row; want it to wait for the opening's commit", err)
 	}
-	finished := loggedMessages(t, logs.String(), "outbox: the work hold's stop finds the claim stopped by the hold")
-	if len(finished) != 1 || finished[0]["role"] != string(claim.RoleTester) || finished[0]["version"] != float64(4) {
-		t.Fatalf("the second attempt logged %v, want one line naming the tester and version 4", finished)
+	commit()
+	if err := <-opened; err != nil {
+		t.Fatalf("apply the approval: %v", err)
+	}
+	if !returned {
+		err = <-ended
+	}
+	if err != nil {
+		t.Fatalf("end the implementer's turn: %v", err)
+	}
+
+	r.drain()
+	if c := machine.Claim(); c.State != supervise.StateIdle || c.WorkHeld() || c.SuspensionHeld {
+		t.Fatalf("after the drain the implementer is %s by %q, held %v, a stop held %v; want it idle and not stopped",
+			c.State, c.SuspendedBy, c.WorkHeld(), c.SuspensionHeld)
+	}
+	if state, by := r.stored(claim.RoleImplementer); state != supervise.StateIdle {
+		t.Fatalf("the implementer is stored %s by %q, want it idle", state, by)
+	}
+	if stops := r.rt.CallsOf("Suspend"); len(stops) != 0 {
+		t.Fatalf("the runtime was asked %d stops, want none: the implementer's process was never to be stopped", len(stops))
+	}
+	if got := r.launches(claim.RoleImplementer); got != launched {
+		t.Fatalf("the runtime started the implementer %d times since the close, want none", got-launched)
 	}
 }
 
 // Spec step 3 ("A stop that the daemon has not made when the gate opens again is not made"), H33,
 // for a stop the outbox makes at once. The released tester's stop row reads the gate while it
-// holds work. The opening's transaction reads the tree's claims with the tester still released.
-// The row makes the stop, and then the opening commits, so the opening starts nothing of the
-// tester. The row's second attempt reads the gate again and finds it open. It starts the tester
-// with the opening's task, and its log line names the version that closed the gate.
-func TestWorkHoldStartsAStopMadeAtOnceWhileTheOpeningCommits(t *testing.T) {
+// holds work, and the opening's transaction holds the tree's work hold row: it read the tester
+// released and deleted the row, and it has not committed. The stop's decision waits for the row
+// until the opening commits, and then reads no row, so it makes no stop. The tester stays
+// released, nothing starts it, and the row finishes with one line that names the tester and the
+// version that closed the gate.
+func TestWorkHoldMakesNoStopOfAReleasedWorkerWhileTheOpeningCommits(t *testing.T) {
 	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
 	logs := &testlog.Buffer{}
 	r.runner.log = slog.New(slog.NewJSONHandler(logs, nil))
 	r.released(claim.RoleTester)
 	r.close(4)
-
-	// A person's approval of version 4, applied as r.approve applies it, with one more handler
-	// after the engine's and admission's. That handler runs the stop row's first attempt inside
-	// the opening's transaction: after the opening read the claims, and before it commits.
-	stopBeforeTheCommit := applyFunc(func(context.Context, pgx.Tx, intake.Fact) (intake.Result, error) {
-		r.runOnce()
-		return intake.Result{}, nil
-	})
-	if result, err := intake.ApplyFact(r.ctx, r.pool, "test", "approved-4-around-the-stop", r.approval(4, 12), r.engine, r.admission,
-		stopBeforeTheCommit); err != nil || result.Refusal != nil {
-		t.Fatalf("apply the approval = %+v, %v", result.Refusal, err)
-	}
-	r.wantHeld(claim.RoleTester, 0, "after the opening committed")
-	if got := r.startsSince(claim.RoleTester, 0); got != 0 {
-		t.Fatalf("the opening queued %d starts of the tester, want none: it read the tester released", got)
-	}
 	if stops := r.holdStops(claim.RoleTester); len(stops) != 1 {
-		t.Fatalf("after the opening the tester's stops are %+v, want its row waiting to read the gate again", stops)
+		t.Fatalf("after the close the tester's stops are %+v, want its one row", stops)
 	}
 
+	commit, opened := r.openingHeldOpen(4, 12)
+	ran := r.inBackground(func() error { return r.runner.RunOnce(r.ctx) })
+	t.Cleanup(commit)
+	returned, err := r.waitsOrReturns("the tester's stop row", ran)
+	if returned {
+		t.Errorf("the tester's stop row returned (%v) while the opening's transaction held the tree's work hold row; want its stop to wait for the opening's commit", err)
+	}
+	commit()
+	if err := <-opened; err != nil {
+		t.Fatalf("apply the approval: %v", err)
+	}
+	if !returned {
+		err = <-ran
+	}
+	if err != nil {
+		t.Fatalf("drain the outbox: %v", err)
+	}
+
+	if c := r.machine(claim.RoleTester).Claim(); !c.Released() {
+		t.Fatalf("the tester is %s by %q, want it still released: the hold's stop was not made", c.State, c.SuspendedBy)
+	}
+	if state, by := r.stored(claim.RoleTester); state != supervise.StateSuspended || by != supervise.SuspendedByReleased {
+		t.Fatalf("the tester is stored %s by %q, want it still released", state, by)
+	}
+	if stops := r.holdStops(claim.RoleTester); len(stops) != 0 {
+		t.Fatalf("the tester's stops are %+v, want the row finished", stops)
+	}
+	unmade := loggedMessages(t, logs.String(), "outbox: the design gate opened again before the work hold's stop was made; the stop is not made")
+	if len(unmade) != 1 || unmade[0]["role"] != string(claim.RoleTester) || unmade[0]["version"] != float64(4) {
+		t.Fatalf("the stop row logged %v, want one line naming the tester and version 4", unmade)
+	}
 	r.drain()
-	want := holdSentence + " The work hold stopped your turn. The deployment no longer holds the work of " + r.tree.key + "'s tree." +
-		" Check what your turn already did: a tool call may not have finished.\n\nThe issue's other roles may ask you questions."
-	r.wantStarted(claim.RoleTester, 0, want)
+	if got := r.startsSince(claim.RoleTester, 0); got != 0 {
+		t.Fatalf("the outbox holds %d starts of the tester, want none", got)
+	}
+	if got := r.launches(claim.RoleTester); got != 0 {
+		t.Fatalf("the runtime started the tester %d times, want none", got)
+	}
+	if c := r.machine(claim.RoleTester).Claim(); !c.Released() {
+		t.Fatalf("after the drain the tester is %s by %q, want it still released", c.State, c.SuspendedBy)
+	}
+}
+
+// heldStopWrite is the rig's store with the work hold's stop of one claim held at its write: the
+// decision that makes the stop closes writing there and waits until proceed closes, its lock on
+// the tree's work hold row still taken. Every other call goes straight to the store.
+type heldStopWrite struct {
+	supervise.Store
+	token            claim.Token
+	writing, proceed chan struct{}
+}
+
+func (s heldStopWrite) PutClaim(ctx context.Context, c supervise.Claim) error {
+	if c.Token == s.token && c.State == supervise.StateSuspended && c.SuspendedBy == supervise.SuspendedByHold {
+		select {
+		case <-s.writing:
+		default:
+			close(s.writing)
+		}
+		<-s.proceed
+	}
+	return s.Store.PutClaim(ctx, c)
+}
+
+// Spec step 7, H33, the other order: the released tester's stop is made and committed before the
+// opening reads the claims. The stop's decision holds the tree's work hold row while it writes the
+// stop, and the opening waits for that row. Once the stop has committed, the opening reads the
+// tester stopped by the hold, and it starts the tester once, with the opening's own task.
+func TestWorkHoldOpeningStartsAStopCommittedBeforeIt(t *testing.T) {
+	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
+	write := heldStopWrite{Store: r.trees, token: r.token(claim.RoleTester), writing: make(chan struct{}), proceed: make(chan struct{})}
+	letGo := sync.OnceFunc(func() { close(write.proceed) })
+	r.sup.deps.Store = write
+	r.released(claim.RoleTester)
+	r.close(4)
+
+	ran := r.inBackground(func() error { return r.runner.RunOnce(r.ctx) })
+	t.Cleanup(letGo)
+	select {
+	case <-write.writing:
+	case err := <-ran:
+		t.Fatalf("the tester's stop row returned %v before it wrote the stop", err)
+	}
+	opened := r.inBackground(func() error {
+		result, err := intake.ApplyFact(r.ctx, r.pool, "test", "approved-4-after-the-stop", r.approval(4, 12), r.engine, r.admission)
+		if err == nil && result.Refusal != nil {
+			err = fmt.Errorf("the approval was refused: %+v", result.Refusal)
+		}
+		return err
+	})
+	t.Cleanup(letGo)
+	returned, err := r.waitsOrReturns("the opening", opened)
+	if returned {
+		t.Errorf("the opening returned (%v) while the stop's decision held the tree's work hold row; want it to wait for the stop's commit", err)
+	}
+	letGo()
+	if err := <-ran; err != nil {
+		t.Fatalf("drain the outbox: %v", err)
+	}
+	if !returned {
+		err = <-opened
+	}
+	if err != nil {
+		t.Fatalf("apply the approval: %v", err)
+	}
+
+	if got := r.startsSince(claim.RoleTester, 0); got != 1 {
+		t.Fatalf("the opening queued %d starts of the tester, want one: it reads the tester stopped by the hold", got)
+	}
+	r.drain()
+	r.wantStarted(claim.RoleTester, 0, r.opening(4, 4)+"\n\n"+"The issue's other roles may ask you questions.")
 	if stops := r.holdStops(claim.RoleTester); len(stops) != 0 {
 		t.Fatalf("after the drain the tester's stops are %+v, want the row finished", stops)
-	}
-	started := loggedMessages(t, logs.String(), "outbox: the work hold's stop was made after the design gate opened again")
-	if len(started) != 1 || started[0]["role"] != string(claim.RoleTester) || started[0]["version"] != float64(4) {
-		t.Fatalf("the second attempt logged %v, want one line naming the tester and version 4", started)
 	}
 }
 

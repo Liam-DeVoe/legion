@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -106,15 +108,65 @@ func (s *Store) CheckLaunch(ctx context.Context, c supervise.Claim) error {
 	})
 }
 
-// WorkHoldStands is whether the work hold of tree stands (supervise.Store.WorkHoldStands): whether
-// the tree's work_holds row exists. The workflow writes the row at the hold's close and deletes it
-// in the opening's own transaction (record.Store.PutWorkHold, DeleteWorkHold).
-func (s *Store) WorkHoldStands(ctx context.Context, tree string) (bool, error) {
-	var stands bool
-	if err := s.pool.QueryRow(ctx, `select exists (select 1 from work_holds where tree = $1)`, tree).Scan(&stands); err != nil {
-		return false, fmt.Errorf("read the work hold of %s: %w", tree, err)
+// LockWorkHold takes tree's work_holds row for share and answers whether the row exists
+// (supervise.Store.LockWorkHold): whether the work hold of tree stands. The workflow writes the
+// row at the hold's close, and the opening takes it for update and deletes it in its own
+// transaction (record.Store.PutWorkHold, LockWorkHold, DeleteWorkHold). The lock is held by a
+// transaction of its own, which writes nothing and lasts until release rolls it back, so a
+// decision of a claim holds it across its claim writes. Those writes take connections of their
+// own, and each waits at most the claim-write deadline for one, so a pool with no connection left
+// holds such a decision no longer than that bound. The transaction is the lock's alone: it is
+// begun apart from the caller's mark of the connection it holds (ForConcurrentWorker), so the
+// claim writes the caller makes while the lock lasts are not refused as a second connection
+// (ErrNestedAcquire). A caller that holds a connection already is refused, as any caller is. The
+// pool's idle bound (idleBound) still ends a lock whose decision runs past it, and its connection
+// with it.
+//
+// The wait for the row ends at ctx's deadline, laid twice as the state route lays its bound
+// (internal/api's projectState): the context ends the Go side's wait, and the same bound is the
+// transaction's lock_timeout, which ends a lock wait inside the server. The rollback runs on a
+// context apart from ctx, with that same bound, so a lock asked for at the deadline still ends
+// its transaction. A tree with no row takes no lock: its transaction ends at once, and release
+// does nothing. An error ends the transaction, and no release is answered.
+func (s *Store) LockWorkHold(ctx context.Context, tree string) (stands bool, release func(), err error) {
+	if err := s.pool.guard(ctx); err != nil {
+		return false, nil, err
 	}
-	return stands, nil
+	var bound time.Duration
+	if deadline, ok := ctx.Deadline(); ok {
+		if bound = time.Until(deadline); bound <= 0 {
+			return false, nil, fmt.Errorf("lock the work hold of %s: %w", tree, context.DeadlineExceeded)
+		}
+	}
+	tx, err := s.pool.begin(ForConcurrentWorker(ctx), pgx.TxOptions{})
+	if err != nil {
+		return false, nil, fmt.Errorf("lock the work hold of %s: %w", tree, err)
+	}
+	end := func() {
+		ending := context.WithoutCancel(ctx)
+		if bound > 0 {
+			var cancel context.CancelFunc
+			ending, cancel = context.WithTimeout(ending, bound)
+			defer cancel()
+		}
+		_ = tx.Rollback(ending)
+	}
+	if bound > 0 {
+		if _, err := tx.Exec(ctx, "set local lock_timeout = "+strconv.FormatInt(max(bound.Milliseconds(), 1), 10)); err != nil {
+			end()
+			return false, nil, fmt.Errorf("bound the wait for the work hold of %s: %w", tree, err)
+		}
+	}
+	var one int
+	switch err := tx.QueryRow(ctx, `select 1 from work_holds where tree = $1 for share`, tree).Scan(&one); {
+	case errors.Is(err, pgx.ErrNoRows):
+		end()
+		return false, func() {}, nil
+	case err != nil:
+		end()
+		return false, nil, fmt.Errorf("lock the work hold of %s: %w", tree, err)
+	}
+	return true, sync.OnceFunc(end), nil
 }
 
 // ReserveWorkflowTreeCleanup records the workflow close before any resource snapshot. A retry of an

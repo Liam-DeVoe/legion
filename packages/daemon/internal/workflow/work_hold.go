@@ -284,8 +284,26 @@ func (e *Engine) workHoldOpen(ctx context.Context, tx pgx.Tx, root record.Issue,
 // its work hold, logs line with args and the number told, and ends the hold (endWorkHold): the
 // opening's end of it (workHoldOpen) and the boot's end of a hold the deployment no longer holds
 // (workHoldBooted).
+//
+// It takes the tree's work_holds row for update before it reads the tree's claims
+// (record.Store.LockWorkHold), and the transaction deletes the row and commits with that lock
+// held. A claim's decision that may make the hold's stop holds the same row for share until it
+// ends, or until it reports a durable state, whose fact waits on this transaction
+// (supervise.Store.LockWorkHold). So this waits for a decision that holds the row, and its read of
+// the claims, a later statement of the transaction, sees the stop that decision committed:
+// openHeldClaims starts that claim. A decision that asks for the row while this holds it waits
+// for the commit and then reads no row, so it makes no stop. No stop is made between this read
+// of the claims and the commit, except by a decision whose lock was not granted, or one that made
+// its stop after its report had ended its lock (intake.WorkHoldOpened covers both).
 func (e *Engine) tellAndEndWorkHold(ctx context.Context, tx pgx.Tx, root record.Issue, ended string, fallback *record.WorkHold,
 	line string, args ...any) error {
+	closing, err := e.store.LockWorkHold(ctx, tx, root.Tree)
+	if err != nil {
+		return err
+	}
+	if closing == nil {
+		closing = fallback
+	}
 	claims, err := e.treeClaims(ctx, tx, root)
 	if err != nil {
 		return err
@@ -301,20 +319,14 @@ func (e *Engine) tellAndEndWorkHold(ctx context.Context, tx pgx.Tx, root record.
 		told++
 	}
 	e.logOnCommit(ctx, line, append(args, "told", told)...)
-	return e.endWorkHold(ctx, tx, root, claims, ended, fallback)
+	return e.endWorkHold(ctx, tx, root, claims, ended, closing)
 }
 
 // endWorkHold ends root's work hold: the record goes, and each claim the hold stopped is started
-// (openHeldClaims) with the opening's sentences around ended, what ended the hold. The record names
-// the version that closed the gate; a tree whose record is gone already is named by fallback.
-func (e *Engine) endWorkHold(ctx context.Context, tx pgx.Tx, root record.Issue, claims []treeClaim, ended string, fallback *record.WorkHold) error {
-	closing, err := e.store.WorkHold(ctx, tx, root.Tree)
-	if err != nil {
-		return err
-	}
-	if closing == nil {
-		closing = fallback
-	}
+// (openHeldClaims) with the opening's sentences around ended, what ended the hold. closing is the
+// record its caller read with the row locked (tellAndEndWorkHold), which names the version that
+// closed the gate, or the caller's fallback where the record is gone already, nil for none.
+func (e *Engine) endWorkHold(ctx context.Context, tx pgx.Tx, root record.Issue, claims []treeClaim, ended string, closing *record.WorkHold) error {
 	if err := e.store.DeleteWorkHold(ctx, tx, root.Tree); err != nil {
 		return err
 	}
@@ -469,13 +481,15 @@ func (e *Engine) workHoldBooted(ctx context.Context, tx pgx.Tx, owners phaseOwne
 }
 
 // workHoldOpened is the work hold of a tree found ended under a claim it stopped
-// (intake.WorkHoldOpened): the opening read the claims before the hold's stop was made and started
-// nothing of the claim (openHeldClaims starts only a claim stored stopped by the hold), and the
-// stop was made before the opening committed. Two stops are made in that window: a stop whose
-// decision read the hold's record before the commit, and a stop the outbox's row made at once,
-// whose row reads the gate again on its next attempt (internal/daemon's holdStop). A decision
-// after the commit reads no record and makes no stop (supervise's dropOpenedHoldStop). The claim
-// is started now, as the boot starts a claim the hold stopped in a tree that holds no work
+// (intake.WorkHoldOpened): the opening committed and started nothing of the claim (openHeldClaims
+// starts only a claim stored stopped by the hold), and the claim stands stopped by the hold. Under
+// the lock on the tree's work hold row this order does not happen: the opening reads the claims
+// only once each decision that holds the row has committed its stop, and a decision that waited
+// for the opening's commit reads no row and makes no stop (tellAndEndWorkHold, supervise's
+// lockHoldStop). It is left to a stop a decision made without the lock: one whose lock was not
+// granted, one made after its decision's report of a durable state ended the lock, or one whose
+// lock the database ended. The stop's outbox row then meets the open gate, and the claim is
+// started now, as the boot starts a claim the hold stopped in a tree that holds no work
 // (openStoppedClaims), and the log line of its start names the version the hold's stop named
 // (intake.WorkHoldOpened.Version). A tree that holds work again, one that lingers, and a root the
 // record does not hold are left alone. Under `merge` no tree holds work, so the gate is read under
