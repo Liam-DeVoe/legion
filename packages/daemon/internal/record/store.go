@@ -2172,6 +2172,36 @@ func (s *Postgres) SetCaughtUp(ctx context.Context, tx pgx.Tx, issue string, seq
 	return nil
 }
 
+func (s *Postgres) CheckStatesSeqs(ctx context.Context, tx pgx.Tx, issues []string) (map[string]int64, error) {
+	cursors := make(map[string]int64, len(issues))
+	if len(issues) == 0 {
+		return cursors, nil
+	}
+	rows, err := tx.Query(ctx, `select key, check_states_seq from issues where key = any($1)`, issues)
+	if err != nil {
+		return nil, fmt.Errorf("read the check states cursors of %d issues: %w", len(issues), err)
+	}
+	var key string
+	var seq int64
+	if _, err := pgx.ForEachRow(rows, []any{&key, &seq}, func() error {
+		cursors[key] = seq
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("read the check states cursors of %d issues: %w", len(issues), err)
+	}
+	return cursors, nil
+}
+
+func (s *Postgres) SetCheckStatesSeq(ctx context.Context, tx pgx.Tx, issue string, seq int64) error {
+	if seq < 0 {
+		return fmt.Errorf("set the check states cursor of %s: sequence %d is negative", issue, seq)
+	}
+	if _, err := tx.Exec(ctx, `update issues set check_states_seq = greatest(check_states_seq, $2) where key = $1`, issue, seq); err != nil {
+		return fmt.Errorf("set the check states cursor of %s at %d: %w", issue, seq, err)
+	}
+	return nil
+}
+
 // nullableText is text, or SQL null when it is empty.
 func nullableText(text string) any {
 	if text == "" {

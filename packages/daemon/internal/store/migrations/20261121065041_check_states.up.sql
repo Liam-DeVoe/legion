@@ -39,7 +39,10 @@
 -- and the row deleted, store.apply finds no row of this version and runs this file again, which
 -- creates the tables empty and adds the column at 0. What the drops cost is what the release before
 -- never kept: the roll-forward's first catch-up of each issue reads its event log from the start
--- again, so each state event the release before took as no fact while it ran is held as well.
+-- again and applies each state event in it whether or not processed_events, which the way back
+-- leaves standing, records the event (the daemon's catchUpCheckStates), so each state event this
+-- release held before the drops is held again, and each one the release before took as no fact
+-- while it ran is held as well.
 create table check_states (
   issue text not null,
   repo text not null,

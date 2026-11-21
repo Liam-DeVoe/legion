@@ -2149,6 +2149,13 @@ type Store interface {
 	// RestartCaughtUp sets issue's catch-up cursor back to 0, so its next catch-up reads from its
 	// last handout: a re-admission's new generation, whose old generation's events are not its own.
 	RestartCaughtUp(ctx context.Context, tx pgx.Tx, issue string) error
+	// CheckStatesSeqs is the cursor of the boot's catch-up of check states of each of issues the
+	// store records, by key: the sequence of the issue's Dispatch event log through which that
+	// catch-up has read its state events, 0 for an issue it has never read.
+	CheckStatesSeqs(ctx context.Context, tx pgx.Tx, issues []string) (map[string]int64, error)
+	// SetCheckStatesSeq raises issue's cursor of the catch-up of check states to seq; it is never
+	// lowered.
+	SetCheckStatesSeq(ctx context.Context, tx pgx.Tx, issue string, seq int64) error
 	// PutAssignments records rows, the answers drawn for issue, and reports how many rows it
 	// wrote. Each is written once: an experiment issue already holds a row for keeps that row
 	// whatever is passed for it now, so a later pass under another mode leaves a unit on the arm
