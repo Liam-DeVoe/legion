@@ -208,7 +208,7 @@ func backfillInbox(ctx context.Context, database *store.Store) ([]KindBackfill, 
 // inboxPasses is this child's passes in the order backfillInbox runs them, the order their facts
 // hang on each other.
 func inboxPasses() []inboxPass {
-	passes := []inboxPass{messagesPass(), commentPointersPass()}
+	passes := []inboxPass{messagesPass(), commentPointersPass(), pastBoundRowsPass(pastBoundComments), pastBoundRowsPass(pastBoundMessages)}
 	for _, kind := range inboxItemKinds {
 		passes = append(passes, itemBlocksPass(kind), itemLinksPass(kind), itemCitationsPass(kind))
 	}
@@ -616,6 +616,84 @@ func writeCommentPointers(ctx context.Context, tx pgx.Tx, ids []string) (inboxWr
 		return inboxWrote{}, fmt.Errorf("mark a batch of comments' pointers stored: %w", err)
 	}
 	return wrote, nil
+}
+
+// --- the rows past the store's bound ----------------------------------------------------------
+
+// pastBoundTable is one table whose rows an older build wrote past the store's address bound the
+// past-bound pass marks: the kind it reports, its table, the read of the owner of each of its rows
+// (lockOwnersOf), the rows it owes, `from` the table under the alias the batch's key names, and the
+// statement that marks a batch of them, by id ($1), which takes the rows still owed `for no key
+// update` in ascending id, as every writer of these rows takes them after their owners.
+type pastBoundTable struct {
+	kind, table, alias, owners, owed, mark string
+}
+
+// pastBoundComments are the comments rows an older build wrote that no pointer pass takes and
+// this release's writer would not have stated either: a comment left whole out of the store
+// (refs.CommentInTheStore), and one whose replies_to_block the store cannot key, which the pointer
+// pass leaves to its old arms as the writer does.
+var pastBoundComments = pastBoundTable{
+	kind: "comments_past_bound", table: "comments", alias: "c", owners: commentOwners,
+	mark: `
+	with held as (
+		select c.id from comments c
+		where c.id = any($1::uuid[]) and not c.threads_recorded
+		order by c.id
+		for no key update of c
+	)
+	update comments set threads_recorded = true from held where comments.id = held.id`,
+	owed: `
+	from comments c` + refs.CommentStoreJoins + `
+	where not c.tuples_stored and not c.threads_recorded
+	  and (not (` + refs.CommentInTheStore + `) or octet_length(coalesce(c.replies_to_block, '')) > ` + addressBound + `)`,
+}
+
+// pastBoundMessages are the messages rows an older build wrote whose replies_to end the store
+// cannot key (graphstore.MessageFacts), which the messages pass leaves to their old arms, as the
+// writer does.
+var pastBoundMessages = pastBoundTable{
+	kind: "messages_past_bound", table: "messages", alias: "m", owners: messageOwners,
+	mark: `
+	with held as (
+		select m.id from messages m
+		where m.id = any($1::uuid[]) and not m.threads_recorded
+		order by m.id
+		for no key update of m
+	)
+	update messages set threads_recorded = true from held where messages.id = held.id`,
+	owed: `
+	from messages m
+	where m.node_kind is null and not m.threads_recorded
+	  and octet_length(coalesce(m.replies_to_block, '')) > ` + addressBound,
+}
+
+// pastBoundRowsPass sets threads_recorded on each row of table an older build wrote past the
+// store's bound (migrations 20261116124447 and 20261116114515), after the owner rows of its batch,
+// and states nothing: no tuple of such a row can be stated, as this release's writer states none
+// of one (inboxwrite's Write.Unstored), and the trigger that fired on its insert wrote its
+// user_threads rows then, each moved row unmarked by its depth test (migration 20261116160000),
+// which the thread pass marks. The mark is what passes the row by the triggers' marker test, which
+// the root's drop of those triggers reads: without it such a row would stand
+// unmarked for good, the one row no pass takes, and the triggers would never go.
+func pastBoundRowsPass(table pastBoundTable) inboxPass {
+	return inboxPass{
+		kind:  table.kind,
+		batch: `select ` + table.alias + `.id::text ` + table.owed + ` and ` + table.alias + `.id > $1::uuid order by ` + table.alias + `.id limit $2`,
+		start: []string{zeroUUID},
+		write: func(ctx context.Context, tx pgx.Tx, keys [][]string) (inboxWrote, error) {
+			ids := column(keys, 0)
+			if err := lockOwnersOf(ctx, tx, table.owners, ids); err != nil {
+				return inboxWrote{}, err
+			}
+			tag, err := tx.Exec(ctx, table.mark, ids)
+			if err != nil {
+				return inboxWrote{}, fmt.Errorf("mark a batch of %s past the store's bound recorded: %w", table.table, err)
+			}
+			return inboxWrote{rows: tag.RowsAffected()}, nil
+		},
+		remaining: table.owed,
+	}
 }
 
 // --- an item's blocks, their links and its citations ----------------------------------------------

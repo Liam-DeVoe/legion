@@ -1347,14 +1347,19 @@ func (s *server) planCommentReply(
 	plan.changes, plan.write, plan.indexed, err = s.planPendingItem(ctx, tx, who, refs.ItemComment, plan.id, body, refs.PendingSource{
 		IssueKey: comment.IssueKey, ArtifactID: comment.ArtifactID, ReplyTo: plan.thread.ReplyTo, AskID: plan.thread.AskID,
 	}, plan.stored.scope(), plan.createdAt, true)
-	if err != nil || !plan.stored.pointersStored {
+	if err != nil {
 		return plan, err
 	}
 	// The reply's thread in the Inbox, recorded once its event is in, as a comment's is
 	// (createCommentFor): its record names the node its head pointer names, whose tuple is queued
-	// and not written (commentRepliesTo), and reaches each person its text newly mentions.
+	// and not written (commentRepliesTo), and reaches each person its text newly mentions; a reply
+	// whose pointers are no tuples is recorded as the trigger body would have recorded it
+	// (inboxwrite.Write.Unstored).
 	plan.inbox = commentRepliesTo(inboxwrite.Comment(plan.id, who, plan.createdAt, comment.IssueKey, comment.ArtifactID, replyProject).ReachesMentioned(plan.indexed),
 		plan.thread.AskID, plan.thread.ReplyTo)
+	if !plan.stored.pointersStored {
+		plan.inbox = plan.inbox.Unstored()
+	}
 	plan.recording, err = inboxwrite.PlanRecord(ctx, tx, plan.inbox)
 	return plan, err
 }
@@ -1607,7 +1612,8 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	// comments route writes them (comment_create.go). The reply's node goes in before the row,
 	// whose foreign key names it, in the one batch that writes the row (commentStoreWrite), a
 	// reply left out of the store writes none, and the row says in its own insert whether its
-	// pointers are stated (tuples_stored).
+	// pointers are stated (tuples_stored) and that this release records it in its thread
+	// (threads_recorded).
 	var reply model.Comment
 	nodeKind, nodeAddress := plan.stored.rowNode()
 	if err := store.RunWrite(r.Context(), tx, func(b *store.WriteBatch) error {
@@ -1615,8 +1621,8 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 			graphstore.QueueNodes(b, plan.stored.written)
 		}
 		b.Queue("", `
-			insert into comments (id, issue_key, artifact_id, author, body, reply_to, ask_id, turn, replies_to_block, answers, node_kind, node_address, tuples_stored, created_at)
-			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+			insert into comments (id, issue_key, artifact_id, author, body, reply_to, ask_id, turn, replies_to_block, answers, node_kind, node_address, tuples_stored, threads_recorded, created_at)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, true, $14)
 			returning `+commentColumns+`
 		`, plan.id, comment.IssueKey, comment.ArtifactID, author, *input.Body, plan.thread.ReplyTo, plan.thread.AskID, turn,
 			plan.thread.ReplyBlock.nodeID(), plan.thread.Answers, nodeKind, nodeAddress, plan.stored.pointersStored, plan.createdAt).QueryRow(func(row pgx.Row) error {
@@ -1666,12 +1672,10 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// A reply whose pointers are stated is passed by the trigger user_threads_comment, so the
-	// event names the row its writer's record is about to keep beside the rows already there
+	// The reply's threads_recorded passes it by the trigger user_threads_comment, so the event
+	// names the row its writer's record is about to keep beside the rows already there
 	// (planCommentReply).
-	if plan.stored.pointersStored {
-		payload.ThreadLogins = plan.inbox.ThreadLogins(payload.ThreadLogins)
-	}
+	payload.ThreadLogins = plan.inbox.ThreadLogins(payload.ThreadLogins)
 	event, err := s.appendEvent(r.Context(), tx, ownerOf(reply.IssueKey, reply.ArtifactID).event(
 		"comment.answered", actor, payload,
 	))
@@ -1719,7 +1723,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		if plan.stored.pointersStored {
 			return queueRecordAndMentions(b, plan.recording, plan.indexed, actor, plan.createdAt, event.ID)
 		}
-		return nil
+		return plan.recording.Queue(b, event.ID)
 	}); err != nil {
 		s.writeHandlerError(w, err)
 		return

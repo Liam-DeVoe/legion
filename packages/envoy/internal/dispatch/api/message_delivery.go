@@ -1025,13 +1025,12 @@ func planSessionReplyNode(ctx context.Context, tx pgx.Tx, plan messageReplyPlan,
 // reply plan holds under parent, whose node and facts are stored: it reaches the person who started
 // a direct conversation the reply joins (inboxwrite.Write.Starter) and each person the reply's text
 // newly mentions, as its index states them (plan.indexed, inboxwrite.Write.ReachesMentioned). A reply
-// whose row names no node is the trigger's, as an older build's is, and is recorded by nothing here.
+// whose row names no node is recorded as the trigger bodies would have recorded it: its thread's
+// rows moved and left to the backfill, its root's Agent dismissals cleared, and no tuple of its
+// own (inboxwrite.Write.Unstored).
 func planSessionReplyRecord(
 	ctx context.Context, tx pgx.Tx, plan messageReplyPlan, stored messageStoreWrite, parent model.Message, who model.Actor,
 ) (inboxwrite.Recording, error) {
-	if !stored.projected {
-		return inboxwrite.Recording{}, nil
-	}
 	inbox := stored.inbox(model.Message{ID: plan.id, IssueKey: parent.IssueKey, InReplyTo: &parent.ID, CreatedAt: plan.createdAt}, who).ReachesMentioned(plan.indexed)
 	inbox.Starter = stored.starter
 	return inboxwrite.PlanRecord(ctx, tx, inbox)
@@ -1366,8 +1365,8 @@ func (s *server) insertSessionReply(
 		graphstore.QueueNodes(b, stored.written)
 		failpoint.Queue(b, fails)
 		b.Queue("", `
-			insert into messages (id, issue_key, author, body, target, in_reply_to, replies_to_block, created_at, node_kind, node_address)
-			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+			insert into messages (id, issue_key, author, body, target, in_reply_to, replies_to_block, created_at, node_kind, node_address, threads_recorded)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, true)
 			returning `+messageColumns+`
 		`, plan.id, parent.IssueKey, author, plan.body, parent.Target, parent.ID, plan.block.nodeID(), plan.createdAt, nodeKind, nodeAddress,
 		).QueryRow(func(row pgx.Row) error {
@@ -1409,8 +1408,9 @@ func (s *server) insertSessionReply(
 	// participation still stands, and user_threads_message, which returns on a message on no
 	// issue, never did. Who wrote it is stated before any write of the session the answered
 	// attempt names (queueAnsweredDelivery), which is the order that write is held to, and the
-	// clear trigger passes a reply whose row names its node (migration 20261116160001), so the
-	// record also ends every Agent dismissal of its root.
+	// clear trigger passes a reply that holds threads_recorded (migration 20261116160001), so the
+	// record also ends every Agent dismissal of its root - a reply whose row names no node too, by
+	// its record's thread pass alone (inboxwrite.Write.Unstored).
 	event, err := s.appendEventThen(ctx, tx, messageEvent(reply, "message.answered", actor, payload), func(b *store.WriteBatch) error {
 		if reply.IssueKey != nil {
 			refs.QueueStamp(b, "message", reply.ID)
@@ -1419,7 +1419,7 @@ func (s *server) insertSessionReply(
 		// What the reply's body is in the store, under the same event (planPendingItem).
 		graphstore.QueueCaused(b, plan.indexed, graphstore.LatestEvent)
 		if !stored.projected {
-			return nil
+			return recording.Queue(b, graphstore.LatestEvent)
 		}
 		if err := graphstore.QueueAuthored(b, graphstore.KindMessage, reply.ID, actor, reply.CreatedAt, graphstore.LatestEvent); err != nil {
 			return err

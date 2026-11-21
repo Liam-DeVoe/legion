@@ -10,9 +10,15 @@
 --
 --   user_threads_comment   comments.tuples_stored (20261116124447): true for a comment whose
 --                          writer stated its pointers in the store, which is every comment this
---                          release writes but one past the store's address bound.
+--                          release writes but one past the store's address bound; or
+--                          comments.threads_recorded (the same migration): true for every comment
+--                          this release writes, the one past the bound included, whose
+--                          user_threads rows inboxwrite writes in Go as this body would have
+--                          (Write.Unstored), and for an older build's comment past the bound once
+--                          the backfill marks it.
 --   user_threads_message   the message's node pair (20261116114515), which a row names exactly
---                          where its writer stated it in the store.
+--                          where its writer stated it in the store; or messages.threads_recorded
+--                          (the same migration), as comments.threads_recorded is for a comment.
 --   user_threads_ask       on an insert, asks.tuples_stored_at is not null (20261116140001), which
 --                          every ask this release creates holds from its insert; on an answer, the
 --                          answer passes only where asks.tuples_stored_at differs from the answer's
@@ -22,9 +28,10 @@
 --                          whose update leaves the marker at the ask's created_at, is still
 --                          projected here.
 --   user_agent_thread_dismissed_clear
---                          the message's node pair: a session's reply this release writes clears
---                          its root's Agent dismissal in Go, with the retraction of each dismissed
---                          tuple it clears (inboxwrite.Record).
+--                          the message's node pair or messages.threads_recorded: a session's reply
+--                          this release writes clears its root's Agent dismissal in Go, with the
+--                          retraction of each dismissed tuple it clears (inboxwrite.Record, and
+--                          Write.Unstored for a reply whose row names no node).
 --
 -- user_threads_record itself is unchanged: it is reached only from the three trigger functions
 -- above, below each one's marker test, and api's TestNoProjectionRowIsWrittenWithoutTheStore reads
@@ -37,9 +44,9 @@
 -- No row is read or rewritten and the census answers 0.
 create or replace function user_threads_comment() returns trigger language plpgsql as $$
 begin
-  -- A comment whose pointers its writer stated is a write of this release's, whose thread
-  -- inboxwrite.Record recorded in Go.
-  if new.tuples_stored then
+  -- A comment whose pointers its writer stated, or which this release recorded in its thread, is
+  -- a write whose thread inboxwrite recorded in Go.
+  if new.tuples_stored or new.threads_recorded then
     return null;
   end if;
   perform user_threads_record(
@@ -61,9 +68,9 @@ begin
   if new.issue_key is null then
     return null;
   end if;
-  -- A message that names its node is a write of this release's, whose thread inboxwrite.Record
-  -- recorded in Go.
-  if new.node_kind is not null and new.node_address is not null then
+  -- A message that names its node, or which this release recorded in its thread, is a write whose
+  -- thread inboxwrite recorded in Go.
+  if (new.node_kind is not null and new.node_address is not null) or new.threads_recorded then
     return null;
   end if;
   while v_parent is not null and v_depth < 64 loop
@@ -111,9 +118,9 @@ declare
   v_parent uuid := new.in_reply_to;
   v_depth integer := 0;
 begin
-  -- A message that names its node is a write of this release's, whose root inboxwrite.Record
-  -- cleared in Go, with the retraction of each dismissal it cleared.
-  if new.node_kind is not null and new.node_address is not null then
+  -- A message that names its node, or which this release recorded in its thread, is a write whose
+  -- root inboxwrite cleared in Go, with the retraction of each dismissal it cleared.
+  if (new.node_kind is not null and new.node_address is not null) or new.threads_recorded then
     return null;
   end if;
   -- A root is dismissed by the person who sent it; a root's own insert can clear nothing, and a

@@ -22,18 +22,19 @@
 -- the lock above.
 --
 -- The setting alone does not find the old trigger body when it runs inside this release's own
--- transaction, whose connection carries the setting: this release still leaves three writes to it
--- - a comment or a message past the store's address bound, whose row names no marker of its own
--- (comments.tuples_stored false, no node pair), and an answer the boot step's decision step
--- replays from another build's ask.answered (docs' decision step, asks.Recorded), whose update
--- leaves the ask's marker where it was - and each of them moves the version of a marked row with
--- no delivered_to beside it, just as an older build's write does. That body only ever runs inside
--- the trigger of the write that fires it (user_threads_comment, user_threads_message,
--- user_threads_ask), so its update reaches this trigger at a nesting depth above one
--- (pg_trigger_depth), and the second test unmarks it whichever build's transaction it runs in.
--- Every statement this release's own writers run on user_threads - inboxwrite.Record's moves and
--- its own row, and the read-mark and dismissal routes - runs at depth one, outside any trigger, and
--- keeps the marker it finds.
+-- transaction, whose connection carries the setting: this release still leaves one write to it -
+-- an answer the boot step's decision step replays from another build's ask.answered (docs'
+-- decision step, asks.Recorded), whose update leaves the ask's marker where it was - which moves
+-- the version of a marked row with no delivered_to beside it, just as an older build's write
+-- does. That body only ever runs inside the trigger of the write that fires it
+-- (user_threads_comment, user_threads_message, user_threads_ask), so its update reaches this
+-- trigger at a nesting depth above one (pg_trigger_depth), and the second test unmarks it
+-- whichever build's transaction it runs in. Every statement this release's own writers run on
+-- user_threads - inboxwrite.Record's moves and its own row, and the read-mark and dismissal
+-- routes - runs at depth one, outside any trigger, and keeps the marker it finds; a comment or a
+-- message past the store's address bound, which this release recorded through the triggers before,
+-- is recorded in Go too, and that writer clears the marker of each row it moves in its own
+-- statement, as the body's update did (inboxwrite's Write.Unstored).
 --
 -- Both columns are nullable with no default: a catalog change, so no stored row is rewritten or
 -- read, and every existing row reads null, which is true of it, since no writer before this one

@@ -619,8 +619,8 @@ func (s *server) queueBroadcastCopy(
 	graphstore.QueueNodes(b, copied.stored.written)
 	nodeKind, nodeAddress := copied.stored.rowNode()
 	b.Queue("", `
-		insert into messages (id, issue_key, author, body, target, broadcast_id, broadcast_position, created_at, node_kind, node_address)
-		values ($1, null, $2, $3, $4, $5, $6, $7, $8, $9)
+		insert into messages (id, issue_key, author, body, target, broadcast_id, broadcast_position, created_at, node_kind, node_address, threads_recorded)
+		values ($1, null, $2, $3, $4, $5, $6, $7, $8, $9, true)
 	`, copied.message.ID, author, copied.message.Body, *copied.message.Target, sent.ID, position, sent.CreatedAt, nodeKind, nodeAddress)
 	if err := copied.index(b); err != nil {
 		return err

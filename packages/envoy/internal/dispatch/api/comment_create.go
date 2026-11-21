@@ -1029,8 +1029,8 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	}
 	nodeKind, nodeAddress := stored.rowNode()
 	if err := queueExec(ledger, `
-		insert into comments (id, issue_key, artifact_id, author, body, anchor, reply_to, ask_id, turn, suggestion, replies_to_block, answers, node_kind, node_address, tuples_stored, created_at)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+		insert into comments (id, issue_key, artifact_id, author, body, anchor, reply_to, ask_id, turn, suggestion, replies_to_block, answers, node_kind, node_address, tuples_stored, threads_recorded, created_at)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, true, $16)
 	`, rowID, owner.IssueKey, owner.ArtifactID, author, input.Body, anchorJSON, input.ReplyTo, input.AskID, turn, suggestionJSON,
 		threadTarget.ReplyBlock.nodeID(), threadTarget.Answers, nodeKind, nodeAddress, stored.pointersStored, comment.CreatedAt); err != nil {
 		s.writeHandlerError(w, err)
@@ -1206,17 +1206,18 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		indexed = commentMentionFacts(indexed, comment.ID, resolvedMentions, actor, comment.CreatedAt)
 	}
 	// The comment's thread in the Inbox, planned below and queued once its event is in
-	// (inboxwrite.PlanRecord): a comment whose pointers are stated is passed by the trigger
+	// (inboxwrite.PlanRecord): the row's threads_recorded passes it by the trigger
 	// user_threads_comment, so its thread_logins, which its event's insert reads after the
 	// comment's own insert, name the row its writer is about to hold beside the ones the thread
 	// holds. Its record names the node its head pointer names, whose tuple is queued and not
 	// written (commentRepliesTo), and reaches each person its text newly mentions. A comment whose
-	// pointers are no tuples is the trigger's, as an older build's is, and the backfill takes it.
+	// pointers are no tuples is recorded as the trigger body would have recorded it, its thread's
+	// rows moved and left to the backfill and no tuple stated (inboxwrite.Write.Unstored).
 	inbox := commentRepliesTo(inboxwrite.Comment(comment.ID, actor, comment.CreatedAt, owner.IssueKey, owner.ArtifactID, project).ReachesMentioned(indexed), input.AskID, input.ReplyTo)
-	logins := events.ThreadLoginsOf(commentThread(comment))
-	if stored.pointersStored {
-		logins = events.ThreadLoginsOf(commentThread(comment), inbox.KeptLogins()...)
+	if !stored.pointersStored {
+		inbox = inbox.Unstored()
 	}
+	logins := events.ThreadLoginsOf(commentThread(comment), inbox.KeptLogins()...)
 	events := []*model.Event{}
 	if snapshot != nil {
 		snapshotEvent, err := s.commitArtifactVersionEvent(ledger, owner, actor, anchor.ArtifactID, artifactName, *snapshot, nil)
@@ -1261,12 +1262,10 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 			return
 		}
 	}
-	var recording inboxwrite.Recording
-	if stored.pointersStored {
-		if recording, err = inboxwrite.PlanRecord(r.Context(), tx, inbox); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
+	recording, err := inboxwrite.PlanRecord(r.Context(), tx, inbox)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
 	}
 	event, err := s.queueLoggedEvent(ledger, owner.event(
 		"comment.created",
@@ -1323,7 +1322,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		if stored.pointersStored {
 			return queueRecordAndMentions(b, recording, indexed, actor, comment.CreatedAt, graphstore.LatestEvent)
 		}
-		return nil
+		return recording.Queue(b, graphstore.LatestEvent)
 	}); err != nil {
 		s.writeHandlerError(w, err)
 		return

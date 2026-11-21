@@ -49,6 +49,7 @@ func TestEveryBackfillBatchTakesTheStoreLockOrder(t *testing.T) {
 	t.Run("writeScopeBatch over a comment node takes no owner lock and no fence, then the node row and the project tuple", requireTheCommentScopeBatchLockOrder)
 	t.Run("writeMessages takes the owner lock, the messages rows ascending, then the store and the reached thread row before its delivery", requireTheMessagesBatchLockOrder)
 	t.Run("writeCommentPointers takes the owner lock, the comments rows ascending, then the store and the reached thread row before its delivery", requireTheCommentPointersBatchLockOrder)
+	t.Run("the messages_past_bound batch takes the owner lock, then the messages rows ascending, and nothing of the store", requireTheMessagesPastBoundBatchLockOrder)
 	for _, kind := range inboxItemKinds {
 		for _, part := range itemParts {
 			t.Run("the "+part.pass(kind)+" batch takes the owner lock, the "+kind.kind+"'s row, its block state row and its "+part.name+" rows, then the store",

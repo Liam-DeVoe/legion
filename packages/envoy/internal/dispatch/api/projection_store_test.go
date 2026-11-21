@@ -1299,18 +1299,19 @@ var markerTestedProjectionWriters = []string{"user_agent_thread_dismissed_clear"
 // lowered and its white space folded (normalizedSQLBody). A test that ends `end if;` is a guard
 // that returns before the write; any other is the condition of the `if` the write sits inside.
 //
-// A comment names its writer's stated pointers (comments.tuples_stored), a message its node pair,
-// and an ask the moment of the writes the store holds (asks.tuples_stored_at): on its insert, any
-// marker at all, and on an answer the answer's own moment, so an older build's answer to an ask this
-// release created is still projected.
+// A comment names its writer's stated pointers (comments.tuples_stored) or that this release
+// recorded it in its thread (comments.threads_recorded), a message its node pair or the same
+// (messages.threads_recorded), and an ask the moment of the writes the store holds
+// (asks.tuples_stored_at): on its insert, any marker at all, and on an answer the answer's own
+// moment, so an older build's answer to an ask this release created is still projected.
 var markerTests = map[string][]string{
-	"user_threads_comment": {"if new.tuples_stored then return null; end if;"},
-	"user_threads_message": {"if new.node_kind is not null and new.node_address is not null then return null; end if;"},
+	"user_threads_comment": {"if new.tuples_stored or new.threads_recorded then return null; end if;"},
+	"user_threads_message": {"if (new.node_kind is not null and new.node_address is not null) or new.threads_recorded then return null; end if;"},
 	"user_threads_ask": {
 		"if tg_op = 'insert' and new.tuples_stored_at is not null then return null; end if;",
 		"and new.tuples_stored_at is distinct from (new.answer->>'at')::timestamptz then",
 	},
-	"user_agent_thread_dismissed_clear": {"if new.node_kind is not null and new.node_address is not null then return null; end if;"},
+	"user_agent_thread_dismissed_clear": {"if (new.node_kind is not null and new.node_address is not null) or new.threads_recorded then return null; end if;"},
 }
 
 // normalizedSQLBody is a stored function's body as markerTests spells it: its line comments

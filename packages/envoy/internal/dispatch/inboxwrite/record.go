@@ -87,6 +87,8 @@ type Write struct {
 	// mentioned is, for a comment or a message, the login of each person a mention of its text
 	// newly names (ReachesMentioned), in the order the text first names them.
 	mentioned []string
+	// unstored is a write whose head pointers the store holds no tuple of (Unstored).
+	unstored bool
 }
 
 // Comment is a comment's write, a reply in the thread its head pointers name.
@@ -125,6 +127,28 @@ func (w Write) WaitingOn(waiting string) Write {
 // it answers (in_reply_to). A write that names none is the root of its own thread.
 func (w Write) RepliesTo(kind, id string) Write {
 	w.parent = &thread{kind: kind, id: id}
+	return w
+}
+
+// Unstored is w, a comment or a message whose head pointers the store holds no tuple of: one past
+// the store's address bound - a comment left whole out of the store (api's commentStoreWrite
+// .unprojected), a comment whose pointer the bound cannot key (pointersStored false), a message
+// whose replies_to end it cannot key (graphstore.MessageFacts' projected false) - whose row the
+// old arms of graph_edges answer. Such a write states no delivered_to: the census reads the
+// thread a delivery was written in off the write's own head pointers (graphcensus's
+// deliveryThread), so a delivery of a write with none is a delivery into no thread, and a row of
+// its thread moved beside none would break R6's equation on a marked row. So its record is the
+// projection the trigger body user_threads_record wrote of it, written here in the write's own
+// transaction after its event (Recording.Queue): each row of its thread but its writer's moves
+// and gives up its marker, as an update of that body's did (migration 20261116160000), the
+// writer keeps a row of their own, also unmarked, and a session's reply to a message ends its
+// root's Agent dismissals, as the trigger user_agent_thread_dismissed_clear did. Each row it
+// leaves unmarked is the backfill's thread pass's, which marks it under the thread's lock. Its
+// row carries threads_recorded (migrations 20261116124447 and 20261116114515), which the triggers
+// pass it by (20261116160001), so the triggers write nothing of it while they stand and the
+// root's drop of them finds no row of this release they would still write for.
+func (w Write) Unstored() Write {
+	w.unstored = true
 	return w
 }
 
@@ -374,6 +398,11 @@ func PlanRecord(ctx context.Context, tx pgx.Tx, w Write) (Recording, error) {
 		r.clears = true
 		r.failClear = failpoint.Planned(ctx, failpoint.AgentDismissalClear)
 	}
+	// A write the store holds no head pointer of moves its thread's rows as the trigger body did,
+	// all of them but its writer's, and delivers nothing (Unstored): there is no set to read.
+	if w.unstored {
+		return r, nil
+	}
 	members, err := readMembers(ctx, tx, thread)
 	if err != nil {
 		return Recording{}, err
@@ -440,6 +469,10 @@ func withOwedParticipants(members []member, owed []graphstore.Tuple) []member {
 // is that of a step of its own that cannot be queued.
 func (r Recording) Queue(b *store.WriteBatch, event int64) error {
 	w, thread := r.w, r.thread
+	if w.unstored {
+		r.queueUnstored(b, event)
+		return nil
+	}
 
 	// 0. What an answer owes of an ask an older build wrote: its participation and its
 	// citations now, its deliveries with step 3's.
@@ -533,4 +566,29 @@ func dismissalsEnded(logins []string, thread thread, w Write, event int64) []gra
 		})
 	}
 	return ended
+}
+
+// queueUnstored is the record of an Unstored write: its root's Agent dismissals, for a session's
+// reply to a message, cleared as Record clears them; then, for a thread whose owner resolves to a
+// project - the only one that holds rows, and the only one user_threads_record wrote any row of -
+// every row of the thread locked in Record's one pass, each row of it but its writer's moved and
+// unmarked (queueMoveUnmarked), and its writer's own row kept, unmarked (queueKeepUnmarkedRow).
+// It states nothing else: no participation, no delivery and no read mark, since no row it writes
+// is marked, and the backfill's thread pass states what each row says when it marks it.
+func (r Recording) queueUnstored(b *store.WriteBatch, event int64) {
+	w, thread := r.w, r.thread
+	if r.clears {
+		queueAgentDismissalsClear(b, thread.id, r.failClear, w, event)
+	}
+	if w.Project == "" {
+		return
+	}
+	queueThreadLock(b, thread)
+	// The trigger body leaves out of its move the row of a person writer, by their canonical login
+	// (user_threads_record's v_writer), and keeps them a row; r.person is that login where it fits
+	// the store's bound, which keptLogin holds a row to as well.
+	queueMoveUnmarked(b, thread, w, r.person)
+	if login, keeps := w.keptLogin(); keeps {
+		queueKeepUnmarkedRow(b, thread, w, login)
+	}
 }
