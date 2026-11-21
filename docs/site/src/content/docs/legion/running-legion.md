@@ -28,7 +28,8 @@ your cluster, from one published worker image.
 `legion.yaml` names no repository of the project. Each issue targets the repository Dispatch
 resolves for it: its own (the issue header's Repository picker, or `dispatch issue-update --repo
 owner/name`), else its nearest ancestor's, else the project's default repository, which is set in
-Dispatch. An issue may name any `owner/name`. The daemon records an issue on that repository, and
+Dispatch. An issue may name any `owner/name`. The daemon records an issue on that repository as
+Dispatch resolved it when the daemon read the issue (its event, or a listing of the project), and
 its default branch as GitHub names it, when it first records the issue. The record then follows
 Dispatch: a later change of the issue's repository is applied in the next pass that reads it,
 which is a live Dispatch event of the issue, a hand-over, or the pass over every recorded issue
@@ -44,10 +45,10 @@ carries the waiting change (`repoChangePending` and `repoChangeReason` of `legio
 until the issue's next event or the daemon's next boot, the two passes that read the repository
 again: installing the missing App starts no pass by itself. The daemon reads no repository
 mapping from Dispatch, so nothing else reads such a repository again, and a change of the
-project's default repository in Dispatch moves an issue that inherits it at that issue's next
-event or at the next boot. An issue whose repository resolves to none, or to one a role App is
-not installed on, is not admitted, and the daemon says why on the issue. A claim an operator
-starts on an issue the
+project's default repository in Dispatch, which sends no event of the issues that inherit it,
+moves such an issue at that issue's next event or at the next boot. An issue whose repository
+resolves to none, or to one a role App is not installed on, is not admitted, and the daemon says
+why on the issue. A claim an operator starts on an issue the
 workflow does not record works the repository Dispatch resolves for that issue, read at the
 claim's first launch and kept for as long as the issue holds its workspace. When that issue
 resolves to no repository, the launch is refused: `<KEY> names no repository: set the repository
