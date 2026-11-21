@@ -312,7 +312,7 @@ func operatorHeld() []string {
 // entry and in order, so a subject added to any phase, or a phase that grants another's entry, fails
 // here naming it. Every operator connection subscribes its own inbox prefix alone.
 func TestOperatorIsExactly(t *testing.T) {
-	inbox := []string{"_INBOX_envoy_operator.>"}
+	inbox := []string{"_INBOX_envoy._operator.>"}
 	for phase, want := range map[natsgrant.OperatorPhase][]string{
 		natsgrant.OperatorPhaseReleased: operatorReleased(),
 		natsgrant.OperatorPhasePrepare:  operatorPrepare(),
@@ -333,8 +333,21 @@ func TestOperatorIsExactly(t *testing.T) {
 		Publish:   []string{"_ENVOY_HOLD_PROBE.none"},
 		Subscribe: []string{"_ENVOY_HOLD_PROBE.none"},
 	}, natsgrant.HoldProbe())
-	require.Equal(t, "_INBOX_envoy_operator", natsgrant.OperatorInbox)
+	require.Equal(t, "_INBOX_envoy._operator", natsgrant.OperatorInbox)
 	require.Equal(t, "ENVOY_HOLD_BARRIER", natsgrant.HoldBarrierStream)
+}
+
+// The operator's inbox prefix sits under the one reply root, "_INBOX_envoy", as a token of its
+// own, so a render that moves JetStream into an account of its own and exports only the reply
+// root reaches the operator's replies through that one export. It fails when the operator's prefix
+// leaves the root, as "_INBOX_envoy_operator" did, which shares the root's characters but not its
+// token.
+func TestTheOperatorInboxIsUnderTheReplyRoot(t *testing.T) {
+	require.Equal(t, "_INBOX_envoy", natsgrant.ReplyRoot)
+	require.True(t, strings.HasPrefix(natsgrant.OperatorInbox, natsgrant.ReplyRoot+"."),
+		"OperatorInbox %q is not under the reply root %q", natsgrant.OperatorInbox, natsgrant.ReplyRoot)
+	require.True(t, natsserver.SubjectMatchesFilter(natsgrant.OperatorInbox+".x", natsgrant.ReplyRoot+".>"),
+		"the reply root's export %s.> does not reach an operator reply", natsgrant.ReplyRoot)
 }
 
 // No grant the package builds names the retired hold bucket, KV_envoy_maintenance or its keys:

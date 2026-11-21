@@ -4027,8 +4027,9 @@ answers them, to the `BROKER_NATS_SERVICES` entries of kinds `operator` and `pro
 once, as `operator/-/*=<account>` and `probe/-/*=<account>`. `natsgrant.Operator(phase)` is the
 deployment's one operator identity's grant, a function of the NATS writer hold's phase, which the
 hold's row in the secrets broker's Postgres holds and the auth service reads at each decision. Each
-phase holds the one before it, and every phase subscribes `_INBOX_envoy_operator.>` alone, so an
-operator connects with that inbox prefix:
+phase holds the one before it, and every phase subscribes `_INBOX_envoy._operator.>` alone, so an
+operator connects with that inbox prefix, which sits under the one reply root `_INBOX_envoy`
+(`natsgrant.ReplyRoot`), the token a render that gives JetStream its own account exports:
 
 - `released`, no hold, and the grant whenever the auth service cannot read the row, which names no
   subject that writes: `$JS.API.INFO`; the infos of `ENVOY_NOTIFICATIONS`,

@@ -393,9 +393,15 @@ const (
 	OperatorPhaseHeld     OperatorPhase = "held"
 )
 
+// ReplyRoot is the one subject token every reply prefix of Envoy's own clients sits under, so a
+// render that moves JetStream into an account of its own and exports only the reply roots to the
+// clients' account exports this one token, and no client's prefix needs an export of its own.
+const ReplyRoot = "_INBOX_envoy"
+
 // OperatorInbox is the inbox prefix of every operator connection (nats.CustomInboxPrefix), the
-// one subscribe of every phase's grant, so the operator reads no other client's replies.
-const OperatorInbox = "_INBOX_envoy_operator"
+// one subscribe of every phase's grant, so the operator reads no other client's replies. It sits
+// under ReplyRoot.
+const OperatorInbox = ReplyRoot + "._operator"
 
 // HoldBarrierStream is the hold's barrier stream, which the held operator creates, lists until it
 // is present, and deletes: a stream rather than a consumer of the notification stream, because at
@@ -550,7 +556,7 @@ func operatorHeld() []string {
 // OperatorPhasePrepare's while a hold is prepared, and OperatorPhaseHeld's, the full list, while a
 // hold is set. Each phase's list holds the one before it. A phase outside the three is answered
 // with released's, the least. Every phase subscribes the operator's own inbox prefix
-// (OperatorInbox) alone, and names only $JS. and _INBOX_envoy_operator. subjects, the session
+// (OperatorInbox) alone, and names only $JS. and OperatorInbox subjects, the session
 // consumers' records' $KV. keys and the copied buckets' $KV. barrier keys, so NamesSystemSubject
 // is false for each. The server installs a connection's permissions at its authorization, so a
 // process that changes the phase reconnects to be given the new phase's grant.
