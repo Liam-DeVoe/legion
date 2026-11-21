@@ -514,8 +514,8 @@ func TestADeliveryViewTakesItsCallersNewReaderOnAnAccessChange(t *testing.T) {
 // TestADeploymentReadCountsOnlyTheProjectsTheCallerSees: GET /api/v1/priorities, a read of the whole
 // deployment that an open viewer still makes, counts only the work of the projects the caller sees:
 // PRIV's work is not counted for alice, the shared token or carol's token that lists no project. A
-// restricted member or a credential that lists projects makes no such read (DEPLOYMENT_READ_REFUSED,
-// readClasses), so only open viewers are asked. The delivery reads have their own rule and test
+// restricted member makes no such read (DEPLOYMENT_READ_REFUSED, readClasses), so only open
+// viewers are asked. The delivery reads have their own rule and test
 // (TestADeliveryReadShowsOnlyThePullRequestsItsViewerSees), and so do the CI reconcile passes
 // (TestCIRepairPassesGoToAnOpenViewerOnly).
 func TestADeploymentReadCountsOnlyTheProjectsTheCallerSees(t *testing.T) {

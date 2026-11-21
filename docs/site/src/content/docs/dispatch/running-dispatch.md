@@ -352,7 +352,8 @@ sees: a private project needs a token that lists it.
   private projects it lists that its person sees. It reads what belongs to no project as its
   person does, but for the sessions and roles of private projects it does not see. A token that
   lists projects is refused a write of the whole deployment, such as a new project, a repository
-  mapping or a broadcast, `403 PROJECT_SCOPE_DEPLOYMENT`.
+  mapping or a broadcast, `403 PROJECT_SCOPE_DEPLOYMENT`; a broker access token acting as its
+  person is refused it only while some project is private.
 - A restricted member's token that lists projects sees those of them its person sees and nothing
   else; one that lists none sees the public projects its person sees. Of what belongs to no
   project it reads only the people and sessions of those projects, its own, and its person's
@@ -387,8 +388,8 @@ switch. `DISPATCH_PRIVATE_BEFORE_FULL_SWITCH` holds, in the same form, the keys 
 makes private before their full switch (below). On a deployment built by `envoy-infra`'s
 `gcp:Dispatch`, the component's `privateProjects` and `privateBeforeFullSwitch` inputs, each a
 list of keys, render them. An entry that is not a project key, the old value `1` included, is
-ignored with an ERROR line at start naming it. With both unset or empty, no project can be made
-private.
+ignored, and the start logs an ERROR line naming it. With both unset or empty, no project can be
+made private.
 
 The owner switches a project private on its Access tab
 (`PATCH /api/v1/projects/{key}/access` with `{"visibility": "private"}`), and Dispatch checks, in

@@ -274,12 +274,14 @@ func newWhoamiAgent(actor model.Actor, memberKind string, scopes []string, viewe
 	if actor.Kind == "session" && actor.ID != "" {
 		session = &actor.ID
 	}
-	read, written := whoamiProjects(actor.Credential), whoamiProjects(actor.Credential)
+	var read, written []string
 	if viewer != nil {
 		reader := actor
 		reader.Viewer = viewer
 		read = whoamiProjects(&model.Credential{Projects: viewer.Lists})
 		written = whoamiProjects(&model.Credential{Projects: writesHeldTo(reader, actor.Credential)})
+	} else {
+		read, written = whoamiProjects(actor.Credential), whoamiProjects(actor.Credential)
 	}
 	var project *string
 	if len(written) == 1 {
