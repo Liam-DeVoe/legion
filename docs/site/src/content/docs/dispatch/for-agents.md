@@ -77,13 +77,14 @@ decides only which private projects it sees: a private project needs a token tha
 
 - A full member's token sees every public project its person sees, whatever it lists, and the
   private projects it lists that its person sees. It reads every person and the whole deployment,
-  and every agent session but one that has acted in a private project it cannot see, or, if it
-  has acted in none, one whose token names such a project or that the listener does not list
-  (while a project is private and the operator has not yet filled the sessions' projects, no
-  session but its own). It reads no role of a private project it cannot see, and no direct
-  conversation, its person's included, with an agent session it cannot read. A token that lists
-  projects is refused a write of the whole deployment, such as `dispatch project` or a broadcast,
-  `403 PROJECT_SCOPE_DEPLOYMENT`; one that lists none makes it as its person does.
+  its own agent session, and every other agent session but one that has acted in a private project
+  it cannot see, or, if it has acted in none, one whose token names such a project or that the
+  listener does not list (while a project is private and the operator has not yet filled the
+  sessions' projects, no session but its own). It reads no role of a private project it cannot
+  see, and no direct conversation, its person's included, with an agent session it cannot read. A
+  token that lists projects is refused a write of the whole deployment, such as `dispatch project`
+  or a broadcast, `403 PROJECT_SCOPE_DEPLOYMENT`; one that lists none makes it as its person does,
+  and so does a broker access token acting as its person while no project is private.
 - A restricted member's token that lists projects sees those of them its person sees, and nothing
   of any other project; one that lists none sees the public projects its person sees. Of what
   belongs to no project, it reads only the people and agent sessions of those projects, its own,
@@ -109,7 +110,7 @@ deployment, a full member's token sees every project its person sees, whatever i
 | --- | --- |
 | Issues | `dispatch issue` creates one; `--blocked-by <key>`, repeated, names up to 20 issues it waits on, each of any project the token sees. `dispatch issue-update` changes status, title, labels, priority, assignee, parent, links, blockers, components, or the priorities the issue advances; `--assignee <email>` names the person the issue's asks wait on and `--clear-assignee` leaves them on the project's default assignee; its `--blocked-by` replaces the list, and `--clear-blocked-by` empties it; `--advance <id>`, repeated, replaces the priorities the issue states itself, `--clear-advances` drops them all, and `--advances-revision <n>` writes that set against the revision a refusal named rather than the one the command's own read answered; `--before <KEY>` and `--after <KEY>` move it on its project's board, above that issue, below it, or between the two. `dispatch claim` claims an issue before work starts. `dispatch issues` lists a project's issues. |
 | Priorities | `dispatch priorities` lists every live priority the deployment works towards, in rank order, with the work under each — its open issues by status, how many are claimed, their open asks, what closed in the last seven days, and when anything under it last moved — then the two faults: the work in flight under no priority and the work under a priority parked in backlog or icebox. `--project <KEY>`, repeated, narrows the counts and both lists to those projects. A priority belongs to no project, so this reads the whole deployment, counting only the work of the projects the token sees, and a restricted member's token is refused it; the id each row names is what `--advance` takes. |
-| Projects | `dispatch project` creates a project from a key and a name; a key that is already taken is refused, and so is any call from a token that lists projects. `--default-assignee <email>` names the person the project's unowned work lands on, and without it the project takes the person creating it, else the person the agent acts for; an agent that acts for nobody must name one. `dispatch projects` lists the key and name of every project the token sees. |
+| Projects | `dispatch project` creates a project from a key and a name; a key that is already taken is refused, and so is any call from a token that lists projects, a broker access token acting as its person only while some project is private. `--default-assignee <email>` names the person the project's unowned work lands on, and without it the project takes the person creating it, else the person the agent acts for; an agent that acts for nobody must name one. `dispatch projects` lists the key and name of every project the token sees. |
 | Asks | `dispatch ask` opens one. `dispatch edit-ask` rewords an open one. `dispatch resolve-ask` retracts or resolves one. `dispatch follow` follows or leaves an ask's thread. `dispatch open-asks` lists open asks. `dispatch answers` lists, in full and newest first, every answer, comment and message a person wrote to the session in the last 72 hours. |
 | Comments | `dispatch comment` comments on a document or replies in a thread. `dispatch suggest` proposes replacement text. `dispatch resolve-comment` resolves a thread. |
 | Messages | `dispatch message` posts a message or replies to one. |
@@ -415,14 +416,16 @@ method, who may call it, and what it does. An agent calls the API with its token
 `Authorization: Bearer <token>`.
 
 `GET /api/v1/whoami` answers `projects`, the projects the token lists, sorted, and leaves the
-field out for a token that lists none. A full member's token reads every public project whatever
-it lists, and its list decides only which private projects it reads; a restricted member's list
-decides every project it reads. Beside it, `private_projects` lists, sorted, those of
-`projects` the token must treat as private: a private project, one the token can no longer see,
-and a key that names no project; it is left out when there is none, so a key is public exactly
-when it is in `projects` and not in `private_projects`. Its `project` is deprecated, and its
-value comes from that list alone: the one key of a one-key list, and `null` for any other list,
-an empty one included. Read `projects` instead.
+field out for a token that lists none, and for a broker access token of a full member while no
+project is private, as before projects could be private. A full member's token reads every public
+project whatever it lists, and its list decides only which private projects it reads; a
+restricted member's list decides every project it reads. Beside it, `private_projects` lists,
+sorted, those of `projects` the token must treat as private: a private project, one the token can
+no longer see, and a key that names no project; it is left out when there is none, so a key is
+public exactly when it is in `projects` and not in `private_projects`. Its `project` is
+deprecated: the one project the token's writes are held to, where they are held to one (a token
+whose list holds its writes and names one key, or a broker token an operator's entry scoped to one
+project), and `null` for any other token. Read `projects` instead.
 
 Every `POST` and `PATCH` an agent makes through `dispatch` is keyed: each write a command makes
 carries an `Idempotency-Key` header of its own, and the command asks again under that key when an

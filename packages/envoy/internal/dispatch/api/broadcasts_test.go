@@ -601,9 +601,9 @@ func TestACredentialReadsItsPersonsBroadcastOnlyWhereItSeesEveryRecipient(t *tes
 	}
 }
 
-// With no private project every caller sees every session, so an author reads her broadcast as she
-// did before a project could be private (R9): with PRIV made public, carol's token that lists no
-// project lists carol's broadcast to session-priv and reads it, as carol does.
+// With no private project every full member sees every session, so an author reads her broadcast
+// as she did before a project could be private (R9): with PRIV made public, carol's token that
+// lists no project lists carol's broadcast to session-priv and reads it, as carol does.
 func TestWithNoPrivateProjectAnAuthorReadsHerBroadcastAsToday(t *testing.T) {
 	listener, _ := newBroadcastListener(t, privateRoster)
 	seed := seedPrivateProjectWith(t, testServerOptions{envoyURL: listener.URL})

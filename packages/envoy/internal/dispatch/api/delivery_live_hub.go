@@ -628,19 +628,18 @@ func (h *deliveryHub) startLocked() *hubGeneration {
 	return g
 }
 
-// goLocked runs f on a goroutine of the hub's, which running counts, with mu held, and reports
-// whether it did. Once the hub is closed (wait) it starts nothing: every Add of running is made
-// under mu before the close, so none can meet wait's Wait.
-func (h *deliveryHub) goLocked(f func()) bool {
+// goLocked runs f on a goroutine of the hub's, which running counts, with mu held. Once the hub
+// is closed (wait) it starts nothing: every Add of running is made under mu before the close, so
+// none can meet wait's Wait.
+func (h *deliveryHub) goLocked(f func()) {
 	if h.closed {
-		return false
+		return
 	}
 	h.running.Add(1)
 	go func() {
 		defer h.running.Done()
 		f()
 	}()
-	return true
 }
 
 // wait marks the hub closed, so no generation starts again and no goroutine of the hub's either
