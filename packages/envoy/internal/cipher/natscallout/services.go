@@ -32,9 +32,9 @@ const (
 // ServiceEntry is one service the auth service admits by its platform identity.
 type ServiceEntry struct {
 	Kind Kind
-	// MachineID is the machine id the grant is built for, which Dispatch's and a listener's
-	// name their durable and queue group by; required for those two kinds and refused for the
-	// others.
+	// MachineID is the entry's machine id: the one Dispatch's and a listener's grant name their
+	// durable and queue group by, and the one a privacy measurement's reads are named by in the
+	// broker's record; required for those three kinds and refused for the others.
 	MachineID string
 	// Account is the platform account whose token the service presents: a ServiceAccount
 	// subject, or a Google account address.
@@ -46,8 +46,9 @@ type ServiceEntry struct {
 	AllProjects bool
 }
 
-// name is the name the user the auth service answers this entry's connections with carries,
-// <kind>/<machine id or account>, which a server's connection listing (/connz) reports.
+// name is the entry's name, <kind>/<machine id or account>: the name of the user the auth service
+// answers its connections with, which a server's connection listing (/connz) reports, and for a
+// privacy measurement, which takes no NATS user, the name the broker's record gives its reads.
 func (e ServiceEntry) name() string {
 	if e.MachineID != "" {
 		return string(e.Kind) + "/" + e.MachineID

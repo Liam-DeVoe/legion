@@ -12,9 +12,9 @@ import (
 // TestProjectPrivacyNeverLogsTheBrokersToken (Tester4672's red test, F1): a Dispatch that repeats
 // the bearer it was sent, in a refusal's code or in a malformed projects value, must not get that
 // bearer into the broker's log. GET /v1/project-privacy answers each 502 dispatch_unavailable in
-// fixed words already; its WARN line must still be written, naming the failure's kind alone, as
-// GET /v1/private-projects does (redact.Class, or ErrBrokerRefused's fixed text): a line that is
-// not written holds no bearer either, so each row also names the line it wants.
+// fixed words already; its WARN line must still be written, naming the failure's kind alone
+// (redact.Class, or ErrBrokerRefused's fixed text): a line that is not written holds no bearer
+// either, so each row also names the line it wants.
 func TestProjectPrivacyNeverLogsTheBrokersToken(t *testing.T) {
 	logged := policytest.CaptureLog(t)
 	for _, c := range []struct {
