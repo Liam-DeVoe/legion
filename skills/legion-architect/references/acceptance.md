@@ -5,8 +5,8 @@ Where it says to ask a person, a child's own architect sends the question to the
 
 ## Retro's result
 
-Retro posts at most one `dispatch comment` of learnings and one `dispatch message`, brings the pull request body up to date, and commits nothing.
-When it reports that it cannot compute, read or write that body, it is still in its phase:
+Retro's output is in `skill://legion-retro`, steps 3 to 5.
+When it reports that it cannot compute, read or write the pull request body, it is still in its phase:
 answer it on its role topic from the deployment instructions, or open a `dispatch ask` naming the missing instruction.
 
 ## Accepting

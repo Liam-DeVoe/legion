@@ -887,7 +887,7 @@ test("each duty a role skill routes to a reference stands in that reference", ()
     ]),
     ...lacks("legion-architect/references/decomposition.md", [
       /running system[^.;]*implementer proves them on and a tester step drives/,
-      /wait on a sibling or on an issue outside this tree[^.;]*replaces the whole list/,
+      /wait on a sibling or on an issue outside this tree[^.;]*`skill:\/\/dispatch`, "Choosing what to work on"/,
     ]),
     ...lacks("legion-worker/SKILL.md", [
       /references\/default-branch-check\.md`[^.]*trailers the pane writes for you/,

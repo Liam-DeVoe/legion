@@ -918,6 +918,9 @@ echo done
 // environment. SKILL_SCENARIOS_JUDGE_OMP puts the stand-in where the pinned omp's binary is
 // mounted, so no test needs a model. The checkout's own skills/asd-ste100 is the ste skill.
 describe("judge-omp", () => {
+  // Each row starts one or two judge containers, and a container's start on a loaded host has
+  // taken longer than the file's 60 s bound, so these rows get a bound of their own.
+  const judgeBound = 180_000;
   // Every row that reaches the container needs Docker, so a machine without it (a Legion
   // worker's pod) skips those rows and the rest of the file still runs. GitHub Actions is the
   // exception, as in extensions/controller-start-omp.test.ts: its ubuntu-24.04 runners have
@@ -1066,7 +1069,8 @@ exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
           "utf8"
         )
       ).toContain("https://api.anthropic.com");
-    }
+    },
+    judgeBound
   );
 
   // Catches: a judge that reads the run's transcript, other runs or the operator's files beside its
@@ -1092,7 +1096,8 @@ exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
         "dbus-set": "denied",
       });
       expect(existsSync(path.join(dir, "new.txt"))).toBe(false);
-    }
+    },
+    judgeBound
   );
 
   // Catches: a bare judge that still loads skills, or a judge-omp that hides omp's failure.
@@ -1109,7 +1114,7 @@ exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
     expect(
       existsSync(path.join(work, "judge-profiles/bare/home/.omp/profiles/judge-bare/agent/skills"))
     ).toBe(false);
-  });
+  }, judgeBound);
 
   // Catches: a mount two judges share that one can write and the next can read, such as the key
   // command's call record, a path one judge could leave its private input in for another to read.
@@ -1124,7 +1129,7 @@ exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
     const second = judgeDir();
     expect(judge("ste", second, "answer.json", env("SEEK=1")).exitCode).toBe(0);
     expect(recorded(second, "seek")).toEqual([""]);
-  });
+  }, judgeBound);
 
   // Catches: a judge kind the rig has no profile for, a directory with no prompt, and an answer
   // file name that escapes the judge's directory or names another of its files.
@@ -1138,7 +1143,7 @@ exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
       expect(result.exitCode).not.toBe(0);
       expect(result.stderr.toString()).toContain("is not the name of an answer file");
     }
-  });
+  }, judgeBound);
 
   // The gateway route with the real installer and key command, and a stand-in hawk-token first on
   // PATH that mints a JWT and counts each mint. The key command needs the operator's home and
@@ -1219,7 +1224,8 @@ printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
         });
         expect(existsSync(`${dir}.key`)).toBe(false);
         expect(readFileSync(path.join(dir, "answer.json"), "utf8")).not.toMatch(/eyJ[\w-]*\./);
-      }
+      },
+      judgeBound
     );
 
     // Catches: a token directory or file that others can read while the judge runs. The modes
@@ -1233,7 +1239,7 @@ printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
       expect(judged(result)).toEqual(judgedCleanly);
       expect(recorded(dir, "mode")).toEqual(["key-dir 700", "token 600"]);
       expect(existsSync(`${dir}.key`)).toBe(false);
-    });
+    }, judgeBound);
 
     // Catches: a token file left behind when the judge fails, and a failed mint that starts the
     // judge anyway.
@@ -1261,7 +1267,8 @@ printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
           "judge-omp: the gateway's key command gave no key"
         );
         expect(existsSync(path.join(refused, "answer.json"))).toBe(false);
-      }
+      },
+      judgeBound
     );
   });
 
@@ -1298,7 +1305,7 @@ printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
     expect(result.exitCode).toBe(1);
     expect(result.stderr.toString()).toContain(`cannot read the commit of ${top} with jj or git`);
     expect(existsSync(path.join(rootWork, "judge-profiles/ready"))).toBe(false);
-  });
+  }, judgeBound);
 });
 
 // A spec run's plan row reads skill://writing-plans, which only a label built with
