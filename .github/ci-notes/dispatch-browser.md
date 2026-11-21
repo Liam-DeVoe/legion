@@ -1008,6 +1008,19 @@ was added (240 + 314 + 120 = 674 s), where #2856 had already re-measured them at
 six columns above, the sixth being run 42614920253 (job 129152410516). So the sum is
 240 + 333 + 120 = 693 s, 11 min 33 s, and the budget stays 12 minutes.
 
+Each browser step's seed now waits for the next UTC day when it would start within 90 s of
+midnight (e2e/visual-seed.ts says why: a seed written at 23:59:46Z, run 44840127934, drew
+"Yesterday" over two baselines taken as "Today"), and that wait is at most 91 s, which no
+measured run held. So each browser step is (183 + 91) x 1.15 = 315 s -> 6 min, and the job is
+360 + 333 + 120 = 813 s, 13 min 33 s -> 14 min, and 14 + 6 = 20 minutes with the reverse-order
+step. Only one of the two steps can wait, since the first wait ends past midnight, but each
+step's own budget must hold its worst case. A browser time zone chosen from `seededAt`, which
+would put the seed near local noon and need no wait, cannot be used: the Delivery page draws
+its timeline's axis in the browser's zone on a canvas no mask covers (ECharts' `useUTC` is off
+in packages/dispatch/web/src/features/delivery/Timeline.tsx), and delivery-light.png and
+delivery-dark.png read the seeded window's UTC hours there, "Jun 1", "Jun 1 04:00" up to
+"Jun 2", which a zone of any other offset would relabel.
+
 ## Why the visual job restores go-envoy-test
 
 go-envoy-test, restored only, for the reason the binaries job's step of this name gives:
