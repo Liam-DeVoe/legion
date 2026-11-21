@@ -225,7 +225,7 @@ func TestGraphEdgesLosesEveryArmOverAMovedKind(t *testing.T) {
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 
-	read := readGraphEdgesArms(t, database)
+	read := readViewArms(t, database, "graph_edges")
 	t.Logf("graph_edges has %d arms:\n  %s", len(read), strings.Join(armReport(read), "\n  "))
 	if want := armRelations(graphEdgesArms); !slices.Equal(armRelations(read), want) {
 		t.Fatalf("graph_edges reads %v; this test declares %v.\nAn arm over a source column is a kind that would have to be moved twice: "+
@@ -235,7 +235,7 @@ func TestGraphEdgesLosesEveryArmOverAMovedKind(t *testing.T) {
 	moved := append(movedArms(t, read, movedArmsDeletedBy, "", 4), movedArms(t, read, askArmsDeletedBy, inboxArmsMovedBy, 13)...)
 	stores := storeArms(t, read)
 	requireTheStatedArmsTestTheirRows(t, read)
-	createPreviousGraphEdges(t, database)
+	createViewFrom(t, database, previousGraphEdgesMigration, previousGraphEdges)
 
 	fixture := seedGraphEdgeFixture(t, database, service)
 	// The rows of one document are put back in the shape the release before this one left
@@ -530,22 +530,25 @@ func storeArms(t *testing.T, read []graphEdgesArm) []movedArm {
 	return stores
 }
 
-// createPreviousGraphEdges creates previousGraphEdges from the statement of the migration that
-// last stated graph_edges before this child, over the same tables, so that what the release
-// before this one reads can be read beside what this one reads.
-func createPreviousGraphEdges(t *testing.T, database *store.Store) {
+// graphEdgesStatement opens every migration's statement of graph_edges, which each holds last.
+const graphEdgesStatement = "create or replace view graph_edges "
+
+// createViewFrom creates the view name from migration's statement of graph_edges, over the same
+// tables, so that what that statement reads can be read beside what graph_edges reads: the
+// release before this one's (previousGraphEdges), or each restatement of the view
+// (TestGraphEdgesAnswersEveryRowEachRestatementOfItAnswered).
+func createViewFrom(t *testing.T, database *store.Store, migration, name string) {
 	t.Helper()
-	migration, err := os.ReadFile(previousGraphEdgesMigration)
+	text, err := os.ReadFile(migration)
 	if err != nil {
-		t.Fatalf("read the previous release's view: %v", err)
+		t.Fatalf("read %s: %v", migration, err)
 	}
-	const statement = "create or replace view graph_edges "
-	_, view, found := strings.Cut(string(migration), statement)
+	_, view, found := strings.Cut(string(text), graphEdgesStatement)
 	if !found {
-		t.Fatalf("%s states no %q", previousGraphEdgesMigration, statement)
+		t.Fatalf("%s states no %q", migration, graphEdgesStatement)
 	}
-	if _, err := database.Pool.Exec(context.Background(), "create view "+previousGraphEdges+" "+view); err != nil {
-		t.Fatalf("create the previous release's view: %v", err)
+	if _, err := database.Pool.Exec(context.Background(), "create view "+name+" "+view); err != nil {
+		t.Fatalf("create %s from %s: %v", name, migration, err)
 	}
 }
 
@@ -859,17 +862,18 @@ func armReport(read []graphEdgesArm) []string {
 	return lines
 }
 
-// readGraphEdgesArms reads graph_edges out of the catalogue and answers one entry per arm, each
-// naming the relation that arm reads first and carrying the arm's own text. pg_get_viewdef's
-// pretty form puts every top-level UNION ALL on a line of its own and opens each arm's own FROM
-// at three spaces; an arm whose FROM opens a sub-select is named by the first relation inside
-// it, which the store's own arm reads under a `distinct on`.
-func readGraphEdgesArms(t *testing.T, database *store.Store) []graphEdgesArm {
+// readViewArms reads view, graph_edges or a view created beside it from another statement of it
+// (createViewFrom), out of the catalogue and answers one entry per arm, each naming the relation
+// that arm reads first and carrying the arm's own text. pg_get_viewdef's pretty form puts every
+// top-level UNION ALL on a line of its own and opens each arm's own FROM at three spaces; an arm
+// whose FROM opens a sub-select is named by the first relation inside it, which the store's own
+// arm reads under a `distinct on`.
+func readViewArms(t *testing.T, database *store.Store, view string) []graphEdgesArm {
 	t.Helper()
 	var definition string
 	if err := database.Pool.QueryRow(context.Background(),
-		`select pg_get_viewdef('graph_edges'::regclass, true)`).Scan(&definition); err != nil {
-		t.Fatalf("read the graph_edges definition: %v", err)
+		`select pg_get_viewdef($1::regclass, true)`, view).Scan(&definition); err != nil {
+		t.Fatalf("read the %s definition: %v", view, err)
 	}
 	var arms []graphEdgesArm
 	for index, text := range strings.Split(strings.TrimSuffix(strings.TrimRight(definition, "\n"), ";"), "\nUNION ALL\n") {
@@ -882,7 +886,7 @@ func readGraphEdgesArms(t *testing.T, database *store.Store) []graphEdgesArm {
 			}
 			fields := strings.Fields(rest)
 			if len(fields) == 0 {
-				t.Fatalf("arm %d of graph_edges names no relation after its FROM: %q", index+1, line)
+				t.Fatalf("arm %d of %s names no relation after its FROM: %q", index+1, view, line)
 			}
 			relation = fields[0]
 			if relation == "(" {
@@ -891,7 +895,7 @@ func readGraphEdgesArms(t *testing.T, database *store.Store) []graphEdgesArm {
 			break
 		}
 		if relation == "" {
-			t.Fatalf("arm %d of graph_edges has no FROM of its own:\n%s", index+1, text)
+			t.Fatalf("arm %d of %s has no FROM of its own:\n%s", index+1, view, text)
 		}
 		arms = append(arms, graphEdgesArm{relation: relation, text: text})
 	}
@@ -1863,7 +1867,7 @@ func TestTheAsksArmsAnswerEachRowOnce(t *testing.T) {
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 
-	read := readGraphEdgesArms(t, database)
+	read := readViewArms(t, database, "graph_edges")
 	if want := armRelations(graphEdgesArms); !slices.Equal(armRelations(read), want) {
 		t.Fatalf("graph_edges reads %v; this test declares %v", armRelations(read), want)
 	}
@@ -1871,7 +1875,7 @@ func TestTheAsksArmsAnswerEachRowOnce(t *testing.T) {
 	moved := append(movedArms(t, read, movedArmsDeletedBy, "", 4), asked...)
 	firstAsked := len(moved) - len(asked)
 	stores := storeArms(t, read)
-	createPreviousGraphEdges(t, database)
+	createViewFrom(t, database, previousGraphEdgesMigration, previousGraphEdges)
 
 	fixture := seedAskArmsFixture(t, database, service)
 	before := readEachArm(t, database, "before the backfill", moved, stores)
