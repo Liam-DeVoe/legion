@@ -340,7 +340,8 @@ export interface BlindJudged extends Judged {
 /** The judgements of `replies`, the replies of all arms of case `c`, in the order `blindOrder`
  *  gives them under `seed`: the first alone, then the rest at once in that order, so they read the
  *  case's part from the cache the first wrote. A call that fails gives the verdict null with its
- *  reason. */
+ *  reason. A judge body that cannot be built (a missing or bad `prompts/judge.md`) is a fault of
+ *  the harness, not of a reply: it rejects the whole call with its reason, before any send. */
 export async function judgeBlind(
   c: Case,
   replies: readonly ArmReply[],

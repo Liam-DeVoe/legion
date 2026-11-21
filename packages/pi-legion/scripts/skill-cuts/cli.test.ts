@@ -23,6 +23,7 @@ import {
   falseLossChance,
   lossChance,
   main,
+  noVerdict,
   ompBinary,
   textDigest,
 } from "./cli";
@@ -39,7 +40,14 @@ import {
   startRecorder,
 } from "./recorder";
 import { sendOrder } from "./replay";
-import { SCREEN_RUNS } from "./score";
+import {
+  FRESH_RUNS,
+  MAX_EXTRA_RUNS,
+  MIN_INFORMATIVE_CASES,
+  type RunRecord,
+  SCREEN_RUNS,
+  scoreSkill,
+} from "./score";
 
 // The runner's command line, end to end: each command runs as its own `bun cli.ts` process, with
 // every GH_* and GITHUB_* variable taken out of its environment, against a stand-in gateway on
@@ -1124,7 +1132,30 @@ describe("behaviour", () => {
     expect(other.stderr).toContain("were made with other skill texts");
 
     // The false-loss control is a loss: the skill gets no verdict, and the report says why.
-    expect((await cli(behaviour("control", falseLoss))).code).toBe(0);
+    // Another case's result is a pipe whose writer, once the command opens it, waits 1.5 s before
+    // it writes, so reading the screen's results takes that long: the control case's seconds
+    // start after it.
+    // Catches: the control case's "other" and total counting the read of every case's result.
+    const slowResult = caseResultFile(falseLoss.out, "c05");
+    const resultText = `${slowResult}.text`;
+    writeFileSync(resultText, readFileSync(slowResult));
+    rmSync(slowResult);
+    expect(Bun.spawnSync(["mkfifo", slowResult]).exitCode).toBe(0);
+    const writer = Bun.spawn([
+      "sh",
+      "-c",
+      'exec 3>"$1"; sleep 1.5; cat "$0" >&3',
+      resultText,
+      slowResult,
+    ]);
+    const falseControl = await cli(behaviour("control", falseLoss));
+    await writer.exited;
+    rmSync(slowResult);
+    copyFileSync(resultText, slowResult);
+    expect(falseControl.code).toBe(0);
+    const controlLine = falseControl.stdout.split("\n").find((line) => line.includes("case c04: "));
+    const [, otherSeconds = ""] = /, other (\d+\.\d), total/.exec(controlLine ?? "") ?? [];
+    expect(Number(otherSeconds)).toBeLessThan(1);
     expect(passes(result(falseLoss.out, "c04"), "control")).toEqual({
       old: 40,
       minus: 0,
@@ -1573,4 +1604,34 @@ describe("refusals before any model call", () => {
     const reported = await cli(report(s).map((arg) => (arg === s.out ? inCheckout : arg)));
     expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
   }, 60_000);
+});
+
+/** The run records of `informative` cases screened as informative (old and new pass each run,
+ *  none no run), and of the first one's control runs, each with no verdict and no try left: its
+ *  control is unscreened. */
+function unscreenedControl(informative: number): RunRecord[] {
+  const ids = Array.from({ length: informative }, (_, n) => `c${n}`);
+  const screen = ids.flatMap((caseId) =>
+    (["old", "new", "none"] as const).flatMap((arm) =>
+      Array.from({ length: SCREEN_RUNS }, (): RunRecord => {
+        const verdict = arm === "none" ? "fail" : "pass";
+        return { caseId, arm, stage: "screen", verdict, reason: "" };
+      })
+    )
+  );
+  const control = Array.from(
+    { length: FRESH_RUNS + MAX_EXTRA_RUNS },
+    (): RunRecord => ({ caseId: "c0", arm: "old", stage: "control", verdict: null, reason: "" })
+  );
+  return [...screen, ...control];
+}
+
+// Catches: ": its runs are unscreened" added to a reason the control's runs are no part of.
+test("a skill's no-verdict reason says its control's runs are unscreened only where the control is the reason", () => {
+  expect(noVerdict(scoreSkill(unscreenedControl(MIN_INFORMATIVE_CASES - 1)))).toBe(
+    `fewer than ${MIN_INFORMATIVE_CASES} informative cases: ${MIN_INFORMATIVE_CASES - 1}`
+  );
+  expect(noVerdict(scoreSkill(unscreenedControl(MIN_INFORMATIVE_CASES)))).toBe(
+    "control not a loss: its runs are unscreened"
+  );
 });

@@ -151,12 +151,13 @@ from the session is replaced (`capture.ts`, "The harness strings"):
 
 A body that still holds the case's scratch directory after this is refused. The session's head is
 read once from its store, through the configuration's `psqlCommand` (`session-head.sql`: the
-file of the path hash, its first 256 KiB only), and saved as `<out>/sessions/<path hash>.json`;
-a read that fails stops that capture, with why. Each capture's record says each value it shows
-and where the value came from (`harness`: the store, the configuration, or neutral, and why),
-how many strings each rule replaced, and keeps the body as the host sent it beside the saved one
-(`<stem>.raw.body.json`). A saved capture whose record holds no `harness` was made before this
-rule and is refused.
+file of the path hash, its first 256 KiB only), and saved as
+`<out>/sessions/<store>-<path hash>.json` (a head an earlier run saved as `<path hash>.json` is
+read back too); a read that fails stops that capture, with why. Each capture's record says each
+value it shows and where the value came from (`harness`: the store, the configuration, or
+neutral, and why), how many strings each rule replaced, and keeps the body as the host sent it
+beside the saved one (`<stem>.raw.body.json`). A saved capture whose record holds no `harness`
+was made before this rule and is refused.
 
 ### `read`
 
@@ -500,10 +501,11 @@ reader's mode each offered message's session is rebuilt first, the drop is count
 dropped when it is tried, and counted (`skillNotListed`). A written task takes the profile of
 `--context-session <store>:<hash>`, the session the reader's mode requires for it (the most-read
 session of the context that installs the skill). That profile is rebuilt before any reader call;
-the build fails when that session gives none, and is refused (exit 2) when its rebuilt context
-does not list the skill. The summary's `profiles` records the context session, each task's
-profile with its evidence, and why a task has none. A build that has already finished gets no
-profiles from `--profiles-out` afterwards; `--reprofile` builds them again.
+the build fails when that session gives none, and fails too (exit 1, since it is found after a
+store read) when its rebuilt context does not list the skill. The summary's `profiles` records
+the context session, each task's profile with its evidence, and why a task has none. A build
+that has already finished gets no profiles from `--profiles-out` afterwards; `--reprofile` builds
+them again.
 
 `--reprofile <tasks.jsonl> --profiles-out <new dir>` builds the profile of each task of a tasks
 file again, as `--profiles-out` builds one now, with no candidate search and no reader call, so the

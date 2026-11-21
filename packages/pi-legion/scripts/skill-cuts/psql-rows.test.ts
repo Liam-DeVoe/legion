@@ -264,6 +264,12 @@ test("a row line that is not one JSON value is refused, naming its line", () => 
   expect(() => psqlRows(lines.join("\n"))).toThrow("psql output line 4: not one JSON value");
 });
 
+// Catches: a fault that names the last of several blank lines inside the table.
+test("blank lines followed by a row are refused, naming the first blank line", () => {
+  const output = [" value ", "-------", ' {"a" : 1}', "", "", ' {"a" : 2}', "(2 rows)", ""];
+  expect(() => psqlRows(output.join("\n"))).toThrow('psql output line 4: not one JSON value: ""');
+});
+
 test.each([
   [
     "a footer that gives another count",

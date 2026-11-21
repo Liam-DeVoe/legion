@@ -16,6 +16,7 @@ import {
   NEUTRAL_CWD,
   NEUTRAL_OS,
   ompHarnessRules,
+  pluginTools,
   promptDigest,
   refusedTools,
   renderReminder,
@@ -30,7 +31,7 @@ import {
   userTurnKey,
 } from "./capture";
 import { type Case, type Profile, pathHash } from "./cases";
-import { localSource, skillFrontmatter } from "./context";
+import { type ContextRecord, localSource, skillFrontmatter } from "./context";
 import { BudgetSpent } from "./gateway";
 import { END_TURN_REPLY, messageSse, sseResponse, startRecorder } from "./recorder";
 import { BLOCK_REASON, MESSAGES_VARIABLE } from "./replay-hook";
@@ -1619,9 +1620,42 @@ test("the harness rules of a capture whose working directory is below its checko
   );
 });
 
-// Catches: a head read twice from the store, a hash the store does not hold taken as held, or a
-// failed read taken for a neutral session.
-test("sessionHeads reads the heads it lacks in one query through the store command, saves each, and reads a saved one back", async () => {
+// Catches: a session checkout at the file system's root joined to a path as `//`.
+test("the harness rules of a capture whose session's checkout is the file system's root name it with one slash", () => {
+  const checkout = "/scratch/run-1/legion-retro/captures/abc/work";
+  const work = `${checkout}/agents`;
+  // No session is named: the working directory is NEUTRAL_CWD, one level below `/`.
+  const facts = sessionFacts(undefined, {
+    turn: FIRST_TURN,
+    date: STEP_DATE,
+    devbox: false,
+    devboxClaudeConfigDir: undefined,
+  });
+  const body = {
+    model: "claude-sonnet-5-5",
+    system: [{ type: "text", text: `<file path="${checkout}/AGENTS.md">\nRoot rules.\n</file>` }],
+    messages: [
+      {
+        role: "assistant",
+        content: [{ type: "text", text: `I read ${checkout}/README.md in ${checkout}.` }],
+      },
+    ],
+  };
+  const built = rewriteBody(
+    body,
+    ompHarnessRules(work, undefined, facts, true, { dir: checkout, workingDirectory: "agents" }),
+    ["/scratch/run-1"]
+  );
+  expect(built.faults).toEqual([]);
+  const text = JSON.stringify(built.body);
+  expect(text).toContain('<file path=\\"/AGENTS.md\\">');
+  expect(text).toContain("I read /README.md in /.");
+});
+
+// Catches: a head read twice from the store, a hash the store does not hold taken as held, a
+// failed read taken for a neutral session, or a second store's session at the same path refused
+// for the first store's head file.
+test("sessionHeads reads the heads it lacks in one query through the store command, saves each under its store and path hash, and reads a saved one back, one saved under its path hash alone too", async () => {
   const root = path.join(dir, "heads");
   mkdirSync(root, { recursive: true });
   const calls = path.join(root, "calls.txt");
@@ -1666,11 +1700,27 @@ test("sessionHeads reads the heads it lacks in one query through the store comma
     badLines: 1,
   });
   expect(heads.get(missing)?.head).toMatchObject({ held: false, cwd: null, reminders: [] });
-  expect(existsSync(path.join(sessions, `${held}.json`))).toBe(true);
+  expect(existsSync(path.join(sessions, `store_a-${held}.json`))).toBe(true);
   // Read again: both from their files, and no query.
   const again = await sessionHeads(command, "store_a", [held, missing], sessions);
   expect(readFileSync(calls, "utf8")).toBe("store_a\n");
   expect(again.get(held)?.head).toEqual(heads.get(held)?.head);
+  // Another store's session at the same path gets its own head, read from that store.
+  const other = await sessionHeads(command, "store_b", [held], sessions);
+  expect(readFileSync(calls, "utf8")).toBe("store_a\nstore_b\n");
+  expect(other.get(held)?.head).toMatchObject({ store: "store_b", pathHash: held, held: true });
+  expect(existsSync(path.join(sessions, `store_b-${held}.json`))).toBe(true);
+  // A head an earlier run saved under its path hash alone is read back with no query by its own
+  // store, and is no head of another store's session at that path.
+  const earlier = pathHash("/sessions/earlier.jsonl");
+  const saved = { ...heads.get(held)?.head, pathHash: earlier };
+  writeFileSync(path.join(sessions, `${earlier}.json`), JSON.stringify(saved));
+  const kept = await sessionHeads(command, "store_a", [earlier], sessions);
+  expect(kept.get(earlier)?.head).toEqual(saved as SavedHead["head"]);
+  expect(readFileSync(calls, "utf8")).toBe("store_a\nstore_b\n");
+  const another = await sessionHeads(command, "store_b", [earlier], sessions);
+  expect(another.get(earlier)?.head).toMatchObject({ store: "store_b", held: false });
+  expect(readFileSync(calls, "utf8")).toBe("store_a\nstore_b\nstore_b\n");
   // A command that fails is a failed read, never a neutral session.
   const failing = path.join(root, "failing.sh");
   writeFileSync(failing, "#!/bin/sh\necho 'permission denied for table' >&2\nexit 3\n", {
@@ -1694,4 +1744,35 @@ test("a saved capture whose record holds no harness record is refused", () => {
   expect(() => savedCapture(files)).toThrow("was made before the harness-string rule");
   writeFileSync(files.record, JSON.stringify({ case: "c", arm: "old", harness: { replaced: [] } }));
   expect(savedCapture(files)?.record.case).toBe("c");
+});
+
+// Catches: every left-out plugin said to have failed its build, whatever left it out.
+test("each plugin tool left out is named with the reason its plugin was left out", () => {
+  // A context record of two plugins left out: only the fields pluginTools reads.
+  const context = {
+    plugins: [
+      {
+        name: "pi-a",
+        repo: "acme/a",
+        commit: "c",
+        path: "p",
+        as: "left out",
+        reason: "its package.json does not parse: Unexpected token",
+      },
+      {
+        name: "pi-b",
+        repo: "acme/b",
+        commit: "c",
+        path: "p",
+        as: "left out",
+        reason: "it could not be installed: a plugin named pi-b is installed already",
+      },
+      { name: "pi-c", repo: "acme/c", commit: "c", path: "p", as: "extension" },
+    ],
+  } as unknown as ContextRecord;
+  const tools = pluginTools({ model: "claude-sonnet-5-5", messages: [] }, context, undefined, "");
+  expect(tools.leftOut).toEqual([
+    "pi-a: its package.json does not parse: Unexpected token",
+    "pi-b: it could not be installed: a plugin named pi-b is installed already",
+  ]);
 });

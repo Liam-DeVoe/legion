@@ -1,6 +1,14 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
@@ -1129,6 +1137,94 @@ describe("skill-cuts load refuses or stops on its own rules", () => {
   });
 });
 
+// Catches: a task's total that counts the captures of the tasks after it in its profile's group.
+test("a task's seconds count its own capture, its group's runs and its writes, and no later task's capture", async () => {
+  const dir = path.join(scratch, "timing");
+  const made = setup(dir);
+  const skill = path.join(dir, "alpha");
+  writeTree(skill, { "SKILL.md": ALPHA_SKILL, "references/x.md": ALPHA_X });
+  const tasks = path.join(dir, "tasks.jsonl");
+  const ids = ["t1", "t2"];
+  writeFileSync(
+    tasks,
+    ids
+      .map((id) => `${JSON.stringify({ id, text: NEED, label: "need", source: "written" })}\n`)
+      .join("")
+  );
+  const profile = path.join(dir, "profile.json");
+  writeFileSync(profile, JSON.stringify(BETA_PROFILE));
+  const out = path.join(dir, "out");
+  for (const id of ids) {
+    const files = loadCapturePaths(out, "omp", id);
+    writeTree(path.dirname(files.body), {
+      [path.basename(files.body)]: JSON.stringify({
+        ...F2,
+        messages: [{ role: "user", content: [{ type: "text", text: NEED }] }],
+      }),
+      [path.basename(files.record)]: JSON.stringify({
+        listing: [{ name: "alpha", hint: "Use for the alpha checklist." }],
+        requestHeaders: { "anthropic-version": "2023-06-01" },
+        hintCalls: [],
+        harness: { head: null, replaced: [] },
+      }),
+    });
+  }
+  // t2's saved body is a pipe whose writer, once t2's capture opens it, waits 1.5 s before it
+  // writes, so t2's capture, read back from it, takes that long, and t1's takes none of it.
+  const slow = loadCapturePaths(out, "omp", "t2").body;
+  const text = `${slow}.text`;
+  writeFileSync(text, readFileSync(slow));
+  rmSync(slow);
+  expect(Bun.spawnSync(["mkfifo", slow]).exitCode).toBe(0);
+  const writer = Bun.spawn(["sh", "-c", 'exec 3>"$1"; sleep 1.5; cat "$0" >&3', text, slow]);
+  answer = () => TEXT;
+  const lines: string[] = [];
+  await runLoad({
+    io: { out: (line) => lines.push(line), err: () => {}, peakRssBytes: () => 0 },
+    host: "omp",
+    skillDir: skill,
+    skillDigest: "a-made-up-digest",
+    tasksFile: tasks,
+    profileFile: profile,
+    runs: 1,
+    out,
+    model: LOAD_MODEL,
+    thinking: "off",
+    gateway: createGateway({
+      baseUrl: recorder.url,
+      keyFile: made.keyFile,
+      concurrency: 2,
+      timeoutMs: 60_000,
+    }),
+    hints: async () => {
+      throw new Error("no hint is written here");
+    },
+    source: localSource(dir),
+    scratch: path.join(dir, "scratch"),
+    cacheDir: path.join(dir, "cache"),
+    configFiles: [],
+    claude: "claude",
+    requestLog: path.join(dir, "requests.jsonl"),
+    memoryLimitBytes: 2 ** 30,
+    psqlCommand: "/nowhere/read-store",
+    stores: ["store_a"],
+  });
+  await writer.exited;
+  /** Task `id`'s seconds as its line gives them. */
+  const seconds = (id: string) => {
+    const line =
+      lines
+        .join("")
+        .split("\n")
+        .find((each) => each.includes(`task ${id} (`)) ?? "";
+    const [, capture = "", other = ""] =
+      /seconds: capture (\d+\.\d) .*, other (\d+\.\d), total/.exec(line) ?? [];
+    return { capture: Number(capture), other: Number(other) };
+  };
+  expect(seconds("t2").capture).toBeGreaterThanOrEqual(1);
+  expect(seconds("t1").other).toBeLessThan(0.5);
+}, 60_000);
+
 describe("skill-cuts load sends a profile's tasks' runs in one order, each with its own id", () => {
   const dir = path.join(scratch, "interleaved");
   const out = path.join(dir, "out");
@@ -1400,6 +1496,33 @@ test("Claude Code's harness rules name the session's checkout for a mention of t
   expect(text).toContain("Contents of /srv/acme/widgets/agents/vm/CLAUDE.md (project instructions");
   expect(text).toContain("Primary working directory: /srv/acme/widgets/agents/vm\\n");
   expect(rewritten.replaced).toContainEqual({ what: "the checkout", count: 1 });
+});
+
+// Catches: a session checkout at the file system's root joined to a path as `//`.
+test("Claude Code's harness rules name a session checkout at the file system's root with one slash", () => {
+  const checkout = "/scratch/load-1/claude/profiles/abc/context/work";
+  const work = `${checkout}/agents`;
+  // No session is named: the working directory is the neutral one, one level below `/`.
+  const facts = sessionFacts(undefined, {
+    turn: undefined,
+    date: { value: "2026-11-18", from: "the UTC date of the session's first user turn" },
+    devbox: false,
+    devboxClaudeConfigDir: undefined,
+  });
+  const body = {
+    model: "claude-sonnet-5-5",
+    system: [{ type: "text", text: `Contents of ${checkout}/CLAUDE.md (project instructions)` }],
+    messages: [{ role: "user", content: [{ type: "text", text: `The root is ${checkout}.` }] }],
+  };
+  const rewritten = rewriteBody(
+    body,
+    claudeHarnessRules(work, "", facts, { dir: checkout, workingDirectory: "agents" }),
+    ["/scratch/load-1"]
+  );
+  expect(rewritten.faults).toEqual([]);
+  const text = JSON.stringify(rewritten.body);
+  expect(text).toContain("Contents of /CLAUDE.md (project instructions)");
+  expect(text).toContain("The root is /.");
 });
 
 /** Made-up repositories (skills alpha, beta and gamma), the tested skill's `tested` files (alpha's

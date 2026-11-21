@@ -264,22 +264,29 @@ export function isResponsesBody(body: RequestBody): body is ResponsesBody {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** Fewer hex digits than this in an id are too few to draw a fresh id from. */
 const MIN_HEX_DIGITS = 16;
+/** A word of an id that holds hex digits alone: a run of letters and digits between characters
+ *  that are neither, such as a digest or one group of a UUID. */
+const HEX_WORD = /(?<![0-9a-z])[0-9a-f]+(?![0-9a-z])/gi;
 
 /** A fresh value in the form of the id text `value`: a new random UUID for a UUID; else each hex
- *  digit drawn again at random, every other character kept (a 64-digit hex digest stays one); a
- *  text of fewer than MIN_HEX_DIGITS hex digits becomes a new UUID. An empty text stays empty. */
+ *  digit of each word of hex digits alone (HEX_WORD) drawn again at random, every other character
+ *  kept, so a 64-digit hex digest stays one and the letters of a word such as `user` or `account`
+ *  stay as they are; a text of fewer than MIN_HEX_DIGITS such digits becomes a new UUID. An empty
+ *  text stays empty. */
 function redrawnId(value: string): string {
   if (value === "") return value;
   if (UUID.test(value)) return randomUUID();
-  const digits = value.match(/[0-9a-f]/gi)?.length ?? 0;
-  if (digits < MIN_HEX_DIGITS) return randomUUID();
-  const upper = /[A-F]/.test(value) && !/[a-f]/.test(value);
-  const drawn = randomBytes(digits);
+  const hex = (value.match(HEX_WORD) ?? []).join("");
+  if (hex.length < MIN_HEX_DIGITS) return randomUUID();
+  const upper = /[A-F]/.test(hex) && !/[a-f]/.test(hex);
+  const drawn = randomBytes(hex.length);
   let at = 0;
-  return value.replace(/[0-9a-f]/gi, () => {
-    const digit = ((drawn[at++] ?? 0) & 15).toString(16);
-    return upper ? digit.toUpperCase() : digit;
-  });
+  return value.replace(HEX_WORD, (word) =>
+    word.replace(/./g, () => {
+      const digit = ((drawn[at++] ?? 0) & 15).toString(16);
+      return upper ? digit.toUpperCase() : digit;
+    })
+  );
 }
 
 /** `value` with each string inside it drawn again as `redrawnId` draws one, its keys, their

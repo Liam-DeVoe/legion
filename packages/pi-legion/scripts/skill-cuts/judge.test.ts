@@ -1,4 +1,4 @@
-import { beforeAll, expect, test } from "bun:test";
+import { beforeAll, expect, mock, test } from "bun:test";
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
@@ -37,7 +37,20 @@ import {
   newSeed,
   stepText,
 } from "./judge";
+import * as readers from "./readers";
 import { PROMPTS_DIR, parsePrompt } from "./readers";
+
+/** When set, the judge's prompt reads as this error: a missing or bad `prompts/judge.md`. Every
+ *  other read is readers.ts's own. */
+let judgePromptFault: string | undefined;
+const loadPrompt = readers.loadPrompt;
+mock.module("./readers", () => ({
+  ...readers,
+  loadPrompt: (name: string) => {
+    if (name === "judge" && judgePromptFault !== undefined) throw new Error(judgePromptFault);
+    return loadPrompt(name);
+  },
+}));
 
 // The blind judge, on F1, F2, F5 and F9 (testdata/, captured as testdata/CAPTURE.md says). F1 is
 // an Oh My Pi 18.18.6 session of a scratch profile with the made-up skills alpha and beta
@@ -470,6 +483,22 @@ test("an unparsed judgement is judged again twice and then gives null, never fai
     replies.map(() => [null, true])
   );
   expect(refused.judged[0]?.reason).toContain("the budget of $0 is spent");
+});
+
+// Catches: a judge body that cannot be built (a missing or bad prompts/judge.md) taken as a null
+// verdict for each reply, where it is a harness fault that stops the command with its reason.
+test("judgeBlind rejects with the reason when the judge's body cannot be built, and sends nothing", async () => {
+  const replies = armReplies(["old", "none"]);
+  const quiet = world(() => sse(PASS));
+  judgePromptFault = "prompts/judge.md has no header";
+  try {
+    await expect(judgeBlind(f1Case, replies, quiet.gateway, "seed-bad-prompt")).rejects.toThrow(
+      "prompts/judge.md has no header"
+    );
+  } finally {
+    judgePromptFault = undefined;
+  }
+  expect(quiet.bodies).toHaveLength(0);
 });
 
 test("the pinned settings reach every request", async () => {

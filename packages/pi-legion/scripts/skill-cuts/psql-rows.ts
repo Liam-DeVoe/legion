@@ -103,7 +103,7 @@ export class PsqlTable {
       return;
     }
     if (trimmed === "") {
-      this.#blank = this.#line;
+      if (this.#blank === 0) this.#blank = this.#line;
       return;
     }
     let row: unknown;

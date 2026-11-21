@@ -19,9 +19,10 @@
  *   also looks for its skills at load) is a link to `skills/`, so a plugin lists the arm's skills
  *   and no copy of its own: only the case's skill differs between arms. A plugin with no
  *   `package.json` of that kind installs skills alone (a verification-skills plugin), which the
- *   profile's skills already hold. A plugin that cannot be installed (its repository cannot be
- *   read, its manifest cannot be parsed, its build fails, or a plugin of its name is installed
- *   already) is left out, with its reason.
+ *   profile's skills already hold. A plugin that cannot be installed (its manifest cannot be
+ *   parsed, its build fails, or a plugin of its name is installed already) is left out, with its
+ *   reason; a plugin whose repository cannot be read stops the case with the reason, as a failed
+ *   role-prompt read does, so every arm of a case has the same plugins.
  * - `work/`: the checkout of the session repository. Each of its context files (a file named
  *   `AGENTS.md`, `CLAUDE.md`, `GEMINI.md` or `copilot-instructions.md`, REPOSITORY_CONTEXT_FILES,
  *   at its default branch's commit at the session's start) is written there at its path in the
@@ -110,8 +111,10 @@ export interface RepoSource {
    *  all of it) into `dest`, at its path below `dir`. Throws when `dir` holds no file. */
   tree(repo: string, commit: string, dir: string, dest: string): Promise<void>;
   /** Reads ahead, in as few calls as it can, the files of `repo` at `commit` under each of `dirs`,
-   *  so the `tree` calls for them that follow need no read of their own. Optional. */
-  prefetch?(repo: string, commit: string, dirs: readonly string[]): Promise<void>;
+   *  so the `tree` calls for them that follow need no read of their own. What it reads is held
+   *  until `tree` writes each file of it, or until the release it gives is called, which drops
+   *  what no `tree` wrote. Optional. */
+  prefetch?(repo: string, commit: string, dirs: readonly string[]): Promise<() => void>;
   /** The reads this source has made of GitHub so far: how many `gh` calls, the milliseconds in
    *  which at least one of them was running, and the calls sent again after a transient failure,
    *  by reason (common.ts's `GhRetries.record`). Absent for a source that reads no GitHub. */
@@ -151,8 +154,9 @@ export interface ContextRecord {
     readonly commit: string;
     readonly path: string;
     /** `extension`: built and loaded with `--extension`; `skills only`: nothing to load beyond
-     *  the profile's skills; `left out`: it could not be installed, for `reason` (a failed read,
-     *  manifest, build or copy). */
+     *  the profile's skills; `left out`: it could not be installed, for `reason`, which starts
+     *  with the step that failed (its package.json does not parse, its build failed, or it could
+     *  not be installed). */
     readonly as: "extension" | "skills only" | "left out";
     readonly key?: string;
     readonly reason?: string;
@@ -471,12 +475,16 @@ export interface GhOptions {
  * `-f owner=<owner> -f name=<repo>` so the pod's gh sends it with that owner's token (as copies.ts
  * does); a blob a batch does not give whole (binary, truncated, missing, in a batch that failed,
  * or a text whose bytes are not the blob's, checked by its git blob id) is read alone over REST.
- * A blob a batch gave is kept until each file of those directories that holds it is written. Each
- * read is sent again after a transient failure, by the rule copies.ts's and build.ts's GitHub reads
- * share (common.ts's `GhRetries`), so one network error stops no screen; a 404 is not.
+ * A blob a batch gave is kept until each file of those directories that holds it is written, or
+ * until the release `prefetch` gives is called (`held()` counts the blobs kept). Each read is
+ * sent again after a transient failure, by the rule copies.ts's and build.ts's GitHub reads share
+ * (common.ts's `GhRetries`), so one network error stops no screen; a 404 is not.
  * `reads()` counts the `gh` calls made, the time in which one ran, and the calls sent again.
  */
-export function ghSource(gh = "gh", options: GhOptions = {}): RepoSource {
+export function ghSource(
+  gh = "gh",
+  options: GhOptions = {}
+): RepoSource & { readonly held: () => number } {
   const retries = new GhRetries(
     {
       sleep: options.sleep ?? Bun.sleep,
@@ -609,11 +617,22 @@ export function ghSource(gh = "gh", options: GhOptions = {}): RepoSource {
     }
     return listing;
   };
-  // Each blob a GraphQL batch gave whole, by its id: its bytes, and how many files of the
-  // directories read ahead are still to be written from it. It is dropped once the last is.
-  const blobs = new Map<string, { readonly bytes: Uint8Array; waiting: number }>();
+  // Each blob a GraphQL batch gave whole, by its id: its bytes, and the files of the directories
+  // read ahead still to be written from it, each as `<repo>@<commit>\0<dir>/\0<path>` (a file under
+  // two such directories is written once for each). It is dropped once the last is written, or
+  // released (`prefetch`'s release).
+  const blobs = new Map<string, { readonly bytes: Uint8Array; readonly waiting: Set<string> }>();
+  /** Marks the file `key` of the blob `sha` written, or no longer to be written; drops the blob
+   *  when no file waits on it. */
+  const done = (sha: string, key: string) => {
+    const held = blobs.get(sha);
+    if (held === undefined) return;
+    held.waiting.delete(key);
+    if (held.waiting.size === 0) blobs.delete(sha);
+  };
   return {
     name: "gh",
+    held: () => blobs.size,
     reads: () => ({
       calls,
       ms: busyMs + (running > 0 ? performance.now() - busyFrom : 0),
@@ -632,21 +651,26 @@ export function ghSource(gh = "gh", options: GhOptions = {}): RepoSource {
       }
     },
     async prefetch(repo, commit, dirs) {
+      // Each blob this read ahead holds files of, by its id, with those files.
+      const mine = new Map<string, Set<string>>();
+      const release = () => {
+        for (const [sha, keys] of mine) for (const key of keys) done(sha, key);
+      };
       const { entries, truncated } = await listingOf(repo, commit);
-      if (truncated) return;
-      const prefixes = dirs.map((dir) => `${dir.replace(/\/+$/, "")}/`);
-      // Each blob to read, and how many files under `dirs` hold it.
-      const wanted = new Map<string, { entry: BlobEntry; files: number }>();
-      for (const entry of entries) {
-        if (!/^[0-9a-f]{40}$/.test(entry.sha)) continue;
-        if (!prefixes.some((prefix) => entry.path.startsWith(prefix))) continue;
-        const held = blobs.get(entry.sha);
-        const want = wanted.get(entry.sha);
-        if (held !== undefined) held.waiting += 1;
-        else if (want !== undefined) want.files += 1;
-        else wanted.set(entry.sha, { entry, files: 1 });
+      if (truncated) return release;
+      // Each blob to read, by its id.
+      const wanted = new Map<string, BlobEntry>();
+      for (const prefix of dirs.map((dir) => `${dir.replace(/\/+$/, "")}/`)) {
+        for (const entry of entries) {
+          if (!/^[0-9a-f]{40}$/.test(entry.sha) || !entry.path.startsWith(prefix)) continue;
+          const key = `${repo}@${commit}\0${prefix}\0${entry.path}`;
+          mine.set(entry.sha, (mine.get(entry.sha) ?? new Set()).add(key));
+          const held = blobs.get(entry.sha);
+          if (held !== undefined) held.waiting.add(key);
+          else if (!wanted.has(entry.sha)) wanted.set(entry.sha, entry);
+        }
       }
-      const entriesWanted = [...wanted.values()].map(({ entry }) => entry);
+      const entriesWanted = [...wanted.values()];
       for (const batch of blobBatches(entriesWanted, BLOB_BATCH, BLOB_BATCH_BYTES)) {
         const args = graphqlArgs(repo, blobQuery(batch));
         let answer: unknown;
@@ -673,10 +697,11 @@ export function ghSource(gh = "gh", options: GhOptions = {}): RepoSource {
           // alone.
           const bytes = new TextEncoder().encode(blob.text);
           if (gitBlobId(bytes) === entry.sha) {
-            blobs.set(entry.sha, { bytes, waiting: wanted.get(entry.sha)?.files ?? 1 });
+            blobs.set(entry.sha, { bytes, waiting: new Set(mine.get(entry.sha)) });
           }
         });
       }
+      return release;
     },
     async tree(repo, commit, dir, dest) {
       if (dir === "") return tarball(repo, commit, dest);
@@ -701,10 +726,7 @@ export function ghSource(gh = "gh", options: GhOptions = {}): RepoSource {
         const held = blobs.get(entry.sha);
         const bytes = held?.bytes ?? (await api(`repos/${repo}/git/blobs/${entry.sha}`, true));
         writeBlob(path.join(dest, entry.path.slice(prefix.length)), entry.mode, bytes);
-        if (held !== undefined) {
-          held.waiting -= 1;
-          if (held.waiting <= 0 && blobs.get(entry.sha) === held) blobs.delete(entry.sha);
-        }
+        if (held !== undefined) done(entry.sha, `${repo}@${commit}\0${prefix}\0${entry.path}`);
       });
     },
   };
@@ -1091,30 +1113,43 @@ export async function buildContext(
     group.dirs.push(skill.path);
     ahead.set(id, group);
   }
-  for (const { repo, commit, dirs } of ahead.values()) {
-    await source.prefetch?.(repo, commit, dirs);
-  }
+  // What the read ahead holds is released once the skills are installed, or once their step
+  // fails: a file no `tree` wrote (a step that threw first, or a skill whose cache entry another
+  // capture made first) holds nothing after it.
+  const releases: (() => void)[] = [];
   const skills: InstalledSkill[] = [];
   const skillRecords: ContextRecord["skills"][number][] = [];
-  for (const skill of arm.profileSkills) {
-    const dir = path.join(skillsDir, skill.name);
-    if (existsSync(dir)) throw new Error(`case ${c.id}: the profile installs ${skill.name} twice`);
-    if (skill.name === arm.skill) {
-      if (arm.skillDir === undefined) throw new Error(`case ${c.id}: arm ${arm.name} has no skill`);
-      cpSync(arm.skillDir, dir, { recursive: true, verbatimSymlinks: true });
-      skillRecords.push({ name: skill.name, from: "arm" });
-    } else {
-      const key = cacheKey(skill.repo, skill.commit, skill.path);
-      const cached = await builds.entry("skill", key, (dest) =>
-        source.tree(skill.repo, skill.commit, skill.path, dest)
-      );
-      cpSync(cached, dir, { recursive: true, verbatimSymlinks: true });
-      skillRecords.push({
-        name: skill.name,
-        from: { repo: skill.repo, commit: skill.commit, path: skill.path, key },
-      });
+  try {
+    for (const { repo, commit, dirs } of ahead.values()) {
+      const release = await source.prefetch?.(repo, commit, dirs);
+      if (release !== undefined) releases.push(release);
     }
-    skills.push({ name: skill.name, dir, ...skillFrontmatter(dir) });
+    for (const skill of arm.profileSkills) {
+      const dir = path.join(skillsDir, skill.name);
+      if (existsSync(dir)) {
+        throw new Error(`case ${c.id}: the profile installs ${skill.name} twice`);
+      }
+      if (skill.name === arm.skill) {
+        if (arm.skillDir === undefined) {
+          throw new Error(`case ${c.id}: arm ${arm.name} has no skill`);
+        }
+        cpSync(arm.skillDir, dir, { recursive: true, verbatimSymlinks: true });
+        skillRecords.push({ name: skill.name, from: "arm" });
+      } else {
+        const key = cacheKey(skill.repo, skill.commit, skill.path);
+        const cached = await builds.entry("skill", key, (dest) =>
+          source.tree(skill.repo, skill.commit, skill.path, dest)
+        );
+        cpSync(cached, dir, { recursive: true, verbatimSymlinks: true });
+        skillRecords.push({
+          name: skill.name,
+          from: { repo: skill.repo, commit: skill.commit, path: skill.path, key },
+        });
+      }
+      skills.push({ name: skill.name, dir, ...skillFrontmatter(dir) });
+    }
+  } finally {
+    for (const release of releases) release();
   }
 
   const extensions: string[] = [];
@@ -1127,8 +1162,18 @@ export async function buildContext(
       path: plugin.path,
     };
     const key = cacheKey(plugin.repo, plugin.commit, plugin.path);
+    let tree: string;
     try {
-      const tree = await checkout(builds, source, plugin.repo, plugin.commit);
+      tree = await checkout(builds, source, plugin.repo, plugin.commit);
+    } catch (error) {
+      // A read that failed stops the case, as a failed role-prompt read does, so every arm of a
+      // case has the same plugins.
+      throw new Error(
+        `case ${c.id}: the repository of the plugin ${plugin.name}, ${plugin.repo} at ${plugin.commit}, could not be read: ${messageFor(error)}`
+      );
+    }
+    let step = "its package.json does not parse";
+    try {
       const manifestFile = path.join(tree, plugin.path, "package.json");
       const manifest = existsSync(manifestFile)
         ? (JSON.parse(readFileSync(manifestFile, "utf8")) as Manifest)
@@ -1137,9 +1182,11 @@ export async function buildContext(
         pluginRecords.push({ ...where, as: "skills only" });
         continue;
       }
+      step = "its build failed";
       const built = await builds.entry("plugin", key, (dest) =>
         buildPlugin(tree, plugin.path, dest)
       );
+      step = "it could not be installed";
       const dir = path.join(pluginsDir, plugin.name);
       if (existsSync(dir)) throw new Error(`a plugin named ${plugin.name} is installed already`);
       cpSync(built, dir, { recursive: true, verbatimSymlinks: true });
@@ -1152,7 +1199,12 @@ export async function buildContext(
       extensions.push(dir);
       pluginRecords.push({ ...where, as: "extension", key });
     } catch (error) {
-      pluginRecords.push({ ...where, as: "left out", key, reason: messageFor(error) });
+      pluginRecords.push({
+        ...where,
+        as: "left out",
+        key,
+        reason: `${step}: ${messageFor(error)}`,
+      });
     }
   }
 

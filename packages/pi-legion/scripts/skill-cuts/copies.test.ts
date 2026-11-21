@@ -43,6 +43,7 @@ import {
   type ReaderSkill,
   ReadSlots,
   repositoryFiles,
+  repositoryKey,
   resolveInstallers,
   SKILL_COPIES_COLUMNS,
   type SkillCopy,
@@ -50,6 +51,7 @@ import {
   skillFields,
   type TreeEntry,
   tsv,
+  walkLevelKey,
   writeOutputs,
 } from "./copies";
 
@@ -2010,22 +2012,53 @@ describe("a truncated tree", () => {
     expect(outputs(resumed)).toEqual(outputs(whole));
   }, 60_000);
 
-  test("a walk's levels saved under other keep rules are read again", async () => {
+  // Catches: a repository, or a level of its walk, that a run under other keep rules saved, read
+  // back as this run's: its kept entries are the other rules'.
+  test("a repository and its walk's levels saved under other keep rules are read again", async () => {
+    const legion = "cybermonklabs/legion";
     const whole = await run(truncatedWorld(), LEGION_ONLY);
     const cacheDir = mkdtempSync(path.join(tmpdir(), "copies-cache-"));
     scratch.push(cacheDir);
-    // As a run under other keep rules saved them: each level under the key of another rules
-    // version, and holding no entry, so a replay of one would change the output.
-    const saved = await stoppedWalk(cacheDir);
-    expect(saved.length).toBeGreaterThanOrEqual(2);
-    for (const { file, key, value } of saved) {
-      const parts = key.split("\0");
-      parts[3] = String(KEEP_RULES_VERSION + 1);
-      const other = parts.join("\0");
+    expect((await run(truncatedWorld(), [...LEGION_ONLY, "--cache-dir", cacheDir])).code).toBe(0);
+    const rules = KEEP_RULES_VERSION + 1;
+    /** Moves the cache file of `kind` and `key` to the file a run under the other rules keeps
+     *  under `other`, its value as `emptied` leaves it. */
+    const moveTo = (
+      kind: string,
+      key: string,
+      other: string,
+      emptied: (value: Record<string, unknown>) => unknown
+    ) => {
+      const file = path.join(cacheDir, kind, `${sha1(key)}.json`);
+      const saved = JSON.parse(readFileSync(file, "utf8")) as {
+        key: string;
+        value: Record<string, unknown>;
+      };
+      expect(saved.key).toBe(key);
       rmSync(file);
       writeFileSync(
-        path.join(path.dirname(file), `${sha1(other)}.json`),
-        JSON.stringify({ key: other, value: { ...value, kept: [], count: 0 } })
+        path.join(cacheDir, kind, `${sha1(other)}.json`),
+        JSON.stringify({ key: other, value: emptied(saved.value) })
+      );
+    };
+    // As a run under other keep rules saved them: the repository and each level of its walk under
+    // the key that run gives it, holding no entry, so a replay of one would change the output.
+    moveTo(
+      "repository",
+      repositoryKey(legion, "main", AT),
+      repositoryKey(legion, "main", AT, rules),
+      (value) => ({ ...value, tree: [] })
+    );
+    const levels = readdirSync(path.join(cacheDir, "walk")).filter((name) =>
+      name.endsWith(".json")
+    ).length;
+    expect(levels).toBeGreaterThanOrEqual(2);
+    for (let level = 0; level < levels; level++) {
+      moveTo(
+        "walk",
+        walkLevelKey(legion, LEGION_ROOT, false, level),
+        walkLevelKey(legion, LEGION_ROOT, false, level, rules),
+        (value) => ({ ...value, kept: [], count: 0 })
       );
     }
     const w = truncatedWorld();
@@ -2039,6 +2072,24 @@ describe("a truncated tree", () => {
     expect(w.calls.filter((call) => /\/git\/trees\//.test(call[1] ?? ""))).toHaveLength(1);
     expect(asked[0]).toEqual([LEGION_ROOT]);
     expect(outputs(again)).toEqual(outputs(whole));
+  }, 60_000);
+
+  // Catches: a refused `gh repo list`, a GraphQL call, waited out to the REST limit's reset.
+  test("an owner's listing refused for the GraphQL rate limit waits for that limit's reset", async () => {
+    const w = world();
+    let left = 1;
+    w.refuse = (args) =>
+      args[0] === "repo" && args[1] === "list" && left-- > 0
+        ? "GraphQL: API rate limit exceeded for user ID 1001."
+        : undefined;
+    const r = await run(w, LEGION_ONLY);
+    expect(r.code).toBe(0);
+    expect(r.errors.filter((line) => line.includes("rate limit is spent"))).toEqual([
+      "copies: the graphql rate limit is spent; waiting 46 s",
+    ]);
+    expect(r.table("repositories.tsv").map((row) => row.repository)).toEqual([
+      "cybermonklabs/legion",
+    ]);
   }, 60_000);
 
   test("a batch refused for the GraphQL rate limit is sent again after the reset, not halved", async () => {
@@ -2149,7 +2200,24 @@ describe("a truncated tree", () => {
       return w;
     };
     const skillsReads = (w: World) => w.calls.filter((call) => call[1] === SKILLS_READ).length;
-    const SAME = ["repositories.tsv", "skill-copies.tsv", "manifests.tsv"];
+    const SAME = ["skill-copies.tsv", "manifests.tsv"];
+    /** The gh calls of the walk repositories.tsv gives (`by directory, N reads`), and its rows
+     *  less that column. */
+    const walked = (r: Run) => {
+      const rows = r.table("repositories.tsv");
+      const treeRead = /^by directory, (\d+) reads$/.exec(rows[0]?.tree_read ?? "");
+      return {
+        reads: Number(treeRead?.[1]),
+        rest: rows.map(({ tree_read: _treeRead, ...row }) => row),
+      };
+    };
+    /** Checks that `r`'s repositories are `calm`'s, its walk counting `retries` reads more: each
+     *  try of a read sent again is a gh call, over REST as over GraphQL. */
+    const sameRepositories = (r: Run, calm: Run, retries: number) => {
+      expect(walked(calm).reads).toBeGreaterThan(0);
+      expect(walked(r).reads).toBe(walked(calm).reads + retries);
+      expect(walked(r).rest).toEqual(walked(calm).rest);
+    };
 
     test("a tree read that fails on a TLS handshake timeout is sent again 5 s later, and its repository keeps its entries", async () => {
       const calm = await run(restWorld(), LEGION_ONLY);
@@ -2159,6 +2227,7 @@ describe("a truncated tree", () => {
       expect(r.code).toBe(0);
       expect(r.table("repositories.tsv")[0]).toMatchObject({ error: "" });
       for (const name of SAME) expect(r.text(name)).toBe(calm.text(name));
+      sameRepositories(r, calm, 1);
       expect(w.sleeps).toEqual([5_000]);
       expect(skillsReads(w)).toBe(2);
       expect(r.errors).toContain(
@@ -2180,6 +2249,7 @@ describe("a truncated tree", () => {
       expect(r.code).toBe(0);
       expect(r.table("repositories.tsv")[0]).toMatchObject({ error: "" });
       for (const name of SAME) expect(r.text(name)).toBe(calm.text(name));
+      sameRepositories(r, calm, 2);
       expect(w.sleeps).toEqual([5_000, 15_000]);
       expect(skillsReads(w)).toBe(3);
       expect(r.text("skill-copies.md")).toContain(
@@ -2195,6 +2265,7 @@ describe("a truncated tree", () => {
       expect(r.code).toBe(0);
       expect(r.table("repositories.tsv")[0]).toMatchObject({ error: "" });
       for (const name of SAME) expect(r.text(name)).toBe(calm.text(name));
+      sameRepositories(r, calm, 1);
       expect(w.sleeps).toEqual([5_000]);
       expect(skillsReads(w)).toBe(2);
       expect(r.text("skill-copies.md")).toContain(
@@ -2535,7 +2606,9 @@ describe("a run started again over --cache-dir", () => {
     return w;
   };
 
-  test("a second run makes no gh call and writes the same output", async () => {
+  // Catches: a summary that counts the calls an earlier run made for a cached search as this
+  // run's, beside retries that count this run's alone.
+  test("a second run makes no gh call and writes the same output, its summary counting no search call and each search it took from the cache", async () => {
     const cacheDir = mkdtempSync(path.join(tmpdir(), "copies-cache-"));
     scratch.push(cacheDir);
     const first = await run(clean(), [...only, "--cache-dir", cacheDir]);
@@ -2544,7 +2617,26 @@ describe("a run started again over --cache-dir", () => {
     const second = await run(w, [...only, "--cache-dir", cacheDir]);
     expect(second.code).toBe(0);
     expect(w.calls).toEqual([]);
-    expect(outputs(second)).toEqual(outputs(first));
+    const searches = first.queries().filter((query) => query.type === "search");
+    const calls = searches.reduce((sum, query) => sum + Number(query.calls), 0);
+    expect(searches.length).toBeGreaterThan(1);
+    expect(calls).toBeGreaterThan(0);
+    /** The summary's sentence of `made` search calls and `cached` searches. */
+    const said = (made: number, cached: number) =>
+      `${made} code search calls (budget none); ${cached} searches taken from the cache.`;
+    expect(first.text("skill-copies.md")).toContain(said(calls, 0));
+    expect(second.text("skill-copies.md")).toContain(said(0, searches.length));
+    expect(second.stdout).toContain(
+      `${searches.length} searches taken from the cache, 0 code search calls, 0 retries`
+    );
+    // The second run's files with its summary sentence written as the first run's are the
+    // first run's files.
+    const again: Record<string, string> = outputs(second);
+    again["skill-copies.md"] = (again["skill-copies.md"] ?? "").replace(
+      said(0, searches.length),
+      said(calls, 0)
+    );
+    expect(again).toEqual(outputs(first));
     // The fork's tree: its 4 files and the 4 directories that hold them.
     expect(first.errors).toContainEqual(
       expect.stringMatching(

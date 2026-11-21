@@ -690,6 +690,45 @@ test("a Legion context's role prompt: a plugin repository that holds no prompts.
   expect(absent).toContain(`no plugin repository holds ${PROMPTS_GO}`);
 });
 
+// Catches: a plugin whose repository read failed left out of one arm's context while the next
+// arm, reading it again, installs it; and a left-out plugin whose reason does not say which step
+// failed.
+test("a plugin whose repository read fails stops the context, naming why; a plugin that cannot be installed is left out, its reason naming the step that failed", async () => {
+  const root = path.join(dir, "plugin-reads");
+  const c = aCase("devbox", {
+    plugins: [
+      { repo: "acme/legion", commit: COMMIT, path: "packages/plugin-b", name: "plugin-b" },
+      { repo: "acme/legion", commit: COMMIT, path: "plugins/broken", name: "broken" },
+    ],
+    contextFiles: [],
+  });
+  const { options, arm } = setUp(root, c);
+  writeTree(path.join(root, "repos", "acme/legion", COMMIT), {
+    "plugins/broken/package.json": "{ not JSON",
+  });
+  const local = options.source;
+  const unread: RepoSource = {
+    ...local,
+    name: "a source whose read of acme/legion fails",
+    tree: (repo, commit, inside, dest) =>
+      repo === "acme/legion"
+        ? Promise.reject(new Error("gh: connection reset by peer"))
+        : local.tree(repo, commit, inside, dest),
+  };
+  const failed = await buildContext(c, arm, { ...options, source: unread }).then(
+    () => "built",
+    String
+  );
+  expect(failed).toContain("plugin-b");
+  expect(failed).toContain("gh: connection reset by peer");
+  const built = await buildContext(c, arm, options);
+  const reasons = Object.fromEntries(built.record.plugins.map((p) => [p.name, p.reason]));
+  expect(built.record.plugins.map((p) => p.as)).toEqual(["left out", "left out"]);
+  expect(reasons["plugin-b"]).toStartWith("its build failed: ");
+  expect(reasons["plugin-b"]).toContain("exit 3");
+  expect(reasons.broken).toStartWith("its package.json does not parse: ");
+}, 120_000);
+
 /** A file of the stand-in repository: its path, its bytes, and whether a GraphQL batch calls it
  *  binary. */
 interface StandinFile {
@@ -887,6 +926,92 @@ exec ${JSON.stringify(inner.gh)} "$@"
   // The failed tree read, the tree read again and one GraphQL batch.
   expect(source.reads?.().calls).toBe(3);
 });
+
+/** A made-up skill's SKILL.md at `dir`, and one reference beside it. */
+const skillFiles = (dir: string): StandinFile[] => [
+  {
+    path: `${dir}/SKILL.md`,
+    bytes: new TextEncoder().encode(
+      `---\nname: ${path.basename(dir)}\ndescription: Made-up ${dir}.\n---\n`
+    ),
+  },
+  { path: `${dir}/notes.md`, bytes: new TextEncoder().encode(`Notes of ${dir}.\n`) },
+];
+
+// Catches: a blob read ahead and held for the life of the source when its skill's files are never
+// written (the build stops first, or another capture made the skill's cache entry first), or
+// dropped before its last file is written (a skill directory inside another).
+test("each blob read ahead is dropped once its last file is written, or once the context's skills are installed or it fails, on every path", async () => {
+  // The build stops between the read ahead and the second skill's files: two skills named dup.
+  const twice = standinRepoGh("gh-held-twice", [
+    ...skillFiles("skills/dup"),
+    ...skillFiles("other/dup"),
+  ]);
+  const twiceSource = ghSource(twice.gh);
+  const twiceRoot = path.join(dir, "held-twice");
+  const { c: twiceCase, arm: twiceArm } = batchCase(twiceRoot, ["skills/dup", "other/dup"]);
+  const stopped = await buildContext(twiceCase, twiceArm, {
+    source: twiceSource,
+    cacheDir: path.join(twiceRoot, "cache"),
+    root: path.join(twiceRoot, "scratch"),
+  }).then(() => "built", String);
+  expect(stopped).toContain("installs dup twice");
+  expect(twiceSource.held()).toBe(0);
+
+  // Another capture makes the skill's cache entry while this one reads ahead, so its tree never
+  // runs here.
+  const madeRoot = path.join(dir, "held-made");
+  const made = standinRepoGh("gh-held-made-inner", skillFiles("skills/made"));
+  const entry = path.join(
+    madeRoot,
+    "cache",
+    "skills",
+    cacheKey("acme/batch", COMMIT, "skills/made")
+  );
+  const staged = path.join(madeRoot, "staged");
+  writeTree(staged, { "SKILL.md": "---\nname: made\ndescription: Made-up made.\n---\n" });
+  writeTree(madeRoot, {
+    gh: `#!/bin/sh
+case "$*" in *graphql*)
+  if [ ! -e ${JSON.stringify(entry)} ]; then
+    mkdir -p ${JSON.stringify(path.dirname(entry))}
+    cp -R ${JSON.stringify(staged)} ${JSON.stringify(entry)}
+  fi;;
+esac
+exec ${JSON.stringify(made.gh)} "$@"
+`,
+  });
+  chmodSync(path.join(madeRoot, "gh"), 0o755);
+  const madeSource = ghSource(path.join(madeRoot, "gh"));
+  const { c: madeCase, arm: madeArm } = batchCase(madeRoot, ["skills/made"]);
+  const built = await buildContext(madeCase, madeArm, {
+    source: madeSource,
+    cacheDir: path.join(madeRoot, "cache"),
+    root: path.join(madeRoot, "scratch"),
+  });
+  expect(built.record.builds.find((each) => each.kind === "skill")?.hit).toBe(true);
+  expect(madeSource.held()).toBe(0);
+
+  // A skill directory inside another: each file of the inner one is written twice, once for each.
+  const nested = standinRepoGh("gh-held-nested", [
+    ...skillFiles("skills/outer"),
+    ...skillFiles("skills/outer/inner"),
+  ]);
+  const nestedSource = ghSource(nested.gh);
+  const nestedRoot = path.join(dir, "held-nested");
+  const { c: nestedCase, arm: nestedArm } = batchCase(nestedRoot, [
+    "skills/outer",
+    "skills/outer/inner",
+  ]);
+  await buildContext(nestedCase, nestedArm, {
+    source: nestedSource,
+    cacheDir: path.join(nestedRoot, "cache"),
+    root: path.join(nestedRoot, "scratch"),
+  });
+  // Each blob came from the batch: none was read alone because it was dropped too soon.
+  expect(callsOf(nested.log)).toEqual({ tree: 1, graphql: 1, blob: 0, other: 0 });
+  expect(nestedSource.held()).toBe(0);
+}, 120_000);
 
 // Catches: one transport error on a GitHub read failing the context, where copies.ts sends the
 // read again (a build-cases re-profile failed so on 2026-11-21).

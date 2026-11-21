@@ -97,8 +97,8 @@
  * stand-in daemons answer
  * with that working directory and made-up ids. A body that still holds the case's scratch
  * directory or the capture's `scratchDir` after this is refused. The session's head comes from
- * its store (`sessionHeads`, session-head.sql, saved as `<out>/sessions/<pathHash>.json`), and
- * the record says what each value is and where it came from (`harness`), and keeps the body as
+ * its store (`sessionHeads`, session-head.sql, saved as `<out>/sessions/<store>-<pathHash>.json`),
+ * and the record says what each value is and where it came from (`harness`), and keeps the body as
  * Oh My Pi sent it beside the saved one (`rawBodyFile`). A saved capture whose record holds no
  * such record was made before this rule, and is refused (`savedCapture`).
  */
@@ -165,8 +165,8 @@ function bodyToolNames(body: RequestBody): string[] {
 
 /** The tools a body defines and the `xd://` devices its system prompt lists, the Legion and
  *  Envoy plugins' among them, and each plugin tool left out with why. `role` is the Legion role
- *  of the case's context, when it has one. */
-function pluginTools(
+ *  of the case's context, when it has one. Exported for capture.test.ts. */
+export function pluginTools(
   body: RequestBody,
   context: ContextRecord,
   role: { readonly role: string } | undefined,
@@ -178,7 +178,7 @@ function pluginTools(
   );
   const leftOut = context.plugins
     .filter((plugin) => plugin.as === "left out")
-    .map((plugin) => `${plugin.name}: its build failed: ${plugin.reason ?? ""}`);
+    .map((plugin) => `${plugin.name}: ${plugin.reason ?? "left out"}`);
   if (role?.role === "controller") {
     leftOut.push("legion: a controller session is not reproduced, so its tool is not defined");
   } else if (role !== undefined && !tools.includes("legion")) {
@@ -633,12 +633,12 @@ export function renderReminder(date: string, cwd: string): string {
 const REMINDER_CWD = /current working directory: '([^']*)'\. Do not repeat/;
 
 /** A session's head as session-head.sql reads it from its store and the runner saves it
- *  (`<out>/sessions/<pathHash>.json`): whether the store holds a file of the hash; the header's
- *  `cwd` and `timestamp` (`start`); the first user message's `timestamp` and `attribution`; each
- *  `date-cwd-reminder` entry Oh My Pi journaled, in file order, its `turn` the key of the turn it
- *  went on (`user:<timestamp>:<attribution>`); the bytes read (the file's first 256 KiB at most)
- *  and the lines of them that did not parse (the last, cut where the head ends); and when it was
- *  read. */
+ *  (`<out>/sessions/<store>-<pathHash>.json`): whether the store holds a file of the hash; the
+ *  header's `cwd` and `timestamp` (`start`); the first user message's `timestamp` and
+ *  `attribution`; each `date-cwd-reminder` entry Oh My Pi journaled, in file order, its `turn` the
+ *  key of the turn it went on (`user:<timestamp>:<attribution>`); the bytes read (the file's first
+ *  256 KiB at most) and the lines of them that did not parse (the last, cut where the head ends);
+ *  and when it was read. */
 export const SessionHead = z.strictObject({
   store: z.string().min(1),
   pathHash: z.string().regex(/^[0-9a-f]{64}$/),
@@ -682,17 +682,20 @@ const HeadRow = z.strictObject({
   bad_lines: z.number().int().nonnegative(),
 });
 
-/** The file `dir` keeps the head of the session `pathHash` in. */
-export function sessionHeadFile(dir: string, pathHash: string): string {
-  return path.join(dir, `${pathHash}.json`);
+/** The file `dir` keeps the head of the session `pathHash` of the store `store` in, named by both:
+ *  two stores can each hold a session at one path, and one `dir` keeps every store's heads. */
+export function sessionHeadFile(dir: string, store: string, pathHash: string): string {
+  return path.join(dir, `${store}-${pathHash}.json`);
 }
 
 /**
  * The heads of the sessions `pathHashes` of the store `store`, by hash: each saved head in `dir`
  * read back, and the others read in one session-head.sql query through the store command
  * `command` (config.ts's `psqlCommand`, which runs it read-only) and each saved there whole
- * before it is given. A hash the store holds no file of gets a head with `held: false`. Throws
- * when the command fails, or a row or a saved file is no head.
+ * before it is given. A head an earlier run saved under its path hash alone (`<pathHash>.json`) is
+ * read back too when it is this store's head; another store's is not this one's, so this store
+ * reads its own. A hash the store holds no file of gets a head with `held: false`. Throws when the
+ * command fails, or a row or a file saved under this store's name is no head.
  */
 export async function sessionHeads(
   command: string,
@@ -703,16 +706,24 @@ export async function sessionHeads(
   const heads = new Map<string, SavedHead>();
   const missing: string[] = [];
   for (const hash of new Set(pathHashes)) {
-    const file = sessionHeadFile(dir, hash);
-    if (!existsSync(file)) {
-      missing.push(hash);
+    const file = sessionHeadFile(dir, store, hash);
+    if (existsSync(file)) {
+      const parsed = SessionHead.safeParse(JSON.parse(readFileSync(file, "utf8")));
+      if (!parsed.success || parsed.data.store !== store || parsed.data.pathHash !== hash) {
+        throw new Error(`${file} is not the head of the session ${hash} of the store ${store}`);
+      }
+      heads.set(hash, { head: parsed.data, file });
       continue;
     }
-    const parsed = SessionHead.safeParse(JSON.parse(readFileSync(file, "utf8")));
-    if (!parsed.success || parsed.data.store !== store || parsed.data.pathHash !== hash) {
-      throw new Error(`${file} is not the head of the session ${hash} of the store ${store}`);
+    const unnamed = path.join(dir, `${hash}.json`);
+    const earlier = existsSync(unnamed)
+      ? SessionHead.safeParse(JSON.parse(readFileSync(unnamed, "utf8")))
+      : undefined;
+    if (earlier?.success && earlier.data.store === store && earlier.data.pathHash === hash) {
+      heads.set(hash, { head: earlier.data, file: unnamed });
+      continue;
     }
-    heads.set(hash, { head: parsed.data, file });
+    missing.push(hash);
   }
   if (missing.length === 0) return heads;
   const child = Bun.spawn([command, store], {
@@ -761,7 +772,7 @@ export async function sessionHeads(
       badLines: row?.bad_lines ?? 0,
       readAt,
     };
-    const file = sessionHeadFile(dir, hash);
+    const file = sessionHeadFile(dir, store, hash);
     writeWhole(file, json(head));
     heads.set(hash, { head, file });
   }
@@ -972,6 +983,17 @@ export interface CaptureCheckout {
   readonly workingDirectory: string;
 }
 
+/** The rule's pattern for each mention of the capture's checkout `dir`, with the `/` after it when
+ *  one follows, and its replacement: the session's checkout `root` there, so a `root` of `/` takes
+ *  no second `/`. */
+export function checkoutMention(dir: string, root: string): Pick<HarnessRule, "pattern" | "to"> {
+  const base = root === "/" ? "" : root;
+  return {
+    pattern: new RegExp(`${literal(dir)}(/?)`, "g"),
+    to: (_match, slash = "") => `${base}${slash}` || "/",
+  };
+}
+
 /**
  * The harness rules of an Oh My Pi capture that ran in `workspace`, with the scratch Claude Code
  * config directory `claudeConfigDir` (a devbox context's), for the session `facts`: the date and
@@ -1011,7 +1033,7 @@ export function ompHarnessRules(
           {
             what: "a context file's path in the checkout",
             pattern: new RegExp(`<file path="${literal(checkout.dir)}/`, "g"),
-            to: () => `<file path="${root}/`,
+            to: () => `<file path="${root === "/" ? "" : root}/`,
           },
         ]),
     ...(claudeConfigDir === undefined
@@ -1042,8 +1064,7 @@ export function ompHarnessRules(
       : [
           {
             what: "another mention of the checkout",
-            pattern: new RegExp(literal(checkout.dir), "g"),
-            to: () => root,
+            ...checkoutMention(checkout.dir, root),
           },
         ]),
   ];

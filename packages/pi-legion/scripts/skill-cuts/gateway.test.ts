@@ -1,4 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
+import { createHash, randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
@@ -883,6 +884,22 @@ test("freshIdentity draws the session id again in its own shape and changes noth
   expect(BODY.metadata).toEqual(
     JSON.parse(readFileSync(path.join(TESTDATA, "F2-request.json"), "utf8")).metadata
   );
+});
+
+// Catches: an id whose words hold the letters a to f, redrawn letter by letter, so its words change
+// and the id leaves its host's shape.
+test("freshIdentity keeps the words of an id and draws again only its runs of hex digits", () => {
+  const digest = createHash("sha256").update("a made-up device").digest("hex");
+  const recorded = `user_${digest}_account__session_${randomUUID()}`;
+  const body = { ...BODY, metadata: { user_id: recorded } } as MessagesBody;
+  const drawn = freshIdentity(body).id ?? "";
+  const shape =
+    /^user_([0-9a-f]{64})_account__session_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
+  const [, device, session] = shape.exec(drawn) ?? [];
+  const [, recordedDevice, recordedSession] = shape.exec(recorded) ?? [];
+  expect(device).toBeString();
+  expect(device).not.toBe(recordedDevice);
+  expect(session).not.toBe(recordedSession);
 });
 
 // Catches: a request log that cannot tell which deployment answered, or when a call was sent and

@@ -77,9 +77,9 @@
  * A capture shows its task's session, not the run that captured it (capture.ts, "The harness
  * strings"): a task from a session stands for that session, and a written task for the session
  * `--context-session` names, whose context its profile was rebuilt from. That session's head is
- * read from its store once (`<out>/sessions/<pathHash>.json`); the capture shows its working
- * directory and the reminder Oh My Pi journaled for its first user turn (else one rendered for
- * that turn's UTC date), and Claude Code's body its working directory, its config directory's
+ * read from its store once (`<out>/sessions/<store>-<pathHash>.json`); the capture shows its
+ * working directory and the reminder Oh My Pi journaled for its first user turn (else one rendered
+ * for that turn's UTC date), and Claude Code's body its working directory, its config directory's
  * memory path, that date and a neutral OS line (`claudeHarnessRules`). A written task with no
  * `--context-session` names no session: its values are neutral, its date the capture's own.
  *
@@ -128,6 +128,7 @@ import {
   type CaptureRecord,
   captureBody,
   capturePaths,
+  checkoutMention,
   type HarnessRecord,
   type HarnessRule,
   type HintWriter,
@@ -211,7 +212,7 @@ const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---(\r?\n|$)/;
 /** The levels `claude --effort` takes. */
 const CLAUDE_EFFORTS: readonly ThinkingLevel[] = ["low", "medium", "high", "xhigh", "max"];
 /** The directory under `--out` that keeps each session head a capture read (capture.ts's
- *  `sessionHeads`), one file per path hash. */
+ *  `sessionHeads`), one file per store and path hash. */
 const SESSIONS_DIR = "sessions";
 
 const Name = z.string().regex(NAME, { error: "a name of letters, digits, '.', '_' and '-'" });
@@ -769,8 +770,7 @@ export function claudeHarnessRules(
       : [
           {
             what: "the checkout",
-            pattern: literally(checkout.dir),
-            to: () => sessionCheckout(cwd, checkout.workingDirectory),
+            ...checkoutMention(checkout.dir, sessionCheckout(cwd, checkout.workingDirectory)),
           },
         ]),
   ];
@@ -1613,9 +1613,9 @@ class LoadTest {
   }
 }
 
-/** The seconds of the phases of a task that took `totalMs` in all, as its line ends them: its
- *  capture (the context build and the GitHub reads within it apart), its runs, its writes, and
- *  the rest. */
+/** The seconds of the phases of a task that took `totalMs` in all (its own capture step, its
+ *  group's runs and its writes), as its line ends them: its capture (the context build and the
+ *  GitHub reads within it apart), its runs, its writes, and the rest. */
 function phaseWords(phases: TaskPhases, totalMs: number): string {
   const s = (ms: number) => (ms / 1000).toFixed(1);
   const other = Math.max(0, totalMs - phases.captureMs - phases.runsMs - phases.writeMs);
@@ -1840,7 +1840,9 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
   // Each profile's tasks are captured one by one, then the runs they lack are sent together in
   // one seeded order (`sendRuns`), so no task's runs go as a batch of their own.
   for (const group of byFile.values()) {
-    const startedAt = new Map<string, number>();
+    // Each task's own capture step: its capture, and the read of its hint dollars after it. Its
+    // line's total is that, its group's runs and its writes, so no other task's capture is in it.
+    const ownMs = new Map<string, number>();
     const ready: ReadyTask[] = [];
     for (const { task, profile } of profiled) {
       if (profile.file !== group.profile.file) continue;
@@ -1852,7 +1854,7 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
         );
         continue;
       }
-      startedAt.set(task.id, performance.now());
+      const startedAt = performance.now();
       try {
         ready.push(await test.captureTask(task, profile, saved));
       } catch (error) {
@@ -1869,6 +1871,7 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
         o.io.err(`load: ${what(task)}: ${messageFor(error)}`);
       }
       readHintDollars(task);
+      ownMs.set(task.id, performance.now() - startedAt);
     }
     if (ready.length === 0) continue;
     const sent = await test.sendRuns(ready);
@@ -1910,8 +1913,9 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
         writeMs: (writeMs.get(task.id) ?? 0) + summaryMs,
       };
       const each = runs.map((run) => `run ${run.run} ${run.loaded ? "loads" : "does not"}`);
+      const totalMs = (ownMs.get(task.id) ?? captureMs) + phases.runsMs + phases.writeMs;
       test.say(
-        `${what(task)}: loaded in ${outcome.loads} of ${outcome.made} runs (${each.join(", ")}): ${verdictWords(task, outcome, o.runs)}; ${phaseWords(phases, performance.now() - (startedAt.get(task.id) ?? 0))}`
+        `${what(task)}: loaded in ${outcome.loads} of ${outcome.made} runs (${each.join(", ")}): ${verdictWords(task, outcome, o.runs)}; ${phaseWords(phases, totalMs)}`
       );
     }
     for (const failure of sent.failures) {

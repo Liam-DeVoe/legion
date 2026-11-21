@@ -270,6 +270,33 @@ test("minus copies each link of the old directory as the file it names, so its e
   );
 });
 
+// Catches: a link of the old directory that names nothing failing the minus arm with a raw error,
+// where old answers a read of it as not found.
+test("minus answers a read of a link of the old directory that names nothing as not found, as old does", () => {
+  const dangling = skillDir("dangling-old", {
+    "SKILL.md": f1File(2),
+    "references/x.md": f1File(4),
+  });
+  symlinkSync("nowhere.md", path.join(dangling, "references", "gone.md"));
+  const dirs = { old: dangling, new: newDir };
+  const old = buildArm(f1Case, "old", dirs, path.join(scratch, "scratch-dangling"));
+  const minus = buildArm(f1Case, "minus", dirs, path.join(scratch, "scratch-dangling"));
+  expect(skillFile(minus, "references/gone.md")).toEqual(skillFile(old, "references/gone.md"));
+  expect(skillFile(minus, "references/gone.md").isError).toBe(true);
+  expect(readFileSync(path.join(minus.skillDir ?? "", "SKILL.md"), "utf8")).toBe(
+    f1File(2).replace(`${LINE}\n`, "")
+  );
+});
+
+// Catches: a link to a directory that holds the old directory copied into itself without end.
+test("minus refuses an old directory with a link to a directory that holds it, naming the link", () => {
+  const looped = skillDir("looped-old", { "SKILL.md": f1File(2) });
+  symlinkSync("..", path.join(looped, "up"));
+  expect(() =>
+    buildArm(f1Case, "minus", { old: looped, new: newDir }, path.join(scratch, "scratch-looped"))
+  ).toThrow(`${path.join(looped, "up")} names a directory that holds ${looped}`);
+});
+
 /** An arm's messages as JSON with the text of the skill's files taken out: each read result of
  * them keeps its header line, and the text after it and the tool's record of that text go. */
 function outsideFileTexts(each: Arm): string {

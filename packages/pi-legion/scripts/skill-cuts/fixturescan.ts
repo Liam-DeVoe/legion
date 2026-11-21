@@ -10,7 +10,9 @@
  *    nowhere);
  * 2. any key or token shape (SHAPES): an `sk-` key, a GitHub token or fine-grained token prefix,
  *    an AWS key id, a PEM block header, a `Bearer` credential, the key header's name, an IP
- *    address other than 127.0.0.1, or an email address other than the example and no-reply ones;
+ *    address other than 127.0.0.1, or an email address (a bot's `<name>[bot]@…` among them) other
+ *    than the example and no-reply ones; a hit names the shape and the first 6 characters it
+ *    matched, never more;
  * 3. any private name: each line of `--terms` is a regular expression, matched in any case (a
  *    blank line, or one that starts with `#`, is skipped). The terms file is the operator's and
  *    stays outside the repository, since the names it lists are private; a hit names the file and
@@ -18,7 +20,8 @@
  * 4. any run of 32 or more hex digits, or of 16 or more characters mixing capitals, small letters
  *    and digits, that is not the value of a JSON key of a known kind (KNOWN_KINDS), nor a run that
  *    a file under `<dir>` holds as the value of a known kind (a git object id a GitHub answer gives
- *    as its `sha`, or an id in a pull row's piece of a line cut in the middle).
+ *    as its `sha`, or an id in a pull row's piece of a line cut in the middle). The decoded content
+ *    of a GitHub contents answer is read under the key `(content)`, as a string value is.
  *
  * Shapes and private names are checked in each file's path too. A JSON file is read value by
  * value, a JSONL file and a psql capture (`.txt`) line by line, an SSE file by its `data:` lines;
@@ -39,7 +42,10 @@ const SHAPES: readonly (readonly [string, RegExp])[] = [
   ["Bearer credential", /Bearer [A-Za-z0-9._~+/-]{8,}/g],
   ["key header", /x-api-key/gi],
   ["IP address", /(?<![\d.])\d{1,3}(?:\.\d{1,3}){3}(?![\d.])/g],
-  ["email address", /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g],
+  [
+    "email address",
+    /[A-Za-z0-9._%+-]+(?:\[bot\])?@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g,
+  ],
 ];
 
 /** Matches of SHAPES that name nothing private: the loopback address, and the example and
@@ -125,8 +131,9 @@ function termsOf(text: string): { line: number; pattern: RegExp }[] {
   });
 }
 
-/** The command. Returns the exit status: 0 nothing found, 1 a hit, 2 refused. */
-function main(
+/** The command. Returns the exit status: 0 nothing found, 1 a hit, 2 refused. Exported for
+ *  fixturescan.test.ts. */
+export function main(
   argv: readonly string[],
   io: { out(text: string): void; err(text: string): void }
 ): number {
@@ -179,7 +186,7 @@ function main(
   const checkText = (name: string, where: string, text: string) => {
     for (const [kind, shape] of SHAPES) {
       for (const found of text.matchAll(shape)) {
-        if (ALLOWED[found[0]] !== true) hit(`${name}${where}: ${kind}: ${found[0].slice(0, 40)}`);
+        if (ALLOWED[found[0]] !== true) hit(`${name}${where}: ${kind}: ${found[0].slice(0, 6)}…`);
       }
     }
     for (const term of terms) {
@@ -198,7 +205,9 @@ function main(
       if (file.endsWith(".json")) {
         const parsed = JSON.parse(raw);
         if (parsed?.encoding === "base64" && typeof parsed.content === "string") {
-          texts.push(Buffer.from(parsed.content, "base64").toString("utf8"));
+          const decoded = Buffer.from(parsed.content, "base64").toString("utf8");
+          texts.push(decoded);
+          walk(decoded, "(content)", found);
           count("a GitHub contents answer's base64 file content");
           parsed.content = "";
         }

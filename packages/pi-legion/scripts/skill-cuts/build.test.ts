@@ -12,6 +12,7 @@ import {
   type DropReason,
   EXIT,
   fileHash,
+  GithubReads,
   main,
   messageOf,
   pullTranscript,
@@ -23,7 +24,9 @@ import {
   STOP_AFTER_SESSIONS,
 } from "./build";
 import { type Case, loadCases, pathHash } from "./cases";
+import { GhRetries } from "./common";
 import {
+  type GhResult,
   INSTALLERS_COLUMNS,
   LOADERS_COLUMNS,
   MANIFESTS_COLUMNS,
@@ -1909,11 +1912,36 @@ describe("build-cases over every made-up session", () => {
         .map((line) => `${line.db} ${line.kind}`)
         .sort()
     ).toEqual(["store_a heads", "store_b heads"]);
-    expect(existsSync(path.join(`${fresh}.sessions`, `${devbox.source.pathHash}.json`))).toBe(true);
+    const headFile = `${devbox.source.store}-${devbox.source.pathHash}.json`;
+    expect(existsSync(path.join(`${fresh}.sessions`, headFile))).toBe(true);
     const summary = JSON.parse(readFileSync(`${fresh}.summary.json`, "utf8")) as {
       cases: { sessionHead: string }[];
     };
     expect(summary.cases.map((each) => each.sessionHead)).toEqual(["read", "read", "not held"]);
+  }, 60_000);
+
+  // Catches: a case whose session the store no longer holds rebuilt at its checkout's root, its
+  // working directory lost while its evidence still names it.
+  test("--reprofile of a case whose session the store no longer holds keeps the case's working directory below its checkout's root, and that level's project skills", async () => {
+    const subdir = byName("proj-subdir") as Case;
+    const gone: Case = {
+      ...subdir,
+      id: `${subdir.id}-gone`,
+      source: { ...subdir.source, pathHash: pathHash("/sessions/gone-subdir.jsonl") },
+    };
+    const from = path.join(scratch, "heads-subdir", "old.jsonl");
+    mkdirSync(path.dirname(from), { recursive: true });
+    writeFileSync(from, `${JSON.stringify(gone)}\n`);
+    const fresh = path.join(scratch, "heads-subdir", "reprofiled.jsonl");
+    const args = ["build-cases", "--config", config, "--old", old, "--copies", copiesDir];
+    const reprofile = ["--count", countDir, "--reprofile", from, "--out", fresh];
+    expect(await main([...args, ...reprofile], io([]))).toBe(0);
+    const [c] = loadCases(fresh, old);
+    expect(c?.profile.workingDirectory).toBe("agents/agentvm");
+    expect(c?.profile).toEqual(subdir.profile);
+    expect(c?.evidence?.find((each) => each.item === "no session head")?.source).toContain(
+      "the session repository is the one the old evidence names"
+    );
   }, 60_000);
 
   test("a Legion session's role comes from its first user message, and its profile adds the image's plugin and the context files", () => {
@@ -3634,7 +3662,9 @@ test("build-tasks --profiles-out gives each session task build-cases' profile of
   expect(existsSync(`${out}.spool`)).toBe(false);
 }, 120_000);
 
-test("build-tasks refuses a --context-session whose rebuilt context does not list the skill, with exit 2, before any reader call", async () => {
+// Catches: a context session refused (exit 2) after the store read that found it, where exit 2 is
+// a refusal before any store read.
+test("build-tasks fails (exit 1) on a --context-session whose rebuilt context does not list the skill, naming why, before any reader call", async () => {
   const out = path.join(scratch, "profiles-unlisted-context", "tasks.jsonl");
   const unlisted = fileHash("/sessions/task-1.jsonl");
   const from = recorder.requests.length;
@@ -3663,7 +3693,7 @@ test("build-tasks refuses a --context-session whose rebuilt context does not lis
     ],
     io(lines)
   );
-  expect(code).toBe(EXIT.refused);
+  expect(code).toBe(EXIT.failed);
   expect(lines.join("\n")).toContain(
     `--context-session store_a:${unlisted}: its rebuilt context (subagent:task) does not list alpha`
   );
@@ -4556,3 +4586,126 @@ test("build-tasks --reprofile keeps the old profile of a task whose session its 
   expect(said.join("\n")).toContain("the store command exited 3: psql: error: gone");
   expect(existsSync(path.join(failed, "tasks.jsonl"))).toBe(false);
 }, 120_000);
+
+// Catches: a context session whose rebuilt context does not list the skill refused (exit 2) after
+// the store read that found it, where exit 2 is a refusal before any store read.
+test("build-tasks --reprofile fails (exit 1) on a --context-session whose rebuilt context does not list the skill, naming why, and writes no tasks file", async () => {
+  const from = await profiledTasks();
+  const unlisted = fileHash("/sessions/task-1.jsonl");
+  const dir = path.join(scratch, "reprofile-unlisted-context", "profiles");
+  const said: string[] = [];
+  const requests = recorder.requests.length;
+  expect(
+    await main(
+      reprofileArgs(config, from, dir, "--context-session", `store_a:${unlisted}`),
+      io(said)
+    )
+  ).toBe(EXIT.failed);
+  expect(said.join("\n")).toContain(
+    `the context session store_a:${unlisted}: its rebuilt context (subagent:task) does not list alpha`
+  );
+  expect(recorder.requests.length).toBe(requests);
+  expect(existsSync(path.join(dir, "tasks.jsonl"))).toBe(false);
+}, 120_000);
+
+// Catches: a candidate's drop reason taken from the flags given, not from the step that failed.
+test("build-tasks drops a candidate whose pull gives no row as pull-failed and one whose transcript does not parse as unparseable, with --model and with --profiles-out", async () => {
+  const broken = changedStore("candidate-drops", (files) => {
+    const store = files.store_a ?? {};
+    store["/sessions/task-1.jsonl"] = `not one entry\n${sessionText("good")}`;
+    store["/sessions/task-4.jsonl"] = "";
+  });
+  const args = (out: string, ...extra: string[]) => [
+    "build-tasks",
+    ...["--config", broken, "--key-file", keyFile, "--skill", old, "--store", "store_a"],
+    ...["--out", out, ...extra],
+  ];
+  /** Each candidate drop the summary beside `out` records: its path hash and reason. */
+  const drops = (out: string) => {
+    // The summary build-tasks wrote, read as the file's other tests read one.
+    const summary = JSON.parse(readFileSync(`${out}.summary.json`, "utf8")) as {
+      candidateDrops: { sessions: { pathHash: string; reason: string }[] };
+    };
+    return summary.candidateDrops.sessions.map((each) => [each.pathHash, each.reason]);
+  };
+  const wanted = [
+    [pathHash("/sessions/task-1.jsonl"), "unparseable"],
+    [pathHash("/sessions/task-4.jsonl"), "pull-failed"],
+  ];
+  const model = path.join(scratch, "candidate-drops-model", "tasks.jsonl");
+  expect(await main(args(model, "--model", "openai/gpt-6.1-sol"), io([]))).toBe(EXIT.ok);
+  expect(drops(model)).toEqual(wanted);
+  const profiled = path.join(scratch, "candidate-drops-profiles", "tasks.jsonl");
+  const profiles = [
+    ...["--profiles-out", path.join(scratch, "candidate-drops-profiles", "profiles")],
+    ...["--copies", copiesDir, "--count", countDir],
+    ...["--context-session", `store_b:${fileHash(sessionPath("legion"))}`],
+  ];
+  expect(await main(args(profiled, ...profiles), io([]))).toBe(EXIT.ok);
+  expect(drops(profiled)).toEqual(wanted);
+}, 120_000);
+
+describe("GithubReads", () => {
+  const COMMIT = "1111111111111111111111111111111111111111";
+  const BLOB = "2222222222222222222222222222222222222222";
+  const SKILL = "---\nname: alpha\ndescription: Use for the alpha list.\n---\n";
+  const failed = (stderr: string): GhResult => ({ code: 1, stdout: "", stderr: `${stderr}\n` });
+  /** A rule that sends a read again with no wait. */
+  const noWait = () => new GhRetries({ sleep: async () => {}, err: () => {} }, "build-cases");
+  /** A stand-in gh of `repo`, whose tree at COMMIT holds skills/alpha/SKILL.md, the blob BLOB:
+   *  each call kept in `calls`, a GraphQL batch refused (so the blob is read alone), and the blob
+   *  read answered by `blob`. */
+  const standIn = (repo: string, blob: () => GhResult) => {
+    const calls: string[] = [];
+    const gh = async (args: readonly string[]): Promise<GhResult> => {
+      const endpoint = args[1] ?? "";
+      calls.push(endpoint);
+      if (endpoint === `repos/${repo}/git/trees/${COMMIT}?recursive=1`) {
+        const entry = { path: "skills/alpha/SKILL.md", mode: "100644", type: "blob", sha: BLOB };
+        return { code: 0, stdout: JSON.stringify({ sha: COMMIT, tree: [entry] }), stderr: "" };
+      }
+      if (endpoint === `repos/${repo}/git/blobs/${BLOB}`) return blob();
+      return failed("gh: Not Found (HTTP 404)");
+    };
+    return { gh, calls };
+  };
+
+  // Catches: a SKILL.md read that failed for a transient reason on every try kept, as a fault,
+  // for every later case at that repository and commit.
+  test("a SKILL.md read that fails for a transient reason on every try is not kept: the next read of that commit reads it again", async () => {
+    let flaky = true;
+    const { gh, calls } = standIn("acme/skills", () =>
+      flaky
+        ? failed("net/http: TLS handshake timeout")
+        : {
+            code: 0,
+            stdout: JSON.stringify({
+              content: Buffer.from(SKILL).toString("base64"),
+              encoding: "base64",
+            }),
+            stderr: "",
+          }
+    );
+    const reads = new GithubReads(gh, new Map(), noWait());
+    const first = await reads.at("acme/skills", COMMIT, []).then(() => "read", String);
+    expect(first).toContain("TLS handshake timeout");
+    flaky = false;
+    const again = await reads.at("acme/skills", COMMIT, []);
+    expect(again.faults).toEqual([]);
+    expect(again.copies.map((copy) => copy.description)).toEqual(["Use for the alpha list."]);
+    // Five tries the first time, one the second.
+    expect(calls.filter((call) => call.endsWith(`/git/blobs/${BLOB}`))).toHaveLength(6);
+  });
+
+  // Catches: a failure taken as transient for a word of the repository's name in its error, so a
+  // read that failed for good is sent again for every later case.
+  test("a read that fails for good is kept, though the repository's name holds the word timeout", async () => {
+    const { gh, calls } = standIn("acme/other", () => failed("gh: Not Found (HTTP 404)"));
+    const reads = new GithubReads(gh, new Map(), noWait());
+    for (let read = 0; read < 2; read++) {
+      const outcome = await reads.at("acme/request-timeout", COMMIT, []).then(() => "read", String);
+      expect(outcome).toContain("gh: Not Found (HTTP 404)");
+    }
+    expect(calls).toEqual([`repos/acme/request-timeout/git/trees/${COMMIT}?recursive=1`]);
+  });
+});

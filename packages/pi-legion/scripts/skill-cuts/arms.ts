@@ -25,7 +25,16 @@
  * what replay.ts answers a reply's read with; cases.ts's `skillReadFile(arm.skill, target)` says
  * which file a read reads.
  */
-import { cpSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import {
   readTargets,
@@ -137,16 +146,34 @@ function removeLine(file: string, line: string): number {
   return lines.length - kept.length;
 }
 
+/** Whether `from`, a path of the old directory `old`, is copied into minus: not when it is a link
+ *  that names nothing, so a read of it answers not found from the copy as from `old`. Throws when
+ *  it is a link to `old` or to a directory that holds it, whose copy would hold itself. */
+function copiedIntoMinus(old: string, from: string): boolean {
+  if (from === old) return true;
+  if (!existsSync(from)) return false;
+  const back = path.relative(realpathSync(from), realpathSync(old));
+  if (back !== ".." && !back.startsWith(`..${path.sep}`) && !path.isAbsolute(back)) {
+    throw new Error(`${from} names a directory that holds ${old}, so minus cannot copy it`);
+  }
+  return true;
+}
+
 /** The `minus` directory: a copy of `old` under `scratch`, less each line of its baseFile that is
  * the case's line (trimmed), or less each line that is `plantedLine` in each file of the copy that
  * holds it. Each symbolic link of `old` is copied as the file or directory it names, so an edit of
- * the copy never writes through a link into `old` or elsewhere. Throws when no line is left out. */
+ * the copy never writes through a link into `old` or elsewhere; a link that names nothing is left
+ * out (`copiedIntoMinus`). Throws when no line is left out. */
 function minusDirectory(c: Case, dirs: ArmDirs, scratch: string): string {
   const old = directory(dirs.old, "old");
   if (dirs.plantedLine?.trim() === "") throw new Error("the planted line is blank");
   const dir = path.resolve(scratch, "minus");
   rmSync(dir, { recursive: true, force: true });
-  cpSync(old, dir, { recursive: true, dereference: true });
+  cpSync(old, dir, {
+    recursive: true,
+    dereference: true,
+    filter: (from) => copiedIntoMinus(old, from),
+  });
   const { plantedLine } = dirs;
   const removed =
     plantedLine === undefined

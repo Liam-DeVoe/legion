@@ -1063,8 +1063,8 @@ function screened(
 /** Why a skill whose screen is finished can get no verdict, whatever its confirm runs show, or
  *  undefined: too few informative cases, or a control whose runs are made and whose planted-loss
  *  control is no loss or whose false-loss control is a loss (score.ts's `skillVerdict`, and its
- *  reason). */
-function noVerdict(score: SkillScore): string | undefined {
+ *  reason). Exported for cli.test.ts. */
+export function noVerdict(score: SkillScore): string | undefined {
   const control = score.control;
   const counted = control?.state === "counted" ? control.passes : undefined;
   const controlLoss =
@@ -1079,7 +1079,9 @@ function noVerdict(score: SkillScore): string | undefined {
     losses: 0,
   });
   if (outcome.verdict !== null) return undefined;
-  return control?.state === "unscreened"
+  // Too few informative cases is the reason whatever the control is; with enough, an unscreened
+  // control is no control loss, and its reason says why.
+  return control?.state === "unscreened" && score.informative >= MIN_INFORMATIVE_CASES
     ? `${outcome.reason}: its runs are unscreened`
     : outcome.reason;
 }
@@ -1095,7 +1097,7 @@ function servedModel(model: string, servedModels: readonly string[]): string | u
 }
 
 /** The directory under `--out` that keeps each session head a capture read (capture.ts's
- *  `sessionHeads`), one file per path hash. */
+ *  `sessionHeads`), one file per store and path hash. */
 const SESSIONS_DIR = "sessions";
 
 /**
@@ -1511,7 +1513,6 @@ async function confirmCommand(r: Runner): Promise<void> {
 
 /** `behaviour control`. */
 async function controlStageCommand(r: Runner): Promise<void> {
-  const phases = newPhases();
   const { results, score } = screened(r, (s) => [s.controlCase]);
   const tooFew = skillVerdict({
     informative: score.informative,
@@ -1523,6 +1524,9 @@ async function controlStageCommand(r: Runner): Promise<void> {
     say(r, `no control runs: the skill gets no verdict: ${tooFew.reason}`);
     return;
   }
+  // The control case's own work starts here: reading and scoring every case's result is no part
+  // of its stage.
+  const phases = newPhases();
   const id = score.controlCase;
   const c = r.cases.find((each) => each.id === id);
   const result = id === undefined ? undefined : results.get(id);

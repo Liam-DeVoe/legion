@@ -359,7 +359,8 @@
  * `--profiles-out` such a session is dropped (`skill-not-listed`) and counted: in the reader's
  * mode each offered message's session is rebuilt first and the next candidate taken in its
  * place (`offeredMessages`, `candidateDrops`), in `--first-read` when the session is tried
- * (`skillNotListed`); and a `--context-session` whose context does not list it is refused.
+ * (`skillNotListed`); and a `--context-session` whose context does not list it fails the build
+ * (exit 1, found after its store read).
  *
  * **build-tasks --reprofile <tasks.jsonl> --profiles-out <new dir>** builds the profile of each task
  * of a tasks file again as `--profiles-out` builds one now, with no candidate search and no reader
@@ -1783,9 +1784,10 @@ interface RepositoryAt {
   readonly ompLevels: ReadonlySet<string>;
 }
 
-/** `cache`'s promise for `key`, made by `make` when it holds none. A promise that rejects for a
- *  transient failure (common.ts's `transientReason`: each read it made was sent again until no
- *  try was left) is dropped once it does, so a later caller reads again. */
+/** `cache`'s promise for `key`, made by `make` when it holds none. A promise that rejects with a
+ *  gh call that failed for a transient reason (`GhFailed`: each read it made was sent again until
+ *  no try was left) is dropped once it does, so a later caller reads again; any other rejection
+ *  is kept. */
 function readOnce<T>(
   cache: Map<string, Promise<T>>,
   key: string,
@@ -1796,19 +1798,35 @@ function readOnce<T>(
   const made = make();
   cache.set(key, made);
   made.catch((error: unknown) => {
-    if (transientReason(messageFor(error)) !== undefined && cache.get(key) === made) {
-      cache.delete(key);
-    }
+    if (transientFailure(error) && cache.get(key) === made) cache.delete(key);
   });
   return made;
 }
 
-/** The standard output of `result`, gh's answer to `args`; throws naming `args` and gh's first
- *  error line (each try's, when the read was sent more than once) when it failed. */
+/** A gh call that failed: the message names the call and gh's first error line; `transient` is
+ *  the reason of common.ts's TRANSIENT_FAILURES that gh's error text names (`transientReason`),
+ *  read from that text alone, so a repository or path that holds such a word is no transient
+ *  failure. */
+class GhFailed extends Error {
+  constructor(
+    message: string,
+    readonly transient: string | undefined
+  ) {
+    super(message);
+  }
+}
+
+/** Whether `error` is a gh call that failed for a transient reason (GhFailed). */
+function transientFailure(error: unknown): boolean {
+  return error instanceof GhFailed && error.transient !== undefined;
+}
+
+/** The standard output of `result`, gh's answer to `args`; throws a GhFailed naming `args` and
+ *  gh's first error line (each try's, when the read was sent more than once) when it failed. */
 function ghAnswer(args: readonly string[], result: GhResult): string {
   if (result.code !== 0) {
     const line = result.stderr.split("\n").find((each) => each.trim() !== "") ?? "";
-    throw new Error(`gh ${args.join(" ")} failed: ${line}`);
+    throw new GhFailed(`gh ${args.join(" ")} failed: ${line}`, transientReason(result.stderr));
   }
   return result.stdout;
 }
@@ -2059,7 +2077,9 @@ export class GithubReads {
     return { at: await this.fromEntries(repo, entries, excludePaths), reads: read.size };
   }
 
-  /** What `repo` holds by the tree entries `entries`, as `at` reads it (see there). */
+  /** What `repo` holds by the tree entries `entries`, as `at` reads it (see there). A SKILL.md or
+   *  manifest whose read failed is a fault of the result, unless it failed for a transient reason
+   *  on every try: then this rejects with that failure. */
   private async fromEntries(
     repo: string,
     entries: readonly TreeEntry[],
@@ -2091,6 +2111,9 @@ export class GithubReads {
       try {
         return { ...base, ...skillFields(dir, repo, await this.blob(repo, entry.sha)) };
       } catch (error) {
+        // A read that failed for a transient reason on every try fails the whole read, which is
+        // then not kept (`readOnce`), so a later caller reads it again; any other is a fault.
+        if (transientFailure(error)) throw error;
         const fault = `SKILL.md read failed: ${messageFor(error)}`;
         faults.push({ file: entry.path, why: fault });
         return {
@@ -2116,6 +2139,7 @@ export class GithubReads {
             error: "",
           };
         } catch (error) {
+          if (transientFailure(error)) throw error;
           faults.push({ file: entry.path, why: `${kind}: ${messageFor(error)}` });
           return { ...base, facts: [], ofKind: true, says: "", error: messageFor(error) };
         }
@@ -3985,7 +4009,7 @@ async function reprofileCases(
                 repo: decided.item.startsWith(SESSION_REPOSITORY)
                   ? decided.item.slice(SESSION_REPOSITORY.length)
                   : undefined,
-                rel: "",
+                rel: c.profile.workingDirectory ?? "",
                 line: decided,
               },
       });
@@ -4896,7 +4920,7 @@ interface ContextProfile {
 
 /** The context session's profile, rebuilt before any reader call, or undefined when the plan
  *  names no context session. Throws when the store holds the session no longer or it gives no
- *  profile, and refuses (exit 2) one whose profile does not list the skill (`rebuiltContext`). */
+ *  profile, and when its profile does not list the skill (`rebuiltContext`). */
 async function contextProfile(
   plan: ProfilesPlan,
   spool: string,
@@ -4912,8 +4936,9 @@ async function contextProfile(
 
 /** The profile of the context session `session`, pulled into `spool` and rebuilt, or undefined
  *  when sessions.sql gives no file of its hash (its store holds it no longer). Throws, naming it
- *  `named`, when the session gives no profile, and refuses (exit 2) a session whose profile does
- *  not list the skill, since a written task in it would test nothing. */
+ *  `named`, when the session gives no profile, and when its profile does not list the skill,
+ *  since a written task in it would test nothing: both are found after a store read, so the
+ *  command fails (exit 1), not refuses. */
 async function rebuiltContext(
   run: ProfileRun,
   session: { readonly store: string; readonly hash: string },
@@ -4932,7 +4957,9 @@ async function rebuiltContext(
     throw new Error(`${named}: ${messageFor(error)}`);
   }
   if (!built.listed) {
-    throw new Refused(
+    // Found after a store read and a pull, so it fails the run (exit 1): exit 2 is a refusal
+    // before any store read.
+    throw new Error(
       `${named}: its rebuilt context (${built.profile.context}) does not list ${skill}, so a written task in it would test nothing; give a session whose context lists it`
     );
   }
@@ -5391,20 +5418,44 @@ async function offeredMessages(
           drop("not-in-store", "sessions.sql gives no file of its hash");
           continue;
         }
+        // The pull, the parse and the profile each drop the candidate with the reason
+        // `--first-read` gives the same step.
+        let pulledBytes: number;
         try {
-          const t = await pulledTranscript(config.psqlCommand, row.store, filePath, spool);
-          const ran = model === undefined ? undefined : firstReplyModel(t);
-          session = {
-            model: ran,
-            profile:
-              plan === undefined || ran !== model
-                ? undefined
-                : await sessionProfile(plan.run, storeNamed(config, row.store), filePath, t, skill),
-          };
+          pulledBytes = (await pullTranscript(config.psqlCommand, row.store, filePath, spool))
+            .bytes;
         } catch (error) {
-          drop(plan === undefined ? "pull-failed" : "profile-failed", messageFor(error));
+          drop("pull-failed", messageFor(error));
           continue;
         }
+        if (pulledBytes === 0) {
+          drop("pull-failed", "the pull returned no row");
+          continue;
+        }
+        let t: Transcript;
+        try {
+          t = readTranscript(spool);
+        } catch (error) {
+          drop("unparseable", messageFor(error));
+          continue;
+        }
+        const ran = model === undefined ? undefined : firstReplyModel(t);
+        let profile: SessionProfile | undefined;
+        if (plan !== undefined && ran === model) {
+          try {
+            profile = await sessionProfile(
+              plan.run,
+              storeNamed(config, row.store),
+              filePath,
+              t,
+              skill
+            );
+          } catch (error) {
+            drop("profile-failed", messageFor(error));
+            continue;
+          }
+        }
+        session = { model: ran, profile };
         pulled.set(key, session);
         if (session.profile !== undefined) built.set(key, session.profile);
       }

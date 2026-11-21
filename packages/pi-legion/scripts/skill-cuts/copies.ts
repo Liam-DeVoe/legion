@@ -681,22 +681,35 @@ class Github {
     return wait;
   }
 
-  /** gh's standard output for `args`, each try in one of the read slots of `slot` when it is given
-   *  (`inSlot`), sent again as `withRetries` says; throws gh's first error line, or each try's when
-   *  there were several. */
-  async text(args: readonly string[], slot?: string): Promise<string> {
-    const result = await this.withRetries(
-      () => (slot === undefined ? this.call(args) : this.inSlot(slot, () => this.call(args))),
-      "core"
-    );
+  /** gh's standard output for `args`, a read of the REST (`core`) or the GraphQL `resource`, each
+   *  try in one of the read slots of `slot` when it is given (`inSlot`) and counted by `tried`
+   *  when it is given, sent again as `withRetries` says; throws gh's first error line, or each
+   *  try's when there were several. */
+  async text(
+    args: readonly string[],
+    slot?: string,
+    {
+      resource = "core",
+      tried,
+    }: { readonly resource?: "core" | "graphql"; readonly tried?: () => void } = {}
+  ): Promise<string> {
+    const result = await this.withRetries(() => {
+      tried?.();
+      return slot === undefined ? this.call(args) : this.inSlot(slot, () => this.call(args));
+    }, resource);
     if (result.code === 0) return result.stdout;
     throw new Error(firstLine(result.stderr) || `gh exited ${result.code}`);
   }
 
-  /** gh's answer to `args` (`text`, each try in a read slot of `slot` when it is given), parsed by
-   *  `schema`; throws as `text` does, or the faults. */
-  async json<T>(args: readonly string[], schema: z.ZodType<T>, slot?: string): Promise<T> {
-    const parsed = schema.safeParse(parseJson(await this.text(args, slot)));
+  /** gh's answer to `args` (`text`, a read of `resource`, each try in a read slot of `slot` when
+   *  it is given), parsed by `schema`; throws as `text` does, or the faults. */
+  async json<T>(
+    args: readonly string[],
+    schema: z.ZodType<T>,
+    slot?: string,
+    resource: "core" | "graphql" = "core"
+  ): Promise<T> {
+    const parsed = schema.safeParse(parseJson(await this.text(args, slot, { resource })));
     if (!parsed.success)
       throw new Error(`gh's answer is not of its shape: ${schemaFaults(parsed.error)}`);
     return parsed.data;
@@ -983,17 +996,19 @@ export interface Repository {
   error: string;
 }
 
-/** The version of the rules `keepsEntry` keeps by. A walk's saved levels (`readTree`) hold only the
- *  entries the rules of the run that saved them kept, so the key of each holds this version, and a
- *  level saved under other rules is read again. Bump it with every change to what `keepsEntry`
- *  keeps, `manifestKind`, MANIFEST_KINDS, TEXT_EXTENSIONS and TEXT_NAMES included. */
+/** The version of the rules `keepsEntry` keeps by. A cached repository and a walk's saved levels
+ *  (`readTree`) hold only the entries the rules of the run that saved them kept, so the key of
+ *  each holds this version (`repositoryKey`, `walkLevelKey`), and one saved under other rules is
+ *  read again. Bump it with every change to what `keepsEntry` keeps, `manifestKind`,
+ *  MANIFEST_KINDS, TEXT_EXTENSIONS and TEXT_NAMES included. */
 export const KEEP_RULES_VERSION = 1;
 
 /** Whether a tree entry is one this list uses, of a fork's tree when `fork`: a `SKILL.md`, a file
  *  of a manifest kind, or, in a fork, a text file its scan may read. Every other entry is
  *  counted and dropped as the tree is read: a data repository's tree holds hundreds of thousands
  *  of entries, and a hit file is read by its path, not looked up in the tree. A change to what it
- *  keeps bumps KEEP_RULES_VERSION, so no walk level saved under the old rules is replayed. */
+ *  keeps bumps KEEP_RULES_VERSION, so no repository or walk level saved under the old rules is
+ *  replayed. */
 export function keepsEntry(
   entry: Pick<TreeEntry, "path" | "mode" | "type">,
   fork: boolean
@@ -1073,11 +1088,15 @@ export async function readTree(
       part.subtrees.push({ sha: entry.sha, prefix: entry.path });
     }
   };
-  /** A tree's entries over REST, the whole tree when `recursive`, else one level. */
+  /** A tree's entries over REST, the whole tree when `recursive`, else one level; each try a read
+   *  of `reads`, as a GraphQL batch's is. */
   const restRead = async (treeSha: string, prefix: string, recursive: boolean) => {
-    reads++;
     const endpoint = `repos/${repository}/git/trees/${treeSha}${recursive ? "?recursive=1" : ""}`;
-    const text = await github.text(["api", endpoint, "--jq", TREE_JQ], repository);
+    const text = await github.text(["api", endpoint, "--jq", TREE_JQ], repository, {
+      tried: () => {
+        reads++;
+      },
+    });
     // The answer is read a line at a time, so an entry not kept outlives only its line.
     let end = text.indexOf("\n");
     const flag = end < 0 ? text : text.slice(0, end);
@@ -1239,16 +1258,16 @@ async function readRepository(
     return 0;
   }
   try {
-    const levelKey = (level: number) =>
-      [repo.repository, treeSha, repo.fork, KEEP_RULES_VERSION, level].join("\0");
     const tree = await readTree(
       github,
       repo.repository,
       treeSha,
       (entry) => keepsEntry(entry, repo.fork),
       {
-        get: (level) => cache.get("walk", levelKey(level), CachedLevel),
-        put: (level, saved) => cache.put("walk", levelKey(level), saved),
+        get: (level) =>
+          cache.get("walk", walkLevelKey(repo.repository, treeSha, repo.fork, level), CachedLevel),
+        put: (level, saved) =>
+          cache.put("walk", walkLevelKey(repo.repository, treeSha, repo.fork, level), saved),
       }
     );
     repo.tree = tree.entries;
@@ -1429,9 +1448,29 @@ interface RepositoryRead {
 }
 
 /** The key of a repository's reads in the cache: its name, default branch and --at, which name
- *  one commit. */
-function repositoryKey(repo: Repository, at: string): string {
-  return `${repo.repository}\0${repo.branch}\0${at}`;
+ *  one commit, and the version of the keep rules its kept tree was read under (`rules`,
+ *  KEEP_RULES_VERSION), so a repository read under other rules is read again. Exported for
+ *  copies.test.ts, which plants a repository saved under other rules. */
+export function repositoryKey(
+  repository: string,
+  branch: string,
+  at: string,
+  rules = KEEP_RULES_VERSION
+): string {
+  return [repository, branch, at, rules].join("\0");
+}
+
+/** The key of the level `level` of the walk of the tree `tree` of `repository` (a fork's when
+ *  `fork`) in the cache, under the keep rules `rules` (KEEP_RULES_VERSION). Exported for
+ *  copies.test.ts, as `repositoryKey` is. */
+export function walkLevelKey(
+  repository: string,
+  tree: string,
+  fork: boolean,
+  level: number,
+  rules = KEEP_RULES_VERSION
+): string {
+  return [repository, tree, fork, rules, level].join("\0");
 }
 
 /** Takes `repo` from the cache when it holds it: its commit, kept tree, and fork reads, and the
@@ -1498,7 +1537,7 @@ async function readRepositoryStep(
   at: string,
   excludePaths: SkillCutsConfig["excludePaths"]
 ): Promise<{ read: RepositoryRead | undefined; calls: number; cached: boolean }> {
-  const key = repositoryKey(repo, at);
+  const key = repositoryKey(repo.repository, repo.branch, at);
   const texts = new Map<string, string>();
   const cached = takeCached(cache, key, repo, excludePaths, texts);
   const calls = cached === undefined ? await readRepository(github, cache, repo, at) : 0;
@@ -3303,7 +3342,10 @@ const MINUTE_MS = 60_000;
 /** Code search calls under a call budget, each owner paced by its own token's limit (the file
  *  header, step 5). */
 class CodeSearch {
+  /** This run's search calls, each try counted. */
   calls = 0;
+  /** The searches an earlier run finished, taken from the cache with no call. */
+  cached = 0;
   private readonly paces = new Map<string, OwnerPace>();
 
   constructor(
@@ -3450,6 +3492,7 @@ async function runSearch(search: CodeSearch, job: SearchJob, record: QueryRecord
     Object.assign(record, cached, {
       hits: cached.hits.map((hit) => ({ ...hit, verdict: "", match: "" })),
     });
+    search.cached++;
     return;
   }
   for (let page = 1; page <= 10; page++) {
@@ -3945,7 +3988,10 @@ export interface CopiesResult {
   readonly forkScans: ForkScanRecord[];
   readonly forksNotScanned: string[];
   readonly failures: string[];
+  /** This run's code search calls, each try counted, as the budget counts them. */
   readonly searchCalls: number;
+  /** The searches an earlier run finished, taken from the cache (`--cache-dir`) with no call. */
+  readonly searchesCached: number;
   /** The gh calls sent again after a transient failure, by reason (`GhRetries.counts`). */
   readonly retries: ReadonlyMap<string, number>;
   /** The run's peak resident memory, in bytes. */
@@ -4012,7 +4058,7 @@ function markdown(result: CopiesResult): string {
     `${result.repositories.length} repositories listed: ${readable.length} read, ${failed.length} not read. ` +
       `${result.copies.length} skill copies, ${new Set(result.copies.map((copy) => copy.name)).size} names. ` +
       `${result.manifests.length} manifests, ${result.rows.length} installer rows, ${result.loaders.length} loader rows. ` +
-      `${result.searchCalls} code search calls (budget ${Number.isFinite(result.budget) ? result.budget : "none"}). ` +
+      `${result.searchCalls} code search calls (budget ${Number.isFinite(result.budget) ? result.budget : "none"}); ${result.searchesCached} ${result.searchesCached === 1 ? "search" : "searches"} taken from the cache. ` +
       `${retriesSaid(result.retries)}. ` +
       `Peak resident memory ${Math.round(result.peakBytes / 1024 ** 2)} MiB (the run stops above ${MEMORY_LIMIT_BYTES / 1024 ** 2} MiB).`,
     "",
@@ -4324,7 +4370,10 @@ async function readAll(
             "--json",
             "nameWithOwner,isFork,isArchived,defaultBranchRef,parent",
           ],
-          Listing
+          Listing,
+          undefined,
+          // `gh repo list` reads the GraphQL API, so a refusal waits for its limit's reset.
+          "graphql"
         ));
       cache.put("listing", owner, listed);
       for (const entry of listed) {
@@ -4633,7 +4682,7 @@ async function readAll(
       `copies: reading the fork ${repo.repository} from its tree (${reads.get(repo)?.forkFiles ?? 0} text files)`
     );
     // Its text files, from disk one at a time (its step wrote them), each dropped once matched.
-    const key = repositoryKey(repo, options.at);
+    const key = repositoryKey(repo.repository, repo.branch, options.at);
     const lines = cache.lines("fork-files", key);
     if (lines === undefined) scan.failures.push("its text files are not on disk");
     for await (const line of lines ?? []) {
@@ -4732,8 +4781,8 @@ async function readAll(
     forkScans,
     forksNotScanned,
     failures,
-    // Each search's calls, those an earlier run made for a cached search included.
-    searchCalls: records.reduce((sum, record) => sum + record.calls, 0),
+    searchCalls: search.calls,
+    searchesCached: search.cached,
     retries: github.retries.counts,
     peakBytes: github.readPeak(),
     budget: options.maxSearchCalls,
@@ -4813,7 +4862,7 @@ export async function main(argv: readonly string[], io: CopiesIo): Promise<numbe
     const written = writeOutputs(values.out, result);
     io.out(
       `${result.repositories.length} repositories, ${result.copies.length} skill copies, ${result.manifests.length} manifests, ` +
-        `${result.loaders.length} loader rows, ${result.prefixes.length} prefix rows, ${result.searchCalls} code search calls, ` +
+        `${result.loaders.length} loader rows, ${result.prefixes.length} prefix rows, ${result.searchesCached} ${result.searchesCached === 1 ? "search" : "searches"} taken from the cache, ${result.searchCalls} code search calls, ` +
         `${retriesSaid(result.retries)}, ` +
         `peak memory ${Math.round(result.peakBytes / 1024 ** 2)} MiB\n` +
         written.map((file) => `${file}\n`).join("")
