@@ -270,6 +270,17 @@ function stepOf(body: MessagesBody | undefined): string {
   return (blocksOf(body)[1] ?? "").replace(/^<step>\n/, "").replace(/\n<\/step>$/, "");
 }
 
+/** A judge body less its `metadata`, the session id each call draws for itself. */
+function withoutId(body: MessagesBody | undefined): Record<string, unknown> {
+  const { metadata: _metadata, ...rest } = body ?? { model: "", messages: [] };
+  return rest;
+}
+
+/** The session id of each body, as `metadata.user_id` names it. */
+function sessionIds(bodies: readonly MessagesBody[]): unknown[] {
+  return bodies.map((body) => JSON.parse(String(Object(body.metadata).user_id)).session_id);
+}
+
 /** The replies of each arm: F5's text, thinking, and skill read with another call. */
 function armReplies(arms: readonly ArmName[]): ArmReply[] {
   const shapes = ["text", "thinking", "skill-read-and-other"];
@@ -299,6 +310,7 @@ test("the request names no arm and no path, and holds no text of an arm's skill 
       [
         "max_tokens",
         "messages",
+        "metadata",
         "model",
         "output_config",
         "stream",
@@ -314,6 +326,14 @@ test("the request names no arm and no path, and holds no text of an arm's skill 
       (each) => each.arm === judged[place]?.arm && each.run === judged[place]?.run
     );
     expect(stepOf(body)).toBe(stepText(reply?.content ?? []));
+  }
+  // Each judgement went with a session id of its own, a UUID in Oh My Pi's shape, and its
+  // metadata holds that id alone.
+  const ids = sessionIds(bodies);
+  expect(new Set(ids).size).toBe(bodies.length);
+  for (const [index, id] of ids.entries()) {
+    expect(String(id)).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    expect(bodies[index]?.metadata).toEqual({ user_id: JSON.stringify({ session_id: id }) });
   }
 
   // What the runner puts in a request (all of it but the step) names no arm, no path of an arm's
@@ -413,8 +433,10 @@ test("an unparsed judgement is judged again twice and then gives null, never fai
   const unparsed = await judgeReply(input, never.gateway);
   expect(JUDGE_TRIES).toBe(3);
   expect(never.bodies).toHaveLength(JUDGE_TRIES);
-  expect(never.bodies[1]).toEqual(never.bodies[0]);
-  expect(never.bodies[2]).toEqual(never.bodies[0]);
+  // Each try is the same request but for a session id of its own.
+  expect(withoutId(never.bodies[1])).toEqual(withoutId(never.bodies[0]));
+  expect(withoutId(never.bodies[2])).toEqual(withoutId(never.bodies[0]));
+  expect(new Set(sessionIds(never.bodies)).size).toBe(JUDGE_TRIES);
   expect(unparsed.verdict).toBeNull();
   expect(unparsed.reason).toContain("the judgement did not parse on 3 tries");
   expect(unparsed.spent).toHaveLength(3);
@@ -684,7 +706,7 @@ test("an OpenAI reply renders as the matching Messages reply does, so the judge'
   for (const run of shapes.keys()) {
     const bodyOf = (arm: ArmName) =>
       bodies[judged.findIndex((each) => each.arm === arm && each.run === run)];
-    expect(bodyOf("old")).toEqual(bodyOf("new") as MessagesBody);
+    expect(withoutId(bodyOf("old"))).toEqual(withoutId(bodyOf("new")));
   }
   const sent = JSON.stringify(bodies);
   expect(bodies.every((body) => body.model === "claude-opus-5-5")).toBe(true);

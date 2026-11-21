@@ -9,6 +9,16 @@
  * a null verdict; it is no fail, and it is run again, at most MAX_EXTRA_RUNS extra times per
  * case, stage and arm. A case whose arm still lacks its judged runs is "unscreened" and is not
  * counted (stageOutcome).
+ *
+ * The control stage holds a skill's two controls on its control case, their arms' runs sent in
+ * one interleaved order: the planted-loss control (`old` against `minus`, the old text less the
+ * case's line), which must be a loss, so the test can see a loss; and the false-loss control
+ * (`old` against `twin`, the old text again under another arm's name, its own capture and runs),
+ * which must be no loss, so the test does not call a loss where the texts are the same. Both are
+ * scored by the confirm rule, LOSS_GAP of FRESH_RUNS; a skill whose planted-loss control is no
+ * loss, or whose false-loss control is a loss, gets no verdict (skillVerdict). The false-loss
+ * control is the architect's check: the runs of one arm once shared one request id, and the same
+ * body sent with two fixed ids passed 8 and 26 of 30 runs.
  */
 import { z } from "zod";
 
@@ -44,9 +54,10 @@ export const NEED_MIN_LOADS = 2;
 /** A near-miss task is a fault when it loads on more of its runs than this. */
 export const NEAR_MISS_MAX_LOADS = 1;
 
-/** The texts a case runs under: the cut's base, the cut text, no skill, and the base without the
- *  case's line (the planted-loss control). */
-export const Arm = z.enum(["old", "new", "none", "minus"]);
+/** The texts a case runs under: the cut's base, the cut text, no skill, the base without the
+ *  case's line (the planted-loss control), and the base again under another arm's name (`twin`,
+ *  the false-loss control). */
+export const Arm = z.enum(["old", "new", "none", "minus", "twin"]);
 export type Arm = z.infer<typeof Arm>;
 export const Stage = z.enum(["screen", "confirm", "control"]);
 export type Stage = z.infer<typeof Stage>;
@@ -65,11 +76,11 @@ export const RunRecord = z.strictObject({
 export type RunRecord = z.infer<typeof RunRecord>;
 
 /** The arms each stage runs: screen the old text, the cut and no skill; confirm the old text and
- *  the cut; control the old text and the old text less the case's line. */
+ *  the cut; control the old text, the old text less the case's line, and the old text again. */
 export const STAGE_ARMS = {
   screen: ["old", "new", "none"],
   confirm: ["old", "new"],
-  control: ["old", "minus"],
+  control: ["old", "minus", "twin"],
 } as const satisfies Record<Stage, readonly Arm[]>;
 /** The judged runs each arm of a stage needs. */
 export const STAGE_RUNS: Record<Stage, number> = {
@@ -160,6 +171,14 @@ export function isControlLoss(passes: Passes<"control">): boolean {
   return passes.old - passes.minus >= LOSS_GAP;
 }
 
+/** Whether a skill's false-loss control is a loss by the same rule as isLoss, with the old text
+ *  again (`twin`) in the cut's place: the two arms' texts are the same, so a loss here is the
+ *  procedure's own (its sends, the gateway, the judge), and it would call one in a cut too. */
+export function isFalseLoss(passes: Passes<"control">): boolean {
+  assertCounts(passes, FRESH_RUNS);
+  return passes.old - passes.twin >= LOSS_GAP;
+}
+
 /** The id of a skill's control case: among its informative screened cases, the one whose old text
  *  passes most more often than no skill, a tie going to the lower id in string order. Undefined
  *  when no case is informative. */
@@ -182,12 +201,14 @@ export type NoVerdict = { verdict: null; reason: string };
 export type SkillOutcome = { verdict: "loss" | "keeps" } | NoVerdict;
 
 /** A skill's verdict from its counted cases: no verdict with fewer than MIN_INFORMATIVE_CASES
- *  informative cases, since too few cases see the skill at all; no verdict when its control is no
- *  loss, since then the test could not see a loss; else `loss` when any confirmed case is a loss,
- *  else `keeps`. */
+ *  informative cases, since too few cases see the skill at all; no verdict when its planted-loss
+ *  control is no loss, since then the test could not see a loss, or when its false-loss control
+ *  is a loss, since then the test calls one where none is (the reason names each control that
+ *  failed); else `loss` when any confirmed case is a loss, else `keeps`. */
 export function skillVerdict(counts: {
   informative: number;
   controlLoss: boolean;
+  falseLoss: boolean;
   losses: number;
 }): SkillOutcome {
   if (counts.informative < MIN_INFORMATIVE_CASES)
@@ -195,7 +216,11 @@ export function skillVerdict(counts: {
       verdict: null,
       reason: `fewer than ${MIN_INFORMATIVE_CASES} informative cases: ${counts.informative}`,
     };
-  if (!counts.controlLoss) return { verdict: null, reason: "control not a loss" };
+  const failed = [
+    ...(counts.controlLoss ? [] : ["control not a loss"]),
+    ...(counts.falseLoss ? ["false-loss control a loss"] : []),
+  ];
+  if (failed.length > 0) return { verdict: null, reason: failed.join("; ") };
   return { verdict: counts.losses > 0 ? "loss" : "keeps" };
 }
 
@@ -223,10 +248,11 @@ export interface SkillScore {
 
 /** A skill's score from the run records of its cases, in the order their first screen record
  *  comes. Unscreened cases count for nothing. The verdict waits for every case's screen runs; with
- *  enough informative cases, for the control's runs; and when the control is a loss, for the
- *  confirm runs of every flagged case. An unscreened control is no control loss. A flagged case
- *  whose confirm runs stay unscreened gives no verdict, since its loss can be neither seen nor
- *  ruled out, and a `keeps` over it would hide one. */
+ *  enough informative cases, for the control's runs (its planted-loss and false-loss controls are
+ *  one stage); and when the planted-loss control is a loss and the false-loss control is not, for
+ *  the confirm runs of every flagged case. An unscreened control is no control loss. A flagged
+ *  case whose confirm runs stay unscreened gives no verdict, since its loss can be neither seen
+ *  nor ruled out, and a `keeps` over it would hide one. */
 export function scoreSkill(records: readonly RunRecord[]): SkillScore {
   const ids = [
     ...new Set(records.filter((record) => record.stage === "screen").map((r) => r.caseId)),
@@ -258,8 +284,11 @@ export function scoreSkill(records: readonly RunRecord[]): SkillScore {
   if (informative >= MIN_INFORMATIVE_CASES && waiting(control))
     return { ...score, outcome: undefined };
   const controlLoss = control?.state === "counted" && isControlLoss(control.passes);
-  if (controlLoss && cases.some((c) => waiting(c.confirm))) return { ...score, outcome: undefined };
-  const unconfirmed = controlLoss
+  const falseLoss = control?.state === "counted" && isFalseLoss(control.passes);
+  const controlsHold = controlLoss && !falseLoss;
+  if (controlsHold && cases.some((c) => waiting(c.confirm)))
+    return { ...score, outcome: undefined };
+  const unconfirmed = controlsHold
     ? cases.filter((c) => c.confirm?.state === "unscreened").map((c) => c.caseId)
     : [];
   if (informative >= MIN_INFORMATIVE_CASES && unconfirmed.length > 0)
@@ -268,7 +297,7 @@ export function scoreSkill(records: readonly RunRecord[]): SkillScore {
       outcome: { verdict: null, reason: `confirm runs missing: ${unconfirmed.join(", ")}` },
     };
   const losses = cases.filter((c) => c.loss).length;
-  return { ...score, outcome: skillVerdict({ informative, controlLoss, losses }) };
+  return { ...score, outcome: skillVerdict({ informative, controlLoss, falseLoss, losses }) };
 }
 
 /** The no-verdict outcome of a skill that too few sessions in the window read to give it

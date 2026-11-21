@@ -44,11 +44,22 @@ test("a configuration with every key loads", () => {
 });
 
 test.each(
-  Object.keys(SkillCutsConfig.shape)
+  Object.keys(SkillCutsConfig.shape).filter((key) => key !== "devboxClaudeConfigDir")
 )("a configuration without %s is refused by name", (key) => {
   const value = valid();
   delete value[key];
   expect(refusal(value)).toContain(`${key}: missing`);
+});
+
+test("devboxClaudeConfigDir is the one optional key, and an absolute path when given", () => {
+  expect(parseConfig(valid()).devboxClaudeConfigDir).toBeUndefined();
+  expect(
+    parseConfig({ ...valid(), devboxClaudeConfigDir: "/srv/acme/dotfiles/.claude" })
+      .devboxClaudeConfigDir
+  ).toBe("/srv/acme/dotfiles/.claude");
+  expect(refusal({ ...valid(), devboxClaudeConfigDir: "acme-dotfiles/.claude" })).toContain(
+    "devboxClaudeConfigDir: an absolute path"
+  );
 });
 
 test("an unknown key is refused by name", () => {

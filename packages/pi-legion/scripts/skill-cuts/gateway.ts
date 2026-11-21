@@ -20,7 +20,14 @@
  *   ended) and a reply that does not read as a reply of the body's API are tried again, after the
  *   longer of the `retry-after` wait and the back-off (1 s, 2 s, 4 s, ...), up to GATEWAY_TRIES
  *   tries in all. Any other status, a 400 among them, throws at once.
- * - At most `concurrency` calls are in flight; the others wait their turn, in the order sent.
+ * - At most `concurrency` calls are in flight; the others wait their turn, in the order sent. A
+ *   reply says when its call got its place and was sent and how many calls were in flight then
+ *   (`sentAt`, `inFlight`; `onSent` is told the same as the call goes), and carries the
+ *   gateway's headers of GATEWAY_HEADERS: the deployment and model group that answered, the
+ *   fallbacks and retries the gateway made, and the provider's request id.
+ * - `send` changes no byte of a body. `freshIdentity(body)` is how a caller gives a body a fresh
+ *   session id (`metadata.user_id`, or a Responses body's `prompt_cache_key`) in that id's own
+ *   form: the runner sends each run, and each judge call, with one of its own.
  * - A body that sets `stream` gets a streamed (SSE) reply, read whole before it counts
  *   (`streamedMessage`; `streamedResponse` for a Responses reply, F9); any other gets one JSON
  *   message. A Responses reply comes back in ReplyMessage's frame (`responseMessage`): its output
@@ -36,6 +43,7 @@
  *   says so. A call already in flight finishes and is counted, so the spend can pass the budget by
  *   at most the calls in flight, and the bill by those and the tries that failed mid-stream.
  */
+import { randomBytes, randomUUID } from "node:crypto";
 import { holdSecret, scrubError } from "@legion/contracts/held-secrets";
 import { z } from "zod";
 import { postMessages, readKeyFile } from "../skill-scenarios/messages-api";
@@ -251,6 +259,97 @@ export function isResponsesBody(body: RequestBody): body is ResponsesBody {
   return Array.isArray(body.input) && body.messages === undefined;
 }
 
+/** A UUID, any version, as Oh My Pi and Claude Code write a session id. */
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** Fewer hex digits than this in an id are too few to draw a fresh id from. */
+const MIN_HEX_DIGITS = 16;
+
+/** A fresh value in the form of the id text `value`: a new random UUID for a UUID; else each hex
+ *  digit drawn again at random, every other character kept (a 64-digit hex digest stays one); a
+ *  text of fewer than MIN_HEX_DIGITS hex digits becomes a new UUID. An empty text stays empty. */
+function redrawnId(value: string): string {
+  if (value === "") return value;
+  if (UUID.test(value)) return randomUUID();
+  const digits = value.match(/[0-9a-f]/gi)?.length ?? 0;
+  if (digits < MIN_HEX_DIGITS) return randomUUID();
+  const upper = /[A-F]/.test(value) && !/[a-f]/.test(value);
+  const drawn = randomBytes(digits);
+  let at = 0;
+  return value.replace(/[0-9a-f]/gi, () => {
+    const digit = ((drawn[at++] ?? 0) & 15).toString(16);
+    return upper ? digit.toUpperCase() : digit;
+  });
+}
+
+/** `value` with each string inside it drawn again as `redrawnId` draws one, its keys, their
+ *  order and every other value kept. */
+function redrawnValues(value: unknown): unknown {
+  if (typeof value === "string") return redrawnId(value);
+  if (Array.isArray(value)) return value.map(redrawnValues);
+  if (typeof value === "object" && value !== null) {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, each]) => [key, redrawnValues(each)])
+    );
+  }
+  return value;
+}
+
+/** A fresh id in the form of the id field's text `value`: a JSON object's strings each drawn
+ *  again (`redrawnValues`: Oh My Pi's `{"session_id": …}`, Claude Code's `{"device_id": …,
+ *  "account_uuid": "", "session_id": …}`), or the text itself drawn again. */
+function freshIdText(value: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    parsed = undefined;
+  }
+  return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+    ? JSON.stringify(redrawnValues(parsed))
+    : redrawnId(value);
+}
+
+/**
+ * `body` with a fresh id in the field its host names the session by, and nothing else changed:
+ * a Messages body's `metadata.user_id` and a Responses body's `prompt_cache_key` (F8), each drawn
+ * again in its own form (`freshIdText`). A gateway that routes or caches by that id makes it a
+ * factor of every run that sends it: one body sent with two fixed ids and with a fresh one per
+ * send, interleaved on one deployment, read the skill's reference in 8, 26 and 18 of 30 runs. A
+ * body that holds no such id is given back as it is, or with `add` given one: `{"session_id":
+ * <uuid>}` as Oh My Pi writes it, or a UUID as the cache key. `id` is the id sent, or null.
+ */
+export function freshIdentity(
+  body: RequestBody,
+  add = false
+): { readonly body: RequestBody; readonly id: string | null } {
+  if (isResponsesBody(body)) {
+    const key = body.prompt_cache_key;
+    if (typeof key !== "string" && !add) return { body, id: null };
+    const id = typeof key === "string" ? freshIdText(key) : randomUUID();
+    return { body: { ...body, prompt_cache_key: id }, id };
+  }
+  const metadata = body.metadata;
+  const userId =
+    typeof metadata === "object" && metadata !== null
+      ? Reflect.get(metadata, "user_id")
+      : undefined;
+  if (typeof userId !== "string" && !add) return { body, id: null };
+  const id =
+    typeof userId === "string" ? freshIdText(userId) : JSON.stringify({ session_id: randomUUID() });
+  const kept = typeof metadata === "object" && metadata !== null ? metadata : {};
+  return { body: { ...body, metadata: { ...kept, user_id: id } }, id };
+}
+
+/** The id `body` names its session by: its `metadata.user_id` or `prompt_cache_key`, or null. */
+export function bodyIdentity(body: RequestBody): string | null {
+  const id = isResponsesBody(body)
+    ? body.prompt_cache_key
+    : typeof body.metadata === "object" && body.metadata !== null
+      ? Reflect.get(body.metadata, "user_id")
+      : undefined;
+  return typeof id === "string" ? id : null;
+}
+
 /** One tool call of a reply: its id, its tool's name and its input, as either API writes one (a
  *  Messages `tool_use` block, its `id` and its `input` object; a Responses `function_call` item,
  *  its `call_id` and its `arguments`, JSON text parsed here). A call whose arguments do not parse
@@ -301,13 +400,34 @@ export function usdOf(spent: readonly Spent[]): number {
   return spent.reduce((sum, each) => sum + each.usd, 0);
 }
 
+/** The reply headers of the gateway (LiteLLM) and its provider that the request log records:
+ *  the deployment and the model group that answered, the fallbacks and retries the gateway made,
+ *  and the provider's own request id, as the gateway forwards it. */
+export const GATEWAY_HEADERS = [
+  "x-litellm-model-id",
+  "x-litellm-model-group",
+  "x-litellm-attempted-fallbacks",
+  "x-litellm-attempted-retries",
+  "llm_provider-request-id",
+  "llm_provider-x-request-id",
+  "request-id",
+] as const;
+
 /** One model call's answer: the reply message, the gateway's request id when it sent one, how long
- *  the call took from its start (its retries included), and what it used. */
+ *  the call took from its start (its retries included), and what it used. `gatewayHeaders` holds
+ *  each of GATEWAY_HEADERS the reply came with; `providerRequestId` is the first of the provider's
+ *  ids among them (the two `llm_provider-` ones, then `request-id`), or null. `sentAt` is when the
+ *  call got its place among the calls in flight and was sent, and `inFlight` how many were in
+ *  flight then, this one among them. */
 export interface Reply {
   readonly message: ReplyMessage;
   readonly requestId?: string;
   readonly durationMs: number;
   readonly spent: Spent;
+  readonly gatewayHeaders: Readonly<Record<string, string>>;
+  readonly providerRequestId: string | null;
+  readonly sentAt: string;
+  readonly inFlight: number;
 }
 
 /** One model's total: the replies counted, their tokens (the reasoning tokens among their output
@@ -359,6 +479,13 @@ export interface GatewayOptions {
   readonly sleep?: Sleep;
 }
 
+/** When a call got its place and was sent, and how many calls were in flight then, this one
+ *  among them. */
+export interface Sent {
+  readonly at: string;
+  readonly inFlight: number;
+}
+
 /** What one `send` takes beside its body. */
 export interface SendOptions {
   /** Headers sent with a Messages body, such as the `anthropic-beta` Oh My Pi sent beside it,
@@ -366,6 +493,8 @@ export interface SendOptions {
    *  `output_config.effort`). Only `anthropic-*` names; a name that can carry a key is refused,
    *  and so is any header beside a Responses body. */
   readonly headers?: Readonly<Record<string, string>>;
+  /** Told when the call gets its place and is sent, before its reply (or its failure) comes. */
+  readonly onSent?: (sent: Sent) => void;
 }
 
 export interface Gateway {
@@ -739,7 +868,10 @@ export function createGateway(options: GatewayOptions): Gateway {
     return spent;
   }
 
-  async function send(body: RequestBody, { headers = {} }: SendOptions = {}): Promise<Reply> {
+  async function send(
+    body: RequestBody,
+    { headers = {}, onSent }: SendOptions = {}
+  ): Promise<Reply> {
     checkHeaders(headers);
     const responses = isResponsesBody(body);
     if (responses && Object.keys(headers).length > 0) {
@@ -769,8 +901,11 @@ export function createGateway(options: GatewayOptions): Gateway {
       // The body's text is made once its call has a place, so at most `concurrency` texts are
       // held, and a call the budget refuses makes none.
       const text = JSON.stringify(body);
+      const sentAt = new Date().toISOString();
+      const inFlight = running;
+      onSent?.({ at: sentAt, inFlight });
       const started = performance.now();
-      const { message, usage, requestId } = await postMessages({
+      const { message, usage, requestId, gatewayHeaders } = await postMessages({
         url: baseUrl,
         ...(responses ? { path: "/v1/responses", auth: "bearer" as const } : {}),
         key,
@@ -785,13 +920,25 @@ export function createGateway(options: GatewayOptions): Gateway {
             ? responseReply(streamed ? streamedResponse(reply) : JSON.parse(reply))
             : { message: replyMessage(reply, streamed), usage: undefined }),
           requestId: response.headers.get("request-id") ?? undefined,
+          gatewayHeaders: Object.fromEntries(
+            GATEWAY_HEADERS.flatMap((name): [string, string][] => {
+              const value = response.headers.get(name);
+              return value === null ? [] : [[name, value]];
+            })
+          ),
         }),
       });
       const durationMs = Math.round(performance.now() - started);
       const spent = count(message, bodyPrice, usage);
+      const providerRequestId =
+        gatewayHeaders["llm_provider-request-id"] ??
+        gatewayHeaders["llm_provider-x-request-id"] ??
+        gatewayHeaders["request-id"] ??
+        null;
+      const sent = { gatewayHeaders, providerRequestId, sentAt, inFlight };
       return requestId === undefined
-        ? { message, durationMs, spent }
-        : { message, requestId, durationMs, spent };
+        ? { message, durationMs, spent, ...sent }
+        : { message, requestId, durationMs, spent, ...sent };
     } catch (error) {
       // A refusal can quote the key it got: no part of the key leaves in an error.
       throw scrubError(error);

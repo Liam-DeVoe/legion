@@ -6,7 +6,15 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { z } from "zod";
 import { skillHeaderPath } from "../skill-scenarios/transcript";
-import { armPromptBlocks, type CaptureRecord, renamedListingBlocks, skillListing } from "./capture";
+import {
+  armPromptBlocks,
+  type CaptureRecord,
+  renamedListingBlocks,
+  renderReminder,
+  rewriteBody,
+  sessionFacts,
+  skillListing,
+} from "./capture";
 import { pathHash } from "./cases";
 import { type CliIo, main } from "./cli";
 import { Stopped } from "./common";
@@ -20,6 +28,7 @@ import {
   streamedResponse,
 } from "./gateway";
 import {
+  claudeHarnessRules,
   claudeListing,
   firstMessageLoad,
   type Host,
@@ -44,6 +53,7 @@ import {
   sseResponse,
   startRecorder,
 } from "./recorder";
+import { sendOrder } from "./replay";
 import type { TaskLabel } from "./score";
 
 // The load test (plan, R5 `load.ts`). Its detection rows read the request bodies of the pinned
@@ -367,6 +377,9 @@ function runsOf(label: TaskLabel, loads: readonly boolean[]): LoadRun[] {
       listed: "Use for the alpha checklist.",
       profile: "/profiles/alpha.json",
       profileDigest: "0".repeat(64),
+      userId: JSON.stringify({ session_id: `00000000-0000-4000-8000-00000000000${index}` }),
+      sendSeed: "made-up-seed",
+      sendPlace: index,
     })
   );
 }
@@ -722,6 +735,8 @@ describe("skill-cuts load with saved captures", () => {
           ],
           requestHeaders: { "anthropic-version": "2023-06-01" },
           hintCalls: [],
+          // A saved capture holds the harness-string rule's record, or it is refused.
+          harness: { head: null, replaced: [] },
         }),
       });
     }
@@ -989,6 +1004,7 @@ describe("skill-cuts load refuses or stops on its own rules", () => {
         listing: [{ name: "alpha", hint: "Use for the alpha checklist." }],
         requestHeaders: { "anthropic-version": "2023-06-01" },
         hintCalls: [],
+        harness: { head: null, replaced: [] },
       }),
     });
     answer = () => TEXT;
@@ -1019,12 +1035,231 @@ describe("skill-cuts load refuses or stops on its own rules", () => {
       claude: "claude",
       requestLog: path.join(dir, "requests.jsonl"),
       memoryLimitBytes: 2 ** 20,
+      psqlCommand: "/nowhere/read-store",
+      stores: ["store_a"],
     }).catch((caught: unknown) => caught);
     expect(stopped).toBeInstanceOf(Stopped);
     expect(String(stopped)).toContain(
       "the runner's peak resident memory, 3 MiB, is above its limit of 1 MiB, so the test stops after task need-1"
     );
   });
+});
+
+describe("skill-cuts load sends a profile's tasks' runs in one order, each with its own id", () => {
+  const dir = path.join(scratch, "interleaved");
+  const out = path.join(dir, "out");
+  const texts3 = [
+    "Write the alpha checklist, one.",
+    "Write the alpha checklist, two.",
+    "Write the beta greeting, three.",
+  ];
+  const ids = ["t1", "t2", "t3"];
+  let args: string[] = [];
+
+  beforeAll(() => {
+    const made = setup(dir);
+    const skill = path.join(dir, "alpha");
+    writeTree(skill, { "SKILL.md": ALPHA_SKILL, "references/x.md": ALPHA_X });
+    const tasks = path.join(dir, "tasks.jsonl");
+    writeFileSync(
+      tasks,
+      ids
+        .map((id, index) =>
+          JSON.stringify({
+            id,
+            text: texts3[index],
+            label: index < 2 ? "need" : "near-miss",
+            source: "written",
+          })
+        )
+        .map((line) => `${line}\n`)
+        .join("")
+    );
+    const profile = path.join(dir, "profile.json");
+    writeFileSync(profile, JSON.stringify(BETA_PROFILE));
+    for (const [index, id] of ids.entries()) {
+      const files = loadCapturePaths(out, "omp", id);
+      writeTree(path.dirname(files.body), {
+        [path.basename(files.body)]: JSON.stringify({
+          ...F2,
+          messages: [{ role: "user", content: [{ type: "text", text: texts3[index] }] }],
+        }),
+        [path.basename(files.record)]: JSON.stringify({
+          listing: [{ name: "alpha", hint: "Use for the alpha checklist." }],
+          requestHeaders: { "anthropic-version": "2023-06-01" },
+          hintCalls: [],
+          harness: { head: null, replaced: [] },
+        }),
+      });
+    }
+    args = [
+      "load",
+      ...["--config", made.config, "--key-file", made.keyFile, "--skill", skill],
+      ...["--tasks", tasks, "--host", "omp", "--profile", profile, "--out", out],
+      ...["--scratch", path.join(dir, "scratch"), "--cache-dir", path.join(dir, "cache")],
+    ];
+  });
+
+  // Catches: a task's runs sent as a batch of their own, or runs that share the captured id.
+  test("the runs of every task of a profile go in the seeded order, each with a session id no other run carries", async () => {
+    answer = () => TEXT;
+    const before = recorder.requests.length;
+    const ran = await cli(args);
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const sent = recorder.requests.slice(before).map((request) => JSON.parse(request.body));
+    expect(sent).toHaveLength(9);
+    const userIds = sent.map((body) => body.metadata.user_id as string);
+    expect(new Set(userIds).size).toBe(9);
+    expect(userIds).not.toContain(Object(F2.metadata).user_id);
+    for (const id of userIds) {
+      expect(JSON.parse(id).session_id).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+      );
+    }
+    // Every run line names its id, the one seed of its profile's sends and its place in them,
+    // and the places are the seed's order of the three tasks' runs.
+    const runs = ids.flatMap((id) => savedRuns(out, id));
+    const seeds = new Set(runs.map((run) => run.sendSeed));
+    expect(seeds.size).toBe(1);
+    const seed = [...seeds][0] ?? "";
+    expect(ran.stdout).toContain(
+      `the runs of tasks t1, t2, t3 in the context of ${path.join(dir, "profile.json")} went in one order (seed ${seed}), each with a session id of its own`
+    );
+    const order = sendOrder(
+      ids.map((key) => ({ key, runs: 3 })),
+      seed
+    );
+    for (const id of ids) {
+      expect(
+        runs
+          .filter((run) => run.task === id)
+          .map((run) => run.sendPlace)
+          .toSorted((a, b) => a - b)
+      ).toEqual(order.flatMap((each, place) => (each.key === id ? [place] : [])));
+    }
+    expect(new Set(runs.map((run) => run.userId))).toEqual(new Set(userIds));
+    // The request log names each run's id, when it was sent and the calls in flight then.
+    const logged = readFileSync(path.join(out, "requests.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(new Set(logged.map((line) => line.userId))).toEqual(new Set(userIds));
+    for (const line of logged) {
+      expect(line.inFlight).toBeGreaterThanOrEqual(1);
+      expect(Date.parse(line.sentAt)).toBeGreaterThanOrEqual(Date.parse(line.at));
+      expect(line.providerRequestId).toMatch(/^req_standin_\d+$/);
+    }
+  });
+
+  // Catches: runs sent before each had its own id taken up again, or a capture made before the
+  // harness-string rule replayed.
+  test("an --out whose runs were sent with the captured id, and a saved capture made before the harness-string rule, are refused", async () => {
+    const summary = path.join(out, "summary.json");
+    const saved = JSON.parse(readFileSync(summary, "utf8"));
+    const { sends: _sends, ...before } = saved.settings;
+    writeFileSync(summary, JSON.stringify({ ...saved, settings: before }));
+    const stale = await cli(args);
+    expect(stale.code).toBe(2);
+    expect(stale.stderr).toContain("holds a load test of other settings");
+    writeFileSync(summary, JSON.stringify(saved));
+    // A capture whose record holds no harness record fails its task, saying why.
+    const files = loadCapturePaths(out, "omp", "t3");
+    const record = JSON.parse(readFileSync(files.record, "utf8"));
+    delete record.harness;
+    writeFileSync(files.record, JSON.stringify(record));
+    writeFileSync(loadRunFile(out, "t3"), "");
+    const refused = await cli(args);
+    expect(refused.code).toBe(1);
+    expect(refused.stderr).toContain("was made before the harness-string rule");
+  });
+
+  test("--context-session is <store>:<path hash> of a store the configuration names", async () => {
+    const bad = await cli([...args, "--context-session", "store_a:not-a-hash"]);
+    expect(bad.code).toBe(2);
+    expect(bad.stderr).toContain("--context-session store_a:not-a-hash is not <store>:<path hash>");
+    const unknown = await cli([
+      ...args,
+      "--context-session",
+      `store_z:${pathHash("/sessions/z.jsonl")}`,
+    ]);
+    expect(unknown.code).toBe(2);
+    expect(unknown.stderr).toContain("the configuration names no store store_z");
+  });
+});
+
+// Catches: a Claude Code body that still names the capture's working directory, its scratch
+// config directory (in the memory path too), its date or its sandbox's OS version.
+test("Claude Code's harness rules replace the working directory, the memory path, the date line and the OS version, and nothing of the session's text", () => {
+  const work = "/scratch/load-1/claude/profiles/abc/context/work";
+  const config = "/scratch/load-1/claude/profiles/abc/config";
+  const head = {
+    file: "/made-up/sessions/h.json",
+    head: {
+      store: "store_a",
+      pathHash: pathHash("/sessions/h.jsonl"),
+      held: true,
+      cwd: "/srv/acme/widgets",
+      start: "2026-11-18T08:00:00.000Z",
+      firstUser: { timestamp: Date.parse("2026-11-18T08:00:01.000Z"), attribution: "user" },
+      reminders: [],
+      bytes: 100,
+      badLines: 0,
+      readAt: "2026-11-21T00:00:00.000Z",
+    },
+  };
+  const facts = sessionFacts(head, {
+    turn: undefined,
+    date: { value: "2026-11-18", from: "the UTC date of the session's first user turn" },
+    devbox: true,
+    devboxClaudeConfigDir: "/srv/acme/dotfiles/.claude",
+  });
+  const projects = `${config}/projects/${work.replace(/[^A-Za-z0-9]/g, "-")}/memory/`;
+  const body = {
+    model: "claude-sonnet-5-5",
+    system: [
+      {
+        type: "text",
+        text: `You have a persistent file-based memory at \`${projects}\`.\nContents of ${config}/CLAUDE.md (user's private global instructions for all projects):\nRules.`,
+      },
+    ],
+    messages: [
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: `# Environment\n - Primary working directory: ${work}\n - Is a git repository: false\n - Platform: linux\n - OS Version: Linux 4.19.0-gvisor\n`,
+          },
+          {
+            type: "text",
+            text: "<system-reminder>\nToday's date is 2026-11-21.\n</system-reminder>",
+          },
+          { type: "text", text: "Write the alpha checklist; cost $5." },
+        ],
+      },
+    ],
+  };
+  const rewritten = rewriteBody(body, claudeHarnessRules(work, config, facts), ["/scratch/load-1"]);
+  expect(rewritten.faults).toEqual([]);
+  const text = JSON.stringify(rewritten.body);
+  expect(text).not.toContain("/scratch/load-1");
+  expect(text).not.toContain("gvisor");
+  expect(text).toContain("/srv/acme/dotfiles/.claude/projects/-srv-acme-widgets/memory/");
+  expect(text).toContain("Contents of /srv/acme/dotfiles/.claude/CLAUDE.md (user's private");
+  expect(text).toContain("Primary working directory: /srv/acme/widgets\\n");
+  expect(text).toContain("OS Version: Linux\\n");
+  expect(text).toContain("Today's date is 2026-11-18.");
+  expect(text).toContain("Write the alpha checklist; cost $5.");
+  expect(rewritten.replaced).toEqual([
+    { what: "the memory directory's project path", count: 1 },
+    { what: "the date line", count: 1 },
+    { what: "the OS version line", count: 1 },
+    { what: "the config directory", count: 1 },
+    { what: "the working directory", count: 1 },
+  ]);
+  expect(renderReminder("2026-11-18", "/srv/acme/widgets")).toContain(
+    "current working directory: '/srv/acme/widgets'"
+  );
 });
 
 /** Made-up repositories (skills alpha, beta and gamma), the tested skill's `tested` files (alpha's

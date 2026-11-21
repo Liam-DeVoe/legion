@@ -1,5 +1,13 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
@@ -30,6 +38,7 @@ import {
   sseResponse,
   startRecorder,
 } from "./recorder";
+import { sendOrder } from "./replay";
 import { SCREEN_RUNS } from "./score";
 
 // The runner's command line, end to end: each command runs as its own `bun cli.ts` process, with
@@ -656,6 +665,8 @@ function recordCaptures(
           requestHeaders: responses ? {} : F2_HEADERS,
           captureDigest: "0123456789abcdef",
           sessionDigest: c.sessionDigest,
+          // A saved capture holds the harness-string rule's record, or it is refused.
+          harness: { head: null, replaced: [] },
         })
       );
     }
@@ -734,7 +745,7 @@ describe("behaviour", () => {
       { id: "c08" },
       { id: "c09" },
     ]);
-    recordCaptures(s, ["old", "new", "none", "minus"]);
+    recordCaptures(s, ["old", "new", "none", "minus", "twin"]);
     answer = behaviourStandIn;
     usage = { input: 10, output: 3 };
     flakyLeft = 3;
@@ -758,6 +769,15 @@ describe("behaviour", () => {
     for (const request of replays) {
       expect(request.headers["anthropic-beta"]).toBe(F2_HEADERS["anthropic-beta"] ?? "");
     }
+    // Every replay and every judgement went with a session id of its own (no stand-in reply
+    // reads a skill file, so each run is one request), none the id its capture holds.
+    const sessionIds = screenRequests.map(
+      (request) => JSON.parse(request.body).metadata?.user_id as string | undefined
+    );
+    expect(sessionIds.every((id) => typeof id === "string")).toBe(true);
+    expect(new Set(sessionIds).size).toBe(screenRequests.length);
+    const captured = JSON.parse(readFileSync(F2, "utf8")).metadata.user_id;
+    expect(sessionIds).not.toContain(captured);
 
     // c00's violating step is judged pass, and c01's real step fail: each is dropped, its drop
     // naming the control it failed.
@@ -793,6 +813,28 @@ describe("behaviour", () => {
     for (const run of c02.stages.screen?.runs ?? []) {
       if (run.verdict !== null) expect(run.id).toMatch(/^[0-9a-f]{12}$/);
     }
+    // Each run records its session id, the one its request went with, and its place in its
+    // round's send order, which is the seed's: the three arms' runs interleaved, never one arm's
+    // after another's.
+    const c04 = result(s.out, "c04");
+    const screened = c04.stages.screen;
+    expect(screened?.sends).toBe(
+      "each run its own session id; a round's arms interleaved in one seeded order"
+    );
+    const firstRound = (screened?.runs ?? []).filter((run) => run.round === 1);
+    expect(firstRound).toHaveLength(30);
+    const bySend = firstRound.toSorted((a, b) => a.sendPlace - b.sendPlace);
+    expect(bySend.map((run) => run.sendPlace)).toEqual(Array.from({ length: 30 }, (_, n) => n));
+    expect(bySend.map((run) => run.arm)).toEqual(
+      sendOrder(
+        (["old", "new", "none"] as const).map((key) => ({ key, runs: SCREEN_RUNS })),
+        screened?.seeds[0] ?? ""
+      ).map((each) => each.key)
+    );
+    expect(new Set(bySend.slice(0, 10).map((run) => run.arm)).size).toBeGreaterThan(1);
+    const runIds = firstRound.map((run) => run.userId);
+    expect(new Set(runIds).size).toBe(30);
+    for (const id of runIds) expect(sessionIds).toContain(id ?? "no id");
     expect(result(s.out, "c03").stages.screen?.state).toBe("unscreened");
     expect(existsSync(caseResultFile(s.out, "c09"))).toBe(false);
     expect(readFileSync(afterLog, "utf8").trim().split("\n")).toEqual(
@@ -814,8 +856,9 @@ describe("behaviour", () => {
     expect(control.stderr).toBe("");
     expect(control.code).toBe(0);
     expect(control.stdout).toContain("the control case is c02; minus leaves out the case's line");
-    expect(requestsSince(from)).toHaveLength(160);
-    expect(passes(result(s.out, "c02"), "control")).toEqual({ old: 40, minus: 0 });
+    // old, minus and twin, the false-loss control's second copy of old, 40 runs each.
+    expect(requestsSince(from)).toHaveLength(240);
+    expect(passes(result(s.out, "c02"), "control")).toEqual({ old: 40, minus: 0, twin: 40 });
 
     const reported = await cli(report(s));
     expect(reported.stderr).toBe("");
@@ -828,7 +871,7 @@ describe("behaviour", () => {
       "case c01: dropped: the judge controls do not hold: the real step is judged fail (pass wanted)"
     );
     expect(lines).toContain(
-      "case c02: screen: old 10/10, new 0/10, none 0/10: informative, flagged (3 runs with no verdict, run again); confirm: old 40/40, new 0/40: a loss; control: old 40/40, minus 0/40: a control loss"
+      "case c02: screen: old 10/10, new 0/10, none 0/10: informative, flagged (3 runs with no verdict, run again); confirm: old 40/40, new 0/40: a loss; control: old 40/40, minus 0/40, twin 40/40: the planted-loss control (old against minus) is a loss, the false-loss control (old against twin) is no loss"
     );
     expect(lines).toContain(
       "case c03: screen: unscreened: an arm lacks its 10 judged runs after 5 extra runs (45 runs with no verdict, run again)"
@@ -845,7 +888,7 @@ describe("behaviour", () => {
     );
     expect(lines).toContain("control case: c02");
     expect(lines).toContain(
-      "verdict: loss: in c02, c04, c05, c06, c07, c08 the cut's text passes at least 10 fewer of 40 fresh runs than the old text, and the planted-loss control (case c02) is a loss"
+      "verdict: loss: in c02, c04, c05, c06, c07, c08 the cut's text passes at least 10 fewer of 40 fresh runs than the old text, and the planted-loss control (case c02) is a loss and its false-loss control is no loss"
     );
     // Each informative case passed old 10, new 0 and none 0 of its screen runs.
     const each = falseLossChance({ old: 10, new: 0, none: 0 });
@@ -861,7 +904,7 @@ describe("behaviour", () => {
       `  old 0.9: ${[0.8, 0.7, 0.6, 0.5].map((cut) => `new ${cut} ${percent(lossChance({ old: 0.9, cut, none: 0.1 }))}`).join(", ")}`
     );
     expect(lines).toContain(
-      "digests: 22 of 22 captures' system-prompt digests differ from their session's"
+      "digests: 23 of 23 captures' system-prompt digests differ from their session's"
     );
 
     // The request log: one line per request with its settings and usage, never the key and never
@@ -874,7 +917,28 @@ describe("behaviour", () => {
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line));
-    expect(logged).toHaveLength(435 + 6 * 160 + 160);
+    expect(logged).toHaveLength(435 + 6 * 160 + 240);
+    // Each line says when its call was sent, how many were in flight then, the session id it went
+    // with, and the reply's model, ids, gateway headers and cache tokens.
+    const replayLine = logged.find((line) => line.kind === "replay" && line.usage);
+    expect(replayLine.answeredBy).toBe("claude-sonnet-5-5");
+    expect(replayLine.messageId).toMatch(/^msg_standin_\d+$/);
+    expect(replayLine.requestId).toMatch(/^req_standin_\d+$/);
+    expect(replayLine.providerRequestId).toBe(replayLine.requestId);
+    expect(replayLine.gateway).toEqual({ "request-id": replayLine.requestId });
+    expect([replayLine.cacheRead, replayLine.cacheWrite]).toEqual([0, 0]);
+    expect(replayLine.userId).toMatch(/^\{"session_id":"[0-9a-f-]{36}"\}$/);
+    expect(Date.parse(replayLine.sentAt)).toBeGreaterThanOrEqual(Date.parse(replayLine.at));
+    for (const line of logged) {
+      expect(line.inFlight === null || (line.inFlight >= 1 && line.inFlight <= 8)).toBe(true);
+      expect(typeof line.userId).toBe("string");
+    }
+    expect(logged.filter((line) => line.inFlight > 1).length).toBeGreaterThan(0);
+    // Every replay's and judgement's line names an id no other run's line names.
+    const replayIds = logged
+      .filter((line) => line.kind === "replay" || line.kind === "judge")
+      .map((line) => line.userId);
+    expect(new Set(replayIds).size).toBe(replayIds.length);
     expect(logged.filter((line) => line.status === 400)).toHaveLength(48);
     const judge = loadPrompt("judge").settings;
     expect(logged.find((line) => line.kind === "judge")).toMatchObject({
@@ -934,6 +998,19 @@ describe("behaviour", () => {
     expect(requestsSince(from)).toHaveLength(63);
     expect(readFileSync(caseResultFile(s.out, "c04"), "utf8")).toBe(c04);
     expect(result(s.out, "c05").stages.screen?.state).toBe("counted");
+
+    // A result whose stage was run before each run had its own session id and the arms were
+    // interleaved (it records no `sends`) is refused, so no old run is counted with new ones.
+    const before = JSON.parse(readFileSync(caseResultFile(s.out, "c05"), "utf8"));
+    delete before.stages.screen.sends;
+    writeFileSync(caseResultFile(s.out, "c05"), JSON.stringify(before));
+    from = recorder.requests.length;
+    const stale = await cli(behaviour("screen", s));
+    expect(stale.code).toBe(2);
+    expect(stale.stderr).toContain(
+      "holds screen runs sent before each run had its own session id and a round's arms were interleaved, so they are no runs of this procedure: use a new --out"
+    );
+    expect(requestsSince(from)).toHaveLength(0);
   }, 120_000);
 
   test("the budget stops new calls, and a run started again goes on from the runs saved", async () => {
@@ -979,7 +1056,7 @@ describe("behaviour", () => {
       f1File(2),
       ["c04", "c05", "c06", "c07", "c08", "c09"].map((id) => ({ id }))
     );
-    recordCaptures(s, ["old", "new", "none", "minus"]);
+    recordCaptures(s, ["old", "new", "none", "minus", "twin"]);
     answer = behaviourStandIn;
     usage = { input: 10, output: 3 };
     expect((await cli(behaviour("screen", s))).code).toBe(0);
@@ -992,22 +1069,52 @@ describe("behaviour", () => {
     const planted = { ...s, out: path.join(s.dir, "out-planted") };
     cpSync(s.out, planted.out, { recursive: true });
     recordCaptures(s, ["minus"], OTHER_LINE, planted.out);
+    // A false-loss control that is a loss: the twin's capture made to fail every run (its body is
+    // minus's, which lacks the line), as a procedure that tells the two copies of old apart would.
+    const falseLoss = { ...s, out: path.join(s.dir, "out-false-loss") };
+    cpSync(s.out, falseLoss.out, { recursive: true });
+    const c04 = s.cases.find((each) => each.id === "c04") ?? makeCase("c04");
+    const dirs = { old: s.old, new: s.new };
+    const texts = { old: textDigest(s.old), new: textDigest(s.new) };
+    const captureOf = (name: ArmName) =>
+      capturePaths(
+        armCaptureDir(
+          falseLoss.out,
+          buildArm(c04, name, dirs, path.join(s.dir, "arms", "c04")),
+          texts
+        ),
+        "c04",
+        name
+      ).body;
+    copyFileSync(captureOf("minus"), captureOf("twin"));
 
-    expect((await cli(behaviour("control", s))).code).toBe(0);
+    from = recorder.requests.length;
+    const held = await cli(behaviour("control", s));
+    expect(held.code).toBe(0);
+    // old, minus and twin: 40 replays and 40 judgements each.
+    expect(requestsSince(from)).toHaveLength(240);
+    expect(passes(result(s.out, "c04"), "control")).toEqual({ old: 40, minus: 0, twin: 40 });
     const kept = (await cli(report(s))).stdout.split("\n");
     expect(kept).toContain(
-      "case c04: screen: old 10/10, new 10/10, none 0/10: informative, not flagged; control: old 40/40, minus 0/40: a control loss"
+      "case c04: screen: old 10/10, new 10/10, none 0/10: informative, not flagged; control: old 40/40, minus 0/40, twin 40/40: the planted-loss control (old against minus) is a loss, the false-loss control (old against twin) is no loss"
     );
     expect(kept).toContain(
-      "verdict: no loss detected by the registered rule: no confirmed case is a loss (0 flagged of 6 informative), and the planted-loss control (case c04) is a loss"
+      "controls, scored by the confirm rule (a loss when the other arm passes at least 10 fewer of 40 fresh runs than old): old 40/40, minus 0/40, twin 40/40; the planted-loss control (old less minus, 40) is a loss, as it must be; the false-loss control (old less twin, the same text twice, 0) is no loss, as it must be"
+    );
+    expect(kept).toContain(
+      "verdict: no loss detected by the registered rule: no confirmed case is a loss (0 flagged of 6 informative), and the planted-loss control (case c04) is a loss and its false-loss control is no loss"
     );
 
     from = recorder.requests.length;
     const control = await cli(behaviour("control", planted, "--planted-line", OTHER_LINE));
     expect(control.code).toBe(0);
     expect(control.stdout).toContain(`minus leaves out the planted line "${OTHER_LINE}"`);
-    expect(requestsSince(from)).toHaveLength(160);
-    expect(passes(result(planted.out, "c04"), "control")).toEqual({ old: 40, minus: 40 });
+    expect(requestsSince(from)).toHaveLength(240);
+    expect(passes(result(planted.out, "c04"), "control")).toEqual({
+      old: 40,
+      minus: 40,
+      twin: 40,
+    });
     expect((await cli(report(planted))).stdout.split("\n")).toContain(
       "verdict: none: control not a loss"
     );
@@ -1015,6 +1122,19 @@ describe("behaviour", () => {
     const other = await cli(behaviour("control", planted));
     expect(other.code).toBe(2);
     expect(other.stderr).toContain("were made with other skill texts");
+
+    // The false-loss control is a loss: the skill gets no verdict, and the report says why.
+    expect((await cli(behaviour("control", falseLoss))).code).toBe(0);
+    expect(passes(result(falseLoss.out, "c04"), "control")).toEqual({
+      old: 40,
+      minus: 0,
+      twin: 0,
+    });
+    const refused = (await cli(report(falseLoss))).stdout.split("\n");
+    expect(refused).toContain("verdict: none: false-loss control a loss");
+    expect(refused).toContain(
+      "controls, scored by the confirm rule (a loss when the other arm passes at least 10 fewer of 40 fresh runs than old): old 40/40, minus 0/40, twin 0/40; the planted-loss control (old less minus, 40) is a loss, as it must be; the false-loss control (old less twin, the same text twice, 40) is a loss, so the skill gets no verdict"
+    );
   }, 300_000);
 
   test("stops above 1 GiB of peak resident memory, once the case is saved", async () => {
@@ -1184,7 +1304,7 @@ describe("behaviour", () => {
       { id: "c08", model: "gateway/claude-sonnet-5-5" },
       { id: "c09", model: "openai/gpt-6.1-sol" },
     ]);
-    recordCaptures(s, ["old", "new", "none", "minus"]);
+    recordCaptures(s, ["old", "new", "none", "minus", "twin"]);
     answer = behaviourStandIn;
     usage = { input: 10, output: 3 };
     const sonnet = {
@@ -1212,7 +1332,7 @@ describe("behaviour", () => {
     expect({ code: screen.code, stderr: screen.stderr }).toEqual({ code: 0, stderr: "" });
     expect((await cli(behaviour("control", s))).code).toBe(0);
     const keeps =
-      "verdict: no loss detected by the registered rule: no confirmed case is a loss (0 flagged of 6 informative), and the planted-loss control (case c04) is a loss";
+      "verdict: no loss detected by the registered rule: no confirmed case is a loss (0 flagged of 6 informative), and the planted-loss control (case c04) is a loss and its false-loss control is no loss";
 
     // Without --reading-models the report says so, and its verdict names no models.
     const plain = (await cli(report(s))).stdout.split("\n");

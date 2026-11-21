@@ -26,7 +26,9 @@
  * A judgement is the JSON object `{"verdict": "pass" | "fail", "reason": ...}`. One that does not
  * parse is asked for again, JUDGE_TRIES times in all, and then gives the verdict null, never fail
  * (score.ts counts judged runs only). A send that rejects rejects (`judgeReply`), or gives null
- * with its reason (`judgeBlind`), never a verdict.
+ * with its reason (`judgeBlind`), never a verdict. Each call, a try asked again among them, goes
+ * with a session id of its own (gateway.ts's `freshIdentity`, which adds `metadata.user_id`), so
+ * no two judgements share one: a gateway that routes or caches by it would make it a factor.
  *
  * `judgeBlind` shuffles the replies of all arms of a case with a seed (`blindOrder`), names each by
  * an opaque id that depends on the seed and its place alone, and starts their judgements in that
@@ -42,7 +44,14 @@ import { z } from "zod";
 import { readCalls, type SessionMessage, stripSkillHeader } from "../skill-scenarios/transcript";
 import type { ArmName } from "./arms";
 import type { Case } from "./cases";
-import { BudgetSpent, type Gateway, type MessagesBody, type Spent, toolCalls } from "./gateway";
+import {
+  BudgetSpent,
+  freshIdentity,
+  type Gateway,
+  type MessagesBody,
+  type Spent,
+  toolCalls,
+} from "./gateway";
 import { ask, loadPrompt, promptBody } from "./readers";
 
 /** How many times one reply is judged before its verdict is null. */
@@ -242,9 +251,14 @@ export interface Judged {
 }
 
 /** The judgement that `body` asks for. A judgement that does not parse is asked for again,
- *  JUDGE_TRIES times in all, then gives the verdict null. Rejects when a send does. */
+ *  JUDGE_TRIES times in all, then gives the verdict null. Each call goes with a session id of its
+ *  own. Rejects when a send does. */
 async function askJudge(body: MessagesBody, gateway: Gateway): Promise<Judged> {
-  const asked = await ask(body, Judgement, gateway, JUDGE_TRIES);
+  const freshEach: Gateway = {
+    send: (sent, options) => gateway.send(freshIdentity(sent, true).body, options),
+    spend: () => gateway.spend(),
+  };
+  const asked = await ask(body, Judgement, freshEach, JUDGE_TRIES);
   if (asked.answer === undefined) {
     return {
       verdict: null,

@@ -15,6 +15,7 @@ import {
   mtimeRange,
   PULL_PAGE,
   pullSql,
+  sessionHeadSql,
   sessionsSql,
   sqlString,
   tasksSql,
@@ -207,6 +208,18 @@ describe("countsql.ts fills the SQL", () => {
     ]);
     expect(main([...day, "--query", "pull"], io)).toBe(2);
     expect(err).toEqual(['countsql: --query "pull" is neither count nor models']);
+  });
+
+  test("session-head.sql is filled with the path hashes, each a SHA-256 in hex, and refuses any other", () => {
+    const hash = createHash("sha256").update("made-up/a.jsonl").digest("hex");
+    const sql = sessionHeadSql([hash]);
+    expect(sql).toStartWith("SET LOCAL statement_timeout = '15min';");
+    expect(sql).toContain(`= ANY (ARRAY['${hash}']::text[])`);
+    expect(sql).not.toContain("{{");
+    expect(() => sessionHeadSql(["0123456789abcdef"])).toThrow(
+      '"0123456789abcdef" is not a path hash of 64 hex characters'
+    );
+    expect(() => sessionHeadSql(["x'; DROP TABLE y; --"])).toThrow("is not a path hash");
   });
 });
 
@@ -765,6 +778,54 @@ describe.skipIf(serverDsn === undefined)(
           bad_lines: 0,
         }),
       });
+    });
+
+    /** What session-head.sql must give for `file`: its header's cwd and start, its first user
+     *  message's timestamp and attribution, and its journaled reminders, read from the fixture. */
+    const headOf = (file: string) => {
+      const text = readFileSync(file, "utf8");
+      const lines = text
+        .split("\n")
+        .filter((line) => line.trim() !== "")
+        .map((line) => JSON.parse(line));
+      const header = lines.find((line) => line.type === "session");
+      const user = lines.find((line) => line.type === "message" && line.message?.role === "user");
+      return {
+        hash: createHash("sha256").update(storedPath(file)).digest("hex"),
+        cwd: header.cwd,
+        start: header.timestamp,
+        first_user: {
+          timestamp: user.message.timestamp,
+          attribution: user.message.attribution ?? null,
+        },
+        reminders: lines
+          .filter((line) => line.type === "custom" && line.customType === "date-cwd-reminder")
+          .map(({ data }) => ({
+            turn: data.turn,
+            reminder: data.reminder,
+            placement: data.placement,
+          })),
+        bytes: Buffer.byteLength(Array.from(text).slice(0, 262_144).join("")),
+        bad_lines: 0,
+      };
+    };
+
+    test("session-head.sql: each file of a hash, its header's cwd and start, its first user turn and its journaled reminders; no row for a hash the store does not hold", () => {
+      const session = headOf(F1_SESSION);
+      const subagent = headOf(F1_SUBAGENT);
+      // F1's session and its subagent each journaled the reminder of their first user turn.
+      expect(session.reminders).toHaveLength(1);
+      expect(session.reminders[0]?.turn).toBe(
+        `user:${session.first_user.timestamp}:${session.first_user.attribution}`
+      );
+      expect(subagent.first_user.attribution).toBe("agent");
+      const missing = createHash("sha256").update("made-up/missing.jsonl").digest("hex");
+      const rows = run(names.first, sessionHeadSql([session.hash, subagent.hash, missing]));
+      expect(rows).toEqual([session, subagent].toSorted((a, b) => (a.hash < b.hash ? -1 : 1)));
+      // F1's session cut into three parts inside one line: the head is joined whole.
+      expect(threeParts.length).toBeGreaterThan(1);
+      expect(run(names.third, sessionHeadSql([session.hash]))).toEqual([session]);
+      expect(run(names.first, sessionHeadSql([missing]))).toEqual([]);
     });
   }
 );

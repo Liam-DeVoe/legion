@@ -7,9 +7,12 @@ import { MessagesApiError, postMessages } from "../skill-scenarios/messages-api"
 import type { Fetch } from "../skill-scenarios/production-dispatch";
 import {
   BudgetSpent,
+  bodyIdentity,
   type ContentBlock,
   costUsd,
   createGateway,
+  freshIdentity,
+  GATEWAY_HEADERS,
   GATEWAY_TRIES,
   type GatewayOptions,
   isResponsesBody,
@@ -18,6 +21,7 @@ import {
   type ResponsesBody,
   responsesCostUsd,
   responsesTokensOf,
+  type Sent as SentAt,
   toolCalls,
 } from "./gateway";
 
@@ -828,4 +832,125 @@ test("postMessages on the bearer route posts to its path with the key as authori
   expect(seen[0]?.headers.get("authorization")).toBe(`Bearer ${key}`);
   expect(seen[0]?.headers.get("x-api-key")).toBeNull();
   expect(seen[0]?.headers.get("anthropic-version")).toBeNull();
+});
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+// Catches: a fresh id of another shape than the host's, a body changed beyond its id, or one id
+// given twice.
+test("freshIdentity draws the session id again in its own shape and changes nothing else of the body", () => {
+  // Oh My Pi's Messages body (F2): `{"session_id": <uuid>}`.
+  const omp = freshIdentity(BODY);
+  const ompId = JSON.parse(omp.id ?? "{}");
+  expect(Object.keys(ompId)).toEqual(["session_id"]);
+  expect(ompId.session_id).toMatch(UUID);
+  expect(omp.id).not.toBe(bodyIdentity(BODY));
+  expect(omp.body).toEqual({ ...BODY, metadata: { ...Object(BODY.metadata), user_id: omp.id } });
+  expect(bodyIdentity(omp.body)).toBe(omp.id);
+  // Claude Code's (F3): its device id stays 64 hex digits, its empty account id stays empty.
+  const claude = JSON.parse(
+    readFileSync(path.join(TESTDATA, "F3-request-first.json"), "utf8")
+  ) as MessagesBody;
+  const recorded = JSON.parse(bodyIdentity(claude) ?? "{}");
+  const drawn = JSON.parse(freshIdentity(claude).id ?? "{}");
+  expect(Object.keys(drawn)).toEqual(Object.keys(recorded));
+  expect(drawn.device_id).toMatch(/^[0-9a-f]{64}$/);
+  expect(drawn.device_id).not.toBe(recorded.device_id);
+  expect(drawn.account_uuid).toBe("");
+  expect(drawn.session_id).toMatch(UUID);
+  expect(drawn.session_id).not.toBe(recorded.session_id);
+  // A Responses body (F8): its `prompt_cache_key`, a UUID.
+  const responses = freshIdentity(RESPONSES_BODY);
+  expect(responses.id).toMatch(UUID);
+  expect(responses.id).not.toBe(RESPONSES_BODY.prompt_cache_key);
+  expect(responses.body).toEqual({ ...RESPONSES_BODY, prompt_cache_key: responses.id });
+  // A body with no id is given back as it is, or given Oh My Pi's shape of one.
+  const { metadata: _metadata, ...bare } = BODY;
+  expect(freshIdentity(bare as MessagesBody)).toEqual({ body: bare, id: null });
+  expect(bodyIdentity(bare as MessagesBody)).toBeNull();
+  const added = freshIdentity(bare as MessagesBody, true);
+  expect(JSON.parse(added.id ?? "{}").session_id).toMatch(UUID);
+  expect(added.body).toEqual({ ...bare, metadata: { user_id: added.id } });
+  // No two draws give one id.
+  const ids = Array.from({ length: 200 }, () => freshIdentity(BODY).id);
+  expect(new Set(ids).size).toBe(200);
+  // The body given is never changed.
+  expect(BODY.metadata).toEqual(
+    JSON.parse(readFileSync(path.join(TESTDATA, "F2-request.json"), "utf8")).metadata
+  );
+});
+
+// Catches: a request log that cannot tell which deployment answered, or when a call was sent and
+// with how many others.
+test("a reply carries the gateway's headers, the provider's request id, its send time and the calls in flight then", async () => {
+  const headers = {
+    "content-type": "text/event-stream",
+    "x-litellm-model-id": "deployment-a",
+    "x-litellm-model-group": "claude-sonnet-5-5",
+    "x-litellm-attempted-fallbacks": "0",
+    "x-litellm-attempted-retries": "1",
+    "llm_provider-request-id": "req_provider_made_up",
+    "x-litellm-key-spend": "not recorded",
+  };
+  const text = readFileSync(path.join(TESTDATA, "F5-text.sse"), "utf8");
+  const releases: (() => void)[] = [];
+  const arrived: (() => void)[] = [];
+  const { gateway } = world(
+    async () => {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      releases.push(resolve);
+      arrived.shift()?.();
+      await promise;
+      return new Response(text, { status: 200, headers });
+    },
+    { concurrency: 2 }
+  );
+  const told: SentAt[] = [];
+  const before = new Date().toISOString();
+  const replies = Array.from({ length: 3 }, () =>
+    gateway.send(BODY, { onSent: (sent) => told.push(sent) })
+  );
+  // Two calls go at once; the third gets its place when the first ends.
+  while (releases.length < 2) {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    arrived.push(resolve);
+    await promise;
+  }
+  expect(told.map((sent) => sent.inFlight)).toEqual([1, 2]);
+  releases[0]?.();
+  while (releases.length < 3) {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    arrived.push(resolve);
+    await promise;
+  }
+  releases[1]?.();
+  releases[2]?.();
+  const done = await Promise.all(replies);
+  expect(told.map((sent) => sent.inFlight)).toEqual([1, 2, 2]);
+  for (const [index, reply] of done.entries()) {
+    expect(reply.gatewayHeaders).toEqual({
+      "x-litellm-model-id": "deployment-a",
+      "x-litellm-model-group": "claude-sonnet-5-5",
+      "x-litellm-attempted-fallbacks": "0",
+      "x-litellm-attempted-retries": "1",
+      "llm_provider-request-id": "req_provider_made_up",
+    });
+    expect(reply.providerRequestId).toBe("req_provider_made_up");
+    expect(reply.sentAt).toBe(told[index]?.at ?? "");
+    expect(reply.sentAt >= before).toBe(true);
+    expect(reply.inFlight).toBe(told[index]?.inFlight ?? 0);
+  }
+  expect(GATEWAY_HEADERS).toContain("request-id");
+  // F5's own reply carries the provider's id as `llm_provider-request-id` and `request-id`.
+  const fixture = await world(() => f5("text")).gateway.send(BODY);
+  expect(fixture.providerRequestId).toBe(fixture.requestId ?? "");
+  expect(fixture.gatewayHeaders).toEqual({
+    "llm_provider-request-id": fixture.requestId ?? "",
+    "request-id": fixture.requestId ?? "",
+  });
+  // A call that fails was still told when it was sent.
+  const failing: SentAt[] = [];
+  const { gateway: refusing } = world(() => refusal(400, "invalid_request_error", "made up"));
+  await expect(refusing.send(BODY, { onSent: (sent) => failing.push(sent) })).rejects.toThrow();
+  expect(failing.map((sent) => sent.inFlight)).toEqual([1]);
 });

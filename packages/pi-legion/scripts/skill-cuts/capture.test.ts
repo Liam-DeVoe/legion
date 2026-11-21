@@ -12,9 +12,21 @@ import {
   type CaptureOptions,
   captureBody,
   type HintWriter,
+  NEUTRAL_CLAUDE_CONFIG_DIR,
+  NEUTRAL_CWD,
+  NEUTRAL_OS,
+  ompHarnessRules,
   promptDigest,
   refusedTools,
+  renderReminder,
+  rewriteBody,
+  type SavedHead,
+  type SessionFacts,
+  savedCapture,
+  sessionFacts,
+  sessionHeads,
   skillListing,
+  userTurnKey,
 } from "./capture";
 import { type Case, pathHash } from "./cases";
 import { localSource, skillFrontmatter } from "./context";
@@ -145,6 +157,38 @@ function f1Case(id: string): Case {
   };
 }
 
+/** The made-up session the captures stand for: its working directory, the reminder Oh My Pi
+ *  journaled for its first user turn (F1's first message), and the dev box's Claude Code config
+ *  directory, as a store and a configuration would give them. */
+const SESSION_CWD = "/srv/acme/widgets";
+const SESSION_REMINDER = renderReminder("2026-11-19", SESSION_CWD);
+const FIRST_TURN = userTurnKey({
+  timestamp: Number(messages[0]?.timestamp),
+  attribution: String(messages[0]?.attribution),
+});
+const DEVBOX_CLAUDE = "/srv/acme/dotfiles/.claude";
+const SESSION_HEAD: SavedHead = {
+  file: path.join(dir, "sessions", "made-up.json"),
+  head: {
+    store: "store_a",
+    pathHash: pathHash("/sessions/alpha.jsonl"),
+    held: true,
+    cwd: SESSION_CWD,
+    start: "2026-11-19T09:00:00.000Z",
+    firstUser: { timestamp: Number(messages[0]?.timestamp), attribution: "user" },
+    reminders: [{ turn: FIRST_TURN, reminder: SESSION_REMINDER, placement: "prefix" }],
+    bytes: 4096,
+    badLines: 1,
+    readAt: "2026-11-21T00:00:00.000Z",
+  },
+};
+const SESSION: SessionFacts = sessionFacts(SESSION_HEAD, {
+  turn: FIRST_TURN,
+  date: { value: "2026-11-20", from: "the UTC date of the case's step in the session" },
+  devbox: true,
+  devboxClaudeConfigDir: DEVBOX_CLAUDE,
+});
+
 /** The skill each hint request names, in the order the stand-in got them. */
 const hintRequests: string[] = [];
 /** The `anthropic-version` header each hint request came with. */
@@ -242,6 +286,7 @@ function captures(): Promise<Captures> {
       source: localSource(repos),
       models: path.join(dir, "models.yml"),
       hints,
+      session: SESSION,
     };
     const dirs = { old: path.join(dir, "old"), new: path.join(dir, "new") };
     const armOf = (c: Case, name: ArmName) => buildArm(c, name, dirs, path.join(dir, "arms"));
@@ -419,7 +464,7 @@ describe.skipIf(skip)("capture on the pinned Oh My Pi", () => {
   );
 
   test(
-    "a devbox case's context file is Oh My Pi's user-level one: CLAUDE.md in the scratch Claude Code config directory its run names, not a project file",
+    "a devbox case's context file is Oh My Pi's user-level one: CLAUDE.md in the scratch Claude Code config directory its run names, not a project file, shown at the dev box's",
     async () => {
       const { old } = await captures();
       const { record } = old.capture;
@@ -427,16 +472,83 @@ describe.skipIf(skip)("capture on the pinned Oh My Pi", () => {
       expect(record.context.contextFiles).toMatchObject([
         { repo: "acme/project", path: ".claude/CLAUDE.md", as: "user level" },
       ]);
-      const system = systemBlocks(old.capture.body).join("\n");
-      // Oh My Pi's block of it names the file where Oh My Pi read it at user level
+      // As Oh My Pi sent it, its block names the file where Oh My Pi read it at user level
       // (CLAUDE_CONFIG_DIR/CLAUDE.md), and the working directory holds no .claude/CLAUDE.md.
-      expect(system).toContain(
+      const raw = systemBlocks(JSON.parse(readFileSync(record.harness.rawBody, "utf8"))).join("\n");
+      expect(raw).toContain(
         `<file path="${path.join(configDir, "CLAUDE.md")}">\n# Made-up user rules\n\nKeep each answer short.`
       );
-      expect(system).not.toContain(path.join(record.scratch, "work", ".claude"));
+      expect(raw).not.toContain(path.join(record.scratch, "work", ".claude"));
       expect(existsSync(path.join(record.scratch, "work", ".claude"))).toBe(false);
+      // The body the replays send names it at the dev box's config directory, the configuration's
+      // devboxClaudeConfigDir, and names the scratch one nowhere.
+      const system = systemBlocks(old.capture.body).join("\n");
+      expect(system).toContain(
+        `<file path="${DEVBOX_CLAUDE}/CLAUDE.md">\n# Made-up user rules\n\nKeep each answer short.`
+      );
+      expect(system).not.toContain(configDir);
+      expect(record.harness.claudeConfigDir).toEqual({
+        value: DEVBOX_CLAUDE,
+        from: "the configuration's devboxClaudeConfigDir",
+      });
       // It is the prompt's one context file.
       expect(system.match(/<file path="/g)).toHaveLength(1);
+    },
+    ROW_TIMEOUT_MS
+  );
+
+  // Catches: a captured body that still names the capture's scratch directory (which names the
+  // run, the cut and the skill under test), or a reminder of the capture's own working directory
+  // and date in place of the session's.
+  test(
+    "the body holds no path of the capture's scratch, and its reminder is the session's own: its recorded working directory, byte for byte",
+    async () => {
+      const { old, fresh, none } = await captures();
+      for (const { capture } of [old, fresh, none]) {
+        const { body, record } = capture;
+        const sent = JSON.stringify(body);
+        const own = [
+          record.scratch,
+          path.join(dir, "scratch"),
+          path.join(dir, "old"),
+          path.join(dir, "new"),
+        ];
+        for (const scratchPath of own) expect(sent).not.toContain(scratchPath);
+        // The reminder at the start of the first user turn is the one the session journaled.
+        const first = (body.messages as { content: { text?: string }[] }[])[0]?.content[0]?.text;
+        expect(first).toBe(SESSION_REMINDER);
+        const shown = [...sent.matchAll(/current working directory: '([^']*)'/g)].map(
+          (match) => match[1]
+        );
+        expect(shown).toEqual([SESSION_CWD]);
+        for (const name of ["alpha", "acme-skills-1", "old", "new", "none", "scratch"]) {
+          expect(shown[0]).not.toContain(name);
+        }
+        // The body as Oh My Pi sent it held the capture's working directory, which names the
+        // capture's scratch: the rule replaced it.
+        const raw = readFileSync(record.harness.rawBody, "utf8");
+        expect(raw).toContain(`current working directory: '${path.join(record.scratch, "work")}'`);
+        expect(record.harness.replaced).toContainEqual({
+          what: "the date and working-directory reminder",
+          count: 1,
+        });
+        expect(record.harness.cwd).toEqual({
+          value: SESSION_CWD,
+          from: "the session header's cwd",
+        });
+        expect(record.harness.reminder.from).toBe(
+          `the session's journaled reminder of ${FIRST_TURN}`
+        );
+        expect(record.harness.head).toEqual({
+          store: "store_a",
+          pathHash: pathHash("/sessions/alpha.jsonl"),
+          file: SESSION_HEAD.file,
+          held: true,
+        });
+        // A prompt Oh My Pi built shows the neutral OS line, the same in every arm.
+        expect(sent).toContain(`<workstation>\\n- OS: ${NEUTRAL_OS}\\n`);
+        expect(record.harness.os?.value).toBe(NEUTRAL_OS);
+      }
     },
     ROW_TIMEOUT_MS
   );
@@ -463,6 +575,7 @@ describe.skipIf(skip)("capture on the pinned Oh My Pi", () => {
           source: localSource(path.join(dir, "repos")),
           models: path.join(dir, "models.yml"),
           hints,
+          session: SESSION,
         }
       );
       expect(read.record).toEqual(old.capture.record);
@@ -681,6 +794,7 @@ describe.skipIf(skip)("capture on the pinned Oh My Pi", () => {
           source: localSource(path.join(dir, "repos")),
           models: path.join(dir, "models.yml"),
           hints,
+          session: SESSION,
         }
       );
       const { record, body } = capture;
@@ -735,6 +849,7 @@ describe.skipIf(skip)("capture on the pinned Oh My Pi", () => {
             source: localSource(path.join(dir, "repos")),
             models: path.join(dir, "models.yml"),
             hints,
+            session: SESSION,
           }
         );
         const sent = systemBlocks(body);
@@ -796,6 +911,7 @@ describe.skipIf(skip)("capture on the pinned Oh My Pi", () => {
           source: localSource(path.join(dir, "repos")),
           models: path.join(dir, "models.yml"),
           hints,
+          session: SESSION,
         }
       );
       expect(record.tools?.recorded).toEqual(recorded);
@@ -838,6 +954,7 @@ describe.skipIf(skip)("capture on the pinned Oh My Pi", () => {
           source: localSource(path.join(dir, "repos")),
           models: path.join(dir, "models.yml"),
           hints,
+          session: SESSION,
         }
       );
       expect(record.exit.code).toBe(0);
@@ -870,6 +987,7 @@ describe.skipIf(skip)("capture on the pinned Oh My Pi", () => {
         source: localSource(path.join(dir, "repos")),
         models,
         hints,
+        session: SESSION,
         hintModel: "anthropic/claude-sonnet-5-5",
       };
       const dirs = { old: path.join(dir, "old"), new: path.join(dir, "new") };
@@ -1027,6 +1145,7 @@ export default function bootProbe(pi) {
           source: localSource(path.join(dir, "repos")),
           models: path.join(dir, "models.yml"),
           hints,
+          session: SESSION,
         }
       );
       expect(record.exit).toEqual({ code: 0, signal: null, reason: "" });
@@ -1072,6 +1191,7 @@ export default function bootProbe(pi) {
           source: localSource(path.join(dir, "repos")),
           models: path.join(dir, "models.yml"),
           hints: refusedHint,
+          session: SESSION,
         }
       ).catch((caught: unknown) => caught);
       expect(failed).toBeInstanceOf(BudgetSpent);
@@ -1106,4 +1226,223 @@ test("each tool Oh My Pi refuses in --tools is read from its refusal, one or sev
     { name: "codegraph", reason: expect.stringContaining("defines it") },
   ]);
   expect(refusedTools("some other failure")).toEqual([]);
+});
+
+/** A head of the made-up session at `pathHash`, with `fields` in place of the default ones. */
+function madeUpHead(fields: Partial<SavedHead["head"]>): SavedHead {
+  return { file: SESSION_HEAD.file, head: { ...SESSION_HEAD.head, ...fields } };
+}
+
+const STEP_DATE = { value: "2026-11-21", from: "the UTC date of the case's step in the session" };
+
+// Catches: a capture that shows a neutral or a rendered value where the store holds the
+// session's own, or the capture's own value where it holds none.
+test("sessionFacts: the journaled reminder byte for byte, else one rendered from the header's working directory and the step's date, else neutral values", () => {
+  const options = {
+    turn: FIRST_TURN,
+    date: STEP_DATE,
+    devbox: false,
+    devboxClaudeConfigDir: DEVBOX_CLAUDE,
+  };
+  const journaled = sessionFacts(SESSION_HEAD, options);
+  expect(journaled.cwd).toEqual({ value: SESSION_CWD, from: "the session header's cwd" });
+  expect(journaled.reminder.value).toBe(SESSION_REMINDER);
+  expect(journaled.date).toEqual({
+    value: "2026-11-19",
+    from: "the session's journaled reminder of the turn",
+  });
+  // Not a dev box: Claude Code's config directory is neutral whatever the configuration names.
+  expect(journaled.claudeConfigDir).toEqual({
+    value: NEUTRAL_CLAUDE_CONFIG_DIR,
+    from: "neutral: the context is no dev box's",
+  });
+  // A reminder of another turn is not this one's: the reminder is rendered for the step's date.
+  const otherTurn = sessionFacts(SESSION_HEAD, { ...options, turn: "user:1:user" });
+  expect(otherTurn.reminder).toEqual({
+    value: renderReminder("2026-11-21", SESSION_CWD),
+    from: "rendered from the working directory (the session header's cwd) and the date (the UTC date of the case's step in the session)",
+  });
+  // No header cwd: the journaled reminder's working directory.
+  const noHeader = sessionFacts(madeUpHead({ cwd: null }), options);
+  expect(noHeader.cwd).toEqual({
+    value: SESSION_CWD,
+    from: "the session's journaled reminder of the turn",
+  });
+  // Neither: neutral, saying why; and a session the store does not hold.
+  const neither = sessionFacts(madeUpHead({ cwd: null, reminders: [] }), options);
+  expect(neither.cwd.value).toBe(NEUTRAL_CWD);
+  expect(neither.cwd.from).toContain("neither a header cwd nor a reminder");
+  expect(neither.reminder.value).toBe(renderReminder("2026-11-21", NEUTRAL_CWD));
+  const gone = sessionFacts(
+    madeUpHead({ held: false, cwd: null, reminders: [], firstUser: null }),
+    options
+  );
+  expect(gone.cwd).toEqual({
+    value: NEUTRAL_CWD,
+    from: "neutral: the store holds no session of this hash",
+  });
+  expect(gone.head?.held).toBe(false);
+  const unnamed = sessionFacts(undefined, options);
+  expect(unnamed.head).toBeNull();
+  expect(unnamed.cwd.from).toBe("neutral: no session is named");
+  // A dev box: the configuration's config directory, else a neutral one saying why.
+  expect(sessionFacts(SESSION_HEAD, { ...options, devbox: true }).claudeConfigDir.value).toBe(
+    DEVBOX_CLAUDE
+  );
+  expect(
+    sessionFacts(SESSION_HEAD, { ...options, devbox: true, devboxClaudeConfigDir: undefined })
+      .claudeConfigDir
+  ).toEqual({
+    value: NEUTRAL_CLAUDE_CONFIG_DIR,
+    from: "neutral: the configuration names no devboxClaudeConfigDir",
+  });
+});
+
+// Catches: a rule that misses a harness string, touches a recorded prompt, reads a `$` of the
+// session's text as a pattern, or lets a body through that still names the scratch.
+test("the harness rules replace the capture's reminder, context-file paths, OS line and working directory, and leave a recorded prompt as recorded", () => {
+  const work = "/scratch/run-1/legion-retro/captures/abc/work";
+  const config = "/scratch/run-1/legion-retro/captures/abc/claude-config";
+  const facts = sessionFacts(SESSION_HEAD, {
+    turn: FIRST_TURN,
+    date: STEP_DATE,
+    devbox: true,
+    devboxClaudeConfigDir: DEVBOX_CLAUDE,
+  });
+  const captured = renderReminder("2026-11-21", work);
+  const body = {
+    model: "claude-sonnet-5-5",
+    system: [
+      {
+        type: "text",
+        text: `<project-context>\n<workstation>\n- OS: linux 4.19.0-gvisor\n- Arch: x64\n</workstation>\n<file path="${work}/AGENTS.md">\nKeep $1 and $& as they are.\n</file>\n<file path="${config}/CLAUDE.md">\nRules.\n</file>`,
+      },
+    ],
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: captured },
+          {
+            type: "text",
+            text: "Cost: $5. Look in /legion/scratch/tmp/own-session for the notes.",
+          },
+        ],
+      },
+      { role: "assistant", content: [{ type: "text", text: `I am in ${work}/src.` }] },
+    ],
+  };
+  const built = rewriteBody(body, ompHarnessRules(work, config, facts, true), ["/scratch/run-1"]);
+  expect(built.faults).toEqual([]);
+  const text = JSON.stringify(built.body);
+  expect(text).not.toContain("/scratch/run-1");
+  expect((built.body.messages as unknown[] | undefined)?.[0]).toEqual({
+    role: "user",
+    content: [
+      { type: "text", text: SESSION_REMINDER },
+      // The session's own text, a `$` and its own scratch path among it, is left as it is.
+      { type: "text", text: "Cost: $5. Look in /legion/scratch/tmp/own-session for the notes." },
+    ],
+  });
+  const system = String(Object(built.body.system as unknown[])[0]?.text);
+  expect(system).toContain(`<file path="${SESSION_CWD}/AGENTS.md">\nKeep $1 and $& as they are.`);
+  expect(system).toContain(`<file path="${DEVBOX_CLAUDE}/CLAUDE.md">`);
+  expect(system).toContain(`<workstation>\n- OS: ${NEUTRAL_OS}\n- Arch: x64\n`);
+  expect(text).toContain(`I am in ${SESSION_CWD}/src.`);
+  expect(built.replaced).toEqual([
+    { what: "the date and working-directory reminder", count: 1 },
+    { what: "a context file's path in the working directory", count: 1 },
+    { what: "the user-level context file's path", count: 1 },
+    { what: "the workstation's OS line", count: 1 },
+    { what: "another mention of the working directory", count: 1 },
+  ]);
+  // A recorded prompt is sent as recorded: its OS line stays, and a scratch path in it is a fault.
+  const recorded = rewriteBody(
+    body,
+    ompHarnessRules(work, config, facts, false),
+    ["/scratch/run-1"],
+    (where) => where.length === 1 && where[0] === "system"
+  );
+  expect(recorded.body.system).toEqual(body.system);
+  expect(recorded.faults).toEqual(["system.0.text: /scratch/run-1"]);
+  expect(recorded.replaced.map((rule) => rule.what)).not.toContain("the workstation's OS line");
+  // The body given is never changed.
+  expect(body.messages[0]?.content[0]?.text).toBe(captured);
+});
+
+// Catches: a head read twice from the store, a hash the store does not hold taken as held, or a
+// failed read taken for a neutral session.
+test("sessionHeads reads the heads it lacks in one query through the store command, saves each, and reads a saved one back", async () => {
+  const root = path.join(dir, "heads");
+  mkdirSync(root, { recursive: true });
+  const calls = path.join(root, "calls.txt");
+  const held = pathHash("/sessions/held.jsonl");
+  const missing = pathHash("/sessions/missing.jsonl");
+  const row = JSON.stringify({
+    hash: held,
+    cwd: SESSION_CWD,
+    start: "2026-11-19T09:00:00.000Z",
+    first_user: { timestamp: 1795139983655, attribution: "user" },
+    reminders: [
+      { turn: "user:1795139983655:user", reminder: SESSION_REMINDER, placement: "prefix" },
+    ],
+    bytes: 4096,
+    bad_lines: 1,
+  });
+  // A store command that prints the row as psql prints a one-column table, and keeps its query.
+  const command = path.join(root, "store.sh");
+  writeFileSync(
+    command,
+    `#!/bin/sh\ncat > "${root}/query-$$.sql"\necho "$1" >> "${calls}"\nprintf ' head \\n------\\n %s\\n(1 row)\\n\\n' '${row.replaceAll("'", "'\\''")}'\n`,
+    { mode: 0o755 }
+  );
+  const sessions = path.join(root, "sessions");
+  const heads = await sessionHeads(command, "store_a", [held, missing, held], sessions);
+  expect(readFileSync(calls, "utf8")).toBe("store_a\n");
+  const queries = readdirSync(root).filter((file) => file.startsWith("query-"));
+  expect(queries).toHaveLength(1);
+  const query = readFileSync(path.join(root, queries[0] ?? ""), "utf8");
+  expect(query).toContain(`'${held}'`);
+  expect(query).toContain(`'${missing}'`);
+  expect(heads.get(held)?.head).toMatchObject({
+    store: "store_a",
+    pathHash: held,
+    held: true,
+    cwd: SESSION_CWD,
+    firstUser: { timestamp: 1795139983655, attribution: "user" },
+    reminders: [
+      { turn: "user:1795139983655:user", reminder: SESSION_REMINDER, placement: "prefix" },
+    ],
+    bytes: 4096,
+    badLines: 1,
+  });
+  expect(heads.get(missing)?.head).toMatchObject({ held: false, cwd: null, reminders: [] });
+  expect(existsSync(path.join(sessions, `${held}.json`))).toBe(true);
+  // Read again: both from their files, and no query.
+  const again = await sessionHeads(command, "store_a", [held, missing], sessions);
+  expect(readFileSync(calls, "utf8")).toBe("store_a\n");
+  expect(again.get(held)?.head).toEqual(heads.get(held)?.head);
+  // A command that fails is a failed read, never a neutral session.
+  const failing = path.join(root, "failing.sh");
+  writeFileSync(failing, "#!/bin/sh\necho 'permission denied for table' >&2\nexit 3\n", {
+    mode: 0o755,
+  });
+  await expect(
+    sessionHeads(failing, "store_a", [pathHash("/sessions/other.jsonl")], sessions)
+  ).rejects.toThrow("exited 3: permission denied for table");
+});
+
+// Catches: a capture made before the harness-string rule read back and replayed.
+test("a saved capture whose record holds no harness record is refused", () => {
+  const root = path.join(dir, "saved-before");
+  mkdirSync(root, { recursive: true });
+  const files = {
+    body: path.join(root, "c.old.body.json"),
+    record: path.join(root, "c.old.capture.json"),
+  };
+  writeFileSync(files.body, JSON.stringify({ model: "claude-sonnet-5-5", messages: [] }));
+  writeFileSync(files.record, JSON.stringify({ case: "c", arm: "old" }));
+  expect(() => savedCapture(files)).toThrow("was made before the harness-string rule");
+  writeFileSync(files.record, JSON.stringify({ case: "c", arm: "old", harness: { replaced: [] } }));
+  expect(savedCapture(files)?.record.case).toBe("c");
 });

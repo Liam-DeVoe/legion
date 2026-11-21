@@ -1,11 +1,12 @@
 /**
- * The four arms of a case (plan, R5 `arms.ts`): `old` (the skill's base text, `--old`), `new` (the
- * cut text, `--new`), `none` (no skill) and `minus` (a copy of the old directory less every line
+ * The five arms of a case (plan, R5 `arms.ts`): `old` (the skill's base text, `--old`), `new` (the
+ * cut text, `--new`), `none` (no skill), `minus` (a copy of the old directory less every line
  * of the case's baseFile that is the case's line, trimmed, or less every line of any of its files
  * that is `--planted-line`, trimmed, when one is given: a rule written twice is still the rule, so
- * each copy of it goes). Only the skill's directory differs between arms: the messages are the
- * case's own but for the text of the skill's files in its read results, and the profile is the
- * case's own but for the skill, which `none` leaves out.
+ * each copy of it goes) and `twin` (the old directory again, built as `old` is: the false-loss
+ * control's second copy of the old arm, with its own capture and runs). Only the skill's directory
+ * differs between arms: the messages are the case's own but for the text of the skill's files in
+ * its read results, and the profile is the case's own but for the skill, which `none` leaves out.
  *
  * In each arm but `none`, each read result of a file of the skill (the case's `skillReads`) is
  * answered from the arm's file the way the pinned Oh My Pi 18.18.6 answers a `skill://` read: one
@@ -213,7 +214,9 @@ export function buildArm(c: Case, name: ArmName, dirs: ArmDirs, scratch: string)
   }
 
   const skillDir =
-    name === "minus" ? minusDirectory(c, dirs, scratch) : directory(dirs[name], name);
+    name === "minus"
+      ? minusDirectory(c, dirs, scratch)
+      : directory(dirs[name === "twin" ? "old" : name], name);
   const arm: Arm = {
     name,
     skill: c.skill,

@@ -3,14 +3,32 @@
 The runner that tests whether a cut of a skill's text keeps what agents do with it. Run every command
 from `packages/pi-legion` as `bun scripts/skill-cuts/cli.ts <command> ...`.
 
+A replayed request is sent as a real session sent it, and nothing of the run that made it may
+change what the agent does. Two such things did, and the runner now removes both:
+
+- **The request id.** A body whose `metadata.user_id` (or, on the OpenAI route, `prompt_cache_key`)
+  stays the same from run to run moves the pass rate with the batch it is sent in. One body, sent
+  interleaved to one gateway deployment, passed 8 of 30 runs with one fixed id, 26 of 30 with
+  another, and 18 of 30 with a fresh id for every send. So the runner draws a fresh id for every
+  run (the same id in each round of one run) and for every judge call, sends the runs of all the
+  arms of a round in one seeded order, never one arm's batch after another's, and checks each
+  skill with a false-loss control (`behaviour control`).
+- **The harness strings.** A captured body named the capture's own scratch directory, which named
+  the skill under test and the cut, in Oh My Pi's date and working-directory reminder and in the
+  context files' paths. On one case, with that path the agent read the skill's reference in 12 and
+  33 of 40 runs; with a path that named no skill, in 0 and 1 of 40. So every string of a captured
+  body that comes from the capture and not from the session is replaced by the session's recorded
+  value, or by a neutral one where the store holds none ("The harness strings", below).
+
 Every private value (the owners, the session stores, the gateway's address, the paths left out, the
-repositories copies map to) comes from the `--config <skill-cuts.json>` file at run time
-(`config.ts` says each key). No file here names one. The behaviour test needs no GitHub token: it
-reads the skill texts from two directories, the cases from a file outside the repository, the
-repositories a case's context needs from local clones (`--repos`), and the gateway key from
-`--key-file`, inside the process that uses it, never printed, logged or written. `copies`,
-`build-cases` and `build-tasks` only read GitHub, through `gh`: GET calls, and, in `copies` and
-`build-cases`, GraphQL queries that read file contents in batches.
+repositories copies map to, the dev box's Claude Code config directory) comes from the `--config
+<skill-cuts.json>` file at run time (`config.ts` says each key). No file here names one. The
+behaviour test needs no GitHub token: it reads the skill texts from two directories, the cases from
+a file outside the repository, the repositories a case's context needs from local clones
+(`--repos`), and the gateway key from `--key-file`, inside the process that uses it, never
+printed, logged or written. `copies`, `build-cases` and `build-tasks` only read GitHub, through
+`gh`: GET calls, and, in `copies` and `build-cases`, GraphQL queries that read file contents in
+batches.
 
 ## Commands
 
@@ -44,15 +62,22 @@ skill's cases (`cases.ts`), one JSON object per line.
   (exit 2): it gets no verdict, with the reason `too few sessions on served models` and its served
   and total counts, and the walk of the cut's ranking goes on to the next skill.
 - `confirm`: 40 fresh runs of old and new for each flagged case.
-- `control`: 40 runs of `minus` (old without each line of the case's file that is the case's line,
-  trimmed, or without each line that is `--planted-line`; a rule written twice is still the rule,
-  so every copy goes; a link in the old directory is copied as the file it names) and 40 fresh
-  runs of old, on the skill's control case.
-- `report`: each case's passes per arm and stage, the skill's verdict and its reason (`keeps`
-  prints as "no loss detected by the registered rule"), the drops per judge control, an estimate
-  of the procedure's false-loss chance at the cases run (exact binomial under identical old and
-  new texts, the pass rates taken from each case's own screen; its assumptions are printed with
-  it), a table of the chance it finds a loss of 10 to 40 points in one informative case, the spend
+- `control`: on the skill's control case, 40 runs each of three arms: old; `minus` (old without
+  each line of the case's file that is the case's line, trimmed, or without each line that is
+  `--planted-line`; a rule written twice is still the rule, so every copy goes; a link in the old
+  directory is copied as the file it names); and `twin` (old again, with a capture and runs of its
+  own). Two controls are scored on these runs by the confirm rule (a loss when the other arm
+  passes at least 10 fewer of 40 runs than old). The planted-loss control, old against `minus`,
+  must be a loss, or the test could not see a loss. The false-loss control, old against `twin`,
+  must be no loss, or the test calls a loss where the texts are the same. A skill whose planted-loss
+  control is no loss, or whose false-loss control is a loss, gets no verdict, and the report says
+  which control failed.
+- `report`: each case's passes per arm and stage, the control case's passes of old, `minus` and
+  `twin` and what each control says, the skill's verdict and its reason (`keeps` prints as "no
+  loss detected by the registered rule"), the drops per judge control, an estimate of the
+  procedure's false-loss chance at the cases run (exact binomial under identical old and new
+  texts, the pass rates taken from each case's own screen; its assumptions are printed with it),
+  a table of the chance it finds a loss of 10 to 40 points in one informative case, the spend
   at list price, the peak memory, and how many captures' system-prompt digests differ from their
   session's. It calls no model, and needs only `--config`, `--out`, `--old` and `--cases`. With
   `--reading-models` it also prints each model of that file with its sessions and whether the
@@ -67,7 +92,13 @@ skill's cases (`cases.ts`), one JSON object per line.
 
 `score.ts` holds the rules. Each case's results are one file, `<out>/cases/<case id>.json`,
 written whole after each round of runs, so a run started again goes on from what was saved and
-skips each complete case. `--after-case <command>` runs `<command> <that file>` when a case's stage
+skips each complete case. Each run in it keeps its arm, its verdict, the session id it went with
+(`userId`) and its place in its round's send order (`sendPlace`), so both controls can be
+recounted from it. A round sends every arm's runs in one order, shuffled by the round's recorded
+seed (`replay.ts`'s `sendOrder`); the first run of each arm in that order goes alone among its
+arm's, so its reply writes the prefix cache the arm's later runs read, and no place of the order
+changes. A results file whose stages were run before this (they record no `sends`) is refused:
+use a new `--out`. `--after-case <command>` runs `<command> <that file>` when a case's stage
 ends. Captures are kept under `<out>/captures/`; a capture that is not there yet is made with Oh My
 Pi and needs `--models`: `--omp`, else `$LEGION_OMP_PATH`, else the `omp` on PATH, taken as an
 absolute path; a command given `--models` when none of them names one is refused (exit 2), and
@@ -92,6 +123,38 @@ Responses route), at most three rounds. A Messages body gets a cache breakpoint 
 message; a Responses body gets none, since that route caches the shared prefix by itself. The
 judge stays `claude-opus-5-5` on the Messages route and reads a Responses reply's text and tool
 calls as it reads a Messages reply's, so its request names no model, route or arm.
+
+### The harness strings
+
+Before a capture is saved, every string of its body that comes from the capture's run and not
+from the session is replaced (`capture.ts`, "The harness strings"):
+
+- Oh My Pi's reminder at the start of the first user turn (`Today: <date>; current working
+  directory: '<dir>'`) becomes the reminder Oh My Pi journaled for that turn in the session, byte
+  for byte. Where the session's head holds none, it is written with the session's working
+  directory and the UTC date of the turn it stands for: a case's step, or a load task's first user
+  turn.
+- The working directory is the session header's `cwd`, else the one its journaled reminder names,
+  else `/work`. Every context file's `<file path="…">` names it, and every other mention of the
+  capture's working directory does too.
+- A devbox context's user-level `CLAUDE.md` is shown at `<devboxClaudeConfigDir>/CLAUDE.md`, the
+  configuration's value of the dev box's CLAUDE_CONFIG_DIR, else at `/work/.claude/CLAUDE.md`.
+- A prompt Oh My Pi builds shows `- OS: linux` in its workstation lines, the same in every arm. A
+  subagent's recorded prompt is sent as recorded, its workstation lines and `<file path>` blocks
+  the session's own.
+- The stand-in daemons answer with that working directory and made-up ids.
+- A Claude Code capture (`load`) shows the session's working directory, its memory directory
+  under the config directory above, the session's date in `Today's date is`, and `OS Version:
+  Linux`.
+
+A body that still holds the case's scratch directory after this is refused. The session's head is
+read once from its store, through the configuration's `psqlCommand` (`session-head.sql`: the
+file of the path hash, its first 256 KiB only), and saved as `<out>/sessions/<path hash>.json`;
+a read that fails stops that capture, with why. Each capture's record says each value it shows
+and where the value came from (`harness`: the store, the configuration, or neutral, and why),
+how many strings each rule replaced, and keeps the body as the host sent it beside the saved one
+(`<stem>.raw.body.json`). A saved capture whose record holds no `harness` was made before this
+rule and is refused.
 
 ### `read`
 
@@ -139,7 +202,7 @@ bun scripts/skill-cuts/cli.ts load --config <skill-cuts.json> --key-file <file> 
   [--budget-usd <n>] [--concurrency <n>] [--request-log <file>] \
   [--repos <dir>] [--cache-dir <dir>] [--scratch <dir>] \
   [--models <models.yml>] [--omp <binary>] [--hint-model <model>] [--omp-config <file>]... \
-  [--claude <binary>]
+  [--claude <binary>] [--context-session <store>:<path hash>]
 ```
 
 The load test of R6 and R7 (`load.ts`): whether the host's agent loads the skill for each task,
@@ -160,16 +223,24 @@ Per task, the host's first request is captured once against a recorder, in the c
 task's own profile (Oh My Pi through `capture.ts`, which lists the skill under the hint Oh My Pi
 has a model write, with the plugins' stand-ins, and sends a subagent's recorded prompt with only
 the skill's listing line changed; Claude Code with a scratch `CLAUDE_CONFIG_DIR` per profile that
-installs the skills as local plugins), then sent `--runs` times. An `openai/<id>` model runs on
-Oh My Pi only, on the Responses route, with an Anthropic `--hint-model`. A run loads the skill
+installs the skills as local plugins), then sent `--runs` times. A capture follows the harness
+strings rule above: a session task stands for its own session, and a written task for the one
+`--context-session` names (the session its profile was rebuilt from; `<path hash>` is the
+SHA-256 of that session file's path in hex), or for none, with neutral values, when it is not
+given. The runs of a profile's tasks are sent together, once each of its tasks has its capture,
+in one seeded order, each run with a fresh session id, the first run of each task in the order
+alone among its task's. An `openai/<id>` model runs on Oh My Pi only, on the Responses route,
+with an Anthropic `--hint-model`. A run loads the skill
 when the first assistant message reads it (Oh My Pi: `read` of `skill://<name>` or its
 `SKILL.md`, a `tool_use` block or a Responses `function_call` item; Claude Code: `Skill` naming
 `<name>` or `<plugin>:<name>`, or `Read` of its `SKILL.md`), and never goes past that message. It
-prints each task's loads and verdict and the skill's verdict (`score.ts`), and writes
-`<out>/runs/<task>.jsonl` (one line per run), `<out>/captures/` and `<out>/summary.json`; each
-run line and each task of the summary names its profile file and the SHA-256 of its bytes. A
-task whose run file is complete is skipped, so a run started again goes on from what was saved;
-a task whose capture or runs were made under a profile of other bytes is refused.
+prints each task's loads and verdict, each profile's send seed, and the skill's verdict
+(`score.ts`), and writes `<out>/runs/<task>.jsonl` (one line per run, with its session id, its
+send seed and its place in the order), `<out>/captures/`, `<out>/sessions/` and
+`<out>/summary.json`; each run line and each task of the summary names its profile file and the
+SHA-256 of its bytes. A task whose run file is complete is skipped, so a run started again goes
+on from what was saved; a task whose capture or runs were made under a profile of other bytes is
+refused, and so is an `--out` whose runs were sent before each had its own session id.
 
 ### `copies`
 
@@ -381,9 +452,16 @@ that goes on with another model is refused.
 
 Each model request of `behaviour`, `read`, `control` and `load` adds one JSON line to the request
 log (`<out>/requests.jsonl` for `behaviour` and `load`, `<out file>.requests.jsonl` otherwise):
-what the call was for, the model, the thinking type and budget, `max_tokens` (a Responses body's
-`max_output_tokens`), the temperature, the effort (a Responses body's `reasoning.effort`), and the
-reply's usage and dollars at list price. It never holds the key or a message's text.
+what the call was for; when it was asked for (`at`), when it got its place and was sent
+(`sentAt`) and how many calls were in flight then, it among them (`inFlight`); the session id it
+went with (`userId`: its `metadata.user_id` or `prompt_cache_key`); the model, the thinking type
+and budget, `max_tokens` (a Responses body's `max_output_tokens`), the temperature, the effort (a
+Responses body's `reasoning.effort`); and the reply's answering model (`answeredBy`), its message
+id, its request id and the provider's request id, the gateway's headers of it (`gateway`:
+`x-litellm-model-id`, `x-litellm-model-group`, `x-litellm-attempted-fallbacks`,
+`x-litellm-attempted-retries` and the provider's request-id headers, each it came with), its
+cache read and write tokens, usage and dollars at list price. It never holds the key or a
+message's text.
 
 ## Exit status
 

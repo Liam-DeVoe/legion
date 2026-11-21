@@ -316,3 +316,17 @@ test("only the skill's directory differs between arms", () => {
   // No arm changes the case it was built from.
   expect(f1Case).toEqual(original);
 });
+
+// Catches: a false-loss control whose second arm is not the old text, or is a copy the model can
+// tell from it.
+test("twin is the old arm again: the old directory, the same messages and profile, its own name", () => {
+  const old = arm("old");
+  const twin = arm("twin");
+  expect(twin.name).toBe("twin");
+  expect(twin.skillDir).toBe(old.skillDir ?? "");
+  expect(twin.skillDir).toBe(path.resolve(oldDir));
+  expect(JSON.stringify(twin.messages)).toBe(JSON.stringify(old.messages));
+  expect(twin.profileSkills).toEqual(old.profileSkills);
+  expect(twin.installedDir).toBe(old.installedDir);
+  expect(f1Case).toEqual(original);
+});

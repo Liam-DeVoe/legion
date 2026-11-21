@@ -64,20 +64,37 @@
  * first message: no tool call is answered, so a skill that another skill sends the agent to is
  * never counted as loaded by its own description.
  *
+ * A capture shows its task's session, not the run that captured it (capture.ts, "The harness
+ * strings"): a task from a session stands for that session, and a written task for the session
+ * `--context-session` names, whose context its profile was rebuilt from. That session's head is
+ * read from its store once (`<out>/sessions/<pathHash>.json`); the capture shows its working
+ * directory and the reminder Oh My Pi journaled for its first user turn (else one rendered for
+ * that turn's UTC date), and Claude Code's body its working directory, its config directory's
+ * memory path, that date and a neutral OS line (`claudeHarnessRules`). A written task with no
+ * `--context-session` names no session: its values are neutral, its date the capture's own.
+ *
+ * The runs of a profile's tasks are sent together, once each task of it has its capture, in one
+ * seeded order (`sendRuns`): no task's runs go as a batch of their own. Each run goes with a
+ * session id of its own (gateway.ts's `freshIdentity`), its body otherwise its capture's, since a
+ * captured body holds the one id of the host run that made it, and a gateway that routes or
+ * caches by that id makes it a factor of every run that sends it.
+ *
  * Under `--out`: `summary.json` (the test's settings, what the host lists for the skill, each
  * task's profile file with the SHA-256 of its bytes, its loads and verdict, the skill's verdict,
  * the spend), `runs/<task id>.jsonl` (one JSON line per run, LoadRun, which names its task's
- * profile file and that SHA-256 too), and `captures/` (each task's body and its record). A task
- * whose run file holds its runs is skipped, so a command started again goes on from what was
- * saved; an `--out` written by a test of other settings (another skill text, name, host, model,
- * thinking level, run count or hint model), or holding a capture or runs of a task of the same id
- * with another text, under a profile of other bytes, or that its summary does not list (so the
- * text they were made for is not known), is refused. So is an `openai/<id>` model on Oh My Pi
- * with no `--hint-model` when no task's capture is saved: the hint model would be that model,
- * and hints are written on the Messages route only. The verdicts are score.ts's: a task's is
- * `taskFault` and the skill's `descriptionFault`, given only once every task has its runs and
- * they are LOAD_RUNS. Each task's line ends with the seconds of its phases: its capture (its
- * context build, and the GitHub reads in it with their count), its runs, its writes, the rest,
+ * profile file and that SHA-256 too, its session id and its place in its send order),
+ * `captures/` (each task's body, the body as the host sent it, and its record) and `sessions/`.
+ * A task whose run file holds its runs is skipped, so a command started again goes on from what
+ * was saved; an `--out` written by a test of other settings (another skill text, name, host,
+ * model, thinking level, run count, hint model, or one whose runs were sent before each had its
+ * own session id), or holding a capture or runs of a task of the same id with another text,
+ * under a profile of other bytes, or that its summary does not list (so the text they were made
+ * for is not known), is refused. So is an `openai/<id>` model on Oh My Pi with no `--hint-model`
+ * when no task's capture is saved: the hint model would be that model, and hints are written on
+ * the Messages route only. The verdicts are score.ts's: a task's is `taskFault` and the skill's
+ * `descriptionFault`, given only once every task has its runs and they are LOAD_RUNS. Each
+ * task's line ends with the seconds of its phases: its capture (its context build, and the
+ * GitHub reads in it with their count), the runs of its profile's tasks, its writes, the rest,
  * and the total.
  */
 import { createHash } from "node:crypto";
@@ -96,14 +113,23 @@ import { z } from "zod";
 import type { Arm } from "./arms";
 import {
   anthropicHeaders,
-  type Capture,
   type CaptureCase,
   type CaptureRecord,
   captureBody,
   capturePaths,
+  type HarnessRecord,
+  type HarnessRule,
   type HintWriter,
+  rawBodyFile,
   renamedListingBlocks,
+  rewriteBody,
+  type SavedHead,
+  type SessionFacts,
+  type Sourced,
   savedCapture,
+  sessionFacts,
+  sessionHeads,
+  userTurnKey,
 } from "./capture";
 import { Case, Profile, type ProfileSkill, type Thinking } from "./cases";
 import { json, Refused, Stopped, schemaFaults, writeWhole } from "./common";
@@ -118,6 +144,7 @@ import {
 import {
   BudgetSpent,
   type ContentBlock,
+  freshIdentity,
   type Gateway,
   type MessagesBody,
   PRICES,
@@ -127,7 +154,9 @@ import {
   type ToolCall,
   toolCalls,
 } from "./gateway";
+import { newSeed } from "./judge";
 import { type RecordedRequest, startRecorder } from "./recorder";
+import { sendOrder } from "./replay";
 import {
   descriptionFault,
   LOAD_RUNS,
@@ -169,6 +198,9 @@ const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---(\r?\n|$)/;
 /** The levels `claude --effort` takes. */
 const CLAUDE_EFFORTS: readonly ThinkingLevel[] = ["low", "medium", "high", "xhigh", "max"];
+/** The directory under `--out` that keeps each session head a capture read (capture.ts's
+ *  `sessionHeads`), one file per path hash. */
+const SESSIONS_DIR = "sessions";
 
 const Name = z.string().regex(NAME, { error: "a name of letters, digits, '.', '_' and '-'" });
 /** A SHA-256 in hex. */
@@ -218,8 +250,10 @@ type LoadProfile = z.infer<typeof LoadProfile>;
 /** One run of one task: whether the first assistant message the gateway gave for the task's body
  *  loaded the skill and by which call, the names of its tool calls in order, its stop reason, the
  *  request id, what it used, what the host lists for the skill (Oh My Pi's hint, or Claude Code's
- *  listed description), and the profile file of its task's context with the SHA-256 of its
- *  bytes. */
+ *  listed description), the profile file of its task's context with the SHA-256 of its bytes,
+ *  the session id it went with (its own: `metadata.user_id`, or a Responses body's
+ *  `prompt_cache_key`), and the seed of the send order of its profile's tasks and its place in
+ *  that order (from 0). */
 export const LoadRun = z.strictObject({
   task: z.string().min(1),
   run: z.int().positive(),
@@ -236,6 +270,9 @@ export const LoadRun = z.strictObject({
   listed: z.string(),
   profile: z.string().min(1),
   profileDigest: Sha256,
+  userId: z.string().nullable(),
+  sendSeed: z.string().min(1),
+  sendPlace: z.int().nonnegative(),
 });
 export type LoadRun = z.infer<typeof LoadRun>;
 
@@ -606,6 +643,63 @@ export function claudeListing(body: unknown): Map<string, string> {
   return listing;
 }
 
+/** What a Claude Code capture's `OS Version:` line shows: the system alone, the same for every
+ *  task, where the store records no value of the session's. */
+const CLAUDE_NEUTRAL_OS = "Linux";
+
+/** `dir` as Claude Code names its project directory under `<config>/projects/`: each character
+ *  that is no letter or digit a `-`. */
+function claudeProjectName(dir: string): string {
+  return dir.replace(/[^A-Za-z0-9]/g, "-");
+}
+
+/** `text` as a regular expression that matches it alone, everywhere. */
+function literally(text: string): RegExp {
+  return new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g");
+}
+
+/**
+ * The harness rules of a Claude Code capture (capture.ts, "The harness strings") that ran in
+ * `workspace` with its config directory at `configDir`, for the session `facts`: its memory
+ * directory's project path (`<config>/projects/<the working directory, its non-alphanumerics as
+ * -s>`) names the session's config directory and working directory; its `Today's date is …`
+ * line the session's date; its `OS Version:` line CLAUDE_NEUTRAL_OS; and every other mention of
+ * the config directory or the working directory the session's.
+ */
+export function claudeHarnessRules(
+  workspace: string,
+  configDir: string,
+  facts: SessionFacts
+): HarnessRule[] {
+  const config = facts.claudeConfigDir.value;
+  const cwd = facts.cwd.value;
+  return [
+    ...(configDir === ""
+      ? []
+      : [
+          {
+            what: "the memory directory's project path",
+            pattern: literally(`${configDir}/projects/${claudeProjectName(workspace)}`),
+            to: () => `${config}/projects/${claudeProjectName(cwd)}`,
+          },
+        ]),
+    {
+      what: "the date line",
+      pattern: /Today's date is \d{4}-\d{2}-\d{2}\./g,
+      to: () => `Today's date is ${facts.date.value}.`,
+    },
+    {
+      what: "the OS version line",
+      pattern: /( - OS Version: )[^\n]*/g,
+      to: (_match, lead = "") => `${lead}${CLAUDE_NEUTRAL_OS}`,
+    },
+    ...(configDir === ""
+      ? []
+      : [{ what: "the config directory", pattern: literally(configDir), to: () => config }]),
+    { what: "the working directory", pattern: literally(workspace), to: () => cwd },
+  ];
+}
+
 /** The files of the capture of task `taskId` in `host` under `out`. */
 export function loadCapturePaths(
   out: string,
@@ -648,6 +742,8 @@ interface ClaudeCaptureRecord {
    *  config directory), or null when the profile has none. */
   readonly userMemory: UserMemory | null;
   readonly runMs: number;
+  /** The harness-string rule's record (capture.ts's HarnessRecord). */
+  readonly harness: HarnessRecord;
 }
 
 /** A task's captured body, the headers it goes with, what the host lists for the skill, and the
@@ -681,8 +777,8 @@ interface UserMemory {
 }
 
 /** The milliseconds each phase of a task took: its capture (made or read back), the context
- *  build within it, the GitHub reads made in it (how many, and the milliseconds one ran), its
- *  runs, and the writes of its run file and the summary. */
+ *  build within it, the GitHub reads made in it (how many, and the milliseconds one ran), the
+ *  runs of its profile's tasks, sent together, and the writes of its run file and the summary. */
 interface TaskPhases {
   readonly captureMs: number;
   readonly contextMs: number;
@@ -691,13 +787,15 @@ interface TaskPhases {
   writeMs: number;
 }
 
-/** A task's runs after `runTask`: every run saved, each run that failed or that the budget
- *  refused, and the time of each phase. */
-interface TaskRuns {
-  readonly runs: LoadRun[];
-  readonly failures: string[];
-  readonly budgetSpent: boolean;
-  readonly phases: TaskPhases;
+/** A task whose capture is made, ready for its runs: the task, its profile, its runs saved so
+ *  far, its capture, and its capture's phases. */
+interface ReadyTask {
+  readonly task: Task;
+  readonly profile: TaskProfile;
+  readonly saved: readonly LoadRun[];
+  readonly captured: Captured;
+  readonly captureMs: number;
+  readonly github: { readonly calls: number; readonly ms: number };
 }
 
 /** What a load test reads and writes beside its inputs. */
@@ -749,12 +847,27 @@ interface LoadOptions {
   readonly requestLog: string;
   /** The most the peak resident memory may reach: a task that ends above it stops the test. */
   readonly memoryLimitBytes: number;
+  /** The store command (config.ts's `psqlCommand`) and the stores it may read: a capture reads
+   *  the head of its task's session through it (capture.ts's `sessionHeads`). */
+  readonly psqlCommand: string;
+  readonly stores: readonly string[];
+  /** The dev box's CLAUDE_CONFIG_DIR (config.ts's `devboxClaudeConfigDir`), when the
+   *  configuration names one. */
+  readonly devboxClaudeConfigDir?: string;
+  /** The session a written task stands for (`--context-session`): the session whose context
+   *  its profile was rebuilt from. */
+  readonly contextSession?: { readonly store: string; readonly pathHash: string };
 }
 
 /** What the test came to: each task or run that failed. */
 interface LoadResult {
   readonly failures: readonly string[];
 }
+
+/** How a test's runs are sent, as its settings record it: each run with a session id of its own,
+ *  and the runs of a profile's tasks in one seeded order. An `--out` whose settings do not record
+ *  it holds runs that went with their capture's one id, task after task, so it is refused. */
+const SENDS = "each run its own session id; a profile's tasks interleaved in one seeded order";
 
 /** The settings of a test that an `--out` holds: a test of other settings is refused there. */
 interface Settings {
@@ -766,6 +879,7 @@ interface Settings {
   readonly thinking: ThinkingLevel;
   readonly runs: number;
   readonly hintModel: string | null;
+  readonly sends: typeof SENDS;
 }
 
 /** A test's summary, as `summary.json` holds it. Only what a later command checks is read back. */
@@ -872,13 +986,60 @@ class LoadTest {
     };
   }
 
+  /** What a capture of `task` shows of the session it stands for (capture.ts's `sessionFacts`):
+   *  the head of the task's own session, or for a written task of `--context-session`, read once
+   *  from its store and saved under `<out>/sessions/`; the reminder Oh My Pi journaled for that
+   *  session's first user turn, else one rendered for that turn's UTC date (the session's start's
+   *  when its head holds no user turn). A written task with no `--context-session` names no
+   *  session, so its values are neutral and its date the capture's own. Throws when the store is
+   *  not the configuration's, or the head cannot be read. */
+  async sessionOf(task: Task, profile: TaskProfile): Promise<SessionFacts> {
+    const named = task.source === "session" ? task : this.o.contextSession;
+    let saved: SavedHead | undefined;
+    if (named !== undefined) {
+      if (!this.o.stores.includes(named.store)) {
+        throw new Error(`the configuration names no store ${named.store}`);
+      }
+      const heads = await sessionHeads(
+        this.o.psqlCommand,
+        named.store,
+        [named.pathHash],
+        path.join(this.o.out, SESSIONS_DIR)
+      );
+      saved = heads.get(named.pathHash);
+    }
+    const first = saved?.head.firstUser ?? null;
+    const start = saved?.head.start ?? null;
+    const utc = (at: number | string) => new Date(at).toISOString().slice(0, 10);
+    const date: Sourced =
+      first !== null
+        ? { value: utc(first.timestamp), from: "the UTC date of the session's first user turn" }
+        : start !== null
+          ? {
+              value: utc(start),
+              from: "the UTC date of the session's start (its head holds no user turn)",
+            }
+          : {
+              value: utc(Date.now()),
+              from:
+                saved === undefined
+                  ? "neutral: the capture's own date, the task names no session"
+                  : "neutral: the capture's own date, the store holds no start of the session",
+            };
+    return sessionFacts(saved, {
+      turn: first === null ? undefined : userTurnKey(first),
+      date,
+      devbox: profile.profile.context === "devbox",
+      devboxClaudeConfigDir: this.o.devboxClaudeConfigDir,
+    });
+  }
+
   /** Task `task`'s body through Oh My Pi in the context of `profile`, captured or read back. */
   async ompCapture(task: Task, profile: TaskProfile): Promise<Captured> {
     const files = loadCapturePaths(this.o.out, "omp", task.id);
     const { models } = this.o;
-    let capture: Capture | undefined;
-    if (models === undefined) capture = savedCapture(files);
-    else {
+    let capture = savedCapture(files);
+    if (capture === undefined && models !== undefined) {
       const { c, arm } = this.caseOf(task.id, task.text, profile.profile);
       capture = await captureBody(c, arm, {
         omp: this.o.omp,
@@ -890,6 +1051,7 @@ class LoadTest {
         hints: this.o.hints,
         ...(this.o.hintModel === undefined ? {} : { hintModel: this.o.hintModel }),
         configFiles: this.o.configFiles,
+        session: await this.sessionOf(task, profile),
       });
     }
     if (capture === undefined) {
@@ -1023,12 +1185,20 @@ class LoadTest {
     return setup;
   }
 
-  /** Task `task`'s body through Claude Code in the context of `profile`, captured or read
-   *  back. */
+  /** Task `task`'s body through Claude Code in the context of `profile`, captured or read back;
+   *  a saved one whose record holds no harness-string record was made before that rule, and is
+   *  refused. Before it is saved, the body's strings of the capture's run are replaced by the
+   *  session's (`claudeHarnessRules`), and a body that still holds the test's scratch is
+   *  refused. */
   async claudeCapture(task: Task, profile: TaskProfile): Promise<Captured> {
     const files = loadCapturePaths(this.o.out, "claude", task.id);
     if (existsSync(files.body) && existsSync(files.record)) {
       const record = JSON.parse(readFileSync(files.record, "utf8")) as ClaudeCaptureRecord;
+      if (!Object.hasOwn(record, "harness")) {
+        throw new Error(
+          `the capture ${files.body} was made before the harness-string rule, so its body holds the capture's own paths and date: make it again under a new --out`
+        );
+      }
       return {
         body: JSON.parse(readFileSync(files.body, "utf8")) as MessagesBody,
         headers: record.requestHeaders,
@@ -1036,6 +1206,7 @@ class LoadTest {
         contextMs: 0,
       };
     }
+    const facts = await this.sessionOf(task, profile);
     // The context is built by the first task of its profile, which counts its time.
     const setUpNow = !this.claudeSetups.has(profile.digest);
     const setup = await this.claudeSetup(profile);
@@ -1098,7 +1269,17 @@ class LoadTest {
       return Array.isArray(tools) && bodyTexts(body).some((text) => text.includes(task.text));
     });
     if (turn === undefined) throw new Error("Claude Code sent no model request that holds it");
-    const body = JSON.parse(turn.body) as MessagesBody;
+    const raw = JSON.parse(turn.body) as MessagesBody;
+    const configDir = setup.env.CLAUDE_CONFIG_DIR ?? "";
+    const rewritten = rewriteBody(raw, claudeHarnessRules(setup.workspace, configDir, facts), [
+      this.root,
+    ]);
+    if (rewritten.faults.length > 0) {
+      throw new Error(
+        `its captured body is refused: it still holds the test's scratch after the harness-string rule, at ${rewritten.faults.join("; ")}`
+      );
+    }
+    const body = rewritten.body as MessagesBody;
     const listing = claudeListing(body);
     const key = `${profile.tested.plugin}:${profile.tested.name}`;
     const listed = listing.get(key);
@@ -1125,8 +1306,15 @@ class LoadTest {
       context: setup.context,
       userMemory: setup.userMemory,
       runMs,
+      harness: {
+        ...facts,
+        os: { value: CLAUDE_NEUTRAL_OS, from: "neutral: the store records no OS of the session" },
+        replaced: rewritten.replaced,
+        rawBody: rawBodyFile(files.body),
+      },
     };
-    writeWhole(files.body, turn.body);
+    writeWhole(rawBodyFile(files.body), turn.body);
+    writeWhole(files.body, JSON.stringify(body));
     writeWhole(files.record, json(record));
     return {
       body,
@@ -1166,8 +1354,15 @@ class LoadTest {
   }
 
   /** The run of `task` numbered `run` that `reply` is, in the context of `profile`, as its run
-   *  file keeps it. */
-  runOf(task: Task, run: number, reply: Reply, listed: string, profile: TaskProfile): LoadRun {
+   *  file keeps it, with the session id it went with and its place in the send order of `seed`. */
+  runOf(
+    task: Task,
+    run: number,
+    reply: Reply,
+    listed: string,
+    profile: TaskProfile,
+    sent: { readonly userId: string | null; readonly seed: string; readonly place: number }
+  ): LoadRun {
     const first = firstMessageLoad(this.o.host, reply.message.content, profile.tested);
     return {
       task: task.id,
@@ -1185,53 +1380,107 @@ class LoadTest {
       listed,
       profile: profile.file,
       profileDigest: profile.digest,
+      userId: sent.userId,
+      sendSeed: sent.seed,
+      sendPlace: sent.place,
     };
   }
 
-  /** Makes the runs `task` lacks beside `saved`, in the context of `profile`: the first alone and
-   *  the rest after it at once (the body is the same, so the cache the first one writes serves
-   *  the others), and saves its run file when they end. */
-  async runTask(task: Task, saved: readonly LoadRun[], profile: TaskProfile): Promise<TaskRuns> {
+  /** Task `task`'s capture in the context of `profile` (made, or read back), ready for the runs
+   *  it lacks beside `saved`, with the time it took and the GitHub reads made in it. */
+  async captureTask(
+    task: Task,
+    profile: TaskProfile,
+    saved: readonly LoadRun[]
+  ): Promise<ReadyTask> {
     const readsBefore = this.o.source.reads?.() ?? { calls: 0, ms: 0 };
-    const captureStarted = performance.now();
+    const started = performance.now();
     const captured =
       this.o.host === "omp"
         ? await this.ompCapture(task, profile)
         : await this.claudeCapture(task, profile);
-    const captureMs = performance.now() - captureStarted;
     const readsAfter = this.o.source.reads?.() ?? { calls: 0, ms: 0 };
-    const runsStarted = performance.now();
-    const send = () => this.o.gateway.send(captured.body, { headers: captured.headers });
-    const opening = await Promise.allSettled([send()]);
-    const others = await Promise.allSettled(
-      Array.from({ length: this.settings.runs - saved.length - 1 }, send)
+    return {
+      task,
+      profile,
+      saved,
+      captured,
+      captureMs: performance.now() - started,
+      github: { calls: readsAfter.calls - readsBefore.calls, ms: readsAfter.ms - readsBefore.ms },
+    };
+  }
+
+  /**
+   * The runs the tasks of `ready` (one profile's) lack, sent in one order, replay.ts's
+   * `sendOrder` under a fresh seed, never one task's batch after another's; each run with a
+   * session id of its own (gateway.ts's `freshIdentity`), its body otherwise its capture's. The
+   * runs start in that order, all at once but for one wait: the first run of each task in the
+   * order goes alone among its task's, the next send in the order starting only once it has its
+   * reply, so that the prefix it wrote to the cache serves its task's later runs; the waits change
+   * no place of the order. Gives each task's runs, its saved ones first and the new ones in the
+   * order sent, each run that failed, whether the budget refused one, the seed and the time.
+   */
+  async sendRuns(ready: readonly ReadyTask[]): Promise<{
+    readonly runs: ReadonlyMap<string, LoadRun[]>;
+    readonly failures: string[];
+    readonly budgetSpent: boolean;
+    readonly seed: string;
+    readonly runsMs: number;
+  }> {
+    const seed = newSeed();
+    const byId = new Map(ready.map((each) => [each.task.id, each]));
+    const order = sendOrder(
+      ready.map((each) => ({ key: each.task.id, runs: this.settings.runs - each.saved.length })),
+      seed
     );
+    const started = new Set<string>();
+    const sends: { id: string; place: number; userId: string | null; reply: Promise<Reply> }[] = [];
+    const runsStarted = performance.now();
+    for (const [place, { key }] of order.entries()) {
+      const each = byId.get(key);
+      if (each === undefined) throw new Error(`no task ${key}`);
+      const own = freshIdentity(each.captured.body);
+      const reply = this.o.gateway.send(own.body, { headers: each.captured.headers });
+      // Its outcome is read once every run has started; until then a failure is held, not thrown.
+      const settledOne = reply.then(
+        () => undefined,
+        () => undefined
+      );
+      sends.push({ id: key, place, userId: own.id, reply });
+      if (!started.has(key)) {
+        started.add(key);
+        await settledOne;
+      }
+    }
+    const settled = await Promise.allSettled(sends.map((send) => send.reply));
     const runsMs = performance.now() - runsStarted;
-    const runs = [...saved];
+    const runs = new Map(ready.map((each) => [each.task.id, [...each.saved]]));
     const failures: string[] = [];
     let budgetSpent = false;
-    for (const result of [...opening, ...others]) {
-      if (result.status === "fulfilled") {
-        runs.push(this.runOf(task, runs.length + 1, result.value, captured.listed, profile));
-      } else if (result.reason instanceof BudgetSpent) budgetSpent = true;
-      else failures.push(`task ${task.id}: a run failed: ${messageFor(result.reason)}`);
+    for (const [index, { id, place, userId }] of sends.entries()) {
+      const outcome = settled[index];
+      const each = byId.get(id);
+      const made = runs.get(id);
+      if (outcome === undefined || each === undefined || made === undefined) continue;
+      if (outcome.status === "fulfilled") {
+        made.push(
+          this.runOf(
+            each.task,
+            made.length + 1,
+            outcome.value,
+            each.captured.listed,
+            each.profile,
+            {
+              userId,
+              seed,
+              place,
+            }
+          )
+        );
+      } else if (outcome.reason instanceof BudgetSpent) budgetSpent = true;
+      else failures.push(`task ${id}: a run failed: ${messageFor(outcome.reason)}`);
     }
-    const writeStarted = performance.now();
-    writeWhole(
-      loadRunFile(this.o.out, task.id),
-      runs.map((run) => `${JSON.stringify(run)}\n`).join("")
-    );
-    const phases: TaskPhases = {
-      captureMs,
-      contextMs: captured.contextMs,
-      github: {
-        calls: readsAfter.calls - readsBefore.calls,
-        ms: readsAfter.ms - readsBefore.ms,
-      },
-      runsMs,
-      writeMs: performance.now() - writeStarted,
-    };
-    return { runs, failures, budgetSpent, phases };
+    return { runs, failures, budgetSpent, seed, runsMs };
   }
 }
 
@@ -1326,6 +1575,7 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
     thinking: o.thinking,
     runs: o.runs,
     hintModel: o.host === "omp" ? (o.hintModel ?? null) : null,
+    sends: SENDS,
   };
 
   const summaryFile = path.join(o.out, "summary.json");
@@ -1455,66 +1705,98 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
   }
   const failures: string[] = [];
   const listedSaid = new Set<string>();
-  for (const { task, profile } of profiled) {
-    const taskStarted = performance.now();
-    const saved = runsOf.get(task.id) ?? [];
-    const what = `task ${task.id} (${task.label}, ${task.source === "session" ? "from a session" : "written"})`;
-    if (saved.length >= o.runs) {
-      const outcome = outcomeOf(task);
-      test.say(
-        `${what}: its run file is complete, skipped: loaded in ${outcome.loads} of ${outcome.made} runs: ${verdictWords(task, outcome, o.runs)}`
-      );
-      continue;
-    }
-    let ran: TaskRuns;
-    try {
-      ran = await test.runTask(task, saved, profile);
-    } catch (error) {
-      // The budget refused a hint call of the task's capture: the test stops as it does when it
-      // refuses a run.
-      if (error instanceof BudgetSpent) {
-        peak = Math.max(peak, o.io.peakRssBytes());
-        writeSummary();
-        throw new Stopped(
-          `the budget is spent, so no new model call starts, and task ${task.id} has no capture; the runs so far are saved under ${o.out}`
+  const what = (task: Task) =>
+    `task ${task.id} (${task.label}, ${task.source === "session" ? "from a session" : "written"})`;
+  // Each profile's tasks are captured one by one, then the runs they lack are sent together in
+  // one seeded order (`sendRuns`), so no task's runs go as a batch of their own.
+  for (const group of byFile.values()) {
+    const startedAt = new Map<string, number>();
+    const ready: ReadyTask[] = [];
+    for (const { task, profile } of profiled) {
+      if (profile.file !== group.profile.file) continue;
+      const saved = runsOf.get(task.id) ?? [];
+      if (saved.length >= o.runs) {
+        const outcome = outcomeOf(task);
+        test.say(
+          `${what(task)}: its run file is complete, skipped: loaded in ${outcome.loads} of ${outcome.made} runs: ${verdictWords(task, outcome, o.runs)}`
         );
+        continue;
       }
-      failures.push(`task ${task.id}: ${messageFor(error)}`);
-      o.io.err(`load: ${what}: ${messageFor(error)}`);
-      continue;
+      startedAt.set(task.id, performance.now());
+      try {
+        ready.push(await test.captureTask(task, profile, saved));
+      } catch (error) {
+        // The budget refused a hint call of the task's capture: the test stops as it does when
+        // it refuses a run.
+        if (error instanceof BudgetSpent) {
+          peak = Math.max(peak, o.io.peakRssBytes());
+          writeSummary();
+          throw new Stopped(
+            `the budget is spent, so no new model call starts, and task ${task.id} has no capture; the runs so far are saved under ${o.out}`
+          );
+        }
+        failures.push(`task ${task.id}: ${messageFor(error)}`);
+        o.io.err(`load: ${what(task)}: ${messageFor(error)}`);
+      }
+      readHintDollars(task);
     }
-    runsOf.set(task.id, ran.runs);
-    const outcome = outcomeOf(task);
-    readHintDollars(task);
+    if (ready.length === 0) continue;
+    const sent = await test.sendRuns(ready);
+    const writeMs = new Map<string, number>();
+    for (const { task } of ready) {
+      const runs = sent.runs.get(task.id) ?? [];
+      const writeStarted = performance.now();
+      writeWhole(
+        loadRunFile(o.out, task.id),
+        runs.map((run) => `${JSON.stringify(run)}\n`).join("")
+      );
+      writeMs.set(task.id, performance.now() - writeStarted);
+      runsOf.set(task.id, runs);
+    }
     peak = Math.max(peak, o.io.peakRssBytes());
     const summaryStarted = performance.now();
     writeSummary();
-    ran.phases.writeMs += performance.now() - summaryStarted;
-    const listed = ran.runs[0]?.listed;
-    if (listed !== undefined && !listedSaid.has(profile.digest)) {
-      listedSaid.add(profile.digest);
+    const summaryMs = performance.now() - summaryStarted;
+    test.say(
+      `the runs of ${ready.length === 1 ? "task" : "tasks"} ${ready.map((each) => each.task.id).join(", ")} in the context of ${group.profile.file} went in one order (seed ${sent.seed}), each with a session id of its own`
+    );
+    for (const { task, profile, captured, captureMs, github } of ready) {
+      const runs = sent.runs.get(task.id) ?? [];
+      const outcome = outcomeOf(task);
+      const listed = runs[0]?.listed;
+      if (listed !== undefined && !listedSaid.has(profile.digest)) {
+        listedSaid.add(profile.digest);
+        test.say(
+          o.host === "omp"
+            ? `Oh My Pi lists ${name} under the hint ${JSON.stringify(listed)} in the context of ${profile.file}`
+            : `Claude Code lists ${profile.tested.plugin}:${name} as ${JSON.stringify(listed)} in the context of ${profile.file}`
+        );
+      }
+      const phases: TaskPhases = {
+        captureMs,
+        contextMs: captured.contextMs,
+        github,
+        runsMs: sent.runsMs,
+        writeMs: (writeMs.get(task.id) ?? 0) + summaryMs,
+      };
+      const each = runs.map((run) => `run ${run.run} ${run.loaded ? "loads" : "does not"}`);
       test.say(
-        o.host === "omp"
-          ? `Oh My Pi lists ${name} under the hint ${JSON.stringify(listed)} in the context of ${profile.file}`
-          : `Claude Code lists ${profile.tested.plugin}:${name} as ${JSON.stringify(listed)} in the context of ${profile.file}`
+        `${what(task)}: loaded in ${outcome.loads} of ${outcome.made} runs (${each.join(", ")}): ${verdictWords(task, outcome, o.runs)}; ${phaseWords(phases, performance.now() - (startedAt.get(task.id) ?? 0))}`
       );
     }
-    const each = ran.runs.map((run) => `run ${run.run} ${run.loaded ? "loads" : "does not"}`);
-    test.say(
-      `${what}: loaded in ${outcome.loads} of ${outcome.made} runs (${each.join(", ")}): ${verdictWords(task, outcome, o.runs)}; ${phaseWords(ran.phases, performance.now() - taskStarted)}`
-    );
-    for (const failure of ran.failures) {
+    for (const failure of sent.failures) {
       failures.push(failure);
       o.io.err(`load: ${failure}`);
     }
-    if (ran.budgetSpent) {
+    if (sent.budgetSpent) {
       throw new Stopped(
         `the budget is spent, so no new model call starts; the runs so far are saved under ${o.out}`
       );
     }
     if (peak > o.memoryLimitBytes) {
+      const named = ready.map((each) => each.task.id).join(", ");
       throw new Stopped(
-        `the runner's peak resident memory, ${Math.round(peak / 2 ** 20)} MiB, is above its limit of ${Math.round(o.memoryLimitBytes / 2 ** 20)} MiB, so the test stops after task ${task.id}; its runs are saved under ${o.out}`
+        `the runner's peak resident memory, ${Math.round(peak / 2 ** 20)} MiB, is above its limit of ${Math.round(o.memoryLimitBytes / 2 ** 20)} MiB, so the test stops after ${ready.length === 1 ? "task" : "tasks"} ${named}; their runs are saved under ${o.out}`
       );
     }
   }

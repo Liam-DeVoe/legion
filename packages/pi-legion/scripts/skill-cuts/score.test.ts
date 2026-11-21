@@ -4,6 +4,7 @@ import {
   controlCase,
   descriptionFault,
   isControlLoss,
+  isFalseLoss,
   isFlagged,
   isInformative,
   isLoss,
@@ -53,21 +54,25 @@ const screen = (caseId: string, old: number, cut: number, none: number): RunReco
   ...runs(caseId, "screen", "new", cut, 10),
   ...runs(caseId, "screen", "none", none, 10),
 ];
-/** A case's 40 fresh runs of `old` and of `other` (`new` to confirm, `minus` for the control). */
+/** A case's 40 fresh runs of `old` and of `other` (`new` to confirm, `minus` for the control), and
+ *  for the control the false-loss control's `twin` too, passing `twin` (old's passes unless
+ *  given). */
 const fresh = (
   caseId: string,
   stage: "confirm" | "control",
   old: number,
-  other: number
+  other: number,
+  twin = old
 ): RunRecord[] => [
   ...runs(caseId, stage, "old", old, 40),
   ...runs(caseId, stage, stage === "confirm" ? "new" : "minus", other, 40),
+  ...(stage === "control" ? runs(caseId, stage, "twin", twin, 40) : []),
 ];
 /** Six informative cases (old 8, none 5 of 10), none flagged (new 8), and the control's runs on
- * c1, the lowest id of the six equal gaps: old 30 and minus `minus` of 40. */
-const sixCases = (minus: number): RunRecord[] => [
+ * c1, the lowest id of the six equal gaps: old 30, minus `minus` and twin `twin` (30) of 40. */
+const sixCases = (minus: number, twin = 30): RunRecord[] => [
   ...["c1", "c2", "c3", "c4", "c5", "c6"].flatMap((id) => screen(id, 8, 8, 5)),
-  ...fresh("c1", "control", 30, minus),
+  ...fresh("c1", "control", 30, minus, twin),
 ];
 /** A load test that passes: 5 need tasks, each loaded on 2 or 3 of 3 runs, and 5 near-miss tasks,
  * each loaded on at most 1; and the same test with its first need task loaded once. */
@@ -174,9 +179,19 @@ const rows: [string, () => unknown, unknown][] = [
     { state: "running", toStart: { old: 1, new: 0 } },
   ],
   [
-    "40 judged control runs of old and minus are counted",
-    () => stageOutcome(fresh("c1", "control", 30, 20), "c1", "control"),
-    { state: "counted", passes: { old: 30, minus: 20 } },
+    "40 judged control runs of old, minus and twin are counted",
+    () => stageOutcome(fresh("c1", "control", 30, 20, 28), "c1", "control"),
+    { state: "counted", passes: { old: 30, minus: 20, twin: 28 } },
+  ],
+  [
+    "the control stage needs twin's 40 judged runs too",
+    () =>
+      stageOutcome(
+        fresh("c1", "control", 30, 20).filter((run) => run.arm !== "twin"),
+        "c1",
+        "control"
+      ),
+    { state: "running", toStart: { old: 0, minus: 0, twin: 40 } },
   ],
 
   // informative: old passes - none passes >= 2, of 10 each.
@@ -193,8 +208,32 @@ const rows: [string, () => unknown, unknown][] = [
   ["no loss at 9 fewer passes of 40", () => isLoss({ old: 30, new: 21 }), false],
 
   // control loss: old - minus >= 10, of 40 fresh runs each.
-  ["a control loss at 10 fewer passes of 40", () => isControlLoss({ old: 30, minus: 20 }), true],
-  ["no control loss at 9 fewer passes of 40", () => isControlLoss({ old: 30, minus: 21 }), false],
+  [
+    "a control loss at 10 fewer passes of 40",
+    () => isControlLoss({ old: 30, minus: 20, twin: 30 }),
+    true,
+  ],
+  [
+    "no control loss at 9 fewer passes of 40",
+    () => isControlLoss({ old: 30, minus: 21, twin: 30 }),
+    false,
+  ],
+  // false loss: old - twin >= 10, of 40 fresh runs each, the same text twice.
+  [
+    "a false loss at 10 fewer passes of 40 of the twin",
+    () => isFalseLoss({ old: 30, minus: 20, twin: 20 }),
+    true,
+  ],
+  [
+    "no false loss at 9 fewer passes of 40 of the twin",
+    () => isFalseLoss({ old: 30, minus: 20, twin: 21 }),
+    false,
+  ],
+  [
+    "no false loss when the twin passes more than old",
+    () => isFalseLoss({ old: 20, minus: 10, twin: 35 }),
+    false,
+  ],
 
   // control case: the informative case with the largest old - none gap; a tie to the lower id.
   [
@@ -234,27 +273,37 @@ const rows: [string, () => unknown, unknown][] = [
   // skill verdict.
   [
     "6 informative cases and a control loss give a verdict",
-    () => skillVerdict({ informative: 6, controlLoss: true, losses: 0 }),
+    () => skillVerdict({ informative: 6, controlLoss: true, falseLoss: false, losses: 0 }),
     keeps,
   ],
   [
     "5 informative cases give no verdict",
-    () => skillVerdict({ informative: 5, controlLoss: true, losses: 0 }),
+    () => skillVerdict({ informative: 5, controlLoss: true, falseLoss: false, losses: 0 }),
     tooFew,
   ],
   [
     "a control that is no loss gives no verdict",
-    () => skillVerdict({ informative: 6, controlLoss: false, losses: 1 }),
+    () => skillVerdict({ informative: 6, controlLoss: false, falseLoss: false, losses: 1 }),
     { verdict: null, reason: "control not a loss" },
   ],
   [
+    "a false-loss control that is a loss gives no verdict, whatever the confirmed cases say",
+    () => skillVerdict({ informative: 6, controlLoss: true, falseLoss: true, losses: 1 }),
+    { verdict: null, reason: "false-loss control a loss" },
+  ],
+  [
+    "both controls failing give no verdict, and the reason names both",
+    () => skillVerdict({ informative: 6, controlLoss: false, falseLoss: true, losses: 0 }),
+    { verdict: null, reason: "control not a loss; false-loss control a loss" },
+  ],
+  [
     "one confirmed loss gives loss",
-    () => skillVerdict({ informative: 6, controlLoss: true, losses: 1 }),
+    () => skillVerdict({ informative: 6, controlLoss: true, falseLoss: false, losses: 1 }),
     loss,
   ],
   [
     "no confirmed loss gives keeps",
-    () => skillVerdict({ informative: 7, controlLoss: true, losses: 0 }),
+    () => skillVerdict({ informative: 7, controlLoss: true, falseLoss: false, losses: 0 }),
     keeps,
   ],
 
@@ -271,6 +320,26 @@ const rows: [string, () => unknown, unknown][] = [
     "a planted-loss control at 9 fewer passes of 40 gives no verdict",
     () => scoreSkill(sixCases(21)).outcome,
     { verdict: null, reason: "control not a loss" },
+  ],
+  [
+    "a false-loss control at 10 fewer passes of 40 gives no verdict",
+    () => scoreSkill(sixCases(20, 20)).outcome,
+    { verdict: null, reason: "false-loss control a loss" },
+  ],
+  [
+    "a false-loss control at 9 fewer passes of 40 keeps the verdict",
+    () => scoreSkill(sixCases(20, 21)).outcome,
+    keeps,
+  ],
+  [
+    "a control stage whose twin lacks its runs waits for them",
+    () => scoreSkill(sixCases(20).filter((run) => run.arm !== "twin")).outcome,
+    undefined,
+  ],
+  [
+    "a flagged case's confirm runs are not waited for when the false-loss control is a loss",
+    () => scoreSkill([...sixCases(20, 20), ...screen("c7", 8, 6, 5)]).outcome,
+    { verdict: null, reason: "false-loss control a loss" },
   ],
   [
     "an unscreened case is not counted among the informative cases",

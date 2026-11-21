@@ -21,22 +21,32 @@
  * Every round goes with the same headers (`ReplayOptions.headers`), the ones Oh My Pi sent beside
  * the body (none beside a Responses body).
  *
- * Every run of an arm sends the same body, so the gateway's prompt cache can serve all but the
- * first run's prefix. A Messages body is cached only up to its last cache breakpoint, and the
- * bodies Oh My Pi builds hold theirs on the tools and the system prompt only: the pilot's runs
- * read about 20,000 tokens of a 340,000-token body from the cache and paid the rest as input. So
- * each run sends a Messages body with a breakpoint on its last message (`withCacheBreakpoint`).
- * The Responses route caches the prefix a body shares with an earlier one by itself (F9: the
- * second send of a body read all but 3 of its 7,985 input tokens from the cache), so a Responses
- * body goes as it is, with no `cache_control`; its reads are counted as `cacheRead`. `replay`
- * sends an arm's first run alone, so that the others read what it wrote.
+ * Every run of an arm sends the same body but for its session id, so the gateway's prompt cache
+ * can serve all but the first run's prefix. A Messages body is cached only up to its last cache
+ * breakpoint, and the bodies Oh My Pi builds hold theirs on the tools and the system prompt only:
+ * the pilot's runs read about 20,000 tokens of a 340,000-token body from the cache and paid the
+ * rest as input. So each run sends a Messages body with a breakpoint on its last message
+ * (`withCacheBreakpoint`). The Responses route caches the prefix a body shares with an earlier
+ * one by itself (F9: the second send of a body read all but 3 of its 7,985 input tokens from the
+ * cache), so a Responses body goes as it is, with no `cache_control`; its reads are counted as
+ * `cacheRead`.
+ *
+ * Each run goes with a session id of its own (gateway.ts's `freshIdentity`: `metadata.user_id`,
+ * or a Responses body's `prompt_cache_key`, drawn again in its own form), the same in every round
+ * of the run, and no other byte of the body changes: a captured body holds the id of the one Oh
+ * My Pi run that made it, and a gateway that routes or caches by it made it a factor of a whole
+ * arm (one body with two fixed ids and with a fresh one per send, interleaved on one deployment:
+ * 8, 26 and 18 of 30 runs read the skill's reference). `replayInterleaved` sends the runs of all
+ * the arms of a round in one seeded order (`sendOrder`), never one arm's batch after another's.
  */
+import { createHash } from "node:crypto";
 import { statSync } from "node:fs";
 import path from "node:path";
-import { type Arm, skillFile } from "./arms";
+import { type Arm, type ArmName, skillFile } from "./arms";
 import { skillReadFile } from "./cases";
 import {
   type ContentBlock,
+  freshIdentity,
   type Gateway,
   isResponsesBody,
   type MessagesBody,
@@ -125,12 +135,14 @@ export function withCacheBreakpoint(body: MessagesBody): MessagesBody {
   return { ...body, messages };
 }
 
-/** One replay: the judged step, how many rounds of skill reads were answered before it, and what
- *  each reply used, in the order sent. */
+/** One replay: the judged step, how many rounds of skill reads were answered before it, what each
+ *  reply used, in the order sent, and the session id every round of the run went with
+ *  (gateway.ts's `freshIdentity`; null for a body that names none). */
 export interface Replayed {
   readonly step: Reply;
   readonly rounds: number;
   readonly usage: Spent[];
+  readonly userId: string | null;
 }
 
 /** How a replay runs: the most rounds of skill reads it answers, and the headers that go with the
@@ -196,19 +208,28 @@ function answered(
   };
 }
 
-/** Sends `sent` for `arm`: the body with its cache breakpoint as `replayOnce` makes it (see the
- *  file's header); answers its skill reads, and returns the judged step. `sent` is never changed,
- *  so runs at once can share it. */
+/** Sends `sent` for `arm`, the body with its cache breakpoint as `replayOnce` makes it (see the
+ *  file's header) and the run's own session id `userId` (`freshIdentity`), which every round of
+ *  the run keeps; answers its skill reads, and returns the judged step. `sent` is never changed,
+ *  and every round's body shares its parts. `firstSettled` is told once the run's first send has
+ *  its reply or its failure. */
 async function replaySent(
   sent: RequestBody,
+  userId: string | null,
   arm: Arm,
   gateway: Gateway,
-  { maxSkillRounds = MAX_SKILL_ROUNDS, headers }: ReplayOptions
+  { maxSkillRounds = MAX_SKILL_ROUNDS, headers }: ReplayOptions,
+  firstSettled?: () => void
 ): Promise<Replayed> {
   let body = sent;
   const usage: Spent[] = [];
   for (let rounds = 0; ; rounds += 1) {
-    const reply = await gateway.send(body, { headers });
+    let reply: Reply;
+    try {
+      reply = await gateway.send(body, { headers });
+    } finally {
+      if (rounds === 0) firstSettled?.();
+    }
     usage.push(reply.spent);
     const calls = toolCalls(reply.message.content);
     const reads = calls.map((call) => skillRead(call, arm));
@@ -217,45 +238,134 @@ async function replaySent(
       calls.length === 0 ||
       !reads.every((read): read is SkillRead => read !== undefined)
     ) {
-      return { step: reply, rounds, usage };
+      return { step: reply, rounds, usage, userId };
     }
     body = answered(body, reply.message.content, reads, arm);
   }
 }
 
-/** Sends `body` for `arm`, answers its skill reads, and returns the judged step. Rejects when a
- *  send does (the gateway's `BudgetSpent` among them). */
+/** Sends `body` for `arm` with a session id of its own, answers its skill reads, and returns the
+ *  judged step. Rejects when a send does (the gateway's `BudgetSpent` among them). */
 export function replayOnce(
   body: RequestBody,
   arm: Arm,
   gateway: Gateway,
   options: ReplayOptions = {}
 ): Promise<Replayed> {
-  const sent = isResponsesBody(body) ? body : withCacheBreakpoint(body);
-  return replaySent(sent, arm, gateway, options);
+  const own = freshIdentity(isResponsesBody(body) ? body : withCacheBreakpoint(body));
+  return replaySent(own.body, own.id, arm, gateway, options);
+}
+
+/** One arm's runs in a round: its arm, its captured body, the headers that go with it (its
+ *  capture's `anthropic-*` headers, none beside a Responses body), and how many runs to make. */
+export interface ArmRuns {
+  readonly arm: Arm;
+  readonly body: RequestBody;
+  readonly headers?: Readonly<Record<string, string>>;
+  readonly runs: number;
+}
+
+/** One run's place in a round's send order: its arm, and its number among that arm's runs of
+ *  the round, from 0. */
+export interface Slot {
+  readonly arm: ArmName;
+  readonly run: number;
+}
+
+/** The send order of runs of several kinds (a round's arms, a load test's tasks), `runs` of each
+ *  kind `key`: every `{key, run}`, the kinds in the order given and each kind's runs in order,
+ *  then shuffled by the seed (a Fisher-Yates shuffle whose numbers are SHA-256 of
+ *  `<seed>:send:<counter>`). The same seed and counts give the same order. */
+export function sendOrder<K extends string>(
+  runs: readonly { readonly key: K; readonly runs: number }[],
+  seed: string
+): { readonly key: K; readonly run: number }[] {
+  type Place = { readonly key: K; readonly run: number };
+  const order = runs.flatMap(({ key, runs: n }) =>
+    Array.from({ length: n }, (_, run): Place => ({ key, run }))
+  );
+  let counter = 0;
+  const random = () =>
+    createHash("sha256").update(`${seed}:send:${counter++}`).digest().readUIntBE(0, 6) / 2 ** 48;
+  for (let index = order.length - 1; index > 0; index -= 1) {
+    const other = Math.floor(random() * (index + 1));
+    [order[index], order[other]] = [order[other] as Place, order[index] as Place];
+  }
+  return order;
+}
+
+/** One run of an interleaved round: its slot, its place in the send order (from 0), and its
+ *  outcome, a step or a failure. */
+export interface InterleavedRun extends Slot {
+  readonly place: number;
+  /** The session id every request of the run went with, or null for a body that names none. */
+  readonly userId: string | null;
+  readonly outcome: PromiseSettledResult<Replayed>;
 }
 
 /**
- * `n` replays of `body` for `arm`, each as `replayOnce`, each one's outcome kept whether it was a
- * step or a failure, in the order started. The first goes alone and the rest after it, all at
- * once (the gateway bounds how many are in flight): the bodies are the same, so the cache the
- * first one writes serves the others' shared prefix. The body to send is made once for all `n`,
- * so the runs that wait for a place hold no copy of it.
+ * The runs of every arm of a round, sent in one order, `sendOrder` under `seed`, never one arm's
+ * batch after another's: a gateway's state (its deployment, its cache, its load) then falls on
+ * every arm alike. Each run is `replayOnce`'s, with a session id of its own. The runs start in
+ * that order, all at once but for one wait (the gateway bounds how many are in flight, and gives
+ * its places in the order asked): the first run of each arm in the order goes alone among its
+ * arm's, the next run in the order starting only once its first send has its reply, so that the
+ * prefix its reply wrote to the cache serves its arm's later runs. Those waits change no place of
+ * the order. Each arm's body to send is made once for all its runs, each run's a copy of its top
+ * level with its own id. Each run's outcome is kept, whether it was a step or a failure, in the
+ * order sent.
  */
-export async function replay(
-  body: RequestBody,
-  arm: Arm,
+export async function replayInterleaved(
+  arms: readonly ArmRuns[],
   gateway: Gateway,
-  n: number,
-  options: ReplayOptions = {}
-): Promise<PromiseSettledResult<Replayed>[]> {
-  if (!Number.isInteger(n) || n < 1) {
-    throw new Error(`a replay runs a whole number of times, 1 or more, not ${n}`);
+  seed: string,
+  options: Pick<ReplayOptions, "maxSkillRounds"> = {}
+): Promise<InterleavedRun[]> {
+  const byName = new Map<ArmName, ArmRuns & { readonly sent: RequestBody }>();
+  for (const each of arms) {
+    if (!Number.isInteger(each.runs) || each.runs < 0) {
+      throw new Error(`a replay runs a whole number of times, 0 or more, not ${each.runs}`);
+    }
+    if (byName.has(each.arm.name)) throw new Error(`the arm ${each.arm.name} is given twice`);
+    const sent = isResponsesBody(each.body) ? each.body : withCacheBreakpoint(each.body);
+    byName.set(each.arm.name, { ...each, sent });
   }
-  const sent = isResponsesBody(body) ? body : withCacheBreakpoint(body);
-  const first = await Promise.allSettled([replaySent(sent, arm, gateway, options)]);
-  const rest = await Promise.allSettled(
-    Array.from({ length: n - 1 }, () => replaySent(sent, arm, gateway, options))
-  );
-  return [...first, ...rest];
+  const order: Slot[] = sendOrder(
+    arms.map((each) => ({ key: each.arm.name, runs: each.runs })),
+    seed
+  ).map(({ key, run }) => ({ arm: key, run }));
+  const started = new Set<ArmName>();
+  const runs: {
+    slot: Slot;
+    place: number;
+    userId: string | null;
+    replayed: Promise<Replayed>;
+  }[] = [];
+  for (const [place, slot] of order.entries()) {
+    const each = byName.get(slot.arm);
+    if (each === undefined) throw new Error(`no arm ${slot.arm}`);
+    const first = !started.has(slot.arm);
+    started.add(slot.arm);
+    const settled = Promise.withResolvers<void>();
+    const own = freshIdentity(each.sent);
+    const replayed = replaySent(
+      own.body,
+      own.id,
+      each.arm,
+      gateway,
+      { ...options, ...(each.headers === undefined ? {} : { headers: each.headers }) },
+      settled.resolve
+    );
+    // Its outcome is read once every run has started; until then a failure is held, not thrown.
+    replayed.catch(() => undefined);
+    runs.push({ slot, place, userId: own.id, replayed });
+    if (first) await settled.promise;
+  }
+  const outcomes = await Promise.allSettled(runs.map((run) => run.replayed));
+  return runs.map(({ slot, place, userId }, index) => ({
+    ...slot,
+    place,
+    userId,
+    outcome: outcomes[index] as PromiseSettledResult<Replayed>,
+  }));
 }

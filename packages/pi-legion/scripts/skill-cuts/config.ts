@@ -6,7 +6,7 @@
  * it leaves out and the repositories its copies map to) comes from this file at run time and never
  * from a committed file. The real file is kept outside the repository.
  *
- * Keys, every one required, no other allowed:
+ * Keys, every one required but the last, no other allowed:
  *   owners          GitHub owners whose repositories the copy lister reads
  *   stores          the session stores the count reads: `{name, context}`, `name` the database
  *                   name, `context` `devbox` or `legion:<PROJECT>` (whose sessions the store holds)
@@ -21,6 +21,11 @@
  *   cuts            `{id, repo, pr}`: each skill cut, the pull request that made it
  *   windowStart     the count's window, start inclusive, as an ISO instant (`…Z`)
  *   windowEnd       the window's end, exclusive, after windowStart
+ *   devboxClaudeConfigDir  (optional) the absolute path a dev box's CLAUDE_CONFIG_DIR names, whose
+ *                   CLAUDE.md Oh My Pi reads as its user-level context file: a devbox capture
+ *                   shows that file at `<dir>/CLAUDE.md` (capture.ts, "The harness strings"),
+ *                   and a neutral path without it. It names a person's home on the dev box, a
+ *                   private value that only this file holds.
  *
  * A file that is not JSON, or that misses a key, holds a key not above or holds a value of the
  * wrong shape, is refused with one line per fault, each naming the key.
@@ -68,6 +73,10 @@ export const SkillCutsConfig = z
     ),
     windowStart: Instant,
     windowEnd: Instant,
+    devboxClaudeConfigDir: z
+      .string()
+      .refine((value) => path.isAbsolute(value), { error: "an absolute path" })
+      .optional(),
   })
   .refine((config) => Date.parse(config.windowStart) < Date.parse(config.windowEnd), {
     error: "windowEnd must be after windowStart",

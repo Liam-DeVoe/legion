@@ -66,6 +66,33 @@
  * or holds a credential it redacts, so the two agree whenever no block is either. A Responses body
  * holds the blocks joined into one `instructions` text, a blank line between, so its digest is
  * of that one text, and differs from the session's whenever the prompt has more than one block.
+ * The capture's digest is of the body it saves, after the harness-string rule below.
+ *
+ * **The harness strings.** Oh My Pi writes into its request strings of the run that captures it,
+ * not of the session: the reminder at the start of the first user turn (`Today: <date>; current
+ * working directory: '<cwd>'`), whose working directory was the capture's scratch, which names
+ * the run, the cut and the skill under test; the path of each context file's block (`<file
+ * path="<cwd>/AGENTS.md">`, or the scratch Claude Code config directory's `CLAUDE.md`); and, in a
+ * prompt it builds, the workstation's `- OS:` line of the pod. Such a string is a factor of the
+ * measure: on one case of R2, a working directory that named the skill had its reference read in
+ * 12 and 33 of 40 runs, and one that named no skill in 0 and 1 of 40. So every string of a body
+ * that comes from the capture and not from the session is replaced, before the body is saved, by
+ * the session's recorded value, or by a neutral one where the store holds none
+ * (`options.session`, `sessionFacts`): the working directory is the session header's `cwd` (or
+ * the one its journaled reminder names), else NEUTRAL_CWD; the reminder is the one Oh My Pi
+ * journaled for the turn the capture's reminder goes on (a `date-cwd-reminder` entry of the
+ * session's head), byte for byte, else it is rendered from that working directory and the UTC
+ * date of the turn it stands for; a context file's path is under that working directory, and the
+ * user-level `CLAUDE.md` under the configuration's `devboxClaudeConfigDir`, else under
+ * NEUTRAL_CLAUDE_CONFIG_DIR; a built prompt's `- OS:` line shows NEUTRAL_OS, the same for every
+ * arm (a recorded prompt is sent as recorded, its workstation lines the session's own). Any other
+ * mention of the capture's working directory names the session's. The stand-in daemons answer
+ * with that working directory and made-up ids. A body that still holds the case's scratch
+ * directory or the capture's `scratchDir` after this is refused. The session's head comes from
+ * its store (`sessionHeads`, session-head.sql, saved as `<out>/sessions/<pathHash>.json`), and
+ * the record says what each value is and where it came from (`harness`), and keeps the body as
+ * Oh My Pi sent it beside the saved one (`rawBodyFile`). A saved capture whose record holds no
+ * such record was made before this rule, and is refused (`savedCapture`).
  */
 import { Database } from "bun:sqlite";
 import { randomBytes } from "node:crypto";
@@ -74,11 +101,14 @@ import path from "node:path";
 import { messageFor } from "@legion/envoy-client/errors";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import { linkOmpNatives } from "@legion/pi-shared/test/omp-natives";
+import { z } from "zod";
 import type { Arm, ArmName } from "./arms";
 import type { Case } from "./cases";
 import { json, writeWhole } from "./common";
 import { buildContext, type ContextRecord, cacheKey, legionRole, type RepoSource } from "./context";
+import { sessionHeadSql } from "./countsql";
 import { type Gateway, isResponsesBody, type MessagesBody, type RequestBody } from "./gateway";
+import { psqlRows } from "./psql-rows";
 import { messageSse, type RecordedRequest, sseResponse, startRecorder } from "./recorder";
 import { HOOK_LOG_VARIABLE, MESSAGES_VARIABLE, SYSTEM_PROMPT_VARIABLE } from "./replay-hook";
 
@@ -100,9 +130,14 @@ const MAX_HINT_CHARS = 160;
 const RECORDER_CREDENTIAL = "placeholder-the-recorder-reads-none";
 /** The made-up tree and issue a Legion capture's pane claims, and how many times its run is made
  *  when it ends before the turn's request. */
-const CAPTURE_TREE = "CAPTURE-1";
-const CAPTURE_ISSUE = "CAPTURE-2";
+const CAPTURE_TREE = "WORK-1";
+const CAPTURE_ISSUE = "WORK-2";
 const CAPTURE_TRIES = 3;
+/** The made-up session, machine and stream ids the stand-in daemons answer with: no name of the
+ *  runner's, as no answer holds a path of the capture's. */
+const STAND_IN_SESSION = "session-1";
+const STAND_IN_MACHINE = "machine-1";
+const STAND_IN_STREAM = "stream-1";
 
 /** An Oh My Pi run that ended with no model request a capture can take. */
 class RunEnded extends Error {}
@@ -267,6 +302,24 @@ export interface CaptureOptions {
   readonly configFiles?: readonly string[];
   /** The longest one Oh My Pi run may take. */
   readonly timeoutMs?: number;
+  /** What the body shows of the session the case stands for, in place of the capture's own
+   *  values (`sessionFacts`; the file's header, "The harness strings"). */
+  readonly session: SessionFacts;
+}
+
+/** What the harness-string rule did to a captured body: what it shows of its session and where
+ *  each value came from (SessionFacts), the workstation's OS line of a built prompt (null for a
+ *  recorded prompt, which is sent as recorded), how many strings each rule replaced, and the file
+ *  of the body as the host sent it. */
+export interface HarnessRecord extends SessionFacts {
+  readonly os: Sourced | null;
+  readonly replaced: readonly { readonly what: string; readonly count: number }[];
+  readonly rawBody: string;
+}
+
+/** The file a capture keeps the body in as the host sent it, beside the body it saves. */
+export function rawBodyFile(bodyFile: string): string {
+  return bodyFile.replace(/\.body\.json$/, ".raw.body.json");
 }
 
 /** What a capture used and saw. */
@@ -367,6 +420,8 @@ export interface CaptureRecord {
     readonly captureRunMs: number;
     readonly totalMs: number;
   };
+  /** The harness-string rule's record (HarnessRecord). */
+  readonly harness: HarnessRecord;
 }
 
 /** A saved capture: the body, its record, and their files; `made` is true when this call made it,
@@ -401,7 +456,8 @@ export function capturePaths(
 }
 
 /** The capture saved at `files` (`capturePaths`), read back, or undefined when either file is
- *  missing. */
+ *  missing. Throws for a capture whose record holds no harness-string record: it was made before
+ *  that rule, so its body holds the capture's own paths and date. */
 export function savedCapture(files: {
   readonly body: string;
   readonly record: string;
@@ -415,9 +471,15 @@ export function savedCapture(files: {
     if (Reflect.get(Object(error), "code") === "ENOENT") return undefined;
     throw error;
   }
+  const parsed = JSON.parse(record) as CaptureRecord;
+  if (!Object.hasOwn(parsed, "harness")) {
+    throw new Error(
+      `the capture ${files.body} was made before the harness-string rule, so its body holds the capture's own paths and date: make it again under a new --out`
+    );
+  }
   return {
     body: JSON.parse(body) as RequestBody,
-    record: JSON.parse(record) as CaptureRecord,
+    record: parsed,
     bodyFile: files.body,
     recordFile: files.record,
     made: false,
@@ -532,6 +594,403 @@ export function renamedListingBlocks(
   to: string
 ): string[] {
   return changedListingLine(blocks, from, (text) => `- ${to}: ${text}`) ?? [...blocks];
+}
+
+// The harness-string rule: what a captured body shows of the session it stands for.
+
+/** The working directory a capture shows when the store holds neither the session's header
+ *  `cwd` nor a reminder of it, or when the case or task names no session. */
+export const NEUTRAL_CWD = "/work";
+/** Claude Code's config directory a capture shows when the configuration names none for the dev
+ *  box (`devboxClaudeConfigDir`), or the context is no dev box's. */
+export const NEUTRAL_CLAUDE_CONFIG_DIR = "/work/.claude";
+/** What a built prompt's workstation `- OS:` line shows: the platform alone, the same for every
+ *  arm, where the store records no value of the session's. */
+export const NEUTRAL_OS = "linux";
+
+/** Oh My Pi 18.18.6's date and working-directory reminder
+ *  (prompts/system/date-cwd-reminder.md), which it puts first in a request's first user turn. */
+export function renderReminder(date: string, cwd: string): string {
+  return `<system-reminder>\nToday: ${date}; current working directory: '${cwd}'. Do not repeat this information in your reply.\n</system-reminder>`;
+}
+
+/** The working directory a reminder names, in group 1. */
+const REMINDER_CWD = /current working directory: '([^']*)'\. Do not repeat/;
+
+/** A session's head as session-head.sql reads it from its store and the runner saves it
+ *  (`<out>/sessions/<pathHash>.json`): whether the store holds a file of the hash; the header's
+ *  `cwd` and `timestamp` (`start`); the first user message's `timestamp` and `attribution`; each
+ *  `date-cwd-reminder` entry Oh My Pi journaled, in file order, its `turn` the key of the turn it
+ *  went on (`user:<timestamp>:<attribution>`); the bytes read (the file's first 256 KiB at most)
+ *  and the lines of them that did not parse (the last, cut where the head ends); and when it was
+ *  read. */
+export const SessionHead = z.strictObject({
+  store: z.string().min(1),
+  pathHash: z.string().regex(/^[0-9a-f]{64}$/),
+  held: z.boolean(),
+  cwd: z.string().nullable(),
+  start: z.string().nullable(),
+  firstUser: z
+    .strictObject({ timestamp: z.number(), attribution: z.string().nullable() })
+    .nullable(),
+  reminders: z.array(
+    z.strictObject({ turn: z.string(), reminder: z.string(), placement: z.string() })
+  ),
+  bytes: z.int().nonnegative(),
+  badLines: z.int().nonnegative(),
+  readAt: z.string(),
+});
+export type SessionHead = z.infer<typeof SessionHead>;
+
+/** A head as the runner holds it: the head and its file. */
+export interface SavedHead {
+  readonly head: SessionHead;
+  readonly file: string;
+}
+
+/** A session-head.sql row. */
+const HeadRow = z.strictObject({
+  hash: z.string(),
+  cwd: z.string().nullable(),
+  start: z.string().nullable(),
+  first_user: z
+    .strictObject({ timestamp: z.number().nullable(), attribution: z.string().nullable() })
+    .nullable(),
+  reminders: z.array(
+    z.strictObject({
+      turn: z.string().nullable(),
+      reminder: z.string().nullable(),
+      placement: z.string().nullable(),
+    })
+  ),
+  bytes: z.number().int().nonnegative(),
+  bad_lines: z.number().int().nonnegative(),
+});
+
+/** The file `dir` keeps the head of the session `pathHash` in. */
+export function sessionHeadFile(dir: string, pathHash: string): string {
+  return path.join(dir, `${pathHash}.json`);
+}
+
+/**
+ * The heads of the sessions `pathHashes` of the store `store`, by hash: each saved head in `dir`
+ * read back, and the others read in one session-head.sql query through the store command
+ * `command` (config.ts's `psqlCommand`, which runs it read-only) and each saved there whole
+ * before it is given. A hash the store holds no file of gets a head with `held: false`. Throws
+ * when the command fails, or a row or a saved file is no head.
+ */
+export async function sessionHeads(
+  command: string,
+  store: string,
+  pathHashes: readonly string[],
+  dir: string
+): Promise<Map<string, SavedHead>> {
+  const heads = new Map<string, SavedHead>();
+  const missing: string[] = [];
+  for (const hash of new Set(pathHashes)) {
+    const file = sessionHeadFile(dir, hash);
+    if (!existsSync(file)) {
+      missing.push(hash);
+      continue;
+    }
+    const parsed = SessionHead.safeParse(JSON.parse(readFileSync(file, "utf8")));
+    if (!parsed.success || parsed.data.store !== store || parsed.data.pathHash !== hash) {
+      throw new Error(`${file} is not the head of the session ${hash} of the store ${store}`);
+    }
+    heads.set(hash, { head: parsed.data, file });
+  }
+  if (missing.length === 0) return heads;
+  const child = Bun.spawn([command, store], {
+    stdin: new Blob([sessionHeadSql(missing)]),
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
+  if (code !== 0) {
+    const first = stderr.split("\n").find((line) => line.trim() !== "") ?? "";
+    throw new Error(
+      `the store command's read of the session heads exited ${code}: ${first.slice(0, 300)}`
+    );
+  }
+  const rows = new Map<string, z.infer<typeof HeadRow>>();
+  for (const row of psqlRows(stdout)) {
+    const parsed = HeadRow.safeParse(row);
+    if (!parsed.success)
+      throw new Error(`a session-head.sql row is no head: ${JSON.stringify(row)}`);
+    rows.set(parsed.data.hash, parsed.data);
+  }
+  const readAt = new Date().toISOString();
+  for (const hash of missing) {
+    const row = rows.get(hash);
+    const first = row?.first_user;
+    const head: SessionHead = {
+      store,
+      pathHash: hash,
+      held: row !== undefined,
+      cwd: row?.cwd ?? null,
+      start: row?.start ?? null,
+      firstUser:
+        first === undefined || first === null || first.timestamp === null
+          ? null
+          : { timestamp: first.timestamp, attribution: first.attribution },
+      reminders: (row?.reminders ?? []).flatMap(({ turn, reminder, placement }) =>
+        turn === null || reminder === null || placement === null
+          ? []
+          : [{ turn, reminder, placement }]
+      ),
+      bytes: row?.bytes ?? 0,
+      badLines: row?.bad_lines ?? 0,
+      readAt,
+    };
+    const file = sessionHeadFile(dir, hash);
+    writeWhole(file, json(head));
+    heads.set(hash, { head, file });
+  }
+  return heads;
+}
+
+/** The key Oh My Pi gives a user turn: `user:<timestamp>:<attribution>`. */
+export function userTurnKey(turn: {
+  readonly timestamp?: number | undefined;
+  readonly attribution?: string | null | undefined;
+}): string {
+  return `user:${turn.timestamp}:${turn.attribution ?? ""}`;
+}
+
+/** One value a capture shows of its session, and where it came from. */
+export interface Sourced {
+  readonly value: string;
+  readonly from: string;
+}
+
+/** What a capture shows of the session it stands for, in place of its own run's values: the
+ *  working directory, the reminder of the turn it stands for, the date that turn names, and
+ *  Claude Code's config directory; each with where it came from, and the head they were read
+ *  from (null when the case or task names no session). */
+export interface SessionFacts {
+  readonly head: {
+    readonly store: string;
+    readonly pathHash: string;
+    readonly file: string;
+    readonly held: boolean;
+  } | null;
+  readonly cwd: Sourced;
+  readonly reminder: Sourced;
+  readonly date: Sourced;
+  readonly claudeConfigDir: Sourced;
+}
+
+/**
+ * The facts a capture shows of its session (SessionFacts), from its head `saved` (undefined when
+ * no session is named). The working directory is the header's `cwd`, else the one the turn's
+ * journaled reminder names, else NEUTRAL_CWD. The reminder is the one Oh My Pi journaled for
+ * `turn` (its key, `userTurnKey`), byte for byte; else it is rendered from that working directory
+ * and `date`, the UTC date of the turn the reminder stands for (`date.value`, with where it came
+ * from). Claude Code's config directory is `devboxClaudeConfigDir` for a devbox context that the
+ * configuration gives one for, else NEUTRAL_CLAUDE_CONFIG_DIR.
+ */
+export function sessionFacts(
+  saved: SavedHead | undefined,
+  options: {
+    readonly turn: string | undefined;
+    readonly date: Sourced;
+    readonly devbox: boolean;
+    readonly devboxClaudeConfigDir: string | undefined;
+  }
+): SessionFacts {
+  const head = saved?.head;
+  const placed = head?.reminders.find(
+    (each) => each.placement === "prefix" && each.turn === options.turn
+  );
+  const named = placed === undefined ? undefined : REMINDER_CWD.exec(placed.reminder)?.[1];
+  const none =
+    head === undefined
+      ? "neutral: no session is named"
+      : head.held
+        ? "neutral: the session's head holds neither a header cwd nor a reminder of the turn"
+        : "neutral: the store holds no session of this hash";
+  const cwd: Sourced =
+    head?.cwd !== null && head?.cwd !== undefined
+      ? { value: head.cwd, from: "the session header's cwd" }
+      : named !== undefined
+        ? { value: named, from: "the session's journaled reminder of the turn" }
+        : { value: NEUTRAL_CWD, from: none };
+  const reminder: Sourced =
+    placed !== undefined
+      ? { value: placed.reminder, from: `the session's journaled reminder of ${placed.turn}` }
+      : {
+          value: renderReminder(options.date.value, cwd.value),
+          from: `rendered from the working directory (${cwd.from}) and the date (${options.date.from})`,
+        };
+  const dated =
+    placed === undefined ? undefined : /Today: (\d{4}-\d{2}-\d{2});/.exec(placed.reminder)?.[1];
+  const config = options.devbox ? options.devboxClaudeConfigDir : undefined;
+  return {
+    head:
+      saved === undefined
+        ? null
+        : {
+            store: saved.head.store,
+            pathHash: saved.head.pathHash,
+            file: saved.file,
+            held: saved.head.held,
+          },
+    cwd,
+    reminder,
+    date:
+      dated === undefined
+        ? options.date
+        : { value: dated, from: "the session's journaled reminder of the turn" },
+    claudeConfigDir:
+      config === undefined
+        ? {
+            value: NEUTRAL_CLAUDE_CONFIG_DIR,
+            from: options.devbox
+              ? "neutral: the configuration names no devboxClaudeConfigDir"
+              : "neutral: the context is no dev box's",
+          }
+        : { value: config, from: "the configuration's devboxClaudeConfigDir" },
+  };
+}
+
+/** `text` as a regular expression that matches it alone. */
+function literal(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** One rule of the harness-string rewrite: what it replaces, the pattern, and its replacement. */
+export interface HarnessRule {
+  readonly what: string;
+  readonly pattern: RegExp;
+  readonly to: (match: string, ...groups: string[]) => string;
+}
+
+/** What a rewrite did: the body, each rule with how many strings it replaced, and each string
+ *  that still holds a path of `forbidden`, as `<where>: <path>`. */
+export interface Rewritten {
+  readonly body: RequestBody;
+  readonly replaced: readonly { readonly what: string; readonly count: number }[];
+  readonly faults: readonly string[];
+}
+
+/**
+ * `body` with `rules` applied, in order, to each string inside it, every other byte kept; a part
+ * `kept` says (a recorded prompt's blocks) is left as it is. Then each string, a kept part's
+ * among them, that still holds a path of `forbidden` is a fault. A rule's replacement is made by
+ * a function, so no `$` of a session's text is read as a pattern.
+ */
+export function rewriteBody(
+  body: RequestBody,
+  rules: readonly HarnessRule[],
+  forbidden: readonly string[],
+  kept: (where: readonly (string | number)[], value: unknown) => boolean = () => false
+): Rewritten {
+  const counts = rules.map(() => 0);
+  const faults: string[] = [];
+  const walk = (value: unknown, where: (string | number)[], keep: boolean): unknown => {
+    const keepHere = keep || kept(where, value);
+    if (typeof value === "string") {
+      let text = value;
+      if (!keepHere) {
+        for (const [index, rule] of rules.entries()) {
+          text = text.replace(rule.pattern, (match, ...rest: unknown[]) => {
+            counts[index] = (counts[index] ?? 0) + 1;
+            // The arguments after the groups are the match's offset and the whole text.
+            const groups = rest
+              .slice(0, -2)
+              .map((group) => (typeof group === "string" ? group : ""));
+            return rule.to(match, ...groups);
+          });
+        }
+      }
+      for (const each of forbidden) {
+        if (each !== "" && text.includes(each)) faults.push(`${where.join(".")}: ${each}`);
+      }
+      return text;
+    }
+    if (Array.isArray(value)) {
+      return value.map((item, index) => walk(item, [...where, index], keepHere));
+    }
+    if (typeof value === "object" && value !== null) {
+      return Object.fromEntries(
+        Object.entries(value).map(([key, item]) => [key, walk(item, [...where, key], keepHere)])
+      );
+    }
+    return value;
+  };
+  const rewritten = walk(body, [], false) as RequestBody;
+  return {
+    body: rewritten,
+    replaced: rules.map((rule, index) => ({ what: rule.what, count: counts[index] ?? 0 })),
+    faults,
+  };
+}
+
+/** Whether the part of a body at `where` is its system prompt: a Messages body's `system`, a
+ *  Responses body's `instructions`, and each `developer` or `system` item of its `input`. */
+function isSystemPart(where: readonly (string | number)[], value: unknown): boolean {
+  if (where.length === 1) return where[0] === "system" || where[0] === "instructions";
+  if (where.length !== 2 || where[0] !== "input") return false;
+  const role = typeof value === "object" && value !== null ? Reflect.get(value, "role") : undefined;
+  return role === "developer" || role === "system";
+}
+
+/**
+ * The harness rules of an Oh My Pi capture that ran in `workspace`, with the scratch Claude Code
+ * config directory `claudeConfigDir` (a devbox context's), for the session `facts`: the date and
+ * working-directory reminder (any date) becomes the session's; a context file's block path under
+ * the working directory, or in the config directory, names the session's; with `builtPrompt`
+ * (a prompt Oh My Pi built, not a recorded one), the workstation's `- OS:` line shows NEUTRAL_OS;
+ * and every other mention of the working directory names the session's.
+ */
+export function ompHarnessRules(
+  workspace: string,
+  claudeConfigDir: string | undefined,
+  facts: SessionFacts,
+  builtPrompt: boolean
+): HarnessRule[] {
+  return [
+    {
+      what: "the date and working-directory reminder",
+      pattern: new RegExp(
+        `<system-reminder>\\nToday: \\d{4}-\\d{2}-\\d{2}; current working directory: '${literal(workspace)}'\\. Do not repeat this information in your reply\\.\\n</system-reminder>`,
+        "g"
+      ),
+      to: () => facts.reminder.value,
+    },
+    {
+      what: "a context file's path in the working directory",
+      pattern: new RegExp(`<file path="${literal(workspace)}/`, "g"),
+      to: () => `<file path="${facts.cwd.value}/`,
+    },
+    ...(claudeConfigDir === undefined
+      ? []
+      : [
+          {
+            what: "the user-level context file's path",
+            pattern: new RegExp(`<file path="${literal(claudeConfigDir)}/`, "g"),
+            to: () => `<file path="${facts.claudeConfigDir.value}/`,
+          },
+        ]),
+    ...(builtPrompt
+      ? [
+          {
+            what: "the workstation's OS line",
+            pattern: /(<workstation>\n- OS: )[^\n]*/g,
+            to: (_match: string, line = "") => `${line}${NEUTRAL_OS}`,
+          },
+        ]
+      : []),
+    {
+      what: "another mention of the working directory",
+      pattern: new RegExp(literal(workspace), "g"),
+      to: () => facts.cwd.value,
+    },
+  ];
 }
 
 /** `model` with its provider, `anthropic` when it names none. */
@@ -781,7 +1240,7 @@ export async function captureBody(
     // Every other route of every endpoint is refused.
     if (request.path === "/legion/v1/claims/register" && pane !== undefined) {
       return Response.json({
-        claimToken: `capture-${issue.toLowerCase()}-${pane.role}`,
+        claimToken: `claim-${issue.toLowerCase()}-${pane.role}`,
         tree: CAPTURE_TREE,
         issue,
         role: pane.role,
@@ -804,7 +1263,8 @@ export async function captureBody(
     // predates session consumers reads it as core delivery), and the role claim with that
     // interest. The consumer is `@legion/envoy-client/test/subscribe-answer`'s, the one every
     // stand-in listener of this repository answers, so it never drifts from what the client
-    // accepts. Every other Envoy route is refused.
+    // accepts. Its answers name the session's working directory and made-up ids, no path or
+    // name of the capture's. Every other Envoy route is refused.
     if (
       pane !== undefined &&
       request.method === "POST" &&
@@ -813,14 +1273,14 @@ export async function captureBody(
       const asked: unknown = request.body === "" ? {} : JSON.parse(request.body);
       const named =
         typeof asked === "object" && asked !== null ? Reflect.get(asked, "session_id") : undefined;
-      const session = typeof named === "string" ? named : "skill-cuts-capture";
+      const session = typeof named === "string" ? named : STAND_IN_SESSION;
       return Response.json({
         session_id: session,
-        machine_id: "skill-cuts-capture",
-        dir: context.workspace,
+        machine_id: STAND_IN_MACHINE,
+        dir: options.session.cwd.value,
         topics: [],
         ...(endpoint === "/envoy/v1/interests/subscribe"
-          ? { delivery: consumerDelivery(session, { streamID: "skill-cuts-capture" }) }
+          ? { delivery: consumerDelivery(session, { streamID: STAND_IN_STREAM }) }
           : {}),
       });
     }
@@ -907,7 +1367,7 @@ export async function captureBody(
           LEGION_ISSUE: issue,
           LEGION_STATE_DIR: path.join(root, "legion-state"),
           LEGION_BOOT_TOKEN: randomBytes(18).toString("base64url"),
-          DISPATCH_SESSION_ID: "skill-cuts-capture",
+          DISPATCH_SESSION_ID: STAND_IN_SESSION,
           ...endpoints,
         };
   let stderr = "";
@@ -1136,7 +1596,23 @@ export async function captureBody(
         `case ${c.id} arm ${arm.name}: the captured body is refused: ${faults.join("; ")}`
       );
     }
-    const defined = pluginTools(body, context.record, role, stderr);
+    // The harness-string rule: the body shows the session's working directory, reminder and
+    // user-level path, not the capture's, and holds no path of its scratch.
+    const facts = options.session;
+    const rewritten = rewriteBody(
+      body,
+      ompHarnessRules(context.workspace, context.claudeConfigDir, facts, recorded === undefined),
+      [root, options.scratchDir],
+      recorded === undefined ? undefined : isSystemPart
+    );
+    if (rewritten.faults.length > 0) {
+      throw new Error(
+        `case ${c.id} arm ${arm.name}: the captured body is refused: it still holds the capture's scratch after the harness-string rule, at ${rewritten.faults.join("; ")}`
+      );
+    }
+    const sentBody = rewritten.body;
+    const rawFile = rawBodyFile(files.body);
+    const defined = pluginTools(sentBody, context.record, role, stderr);
     const sentTools = defined.tools;
     const record: CaptureRecord = {
       case: c.id,
@@ -1150,7 +1626,7 @@ export async function captureBody(
       configFiles: options.configFiles ?? [],
       requestHeaders: turn.headers,
       sessionDigest: c.sessionDigest,
-      captureDigest: promptDigest(body),
+      captureDigest: promptDigest(sentBody),
       scratch: root,
       listing: [...listing].map(([name, hint]) => ({ name, hint })),
       recordedPrompt:
@@ -1209,10 +1685,23 @@ export async function captureBody(
         captureRunMs,
         totalMs: Math.round(performance.now() - started),
       },
+      harness: {
+        ...facts,
+        os:
+          recorded === undefined
+            ? {
+                value: NEUTRAL_OS,
+                from: "neutral: the store records no workstation of a session whose prompt Oh My Pi builds",
+              }
+            : null,
+        replaced: rewritten.replaced,
+        rawBody: rawFile,
+      },
     };
-    writeWhole(files.body, turn.body);
+    writeWhole(rawFile, turn.body);
+    writeWhole(files.body, JSON.stringify(sentBody));
     writeWhole(files.record, json(record));
-    return { body, record, bodyFile: files.body, recordFile: files.record, made: true };
+    return { body: sentBody, record, bodyFile: files.body, recordFile: files.record, made: true };
   } finally {
     await recorder.close();
     nats.stop(true);

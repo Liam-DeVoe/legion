@@ -25,7 +25,7 @@
  *       [--runs <n>] [--model <model>] [--thinking <level>] [--budget-usd <n>]
  *       [--concurrency <n>] [--request-log <file>] [--repos <dir>] [--cache-dir <dir>]
  *       [--scratch <dir>] [--models <models.yml>] [--omp <binary>] [--hint-model <model>]
- *       [--omp-config <file>]... [--claude <binary>]
+ *       [--omp-config <file>]... [--claude <binary>] [--context-session <store>:<path hash>]
  *
  * **`behaviour`** runs R2's behaviour test of one skill: `--old` and `--new` are the skill's own
  * directories at the cut's base and in the cut, and `--cases` a case file of that skill (cases.ts,
@@ -51,10 +51,12 @@
  *   models`, with the served and total counts): it gets no verdict, and the walk of the cut's
  *   ranking goes on to its next skill.
  * - `confirm`: FRESH_RUNS fresh runs of old and new for each flagged case.
- * - `control`: FRESH_RUNS runs of `minus` (old less the case's line, or less `--planted-line`) and
- *   FRESH_RUNS fresh runs of old, on the skill's control case.
+ * - `control`: on the skill's control case, FRESH_RUNS runs each of old, `minus` (old less the
+ *   case's line, or less `--planted-line`: the planted-loss control, which must be a loss) and
+ *   `twin` (old again, its own capture: the false-loss control, which must be no loss).
  *   confirm and control need the screen finished, and make no run when the skill can get no verdict
- *   (fewer than MIN_INFORMATIVE_CASES informative cases, or a control that is no loss).
+ *   (fewer than MIN_INFORMATIVE_CASES informative cases, a planted-loss control that is no loss,
+ *   or a false-loss control that is a loss).
  * - `report` (no model call) prints each case's passes per arm and stage, the drops by each judge
  *   control, the skill's verdict and its reason (score.ts; `keeps` is printed "no loss detected by
  *   the registered rule"), the rule's sensitivity (`lossChance` at an old pass rate of 0.9 and 0.7
@@ -68,6 +70,12 @@
  *   does not: on models the gateway does not serve, and on served models no screened case ran
  *   on; a skill the screen's refusal holds for gets no verdict. Without it, `report` says the
  *   reading sessions by model were not given, and its verdict names no models.
+ *
+ * Every round of a stage sends the runs of all its arms in one order, seeded by the round's
+ * recorded seed (replay.ts's `replayInterleaved`), each run with a session id of its own, and its
+ * runs record that id and their place in the order. A capture made for a stage shows the case's
+ * session (capture.ts, "The harness strings"), whose head the capture reads once from its store
+ * through the configuration's `psqlCommand` and saves under `<out>/sessions/`.
  *
  * Captures are saved under `<out>/captures/<arm>-<digest of the arm's skill directory>/`, so a new
  * text, or another planted line, is captured again. Making one runs Oh My Pi (`--omp`, else
@@ -95,16 +103,20 @@
  * **`count-sql`** is countsql.ts's own command: it prints count.sql filled for one store and day.
  *
  * **`load`** is load.ts's load test of R6 and R7: per task, the host's first request captured once
- * and sent `--runs` times (LOAD_RUNS by default), each run's first assistant message read for a
- * read of the skill, the loads and verdicts printed and saved under `--out`, which a run started
- * again goes on from. The model is LOAD_MODEL and the thinking level LOAD_THINKING unless
- * `--model` and `--thinking` say otherwise.
+ * and sent `--runs` times (LOAD_RUNS by default), the runs of a profile's tasks in one seeded
+ * order, each with a session id of its own; each run's first assistant message read for a read of
+ * the skill, the loads and verdicts printed and saved under `--out`, which a run started again
+ * goes on from. The model is LOAD_MODEL and the thinking level LOAD_THINKING unless `--model` and
+ * `--thinking` say otherwise. `--context-session <store>:<path hash>` names the session a written
+ * task stands for in its capture.
  *
  * Each model request goes through the request log (`loggedGateway`): one JSON line per request,
  * appended to `--request-log` (by default `<out>/requests.jsonl` for `behaviour` and `load`, and
  * the `--out` file's path with `.requests.jsonl` added for `read` and `control`), holding what the
- * call was for, the model, the thinking type and budget, max_tokens, the temperature, the effort,
- * and the reply's usage and dollars at list price; never the key and never a message's text.
+ * call was for, when it was asked for and sent and the calls in flight then, the session id it
+ * went with, the model, the thinking type and budget, max_tokens, the temperature, the effort,
+ * and the reply's answering model, ids, gateway headers, cache read and write tokens, usage and
+ * dollars at list price; never the key and never a message's text.
  *
  * Exit status: 0 done (a control held); 1 failed (a reader's every reply refused, a control that
  * did not hold, a call, a load test's task or an `--after-case` command that failed); 2 refused
@@ -128,7 +140,17 @@ import { outRefusal } from "../skill-scenarios/production-dispatch";
 import { type Arm, type ArmDirs, type ArmName, buildArm } from "./arms";
 import { main as attributeMain, type ModelCount, ModelCountFile, modelId } from "./attribute";
 import { main as buildMain } from "./build";
-import { type Capture, captureBody, capturePaths, gatewayHints, savedCapture } from "./capture";
+import {
+  type Capture,
+  captureBody,
+  capturePaths,
+  gatewayHints,
+  type SessionFacts,
+  savedCapture,
+  sessionFacts,
+  sessionHeads,
+  userTurnKey,
+} from "./capture";
 import { type Case, loadCases, Thinking } from "./cases";
 import {
   configFrom,
@@ -140,17 +162,19 @@ import {
   schemaFaults,
   writeWhole,
 } from "./common";
-import type { SkillCutsConfig } from "./config";
+import { type SkillCutsConfig, storeNamed } from "./config";
 import { ghSource, localSource, type RepoSource } from "./context";
 import { main as copiesMain, spawnGh } from "./copies";
 import { main as countSqlMain } from "./countsql";
 import {
   BudgetSpent,
+  bodyIdentity,
   createGateway,
   type Gateway,
   PRICE_SOURCE,
   PRICES,
   type RequestBody,
+  type Sent,
   SpentRecord,
   usdOf,
 } from "./gateway";
@@ -178,12 +202,13 @@ import {
   runReader,
   SameJobInput,
 } from "./readers";
-import { type Replayed, replay } from "./replay";
+import { type Replayed, replayInterleaved } from "./replay";
 import {
   FLAG_GAP,
   FRESH_RUNS,
   INFORMATIVE_GAP,
   isControlLoss,
+  isFalseLoss,
   isFlagged,
   isInformative,
   isLoss,
@@ -290,10 +315,15 @@ function requestSettings(body: RequestBody): Record<string, unknown> {
   };
 }
 
-/** `gateway`, with each request it sends appended to `logFile` as one JSON line: when it started,
- *  `kind` (what the call is for), the body's settings (`requestSettings`), and the reply's model,
- *  request id, duration, stop reason, usage and dollars; or, for a call that failed, the error's
- *  name and HTTP status. Never the key, and never a message's text. */
+/** `gateway`, with each request it sends appended to `logFile` as one JSON line: when it was
+ *  asked for (`at`), when it got its place and was sent (`sentAt`) and how many calls were in
+ *  flight then, it among them (`inFlight`), `kind` (what the call is for), the body's settings
+ *  (`requestSettings`) and the session id it went with (`userId`: its `metadata.user_id` or
+ *  `prompt_cache_key`), and the reply's model (`answeredBy`), message id, request id, provider
+ *  request id, the gateway's headers of it (`gateway`: gateway.ts's GATEWAY_HEADERS it came
+ *  with, the deployment and model group among them), duration, stop reason, cache read and write
+ *  tokens, usage and dollars; or, for a call that failed, the error's name and HTTP status. Never
+ *  the key, and never a message's text. */
 function loggedGateway(gateway: Gateway, logFile: string, kind: string): Gateway {
   mkdirSync(path.dirname(logFile), { recursive: true });
   const log = (line: Record<string, unknown>) =>
@@ -302,16 +332,31 @@ function loggedGateway(gateway: Gateway, logFile: string, kind: string): Gateway
     async send(body, options) {
       const at = new Date().toISOString();
       const settings = requestSettings(body);
+      const userId = bodyIdentity(body);
+      let sent: Sent | undefined;
+      const onSent = (each: Sent): void => {
+        sent = each;
+        options?.onSent?.(each);
+      };
       try {
-        const reply = await gateway.send(body, options);
+        const reply = await gateway.send(body, { ...options, onSent });
+        const id: unknown = reply.message.id;
         log({
           at,
+          sentAt: reply.sentAt,
+          inFlight: reply.inFlight,
           kind,
           ...settings,
+          userId,
           answeredBy: reply.message.model,
+          messageId: typeof id === "string" ? id : null,
           requestId: reply.requestId ?? null,
+          providerRequestId: reply.providerRequestId,
+          gateway: reply.gatewayHeaders,
           durationMs: reply.durationMs,
           stopReason: reply.message.stop_reason,
+          cacheRead: reply.spent.cacheRead,
+          cacheWrite: reply.spent.cacheWrite,
           usage: reply.message.usage,
           usd: reply.spent.usd,
         });
@@ -319,8 +364,11 @@ function loggedGateway(gateway: Gateway, logFile: string, kind: string): Gateway
       } catch (error) {
         log({
           at,
+          sentAt: sent?.at ?? null,
+          inFlight: sent?.inFlight ?? null,
           kind,
           ...settings,
+          userId,
           error: error instanceof Error ? error.name : "error",
           status: error instanceof MessagesApiError ? (error.status ?? null) : null,
         });
@@ -613,8 +661,14 @@ const Run = z.strictObject({
   ...RunRecord.shape,
   /** The run's number in its arm and stage, from 1. */
   run: z.int().positive(),
-  /** The round of the stage that started it, from 1; its blind order's seed is `seeds[round - 1]`. */
+  /** The round of the stage that started it, from 1; its blind order's seed, and its send
+   *  order's (replay.ts's `sendOrder`), is `seeds[round - 1]`. */
   round: z.int().positive(),
+  /** Its place in that round's send order, from 0. */
+  sendPlace: z.int().nonnegative(),
+  /** The session id every request of the run went with (its `metadata.user_id` or
+   *  `prompt_cache_key`), its own, or null for a body that names none. */
+  userId: z.string().nullable(),
   /** Its reply's opaque id in that round's blind order, or null when the replay failed. */
   id: z.string().nullable(),
   /** The rounds of skill reads the replay answered before the step, or null when it failed. */
@@ -633,11 +687,19 @@ const CaptureNote = z.strictObject({
   sessionDigest: z.string().nullable(),
 });
 
+/** How a stage's runs were sent, as each stage result records it: each run with a session id of
+ *  its own, and every arm's runs of a round in one seeded order. A stage result that does not
+ *  record it was made before, when an arm's runs shared its capture's one id and went as one
+ *  batch, so its runs are no runs of this procedure. */
+const SENDS = "each run its own session id; a round's arms interleaved in one seeded order";
+
 /** One stage of a case: `running` until score.ts's `stageOutcome` says `counted` or `unscreened`.
  *  `texts` are the digests of `--old` and `--new` it ran with, and `plantedLine` the line `minus`
- *  left out in place of the case's (control only). `usd` is what its calls cost at list price. */
+ *  left out in place of the case's (control only). `sends` is SENDS. `usd` is what its calls cost
+ *  at list price. */
 const StageResult = z.strictObject({
   state: StageState,
+  sends: z.literal(SENDS),
   texts: z.strictObject({ old: z.string(), new: z.string() }),
   plantedLine: z.string().nullable(),
   captures: z.record(z.string(), CaptureNote),
@@ -700,7 +762,8 @@ export function textDigest(dir: string): string {
 }
 
 /** Where the captures of `arm` are saved under `out`: one directory per arm and text. `texts` are
- *  the digests of `--old` and `--new` (`textDigest`), so only `minus`'s copy is hashed here. */
+ *  the digests of `--old` and `--new` (`textDigest`), so only `minus`'s copy is hashed here;
+ *  `twin` holds the old text. */
 export function armCaptureDir(
   out: string,
   arm: Arm,
@@ -711,7 +774,9 @@ export function armCaptureDir(
       ? "none"
       : arm.name === "old" || arm.name === "new"
         ? texts[arm.name]
-        : textDigest(arm.skillDir);
+        : arm.name === "twin"
+          ? texts.old
+          : textDigest(arm.skillDir);
   return path.join(out, "captures", `${arm.name}-${text}`);
 }
 
@@ -870,11 +935,25 @@ function say(b: Behaviour, line: string): void {
   b.io.out(`${b.command}: ${line}\n`);
 }
 
-/** Case `caseId`'s results under `b.out`, or undefined when it has none. */
+/** Case `caseId`'s results under `b.out`, or undefined when it has none. Refuses a result one of
+ *  whose stages was run before each run had its own session id and the arms were interleaved
+ *  (its stage records no `sends`, SENDS). */
 function readResult(b: Behaviour, caseId: string): CaseResult | undefined {
   const file = caseResultFile(b.out, caseId);
   if (!existsSync(file)) return undefined;
-  const parsed = CaseResult.safeParse(readJson(file, "the case result"));
+  const raw = readJson(file, "the case result");
+  const stages: unknown = typeof raw === "object" && raw !== null ? Reflect.get(raw, "stages") : {};
+  const before = Stage.options.filter((stage) => {
+    const state: unknown =
+      typeof stages === "object" && stages !== null ? Reflect.get(stages, stage) : undefined;
+    return typeof state === "object" && state !== null && !Object.hasOwn(state, "sends");
+  });
+  if (before.length > 0) {
+    throw new Refused(
+      `${file} holds ${before.join(" and ")} runs sent before each run had its own session id and a round's arms were interleaved, so they are no runs of this procedure: use a new --out`
+    );
+  }
+  const parsed = CaseResult.safeParse(raw);
   if (!parsed.success) {
     throw new Refused(`${file} is not a case result: ${schemaFaults(parsed.error)}`);
   }
@@ -950,15 +1029,23 @@ function screened(
 }
 
 /** Why a skill whose screen is finished can get no verdict, whatever its confirm runs show, or
- *  undefined: too few informative cases, or a control whose runs are made and are no loss
- *  (score.ts's `skillVerdict`, and its reason). */
+ *  undefined: too few informative cases, or a control whose runs are made and whose planted-loss
+ *  control is no loss or whose false-loss control is a loss (score.ts's `skillVerdict`, and its
+ *  reason). */
 function noVerdict(score: SkillScore): string | undefined {
   const control = score.control;
+  const counted = control?.state === "counted" ? control.passes : undefined;
   const controlLoss =
     control === undefined ||
     control.state === "running" ||
-    (control.state === "counted" && isControlLoss(control.passes));
-  const outcome = skillVerdict({ informative: score.informative, controlLoss, losses: 0 });
+    (counted !== undefined && isControlLoss(counted));
+  const falseLoss = counted !== undefined && isFalseLoss(counted);
+  const outcome = skillVerdict({
+    informative: score.informative,
+    controlLoss,
+    falseLoss,
+    losses: 0,
+  });
   if (outcome.verdict !== null) return undefined;
   return control?.state === "unscreened"
     ? `${outcome.reason}: its runs are unscreened`
@@ -973,6 +1060,57 @@ const MODEL_NOT_SERVED = "model-not-served";
  *  the one whose id, its text after its last `/`, is `model`'s; or undefined when none is. */
 function servedModel(model: string, servedModels: readonly string[]): string | undefined {
   return servedModels.find((served) => modelId(served) === modelId(model));
+}
+
+/** The directory under `--out` that keeps each session head a capture read (capture.ts's
+ *  `sessionHeads`), one file per path hash. */
+const SESSIONS_DIR = "sessions";
+
+/**
+ * What a capture of case `c` shows of the session it stands for (capture.ts's `sessionFacts`):
+ * the session's head, read from its store (`c.source`) through the configuration's
+ * `psqlCommand` once and saved under `<out>/sessions/`; the reminder Oh My Pi journaled for the
+ * case's first message that goes to the model as a user turn (any but an assistant message or a
+ * tool result), the turn a capture's reminder goes on, else one rendered for the UTC date of the
+ * case's step (of its session's start when the step has no time). Throws when the
+ * configuration names no such store or the head cannot be read: no capture of a session the
+ * store holds is made with neutral values in place of a read that failed.
+ */
+async function caseSession(config: SkillCutsConfig, out: string, c: Case): Promise<SessionFacts> {
+  const store = storeNamed(config, c.source.store).name;
+  const heads = await sessionHeads(
+    config.psqlCommand,
+    store,
+    [c.source.pathHash],
+    path.join(out, SESSIONS_DIR)
+  );
+  const first = c.messages.find(
+    (message) => message.role !== "assistant" && message.role !== "toolResult"
+  );
+  const turnAt: unknown = first?.timestamp;
+  const attribution: unknown = first?.attribution;
+  const stepAt: unknown = c.realStep.timestamp;
+  return sessionFacts(heads.get(c.source.pathHash), {
+    turn:
+      typeof turnAt === "number"
+        ? userTurnKey({
+            timestamp: turnAt,
+            attribution: typeof attribution === "string" ? attribution : undefined,
+          })
+        : undefined,
+    date:
+      typeof stepAt === "number"
+        ? {
+            value: new Date(stepAt).toISOString().slice(0, 10),
+            from: "the UTC date of the case's step in the session",
+          }
+        : {
+            value: new Date(c.sessionStart).toISOString().slice(0, 10),
+            from: "the UTC date of the session's start (the case's step has no time)",
+          },
+    devbox: c.context === "devbox",
+    devboxClaudeConfigDir: config.devboxClaudeConfigDir,
+  });
 }
 
 /** A fresh result of case `c`. */
@@ -1037,9 +1175,11 @@ async function judgeTheControls(r: Runner, c: Case, result: CaseResult): Promise
   return { ...next, dropped: `the judge controls do not hold: ${failures.join("; ")}` };
 }
 
-/** Round `round` of a stage: `toStart` replays of each arm, all at once (the gateway bounds the
- *  calls in flight), then every reply judged blind under `seed`. A replay that fails is a run with
- *  no verdict; one the budget refused, or whose judgement the budget refused, is no run. */
+/** Round `round` of a stage: `toStart` replays of each arm, every arm's sent in one order under
+ *  `seed` (replay.ts's `replayInterleaved`; the gateway bounds the calls in flight), each run with
+ *  a session id of its own; then every reply judged blind under `seed`. A replay that fails is a
+ *  run with no verdict; one the budget refused, or whose judgement the budget refused, is no run.
+ *  The runs are numbered, within their arm, in the order they were sent. */
 async function runRound(
   r: Runner,
   c: Case,
@@ -1052,25 +1192,21 @@ async function runRound(
   phases: Phases
 ): Promise<{ runs: Run[]; budgetSpent: boolean }> {
   const replaysStarted = performance.now();
-  const replayed = await Promise.all(
-    [...arms].map(async ([name, { arm, capture }]) => {
-      const n = toStart[name] ?? 0;
-      const results =
-        n === 0
-          ? []
-          : await replay(capture.body, arm, r.replays, n, {
-              headers: capture.record.requestHeaders,
-            });
-      return { name, results };
-    })
+  const sent = await replayInterleaved(
+    [...arms].map(([name, { arm, capture }]) => ({
+      arm,
+      body: capture.body,
+      headers: capture.record.requestHeaders,
+      runs: toStart[name] ?? 0,
+    })),
+    r.replays,
+    seed
   );
   // Each reply is judged under its arm and its place among its arm's replays of this round.
-  const replies: ArmReply[] = replayed.flatMap(({ name, results }) =>
-    results.flatMap((result, place) =>
-      result.status === "fulfilled"
-        ? [{ arm: name, run: place, content: result.value.step.message.content }]
-        : []
-    )
+  const replies: ArmReply[] = sent.flatMap(({ arm, run, outcome }) =>
+    outcome.status === "fulfilled"
+      ? [{ arm, run, content: outcome.value.step.message.content }]
+      : []
   );
   const judgeStarted = performance.now();
   phases.replaysMs += judgeStarted - replaysStarted;
@@ -1079,48 +1215,49 @@ async function runRound(
   const judgements = new Map(judged.map((j) => [`${j.arm}:${j.run}`, j]));
   let budgetSpent = false;
   const runs: Run[] = [];
-  for (const { name, results } of replayed) {
-    let run = made.filter((each) => each.arm === name).length;
-    for (const [place, result] of results.entries()) {
-      const base = { caseId: c.id, arm: name, stage, round };
-      if (result.status === "rejected") {
-        if (result.reason instanceof BudgetSpent) {
-          budgetSpent = true;
-          continue;
-        }
-        run += 1;
-        runs.push({
-          ...base,
-          run,
-          verdict: null,
-          reason: `the replay failed: ${messageFor(result.reason)}`,
-          id: null,
-          skillRounds: null,
-          reply: null,
-          replaySpent: [],
-          judgeSpent: [],
-        });
-        continue;
-      }
-      const judgement = judgements.get(`${name}:${place}`);
-      if (judgement === undefined || judgement.budgetRefused) {
+  const numbered = new Map<ArmName, number>();
+  for (const { arm, run: inArm, place: sendPlace, userId, outcome } of sent) {
+    const base = { caseId: c.id, arm, stage, round, sendPlace, userId };
+    const next = () => {
+      const run = (numbered.get(arm) ?? made.filter((each) => each.arm === arm).length) + 1;
+      numbered.set(arm, run);
+      return run;
+    };
+    if (outcome.status === "rejected") {
+      if (outcome.reason instanceof BudgetSpent) {
         budgetSpent = true;
         continue;
       }
-      const step: Replayed = result.value;
-      run += 1;
       runs.push({
         ...base,
-        run,
-        verdict: judgement.verdict,
-        reason: judgement.reason,
-        id: judgement.id,
-        skillRounds: step.rounds,
-        reply: step.step.message.content,
-        replaySpent: step.usage,
-        judgeSpent: [...judgement.spent],
+        run: next(),
+        verdict: null,
+        reason: `the replay failed: ${messageFor(outcome.reason)}`,
+        id: null,
+        skillRounds: null,
+        reply: null,
+        replaySpent: [],
+        judgeSpent: [],
       });
+      continue;
     }
+    const judgement = judgements.get(`${arm}:${inArm}`);
+    if (judgement === undefined || judgement.budgetRefused) {
+      budgetSpent = true;
+      continue;
+    }
+    const step: Replayed = outcome.value;
+    runs.push({
+      ...base,
+      run: next(),
+      verdict: judgement.verdict,
+      reason: judgement.reason,
+      id: judgement.id,
+      skillRounds: step.rounds,
+      reply: step.step.message.content,
+      replaySpent: step.usage,
+      judgeSpent: [...judgement.spent],
+    });
   }
   return { runs, budgetSpent };
 }
@@ -1142,6 +1279,7 @@ async function runStage(
   const existing = result.stages[stage];
   let state: StageResult = existing ?? {
     state: "running",
+    sends: SENDS,
     texts: r.texts,
     plantedLine: stage === "control" ? (r.dirs.plantedLine ?? null) : null,
     captures: {},
@@ -1343,7 +1481,12 @@ async function confirmCommand(r: Runner): Promise<void> {
 async function controlStageCommand(r: Runner): Promise<void> {
   const phases = newPhases();
   const { results, score } = screened(r, (s) => [s.controlCase]);
-  const tooFew = skillVerdict({ informative: score.informative, controlLoss: true, losses: 0 });
+  const tooFew = skillVerdict({
+    informative: score.informative,
+    controlLoss: true,
+    falseLoss: false,
+    losses: 0,
+  });
   if (tooFew.verdict === null) {
     say(r, `no control runs: the skill gets no verdict: ${tooFew.reason}`);
     return;
@@ -1355,7 +1498,7 @@ async function controlStageCommand(r: Runner): Promise<void> {
   const planted = r.dirs.plantedLine;
   say(
     r,
-    `the control case is ${c.id}; minus leaves out ${planted === undefined ? "the case's line" : `the planted line ${JSON.stringify(planted)}`}`
+    `the control case is ${c.id}; minus leaves out ${planted === undefined ? "the case's line" : `the planted line ${JSON.stringify(planted)}`}, and twin is the old text again (the false-loss control); old, minus and twin are sent in one order each round`
   );
   if (stageDone(r, result, "control")) {
     say(r, `case ${c.id}: control runs made before, skipped`);
@@ -1375,7 +1518,7 @@ function stageVerdict(stage: Stage, passes: Record<ArmName, number>): string {
     case "confirm":
       return isLoss(passes) ? "a loss" : "no loss";
     case "control":
-      return isControlLoss(passes) ? "a control loss" : "not a control loss";
+      return `the planted-loss control (old against minus) is ${isControlLoss(passes) ? "a loss" : "no loss"}, the false-loss control (old against twin) is ${isFalseLoss(passes) ? "a loss" : "no loss"}`;
   }
 }
 
@@ -1499,7 +1642,7 @@ function verdictLine(
   }
   if (outcome.verdict === null) return `none: ${outcome.reason}`;
   const flagged = score.cases.filter((each) => each.flagged).length;
-  const control = `the planted-loss control (case ${score.controlCase}) is a loss`;
+  const control = `the planted-loss control (case ${score.controlCase}) is a loss and its false-loss control is no loss`;
   if (outcome.verdict === "keeps") {
     return `no loss detected by the registered rule: no confirmed case is a loss (${flagged} flagged of ${score.informative} informative), and ${control}${speaksFor(b, score)}`;
   }
@@ -1546,6 +1689,17 @@ function reportCommand(b: Behaviour): void {
       ? "control case: none, since no case is informative"
       : `control case: ${score.controlCase}`
   );
+  const control = score.control;
+  if (control?.state === "counted") {
+    const { old, minus, twin } = control.passes;
+    lines.push(
+      `controls, scored by the confirm rule (a loss when the other arm passes at least ${LOSS_GAP} fewer of ${FRESH_RUNS} fresh runs than old): old ${old}/${FRESH_RUNS}, minus ${minus}/${FRESH_RUNS}, twin ${twin}/${FRESH_RUNS}; the planted-loss control (old less minus, ${old - minus}) is ${isControlLoss(control.passes) ? "a loss, as it must be" : "no loss, so the skill gets no verdict"}; the false-loss control (old less twin, the same text twice, ${old - twin}) is ${isFalseLoss(control.passes) ? "a loss, so the skill gets no verdict" : "no loss, as it must be"}`
+    );
+  } else if (control !== undefined) {
+    lines.push(
+      `controls: the planted-loss and false-loss controls are ${control.state === "running" ? "not all run (behaviour control)" : "unscreened: an arm lacks its judged runs"}`
+    );
+  }
   lines.push(...modelLines(b, score));
   lines.push(`verdict: ${verdictLine(b, results, score)}`);
 
@@ -1741,14 +1895,12 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
     source,
     capture: async (c, arm) => {
       const outDir = armCaptureDir(given.out, arm, texts);
+      const saved = savedCapture(capturePaths(outDir, c.id, arm.name));
+      if (saved !== undefined) return saved;
       if (models === undefined || omp === undefined) {
-        const saved = savedCapture(capturePaths(outDir, c.id, arm.name));
-        if (saved === undefined) {
-          throw new Error(
-            `case ${c.id} has no capture of its ${arm.name} arm in ${outDir}, and no --models is given to make one`
-          );
-        }
-        return saved;
+        throw new Error(
+          `case ${c.id} has no capture of its ${arm.name} arm in ${outDir}, and no --models is given to make one`
+        );
       }
       // A case runs on the served model that serves it: an Anthropic model behind another
       // gateway prefix as the served `anthropic/<id>`, so the capture finds its provider.
@@ -1763,6 +1915,7 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
         hints,
         ...(values["hint-model"] === undefined ? {} : { hintModel: values["hint-model"] }),
         configFiles: values["omp-config"] ?? [],
+        session: await caseSession(config, given.out, c),
       });
     },
     afterCase: values["after-case"],
@@ -1791,6 +1944,7 @@ const LOAD_USAGE = [
   "  --profile is the profile of each task whose line names no profile of its own",
   `  [--runs <n, default ${LOAD_RUNS}>] [--model <model, default ${LOAD_MODEL}>] [--thinking <level, default ${LOAD_THINKING.omp} on omp, ${LOAD_THINKING.claude} on claude>]`,
   "  [--budget-usd <n>] [--concurrency <n>] [--request-log <file>] [--repos <dir>] [--cache-dir <dir>] [--scratch <dir>]",
+  "  [--context-session <store>:<path hash>] (the session a written task stands for: the one its profile was rebuilt from)",
   "  omp: [--models <models.yml>] [--omp <binary>] [--hint-model <model>] [--omp-config <file>]...",
   "  claude: [--claude <binary>]",
 ].join("\n");
@@ -1818,6 +1972,7 @@ async function loadCommand(argv: readonly string[], io: CliIo): Promise<number> 
       repos: { type: "string" },
       "cache-dir": { type: "string" },
       scratch: { type: "string" },
+      "context-session": { type: "string" },
     },
     LOAD_USAGE
   );
@@ -1846,6 +2001,20 @@ async function loadCommand(argv: readonly string[], io: CliIo): Promise<number> 
     throw new Refused(`--skill ${given.skill} is not a directory`);
   }
   const config = configFrom(given.config);
+  const named = values["context-session"];
+  let contextSession: { store: string; pathHash: string } | undefined;
+  if (named !== undefined) {
+    const match = /^([^:]+):([0-9a-f]{64})$/.exec(named);
+    if (match?.[1] === undefined || match[2] === undefined) {
+      throw new Refused(
+        `--context-session ${named} is not <store>:<path hash>, the hash the SHA-256 of the session file's path in hex`
+      );
+    }
+    if (!config.stores.some((store) => store.name === match[1])) {
+      throw new Refused(`--context-session ${named}: the configuration names no store ${match[1]}`);
+    }
+    contextSession = { store: match[1], pathHash: match[2] };
+  }
   const gateway = openGateway({
     config,
     keyFile: given["key-file"],
@@ -1877,6 +2046,12 @@ async function loadCommand(argv: readonly string[], io: CliIo): Promise<number> 
     claude: values.claude ?? "claude",
     requestLog: log,
     memoryLimitBytes: MEMORY_LIMIT_BYTES,
+    psqlCommand: config.psqlCommand,
+    stores: config.stores.map((store) => store.name),
+    ...(config.devboxClaudeConfigDir === undefined
+      ? {}
+      : { devboxClaudeConfigDir: config.devboxClaudeConfigDir }),
+    ...(contextSession === undefined ? {} : { contextSession }),
   });
   io.out(
     `load: done; the calls of this command cost $${gateway.spend().usd.toFixed(4)} at list price; request log ${log}\n`

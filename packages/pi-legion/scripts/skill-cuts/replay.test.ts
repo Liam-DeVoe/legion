@@ -5,17 +5,23 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import type { Arm } from "./arms";
 import {
+  bodyIdentity,
   createGateway,
+  freshIdentity,
   type Gateway,
+  isResponsesBody,
   type MessagesBody,
   type Reply,
+  type RequestBody,
   type ResponsesBody,
+  toolCalls,
 } from "./gateway";
 import {
   MAX_BREAKPOINTS,
   MAX_SKILL_ROUNDS,
-  replay,
+  replayInterleaved,
   replayOnce,
+  sendOrder,
   withCacheBreakpoint,
 } from "./replay";
 
@@ -182,18 +188,36 @@ function lastBlock(body: MessagesBody): Record<string, unknown> {
   return block;
 }
 
+/** `body` with the session id `id`: what a run sends of it, its id its own. */
+function withId<T extends RequestBody>(body: T, id: string | null): T {
+  return isResponsesBody(body)
+    ? { ...body, prompt_cache_key: id }
+    : { ...body, metadata: { ...Object(body.metadata), user_id: id } };
+}
+
 test("answers skill reads and stops at the first other call", async () => {
   const arm = armWith("old", { "SKILL.md": SKILL_MD, "references/x.md": X_MD });
   const { gateway, bodies } = world((n) => f5(n === 1 ? "skill-read" : "text"));
   const replayed = await replayOnce(BODY, arm, gateway);
 
   expect(bodies).toHaveLength(2);
-  // Each send is the body with a cache breakpoint on its last block (withCacheBreakpoint).
+  // Each send is the body with a cache breakpoint on its last block (withCacheBreakpoint) and a
+  // session id of the run's own, in the captured id's shape; both rounds go with that one id.
   const cached = withCacheBreakpoint(BODY);
-  expect(bodies[0]).toEqual(cached);
+  const id = bodyIdentity(bodies[0] ?? BODY);
+  expect(id).not.toBe(bodyIdentity(BODY));
+  expect(Object.keys(JSON.parse(id ?? "{}"))).toEqual(
+    Object.keys(JSON.parse(bodyIdentity(BODY) ?? ""))
+  );
+  expect(JSON.parse(id ?? "{}").session_id).toMatch(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+  );
+  expect(replayed.userId).toBe(id);
+  expect(bodies[0]).toEqual(withId(cached, id));
+  expect(bodyIdentity(bodies[1] ?? BODY)).toBe(id);
   // The second send is the same body with the reply and the arm's answer to its read added.
   const { messages: sentMessages, ...sentFields } = bodies[1] ?? BODY;
-  const { messages: bodyMessages, ...bodyFields } = cached;
+  const { messages: bodyMessages, ...bodyFields } = withId(cached, id);
   expect(sentFields).toEqual(bodyFields);
   expect(sentMessages).toEqual([
     ...bodyMessages,
@@ -302,10 +326,14 @@ test("sends the captured anthropic-* headers with the body on every round", asyn
     }
   }
 
-  // `replay` gives each of its runs the same headers.
+  // An interleaved round gives each of its runs the same headers.
   const runs = world(() => f5("text"));
-  const settled = await replay(BODY, arm, runs.gateway, 2, { headers: CAPTURED_HEADERS });
-  expect(settled.map((run) => run.status)).toEqual(["fulfilled", "fulfilled"]);
+  const settled = await replayInterleaved(
+    [{ arm, body: BODY, headers: CAPTURED_HEADERS, runs: 2 }],
+    runs.gateway,
+    "headers-seed"
+  );
+  expect(settled.map((run) => run.outcome.status)).toEqual(["fulfilled", "fulfilled"]);
   expect(runs.headers.map((sent) => sent.get("anthropic-beta"))).toEqual([
     CAPTURED_HEADERS["anthropic-beta"],
     CAPTURED_HEADERS["anthropic-beta"],
@@ -355,42 +383,249 @@ test("a read of a file the arm lacks is answered with the not-found result", asy
   });
 });
 
-test("replay runs n replays, the first alone, and keeps each one's outcome", async () => {
-  const arm = armWith("old", { "SKILL.md": SKILL_MD, "references/x.md": X_MD });
-  const events: string[] = [];
+// Catches: a round that sends one arm's runs as a batch before another's, an order that is not
+// the seed's, an arm's first run that does not go alone among its arm's, or a failed run that
+// takes the round's other outcomes with it.
+test("replayInterleaved sends every arm's runs in the seeded order, each arm's first run alone, and keeps each one's outcome", async () => {
+  const names = ["old", "new", "none"] as const;
+  const counts: Record<string, number> = { old: 3, new: 3, none: 2 };
   const text = await world(() => f5("text")).gateway.send(BODY);
-  let sends = 0;
-  // A gateway whose third send fails: the other runs keep their steps.
+  const events: string[] = [];
+  const sent: { arm: unknown; id: string | null }[] = [];
+  // A gateway whose fifth send fails: the other runs keep their steps.
   const gateway: Gateway = {
-    async send(): Promise<Reply> {
-      sends += 1;
-      const n = sends;
+    async send(body): Promise<Reply> {
+      sent.push({ arm: body.x_arm, id: bodyIdentity(body) });
+      const n = sent.length;
       events.push(`start ${n}`);
       await Promise.resolve();
       events.push(`end ${n}`);
-      if (n === 3) throw new Error("the model call failed: made up");
+      if (n === 5) throw new Error("the model call failed: made up");
       return text;
     },
     spend: () => ({ models: {}, usd: 0 }),
   };
-  const runs = await replay(BODY, arm, gateway, 4);
-  expect(events.slice(0, 2)).toEqual(["start 1", "end 1"]);
-  expect(events).toHaveLength(8);
-  expect(runs.map((run) => run.status)).toEqual([
-    "fulfilled",
-    "fulfilled",
-    "rejected",
-    "fulfilled",
-  ]);
-  expect(runs[0]).toMatchObject({ status: "fulfilled", value: { rounds: 0, step: text } });
-  const failed = runs[2];
+  const arms = names.map((name) => ({
+    arm: armWith(name === "none" ? "minus" : name, { "SKILL.md": SKILL_MD }),
+    name,
+  }));
+  const runs = await replayInterleaved(
+    arms.map(({ arm, name }) => ({
+      arm: { ...arm, name },
+      body: { ...BODY, x_arm: name },
+      runs: counts[name] ?? 0,
+    })),
+    gateway,
+    "order-seed"
+  );
+  const order = sendOrder(
+    names.map((name) => ({ key: name, runs: counts[name] ?? 0 })),
+    "order-seed"
+  );
+  // The sends went in the seeded order, which interleaves the arms, and the runs come back in it.
+  expect(sent.map((each) => each.arm)).toEqual(order.map((each) => each.key));
+  expect(new Set(order.slice(0, 4).map((each) => each.key)).size).toBeGreaterThan(1);
+  expect(runs.map(({ arm, run, place }) => [arm, run, place])).toEqual(
+    order.map(({ key, run }, place) => [key, run, place])
+  );
+  // Each arm's first send in the order ended before the next send in the order started.
+  for (const name of names) {
+    const first = order.findIndex((each) => each.key === name) + 1;
+    if (first === order.length) continue;
+    expect(events.indexOf(`end ${first}`)).toBeLessThan(events.indexOf(`start ${first + 1}`));
+  }
+  expect(events).toHaveLength(2 * order.length);
+  // Each run went with an id of its own, and its outcome is kept: the fifth failed alone.
+  expect(new Set(runs.map((run) => run.userId)).size).toBe(runs.length);
+  expect(runs.map((run) => run.outcome.status)).toEqual(
+    order.map((_, place) => (place === 4 ? "rejected" : "fulfilled"))
+  );
+  const failed = runs[4]?.outcome;
   expect(failed?.status === "rejected" && String(failed.reason)).toBe(
     "Error: the model call failed: made up"
   );
-  await expect(replay(BODY, arm, gateway, 0)).rejects.toThrow("1 or more, not 0");
+  expect(runs[0]?.outcome).toMatchObject({ status: "fulfilled", value: { rounds: 0 } });
+  // A seed gives one order, and another seed another.
+  expect(
+    sendOrder(
+      [
+        { key: "old", runs: 5 },
+        { key: "new", runs: 5 },
+      ],
+      "a"
+    )
+  ).toEqual(
+    sendOrder(
+      [
+        { key: "old", runs: 5 },
+        { key: "new", runs: 5 },
+      ],
+      "a"
+    )
+  );
+  expect(
+    sendOrder(
+      [
+        { key: "old", runs: 5 },
+        { key: "new", runs: 5 },
+      ],
+      "a"
+    )
+  ).not.toEqual(
+    sendOrder(
+      [
+        { key: "old", runs: 5 },
+        { key: "new", runs: 5 },
+      ],
+      "b"
+    )
+  );
+  const old = arms[0]?.arm ?? armWith("old", {});
+  await expect(
+    replayInterleaved([{ arm: old, body: BODY, runs: -1 }], gateway, "s")
+  ).rejects.toThrow("0 or more, not -1");
+  await expect(
+    replayInterleaved(
+      [
+        { arm: old, body: BODY, runs: 1 },
+        { arm: old, body: BODY, runs: 1 },
+      ],
+      gateway,
+      "s"
+    )
+  ).rejects.toThrow("the arm old is given twice");
 });
 
-test("replay makes the body it sends once for all its runs, the bytes replayOnce sends for one", async () => {
+// Catches: runs of an arm that share the captured id, or one run whose rounds go with two ids.
+test("a run's requests carry an id no other run carries, the same in every round of the run", async () => {
+  const arm = armWith("old", { "SKILL.md": SKILL_MD, "references/x.md": X_MD });
+  const fresh = armWith("new", { "SKILL.md": SKILL_MD, "references/x.md": X_MD });
+  // A run's first round reads x.md, and its second, which holds the answer, gives the text.
+  const bodies: MessagesBody[] = [];
+  const keyFile = path.join(scratch, "rounds-key");
+  writeFileSync(keyFile, fixtureSecret("gw"), { mode: 0o600 });
+  const byRounds = createGateway({
+    baseUrl: "http://gateway.test",
+    keyFile,
+    concurrency: 3,
+    timeoutMs: 5_000,
+    fetch: async (_url, init) => {
+      const body = JSON.parse(String(init.body)) as MessagesBody;
+      bodies.push(body);
+      return f5(body.messages.length === BODY.messages.length ? "skill-read" : "text");
+    },
+    sleep: async () => {},
+  });
+  const runs = await replayInterleaved(
+    [
+      { arm, body: BODY, runs: 4 },
+      { arm: fresh, body: BODY, runs: 4 },
+    ],
+    byRounds,
+    "id-seed"
+  );
+  expect(runs.map((run) => run.outcome.status)).toEqual(Array(8).fill("fulfilled"));
+  const requests = new Map<string, number>();
+  for (const body of bodies) {
+    const id = bodyIdentity(body) ?? "none";
+    requests.set(id, (requests.get(id) ?? 0) + 1);
+  }
+  // Eight runs, eight ids, two requests each (its skill round and its step), none the captured id.
+  expect(bodies).toHaveLength(16);
+  expect([...requests.values()]).toEqual(Array(8).fill(2));
+  expect(requests.has(bodyIdentity(BODY) ?? "")).toBe(false);
+  expect(new Set(runs.map((run) => run.userId))).toEqual(new Set(requests.keys()));
+  for (const run of runs) {
+    expect(run.outcome.status === "fulfilled" && run.outcome.value.rounds).toBe(1);
+    expect(run.outcome.status === "fulfilled" && run.outcome.value.userId).toBe(run.userId);
+  }
+});
+
+// The batch probe of 2026-11-21 as a test: one made-up body, a stand-in gateway that answers by
+// the body's session id, and three variants interleaved in one seeded order. With a fixed id a
+// variant's every run gets the one answer that id gets, so the id is a factor of its batch; the
+// runner draws a fresh id for every run, so it never sends one id in two runs.
+test("the batch probe: a fixed session id sets its batch's count, and the runner never sends one id in two runs", async () => {
+  const FIXED_A = JSON.stringify({ session_id: "00000000-0000-4000-8000-000000000002" });
+  const FIXED_B = JSON.stringify({ session_id: "00000000-0000-4000-8000-000000000001" });
+  // The stand-in reads the skill's reference when the id's last hex digit is even.
+  const reads = (id: string | null) =>
+    Number.parseInt((id ?? "1").replace(/[^0-9a-f]/g, "").slice(-1), 16) % 2 === 0;
+  const ids: (string | null)[] = [];
+  const keyFile = path.join(scratch, "probe-key");
+  writeFileSync(keyFile, fixtureSecret("gw"), { mode: 0o600 });
+  const gateway = createGateway({
+    baseUrl: "http://gateway.test",
+    keyFile,
+    concurrency: 8,
+    timeoutMs: 5_000,
+    fetch: async (_url, init) => {
+      const body = JSON.parse(String(init.body)) as MessagesBody;
+      const id = bodyIdentity(body);
+      ids.push(id);
+      return f5(reads(id) ? "skill-read" : "text");
+    },
+    sleep: async () => {},
+  });
+  // A run passes when its reply's tool calls read the reference, as the probe counted one.
+  const readsReference = (reply: Reply) =>
+    toolCalls(reply.message.content).some((call) =>
+      JSON.stringify(call.input).includes("references/x.md")
+    );
+  // The probe: 30 sends of each variant, interleaved in one seeded order.
+  const variants = ["fixed-a", "fixed-b", "fresh"] as const;
+  const probe = sendOrder(
+    variants.map((key) => ({ key, runs: 30 })),
+    "probe-seed"
+  );
+  const probed = await Promise.all(
+    probe.map(({ key }) =>
+      gateway.send(
+        key === "fresh"
+          ? freshIdentity(BODY).body
+          : withId(BODY, key === "fixed-a" ? FIXED_A : FIXED_B)
+      )
+    )
+  );
+  const count = (key: string) =>
+    probe.filter((each, place) => each.key === key && readsReference(probed[place] as Reply))
+      .length;
+  expect([count("fixed-a"), count("fixed-b")]).toEqual([30, 0]);
+  expect(count("fresh")).toBeGreaterThan(0);
+  expect(count("fresh")).toBeLessThan(30);
+  // The runner: three arms whose captured bodies hold the fixed ids, interleaved in one order.
+  ids.length = 0;
+  const arm = (name: "old" | "new" | "minus") => armWith(name, { "SKILL.md": SKILL_MD });
+  const runs = await replayInterleaved(
+    [
+      { arm: arm("old"), body: withId(BODY, FIXED_A), runs: 30 },
+      { arm: arm("new"), body: withId(BODY, FIXED_B), runs: 30 },
+      { arm: arm("minus"), body: withId(BODY, FIXED_A), runs: 30 },
+    ],
+    gateway,
+    "probe-seed",
+    { maxSkillRounds: 0 }
+  );
+  expect(ids).toHaveLength(90);
+  expect(new Set(ids).size).toBe(90);
+  expect(ids).not.toContain(FIXED_A);
+  expect(ids).not.toContain(FIXED_B);
+  for (const name of ["old", "new", "minus"] as const) {
+    const passes = runs.filter(
+      (run) =>
+        run.arm === name &&
+        run.outcome.status === "fulfilled" &&
+        readsReference(run.outcome.value.step)
+    ).length;
+    // No arm's count is its fixed id's 30 or 0: the id is no factor of the arm's batch.
+    expect(passes).toBeGreaterThan(0);
+    expect(passes).toBeLessThan(30);
+  }
+});
+
+// Catches: a body made again for each run, or a run whose bytes differ from replayOnce's in more
+// than its own session id.
+test("each run sends its arm's body as replayOnce sends it, but for a session id of its own", async () => {
   const arm = armWith("old", { "SKILL.md": SKILL_MD, "references/x.md": X_MD });
   /** A gateway whose fake fetch answers `answer` and keeps each body's text as sent. */
   const recording = (answer: () => Response) => {
@@ -417,15 +652,25 @@ test("replay makes the body it sends once for all its runs, the bytes replayOnce
     const one = recording(answer);
     await replayOnce(body, arm, one.gateway);
     expect(one.texts).toHaveLength(1);
+    const sentOnce = JSON.parse(one.texts[0] ?? "{}") as RequestBody;
     const runs = recording(answer);
-    const settled = await replay(body, arm, runs.gateway, 6);
-    expect(settled.map((run) => run.status)).toEqual(Array(6).fill("fulfilled"));
-    expect(runs.texts).toEqual(Array(6).fill(one.texts[0]));
+    const settled = await replayInterleaved([{ arm, body, runs: 6 }], runs.gateway, "bytes");
+    expect(settled.map((run) => run.outcome.status)).toEqual(Array(6).fill("fulfilled"));
+    const ids = runs.texts.map((text) => bodyIdentity(JSON.parse(text)));
+    expect(new Set([...ids, bodyIdentity(sentOnce)]).size).toBe(7);
+    expect(
+      runs.texts.map((text) =>
+        JSON.stringify(withId(JSON.parse(text) as RequestBody, bodyIdentity(sentOnce)))
+      )
+    ).toEqual(Array(6).fill(one.texts[0]));
   }
-  // The bytes are the body with its cache breakpoint, as each run made them before.
+  // The bytes are the body with its cache breakpoint and the run's id, as each run made them.
   const one = recording(() => f5("text"));
-  await replay(BODY, arm, one.gateway, 2);
-  expect(one.texts).toEqual(Array(2).fill(JSON.stringify(withCacheBreakpoint(BODY))));
+  await replayInterleaved([{ arm, body: BODY, runs: 2 }], one.gateway, "bytes");
+  for (const text of one.texts) {
+    const sent = JSON.parse(text) as MessagesBody;
+    expect(text).toBe(JSON.stringify(withId(withCacheBreakpoint(BODY), bodyIdentity(sent))));
+  }
 });
 
 test("withCacheBreakpoint puts one breakpoint on the last block and changes nothing else", () => {
@@ -494,14 +739,19 @@ test("on a Responses body (F8, F9): answers a skill read with a function_call_ou
   const replayed = await replayOnce(RESPONSES_BODY, arm, gateway);
   const sent = bodies as readonly unknown[] as readonly ResponsesBody[];
   expect(sent).toHaveLength(2);
-  // The body goes as it was captured: the Responses route caches the prefix it shares by itself.
-  expect(sent[0]).toEqual(RESPONSES_BODY);
+  // The body goes as it was captured but for its cache key, a fresh one of the run's own: the
+  // Responses route caches the prefix it shares by itself.
+  const key = bodyIdentity(sent[0] ?? RESPONSES_BODY);
+  expect(key).not.toBe(RESPONSES_BODY.prompt_cache_key);
+  expect(key).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+  expect(replayed.userId).toBe(key);
+  expect(sent[0]).toEqual(withId(RESPONSES_BODY, key));
   expect(JSON.stringify(sent)).not.toContain("cache_control");
   // The second send is the body with the reply's output items as they came and the arm's answer
   // to its read, the form Oh My Pi sends a tool result in (F8's `function_call_output`).
   const [read] = f9Output("skill-read");
   const { input: sentInput, ...sentFields } = sent[1] ?? RESPONSES_BODY;
-  const { input: bodyInput, ...bodyFields } = RESPONSES_BODY;
+  const { input: bodyInput, ...bodyFields } = withId(RESPONSES_BODY, key);
   expect(sentFields).toEqual(bodyFields);
   expect(sentInput).toEqual([
     ...bodyInput,
