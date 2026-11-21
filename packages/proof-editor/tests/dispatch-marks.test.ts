@@ -6,9 +6,10 @@
  */
 
 import { expect, test } from "bun:test";
+import type { Node as ProseMirrorNode } from "@milkdown/kit/prose/model";
 import { EditorState } from "@milkdown/kit/prose/state";
 import { createAskMark, findAskMarkRange, removeAskMark } from "../src/dispatch-marks.js";
-import { createHeadlessProof } from "../src/lib-headless.js";
+import { createHeadlessProof, milkdownMarkOpens } from "../src/lib-headless.js";
 import { markedText } from "./mark-text";
 import { viewDouble } from "./view-double";
 
@@ -88,7 +89,11 @@ const docJson = (...paragraphs: string[]) => `{"type":"doc","content":[${paragra
 // expected document is main's: the same markdown parsed by `createHeadlessProof()` at 8a9540682d
 // (main before #4437), in both modes, and printed as `JSON.stringify(doc.toJSON())` with each
 // random `blockId` written as "<id>", one paragraph a line here. The runner #4437 had at
-// 1c711353dc gave `after` in the first row no mark, and `b2` and `a2` in the third none.
+// 1c711353dc gave `after` in the first row no mark, and `b2` and `a2` in the third none. The last
+// two rows put an empty code block and an image after an inner ask, neither of which holds a mark
+// in the document. Their documents are main's runner's: 8a9540682d's `parseMarkdown.runner` put in
+// this tree's src/dispatch-marks.ts, which gives each of the seven documents above byte for byte,
+// printed the same way.
 const nestedAsks: (readonly [string, string, string])[] = [
   [
     "the block-level shape A{P(first), B{P(inner)}, P(after)}",
@@ -165,6 +170,25 @@ const nestedAsks: (readonly [string, string, string])[] = [
       '{"type":"paragraph","attrs":{"blockId":"<id>"},"content":[{"type":"text","marks":[{"type":"dispatchAsk","attrs":{"id":"a","by":"user:a"}}],"text":"a3"}]}'
     ),
   ],
+  [
+    "an empty code block after an inner ask, A{P(a1), B{P(b1)}, CODE, P(a2)}",
+    blocks(ask("a"), "a1", ask("b"), "b1", "</span>", "```\n```", "a2", "</span>"),
+    docJson(
+      '{"type":"paragraph","attrs":{"blockId":"<id>"},"content":[{"type":"text","marks":[{"type":"dispatchAsk","attrs":{"id":"a","by":"user:a"}}],"text":"a1"}]}',
+      '{"type":"paragraph","attrs":{"blockId":"<id>"},"content":[{"type":"text","marks":[{"type":"dispatchAsk","attrs":{"id":"b","by":"user:b"}}],"text":"b1"}]}',
+      '{"type":"code_block","attrs":{"language":null,"blockId":"<id>"}}',
+      '{"type":"paragraph","attrs":{"blockId":"<id>"},"content":[{"type":"text","text":"a2"}]}'
+    ),
+  ],
+  [
+    "an image opening the paragraph after an inner ask, A{P(a1), B{P(b1)}, P(![i](u) a2)}",
+    blocks(ask("a"), "a1", ask("b"), "b1", "</span>", "![i](u) a2", "</span>"),
+    docJson(
+      '{"type":"paragraph","attrs":{"blockId":"<id>"},"content":[{"type":"text","marks":[{"type":"dispatchAsk","attrs":{"id":"a","by":"user:a"}}],"text":"a1"}]}',
+      '{"type":"paragraph","attrs":{"blockId":"<id>"},"content":[{"type":"text","marks":[{"type":"dispatchAsk","attrs":{"id":"b","by":"user:b"}}],"text":"b1"}]}',
+      '{"type":"paragraph","attrs":{"blockId":"<id>"},"content":[{"type":"image","attrs":{"src":"u","alt":"i","title":null}},{"type":"text","marks":[{"type":"dispatchAsk","attrs":{"id":"a","by":"user:a"}}],"text":" a2"}]}'
+    ),
+  ],
 ];
 
 for (const [shape, markdown, main] of nestedAsks) {
@@ -175,6 +199,61 @@ for (const [shape, markdown, main] of nestedAsks) {
         key === "blockId" ? "<id>" : value
       );
       expect({ readOnly, parsed }).toEqual({ readOnly, parsed: main });
+    }
+  });
+}
+
+/** How many ask marks the nodes of `doc` hold, together. */
+function askMarksOf(doc: ProseMirrorNode): number {
+  let count = 0;
+  doc.descendants((node) => {
+    count += node.marks.filter((mark) => mark.type.name === "dispatchAsk").length;
+  });
+  return count;
+}
+
+/** Block asks nested `depth` deep, A{P(x1), B{P(x2), ... Z{P(xD)} ..., AFTER}, AFTER}, with the
+ *  block `after` builds after each inner ask, at the depth of the ask that holds it. */
+function nestedBlockAsks(depth: number, after: (level: number) => string): string {
+  const lines: string[] = [];
+  for (let level = 1; level <= depth; level++) lines.push(ask(`a${level}`), `x${level}`);
+  for (let level = depth; level >= 1; level--) {
+    lines.push("</span>");
+    if (level > 1) lines.push(after(level - 1));
+  }
+  return blocks(...lines);
+}
+
+// Block asks nested D deep with a block after each inner ask: each inner ask ends after its
+// paragraph closed, which dropped the marks of the asks around it. A paragraph after it holds the
+// marks of every ask around it, so the document holds D(D+1)/2 ask marks, as main's does, and a
+// runner that opens a mark for each of them opens about D²/2 for a body of length D, in proportion
+// to the document. A block that holds no mark (an empty code block), or a paragraph of an image,
+// which holds none in any document the engine returns, leaves the document D ask marks, and the
+// runner that opened every enclosing ask again at each such end opened about D²/2 for those too.
+// The runner opens a mark only where a node then holds it (`openAsksOf`, src/dispatch-marks.ts),
+// so its opens, counted (`milkdownMarkOpens`), are at most one for each ask and one for each ask
+// mark the document holds, whatever stands after each inner ask.
+const depth = 100;
+const afterEachInnerAsk: (readonly [string, (level: number) => string, number])[] = [
+  ["a paragraph", (level) => `y${level}`, (depth * (depth + 1)) / 2],
+  ["an empty code block", () => "```\n```", depth],
+  ["a paragraph of an image", () => "![i](u)", depth],
+];
+for (const [after, block, held] of afterEachInnerAsk) {
+  test(`block asks nested ${depth} deep with ${after} after each inner ask open no more marks than the asks and the document hold`, async () => {
+    const markdown = nestedBlockAsks(depth, block);
+    for (const readOnly of [false, true]) {
+      const { parseMarkdown } = await createHeadlessProof({ readOnly });
+      const before = milkdownMarkOpens();
+      const doc = parseMarkdown(markdown);
+      const opened = milkdownMarkOpens() - before;
+      const marks = askMarksOf(doc);
+      expect({ readOnly, marks }).toEqual({ readOnly, marks: held });
+      expect(
+        opened,
+        `${opened} marks opened for ${depth} asks and the ${marks} ask marks the document holds (readOnly ${readOnly})`
+      ).toBeLessThanOrEqual(depth + marks);
     }
   });
 }

@@ -94,15 +94,30 @@ const nonLazyContinuationStart: Construct = {
 
 /**
  * The steps `resolveToHtmlFlow` has taken in this process: one for each event its walk back to the
- * block's `htmlFlow` enter reads, and one for each event its splice of the line prefix shifts, so
- * a test holds the resolver to the length of the block it resolves (tests/parse-work.ts). The
- * tokenizer's count sees only the codes handed to states, not a resolver's walk.
+ * block's `htmlFlow` enter reads, and one for each event its splice of the line prefix removes or
+ * shifts (`spliceCounted`), so a test holds the resolver to the length of the block it resolves
+ * (tests/parse-work.ts). The tokenizer's count sees only the codes handed to states, not a
+ * resolver's walk.
  */
 let resolveSteps = 0;
 
 /** How many steps `resolveToHtmlFlow` has taken in this process so far. */
 export function htmlFlowResolveSteps(): number {
   return resolveSteps
+}
+
+/**
+ * `events.splice(start, remove)`, counted to `resolveSteps` from its own arguments as
+ * micromark-core-commonmark's patched `countSplice` counts a splice (`lib/work-counts.js`): each
+ * event it removes and each event after them it shifts, so a changed argument changes the count
+ * with it.
+ */
+function spliceCounted(events: Event[], start: number, remove: number): void {
+  const length = events.length
+  const from = start < 0 ? Math.max(length + start, 0) : Math.min(start, length)
+  const removed = Math.min(Math.max(remove, 0), length - from)
+  resolveSteps += removed + (length - from - removed)
+  events.splice(start, remove)
 }
 
 /** @type {Resolver} */
@@ -124,9 +139,8 @@ function resolveToHtmlFlow(events: Event[]): Event[] {
     events[index][1].start = events[index - 2][1].start
     // Add the prefix start to the HTML line token.
     events[index + 1][1].start = events[index - 2][1].start
-    // Remove the line prefix: the splice shifts every event after it.
-    resolveSteps += events.length - index
-    events.splice(index - 2, 2)
+    // Remove the line prefix.
+    spliceCounted(events, index - 2, 2)
   }
 
   return events

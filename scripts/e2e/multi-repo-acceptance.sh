@@ -312,7 +312,7 @@ dispatch_events_raw() {
 }
 
 # issue_project <KEY> is the Dispatch project prefix of an issue key (DaemonSession's own
-# derivation, internal/dispatch/client.go:571: the text before the first '-'), used both to
+# derivation, internal/dispatch/client.go:586: the text before the first '-'), used both to
 # bind a baseline to its project and to name the daemon's own actor id, legion-daemon:<PROJECT>.
 issue_project() { printf '%s' "${1%%-*}"; }
 

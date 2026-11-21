@@ -250,6 +250,21 @@ const shapes: HeavyShape[] = [
     },
   },
   {
+    // Each `<em>` is a tag nothing closes, so `convertHtmlFormatting` finds no `</em>` for it: a
+    // search forward for the closer read every child after the tag, about the square of the
+    // span's children; `patches/proof-sdk@…tgz.patch` finds each tag's closer in one pass from the
+    // end (`nextCloseTags`), with the same matches.
+    name: "a proof span holding 1,000 emphasis tags that nothing closes",
+    grow: (size) =>
+      `<span data-proof="authored" data-id="p" data-by="human:reader">${"<em>w ".repeat(size)}</span>`,
+    full: 1_000,
+    opensContainers: false,
+    expectDoc: (doc) => {
+      expect(doc.childCount).toBe(1);
+      expect(nodesOf(doc, "html")).toBe(1_000);
+    },
+  },
+  {
     // Each ask's opening tag, its text and its closing tag are three children of the paragraph
     // (`remarkDispatchMarks`'s `normalizeSplitDispatchSpans`), so a walk that splices each child
     // it moves into an ask out of the paragraph shifts the rest of it twice an ask.
@@ -361,6 +376,34 @@ const shapes: HeavyShape[] = [
     opensContainers: false,
     expectDoc: (doc) => {
       expect(doc.textContent).toBe("a* ".repeat(3_000).trim());
+    },
+  },
+  {
+    // Each reference is looked up among the identifiers the definitions define: by its label end
+    // (`isDefined`), and, for a full reference (`[w][d1]`), by the reference's own lookup, both in
+    // `patches/micromark-core-commonmark@2.0.3.patch`. A lookup that searched micromark's list of
+    // the definitions (`parser.defined`) for each label read about references times definitions,
+    // here the square of the shape; the patch keeps a set beside the list (`definedIdentifiers`),
+    // and the rows count the list's reads through a Proxy (tests/parse-work.ts).
+    // `remark-inline-links` spliced each definition out of the document's list of blocks,
+    // shifting the definitions after it, which its walk's reads hid at these sizes (16.21 times the
+    // steps for 8 times the definitions); the rows count the transform's writes to the tree's lists
+    // on their own, where that splice reads 46.93 times. The references name the definitions in
+    // reverse order, so a search of the list from its start reads half of it for each reference,
+    // on average.
+    name: "800 definitions and 800 references to them",
+    grow: (size) => {
+      const definitions = Array.from({ length: size }, (_, id) => `[d${id}]: /u${id}\n`);
+      const references = Array.from({ length: size }, (_, at) =>
+        at % 2 === 0 ? `[d${size - 1 - at}]` : `[w][d${size - 1 - at}]`
+      );
+      return `${definitions.join("")}\n${references.join(" ")}\n`;
+    },
+    full: 800,
+    opensContainers: false,
+    expectDoc: (doc) => {
+      expect(doc.childCount).toBe(1);
+      expect(marksOf(doc, "link")).toBe(800);
     },
   },
   {

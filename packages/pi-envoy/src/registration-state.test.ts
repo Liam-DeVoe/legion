@@ -1,4 +1,4 @@
-import { describe, expect, jest, test } from "bun:test";
+import { afterEach, describe, expect, jest, test } from "bun:test";
 import { ROLE_TOPIC_PREFIX } from "@legion/contracts";
 import { messageFor } from "@legion/envoy-client/errors";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
@@ -21,6 +21,13 @@ import {
   type RegistrationState,
   taskWasAbandoned,
 } from "./registration-state";
+
+// A row that runs on Bun's fake clock (`jest.useFakeTimers`) gives the real clock back in its own
+// `finally`, and this hook gives it back too, so a row aborted at Bun's own timeout cannot leave
+// the fake clock on for the next.
+afterEach(() => {
+  jest.useRealTimers();
+});
 
 /** The deadline rejection the queue answers with, which the module names through its predicate:
  *  the error class itself is private to it. */

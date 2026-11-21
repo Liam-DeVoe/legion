@@ -312,6 +312,7 @@
     "prosemirror-tables@1.8.5": "patches/prosemirror-tables@1.8.5.patch",
     "@milkdown/plugin-clipboard@7.22.1": "patches/@milkdown%2Fplugin-clipboard@7.22.1.patch",
     "@milkdown/preset-gfm@7.22.1": "patches/@milkdown%2Fpreset-gfm@7.22.1.patch",
+    "remark-inline-links@7.0.0": "patches/remark-inline-links@7.0.0.patch",
     "nats@2.29.3": "patches/nats@2.29.3.patch",
     "proof-sdk@./proof-sdk-dc6a852b2ab45463dc9d3d17762235450c8ff0d6.tgz": "patches/proof-sdk@.%2Fproof-sdk-dc6a852b2ab45463dc9d3d17762235450c8ff0d6.tgz.patch",
   },

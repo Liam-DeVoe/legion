@@ -17,7 +17,7 @@
  */
 
 import { $markSchema, $markAttr, $remark } from '@milkdown/kit/utils';
-import type { Attrs, Mark as ProseMirrorMark, Node as ProseMirrorNode } from '@milkdown/kit/prose/model';
+import type { Attrs, MarkType, Mark as ProseMirrorMark, Node as ProseMirrorNode } from '@milkdown/kit/prose/model';
 import type { EditorView } from '@milkdown/kit/prose/view';
 import type { ParserState, Root } from '@milkdown/kit/transformer';
 import type { Transformer } from 'unified';
@@ -94,29 +94,56 @@ type DispatchMarkNode = {
 
 export const dispatchAskAttr = $markAttr('dispatchAsk', () => ({}));
 
-/** The asks the markdown parser has open on one parser state: their attrs, outermost first, how
- *  many of each id and author, and whether the ask marks the state holds are still those of every
- *  open ask (`intact`). A node closing ends that, since `closeNode` resets the state's open marks to
- *  none (@milkdown/transformer's `#closeNodeAndPush`). */
+/** The asks the markdown parser has open on one parser state: their attrs, outermost first; those
+ *  of them no equal ask around them holds (`distinct`: a mark set keeps one of two equal marks, so
+ *  these are the ask marks the open asks give); how many of each id and author; whether the ask
+ *  marks the state holds are still those of every open ask (`intact`), which a node closing ends,
+ *  since `closeNode` resets the state's open marks to none (@milkdown/transformer's
+ *  `#closeNodeAndPush`); and whether the state owes the marks of every open ask (`owed`): an ask
+ *  ended after a node closed inside it, so the ask marks are to be those of the asks around it,
+ *  and the state holds none of them yet. */
 interface OpenAsks {
   readonly attrs: Attrs[];
+  readonly distinct: Attrs[];
   readonly counts: Map<string, number>;
   intact: boolean;
+  owed: boolean;
 }
 
 const openAskSpans = new WeakMap<ParserState, OpenAsks>();
 
-/** `state`'s open asks, made the first time an ask's runner is handed it, with its `closeNode`
- *  wrapped so a node that closes marks them no longer intact: ParserState holds `closeNode` as a
- *  property of its own, so the wrapper replaces it on that one state. */
-function openAsksOf(state: ParserState): OpenAsks {
+/**
+ * `state`'s open asks, made the first time an ask's runner is handed it, with three of its methods
+ * wrapped; ParserState holds each as a property of its own, so a wrapper replaces it on that one
+ * state. A node that closes marks the asks no longer intact and clears what they owe, since it
+ * drops every open mark, the owed ones with them. `addText` and `addNode` are the two that put the
+ * open marks on a node, so each first opens what the asks owe, outermost first, as the earlier
+ * runner opened them at the owing ask's end: a mark owed is opened only where a node then holds
+ * it. An inline leaf (an image, a piece of HTML, a hard break) holds none in any document this
+ * engine returns (`withoutLeafMarks`, which every import seam applies), so adding one leaves the
+ * debt for the node after it.
+ */
+function openAsksOf(state: ParserState, markType: MarkType): OpenAsks {
   const known = openAskSpans.get(state);
   if (known !== undefined) return known;
-  const asks: OpenAsks = { attrs: [], counts: new Map(), intact: true };
-  const closeNode = state.closeNode;
+  const asks: OpenAsks = { attrs: [], distinct: [], counts: new Map(), intact: true, owed: false };
+  const { addNode, addText, closeNode, openMark } = state;
+  const pay = () => {
+    asks.owed = false;
+    for (const ask of asks.distinct) openMark(markType, ask);
+  };
   state.closeNode = () => {
     asks.intact = false;
+    asks.owed = false;
     return closeNode();
+  };
+  state.addText = (text) => {
+    if (asks.owed) pay();
+    return addText(text);
+  };
+  state.addNode = (nodeType, attrs, content) => {
+    if (asks.owed && !(nodeType.isInline && nodeType.isLeaf)) pay();
+    return addNode(nodeType, attrs, content);
   };
   openAskSpans.set(state, asks);
   return asks;
@@ -155,33 +182,45 @@ export const dispatchAskSchema = $markSchema('dispatchAsk', (ctx) => ({
       // Two readers' asks may cover the same text, so their spans nest. Once an ask's content is
       // read, the open ask marks are those of the asks around it, in their order, whatever closed
       // inside it, as the earlier runner gave them: it closed every ask mark there and opened
-      // each enclosing ask again, about D²/2 marks for an ask D deep. This one does that only after
-      // a node closed inside the ask, since `closeNode` drops every open mark, the enclosing asks'
-      // with them: once for each such close at most, the first ask that ends after it restoring
-      // them. Otherwise the ask marks are still the enclosing asks' and this ask's, and the ask
-      // closes its own mark alone: closeMark calls `removeFromSet` on what it is handed
+      // each enclosing ask again, about D²/2 marks for an ask D deep. The marks are still the
+      // enclosing asks' and this ask's unless a node closed inside the ask, so the ask closes its
+      // own mark alone: closeMark calls `removeFromSet` on what it is handed
       // (@milkdown/transformer's ParserState), and a mark's `removeFromSet` removes that mark and
       // no other. An ask the same as one around it (its id and its author) adds no mark, since
-      // the set keeps one of two equal marks, so it closes none there.
-      const asks = openAsksOf(state);
-      // No ask open: no ask mark is either, whatever closed since the last one.
-      if (asks.attrs.length === 0) asks.intact = true;
+      // the set keeps one of two equal marks, so it closes none there. A node that closed inside
+      // the ask dropped every open mark, the enclosing asks' with them, and the state then owes
+      // them: `openAsksOf`'s `addText` and `addNode` open them before the next node that holds
+      // marks, so a mark is opened again only where the document holds it. While they are owed,
+      // the state holds no ask mark, and an ask opening adds its own to what is owed.
+      const asks = openAsksOf(state, markType);
+      // No ask open: no ask mark is either, whatever closed since the last one, and none is owed.
+      if (asks.attrs.length === 0) {
+        asks.intact = true;
+        asks.owed = false;
+      }
       const key = JSON.stringify([askAttrs.id, askAttrs.by]);
       const around = asks.counts.get(key) ?? 0;
-      state.openMark(markType, askAttrs);
+      if (!asks.owed) state.openMark(markType, askAttrs);
       asks.attrs.push(askAttrs);
+      if (around === 0) asks.distinct.push(askAttrs);
       asks.counts.set(key, around + 1);
       try {
         state.next((n.children as never[]) || []);
       } finally {
         asks.attrs.pop();
-        if (around === 0) asks.counts.delete(key);
-        else asks.counts.set(key, around);
+        if (around === 0) {
+          asks.distinct.pop();
+          asks.counts.delete(key);
+        } else {
+          asks.counts.set(key, around);
+        }
         if (!asks.intact) {
+          // The state holds no ask mark of an ask around this one, only those of asks that opened
+          // since the node closed: close those, and owe the rest.
           state.closeMark(markType);
-          for (const outer of asks.attrs) state.openMark(markType, outer);
+          asks.owed = true;
           asks.intact = true;
-        } else if (around === 0) {
+        } else if (around === 0 && !asks.owed) {
           state.closeMark(markType.create(askAttrs) as unknown as typeof markType);
         }
       }
