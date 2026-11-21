@@ -37,7 +37,10 @@ func nkeyClient(t *testing.T, url, seed, name string) *nats.Conn {
 // row to read.
 type startRecorder struct{ *leakRecorder }
 
-func (r startRecorder) Fatalf(format string, args ...any) { r.leakRecorder.TB.Fatalf(format, args...) }
+func (r startRecorder) Fatalf(format string, args ...any) {
+	r.leakRecorder.TB.Helper()
+	r.leakRecorder.TB.Fatalf(format, args...)
+}
 
 // The leak check holds a server a test starts for itself too (armServerLeakCheck): a client the
 // test leaves open on it fails the test, named by id and name, though the server is removed when
