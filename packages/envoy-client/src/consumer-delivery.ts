@@ -1,4 +1,4 @@
-import { legacyAgentSubject, topicForms } from "@legion/contracts";
+import { topicForms } from "@legion/contracts";
 import { z } from "zod";
 import {
   type DedupeIdentity,
@@ -8,7 +8,7 @@ import {
 } from "./delivery";
 import { type DeliveryLedger, envoyNoticeText } from "./delivery-ledger";
 import { messageFor } from "./errors";
-import { registrationTopics, subjectsOverlap } from "./stream-topics";
+import { isOwnAgentSubject, registrationTopics, subjectsOverlap } from "./stream-topics";
 import {
   type DeliveryAnswer,
   type DeliveryRequest,
@@ -378,12 +378,10 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
   const render = options.render ?? renderInbound;
   const now = options.now ?? Date.now;
   const repeat = options.every ?? every;
-  // The session's own inbox, in the old form and under any project: every form of such a subject
-  // holds the old form (`topicForms`), which no other session's does, so a frame on any of them
-  // is its own, whenever the stream stored it. Named because the follow filter and the persisted
-  // follow times must read it the same way.
-  const ownSubject = legacyAgentSubject(sessionID);
-  const ownsSubject = (subject: string): boolean => topicForms(subject).includes(ownSubject);
+  // The session's own inbox, in the old form and under any project (`isOwnAgentSubject`), so a
+  // frame on any of them is its own, whenever the stream stored it. Named because the follow
+  // filter and the persisted follow times must read it the same way.
+  const ownsSubject = (subject: string): boolean => isOwnAgentSubject(subject, sessionID);
 
   let currentEpoch: ConsumerEpoch = { id: newEpoch(), startedAt: now() };
   // When each followed topic was first followed, on the host's clock.

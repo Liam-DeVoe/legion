@@ -6240,7 +6240,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       first.requests.slice(requestsBeforeResume),
       "ses_controller_first"
     );
-    expect(resumedRegistration).toContain("notifications.agent.ses_controller_first");
+    expect(resumedRegistration).toContain("notifications.agent.*.ses_controller_first");
     expect(resumedRegistration).not.toContain(topic);
   });
 
@@ -6360,7 +6360,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
         controller.requests.slice(requestsBeforeEnd),
         "ses_controller_slack"
       );
-      expect(afterEnd).toContain("notifications.agent.ses_controller_slack");
+      expect(afterEnd).toContain("notifications.agent.*.ses_controller_slack");
       expect(afterEnd).not.toContain(lane);
       expect(slackAmong(afterEnd)).toEqual([]);
     });
@@ -6380,7 +6380,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
           first.requests.slice(before),
           "ses_controller_slack_resume"
         );
-        expect(registered).toContain("notifications.agent.ses_controller_slack_resume");
+        expect(registered).toContain("notifications.agent.*.ses_controller_slack_resume");
         expect(slackAmong(registered)).toEqual([...want]);
       }
     });
@@ -6607,7 +6607,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     for (const tick of ticks) tick();
     await new Promise<void>((resolve) => setImmediate(resolve));
     const next = registeredTopics(first.requests.slice(requestsBefore), "ses_controller_first");
-    expect(next).toContain("notifications.agent.ses_controller_first");
+    expect(next).toContain("notifications.agent.*.ses_controller_first");
     expect(next).not.toContain(topic);
   });
 
@@ -6666,7 +6666,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       expect(openSubjects).toContain(relaySubject);
       expect(await followedTopics(first, firstContext)).not.toContain(topic);
       const next = registeredTopics(first.requests.slice(requestsAfterEnd), "ses_controller_first");
-      expect(next).toContain("notifications.agent.ses_controller_first");
+      expect(next).toContain("notifications.agent.*.ses_controller_first");
       expect(next).not.toContain(topic);
     } finally {
       delete process.env.ENVOY_RESUBSCRIBE_DELAY_MS;
@@ -6765,7 +6765,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
         first.requests.slice(requestsAfterEnd),
         "ses_controller_first"
       );
-      expect(afterRetries).toContain("notifications.agent.ses_controller_first");
+      expect(afterRetries).toContain("notifications.agent.*.ses_controller_first");
       expect(afterRetries).not.toContain(topic);
 
       // The replaced session is resumed in a new process: nothing in the registry brings the
@@ -6792,7 +6792,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
         first.requests.slice(requestsBeforeResume),
         "ses_controller_first"
       );
-      expect(resumedRegistration).toContain("notifications.agent.ses_controller_first");
+      expect(resumedRegistration).toContain("notifications.agent.*.ses_controller_first");
       expect(resumedRegistration).not.toContain(topic);
     } finally {
       jest.useRealTimers();
@@ -6838,7 +6838,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       const openFor = async (sessionId: string, context: SessionContext) => {
         expect(await followedTopics(controller, context)).toContain(topic);
         const registered = registeredTopics(controller.requests, sessionId);
-        expect(registered).toContain(`notifications.agent.${sessionId}`);
+        expect(registered).toContain(`notifications.agent.*.${sessionId}`);
         expect(registered).toContain(topic);
       };
       await openFor("ses_controller_before", before);
