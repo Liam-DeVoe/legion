@@ -61,7 +61,13 @@ type Config struct {
 	// Steps are the design-gate steps the deployment gates (config.Gates.Steps), in the order a
 	// root's architect takes them. Every hold the gate puts on a tree's work reads the whole list
 	// (classify.DesignGatesOpen), and the empty list gates no step, which is `gates.design: off`.
-	Steps          []record.DesignStep
+	Steps []record.DesignStep
+	// Hold is what a closed standing gate holds of its tree (`gates.hold`, config.Gates.Holds):
+	// config.HoldMerge, the merger's start and the first phase of each member that has not
+	// started, which today's hold has always been; or config.HoldWork, the tree's running work as
+	// well, which the close stops and the opening starts again (work_hold.go,
+	// dispatch://INFRA-4528). The empty word, an engine built without it, is HoldMerge (New).
+	Hold           config.Hold
 	ReviewRoundCap int
 	Linger         time.Duration
 	// ProductionCheckBound is how long a closed issue's production check waits for its deploy
@@ -166,14 +172,17 @@ type Engine struct {
 
 var _ intake.Handler = (*Engine)(nil)
 
-// New constructs a workflow engine, taking the shipped review round cap, production check bound
-// and clock for every one of them a caller omits.
+// New constructs a workflow engine, taking the shipped review round cap, production check bound,
+// hold and clock for every one of them a caller omits.
 func New(store record.Store, cfg Config, log *slog.Logger) *Engine {
 	if cfg.ReviewRoundCap <= 0 {
 		cfg.ReviewRoundCap = 3
 	}
 	if cfg.ProductionCheckBound <= 0 {
 		cfg.ProductionCheckBound = 336 * time.Hour
+	}
+	if cfg.Hold == "" {
+		cfg.Hold = config.HoldMerge
 	}
 	if cfg.Clock == nil {
 		cfg.Clock = time.Now

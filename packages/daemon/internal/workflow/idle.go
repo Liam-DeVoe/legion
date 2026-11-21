@@ -111,6 +111,11 @@ const (
 	// (pods.IdleClaim.OperatorSuspended), the one suspension no daemon rule undoes, and the
 	// operator's resume brings that role back into this pod.
 	IdleHoldUnownedOperatorSuspended
+	// IdleHoldUnownedWorkHeld: the work hold stopped a claim of the pod (pods.IdleClaim.WorkHeld,
+	// `gates.hold: work`), which keeps its session, its phase and its pending task until the hold's
+	// opening starts it again in this pod. A release would take the disk with no bundle, and the
+	// worker's unpushed work with it (decision 17 of dispatch://INFRA-4528's plan).
+	IdleHoldUnownedWorkHeld
 	// IdleHoldUnownedDelivery: a task, notice, message or start waits for delivery to a role of
 	// the pod, and the delivery is what brings a role back into it.
 	IdleHoldUnownedDelivery
@@ -169,6 +174,7 @@ var idleHoldNames = map[IdleHold]string{
 	IdleHoldUnownedSandboxGone:       "unowned_sandbox_gone",
 	IdleHoldUnownedClaimProcess:      "unowned_claim_process",
 	IdleHoldUnownedOperatorSuspended: "unowned_operator_suspended",
+	IdleHoldUnownedWorkHeld:          "unowned_work_held",
 	IdleHoldUnownedDelivery:          "unowned_delivery_waiting",
 	IdleHoldUnownedTreeNotLive:       "unowned_tree_not_live",
 	IdleHoldUnownedReleasing:         "unowned_releasing",
@@ -398,6 +404,11 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 //     which starts the role in the pod that is still there, or by stopping it, which retires the
 //     claim and leaves the issue to this rule (IdleHoldUnownedOperatorSuspended);
 //
+//   - no claim is stopped by the work hold (pods.IdleClaim.WorkHeld, `gates.hold: work`). The hold
+//     keeps the claim's session, its phase and its pending task, and its opening starts the role
+//     again in this pod; a release would take the disk with no bundle, and the worker's unpushed
+//     work with it (IdleHoldUnownedWorkHeld, decision 17 of dispatch://INFRA-4528's plan);
+//
 //   - nothing waits for delivery to a role of the issue. A start queued for a stopped claim is
 //     the one delivery such an issue carries, and it is what brings a role back into this pod; a
 //     release taken under it would leave that start to find its pod gone and to provision the
@@ -449,6 +460,11 @@ func UnownedPodRelease(view pods.IdleView, now time.Time, idle time.Duration, sa
 	for _, c := range view.Claims {
 		if c.OperatorSuspended() {
 			return IdleDecision{Hold: IdleHoldUnownedOperatorSuspended}
+		}
+	}
+	for _, c := range view.Claims {
+		if c.WorkHeld() {
+			return IdleDecision{Hold: IdleHoldUnownedWorkHeld}
 		}
 	}
 	if view.Waiting {

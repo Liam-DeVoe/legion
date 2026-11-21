@@ -75,6 +75,9 @@ const schemas: Record<string, z.ZodType> = {
   // pause has ended, which carries `lastPause` and no `paused` (contract 178). state.json is the
   // state of a paused project and carries the other key.
   "state-last-pause.json": LegionStateResponse,
+  // Written by internal/api's TestStateWorkHoldGolden: the state of an issue the work hold holds
+  // (`gates.hold: work`), whose `why` is `held` (contract 199).
+  "state-work-hold.json": LegionStateResponse,
   "register.json": LegionRegisterResponse,
   // The claim wire's `claim.ReadyRequest` with a capability report: what a session posts on
   // `claims/ready` (contract 21).
@@ -2427,6 +2430,49 @@ test("the state goldens carry the pause that stands and the last pause, and both
       JSON.stringify(refused)
     ).toBeFalse();
   }
+});
+
+// The work hold (contract 199). An issue the hold holds says so on its own view: `why.state` is
+// `held`, with the sentence that names the version that closed its tree's design gate. The word
+// joins the enum at this contract, and a reader before it refuses the whole state for it, so a
+// pod below 199 is to be served the state without that `why` rather than the body that reader
+// would refuse.
+test("an issue the work hold holds says why, in a word the reader before contract 199 refuses", () => {
+  const state = LegionStateResponse.parse(fixture("state-work-hold.json"));
+  expect(state.issues["LEGION-214"]?.why).toEqual({
+    state: "held",
+    reason:
+      "Its phase is implementing, and the work hold holds the work of its tree LEGION-208 until every gated step " +
+      "stands open again: version 4 of its spec document (artifact-208) closed the design gate.",
+  });
+
+  const whyAt198 = z.strictObject({
+    state: z.enum(["claim_stopped", "waiting", "blocked", "unlisted"]),
+    reason: z.string().min(1),
+  });
+  const refused = whyAt198.safeParse(state.issues["LEGION-214"]?.why);
+  expect(refused.success).toBeFalse();
+  expect(refused.error?.issues[0]?.path).toEqual(["state"]);
+
+  // Every other word still parses at this contract, and the reason is never empty.
+  const why = state.issues["LEGION-214"]?.why;
+  for (const word of ["claim_stopped", "waiting", "blocked", "unlisted"]) {
+    expect(whyAt198.safeParse({ ...why, state: word }).success).toBeTrue();
+  }
+  const { issues, ...rest } = fixtureBody("state-work-hold.json");
+  if (!isJsonObject(issues)) {
+    throw new Error("state-work-hold fixture lacks its issues");
+  }
+  const held = issues["LEGION-214"];
+  if (!isJsonObject(held)) {
+    throw new Error("state-work-hold fixture lacks its held issue");
+  }
+  expect(
+    LegionStateResponse.safeParse({
+      ...rest,
+      issues: { "LEGION-214": { ...held, why: { state: "held", reason: "" } } },
+    }).success
+  ).toBeFalse();
 });
 
 // What the pause routes answer (contract 178). A pause answers the pause it began, which names

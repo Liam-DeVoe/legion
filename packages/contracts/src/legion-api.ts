@@ -506,15 +506,17 @@ const legionWaitingLineView = z.object({
 });
 
 /** `api.WhyView` — the one rendered answer an issue that is not working now carries: `state`,
- * which of the four facts holds it — its claim has stopped (`claim_stopped`), it waits in the
- * admission line (`waiting`), something holds it where it stands (`blocked`), or it stands in
- * neither the line nor the work at all (`unlisted`) — and `reason`, the sentence a person reads.
- * The projection reads the four in one order over the facts the pass already holds and renders the
- * sentence of whichever holds the issue, so an issue carries one answer and never two. `state` is a
- * `z.enum` for the reason `part` and `kind` above are, and it arrives with the line's own
- * `partPlace` and the rest of its fields at contract 85. */
+ * which of the five facts holds it — its claim has stopped (`claim_stopped`), the work hold holds
+ * its tree's work (`held`, `gates.hold: work`, contract 199), it waits in the admission line
+ * (`waiting`), something holds it where it stands (`blocked`), or it stands in neither the line
+ * nor the work at all (`unlisted`) — and `reason`, the sentence a person reads; a `held` issue's
+ * names the version that closed its tree's design gate. The projection reads the five in one
+ * order over the facts the pass already holds and renders the sentence of whichever holds the
+ * issue, so an issue carries one answer and never two. `state` is a `z.enum` for the reason `part`
+ * and `kind` above are, and it arrives with the line's own `partPlace` and the rest of its fields
+ * at contract 85. */
 const legionWhyView = z.object({
-  state: z.enum(["claim_stopped", "waiting", "blocked", "unlisted"]),
+  state: z.enum(["claim_stopped", "held", "waiting", "blocked", "unlisted"]),
   reason: nonEmptyString,
 });
 

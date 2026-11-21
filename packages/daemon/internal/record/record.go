@@ -1711,6 +1711,25 @@ type ClearedSpecApproval struct {
 	Mark       EventMark
 }
 
+// WorkHold is the record of the work hold of one tree (`gates.hold: work`, dispatch://INFRA-4528):
+// its project (the Dispatch project key, as Issue.Project holds it), its root (Tree), the root's
+// generation the hold was applied at, and the gate row that closed it, by its step, its document
+// and the version that closed it, with the moment of the close (ClosedAt). The close writes it
+// (workflow's workHoldClose), and the opening deletes it, as does a new generation of the tree
+// (Store.ClearTreeGeneration). It is how the daemon's record holds the hold across a restart (spec
+// step 4): the boot tells a tree whose close has not been applied, which holds no record, from
+// one whose drain is under way, which does (workflow's workHoldBooted), and the opening's task and
+// the state's `why: held` name the version that closed the gate from it.
+type WorkHold struct {
+	Project        string
+	Tree           string
+	RootGeneration uint64
+	Step           DesignStep
+	ArtifactID     string
+	Version        int
+	ClosedAt       time.Time
+}
+
 // DispatchIssueRow is one row of the daemon's copy of Dispatch's issues: what the readings of
 // Dispatch said about an issue of the project, whether or not the daemon records the issue itself.
 // Each of its five values, Status, Parent, Blockers, Labels and Rank, is the one shown by the
@@ -2029,6 +2048,13 @@ type Store interface {
 	PutClearedSpecApproval(ctx context.Context, tx pgx.Tx, approval ClearedSpecApproval) error
 	ClearedSpecApproval(ctx context.Context, tx pgx.Tx, root string) (*ClearedSpecApproval, error)
 	DeleteClearedSpecApproval(ctx context.Context, tx pgx.Tx, root string) error
+	// PutWorkHold records the work hold of a tree, in place of any it held; WorkHold is the hold
+	// tree holds, nil for none; WorkHolds is every hold of project's trees, by tree; and
+	// DeleteWorkHold deletes tree's, if any.
+	PutWorkHold(ctx context.Context, tx pgx.Tx, hold WorkHold) error
+	WorkHold(ctx context.Context, tx pgx.Tx, tree string) (*WorkHold, error)
+	WorkHolds(ctx context.Context, tx pgx.Tx, project string) ([]WorkHold, error)
+	DeleteWorkHold(ctx context.Context, tx pgx.Tx, tree string) error
 	// TellChildrenFirst marks that the architect that owns issue has been told, for the run
 	// generation of tree, that the issue's own first phase waits for the Dispatch children under
 	// it, and reports whether this call is the telling. That architect is the root's own for a

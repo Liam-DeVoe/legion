@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // gatesStep says whether the deployment gates step, so a person must approve that step's document
@@ -985,6 +986,14 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 // Linger holds a member of a closed tree where it stood (record.TreeLingers): every role of it is
 // suspended there, so a gate that moves then tells nobody, as a CI settlement tells nobody.
 //
+// What the move does beyond telling is the deployment's hold (Config.Hold, `gates.hold`). Under
+// `merge`, the default, it is what this comment says, word for word as it always was (row H1 of
+// dispatch://INFRA-4528's plan), with one fix: the close message to a merger whose claim the idle
+// release suspended is marked to wake it (record.RoleMessage.Wake), so it can take its pull request
+// out of GitHub's merge queue rather than leave it to merge a head the gate holds (decision 13,
+// row H16). Under `work` the move is the work hold's close or its opening, with recipients and
+// texts of their own (workHoldClose, workHoldOpen).
+//
 // A holder whose message token cannot be built is logged and skipped, and the rest are told. The
 // gate's state is the record this transaction writes; a message is what the record is worth
 // telling, and secondary to it. Aborting here would roll the gate's own move back for a name the
@@ -998,6 +1007,12 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 	}
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, root.Tree); err != nil || lingers {
 		return err
+	}
+	if e.holdsWork() && open {
+		return e.workHoldOpen(ctx, tx, *root, step, document, version)
+	}
+	if e.holdsWork() {
+		return e.workHoldClose(ctx, tx, *root, step, document, version)
 	}
 	members, err := e.store.TreeIssues(ctx, tx, root.Tree)
 	if err != nil {
@@ -1020,27 +1035,61 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 	if err != nil {
 		return err
 	}
-	// The step and its own document, never "spec version": under more than one gated step the
-	// version this event carries is that step's document's, and a message naming the spec would
-	// send a reader to the wrong one (INFRA-1272).
-	var body string
-	if open {
-		body = fmt.Sprintf("The design gate of %s opened: a person approved version %d of its %s document (%s), "+
-			"and every step the deployment gates now stands open, so the design you are working to is the approved one. "+
-			"A merge the closed gate held is released.", root.Tree, version, step, document)
-	} else {
-		body = fmt.Sprintf("The design gate of %s closed: version %d of its %s document (%s) is with its reviewer, "+
-			"so the design you are working to may change. Your phase goes on; the merge waits until every gated step "+
-			"stands open again.", root.Tree, version, step, document)
+	body := gateOpenedMessage(root.Tree, step, document, version)
+	var woken map[claim.Token]bool
+	if !open {
+		body = mergeCloseMessage(root.Tree, step, document, version)
+		if woken, err = e.releasedMergers(ctx, tx, root.Project, recipients); err != nil {
+			return err
+		}
 	}
 	for _, to := range told {
-		if err := e.enqueue(ctx, tx, to.issue, record.RoleMessage{Role: string(to.token), Body: body}); err != nil {
+		if err := e.enqueue(ctx, tx, to.issue, record.RoleMessage{Role: string(to.token), Body: body, Wake: woken[to.token]}); err != nil {
 			return err
 		}
 	}
 	e.logOnCommit(ctx, "workflow: the design gate moved and every phase worker of the tree and the root's architect are told", "issue", key, "tree", root.Tree,
 		"step", string(step), "version", version, "open", open, "told", len(told))
+	if len(woken) > 0 {
+		e.logOnCommit(ctx, "workflow: the design gate closed and its message wakes each released merger of the tree", "tree", root.Tree,
+			"version", version, "woken", len(woken))
+	}
 	return nil
+}
+
+// releasedMergers is the claim token of each merger of recipients whose claim is released, the
+// mergers the close message wakes (record.RoleMessage.Wake). Only a merger is woken for it, and
+// only from its release: a live merger reads the message as it is, and one an operator or the
+// daemon suspended is not woken by any message.
+func (e *Engine) releasedMergers(ctx context.Context, tx pgx.Tx, project string, recipients []roleRecipient) (map[claim.Token]bool, error) {
+	var mergers []roleRecipient
+	for _, recipient := range recipients {
+		if recipient.role == claim.RoleMerger {
+			mergers = append(mergers, recipient)
+		}
+	}
+	if len(mergers) == 0 {
+		return nil, nil
+	}
+	addressed, err := e.addressRoles(project, mergers, func(roleRecipient, error) error { return nil })
+	if err != nil {
+		return nil, err
+	}
+	tokens := make([]claim.Token, len(addressed))
+	for i, merger := range addressed {
+		tokens[i] = merger.token
+	}
+	claims, err := e.store.RoleClaims(ctx, tx, tokens)
+	if err != nil {
+		return nil, err
+	}
+	woken := make(map[claim.Token]bool, len(claims))
+	for token, held := range claims {
+		if held != nil && (supervise.Claim{State: held.State, SuspendedBy: held.SuspendedBy}).Released() {
+			woken[token] = true
+		}
+	}
+	return woken, nil
 }
 
 // putGateTold writes gate's row and, when that write moves the standing gate of its tree, tells

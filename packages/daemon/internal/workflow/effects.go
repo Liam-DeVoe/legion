@@ -689,6 +689,11 @@ type startMarks struct {
 	// raising the entry it hands (enter), and the held phase's retry, which an architect's or an
 	// operator's own request brings (restart).
 	reasserts bool
+	// opening is the work hold's opening sentences (record.SuperviseRequest.Opening), set on the
+	// one start the hold's opening gives a claim the hold stopped that holds its issue's phase:
+	// started puts them, then a blank line, in front of the task, and carries them apart on the
+	// request for supervise.Machine.EndHold. Every other start leaves it empty.
+	opening string
 }
 
 // started enqueues the start each of its six callers makes, each of which has held role to one
@@ -721,9 +726,13 @@ func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 	if marks.reasserts {
 		move = reassertion
 	}
+	if marks.opening != "" {
+		task = marks.opening + "\n\n" + task
+	}
 	return startOrOwe(ctx, tx, e.store, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Task: task,
 		Generation: issue.Generation, Phase: issue.Phase, Entry: entry, ResendEntry: marks.resend, ResumeTask: marks.resumeTask,
-		RoundNamed: marks.stored && role == claim.RoleReviewer, RuleResume: marks.ruleResume, FreshSession: marks.freshSession}, e.now(), move)
+		RoundNamed: marks.stored && role == claim.RoleReviewer, RuleResume: marks.ruleResume, FreshSession: marks.freshSession,
+		Opening: marks.opening}, e.now(), move)
 }
 
 // movement says whether a start of a phase worker is news of its issue, which startOrOwe marks
