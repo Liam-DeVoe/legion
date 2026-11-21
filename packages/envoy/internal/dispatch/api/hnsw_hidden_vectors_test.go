@@ -200,19 +200,25 @@ func TestARestrictedMembersMeaningSearchFindsHisProjectWhateverTheOthersHold(t *
 
 // TestASwitchToPrivateLeavesTheSearchOfTheProjectsStillSeenAsItWas (HNSW): when a project alice
 // saw becomes private, her meaning search answers what it answered before that project held
-// anything: PRIV is made public, 1,000 vectors of it are written nearer her query than every one
-// of PUB's (her answer then holds PRIV's issues, which shows she read them), and PRIV is made
-// private again; her total and hits, ids and order, are then those of the search before PRIV's
-// vectors were written. A switch moves no row: each project's vectors are a graph of their own
-// whatever the project's visibility, and the switch changes only which graphs her search reads.
+// anything: PRIV is made public, hnswSwitchHidden vectors of it are written nearer her query than
+// every one of PUB's (her answer then holds PRIV's issues, which shows she read them), and PRIV is
+// made private again; her total and hits, ids and order, are then those of the search before
+// PRIV's vectors were written, which read at least hnswSwitchFloor of PUB's hnswVisible issues. A
+// switch moves no row: each project's vectors are a graph of their own whatever the project's
+// visibility, and the switch changes only which graphs her search reads.
 //
 // A design that kept every public project's vectors in one graph would move PRIV's out of it at
 // the switch, and a vector moved out of an HNSW graph stays in it, dead, until the graph is built
 // again: in a bare pgvector 0.8.7 table holding alice's 40 spread vectors and 1,000 nearer ones,
 // her rows read 0 with the 1,000 live, 0 with them deleted, 2 after VACUUM, and 33 only after
 // REINDEX (measured on 2026-11-20). The control here is one graph over every project, the base's,
-// where PRIV's vectors stay in alice's graph after the switch, live and hidden from her, and leave
-// her none of her hits: the row fails there, or it proves nothing.
+// where PRIV's vectors stay in alice's graph after the switch, live and hidden from her. It runs
+// the same rounds, and it must read at least hnswSwitchFloor hits before PRIV's vectors and at
+// most hnswSwitchCeiling once PRIV is private again, or the row fails, since it then proves
+// nothing. Each side is held to a bound with a margin rather than to a count or to a difference:
+// every round builds its graphs with random levels, so its counts move from run to run, and a
+// control that differs from the first answer by one hit can as well differ by none
+// (hnswSwitchHidden gives the counts measured).
 func TestASwitchToPrivateLeavesTheSearchOfTheProjectsStillSeenAsItWas(t *testing.T) {
 	partitioned := hnswSwitchBack(t, hnswPartitioned)
 	if partitioned.after.Total != partitioned.before.Total || !slices.Equal(hnswHits(partitioned.after), hnswHits(partitioned.before)) {
@@ -221,28 +227,53 @@ func TestASwitchToPrivateLeavesTheSearchOfTheProjectsStillSeenAsItWas(t *testing
 			partitioned.before.Total, len(partitioned.before.Results), hnswHits(partitioned.before))
 	}
 	shared := hnswSwitchBack(t, hnswSharedGraph)
-	if shared.after.Total == shared.before.Total && slices.Equal(hnswHits(shared.after), hnswHits(shared.before)) {
-		t.Errorf("%s, alice's search after the switch back answers what it did before (%d hits): the shared graph does not fail this row, so it proves nothing",
-			hnswSharedGraph, len(shared.after.Results))
+	if got := len(shared.after.Results); got > hnswSwitchCeiling {
+		t.Errorf("%s, once PRIV is private again alice's search answers %d hits, more than %d: the shared graph does not fail this row by a margin, so the row proves nothing",
+			hnswSharedGraph, got, hnswSwitchCeiling)
 	}
 }
+
+// hnswSwitchHidden is how many vectors of PRIV the switch row writes nearer alice's query than
+// every one of PUB's while PRIV is public: enough that one graph over every project, the row's
+// control, answers her none of her hits once PRIV is private again. At 1,000, the count the row
+// first wrote, the control read 33 in one run of the check on 2026-11-21, after a first answer of
+// 34, and so failed the row by a single hit; in that run the walk had reached 50 of PRIV's vectors
+// with PRIV public, where each of the 120 runs at 1,000 measured below reached 33 or 34. Measured
+// on 2026-11-21 against pgvector 0.8.7, each run on a fresh database: in 120 runs of the control
+// at each of 1,000, 5,000 and 25,000 (20 within the whole row, 100 alone), it read 0 every time,
+// and at 5,000 and 25,000 its walk reached 50 of PRIV's vectors with PRIV public in every run, the
+// state in which the failing run at 1,000 reached alice's as well. The row writes 25,000, the most
+// of those counts, as bob's row does. In the 20 runs of the whole row at each count, one graph a
+// project read 33 or 34 hits before PRIV held anything and the same hits after.
+const hnswSwitchHidden = 25000
+
+// hnswSwitchFloor is the fewest hits of PUB's hnswVisible that alice's search must read before
+// PRIV holds anything, on either shape: every run measured read 33 or 34 there, the graph's own
+// reach over the spread placement (hnswLayout), and the floor leaves those counts a margin of 3.
+const hnswSwitchFloor = 30
+
+// hnswSwitchCeiling is the most hits that one graph over every project may answer alice once PRIV
+// is private again: a tenth of hnswSwitchFloor, where every run measured at hnswSwitchHidden read
+// 0.
+const hnswSwitchCeiling = 3
 
 // hnswSwitch is alice's search at the three points of hnswSwitchBack.
 type hnswSwitch struct {
 	before, public, after model.SearchResponse
 }
 
-// hnswSwitchBack seeds alice's 40 spread vectors of PUB on shape and searches as alice; makes PRIV
-// public, writes 1,000 vectors of it nearer her query and searches again, requiring a hit of PRIV
-// (so the switch to public is honoured, and the vectors are near enough to matter); then makes
-// PRIV private and searches a third time.
+// hnswSwitchBack seeds alice's 40 spread vectors of PUB on shape and searches as alice, requiring
+// at least hnswSwitchFloor hits (fewer leave the row too little to compare, and its control too
+// little to lose); makes PRIV public, writes hnswSwitchHidden vectors of it nearer her query and
+// searches again, requiring a hit of PRIV (so the switch to public is honoured, and the vectors
+// are near enough to matter); then makes PRIV private and searches a third time.
 func hnswSwitchBack(t *testing.T, shape hnswShape) hnswSwitch {
 	t.Helper()
 	var round hnswSwitch
 	seed := hnswSeed(t, hnswAlice, shape)
 	round.before = hnswSearch(t, seed, hnswAlice, nil)
-	if len(round.before.Results) == 0 {
-		t.Fatalf("%s: alice's search before PRIV held anything holds no hit of PUB's %d: the row proves nothing", shape, hnswVisible)
+	if got := len(round.before.Results); got < hnswSwitchFloor {
+		t.Fatalf("%s: alice's search before PRIV held anything answers %d hits, fewer than %d of PUB's %d: the row proves nothing", shape, got, hnswSwitchFloor, hnswVisible)
 	}
 	visibility := func(to string) {
 		t.Helper()
@@ -251,7 +282,7 @@ func hnswSwitchBack(t *testing.T, shape hnswShape) hnswSwitch {
 		}
 	}
 	visibility("public")
-	hnswAddHidden(t, seed, hnswAlice, 1000)
+	hnswAddHidden(t, seed, hnswAlice, hnswSwitchHidden)
 	round.public = hnswSearch(t, seed, hnswAlice, nil)
 	read := 0
 	for _, hit := range round.public.Results {
@@ -264,8 +295,8 @@ func hnswSwitchBack(t *testing.T, shape hnswShape) hnswSwitch {
 	}
 	visibility("private")
 	round.after = hnswSearch(t, seed, hnswAlice, nil)
-	t.Logf("%s, alice: %d hits before PRIV held anything; %d hits, %d of them PRIV's, with PRIV public and 1,000 vectors of it nearer; %d hits once PRIV is private again",
-		shape, len(round.before.Results), len(round.public.Results), read, len(round.after.Results))
+	t.Logf("%s, alice: %d hits before PRIV held anything; %d hits, %d of them PRIV's, with PRIV public and %d vectors of it nearer; %d hits once PRIV is private again",
+		shape, len(round.before.Results), len(round.public.Results), read, hnswSwitchHidden, len(round.after.Results))
 	return round
 }
 
