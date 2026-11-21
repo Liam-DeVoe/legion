@@ -12,7 +12,30 @@ import (
 	"github.com/sjawhar/envoy/cmd/writing-check/harness/claude"
 	"github.com/sjawhar/envoy/cmd/writing-check/harness/llm"
 	"github.com/sjawhar/envoy/internal/dispatch/modeltest"
+	"github.com/sjawhar/envoy/internal/dispatch/writingcheck/plainwords"
 )
+
+// PromptsDigest is what scores.md, run.json and grader-test name as the prompts a run's grades
+// were made with, and what phrases-labels checks before it reuses its results (checkParams). The
+// phrases grader's system prompt holds the table of phrases skills/plain-words tells agents to
+// stop (stoppedPhrases), so a change of that table changes the digest: this round's table, with
+// one row fewer than 16fbf2f2's, gave the same digest as that table did.
+func TestThePromptsDigestChangesWithThePhrasesTable(t *testing.T) {
+	before := PromptsDigest()
+	skill := plainwords.Skill
+	t.Cleanup(func() { plainwords.Skill = skill })
+	table := stoppedPhrases()
+	if table == "" {
+		t.Fatal("the skill holds no table of phrases to stop")
+	}
+	plainwords.Skill = strings.Replace(skill, table, table+"\n| name the problem, name the owner | the run fails on one row |", 1)
+	if stoppedPhrases() == table {
+		t.Fatal("the changed skill holds the same table")
+	}
+	if after := PromptsDigest(); after == before {
+		t.Errorf("PromptsDigest = %s with a row more in the phrases table, the same as before: it does not name the phrases grader's prompt", after)
+	}
+}
 
 // The fixture of parentRequests beside the golden calls' (requests_test.go): the new text, with a
 // sentence the phrases judgement reads, and a definition.
