@@ -37,6 +37,9 @@ const (
 	edgeLiveMachine = "example-edge-a"
 	// edgeLiveSession is the edge session every row registers.
 	edgeLiveSession = "ses_edge_a"
+	// edgeLiveOtherSession is a second session of the edge's person, which holds a role the edge
+	// session then takes, or which holds a role a message on the edge session's subject is of.
+	edgeLiveOtherSession = "ses_edge_b"
 	// edgeLiveRole is the role the edge session claims: a Legion role of the edge's project, in
 	// the new form, which the claim route takes (contracts.RoleProject).
 	edgeLiveRole = "PRIV.legion-priv-reviewer"
@@ -69,7 +72,9 @@ type edgeLiveRig struct {
 	broker   *ciphertokentest.StubBroker
 	caller   *ciphertokentest.Caller
 	token    string
-	binary   string
+	// otherToken is edgeLiveOtherSession's broker token, as token is edgeLiveSession's.
+	otherToken string
+	binary     string
 }
 
 // newEdgeLiveRig starts a server whose users are the edge listener's, holding edge (natsgrant.Edge
@@ -111,20 +116,31 @@ func newEdgeLiveRig(t *testing.T, edge natsgrant.Permissions) *edgeLiveRig {
 	}
 	t.Cleanup(client.Close)
 	rig.dispatch = client
+	// The edge's grant creates and raises no bucket's stream, so it finds each bucket the shared
+	// listeners made at their start; Dispatch's user, whose grant holds each one's create, makes
+	// them here before any edge starts.
+	for _, bucket := range bus.ListenerBuckets() {
+		if _, err := client.JS().CreateKeyValue(&natsgo.KeyValueConfig{Bucket: bucket, Storage: natsgo.FileStorage}); err != nil {
+			t.Fatalf("Dispatch's user makes the %s bucket: %v", bucket, err)
+		}
+	}
 
 	rig.broker = ciphertokentest.NewStubBroker(t)
 	rig.caller = ciphertokentest.NewCaller(t)
 	rig.token = "access-token-of-the-edge-session"
-	rig.broker.Says(rig.token, ciphertoken.Introspection{
-		Active:       true,
-		Session:      edgeLiveSession,
-		Person:       "outside-person@example.test",
-		ProjectScope: ciphertoken.ProjectScopeNamed,
-		Projects:     []string{edgeProject},
-		ClientID:     ciphertoken.ExchangeClientID,
-		Thumbprint:   rig.caller.JKT(),
-		ExpiresAt:    time.Now().Add(time.Hour).Unix(),
-	})
+	rig.otherToken = "access-token-of-the-other-edge-session"
+	for token, session := range map[string]string{rig.token: edgeLiveSession, rig.otherToken: edgeLiveOtherSession} {
+		rig.broker.Says(token, ciphertoken.Introspection{
+			Active:       true,
+			Session:      session,
+			Person:       "outside-person@example.test",
+			ProjectScope: ciphertoken.ProjectScopeNamed,
+			Projects:     []string{edgeProject},
+			ClientID:     ciphertoken.ExchangeClientID,
+			Thumbprint:   rig.caller.JKT(),
+			ExpiresAt:    time.Now().Add(time.Hour).Unix(),
+		})
+	}
 	return rig
 }
 
@@ -155,8 +171,14 @@ func (r *edgeLiveRig) connect(t *testing.T, name string) *natsgo.Conn {
 // its real client signs one, and returns the status and body it answered.
 func (r *edgeLiveRig) call(t *testing.T, edge *listenerProcess, method, path, body string) (int, string) {
 	t.Helper()
+	return r.callAs(t, edge, r.token, method, path, body)
+}
+
+// callAs is call under the broker token token.
+func (r *edgeLiveRig) callAs(t *testing.T, edge *listenerProcess, token, method, path, body string) (int, string) {
+	t.Helper()
 	origin := "http://127.0.0.1:" + strconv.Itoa(edge.port)
-	signed := r.caller.Signed(t, method, origin+path, r.token)
+	signed := r.caller.Signed(t, method, origin+path, token)
 	request, err := http.NewRequest(method, origin+path, strings.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
@@ -179,7 +201,13 @@ func (r *edgeLiveRig) call(t *testing.T, edge *listenerProcess, method, path, bo
 // mustCall is call, requiring a 2xx.
 func (r *edgeLiveRig) mustCall(t *testing.T, edge *listenerProcess, method, path, body string) string {
 	t.Helper()
-	status, answer := r.call(t, edge, method, path, body)
+	return r.mustCallAs(t, edge, r.token, method, path, body)
+}
+
+// mustCallAs is callAs, requiring a 2xx.
+func (r *edgeLiveRig) mustCallAs(t *testing.T, edge *listenerProcess, token, method, path, body string) string {
+	t.Helper()
+	status, answer := r.callAs(t, edge, token, method, path, body)
 	if status < 200 || status > 299 {
 		t.Fatalf("%s %s: %d %s\n%s", method, path, status, answer, edge.Output.String())
 	}
@@ -190,10 +218,32 @@ func (r *edgeLiveRig) mustCall(t *testing.T, edge *listenerProcess, method, path
 // requires the answer to be consumer delivery on the session's relay subject.
 func (r *edgeLiveRig) register(t *testing.T, edge *listenerProcess) {
 	t.Helper()
-	answer := r.mustCall(t, edge, http.MethodPost, "/v1/interests/subscribe",
-		`{"session_id":"`+edgeLiveSession+`","topics":[],"self_subscribed":true,"delivery":{"consumer":true,"epoch":"edge-epoch"}}`)
-	if !strings.Contains(answer, `"mode":"consumer"`) || !strings.Contains(answer, `"subject":"`+bus.DeliverSubject(edgeLiveSession)+`"`) {
-		t.Fatalf("the edge session's registration was not answered consumer delivery on its relay subject: %s", answer)
+	r.registerAs(t, edge, edgeLiveSession, r.token)
+}
+
+// registerAs is register for session, under its broker token token.
+func (r *edgeLiveRig) registerAs(t *testing.T, edge *listenerProcess, session, token string) {
+	t.Helper()
+	answer := r.mustCallAs(t, edge, token, http.MethodPost, "/v1/interests/subscribe",
+		`{"session_id":"`+session+`","topics":[],"self_subscribed":true,"delivery":{"consumer":true,"epoch":"edge-epoch"}}`)
+	if !strings.Contains(answer, `"mode":"consumer"`) || !strings.Contains(answer, `"subject":"`+bus.DeliverSubject(session)+`"`) {
+		t.Fatalf("session %s's registration was not answered consumer delivery on its relay subject: %s", session, answer)
+	}
+}
+
+// requireRoleHolder requires the edge listener's role lookup to name holder as edgeLiveRole's live
+// holder.
+func (r *edgeLiveRig) requireRoleHolder(t *testing.T, edge *listenerProcess, holder string) {
+	t.Helper()
+	answer := r.mustCall(t, edge, http.MethodGet, "/v1/roles/"+edgeLiveRole, "")
+	var read struct {
+		Holder string `json:"holder"`
+	}
+	if err := json.Unmarshal([]byte(answer), &read); err != nil {
+		t.Fatalf("decode the role lookup %s: %v", answer, err)
+	}
+	if read.Holder != holder {
+		t.Fatalf("role %s is held by %q, want %s: %s", edgeLiveRole, read.Holder, holder, answer)
 	}
 }
 
@@ -246,6 +296,8 @@ func (r *edgeLiveRig) violations(t *testing.T) [][]string {
 // The edge listener connects as its user, rendered from natsgrant.Edge, starts, registers a
 // session under a broker token of its project, gives it a consumer and relays a send to it on the
 // session's relay subject, whose frame the observer answers on the reply subject the frame names.
+// The session sends to itself and names itself the sender (source_session), as a send made under
+// its token names it.
 // The server refuses the edge nothing: a publish the edge's own user is refused, made last, is the
 // one violation the server logs, which shows the log is read. Without the edge's own inbox prefix
 // in its grant the start ends, naming the prefix, since every reply the listener asks for comes
@@ -375,5 +427,73 @@ func TestARoleHeldAtTheEdgeIsReachedThroughASharedListener(t *testing.T) {
 	}
 	if envelope.PayloadSummary != summary || envelope.Topic != contracts.RoleTopicPrefix+edgeLiveRole {
 		t.Fatalf("the edge session was relayed %q on %s, want %q on %s", envelope.PayloadSummary, envelope.Topic, summary, contracts.RoleTopicPrefix+edgeLiveRole)
+	}
+}
+
+// edgeRoleClaim is the body of a hard claim of edgeLiveRole by session.
+func edgeRoleClaim(session string) string {
+	return `{"session_id":"` + session + `","role":"` + edgeLiveRole + `"}`
+}
+
+// An edge session takes a role another session of the edge holds. A claim that takes a role from
+// another session writes a takeover record on the takeover lane first (publishTakeover), and the
+// edge's grant publishes no takeover lane (natsgrant.Edge), so an edge listener writes none: the
+// claim lands, answered 200, and the role lookup names the claimant. A record the edge had tried to
+// write would be refused by the server, and the claim answered 503 with nothing written
+// (errTakeoverUnrecorded).
+func TestAnEdgeSessionTakesARoleAnotherSessionHolds(t *testing.T) {
+	rig := newEdgeLiveRig(t, edgeLiveGrant(t))
+	edge := rig.startEdge(t)
+	edge.waitHealthy(t)
+	rig.register(t, edge)
+	rig.registerAs(t, edge, edgeLiveOtherSession, rig.otherToken)
+	rig.mustCallAs(t, edge, rig.otherToken, http.MethodPost, "/v1/roles/set", edgeRoleClaim(edgeLiveOtherSession))
+	rig.requireRoleHolder(t, edge, edgeLiveOtherSession)
+
+	status, answer := rig.call(t, edge, http.MethodPost, "/v1/roles/set", edgeRoleClaim(edgeLiveSession))
+	if status != http.StatusOK {
+		t.Fatalf("session %s's claim of role %s from %s answered %d %s, want 200:\n%s", edgeLiveSession, edgeLiveRole, edgeLiveOtherSession, status, answer, edge.Output.String())
+	}
+	rig.requireRoleHolder(t, edge, edgeLiveSession)
+}
+
+// A role message on an edge session's own subject whose role another session holds reaches the
+// edge session. A shared listener's session relay copies such a frame to the role's kept lane and
+// acknowledges it rather than sending it (sessionRelays.takeOverFrame), and the edge's grant
+// publishes no kept role lane (natsgrant.Edge), so an edge listener takes no frame: the frame goes
+// to the session as every frame does. A copy the edge had tried to make would be refused by the
+// server, and the frame given back to it at every delivery, never sent. Dispatch's user stands in
+// for the shared listener that forwarded the message to the session's subject while the session
+// held the role (TestARoleHeldAtTheEdgeIsReachedThroughASharedListener), on the subject and with
+// the role topic that forward carries.
+func TestAnEdgeSessionIsRelayedARoleMessageWhoseRoleAnotherSessionHolds(t *testing.T) {
+	rig := newEdgeLiveRig(t, edgeLiveGrant(t))
+	edge := rig.startEdge(t)
+	edge.waitHealthy(t)
+	frames, err := rig.connect(t, "observer").SubscribeSync(bus.DeliverSubject(edgeLiveSession))
+	if err != nil {
+		t.Fatalf("the observer reads the relay subject: %v", err)
+	}
+	rig.register(t, edge)
+	rig.registerAs(t, edge, edgeLiveOtherSession, rig.otherToken)
+	rig.mustCallAs(t, edge, rig.otherToken, http.MethodPost, "/v1/roles/set", edgeRoleClaim(edgeLiveOtherSession))
+	rig.requireRoleHolder(t, edge, edgeLiveOtherSession)
+
+	const summary = "forwarded while the edge session held the role"
+	item := edgeRoleEnvelope(summary)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := rig.dispatch.PublishStoredAck(ctx, contracts.LegacyAgentSubject(edgeLiveSession), item, item.DedupeKey); err != nil {
+		t.Fatalf("store the role message on session %s's subject: %v", edgeLiveSession, err)
+	}
+	envelope, ok := nextRelayFrame(t, frames, 20*time.Second)
+	if !ok {
+		t.Fatalf("the role message %q did not reach session %s within 20s:\n%s", summary, edgeLiveSession, edge.Output.String())
+	}
+	if envelope.PayloadSummary != summary || envelope.Topic != contracts.RoleTopicPrefix+edgeLiveRole {
+		t.Fatalf("session %s was relayed %q on %s, want %q on %s", edgeLiveSession, envelope.PayloadSummary, envelope.Topic, summary, contracts.RoleTopicPrefix+edgeLiveRole)
+	}
+	if output := edge.Output.String(); strings.Contains(output, "gave a role message back to the server") {
+		t.Fatalf("the edge listener gave the role message back to the server:\n%s", output)
 	}
 }

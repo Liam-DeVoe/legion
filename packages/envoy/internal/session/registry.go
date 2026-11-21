@@ -101,6 +101,13 @@ type SessionEntry struct {
 	// hold a send and a read to the target's projects (cmd/listener's project_scope.go). It is
 	// the registry's own record: no answer of the listener's API carries it.
 	Projects []string `json:"projects"`
+	// RepositoryGap is the gap mark the session is owed: an edge listener withheld a GitHub
+	// event of the session while no fresh repository answer stood, and no frame carrying the mark
+	// has been sent since (cmd/listener's sessionRelays). It lives on the entry so the next
+	// listener to relay the session, after a move or a restart, sends the mark; the relay that
+	// sends it clears it (SetRepositoryGap), and a registration carries it over. It is the
+	// registry's own record: no answer of the listener's API carries it.
+	RepositoryGap bool `json:"repository_gap,omitempty"`
 }
 
 // TmuxPlace is a session's pane and the window and tmux session holding it, as the listener's
@@ -802,6 +809,60 @@ func (r *SessionRegistry) PutWithin(ctx context.Context, sessionID string, entry
 	r.cache.Put(r.watcher, epoch, sessionID, &cachedSession{entry: entry, expiresAt: r.expiryFor(time.Time{}, entry.UpdatedAt)}, revision)
 	r.unlockAndNotify()
 	return nil
+}
+
+// setRepositoryGapAttempts bounds the conditional writes one SetRepositoryGap sends: the first,
+// and two more over an entry a registration wrote under it.
+const setRepositoryGapAttempts = 3
+
+// SetRepositoryGap writes owed as sessionID's RepositoryGap and nothing else: the entry is read
+// from the bucket and written back at the revision read (an update, never a create), so a
+// registration or another write that lands between the two is never overwritten, and the entry
+// is read again and the mark written over it, up to setRepositoryGapAttempts writes. UpdatedAt is
+// kept as read: the mark says nothing of whether the session answers. An entry the bucket does
+// not hold, or one that already carries owed, is left as it is and is no error. Each bucket call
+// waits no longer than ctx (bus.Bounded).
+func (r *SessionRegistry) SetRepositoryGap(ctx context.Context, sessionID string, owed bool) error {
+	kv, epoch := r.watcher.Handle()
+	for range setRepositoryGapAttempts {
+		got, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.Get(sessionID) })
+		if !answered {
+			return fmt.Errorf("read session %s to mark its repository gap: %w", sessionID, err)
+		}
+		if errors.Is(err, nats.ErrKeyNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		var entry SessionEntry
+		if err := json.Unmarshal(got.Value(), &entry); err != nil {
+			return fmt.Errorf("decode session %s to mark its repository gap: %w", sessionID, err)
+		}
+		if entry.RepositoryGap == owed {
+			return nil
+		}
+		entry.RepositoryGap = owed
+		buf, err := json.Marshal(entry)
+		if err != nil {
+			return err
+		}
+		revision, answered, err := bus.Bounded(ctx, func() (uint64, error) { return kv.Update(sessionID, buf, got.Revision()) })
+		if !answered {
+			return fmt.Errorf("mark session %s's repository gap: %w", sessionID, err)
+		}
+		if errors.Is(err, nats.ErrKeyExists) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		r.mu.Lock()
+		r.cache.Put(r.watcher, epoch, sessionID, &cachedSession{entry: entry, expiresAt: r.expiryFor(time.Time{}, entry.UpdatedAt)}, revision)
+		r.unlockAndNotify()
+		return nil
+	}
+	return fmt.Errorf("mark session %s's repository gap: the entry was written under each of %d conditional writes", sessionID, setRepositoryGapAttempts)
 }
 
 // Get returns the entry sessionID's cached record carries, or nats.ErrKeyNotFound when the cache

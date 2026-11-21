@@ -415,6 +415,29 @@ func TestEdgeRefusesToStartBesideSharedCredentials(t *testing.T) {
 	}
 }
 
+// An edge listener refuses to start beside ENVOY_DISPATCH_PRINCIPAL, in either of its shapes,
+// naming the variable: Dispatch sends its role-marked messages through a shared listener, and no
+// session of the edge sends as Dispatch, so the edge names no principal whose send may carry a
+// role mark. A value of white space alone names no principal, and the edge starts.
+func TestAnEdgeRefusesToStartBesideDispatchsPrincipal(t *testing.T) {
+	projects := edgeTestProjects(t)
+	broker := []string{
+		"ENVOY_AGENT_SECRETS_URL=http://broker.example",
+		"ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE=/var/run/secrets/broker/token",
+		"ENVOY_PUBLIC_URL=https://edge.example",
+	}
+	for _, principal := range []string{"system:serviceaccount:dispatch:example-dispatch", "dispatch@example.iam.gserviceaccount.com"} {
+		env := append(slices.Clone(broker), "ENVOY_DISPATCH_PRINCIPAL="+principal)
+		err := validateEdgeMode(projects, env)
+		if err == nil || !strings.Contains(err.Error(), "ENVOY_DISPATCH_PRINCIPAL") || !strings.Contains(err.Error(), "ENVOY_EDGE_PROJECTS") {
+			t.Errorf("an edge listener of %v with ENVOY_DISPATCH_PRINCIPAL=%s: %v, want a refusal naming ENVOY_DISPATCH_PRINCIPAL and ENVOY_EDGE_PROJECTS", projects, principal, err)
+		}
+	}
+	if err := validateEdgeMode(projects, append(slices.Clone(broker), "ENVOY_DISPATCH_PRINCIPAL= ")); err != nil {
+		t.Fatalf("an edge listener whose ENVOY_DISPATCH_PRINCIPAL is white space alone: %v, want it to start", err)
+	}
+}
+
 // A registration the edge refuses names exactly the topics it refuses, as the
 // registration carried them, so the client drops those and registers the rest again; the allowed
 // topic beside them is named nowhere, and nothing of the registration is stored.
@@ -855,9 +878,12 @@ func TestAnEdgeRoleReadNamesNoPlaceOfAHolderOutsideItsProjects(t *testing.T) {
 // A session that holds a role of another project when it registers at the edge, which another
 // listener claimed for it, loses that role at the registration: the claim is released rather than
 // renewed, and the answer's warnings name it, as a claim of that role at the edge is refused. A
-// message on that role's lane then reaches no holder, so the edge relays none of it, and the
-// session's role of the token's project stays and is renewed. Controls: with edge mode off, and
-// with the edge's hold of the renewal off, the other project's claim is renewed and the row fails.
+// message on that role's lane after the registration then reaches no holder, and the session's
+// role of the token's project stays and is renewed. A role message the lane forwarded to the
+// session's agent subject before the registration, or after a later claim another writer makes,
+// is not this row's: the relay's check of each frame's topic holds those frames. Controls: with
+// edge mode off, and with the edge's hold of the renewal off, the other project's claim is renewed
+// and the row fails.
 func TestAnEdgeReleasesTheRoleClaimsOfOtherProjects(t *testing.T) {
 	rig := newEdgeRig(t)
 	const moved, privIssues = "ses_edge_role_moved", "notifications.dispatch.issue.PRIV.>"
@@ -911,6 +937,67 @@ func TestAnEdgeReleasesTheRoleClaimsOfOtherProjects(t *testing.T) {
 	frames := standIn.collect(t, 1, 10*time.Second)
 	if frames[0].item.EventID != sentinel.EventID {
 		t.Fatalf("the moved session's first frame is %s on %s, want PRIV's event: a message of INFRA's role reached it", frames[0].item.EventID, frames[0].item.Topic)
+	}
+}
+
+// A registration at the edge releases a claim of another project's role also while the role claim
+// copy is refilling and names no role (store.Registry.RolesHeldBy refuses): the role's lane topic,
+// which the hold took out of the session's row, names the role then. Control: with the lane topics
+// the hold dropped left out of the renewal's weighing, the claim is neither released nor renewed,
+// and the row fails.
+func TestAnEdgeReleasesAnotherProjectsClaimWhileTheClaimViewRefills(t *testing.T) {
+	rig := newEdgeRig(t)
+	const moved, infraRole = "ses_edge_role_refill", "legion-infra-infra-7-reviewer"
+	rig.placeElsewhere(t, moved)
+	if _, err := rig.deps.registry.SetRole(moved, "shared-listener", infraRole, false); err != nil {
+		t.Fatalf("claim %s for %s on the other listener: %v", infraRole, moved, err)
+	}
+	testwait.Eventually(t, "the role claim copy to name the claim", func() bool {
+		held, err := rig.deps.registry.RolesHeldBy(moved)
+		return err == nil && len(held) == 1
+	})
+	refilled := refuseRoleClaimView(t, rig.deps.registry)
+	defer refilled()
+	if _, err := rig.deps.registry.RolesHeldBy(moved); err == nil {
+		t.Fatal("UNKNOWN: the role claim copy still answers, so the registration would read the claim from it")
+	}
+
+	answer := rig.subscribe(t, rig.personToken(moved, "PRIV"), moved)
+	requireStatus(t, answer, http.StatusOK, "the moved session's registration at the edge while the claim copy refills")
+	var registered listenerwire.SubscribeResponse
+	if err := json.Unmarshal(answer.Body.Bytes(), &registered); err != nil {
+		t.Fatalf("decode the registration's answer %s: %v", answer.Body.String(), err)
+	}
+	if !slices.ContainsFunc(registered.Warnings, func(warning string) bool { return strings.HasPrefix(warning, "role "+infraRole+" was released") }) {
+		t.Errorf("the registration's warnings %q name no release of %s", registered.Warnings, infraRole)
+	}
+	if claim, err := rig.deps.registry.RoleClaim(t.Context(), infraRole); err != nil || (claim.Revision != 0 && claim.HolderSessionID == moved) {
+		t.Fatalf("after the registration at the edge %s's claim reads %+v (%v): %s still holds a role of INFRA", infraRole, claim, err, moved)
+	}
+}
+
+// A claim of another project's role that the edge cannot release refuses the registration with
+// the retryable 503, and nothing of the registration is stored: the claim stands, and nothing else
+// frees it while the session lives. Here the claim's record cannot be read, so the release cannot
+// tell that it is not the session's. Control: with edge mode off the registration is taken.
+func TestAnEdgeRegistrationWhoseRoleReleaseFailsIsRefused(t *testing.T) {
+	rig := newEdgeRig(t)
+	const moved, infraRole = "ses_edge_release_fails", "legion-infra-infra-6-reviewer"
+	rig.placeElsewhereFollowing(t, moved, []string{}, contracts.RoleTopicPrefix+infraRole)
+	// JSON that is not a claim is a record no read can decode (store.ErrMalformedRoleClaim); a
+	// string that is not JSON would read as an earlier build's bare holder id.
+	if _, err := registryRoleKV(t, rig.deps.registry).Put(infraRole, []byte(`{"holder_session_id":7}`)); err != nil {
+		t.Fatalf("store an unreadable claim of %s: %v", infraRole, err)
+	}
+	before := storedEdgeSessionEntry(t, rig, moved)
+
+	answer := rig.subscribe(t, rig.personToken(moved, "PRIV"), moved)
+	if answer.Code != http.StatusServiceUnavailable || answer.Header().Get("Retry-After") == "" {
+		t.Fatalf("the registration whose release of %s fails: status %d, Retry-After %q (%s), want the retryable 503",
+			infraRole, answer.Code, answer.Header().Get("Retry-After"), strings.TrimSpace(answer.Body.String()))
+	}
+	if after := storedEdgeSessionEntry(t, rig, moved); after.MachineID != before.MachineID || after.UpdatedAt != before.UpdatedAt {
+		t.Fatalf("the refused registration wrote %s's entry: %+v, want it left at %+v", moved, after, before)
 	}
 }
 

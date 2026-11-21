@@ -1,12 +1,14 @@
 kind: Added
 body: |-
   The listener has an edge mode. `ENVOY_EDGE_PROJECTS` names the projects an edge listener
-  serves (project keys, separated by commas or white space). An edge listener admits a broker
+  serves (project keys, separated by commas or white space); empty is no edge, and a set value
+  that names no project, such as a lone comma, refuses the start. An edge listener admits a broker
   token alone, and only one whose projects it all serves, of project scope `named` or `person`
-  (`EdgeAdmits`); it refuses to start beside `ENVOY_API_TOKEN`, any `ENVOY_OIDC_*` setting, the
-  webhooks or a webhook secret, or without the broker-token settings. It holds every request to
-  the token's projects: a registration follows the session's own agent subject, the topics of
-  those projects, and the GitHub topics of one repository each that the secrets broker's
+  (`EdgeAdmits`); it refuses to start beside `ENVOY_API_TOKEN`, any `ENVOY_OIDC_*` setting,
+  `ENVOY_DISPATCH_PRINCIPAL`, the webhooks or a webhook secret, or without the broker-token
+  settings. It holds every request to the token's projects: a registration follows the session's
+  own agent subject, the topics of those projects, and the GitHub topics of one repository each
+  that the secrets broker's
   `GET /v1/project-repositories` answer names for them, read with the listener's own account at
   each such registration and every 30 seconds, each project's read on its own, compared ignoring
   case. The topics the session's interest record already holds are held to the same rule at
@@ -19,16 +21,19 @@ body: |-
   `envoy_edge_github_withheld_total{reason}`, the session's interest in a repository that left
   the answer is removed, and while no answer is fresh the next frame carries `Envoy-Gap: true`
   with `Envoy-Gap-Reason: repository_withheld`, which a client tells from the stream's retention
-  gap, whose mark carries no reason; the mark is kept for the session, across its relay runs on
-  the listener, until a frame carrying it is published. A session at the edge publishes only a
+  gap, whose mark carries no reason; the mark is kept for the session, across its relay runs and
+  on its `envoy_sessions` entry for the next listener to relay it, until a frame carrying it is
+  published. A session at the edge publishes only a
   role subject of its project, sends and publishes only as itself (`source` `agent` and
   `source_session` the token's session, else `403 sender_not_session`), claims and reads only
   that project's roles, sends only to sessions whose token listed it, and reads only its
   sessions, roles, topics and Legion agents; a role read names a holder of no project of its
   token without the holder's directory, machine, host, title, client instance and capabilities.
-  A registration at the edge releases, rather than renews, each claim the session holds of a
-  role of another project, named in the answer's `warnings`, and a claimant there is handed the
-  kept messages of its projects' roles alone. Every other listener serves as before.
+  A registration at the edge first releases each claim the session holds of a role of another
+  project, named in the answer's `warnings`, and is refused with a retryable 503 when a release
+  fails; it renews only its projects' roles, and a claimant there is handed the kept messages of
+  its projects' roles alone. A heartbeat refused 503 for want of a repository answer still renews
+  the session's entry, also when the broker never answers. Every other listener serves as before.
 
   Every listener that verifies broker tokens records the registering token's projects on the
   session's `envoy_sessions` entry (`projects`, `[]` for none). No API answer carries it.

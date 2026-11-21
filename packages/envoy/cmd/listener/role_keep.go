@@ -660,9 +660,9 @@ func heldKeptRoleCopy(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 // roleSend.noHolder), which is the one give-up a sender can address: nothing publishes a raw role
 // message it would redeliver, so the role lane always keeps.
 //
-// An edge listener keeps nothing (cfg.edge, errEdgeKeepsNothing): its grant publishes no kept role
-// lane (natsgrant.Edge), so its give-up is the one a keep that kept nothing leaves, the publish
-// route's 404 with its refusal's exception.
+// An edge listener keeps nothing (cfg.edge) and answers errEdgeKeepsNothing: its grant publishes
+// no kept role lane (natsgrant.Edge), so its give-up is the one a keep that kept nothing leaves,
+// the publish route's 404 with its refusal's exception.
 func keepForNextHolder(cfg listenerDeliveryHandlerConfig, role string, item contracts.Envelope) (keptRoleCopy, error) {
 	if !roles.ValidClaimKey(role) {
 		return keptRoleCopy{}, errRoleNotKeepable
@@ -678,13 +678,13 @@ func keepForNextHolder(cfg listenerDeliveryHandlerConfig, role string, item cont
 	return kept, nil
 }
 
-// errRoleNotKeepable is keepForNextHolder's answer for a role token no claim can name (roles.Valid),
-// which it keeps nothing for.
-var errRoleNotKeepable = errors.New("no claim can name this role token, so nothing is kept for it")
+// errRoleNotKeepable is keepForNextHolder's answer for a role no claim can be keyed by
+// (roles.ValidClaimKey), which it keeps nothing for.
+var errRoleNotKeepable = errors.New("no claim can be keyed by this role, so nothing is kept for it")
 
-// errEdgeKeepsNothing is keepForNextHolder's answer on an edge listener (cfg.edge), whose grant
-// publishes no kept role lane (natsgrant.Edge).
-var errEdgeKeepsNothing = errors.New("an edge listener keeps no role message for a role's next holder")
+// errEdgeKeepsNothing is keepForNextHolder's answer at an edge listener, which keeps nothing: its
+// grant publishes no kept role lane (natsgrant.Edge).
+var errEdgeKeepsNothing = errors.New("an edge listener keeps no role message: its grant publishes no kept role lane")
 
 // keepRoleLaneMessage keeps the role lane's copy of a message it found no live holder for, or
 // whose holder it could not read, and reports whether it was kept. reason is why, as the lane's

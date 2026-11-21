@@ -166,13 +166,14 @@ func TestTheEdgeGrantsConsumerCallsReachPastItsPublishList(t *testing.T) {
 	})
 }
 
-// One edge machine can neither publish nor read another machine's relay receipts
-// (natsgrant.EdgeRelayReplyPrefix): on the hub's image, edge-a's publish on edge-b's receipt
-// family and its subscription to that family are each refused naming the subject. The control is
-// in the same run: each machine publishes on its own family and reads what it published, edge-b
-// first, so a forged receipt of edge-a's that the server let through would be the first edge-b
-// reads.
-func TestAnEdgeMachineCannotReadOrPublishAnotherMachinesReceipts(t *testing.T) {
+// One edge machine answers another machine's relay frame and reads only its own receipts
+// (natsgrant.EdgeRelayReplyPrefix), on the hub's image: edge-a publishes a frame on a session's
+// relay subject with a reply subject of its own family, as the machine holding the session's
+// consumer does; edge-b, serving the session's relay socket, reads the frame and answers it, and
+// edge-a receives the answer. edge-b's subscription to edge-a's receipt family is refused naming
+// the family, and edge-b reads its own family's receipt, the control that a subscription edge-b
+// holds is delivered.
+func TestAnEdgeMachineAnswersAnotherMachinesFrameAndReadsOnlyItsOwnReceipts(t *testing.T) {
 	aSeed, aKey := testnats.User(t)
 	bSeed, bKey := testnats.User(t)
 	a, b := edge(t, "edge-a", "PRIV"), edge(t, "edge-b", "PRIV")
@@ -180,37 +181,110 @@ func TestAnEdgeMachineCannotReadOrPublishAnotherMachinesReceipts(t *testing.T) {
 		testnats.StaticUser{NKey: aKey, Publish: a.Publish, Subscribe: a.Subscribe},
 		testnats.StaticUser{NKey: bKey, Publish: b.Publish, Subscribe: b.Subscribe},
 	), []string{"-js"}, false)
-	aConn, aErrs := grantedConnection(t, uri, aSeed)
-	bConn, _ := grantedConnection(t, uri, bSeed)
+	aConn, _ := grantedConnection(t, uri, aSeed)
+	bConn, bErrs := grantedConnection(t, uri, bSeed)
 	familyOf := func(machine string) string { return natsgrant.EdgeRelayReplyPrefix(machine) + ".>" }
-	receiptOf := func(machine string) string { return natsgrant.EdgeRelayReplyPrefix(machine) + ".t1" }
-	ofB, err := bConn.SubscribeSync(familyOf("edge-b"))
+	receiptOf := func(machine string) string { return natsgrant.EdgeRelayReplyPrefix(machine) + ".n1.t1" }
+	const session = "notifications.envoy.deliver.ses_s"
+	receipts, err := aConn.SubscribeSync(familyOf("edge-a"))
 	require.NoError(t, err)
-	ofA, err := aConn.SubscribeSync(familyOf("edge-a"))
+	ownOfB, err := bConn.SubscribeSync(familyOf("edge-b"))
+	require.NoError(t, err)
+	frames, err := bConn.SubscribeSync(session)
+	require.NoError(t, err)
+	require.NoError(t, aConn.Flush())
+	require.NoError(t, bConn.Flush())
+
+	require.NoError(t, aConn.PublishRequest(session, receiptOf("edge-a"), []byte("a frame")))
+	require.NoError(t, aConn.Flush())
+	frame, err := frames.NextMsg(10 * time.Second)
+	require.NoError(t, err, "edge-b did not read the frame on %s", session)
+	require.Equal(t, receiptOf("edge-a"), frame.Reply)
+	require.NoError(t, frame.Respond([]byte("done")))
+	require.NoError(t, bConn.Flush())
+	answer, err := receipts.NextMsg(10 * time.Second)
+	require.NoError(t, err, "edge-a did not receive edge-b's answer on %s", receiptOf("edge-a"))
+	require.Equal(t, "done", string(answer.Data))
+
+	_, err = bConn.SubscribeSync(familyOf("edge-a"))
 	require.NoError(t, err)
 	require.NoError(t, bConn.Flush())
-	require.NoError(t, aConn.Flush())
+	refusedNaming(t, bErrs, `Subscription to "`+familyOf("edge-a")+`"`)
+	require.NoError(t, bConn.Publish(receiptOf("edge-b"), []byte("edge-b's own")))
+	require.NoError(t, bConn.Flush())
+	own, err := ownOfB.NextMsg(10 * time.Second)
+	require.NoError(t, err, "edge-b did not read its own receipt")
+	require.Equal(t, "edge-b's own", string(own.Data))
+}
 
-	require.NoError(t, aConn.Publish(receiptOf("edge-b"), []byte("forged by edge-a")))
-	require.NoError(t, aConn.Flush())
-	refusedNaming(t, aErrs, `Publish to "`+receiptOf("edge-b")+`"`)
-	_, err = aConn.SubscribeSync(familyOf("edge-b"))
+// The update of a bucket's stream can change its subjects and set a republish, so the edge holds
+// no bucket stream's create or update. On the hub's image:
+//   - the edge's update of the interest bucket's stream with a republish to
+//     $JS.API.STREAM.DELETE.SCRATCH_VICTIM is refused naming the update, and the edge's write of
+//     the key the republish would copy leaves SCRATCH_VICTIM as it was;
+//   - in the same run, the account's administrator sets the same republish on another bucket's
+//     stream to $JS.API.STREAM.DELETE.SCRATCH_VICTIM_ADMIN and writes the key: a client
+//     subscribed to that subject receives the republished copy, which shows the republish fired,
+//     and the stream it names is still there, so the JetStream API took no action on it.
+func TestTheEdgeCannotSetABucketToRepublishIntoTheJetStreamAPI(t *testing.T) {
+	edgeSeed, edgeKey := testnats.User(t)
+	adminSeed, adminKey := testnats.User(t)
+	edge := edge(t, "m", "PRIV")
+	_, uri := testnats.StartImageConfig(t, testnats.HubImage, testnats.GrantedUsersConfig(
+		testnats.StaticUser{NKey: edgeKey, Publish: edge.Publish, Subscribe: edge.Subscribe},
+		testnats.StaticUser{NKey: adminKey, Publish: []string{">"}, Subscribe: []string{">"}},
+	), []string{"-js"}, false)
+	adminConn, _ := grantedConnection(t, uri, adminSeed)
+	admin, err := adminConn.JetStream()
 	require.NoError(t, err)
-	require.NoError(t, aConn.Flush())
-	refusedNaming(t, aErrs, `Subscription to "`+familyOf("edge-b")+`"`)
-
-	for _, own := range []struct {
-		conn     *natsgo.Conn
-		sub      *natsgo.Subscription
-		machine  string
-		received string
-	}{{bConn, ofB, "edge-b", "from edge-b"}, {aConn, ofA, "edge-a", "from edge-a"}} {
-		require.NoError(t, own.conn.Publish(receiptOf(own.machine), []byte(own.received)))
-		require.NoError(t, own.conn.Flush())
-		msg, err := own.sub.NextMsg(10 * time.Second)
-		require.NoError(t, err, "%s did not read its own receipt", own.machine)
-		require.Equal(t, own.received, string(msg.Data), "%s read a receipt it did not publish first", own.machine)
+	for _, name := range []string{"SCRATCH_VICTIM", "SCRATCH_VICTIM_ADMIN"} {
+		_, err := admin.AddStream(&natsgo.StreamConfig{Name: name, Subjects: []string{"scratch." + strings.ToLower(name) + ".>"}, Storage: natsgo.MemoryStorage})
+		require.NoError(t, err)
 	}
+	for _, bucket := range []string{bus.InterestBucket, bus.LegionAgentBucket} {
+		_, err := admin.CreateKeyValue(&natsgo.KeyValueConfig{Bucket: bucket, Storage: natsgo.MemoryStorage})
+		require.NoError(t, err)
+	}
+	present := func(name string) bool {
+		_, err := admin.StreamInfo(name)
+		require.True(t, err == nil || errors.Is(err, natsgo.ErrStreamNotFound), "read %s: %v", name, err)
+		return err == nil
+	}
+	republishInto := func(js natsgo.JetStreamContext, bucket, victim string) error {
+		info, err := js.StreamInfo("KV_" + bucket)
+		if err != nil {
+			return err
+		}
+		config := info.Config
+		config.RePublish = &natsgo.RePublish{Source: "$KV." + bucket + ".rp", Destination: "$JS.API.STREAM.DELETE." + victim}
+		_, err = js.UpdateStream(&config)
+		return err
+	}
+	edgeConn, edgeErrs := grantedConnection(t, uri, edgeSeed, natsgo.CustomInboxPrefix(natsgrant.EdgeInboxPrefix("m")))
+	edgeJS, err := edgeConn.JetStream(natsgo.MaxWait(3 * time.Second))
+	require.NoError(t, err)
+
+	require.Error(t, republishInto(edgeJS, bus.InterestBucket, "SCRATCH_VICTIM"), "the edge set a republish on KV_%s", bus.InterestBucket)
+	refusedNaming(t, edgeErrs, `Publish to "$JS.API.STREAM.UPDATE.KV_`+bus.InterestBucket+`"`)
+	interests, err := edgeJS.KeyValue(bus.InterestBucket)
+	require.NoError(t, err)
+	_, err = interests.Put("rp", []byte("written by the edge"))
+	require.NoError(t, err, "the edge writes a key of the interest bucket")
+
+	const adminDelete = "$JS.API.STREAM.DELETE.SCRATCH_VICTIM_ADMIN"
+	republished, err := adminConn.SubscribeSync(adminDelete)
+	require.NoError(t, err)
+	require.NoError(t, adminConn.Flush())
+	require.NoError(t, republishInto(admin, bus.LegionAgentBucket, "SCRATCH_VICTIM_ADMIN"), "the administrator sets a republish on KV_%s", bus.LegionAgentBucket)
+	agents, err := admin.KeyValue(bus.LegionAgentBucket)
+	require.NoError(t, err)
+	_, err = agents.Put("rp", []byte("written by the administrator"))
+	require.NoError(t, err)
+	copied, err := republished.NextMsg(10 * time.Second)
+	require.NoError(t, err, "the administrator's republish to %s reached no subscriber within 10s, so the row cannot see it fire", adminDelete)
+	require.Equal(t, "written by the administrator", string(copied.Data))
+	require.True(t, present("SCRATCH_VICTIM_ADMIN"), "the administrator's republish into %s deleted the stream", adminDelete)
+	require.True(t, present("SCRATCH_VICTIM"), "the edge's write deleted SCRATCH_VICTIM")
 }
 
 // accountUserEntry is one nkey user of an account in a server configuration, held to its allow
@@ -246,15 +320,18 @@ func twoAccountsConfig(a, b []testnats.StaticUser) string {
 // its account, over a message the edge stored on its own agent subject:
 //   - a deliver subject no client subscribes gives the consumer no interest: it is not push bound
 //     and delivers nothing, the JetStream API's import and a stream's capture being no interest;
-//   - with a client also subscribed to it, the consumer delivers, and still a stream delete,
-//     purge or update and a bucket's stream delete leave the stream as it was, and a $KV write
-//     leaves no entry: the API does not act on a delivery;
-//   - with a client subscribed to a subject another stream of the account captures, that stream
-//     stores the edge's message: the one write this route has.
+//   - with a client also subscribed to it, the consumer delivers, and the client receives the
+//     delivery under the message's stream subject, not the deliver subject. So the JetStream API
+//     takes no action: a stream delete, purge or update and a bucket's stream delete leave the
+//     stream as it was;
+//   - a stream whose subjects take the deliver subject stores the delivery as a message of its
+//     own: another scratch stream, and a bucket's stream, whose key the delivery leaves unwritten
+//     while the stream counts one message more. That is the one write this route has.
 //
 // Controls in the same run: a subscribed subject receives the delivery; the edge's direct request
 // of a stream delete is refused and the stream stays; the account's administrator deleting a
-// stream is seen as deleted; and a stream of the same name in another account stays.
+// stream is seen as deleted; and a stream of the same name in another account stays. A key the
+// row cannot read reads as unread, never as absent (keyState).
 func TestTheEdgeGrantsPushConsumerReachesItsAccountsJetStreamAPI(t *testing.T) {
 	edgeSeed, edgeKey := testnats.User(t)
 	sharedSeed, sharedKey := testnats.User(t)
@@ -315,6 +392,18 @@ func TestTheEdgeGrantsPushConsumerReachesItsAccountsJetStreamAPI(t *testing.T) {
 		}
 		return fmt.Sprintf("kept, %d messages, max_msgs %d", info.State.Msgs, info.Config.MaxMsgs)
 	}
+	// keyState is a bucket key's state: its entry, "no entry" when the bucket answers that it holds
+	// none, and the read's error otherwise, so a key nothing could read never reads as absent.
+	keyState := func(bucket natsgo.KeyValue, key string) string {
+		entry, err := bucket.Get(key)
+		switch {
+		case errors.Is(err, natsgo.ErrKeyNotFound):
+			return "no entry"
+		case err != nil:
+			return "unread: " + err.Error()
+		}
+		return fmt.Sprintf("entry %q", entry.Value())
+	}
 	var received atomic.Int64
 	const kept, keptEmpty = "kept, 1 messages, max_msgs -1", "kept, 0 messages, max_msgs -1"
 	edgeConn, edgeErrs := grantedConnection(t, uri, edgeSeed, natsgo.CustomInboxPrefix(natsgrant.EdgeInboxPrefix("m")))
@@ -335,19 +424,25 @@ func TestTheEdgeGrantsPushConsumerReachesItsAccountsJetStreamAPI(t *testing.T) {
 		{target: "$JS.API.STREAM.UPDATE.SCRATCH_UPDATE", payload: string(updateBody), subscribed: true, state: func() string { return streamState("SCRATCH_UPDATE") }, want: kept},
 		{target: "$JS.API.STREAM.DELETE.KV_scratch_kv_delete", subscribed: true, state: func() string { return streamState("KV_scratch_kv_delete") }, want: keptEmpty},
 		{target: "$KV.scratch_kv_write.k1", payload: "written by the edge", subscribed: true, state: func() string {
-			if entry, err := written.Get("k1"); err == nil {
-				return fmt.Sprintf("entry %q", entry.Value())
-			}
-			return "no entry"
-		}, want: "no entry"},
+			return keyState(written, "k1") + "; " + streamState("KV_scratch_kv_write")
+		}, want: "no entry; kept, 1 messages, max_msgs -1"},
 		{target: "scratch.scratch_capture_sub.m", payload: "captured", subscribed: true, state: func() string { return streamState("SCRATCH_CAPTURE_SUB") }, want: "kept, 2 messages, max_msgs -1"},
 		{target: "scratch.subscribed", payload: "to a subscriber", subscribed: true, state: func() string { return fmt.Sprintf("%d received", received.Load()) }, want: "1 received"},
 	} {
 		t.Run(delivery.target, func(t *testing.T) {
+			// subjects are the subjects the client subscribed to the deliver subject receives the
+			// delivery under: the message's stream subject, never the deliver subject, which is why
+			// an internal subscriber of the deliver subject, the JetStream API's import among them,
+			// reads no request of its own in it.
+			subjects := make(chan string, 1)
 			if delivery.subscribed {
-				sub, err := adminConn.Subscribe(delivery.target, func(*natsgo.Msg) {
+				sub, err := adminConn.Subscribe(delivery.target, func(msg *natsgo.Msg) {
 					if delivery.target == "scratch.subscribed" {
 						received.Add(1)
+					}
+					select {
+					case subjects <- msg.Subject:
+					default:
 					}
 				})
 				require.NoError(t, err)
@@ -375,10 +470,17 @@ func TestTheEdgeGrantsPushConsumerReachesItsAccountsJetStreamAPI(t *testing.T) {
 				delivered = err == nil && info.Delivered.Consumer >= 1
 			}
 			require.True(t, delivered, "the consumer on %s delivered nothing within 10s, though a client subscribes it", delivery.target)
-			// A change lands within the bound (the capture case is seen changed inside it); one
-			// judged unchanged has had the whole bound to land.
+			select {
+			case subject := <-subjects:
+				require.Equal(t, own, subject, "the delivery on %s came under %s, not its stream subject", delivery.target, subject)
+			case <-time.After(10 * time.Second):
+				t.Fatalf("the client subscribed to %s received no delivery within 10s", delivery.target)
+			}
+			// The subject above is why an API path takes no action; no clock decides it. A case
+			// whose stream stores the delivery waits for that store, which lands just behind the
+			// client's copy, and every other case reads its state once.
 			after := delivery.state()
-			for deadline := time.Now().Add(2 * time.Second); after == before && time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+			for deadline := time.Now().Add(10 * time.Second); after == before && before != delivery.want && time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
 				after = delivery.state()
 			}
 			require.Equal(t, delivery.want, after, "%s after the edge's delivery (before: %s)", delivery.target, before)
@@ -454,14 +556,14 @@ func TestTheEdgeCannotPublishADispatchEvent(t *testing.T) {
 }
 
 // edgeOwnLanes is one subject of each lane natsgrant.Edge("m", ["PRIV"]) publishes among the
-// notification topics: the agent subjects, project PRIV's role subjects, the relay subjects,
-// machine m's relay receipts, the resume lane, and the exception lanes of the agent subjects and of
-// PRIV's role subjects.
+// notification topics: the agent subjects, project PRIV's role subjects, the relay subjects, the
+// relay receipts - another machine's here, which the listener serving a relay socket answers on -,
+// the resume lane, and the exception lanes of the agent subjects and of PRIV's role subjects.
 var edgeOwnLanes = []string{
 	"notifications.agent.x",
 	"notifications.role.PRIV.x",
 	"notifications.envoy.deliver.x",
-	"notifications.envoy.relayreply.m.x",
+	"notifications.envoy.relayreply.other.x",
 	"notifications.envoy.resume.x",
 	"notifications.envoy.exceptions.notifications.agent.x",
 	"notifications.envoy.exceptions.notifications.role.PRIV.x",
@@ -469,8 +571,7 @@ var edgeOwnLanes = []string{
 
 // edgeRefusedLanes are notification topics the edge's grant does not publish: the kept role lane
 // and its drain cursors, a role of another project, a role in the form that names no project, the
-// Legion wake topic, a Slack topic, the exception lane of a GitHub topic, and another machine's
-// relay receipts.
+// Legion wake topic, a Slack topic, and the exception lane of a GitHub topic.
 var edgeRefusedLanes = []string{
 	"notifications.envoy.kept.role.x",
 	"notifications.envoy.kept.cursor.x",
@@ -479,7 +580,6 @@ var edgeRefusedLanes = []string{
 	"notifications.legion.wake",
 	"notifications.slack.x",
 	"notifications.envoy.exceptions.notifications.github.acme.pub.pr.1.opened",
-	"notifications.envoy.relayreply.other.x",
 }
 
 // publishOutcome publishes once on each of subjects, in order, as the nkey user whose seed is

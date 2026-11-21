@@ -150,7 +150,7 @@ func (r *Registry) UpsertWithin(ctx context.Context, item Interest, topics []str
 		if err != nil {
 			return Interest{}, err
 		}
-		row, stored, err := r.writeRowAt(ctx, cur, revision, getErr, item, upsertPlan(cur, getErr, item, roles, topics))
+		row, stored, err := r.writeRowAt(ctx, cur, revision, getErr, item, InterestPlan{Roles: roles, Topics: topics})
 		if err != nil {
 			return Interest{}, err
 		}
@@ -371,19 +371,6 @@ func (r *Registry) putInterestAt(ctx context.Context, sessionID string, value []
 	return written, epoch, true, nil
 }
 
-// upsertPlan is the complete plan a merging write (UpsertWithin) stores over cur, the row a read
-// answered with getErr: topics merged into the row's own topics (MergedTopics), or into item's
-// where the bucket holds no row or one this build cannot decode, under roles. A planned write's
-// plan is complete already (PlanInterest), so both writes store their plan's topics as they stand
-// (mergeForUpsert). A read that failed otherwise refuses the write there, whatever this merged.
-func upsertPlan(cur Interest, getErr error, item Interest, roles, topics []string) InterestPlan {
-	base := item.Topics
-	if getErr == nil {
-		base = cur.Topics
-	}
-	return InterestPlan{Roles: roles, Topics: MergedTopics(item.SessionID, roles, base, topics)}
-}
-
 // mergeForUpsert computes the Interest to persist by reconciling the requested
 // item/topics with the current cached/durable state returned by r.Get.
 //
@@ -401,16 +388,18 @@ func upsertPlan(cur Interest, getErr error, item Interest, roles, topics []strin
 // not the transient case, its topics are ones this build never routed (the cache holds no record
 // it cannot decode), and the session's own subscribe is the authority on its record.
 //
-// The row's topics are plan's, which is the complete set: the stored row's topics merged with
-// the ones the write adds (upsertPlan for a merging write, PlanInterest for a planned one), with
-// no topic reaching a private stream subject that is not the session's own, sorted
-// (MergedTopics), so a row stored before the listener refused such a topic is cleaned at the
-// session's next registration. plan's roles are the ones the session holds (controllerLaneRoles),
-// which decide the one private subject a session registers beside its own agent subject: the
-// controller notice lane of the project whose controller role it holds. The listener's
-// registration route filters the session's consumer on the same plan, so the row is the filter.
-// The write is fenced on the revision cur was read at, the one the plan merged, so a row another
-// writer stored since is never overwritten by a plan made from the row before it.
+// The merged row keeps no topic reaching a private stream subject that is not the session's own,
+// and holds them sorted (MergedTopics): a row stored before the listener refused such a topic is
+// cleaned at the session's next registration. plan is the topics to merge in and the roles the
+// session holds (controllerLaneRoles), which decide the one private subject a session registers
+// beside its own agent subject: the controller notice lane of the project whose controller role
+// it holds. The topics are merged into the row the write read, never into the plan's copy of
+// it, so a topic the bucket's row holds and a stale cache lacked is kept. The listener's
+// registration route filters the session's consumer on the row this merge produces, having
+// planned it with these same roles (PlanInterest), and plans again when the row it stored is not
+// the one it filtered on. plan's Withheld topics are taken out of the row the write read before
+// the merge: a caller that holds a session to a rule of its own (cmd/listener's edge hold) takes
+// a stored topic out of the row that way.
 //
 // The machine id and the directory are the requesting registration's, and the stored row is the
 // fallback for whichever of the two the request leaves empty. A session that registers again
@@ -433,7 +422,11 @@ func mergeForUpsert(cur Interest, getErr error, item Interest, now int64, plan I
 	item.MachineID = first(requested.MachineID, cur.MachineID)
 	item.Dir = first(requested.Dir, cur.Dir)
 	item.UpdatedAt = now
-	item.Topics = plan.Topics
+	stored := item.Topics
+	if len(plan.Withheld) > 0 {
+		stored = slices.DeleteFunc(slices.Clone(stored), func(topic string) bool { return slices.Contains(plan.Withheld, topic) })
+	}
+	item.Topics = MergedTopics(requested.SessionID, plan.Roles, stored, plan.Topics)
 	return item, nil
 }
 
