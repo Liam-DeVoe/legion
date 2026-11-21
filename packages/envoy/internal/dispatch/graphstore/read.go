@@ -320,8 +320,8 @@ const nodesOfKind = `
 // that node's row out of the answer, since what still stands under a gone node stands beneath the
 // start too. The statement binds `to_kind <> 'value'` as a literal, as CurrentIn does, so the
 // planner proves the predicate of graph_tuples_as_of_in for an end the walk reads off a row it
-// reached, and walks that index from each such end. The write that takes a node to gone reads
-// what stands beneath it so (api's writeNodeState).
+// reached, and walks that index from each such end. Each writer that takes a node to gone reads
+// what stands beneath it so, through WithBeneath.
 func NodesBeneath(ctx context.Context, q Queryer, kind, id string) ([]Node, error) {
 	rows, err := q.Query(ctx, nodesBeneath, kind, id, StateGone)
 	if err != nil {
@@ -332,6 +332,36 @@ func NodesBeneath(ctx context.Context, q Queryer, kind, id string) ([]Node, erro
 		return nil, fmt.Errorf("read the nodes beneath %s/%s: %w", kind, id, err)
 	}
 	return beneath, nil
+}
+
+// WithBeneath answers roots, each followed by what NodesBeneath reads beneath it, root by root in
+// the order roots holds them, and each node once, as the store keys it, by kind and id: where a node
+// is met twice - a root an earlier root's subtree holds, or a node two roots' subtrees share - the
+// answer keeps it where it was first met, as that read answered it. It reads beneath every root, one
+// NodesBeneath each, whether or not it met the root already. Each writer that takes a node to gone
+// takes with it what this answers beneath it: the state route and the settle (api's
+// writeNodeState), a document's removal over the stale lenses on its node (api's removeArtifact),
+// and the block-index tick's sweep of every stale lens (graphcensus's StateStaleLensesGone).
+func WithBeneath(ctx context.Context, q Queryer, roots []Node) ([]Node, error) {
+	var nodes []Node
+	taken := map[[2]string]bool{}
+	take := func(node Node) {
+		if key := [2]string{node.Kind, node.ID}; !taken[key] {
+			taken[key] = true
+			nodes = append(nodes, node)
+		}
+	}
+	for _, root := range roots {
+		take(root)
+		beneath, err := NodesBeneath(ctx, q, root.Kind, root.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, node := range beneath {
+			take(node)
+		}
+	}
+	return nodes, nil
 }
 
 // nodesBeneath is the statement of NodesBeneath: $1 and $2 the start's kind and id and $3 the gone

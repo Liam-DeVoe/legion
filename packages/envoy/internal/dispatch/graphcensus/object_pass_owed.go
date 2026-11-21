@@ -15,9 +15,9 @@ import (
 // writes the node of, or the removal of a document whose node stands orphaned behind no row
 // (orphanedDocumentNode), which StateOrphanedGone states gone, or a lens that is not gone and is
 // stale (refs.StaleSQL) on the document node at the address an artifact.removed or an
-// artifact.created names, whatever the state of that node, which refs.StateStaleLensesGone states
-// gone. Docs' block-index tick reads it over the events it moves its cursor past, on every tick,
-// and owes the pass where it answers true.
+// artifact.created names, whatever the state of that node, which StateStaleLensesGone states gone.
+// Docs' block-index tick reads it over the events it moves its cursor past, on every tick, and owes
+// the pass where it answers true.
 //
 // A build before this one may serve a whole roll while no tick of this build runs, since the two
 // share one block-index lease and a process whose ticks come first in each period takes every

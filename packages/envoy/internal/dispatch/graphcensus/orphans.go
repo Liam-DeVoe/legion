@@ -5,12 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -75,9 +77,9 @@ var ErrNotOrphaned = errors.New("the node is not an orphaned document's")
 // (api's artifactIsUntouched), whose index holds no block, so what stands under its node is the
 // lenses invoked on it and what stands under each. Each such lens is stale already, since the row
 // it recorded no longer stands at the address (refs.StaleSQL), so no read answers one, and
-// refs.StateStaleLensesGone, which the tick runs after this, takes each one gone with its whole
-// subtree. A node a write moved under the document's node, which is no stale lens and stands under
-// none, belongs to the document its own address names and stays as it is.
+// StateStaleLensesGone, which the tick runs after this, takes each one gone with its whole subtree.
+// A node a write moved under the document's node, which is no stale lens and stands under none,
+// belongs to the document its own address names and stays as it is.
 //
 // It takes the store's lock order: the issue's owner lock first (events.LockOwnerRows), as the
 // removal and every create of a document of that issue take it, then the node's row `for
@@ -145,6 +147,115 @@ func StateOrphanedGone(ctx context.Context, database *store.Store, ref string) e
 		}
 		return graphstore.Caused(ctx, tx, uncaused, removal)
 	})
+}
+
+// staleLenses reads the row of each stale lens that is not gone (refs.StaleSQL), as
+// graphstore.ScanNode reads a node row: each lens that records a document's row
+// (graphstore.AttributeArtifactID) whose row no longer stands at the address of the document it
+// stands on, with the key of the issue that address names, `<issue key>/<slug>`, whose owner lock
+// every writer under the lens takes (api's lockIssueOwner). Only a lens that records a row can be
+// stale itself, so the read keeps those before it walks; every node under one is stale with it and
+// is taken with it as graphstore.NodesBeneath reads it. It reads the lenses of the store, through
+// the primary key of graph_nodes.
+var staleLenses = `
+	select ` + graphstore.NodeColumnsOf(`stale`) + `, split_part(split_part(placed.to_id, '#', 1), '/', 1)
+	from graph_nodes stale
+	cross join lateral (
+		` + refs.CurrentFarEndSQL(`newest.to_kind, newest.to_id`, `'`+graphstore.KindLens+`'`, `stale.id`, graphstore.TuplePartOf) + `
+	) placed
+	where stale.kind = '` + graphstore.KindLens + `' and stale.state <> '` + graphstore.StateGone + `'
+	  and stale.attributes->>'` + graphstore.AttributeArtifactID + `' is not null
+	  and ` + refs.StaleSQL(`'`+graphstore.KindLens+`'`, `stale.id`) + `
+	order by stale.id`
+
+// readStaleLenses answers the row of each stale lens staleLenses reads, each with the issue its
+// document's address names.
+func readStaleLenses(ctx context.Context, tx pgx.Tx) (lenses []graphstore.Node, issues []string, err error) {
+	rows, err := tx.Query(ctx, staleLenses)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read the stale lenses: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var issue string
+		lens, err := graphstore.ScanNode(rows, &issue)
+		if err != nil {
+			return nil, nil, fmt.Errorf("read the stale lenses: %w", err)
+		}
+		lenses, issues = append(lenses, lens), append(issues, issue)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("read the stale lenses: %w", err)
+	}
+	return lenses, issues, nil
+}
+
+// StateStaleLensesGone states gone every stale lens the store holds that is not gone
+// (refs.StaleSQL): a lens on a document, or on a block of one, whose recorded row
+// (graphstore.AttributeArtifactID) no longer stands at the document's address, because the row is
+// gone or another row stands there. Each goes with its whole part_of subtree, at every depth, its
+// findings, its risks and the lenses on those, whoever may see each node (graphstore.WithBeneath),
+// each written again as the store holds it but for its state, keeping its cause, with one state
+// tuple at the sentinel signed by the block-index tick (SweepActor) at the database's clock
+// (graphstore.AsStateWrite), all in one write. It reads a lens stale whatever the state of the node
+// at its document's address - live behind no row, gone behind no row, or live for the row a later
+// create made there - since the recorded row, and not the node, is what tells which document the
+// lens was written on. The block-index tick runs it after its orphan sweep (docs'
+// writeObjectNodesAnotherBuildWrote), so a lens a removal by an earlier build left stale does not
+// stay live in the store. It answers how many nodes it stated gone.
+//
+// It runs in a transaction of its own, as StateOrphanedGone does, and takes the store's lock order.
+// It reads the stale lenses with no lock, and where there are none it takes no lock and writes
+// nothing; otherwise it takes the owner lock of each issue those lenses' documents name
+// (events.LockOwnerRows), which every writer of a lens, a finding, a risk or a node's state under
+// the issue takes first (api's lockIssueOwner), and reads the stale lenses again under them,
+// keeping those of an issue it locked. Each read answers the row of each stale lens, so no lens is
+// read again. It then reads the database's clock, reads what stands beneath each lens it kept, and
+// writes the nodes, in ascending (kind, id), and their state tuples, in one graphstore.Write.
+func StateStaleLensesGone(ctx context.Context, database *store.Store) (int, error) {
+	var stated int
+	err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		_, issues, err := readStaleLenses(ctx, tx)
+		if err != nil || len(issues) == 0 {
+			return err
+		}
+		owners, locked := events.OwnerRows{}, map[string]bool{}
+		for _, issue := range issues {
+			owners.Add(issue, "", "the issue of a stale lens")
+			locked[issue] = true
+		}
+		if err := events.LockOwnerRows(ctx, tx, owners); err != nil {
+			return err
+		}
+		lenses, issues, err := readStaleLenses(ctx, tx)
+		if err != nil {
+			return err
+		}
+		var at time.Time
+		if err := tx.QueryRow(ctx, `select clock_timestamp()`).Scan(&at); err != nil {
+			return fmt.Errorf("read the time of the stale lenses' gone: %w", err)
+		}
+		kept := lenses[:0]
+		for index, lens := range lenses {
+			if locked[issues[index]] {
+				kept = append(kept, lens)
+			}
+		}
+		gone, err := graphstore.WithBeneath(ctx, tx, kept)
+		if err != nil || len(gone) == 0 {
+			return err
+		}
+		graphstore.AsStateWrite(gone, graphstore.StateGone, at.UTC(), SweepActor)
+		if err := graphstore.Write(ctx, tx, gone, nil); err != nil {
+			return fmt.Errorf("state %d nodes of stale lenses gone: %w", len(gone), err)
+		}
+		stated = len(gone)
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return stated, nil
 }
 
 // sessionParty is the session a document node's parties name, the empty string for a node of a

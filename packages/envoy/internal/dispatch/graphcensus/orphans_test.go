@@ -23,10 +23,12 @@ import (
 const orphanIssue = "ORPH-1"
 
 // seedOrphan writes project ORPH, issue ORPH-1 with its node, and a document of the issue at
-// ORPH-1/<slug> with its node, as this build's create writes them, and then removes the document's
-// row as the release before this one does: the row goes, a removal event is appended, and nothing
-// states the node gone. It answers the document's address and the removal event.
-func seedOrphan(t *testing.T, database *store.Store, slug string) (string, int64) {
+// ORPH-1/<slug> with its node, as this build's create writes them, and each of lenses, a lens of
+// alice's on the document, whose write records the document's row (graphstore.AttributeArtifactID).
+// It then removes the document's row as the release before this one does: the row goes, a removal
+// event is appended, and nothing states the node or a lens gone, so each lens is stale. It answers
+// the document's address and the removal event.
+func seedOrphan(t *testing.T, database *store.Store, slug string, lenses ...string) (string, int64) {
 	t.Helper()
 	ctx := context.Background()
 	alice := model.Actor{Kind: "user", ID: "alice"}
@@ -45,11 +47,27 @@ func seedOrphan(t *testing.T, database *store.Store, slug string) (string, int64
 		}, nil); err != nil {
 			return err
 		}
-		_, err := tx.Exec(ctx, `
+		if _, err := tx.Exec(ctx, `
 			insert into artifacts (issue_key, project_key, slug, name, kind, created_by)
 			values ('ORPH-1', 'ORPH', $1, $1, 'doc', '{"kind":"user","id":"alice"}')
-		`, slug)
-		return err
+		`, slug); err != nil {
+			return err
+		}
+		at := time.Now().UTC()
+		var placed []graphstore.Node
+		var placements []graphstore.Tuple
+		for _, lens := range lenses {
+			placed = append(placed, graphstore.Node{Kind: graphstore.KindLens, ID: lens, Supertag: graphstore.KindLens,
+				Visibility: graphstore.VisibilityProject, State: graphstore.StateLive, Project: "ORPH",
+				MadeAt: at, MadeBy: alice, SourceEvent: graphstore.NoEvent})
+			placements = append(placements, graphstore.Tuple{FromKind: graphstore.KindLens, FromID: lens,
+				Kind: graphstore.TuplePartOf, ToKind: graphstore.KindArtifact, ToID: ref,
+				At: at, Who: alice, SourceEvent: graphstore.NoEvent, Asserted: true})
+		}
+		if len(placed) == 0 {
+			return nil
+		}
+		return graphstore.Write(ctx, tx, placed, placements)
 	}); err != nil {
 		t.Fatalf("seed the document %s: %v", ref, err)
 	}

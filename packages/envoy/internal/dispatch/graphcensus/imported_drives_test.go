@@ -490,10 +490,11 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 	}, {
 		// The removal of an untouched document of the issue, made just before by typing a title,
 		// with alice's trade-off lens on it: its node stated gone, which the term artifact_removed
-		// counts, and the lens, stale once the row it recorded is deleted, stated gone through the
-		// sweep's statement (refs.StateStaleLensesGone), whose state tuple the term lens counts.
+		// counts, and the lens, stale once the row it recorded is deleted, stated gone in the
+		// removal's own write of the stale lenses on the document (refs.StaleLensesOn), whose state
+		// tuple the term lens counts.
 		Name: "api/artifact_removal.go#removeArtifact", Database: r.database,
-		Sites: []string{"api/artifact_removal.go#removeArtifact", "api/server.go#appendCausingEvent", "refs/stale_lenses.go#StateStaleLensesGone"},
+		Sites: []string{"api/artifact_removal.go#removeArtifact", "api/server.go#appendCausingEvent"},
 		Ready: func(t *testing.T) {
 			removable := decoded[struct {
 				Artifact model.Artifact `json:"artifact"`

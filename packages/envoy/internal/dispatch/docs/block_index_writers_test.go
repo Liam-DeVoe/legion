@@ -656,8 +656,9 @@ var indexPasses = map[string]string{
 	// The removal of an untouched document states its node gone before its row goes, caused by
 	// the artifact.removed event it appends, with each changed_by_run the node states now
 	// retracted - the store's own relations, retracted because the document they name has gone. The
-	// lenses on the document that the delete leaves stale go gone through the sweep's statement
-	// (refs/stale_lenses.go#StateStaleLensesGone), which it runs where it read one standing there.
+	// lenses on the document that the delete leaves stale go gone with all beneath them, read as the
+	// stale lenses on its node (refs.StaleLensesOn) and what stands beneath each
+	// (graphstore.WithBeneath), where it read one standing there.
 	"api/artifact_removal.go#removeArtifact": "the document the request removes, the changed_by_run its node states, the lenses that stand on its node, and the event it appended",
 	// The block index's cause: what a version's index pass stated, appended under the event
 	// that recorded the version once it is appended (graphstore.QueueCaused), which reads no
@@ -720,17 +721,15 @@ var indexPasses = map[string]string{
 	// OrphanedDocumentNodes), which it locks and reads again to find it still so under that lock.
 	// The artifact.removed event naming the address is only the cause it states the node gone
 	// under, and the sentinel where there is none, as this build's removal does. It states nothing
-	// beneath the node gone: the stale lenses on the document are refs.StateStaleLensesGone's. It
-	// reads no projected table, and the store only to state the store's own next fact, so it is no
-	// repair.
+	// beneath the node gone: the stale lenses on the document are StateStaleLensesGone's. It reads
+	// no projected table, and the store only to state the store's own next fact, so it is no repair.
 	"graphcensus/orphans.go#StateOrphanedGone": "each document node not gone at an issue's address that no artifacts row stands behind, the store's row of that node, and the artifact.removed event naming the address as its cause",
-	// The statement that states every stale lens gone, which the block-index tick runs after its
-	// sweep and a document's removal runs for the removed document's address: what decides is the
-	// lens's own recorded row (graphstore.AttributeArtifactID) against the artifacts row at its
-	// document's address (refs.StaleSQL), the lens's own fact and the address's own row, neither of
-	// which is the other side of a projection, and what stands under each stale lens goes gone with it
-	// from its own row (graphstore.NodesBeneath). It mends nothing, so it is no repair.
-	"refs/stale_lenses.go#StateStaleLensesGone": "each lens's recorded row and the artifacts row at its document's address, the rows of every node beneath each stale one, and the caller's actor and time",
+	// The block-index tick's sweep that states every stale lens gone, after its orphan sweep: what
+	// decides is the lens's own recorded row (graphstore.AttributeArtifactID) against the artifacts
+	// row at its document's address (refs.StaleSQL), the lens's own fact and the address's own row,
+	// neither of which is the other side of a projection, and what stands under each stale lens goes
+	// gone with it from its own row (graphstore.WithBeneath). It mends nothing, so it is no repair.
+	"graphcensus/orphans.go#StateStaleLensesGone": "each lens's recorded row and the artifacts row at its document's address, the rows of every node beneath each stale one, and the database's clock",
 	// The store's own record, beside its write of a lens's part_of, of the row of the document the
 	// lens is placed on (graphstore.AttributeArtifactID): the lens's part_of the write states, the
 	// artifacts row at the address of the document it names - a document's id, or the address before

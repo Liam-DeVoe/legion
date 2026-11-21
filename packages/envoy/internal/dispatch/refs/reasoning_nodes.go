@@ -241,9 +241,9 @@ func issueOfSQL(kindExpr, idExpr string, spelled bool) string {
 // row the artifacts table holds there, one probe of its unique index on ref_key: null for a
 // document of a project or of an agent's conversation, and null where no row stands there. Where
 // spelled is true, an address no row stands at answers the issue key it spells instead, its first
-// segment, as the read of the stale lenses reads it (staleLenses): a document of an issue is
-// `<issue key>/<slug>`, and the first segment of any other document's address, a project's key or
-// `agent`, is no issue's key.
+// segment, as the block-index tick's read of the stale lenses reads it (graphcensus's
+// staleLenses): a document of an issue is `<issue key>/<slug>`, and the first segment of any other
+// document's address, a project's key or `agent`, is no issue's key.
 func documentIssueSQL(address string, spelled bool) string {
 	if !spelled {
 		return `(select owner_document.issue_key from artifacts owner_document where owner_document.ref_key = ` + address + `)`

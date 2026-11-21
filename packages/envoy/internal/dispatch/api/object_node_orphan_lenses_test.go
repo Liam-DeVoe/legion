@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -129,16 +128,12 @@ func sweepAsTheTick(t *testing.T, database *store.Store) {
 	stateStaleLensesGoneAsTheTick(t, database)
 }
 
-// stateStaleLensesGoneAsTheTick runs refs.StateStaleLensesGone as the block-index tick runs it:
-// over every address, in a transaction of its own, by the tick (graphcensus.SweepActor) at the
-// database's clock.
+// stateStaleLensesGoneAsTheTick runs graphcensus.StateStaleLensesGone as the block-index tick runs
+// it: over every stale lens of the store, in a transaction of its own, by the tick
+// (graphcensus.SweepActor) at the database's clock.
 func stateStaleLensesGoneAsTheTick(t *testing.T, database *store.Store) {
 	t.Helper()
-	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
-		_, err := refs.StateStaleLensesGone(ctx, tx, "", time.Time{}, graphcensus.SweepActor)
-		return err
-	}); err != nil {
+	if _, err := graphcensus.StateStaleLensesGone(context.Background(), database); err != nil {
 		t.Fatalf("state the stale lenses gone: %v", err)
 	}
 }
@@ -179,7 +174,7 @@ func (d lensedDocument) requireRemovedBehindNoRow(t *testing.T, state string) {
 // because LO, FO and LP are stale. The test then runs the sweep as the block-index tick runs it:
 // graphcensus.StateOrphanedGone on the document's address, after which the document's node reads
 // gone and LO, FO and LP still read live, since it states nothing beneath the node gone; then
-// refs.StateStaleLensesGone. The rows of the document's node, LO, FO and LP then each read
+// graphcensus.StateStaleLensesGone. The rows of the document's node, LO, FO and LP then each read
 // gone, the four reads still answer 404 NOT_FOUND, and X#b and LK still read live: each belongs to
 // X, whose row stands, and neither statement takes a node that is not a stale lens or under one.
 func TestTheOrphanSweepTakesEveryLensOnItsDocumentGone(t *testing.T) {
@@ -240,7 +235,7 @@ func TestTheOrphanSweepTakesEveryLensOnItsDocumentGone(t *testing.T) {
 // alice's two reads of LO and the second agent's two reads of LP already answer what a lens nobody
 // wrote answers, because each is stale. The test then runs the orphan sweep as the block-index
 // tick runs it (sweepAsTheTick: graphcensus.OrphanedDocumentNodes, graphcensus.StateOrphanedGone
-// on each address that read answers, then refs.StateStaleLensesGone), after which LO, FO
+// on each address that read answers, then graphcensus.StateStaleLensesGone), after which LO, FO
 // and LP each read gone in the store, and the four reads still answer 404 NOT_FOUND.
 func TestTheSweepTakesTheLensesOnADocumentAnotherBuildStatedGone(t *testing.T) {
 	removed := newLensedDocument(t, "Notes another build states gone.md")
