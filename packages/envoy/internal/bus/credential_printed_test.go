@@ -114,12 +114,19 @@ func TestTheBusCredentialPrintsNoSeedOrToken(t *testing.T) {
 	slashedPassword, queryPassword := "madeUpNatsPassword/"+tail, "madeUpNatsPassword?"+tail
 	fragmentPassword, spacedPassword := "madeUpNatsPassword#"+tail, "madeUpNatsPassword "+tail
 	commaPassword := "madeUpNatsPassword," + tail
+	// A password holding a comma after a head of digits, which url.Parse reads as a port once the
+	// list is split, a token holding a comma, whose head it reads as the host, and a password that
+	// parses, written with white space around its URL.
+	digitsPassword, commaToken := "8472915603918274,"+tail, "madeUpNatsToken,"+tail
+	plainPassword := "madeUpNatsPasswordPlain" + tail
 	slashedToken := "madeUpNatsToken/" + base64.RawURLEncoding.EncodeToString(slashed[12:24])
 	credentials := []printedCredential{
 		{"the made-up seed", seed}, {"the made-up account seed", account}, {"the mistyped seed", mistyped}, {"the made-up service token", token},
 		{"the made-up password holding a /", slashedPassword}, {"the made-up password holding a ?", queryPassword},
 		{"the made-up password holding a #", fragmentPassword}, {"the made-up password holding a space", spacedPassword},
 		{"the made-up password holding a comma", commaPassword}, {"the made-up token holding a /", slashedToken},
+		{"the made-up password holding a comma after digits", digitsPassword}, {"the made-up token holding a comma", commaToken},
+		{"the made-up password that parses", plainPassword},
 	}
 	unparsed := []string{"NATS server URL 1 of 1 cannot be read", "does not parse as a URL"}
 	remote := map[string]string{AllowRemoteEnvVar: "1"}
@@ -201,6 +208,12 @@ func TestTheBusCredentialPrintsNoSeedOrToken(t *testing.T) {
 				env: remote, names: unparsed},
 			{name: "a server URL whose password holds a comma, split as every caller splits its list", urls: strings.Split(withPassword(commaPassword), ","),
 				env: remote, names: []string{"NATS server URL 1 of 2 cannot be read", "does not parse as a URL"}},
+			{name: "a server URL whose password holds a comma after digits, split", urls: strings.Split(withPassword(digitsPassword), ","),
+				env: remote, names: []string{"NATS server URL 2 of 2 cannot be read", "names no scheme", "(%2C)"}},
+			{name: "a server URL naming a token that holds a comma as its user, split", urls: strings.Split("nats://"+commaToken+"@127.0.0.1:1", ","),
+				env: remote, names: []string{"NATS server URL 2 of 2 cannot be read", "names no scheme", "(%2C)"}},
+			{name: "a server URL with white space around it whose password parses, trimmed before nats.go reads it",
+				urls: []string{" " + withPassword(plainPassword) + " "}},
 			{name: "a server URL naming a token that holds a / as its user", urls: []string{"nats://" + slashedToken + "@127.0.0.1:1"},
 				env: remote, names: []string{"NATS server URL 1 of 1 cannot be read", `an "@" stands after its host`}},
 			{name: "a server URL that does not parse with the token in its query", urls: []string{"nats://127.0.0.1:1/%zz?token=" + token},
@@ -226,8 +239,8 @@ func TestTheBusCredentialPrintsNoSeedOrToken(t *testing.T) {
 				}
 			})
 		}
-		// A URL with spaces around it is read as nats.go reads it, trimmed, and is no refusal.
-		require.NoError(t, refuseUnreadableNATSURL([]string{" nats://127.0.0.1:4222 ", "\t127.0.0.1:4223\n"}))
+		// The list is trimmed once, and the trimmed list is what every check and nats.go read.
+		require.Equal(t, []string{"nats://127.0.0.1:4222", "127.0.0.1:4223"}, trimmedNATSURLs([]string{" nats://127.0.0.1:4222 ", "\t127.0.0.1:4223\n"}))
 	})
 
 	t.Run("every line logged while a server refuses the connection", func(t *testing.T) {

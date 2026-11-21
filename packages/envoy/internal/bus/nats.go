@@ -412,6 +412,7 @@ type Client struct {
 // this codebase owns, ConnectOwningStream.
 func Dial(name string, urls []string, environment func(string) (string, bool), options ...DialOption) (*nats.Conn, error) {
 	opts := parseConnectOptions(options)
+	urls = trimmedNATSURLs(urls)
 	if err := refuseUnreadableNATSURL(urls); err != nil {
 		return nil, err
 	}
@@ -488,6 +489,7 @@ func ConnectOwningStream(urls []string, options ...ConnectOption) (*Client, erro
 // first connection's reconnect hook once its ensure has succeeded (startKeeperOnce), so its
 // keeper runs no pass before that ensure.
 func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error) {
+	urls = trimmedNATSURLs(urls)
 	if err := refuseUnreadableNATSURL(urls); err != nil {
 		return nil, err
 	}
