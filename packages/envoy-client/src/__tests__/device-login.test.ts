@@ -23,12 +23,16 @@ import * as path from "node:path";
 import { thumbprintOf } from "@legion/cipher-client/test/sign-ins";
 import { DEVICE_LOGIN_COMMAND } from "@legion/cipher-client/token-errors";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { moduleRoot, temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { runDispatchCli } from "../dispatch-cli";
 import { dispatchSettings } from "../dispatch-config";
 import { readEnvoyConfig } from "../envoy-config";
 import { deviceLoginStandIns } from "./broker-stand-ins";
 
 const { broker, laptopEnvironment, loginFile, tempDir } = deviceLoginStandIns("device-login");
+/** The directory of each child script a row has Bun run: Bun loads no module from a path that
+ *  holds a `?`. */
+const moduleDir = temporaryDirectories("device-login-child", { root: moduleRoot() });
 
 const PERSON = "ada@example.com";
 
@@ -380,7 +384,7 @@ async function tradeTwiceAtOnce(
   file: string,
   lock: "file" | "none" | "refresh-only"
 ) {
-  const child = path.join(tempDir(), "trade.ts");
+  const child = path.join(moduleDir(), "trade.ts");
   writeFileSync(
     child,
     `import { DeviceLoginIdentity, refreshDeviceLogin, withDeviceLoginLock } from ${JSON.stringify(DEVICE_LOGIN_MODULE)};

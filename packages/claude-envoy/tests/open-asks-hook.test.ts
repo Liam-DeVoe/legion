@@ -3,11 +3,14 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } fro
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
+import { moduleRoot, temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
 import { unresolvedNames } from "./unresolved-names"
 
 const hookEntry = resolve(import.meta.dir, "..", "hooks", "session-hook.ts")
 /** The Dispatch token the hook is handed, in its environment or in envoy.json. */
 const DISPATCH_TOKEN = fixtureSecret("dsp")
+/** The directory of a row's `--preload`: a module, and Bun loads none from a path holding a `?`. */
+const preloadDir = temporaryDirectories("claude-envoy-hook-preload", { root: moduleRoot() })
 
 /** Runs the hook as Claude Code does, with `env` as its whole environment and `preload` given to
  * Bun first where set. The session's cwd is the test's scratch HOME unless the input names one:
@@ -135,7 +138,7 @@ test("names an unreachable Dispatch whose password holds an '@' by no part of th
   const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-at-"))
   const tail = `Tail${crypto.randomUUID().slice(0, 8)}`
   try {
-    const names = await unresolvedNames(scratch)
+    const names = await unresolvedNames(preloadDir())
     const result = await runHook(
       hookInput,
       {

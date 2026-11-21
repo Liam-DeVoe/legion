@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { cp, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { moduleRoot } from "@legion/test-fixtures/temporary-directories";
 import { CLAIM_RUN_VARIABLE, RESERVE_VARIABLE } from "../reserve";
 import {
   closureDigestOf,
@@ -38,8 +38,10 @@ const PINNED_DIGEST = "69054a419016dde5f1be9a73c910320202eafbabb0e593f962e029b3f
 
 let scratch: string | undefined;
 
+// The children Bun runs import the closure's copies from here, and Bun loads no module from a
+// path holding a `?`.
 beforeAll(async () => {
-  scratch = await realpath(await mkdtemp(join(tmpdir(), "s10-decision-")));
+  scratch = await realpath(await mkdtemp(join(moduleRoot(), "s10-decision-")));
 });
 
 afterAll(async () => {

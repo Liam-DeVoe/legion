@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { temporaryDirectories } from "./temporary-directories";
+import { moduleRoot, temporaryDirectories } from "./temporary-directories";
 
 // The regression lock for the whole class this package's fixtures guard against: under
 // `bun test -t <pattern>` that selects no row of a file, Bun 1.4.4 evaluates that file's body and
@@ -13,7 +13,8 @@ import { temporaryDirectories } from "./temporary-directories";
 // own row and no row of its `describe`, and once with no filter at all, each under a TMPDIR of its
 // own, and read that TMPDIR afterwards.
 
-const makeDirectory = temporaryDirectories("test-fixtures-filtered-run");
+// Bun runs the fixture file from its directory, and loads no module from a path holding a `?`.
+const makeDirectory = temporaryDirectories("test-fixtures-filtered-run", { root: moduleRoot() });
 
 /** The marker the fixture file prints as its module body runs, so a run that made nothing is told
  *  apart from a run that never loaded the file. */

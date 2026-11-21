@@ -2,9 +2,11 @@ import { expect, test } from "bun:test";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { hostTool, skipWithout } from "./host-tools";
-import { temporaryDirectories } from "./temporary-directories";
+import { moduleRoot, temporaryDirectories } from "./temporary-directories";
 
-const makeDirectory = temporaryDirectories("test-fixtures-host-tools");
+// The one row that makes a directory has Bun run a file from it, and Bun loads no module from a
+// path holding a `?`.
+const makeDirectory = temporaryDirectories("test-fixtures-host-tools", { root: moduleRoot() });
 
 /** Names no host carries a program under. */
 const ABSENT = "legion-test-fixtures-no-such-program";

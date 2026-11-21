@@ -32,9 +32,11 @@ import { memoryRoot, temporaryDirectories } from "@legion/test-fixtures/temporar
 import { rowLimit, runBounded } from "./bounded-subprocess";
 import {
   acceptance,
+  blankFreeScratch,
   closedPort,
   copyLeg,
   type LegRun,
+  moduleScratch,
   publicLeg,
   publicRows,
   rowsOf,
@@ -91,9 +93,15 @@ const withoutTools = skipWithout("bash", "curl");
 // trials, load ~1500), against at most 16 ms on /dev/shm. The suite holds at most 233 entries at
 // once (measured with the legs' own scratch under the same root), under 1 MiB at one 4 KiB page a
 // file, so 8 MiB leaves room for 8 runs sharing the host.
-const scratch = temporaryDirectories("outside-agent-acceptance", {
-  root: memoryRoot({ need: 8 * 2 ** 20 }),
-});
+const scratchRoot = memoryRoot({ need: 8 * 2 ** 20 });
+const scratch = temporaryDirectories("outside-agent-acceptance", { root: scratchRoot });
+// The legs split some text on blanks, by design: each OUTSIDE_*_COMMAND, and each line of the pins
+// file. So every script such a command names, and every file a pins line names, sits where the
+// path holds no blank.
+const blankFree = blankFreeScratch("outside-agent-acceptance-blank-free", scratchRoot);
+// The tailnet leg's peer has Bun load the probe beside the leg, so a copy of the leg sits where the
+// path holds no `?`.
+const modules = moduleScratch("outside-agent-acceptance-modules", scratchRoot);
 
 /** A copy of `leg` that defaults to PASS: every `UNKNOWN` reads `PASS` and every `exit 2` reads
  *  `exit 0`, in the leg and in what it sources. */
@@ -161,7 +169,7 @@ function publicInputs(): Record<string, string> {
   const targets = join(inputs, "targets.txt");
   writeFileSync(targets, `hub 127.0.0.1 ${closedPort()}\n`);
   const approve = script(
-    join(inputs, "approve"),
+    join(blankFree("commands"), "approve"),
     '#!/bin/sh\necho "UNKNOWN: $1 no browser"\nexit 2\n'
   );
   return {
@@ -188,12 +196,13 @@ function tailnetInputs(): Record<string, string> {
   const origin = `http://127.0.0.1:${closedPort()}`;
   const inputs = scratch("inputs");
   const pins = join(inputs, "pins.txt");
+  const absent = blankFree("pins");
   writeFileSync(
     pins,
     [
-      `broker ${join(inputs, "absent-broker.yaml")} example:brokerImage`,
-      `dispatch ${join(inputs, "absent-dispatch.yaml")} example:dispatchImage`,
-      `edge-listener ${join(inputs, "absent-listener.yaml")} example:listenerImage`,
+      `broker ${join(absent, "absent-broker.yaml")} example:brokerImage`,
+      `dispatch ${join(absent, "absent-dispatch.yaml")} example:dispatchImage`,
+      `edge-listener ${join(absent, "absent-listener.yaml")} example:listenerImage`,
       "",
     ].join("\n")
   );
@@ -408,7 +417,7 @@ async function runStandIn(prepared: PreparedStandIn): Promise<StandInRun> {
 async function runStandIns(...standIns: StandIns[]): Promise<StandInRun[]> {
   const prepared: PreparedStandIn[] = [];
   try {
-    for (const each of standIns) prepared.push(prepareStandIn(scratch, each));
+    for (const each of standIns) prepared.push(prepareStandIn(scratch, blankFree, modules, each));
   } catch (error) {
     for (const done of prepared) done.dispatch.stop();
     throw error;

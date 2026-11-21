@@ -70,6 +70,29 @@ KEY = b"gateway-key-of-the-tests-0123456789"
 INPUTS_VERSION = 4
 
 
+def plain_base(start):
+    """The base of this suite's temporary directories: `start` where omp's path grammar, as point
+    5's checks model it, reads its path as a plain path, with no glob character
+    (`CHECKS.GLOB_START`), no syntax the checks refuse (`CHECKS.UNMODELLED`) and no `:` (a
+    selector); else its closest ancestor that does and takes a directory; else /tmp. A judge's
+    sandbox paths live under it, and a path omp cannot take as written is a deviation, so a
+    `TMPDIR` holding a space, a quote or a `?` would make each judging test's verdict the machine's."""
+    def plain(path):
+        return not (CHECKS.GLOB_START.search(path) or CHECKS.UNMODELLED.search(path) or ":" in path)
+
+    candidate = os.path.abspath(start)
+    while True:
+        if plain(candidate) and os.path.isdir(candidate) and os.access(candidate, os.W_OK | os.X_OK):
+            return candidate
+        parent = os.path.dirname(candidate)
+        if parent == candidate:
+            return "/tmp"
+        candidate = parent
+
+
+tempfile.tempdir = plain_base(tempfile.gettempdir())
+
+
 def sha(data):
     return hashlib.sha256(data if isinstance(data, bytes) else data.encode("utf-8")).hexdigest()
 

@@ -11,10 +11,13 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { shellQuote } from "../local-instance-support";
 import {
+  type BlankFreeScratch,
   closedPort,
   copyLeg,
   type LegRun,
+  type ModuleScratch,
   publicRows,
   rowsOf,
   type Scratch,
@@ -176,7 +179,7 @@ function standInPath(scratch: Scratch, state: string, publicCommand: string): st
   script(
     join(bin, "gh"),
     `#!/usr/bin/env bash
-state='${state}'
+state=${shellQuote(state)}
 case $1 in
   repo) [ ! -f "$state/visibility" ] || cat "$state/visibility" ;;
   api)
@@ -199,7 +202,7 @@ case $1 in
     code=\${code%%\\"*}
     mkdir -p "$state/run"
     (
-      OUTSIDE_TAILNET_USER_CODE=$code OUTSIDE_PUBLIC_RESULTS="$state/run" bash '${publicCommand}'
+      OUTSIDE_TAILNET_USER_CODE=$code OUTSIDE_PUBLIC_RESULTS="$state/run" bash ${shellQuote(publicCommand)}
       echo "$?" >"$state/run-exit"
     ) >/dev/null 2>&1 </dev/null &
     echo "https://github.com/${workflowRepository}/actions/runs/4242"
@@ -232,7 +235,7 @@ esac
   script(
     join(bin, "agent-secrets"),
     `#!/usr/bin/env bash
-state='${state}'
+state=${shellQuote(state)}
 operator=''
 [ -z "\${AGENT_SECRETS_OPERATOR_FILE:-}" ] || operator=$(cat "$AGENT_SECRETS_OPERATOR_FILE")
 case $operator in ${fullLogin}) code=FULL-0001 ;; *) code=TEST-0001 ;; esac
@@ -401,7 +404,16 @@ if (command === "peer") {
 `;
 }
 
-export function prepareStandIn(scratch: Scratch, standIns: StandIns): PreparedStandIn {
+/** One run's stand-ins, ready. `blankFree` makes the directory of every path the leg reads from
+ *  text it splits on blanks, by design: the scripts OUTSIDE_IMAGE_REVISION_COMMAND,
+ *  OUTSIDE_PUBLIC_COMMAND and OUTSIDE_OWNER_REMOVE_COMMAND name, and the local files a pins line
+ *  names. `modules` makes the leg's copy, beside which the scripted peer has Bun load the probe. */
+export function prepareStandIn(
+  scratch: Scratch,
+  blankFree: BlankFreeScratch,
+  modules: ModuleScratch,
+  standIns: StandIns
+): PreparedStandIn {
   const state = scratch("state");
   writeFileSync(join(state, "canary-refusal"), `${standIns.canaryRefusal}\n`);
   if (standIns.approve === false) writeFileSync(join(state, "login-expires"), "");
@@ -474,7 +486,8 @@ export function prepareStandIn(scratch: Scratch, standIns: StandIns): PreparedSt
   );
   const repo = checkout(scratch);
   const inputs = scratch("inputs");
-  const leg = copyLeg(scratch, tailnetLeg);
+  const words = blankFree("words");
+  const leg = copyLeg(modules, tailnetLeg);
   const legDir = leg.slice(0, leg.lastIndexOf("/"));
   if (standIns.window !== undefined) {
     writeFileSync(join(legDir, "outside-agent-probe.ts"), standInPeerProbe(standIns.peerAheadMs));
@@ -485,35 +498,33 @@ export function prepareStandIn(scratch: Scratch, standIns: StandIns): PreparedSt
   script(
     join(legDir, "restricted-sweep.sh"),
     `#!/usr/bin/env bash
+state=${shellQuote(state)}
 case $SWEEP_MODE in
   fills)
     [ -n "\${SWEEP_FULL_COOKIE:-}" ] || { echo 'UNKNOWN: SWEEP_FULL_COOKIE is required'; exit 2; }
-    : >'${state}/fills-read-the-cookie'
+    : >"$state/fills-read-the-cookie"
     ${standIns.sweep?.fillsRefused === true ? "echo 'UNKNOWN: fills mode writes no file that lacks a fill: dm_session'; exit 2" : ""}
-    cat '${state}/fills' >"$SWEEP_FILLS_FILE"
+    cat "$state/fills" >"$SWEEP_FILLS_FILE"
     ;;
   writer)
-    cat '${state}/writer-line'
+    cat "$state/writer-line"
     sleep 600 &
     child=$!
-    trap 'kill "$child"; : >"${state}/writer-stopped"; exit 0' TERM
+    trap 'kill "$child"; : >"$state/writer-stopped"; exit 0' TERM
     wait "$child"
     ;;
 esac
 `
   );
-  // The pins at the deployment repository's main (state/deploy), or local files.
-  mkdirSync(join(state, "deploy"), { recursive: true });
   const pinsLocal = standIns.pins === "local";
+  // The pins at the deployment repository's main (state/deploy), or local files.
+  const deploy = join(pinsLocal ? words : state, "deploy");
+  mkdirSync(deploy, { recursive: true });
   const pins: string[] = [];
   for (const name of ["broker", "dispatch", "edge-listener"]) {
-    writeFileSync(
-      join(state, "deploy", `${name}.yaml`),
-      `example:image: registry.example/${name}@sha256:0\n`
-    );
-    pins.push(
-      `${name} ${pinsLocal ? join(state, "deploy", `${name}.yaml`) : `${name}.yaml`} example:image`
-    );
+    const file = join(deploy, `${name}.yaml`);
+    writeFileSync(file, `example:image: registry.example/${name}@sha256:0\n`);
+    pins.push(`${name} ${pinsLocal ? file : `${name}.yaml`} example:image`);
   }
   // A second `dispatch` line, naming another file, where the pins file is to hold one twice.
   if (standIns.pins === "duplicate") pins.push("dispatch dispatch-second.yaml example:image");
@@ -521,33 +532,35 @@ esac
   if (standIns.t3Kills === true) writeFileSync(join(state, "t3-kills"), "");
   const visibility = standIns.workflow?.visibility ?? "PRIVATE";
   if (visibility !== "") writeFileSync(join(state, "visibility"), `${visibility}\n`);
+  // Lines of public.sh below, which sets `state` first.
   const approve =
-    standIns.approve === false ? "" : `: >'${state}/approved-'"$OUTSIDE_TAILNET_USER_CODE"`;
+    standIns.approve === false ? "" : `: >"$state/approved-$OUTSIDE_TAILNET_USER_CODE"`;
   const moves =
     standIns.pins === "moves"
-      ? `echo 'example:image: registry.example/dispatch@sha256:1' >'${state}/deploy/dispatch.yaml'`
+      ? `echo 'example:image: registry.example/dispatch@sha256:1' >"$state/deploy/dispatch.yaml"`
       : "";
   const lastAnswered =
     standIns.window === undefined
       ? ""
       : `printf 'T5-agent\\tthe agent part\\tno trade refused; last_answered_at=%s refused_at=none\\tUNKNOWN\\n' "$(( $(date -u +%s) + ${standIns.window.lastAnsweredAfter} ))" >>"$out/outside-agent-public.tsv"`;
   const publicLegCommand = script(
-    join(inputs, "public.sh"),
+    join(words, "public.sh"),
     `#!/usr/bin/env bash
+state=${shellQuote(state)}
 ${approve}
 ${moves}
 out=$OUTSIDE_PUBLIC_RESULTS
-cp '${state}/public.tsv' "$out/outside-agent-public.tsv"
+cp "$state/public.tsv" "$out/outside-agent-public.tsv"
 ${lastAnswered}
 ${(standIns.revokeVerdicts ?? ["PASS"]).map((verdict) => `printf 'revoke-cred-%s\\trevoked\\tstatus 200\\t%s\\n' "$(printf '%s' "$OUTSIDE_TAILNET_USER_CODE" | tr 'A-Z' 'a-z')" '${verdict}' >>"$out/outside-edge-revocations.tsv"`).join("\n")}
-: >'${state}/revoked'
-{ printf 'the workflow note\\nlive window 2026-01-01T00:00:00Z 2026-01-01T00:00:09Z\\n'; cat '${state}/sweep-verdict'; } >"$out/restricted-sweep.log"
+: >"$state/revoked"
+{ printf 'the workflow note\\nlive window 2026-01-01T00:00:00Z 2026-01-01T00:00:09Z\\n'; cat "$state/sweep-verdict"; } >"$out/restricted-sweep.log"
 echo ${standIns.sweep?.exit ?? 0} >"$out/restricted-sweep.exit"
 ${standIns.window === undefined ? "" : "sleep 3"}
 exit ${standIns.publicExit ?? 0}
 `
   );
-  const revision = script(join(inputs, "revision.sh"), `#!/bin/sh\necho ${repo.built}\n`);
+  const revision = script(join(words, "revision.sh"), `#!/bin/sh\necho ${repo.built}\n`);
   writeFileSync(join(inputs, "cookie"), "session=full\n");
   writeFileSync(join(inputs, "token"), "example-token\n");
   const dispatch = standInDispatch(state, standIns.controls, repo, standIns.serving ?? "pinned");
@@ -556,7 +569,7 @@ exit ${standIns.publicExit ?? 0}
       throw new Error("a step after the stand-in Dispatch started failed, as the row asks");
     }
     const remove = script(
-      join(inputs, "remove.sh"),
+      join(words, "remove.sh"),
       `#!/bin/sh\nexec curl -q -sS -X POST '${dispatch.origin}/_remove' -o /dev/null\n`
     );
     const env = {
