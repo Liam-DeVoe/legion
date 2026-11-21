@@ -16,7 +16,6 @@ import { DispatchClient, type DispatchWriteRetry } from "../dispatch-http";
 import type { Owner, ParsedDispatchRef } from "../dispatch-owner";
 import type { AgentArtifactRef, LocalPicture } from "../dispatch-picture-tools";
 import type { ToolImage } from "../dispatch-pictures";
-import type { ToolInputError } from "../tool-input-errors";
 import { linkBaseOf } from "./links";
 
 /**
@@ -124,15 +123,13 @@ export interface DryRunContext {
 
 /**
  * What a dry-run step found, which the dry run answers with the call's own output and exit code:
- * - `refused`: the call's refusal of its arguments, a `ToolInputError`, which the dry run prints
- *   and exits 2 on;
- * - `thrown`: an error the call throws that is no `ToolInputError`, its refusal of a text for its
- *   size among them, which the dry run prints as `messageFor` prints it and exits 1 on;
+ * - `refused`: the error the call throws for these arguments, which the dry run prints as
+ *   `messageFor` prints it, and exits 2 on where it is a `ToolInputError` and 1 on any other, as
+ *   the call does;
  * - `passed`: a pass, with a warning for stderr when the step could not get its answer.
  */
 export type DryRunVerdict =
-  | { readonly kind: "refused"; readonly refusal: ToolInputError }
-  | { readonly kind: "thrown"; readonly error: Error }
+  | { readonly kind: "refused"; readonly refusal: Error }
   | { readonly kind: "passed"; readonly warning?: string };
 
 export interface ResolvedArtifact {

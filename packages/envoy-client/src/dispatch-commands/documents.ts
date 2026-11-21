@@ -54,6 +54,7 @@ import {
   writeResultDetails,
 } from "./results";
 import {
+  inlineTextTooLarge,
   roundTripFailure,
   type StoredTextCheck,
   storedTextCheck,
@@ -712,6 +713,12 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
   // predicate, and the stored-text check below reads the same pattern, for the call and its dry
   // run alike (storedTextCheck).
   const blank = content === undefined || goBlankPattern.test(content);
+  // Inline text past the bytes one document may hold is refused first, before the read of the
+  // held name below, as the server refuses such an upload whatever name it carries
+  // (inlineTextTooLarge). The call asks Dispatch nothing for it, and answers it as its dry run
+  // does, which reads no held name, under a name the owner holds too.
+  const tooLarge = content === undefined ? undefined : inlineTextTooLarge(content);
+  if (tooLarge !== undefined) throw tooLarge;
   // An upload under a name the owner already holds writes that document's next version, over
   // the text it holds, so the command reads what the owner holds and refuses it. --force is
   // what asks for the version, and the API writes one for every other caller as before.
@@ -739,17 +746,15 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
       ]);
     }
   }
-  // A text the store would write under another spelling, or one the call refuses for its size,
-  // is refused here (storedTextCheck). Only a Dispatch that holds no such route leaves the upload
-  // to make its own refusal, as it did before this check: every other failure refuses the upload,
-  // since a check that did not run says nothing about what the store would write. Blank text
-  // goes to the server unchecked (storedTextCheck says why).
+  // A text the store would write under another spelling, or one whose round trip Dispatch refuses
+  // as too large, is refused here (storedTextCheck). Only a Dispatch that holds no such route
+  // leaves the upload to make its own refusal, as it did before this check: every other failure
+  // refuses the upload, since a check that did not run says nothing about what the store would
+  // write. Blank text goes to the server unchecked (storedTextCheck says why).
   if (content !== undefined) {
     const stored = await storedTextCheck(() => client, input.tool, name, content);
-    if (stored.kind === "respelled" || stored.kind === "too-large") throw stored.refusal;
-    if (stored.kind === "failed") {
-      throw new Error(storedTextCheckFailed(stored.error), { cause: stored.error });
-    }
+    if (stored.kind === "refused") throw stored.refusal;
+    if (stored.kind === "failed") throw storedTextCheckFailed(stored.error);
   }
   // A call with a path uploads that file, one with content stores that text, and one with
   // neither makes an empty document the writer fills in afterwards with dispatch doc-edit.
@@ -824,8 +829,8 @@ function endedSentence(text: string): string {
 export async function artifactDryRun(context: DryRunContext): Promise<DryRunVerdict> {
   const { tool, args, deadline, deadlineMs } = context;
   const content = optionalString(args, "content");
-  // The call asks nothing for a file or a name alone, nothing for blank text (storedTextCheck,
-  // which then builds no client), and nothing for text past the bytes one document may hold.
+  // The call asks nothing for a file or a name alone, nothing for blank text, and nothing for text
+  // past the bytes one document may hold (storedTextCheck, which builds no client for either).
   if (content === undefined) return { kind: "passed" };
   const name = stringArg(args, "name");
   const unasked = (why: string): DryRunVerdict => ({
@@ -843,10 +848,8 @@ export async function artifactDryRun(context: DryRunContext): Promise<DryRunVerd
   switch (stored.kind) {
     case "kept":
       return { kind: "passed" };
-    case "respelled":
+    case "refused":
       return { kind: "refused", refusal: stored.refusal };
-    case "too-large":
-      return { kind: "thrown", error: stored.refusal };
     case "no-route":
       return {
         kind: "passed",

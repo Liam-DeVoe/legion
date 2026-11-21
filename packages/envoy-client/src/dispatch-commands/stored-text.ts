@@ -7,6 +7,7 @@ import {
   MARKDOWN_DOCUMENT_TOO_LARGE,
   PATH_KEEPS_BYTES,
   pathKeepsBytesOf,
+  utf8Bytes,
 } from "@legion/contracts";
 import { goBlankPattern } from "@legion/contracts/go-blank";
 import type { DispatchClient, DispatchServiceError } from "../dispatch-http";
@@ -112,27 +113,33 @@ function roundTripUnanswered(error: unknown): string {
  * says whether the store would write this text under another spelling, so a failure that is not
  * the route's absence leaves that question open, and an upload sent anyway would store the
  * changed text this check exists to stop. A body Dispatch refused as too large is no such failure:
- * the check answers it as `too-large` (`roundTripTooLarge`).
+ * the check answers it as `refused` (`roundTripTooLarge`).
  */
-export function storedTextCheckFailed(error: unknown): string {
-  return `${roundTripUnanswered(error)} Send the upload again once that call is answered.`;
+export function storedTextCheckFailed(error: unknown): Error {
+  return new Error(
+    `${roundTripUnanswered(error)} Send the upload again once that call is answered.`,
+    { cause: error }
+  );
 }
 
 /**
- * The refusal of a text whose round trip Dispatch itself refused as too large (its 413). Dispatch
- * answers it for a body past the round trip's own limit (markdownRoundTripLimit, six times the
- * bytes one document may hold, for the JSON escaping of each byte), which no repeat gets through,
- * so the refusal names what to do instead of saying to send the upload again. Every remedy it
- * names takes text out of one document: a document of its own is no remedy at all, since the
- * upload refused is already one and a second would be refused the same way. A name whose
- * extension keeps the bytes has `--path`, which stores the file and asks this route nothing.
+ * The refusal of a text whose round trip Dispatch itself refused as too large (its 413). The text
+ * sent is at most MARKDOWN_DOCUMENT_MAX_BYTES, since `inlineTextTooLarge` refuses a longer one
+ * first, and JSON writes each of its bytes in at most six, so the body is at most six times that
+ * plus the object around it: under the round trip's own limit (markdownRoundTripLimit, six times
+ * the bytes one document may hold and a kilobyte for that object). Only a Dispatch that reads less
+ * than that answers it, and it answers every repeat alike, so the refusal names what to do instead
+ * of saying to send the upload again. The text is within one document, so a document of its own
+ * is no remedy, since the upload refused is already one: a shorter text is, or the text split
+ * across documents. A name whose extension keeps the bytes has `--path`, which stores the file and
+ * asks this route nothing.
  */
 function roundTripTooLarge(error: DispatchServiceError, name: string): Error {
   const asBytes = pathKeepsBytesOf(name)
     ? ` Send it as a file with ${PATH_KEEPS_BYTES}, which asks this check nothing.`
     : "";
   return new Error(
-    `${roundTripUnanswered(error)} This text is longer than the check reads, and sending the upload again does not change that: a markdown document is at most ${MARKDOWN_DOCUMENT_MAX_BYTES / (1 << 20)} MiB, so shorten it or split it across documents of at most that.${asBytes}`,
+    `${roundTripUnanswered(error)} This Dispatch refuses a request that long, and sending the upload again does not change that: shorten the text or split it across documents.${asBytes}`,
     { cause: error }
   );
 }
@@ -163,29 +170,35 @@ function withoutFinalLineFeed(text: string): string {
  * What Dispatch says of the inline text an upload would store (`storedTextCheck`):
  * - `kept`: the store writes the text as given, but for one final line feed, or the text is
  *   blank, which goes to the server unchecked;
- * - `respelled`: the store writes it under another spelling, and `refusal` is what the call
- *   throws for it;
- * - `too-large`: the call refuses the text for its size, and `refusal` is what it throws for it:
- *   text past the bytes one document may hold (`documentTooLarge`), or text whose round trip
- *   Dispatch refused as too large (`roundTripTooLarge`);
+ * - `refused`: the call refuses the text, and `refusal` is what it throws for it: a
+ *   `ToolInputError` for text the store writes under another spelling (`storedTextProblem`), and
+ *   an `Error` for text it refuses for its size, past the bytes one document may hold
+ *   (`inlineTextTooLarge`) or whose round trip Dispatch refused as too large (`roundTripTooLarge`);
  * - `no-route`: this Dispatch holds no round-trip route (`roundTripRouteAbsent`), so the upload
  *   goes on unchecked and the server makes its own answer;
  * - `failed`: any other failure, which refuses the upload (`storedTextCheckFailed`).
  */
 export type StoredTextCheck =
   | { readonly kind: "kept" }
-  | { readonly kind: "respelled"; readonly refusal: ToolInputError }
-  | { readonly kind: "too-large"; readonly refusal: Error }
+  | { readonly kind: "refused"; readonly refusal: Error }
   | { readonly kind: "no-route"; readonly error: DispatchServiceError }
   | { readonly kind: "failed"; readonly error: unknown };
 
 /**
- * The refusal of inline text past MARKDOWN_DOCUMENT_MAX_BYTES, counted in UTF-8 as the server
- * counts the text it is sent: the server's own `413 CAP_EXCEEDED` in its own words
- * (MARKDOWN_DOCUMENT_TOO_LARGE), which `messageFor` prints as it prints that answer.
+ * The refusal of inline `content` past MARKDOWN_DOCUMENT_MAX_BYTES, or undefined for text within
+ * it. Its bytes are counted in UTF-8 as the server counts the text it is sent (`utf8Bytes`), never
+ * in the UTF-16 units of `content.length`. The refusal is the server's own `413 CAP_EXCEEDED` in
+ * its own words (MARKDOWN_DOCUMENT_TOO_LARGE), which `messageFor` prints as it prints that answer,
+ * for an upload within the server's 25 MiB file cap; past that cap the server answers `artifact
+ * blob exceeds 25 MB` instead (errUploadTooLarge). The server refuses such an upload whatever name
+ * it carries, so `dispatch artifact` refuses such text first: the call before it reads whether the
+ * owner holds the name (`artifactCommand`), and the call and its dry run before they ask the round
+ * trip (`storedTextCheck`).
  */
-function documentTooLarge(): Error {
-  return new Error(`CAP_EXCEEDED: ${MARKDOWN_DOCUMENT_TOO_LARGE}`);
+export function inlineTextTooLarge(content: string): Error | undefined {
+  return utf8Bytes(content) > MARKDOWN_DOCUMENT_MAX_BYTES
+    ? new Error(`CAP_EXCEEDED: ${MARKDOWN_DOCUMENT_TOO_LARGE}`)
+    : undefined;
 }
 
 /**
@@ -197,11 +210,9 @@ function documentTooLarge(): Error {
  * trip is returned, never thrown; `client` is called once, for the client the round trip goes
  * through, and what it throws is thrown.
  *
- * Text past MARKDOWN_DOCUMENT_MAX_BYTES is `too-large` before the blank test below, since the
- * server refuses an upload of such text whatever it holds, and it asks Dispatch nothing. `client`
- * is still called for it, as the call builds its client before this check, so a session with no
- * Dispatch answers as it does for any other text. Its bytes are counted in UTF-8, as the server
- * counts them, never in the UTF-16 units of `content.length`.
+ * Text past MARKDOWN_DOCUMENT_MAX_BYTES is `refused` (`inlineTextTooLarge`) before the blank test
+ * below, since the server refuses an upload of such text whatever it holds, and without calling
+ * `client`, so nothing is asked for it and a dry run of it builds no client.
  *
  * Blank text (`goBlankPattern`) is `kept` without calling `client`, so nothing is asked for it,
  * and a dry run of it builds no client: the round trip answers the empty string for
@@ -218,10 +229,8 @@ export async function storedTextCheck(
   name: string,
   content: string
 ): Promise<StoredTextCheck> {
-  if (Buffer.byteLength(content, "utf8") > MARKDOWN_DOCUMENT_MAX_BYTES) {
-    client();
-    return { kind: "too-large", refusal: documentTooLarge() };
-  }
+  const tooLarge = inlineTextTooLarge(content);
+  if (tooLarge !== undefined) return { kind: "refused", refusal: tooLarge };
   if (goBlankPattern.test(content)) return { kind: "kept" };
   const dispatch = client();
   let stored: string;
@@ -230,7 +239,7 @@ export async function storedTextCheck(
   } catch (error) {
     if (roundTripRouteAbsent(error)) return { kind: "no-route", error };
     if (dispatchAnswered(error, 413)) {
-      return { kind: "too-large", refusal: roundTripTooLarge(error, name) };
+      return { kind: "refused", refusal: roundTripTooLarge(error, name) };
     }
     return { kind: "failed", error };
   }
@@ -240,7 +249,7 @@ export async function storedTextCheck(
   return withoutFinalLineFeed(stored) === withoutFinalLineFeed(content)
     ? { kind: "kept" }
     : {
-        kind: "respelled",
+        kind: "refused",
         refusal: new ToolInputError(tool, [storedTextProblem(content, stored, name)]),
       };
 }

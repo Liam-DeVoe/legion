@@ -293,6 +293,9 @@ const keptText = (markdown: string): Response =>
 /** How POST /api/v1/markdown/round-trip answers the markdown it is sent: as the store keeps it,
  *  unless a test sets another answer. */
 let roundTrip: (markdown: string) => Response | Promise<Response> = keptText;
+/** What DSP-1 holds, which an upload reads to refuse a name that exists: no document, unless a
+ *  test sets another answer. */
+let issueArtifacts: readonly object[] = [];
 
 const server = Bun.serve({
   port: 0,
@@ -324,10 +327,11 @@ const server = Bun.serve({
       });
     }
     // What the issue holds, which an upload reads to refuse a name that exists: DSP-1 holds no
-    // document here, so every upload below writes a first version. It is recorded with the rest.
+    // document here unless a test says it does (`issueArtifacts`), so every other upload below
+    // writes a first version. It is recorded with the rest.
     if (pathname === "/api/v1/issues/DSP-1/artifacts" && request.method === "GET") {
       requests.push({ method: request.method, path: pathname, body: undefined });
-      return Response.json([]);
+      return Response.json(issueArtifacts);
     }
     const text = await request.text();
     const body = text === "" ? undefined : JSON.parse(text);
@@ -553,6 +557,7 @@ beforeEach(() => {
   handoffs.length = 0;
   interests = () => Response.json({ error: "unset" }, { status: 500 });
   roundTrip = keptText;
+  issueArtifacts = [];
   stateDir = makeDirectory();
   // Each run is its own process in production: nothing the library remembers carries over.
   resetAdviceMemory();
@@ -649,6 +654,14 @@ const UPLOAD = ["artifact", "--issue", "DSP-1", "--name", "notes.md", "--content
 const NOTES = "# Notes\n\n* one\n";
 const NOTES_JSON = `${JSON.stringify({ issue: "DSP-1", name: "notes.md", content: NOTES }, null, 2)}\n`;
 const ROUND_TRIP = "/api/v1/markdown/round-trip";
+
+/** A text past the bytes one document holds, counted in UTF-8 as Dispatch counts them: each "é"
+ *  is one UTF-16 unit and two bytes, so the text's length is under the limit and its bytes are
+ *  past it. */
+const PAST_DOCUMENT_LIMIT = `# Notes\n\n${"é".repeat(MARKDOWN_DOCUMENT_MAX_BYTES / 2)}\n`;
+/** The refusal of such a text, in Dispatch's own words, as the call and its dry run print it. */
+const DOCUMENT_TOO_LARGE =
+  "CAP_EXCEEDED: a markdown document is at most 1 MiB; a larger file is stored as a binary artifact under another content type";
 
 /** The stderr line of an upload's dry run against a Dispatch with no round-trip route. */
 const routeAbsent = (answer: string): string =>
@@ -1123,35 +1136,74 @@ describe("the dispatch CLI", () => {
     ]);
   });
 
-  // A text past the bytes one document holds, counted in UTF-8 as Dispatch counts them: each "é"
-  // is one UTF-16 unit and two bytes, so the text's length is under the limit and its bytes are
-  // past it. The call refuses it in Dispatch's own words before it asks the round trip or uploads,
-  // and its dry run alike, asking Dispatch nothing: the same exit, the same stdout, and the same
-  // line in this session's ledger.
+  // A text past the bytes one document holds (PAST_DOCUMENT_LIMIT). The call refuses it in
+  // Dispatch's own words before it sends anything, the read of whether the issue holds the name
+  // included, and its dry run alike: the same exit, the same stdout, and the same line in this
+  // session's ledger.
   test("an upload's dry run refuses a text past the document limit in UTF-8 bytes as the call does, sending nothing", async () => {
-    const content = `# Notes\n\n${"é".repeat(MARKDOWN_DOCUMENT_MAX_BYTES / 2)}\n`;
-    expect(content.length).toBeLessThan(MARKDOWN_DOCUMENT_MAX_BYTES);
-    expect(Buffer.byteLength(content, "utf8")).toBeGreaterThan(MARKDOWN_DOCUMENT_MAX_BYTES);
-    const refusal =
-      "CAP_EXCEEDED: a markdown document is at most 1 MiB; a larger file is stored as a binary artifact under another content type";
+    expect(PAST_DOCUMENT_LIMIT.length).toBeLessThan(MARKDOWN_DOCUMENT_MAX_BYTES);
+    expect(Buffer.byteLength(PAST_DOCUMENT_LIMIT, "utf8")).toBeGreaterThan(
+      MARKDOWN_DOCUMENT_MAX_BYTES
+    );
 
-    const dry = await run([...UPLOAD, "--dry-run"], omp, content);
+    const dry = await run([...UPLOAD, "--dry-run"], omp, PAST_DOCUMENT_LIMIT);
     expect(requests).toEqual([]);
-    const call = await run(UPLOAD, omp, content);
-    expect(call).toEqual({ code: 1, stdout: `${refusal}\n`, stderr: "" });
+    const call = await run(UPLOAD, omp, PAST_DOCUMENT_LIMIT);
+    expect(call).toEqual({ code: 1, stdout: `${DOCUMENT_TOO_LARGE}\n`, stderr: "" });
     expect(dry).toEqual(call);
-    // The call read whether the issue holds the name, and asked nothing else.
-    expect(requests).toEqual([
-      { method: "GET", path: "/api/v1/issues/DSP-1/artifacts", body: undefined },
-    ]);
+    expect(requests).toEqual([]);
     expect(ledger("ses-1").map(({ tool, error }) => ({ tool, error }))).toEqual([
-      { tool: "dispatch_artifact", error: refusal },
-      { tool: "dispatch_artifact", error: refusal },
+      { tool: "dispatch_artifact", error: DOCUMENT_TOO_LARGE },
+      { tool: "dispatch_artifact", error: DOCUMENT_TOO_LARGE },
     ]);
   });
 
-  // A text whose round trip Dispatch refuses as too large, as errMarkdownRoundTripTooLarge answers
-  // a body past the route's own limit: the call refuses it naming what to do instead of sending it
+  // Dispatch refuses an upload past the document limit whatever name it carries, so the call
+  // refuses such a text for its size before it reads whether the issue holds the name, and
+  // answers it under a held name as its dry run, which reads no held name, does: the same exit and
+  // the same stdout, and neither sends anything. A text within the limit under that name is
+  // refused for the name, which shows the issue holds it.
+  test("an upload past the document limit under a name the issue holds is refused for its size, by the call as by its dry run", async () => {
+    issueArtifacts = [
+      {
+        id: "artifact-notes",
+        issue_key: "DSP-1",
+        name: "notes.md",
+        slug: "notes-md",
+        kind: "doc",
+        created_by: { kind: "user", id: "alice" },
+        versions: [{ number: 1, authors: [{ kind: "user", id: "alice" }] }],
+      },
+    ];
+    const named = await run(UPLOAD, omp, NOTES);
+    expect(named.code).toBe(2);
+    expect(named.stdout).toStartWith(
+      "dispatch artifact was not called: 1 problem\n- issue DSP-1 already holds notes.md"
+    );
+    requests.length = 0;
+
+    const dry = await run([...UPLOAD, "--dry-run"], omp, PAST_DOCUMENT_LIMIT);
+    expect(requests).toEqual([]);
+    const call = await run(UPLOAD, omp, PAST_DOCUMENT_LIMIT);
+    expect(call).toEqual({ code: 1, stdout: `${DOCUMENT_TOO_LARGE}\n`, stderr: "" });
+    expect(dry).toEqual(call);
+    expect(requests).toEqual([]);
+  });
+
+  // The dry run asks Dispatch nothing for a text past the document limit, so it builds no client
+  // for it: with Dispatch off it refuses the text as it does with Dispatch on, and says nothing
+  // about Dispatch on stderr.
+  test("an upload's dry run with Dispatch off refuses a text past the document limit, building no client", async () => {
+    const off = { ...omp, DISPATCH_URL: undefined, DISPATCH_TOKEN: undefined };
+    const dry = await run([...UPLOAD, "--dry-run"], off, PAST_DOCUMENT_LIMIT);
+    expect(dry).toEqual({ code: 1, stdout: `${DOCUMENT_TOO_LARGE}\n`, stderr: "" });
+    expect(requests).toEqual([]);
+  });
+
+  // A text whose round trip Dispatch refuses as too large. Every text the round trip is asked
+  // about is within the document limit, and its body is then under the route's own limit
+  // (markdownRoundTripLimit), so only a Dispatch that reads less than that answers so, and it
+  // answers every repeat alike: the call refuses the text naming what to do instead of sending it
   // again, with --path where the name keeps the bytes, and its dry run alike, with the same exit
   // and the same stdout. Neither uploads.
   test("an upload's dry run refuses a text whose round trip Dispatch answers 413 as the call does", async () => {
@@ -1160,7 +1212,7 @@ describe("the dispatch CLI", () => {
         { code: "CAP_EXCEEDED", error: "request body exceeds 6292480 bytes" },
         { status: 413 }
       );
-    const refusal = `Dispatch could not say how it would store this text, so nothing was uploaded: POST ${ROUND_TRIP} failed with CAP_EXCEEDED: request body exceeds 6292480 bytes. This text is longer than the check reads, and sending the upload again does not change that: a markdown document is at most 1 MiB, so shorten it or split it across documents of at most that.`;
+    const refusal = `Dispatch could not say how it would store this text, so nothing was uploaded: POST ${ROUND_TRIP} failed with CAP_EXCEEDED: request body exceeds 6292480 bytes. This Dispatch refuses a request that long, and sending the upload again does not change that: shorten the text or split it across documents.`;
     for (const [name, asBytes] of [
       ["notes.md", ""],
       ["notes", ` Send it as a file with ${PATH_KEEPS_BYTES}, which asks this check nothing.`],

@@ -419,12 +419,14 @@ export async function runDispatchCli(
           });
         },
       });
+      // The call prints what it throws as `messageFor` prints it, and exits 2 on a
+      // `ToolInputError` and 1 on any other error, and so does its dry run.
       if (verdict.kind === "refused") {
-        return refuse(verdict.refusal.message, USAGE, parsed.tool);
-      }
-      // An error the call throws exits 1 there, printed as `messageFor` prints it, and so here.
-      if (verdict.kind === "thrown") {
-        return refuse(messageFor(verdict.error), REFUSED, parsed.tool);
+        return refuse(
+          messageFor(verdict.refusal),
+          verdict.refusal instanceof ToolInputError ? USAGE : REFUSED,
+          parsed.tool
+        );
       }
       if (verdict.warning !== undefined) io.stderr(`${verdict.warning}\n`);
     }

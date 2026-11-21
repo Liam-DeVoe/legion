@@ -1010,13 +1010,18 @@ its step in the command table (`DispatchCommand.dryRun`, `dispatch-commands/tabl
 such step is `dispatch artifact`'s: for inline content, it makes the call's own stored-text check
 (`storedTextCheck`), and refuses with the call's refusal and exit code a text the call refuses: one
 Dispatch would store under another spelling (`POST /api/v1/markdown/round-trip`, asked for text
-that is not blank), or one the call refuses for its size, which is text past the 1 MiB of UTF-8
-one document holds (`CAP_EXCEEDED`, refused without asking) or text whose round trip Dispatch
-answers 413 (exit 1, as the call). The step waits at most 5 s. When it gets no answer (no Dispatch
-configured, any other failure, no answer in time, or a Dispatch without the route), the dry run
-passes, and one `dispatch: warning:` line on stderr says why and what the call does then, so the
-JSON stays alone on stdout. With `DISPATCH_DRY_RUN_LOCAL=1` an upload's dry run asks Dispatch
-nothing, for a caller that reads the arguments alone; the variable does not change a
+that is not blank), or one the call refuses for its size. Text past the 1 MiB of UTF-8 one
+document holds is refused with `CAP_EXCEEDED` and exit 1 without asking Dispatch anything
+(`inlineTextTooLarge`): the call refuses it before it reads whether the owner holds the name, so
+the two answer alike under a held name too, and the dry run builds no client for it, so it refuses
+it with no Dispatch configured too. Text whose round trip Dispatch answers 413 is refused with
+exit 1, as the call refuses it; such text is within the document limit, whose round trip's body
+is under the route's own limit, so only a Dispatch that reads less than that answers so. The step
+waits at most 5 s. When it gets no answer (no Dispatch configured, any other failure, no answer in
+time, or a Dispatch without the route), the dry run passes, and one `dispatch: warning:` line on
+stderr says why and what the call does then, so the JSON stays alone on stdout. With
+`DISPATCH_DRY_RUN_LOCAL=1` an upload's dry run asks Dispatch nothing, for a caller that reads the
+arguments alone; the variable does not change a
 `dispatch result` record's dry run. That dry run asks Dispatch through
 the call itself (`dryRunAsksDispatch`): it needs Dispatch on, as the record does, reads what the
 record reads (this session's title among it), and after the arguments prints the pull-request body

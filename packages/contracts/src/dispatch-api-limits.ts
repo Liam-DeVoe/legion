@@ -43,10 +43,11 @@ export const PROJECT_NAME_MAX = 80;
 /**
  * The most bytes of markdown one document may hold, counted in UTF-8 as the server counts a body:
  * what one upload of a markdown document may send, and what a write may grow a stored document's
- * rendering to. An upload past it is `413 CAP_EXCEEDED` with MARKDOWN_DOCUMENT_TOO_LARGE.
+ * rendering to. An upload past it is `413 CAP_EXCEEDED` with MARKDOWN_DOCUMENT_TOO_LARGE, up to the
+ * server's 25 MiB file cap; past that cap the server answers `artifact blob exceeds 25 MB` instead.
  * Generated into Go as `contracts.MarkdownDocumentMaxBytes`, which is the server's
- * `pmdoc.MaxDocumentBytes`, and `dispatch artifact` refuses inline text past it before it sends
- * anything, in its call and its dry run alike.
+ * `pmdoc.MaxDocumentBytes`. `dispatch artifact` and its dry run refuse inline text past it before
+ * they ask the round trip or upload, and the call before it reads whether the owner holds the name.
  */
 export const MARKDOWN_DOCUMENT_MAX_BYTES = 1 << 20;
 
@@ -54,7 +55,7 @@ export const MARKDOWN_DOCUMENT_MAX_BYTES = 1 << 20;
  * What the `413 CAP_EXCEEDED` of an upload whose markdown is past MARKDOWN_DOCUMENT_MAX_BYTES says.
  * Generated into Go as `contracts.MarkdownDocumentTooLarge`, which the upload route answers, and
  * `dispatch artifact` prints it after `CAP_EXCEEDED: ` for inline text past that bound, so its own
- * refusal and the server's are one text.
+ * refusal and the server's are one text for an upload within the server's 25 MiB file cap.
  */
 export const MARKDOWN_DOCUMENT_TOO_LARGE = `a markdown document is at most ${MARKDOWN_DOCUMENT_MAX_BYTES / (1 << 20)} MiB; a larger file is stored as a binary artifact under another content type`;
 
