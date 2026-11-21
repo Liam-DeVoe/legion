@@ -202,7 +202,9 @@ func reapedPID(t *testing.T) int {
 }
 
 // healthzOn serves /healthz on one address and returns the port, so a status can be told to dial
-// somewhere other than 127.0.0.1 and be wrong about it.
+// somewhere other than 127.0.0.1 and be wrong about it. A client's headers have what is left of
+// the test binary's deadline less 30 s to arrive: a status a loaded machine makes slow to write
+// them is still answered.
 func healthzOn(t *testing.T, host string) int {
 	t.Helper()
 	listener, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
@@ -213,7 +215,7 @@ func healthzOn(t *testing.T, host string) int {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
-	server := &http.Server{Handler: mux, ReadHeaderTimeout: time.Second}
+	server := &http.Server{Handler: mux, ReadHeaderTimeout: testwait.Bounded(t, 1<<60, 30*time.Second)}
 	go func() { _ = server.Serve(listener) }()
 	t.Cleanup(func() { _ = server.Close() })
 	return listener.Addr().(*net.TCPAddr).Port

@@ -1251,9 +1251,16 @@ func refuseLegionGhAsRealGh(gh string) error {
 // ghHelpTimeout is the longest readGhHelp waits for the real gh to print a command's help. The
 // real gh prints it from its own binary in well under a second; a gh that has not in 30 s is
 // hung, and the person running `legion gh` gets a refusal that names the wait rather than a call
-// that never returns. It is a variable so that this package's tests can give it their own deadline
-// (testBounds), or a second to read that the stop comes.
+// that never returns. A test shortens it to read that the stop comes.
 var ghHelpTimeout = 30 * time.Second
+
+// programBound is the bound a read of legion's gives a program it starts and waits for, at the
+// moment the read starts: *bound, the read's own (ghGitReadBound, ghHelpTimeout,
+// visibilityAnswerBound, forkReadBound), in the legion binary. This package's tests make it what
+// is left of the test binary's deadline for each of those no test has set itself (testBounds), so
+// a program a loaded machine makes slow is waited for, and one that never answers still fails its
+// row before that deadline.
+var programBound = func(bound *time.Duration) time.Duration { return *bound }
 
 // readGhHelp is the real gh's help of the command path, `gh <path> --help` (`gh --help` for
 // gh's own), run with env (runGh's ghChildEnviron of the caller's GH_CONFIG_DIR) and refused when
@@ -1265,7 +1272,8 @@ var ghHelpTimeout = 30 * time.Second
 // runGh's, which main cancels on a SIGINT or a SIGTERM and hangupCancels on a SIGHUP. It runs
 // under leakguard.RunByRealGhVar, so a gh that leads back to `legion gh` is refused there.
 func readGhHelp(ctx context.Context, gh string, env, path []string) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, ghHelpTimeout)
+	bound := programBound(&ghHelpTimeout)
+	ctx, cancel := context.WithTimeout(ctx, bound)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, gh, append(slices.Clone(path), "--help")...)
 	killed := procgroup.Configure(cmd)
@@ -1275,7 +1283,7 @@ func readGhHelp(ctx context.Context, gh string, env, path []string) (string, err
 	if err := cmd.Run(); err != nil {
 		switch {
 		case killed() && errors.Is(ctx.Err(), context.DeadlineExceeded):
-			return "", fmt.Errorf("gh did not answer its help within %s, and its process group was stopped", ghHelpTimeout)
+			return "", fmt.Errorf("gh did not answer its help within %s, and its process group was stopped", bound)
 		case killed():
 			return "", fmt.Errorf("gh's help read was stopped, with its process group: %v", context.Cause(ctx))
 		}

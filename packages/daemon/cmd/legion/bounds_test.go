@@ -24,11 +24,13 @@ const testBoundMargin = 30 * time.Second
 // program, and none is what a test here reads: each is all the time a started program has to start
 // and answer, and a loaded machine makes starts slow. At a box load of about 1,100 a git behind a
 // one-line script ran out ghGitReadBound's 30 s in TestGhRepoGitConfigRefusalWithNoGitOrAnOldGit,
-// and a run of this binary as `legion gh` reached the stand-in gh after visibilityAnswerBound's 15 s
-// in TestLegionGhReadsOnlyWhatTheSharedCheckReadsAsARead. So this binary sets each to what is left
-// of its own deadline less testBoundMargin (boundByTheDeadline), in its own process and in each run
-// of it as `legion` (TestMain, testDeadlineEnviron): a program that never answers still fails its
-// row by name before the binary's deadline. A test that reads a bound's stop sets that bound itself.
+// and at a load average of 744 a run of this binary as `legion gh` reached the stand-in gh after
+// visibilityAnswerBound's 15 s in TestLegionGhReadsOnlyWhatTheSharedCheckReadsAsARead. So in this
+// binary each read takes what is left of the binary's deadline less testBoundMargin when the read
+// starts (boundByTheDeadline), in its own process and in each run of it as `legion` (TestMain,
+// testDeadlineEnviron): a program that never answers still fails its row by name before the
+// binary's deadline, however late in the run its read starts. A test that reads a bound's own stop
+// sets that bound itself, and a bound a test has set keeps that test's value.
 var testBounds = []*time.Duration{&ghGitReadBound, &ghHelpTimeout, &visibilityAnswerBound, &forkReadBound}
 
 // testBinaryDeadline is the deadline go test's -timeout gives this binary, reckoned from now, and
@@ -45,13 +47,20 @@ func testBinaryDeadline() (time.Time, bool) {
 	return time.Now().Add(timeout), true
 }
 
-// boundByTheDeadline sets each of testBounds to what is left of deadline less testBoundMargin, and
-// hands deadline to each run of this binary as `legion` whose environment is this process's own
-// (testDeadlineEnv).
+// boundByTheDeadline makes programBound answer, for each of testBounds that still holds the value
+// it held when this was called, what is left of deadline less testBoundMargin at the moment the
+// read asks; a bound a test has set answers its own value. It hands deadline to each run of this
+// binary as `legion` whose environment is this process's own (testDeadlineEnv).
 func boundByTheDeadline(deadline time.Time) error {
-	left := time.Until(deadline) - testBoundMargin
+	product := make(map[*time.Duration]time.Duration, len(testBounds))
 	for _, bound := range testBounds {
-		*bound = left
+		product[bound] = *bound
+	}
+	programBound = func(bound *time.Duration) time.Duration {
+		if held, ok := product[bound]; !ok || *bound != held {
+			return *bound
+		}
+		return time.Until(deadline) - testBoundMargin
 	}
 	return os.Setenv(testDeadlineEnv, deadline.Format(time.RFC3339Nano))
 }
