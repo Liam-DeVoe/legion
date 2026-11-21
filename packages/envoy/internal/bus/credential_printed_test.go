@@ -103,10 +103,11 @@ func lookupOf(values map[string]string) func(string) (string, bool) {
 // URLs a comma in a credential split, as every caller splits its list: a password's, a password's
 // whose head is all digits and a token's, whose second piece names no scheme, and a token's whose
 // second piece names one nats.go does not dial; and a websocket URL with the token in its query
-// whose path stops parsing once nats.go's handshake decodes it. The bus trims its list before
-// nats.go reads Servers as written, so a URL with white space around it connects. Then every line
-// the bus logs through slog while test servers refuse the connection holds none of them: a
-// seed's user the restarted server no longer admits, a service token the server refuses from the
+// whose path stops parsing once nats.go's handshake decodes it, and the same URL written with no
+// scheme after a first ws:// URL, which nats.go gives the pool's ws scheme. The bus trims its list
+// before nats.go reads Servers as written, so a URL with white space around it connects. Then
+// every line the bus logs through slog while test servers refuse the connection holds none of
+// them: a seed's user the restarted server no longer admits, a service token the server refuses from the
 // first connect, and a token written as the server URL's user name - refused; admitted by a
 // server that then reports a slow consumer, stops and starts again; and dialled where nothing
 // answers. Each flow's lines are required, so a run that logged nothing cannot pass, and every
@@ -227,11 +228,11 @@ func TestTheBusCredentialPrintsNoSeedOrToken(t *testing.T) {
 			{name: "a server URL whose password holds a comma, split as every caller splits its list", urls: strings.Split(withPassword(commaPassword), ","),
 				env: remote, names: []string{"NATS server URL 1 of 2 cannot be read", "does not parse as a URL"}},
 			{name: "a server URL whose password holds a comma after digits, split", urls: strings.Split(withPassword(digitsPassword), ","),
-				env: remote, names: []string{"NATS server URL 2 of 2 cannot be read", "names no NATS scheme", "(%2C)"}},
+				env: remote, names: []string{"NATS server URL 2 of 2 cannot be read", "names none of the schemes nats, tls, ws and wss", "(%2C)"}},
 			{name: "a server URL naming a token that holds a comma as its user, split", urls: strings.Split("nats://"+commaToken+"@127.0.0.1:1", ","),
-				env: remote, names: []string{"NATS server URL 2 of 2 cannot be read", "names no NATS scheme", "(%2C)"}},
+				env: remote, names: []string{"NATS server URL 2 of 2 cannot be read", "names none of the schemes nats, tls, ws and wss", "(%2C)"}},
 			{name: "a server URL naming a token that holds a comma and a scheme as its user, split", urls: strings.Split("nats://"+schemedToken+"@127.0.0.1:1", ","),
-				env: remote, names: []string{"NATS server URL 2 of 2 cannot be read", "names no NATS scheme", "(%2C)"}},
+				env: remote, names: []string{"NATS server URL 2 of 2 cannot be read", "names none of the schemes nats, tls, ws and wss", "(%2C)"}},
 			{name: "a server URL naming a token that holds a / as its user", urls: []string{"nats://" + slashedToken + "@127.0.0.1:1"},
 				env: remote, names: []string{"NATS server URL 1 of 1 cannot be read", `an "@" stands after its host`}},
 			{name: "a server URL that does not parse with the token in its query", urls: []string{"nats://127.0.0.1:1/%zz?token=" + token},
@@ -240,6 +241,9 @@ func TestTheBusCredentialPrintsNoSeedOrToken(t *testing.T) {
 			// does against a server, where the handshake's parse error quotes the URL it rebuilt.
 			{name: "a websocket URL with the token in its query whose path stops parsing once decoded", urls: []string{"ws://" + takingListener(t) + "/%25zz?token=" + token},
 				names: []string{"NATS server URL 1 of 1 cannot be read", "does not parse once decoded", "%2525"}},
+			{name: "a ws list's later URL with no scheme, the token in its query, whose path stops parsing once decoded",
+				urls:  []string{"ws://127.0.0.1:1", takingListener(t) + "/%25zz?token=" + token},
+				names: []string{"NATS server URL 2 of 2 cannot be read", "does not parse once decoded", "%2525"}},
 		} {
 			t.Run(row.name, func(t *testing.T) {
 				if row.unreadable && os.Geteuid() == 0 {

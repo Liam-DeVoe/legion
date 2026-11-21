@@ -38,22 +38,29 @@ const (
 	// a URL that holds one is a list of servers or a credential holding a comma.
 	CommaReason = `it holds a comma, which the NATS client reads as a list of servers: list each server as its own nats_urls entry, and write a comma in a credential percent-encoded (%2C)`
 	// TailReason is a later URL's, of a list a caller split on its commas, that carries a user name
-	// or password and names no scheme the NATS client dials: what a comma in a credential leaves
-	// after it. nats.go dialled such a URL with no scheme as nats://, so a list that was written
-	// so names the URL's scheme.
-	TailReason = `it carries a user name or password and names no NATS scheme (nats, tls, ws or wss), as the part after a comma in a credential does once the list is split on its commas; name the URL's scheme, and write a comma in a credential percent-encoded (%2C)`
+	// or password and names none of the schemes NATS servers are written with: what a comma in a
+	// credential leaves after it. nats.go dials such a URL too, a scheme-less one as nats:// and one
+	// of any other scheme as plain NATS, so a list written so connected before. It is refused all
+	// the same: a user name or password written in a URL is a credential there, and where a comma
+	// split it, the part before the comma is a URL nats.go dials, its head read as a host and named
+	// as the host it could not reach.
+	TailReason = `it carries a user name or password and names none of the schemes nats, tls, ws and wss, as the part after a comma in a credential does once the list is split on its commas; such a URL connected before, but a credential split there has its head dialled and printed as a host: name the URL's scheme, and write a comma in a credential percent-encoded (%2C)`
 )
 
-// schemes are the schemes nats.go dials a server by.
+// schemes are the schemes NATS servers are written with. nats.go dials a URL of any other scheme
+// too, as plain NATS; the tail rule refuses one that carries a user name or password.
 var schemes = []string{"nats", "tls", "ws", "wss"}
 
 // Refusal is why nats.go would read server, one trimmed server URL, other than as written, and ""
-// when it would not: read as nats.go reads it, a scheme added where it has none, it does not parse;
-// it parses with an "@" after its host (UserinfoPastHost); or it is a websocket URL whose handshake
-// URL does not parse (HandshakeURLParses).
-func Refusal(server string) string {
+// when it would not: read as nats.go reads it, nats:// added where it names no scheme, it does not
+// parse; it parses with an "@" after its host (UserinfoPastHost); or it is a websocket URL whose
+// handshake URL does not parse (HandshakeURLParses).
+func Refusal(server string) string { return refusal(server, "nats") }
+
+// refusal is Refusal with scheme added where server names none, as nats.go adds its pool's.
+func refusal(server, scheme string) string {
 	if !strings.Contains(server, "://") {
-		server = "nats://" + server
+		server = scheme + "://" + server
 	}
 	parsed, err := url.Parse(server)
 	switch {
@@ -67,22 +74,41 @@ func Refusal(server string) string {
 	return ""
 }
 
+// EntryRefusal is Refusal for one URL of a list its caller joins with commas before nats.go reads
+// it, as the Legion daemon's nats_urls are: a comma in the URL ends it there, so the URL is a list
+// of servers or a credential holding a comma (CommaReason), and otherwise Refusal's reason.
+func EntryRefusal(server string) string {
+	if strings.Contains(server, ",") {
+		return CommaReason
+	}
+	return Refusal(server)
+}
+
 // Check trims each of urls, a list a caller split on its commas, and returns the trimmed list,
 // which is the list to dial: nats.go parses a server as written, so an untrimmed URL would pass
 // the rules trimmed and reach nats.go untrimmed, whose parse error quotes it whole. It also returns
 // the 1-based position of the first URL nats.go would read other than as written, with its reason
 // (Refusal, and for a later URL TailReason), or 0 and "".
+//
+// A later URL that names no scheme is read with the pool's, as nats.go reads it
+// (parseServerURL, connScheme): the first URL's websocket scheme, so a ws or wss list's later
+// scheme-less URL goes through the websocket handshake rule too, and nats:// otherwise.
 func Check(urls []string) (trimmed []string, position int, reason string) {
 	trimmed = make([]string, len(urls))
 	for index, raw := range urls {
 		trimmed[index] = strings.TrimSpace(raw)
 	}
+	pool := "nats"
 	for index, server := range trimmed {
 		scheme, _, named := strings.Cut(server, "://")
-		if index > 0 && strings.Contains(server, "@") && (!named || !slices.Contains(schemes, strings.ToLower(scheme))) {
+		scheme = strings.ToLower(scheme)
+		if index == 0 && named && (scheme == "ws" || scheme == "wss") {
+			pool = scheme
+		}
+		if index > 0 && strings.Contains(server, "@") && (!named || !slices.Contains(schemes, scheme)) {
 			return trimmed, index + 1, TailReason
 		}
-		if why := Refusal(server); why != "" {
+		if why := refusal(server, pool); why != "" {
 			return trimmed, index + 1, why
 		}
 	}

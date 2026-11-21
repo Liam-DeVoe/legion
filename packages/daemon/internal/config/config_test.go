@@ -1158,6 +1158,15 @@ func TestLoadRefuses(t *testing.T) {
 			want: `nats_urls entry 1 cannot be read: it holds a comma, which the NATS client reads as a list of servers: list each server as its own nats_urls entry, and write a comma in a credential percent-encoded (%2C)`,
 		},
 		{
+			// A websocket entry whose path stops parsing once decoded, as the NATS client's handshake
+			// decodes it: it loaded before and the daemon's connect then refused it; the loader now
+			// refuses it with natsurl's reason.
+			name: "nats_urls websocket entry whose path stops parsing once decoded",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				`nats_urls: ["ws://127.0.0.1:4222/%25zz"]`+"\n", 1),
+			want: `nats_urls entry 1 cannot be read: its path does not parse once decoded, as the NATS client's websocket handshake decodes it; write a "%" in its path as %2525`,
+		},
+		{
 			name: "nats_urls entry naming a token that holds a / as its user",
 			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
 				`nats_urls: ["nats://madeUpNatsToken/abc@127.0.0.1:4222"]`+"\n", 1),
