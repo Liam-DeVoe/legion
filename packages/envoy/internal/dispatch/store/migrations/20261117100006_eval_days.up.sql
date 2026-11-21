@@ -147,7 +147,18 @@ create table eval_days (
     updated_at timestamptz not null default now(),
     primary key (project_key, eval_id, writer, deploy_repo, series, repo, day),
     constraint eval_days_eval_of_project check (starts_with(eval_id, project_key || '/'))
-);
+)
+-- fillfactor 80: a rewrite after a change of the delivery settings (evals.rewriteSettings)
+-- updates every row it sends, and none of its updates moves a column an index holds, so with a
+-- fifth of each page left free the new version of a row stays on its page, a heap-only (HOT)
+-- update, and writes no index entry. Against the default of 100, measured for
+-- dispatch://INFRA-2916 (round 14's fillfactor probe: the rewrite's exact upserts on farm-shaped
+-- tables, medians of 7 interleaved rounds), a first pass over 2,181 day rows took 416 ms where it
+-- took 713, 91.6 % of its updates HOT where 0.2 %, and wrote 0.93 MB of WAL where 1.89; over 60
+-- passes with no vacuum the table grew 0.69 MiB a pass at 100 and stopped growing by pass 8 at
+-- 80, smaller than at 100 with autovacuum at its defaults. The cost is up to a quarter more heap
+-- as the rows are loaded.
+with (fillfactor = 80);
 create index eval_days_window on eval_days (project_key, repo, day) where listed;
 create index eval_days_stamps on eval_days (project_key, eval_id, writer, day) where listed;
 

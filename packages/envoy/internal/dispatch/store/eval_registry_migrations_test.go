@@ -560,6 +560,27 @@ func TestAnUpdateThatMovesADayRowsDayLogsBothDays(t *testing.T) {
 	}
 }
 
+// TestTheTablesARewriteUpdatesLeaveAFifthOfEachPageFree: eval_days, eval_range_figures and
+// eval_day_figures are created with fillfactor 80 (migrations 20261117100006 and
+// 20261120072042). A rewrite after a change of the delivery settings updates every row it sends
+// and moves no column an index holds, so the fifth of each page left free keeps each update on its
+// page (HOT), writing no index entry; at the default of 100 almost none is, and each table grows
+// with every pass until a vacuum.
+func TestTheTablesARewriteUpdatesLeaveAFifthOfEachPageFree(t *testing.T) {
+	ctx := context.Background()
+	store := migratedEmptyStore(t)
+	for _, table := range []string{"eval_days", "eval_range_figures", "eval_day_figures"} {
+		var options []string
+		if err := store.Pool.QueryRow(ctx,
+			`select coalesce(reloptions, '{}') from pg_class where oid = $1::regclass`, table).Scan(&options); err != nil {
+			t.Fatalf("read %s's options: %v", table, err)
+		}
+		if !slices.Contains(options, "fillfactor=80") {
+			t.Errorf("%s's options are %v; want fillfactor=80", table, options)
+		}
+	}
+}
+
 // TestEveryColumnOfADayRowButItsBookkeepingIsComparedByItsUpdateTrigger: eval_days_updated logs a
 // change of every row whose content an update moved by comparing the old row with the new one
 // column by column (migration 20261117100014), so a column eval_days gains and the comparison
