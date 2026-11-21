@@ -208,8 +208,8 @@ and in 69 s on an empty build cache with the modules already downloaded. On the 
 took 108 to 150 s across the full lanes of #3513 on 2026-11-19 and 20, and in run 44823289704
 (job 136589534717) both Vite builds beside it took 2 min 5 s, where the same build alone takes
 37 s on the same runner type ("built in 36.97s", dispatch-ui job 136589534807). The go build ran
-beside them on the same four CPUs, and on a build cache that held none of its objects it is the
-cold build those Jobs time at a minute and more. That job's restore of go-envoy-test read
+beside them on the same four CPUs, and on a build cache that held almost none of its objects it
+is the cold build those Jobs time at a minute and more. That job's restore of go-envoy-test read
 723,666,370 bytes, in 19 s.
 
 The connections step's `go run` carries CGO_ENABLED=0 too, so it reuses the build step's

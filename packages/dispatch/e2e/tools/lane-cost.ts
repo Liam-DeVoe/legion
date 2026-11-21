@@ -34,10 +34,12 @@
  *  `base` prints, as JSON and sorted by `updated_at`, the runs of ci.yaml created on `<day>` (UTC)
  *  that count for the base set: event merge_group, the merge queue's runs, which are how ci.yaml
  *  runs the full lane on the tree the default branch lands as (ci.yaml runs on pull_request,
- *  merge_group and workflow_dispatch alone, and a dispatch is a run started by hand); concluded
- *  success; updated at or before `<until>`; at least 8 dispatch-browser jobs that were not
- *  skipped, every one of them successful; and a merged report of at least 1,000 rows. Each is
- *  printed with its run, event, head, cost, rows, jobs, own and updated_at.
+ *  merge_group and workflow_dispatch alone; a dispatch is either the bypass check's run at
+ *  main's tip for a push the queue did not test, `main-bypass-check.yaml`, or a run started by
+ *  hand, and neither is a run of the queue); concluded success; updated at or before `<until>`;
+ *  at least 8 dispatch-browser jobs that were not skipped, every one of them successful; and a
+ *  merged report of at least 1,000 rows. Each is printed with its run, event, head, cost, rows,
+ *  jobs, own and updated_at.
  *
  *  THE DAY'S LISTING. GitHub lists at most 1,000 runs for a filtered query and drops the rest
  *  without saying so: ci.yaml had 1,695 completed runs on 2026-11-20, and the listing of that day
