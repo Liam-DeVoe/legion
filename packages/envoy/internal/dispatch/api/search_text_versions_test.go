@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/textversions"
 	"github.com/sjawhar/envoy/internal/dispatch/textversions/textversionstest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -329,19 +330,28 @@ func TestTheKeywordFillWritesWhileTheServerAnswers(t *testing.T) {
 // on the server's own sessionanswers.Latency, while it catches up a backlog of 4,000 events. A
 // transaction locks message_deliveries, which the answers read reads, so an answers read through
 // the handler runs past 800 ms: within one batch the cursor stops, and the fill says it paused.
-// For the 20 s the lock then holds, while events are written, the cursor does not move. Once the
-// lock is released, reads answer within 800 ms, and for the 10 s after the slow read ended the
-// cursor still stands; then the fill says it continues and the cursor moves, and every event,
-// those written under the lock included, gets its rows.
+// A read counts as slow only 800 ms after it began, and a fast database writes the whole backlog
+// sooner, so the fill's first batch waits on a lock of its cursor until the read has turned slow:
+// the fill is still catching up when it does. For the 20 s the lock then holds, while events are
+// written, the cursor does not move. Once the lock is released, reads answer within 800 ms, and
+// for the 10 s after the slow read ended the cursor still stands; then the fill says it continues
+// and the cursor moves, and every event, those written under the lock included, gets its rows.
 func TestTheKeywordFillPausesWhileTheAnswersReadIsSlow(t *testing.T) {
 	server := newKeywordServer(t)
 	backlog := seedKeywordBacklog(t, server.database, server.deps.Events, 4000)
 	last := backlog[len(backlog)-1].ID
 	issue := createInteractionIssue(t, server.handler, "TEST", "Rotate the signing keys", "# Rotation\n")
+	// Each batch locks the cursor's row before it reads an event, which an exclusive lock of the
+	// cursor's table holds back: the fill's first batch, its pause asked while the reads are
+	// fast, waits there.
+	cursorLock, _ := textversionstest.BeginTransaction(t, server.database)
+	defer func() { _ = cursorLock.Rollback(context.Background()) }()
+	if _, err := cursorLock.Exec(t.Context(), `lock table search_text_versions_fill in exclusive mode`); err != nil {
+		t.Fatalf("lock the keyword fill's cursor: %v", err)
+	}
 	fill := startKeywordFill(t, server)
-	fill.AwaitLine(t, keywordBatchLine, time.Minute)
-	if cursor := textversionstest.Cursor(t, server.database); cursor >= last {
-		t.Fatalf("the fill's first batch took the cursor to %d, the backlog's last event %d: it is not catching up as the lock starts", cursor, last)
+	if queued := storetest.WaitForLockWaiters(t, cursorLock, 1, time.Minute); queued < 1 {
+		t.Fatal("the fill's first batch did not reach its cursor within a minute")
 	}
 
 	holder, _ := textversionstest.BeginTransaction(t, server.database)
@@ -357,6 +367,10 @@ func TestTheKeywordFillPausesWhileTheAnswersReadIsSlow(t *testing.T) {
 		return server.latency.Slow(time.Now())
 	})
 	batchesWhenSlow := len(fill.Lines(t, keywordBatchLine))
+	// The batch in flight writes as the read is slow, and the pause holds the next.
+	if err := cursorLock.Rollback(t.Context()); err != nil {
+		t.Fatalf("release the keyword fill's cursor: %v", err)
+	}
 	fill.AwaitLine(t, keywordPausedLine, 30*time.Second)
 	var batchesBeforePause int
 	for _, msg := range fill.Lines(t, "") {
