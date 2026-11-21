@@ -95,10 +95,9 @@ type leaverRig struct {
 	// broker is the secrets broker, and client a machine's client of it.
 	broker *brokertest.Rig
 	client *brokertest.Client
-	// toBroker is the server DISPATCH_AGENT_SECRETS_URL names, through which each of Dispatch's
-	// calls reaches the broker: while brokerStopped is set it cuts each call unanswered, as a
-	// stopped broker leaves it, and counts it in cutCalls.
-	toBroker      *httptest.Server
+	// brokerStopped, while set, has the server DISPATCH_AGENT_SECRETS_URL names, through which each
+	// of Dispatch's calls reaches the broker, cut each call unanswered, as a stopped broker leaves
+	// it, and count it in cutCalls.
 	brokerStopped atomic.Bool
 	cutCalls      atomic.Int64
 	// brokerDispatch is the server the broker's project-access client reaches when the fixture
@@ -390,14 +389,14 @@ func newLeaverRig(t *testing.T, opts ...leaverOption) *leaverRig {
 	for _, hook := range config.toBroker {
 		toBroker = hook(t, r, toBroker)
 	}
-	r.toBroker = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+	brokerProxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if r.brokerStopped.Load() {
 			r.cutCalls.Add(1)
 			panic(http.ErrAbortHandler)
 		}
 		toBroker.ServeHTTP(w, req)
 	}))
-	t.Cleanup(r.toBroker.Close)
+	t.Cleanup(brokerProxy.Close)
 
 	// Dispatch presents the broker rig's own Dispatch account token, as it presents its projected
 	// token in a deployment.
@@ -410,7 +409,7 @@ func newLeaverRig(t *testing.T, opts ...leaverOption) *leaverRig {
 		"DISPATCH_OIDC_AUDIENCE":                    leaverAccountAudience,
 		"DISPATCH_OIDC_ACCOUNTS":                    leaverBrokerAccount,
 		"DISPATCH_ACCESS_ACCOUNTS":                  leaverBrokerAccount,
-		"DISPATCH_AGENT_SECRETS_URL":                r.toBroker.URL,
+		"DISPATCH_AGENT_SECRETS_URL":                brokerProxy.URL,
 		"DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE": accountFile,
 	}
 	var boot bootConfig
@@ -1001,12 +1000,9 @@ func (r *leaverRig) introspection(t *testing.T, p *leaverPerson) (status int, he
 	return response.StatusCode, answer.Held, ""
 }
 
-// dispatchAnswer is a Dispatch answer as a credential call answers it.
+// dispatchAnswer is a Dispatch answer as a credential call answers it, read as a broker answer is.
 func dispatchAnswer(response *httptest.ResponseRecorder) (int, string) {
-	if response.Code < http.StatusMultipleChoices {
-		return response.Code, ""
-	}
-	return response.Code, errorCode(response)
+	return brokerAnswer(response.Code, response.Body.Bytes())
 }
 
 // brokerAnswer is a broker answer as a credential call answers it.

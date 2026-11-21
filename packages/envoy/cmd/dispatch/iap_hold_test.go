@@ -71,7 +71,7 @@ func newIAPHoldRig(t *testing.T) *iapHoldRig {
 func (r *iapHoldRig) browser(method, path, body string) *httptest.ResponseRecorder {
 	r.t.Helper()
 	request := httptest.NewRequest(method, "http://dispatch.test"+path, strings.NewReader(body))
-	request.Header.Set("X-Goog-IAP-JWT-Assertion", iapAssertion(r.t, r.keys, r.signing, testIAPAudience, "example.com"))
+	request.Header.Set(identity.IAPAssertionHeader, iapAssertion(r.t, r.keys, r.signing, testIAPAudience, "example.com"))
 	if method != http.MethodGet {
 		request.Header.Set("Origin", "http://dispatch.test")
 		request.Header.Set("Content-Type", "application/json")
