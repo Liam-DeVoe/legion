@@ -1,6 +1,6 @@
 kind: Removed
 custom:
-  Issue: pr-te19-daemon
+  Issue: pr4805
 body: |-
   `envoy_token_file` is removed: the Envoy listener takes no shared bearer. A `legion.yaml` that
   names it is refused at load, under either runtime, and so is a `controller.yaml` for
