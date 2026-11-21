@@ -2034,7 +2034,8 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 // each key once. An entry that is not a project key is never rendered: it is answered in ignored,
 // in the order given, and NewDispatch prints it at preview (privateProjectsIgnoredMessage), as
 // Dispatch's boot ignores and logs one. Ignoring it fails closed, since the project it meant is
-// never provisioned and its switch to private stays 409 PRIVATE_PROJECT_NOT_PROVISIONED.
+// never provisioned: its switch to private stays 409 PRIVATE_PROJECT_NOT_PROVISIONED while another
+// entry is a key, and 409 PRIVATE_PROJECTS_OFF where none is.
 func dispatchPrivateProjects(entries []string) (keys, ignored []string) {
 	for _, entry := range entries {
 		if !contracts.ValidProjectKey(entry) {
