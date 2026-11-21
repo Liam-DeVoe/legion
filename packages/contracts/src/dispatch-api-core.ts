@@ -256,9 +256,8 @@ export const ProjectSchema = z
     /** Whether the project needs a credential that proves the session: when it is on, an
      *  architect's write of an issue's spec or Verification document passes only on a credential
      *  that proves the architect's session, and a role-holder publication only on one that proves
-     *  `legion-daemon:<project>`. Off by default. Optional here because a client written before
-     *  the field existed builds this shape without it; Dispatch always answers it. */
-    proven_sessions: z.boolean().optional(),
+     *  `legion-daemon:<project>`. Off by default. Dispatch always answers it. */
+    proven_sessions: z.boolean(),
     created_at: z.string(),
   })
   .readonly();

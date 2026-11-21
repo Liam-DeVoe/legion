@@ -273,11 +273,18 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 			project, key, legionDaemonSessionOf(key)))
 		return
 	}
+	// The delete marks the issue's project too (project_role_holder_marks), in a data-modifying
+	// CTE, which Postgres runs once and to its end whatever the delete does. The delete runs for
+	// every publication the route takes, so the mark lands in the transaction that writes the set,
+	// a refused publication marks nothing, and an empty set marks the project as any other set does.
 	if _, err := tx.Exec(r.Context(), `
+		with mark as (
+			insert into project_role_holder_marks (project_key) values ($4) on conflict do nothing
+		)
 		delete from issue_role_holders
 		where issue_key = $1
 		  and (role, session) not in (select * from unnest($2::text[], $3::text[]))
-	`, issue, roles, sessions); err != nil {
+	`, issue, roles, sessions, project); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -293,14 +300,6 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
-	}
-	// The project's mark, in the transaction that writes the set, so a refused publication marks
-	// nothing and an empty set marks the project as any other set does.
-	if _, err := tx.Exec(r.Context(), `
-		insert into project_role_holder_marks (project_key) values ($1) on conflict do nothing
-	`, project); err != nil {
-		s.writeHandlerError(w, err)
-		return
 	}
 	stored, _, err := readIssueRoleHolders(r.Context(), tx, issue)
 	if err != nil {

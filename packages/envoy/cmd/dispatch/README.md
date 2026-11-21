@@ -4523,10 +4523,13 @@ Each item below names a path with its method and identity, then its purpose.
   The `PATCH` judges only the pairs it changes: a new status judges the issue with its parent and with each direct child, and a new parent judges the issue with that parent.
   A status the issue already has changes no pair, so it is not judged.
   The `PATCH` takes none of that route's options: it ignores them as members it does not declare.
-  On an issue Legion runs, a close, a reopen and a `labels` or `parent` write that takes the issue out of Legion are each `403 DOCUMENT_WRITER_NOT_ARCHITECT` from a writer that is no person, no architect of the issue or of an issue above it, and not the session of the project's Legion daemon (Document errors below).
-  A move under a parent, after which Legion runs the issue, is `403 DOCUMENT_WRITER_NOT_ARCHITECT` from a writer that is no person and no architect of the new parent or of an issue above it.
-  When Legion also runs the issue before the move, the move is also `403 DOCUMENT_WRITER_NOT_ARCHITECT` from a writer that is no person and no architect of the issue or of an issue above it where it stands.
-  A move out of every tree Legion runs is a `parent` write that takes the issue out of Legion, above.
+
+  - On an issue Legion runs, a close, a reopen and a `labels` or `parent` write that takes the issue out of Legion are each `403 DOCUMENT_WRITER_NOT_ARCHITECT` from a writer that is no person, no architect of the issue or of an issue above it, and not the session of the project's Legion daemon (Document errors below).
+
+  - A move under a parent, after which Legion runs the issue, is `403 DOCUMENT_WRITER_NOT_ARCHITECT` from a writer that is no person and no architect of the new parent or of an issue above it.
+    When Legion also runs the issue before the move, the move is also `403 DOCUMENT_WRITER_NOT_ARCHITECT` from a writer that is no person and no architect of the issue or of an issue above it where it stands.
+    A move out of every tree Legion runs is a `parent` write that takes the issue out of Legion, above.
+
   A close (`status: done`) withdraws every open ask of the issue, whoever's turn it is:
   decision blocks in its documents, plain asks and requests to approve one of its documents.
   Each is recorded `resolved` with resolution kind `withdrawn`, naming the closer as the request's actor, with the reason `Withdrawn by the close of <KEY>.`, and gets one `ask.resolved` before `issue.closed`;
