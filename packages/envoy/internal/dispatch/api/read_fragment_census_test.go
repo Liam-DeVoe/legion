@@ -518,6 +518,12 @@ func seedFragmentCensus(t *testing.T, census *fragmentCensus) fragmentCensusFixt
 		}
 		objects.deliveryRun = strconv.FormatInt(run.RunID, 10)
 	}
+	// A project's repository list (GET /api/v1/projects/{key}/repositories) is its owner's alone,
+	// so alice owns the public project and the census reads that route past its owner check; she
+	// still does not see the private one, whose refusal the walk reads as before.
+	if _, err := seed.database.Pool.Exec(ctx, `update projects set owner = $1 where key = $2`, seedAlice, seedPublic); err != nil {
+		t.Fatalf("make alice %s's owner: %v", seedPublic, err)
+	}
 	endedCIPass(t, seed.database, seedServerProcess(t, seed.database, 0), time.Hour, "complete")
 
 	awaitBackgroundWrites(t, seed.server)

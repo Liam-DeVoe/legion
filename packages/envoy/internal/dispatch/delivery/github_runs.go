@@ -42,6 +42,9 @@ type FetchedRun struct {
 	URL          string
 	HeadBranch   *string // GitHub's head_branch; nil when it sends none or an empty one
 	Event        *string // GitHub's event (push, pull_request, workflow_dispatch, ...); nil likewise
+	// RepoID is the GitHub id of the run's repository as GitHub's answer about the run names it,
+	// under whatever name the request used; 0 when the answer carries none.
+	RepoID int64
 }
 
 // FetchedJob is one job of a FetchedRun, with its steps: the apply step's result is what tells a
@@ -100,6 +103,11 @@ type workflowRunItem struct {
 	HeadCommit *struct {
 		Timestamp time.Time `json:"timestamp"`
 	} `json:"head_commit"`
+	// Repository is the run's repository, whose id the answer carries under whatever name the
+	// request named it by.
+	Repository struct {
+		ID int64 `json:"id"`
+	} `json:"repository"`
 }
 
 func fetchedRunFromItem(item workflowRunItem) FetchedRun {
@@ -112,6 +120,7 @@ func fetchedRunFromItem(item workflowRunItem) FetchedRun {
 		URL:        item.HTMLURL,
 		HeadBranch: nonEmpty(item.HeadBranch),
 		Event:      nonEmpty(item.Event),
+		RepoID:     item.Repository.ID,
 	}
 	if item.HeadCommit != nil {
 		run.HeadCommitAt = item.HeadCommit.Timestamp
@@ -306,7 +315,7 @@ func StoredRun(repo string, kind DeliveryRunKind, run FetchedRun) DeliveryRun {
 		Repo: repo, RunID: run.RunID, Kind: kind, PRNumber: run.PRNumber, HeadSHA: run.HeadSHA,
 		HeadCommitAt: run.HeadCommitAt, StartedAt: run.StartedAt, CreatedAt: &createdAt, CompletedAt: run.CompletedAt,
 		Conclusion: mapRunConclusionPtr(run.Conclusion), URL: run.URL,
-		HeadBranch: run.HeadBranch, Event: run.Event,
+		HeadBranch: run.HeadBranch, Event: run.Event, RepoID: recordedRepoID(run.RepoID),
 	}
 }
 

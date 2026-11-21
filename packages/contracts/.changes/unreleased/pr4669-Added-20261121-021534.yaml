@@ -1,0 +1,5 @@
+kind: Added
+body: 'The Dispatch API contract gains `GET /api/v1/projects/{key}/repositories` (`ProjectRepositories`: each stored repository name with its recorded GitHub id, GitHub''s current id and full name, `named_elsewhere` and `shared_elsewhere`) and `POST /api/v1/projects/{key}/repositories/confirm` (`ConfirmRepositoryInput`: `repo`, `id`, `shared`), and `PATCH /api/v1/projects/{key}/access` answers its 409 as `UnconfirmedRepositoriesRefusal`, whose `unconfirmed_repositories` names the repositories a switch to private waits for. The descriptions of the issue create and update, the default repository write and the App-installation read say each judges or records a repository by its GitHub id.'
+time: 2026-11-21T02:15:34.030330290Z
+custom:
+    Issue: pr4669

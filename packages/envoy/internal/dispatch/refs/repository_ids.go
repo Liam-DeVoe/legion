@@ -5,6 +5,8 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 )
 
 // A repository name a person writes is recorded with the GitHub id GitHub answered for it then:
@@ -19,18 +21,22 @@ import (
 
 // heldRepositoriesSQL is every repository name project $1's own rows hold, with the id recorded
 // beside each: one row (repo, repo_id, issue) for each issue of the project whose own repository is
-// set, open or done, issue true, and one for the project's default, issue false. A repository an
-// issue takes from its parent is its parent's row, so it is not here. repo is lower-cased.
-const heldRepositoriesSQL = `
-	select lower(i.repo) as repo, i.repo_id, true as issue from issues i where i.project_key = $1 and i.repo is not null
+// set, open or done, issue true, and one for the project's default, issue false, each row also
+// passing issueClause or defaultClause (a predicate over the issue `i` or the mapping `m`). A
+// repository an issue takes from its parent is its parent's row, so it is not here. repo is
+// lower-cased.
+func heldRepositoriesSQL(issueClause, defaultClause string) string {
+	return `
+	select lower(i.repo) as repo, i.repo_id, true as issue from issues i where i.project_key = $1 and i.repo is not null and ` + issueClause + `
 	union all
-	select lower(m.repo), m.repo_id, false from repo_projects m where m.project = $1 and m.is_default`
+	select lower(m.repo), m.repo_id, false from repo_projects m where m.project = $1 and m.is_default and ` + defaultClause
+}
 
 // unconfirmedRepositoriesQuery is UnconfirmedRepositories' one statement: the names of
 // heldRepositoriesSQL whose row holds no id, each once, sorted byte-wise.
 var unconfirmedRepositoriesQuery = `
 	select coalesce(array_agg(distinct held.repo collate "C" order by held.repo collate "C"), '{}')
-	from (` + heldRepositoriesSQL + `) held
+	from (` + heldRepositoriesSQL("true", "true") + `) held
 	where held.repo_id is null`
 
 // UnconfirmedRepositories is each repository name an issue of project key, or its default,
@@ -63,20 +69,23 @@ type HeldRepository struct {
 	Default bool
 }
 
-// heldRepositoriesQuery is HeldRepositories' one statement.
+// heldRepositoriesQuery is HeldRepositories' one statement, the reader's visibility argument
+// bound at $2.
 var heldRepositoriesQuery = `
 	select held.repo, held.repo_id, (count(*) filter (where held.issue))::int, bool_or(not held.issue)
-	from (` + heldRepositoriesSQL + `) held
+	from (` + heldRepositoriesSQL(access.ProjectClause("i.project_key", "$2"), access.ProjectClause("m.project", "$2")) + `) held
 	group by held.repo, held.repo_id
 	order by held.repo collate "C", held.repo_id nulls first`
 
 // HeldRepositories is every repository project key's own issues and default hold, one for each
-// name and recorded id, by name byte-wise and then the rows with no id first, read through q. A
-// name some rows hold with an id and others with none is two of them, and so is a name rows hold
-// with two ids: a repository that took the name after the first was renamed. [] for a project
-// whose rows name none. It reads as UnconfirmedRepositories does, for the project's owner.
-func HeldRepositories(ctx context.Context, q Queryer, key string) ([]HeldRepository, error) {
-	rows, err := q.Query(ctx, heldRepositoriesQuery, key)
+// name and recorded id, by name byte-wise and then the rows with no id first, read through q for
+// the reader whose visibility argument is viewer (VisibilityArg), which binds the project's clause
+// on each row as every read of a project's rows does; the route that answers it holds the project
+// to its owner first, who sees every row of it. A name some rows hold with an id and others with
+// none is two of them, and so is a name rows hold with two ids: a repository that took the name
+// after the first was renamed. [] for a project whose rows name none.
+func HeldRepositories(ctx context.Context, q Queryer, key string, viewer any) ([]HeldRepository, error) {
+	rows, err := q.Query(ctx, heldRepositoriesQuery, key, viewer)
 	if err != nil {
 		return nil, fmt.Errorf("read the repositories of project %s: %w", key, err)
 	}
@@ -94,13 +103,15 @@ func HeldRepositories(ctx context.Context, q Queryer, key string) ([]HeldReposit
 	return held, nil
 }
 
-// RepositoryElsewhere is what the other projects hold of one repository of a project (Elsewhere):
-// Named, how many of their rows, issues' own repositories and defaults, hold its stored name or
-// the name GitHub gives it now with no id, so the project's confirmation may speak for them
-// (ConfirmRepository's shared); and Shared, how many of their issues, open or done, resolve to its
-// id (ProjectRepositoriesSQL, a default included), so their people read it through the GitHub
-// proxy already. Each is a count and names no project or issue: a repository's name is not a
-// project's content.
+// RepositoryElsewhere is what the other projects the reader sees hold of one repository of a
+// project (Elsewhere): Named, how many of their rows, issues' own repositories and defaults, hold
+// its stored name or the name GitHub gives it now with no id, so the project's confirmation may
+// speak for them (ConfirmRepository's shared); and Shared, how many of their issues, open or done,
+// resolve to its id (ProjectRepositoriesSQL, a default included), so their people read it through
+// the GitHub proxy already. Each is a count and names no project or issue: a repository's name is
+// not a project's content. A project the reader does not see counts toward neither, so neither
+// tells the reader of a private project it may not see: such a project's rows all hold their ids
+// (UnconfirmedRepositories), and its people read the repository through its own issues.
 type RepositoryElsewhere struct {
 	Named, Shared int
 }
@@ -112,29 +123,32 @@ type AskedRepository struct {
 	ID              int64
 }
 
-// elsewhereQuery is Elsewhere's one statement: project $1, and the asked repositories' stored
-// names, current names and ids as three arrays of one length, $2, $3 and $4, "" and 0 for none.
-// Only the issues of other projects are walked, once, for every id together.
+// elsewhereQuery is Elsewhere's one statement: project $1, the asked repositories' stored names,
+// current names and ids as three arrays of one length, $2, $3 and $4, "" and 0 for none, and the
+// reader's visibility argument at $5. Only the issues of other projects the reader sees are walked,
+// once, for every id together.
 var elsewhereQuery = `
 	with shared as (
 		select owned.repo_id, count(*)::int as issues
-		from (` + ProjectRepositoriesSQL(`project_key <> $1`) + `) owned
+		from (` + ProjectRepositoriesSQL(`project_key <> $1 and `+access.ProjectClause("project_key", "$5")) + `) owned
 		where owned.repo_id = any($4::bigint[])
 		group by owned.repo_id
 	), unrecorded as (
-		select lower(i.repo) as repo from issues i where i.project_key <> $1 and i.repo is not null and i.repo_id is null
+		select lower(i.repo) as repo from issues i
+		where i.project_key <> $1 and i.repo is not null and i.repo_id is null and ` + access.ProjectClause("i.project_key", "$5") + `
 		union all
-		select lower(m.repo) from repo_projects m where m.project <> $1 and m.is_default and m.repo_id is null
+		select lower(m.repo) from repo_projects m
+		where m.project <> $1 and m.is_default and m.repo_id is null and ` + access.ProjectClause("m.project", "$5") + `
 	)
 	select (select count(*) from unrecorded where unrecorded.repo in (lower(asked.stored), lower(nullif(asked.current, ''))))::int,
 		coalesce((select shared.issues from shared where shared.repo_id = nullif(asked.id, 0)), 0)
 	from unnest($2::text[], $3::text[], $4::bigint[]) with ordinality as asked(stored, current, id, position)
 	order by asked.position`
 
-// Elsewhere is, for each of asked in order, what the projects other than project hold of it
-// (RepositoryElsewhere), read through q in one statement. It reads every other project's rows
-// whoever runs it, and answers counts alone, for project's owner.
-func Elsewhere(ctx context.Context, q Queryer, project string, asked []AskedRepository) ([]RepositoryElsewhere, error) {
+// Elsewhere is, for each of asked in order, what the projects other than project that the reader
+// whose visibility argument is viewer sees hold of it (RepositoryElsewhere), read through q in one
+// statement, as counts alone.
+func Elsewhere(ctx context.Context, q Queryer, project string, viewer any, asked []AskedRepository) ([]RepositoryElsewhere, error) {
 	answers := make([]RepositoryElsewhere, 0, len(asked))
 	if len(asked) == 0 {
 		return answers, nil
@@ -143,7 +157,7 @@ func Elsewhere(ctx context.Context, q Queryer, project string, asked []AskedRepo
 	for index, repository := range asked {
 		stored[index], current[index], ids[index] = repository.Stored, repository.Current, repository.ID
 	}
-	rows, err := q.Query(ctx, elsewhereQuery, project, stored, current, ids)
+	rows, err := q.Query(ctx, elsewhereQuery, project, stored, current, ids, viewer)
 	if err != nil {
 		return nil, fmt.Errorf("count what other projects hold of the repositories of %s: %w", project, err)
 	}

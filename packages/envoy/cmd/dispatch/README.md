@@ -274,7 +274,7 @@ A session that has acted in no project is judged, while a project is private, by
 While a project is private and `session_projects_filled` holds no row, an open viewer reads no session but its own (Filling the sessions' projects, below).
 Any other caller reads, of what belongs to no project, only the people of the projects it sees, the sessions that have acted in one of them (or, while a project is private, have acted in none and are listed with a list that is not empty and names only projects it sees), its own, and the roles those sessions hold (`access.PersonClause`, `access.SessionClause`, `access.RoleClause`);
 every read of the whole deployment (`readclass.Deployment`: the priorities, the Pipeline page and a delivery run's jobs, the CI reconcile passes, the broadcasts, the delivery and new-issue settings, the credential requests, the machine logins and the groups) is `403 DEPLOYMENT_READ_REFUSED` to it (`api.withinReadScope`), while the delivery timeline and measures answer it the pull requests whose issue it sees and the deploy runs that shipped one of them.
-While a project is private, a pull request that names no issue, and a run that shipped none, is shown to an open viewer only when no private project hidden from that viewer owns its repository (`refs.RepositoryClause`).
+While a project is private, a pull request that names no issue, and a run that shipped none, is shown to an open viewer only when no private project hidden from that viewer owns its repository (`refs.RepositoryClause`), judged by the GitHub id GitHub's own answer about the pull request or run carries (`delivery_pull_requests.repo_id`, `delivery_runs.repo_id`), so a private project's repository GitHub renamed is held under its new name too; a row stored before Delivery recorded ids is judged by its name.
 A direct conversation is read by its parties and by an open viewer, each only when it may read every session in the conversation (`access.PartyClause`), so a restricted member or a credential that lists projects reads only its own, and only with sessions of its projects.
 While a project is private, a direct conversation that names no party (no node, or a node with none) is read by no caller but the server, and the switch to private refuses while one exists.
 A project the caller does not see, and every object in it, answers exactly as one no row holds.
@@ -4286,7 +4286,8 @@ Each item below names a path with its method and identity, then its purpose.
   A read of the id that does not answer, a rate limit, a 5xx, a 404 or a transport failure, hides the repository for that request; the next request reads again.
   A person who is not an open viewer reads only a repository an issue of a project the person sees resolves to.
   Every other repository answers, step for step, what one the App is not installed on answers, and GitHub is asked nothing for it but its id (the installation lookup, the token mint and the read of the repository itself): no App key still answers that, and a rate limit on the mint still answers the rate limit.
-  While a project is private, a read GitHub redirects to any repository but the one the gate passed, by the name its path spells or by the id it read, is not followed and answers `503 GITHUB_TOKEN_UNAVAILABLE`, as a repository the App is not installed on; GitHub's redirect from a renamed or transferred repository's old name to that repository's id is followed.
+  While a project is private, a read GitHub redirects to anywhere but the name its path spells or the location GitHub answered the gate's read of the repository's id at is not followed and answers `503 GITHUB_TOKEN_UNAVAILABLE`, as a repository the App is not installed on.
+  GitHub's guide asks a client to follow the `Location` it is given and not to predict a URL's structure ([Best practices for using the REST API](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api): "Follow redirects", "Do not manually parse URLs"), so the proxy holds a read to the location GitHub itself gave for the repository it judged, whatever that location's form, and predicts none.
   With no private project the proxy follows GitHub's redirects as it always did.
 
 - `/healthz` (GET; none)
@@ -4638,8 +4639,9 @@ Each item below names a path with its method and identity, then its purpose.
   Whether Dispatch's GitHub App, which GitHub sends the repository's webhook events through, is installed on the repository:
   `200 {installed}`, `false` when GitHub answers 404.
   `503 GITHUB_APP_UNCONFIGURED` when Dispatch holds no App key, `502 GITHUB_UNREADABLE` naming the repository and GitHub's error on any other failure.
-  A repository the GitHub proxy would not show the caller (the GitHub proxy, below: no issue the caller sees resolves to it, and the caller is not an open viewer or an issue of a private project hidden from the caller resolves to it) answers exactly what one the App is not installed on answers, and GitHub is asked nothing for it: a rate limit already held on the App answers that limit.
-  With no private project every open viewer reads every repository's answer from GitHub, as before.
+  A repository the GitHub proxy would not show the caller (the GitHub proxy, below: no issue the caller sees resolves to it, and the caller is not an open viewer or an issue of a private project hidden from the caller resolves to it) answers exactly what one the App is not installed on answers, and GitHub is asked nothing for it but its id: a rate limit already held on the App answers that limit.
+  As the proxy does, it judges the repository by the GitHub id its name reaches now, so a private project's repository GitHub renamed or moved answers as not installed under its new name too.
+  With no private project every open viewer reads every repository's answer from GitHub's installation lookup alone, as before.
   The Legion daemon asks it for every repository it serves, for `legion state`, so a daemon whose credential does not see a private project reads that project's repositories as not installed.
 
 - `/api/v1/ci-reconcile/passes` (GET; cookie, trusted header, or bearer)

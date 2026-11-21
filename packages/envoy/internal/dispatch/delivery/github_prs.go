@@ -43,6 +43,18 @@ type FetchedPullRequest struct {
 	Body           string // for issue attribution
 	HeadRef        string // the head branch's name, for issue attribution; empty on a search result
 	FirstCommitAt  *time.Time
+	// RepoID is the GitHub id of the pull request's base repository, the one it merges into, as
+	// GitHub's answer names it, whatever name the request used: the REST pull request's base.repo
+	// and the search's baseRepository. 0 when the answer carries none.
+	RepoID int64
+}
+
+// recordedRepoID is a GitHub answer's repository id as a row records it: nil for none (0).
+func recordedRepoID(id int64) *int64 {
+	if id == 0 {
+		return nil
+	}
+	return &id
 }
 
 type githubLabel struct {
@@ -85,6 +97,11 @@ type pullRequestPayload struct {
 	} `json:"head"`
 	Base struct {
 		Ref string `json:"ref"`
+		// Repo is the base repository, whose id GitHub's answer carries under whatever name the
+		// request named it by.
+		Repo struct {
+			ID int64 `json:"id"`
+		} `json:"repo"`
 	} `json:"base"`
 }
 
@@ -155,6 +172,7 @@ func FetchPullRequest(ctx context.Context, client *githubapp.Client, owner, repo
 		Body:           payload.Body,
 		HeadRef:        payload.Head.Ref,
 		FirstCommitAt:  &firstCommitAt,
+		RepoID:         payload.Base.Repo.ID,
 	}, nil
 }
 
@@ -318,6 +336,11 @@ type searchPullRequestNode struct {
 	} `json:"labels"`
 	CreatedAt time.Time  `json:"createdAt"`
 	MergedAt  *time.Time `json:"mergedAt"`
+	// BaseRepository is the repository the pull request merges into, whose GitHub id the search
+	// answer carries whatever name the query used.
+	BaseRepository *struct {
+		DatabaseID int64 `json:"databaseId"`
+	} `json:"baseRepository"`
 }
 
 func fetchedPullRequestFromSearchNode(node searchPullRequestNode) FetchedPullRequest {
@@ -335,6 +358,9 @@ func fetchedPullRequestFromSearchNode(node searchPullRequestNode) FetchedPullReq
 	}
 	if node.Labels != nil {
 		pr.Labels = labelNames(node.Labels.Nodes)
+	}
+	if node.BaseRepository != nil {
+		pr.RepoID = node.BaseRepository.DatabaseID
 	}
 	return pr
 }
@@ -542,6 +568,7 @@ const searchPullRequestsQuery = `query($q: String!, $after: String) {
         author { login __typename }
         createdAt
         mergedAt
+        baseRepository { databaseId }
         labels(first: 20) { nodes { name } }
       }
     }

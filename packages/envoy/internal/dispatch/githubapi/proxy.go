@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -85,13 +86,15 @@ func workflowRunsOfOneCommit(rawQuery string) bool {
 
 // Gate is the proxy's gate's answer for one read of a repository: Hidden, whether the person
 // asking may not see it, and Held, whether the read is held to it (githubapp.HoldToRepository), so
-// that a redirect GitHub answers with is followed to that repository alone: by its name, or by ID,
-// the GitHub id the gate read for it, 0 where it read none. A read is held while the deployment
-// holds a private project, the flag refs.RepositoryClause's R9 arm reads; with none, the proxy
-// follows GitHub's redirects as it did before a project could be private (R9).
+// that a redirect GitHub answers with is followed to that repository alone: by its name, or to
+// Location, where GitHub answered the gate's read of the repository's id
+// (githubapp.RepositoryAnswer.Location), nil where it answered the name itself or the gate read
+// none. A read is held while the deployment holds a private project, the flag
+// refs.RepositoryClause's R9 arm reads; with none, the proxy follows GitHub's redirects as it did
+// before a project could be private (R9).
 type Gate struct {
 	Hidden, Held bool
-	ID           int64
+	Location     *url.URL
 }
 
 // Identify reads, for the gate, the repository the path's name reaches on GitHub now: its id and
@@ -198,13 +201,13 @@ func ProxyREST(w http.ResponseWriter, r *http.Request, client *githubapp.Client,
 	}
 	// A held read sends GitHub every request held to the repository the gate passed
 	// (githubapp.HoldToRepository): GitHub redirects an old name of a renamed or transferred
-	// repository to that repository as it is now, which the gate read by its id where it read one,
-	// so such a redirect is followed only to that id or to the name the path spells, and any other
-	// answers as a repository the App is not installed on. A read that is not held follows GitHub's
-	// redirects, as every read did before a project could be private.
+	// repository to that repository's new location, which the gate's read of its id reached where
+	// it read one, so such a redirect is followed only to that location or to the name the path
+	// spells, and any other answers as a repository the App is not installed on. A read that is not
+	// held follows GitHub's redirects, as every read did before a project could be private.
 	ctx := r.Context()
 	if answer.Held {
-		ctx = githubapp.HoldToRepository(ctx, owner, repo, answer.ID)
+		ctx = githubapp.HoldToRepository(ctx, owner, repo, answer.Location)
 	}
 	if !minted {
 		token, err = client.RepositoryToken(ctx, owner, repo)

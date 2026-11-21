@@ -261,7 +261,7 @@ func PruneMergedPullRequestProgress(ctx context.Context, pool *store.Pool, keep 
 
 // PullRequestColumns is the delivery_pull_requests select list ScanPullRequest reads, in scan
 // order.
-const PullRequestColumns = `repo, number, title, url, author, created_at, merged_at, first_commit_at, merge_commit_sha, additions, deletions, rework, issue_key, sessions, partial, unfetchable_at, unfetchable_reason, updated_at, attribution_title_keys, attribution_cited_issues, attribution_branch_keys, attribution_commit_keys`
+const PullRequestColumns = `repo, number, title, url, author, created_at, merged_at, first_commit_at, merge_commit_sha, additions, deletions, rework, issue_key, sessions, partial, unfetchable_at, unfetchable_reason, updated_at, attribution_title_keys, attribution_cited_issues, attribution_branch_keys, attribution_commit_keys, repo_id`
 
 // ScanPullRequest decodes one PullRequestColumns row into a DeliveryPullRequest.
 func ScanPullRequest(row pgx.Row) (DeliveryPullRequest, error) {
@@ -277,7 +277,7 @@ func scanPullRequest(row pgx.Row, extra ...any) (DeliveryPullRequest, error) {
 		&pr.Repo, &pr.Number, &pr.Title, &pr.URL, &pr.Author, &pr.CreatedAt, &pr.MergedAt,
 		&pr.FirstCommitAt, &pr.MergeCommitSHA, &pr.Additions, &pr.Deletions, &pr.Rework,
 		&pr.IssueKey, &pr.Sessions, &pr.Partial, &pr.UnfetchableAt, &pr.UnfetchableReason, &pr.UpdatedAt,
-		&inputs.TitleKeys, &inputs.CitedIssues, &inputs.BranchKeys, &inputs.CommitKeys,
+		&inputs.TitleKeys, &inputs.CitedIssues, &inputs.BranchKeys, &inputs.CommitKeys, &pr.RepoID,
 	}
 	if err := row.Scan(append(dest, extra...)...); err != nil {
 		return DeliveryPullRequest{}, err
@@ -319,13 +319,15 @@ func UpsertPullRequest(ctx context.Context, pool *store.Pool, pr DeliveryPullReq
 	if a := pr.Attribution; a != nil {
 		inputs = [4][]string{nonNil(a.TitleKeys), nonNil(a.CitedIssues), nonNil(a.BranchKeys), nonNil(a.CommitKeys)}
 	}
+	// The repository's GitHub id is what GitHub's answer about the pull request named; a write
+	// that names none (a search result's partial row) keeps the one stored.
 	_, err := pool.Exec(ctx, `
 		insert into delivery_pull_requests (
 			repo, number, title, url, author, created_at, merged_at, first_commit_at,
 			merge_commit_sha, additions, deletions, rework, issue_key, sessions, partial,
-			attribution_title_keys, attribution_cited_issues, attribution_branch_keys, attribution_commit_keys
+			attribution_title_keys, attribution_cited_issues, attribution_branch_keys, attribution_commit_keys, repo_id
 		)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
 		on conflict (repo, number) do update set
 			title = excluded.title,
 			url = excluded.url,
@@ -344,6 +346,7 @@ func UpsertPullRequest(ctx context.Context, pool *store.Pool, pr DeliveryPullReq
 			attribution_cited_issues = coalesce(excluded.attribution_cited_issues, delivery_pull_requests.attribution_cited_issues),
 			attribution_branch_keys = coalesce(excluded.attribution_branch_keys, delivery_pull_requests.attribution_branch_keys),
 			attribution_commit_keys = coalesce(excluded.attribution_commit_keys, delivery_pull_requests.attribution_commit_keys),
+			repo_id = coalesce(excluded.repo_id, delivery_pull_requests.repo_id),
 			unfetchable_at = null,
 			unfetchable_reason = null,
 			updated_at = now()
@@ -351,7 +354,7 @@ func UpsertPullRequest(ctx context.Context, pool *store.Pool, pr DeliveryPullReq
 	`,
 		pr.Repo, pr.Number, pr.Title, pr.URL, pr.Author, pr.CreatedAt, pr.MergedAt, pr.FirstCommitAt,
 		pr.MergeCommitSHA, pr.Additions, pr.Deletions, pr.Rework, pr.IssueKey, sessions, pr.Partial,
-		inputs[0], inputs[1], inputs[2], inputs[3],
+		inputs[0], inputs[1], inputs[2], inputs[3], pr.RepoID,
 	)
 	return err
 }
@@ -509,10 +512,12 @@ func MarkPullRequestUnfetchable(ctx context.Context, pool *store.Pool, repo stri
 // (access.ProjectClause), and one that names no issue, or a key no issue row holds, for an open
 // viewer alone (access.OpenClause), and only when its repository is not hidden from that viewer
 // (refs.RepositoryClause), so a pull request of a repository a private project the viewer does
-// not see owns is never shown for naming no issue. A pull request row names its repository and no
-// GitHub id, so the repository is judged by its name (the clause's null id).
+// not see owns is never shown for naming no issue. The repository is judged by the GitHub id the
+// row records (prAlias.repo_id), as the GitHub proxy judges one, so a private project's repository
+// GitHub renamed or moved is held under its new name too; a row that records none is judged by its
+// name.
 func pullRequestShownSQL(prAlias, issueAlias, viewerParam string) string {
-	return `case when ` + issueAlias + `.key is null then (` + access.OpenClause(viewerParam) + ` and ` + refs.RepositoryClause(prAlias+`.repo`, "null", viewerParam) + `)` +
+	return `case when ` + issueAlias + `.key is null then (` + access.OpenClause(viewerParam) + ` and ` + refs.RepositoryClause(prAlias+`.repo`, prAlias+`.repo_id`, viewerParam) + `)` +
 		` else ` + access.ProjectClause(issueAlias+`.project_key`, viewerParam) + ` end`
 }
 
@@ -604,7 +609,7 @@ func listPullRequests(ctx context.Context, pool *store.Pool, query string, args 
 }
 
 // RunColumns is the delivery_runs select list ScanRun reads, in scan order.
-const RunColumns = `repo, run_id, kind, pr_number, head_sha, head_commit_at, started_at, created_at, completed_at, conclusion, url, head_branch, event`
+const RunColumns = `repo, run_id, kind, pr_number, head_sha, head_commit_at, started_at, created_at, completed_at, conclusion, url, head_branch, event, repo_id`
 
 // runCreatedAt is when GitHub created the delivery_runs row r: DeliveryRun.Created in SQL, whose
 // comment says why a row without created_at reads started_at. delivery_runs_kind_created
@@ -619,7 +624,7 @@ func ScanRun(row pgx.Row) (DeliveryRun, error) {
 	var conclusion *string
 	if err := row.Scan(
 		&run.Repo, &run.RunID, &kind, &run.PRNumber, &run.HeadSHA, &run.HeadCommitAt,
-		&run.StartedAt, &run.CreatedAt, &run.CompletedAt, &conclusion, &run.URL, &run.HeadBranch, &run.Event,
+		&run.StartedAt, &run.CreatedAt, &run.CompletedAt, &conclusion, &run.URL, &run.HeadBranch, &run.Event, &run.RepoID,
 	); err != nil {
 		return DeliveryRun{}, err
 	}
@@ -639,8 +644,9 @@ func ScanRun(row pgx.Row) (DeliveryRun, error) {
 // a deploy run that first shipped pull requests (shippingRunJoin) when one of them is; a PR-checks
 // run that names no number or one no row holds, a deploy run that shipped none and a run of any
 // other kind to an open viewer alone, and only when repo is not hidden from that viewer
-// (refs.RepositoryClause), as a pull request that names no issue is. A deploy run on main ships
-// only with a shipping job (shippingJobSQL), and the pull requests it first shipped are those
+// (refs.RepositoryClause, judged by the repository's GitHub id the run's row records), as a pull
+// request that names no issue is. A deploy run on main ships only with a shipping job
+// (shippingJobSQL), and the pull requests it first shipped are those
 // ListPullRequestsWaitingAt reads as of its first such job's finish whose shipping run it is, so
 // only those are read.
 func ReadRunShown(ctx context.Context, pool *store.Pool, repo string, runID int64, production Production, viewer any) (DeliveryRun, error) {
@@ -654,7 +660,7 @@ func ReadRunShown(ctx context.Context, pool *store.Pool, repo string, runID int6
 			where j.repo = asked.repo and j.run_id = asked.run_id and `+shippingJobSQL("$3", "$4")+` and j.completed_at is not null
 		) own
 		cross join lateral (
-			select `+access.OpenClause("$5")+` and `+refs.RepositoryClause("asked.repo", "null", "$5")+` as shown
+			select `+access.OpenClause("$5")+` and `+refs.RepositoryClause("asked.repo", "asked.repo_id", "$5")+` as shown
 		) unnamed
 		where asked.repo = $1 and asked.run_id = $2 and case
 			when asked.kind = 'pr_checks' then coalesce((
@@ -688,9 +694,11 @@ func UpsertRun(ctx context.Context, pool *store.Pool, run DeliveryRun) error {
 		c := string(*run.Conclusion)
 		conclusion = &c
 	}
+	// The repository's GitHub id is what GitHub's answer about the run named; a write that names
+	// none keeps the one stored.
 	_, err := pool.Exec(ctx, `
-		insert into delivery_runs (repo, run_id, kind, pr_number, head_sha, head_commit_at, started_at, created_at, completed_at, conclusion, url, head_branch, event)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		insert into delivery_runs (repo, run_id, kind, pr_number, head_sha, head_commit_at, started_at, created_at, completed_at, conclusion, url, head_branch, event, repo_id)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		on conflict (repo, run_id) do update set
 			kind = excluded.kind,
 			pr_number = excluded.pr_number,
@@ -702,8 +710,9 @@ func UpsertRun(ctx context.Context, pool *store.Pool, run DeliveryRun) error {
 			conclusion = excluded.conclusion,
 			url = excluded.url,
 			head_branch = excluded.head_branch,
-			event = excluded.event
-	`, run.Repo, run.RunID, string(run.Kind), run.PRNumber, run.HeadSHA, run.HeadCommitAt, run.StartedAt, run.CreatedAt, run.CompletedAt, conclusion, run.URL, run.HeadBranch, run.Event)
+			event = excluded.event,
+			repo_id = coalesce(excluded.repo_id, delivery_runs.repo_id)
+	`, run.Repo, run.RunID, string(run.Kind), run.PRNumber, run.HeadSHA, run.HeadCommitAt, run.StartedAt, run.CreatedAt, run.CompletedAt, conclusion, run.URL, run.HeadBranch, run.Event, run.RepoID)
 	return err
 }
 

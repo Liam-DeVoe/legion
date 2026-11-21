@@ -45,14 +45,15 @@ type projectRepository struct {
 	// the name after another left it.
 	GitHubID       *int64  `json:"github_id"`
 	GitHubFullName *string `json:"github_full_name"`
-	// NamedElsewhere is how many rows of other projects, issues' own repositories and defaults,
-	// hold Repo or the full name GitHub gives it now with no id: a confirmation with shared true
-	// records the id on them too.
+	// NamedElsewhere is how many rows of the other projects the owner sees, issues' own
+	// repositories and defaults, hold Repo or the full name GitHub gives it now with no id: a
+	// confirmation with shared true records the id on them too.
 	NamedElsewhere int `json:"named_elsewhere"`
-	// SharedElsewhere is how many issues of other projects, open or done, resolve to the
-	// repository's id, the recorded one or else GitHub's (refs.ProjectRepositoriesSQL, a default
-	// included): their people read it through the GitHub proxy whatever this project's visibility.
-	// It informs and holds nothing.
+	// SharedElsewhere is how many issues of the other projects the owner sees, open or done,
+	// resolve to the repository's id, the recorded one or else GitHub's (refs.ProjectRepositoriesSQL,
+	// a default included): their people read it through the GitHub proxy whatever this project's
+	// visibility. It informs and holds nothing. A private project the owner does not see counts
+	// toward neither (refs.RepositoryElsewhere).
 	SharedElsewhere int `json:"shared_elsewhere"`
 }
 
@@ -76,7 +77,7 @@ const githubReadConcurrency = 4
 
 // getProjectRepositories answers the repositories of project {key} for its owner.
 func (s *server) getProjectRepositories(w http.ResponseWriter, r *http.Request) {
-	key, _, _, ok := s.projectOwnerRead(w, r)
+	key, who, _, ok := s.projectOwnerRead(w, r)
 	if !ok {
 		return
 	}
@@ -85,7 +86,7 @@ func (s *server) getProjectRepositories(w http.ResponseWriter, r *http.Request) 
 		s.writeHandlerError(w, err)
 		return
 	}
-	answer, err := s.listProjectRepositories(r.Context(), pool, key)
+	answer, err := s.listProjectRepositories(r.Context(), pool, key, who)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -167,7 +168,7 @@ func (s *server) confirmProjectRepository(w http.ResponseWriter, r *http.Request
 		s.writeHandlerError(w, err)
 		return
 	}
-	answer, err := s.listProjectRepositories(r.Context(), s.deps.Store.Pool, key)
+	answer, err := s.listProjectRepositories(r.Context(), s.deps.Store.Pool, key, who)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -223,12 +224,12 @@ func (s *server) ownerOf(ctx context.Context, w http.ResponseWriter, q queryer, 
 	return true
 }
 
-// listProjectRepositories is project key's repositories as its owner reads them
-// (projectRepositories): its rows' names and ids, read through q; GitHub's answer for each name,
-// at most githubReadConcurrency read at once; and what other projects hold of each
-// (refs.Elsewhere).
-func (s *server) listProjectRepositories(ctx context.Context, q queryer, key string) (projectRepositories, error) {
-	held, err := refs.HeldRepositories(ctx, q, key)
+// listProjectRepositories is project key's repositories as its owner, who, reads them
+// (projectRepositories): its rows' names and ids, read through q under who's clause; GitHub's
+// answer for each name, at most githubReadConcurrency read at once; and what the other projects
+// who sees hold of each (refs.Elsewhere).
+func (s *server) listProjectRepositories(ctx context.Context, q queryer, key string, who model.Actor) (projectRepositories, error) {
+	held, err := refs.HeldRepositories(ctx, q, key, refs.VisibilityArg(who))
 	if err != nil {
 		return projectRepositories{}, err
 	}
@@ -275,7 +276,7 @@ func (s *server) listProjectRepositories(ctx context.Context, q queryer, key str
 		}
 		answer.Repositories[index], asked[index] = row, ask
 	}
-	elsewhere, err := refs.Elsewhere(ctx, q, key, asked)
+	elsewhere, err := refs.Elsewhere(ctx, q, key, refs.VisibilityArg(who), asked)
 	if err != nil {
 		return projectRepositories{}, err
 	}

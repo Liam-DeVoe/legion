@@ -377,27 +377,33 @@ func (c *Client) OpenPullRequests(ctx context.Context, token, owner, repo string
 }
 
 // RepositoryAnswer is GET /repos/{owner}/{repo} read conditionally for the two fields a poller
-// keys its records by: the name GitHub itself gives the repository, and its id.
+// keys its records by: the name GitHub itself gives the repository, and its id. Location is where
+// GitHub answered the read after following its redirects from an old name of a renamed or
+// transferred repository, nil where it answered the name itself; the GitHub proxy holds its reads
+// of the name to it (HoldToRepository).
 type RepositoryAnswer struct {
 	FullName    string
 	ID          int64
 	ETag        string
 	NotModified bool
+	Location    *url.URL
 }
 
 // RepositoryIdentity reads owner/repo itself, conditional on etag, for the name and id a poller
-// keys its records by. A repository the App cannot see is ErrRepositoryUnreadable, as every read
-// here is.
+// keys its records by, and where GitHub answered it (RepositoryAnswer.Location). A repository the
+// App cannot see is ErrRepositoryUnreadable, as every read here is.
 func (c *Client) RepositoryIdentity(ctx context.Context, token, owner, repo, etag string) (RepositoryAnswer, error) {
 	if c == nil {
 		return RepositoryAnswer{}, ErrNoAppKey
 	}
+	reached := &reachedLocation{}
+	ctx = context.WithValue(ctx, reachedLocationKey{}, reached)
 	body, status, answerETag, err := c.readConditionalRepositoryJSON(ctx, token, repoPath(owner, repo), owner+"/"+repo, etag)
 	if err != nil {
 		return RepositoryAnswer{}, err
 	}
 	if status == http.StatusNotModified {
-		return RepositoryAnswer{ETag: answerETag, NotModified: true}, nil
+		return RepositoryAnswer{ETag: answerETag, NotModified: true, Location: reached.url}, nil
 	}
 	var repository struct {
 		FullName string `json:"full_name"`
@@ -406,7 +412,7 @@ func (c *Client) RepositoryIdentity(ctx context.Context, token, owner, repo, eta
 	if err := json.Unmarshal(body, &repository); err != nil {
 		return RepositoryAnswer{}, fmt.Errorf("decode %s/%s: %w", owner, repo, err)
 	}
-	return RepositoryAnswer{FullName: repository.FullName, ID: repository.ID, ETag: answerETag}, nil
+	return RepositoryAnswer{FullName: repository.FullName, ID: repository.ID, ETag: answerETag, Location: reached.url}, nil
 }
 
 // CurrentRepository is the repository the name owner/repo reaches on GitHub now, read as

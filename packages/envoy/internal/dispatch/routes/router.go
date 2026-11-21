@@ -653,7 +653,7 @@ func (r *router) repositoryHidden(ctx context.Context, login, repository string,
 		refs.VisibilityArg(model.Actor{Viewer: &viewer}), repository, current.ID).Scan(&visible); err != nil {
 		return githubapi.Gate{}, fmt.Errorf("read whether %s sees %s: %w", login, repository, err)
 	}
-	return githubapi.Gate{Hidden: !visible, Held: viewer.AnyPrivate, ID: current.ID}, nil
+	return githubapi.Gate{Hidden: !visible, Held: viewer.AnyPrivate, Location: current.Location}, nil
 }
 
 // repositoryVisibleQuery is refs.RepositoryClause over the repository bound at $2, whose GitHub id

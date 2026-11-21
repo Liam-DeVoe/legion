@@ -489,7 +489,7 @@ func (r *Reconcile) reconcilePullRequest(ctx context.Context, settings DeliveryS
 		return DeletePullRequest(ctx, r.pool, repoFull, pr.Number)
 	}
 	return UpsertPullRequest(ctx, r.pool, DeliveryPullRequest{
-		Repo: repoFull, Number: pr.Number, Title: pr.Title, URL: pr.URL, Author: pr.Author,
+		Repo: repoFull, RepoID: recordedRepoID(pr.RepoID), Number: pr.Number, Title: pr.Title, URL: pr.URL, Author: pr.Author,
 		CreatedAt: &pr.CreatedAt, MergedAt: pr.MergedAt, Rework: IsRework(pr.Title),
 		Partial: true, // the search response never carries MergeCommitSHA/Additions/Deletions/FirstCommitAt
 	})

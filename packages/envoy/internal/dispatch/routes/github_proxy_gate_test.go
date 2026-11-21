@@ -147,7 +147,9 @@ func TestTheGitHubProxyShowsARepositoryByItsIssues(t *testing.T) {
 }
 
 // The repositories of the renamed, transferred and reused rows (seedRenamedGate): each old name is
-// one GitHub answers with the repository it moved to, by that repository's id.
+// one GitHub answers with the repository it moved to, the renamed ones by that repository's id
+// (/repositories/<id>) and the transferred ones by its new name (/repos/<owner>/<name>), so the
+// proxy's hold is shown to follow whatever location GitHub gives and to predict none.
 const (
 	idPrivNew      int64 = 9001 // acme/privold, renamed to acme/privnew
 	idPrivMoved    int64 = 9002 // acme/privmoved, transferred to other/privmoved
@@ -162,12 +164,13 @@ const (
 // and a name another repository took later shows that repository.
 //
 // acme/privold (9001) is renamed to acme/privnew, and acme/privmoved (9002) is transferred to
-// other/privmoved; GitHub answers each old name with the repository it moved to. Only PRIV's
-// issues name them, each recorded with its id, and PRIV is private. alice, an open viewer, reads
-// none of the four names: each answers her as acme/uninstalled does, in status and bytes. bob and
-// carol read all four. With GitHub failing acme/privnew's id read, alice is refused it, as a hidden
-// repository is; with PRIV public again the same failed read answers her as before any project
-// could be private.
+// other/privmoved; GitHub answers each old name with the repository it moved to, the rename at
+// /repositories/9001 and the transfer at /repos/other/privmoved. Only PRIV's issues name them,
+// each recorded with its id, and PRIV is private. alice, an open viewer, reads none of the four
+// names: each answers her as acme/uninstalled does, in status and bytes. bob and carol read all
+// four, each old name through GitHub's redirect to the location the gate's id read reached. With
+// GitHub failing acme/privnew's id read, alice is refused it, as a hidden repository is; with PRIV
+// public again the same failed read answers her as before any project could be private.
 //
 // acme/privold2 (9003) is renamed to acme/privnew2, and acme/privmoved2 (9004) is transferred to
 // other/privmoved2; a PRIV issue written before Dispatch recorded ids names each by its old name,
@@ -186,7 +189,9 @@ const (
 // acme/privnew and other/privmoved); read the stored name's id at request time (after the reuse bob
 // loses acme/privnew2 and alice reads it); let shared: true skip the issues of other projects (alice
 // is still refused acme/privnew2); match a restricted member by name before the id (dave reads
-// acme/privold2); answer a failed id read by the name rule (alice reads acme/privnew).
+// acme/privold2); answer a failed id read by the name rule (alice reads acme/privnew); hold a
+// redirect to /repositories/<id> alone, the form the hold once predicted (bob and carol lose
+// acme/privmoved, which GitHub redirects by name).
 func TestTheGitHubProxyKeepsARenamedOrTransferredPrivateRepositoryHidden(t *testing.T) {
 	t.Run("renamed and transferred, recorded at their writes", func(t *testing.T) {
 		database, fake, handler := seedRenamedGate(t)
@@ -312,6 +317,7 @@ func seedRenamedGate(t *testing.T) (*store.Store, *gateGitHub, http.Handler) {
 			"acme/privold": "acme/privnew", "acme/privmoved": "other/privmoved",
 			"acme/privold2": "acme/privnew2", "acme/privmoved2": "other/privmoved2",
 		},
+		movedByName: map[string]bool{"acme/privmoved": true, "acme/privmoved2": true},
 	}
 	return database, fake, gateRouter(t, database, fake)
 }
@@ -547,18 +553,20 @@ func proxyAnswer(t *testing.T, handler http.Handler, login, repository, suffix s
 // read of a repository, answered with the repository's name and recorded. A repository's id is
 // ids', else proxiedIDs', else 1000 plus its place among installed, compared without case. A name
 // moved names is an old one: GitHub answers every request of it with a redirect to the repository
-// it moved to, by that repository's id, /repositories/<id>, as GitHub answers a renamed or
-// transferred repository's old name. A name failing names answers its id read 502. Every request it
-// is sent, the installation lookups, token mints and id reads included, is recorded apart. Its
-// maps may change while a test runs, under its lock (rename, failID).
+// it moved to, as GitHub answers a renamed or transferred repository's old name: at that
+// repository's id, /repositories/<id>, or, for an old name movedByName holds, at its new name,
+// /repos/<owner>/<name>. A name failing names answers its id read 502. Every request it is sent,
+// the installation lookups, token mints and id reads included, is recorded apart. Its maps may
+// change while a test runs, under its lock (rename, failID).
 type gateGitHub struct {
-	installed []string
-	ids       map[string]int64
-	moved     map[string]string
-	failing   map[string]bool
-	mu        sync.Mutex
-	reads     []string
-	every     []string
+	installed   []string
+	ids         map[string]int64
+	moved       map[string]string
+	movedByName map[string]bool
+	failing     map[string]bool
+	mu          sync.Mutex
+	reads       []string
+	every       []string
 }
 
 // rename makes GitHub answer old with a redirect to the repository now, whose id it holds, or, with
@@ -646,6 +654,9 @@ func (g *gateGitHub) serve(w http.ResponseWriter, r *http.Request) {
 		repository, path = owner+"/"+name, rest
 		if now, ok := g.moved[strings.ToLower(repository)]; ok {
 			location := "/repositories/" + strconv.FormatInt(g.idOf(now), 10)
+			if g.movedByName[strings.ToLower(repository)] {
+				location = "/repos/" + now
+			}
 			if path != "" {
 				location += "/" + path
 			}

@@ -18,27 +18,33 @@ import (
 )
 
 // TestAppInstallationAnswersAHiddenRepositoryAsNotInstalled: GET /api/v1/github/app-installation
-// holds a repository to the GitHub proxy's rule (refs.RepositoryClause): one its caller may not
-// read answers, in status and bytes, exactly what acme/elsewhere, which the App is not installed
-// on, answers, and GitHub is asked nothing about it. The App is installed on acme/priv, which PRIV's
-// issue names, acme/pub, which PUB's issue names, and acme/unowned, which no issue names. bob,
-// carol and carol's token that lists PRIV see PRIV and read acme/priv installed; alice, alice's
-// token that lists PRIV, carol's token that lists no project and the shared token do not, and read
-// it as not installed. Every caller that sees PUB reads acme/pub installed, and every open viewer
+// holds a repository to the GitHub proxy's rule (refs.RepositoryClause), by the GitHub id the name
+// reaches now: one its caller may not read answers, in status and bytes, exactly what
+// acme/elsewhere, which the App is not installed on, answers, and GitHub is asked nothing about it
+// but its id (the installation lookup, the token mint and the read of the repository itself). The
+// App is installed on acme/priv (501), which PRIV's issue names with that id, acme/pub (502), which
+// PUB's issue names, acme/unowned (503), which no issue names, and acme/privnew, the name GitHub
+// gave acme/priv when it renamed it, which answers 501 too. bob, carol and carol's token that lists
+// PRIV see PRIV and read acme/priv and acme/privnew installed; alice, alice's token that lists
+// PRIV, carol's token that lists no project and the shared token do not, and read both as not
+// installed. Every caller that sees PUB reads acme/pub installed, and every open viewer
 // acme/unowned; bob, a restricted member, and the two tokens that list PRIV, which are not open,
 // read only a repository an issue they see resolves to. Under a rate limit already met on the
 // App's scope a hidden repository answers alike too: the held limit, which the uninstalled
 // repository's lookup meets without asking GitHub.
 //
 // With no project private, every full member's browser, carol's token that lists no project and
-// the shared token read every repository from GitHub, as before any project could be private,
-// and the route reads no statement of the repository rule for them (R9).
+// the shared token read every repository from GitHub's installation lookup, as before any project
+// could be private, and the route reads no id and no statement of the repository rule for them
+// (R9).
 //
-// Control: the route answering every caller alike (GitHub asked for every repository, whoever
-// asks): alice reads acme/priv as installed, and the test fails naming her.
+// Controls: the route answering every caller alike (GitHub asked for every repository, whoever
+// asks), and alice reads acme/priv as installed; the route judging the name alone (the rule's null
+// id), and alice reads acme/privnew as installed. Each time the test fails naming her.
 func TestAppInstallationAnswersAHiddenRepositoryAsNotInstalled(t *testing.T) {
 	const uninstalled = "acme/elsewhere"
-	installed := []string{"acme/priv", "acme/pub", "acme/unowned"}
+	ids := map[string]int64{"acme/priv": 501, "acme/pub": 502, "acme/unowned": 503, "acme/privnew": 501}
+	installed := []string{"acme/priv", "acme/privnew", "acme/pub", "acme/unowned"}
 	var mu sync.Mutex
 	var asked []string
 	trace := &existenceTrace{}
@@ -49,9 +55,18 @@ func TestAppInstallationAnswersAHiddenRepositoryAsNotInstalled(t *testing.T) {
 			mu.Lock()
 			asked = append(asked, r.Method+" "+r.URL.Path)
 			mu.Unlock()
+			if r.Method == http.MethodPost && r.URL.Path == "/app/installations/77/access_tokens" {
+				w.WriteHeader(http.StatusCreated)
+				fmt.Fprintf(w, `{"token":"ghs_installed","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
+				return
+			}
 			for _, repository := range installed {
-				if r.URL.Path == "/repos/"+repository+"/installation" {
+				switch r.URL.Path {
+				case "/repos/" + repository + "/installation":
 					fmt.Fprint(w, `{"id":77,"app_slug":"dispatch-test","permissions":{}}`)
+					return
+				case "/repos/" + repository:
+					fmt.Fprintf(w, `{"id":%d,"full_name":%q}`, ids[repository], repository)
 					return
 				}
 			}
@@ -65,8 +80,8 @@ func TestAppInstallationAnswersAHiddenRepositoryAsNotInstalled(t *testing.T) {
 		return append([]string(nil), asked...)
 	}
 	for project, repository := range map[string]string{seedPrivate: "acme/priv", seedPublic: "acme/pub"} {
-		if _, err := seed.database.Pool.Exec(context.Background(), `update issues set repo = $2 where key = $1`,
-			seed.issue[project], repository); err != nil {
+		if _, err := seed.database.Pool.Exec(context.Background(), `update issues set repo = $2, repo_id = $3 where key = $1`,
+			seed.issue[project], repository, ids[repository]); err != nil {
 			t.Fatalf("name %s on %s's issue: %v", repository, project, err)
 		}
 	}
@@ -76,23 +91,25 @@ func TestAppInstallationAnswersAHiddenRepositoryAsNotInstalled(t *testing.T) {
 		trace.take()
 		response := seed.requestIn(t, context.WithValue(context.Background(), recordingKey{}, true), caller,
 			http.MethodGet, "/api/v1/github/app-installation/"+repository, nil)
-		rule := slices.DeleteFunc(trace.take(), func(statement string) bool { return !strings.Contains(statement, "as asked(repo)") })
+		rule := slices.DeleteFunc(trace.take(), func(statement string) bool { return !strings.Contains(statement, "as asked(repo, id)") })
 		return strings.ReplaceAll(fmt.Sprintf("%d %s", response.Code, strings.TrimSpace(response.Body.String())), repository, "<repo>"), rule
 	}
 	// read holds each caller to what it may read of each repository, readers naming the callers
-	// that read it installed: each of those is answered from GitHub's lookup, and every other
-	// caller is answered what acme/elsewhere answers it, whose answer must start with
-	// uninstalledAnswer or the comparison proves nothing, with GitHub asked nothing.
+	// that read it installed: each of those is answered from GitHub, read for the repository's id,
+	// and every other caller is answered what acme/elsewhere answers it, whose answer must start
+	// with uninstalledAnswer or the comparison proves nothing, with GitHub asked nothing but the
+	// repository's id.
 	read := func(state, uninstalledAnswer string, readers map[string][]privateCaller) {
 		t.Helper()
 		for _, repository := range installed {
+			idRead := []string{"GET /repos/" + repository + "/installation", "POST /app/installations/77/access_tokens", "GET /repos/" + repository}
 			for _, caller := range privateCallers {
 				before := len(requests())
 				got, _ := answer(caller, repository)
 				newly := requests()[before:]
 				if slices.Contains(readers[repository], caller) {
-					if got != `200 {"installed":true}` || !slices.Contains(newly, "GET /repos/"+repository+"/installation") {
-						t.Errorf("%s %s reads whether the App is installed on %s as %s with GitHub asked %q, want 200 installed from GitHub's lookup",
+					if got != `200 {"installed":true}` || !slices.Contains(newly, "GET /repos/"+repository) {
+						t.Errorf("%s %s reads whether the App is installed on %s as %s with GitHub asked %q, want 200 installed from GitHub's read of its id",
 							caller, state, repository, got, newly)
 					}
 					continue
@@ -102,9 +119,9 @@ func TestAppInstallationAnswersAHiddenRepositoryAsNotInstalled(t *testing.T) {
 					t.Fatalf("%s %s reads %s, which the App is not installed on, as %s, want %s…: the comparison proves nothing",
 						caller, state, uninstalled, missing, uninstalledAnswer)
 				}
-				if got != missing || len(newly) != 0 {
-					t.Errorf("%s %s reads whether the App is installed on %s, which it may not read, as\n\t%s\nGitHub asked %q\nwant what %s answers, with GitHub asked nothing:\n\t%s",
-						caller, state, repository, got, newly, uninstalled, missing)
+				if got != missing || slices.ContainsFunc(newly, func(request string) bool { return !slices.Contains(idRead, request) }) {
+					t.Errorf("%s %s reads whether the App is installed on %s, which it may not read, as\n\t%s\nGitHub asked %q\nwant what %s answers, with GitHub asked nothing but %q:\n\t%s",
+						caller, state, repository, got, newly, uninstalled, idRead, missing)
 				}
 			}
 		}
@@ -112,6 +129,7 @@ func TestAppInstallationAnswersAHiddenRepositoryAsNotInstalled(t *testing.T) {
 	openViewers := []privateCaller{callerAlice, callerCarol, callerCarolToken, callerSharedToken}
 	privateReaders := map[string][]privateCaller{
 		"acme/priv":    {callerBob, callerCarol, callerCarolPrivToken},
+		"acme/privnew": {callerBob, callerCarol, callerCarolPrivToken},
 		"acme/pub":     openViewers,
 		"acme/unowned": openViewers,
 	}

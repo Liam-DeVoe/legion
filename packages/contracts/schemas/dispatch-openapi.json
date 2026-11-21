@@ -5071,7 +5071,7 @@
     },
     "/api/v1/github/app-installation/{owner}/{repo}": {
       "get": {
-        "description": "Whether Dispatch's GitHub App, which GitHub sends the repository's webhook events through, is installed on the repository: 200 {installed}, false when GitHub answers 404; 503 GITHUB_APP_UNCONFIGURED when Dispatch holds no App key, 502 GITHUB_UNREADABLE naming the repository and GitHub's error on any other failure. A repository the GitHub proxy would not show the caller (no issue the caller sees resolves to it, and the caller is not an open viewer or an issue of a private project hidden from the caller resolves to it) answers exactly as one the App is not installed on (200 installed:false, or the held rate limit's 502), and GitHub is not asked.",
+        "description": "Whether Dispatch's GitHub App, which GitHub sends the repository's webhook events through, is installed on the repository: 200 {installed}, false when GitHub answers 404; 503 GITHUB_APP_UNCONFIGURED when Dispatch holds no App key, 502 GITHUB_UNREADABLE naming the repository and GitHub's error on any other failure. A repository the GitHub proxy would not show the caller (no issue the caller sees resolves to it, and the caller is not an open viewer or an issue of a private project hidden from the caller resolves to it) answers exactly as one the App is not installed on (200 installed:false, or the held rate limit's 502), and GitHub is asked nothing about it but its id. The repository is judged by the GitHub id its name reaches now, as the GitHub proxy judges it, so a private project's repository GitHub renamed or moved is hidden under its new name too; a caller that sees every object, as every open viewer does while no project is private, is answered from GitHub's installation lookup alone.",
         "operationId": "getApiV1GithubAppInstallationByOwnerByRepo",
         "parameters": [
           {
@@ -5567,7 +5567,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee, or the project's default assignee. A restricted member, or a credential acting for one, that names repo, a string or null, is 403 RESTRICTED_MEMBER before the body's project, parent or external ref is read and before anything is written: their issues take the repository they resolve to, their nearest parent's or their project's default. A repo the caller cannot read through Dispatch's GitHub proxy is 403 REPOSITORY_NOT_AVAILABLE, naming no project, once the body's project and parent are read as the caller reads them and before anything is written: for an open caller, a repository that only issues of private projects it does not see resolve to; for a credential that lists projects, any repository no issue of its projects resolves to. null is never refused, and with no private project nothing is. A title over 1000 characters is 400 CAP_EXCEEDED. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate).",
+        "description": "Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee, or the project's default assignee. A restricted member, or a credential acting for one, that names repo, a string or null, is 403 RESTRICTED_MEMBER before the body's project, parent or external ref is read and before anything is written: their issues take the repository they resolve to, their nearest parent's or their project's default. A repo the caller cannot read through Dispatch's GitHub proxy is 403 REPOSITORY_NOT_AVAILABLE, naming no project, once the body's project and parent are read as the caller reads them and before anything is written: for an open caller, a repository that only issues of private projects it does not see resolve to; for a credential that lists projects, any repository no issue of its projects resolves to. null is never refused, and with no private project nothing is. A repo is stored with the GitHub id GitHub answers for the name as the create runs, by which the GitHub proxy and that refusal judge it; where GitHub does not answer it is stored with no id, but an issue of a private project is 503 REPOSITORY_ID_UNAVAILABLE with nothing written. A title over 1000 characters is 400 CAP_EXCEEDED. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate).",
         "operationId": "postApiV1Issues",
         "parameters": [
           {
@@ -5740,7 +5740,7 @@
         "x-auth": "any"
       },
       "patch": {
-        "description": "Update title (over 1000 characters is 400 CAP_EXCEEDED), status, priority, labels (or labels_add, which adds to the labels the issue holds when the write commits rather than replacing them; not with labels), route, parent, rank, assignee (the email of a person who has signed in, or null; anyone may reassign), or components ({mode: inherit|explicit|none, ids, reason}; allowed on a closed issue). Closing the issue (status done) withdraws every open ask it holds, each recorded resolved with resolution kind withdrawn naming the closer; reopening it opens exactly those asks again. expected_sequence makes the write conditional: 409 ISSUE_CHANGED when the issue's last event is no longer that sequence. repo is the issue's own repository, \"owner/name\", or null to clear it; a restricted member, or a credential acting for one, that names it is 403 RESTRICTED_MEMBER before the issue is read and before anything is written, so only a full member sets, changes or clears an issue's own repository. A repo the caller cannot read through Dispatch's GitHub proxy is 403 REPOSITORY_NOT_AVAILABLE in the create's words, once the issue is read as the caller reads it and before anything is written; null is never refused.",
+        "description": "Update title (over 1000 characters is 400 CAP_EXCEEDED), status, priority, labels (or labels_add, which adds to the labels the issue holds when the write commits rather than replacing them; not with labels), route, parent, rank, assignee (the email of a person who has signed in, or null; anyone may reassign), or components ({mode: inherit|explicit|none, ids, reason}; allowed on a closed issue). Closing the issue (status done) withdraws every open ask it holds, each recorded resolved with resolution kind withdrawn naming the closer; reopening it opens exactly those asks again. expected_sequence makes the write conditional: 409 ISSUE_CHANGED when the issue's last event is no longer that sequence. repo is the issue's own repository, \"owner/name\", or null to clear it; a restricted member, or a credential acting for one, that names it is 403 RESTRICTED_MEMBER before the issue is read and before anything is written, so only a full member sets, changes or clears an issue's own repository. A repo the caller cannot read through Dispatch's GitHub proxy is 403 REPOSITORY_NOT_AVAILABLE in the create's words, once the issue is read as the caller reads it and before anything is written; null is never refused. A repo the issue does not hold already is stored with the GitHub id GitHub answers for it then, and one it holds keeps the id it has, or none, with GitHub asked nothing; while the issue's project is private, a new repo whose id GitHub does not answer is 503 REPOSITORY_ID_UNAVAILABLE with nothing written.",
         "operationId": "patchApiV1IssuesByKey",
         "parameters": [
           {
@@ -10185,7 +10185,7 @@
         ]
       },
       "patch": {
-        "description": "Give a project to another owner, set its visibility or name its Slack channels {owner?, visibility?, slack_channels?}, at any time: owner is the email of a full member who has signed in, and visibility public or private. slack_channels names the Slack channel ids the project's credentials may post to, at most 16, set only by the owner; it replaces the whole list, which is stored sorted with each id once, and an id that is no Slack channel id is 400 INVALID_SLACK_CHANNEL naming it while more than 16 is 400 CAP_EXCEEDED. A private project's write of a Slack channel that another private project lists is 409 SLACK_CHANNEL_SHARED. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED); an owner who is not a full member is 400 OWNER_NOT_ALLOWED; a body naming none of the three, or a visibility that is neither, is 400 PROJECT_ACCESS_INPUT. private is 409 PRIVATE_PROJECTS_OFF when the deployment names no private project, 409 PRIVATE_PROJECT_NOT_PROVISIONED when DISPATCH_PRIVATE_PROJECTS does not name this one, and 409 PRIVATE_PROJECTS_INCOMPLETE until the store's backfills have run; public is never refused by them. private is 409 SLACK_CHANNEL_SHARED while another private project lists one of its channels, and starts the channels' time (slack_channels_changed_at) when it names any; a body that sets both slack_channels and private writes the channels first. private is 409 PRIVATE_PROJECTS_UNAVAILABLE, with nothing changed, unless every hub that serves private projects admits Dispatch when the switch proves it, last before its commit; no write here writes anything on the bus. A body that sets the visibility or the channels waits for each lock at most 60 s: an owner-row or slack-channel lock not taken in that time is 409 LOCK_TIMEOUT, naming the lock, with nothing changed. Appends project.access_changed and answers the project's access as GET answers it. Needs the person scope.",
+        "description": "Give a project to another owner, set its visibility or name its Slack channels {owner?, visibility?, slack_channels?}, at any time: owner is the email of a full member who has signed in, and visibility public or private. slack_channels names the Slack channel ids the project's credentials may post to, at most 16, set only by the owner; it replaces the whole list, which is stored sorted with each id once, and an id that is no Slack channel id is 400 INVALID_SLACK_CHANNEL naming it while more than 16 is 400 CAP_EXCEEDED. A private project's write of a Slack channel that another private project lists is 409 SLACK_CHANNEL_SHARED. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED); an owner who is not a full member is 400 OWNER_NOT_ALLOWED; a body naming none of the three, or a visibility that is neither, is 400 PROJECT_ACCESS_INPUT. private is 409 PRIVATE_PROJECTS_OFF when the deployment names no private project, 409 PRIVATE_PROJECT_NOT_PROVISIONED when DISPATCH_PRIVATE_PROJECTS does not name this one, and 409 PRIVATE_PROJECTS_INCOMPLETE until the store's backfills have run; public is never refused by them. private is also 409 PRIVATE_PROJECT_NOT_PROVISIONED, with unconfirmed_repositories naming each, while a repository name the project's own issues or its default hold has no GitHub id recorded beside it: the owner confirms each first (POST /api/v1/projects/{key}/repositories/confirm). private is 409 SLACK_CHANNEL_SHARED while another private project lists one of its channels, and starts the channels' time (slack_channels_changed_at) when it names any; a body that sets both slack_channels and private writes the channels first. private is 409 PRIVATE_PROJECTS_UNAVAILABLE, with nothing changed, unless every hub that serves private projects admits Dispatch when the switch proves it, last before its commit; no write here writes anything on the bus. A body that sets the visibility or the channels waits for each lock at most 60 s: an owner-row or slack-channel lock not taken in that time is 409 LOCK_TIMEOUT, naming the lock, with nothing changed. Appends project.access_changed and answers the project's access as GET answers it. Needs the person scope.",
         "operationId": "patchApiV1ProjectsByKeyAccess",
         "parameters": [
           {
@@ -10232,6 +10232,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProjectAccess"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnconfirmedRepositoriesRefusal"
                 }
               }
             }
@@ -12063,6 +12073,117 @@
         "x-write-scope": "project"
       }
     },
+    "/api/v1/projects/{key}/repositories": {
+      "get": {
+        "description": "The GitHub repositories a project's own issues and its default name, for its owner to confirm before the project turns private: {repositories: [{repo, id, github_id, github_full_name, named_elsewhere, shared_elsewhere}]}, one for each stored name and the GitHub id recorded beside it (null for the rows that hold the name with none, which a switch to private waits for), sorted by repo and then by id, null first. github_id and github_full_name are the repository the name reaches on GitHub now, read as Dispatch's App, each null when GitHub does not answer. named_elsewhere counts the rows of the other projects the owner sees, issues' own repositories and defaults, that hold repo or that full name with no id; shared_elsewhere counts the issues of the other projects the owner sees, open or done, that resolve to the repository's id, the recorded one else GitHub's: their people read it through the GitHub proxy whatever this project's visibility. Each count names no project or issue, and a private project the owner does not see counts toward neither. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED); a project the caller does not see is 404 PROJECT_NOT_FOUND. Needs the person scope.",
+        "operationId": "getApiV1ProjectsByKeyRepositories",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectRepositories"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ]
+      }
+    },
+    "/api/v1/projects/{key}/repositories/confirm": {
+      "post": {
+        "description": "Confirm which GitHub repository a name the project's own issues or its default hold means {repo, id, shared?}: id must be the GitHub id GitHub answers for repo now (409 REPOSITORY_CHANGED, naming what it answers, otherwise; 503 REPOSITORY_ID_UNAVAILABLE when GitHub does not answer), and is recorded on every row of the project that holds repo with no id. With shared true it is also recorded on every row of other projects, issues' own repositories and defaults, that holds repo, or the full name GitHub gives it now, with no id, whose people then read the repository through the GitHub proxy. A row that holds an id keeps it. A name no row of the project holds is 404 REPOSITORY_NOT_FOUND, and a repo that is no owner/name, or an id that is not positive, is 400 REPOSITORY_INPUT; a refusal writes nothing. Answers the project's repositories as GET answers them. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED); a project the caller does not see is 404 PROJECT_NOT_FOUND. Needs the person scope.",
+        "operationId": "postApiV1ProjectsByKeyRepositoriesConfirm",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfirmRepositoryInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectRepositories"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ],
+        "x-write-scope": "project"
+      }
+    },
     "/api/v1/reference-targets": {
       "get": {
         "description": "What many dispatch:// references point at, in one read: ?ref=\u003cdispatch ref\u003e once per reference, at most 256 of them (past that 400 CAP_EXCEEDED naming the cap). {targets}, one member per ?ref= in the request's order (a reference named twice answered twice), each {ref, kind, name, gone}: ref as the request wrote it, kind the kind of node it names, name the words shown for the target in place of its text (an issue's title, a document's name, an ask's question, a comment's or a message's body, a component's title, a block's text), and gone whether nothing answers to that reference now, once an id it writes short is resolved, which carries no name. A caller that sent Dispatch-Trees: 1 is also given text_tree on each member whose kind is block: the block's whole text as the tree a reader is shown, links and references kept and nothing cut, a typed block's being of what stands between its opening line and its closing one. The lines between a typed block's fences are read by the block's kind: a document's block has the closing fence's indentation taken out of each line, which a block in a list item or a footnote definition carries, and a block of a comment, a message or an ask, stored from the start of its line, has its opening line's indentation, up to three spaces, taken off before the directive is read and up to as many columns taken off each later line, as its own text's parse reads them, the indentation left on a line, and the spaces or tabs after a list marker or a quote marker, written as spaces with each tab counted to the next multiple of four from its own column. With its opening line at column 0, such a block keeps every line as written; an opening line four spaces or a tab in opens no typed block, so that text is given the tree of its whole stored text. A typed block in a quote is given the tree of its whole stored text, its opening line included, and so is a block of a comment, a message or an ask whose closing fence stands four spaces or a tab in, since that fence closes nothing in its text. A reference the grammar cannot read is 400 INVALID_REFERENCE naming it; one that reads but names nothing is answered gone, never refused. An item id or a block id written short (8 characters or more, never a whole uuid) is resolved in the scope the reference names, as GET /api/v1/references resolves its ?to=, and ref still echoes it as written: a prefix that nothing carries is answered gone, and a prefix that two or more items carry answers that member gone with ambiguous: true, which no other member carries, and every other member is answered; GET /api/v1/references refuses such a prefix with 409 ID_AMBIGUOUS, and this read refuses none. Under an ETag over the whole answer, each tree and each ambiguous included (If-None-Match answers 304). This answers no edges: GET /api/v1/references reads one node's edges.",
@@ -12924,7 +13045,7 @@
     },
     "/api/v1/settings/repo-projects/{owner}/{repo}": {
       "put": {
-        "description": "Map a GitHub repository to a project {project, default?, renamed_to?}; default true makes it the project's one default. renamed_to is the owner/name this repository is called today, which every comparison of a repository canonicalises through: absent or null leaves the stored one alone, \"\" clears it, and a pair naming this repository, one naming a repository that is itself renamed, or one on a repository another mapping is already renamed to is 400 INVALID_REPO_PROJECT. A write that leaves the mapping its project's default is 403 REPOSITORY_NOT_AVAILABLE, naming no project, when the caller cannot read the repository through Dispatch's GitHub proxy.",
+        "description": "Map a GitHub repository to a project {project, default?, renamed_to?}; default true makes it the project's one default. renamed_to is the owner/name this repository is called today, which every comparison of a repository canonicalises through: absent or null leaves the stored one alone, \"\" clears it, and a pair naming this repository, one naming a repository that is itself renamed, or one on a repository another mapping is already renamed to is 400 INVALID_REPO_PROJECT. A write that leaves the mapping its project's default is 403 REPOSITORY_NOT_AVAILABLE, naming no project, when the caller cannot read the repository through Dispatch's GitHub proxy. A write that makes the mapping its project's default records the repository's GitHub id as GitHub answers the name then, and a default that stays one keeps the id it holds, or none, with GitHub asked nothing; while the project is private, a new default whose id GitHub does not answer is 503 REPOSITORY_ID_UNAVAILABLE with nothing written.",
         "operationId": "putApiV1SettingsRepoProjectsByOwnerByRepo",
         "parameters": [
           {
@@ -17979,6 +18100,25 @@
           "mentions",
           "deliveries",
           "reply_block"
+        ],
+        "type": "object"
+      },
+      "ConfirmRepositoryInput": {
+        "properties": {
+          "id": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "repo": {
+            "type": "string"
+          },
+          "shared": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "repo",
+          "id"
         ],
         "type": "object"
       },
@@ -26699,6 +26839,63 @@
         ],
         "type": "object"
       },
+      "ProjectRepositories": {
+        "properties": {
+          "repositories": {
+            "items": {
+              "$ref": "#/components/schemas/ProjectRepository"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "repositories"
+        ],
+        "type": "object"
+      },
+      "ProjectRepository": {
+        "properties": {
+          "github_full_name": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "github_id": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "id": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "named_elsewhere": {
+            "type": "integer"
+          },
+          "repo": {
+            "type": "string"
+          },
+          "shared_elsewhere": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "repo",
+          "id",
+          "github_id",
+          "github_full_name",
+          "named_elsewhere",
+          "shared_elsewhere"
+        ],
+        "type": "object"
+      },
       "PutArchitectureSourceInput": {
         "properties": {
           "actor": {
@@ -28910,6 +29107,31 @@
         },
         "required": [
           "kind"
+        ],
+        "type": "object"
+      },
+      "UnconfirmedRepositoriesRefusal": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "unconfirmed_repositories": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "unconfirmed_repositories"
         ],
         "type": "object"
       },
