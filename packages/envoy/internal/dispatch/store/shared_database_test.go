@@ -9,7 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	brokerstore "github.com/sjawhar/envoy/internal/broker/store"
+	brokerstore "github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
