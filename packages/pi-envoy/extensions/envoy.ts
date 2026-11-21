@@ -3566,7 +3566,9 @@ export default function envoyExtension(hostApi: PiApi): void {
   // relay on purpose and deletes the record next, so a registration that a queued pass or a timer
   // makes once the stop began has nothing to ask for. It is refused here, before
   // `registerWithRelay`, with an error that says why: a pass reads it as a pass that decided
-  // nothing (`reconcileNow`), and every other caller that reports it reports the truth.
+  // nothing (`reconcileNow`), and every other caller that reports it reports the truth. A
+  // registration already on the wire when the stop begins is not sent again (`stopping`): a
+  // project refusal answered after that drops no topic, and the session is not told of it.
   const sendRegistration = (
     send: (input: RegistrationInput) => Promise<SubscribeResult>,
     relayMissing?: string,
@@ -3655,6 +3657,7 @@ export default function envoyExtension(hostApi: PiApi): void {
         unwritten.sendNotice(refusedTopicsNoticeText(stillFollowed, reason));
       },
       log: (line) => logger.warn(`envoy: ${line}`),
+      stopping: () => shuttingDown,
     });
   };
 

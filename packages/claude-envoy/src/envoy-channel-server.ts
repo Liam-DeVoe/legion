@@ -1393,7 +1393,9 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
    * A stopping session registers nothing (R24 of dispatch://INFRA-3589). Its shutdown closes the
    * relay on purpose and deletes the record next, so a registration the chain still holds when the
    * stop begins has nothing to ask for. It returns at once: made, it would find no relay subject
-   * and be refused, which would only report an outage that the stop made on purpose.
+   * and be refused, which would only report an outage that the stop made on purpose. A
+   * registration already on the wire when the stop begins is not sent again (`stopping`): a
+   * project refusal answered after that drops no topic, and the session is not told of it.
    */
   const register = async (): Promise<void> => {
     // Nothing registers once shutdown has begun: a registration queued before it would find the
@@ -1512,7 +1514,6 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
             `envoy-channel: the topics the listener refused stay in the delivery state until it is written next — ${messageFor(error)}\n`,
           )
         })
-        if (shuttingDown) return
         delivery.notice(refusedTopicsNoticeText(topics, reason)).catch((noticeError: unknown) => {
           process.stderr.write(
             `envoy-channel: the session could not be told which topics the listener refused — ${messageFor(noticeError)}\n`,
@@ -1520,6 +1521,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
         })
       },
       log: (line) => process.stderr.write(`envoy-channel: ${line}\n`),
+      stopping: () => shuttingDown,
     })
   }
 
@@ -2320,8 +2322,9 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       // The relay's unanswered frames `nak`, so the listener sends them to whoever resumes.
       closeRelay()
       await followedTopics.close()
-      // The heartbeat is stopped, `follow` refuses while shutting down, and `register` does
-      // nothing once it is, so no registration starts from here: one the chain still holds does
+      // The heartbeat is stopped, `follow` refuses while shutting down, `register` does nothing
+      // once it is, and a registration on the wire sends nothing again (`registerWithRelay`'s
+      // `stopping`), so no registration starts from here: one the chain still holds does
       // nothing when its turn comes. The chain is still waited out, so the writes it holds (a
       // removal of topics) land before the DELETE, and so is a registration already on the wire,
       // which would write the record back if it landed after the DELETE. Both waits are bounded,

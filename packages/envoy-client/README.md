@@ -489,8 +489,10 @@ which, once, with the reason (`drop`, worded by `refusedTopicsNoticeText`), logs
 them, and registers the rest at once, whichever path registered. The resend names only the topics
 the session still follows (`followed` is read again before it), so one unsubscribed while the
 registration waited is not put back, and the relay forgets only the refused topics
-(`ConsumerDelivery.unfollow`), so one another registration added meanwhile stays followed. Its 503
-`repositories_unknown` and 403 `token_not_admitted` drop nothing.
+(`ConsumerDelivery.unfollow`), so one another registration added meanwhile stays followed. Once the
+host's `stopping` answers true, a project refusal drops nothing, tells nothing and sends nothing
+again, and a registration not yet sent is not sent. Its 503 `repositories_unknown` and 403
+`token_not_admitted` drop nothing.
 
 ## envoy.json
 

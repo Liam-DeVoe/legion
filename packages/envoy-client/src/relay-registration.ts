@@ -49,11 +49,19 @@ export interface RelayRegistration<Result> {
    * session's token (`projectRefusedTopics`) for `reason`, and tells the session which, once, where
    * it tells it an outage (`refusedTopicsNoticeText`): the host takes them out of what it follows,
    * so no later registration of its carries them, and the session does not go on believing it
-   * follows them. `registerWithRelay` sends the rest at once, whichever path registered.
+   * follows them. `registerWithRelay` sends the rest at once, whichever path registered, unless
+   * the host's stop began (`stopping`).
    */
   readonly drop: (topics: readonly string[], reason: string) => void;
   /** Where the one line naming the topics `drop` was given goes. */
   readonly log: (line: string) => void;
+  /**
+   * The host's own reading that the session's stop began. Once it answers true, no registration
+   * is sent again and no topic is dropped (R24 of dispatch://INFRA-3589): a stopping session
+   * closes its relay on purpose, and its record is deleted next. When it is not given, the
+   * session never reads as stopping.
+   */
+  readonly stopping?: () => boolean;
 }
 
 /**
@@ -134,6 +142,12 @@ export class NoRelaySubjectError extends Error {
  * registered again at once; each round drops at least one topic, so it
  * ends. Any other refusal, and a project refusal naming nothing but the session's own agent
  * subject, fails the registration as before.
+ *
+ * The resend stops at the host's stop (`stopping`). A project refusal answered once the stop
+ * began fails the registration as any other refusal does: no topic is dropped, nothing is
+ * logged, nothing is sent again, and the outage report gets the refusal, which it tells to no
+ * stopping session (`InboundUnavailableOptions.stopping`). A registration whose host began
+ * stopping while it was built sends nothing, and fails with an error that says why.
  */
 export async function registerWithRelay<Result>({
   relay,
@@ -146,6 +160,7 @@ export async function registerWithRelay<Result>({
   answered,
   drop,
   log,
+  stopping = () => false,
 }: RelayRegistration<Result>): Promise<Result> {
   if (relay === undefined) {
     const refused = new NoRelaySubjectError(
@@ -155,6 +170,7 @@ export async function registerWithRelay<Result>({
     outage.noRelay(refused);
     throw refused;
   }
+  if (stopping()) throw new Error("this session is stopping, so it registers nothing");
   let topics = registrationTopics(ownAgentSubject, followed(), roles);
   relay.setFollowed(topics);
   for (;;) {
@@ -163,7 +179,7 @@ export async function registerWithRelay<Result>({
       result = await send(topics, relay.registration());
     } catch (error) {
       const refused = projectRefusedTopics(error, topics, ownAgentSubject);
-      if (refused === undefined) {
+      if (refused === undefined || stopping()) {
         outage.refused(error);
         throw error;
       }

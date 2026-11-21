@@ -1,10 +1,11 @@
-// The harness `extensions/envoy.test.ts` and `extensions/consumer-delivery.test.ts` share: the NATS
-// stand-in the extension dials, the fetch that records every registration, the host modules both
-// suites mock, the reset every row starts and ends with, and the helpers both suites call. Bun
-// evaluates an imported module once per process, so both files drive this one set of state, and
-// `mock.module` replaces a module for the whole process. For the same reason this module registers
-// no hook in its body: a hook here would take the scope of whichever test file imported it first.
-// Each file calls `useExtensionHarness()` at its own module scope instead.
+// The harness `extensions/envoy.test.ts`, `extensions/consumer-delivery.test.ts` and
+// `extensions/stopping-registration.test.ts` share: the NATS stand-in the extension dials, the fetch
+// that records every registration, the host modules the suites mock, the reset every row starts and
+// ends with, and the helpers the suites call. Bun evaluates an imported module once per process, so
+// the files drive this one set of state, and `mock.module` replaces a module for the whole process.
+// For the same reason this module registers no hook in its body: a hook here would take the scope
+// of whichever test file imported it first. Each file calls `useExtensionHarness()` at its own
+// module scope instead.
 import { afterAll, afterEach, beforeAll, beforeEach, mock } from "bun:test";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";

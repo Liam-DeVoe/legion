@@ -419,6 +419,118 @@ describe("one registration", () => {
       [AGENT, kept],
     ]);
   });
+
+  /**
+   * One registration following ISSUE_TOPIC and SLACK whose first send the listener answers 403
+   * `topic_not_in_project` naming SLACK, and every later send accepts. When `stopsMeanwhile`, the
+   * host's stop begins while that first send waits. The host has one reading of its stop, which
+   * its outage report reads too. Answers the refusal and what the registration came to.
+   */
+  async function refusedWhileStopping(stopsMeanwhile: boolean) {
+    const SLACK = "notifications.slack.alerts";
+    let stopping = false;
+    const told: string[] = [];
+    const sent: (readonly string[])[] = [];
+    const dropped: (readonly string[])[] = [];
+    const logs: string[] = [];
+    const relay = fakeRelay();
+    const refused = refusal(403, projectRefusal([SLACK], "topic_not_in_project"));
+    const firstAnswer = Promise.withResolvers<string>();
+    const registering = registerWithRelay({
+      relay,
+      ownAgentSubject: AGENT,
+      followed: () => [ISSUE_TOPIC, SLACK],
+      outage: inboundUnavailable((why) => told.push(why), {
+        restored: () => told.push("restored"),
+        stopping: () => stopping,
+      }),
+      send: (topics) => {
+        sent.push(topics);
+        return sent.length === 1 ? firstAnswer.promise : Promise.resolve("registered");
+      },
+      answered: () => undefined,
+      drop: (topics) => dropped.push(topics),
+      log: (line) => logs.push(line),
+      stopping: () => stopping,
+    }).catch((error: unknown) => error);
+    // The first send is on the wire. The stop begins, then the listener answers it.
+    stopping = stopsMeanwhile;
+    firstAnswer.reject(refused);
+    const outcome = await registering;
+    return { SLACK, refused, outcome, sent, dropped, logs, told, unfollowed: relay.unfollowed };
+  }
+
+  test("a project refusal answered once the host began stopping drops nothing, sends nothing again and tells nothing", async () => {
+    // R24 of dispatch://INFRA-3589: a stopping session registers nothing and is told nothing. The
+    // refusal is then a refusal as any other: the registration fails with it, and the topic it
+    // names stays followed, since the session's record is deleted next.
+    const { SLACK, refused, outcome, sent, dropped, logs, told, unfollowed } =
+      await refusedWhileStopping(true);
+
+    expect({ sent, dropped, logs, told, unfollowed }).toEqual({
+      sent: [[AGENT, ISSUE_TOPIC, SLACK]],
+      dropped: [],
+      logs: [],
+      told: [],
+      unfollowed: [],
+    });
+    expect(outcome).toBe(refused);
+  });
+
+  test("the same project refusal answered while the host is not stopping drops the topic and registers the rest", async () => {
+    // The control of the row above: only the stop differs.
+    const { SLACK, outcome, sent, dropped, logs, told, unfollowed } =
+      await refusedWhileStopping(false);
+
+    expect({ outcome, sent, dropped, logs: logs.length, told, unfollowed }).toEqual({
+      outcome: "registered",
+      sent: [
+        [AGENT, ISSUE_TOPIC, SLACK],
+        [AGENT, ISSUE_TOPIC],
+      ],
+      dropped: [[SLACK]],
+      logs: 1,
+      told: [],
+      unfollowed: [[SLACK]],
+    });
+  });
+
+  test("a registration whose host began stopping before it was sent sends nothing and tells nothing", async () => {
+    // This outage report reads no stop of its own, so it tells whatever it is handed: it tells
+    // nothing only because the registration hands it nothing.
+    const relay = fakeRelay();
+    const told: string[] = [];
+    const sent: (readonly string[])[] = [];
+    const dropped: (readonly string[])[] = [];
+    const logs: string[] = [];
+
+    const outcome = await registerWithRelay({
+      relay,
+      ownAgentSubject: AGENT,
+      followed: () => [TEAM],
+      outage: inboundUnavailable((why) => told.push(why), {
+        restored: () => told.push("restored"),
+      }),
+      send: (topics) => {
+        sent.push(topics);
+        return Promise.resolve("registered");
+      },
+      answered: () => undefined,
+      drop: (topics) => dropped.push(topics),
+      log: (line) => logs.push(line),
+      stopping: () => true,
+    }).catch((error: unknown) => error);
+
+    expect({ sent, dropped, logs, told, followed: relay.followed }).toEqual({
+      sent: [],
+      dropped: [],
+      logs: [],
+      told: [],
+      followed: [],
+    });
+    if (!(outcome instanceof Error)) throw new Error(`no refusal: ${String(outcome)}`);
+    expect(outcome.message).toBe("this session is stopping, so it registers nothing");
+  });
 });
 
 describe("a relay socket", () => {

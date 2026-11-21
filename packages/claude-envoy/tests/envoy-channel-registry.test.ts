@@ -890,6 +890,68 @@ test("a topic the edge refuses at a heartbeat is told to the session once, namin
   }
 })
 
+// A stopping session registers nothing and is told nothing (R24 of dispatch://INFRA-3589). A
+// heartbeat's registration is on the wire when the shutdown begins, and only then does the edge
+// answer it a project refusal: the rest is not registered again, and the session is not told of
+// the refused topic.
+test("a project refusal answered after the shutdown began registers nothing again and tells nothing", async () => {
+  const refusedRoot = "notifications.github.acme.priv"
+  let holding = false
+  const held: Array<() => void> = []
+  const subscribes: Array<readonly string[]> = []
+  const client = recordingClient([], {
+    subscribe: async (input) => {
+      subscribes.push(input.topics)
+      const refused = input.topics.filter((topic) => topic.startsWith(refusedRoot))
+      if (holding && refused.length > 0) {
+        // Answered only once the test lets it go, after the shutdown began.
+        const answer = Promise.withResolvers<void>()
+        held.push(answer.resolve)
+        await answer.promise
+        throw new EnvoyApiError({
+          method: "POST",
+          url: "http://listener.example/v1/interests/subscribe",
+          status: 403,
+          responseBody: JSON.stringify(projectRefusal(refused)),
+        })
+      }
+      return noInterest()
+    },
+  })
+  const notifier = new FakeNotifier()
+  const session = await startChannelSession(
+    sessionOptions(new SessionIdentity("ses_claude", "/tmp"), scratchState(), {
+      connection: new FakeNats(),
+      heartbeatMs: 25,
+      client,
+      notifier,
+    }),
+  )
+
+  try {
+    await session.follow([`${refusedRoot}.>`, "notifications.dispatch.issue.DSP-7.>"])
+    holding = true
+    await waitFor(async () => held.length === 1, "a heartbeat's registration on the wire")
+    const heldAt = subscribes.length
+
+    const stopping = session.shutdown()
+    for (const answer of held.splice(0)) answer()
+    await stopping
+    await settled()
+
+    expect(subscribes.slice(heldAt)).toEqual([])
+    expect(
+      notifier.notifications
+        .filter((written) => written.eventId === undefined)
+        .map((written) => written.content)
+        .filter((content) => content.includes(refusedRoot)),
+    ).toEqual([])
+  } finally {
+    for (const answer of held.splice(0)) answer()
+    await session.shutdown()
+  }
+})
+
 // The record outlives this process by the live window and the gone horizon after it, so the
 // deregistration is what ends the session for its peers: a registry write this listener has
 // stalled on must delay it, never swallow it (dispatch://INFRA-392).
