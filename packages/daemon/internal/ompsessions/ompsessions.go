@@ -72,7 +72,8 @@ var createTables = []string{
 // The pin covers name lookup alone. What the tables' owner attaches to the tables themselves, a
 // trigger, a rule, a row-security policy, a column default, a CHECK constraint, a domain or an
 // expression index, runs as whoever writes, whatever the search_path, and this package does not
-// check for it; only the reads refuse a policy (refuseRowSecurity).
+// check for it; only the reads refuse a policy (refuseRowSecurity), and every transaction refuses
+// a view or a foreign table at a table's name (restrictRelationKinds).
 const pinSearchPath = "SET LOCAL search_path = pg_catalog, pg_temp"
 
 // refuseRowSecurity is the second statement of every read-only transaction (inTransaction). A
@@ -82,35 +83,110 @@ const pinSearchPath = "SET LOCAL search_path = pg_catalog, pg_temp"
 // and no policy runs. Oh My Pi's tables carry no policy, so a read of them is unchanged.
 const refuseRowSecurity = "SET LOCAL row_security = off"
 
-// inTransaction runs fn in one transaction on conn, read-only where access is pgx.ReadOnly,
-// whose first statement is pinSearchPath and, in a read-only one, whose second is
-// refuseRowSecurity. It is the one place the package runs a statement, and fn runs each of its
-// statements on the transaction it is handed (TestNoStatementRunsOutsideTheHelper holds the
-// package to both). The transaction commits when fn returns nil and rolls back otherwise, and
-// fn's error is returned as it is.
-func inTransaction(ctx context.Context, conn *pgx.Conn, access pgx.TxAccessMode, fn func(pgx.Tx) error) error {
+// restrictRelationKinds is a statement of every transaction (inTransaction), after the search_path
+// pin and, in a read, after refuseRowSecurity. A login with CREATE on public can make a view at a
+// table's own name before Oh My Pi makes the table, and the view's query, fixed when it was made,
+// runs in each statement that names the table, as whoever runs the statement: no search_path
+// reaches it, and a view carries no row-security policy. With restrict_nonsystem_relation_kind
+// naming views and foreign tables, a statement that would read or write one fails instead
+// (`access to non-system view "…" is restricted`), and none of its code runs. PostgreSQL has the
+// setting from 16.4 and 17.0 on, and any login may set it.
+const restrictRelationKinds = "SET LOCAL restrict_nonsystem_relation_kind = 'view, foreign-table'"
+
+// pinned is a transaction inTransaction opened and pinned, and the only thing in the package that
+// runs a statement: inTransaction builds the one each call hands its function, and every statement
+// of the package is a call of one of its methods (TestNoStatementRunsOutsideTheHelper holds the
+// package to both).
+type pinned struct{ tx pgx.Tx }
+
+// exec runs a statement that answers no rows.
+func (p pinned) exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error) {
+	return p.tx.Exec(ctx, sql, arguments...)
+}
+
+// queryRow runs a statement that answers one row.
+func (p pinned) queryRow(ctx context.Context, sql string, arguments ...any) pgx.Row {
+	return p.tx.QueryRow(ctx, sql, arguments...)
+}
+
+// query runs a statement that answers rows.
+func (p pinned) query(ctx context.Context, sql string, arguments ...any) (pgx.Rows, error) {
+	return p.tx.Query(ctx, sql, arguments...)
+}
+
+// inTransaction runs fn in one transaction on conn, read-only where readOnly, whose statements
+// before fn's are pinSearchPath, then, in a read-only one, refuseRowSecurity, then
+// restrictRelationKinds (TestEveryTransactionPinsBeforeItsWork holds that order). It is the one
+// place the package opens a transaction, and it hands fn the pinned that runs fn's statements. The
+// transaction commits when fn returns nil and rolls back otherwise, and fn's error is returned as
+// it is.
+func inTransaction(ctx context.Context, conn *pgx.Conn, readOnly bool, fn func(pinned) error) error {
+	access := pgx.ReadWrite
+	if readOnly {
+		access = pgx.ReadOnly
+	}
 	return pgx.BeginTxFunc(ctx, conn, pgx.TxOptions{AccessMode: access}, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, pinSearchPath); err != nil {
 			return fmt.Errorf("pin the transaction's search_path: %w", err)
 		}
-		if access == pgx.ReadOnly {
+		if readOnly {
 			if _, err := tx.Exec(ctx, refuseRowSecurity); err != nil {
 				return fmt.Errorf("turn the read's row security off: %w", err)
 			}
 		}
-		return fn(tx)
+		if _, err := tx.Exec(ctx, restrictRelationKinds); err != nil {
+			return fmt.Errorf("refuse views and foreign tables in the transaction: %w", err)
+		}
+		return fn(pinned{tx})
 	})
+}
+
+// notTables names, by name and kind, each relation in public at either of Oh My Pi's two table
+// names that is no ordinary table (pg_class.relkind 'r').
+const notTables = "SELECT c.relname, c.relkind FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace " +
+	"WHERE n.nspname = 'public' AND c.relname IN ('omp_session_files', 'omp_session_files_parts') AND c.relkind <> 'r' ORDER BY c.relname"
+
+// relationKinds are the names Postgres's pg_class.relkind letters stand for, as a refusal says them.
+var relationKinds = map[string]string{
+	"v": "a view", "m": "a materialized view", "f": "a foreign table", "p": "a partitioned table",
+	"S": "a sequence", "i": "an index", "I": "a partitioned index", "c": "a composite type", "t": "a TOAST table",
 }
 
 // CreateTables makes Oh My Pi's two session tables where the database has none (createTables), so a
 // database no Oh My Pi has opened yet takes a session. Import runs it before its write, and a
-// writer of Append and Replace once per connection before its first.
+// writer of Append and Replace once per connection before its first. A relation of either name in
+// public that is no table, a view another login made in its place say, CREATE TABLE IF NOT EXISTS
+// leaves as it is, so CreateTables refuses it, naming it and its kind.
 func CreateTables(ctx context.Context, conn *pgx.Conn) error {
-	err := inTransaction(ctx, conn, pgx.ReadWrite, func(tx pgx.Tx) error {
+	err := inTransaction(ctx, conn, false, func(p pinned) error {
 		for _, statement := range createTables {
-			if _, err := tx.Exec(ctx, statement); err != nil {
+			if _, err := p.exec(ctx, statement); err != nil {
 				return err
 			}
+		}
+		rows, err := p.query(ctx, notTables)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		var refused []string
+		for rows.Next() {
+			var name, kind string
+			if err := rows.Scan(&name, &kind); err != nil {
+				return err
+			}
+			what, ok := relationKinds[kind]
+			if !ok {
+				what = fmt.Sprintf("a relation of kind %q", kind)
+			}
+			refused = append(refused, fmt.Sprintf("public.%s is %s, not a table", name, what))
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		if len(refused) > 0 {
+			return fmt.Errorf("%s: another login made it in place of Oh My Pi's table, and Legion reads and writes no such "+
+				"relation", strings.Join(refused, "; "))
 		}
 		return nil
 	})
@@ -165,8 +241,8 @@ func ConnectURL(ctx context.Context, dsn string) (*pgx.Conn, error) {
 // holds none.
 func Written(ctx context.Context, conn *pgx.Conn, path string) (at time.Time, ok bool, err error) {
 	var mtime int64
-	err = inTransaction(ctx, conn, pgx.ReadOnly, func(tx pgx.Tx) error {
-		return tx.QueryRow(ctx, "SELECT mtime_ms FROM public.omp_session_files WHERE path = $1", path).Scan(&mtime)
+	err = inTransaction(ctx, conn, true, func(p pinned) error {
+		return p.queryRow(ctx, "SELECT mtime_ms FROM public.omp_session_files WHERE path = $1", path).Scan(&mtime)
 	})
 	if isUndefinedTable(err) || errors.Is(err, pgx.ErrNoRows) {
 		return time.Time{}, false, nil
@@ -190,8 +266,8 @@ func FindByID(ctx context.Context, conn *pgx.Conn, id string) (path string, foun
 		return "", false, fmt.Errorf("look up session %q by its id: the id is not a single path element", id)
 	}
 	suffix := "_" + id + ".jsonl"
-	err = inTransaction(ctx, conn, pgx.ReadOnly, func(tx pgx.Tx) error {
-		return tx.QueryRow(ctx,
+	err = inTransaction(ctx, conn, true, func(p pinned) error {
+		return p.queryRow(ctx,
 			"SELECT path FROM public.omp_session_files WHERE right(path, $1) = $2 ORDER BY mtime_ms DESC, path ASC LIMIT 1",
 			utf8.RuneCountInString(suffix), suffix).Scan(&path)
 	})
@@ -209,8 +285,8 @@ func FindByID(ctx context.Context, conn *pgx.Conn, id string) (path string, foun
 // false when the table holds no such session.
 func Read(ctx context.Context, conn *pgx.Conn, path string) (content []byte, ok bool, err error) {
 	var buffer bytes.Buffer
-	err = inTransaction(ctx, conn, pgx.ReadOnly, func(tx pgx.Tx) error {
-		rows, err := tx.Query(ctx,
+	err = inTransaction(ctx, conn, true, func(p pinned) error {
+		rows, err := p.query(ctx,
 			"SELECT 0 AS kind, 0::bigint AS start_offset, content FROM public.omp_session_files WHERE path = $1 "+
 				"UNION ALL SELECT 1, start_offset, content FROM public.omp_session_files_parts WHERE path = $1 "+
 				"ORDER BY kind, start_offset", path)
@@ -293,8 +369,8 @@ func Import(ctx context.Context, conn *pgx.Conn, path string, content []byte, mt
 		return "", err
 	}
 	inserted := false
-	err := inTransaction(ctx, conn, pgx.ReadWrite, func(tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, "INSERT INTO public.omp_session_files (path, content, mtime_ms, byte_len) VALUES ($1, $2, $3, $4) "+
+	err := inTransaction(ctx, conn, false, func(p pinned) error {
+		tag, err := p.exec(ctx, "INSERT INTO public.omp_session_files (path, content, mtime_ms, byte_len) VALUES ($1, $2, $3, $4) "+
 			"ON CONFLICT (path) DO NOTHING", path, string(content), mtime.UnixMilli(), len(content))
 		if err != nil {
 			return err
@@ -302,7 +378,7 @@ func Import(ctx context.Context, conn *pgx.Conn, path string, content []byte, mt
 		if inserted = tag.RowsAffected() == 1; !inserted {
 			return nil
 		}
-		_, err = tx.Exec(ctx, "DELETE FROM public.omp_session_files_parts WHERE path = $1", path)
+		_, err = p.exec(ctx, "DELETE FROM public.omp_session_files_parts WHERE path = $1", path)
 		return err
 	})
 	if err != nil {
@@ -363,13 +439,14 @@ func Append(ctx context.Context, conn *pgx.Conn, path string, saved int64, conte
 	if saved == Absent {
 		return fmt.Errorf("write session %s: the table holds no row to append to", path)
 	}
-	return write(ctx, conn, path, saved, func(exec statement) error {
-		if err := exec("INSERT INTO public.omp_session_files_parts (path, start_offset, content) VALUES ($1, $2, $3)",
+	return write(ctx, conn, path, saved, func(p pinned) error {
+		if _, err := p.exec(ctx, "INSERT INTO public.omp_session_files_parts (path, start_offset, content) VALUES ($1, $2, $3)",
 			path, saved, string(content)); err != nil {
 			return err
 		}
-		return exec("UPDATE public.omp_session_files SET byte_len = $2, mtime_ms = $3 WHERE path = $1",
+		_, err := p.exec(ctx, "UPDATE public.omp_session_files SET byte_len = $2, mtime_ms = $3 WHERE path = $1",
 			path, saved+int64(len(content)), mtime.UnixMilli())
+		return err
 	})
 }
 
@@ -382,12 +459,12 @@ func Append(ctx context.Context, conn *pgx.Conn, path string, saved int64, conte
 // nothing is written. The tables must exist (CreateTables), and content Postgres cannot keep as
 // text is refused as Append's is.
 func Replace(ctx context.Context, conn *pgx.Conn, path string, saved int64, content []byte, mtime time.Time) error {
-	return write(ctx, conn, path, saved, func(exec statement) error {
-		if err := exec("UPDATE public.omp_session_files SET content = '', byte_len = $2, mtime_ms = $3 WHERE path = $1",
+	return write(ctx, conn, path, saved, func(p pinned) error {
+		if _, err := p.exec(ctx, "UPDATE public.omp_session_files SET content = '', byte_len = $2, mtime_ms = $3 WHERE path = $1",
 			path, len(content), mtime.UnixMilli()); err != nil {
 			return err
 		}
-		if err := exec("DELETE FROM public.omp_session_files_parts WHERE path = $1", path); err != nil {
+		if _, err := p.exec(ctx, "DELETE FROM public.omp_session_files_parts WHERE path = $1", path); err != nil {
 			return err
 		}
 		for start := 0; start < len(content); {
@@ -396,7 +473,7 @@ func Replace(ctx context.Context, conn *pgx.Conn, path string, saved int64, cont
 			for end < len(content) && content[end]&0xc0 == 0x80 {
 				end--
 			}
-			if err := exec("INSERT INTO public.omp_session_files_parts (path, start_offset, content) VALUES ($1, $2, $3)",
+			if _, err := p.exec(ctx, "INSERT INTO public.omp_session_files_parts (path, start_offset, content) VALUES ($1, $2, $3)",
 				path, start, string(content[start:end])); err != nil {
 				return err
 			}
@@ -406,33 +483,26 @@ func Replace(ctx context.Context, conn *pgx.Conn, path string, saved int64, cont
 	})
 }
 
-// statement runs one statement of a writer's change in the transaction write opened for it.
-type statement func(sql string, arguments ...any) error
-
 // write runs apply in one transaction once the row at path is the one its writer last saved:
 // saved Absent inserts an empty row in its place when path has none, and otherwise the row is
-// locked and its byte_len compared. A row it is not is a *MovedError. apply runs its statements
-// through the statement it is handed, which runs each in that transaction.
-func write(ctx context.Context, conn *pgx.Conn, path string, saved int64, apply func(exec statement) error) error {
+// locked and its byte_len compared. A row it is not is a *MovedError. apply runs its statements on
+// the pinned transaction it is handed.
+func write(ctx context.Context, conn *pgx.Conn, path string, saved int64, apply func(p pinned) error) error {
 	var moved *MovedError
-	err := inTransaction(ctx, conn, pgx.ReadWrite, func(tx pgx.Tx) error {
-		exec := func(sql string, arguments ...any) error {
-			_, err := tx.Exec(ctx, sql, arguments...)
-			return err
-		}
+	err := inTransaction(ctx, conn, false, func(p pinned) error {
 		if saved == Absent {
 			var inserted string
-			err := tx.QueryRow(ctx, "INSERT INTO public.omp_session_files (path, content, mtime_ms, byte_len) VALUES ($1, '', 0, 0) "+
+			err := p.queryRow(ctx, "INSERT INTO public.omp_session_files (path, content, mtime_ms, byte_len) VALUES ($1, '', 0, 0) "+
 				"ON CONFLICT (path) DO NOTHING RETURNING path", path).Scan(&inserted)
 			if err == nil {
-				return apply(exec)
+				return apply(p)
 			}
 			if !errors.Is(err, pgx.ErrNoRows) {
 				return err
 			}
 		}
 		held := Absent
-		err := tx.QueryRow(ctx, "SELECT byte_len FROM public.omp_session_files WHERE path = $1 FOR UPDATE", path).Scan(&held)
+		err := p.queryRow(ctx, "SELECT byte_len FROM public.omp_session_files WHERE path = $1 FOR UPDATE", path).Scan(&held)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
@@ -440,7 +510,7 @@ func write(ctx context.Context, conn *pgx.Conn, path string, saved int64, apply 
 			moved = &MovedError{Path: path, Saved: saved, Held: held}
 			return moved
 		}
-		return apply(exec)
+		return apply(p)
 	})
 	if moved != nil {
 		return moved

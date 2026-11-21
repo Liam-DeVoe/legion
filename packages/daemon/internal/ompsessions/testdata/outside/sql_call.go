@@ -8,7 +8,13 @@ import (
 	"database/sql"
 )
 
-func inTransaction(ctx context.Context, db *sql.DB, fn func(*sql.Tx) error) error {
+type pinned struct{ tx *sql.Tx }
+
+func (p pinned) queryRow(ctx context.Context, query string) *sql.Row {
+	return p.tx.QueryRowContext(ctx, query)
+}
+
+func inTransaction(ctx context.Context, db *sql.DB, fn func(pinned) error) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -17,15 +23,15 @@ func inTransaction(ctx context.Context, db *sql.DB, fn func(*sql.Tx) error) erro
 	if _, err := tx.ExecContext(ctx, "SET LOCAL search_path = pg_catalog, pg_temp"); err != nil {
 		return err
 	}
-	if err := fn(tx); err != nil {
+	if err := fn(pinned{tx}); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
 func inside(ctx context.Context, db *sql.DB) (n int, err error) {
-	err = inTransaction(ctx, db, func(tx *sql.Tx) error {
-		return tx.QueryRowContext(ctx, "SELECT 1").Scan(&n)
+	err = inTransaction(ctx, db, func(p pinned) error {
+		return p.queryRow(ctx, "SELECT 1").Scan(&n)
 	})
 	return n, err
 }

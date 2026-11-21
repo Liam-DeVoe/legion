@@ -8,18 +8,26 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func inTransaction(ctx context.Context, conn *pgx.Conn, access pgx.TxAccessMode, fn func(pgx.Tx) error) error {
+type pinned struct{ tx pgx.Tx }
+
+func (p pinned) queryRow(ctx context.Context, sql string) pgx.Row { return p.tx.QueryRow(ctx, sql) }
+
+func inTransaction(ctx context.Context, conn *pgx.Conn, readOnly bool, fn func(pinned) error) error {
+	access := pgx.ReadWrite
+	if readOnly {
+		access = pgx.ReadOnly
+	}
 	return pgx.BeginTxFunc(ctx, conn, pgx.TxOptions{AccessMode: access}, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, "SET LOCAL search_path = pg_catalog, pg_temp"); err != nil {
 			return err
 		}
-		return fn(tx)
+		return fn(pinned{tx})
 	})
 }
 
 func inside(ctx context.Context, conn *pgx.Conn) (n int, err error) {
-	err = inTransaction(ctx, conn, pgx.ReadOnly, func(tx pgx.Tx) error {
-		return tx.QueryRow(ctx, "SELECT 1").Scan(&n)
+	err = inTransaction(ctx, conn, true, func(p pinned) error {
+		return p.queryRow(ctx, "SELECT 1").Scan(&n)
 	})
 	return n, err
 }

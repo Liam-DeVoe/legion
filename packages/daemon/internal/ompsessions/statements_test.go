@@ -19,110 +19,114 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testtypes"
 )
 
-// helperName is the one function of this package that runs a statement: inTransaction, whose
-// transaction pins search_path before anything else runs in it.
+// helperName is the one function of this package that opens a transaction: inTransaction, whose
+// transaction pins search_path, and the rest, before anything else runs in it.
 const helperName = "inTransaction"
+
+// pinnedName is the type of the transaction the helper hands its function: only the helper builds
+// one, and only its methods run a statement on it.
+const pinnedName = "pinned"
 
 // driverPackage reports whether path is a package whose methods and functions the check watches:
 // pgx and every package under it (pgconn, pgxpool, pgtype, pgproto3), and database/sql with its
 // driver package. Every method or function of these packages runs a statement, or may, unless
-// nonStatementMethods or nonStatementFunctions lists it: the check denies by default, so a
-// method pgx adds, or one it already has and nobody listed (LoadType, Prepare, ExecStatement,
-// StartPipeline, Hijack), counts as a statement.
+// allowedMethods or allowedFunctions names it: the check denies by default, so a method pgx adds,
+// or one it has and nobody listed (LoadType, Prepare, ExecStatement, StartPipeline, Hijack, a large
+// object's Close), counts as a statement.
 func driverPackage(path string) bool {
 	return path == "github.com/jackc/pgx/v5" || strings.HasPrefix(path, "github.com/jackc/pgx/v5/") ||
 		path == "database/sql" || path == "database/sql/driver"
 }
 
-// nonStatementMethods are the methods of those packages, by name, that send no statement the
-// server resolves names in, and so may be called outside the helper: ending a handle (Close,
-// Release, Commit and Rollback, whose COMMIT and ROLLBACK name nothing), reading what a handle is
-// (Config, TypeMap, PID, TxStatus, ParameterStatus, IsClosed), handing out the handle under
-// another (Conn, PgConn: a statement on what they hand out is a method of its own, which the
-// check reads), and reading a result a statement already returned (Next, Scan, Values, RawValues,
-// Err, FieldDescriptions, CommandTag, RowsAffected and the command tag's Insert, Update, Delete and
-// Select, and an error's Error, SQLState and Unwrap). Ping is not one: it sends a statement. The
-// list matches a method's name alone, so a name on it that a driver type uses for something else
-// is denied by that type (rawConnection).
-var nonStatementMethods = []string{
-	"Close", "Release", "Commit", "Rollback", "Config", "TypeMap", "PID", "TxStatus", "ParameterStatus", "IsClosed",
-	"Conn", "PgConn", "Next", "Scan", "Values", "RawValues", "Err", "FieldDescriptions", "CommandTag", "RowsAffected",
-	"Insert", "Update", "Delete", "Select", "String", "Error", "SQLState", "Unwrap",
+// allowedMethods are the methods of those packages, each by the type that declares it, that send
+// no statement the server resolves a name in, and so may be called anywhere: ending a handle
+// (closing a connection, releasing a pooled one, ending a transaction with COMMIT or ROLLBACK,
+// which name nothing, closing a result set or a result reader), handing out the PgConn under a
+// connection (a statement on it is a method of its own, which the check reads), and reading a
+// result a statement already returned. A method of the same name on another type is not allowed:
+// a large object's Close runs select lo_close, and a PgConn's Conn is the raw socket.
+var allowedMethods = []string{
+	"github.com/jackc/pgx/v5.Conn.Close",
+	"github.com/jackc/pgx/v5.Conn.PgConn",
+	"github.com/jackc/pgx/v5.Tx.Commit",
+	"github.com/jackc/pgx/v5.Tx.Rollback",
+	"github.com/jackc/pgx/v5.Row.Scan",
+	"github.com/jackc/pgx/v5.Rows.Next",
+	"github.com/jackc/pgx/v5.Rows.Scan",
+	"github.com/jackc/pgx/v5.Rows.Close",
+	"github.com/jackc/pgx/v5.Rows.Err",
+	"github.com/jackc/pgx/v5/pgconn.CommandTag.RowsAffected",
+	"github.com/jackc/pgx/v5/pgconn.MultiResultReader.Close",
+	"github.com/jackc/pgx/v5/pgconn.ResultReader.Close",
+	"github.com/jackc/pgx/v5/pgxpool.Conn.Release",
+	"database/sql.Tx.Commit",
+	"database/sql.Tx.Rollback",
+	"database/sql.Row.Scan",
+	"database/sql.Rows.Close",
 }
 
-// rawConnection is the one method nonStatementMethods names that hands out no driver handle:
-// pgconn.PgConn's Conn, the raw net.Conn under the connection, on which any bytes of the protocol
-// can be written, and whose package the check does not watch. It is denied as Hijack is.
-const rawConnection = "github.com/jackc/pgx/v5/pgconn.PgConn.Conn"
-
-// nonStatementFunctions are the package functions of those packages that run no statement: pgx's
+// allowedFunctions are the package functions of those packages that run no statement: pgx's
 // Connect, ConnectConfig and ParseConfig, which read a URL and open a connection with its startup
 // packet alone, and database/sql's Open, which opens nothing until a statement runs.
-var nonStatementFunctions = []string{"Connect", "ConnectConfig", "ParseConfig", "Open"}
-
-// connectionTypes are the handles that run a statement on their own connection rather than in a
-// transaction. A statement on one runs outside the helper's transaction even inside a function
-// literal handed to the helper, so only the transaction is the literal's to use.
-var connectionTypes = []string{
-	"github.com/jackc/pgx/v5.Conn", "github.com/jackc/pgx/v5/pgxpool.Pool", "github.com/jackc/pgx/v5/pgxpool.Conn",
-	"github.com/jackc/pgx/v5/pgconn.PgConn", "database/sql.DB", "database/sql.Conn",
+var allowedFunctions = []string{
+	"github.com/jackc/pgx/v5.Connect",
+	"github.com/jackc/pgx/v5.ConnectConfig",
+	"github.com/jackc/pgx/v5.ParseConfig",
+	"database/sql.Open",
 }
 
-// statementsOutside is every place in files, which info type-checked, where a statement can run
-// outside helper, in source order, and how many places it found where one runs inside it. A place
-// is a call of, or a method value taken from, a method or a function of a driver package
-// (driverPackage) that no allowlist above names; a field and a type are no place. Inside is the
-// helper's own body, and, in the body of a function literal handed to a call of the helper, a
-// method whose receiver expression starts with a parameter of that literal or a variable it
-// declares, which is the transaction the helper opened and what was read from it, unless the
-// method is a connection type's, which runs beside that transaction. A method on anything else
-// there, a caller's transaction say, runs outside the helper's transaction, and so does a
-// function, which runs on whatever handle it is given. A helper of nil is none, so every place
-// is outside.
+// place is where statementsOutside found a statement can run outside the helper, and what runs.
+type place struct {
+	pos  token.Pos
+	what string
+}
+
+// statementsOutside is every place in files, which info type-checked as pkg, where a statement
+// can run outside the helper, in source order, and how many places it found where one runs inside
+// it. A place is:
 //
-// What it cannot see is a driver value converted to an interface of the package's own and run
-// through that, whose method no driver package declares, and a literal's variable assigned a
-// handle from outside the literal; nothing in the package does either.
-func statementsOutside(fset *token.FileSet, files []*ast.File, info *types.Info, helper *types.Func) (outside []string, inside int) {
-	var body *ast.BlockStmt
-	var literals []*ast.FuncLit
+//   - a call of, or a method value taken from, a method or a function of a driver package
+//     (driverPackage) that allowedMethods or allowedFunctions does not name, outside the helper's
+//     own body and the bodies of pinned's methods;
+//   - a pinned built, by a composite literal or a conversion, outside the helper's body, since
+//     only the transaction the helper pinned may be one;
+//   - an interface, declared or written as a constraint anywhere in the files, that a type of a
+//     driver package implements: a driver handle held in one runs its statements through methods
+//     no driver package declares, which the first rule cannot see.
+//
+// Inside is a watched call in the helper's body or a method of pinned. With no helper every place
+// is outside.
+func statementsOutside(fset *token.FileSet, files []*ast.File, info *types.Info, pkg *types.Package) (outside []string, inside int) {
+	helper := helperOf(pkg)
+	pinnedType, _ := pkg.Scope().Lookup(pinnedName).(*types.TypeName)
+	var helperBody *ast.BlockStmt
+	var bodies []*ast.BlockStmt
 	for _, file := range files {
-		ast.Inspect(file, func(node ast.Node) bool {
-			switch node := node.(type) {
-			case *ast.FuncDecl:
-				if helper != nil && info.Defs[node.Name] == helper {
-					body = node.Body
+		for _, declaration := range file.Decls {
+			function, ok := declaration.(*ast.FuncDecl)
+			if !ok || function.Body == nil {
+				continue
+			}
+			if helper != nil && function.Recv == nil && info.Defs[function.Name] == helper {
+				helperBody = function.Body
+				bodies = append(bodies, function.Body)
+			}
+			if pinnedType != nil && function.Recv != nil && len(function.Recv.List) == 1 {
+				receiver := info.Types[function.Recv.List[0].Type].Type
+				if pointer, ok := receiver.(*types.Pointer); ok {
+					receiver = pointer.Elem()
 				}
-			case *ast.CallExpr:
-				if helper == nil || calledFunc(info, node) != helper {
-					return true
-				}
-				for _, argument := range node.Args {
-					if literal, ok := ast.Unparen(argument).(*ast.FuncLit); ok {
-						literals = append(literals, literal)
-					}
+				if named, ok := receiver.(*types.Named); ok && named.Obj() == pinnedType {
+					bodies = append(bodies, function.Body)
 				}
 			}
-			return true
-		})
-	}
-	within := func(node ast.Node, pos token.Pos) bool { return node.Pos() <= pos && pos < node.End() }
-	inHelper := func(pos token.Pos) bool { return body != nil && within(body, pos) }
-	inLiteral := func(pos token.Pos) bool {
-		return slices.ContainsFunc(literals, func(literal *ast.FuncLit) bool { return within(literal.Body, pos) })
-	}
-	// The literals' own objects: each parameter, and each name a literal's body declares.
-	own := map[types.Object]bool{}
-	for ident, object := range info.Defs {
-		if object != nil && slices.ContainsFunc(literals, func(literal *ast.FuncLit) bool {
-			return within(literal.Type.Params, ident.Pos()) || within(literal.Body, ident.Pos())
-		}) {
-			own[object] = true
 		}
 	}
-	type place struct {
-		pos  token.Pos
-		what string
+	within := func(body *ast.BlockStmt, pos token.Pos) bool {
+		return body != nil && body.Pos() <= pos && pos < body.End()
+	}
+	inBodies := func(pos token.Pos) bool {
+		return slices.ContainsFunc(bodies, func(body *ast.BlockStmt) bool { return within(body, pos) })
 	}
 	var places []place
 	for selector, selection := range info.Selections {
@@ -131,12 +135,10 @@ func statementsOutside(fset *token.FileSet, files []*ast.File, info *types.Info,
 			continue
 		}
 		key, name := declaringType(method, selection)
-		if slices.Contains(nonStatementMethods, method.Name()) && key+"."+method.Name() != rawConnection {
+		if slices.Contains(allowedMethods, key+"."+method.Name()) {
 			continue
 		}
-		receiver := leftmost(selector.X)
-		literalOwn := receiver != nil && own[info.Uses[receiver]]
-		if inHelper(selector.Pos()) || inLiteral(selector.Pos()) && literalOwn && !slices.Contains(connectionTypes, key) {
+		if inBodies(selector.Pos()) {
 			inside++
 			continue
 		}
@@ -144,54 +146,86 @@ func statementsOutside(fset *token.FileSet, files []*ast.File, info *types.Info,
 	}
 	for ident, object := range info.Uses {
 		function, ok := object.(*types.Func)
-		if !ok || function.Pkg() == nil || !driverPackage(function.Pkg().Path()) || slices.Contains(nonStatementFunctions, function.Name()) {
+		if !ok || function.Pkg() == nil || !driverPackage(function.Pkg().Path()) || function.Type().(*types.Signature).Recv() != nil {
 			continue
 		}
-		if function.Type().(*types.Signature).Recv() != nil {
+		if slices.Contains(allowedFunctions, function.Pkg().Path()+"."+function.Name()) {
 			continue
 		}
-		// A function takes the handle it runs on as an argument, which may be the connection
-		// beside the helper's transaction, so only the helper's own body may call one.
-		if inHelper(ident.Pos()) {
+		if inBodies(ident.Pos()) {
 			inside++
 			continue
 		}
 		places = append(places, place{ident.Pos(), fmt.Sprintf("%s.%s (a function of %s)", function.Pkg().Name(), function.Name(), function.Pkg().Name())})
 	}
-	slices.SortFunc(places, func(a, b place) int { return cmp.Compare(a.pos, b.pos) })
-	name := "<no helper>"
-	if helper != nil {
-		name = helper.Name()
+	handles := driverTypes(pkg)
+	for _, file := range files {
+		ast.Inspect(file, func(node ast.Node) bool {
+			switch node := node.(type) {
+			case *ast.CompositeLit, *ast.CallExpr:
+				expression := node.(ast.Expr)
+				built := info.Types[expression].Type
+				if call, ok := node.(*ast.CallExpr); ok {
+					if !info.Types[call.Fun].IsType() {
+						return true
+					}
+				}
+				if named, ok := built.(*types.Named); ok && pinnedType != nil && named.Obj() == pinnedType && !within(helperBody, node.Pos()) {
+					places = append(places, place{node.Pos(), fmt.Sprintf("%s (a %s transaction built outside %s)", types.ExprString(expression), pinnedName, helperName)})
+				}
+			case *ast.InterfaceType:
+				iface, ok := info.Types[node].Type.Underlying().(*types.Interface)
+				if !ok || iface.NumMethods() == 0 {
+					return true
+				}
+				if slices.ContainsFunc(handles, func(handle types.Type) bool { return types.Implements(handle, iface) }) {
+					places = append(places, place{node.Pos(), "an interface a driver handle implements"})
+				}
+			}
+			return true
+		})
 	}
+	slices.SortFunc(places, func(a, b place) int { return cmp.Compare(a.pos, b.pos) })
 	for _, p := range places {
-		outside = append(outside, describePlace(fset.Position(p.pos), p.what, name))
+		outside = append(outside, describePlace(fset.Position(p.pos), p.what, helperName))
 	}
 	return outside, inside
 }
 
-// leftmost is the identifier a receiver expression starts from: tx in tx.QueryRow(…).Scan, conn
-// in conn.PgConn(). It answers nil for an expression that starts from no identifier.
-func leftmost(expression ast.Expr) *ast.Ident {
-	for {
-		switch e := ast.Unparen(expression).(type) {
-		case *ast.Ident:
-			return e
-		case *ast.SelectorExpr:
-			expression = e.X
-		case *ast.CallExpr:
-			expression = e.Fun
-		case *ast.IndexExpr:
-			expression = e.X
-		case *ast.IndexListExpr:
-			expression = e.X
-		case *ast.StarExpr:
-			expression = e.X
-		case *ast.TypeAssertExpr:
-			expression = e.X
-		default:
-			return nil
+// driverTypes is every named type the driver packages pkg imports, directly or not, declare, and
+// a pointer to each that is no interface: what a driver handle can be.
+func driverTypes(pkg *types.Package) []types.Type {
+	var handles []types.Type
+	seen := map[*types.Package]bool{}
+	var walk func(*types.Package)
+	walk = func(imported *types.Package) {
+		if seen[imported] {
+			return
+		}
+		seen[imported] = true
+		if driverPackage(imported.Path()) {
+			scope := imported.Scope()
+			for _, name := range scope.Names() {
+				typeName, ok := scope.Lookup(name).(*types.TypeName)
+				if !ok || typeName.IsAlias() {
+					continue
+				}
+				named, ok := typeName.Type().(*types.Named)
+				if !ok || named.TypeParams().Len() > 0 {
+					continue
+				}
+				handles = append(handles, named)
+				if !types.IsInterface(named) {
+					handles = append(handles, types.NewPointer(named))
+				}
+			}
+		}
+		for _, next := range imported.Imports() {
+			walk(next)
 		}
 	}
+	walk(pkg)
+	return handles
 }
 
 // describePlace is how statementsOutside names a place where a statement runs outside helper:
@@ -200,22 +234,7 @@ func describePlace(position token.Position, what, helper string) string {
 	return fmt.Sprintf("%s:%d: %s runs a statement outside %s", filepath.Base(position.Filename), position.Line, what, helper)
 }
 
-// calledFunc is the function call names, or nil where it names none.
-func calledFunc(info *types.Info, call *ast.CallExpr) *types.Func {
-	var ident *ast.Ident
-	switch fun := ast.Unparen(call.Fun).(type) {
-	case *ast.Ident:
-		ident = fun
-	case *ast.SelectorExpr:
-		ident = fun.Sel
-	default:
-		return nil
-	}
-	function, _ := info.Uses[ident].(*types.Func)
-	return function
-}
-
-// declaringType is the named type that declares method, as a key of connectionTypes and as a
+// declaringType is the named type that declares method, as a key of allowedMethods and as a
 // reader writes it (*pgx.Conn, pgx.Tx). A method an interface declares without naming it is read
 // from the selection's receiver.
 func declaringType(method *types.Func, selection *types.Selection) (key, name string) {
@@ -267,7 +286,10 @@ func typeCheck(t *testing.T, path string, files []string, patterns ...string) (*
 		}
 		parsed = append(parsed, syntax)
 	}
-	info := &types.Info{Defs: map[*ast.Ident]types.Object{}, Uses: map[*ast.Ident]types.Object{}, Selections: map[*ast.SelectorExpr]*types.Selection{}}
+	info := &types.Info{
+		Types: map[ast.Expr]types.TypeAndValue{}, Defs: map[*ast.Ident]types.Object{},
+		Uses: map[*ast.Ident]types.Object{}, Selections: map[*ast.SelectorExpr]*types.Selection{},
+	}
 	config := types.Config{Importer: importer.ForCompiler(fset, "gc", lookup)}
 	pkg, err := config.Check(path, fset, parsed, info)
 	if err != nil {
@@ -300,20 +322,21 @@ func wanted(fset *token.FileSet, file *ast.File) []string {
 	return want
 }
 
-// Every statement the package runs runs inside inTransaction, whose transaction pins search_path
-// before anything else runs in it (TestEveryPoolPinsItsSearchPath reads that pin), so the pin
-// covers every statement: outside that helper no method or function of pgx's or database/sql's
-// packages is called, or taken as a value, but the few nonStatementMethods and
-// nonStatementFunctions name, and inside a literal handed to the helper a method runs only on the
-// transaction the literal was handed or what the literal read from it (statementsOutside). Which
-// methods are watched is decided by the package that declares them, never by their name; which
-// are allowed is decided by their name, but for the one name a driver type uses for a raw socket
-// (rawConnection). The check type-checks the package's own files, test files aside, since those
-// seed fixtures. Its controls are the fixtures of testdata/outside, each type-checked alone with a
-// helper of its own: a pgx call outside the helper, a database/sql call, a pool's connection
-// acquired and run, and the other ways a transaction the helper did not open runs a statement. The
-// check must name exactly the lines their want comments mark and none of the calls inside their
-// helper, and it must find statements inside the helper in each, or it read nothing.
+// Every statement the package runs runs inside inTransaction, whose transaction pins search_path,
+// and the rest, before anything else runs in it (TestEveryTransactionPinsBeforeItsWork holds that
+// order, and TestEveryPoolPinsItsSearchPath reads the pin), so the pin covers every statement.
+// The helper hands its function a pinned, the one type whose methods run a statement, and only the
+// helper builds one. So outside the helper's body and pinned's methods no method or function of
+// pgx's or database/sql's packages is called, or taken as a value, but the few allowedMethods,
+// each named with its type, and allowedFunctions name; no pinned is built; and no interface the
+// package declares or writes is one a driver handle implements (statementsOutside). The check
+// type-checks the package's own files, test files aside, since those seed fixtures. Its controls
+// are the fixtures of testdata/outside, each type-checked alone with a helper and a pinned of its
+// own: a pgx call outside the helper, a database/sql call, a pool's connection acquired and run,
+// the other ways a transaction the helper did not open runs a statement, and the Go shapes that
+// carry one into the helper's function or a driver handle past the check. The check must name
+// exactly the lines their want comments mark and none of the calls inside their helper, and it
+// must find statements inside the helper in each, or it read nothing.
 func TestNoStatementRunsOutsideTheHelper(t *testing.T) {
 	t.Run("this package", func(t *testing.T) {
 		entries, err := os.ReadDir(".")
@@ -331,18 +354,20 @@ func TestNoStatementRunsOutsideTheHelper(t *testing.T) {
 		}
 		const path = "github.com/sjawhar/legion/daemon/internal/ompsessions"
 		fset, parsed, info, pkg := typeCheck(t, path, files, path)
-		helper := helperOf(pkg)
-		if helper == nil {
+		if helperOf(pkg) == nil {
 			t.Errorf("the package declares no function %s, the helper every statement runs through", helperName)
 		}
-		outside, inside := statementsOutside(fset, parsed, info, helper)
+		if _, ok := pkg.Scope().Lookup(pinnedName).(*types.TypeName); !ok {
+			t.Errorf("the package declares no type %s, the transaction %s hands its function", pinnedName, helperName)
+		}
+		outside, inside := statementsOutside(fset, parsed, info, pkg)
 		for _, place := range outside {
 			t.Error(place)
 		}
-		if helper != nil && inside == 0 {
-			t.Errorf("UNKNOWN: the check found no statement inside %s in %v, so it read none of the package's statements", helperName, files)
+		if inside == 0 {
+			t.Errorf("UNKNOWN: the check found no statement inside %s or %s's methods in %v, so it read none of the package's statements", helperName, pinnedName, files)
 		}
-		t.Logf("%d statements inside %s in %v", inside, helperName, files)
+		t.Logf("%d statements inside %s and %s's methods in %v", inside, helperName, pinnedName, files)
 	})
 
 	fixtures, err := filepath.Glob(filepath.Join("testdata", "outside", "*.go"))
@@ -356,15 +381,14 @@ func TestNoStatementRunsOutsideTheHelper(t *testing.T) {
 		t.Run("control "+filepath.Base(fixture), func(t *testing.T) {
 			fset, parsed, info, pkg := typeCheck(t, "fixture", []string{fixture},
 				"github.com/jackc/pgx/v5/pgxpool", "database/sql")
-			helper := helperOf(pkg)
-			if helper == nil {
+			if helperOf(pkg) == nil {
 				t.Fatalf("the fixture declares no function %s", helperName)
 			}
 			want := wanted(fset, parsed[0])
 			if len(want) == 0 {
 				t.Fatal("the fixture carries no want comment, so it controls nothing")
 			}
-			outside, inside := statementsOutside(fset, parsed, info, helper)
+			outside, inside := statementsOutside(fset, parsed, info, pkg)
 			if !slices.Equal(outside, want) {
 				t.Errorf("the check named\n\t%s\nwant\n\t%s", strings.Join(outside, "\n\t"), strings.Join(want, "\n\t"))
 			}

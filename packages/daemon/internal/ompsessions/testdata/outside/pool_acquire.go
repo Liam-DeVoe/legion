@@ -7,21 +7,32 @@ import (
 	"context"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func inTransaction(ctx context.Context, pool *pgxpool.Pool, access pgx.TxAccessMode, fn func(pgx.Tx) error) error {
+type pinned struct{ tx pgx.Tx }
+
+func (p pinned) exec(ctx context.Context, sql string) (pgconn.CommandTag, error) {
+	return p.tx.Exec(ctx, sql)
+}
+
+func inTransaction(ctx context.Context, pool *pgxpool.Pool, readOnly bool, fn func(pinned) error) error {
+	access := pgx.ReadWrite
+	if readOnly {
+		access = pgx.ReadOnly
+	}
 	return pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{AccessMode: access}, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, "SET LOCAL search_path = pg_catalog, pg_temp"); err != nil {
 			return err
 		}
-		return fn(tx)
+		return fn(pinned{tx})
 	})
 }
 
 func inside(ctx context.Context, pool *pgxpool.Pool) error {
-	return inTransaction(ctx, pool, pgx.ReadWrite, func(tx pgx.Tx) error {
-		_, err := tx.Exec(ctx, "SELECT 1")
+	return inTransaction(ctx, pool, false, func(p pinned) error {
+		_, err := p.exec(ctx, "SELECT 1")
 		return err
 	})
 }

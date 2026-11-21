@@ -1,13 +1,11 @@
 // A fixture of TestNoStatementRunsOutsideTheHelper: the other ways a statement runs outside the
 // helper. A transaction it did not open, begun on the connection or handed in by a caller;
 // pgx.BeginFunc; a statement method taken as a value; pgx's own PgConn under a connection; a
-// statement prepared on the connection and run on its PgConn; and a type loaded by name, which
-// runs a query under the login's own search_path. The last two are methods no list of statement
-// methods named, so they hold the check to denying by default. Then a caller's transaction used
-// inside a literal handed to the helper, which runs in the caller's unpinned transaction though it
-// sits in the helper's literal, and the raw network connection under a PgConn, on which any bytes
-// of the protocol can be written. The check must name each line that carries a want comment, and
-// no other.
+// statement prepared on the connection and run on its PgConn; a type loaded by name, which runs a
+// query under the login's own search_path; a caller's transaction used inside a function handed
+// to the helper, which runs in the caller's unpinned transaction; and the raw network connection
+// under a PgConn, on which any bytes of the protocol can be written. The check must name each line
+// that carries a want comment, and no other.
 package fixture
 
 import (
@@ -17,19 +15,29 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-func inTransaction(ctx context.Context, conn *pgx.Conn, access pgx.TxAccessMode, fn func(pgx.Tx) error) error {
+type pinned struct{ tx pgx.Tx }
+
+func (p pinned) exec(ctx context.Context, sql string) (pgconn.CommandTag, error) {
+	return p.tx.Exec(ctx, sql)
+}
+
+func inTransaction(ctx context.Context, conn *pgx.Conn, readOnly bool, fn func(pinned) error) error {
+	access := pgx.ReadWrite
+	if readOnly {
+		access = pgx.ReadOnly
+	}
 	return pgx.BeginTxFunc(ctx, conn, pgx.TxOptions{AccessMode: access}, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, "SET LOCAL search_path = pg_catalog, pg_temp"); err != nil {
 			return err
 		}
-		return fn(tx)
+		return fn(pinned{tx})
 	})
 }
 
 func inside(ctx context.Context, conn *pgx.Conn) error {
-	return inTransaction(ctx, conn, pgx.ReadWrite, func(tx pgx.Tx) error {
+	return inTransaction(ctx, conn, false, func(p pinned) error {
 		run := func(sql string) error {
-			_, err := tx.Exec(ctx, sql)
+			_, err := p.exec(ctx, sql)
 			return err
 		}
 		return run("SELECT 1")
@@ -82,7 +90,7 @@ func loaded(ctx context.Context, conn *pgx.Conn) error {
 }
 
 func callers(ctx context.Context, conn *pgx.Conn, caller pgx.Tx) error {
-	return inTransaction(ctx, conn, pgx.ReadOnly, func(pgx.Tx) error {
+	return inTransaction(ctx, conn, true, func(pinned) error {
 		_, err := caller.Exec(ctx, "SELECT 1") // want "caller.Exec (a method of pgx.Tx)"
 		return err
 	})
