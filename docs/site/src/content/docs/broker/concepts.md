@@ -699,7 +699,7 @@ its grants stay live; a secret with no tag is served as before. A broker with no
 A secret tagged `project-channels` is limited by the projects the credential names, whatever
 project the secret itself belongs to. A credential that names a private project, whether or not
 its person can still see it, gets the secret only behind the airlock, and is denied it
-`project-channels-need-airlock` where the secret has no airlock entry. The proxy then carries only
+`project-channels-need-airlock` where no profile with a proxy block serves the secret. The proxy then carries only
 `POST /api/chat.postMessage` with `channel`, `thread_ts` and `text`, to a channel id that the owner
 of every private project the credential names has listed in Dispatch, and refuses every other call
 `CHANNEL_NOT_ALLOWED` without calling Slack. The credential has no channel at all when an owner

@@ -1268,12 +1268,12 @@ secret is refused, so no session gets one until the broker is rolled forward aga
   without which `agent-secrets` writes no typed secret
   ([People who manage secrets](#people-who-manage-secrets)).
   It names no Kubernetes exchange audience: a pod's trade mints no launcher credential, so no
-  machine could register a session under it. When the airlock rules give the model judge
-  seconds of any secret it also answers `judge_keys`: each such name with its judge seconds and its
-  `guidance` — the rules file's own words, never a value. It is the rules' answer, the same on a
-  broker that runs no judge, and `agent-secrets secret show` reads it to say who decides a request
-  for a secret and what the judge looks for. An administrator's secret is listed there when the
-  rules give it seconds, and its person decides it all the same; `secret show` reads its tag and
+  machine could register a session under it. When the profiles' proxy blocks give the model judge
+  seconds of any profile it also answers `judge_keys`: each such name with its judge seconds and its
+  `guidance` — the profiles file's own words, never a value. It is the profiles file's answer, the
+  same on a broker that runs no judge, and `agent-secrets secret show` reads it to say who decides a
+  request for a secret and what the judge looks for. An administrator's secret is listed there when
+  a proxy block gives it seconds, and its person decides it all the same; `secret show` reads its tag and
   says so. The route answers any caller, so it tells anyone who can reach the broker which secrets
   the judge may take and on what guidance. Guidance is no secret: write nothing in it that a
   caller of the broker may not read.
