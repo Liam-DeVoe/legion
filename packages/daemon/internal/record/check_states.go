@@ -75,21 +75,15 @@ func (s *Postgres) HeadStates(ctx context.Context, tx pgx.Tx, issue, repo, head 
 	if err != nil {
 		return HeadStates{}, fmt.Errorf("read the check states of %s at %s of %s: %w", issue, head, repo, err)
 	}
-	states, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (CheckState, error) {
-		state := CheckState{Issue: issue, Repo: repo, Head: head}
-		if err := row.Scan(&state.Check, &state.State, &state.Reason, &state.Roles, &state.CICase, &state.Seq); err != nil {
-			return CheckState{}, err
-		}
+	state := CheckState{Issue: issue, Repo: repo, Head: head}
+	if _, err := pgx.ForEachRow(rows, []any{&state.Check, &state.State, &state.Reason, &state.Roles, &state.CICase, &state.Seq}, func() error {
 		if state.Roles == nil {
 			state.Roles = []string{}
 		}
-		return state, nil
-	})
-	if err != nil {
-		return HeadStates{}, fmt.Errorf("read the check states of %s at %s of %s: %w", issue, head, repo, err)
-	}
-	for _, state := range states {
 		held.States[state.Check] = state
+		return nil
+	}); err != nil {
+		return HeadStates{}, fmt.Errorf("read the check states of %s at %s of %s: %w", issue, head, repo, err)
 	}
 	return held, nil
 }

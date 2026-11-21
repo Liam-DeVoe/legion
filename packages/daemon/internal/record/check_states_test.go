@@ -29,6 +29,32 @@ func headStatesOf(t *testing.T, st *store.Store, issue, head string) HeadStates 
 	return held
 }
 
+// HeadStates reads each check of a head with its own roles and CI case: three checks of one head,
+// each with roles of its own, one with none, come back each as it was put, so no read of one row
+// carries into the state of another.
+func TestHeadStatesReadsEachCheckAsItWasPut(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	put := []CheckState{
+		{Issue: "ACME-1", Repo: checkStatesRepo, Head: checkStatesH1, Check: "k1", State: "yes", Roles: []string{"implementer", "tester"}, Seq: 3},
+		{Issue: "ACME-1", Repo: checkStatesRepo, Head: checkStatesH1, Check: "k2", State: "yes", Roles: []string{"ci"}, CICase: "success", Seq: 4},
+		{Issue: "ACME-1", Repo: checkStatesRepo, Head: checkStatesH1, Check: "k3", State: "no", Reason: "no_result", Roles: []string{}, CICase: "not_completed", Seq: 5},
+	}
+	want := HeadStates{Checks: []string{"k1", "k2", "k3"}, States: map[string]CheckState{}}
+	inTx(t, st, func(tx pgx.Tx) {
+		for _, state := range put {
+			_, err := NewStore().PutCheckState(ctx, tx, state)
+			must(t, err)
+			want.States[state.Check] = state
+		}
+		_, err := NewStore().PutCheckSet(ctx, tx, "ACME-1", checkStatesRepo, checkStatesH1, want.Checks, 5)
+		must(t, err)
+	})
+	if held := headStatesOf(t, st, "ACME-1", checkStatesH1); !reflect.DeepEqual(held, want) {
+		t.Fatalf("ACME-1 at H1 = %#v, want %#v", held, want)
+	}
+}
+
 // The store keeps, for each check at each head of an issue, the state of the newest Dispatch event:
 // a state at a lower sequence than the one it holds changes nothing, and one at a higher sequence
 // replaces it. A state of the same check at another head, or of another issue at the same head,
