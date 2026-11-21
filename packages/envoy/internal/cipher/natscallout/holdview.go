@@ -22,10 +22,13 @@ import (
 // operator wrote held would admit a writer after the hold's census, since the server installs a
 // connection's permissions at its authorization and never asks again. So no row, a row that does
 // not verify against its keys (signedrecord.Verify over signedrecord.HoldRow), a phase outside the
-// row's three, a verified gen below the highest this view has read (its floor), and any read error
-// (Postgres unreachable, a timeout, a failed transaction) are each unknown. The floor keeps a
-// database writer who is not the operator from putting an older signed released back under a
-// running broker; a broker that starts again starts with no floor, which is the residual the
+// row's three, a verified gen below the highest this view has read (its floor), a verified row at
+// the floor's gen other than the one read there, and any read error (Postgres unreachable, a
+// timeout, a failed transaction) are each unknown. The floor keeps a database writer who is not the
+// operator from putting an older signed released back under a running broker, and from putting a
+// second signed row at the gen read: a writer who puts the hold's older prepare row back has the
+// operator's next move signed at the gen the older row names, so a released row at the held row's
+// gen verifies too. A broker that starts again starts with no floor, which is the residual the
 // hold's design states. Two decisions that read across the operator's write can meet the floor in
 // the wrong order, the older reading after the newer one; that reading is unknown and its client is
 // refused and retries, which fails closed.
@@ -93,10 +96,11 @@ func (v *HoldView) verified(ctx context.Context) (natsgrant.OperatorPhase, error
 	default:
 		return "", errors.New("natscallout: the writer hold's row holds a phase none of the three")
 	}
-	if err := signedrecord.Verify(v.keys, row.Sig, signedrecord.HoldRow(row.Gen, row.Phase, row.HoldID, row.SignedAt)); err != nil {
+	lines := signedrecord.HoldRow(row.Gen, row.Phase, row.HoldID, row.SignedAt)
+	if err := signedrecord.Verify(v.keys, row.Sig, lines); err != nil {
 		return "", fmt.Errorf("natscallout: the writer hold's row at gen %d: %w", row.Gen, err)
 	}
-	if err := v.floor.Accept(row.Gen); err != nil {
+	if err := v.floor.Accept(row.Gen, lines); err != nil {
 		return "", fmt.Errorf("natscallout: the writer hold's row: %w", err)
 	}
 	return phase, nil
