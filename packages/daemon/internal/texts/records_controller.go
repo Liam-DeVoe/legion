@@ -123,13 +123,19 @@ type ParkedDecisionRecord struct {
 	Words    map[string]WordsMeta `json:"words,omitempty"`
 }
 
-// The words of what holds an update round past its bound (UpdateStalledRecord.Holds).
+// The words of what holds an update round past its bound (UpdateStalledRecord.Holds). No process
+// in the round's pod (HoldsNoProcess) holds a round past its bound only where the runtime replaces
+// no pod by issue (runtime.IssuePodReplacer): where it does, the daemon replaces the pod once the
+// bound has come, and only a refusal of that replacement is told (HoldsRuntimeRefused). A pod the
+// runtime cannot read (HoldsPodUnread) decides nothing, so the round waits for a read of it that
+// succeeds.
 const (
 	HoldsNoProcess      = "no-process"
 	HoldsTwoPods        = "two-pods"
 	HoldsOperator       = "operator"
 	HoldsRuntimeRefused = "runtime-refused"
 	HoldsNoPod          = "no-pod"
+	HoldsPodUnread      = "pod-unread"
 )
 
 // UpdateStalledRecord is the notice that an update round is held past its bound (the daemon's
@@ -143,11 +149,12 @@ type UpdateStalledRecord struct {
 }
 
 // UpdateRound is the update round an update-stalled notice names (record.UpdateStalled is this
-// type): the round, the pod it was opened over, each changed image by its short
-// digest and each changed setting by its key, and each claim the round asked. Reasons is the text
-// of the drift that a round an older daemon opened records, and empty for a round this daemon
-// opened, which names its drift by those items alone: an empty reasons is left out, as the
-// update ask leaves out its own (UpdateAskRecord.Reasons), so no notice states `reasons: ""`.
+// type): the round, the pod it was opened over, each changed image by its short digest and each
+// changed setting by its key, and each claim of the issue with a session that has not failed,
+// those the round passes over among them. Reasons is the text of the drift that a round an older
+// daemon opened records, and empty for a round this daemon opened, which names its drift by those
+// items alone: an empty reasons is left out, as the update ask leaves out its own
+// (UpdateAskRecord.Reasons), so no notice states `reasons: ""`.
 type UpdateRound struct {
 	Round    string          `json:"round"`
 	Pod      string          `json:"pod,omitempty"`
@@ -168,8 +175,8 @@ func (u UpdateRound) MarshalJSON() ([]byte, error) {
 	return json.Marshal(out)
 }
 
-// UpdateWaiting is one claim an update round asked (record.UpdateWaiting is this type): its token,
-// its role, its state and whether it answered.
+// UpdateWaiting is one claim an update-stalled notice lists (record.UpdateWaiting is this type):
+// its token, its role, its state and whether it answered.
 type UpdateWaiting struct {
 	Claim    string     `json:"claim"`
 	Role     claim.Role `json:"role,omitempty"`
