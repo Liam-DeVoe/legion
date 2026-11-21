@@ -60,10 +60,12 @@ type Intake struct {
 
 // newIntake builds an Intake on natsClient, a connected client StartIntakes opens for it alone,
 // holding its durable and taking it over under a hold and a lease it takes on leases, and routing
-// by settings.
+// by settings. Each take-over first marks every issue with an open head owed
+// (markOpenHeadsOwed).
 func newIntake(natsClient *bus.Client, pool *store.Pool, leases intakeLeases, github *githubapp.Client, broker *events.Broker, settings *SettingsCache) *Intake {
 	in := &Intake{pool: pool, github: github, events: broker, settings: settings}
 	in.heldDurable = newHeldDurable(natsClient, leases, deliveryConsumerConfig, intakeKey, in.deliver)
+	in.heldDurable.beforeTakeOver = in.markOpenHeadsOwed
 	return in
 }
 
@@ -636,6 +638,24 @@ func (in *Intake) handleChecksEnvelope(ctx context.Context, _ DeliverySettings, 
 		return false, fmt.Errorf("%w: mark the check states of %s owed for %s#%d: %w", errCheckStatesNotMarked, *issue, repoFull, number, err)
 	}
 	return false, nil
+}
+
+// markOpenHeadsOwed marks owed the check states of every issue that holds an open pull request
+// head, in one statement, the backfill migration's (20261121000335). Each take-over of the
+// durable runs it before it changes the durable (heldDurable.beforeTakeOver). The holder before
+// may be a build that acknowledges a settlement of a pull request's checks with no mark, as every
+// build before these marks does, and nothing else would read the run that settlement announced:
+// the settle each mark starts reads the check runs at the issue's heads from GitHub again. Its
+// cost is one settle of each such issue, with those reads, per take-over; a settle that finds a
+// state unchanged publishes nothing.
+func (in *Intake) markOpenHeadsOwed(ctx context.Context) error {
+	if _, err := in.pool.Exec(ctx, `
+		select check_states_owe(issue_key)
+		from (select distinct issue_key from pull_request_heads where state = 'open' and issue_key is not null) owed
+	`); err != nil {
+		return fmt.Errorf("mark the check states of every issue with an open head owed: %w", err)
+	}
+	return nil
 }
 
 // completePullRequest finishes writing one merged pull request's complete row -- session

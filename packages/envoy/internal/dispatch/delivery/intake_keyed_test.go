@@ -220,9 +220,9 @@ func TestAPullRequestHeldOnGitHubHoldsBackOnlyItsOwnMessages(t *testing.T) {
 	}
 }
 
-// Every subject but a pull request's own and a workflow run's is acknowledged on its subject alone,
-// with no decode: a comment and a review on a pull request, its checks, an issue and a job event.
-// The pull request's own message is decoded, once.
+// Every subject but a pull request's own, the settlement of its checks and a workflow run's is
+// acknowledged on its subject alone, with no decode: a comment and a review on a pull request, an
+// issue and a job event. The pull request's own message is decoded once, and so is the settlement.
 func TestSubjectsTheIntakeDoesNotWantAreAcknowledgedWithoutADecode(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
@@ -239,7 +239,7 @@ func TestSubjectsTheIntakeDoesNotWantAreAcknowledgedWithoutADecode(t *testing.T)
 	awaitBoundDurable(t, natsClient)
 
 	payload := `{"kind":"comment","action":"created","repo":"acme/widgets","number":"7","author":"octocat"}`
-	for _, kind := range []string{"pr.7.comment", "pr.7.review", "pr.7.checks", "issue.3", "job.500.completed"} {
+	for _, kind := range []string{"pr.7.comment", "pr.7.review", "issue.3", "job.500.completed"} {
 		publishGitHubEnvelope(t, natsClient, contracts.GithubSubject("acme", "widgets", kind), payload)
 	}
 	awaitAcknowledged(t, natsClient)
@@ -253,6 +253,13 @@ func TestSubjectsTheIntakeDoesNotWantAreAcknowledgedWithoutADecode(t *testing.T)
 	awaitAcknowledged(t, natsClient)
 	if got := decodes.Load(); got != 1 {
 		t.Fatalf("decoded %d envelopes for one pull request message, want 1", got)
+	}
+
+	publishGitHubEnvelope(t, natsClient, contracts.GithubSubject("acme", "widgets", "pr.7.checks"),
+		checksSettlementPayload(t, "acme/widgets", 7, "5555555555555555555555555555555555555555"))
+	awaitAcknowledged(t, natsClient)
+	if got := decodes.Load(); got != 2 {
+		t.Fatalf("decoded %d envelopes for one pull request message and one settlement of its checks, want 2", got)
 	}
 }
 

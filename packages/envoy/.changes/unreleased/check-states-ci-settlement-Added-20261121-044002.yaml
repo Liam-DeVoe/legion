@@ -10,7 +10,12 @@ body: |-
     could not be written is handed back to NATS on the path a pull request whose head row was not
     stored takes, after 10 s and for at most 30 deliveries, and acknowledged with an error at the
     last. That path's bounds are renamed `delivery.ownHandBackAfter` and
-    `delivery.ownHandBackMaxDeliveries`, since they now bound both.
+    `delivery.ownHandBackMaxDeliveries`, since they now bound both. Each take-over of the
+    delivery durable first marks every issue with an open attributed head owed, with the
+    backfill migration's statement, before it changes the durable, since the holder before may
+    be a build that acknowledges a settlement with no mark; a take-over whose mark fails changes
+    nothing and is tried again 2 s later. It costs one settle of each such issue, with its
+    check-run reads, per take-over: each rolling release and each take-over after a lost hold.
 time: 2026-11-21T04:40:02Z
 custom:
     Issue: check-states-ci-settlement
