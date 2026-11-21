@@ -287,6 +287,9 @@ type Server struct {
 	srv       *natsserver.Server
 	jetStream bool
 	monitor   string
+	// directGetsAtLaunch is the relay's count of direct gets when the running nats-server
+	// started: the ones past it reached this nats-server (Reload).
+	directGetsAtLaunch int64
 }
 
 // URL is the server's client URL, which stays the same across every Stop and Start: it names the
@@ -430,16 +433,18 @@ func (s *Server) Freeze(t testing.TB) func() {
 // race detector, as the importing account's lock orders the read above: -race reported a reload of
 // the shared server, hold and all, against another test's KV get (envoy-go-race at
 // cybermonklabs/legion#3924's 6591974b), and a reload of a test's own server that came after 100
-// KV gets on it. So a test reloads its own server only before its clients' first direct get, and a
+// KV gets on it. So Reload fails t, and leaves the server as it was, once a client of the running
+// server has sent a direct get (the relay counts them, as its clients publish to
+// $JS.API.DIRECT.GET.>): a test reloads its server before its clients' first direct get. A
 // server that hands JetStream accounts to many tests (accountServer), whose direct gets come from
-// other tests at any time, refuses a reload and fails t.
+// other tests at any time, refuses every reload.
 func (s *Server) Reload(t testing.TB, config string) error {
 	t.Helper()
 	if s.shared {
 		t.Fatalf("testnats: a reload of the NATS server at %s, which other tests use: it races the direct gets the server answers them (Server.Reload); reload a server of the test's own", s.url)
 	}
 	s.mu.Lock()
-	srv, jetStream := s.srv, s.jetStream
+	srv, jetStream, launched := s.srv, s.jetStream, s.directGetsAtLaunch
 	s.mu.Unlock()
 	if srv == nil {
 		t.Fatal("reload the configuration of a NATS server that is not running")
@@ -467,6 +472,11 @@ func (s *Server) Reload(t testing.TB, config string) error {
 	if err != nil {
 		release()
 		t.Fatalf("hold the NATS server's clients still for its reload: %v", err)
+	}
+	// With the clients held, no direct get can reach the server before the reload.
+	if gets := s.relay.directGetsSent() - launched; gets > 0 {
+		release()
+		t.Fatalf("testnats: a reload of the NATS server at %s, whose clients have sent it direct gets (%d): it races them (Server.Reload); reload it before the test's first direct get", s.url, gets)
 	}
 	// ConfigureOptions and ReloadOptions meet over natsserver.FlagSnapshot, a package-level
 	// variable of nats-server; serverOptions clears it under the same lock this takes.
@@ -664,6 +674,7 @@ func (s *Server) launch(t testing.TB) {
 	defer s.mu.Unlock()
 	s.srv = srv
 	s.jetStream = opts.JetStream
+	s.directGetsAtLaunch = s.relay.directGetsSent()
 	if addr := srv.MonitorAddr(); addr != nil {
 		s.monitor = "http://" + addr.String()
 	}

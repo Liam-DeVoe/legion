@@ -294,6 +294,56 @@ func TestAServerOtherTestsUseRefusesAReload(t *testing.T) {
 	Connect(t, uri).Close()
 }
 
+// A Reload once a client has sent the server a direct get fails the test, naming the count, and
+// leaves the server as it was with its clients let through: nats-server's answer to a direct get
+// races a reload (Server.Reload). A Reload before the first direct get reloads, and so does one of
+// a server a Stop and a Start made anew, which counts afresh.
+func TestAReloadAfterADirectGetFailsNamingIt(t *testing.T) {
+	server, uri := Start(t)
+	conn := Connect(t, uri)
+	defer conn.Close()
+	js, err := conn.JetStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	kv, err := js.CreateKeyValue(&natsgo.KeyValueConfig{Bucket: "reloaded"})
+	if err != nil {
+		t.Fatalf("create bucket: %v", err)
+	}
+	if _, err := kv.Put("k", []byte("v")); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	if err := server.Reload(t, hostOnlyConfig); err != nil {
+		t.Fatalf("a reload before any direct get: %v", err)
+	}
+	if _, err := kv.Get("k"); err != nil {
+		t.Fatalf("direct get: %v", err)
+	}
+
+	refused := &fatalRecorder{TB: t}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = server.Reload(refused, hostOnlyConfig)
+	}()
+	<-done
+	if want := fmt.Sprintf("a reload of the NATS server at %s, whose clients have sent it direct gets (1)", uri); !strings.Contains(refused.message, want) {
+		t.Fatalf("the reload after a direct get ended with %q, want it to say %q", refused.message, want)
+	}
+	if reloads := strings.Count(server.Log(), "Reloaded server configuration"); reloads != 1 {
+		t.Fatalf("the server reloaded %d times, want once, before the direct get", reloads)
+	}
+	if _, err := kv.Get("k"); err != nil {
+		t.Fatalf("a direct get after the refused reload, which must let the clients through: %v", err)
+	}
+
+	server.Stop(t)
+	server.Start(t)
+	if err := server.Reload(t, hostOnlyConfig); err != nil {
+		t.Fatalf("a reload of the restarted server, which no client has sent a direct get: %v", err)
+	}
+}
+
 // StartNkeyAuthorized's readiness wait refuses a server that admits a client with no credential:
 // such a server enforces no nkey users, and every refusal a test expects of it would pass for the
 // wrong reason. A server started with no configuration, which asks for no credential, stands in
