@@ -1112,16 +1112,19 @@ and, given `DISPATCH_E2E_PG_BIN` or `DISPATCH_E2E_PG_IMAGE`, runs it against sta
 harness, in one run and split: this checkout's server, where it passes, every write the writer
 makes is delivered and one falls inside the runner's window, and a build with no read check, where
 it fails naming the route, a session's direct message, a GitHub proxy read, the agent view and both
-sockets. CI's `dispatch-project-access` job runs those rows. That build's commit is read from git,
-never written down: the merge base of HEAD and `DISPATCH_E2E_SWEEP_BASE_BRANCH` (`origin/main` by
-default; while the read check's pull request is open, the branch it targets), or, once a squash
-merge has put the read check on that branch, the commit just before it. `DISPATCH_E2E_SWEEP_BASE`
-names the commit outright. A commit that holds the read check, or no restricted members, is
-refused by name.
+sockets. CI's `dispatch-project-access` job runs those rows against a pinned build:
+`DISPATCH_E2E_SWEEP_BASE` names b29b710bd5, kept by the tag `archive/INFRA-3862-slack-channels`,
+which the job fetches. The pull request that brought the read check to main brought restricted
+members with it, so no commit of main's line holds restricted members and no read check. Without
+`DISPATCH_E2E_SWEEP_BASE` the build is read from git: the merge base of HEAD and
+`DISPATCH_E2E_SWEEP_BASE_BRANCH` (`origin/main` by default), or, once a squash merge has put the
+read check on that branch, the commit just before it. A commit that holds the read check, or no
+restricted members, is refused by name.
 
 ```bash
+git fetch origin +refs/tags/archive/INFRA-3862-slack-channels:refs/tags/archive/INFRA-3862-slack-channels
 DISPATCH_E2E_PG_BIN=<a directory holding initdb and pg_ctl, PostgreSQL with vector> \
-  DISPATCH_E2E_SWEEP_BASE_BRANCH=origin/<the branch the read check's pull request targets> \
+  DISPATCH_E2E_SWEEP_BASE=b29b710bd50b38b19f4cd89ba7b9cdad67c6b550 \
   bun run test:harness e2e/__tests__/restricted-sweep.test.ts
 ```
 

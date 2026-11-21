@@ -712,10 +712,14 @@ query_kind() {
     # the projects it worked in: a filter by a session is filled with a session of the project
     # alone, which the member must be answered as one nobody holds, and a filter by a person with
     # a person of the project, whose answer the markers read. `session` is the session a caller
-    # acts as, no filter. The rest name no object.
+    # acts as, no filter. account, account_issuer, account_subject and credential_created_at
+    # describe the credential a membership question asks about (a Google account and the moment the
+    # credential was made), as project-access-walk.sh's query_no_object reads them. The rest name
+    # no object.
     author_session | parent_agent) echo project-session ;;
     assignee | approver | person | author) echo person ;;
     session) echo skip ;;
+    account | account_issuer | account_subject | credential_created_at) echo skip ;;
     advances | after | at | before | blocks | closed_before | closed_since | component | cursor | deployed | \
       download | exclude_issue | exclude_issues | from | ids | keywords_only | kind | label | limit | max_chars | \
       moved | offset | open | order | pinned | priority | q | rework | route_status | since | source_kind | state | \
