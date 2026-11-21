@@ -497,14 +497,21 @@ class NotReadOnlyError extends Error {}
 const READ_ONLY = "read only";
 
 /**
- * Runs `read` in one transaction begun read-only, after confirming from the server, inside that
- * transaction and before anything is read in it, that the begin took. A deployment can point this
- * script at a server or a route that dropped it, and reading on a write-capable connection is what
- * the shared store's pool cannot take. Every read of the store goes through here, so a read added
- * later cannot be the one that skips the confirmation.
+ * Runs `read` in one transaction begun read-only, which opens by pinning search_path to
+ * pg_catalog and pg_temp and turning row_security off, as packages/daemon's internal/ompsessions
+ * reads: the store is written by every session's Oh My Pi, a login that may create in it could
+ * plant a function, or a schema named for the reader, that an unqualified name resolves to, and a
+ * row-security policy the tables' owner attaches runs in each reader's session. So every read
+ * names each table public.<table>, and a policy fails the read rather than runs in it. Then,
+ * inside that transaction and before anything is read in it, it confirms from the server that the
+ * begin took: a deployment can point this script at a server or a route that dropped it, and
+ * reading on a write-capable connection is what the shared store's pool cannot take. Every read of
+ * the store goes through here, so a read added later cannot be the one that skips either.
  */
 async function readOnly<T>(sql: SQL, read: (tx: TransactionSQL) => Promise<T>): Promise<T> {
   return await sql.begin(READ_ONLY, async (tx) => {
+    await tx`set local search_path = pg_catalog, pg_temp`;
+    await tx`set local row_security = off`;
     const rows: { transaction_read_only: string }[] = await tx`show transaction_read_only`;
     if (rows[0]?.transaction_read_only !== "on") throw new NotReadOnlyError();
     return await read(tx);
@@ -520,7 +527,8 @@ function liveStore(dsn: string): LiveStore {
   return {
     async paths() {
       return await readOnly(sql, async (tx) => {
-        const rows: { path: string }[] = await tx`select path from omp_session_files order by path`;
+        const rows: { path: string }[] =
+          await tx`select path from public.omp_session_files order by path`;
         return rows.map((row) => row.path);
       });
     },
@@ -529,8 +537,8 @@ function liveStore(dsn: string): LiveStore {
         const rows: { text: string | null }[] = await tx`
           select f.content || coalesce(
             (select string_agg(p.content, '' order by p.start_offset)
-               from omp_session_files_parts p where p.path = f.path), '') as text
-          from omp_session_files f where f.path = ${path}
+               from public.omp_session_files_parts p where p.path = f.path), '') as text
+          from public.omp_session_files f where f.path = ${path}
         `;
         return rows[0]?.text ?? "";
       });

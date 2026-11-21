@@ -212,6 +212,18 @@ beforeAll(async () => {
         values (${path}, ${Buffer.byteLength(head)}, ${tail})`;
     }
   }
+  // A login that may create in the store can make a schema named for the reader, which the default
+  // search_path, "$user", public, searches before public, and give it empty tables of the same
+  // names. A run that names the tables bare reads those and finds no session; the script pins
+  // search_path to pg_catalog and pg_temp and names each table public.<table>, so it reads the
+  // fixture. The fixture is written first, since an unqualified insert would now land there.
+  const [{ login }]: { login: string }[] = await store`select current_user as login`;
+  const planted = `"${login.replaceAll('"', '""')}"`;
+  await store.unsafe(`create schema ${planted}`);
+  await store.unsafe(`create table ${planted}.omp_session_files (like public.omp_session_files)`);
+  await store.unsafe(
+    `create table ${planted}.omp_session_files_parts (like public.omp_session_files_parts)`
+  );
 
   const dsnFile = join(scratch, "session-store.url");
   await writeFile(dsnFile, `${storeUrl.toString()}\n`);
@@ -291,4 +303,8 @@ const EXPECTED: string[] = [
 test("the run reports the fixture's waits, line by line", () => {
   expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
   expect(printed).toEqual(EXPECTED);
+});
+
+test("a schema named for the reader, holding empty tables of the same names, is not what the run reads", () => {
+  expect(printed[0]).toBe(EXPECTED[0]);
 });
