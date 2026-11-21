@@ -707,6 +707,9 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
     actor,
   };
   const artifactOwner = documentOwner();
+  // --force asks for the next version of a document the owner holds under the name, which is
+  // judged against the document it replaces rather than as a new one.
+  const force = optionalBoolean(args, "force") === true;
   // The server's own `blank`: a body carrying no content, or content Go's
   // `strings.TrimSpace` empties - the `blank :=` line of jsonArtifactUpload in
   // packages/envoy/internal/dispatch/api/artifacts.go, whose set is goBlankPattern's.
@@ -718,10 +721,11 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
   // The file a path names, typed as Bun types the path: the type its upload carries, which is
   // what Dispatch reads for whether it stores the file as a Markdown document. Such a file is read
   // once, here (documentFileBytes), so the bytes checked below are the bytes sent; any other file
-  // is not read here.
+  // is not read here. The bytes AskGate's check read, where it read them, are the bytes the call
+  // checks and sends, copied once into a plain buffer of their own, which a Blob takes.
   const file = path === undefined ? undefined : Bun.file(resolvePath(input.cwd, path));
-  const documentBytes =
-    file === undefined ? undefined : await documentFileBytes(file, input.uploadBytes);
+  const heldBytes = input.uploadBytes === undefined ? undefined : new Uint8Array(input.uploadBytes);
+  const documentBytes = file === undefined ? undefined : await documentFileBytes(file, heldBytes);
   // A document's text past the bytes one document may hold, inline or from a file, is refused
   // first, before the read of the held name below, as the server refuses such an upload whatever
   // name it carries (documentTooLarge). The call asks Dispatch nothing for it, and answers it as
@@ -737,7 +741,7 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
   // force says, and that refusal names the rule which applies to it. Refusing it here would
   // answer it with --force, which writes nothing for a create that stores nothing, so it goes
   // through and reads the server's own answer.
-  if ((path !== undefined || !blank) && optionalBoolean(args, "force") !== true) {
+  if ((path !== undefined || !blank) && !force) {
     const held = artifactUnderName(
       artifactOwner.kind === "project"
         ? // unlinked, as every other read of a project's own documents is: without it the
@@ -757,15 +761,17 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
     }
   }
   // A text the store would write under another spelling, or one Dispatch's round trip refuses as
-  // its upload would (storedTextCheck), is refused here. Only a Dispatch that holds no such route
-  // leaves the upload to make its own refusal, as it did before this check: every other failure
-  // refuses an upload of text that is not blank, since a check that did not run says nothing about
-  // what the store would write. Blank text is asked for a refusal alone, since no spelling of it
-  // is refused (storedTextCheck says why), so a check of it that did not run leaves the upload to
-  // make its own refusal too. A file is asked nothing: the store keeps a Markdown file as it
-  // spells it, and its upload is refused for everything the round trip would refuse its bytes for.
+  // its upload would (storedTextCheck), is refused here. A refusal only a new document's seed
+  // makes is left to the upload under --force, which may replace a document Dispatch judges the
+  // text against, by looser rules: the upload goes on and Dispatch answers, as it does where
+  // Dispatch holds no such route, as before this check. Every other failure refuses an upload of
+  // text that is not blank, since a check that did not run says nothing about what the store would
+  // write. Blank text is asked for a refusal alone, since no spelling of it is refused
+  // (storedTextCheck says why), so a check of it that did not run leaves the upload to make its
+  // own refusal too. A file is asked nothing: the store keeps a Markdown file as it spells it, and
+  // its upload is refused for everything the round trip would refuse its bytes for.
   if (content !== undefined) {
-    const stored = await storedTextCheck(() => client, input.tool, name, content);
+    const stored = await storedTextCheck(() => client, input.tool, name, content, force);
     if (stored.kind === "refused") throw stored.refusal;
     if (stored.kind === "failed" && !blank) throw storedTextCheckFailed(stored.error);
   }
@@ -773,12 +779,7 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
   // neither makes an empty document the writer fills in afterwards with dispatch doc-edit. The
   // file's bytes, where the call holds them - a document's, read above, or those AskGate's check
   // read - are sent as they were read, typed as Bun types the path.
-  const fileBytes =
-    documentBytes ??
-    (input.uploadBytes === undefined
-      ? undefined
-      : // The copy gives the bytes a plain buffer of their own, which a Blob takes.
-        new Uint8Array(input.uploadBytes));
+  const fileBytes = documentBytes ?? heldBytes;
   const artifactInput =
     file !== undefined
       ? {
@@ -838,27 +839,31 @@ function endedSentence(text: string): string {
  * Markdown document is read as the call reads it (`documentFileBytes`), and takes the call's size
  * check and then the round trip's refusal alone (`storedFileCheck`): the call asks the round trip
  * nothing about a file, and the round trip refuses, in the upload's own words, what the upload of
- * that file is refused for. Any other file, and a name alone, is asked nothing. It reads nothing
- * else the call reads: not whether the owner holds the name, and none of the server's other
- * refusals. A check that cannot run passes, with a warning that says what the call then does. A
- * dry run that failed there would let an AskGate older than DISPATCH_DRY_RUN_LOCAL, which runs the
- * call after a failed dry run, post this write unreviewed; AskGate now sets that variable, under
- * which this step does not run.
+ * that file is refused for. Any other file, and a name alone, is asked nothing. Under `--force` a
+ * refusal only a new document's seed makes is not the call's, since the upload may replace a
+ * document Dispatch judges the text against: the dry run passes, naming that refusal in a warning.
+ * It reads nothing else the call reads: not whether the owner holds the name, and none of the
+ * server's other refusals. A check that cannot run passes, with a warning that says what the call
+ * then does. A dry run that failed there would let an AskGate older than DISPATCH_DRY_RUN_LOCAL,
+ * which runs the call after a failed dry run, post this write unreviewed; AskGate now sets that
+ * variable, under which this step does not run.
  */
 export async function artifactDryRun(context: DryRunContext): Promise<DryRunVerdict> {
-  const { tool, args, cwd, deadline, deadlineMs } = context;
+  const { tool, args, cwd, client, deadline, deadlineMs } = context;
   const content = optionalString(args, "content");
   const path = optionalString(args, "path");
-  const client = () => context.client();
+  const force = optionalBoolean(args, "force") === true;
   // The check, what the dry run asks Dispatch, and what the call does without that answer: when
-  // the round trip could not be asked, and when this Dispatch holds no round trip.
+  // the round trip could not be asked, when this Dispatch holds no round trip, and when this
+  // session has no Dispatch.
   let check: () => Promise<StoredTextCheck>;
   let asks: string;
   let callWithout: string;
   let callWithoutRoute: string;
+  let callWithoutDispatch = "The call is refused for the same reason.";
   if (content !== undefined) {
     const name = stringArg(args, "name");
-    check = () => storedTextCheck(client, tool, name, content);
+    check = () => storedTextCheck(client, tool, name, content, force);
     if (goBlankPattern.test(content)) {
       // Blank text is asked for a refusal alone, and the call uploads it without that answer.
       asks = "whether it would refuse the text";
@@ -869,6 +874,7 @@ export async function artifactDryRun(context: DryRunContext): Promise<DryRunVerd
       callWithout = "The call refuses the upload until Dispatch answers.";
       callWithoutRoute =
         "The dry run did not check the spelling. The call uploads the text unchecked.";
+      callWithoutDispatch = callWithout;
     }
   } else if (path !== undefined) {
     let read: Uint8Array | undefined;
@@ -883,16 +889,16 @@ export async function artifactDryRun(context: DryRunContext): Promise<DryRunVerd
     }
     if (read === undefined) return { kind: "passed" };
     const bytes = read;
-    check = () => storedFileCheck(client, bytes);
+    check = () => storedFileCheck(client, bytes, force);
     asks = "whether it would refuse the file's text";
     callWithout = "The call does not ask this before it uploads the file.";
     callWithoutRoute = callWithout;
   } else {
     return { kind: "passed" };
   }
-  const unasked = (why: string): DryRunVerdict => ({
+  const unasked = (why: string, then: string): DryRunVerdict => ({
     kind: "passed",
-    warning: `dispatch: warning: the dry run could not ask Dispatch ${asks}: ${endedSentence(why)} ${callWithout}`,
+    warning: `dispatch: warning: the dry run could not ask Dispatch ${asks}: ${endedSentence(why)} ${then}`,
   });
   let stored: StoredTextCheck;
   try {
@@ -900,13 +906,18 @@ export async function artifactDryRun(context: DryRunContext): Promise<DryRunVerd
   } catch (error) {
     // A session with no Dispatch, which the call refuses in the same words: the check throws
     // only what building the client throws.
-    return unasked(messageFor(error));
+    return unasked(messageFor(error), callWithoutDispatch);
   }
   switch (stored.kind) {
     case "kept":
       return { kind: "passed" };
     case "refused":
       return { kind: "refused", refusal: stored.refusal };
+    case "new-document":
+      return {
+        kind: "passed",
+        warning: `dispatch: warning: Dispatch refuses this text as a new document: ${endedSentence(messageFor(stored.refusal))} A replacement is judged against the document it replaces, so with --force the call uploads the text and Dispatch answers.`,
+      };
     case "no-route":
       return {
         kind: "passed",
@@ -918,7 +929,8 @@ export async function artifactDryRun(context: DryRunContext): Promise<DryRunVerd
       return unasked(
         deadline.aborted
           ? `Dispatch gave no answer within ${deadlineMs / 1000} s`
-          : roundTripFailure(stored.error)
+          : roundTripFailure(stored.error),
+        callWithout
       );
   }
 }

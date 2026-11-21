@@ -125,12 +125,12 @@ type jsonArtifactUpload struct {
 	//
 	// Blank content is carried to the store as it was typed, and seeded as any content is: the
 	// write parses the markdown into the document and stores what that document renders back
-	// (Docs.SeedText, storeArtifact). Spaces, tabs and line feeds alone are no block, so such a
-	// version holds an empty markdown of size 0, and the document is as removable as one made with
-	// no content at all, measured on 2026-11-11 through the route itself. The other characters
-	// strings.TrimSpace empties are text to the parser, so the store keeps them - an upload of
-	// "\u00a0\n" stores "\u00a0\n", measured on 2026-11-21 - and the seed refuses such content as
-	// it refuses any text, past the elements one write may make among it.
+	// (Docs.SeedText, storeArtifact). Spaces, tabs, carriage returns and line feeds alone are no
+	// block, so such a version holds an empty markdown of size 0, and the document is as removable
+	// as one made with no content at all, measured on 2026-11-11 through the route itself. The
+	// other characters strings.TrimSpace empties are text to the parser, so the store keeps them -
+	// an upload of "\u00a0\n" stores "\u00a0\n", measured on 2026-11-21 - and the seed refuses such
+	// content as it refuses any text, past the elements one write may make among it.
 	Content      *string                 `json:"content"`
 	Primary      json.RawMessage         `json:"primary"`
 	Summary      string                  `json:"summary"`
@@ -231,17 +231,19 @@ var errMarkdownDocumentTooLarge = errorf(http.StatusRequestEntityTooLarge, "CAP_
 //     stored as text. Any other file is stored as bytes and never reaches here.
 //
 // Two routes make these checks through it: the upload (uploadArtifactFor), and the round trip
-// (markdownRoundTrip), whose refusal `dispatch artifact` and its dry run take as the call's. So a
-// check of the text alone that the upload makes before its write is made here, and the round trip
-// makes it too. The upload's JSON decode has refused U+0000 in content already, so for the upload
-// the first check finds none; the round trip's body names the text `markdown`, and this names it
-// as the upload does.
+// (markdownRoundTrip), whose refusal of these checks `dispatch artifact` and its dry run take as
+// the call's for every upload, a replacement included (contracts.TextRefusalUpload). So a check of
+// the text alone that every upload of a markdown document makes before its write is made here, and
+// the round trip makes it too. The upload's JSON decode has refused U+0000 in content already, so
+// for the upload the first check finds none; the round trip's body names the text `markdown`, and
+// this names it as the upload does.
 //
-// The upload's other refusals of the text alone are its write's: a new document's seed parses the
+// The upload's other refusals of the text alone are its write's. A new document's seed parses the
 // text, holds its asks to their content rule, renders it and weighs that rendering against the
-// bytes and the elements one document holds (docs' SeedText). The upload makes them once, in that
-// write (storeArtifact); the round trip makes them through the same steps of the seed
-// (docs.SeedRendering).
+// bytes and the elements one document holds (docs' SeedText); a replacement is held to looser
+// rules, against the document it replaces (docs' ReplaceText). The upload makes them once, in that
+// write (storeArtifact); the round trip makes the seed's through the same steps
+// (docs.SeedRendering), and marks them as a new document's (contracts.TextRefusalNewDocument).
 func documentTextRefusal[T string | []byte](content T, file bool) error {
 	if !file {
 		if refusal := unstorableDocumentText("content", content); refusal != nil {
@@ -260,16 +262,9 @@ func documentTextRefusal[T string | []byte](content T, file bool) error {
 }
 
 // unstorableDocumentText is unstorableText of content, a document's text as a string or as bytes,
-// read without a copy where it is storable, as nearly every text is.
+// read without a copy where bytes are storable, as nearly every text is.
 func unstorableDocumentText[T string | []byte](field string, content T) *apiError {
-	var storable bool
-	switch content := any(content).(type) {
-	case string:
-		storable = text.Storable(content)
-	case []byte:
-		storable = text.StorableBytes(content)
-	}
-	if storable {
+	if raw, isBytes := any(content).([]byte); isBytes && text.StorableBytes(raw) {
 		return nil
 	}
 	return unstorableText(field, string(content))

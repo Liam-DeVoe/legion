@@ -299,11 +299,16 @@ const DispatchHandoffBodyMax = 262144
 const MarkdownDocumentMaxBytes = 1048576
 const MarkdownDocumentTooLarge = "a markdown document is at most 1 MiB; a larger file is stored as a binary artifact under another content type"
 
-// TextRefusalHeader is the response header, valued 1, that POST /api/v1/markdown/round-trip puts on
-// its refusal of a text for the text alone, whatever the refusal's status (markdownRoundTrip).
-// Generated from TEXT_REFUSAL_HEADER in packages/contracts so the route and `dispatch artifact`,
-// which reads an answer carrying it as the call's own refusal, name it once.
+// TextRefusalHeader is the response header POST /api/v1/markdown/round-trip puts on its refusal of
+// a text for the text alone, whatever the refusal's status, valued with the scope of the check
+// that refused it (markdownRoundTrip): TextRefusalUpload for a check every upload of a markdown
+// document makes before its write, TextRefusalNewDocument for one a new document's seed makes.
+// Generated from TEXT_REFUSAL_HEADER, TEXT_REFUSAL_UPLOAD and TEXT_REFUSAL_NEW_DOCUMENT in
+// packages/contracts so the route and `dispatch artifact`, which reads an answer carrying it as
+// the call's own refusal where its scope holds for the call, name them once.
 const TextRefusalHeader = "Dispatch-Text-Refusal"
+const TextRefusalUpload = "upload"
+const TextRefusalNewDocument = "new-document"
 
 // PlanRatingLeast and PlanRatingMost are the scale of a retro's rating of the plan its issue ran,
 // from the plan cost the work to the plan fit the work, and PlanReasonMax the most characters,

@@ -16,6 +16,8 @@ import {
   type SearchResult,
   type TablePosition,
   TEXT_REFUSAL_HEADER,
+  TEXT_REFUSAL_NEW_DOCUMENT,
+  TEXT_REFUSAL_UPLOAD,
   zodSchemaApi,
 } from "@legion/contracts";
 import {
@@ -11791,8 +11793,8 @@ describe("executeDispatchTool", () => {
     const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const { pathname } = new URL(String(url));
       if (pathname === "/api/v1/markdown/round-trip") {
-        // What the store holds for text that is whitespace alone: nothing at all (storedMarkdown,
-        // packages/envoy/internal/dispatch/api/markdown_round_trip.go).
+        // What the round trip answers for text that is whitespace alone: the empty markdown
+        // (markdownRoundTrip, packages/envoy/internal/dispatch/api/markdown_round_trip.go).
         return response({ markdown: "" });
       }
       if (pathname === "/api/v1/issues/DSP-42/artifacts") {
@@ -12275,25 +12277,36 @@ describe("executeDispatchTool", () => {
   });
 
   // A round trip Dispatch marks as its refusal of the text (TEXT_REFUSAL_HEADER) is the call's
-  // refusal, in Dispatch's own words, whatever its status: the route marks so every refusal of the
-  // checks the upload of a new document makes of the text alone, at the status the upload answers
-  // it with, a 5xx for a failure of the seed on the text among them. So the call refuses the text
-  // as its upload would be refused, under every name, asks nothing again, and uploads nothing.
+  // refusal, in Dispatch's own words, whatever its status, where its scope holds for the call: an
+  // upload's check for every upload, a new document's for an upload without --force. The route
+  // marks so every refusal of the checks the upload of a new document makes of the text alone, at
+  // the status the upload answers it with, a 5xx for a failure of the seed on the text among them.
+  // So the call refuses the text as its upload would be refused, under every name, asks nothing
+  // again, and uploads nothing.
   test.each([
     [
       "notes.md",
       413,
       "CAP_EXCEEDED",
       "document too large to store: this write's markdown makes more than 65536 elements",
+      TEXT_REFUSAL_NEW_DOCUMENT,
     ],
     [
       "Design notes",
       413,
       "CAP_EXCEEDED",
       "document too large to store: this write's markdown makes more than 65536 elements",
+      TEXT_REFUSAL_NEW_DOCUMENT,
     ],
-    ["notes.md", 500, "INTERNAL", "internal server error"],
-  ])("refuses with Dispatch's own refusal when Dispatch marks the round trip's answer as a refusal of the text (%s, %i)", async (name, status, code, error) => {
+    ["notes.md", 500, "INTERNAL", "internal server error", TEXT_REFUSAL_NEW_DOCUMENT],
+    [
+      "notes.md",
+      400,
+      "NUL_CHARACTER",
+      "content holds a NUL character (U+0000) at character 11, which Dispatch cannot store",
+      TEXT_REFUSAL_UPLOAD,
+    ],
+  ])("refuses with Dispatch's own refusal when Dispatch marks the round trip's answer as a refusal of the text (%s, %i)", async (name, status, code, error, scope) => {
     const posts: string[] = [];
     let asked = 0;
     const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -12303,10 +12316,10 @@ describe("executeDispatchTool", () => {
       }
       if (pathname === "/api/v1/markdown/round-trip") {
         asked += 1;
-        return new Response(JSON.stringify({ error, code }), {
-          status,
-          headers: { "Content-Type": "application/json", [TEXT_REFUSAL_HEADER]: "1" },
-        });
+        return Response.json(
+          { error, code },
+          { status, headers: { [TEXT_REFUSAL_HEADER]: scope } }
+        );
       }
       if (pathname === "/healthz") return response({ idempotency_keys: true });
       posts.push(pathname);
@@ -12337,7 +12350,7 @@ describe("executeDispatchTool", () => {
         code,
         status,
         message: error,
-        textRefusal: true,
+        textRefusal: scope,
       })
     );
     expect(asked).toBe(1);

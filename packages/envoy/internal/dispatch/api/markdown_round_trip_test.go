@@ -239,9 +239,11 @@ func TestMarkdownRoundTripTakesTheLargestTextAnInlineUploadStores(t *testing.T) 
 // markdown the parser refuses; and markdown whose rendering no reader reads back. Each is refused
 // with the status, code and words the upload refuses it with, inline (the body's markdown against
 // a JSON upload's content) and as a file (the body's file against a multipart upload's file
-// part), and carries the mark of a refusal of the text (contracts.TextRefusalHeader), so
-// `dispatch artifact` and its dry run, which take a marked answer as the call's refusal, refuse it
-// as the upload does; the route's refusal of a body naming no text carries none. A text within the
+// part), and carries the mark of a refusal of the text (contracts.TextRefusalHeader) with its
+// scope: upload for the encoding and the bytes, which every upload checks before its write, and
+// new-document for the seed's refusals. `dispatch artifact` and its dry run take a marked answer
+// as the call's refusal where its scope holds, so they refuse it as the upload does; the route's
+// refusal of a body naming no text carries no mark. A text within the
 // limits - 9,000 list items, close below the element limit, in a spelling the store changes - is
 // answered with the markdown the store holds for it, which the upload then stores, and text of
 // whitespace alone that the seed takes is answered "".
@@ -275,47 +277,48 @@ func TestMarkdownRoundTripRefusesWhatAnUploadRefusesForItsText(t *testing.T) {
 	askAfterOptions := ":::ask{#a1 urgency=\"med\" multiple=\"false\" state=\"open\"}\nWhich database?\n\n" +
 		"- Postgres\n- SQLite\n\nPick one by Friday.\n:::\n"
 	both, fileOnly := []string{"inline", "file"}, []string{"file"}
+	upload, newDocument := contracts.TextRefusalUpload, contracts.TextRefusalNewDocument
 	for index, test := range []struct {
-		name, text  string
-		sent        []string
-		status      int
-		code, words string
+		name, text         string
+		sent               []string
+		status             int
+		code, words, scope string
 	}{
 		{"text past the bytes one document holds", pastBytes, both,
-			http.StatusRequestEntityTooLarge, "CAP_EXCEEDED", contracts.MarkdownDocumentTooLarge},
+			http.StatusRequestEntityTooLarge, "CAP_EXCEEDED", contracts.MarkdownDocumentTooLarge, upload},
 		{"12,000 list items, past the elements one write may make", strings.Repeat("- a\n", 12_000), both,
-			http.StatusRequestEntityTooLarge, "CAP_EXCEEDED", "more than 65536 elements"},
+			http.StatusRequestEntityTooLarge, "CAP_EXCEEDED", "more than 65536 elements", newDocument},
 		{"text at the bytes whose rendering adds a final line feed", unended, both,
-			http.StatusRequestEntityTooLarge, "CAP_EXCEEDED", "this change would make the document's markdown"},
+			http.StatusRequestEntityTooLarge, "CAP_EXCEEDED", "this change would make the document's markdown", newDocument},
 		{"text whose rendering escapes 1,100 backticks past the bytes", escaped, both,
-			http.StatusRequestEntityTooLarge, "CAP_EXCEEDED", "this change would make the document's markdown"},
+			http.StatusRequestEntityTooLarge, "CAP_EXCEEDED", "this change would make the document's markdown", newDocument},
 		{"text strings.TrimSpace empties, past the elements one write may make", blank, both,
-			http.StatusRequestEntityTooLarge, "CAP_EXCEEDED", "more than 65536 elements"},
+			http.StatusRequestEntityTooLarge, "CAP_EXCEEDED", "more than 65536 elements", newDocument},
 		{"text holding U+0000", "# Notes\n\nA\x00B\n", both,
-			http.StatusBadRequest, "NUL_CHARACTER", "holds a NUL character (U+0000) at character 11"},
+			http.StatusBadRequest, "NUL_CHARACTER", "holds a NUL character (U+0000) at character 11", upload},
 		{"a file holding a byte that is not UTF-8", "# Notes\n\nA\xffB\n", fileOnly,
-			http.StatusBadRequest, "INVALID_UTF8", "file holds a byte that is not UTF-8 (0xFF) at character 11"},
+			http.StatusBadRequest, "INVALID_UTF8", "file holds a byte that is not UTF-8 (0xFF) at character 11", upload},
 		{"an ask block that breaks its content rule", askAfterOptions, both,
-			http.StatusBadRequest, "INVALID_ASK_BLOCK", "holds a paragraph after its options"},
+			http.StatusBadRequest, "INVALID_ASK_BLOCK", "holds a paragraph after its options", newDocument},
 		{"markdown the parser refuses", "<details>x</details>", both,
-			http.StatusBadRequest, "INVALID_MARKDOWN", ""},
+			http.StatusBadRequest, "INVALID_MARKDOWN", "", newDocument},
 		{"markdown whose rendering no reader reads back", "2. [^N]:\n       12. *\n       --\n", both,
-			http.StatusBadRequest, "INVALID_MARKDOWN", "cannot be read back"},
+			http.StatusBadRequest, "INVALID_MARKDOWN", "cannot be read back", newDocument},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			for _, kind := range test.sent {
-				var roundTrip, upload *httptest.ResponseRecorder
+				var roundTrip, uploaded *httptest.ResponseRecorder
 				if kind == "file" {
 					roundTrip = dispatchRequest(t, handler, http.MethodPost, markdownRoundTripPattern, map[string]any{
 						"file": []byte(test.text),
 					}, "alice")
-					upload = multipartRequest(t, handler, uploads, map[string]string{"name": fmt.Sprintf("file-%d.md", index)},
+					uploaded = multipartRequest(t, handler, uploads, map[string]string{"name": fmt.Sprintf("file-%d.md", index)},
 						"file.md", "text/markdown", []byte(test.text), "alice")
 				} else {
 					roundTrip = dispatchRequest(t, handler, http.MethodPost, markdownRoundTripPattern, map[string]any{
 						"markdown": test.text,
 					}, "alice")
-					upload = dispatchRequest(t, handler, http.MethodPost, uploads, map[string]string{
+					uploaded = dispatchRequest(t, handler, http.MethodPost, uploads, map[string]string{
 						"name": fmt.Sprintf("inline-%d.md", index), "content": test.text,
 					}, "alice")
 				}
@@ -324,13 +327,13 @@ func TestMarkdownRoundTripRefusesWhatAnUploadRefusesForItsText(t *testing.T) {
 					t.Fatalf("the round trip of the %s: status=%d body=%.300s, want %d %s naming %q",
 						kind, roundTrip.Code, roundTrip.Body.String(), test.status, test.code, test.words)
 				}
-				if mark := roundTrip.Header().Get(contracts.TextRefusalHeader); mark != "1" {
-					t.Fatalf("the round trip's refusal of the %s carries %s %q, want 1", kind, contracts.TextRefusalHeader, mark)
+				if scope := roundTrip.Header().Get(contracts.TextRefusalHeader); scope != test.scope {
+					t.Fatalf("the round trip's refusal of the %s carries %s %q, want %q", kind, contracts.TextRefusalHeader, scope, test.scope)
 				}
-				uploadCode, uploadMessage := refusalOf(t, upload)
-				if upload.Code != roundTrip.Code || uploadCode != code || uploadMessage != message {
+				uploadCode, uploadMessage := refusalOf(t, uploaded)
+				if uploaded.Code != roundTrip.Code || uploadCode != code || uploadMessage != message {
 					t.Fatalf("the %s upload answers %d %s %.200q, want the round trip's %d %s %.200q",
-						kind, upload.Code, uploadCode, uploadMessage, roundTrip.Code, code, message)
+						kind, uploaded.Code, uploadCode, uploadMessage, roundTrip.Code, code, message)
 				}
 			}
 		})

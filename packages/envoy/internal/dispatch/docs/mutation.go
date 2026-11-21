@@ -646,7 +646,8 @@ func mergeUpdates(updates [][]byte) ([]byte, error) {
 // but the text - its parse, its asks' content rule, its render and the weigh of that rendering
 // against the limits one document holds (weighRendering). It reads and writes nothing. The
 // markdown round trip answers from it, so every refusal the seed makes of a text alone is the
-// round trip's too, in the same words.
+// round trip's too, in the same words. A replacement is not seeded: ReplaceText judges its text
+// against the document it replaces, by looser rules, so these refusals hold for a new document.
 func SeedRendering(markdown string) (string, error) {
 	seeded, _, err := seedRendering(markdown)
 	return seeded.markdown, err
@@ -687,16 +688,15 @@ func (s *Service) SeedText(ctx context.Context, artifactID, markdown string, act
 	if err != nil {
 		return "", err
 	}
-	tree := seeded.tree
 	// A new document holds no pointer and no check block before this write, so every one it
 	// seeds is checked.
-	if err := refuseBlockPointers(ctx, tx, artifactID, tree, nil, seeded.offsets); err != nil {
+	if err := refuseBlockPointers(ctx, tx, artifactID, seeded.tree, nil, seeded.offsets); err != nil {
 		return "", err
 	}
-	if err := refuseCICheckBlocks(ctx, tx, artifactID, tree, nil); err != nil {
+	if err := refuseCICheckBlocks(ctx, tx, artifactID, seeded.tree, nil); err != nil {
 		return "", err
 	}
-	update, err := encodeDocumentTree(tree)
+	update, err := encodeDocumentTree(seeded.tree)
 	if err != nil {
 		return "", fmt.Errorf("seed live document tree: %w", err)
 	}

@@ -8,6 +8,8 @@ import {
   MARKDOWN_DOCUMENT_MAX_BYTES,
   PROJECT_KEY_RULE,
   TEXT_REFUSAL_HEADER,
+  TEXT_REFUSAL_NEW_DOCUMENT,
+  TEXT_REFUSAL_UPLOAD,
 } from "@legion/contracts";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
@@ -718,9 +720,16 @@ const UNREADABLE_RENDERING_REFUSED = {
     "markdown is not a Proof document: the markdown the document would be stored as cannot be read back: outside Proof schema: an empty list item followed by a blank line inside another list item, where goldmark ends the outer item and the browser editor does not",
 };
 /** The round trip's refusal of a text, as Dispatch answers it: `answer` at `status`, marked as a
- *  refusal of the text (TEXT_REFUSAL_HEADER), which the call takes as its own refusal. */
-const textRefusal = (answer: { code: string; error: string }, status: number): Response =>
-  Response.json(answer, { status, headers: { [TEXT_REFUSAL_HEADER]: "1" } });
+ *  refusal of the text (TEXT_REFUSAL_HEADER) with `scope`: a new document's seed's refusal unless
+ *  a test names an upload's. */
+const textRefusal = (
+  answer: { code: string; error: string },
+  status: number,
+  scope: string = TEXT_REFUSAL_NEW_DOCUMENT
+): Response => Response.json(answer, { status, headers: { [TEXT_REFUSAL_HEADER]: scope } });
+/** The dry run's warning for a new document's refusal it does not take under --force. */
+const newDocumentRefusal = (refusal: { code: string; error: string }): string =>
+  `dispatch: warning: Dispatch refuses this text as a new document: ${refusal.code}: ${refusal.error}. A replacement is judged against the document it replaces, so with --force the call uploads the text and Dispatch answers.\n`;
 
 /** The stderr line of an upload's dry run against a Dispatch with no round-trip route. */
 const routeAbsent = (answer: string): string =>
@@ -1434,6 +1443,7 @@ describe("the dispatch CLI", () => {
       bytes: Buffer.from("# Notes\n\nA\u0000B\n"),
       code: "NUL_CHARACTER",
       error: "file holds a NUL character (U+0000) at character 11, which Dispatch cannot store",
+      scope: TEXT_REFUSAL_UPLOAD,
     },
     {
       holding: "a byte that is not UTF-8",
@@ -1441,21 +1451,24 @@ describe("the dispatch CLI", () => {
       code: "INVALID_UTF8",
       error:
         "file holds a byte that is not UTF-8 (0xFF) at character 11, which Dispatch cannot store",
+      scope: TEXT_REFUSAL_UPLOAD,
     },
     {
       holding: "an ask block that breaks its content rule",
       bytes: Buffer.from(ASK_AFTER_OPTIONS),
       ...ASK_AFTER_OPTIONS_REFUSED,
+      scope: TEXT_REFUSAL_NEW_DOCUMENT,
     },
     {
       holding: "markdown the parser refuses",
       bytes: Buffer.from(BLOCK_HTML),
       ...BLOCK_HTML_REFUSED,
+      scope: TEXT_REFUSAL_NEW_DOCUMENT,
     },
   ]) {
     test(`a markdown --path file holding ${refusal.holding} is refused by the dry run as the call's upload is`, async () => {
       const answer = { code: refusal.code, error: refusal.error };
-      roundTrip = () => textRefusal(answer, 400);
+      roundTrip = () => textRefusal(answer, 400, refusal.scope);
       uploadRefusal = () => Response.json(answer, { status: 400 });
       writeFileSync(join(stateDir, "refused.md"), refusal.bytes);
       const argv = ["artifact", "--issue", "DSP-1", "--name", "notes.md", "--path", "refused.md"];
@@ -1496,6 +1509,81 @@ describe("the dispatch CLI", () => {
       ]);
     });
   }
+
+  // INFRA-4224 R3: under --force the upload may replace a document the owner holds, and a
+  // replacement is judged against the document it replaces, by looser rules than a new document's
+  // seed: an ask the write leaves unchanged is not held to its content rule. So a refusal Dispatch
+  // marks as a new document's (TEXT_REFUSAL_NEW_DOCUMENT) is not the call's: inline, the call
+  // uploads the text and Dispatch answers, and the dry run passes, naming the refusal in a warning,
+  // inline and for a --path file alike.
+  test("under --force a new document's refusal is left to the upload: the call uploads and the dry run passes with a warning", async () => {
+    roundTrip = () => textRefusal(ASK_AFTER_OPTIONS_REFUSED, 400, TEXT_REFUSAL_NEW_DOCUMENT);
+    writeFileSync(join(stateDir, "asks.md"), ASK_AFTER_OPTIONS);
+    const owner = ["artifact", "--issue", "DSP-1", "--name", "notes.md", "--force"];
+    for (const [argv, stdin, args, upload] of [
+      [
+        [...owner, "--content-file", "-"],
+        ASK_AFTER_OPTIONS,
+        { issue: "DSP-1", name: "notes.md", force: true, content: ASK_AFTER_OPTIONS },
+        expect.objectContaining({ content: ASK_AFTER_OPTIONS }),
+      ],
+      [
+        [...owner, "--path", "asks.md"],
+        "",
+        { issue: "DSP-1", name: "notes.md", force: true, path: "asks.md" },
+        ASK_AFTER_OPTIONS,
+      ],
+    ] as const) {
+      requests.length = 0;
+      const dry = await run([...argv, "--dry-run"], omp, stdin);
+      expect({ code: dry.code, stderr: dry.stderr }, argv.join(" ")).toEqual({
+        code: 0,
+        stderr: newDocumentRefusal(ASK_AFTER_OPTIONS_REFUSED),
+      });
+      expect(JSON.parse(dry.stdout), argv.join(" ")).toEqual(args);
+      expect(
+        requests.map((request) => request.path),
+        argv.join(" ")
+      ).toEqual([ROUND_TRIP]);
+      requests.length = 0;
+      const call = await run(argv, omp, stdin);
+      expect(call.code, `${argv.join(" ")}\n${call.stdout}`).toBe(0);
+      expect(
+        requests
+          .filter((request) => request.path === "/api/v1/issues/DSP-1/artifacts")
+          .map((request) => request.body),
+        argv.join(" ")
+      ).toEqual([upload]);
+    }
+  });
+
+  // A refusal every upload makes before its write (TEXT_REFUSAL_UPLOAD), a NUL character here,
+  // holds under --force too: the dry run and the call each refuse it, with the same stdout and
+  // exit 1, inline from the round trip and for a --path file from the round trip and the upload,
+  // naming the field each upload names (`content`, `file`).
+  test("under --force an upload's refusal is still the call's: the dry run and the call refuse a NUL alike", async () => {
+    const text = "# Notes\n\nA\u0000B\n";
+    writeFileSync(join(stateDir, "nul.md"), text);
+    const owner = ["artifact", "--issue", "DSP-1", "--name", "notes.md", "--force"];
+    for (const [argv, stdin, field] of [
+      [[...owner, "--content-file", "-"], text, "content"],
+      [[...owner, "--path", "nul.md"], "", "file"],
+    ] as const) {
+      const answer = {
+        code: "NUL_CHARACTER",
+        error: `${field} holds a NUL character (U+0000) at character 11, which Dispatch cannot store`,
+      };
+      roundTrip = () => textRefusal(answer, 400, TEXT_REFUSAL_UPLOAD);
+      uploadRefusal = () => Response.json(answer, { status: 400 });
+      const dry = await run([...argv, "--dry-run"], omp, stdin);
+      expect(dry, argv.join(" ")).toEqual({
+        code: 1,
+        stdout: `${answer.code}: ${answer.error}\n`,
+        stderr: "",
+      });
+      expect(await run(argv, omp, stdin), argv.join(" ")).toEqual(dry);
+    }
+  });
 
   // The dry run's client stops at the dry run's deadline and takes the same budget as its own
   // deadline, so a credential is given that budget less the request's reserve
@@ -1630,6 +1718,30 @@ describe("the dispatch CLI", () => {
       `dispatch: warning: the dry run could not ask Dispatch how it would store the text: ${why}`
     );
     expect(dry.stderr).toEndWith(" The call refuses the upload until Dispatch answers.\n");
+    expect(requests).toEqual([]);
+  });
+
+  // The dry run of blank inline text and of a Markdown file asks Dispatch for a refusal alone, and
+  // with Dispatch off the call is refused with the Dispatch-off message, exit 2, as for any other
+  // text: the warning says so, rather than what the call does without that answer.
+  test("an upload's dry run of blank text or a Markdown file with Dispatch off says the call is refused for the same reason", async () => {
+    const off = { ...omp, DISPATCH_URL: undefined, DISPATCH_TOKEN: undefined };
+    writeFileSync(join(stateDir, "notes.md"), NOTES);
+    const owner = ["artifact", "--issue", "DSP-1", "--name", "notes.md"];
+    for (const [argv, stdin, asks] of [
+      [[...owner, "--content-file", "-"], " \n\t", "whether it would refuse the text"],
+      [[...owner, "--path", "notes.md"], "", "whether it would refuse the file's text"],
+    ] as const) {
+      const call = await run(argv, off, stdin);
+      expect(call.code, argv.join(" ")).toBe(2);
+      const why = call.stdout.replace(/^dispatch: /, "").trimEnd();
+      const dry = await run([...argv, "--dry-run"], off, stdin);
+      expect(dry.code, argv.join(" ")).toBe(0);
+      expect(dry.stderr, argv.join(" ")).toStartWith(
+        `dispatch: warning: the dry run could not ask Dispatch ${asks}: ${why}`
+      );
+      expect(dry.stderr, argv.join(" ")).toEndWith(" The call is refused for the same reason.\n");
+    }
     expect(requests).toEqual([]);
   });
 
