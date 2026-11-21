@@ -687,11 +687,20 @@ func createOnFreshClients(t *testing.T, uri string, c int, stop <-chan struct{},
 	}
 }
 
-// reloadWait is how long one connect or request of a row that reloads under clients may wait: a
-// reload's hold keeps it back for as long as each step of the hold may take (connectTimeout, as
-// the barrier allows), cut to what is left of the test's deadline (boundOf). nats.go's own
-// defaults, a 2 s connect timeout among them, are shorter than a hold a loaded machine makes.
-func reloadWait(t testing.TB) time.Duration { return boundOf(t).step(connectTimeout) }
+// reloadWait is how long one connect or request of a row that reloads under clients may wait: until
+// the test's deadline (boundOf), or connectTimeout for a test with none. A reload's hold keeps a
+// client's bytes back, and back-to-back reloads keep them back across several holds, since the next
+// hold often starts before a held client's write gets through (a connect waited 6 to 9 s under
+// holds of 3 s). The wait cannot outlast the row's reloads, which release every hold when they end.
+// nats.go's own defaults, a 2 s connect timeout among them, are shorter than one hold a loaded
+// machine makes.
+func reloadWait(t testing.TB) time.Duration {
+	bound := boundOf(t)
+	if !bound.bounded {
+		return connectTimeout
+	}
+	return bound.step(time.Until(bound.end))
+}
 
 // A Reload of a server that a client reached around the relay, at the server's own port, and sent
 // a message fails the test naming that client, and the server does not reload: the hold cannot stop
