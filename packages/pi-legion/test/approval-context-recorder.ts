@@ -1,14 +1,17 @@
-// The recorder approval-context-capture.omp.test.ts loads after pi-envoy and pi-legion: it writes
-// what the pinned Oh My Pi hands an extension on each model request, one JSON line per event, to
-// the file LEGION_CAPTURE_RECORD names. Loaded last, its `context` handler sees the messages both
-// plugins return, and its `before_provider_request` handler sees the wire body they leave. JSON
-// drops the host's per-call Symbol (`agent.message.perCallContext`, a `Symbol()` and not a
-// `Symbol.for`), so the recorder writes it beside each wire message as a flag of its own.
+// The recorder approval-context-capture.omp.test.ts and approval-message-capture.ts load after
+// pi-envoy and pi-legion: it writes what the pinned Oh My Pi hands an extension on each model
+// request, one JSON line per event, to the file LEGION_CAPTURE_RECORD names. Loaded last, its
+// `context` handler sees the messages both plugins return, and its `before_provider_request`
+// handler sees the wire body they leave. JSON drops the host's per-call Symbol
+// (`agent.message.perCallContext`, a `Symbol()` and not a `Symbol.for`), so the recorder writes it
+// beside each wire message as a flag of its own.
 //
 // While the file LEGION_CAPTURE_PLACEMENT names exists, the recorder also stands in for the
-// approval message pi-legion does not place yet: on the first main-loop request it adds a custom
-// message of APPROVAL_MESSAGE_TYPE with that file's text, last, and on every later request it adds
-// the same message right before its answer, the first assistant message stamped at or after it.
+// approval message, for the F1 capture of a build of pi-legion that placed none: on the first
+// main-loop request it adds a custom message of APPROVAL_MESSAGE_TYPE with that file's text, last,
+// and on every later request it adds the same message right before its answer, the first
+// assistant message stamped at or after it. approval-message-capture.ts never sets
+// LEGION_CAPTURE_PLACEMENT, so every approval message it records is pi-legion's own.
 // Without LEGION_CAPTURE_RECORD the recorder does nothing.
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import {

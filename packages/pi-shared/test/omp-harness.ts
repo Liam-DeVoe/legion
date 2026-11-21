@@ -901,9 +901,23 @@ export interface LegionPaneOptions {
   /** The providers and models the pane's profile offers (`writeStandinProfile`); the single
    * `standin/standin-model` by default. */
   readonly providers?: readonly StandinProvider[];
+  /**
+   * Writes the profile's models.yml and config.yml into `agent` (`<home>/.omp/agent`) in place of
+   * the stand-in's (`writeStandinProfile`, which `config` and `providers` then do not reach): a
+   * case whose turns go to another model route than the stand-in, or through the stand-in at
+   * `base` to another (`answer` forwards them).
+   */
+  readonly profile?: (agent: string, base: string) => Promise<void>;
+  /** The plugin entries the pane loads, in order, as absolute paths: this checkout's Envoy entry,
+   * then its Legion entry, by default, the sandbox launch's order. A case runs other builds of the
+   * two plugins, or the other order, here. */
+  readonly plugins?: readonly string[];
   /** Extensions the pane loads after the Envoy and Legion entries, in order, as absolute paths:
    * a case's own recorder of what those two hand the host. None by default. */
   readonly extensions?: readonly string[];
+  /** Arguments on omp's command line in every life, after the runner's own flags and before a
+   * resume's: the model a case runs (`--model`), a system prompt it appends. None by default. */
+  readonly args?: readonly string[];
   /** Sees every request the stand-in serves, with its headers, before it is answered: a case
    * that records what the host sent beside the body. */
   readonly onRequest?: (url: URL, body: Record<string, unknown>, headers: Headers) => void;
@@ -973,9 +987,10 @@ export interface LegionPane {
 
 /**
  * Runs one Legion pane on the real Oh My Pi until its run settles: the Legion and Envoy
- * extensions from this checkout, booted against a stand-in for the daemon's claim and grant
- * routes and the Envoy listener, and the NATS server `options.nats` names, with a stand-in model
- * gateway that answers the pane's turns from `replies`. The server is real: a session's only
+ * extensions from this checkout (or the builds `options.plugins` names), booted against a
+ * stand-in for the daemon's claim and grant routes and the Envoy listener, and the NATS server
+ * `options.nats` names, with a stand-in model gateway that answers the pane's turns from
+ * `replies` (or the route `options.profile` writes). The server is real: a session's only
  * inbound is the consumer the listener builds for it, which it is relayed on its own relay
  * subject, so a pane with no NATS server holds no relay subject, every registration of its fails
  * saying so, and its Legion claim fails with it (INFRA-771). The daemon's assignment arrives as
@@ -1095,7 +1110,11 @@ export async function runLegionPane(
       ...deliveryFor(url.pathname, body, sessionID),
     });
   });
-  await writeStandinProfile(home, base, options.config ?? [], { providers: options.providers });
+  if (options.profile === undefined) {
+    await writeStandinProfile(home, base, options.config ?? [], { providers: options.providers });
+  } else {
+    await options.profile(path.join(home, ".omp", "agent"), base);
+  }
 
   /**
    * One life of the pane: omp started with `args` on its command line, given each prompt of
@@ -1117,15 +1136,17 @@ export async function runLegionPane(
         extensions: [
           // The Envoy entry is the sibling plugin's: a Legion pane loads both, and the Legion
           // entry refuses to run without it.
-          path.resolve(import.meta.dir, "../../pi-envoy/extensions/envoy.ts"),
-          path.resolve(import.meta.dir, "../../pi-legion/extensions/legion.ts"),
+          ...(options.plugins ?? [
+            path.resolve(import.meta.dir, "../../pi-envoy/extensions/envoy.ts"),
+            path.resolve(import.meta.dir, "../../pi-legion/extensions/legion.ts"),
+          ]),
           ...(options.extensions ?? []),
         ],
         home,
         workspace,
         sessions,
         bin,
-        args,
+        args: [...(options.args ?? []), ...args],
         env: {
           ENVOY_URL: base,
           ENVOY_NATS_URL: options.nats,
