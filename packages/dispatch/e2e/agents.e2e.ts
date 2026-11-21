@@ -2,6 +2,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import type { Result } from "../web/src/api/paths";
 import type { CreateBroadcastInput, Message } from "../web/src/api/types";
+import { OVERSCAN_ROWS } from "../web/src/features/delivery/lib/rowWindow";
 import {
   agentGroupToggle,
   agentRow,
@@ -938,8 +939,9 @@ test("the header checkbox stays under the pointer on a phone when its click open
 });
 
 /** `count` silent planners, `capable` of them advertising BTW and the rest `aside` only,
- *  numbered to `count`'s width so the list sorts in order. Each has a role and a directory, so
- *  every card at 390 px is 166 px tall; a fixture with shorter cards gives different row counts. */
+ *  numbered to `count`'s width so the list sorts in order. Each has a role and a directory, which
+ *  its card draws; the phone row below counts whole cards drawn with both, and a fixture with
+ *  shorter cards gives different row counts. */
 function planners(count: number, capable: number): FakeSession[] {
   return Array.from({ length: count }, (_, index) => {
     const number = String(index + 1).padStart(String(count).length, "0");
@@ -978,23 +980,60 @@ function wholeAbove(box: { y: number; height: number } | null, composerTop: numb
   return box !== null && box.y >= 0 && box.y + box.height <= composerTop;
 }
 
-/** Whole cards above the composer, of the rows a reader sees. */
+/** How many of the rows a reader sees stand wholly below the screen's bottom edge, read in one
+ *  pass. Once the window has drawn the offset the page is at, they are its overscan below:
+ *  `OVERSCAN_ROWS` of them (rowWindow.ts) wherever the list's own top edge is above the screen
+ *  and the list leaves that many rows under it. Both hold at every offset the row below measures
+ *  at: the first card is at the screen's top edge or above it, with the group headings above
+ *  that, and forty rows reach far below the screen. A card the window let go after the find is
+ *  skipped, as in `wholeCardsAbove`. */
+function rowsBelowScreen(page: Page): Promise<number> {
+  return shownAgentRows(page).evaluateAll(
+    (cards) =>
+      cards.filter(
+        (card) => card.isConnected && card.getBoundingClientRect().top >= window.innerHeight
+      ).length
+  );
+}
+
+/** Whole cards above the composer, of the rows a reader sees.
+ *
+ *  The list is windowed. The window hears a scroll - the row's own, or the one focusing and
+ *  filling the message box makes - at the browser's next frame and draws the new offset after
+ *  it, so until then it holds the rows of the offset before. The cards are read once the window
+ *  holds exactly its overscan below the screen, and in one pass over the cards drawn then, never
+ *  as a locator per card measured in later round trips: a card counted before the window let it
+ *  go is in no part of the page when its measure comes, and that measure waits its whole action
+ *  timeout for it. `evaluateAll` itself is two calls into the page, one that finds the cards and
+ *  one that runs the pass over them, so the pass skips a card no longer in the page: that card
+ *  measures as a zero box at the screen's top edge, which `wholeAbove` would count as whole. */
 async function wholeCardsAbove(agents: Locator, composer: Locator): Promise<number> {
+  const page = agents.page();
+  await expect.poll(() => rowsBelowScreen(page)).toBe(OVERSCAN_ROWS);
   const composerTop = (await composer.boundingBox())?.y ?? 0;
-  const boxes = await Promise.all(
-    (await shownAgentRows(agents.page()).all()).map((card) => card.boundingBox())
+  const boxes = await shownAgentRows(page).evaluateAll((cards) =>
+    cards
+      .filter((card) => card.isConnected)
+      .map((card) => {
+        const { height, y } = card.getBoundingClientRect();
+        return { height, y };
+      })
   );
   return boxes.filter((box) => wholeAbove(box, composerTop)).length;
 }
 
 // SLOW(>=2s): 40 recipient chips rendered for real and the composer measured empty and filled
-// at each compact size; the layout under measurement is what the row proves.
+// on a phone's screen; the layout under measurement is what the row proves.
 test("on a phone the open composer keeps its height budget at forty recipients, empty or filled, keeps its message box steady, and keeps every chip reachable", async ({
   browser,
 }) => {
   await setLiveSessions(planners(40, 40));
 
-  const alice = await asUser(browser, "alice");
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts). The phone's header draws
+  // the reader's Inbox and New replies counts, and alice's, which every row before on the worker
+  // raises, take a second line, which moves the selection header the row measures at the top of
+  // the page down by that line.
+  const alice = await asUser(browser, rowPerson("alice"));
   try {
     const page = await alice.newPage();
     const viewport = { height: 664, width: 390 };
@@ -1026,7 +1065,7 @@ test("on a phone the open composer keeps its height budget at forty recipients, 
     expect(heightAtTwo).toBeLessThanOrEqual(viewport.height * 0.4);
 
     // Forty recipients: the count stays exact, and one line of chips keeps the composer at the
-    // height two gave it (222.0 px, 33.43%).
+    // height two gave it.
     await agents.getByRole("checkbox", { name: "Select all matching agents" }).click();
     await expect(
       composer.getByRole("heading", { name: "Broadcast to 40 of 40 selected" })
@@ -1050,10 +1089,10 @@ test("on a phone the open composer keeps its height budget at forty recipients, 
     }
 
     // Row counts below are whole `article` cards with top >= 0 and bottom <= the composer's top
-    // edge, with the fold expanded and forty selected; the height clause is the discriminating
-    // one, the row clauses record intent. A third whole card is bounded by the 166 px card, not
-    // by the composer. The list is windowed, so the cards on the page are the ones it drew, of
-    // the forty the heading above counts and the select-all ticked.
+    // edge, with the Idle fold open and forty selected; the height clauses are the
+    // discriminating ones, and the counts record what a reader keeps in view above the
+    // composer. The list is windowed, so the cards on the page are the ones it drew, of the
+    // forty the heading above counts and the select-all ticked.
     // The floor is polled: the window draws its cards after the scroll above, so a count read at
     // once can be of a window still drawing. Once that poll has seen the window draw, one read of
     // the ceiling catches a moment with more than 40 cards, which a poll would wait out.
@@ -1061,25 +1100,24 @@ test("on a phone the open composer keeps its height budget at forty recipients, 
     await expect.poll(() => drawn.count()).toBeGreaterThan(2);
     expect(await drawn.count()).toBeLessThanOrEqual(40);
 
-    // The defined offset: the first card scrolled to the top of the viewport (scrollY 431),
-    // message empty. Two whole cards and the third card's checkbox are above the composer.
+    // The defined offset: the first card scrolled to the top of the viewport, message empty. At
+    // least two whole cards and the third card's checkbox are above the composer.
     await scrollFirstCardToTop();
     expect(await wholeCardsAbove(agents, composer)).toBeGreaterThanOrEqual(2);
     expect(await checkboxAbove(2)).toBe(true);
 
     // The operator's moment: from that offset, a message filled until the box stops growing,
-    // with no re-scroll (focusing and filling the box scrolls the page, to scrollY 461 here).
-    // The composer is then at its tallest, 286 px or 43.1% of 664, under a 45% budget; filling
-    // lifts its top by exactly the 64 px the box grew (442 to 378). One whole card is above it,
-    // and the next card's checkbox.
+    // with no re-scroll (focusing and filling the box scrolls the page further down, so the
+    // first card's top is above the screen). The composer is then at its tallest, under a 45%
+    // budget. At least one whole card is above it, and the third card's checkbox.
     await fillUntilStable(message);
     expect(await composerHeight()).toBeLessThanOrEqual(viewport.height * 0.45);
     expect(await wholeCardsAbove(agents, composer)).toBeGreaterThanOrEqual(1);
     expect(await checkboxAbove(2)).toBe(true);
 
-    // The defined offset again, filled (scrollY 431, cards at 0-166 and 178-344, composer top
-    // 378). This clause has 34 px of slack and no more: anything that later adds composer height
-    // (another chrome line, taller chips, an inline error) turns it red, and that is the budget
+    // The defined offset again, filled: at least two whole cards above the composer at its
+    // tallest. Anything that later adds composer height (another chrome line, taller chips, an
+    // inline error) can cover the second card, and this clause turning red then is the budget
     // working, not a flaky test. Empty, the height clause does the discriminating.
     await scrollFirstCardToTop();
     expect(await wholeCardsAbove(agents, composer)).toBeGreaterThanOrEqual(2);

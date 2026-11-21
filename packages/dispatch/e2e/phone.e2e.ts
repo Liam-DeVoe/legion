@@ -371,14 +371,22 @@ test("a project document has no horizontal overflow, 44px controls, and a Commen
       const reviewToggle = page.getByRole("button", { name: /Open review panel/ });
       await expect(reviewToggle).toBeVisible();
       // The waits above saw the editor, the toolbar and the review toggle drawn, so every part
-      // of the page that holds a control is here when it is read.
+      // of the page that holds a control is here when it is read. The set and every box come
+      // from one evaluateAll: a locator per control runs the `:visible` filter over the live
+      // page again for each one, so a control that hides or appears before another moves the
+      // index the later ones measure, and an index past the end of a shorter set waits out its
+      // whole action timeout. evaluateAll finds the set and measures it in two calls into the
+      // page, so a control gone from the page between them is skipped, not read as a zero box.
       const controls = await page
         .getByRole("main")
         .locator("button:visible, a:visible, select:visible")
-        .all();
-      for (const control of controls) {
-        const box = await control.boundingBox();
-        expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
+        .evaluateAll((elements) =>
+          elements.flatMap((element, index) =>
+            element.isConnected ? [{ height: element.getBoundingClientRect().height, index }] : []
+          )
+        );
+      for (const { height, index } of controls) {
+        expect(height, `document control ${index} is a touch target`).toBeGreaterThanOrEqual(44);
       }
       await reviewToggle.click();
       await expect(page.getByRole("tab", { name: "Comments" })).toBeVisible();
@@ -416,10 +424,18 @@ test("inline @ autocomplete has touch-sized controls and no overflow on iPhone @
     const option = picker.getByRole("option", { exact: true, name: "planner" });
     await expect(option).toBeVisible();
     // The planner option above shows the live list has drawn, and a new issue has no
-    // collaborators to add a Not running option, so one read lists every control.
-    for (const control of await composer.locator("button:visible, textarea:visible").all()) {
-      const box = await control.boundingBox();
-      expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
+    // collaborators to add a Not running option, so one read lists every control. The set and
+    // every box come from one evaluateAll, which skips a control gone from the page between its
+    // find and its measure, for the reasons the document row above gives.
+    const controls = await composer
+      .locator("button:visible, textarea:visible")
+      .evaluateAll((elements) =>
+        elements.flatMap((element, index) =>
+          element.isConnected ? [{ height: element.getBoundingClientRect().height, index }] : []
+        )
+      );
+    for (const { height, index } of controls) {
+      expect(height, `composer control ${index} is a touch target`).toBeGreaterThanOrEqual(44);
     }
     await option.click();
     await composer.getByRole("button", { name: "Send" }).click();
