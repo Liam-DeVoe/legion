@@ -558,7 +558,6 @@ describe("the Codex router of a person's messages", () => {
         "POST http://dispatch.test/api/v1/messages/m/reply is still running on Dispatch, and its deadline ended the wait for its outcome",
         true,
         true,
-        true,
       ),
       warning:
         "a BTW's reply to message 33333333-3333-4333-8333-333333333333 is still running on Dispatch under key reply-key-1; nothing more is posted",
@@ -570,7 +569,6 @@ describe("the Codex router of a person's messages", () => {
         3,
         "reply-key-1",
         "POST http://dispatch.test/api/v1/messages/m/reply may still be running on Dispatch, and its deadline ended the wait for its outcome",
-        false,
         true,
         false,
       ),
@@ -584,7 +582,6 @@ describe("the Codex router of a person's messages", () => {
         5,
         "reply-key-1",
         "POST http://dispatch.test/api/v1/messages/m/reply had no definitive answer when its deadline ended it",
-        true,
       ),
       warning: undefined,
     },

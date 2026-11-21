@@ -7888,7 +7888,6 @@ describe("the Dispatch decision record (A5)", () => {
         3,
         key,
         `POST https://dispatch.example/api/v1/... ${row.told ? "is still running" : "may still be running"} on Dispatch, and its deadline ended the wait for its outcome`,
-        row.told,
         true,
         row.told
       );

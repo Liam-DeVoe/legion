@@ -676,7 +676,6 @@ describe("the AskGate decision record", () => {
           3,
           key ?? "",
           "POST http://dispatch.test/api/v1/projects/INFRA/artifacts may still be running on Dispatch, and its deadline ended the wait for its outcome",
-          false,
           true,
           false
         );
