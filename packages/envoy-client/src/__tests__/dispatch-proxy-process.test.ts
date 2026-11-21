@@ -508,6 +508,48 @@ test("sends SIGTERM and SIGINT to its command, keeps serving until the command e
   }
 }, 60_000);
 
+// A hangup reaches a wrapper whenever its terminal goes: a tmux pane or an ssh session that
+// closes. R4 and R6 hold on every exit: the proxy exits when its command ends, with the command's
+// status, removes its socket, and ends with its exit line. The command records the status it
+// exits with: 7 where the hangup reached it, else 9 once the done file is made. Either way the
+// proxy's status is that one.
+test("exits with its command's status, removes its socket and ends with its exit line when it is sent SIGHUP", async () => {
+  const broker = stubBroker(3600);
+  const dispatch = stubDispatch();
+  const dir = makeDirectory("hangup");
+  const ready = join(dir, "ready");
+  const status = join(dir, "status");
+  const run = spawnProxy(podProxyEnvironment(broker.url, dispatch.url), (done) => [
+    "bash",
+    "-c",
+    `trap 'echo 7 > "$2"; exit 7' HUP; touch "$1"; ${DONE_LOOP}; echo 9 > "$2"; exit 9`,
+    done,
+    ready,
+    status,
+  ]);
+  await untilAccepting(run);
+  await untilMade(ready, run);
+
+  run.child.kill("SIGHUP");
+  // Real processes and a real signal, so no fake clock reaches them. A proxy that sends the
+  // hangup on exits once its command does, within the race below; one that keeps the hangup to
+  // itself still runs its command after it, so the done file ends that command.
+  await Promise.race([run.child.exited, Bun.sleep(500)]);
+  writeFileSync(run.done, "");
+  const { code, stderr } = await exitOf(run);
+  // A proxy that died of the hangup left its command running, which records its status once it
+  // sees the done file: wait for that record, bounded.
+  const deadline = Date.now() + 5_000;
+  while (!existsSync(status) && Date.now() < deadline) await Bun.sleep(20);
+  const recorded = existsSync(status) ? readFileSync(status, "utf-8").trim() : "nothing";
+
+  expect({ code: String(code), last: lastLine(stderr) }).toEqual({
+    code: recorded,
+    last: exitLine(0, 1, 0),
+  });
+  expect(existsSync(run.socket)).toBe(false);
+}, 30_000);
+
 test("prints the exit line on every exit of a run: the command's end, a signal, a command that cannot run, and each start failure", async () => {
   const broker = stubBroker(3600);
   const dispatch = stubDispatch();
