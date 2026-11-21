@@ -216,19 +216,30 @@ func (s *server) patchProjectAccess(w http.ResponseWriter, r *http.Request) {
 	s.ownerWrite(w, r, "", lockTimeout, func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, viewer *model.Viewer) (model.ProjectAccess, []model.Event, error) {
 		var appended []model.Event
 		var answer model.ProjectAccess
+		// switching is a full switch to private: every switch to private but one of a project the
+		// full switch already made private, which changes nothing. A project private some other
+		// way, before any full switch, runs the whole path.
+		switching := false
 		if visibility == model.ProjectPrivate {
 			if !s.privateProjectProvisioned(key) {
 				return model.ProjectAccess{}, nil, fmt.Errorf("%s %w", key, errPrivateProjectNotProvisioned)
 			}
-			// Every repository name the project's own issues and default hold carries its GitHub
-			// id before the project turns private, so the GitHub proxy can tell its repositories
-			// from ones that take their names later (refuseUnconfirmedRepositories): read under the
-			// owner lock ownerWrite holds, which every repository write of the project takes too.
-			if err := refuseUnconfirmedRepositories(ctx, tx, key); err != nil {
+			recorded, err := access.FullSwitchRecorded(ctx, tx, key)
+			if err != nil {
 				return model.ProjectAccess{}, nil, err
 			}
-			if err := privateProjectIncomplete(ctx, tx, key); err != nil {
-				return model.ProjectAccess{}, nil, err
+			if switching = !recorded; switching {
+				// Every repository name the project's own issues and default hold carries its
+				// GitHub id before the project turns private, so the GitHub proxy can tell its
+				// repositories from ones that take their names later
+				// (refuseUnconfirmedRepositories): read under the owner lock ownerWrite holds,
+				// which every repository write of the project takes too.
+				if err := refuseUnconfirmedRepositories(ctx, tx, key); err != nil {
+					return model.ProjectAccess{}, nil, err
+				}
+				if err := privateProjectIncomplete(ctx, tx, key); err != nil {
+					return model.ProjectAccess{}, nil, err
+				}
 			}
 		}
 		if input.SlackChannels != nil {
@@ -238,7 +249,7 @@ func (s *server) patchProjectAccess(w http.ResponseWriter, r *http.Request) {
 			}
 			answer, appended = written, append(appended, event)
 		}
-		if input.Visibility != nil {
+		if input.Visibility != nil && (visibility != model.ProjectPrivate || switching) {
 			written, event, err := access.SetVisibility(ctx, tx, s.deps.Events, key, visibility, by)
 			if err != nil {
 				return model.ProjectAccess{}, nil, err
@@ -261,8 +272,15 @@ func (s *server) patchProjectAccess(w http.ResponseWriter, r *http.Request) {
 			}
 			answer, appended = written, append(appended, event)
 		}
-		if visibility == model.ProjectPrivate {
+		if switching {
 			written, err := s.privateArm(ctx, tx, key, viewer)
+			if err != nil {
+				return model.ProjectAccess{}, nil, err
+			}
+			answer = written
+		}
+		if len(appended) == 0 && !switching {
+			written, err := access.ReadWrittenProject(ctx, tx, key)
 			if err != nil {
 				return model.ProjectAccess{}, nil, err
 			}
@@ -276,13 +294,21 @@ func (s *server) patchProjectAccess(w http.ResponseWriter, r *http.Request) {
 // has run in tx: under the Slack channel lock, taken after the project's owner lock, it refuses the
 // switch while another private project lists one of the project's own channels, naming that project
 // only to viewer when viewer sees it (access.RefuseSharedSlackChannels), and starts the channels'
-// time when the project names any (access.StartSlackChannelsTime), whose answer it returns. Its
-// last step, with nothing after it but the commit, is the hub-admission proof.
+// time when the project names any (access.StartSlackChannelsTime), and records the full switch
+// (access.RecordFullSwitch). Its last step, with nothing after it but the commit, is the
+// hub-admission proof, so a failed proof rolls back the record with the rest. It answers the
+// project's access as the switch leaves it.
 func (s *server) privateArm(ctx context.Context, tx pgx.Tx, key string, viewer *model.Viewer) (model.ProjectAccess, error) {
 	if err := access.RefuseSharedSlackChannels(ctx, tx, key, viewer); err != nil {
 		return model.ProjectAccess{}, err
 	}
-	answer, err := access.StartSlackChannelsTime(ctx, tx, key)
+	if err := access.StartSlackChannelsTime(ctx, tx, key); err != nil {
+		return model.ProjectAccess{}, err
+	}
+	if err := access.RecordFullSwitch(ctx, tx, key); err != nil {
+		return model.ProjectAccess{}, err
+	}
+	answer, err := access.ReadWrittenProject(ctx, tx, key)
 	if err != nil {
 		return model.ProjectAccess{}, err
 	}
