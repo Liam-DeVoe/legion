@@ -7,7 +7,8 @@
 //   - Check, run by each deploy, unattended, as the measurement job's user: it reads each declared
 //     stream and reports what drifted, naming the stream, and sends no create and no update.
 //   - Ensure, as the operator outside a hold: it makes ENVOY_MEASURE, the one unprotected stream,
-//     when it is missing, and nothing else.
+//     when it is missing, and brings it to its declared settings, its copies among them, when it
+//     drifts; it touches no other stream.
 //   - Update, as the operator inside a hold: it makes a missing protected stream with the build's
 //     configuration and raises one by today's reconcile rules, and stops on any other difference.
 //   - Census, as the operator inside a hold: it lists every stream and consumer and removes what the
@@ -200,20 +201,34 @@ func Check(ctx context.Context, conn *nats.Conn, settings streamset.Settings) Re
 	return report
 }
 
-// Ensure makes ENVOY_MEASURE on conn with the build's configuration when it is missing, and nothing
-// else: it runs as the operator outside a hold, whose grant (natsgrant.Operator of
-// OperatorPhaseReleased) holds that create and that info alone of all stream calls, and it refuses
-// to run unless phase reads the hold row released (ErrWrongPhase). A deployed ENVOY_MEASURE is left
-// as it is.
+// Ensure makes ENVOY_MEASURE on conn with the build's configuration when it is missing, and brings
+// a deployed one that drifts (streamset.Drift: fewer copies than the deployment's count, or any
+// other difference) to that configuration with one update, at the greater of its copies and the
+// deployment's, so check's shortfall has a repair. It touches no other stream. It runs as the
+// operator outside a hold, whose grant (natsgrant.Operator of OperatorPhaseReleased) holds the
+// create, the info and the update of ENVOY_MEASURE alone of all stream calls, and it refuses to run
+// unless phase reads the hold row released (ErrWrongPhase). An update the server refuses, such as a
+// storage change nats-server cannot make in place, is a failure naming the stream.
 func Ensure(ctx context.Context, conn *nats.Conn, settings streamset.Settings, phase Phase) (Report, error) {
 	if err := requirePhase(ctx, "streams ensure", phase, natsgrant.OperatorPhaseReleased); err != nil {
 		return Report{}, err
 	}
 	measure, _ := streamset.Find(streamset.Declared(settings), streamset.MeasureStream)
 	var report Report
-	_, err := streamInfo(ctx, conn, measure.Name)
+	info, err := streamInfo(ctx, conn, measure.Name)
 	switch {
 	case err == nil:
+		drift := streamset.Drift(measure, info)
+		if len(drift) == 0 {
+			return report, nil
+		}
+		config := measure.Config
+		config.Replicas = max(config.Replicas, info.Config.Replicas)
+		if _, err := request(ctx, conn, "$JS.API.STREAM.UPDATE."+measure.Name, config); err != nil {
+			report.Failures = append(report.Failures, Finding{Stream: measure.Name, What: differences(drift) + ": the update was refused: " + err.Error()})
+			return report, nil
+		}
+		report.Changes = append(report.Changes, Finding{Stream: measure.Name, What: "brought to the build's configuration: " + differences(drift)})
 		return report, nil
 	case !errors.Is(err, streamset.ErrStreamNotFound):
 		report.Unknown = append(report.Unknown, err.Error())

@@ -3194,7 +3194,9 @@ envoy-infra streams census --nats-url <urls> --token-file <file> --broker-url <u
   and each other setting that differs from the build's, and sends no create and no update. Its
   reads ask for no stored subjects.
 - `ensure`, as the operator while the hold row is `released`: it makes `ENVOY_MEASURE` when it is
-  missing, and nothing else.
+  missing, and brings an existing `ENVOY_MEASURE` that drifts to its declared settings, copies
+  included, with one update, so the shortfall `check` reports has a repair. It touches no other
+  stream. The update of `ENVOY_MEASURE` is in the operator's `released` grant alone.
 - `update`, as the operator while the hold row is `held`: it makes each missing protected stream
   with the build's configuration and raises each by a start's own rules (subjects only added,
   limits only raised, copies raised, `envoy_stream_id` kept), and stops, naming the stream and the

@@ -519,7 +519,8 @@ func otherDeclaredStreams() []string {
 // chunks, nats-server jetstream_api.go's STREAM.SNAPSHOT and $JS.SNAPSHOT.ACK), consumer-names
 // status's reads (the records walked by sequence, the notification stream's consumer names and
 // infos), and the create and info of ENVOY_MEASURE. Its one mutation is that create of the one
-// unprotected stream: a backup only reads.
+// unprotected stream: a backup only reads. Released's own grant adds ENVOY_MEASURE's update
+// (operatorEnsure), which prepare and held, built on this list, do not hold.
 func operatorReleased() []string {
 	publish := []string{
 		jsAPI + "INFO",
@@ -607,12 +608,13 @@ func operatorHeld() []string {
 // Operator is the grant of the deployment's one operator identity (the BROKER_NATS_SERVICES entry
 // of kind operator), one function of the hold row's phase: OperatorPhaseReleased's outside a hold,
 // OperatorPhasePrepare's while a hold is prepared, and OperatorPhaseHeld's, the full list, while a
-// hold is set. Each phase's list holds the one before it. A phase outside the three is answered
-// with released's, the least. Every phase subscribes the operator's own inbox prefix
-// (OperatorInbox) alone, and names only $JS. and _INBOX_envoy_operator. subjects and the copied
-// buckets' $KV. barrier keys, so NamesSystemSubject is false for each. The server installs a
-// connection's permissions at its authorization, so a process that changes the phase reconnects to
-// be given the new phase's grant.
+// hold is set. Each phase's list holds the one before it (operatorReleased), and released's alone
+// holds ENVOY_MEASURE's update too (operatorEnsure). A phase outside the three is answered with
+// released's, the least. Every phase subscribes the operator's own inbox prefix (OperatorInbox)
+// alone, and names only $JS. and _INBOX_envoy_operator. subjects and the copied buckets' $KV.
+// barrier keys, so NamesSystemSubject is false for each. The server installs a connection's
+// permissions at its authorization, so a process that changes the phase reconnects to be given the
+// new phase's grant.
 func Operator(phase OperatorPhase) Permissions {
 	var publish []string
 	switch phase {
@@ -621,9 +623,17 @@ func Operator(phase OperatorPhase) Permissions {
 	case OperatorPhaseHeld:
 		publish = operatorHeld()
 	default:
-		publish = operatorReleased()
+		publish = append(operatorReleased(), operatorEnsure()...)
 	}
 	return Permissions{Publish: publish, Subscribe: []string{OperatorInbox + ".>"}}
+}
+
+// operatorEnsure is the update of ENVOY_MEASURE, which envoy-infra streams ensure sends to bring a
+// deployed ENVOY_MEASURE to its declared settings, its copies among them, as the operator alone may:
+// the configuration it sends is the build's. Released alone holds it, since ensure runs only outside
+// a hold; prepare and held, which build on operatorReleased, do not.
+func operatorEnsure() []string {
+	return []string{jsAPI + "STREAM.UPDATE." + measureStream}
 }
 
 // holdProbeSubject is the hold probe's one subject, which nothing else uses.

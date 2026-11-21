@@ -310,13 +310,21 @@ func operatorHeld() []string {
 	return publish
 }
 
+// measureUpdate is the update of ENVOY_MEASURE, which envoy-infra streams ensure sends to bring a
+// deployed ENVOY_MEASURE to its declared settings. Released alone holds it: ensure runs only
+// outside a hold.
+const measureUpdate = "$JS.API.STREAM.UPDATE.ENVOY_MEASURE"
+
 // Operator's three phases and HoldProbe are each exactly the lists the plan writes, entry for
 // entry and in order, so a subject added to any phase, or a phase that grants another's entry, fails
-// here naming it. Every operator connection subscribes its own inbox prefix alone.
+// here naming it: released's list is the plan's and then ENVOY_MEASURE's update, which prepare and
+// held do not hold. Every operator connection subscribes its own inbox prefix alone.
 func TestOperatorIsExactly(t *testing.T) {
 	inbox := []string{"_INBOX_envoy_operator.>"}
+	require.NotContains(t, natsgrant.Operator(natsgrant.OperatorPhasePrepare).Publish, measureUpdate, "prepare holds ensure's update")
+	require.NotContains(t, natsgrant.Operator(natsgrant.OperatorPhaseHeld).Publish, measureUpdate, "held holds ensure's update")
 	for phase, want := range map[natsgrant.OperatorPhase][]string{
-		natsgrant.OperatorPhaseReleased: operatorReleased(),
+		natsgrant.OperatorPhaseReleased: append(operatorReleased(), measureUpdate),
 		natsgrant.OperatorPhasePrepare:  operatorPrepare(),
 		natsgrant.OperatorPhaseHeld:     operatorHeld(),
 	} {

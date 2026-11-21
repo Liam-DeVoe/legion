@@ -230,6 +230,37 @@ func TestStreamsEnsureCreatesOnlyTheMeasureStream(t *testing.T) {
 	require.ErrorIs(t, err, natsgo.ErrStreamNotFound, "the released operator made KV_envoy_roles")
 }
 
+// ensure, as the operator outside a hold, brings a deployed ENVOY_MEASURE to its declared
+// settings: found at one copy on a hub whose deployment keeps three, it is updated, with the one
+// update call of ENVOY_MEASURE, to three copies, and check then reports nothing of it. A second
+// ensure finds nothing to bring and sends nothing.
+func TestStreamsEnsureRaisesTheMeasureStreamsCopies(t *testing.T) {
+	h := startHub(t, 3, natsgrant.Operator(natsgrant.OperatorPhaseReleased))
+	settings := streamset.Settings{Replicas: 3}
+	measure, _ := streamset.Find(streamset.Declared(settings), streamset.MeasureStream)
+	oneCopy := measure.Config
+	oneCopy.Replicas = 1
+	_, err := h.js.AddStream(&oneCopy)
+	require.NoError(t, err)
+	h.writes.Take(t)
+	conn := h.connect(t, operatorInbox, nil)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+	report, err := streams.Ensure(ctx, conn, settings, phase(natsgrant.OperatorPhaseReleased))
+	require.NoError(t, err)
+	require.Equal(t, 0, report.ExitCode(), "%v", report.Lines())
+	require.Equal(t, []string{"$JS.API.STREAM.UPDATE." + streamset.MeasureStream}, h.writes.Take(t))
+	info := testnats.AwaitStreamCopies(t, h.js, streamset.MeasureStream, 3)
+	require.Equal(t, 3, info.Config.Replicas, "ensure left ENVOY_MEASURE below the deployment's copies")
+	require.Empty(t, streamset.Drift(measure, streamset.Info{StreamInfo: *info}), "ENVOY_MEASURE still drifts after ensure")
+
+	report, err = streams.Ensure(ctx, conn, settings, phase(natsgrant.OperatorPhaseReleased))
+	require.NoError(t, err)
+	require.Equal(t, []string{"CLEAN"}, report.Lines())
+	require.Empty(t, h.writes.Take(t), "a second ensure sent a write")
+}
+
 // update, as the operator inside a hold (natsgrant.Operator of OperatorPhaseHeld), makes a missing
 // KV_envoy_roles at the deployment's three copies, raises a bucket found at one copy to three, and
 // stops, naming the stream and the setting, at KV_envoy_ci_state, whose subjects differ from the
