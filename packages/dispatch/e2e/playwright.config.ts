@@ -767,6 +767,9 @@ export default defineConfig({
       snapshots: true,
       sources: true,
     },
+    // A picture of the page at the moment a row failed, which the trace above no longer carries
+    // as a screencast frame: one image for each failed attempt, and none for a pass.
+    screenshot: "only-on-failure",
   },
   // Starts this run's stacks and checks each of them before any row (e2e/global-setup.ts), and
   // stops them afterwards (e2e/global-teardown.ts). Both hooks are declared for every run,
