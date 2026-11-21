@@ -787,15 +787,18 @@ func TestABrokerThatCannotBeReachedIsTheUnreachableOutcome(t *testing.T) {
 }
 
 // TestAnAccountTokenDispatchCannotReadAsksTheBrokerNothing: Dispatch's own missing credential is
-// its deployment's failure, so it is the unreachable outcome and the error names the file.
+// its deployment's failure, so it is the unreachable outcome and the error says why it could not
+// be read, never the path, which here is a made-up token, as one pasted where the path goes is.
 func TestAnAccountTokenDispatchCannotReadAsksTheBrokerNothing(t *testing.T) {
-	missing := filepath.Join(t.TempDir(), "nothing-here")
+	const pasted = "madeUpAccountTokenPath0123456789"
+	missing := filepath.Join(t.TempDir(), pasted)
 	rig := newRig(t, func(o *ciphertoken.Options) { o.Account = ciphertoken.NewAccountToken(missing) })
 	caller := newSigner(t)
 
 	_, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, "a-token-never-asked-about"))
-	if !errors.Is(err, ciphertoken.ErrBrokerUnreachable) || !strings.Contains(err.Error(), missing) {
-		t.Fatalf("an unreadable account token answered %v, want ErrBrokerUnreachable naming %s", err, missing)
+	if !errors.Is(err, ciphertoken.ErrBrokerUnreachable) || !strings.Contains(err.Error(), "read the ServiceAccount token: its file cannot be read: it does not exist") ||
+		strings.Contains(err.Error(), pasted[:10]) {
+		t.Fatalf("an unreadable account token answered %v, want ErrBrokerUnreachable naming why and not the path", err)
 	}
 	var unreadable *ciphertoken.AccountTokenError
 	if !errors.As(err, &unreadable) {

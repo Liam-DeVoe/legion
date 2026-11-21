@@ -2644,8 +2644,9 @@ func parseSignIn(getenv func(string) string, sessionLifetime time.Duration) (app
 	if len(missing) > 0 {
 		return approval.SignIn{}, fmt.Errorf("the broker's approval page needs %s; missing %s", strings.Join(SignInSettings, ", "), strings.Join(missing, ", "))
 	}
+	// The value is not quoted: a token or a URL with a password pasted here would print.
 	if !signInIssuerOK(signIn.Issuer) {
-		return approval.SignIn{}, fmt.Errorf("%s must be an absolute https URL, or http to a loopback host, got %q", signInIssuerSetting, signIn.Issuer)
+		return approval.SignIn{}, fmt.Errorf("%s must be an absolute https URL, or http to a loopback host", signInIssuerSetting)
 	}
 	var err error
 	if signIn.ClientSecret, err = secretFile(signInClientSecretSetting, secretPath); err != nil {

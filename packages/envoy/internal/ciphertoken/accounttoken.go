@@ -2,11 +2,12 @@ package ciphertoken
 
 import (
 	"errors"
-	"fmt"
 	"os"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/sjawhar/envoy/fileerr"
 )
 
 // AccountTokenCacheTTL is how long an AccountToken reuses the bytes it last read. Opening the file
@@ -70,8 +71,13 @@ type AccountTokenError struct {
 	Err error
 }
 
+// Error names why the file could not be read in fileerr's words, or that it is empty, never Path:
+// the setting that holds the path is where a token pasted in its place would be.
 func (e *AccountTokenError) Error() string {
-	return fmt.Sprintf("brokertoken: read the ServiceAccount token %s: %v", e.Path, e.Err)
+	if errors.Is(e.Err, errEmptyAccountToken) {
+		return "brokertoken: read the ServiceAccount token: " + e.Err.Error()
+	}
+	return "brokertoken: read the ServiceAccount token: its file cannot be read: " + fileerr.Class(e.Err)
 }
 
 func (e *AccountTokenError) Unwrap() error { return e.Err }
@@ -81,8 +87,8 @@ var errEmptyAccountToken = errors.New("the file is empty")
 
 // Read is the bearer a call presents: Path's trimmed contents, read again once the copy it cached
 // is older than TTL. A file that cannot be read, or that holds nothing, is an *AccountTokenError
-// naming the path and no request at all, never an empty bearer for the broker to refuse: a
-// projected token Dispatch cannot read is Dispatch's own misconfiguration.
+// and no request at all, never an empty bearer for the broker to refuse: a projected token
+// Dispatch cannot read is Dispatch's own misconfiguration. The error names why, never the path.
 func (a *AccountToken) Read() (string, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

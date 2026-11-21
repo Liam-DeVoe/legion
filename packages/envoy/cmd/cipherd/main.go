@@ -543,7 +543,7 @@ func main() {
 		// which the exchange's policy already holds.
 		exchangeConfig.PersonAudience = cfg.SignInDeviceAudience
 		exchangeConfig.PersonSignIns = personSignIns()
-		slog.Info("google person sign-in", "issuer", cfg.GoogleOIDCIssuer, "audience", cfg.SignInDeviceAudience, "domain", cfg.SignIn.Domain)
+		slog.Info("google person sign-in", "issuer", redact.URL(cfg.GoogleOIDCIssuer), "audience", cfg.SignInDeviceAudience, "domain", cfg.SignIn.Domain)
 	}
 	if cfg.ExchangeGitHubIssuer != "" {
 		// The GitHub issuer has no second reader, so it keeps a key source of its own, read here
@@ -1519,7 +1519,7 @@ func discoverVerifiers(ctx context.Context, cfg config.Config, keysFor keysFunc)
 		return verifiers{}, err
 	}
 	services := slices.Sorted(maps.Values(cfg.VMServicesByAccount))
-	slog.Info("google machine identity", "issuer", cfg.GoogleOIDCIssuer, "audience", cfg.GoogleOIDCAudience,
+	slog.Info("google machine identity", "issuer", redact.URL(cfg.GoogleOIDCIssuer), "audience", cfg.GoogleOIDCAudience,
 		"services", strings.Join(slices.Compact(services), ","), "fleets", len(cfg.ExchangeGoogleAccounts))
 	found.GoogleKeys = googleKeys
 	// One verifier on that key set, for a listed caller that holds a Google identity rather
@@ -1688,10 +1688,10 @@ func checkSignInClient(ctx context.Context, signIn approval.SignIn, st *store.St
 	}
 	switch {
 	case check == oidc.ClientCheckReady && logged.notReady != "":
-		slog.Info(clientCheckReadyMessage, "issuer", signIn.Issuer, "was", logged.notReady)
+		slog.Info(clientCheckReadyMessage, "issuer", redact.URL(signIn.Issuer), "was", logged.notReady)
 		logged.notReady = ""
 	case check != oidc.ClientCheckReady && check != logged.notReady:
-		slog.Warn(clientCheckFailedMessage, "state", check, "issuer", signIn.Issuer, "error", err)
+		slog.Warn(clientCheckFailedMessage, "state", check, "issuer", redact.URL(signIn.Issuer), "error", redact.Error(err, signIn.Issuer))
 		logged.notReady = check
 	}
 	err = st.RecordClientCheck(ctx, string(check), time.Now())

@@ -2448,13 +2448,17 @@ func TestLoadRefusesThePlainSignInSecret(t *testing.T) {
 
 // TestLoadRefusesASignInIssuerThatIsNotHTTPS pins that the issuer, which a sign-in's code
 // exchange sends the client secret to, is an absolute https URL, with http allowed only to a
-// loopback host.
+// loopback host. The refusal names the setting and never the value: the last value is an http URL
+// with a made-up user name and password.
 func TestLoadRefusesASignInIssuerThatIsNotHTTPS(t *testing.T) {
-	for _, bad := range []string{"http://accounts.example.com", "http://10.0.0.1:5556", "http://127.0.0.1.example.com", "accounts.example.com", "ftp://accounts.example.com", "https://"} {
+	const credential = "madeUpIssuerUser0123:madeUpIssuerPassword0123"
+	for _, bad := range []string{"http://accounts.example.com", "http://10.0.0.1:5556", "http://127.0.0.1.example.com", "accounts.example.com", "ftp://accounts.example.com", "https://",
+		"http://" + credential + "@accounts.example.com"} {
 		e := validEnv()
 		e["BROKER_SIGNIN_ISSUER"] = bad
-		if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_SIGNIN_ISSUER") || strings.Contains(err.Error(), signInSecret) {
-			t.Errorf("BROKER_SIGNIN_ISSUER = %q: err = %v, want a refusal naming it", bad, err)
+		_, err := Load(env(e))
+		if want := "BROKER_SIGNIN_ISSUER must be an absolute https URL, or http to a loopback host"; err == nil || err.Error() != want {
+			t.Errorf("BROKER_SIGNIN_ISSUER = %q: err = %v, want %q", bad, err, want)
 		}
 	}
 }
