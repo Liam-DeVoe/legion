@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/jackc/pgx/v5"
 
@@ -11,12 +12,89 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 )
 
-// The reads below are the successors of the reads that join on the tree an issue or a claim
+// The reads below are the successors of the reads that joined on the tree an issue or a claim
 // stores (dispatch://INFRA-4730, R15 and R18 of dispatch://INFRA-3320): each takes the issues it is
 // about from its caller, which reads them from its Chains (the issues whose gate root an issue
 // is, the gate root itself, the issue's own architect), so no statement here restates a rule of
-// the chain. The tree-keyed reads they replace stay while a caller still uses them, and go with
-// the last one (dispatch://INFRA-4730's t5 to t7).
+// the chain.
+
+// KeptMembers is root and every other issue holding a kept decision or a readmitted approval
+// whose kept rows are owed to root's architect now: those whose state tree on the Dispatch chain
+// this transaction reads is root (Chains.StateTree, R18 of dispatch://INFRA-3320), never the tree
+// their records store, so a change of parent moves what a person decided with the issue; root
+// alone where the daemon records nothing of root. It is what every read and write of root's kept
+// rows takes as its members (UnclaimedKeptOf, ClaimKeptDecisionsOf, ForgetKeptDecisionsOf, and the
+// claim store's hold and telling of a root architect's delivery).
+func KeptMembers(ctx context.Context, tx pgx.Tx, store Store, root string) ([]string, error) {
+	issue, err := store.Issue(ctx, tx, root)
+	if err != nil || issue == nil {
+		return []string{root}, err
+	}
+	held, err := store.KeptIssues(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	chains, err := ReadChainsOf(ctx, tx, store, issue.Project, append([]string{root}, held...))
+	if err != nil {
+		return nil, err
+	}
+	members := []string{root}
+	for _, key := range held {
+		if key != root && chains.StateTree(key) == root {
+			members = append(members, key)
+		}
+	}
+	return members, nil
+}
+
+// KeptOwedTo is the gate root each of issues' kept rows is owed to now, each once, by key: the
+// state tree of each on the Dispatch chain (Chains.StateTree), as KeptMembers reads it. It is what
+// a release of kept rows tells the architects of (workflow.CatchUpTheTreesOwed). An issue the
+// daemon records nothing of is owed to itself.
+func KeptOwedTo(ctx context.Context, tx pgx.Tx, store Store, issues []string) ([]string, error) {
+	if len(issues) == 0 {
+		return nil, nil
+	}
+	records, err := store.IssuesByKey(ctx, tx, issues)
+	if err != nil {
+		return nil, err
+	}
+	byProject := map[string][]string{}
+	recorded := map[string]bool{}
+	for _, issue := range records {
+		byProject[issue.Project] = append(byProject[issue.Project], issue.Key)
+		recorded[issue.Key] = true
+	}
+	var roots []string
+	for project, keys := range byProject {
+		chains, err := ReadChainsOf(ctx, tx, store, project, keys)
+		if err != nil {
+			return nil, err
+		}
+		for _, key := range keys {
+			roots = append(roots, chains.StateTree(key))
+		}
+	}
+	for _, key := range issues {
+		if !recorded[key] {
+			roots = append(roots, key)
+		}
+	}
+	slices.Sort(roots)
+	return slices.Compact(roots), nil
+}
+
+func (s *Postgres) KeptIssues(ctx context.Context, tx pgx.Tx) ([]string, error) {
+	rows, err := tx.Query(ctx, `select issue from parked_decisions union select issue from readmitted_approvals order by 1`)
+	if err != nil {
+		return nil, fmt.Errorf("read the issues that hold kept decisions: %w", err)
+	}
+	issues, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("read the issues that hold kept decisions: %w", err)
+	}
+	return issues, nil
+}
 
 func (s *Postgres) SessionClaimsOf(ctx context.Context, tx pgx.Tx, issues []string, session string) (bool, error) {
 	if len(issues) == 0 {
@@ -30,7 +108,7 @@ func (s *Postgres) SessionClaimsOf(ctx context.Context, tx pgx.Tx, issues []stri
 	return claims, nil
 }
 
-// keptCountsFor is keptCounts over the decisions owed to one architect: the claim and the hold a
+// keptCountsFor is the validity rule as SQL, over the decisions owed to one architect: the claim and the hold a
 // kept row carries count only while the claiming outbox row is root's own and the holding claim is
 // a claim of root, the issue whose architect the caller's members are owed to. row is the kept
 // row's alias and root the placeholder that binds root's key. A void claim or hold is ignored, so
@@ -49,7 +127,12 @@ func (s *Postgres) ParkedDecisionsOf(ctx context.Context, tx pgx.Tx, members []s
 }
 
 // UnclaimedKeptOf locks every kept row of members, and root's readmitted approval, before it reads
-// which of them nothing counting claims, for the reason UnclaimedKept does.
+// which of them nothing counting claims: the composer that reads them claims what it names in the
+// same transaction (ClaimKeptDecisionsOf), so a second composer of root waits here until the first
+// commits and then reads the first's claims. The lock is its own statement, so the read after it
+// judges each claim against a snapshot that holds every claimer committed before the lock was
+// granted. Without it the second composer would read a claim the first has not committed as no
+// claim, name the decision too, and two tellings would name it.
 func (s *Postgres) UnclaimedKeptOf(ctx context.Context, tx pgx.Tx, root string, members []string) ([]ParkedDecision, KeptApproval, error) {
 	if _, err := tx.Exec(ctx, `select 1 from parked_decisions kept where kept.issue = any($1)
 		order by kept.issue, kept.ref for update of kept`, members); err != nil {
@@ -95,8 +178,17 @@ func parkedDecisionsOf(ctx context.Context, tx pgx.Tx, root string, members []st
 }
 
 // ClaimKeptDecisionsOf claims for outbox row what kept names of members and nothing counting
-// claims or holds, under UnclaimedKeptOf's lock, and refuses a row that names what it could not
-// claim, as ClaimKeptDecisions does.
+// claims or holds (keptCountsFor). A row is claimed or held, never both: a hold the claim overrides
+// is one keptCountsFor found void (its holder is no claim of root), and the claim clears it, so no
+// later release of that hold can touch this claim.
+//
+// What stops a second composer from naming a decision another telling claims is UnclaimedKeptOf's
+// lock, which the composer takes before it reads what it names: each row it names is still there
+// to claim when this runs. The count check below is defensive and does not catch that race on its
+// own: without the lock, a second composer's UPDATE waits on the first's row lock and then
+// re-checks the row, but keptCountsFor's subquery reads the statement's old snapshot, which does
+// not see the first composer's outbox row, so it claims anyway and the count matches. The check
+// catches a caller that names what it did not read under the lock, and rolls it back.
 func (s *Postgres) ClaimKeptDecisionsOf(ctx context.Context, tx pgx.Tx, root string, members []string, kept KeptDecisions, row int64) error {
 	if len(kept.Decisions) > 0 {
 		refs, at := keptMarks(kept)
@@ -126,8 +218,12 @@ func (s *Postgres) ClaimKeptDecisionsOf(ctx context.Context, tx pgx.Tx, root str
 	return nil
 }
 
-// ForgetKeptDecisionsOf tells what kept names of members, and leaves a named row whose issue is
-// owed to another architect now to that architect, as ForgetKeptDecisions does for a tree.
+// ForgetKeptDecisionsOf tells what kept names of members. What the teller named of an issue no
+// longer among members since the row was composed is not this architect's to be told: the row's
+// claim goes instead, so the gate root the issue is owed to now names it. The old architect
+// hearing it as well is the lesser fault, and the telling that reached it is one this row has
+// already made. Only this row's own claim is cleared: a row is claimed or held, never both, and
+// no other claim or hold is this row's.
 func (s *Postgres) ForgetKeptDecisionsOf(ctx context.Context, tx pgx.Tx, root string, members []string, kept KeptDecisions, row int64) error {
 	if len(kept.Decisions) > 0 {
 		refs, at := keptMarks(kept)

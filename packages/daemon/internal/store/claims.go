@@ -665,7 +665,7 @@ func (s *Store) ClaimByBootTokenHash(ctx context.Context, hash []byte) (supervis
 // the task names of the decisions a person made while nobody in its root's tree could hear them:
 // queued or taken back, the delivery holds those rows; confirmed, it tells them (kept_decisions.go).
 func (s *Store) PutDelivery(ctx context.Context, token claim.Token, d supervise.Delivery) error {
-	return s.Tx(ctx, func(tx pgx.Tx) error { return putDelivery(ctx, tx, token, d) })
+	return s.Tx(ctx, func(tx pgx.Tx) error { return s.putDelivery(ctx, tx, token, d) })
 }
 
 // putDelivery writes a delivery through the caller's transaction: the one PutDelivery opens, or
@@ -677,14 +677,14 @@ func (s *Store) PutDelivery(ctx context.Context, token claim.Token, d supervise.
 // claim's previous delivery held it under; the write that records the confirmation tells them.
 // All of it is in the caller's transaction, so no row is ever held by a delivery the store does
 // not hold, and no confirmation commits without telling what it confirmed.
-func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.Delivery) error {
+func (s *Store) putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.Delivery) error {
 	if d.Generation > math.MaxInt64 {
 		return fmt.Errorf("put delivery %s on %s: generation %d does not fit a bigint", d.ID, token, d.Generation)
 	}
 	kept := keptDecisions(d.Kept)
 	unconfirmed := d.ConfirmedAt.IsZero()
 	if unconfirmed {
-		if err := putBackARetakenConfirmation(ctx, tx, token, d.ID, kept); err != nil {
+		if err := s.putBackARetakenConfirmation(ctx, tx, token, d.ID, kept); err != nil {
 			return err
 		}
 	}
@@ -716,9 +716,9 @@ func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.
 		return fmt.Errorf("put delivery %s on %s: %w", d.ID, token, err)
 	}
 	if unconfirmed {
-		return holdKeptDecisions(ctx, tx, token, d.ID, kept)
+		return s.holdKeptDecisions(ctx, tx, token, d.ID, kept)
 	}
-	return tellKeptDecisions(ctx, tx, token, d.ID)
+	return s.tellKeptDecisions(ctx, tx, token, d.ID)
 }
 
 // PutClaimAndDelivery writes a claim and its pending delivery in one transaction: a confirmation
@@ -747,7 +747,7 @@ func (s *Store) PutClaimAndDeliveryTx(ctx context.Context, tx pgx.Tx, c supervis
 	if err != nil {
 		return false, err
 	}
-	return queued, putDelivery(ctx, tx, c.Token, d)
+	return queued, s.putDelivery(ctx, tx, c.Token, d)
 }
 
 // RetireDelivery removes the claim's pending delivery, fenced on its id: retiring a delivery the

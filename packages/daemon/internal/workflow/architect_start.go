@@ -125,14 +125,21 @@ func ArchitectStartOf(ctx context.Context, tx pgx.Tx, store record.Store, steps 
 	if start.Gate.Rows, err = store.GatesOf(ctx, tx, root.Key); err != nil {
 		return ArchitectStart{}, err
 	}
-	if start.Served, start.ServedEntry, err = store.ArchitectServed(ctx, tx, root.Tree); err != nil {
+	if start.Served, start.ServedEntry, err = store.ArchitectServedOf(ctx, tx, root.Key); err != nil {
 		return ArchitectStart{}, err
 	}
 	if start.Resting, err = restingRootsTask(ctx, tx, store, root.Key); err != nil {
 		return ArchitectStart{}, err
 	}
 	if root.Phase == phase.Admitted {
-		if start.MembersRun, err = store.TreeMembersRun(ctx, tx, root.Tree); err != nil {
+		// The members are the issues whose gate root root is on the Dispatch chain this
+		// transaction reads (Chains.GateTree, R15 of dispatch://INFRA-3320), root left out, never
+		// the issues whose records store root as their tree.
+		chains, err := record.ReadChains(ctx, tx, store, root.Project, []string{root.Key})
+		if err != nil {
+			return ArchitectStart{}, err
+		}
+		if start.MembersRun, err = store.MembersRunOf(ctx, tx, chains.GateTree(root.Key)[1:]); err != nil {
 			return ArchitectStart{}, err
 		}
 		return start, nil

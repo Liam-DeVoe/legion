@@ -59,7 +59,7 @@ func TestAnOpenIssueThatIsWorkingHasNoClaimStopped(t *testing.T) {
 			Title: "checking", Phase: phase.Done, Generation: 1, Status: "done", Rank: "E"},
 	}
 	for _, issue := range issues {
-		putOutboxIssue(t, pool, records, issue)
+		putChainIssue(t, pool, records, issue)
 	}
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		if err := records.PutSlot(ctx, tx, record.Slot{Issue: root, Index: 0, AdmittedAt: time.Now()}); err != nil {
@@ -196,13 +196,13 @@ func TestAnOpenIssueThatIsWorkingHasNoClaimStopped(t *testing.T) {
 	assertOpen("answer and re-admission")
 	forwardIssue := issues[1]
 	forwardIssue.Phase, forwardIssue.Status = phase.Planning, "in_progress"
-	putOutboxIssue(t, pool, records, forwardIssue)
+	putChainIssue(t, pool, records, forwardIssue)
 	backwardIssue := issues[2]
 	backwardIssue.Phase, backwardIssue.Status = phase.Retro, "retro"
-	putOutboxIssue(t, pool, records, backwardIssue)
+	putChainIssue(t, pool, records, backwardIssue)
 	runningIssue := issues[3]
 	runningIssue.Phase, runningIssue.Status = phase.Testing, "testing"
-	putOutboxIssue(t, pool, records, runningIssue)
+	putChainIssue(t, pool, records, runningIssue)
 	working(tester, "running-task", phase.Testing)
 	working(implementer, "check-task", "")
 	check := openCheck(issues[4], "merged")
@@ -274,8 +274,8 @@ func TestOpenIssueSuspensionInvariantKeepsTheExceptions(t *testing.T) {
 			root := record.Issue{Key: "LEGION-820", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-820", Title: "root", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "A", HandedOver: true}
 			parent := root.Key
 			child := record.Issue{Key: "LEGION-821", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: root.Key, Parent: &parent, Title: "child", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "B"}
-			putOutboxIssue(t, pool, records, root)
-			putOutboxIssue(t, pool, records, child)
+			putChainIssue(t, pool, records, root)
+			putChainIssue(t, pool, records, child)
 			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 				return records.PutSlot(ctx, tx, record.Slot{Issue: root.Key, Index: 0, AdmittedAt: time.Now()})
 			}); err != nil {

@@ -282,7 +282,7 @@ func (r *personHandoverRig) readmit(key string) (api.OperatorClaim, api.State) {
 	settled(t, r.d, "release the slot of "+key+" once the person moved it to the backlog", func(s api.State) bool {
 		return !slices.Contains(s.Admission.Active, key)
 	})
-	r.cleaned(key)
+	r.stopped(key)
 	token := r.architectToken(key)
 	launched := r.launches(string(token))
 	setDispatchStatus(t, r.baseURL, key, "todo")

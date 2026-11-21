@@ -96,7 +96,7 @@ func TestAQuietTreeIsMeasuredFromItsFactsAndItsSteps(t *testing.T) {
 		t.Helper()
 		var trees map[string]record.TreeQuiet
 		inTx(t, pool, func(tx pgx.Tx) {
-			issues, err := record.NewStore().TreeIssues(ctx, tx, quietRoot)
+			issues, err := record.NewStore().IssuesByKey(ctx, tx, []string{quietRoot, quietChild, quietDone})
 			if err != nil {
 				t.Fatalf("read the issues of %s after %s: %v", quietRoot, what, err)
 			}

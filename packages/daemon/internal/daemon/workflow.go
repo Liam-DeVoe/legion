@@ -1299,7 +1299,11 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 		if len(left) == 0 {
 			return nil
 		}
-		trees, err := w.records.ReleaseHeldDecisions(scoped, tx, c.Token, d.ID, left)
+		released, err := w.records.ReleasedHeldIssues(scoped, tx, c.Token, d.ID, left)
+		if err != nil {
+			return err
+		}
+		trees, err := record.KeptOwedTo(scoped, tx, w.records, released)
 		if err != nil {
 			return err
 		}

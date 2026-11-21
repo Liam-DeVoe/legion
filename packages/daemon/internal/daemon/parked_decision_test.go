@@ -767,14 +767,18 @@ func parkedDecisions(t *testing.T, pool *store.Pool) []record.ControllerNotice {
 	return got
 }
 
-// keptDecisions is what root's next start or catch-up would name (Store.ParkedDecisions).
+// keptDecisions is every decision kept for root's architect now: of the issues the Dispatch chain
+// shows owed to it (record.KeptMembers, Store.ParkedDecisionsOf).
 func keptDecisions(t *testing.T, pool *store.Pool, records record.Store, root string) []record.ParkedDecision {
 	t.Helper()
 	ctx := context.Background()
 	var kept []record.ParkedDecision
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		var err error
-		kept, err = records.ParkedDecisions(ctx, tx, root)
+		members, err := record.KeptMembers(ctx, tx, records, root)
+		if err != nil {
+			return err
+		}
+		kept, err = records.ParkedDecisionsOf(ctx, tx, members)
 		return err
 	}); err != nil {
 		t.Fatalf("read the kept decisions of %s: %v", root, err)

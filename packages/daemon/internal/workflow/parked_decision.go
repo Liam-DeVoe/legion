@@ -76,22 +76,27 @@ func (e *Engine) treeRoot(ctx context.Context, tx pgx.Tx, key string) (*record.I
 // version the spec has since moved past), it also names both versions, so the
 // architect requests approval of the latest; never under gates.design off, which asks no person.
 //
-// What it may name is what root's tree is owed now: every row whose issue stands in that tree and
-// that no counting claim or hold holds (Store.UnclaimedKept). A claim or a hold an issue left
-// behind in another tree counts for nothing, so a child handed over, a parked child orphaned, a
-// grandchild handed over beside its parent and a queued root adopted each bring what was decided
-// on them to this task with nothing moved, in whatever order their admissions run.
+// What it may name is what root's architect is owed now: every row of an issue whose gate root on
+// the Dispatch chain is root (record.KeptMembers, R18 of dispatch://INFRA-3320) that no counting
+// claim or hold holds (Store.UnclaimedKeptOf). A claim or a hold an issue left behind under
+// another gate root counts for nothing, so a change of parent, a park and a return each bring
+// what was decided on an issue to this task with nothing moved, in whatever order their
+// admissions run.
 //
 // The text names no generation: a start's task waits on its claim and is prompted whenever that
 // claim is next ready, which can be generations later, and the one architect session of the root
 // reads it then as what a person decided on its tree. It deletes nothing: the caller enqueues the
 // task with the record of what it named (record.KeptDecisions) and claims those rows for it in the
 // same transaction (EnqueueNaming). A catch-up that published tells what it named
-// (Store.ForgetKeptDecisions) and a start's task tells it at the confirmation of the delivery the
+// (Store.ForgetKeptDecisionsOf) and a start's task tells it at the confirmation of the delivery the
 // claim queued it as; one that reached no architect hands it over (HandOverKept). Both results are
 // zero when there was nothing.
 func ParkedDecisionTask(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, root record.Issue) (string, *record.KeptDecisions, error) {
-	decisions, approval, err := store.UnclaimedKept(ctx, tx, root.Key)
+	members, err := record.KeptMembers(ctx, tx, store, root.Key)
+	if err != nil {
+		return "", nil, err
+	}
+	decisions, approval, err := store.UnclaimedKeptOf(ctx, tx, root.Key, members)
 	if err != nil {
 		return "", nil, err
 	}
@@ -170,7 +175,11 @@ func EnqueueNaming(ctx context.Context, tx pgx.Tx, store record.Store, issue, tr
 	if err != nil {
 		return err
 	}
-	return store.ClaimKeptDecisions(ctx, tx, tree, *kept, id)
+	members, err := record.KeptMembers(ctx, tx, store, tree)
+	if err != nil {
+		return err
+	}
+	return store.ClaimKeptDecisionsOf(ctx, tx, tree, members, *kept, id)
 }
 
 // EnqueueNaming is EnqueueNaming over the engine's store.
@@ -179,12 +188,13 @@ func (e *Engine) EnqueueNaming(ctx context.Context, tx pgx.Tx, issue, tree strin
 }
 
 // HandOverKept is the one rule a release of kept decisions follows: a release never leaves a kept
-// decision unclaimed while the tree it is owed to has an architect to tell. It unclaims
-// everything outbox row from holds (Store.ReleaseKeptClaims) — from told no architect what it
-// named — and writes a fresh catch-up to the architect of each tree the released rows are owed to
-// now (CatchUpTheTreesOwed). That is read from the rows rather than from the row's own issue,
-// because an issue the row named can have left for a tree of its own since the row was composed:
-// the tree it stands in now is what owes the person an answer, and its architect is the one told
+// decision unclaimed while the gate root it is owed to has an architect to tell. It unclaims
+// everything outbox row from holds (Store.ReleasedKeptIssues) — from told no architect what it
+// named — and writes a fresh catch-up to the architect of each gate root the released rows are
+// owed to now on the Dispatch chain (record.KeptOwedTo, CatchUpTheTreesOwed). That is read from
+// the rows rather than from the row's own issue, because an issue the row named can have moved
+// under another gate root since the row was composed: that root is what owes the person an
+// answer, and its architect is the one told
 // at once. A row that holds nothing returns at once, so a row whose settle committed and whose
 // finish did not writes no second catch-up when it runs again.
 //
@@ -203,7 +213,11 @@ func (e *Engine) EnqueueNaming(ctx context.Context, tx pgx.Tx, issue, tree strin
 // names every unclaimed decision. A receipt timeout that draws a copy neither tells nor hands
 // over: the re-held copy carries the claims on (Store.MoveKeptClaims).
 func HandOverKept(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, from int64, now time.Time) error {
-	trees, err := store.ReleaseKeptClaims(ctx, tx, from)
+	issues, err := store.ReleasedKeptIssues(ctx, tx, from)
+	if err != nil || len(issues) == 0 {
+		return err
+	}
+	trees, err := record.KeptOwedTo(ctx, tx, store, issues)
 	if err != nil || len(trees) == 0 {
 		return err
 	}
@@ -212,7 +226,7 @@ func HandOverKept(ctx context.Context, tx pgx.Tx, store record.Store, steps []re
 
 // CatchUpTheTreesOwed writes a fresh catch-up to the architect of each of trees that has one to
 // hear it now (ArchitectHears), naming everything that tree is owed and nothing claims, for the
-// launch its architect claim stands at (Store.ArchitectLaunches), so a failed forward of an older
+// launch its architect claim stands at (Store.ArchitectLaunchesOf), so a failed forward of an older
 // catch-up is not queued again behind it. A tree with no architect to hear it — no record, no
 // tree root, lingering, out of the workflow, or waiting in `todo` for its slot — is written
 // nothing, and what it is owed waits KEPT for its next start or ready to name, since a catch-up
@@ -222,7 +236,7 @@ func HandOverKept(ctx context.Context, tx pgx.Tx, store record.Store, steps []re
 // sentence of what a relaunch ended, which only a launch's ready knows: the prompt the claim's
 // own machine sends carries that sentence whatever becomes of a catch-up.
 func CatchUpTheTreesOwed(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, trees []string, now time.Time) error {
-	launches, err := store.ArchitectLaunches(ctx, tx, trees)
+	launches, err := store.ArchitectLaunchesOf(ctx, tx, trees)
 	if err != nil {
 		return err
 	}

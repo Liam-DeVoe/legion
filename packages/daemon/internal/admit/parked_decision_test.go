@@ -222,7 +222,7 @@ func TestARootReadmittedAfterARelayedDecisionStartsItsArchitectNamingIt(t *testi
 		t.Fatalf("the start's kept record %#v, want the one decision it named, at %s", kept, fixedNow)
 	}
 	inTx(t, pool, func(tx pgx.Tx) {
-		if kept, err := record.NewStore().ParkedDecisions(ctx, tx, "LEGION-ROOT"); err != nil || len(kept) != 1 {
+		if kept, err := record.NewStore().ParkedDecisionsOf(ctx, tx, []string{"LEGION-ROOT"}); err != nil || len(kept) != 1 {
 			t.Fatalf("kept after the start %#v, %v; want the decision still kept until the start is delivered", kept, err)
 		}
 	})
@@ -314,7 +314,7 @@ func TestADecisionOnARootThatWaitsForNoSlotKeepsNothing(t *testing.T) {
 				t.Fatalf("parked-decision notices = %#v, want none: the tree hears the person itself", got)
 			}
 			inTx(t, pool, func(tx pgx.Tx) {
-				kept, err := record.NewStore().ParkedDecisions(ctx, tx, "LEGION-ROOT")
+				kept, err := record.NewStore().ParkedDecisionsOf(ctx, tx, []string{"LEGION-ROOT"})
 				if err != nil || len(kept) != 0 {
 					t.Fatalf("kept %#v, %v; want nothing kept for a root that waits for no slot", kept, err)
 				}
@@ -437,7 +437,7 @@ func TestARetriedRowTellsTheArchitectEachKeptDecisionOnce(t *testing.T) {
 		t.Fatalf("the row's attempts = %d, %v; want the one retry this test made", attempts, err)
 	}
 	inTx(t, pool, func(tx pgx.Tx) {
-		decisions, _, err := record.NewStore().UnclaimedKept(ctx, tx, "LEGION-ROOT")
+		decisions, _, err := record.NewStore().UnclaimedKeptOf(ctx, tx, "LEGION-ROOT", []string{"LEGION-ROOT"})
 		if err != nil || len(decisions) != 0 {
 			t.Fatalf("unclaimed decisions of the tree = %#v, %v; want none: the retried row holds them all", decisions, err)
 		}

@@ -414,6 +414,9 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		}
 		return err
 	}
+	// The claim store holds and tells a root architect's kept decisions by the issues the Dispatch
+	// chain shows owed to it (record.KeptMembers), which only the record package reads.
+	st.ReadKeptMembers(keptMembers)
 	// The boot's budget for the steps after the open. The loops the boot starts take marks of their
 	// own, since they run beside each other (store.ForConcurrentWorker).
 	boot, cancelBoot := bootBudget(ctx)
@@ -3116,14 +3119,14 @@ type source struct {
 // Its rule is that a record of another project is no record of this daemon's (owns). The issues
 // table holds the records of every project on the database, each under its project
 // (record.Issue.Project, the Dispatch key, which is project's spelling too), and a record is read
-// by key alone (record.Postgres.Issue), or by tree alone (TreeIssues), so a claim of another
+// by key alone (record.Postgres.Issue), so a claim of another
 // project's issue, which the operator's spawn makes under this daemon's own token, would find the
 // record that project's daemon keeps of the issue. A row built from that record would be keyed by
 // an issue whose rows the other project's daemon runs, against its own claims, and this daemon's
 // outbox never does (record's DueRows reads the rows of its own project's keys); and a drop or a
 // write it led to would change that daemon's rows. So each read here that returns issue records
 // and names no project answers this project's alone: Issue answers no record, and no error, for
-// a record of another project, and TreeIssues, Issues and QueuedRootsUnder leave such records
+// a record of another project, and Issues and QueuedRootsUnder leave such records
 // out. Every read that starts from them is within this filtered set, and so is every path of a
 // claim through the workflow: a claim of another project's issue reads no record at all, as a
 // claim of an issue nobody records reads none. The reads that name a project (LiveIssues,
@@ -3217,14 +3220,6 @@ func (s projectRecords) Issue(ctx context.Context, tx pgx.Tx, key string) (*reco
 
 func (s projectRecords) Issues(ctx context.Context, tx pgx.Tx) ([]record.Issue, error) {
 	all, err := s.Store.Issues(ctx, tx)
-	if err != nil {
-		return nil, err
-	}
-	return s.own(all), nil
-}
-
-func (s projectRecords) TreeIssues(ctx context.Context, tx pgx.Tx, tree string) ([]record.Issue, error) {
-	all, err := s.Store.TreeIssues(ctx, tx, tree)
 	if err != nil {
 		return nil, err
 	}
@@ -3593,4 +3588,10 @@ func callerPodOf(rt runtime.Runtime) func(netip.Addr) (string, bool) {
 		return pods.PodAt
 	}
 	return nil
+}
+
+// keptMembers is the claim store's reader of the issues whose kept rows are owed to issue's
+// architect now (store.KeptMembersReader), over the daemon's own record store.
+func keptMembers(ctx context.Context, tx pgx.Tx, issue string) ([]string, error) {
+	return record.KeptMembers(ctx, tx, record.NewStore(), issue)
 }

@@ -153,7 +153,11 @@ func TestARelaunchedArchitectsCatchUpNamesTheDecisionsKeptForIt(t *testing.T) {
 		if err := tx.QueryRow(ctx, "select id from outbox where kind = 'notice' and payload->>'kind' = 'catch-up' order by id desc limit 1").Scan(&row); err != nil {
 			return err
 		}
-		return record.NewStore().ForgetKeptDecisions(ctx, tx, "LEGION-1", *lastCatchUp(t, pool).Kept, row)
+		members, err := record.KeptMembers(ctx, tx, record.NewStore(), "LEGION-1")
+		if err != nil {
+			return err
+		}
+		return record.NewStore().ForgetKeptDecisionsOf(ctx, tx, "LEGION-1", members, *lastCatchUp(t, pool).Kept, row)
 	}); err != nil {
 		t.Fatalf("forget what the delivered catch-up named: %v", err)
 	}

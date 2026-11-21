@@ -14,12 +14,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// countingRecords counts what a route reads of the records: the issues it reads one at a time
-// (Store.Issue) and the trees it reads whole (Store.TreeIssues).
+// countingRecords counts the issues a route reads one at a time (Store.Issue).
 type countingRecords struct {
 	record.Store
 	issues atomic.Int64
-	trees  atomic.Int64
 }
 
 func (c *countingRecords) Issue(ctx context.Context, tx pgx.Tx, key string) (*record.Issue, error) {
@@ -27,16 +25,9 @@ func (c *countingRecords) Issue(ctx context.Context, tx pgx.Tx, key string) (*re
 	return c.Store.Issue(ctx, tx, key)
 }
 
-func (c *countingRecords) TreeIssues(ctx context.Context, tx pgx.Tx, tree string) ([]record.Issue, error) {
-	c.trees.Add(1)
-	return c.Store.TreeIssues(ctx, tx, tree)
-}
-
-// rerun_child judges the tree from one read of it (treeMembers), as release_children judges a
-// whole wave: those records carry the root whose linger stops a rerun and the chain the accepted
-// ancestor is found on (record.AcceptedAncestorIn). It read the root by itself and then the tree
-// again through a helper of its own, so one request's two judgements stood on two snapshots of
-// the tree and a helper no other route had a use for.
+// rerun_child judges the child from one read of its own record, which authorizes the request, and
+// the Dispatch chain it reads beside it (record.Chains), never the tree a record stores: the chain
+// carries the accepted issue above the child the refusal names (record.AcceptedAncestorIn).
 func TestRerunChildJudgesTheTreeFromOneRead(t *testing.T) {
 	h, handlers, statuses := statusHarness(t)
 	counting := &countingRecords{Store: record.NewStore()}
@@ -51,11 +42,10 @@ func TestRerunChildJudgesTheTreeFromOneRead(t *testing.T) {
 	}
 	acceptPhase(t, h, statusRoot, phase.Merging)
 
-	issues, trees := counting.issues.Load(), counting.trees.Load()
+	issues := counting.issues.Load()
 	recorder := h.request(http.MethodPost, "/legion/v1/children/rerun", map[string]any{"grantId": architect.grant(t), "issue": statusChild}, nil)
 	refused(t, recorder, http.StatusConflict, "CHILD_UNDER_ACCEPTED_PARENT")
-	// The child's own record, which authorizes the request, and the one read of its tree.
-	if read, treeReads := counting.issues.Load()-issues, counting.trees.Load()-trees; read != 1 || treeReads != 1 {
-		t.Fatalf("the refused rerun read %d issues one at a time and %d whole trees, want 1 and 1: the tree it is refused by is read once", read, treeReads)
+	if read := counting.issues.Load() - issues; read != 1 {
+		t.Fatalf("the refused rerun read %d issues one at a time, want 1: the child's own record, which authorizes the request", read)
 	}
 }

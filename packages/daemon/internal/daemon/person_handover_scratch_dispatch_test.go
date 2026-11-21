@@ -1150,17 +1150,20 @@ func (r *personHandoverRig) registerGate(key, artifactID string, grant func() st
 	}
 }
 
-// cleaned waits for the cleanup of key's tree, which its park began, to be confirmed
-// (tree_lifecycles), as the blockers proof waits before it takes a tree back: a root handed back
-// while its cleanup still runs waits for it, and is promoted at the next fact.
-func (r *personHandoverRig) cleaned(key string) {
+// stopped waits for the stop key's park made to finish: every supervise and issue_suspend row of
+// key has run, so its claims are suspended with their sessions kept and its Sandbox is gone. Its
+// own lifecycle stays open and nothing of it is cleaned up: a stopped issue comes back with its
+// claims (R20 of dispatch://INFRA-3320), so a root handed back after this is promoted at the next
+// fact with no cleanup to wait for.
+func (r *personHandoverRig) stopped(key string) {
 	r.t.Helper()
-	testwait.Eventually(r.t, "the cleanup of "+key+"'s tree to be confirmed", func() bool {
-		var cleaned bool
-		if err := r.pool.QueryRow(r.t.Context(), `select cleanup_confirmed_at is not null from tree_lifecycles where tree = $1`, key).Scan(&cleaned); err != nil {
+	testwait.Eventually(r.t, "the stop of "+key+" to finish", func() bool {
+		var left int
+		if err := r.pool.QueryRow(r.t.Context(), `select count(*) from outbox where issue = $1 and kind in ('supervise', 'issue_suspend')`,
+			key).Scan(&left); err != nil {
 			return false
 		}
-		return cleaned
+		return left == 0
 	})
 }
 
@@ -1290,8 +1293,8 @@ func TestAPersonsApprovalOfAParkedRootsSpecIsQueuedByTheDaemonAgainstScratchDisp
 	settled(t, r.d, "release the slot of "+recorded.Key+" once the person parked it", func(s api.State) bool {
 		return !slices.Contains(s.Admission.Active, recorded.Key)
 	})
-	r.cleaned(recorded.Key)
-	t.Logf("%s ran, registered its gate at version 1, and was parked by the person at Dispatch's sequence %d; its tree's cleanup is confirmed", recorded.Key, parkedRecorded.LastSeq)
+	r.stopped(recorded.Key)
+	t.Logf("%s ran, registered its gate at version 1, and was parked by the person at Dispatch's sequence %d; its stop has finished", recorded.Key, parkedRecorded.LastSeq)
 
 	// 2. The running root takes the slot for good.
 	running := r.create(asSession, "Flagship tree occupies everything", labelled)

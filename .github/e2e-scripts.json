@@ -133,6 +133,16 @@
       "jj": true
     },
     {
+      "script": "member-becomes-root.sh",
+      "go_version_file": "packages/daemon/go.mod",
+      "apt": [],
+      "bun": true,
+      "evidence_variable": "MEMBER_BECOMES_ROOT_EVIDENCE_DIR",
+      "timeout_minutes": 30,
+      "why_hosted": "Run it from a checkout on a Linux host with go, git, bun (after bun install), awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/member-becomes-root.sh; CI's pgvector service is the server it needs, the rig builds and starts a scratch Dispatch and the daemon itself, the lib installs the nats-server it needs with go install, a shallow checkout fetches its history from the public repository to find the oldest contract's commit, whose root lib/old-plugin-root.sh unpacks and installs with bun, and it starts no container; a run takes two to eight minutes, most of it the old root's install and building the driver and Dispatch",
+      "jj": true
+    },
+    {
       "script": "stage1-skeleton.sh",
       "go_version_file": "packages/daemon/go.mod",
       "apt": ["tmux"],

@@ -2161,91 +2161,61 @@ type Store interface {
 	// newest decision: a later one, by At, replaces it, KEPT again, so a changes request the
 	// person has since followed with an approval of the same spec is not what the start names.
 	AddParkedDecision(ctx context.Context, tx pgx.Tx, decision ParkedDecision) error
-	// ParkedDecisions is every decision owed to tree — every row whose issue stands in tree now,
-	// in any state — newest first, ties by ref. It is what the close of a tree reads: the tree
-	// ends owing each of them (workflow's warnKeptDecisionsOfAClosedTree).
-	ParkedDecisions(ctx context.Context, tx pgx.Tx, tree string) ([]ParkedDecision, error)
-	// UnclaimedKept is what a start or catch-up of tree may name: every row whose issue stands in
-	// tree now and that no counting claim or hold holds — a claim counts only while the claiming
-	// outbox row's issue stands in the same tree, and a hold only while the holding claim's tree
-	// is that tree — newest first, ties by ref, and tree's own readmitted approval on the same
-	// rule, the zero KeptApproval when there is none to name
-	// (workflow.Engine.ParkedDecisionTask).
-	UnclaimedKept(ctx context.Context, tx pgx.Tx, tree string) ([]ParkedDecision, KeptApproval, error)
-	// ParkedDecisionsOf and UnclaimedKeptOf are ParkedDecisions and UnclaimedKept over the issues
-	// whose decisions are owed to the architect of root: members, the issues whose gate root is
-	// root, root itself among them, as the caller's Chains gives them (R18 of
-	// dispatch://INFRA-3320), in place of the tree each row's issue stores. A claim of a row counts
-	// only while the claiming outbox row is root's own, and a hold only while the holding claim is
-	// of root, and root's readmitted approval is read on the same rule.
+	// KeptIssues is every issue that holds a kept decision or a readmitted approval, by key: the
+	// issues KeptMembers reads the chain of to say which are owed to a root.
+	KeptIssues(ctx context.Context, tx pgx.Tx) ([]string, error)
+	// ParkedDecisionsOf is every decision of members, in any state, newest first, ties by ref.
+	// UnclaimedKeptOf is what a start or catch-up of root may name: every row of members that no
+	// counting claim or hold holds, newest first, ties by ref, and root's own readmitted approval
+	// on the same rule, the zero KeptApproval when there is none to name
+	// (workflow.Engine.ParkedDecisionTask). members are the issues whose decisions are owed to the
+	// architect of root, root itself among them (KeptMembers, R18 of dispatch://INFRA-3320), never
+	// the tree each row's issue stores. A claim of a row counts only while the claiming outbox row
+	// is root's own, and a hold only while the holding claim is of root.
 	ParkedDecisionsOf(ctx context.Context, tx pgx.Tx, members []string) ([]ParkedDecision, error)
 	UnclaimedKeptOf(ctx context.Context, tx pgx.Tx, root string, members []string) ([]ParkedDecision, KeptApproval, error)
-	// ClaimKeptDecisions claims for outbox row what kept names of what tree is owed and nothing
-	// counting claims or holds yet, in the transaction that enqueues row: from then on no other
-	// start or catch-up of that tree names it until that row settles what it named. A published
-	// catch-up tells it (ForgetKeptDecisions); a start whose task the claim queued leaves it to
-	// that delivery, which holds it until its confirmation tells it; a start or catch-up that
-	// reached no architect hands it over (ReleaseKeptClaims, workflow.HandOverKept), and a row's
-	// deletion releases it as a last resort (claimed_by is set null with the row), for the next
-	// start or catch-up to name.
-	ClaimKeptDecisions(ctx context.Context, tx pgx.Tx, tree string, kept KeptDecisions, row int64) error
-	// ClaimKeptDecisionsOf is ClaimKeptDecisions over the decisions owed to root's architect, of
-	// members (UnclaimedKeptOf's rule).
+	// ClaimKeptDecisionsOf claims for outbox row what kept names of what root's members are owed
+	// and nothing counting claims or holds yet, in the transaction that enqueues row: from then on
+	// no other start or catch-up of root names it until that row settles what it named. A
+	// published catch-up tells it (ForgetKeptDecisionsOf); a start whose task the claim queued
+	// leaves it to that delivery, which holds it until its confirmation tells it; a start or
+	// catch-up that reached no architect hands it over (ReleasedKeptIssues, workflow.HandOverKept),
+	// and a row's deletion releases it as a last resort (claimed_by is set null with the row), for
+	// the next start or catch-up to name.
 	ClaimKeptDecisionsOf(ctx context.Context, tx pgx.Tx, root string, members []string, kept KeptDecisions, row int64) error
 	// MoveKeptClaims moves every claim of outbox row from to row to: the re-hold's copy of a catch-up
 	// carries the claims of the row it copies, which then finishes.
 	MoveKeptClaims(ctx context.Context, tx pgx.Tx, from, to int64) error
-	// ReleaseKeptClaims unclaims every parked decision and readmitted approval outbox row holds,
-	// and reports the tree each released row is owed to now, by key: the hand-over's first step,
-	// since the row told no architect what it named, and what says which trees' architects the
-	// hand-over must write a fresh catch-up to (workflow.HandOverKept).
-	ReleaseKeptClaims(ctx context.Context, tx pgx.Tx, row int64) ([]string, error)
-	// ReleasedKeptIssues is ReleaseKeptClaims reporting the issue of each released row, by key,
-	// rather than the tree it stores: the caller finds each one's gate root on its Chains.
+	// ReleasedKeptIssues unclaims every parked decision and readmitted approval outbox row holds,
+	// and reports the issue of each released row, by key: the hand-over's first step, since the
+	// row told no architect what it named; the caller finds the gate root each is owed to now
+	// (KeptOwedTo) and writes its architect a fresh catch-up (workflow.HandOverKept).
 	ReleasedKeptIssues(ctx context.Context, tx pgx.Tx, row int64) ([]string, error)
-	// ReleasedHeldIssues is ReleaseHeldDecisions reporting the issue of each released row, by key,
-	// rather than the tree it stores, as ReleasedKeptIssues does.
+	// ReleasedHeldIssues clears the hold the delivery of claim token holds on the rows marks
+	// names, and reports the issue of each released row, by key, as ReleasedKeptIssues does: the
+	// send-time drop of what a held task names of an issue owed to another gate root leaves those
+	// rows KEPT for that root to name (the daemon's rootTask). A retired delivery's holds go the
+	// same way, in the write that retires it (the claim store's RetireDelivery).
 	ReleasedHeldIssues(ctx context.Context, tx pgx.Tx, token claim.Token, delivery string, marks []DecisionMark) ([]string, error)
-	// ReleaseHeldDecisions clears the hold the delivery of claim token holds on the rows marks
-	// names, and reports the tree each released row is owed to now, by key: the send-time drop of
-	// what a held task names of another tree leaves those rows KEPT for that tree to name
-	// (workflow's RootTask). A retired delivery's holds go the same way, in the write that retires
-	// it (the claim store's RetireDelivery).
-	ReleaseHeldDecisions(ctx context.Context, tx pgx.Tx, token claim.Token, delivery string, marks []DecisionMark) ([]string, error)
 	// HeldKeptRefs is the reference of every decision the delivery of claim token still holds: what
 	// a held task may still name when it is about to be sent (workflow's RootTask). A reference it
 	// named that is gone from here was told by something else, or replaced by a newer decision on
 	// the same reference, and this task names it no longer.
 	HeldKeptRefs(ctx context.Context, tx pgx.Tx, token claim.Token, delivery string) ([]string, error)
-	// ArchitectLaunches is the launch each tree's root architect claim stands at now, by tree, for
-	// the trees that have one: what a catch-up queued to another tree's architect is written for
-	// (record.CatchUp.Launch), so a failed forward of an older one is not queued again behind it.
-	ArchitectLaunches(ctx context.Context, tx pgx.Tx, trees []string) (map[string]uint64, error)
-	// ArchitectServed is what the root architect claim of tree has served: the issue generation
-	// of the last confirmed delivery carrying one that the claim retired, and the phase entry of
-	// the last confirmed delivery carrying one (supervise.Claim.ServingGeneration and
-	// ServedEntry), each zero where the tree has no architect claim or its claim has retired no
-	// confirmed task carrying one. It is what tells a tree whose architect ran before
-	// (workflow.ArchitectStartTask's fourth rule). The launch ArchitectLaunches reads cannot tell
-	// it: claims.generation counts the claim's launches, and the claim is kept from one run to
-	// the next.
-	ArchitectServed(ctx context.Context, tx pgx.Tx, tree string) (uint64, int64, error)
 	// ArchitectLaunchesOf is the launch each of issues' own architect claim stands at now, by
-	// issue, for the issues that have one; ArchitectServedOf what issue's own architect claim has
-	// served, as ArchitectServed says. Each keys on the issue's own architect claim, whatever tree
-	// the claim stores, so a gate holder under a parent reads its own architect (R18).
+	// issue, for the issues that have one: what a catch-up queued to another gate root's architect
+	// is written for (record.CatchUp.Launch), so a failed forward of an older one is not queued
+	// again behind it. ArchitectServedOf is what issue's own architect claim has served: the issue
+	// generation of the last confirmed delivery carrying one that the claim retired, and the phase
+	// entry of the last confirmed delivery carrying one (supervise.Claim.ServingGeneration and
+	// ServedEntry), each zero where the issue has no architect claim or its claim has retired no
+	// confirmed task carrying one. It is what tells a gate root whose architect ran before
+	// (workflow.ArchitectStartTask's fourth rule); the launch cannot tell it, since
+	// claims.generation counts the claim's launches and the claim is kept from one run to the
+	// next. Each keys on the issue's own architect claim, whatever tree the claim stores, so a
+	// gate holder under a parent reads its own architect (R18).
 	ArchitectLaunchesOf(ctx context.Context, tx pgx.Tx, issues []string) (map[string]uint64, error)
 	ArchitectServedOf(ctx context.Context, tx pgx.Tx, issue string) (uint64, int64, error)
-	// TreeMembersRun is whether an issue of tree other than its root stands past
-	// phase.Admitted in the workflow (InWorkflow): its status is none of OutOfWorkflowStatuses
-	// and its phase is neither admitted nor done. Those are the members a
-	// re-admission's promotion starts again (admit's startMidPhaseMembers, which passes over a
-	// member at admitted and one out of the workflow), and a member a person set todo once its
-	// own first phase has started. It is what says a root architect's tree has work under way
-	// whatever its claim has served (workflow.ArchitectStart.MembersRun). It answers one bool
-	// from an exists over the tree's own issues (issues_tree), where TreeIssues would read every
-	// member's whole record, done ones included.
-	TreeMembersRun(ctx context.Context, tx pgx.Tx, tree string) (bool, error)
 	// MembersRunOf is whether one of members stands past phase.Admitted in Legion's work: its
 	// phase is neither admitted nor done and its status is one of the five in work
 	// (InLegionsWork). members are the issues whose gate root an architect's is, itself left out,
@@ -2291,17 +2261,14 @@ type Store interface {
 	// nothing, so the entry sweep's gate asks it in its read-only transaction (admit's
 	// OwesEntryWork), in one statement, and in none for no stall.
 	ArchitectStallsUntold(ctx context.Context, tx pgx.Tx, stalls []ArchitectStall) (bool, error)
-	// ForgetKeptDecisions tells what outbox row's published catch-up named of what tree is owed
-	// (KeptDecisions), of the rows row claims or nothing claims: every parked decision still
-	// standing at the reference and time it named — a newer decision on the same reference, kept
-	// since and unclaimed, survives — and the readmitted approval still standing at the pair of
-	// versions it named. One whose issue has left tree since the row was composed is told nothing:
-	// its claim and hold are cleared instead, so the tree it stands in now names it. A row whose
-	// task reached no architect tells nothing and hands over instead (ReleaseKeptClaims).
-	ForgetKeptDecisions(ctx context.Context, tx pgx.Tx, tree string, kept KeptDecisions, row int64) error
-	// ForgetKeptDecisionsOf is ForgetKeptDecisions over the decisions owed to root's architect, of
-	// members (UnclaimedKeptOf's rule): a named row whose issue is no longer among members is
-	// left to the architect it is owed to now.
+	// ForgetKeptDecisionsOf tells what outbox row's published catch-up named of what root's
+	// members are owed (KeptDecisions), of the rows row claims or nothing claims: every parked
+	// decision still standing at the reference and time it named — a newer decision on the same
+	// reference, kept since and unclaimed, survives — and root's readmitted approval still
+	// standing at the pair of versions it named. A named row whose issue is no longer among
+	// members since the row was composed is told nothing: its claim is cleared instead, so the
+	// gate root it is owed to now names it. A row whose task reached no architect tells nothing
+	// and hands over instead (ReleasedKeptIssues).
 	ForgetKeptDecisionsOf(ctx context.Context, tx pgx.Tx, root string, members []string, kept KeptDecisions, row int64) error
 	// ClaimSession is the session claims records for token, "" and no error when the token holds
 	// no row. The workflow reads it for the claim the daemon starts the reviewer under (workflow's
@@ -2651,8 +2618,6 @@ type Store interface {
 	// OutboxLeased reports whether row id is still in the outbox under leaseToken: false once
 	// another transaction deleted it while the runner held it (DropCatchUps).
 	OutboxLeased(ctx context.Context, tx pgx.Tx, id int64, leaseToken string) (bool, error)
-	// TreeIssues is every issue of tree, the root included, by key.
-	TreeIssues(ctx context.Context, tx pgx.Tx, tree string) ([]Issue, error)
 	// EarlierNotices is every unfinished notice row of the issues of Dispatch project project
 	// written before row id, oldest first: the rows the fence reads, from which the daemon keeps
 	// those that go to the same architect as the later one (its earlierNoticeFor). Which

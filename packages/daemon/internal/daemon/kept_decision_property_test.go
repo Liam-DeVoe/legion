@@ -342,7 +342,7 @@ func (p *keptPublisher) published() []outboxPublish {
 	return append([]outboxPublish(nil), p.delivered...)
 }
 
-// keptForgetStore is the record store with ForgetKeptDecisions failing while the run's toggle is
+// keptForgetStore is the record store with ForgetKeptDecisionsOf failing while the run's toggle is
 // on, as a database error — or the daemon dying — between a start's delivery, or a catch-up's
 // publish, and the forget's commit leaves it. The toggle is read from the lanes the concurrent
 // step runs, so it is held as one word rather than as a field.
@@ -355,7 +355,7 @@ type keptForgetStore struct {
 	failedTellings sync.Map
 }
 
-func (s *keptForgetStore) ForgetKeptDecisions(ctx context.Context, tx pgx.Tx, root string, kept record.KeptDecisions, row int64) error {
+func (s *keptForgetStore) ForgetKeptDecisionsOf(ctx context.Context, tx pgx.Tx, root string, members []string, kept record.KeptDecisions, row int64) error {
 	if s.fails.Load() {
 		telling := row
 		if err := tx.QueryRow(ctx, `select coalesce((payload->>'resend_of')::bigint, id) from outbox where id = $1`, row).Scan(&telling); err != nil &&
@@ -365,7 +365,7 @@ func (s *keptForgetStore) ForgetKeptDecisions(ctx context.Context, tx pgx.Tx, ro
 		s.failedTellings.Store(telling, true)
 		return errors.New("tester: the forget's transaction did not commit")
 	}
-	return s.Store.ForgetKeptDecisions(ctx, tx, root, kept, row)
+	return s.Store.ForgetKeptDecisionsOf(ctx, tx, root, members, kept, row)
 }
 
 // tellingFailed is whether the catch-up telling published under row had its forget fail.

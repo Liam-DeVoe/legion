@@ -2583,9 +2583,3 @@ func (e *Engine) ownPullRequest(ctx context.Context, tx pgx.Tx, pr *record.PullR
 	}
 	return pr, nil
 }
-
-// treeMembers is every issue of root's tree, the root included, read by tree (record.Store.TreeIssues),
-// never from the project's whole record.
-func (e *Engine) treeMembers(ctx context.Context, tx pgx.Tx, root record.Issue) ([]record.Issue, error) {
-	return e.store.TreeIssues(ctx, tx, root.Tree)
-}

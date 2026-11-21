@@ -687,10 +687,10 @@ func TestStoreRoundTripsTheTreeARootLeft(t *testing.T) {
 		if !reflect.DeepEqual(written(t, got), &left) {
 			t.Fatalf("handed-over root = %#v, want %#v", got, left)
 		}
-		issues, err := records.TreeIssues(ctx, tx, left.Key)
+		issues, err := records.IssuesByKey(ctx, tx, []string{left.Key})
 		must(t, err)
 		if !reflect.DeepEqual(writtenAll(t, issues), []Issue{left}) {
-			t.Fatalf("tree issues = %#v, want %#v", issues, []Issue{left})
+			t.Fatalf("issues by key = %#v, want %#v", issues, []Issue{left})
 		}
 	})
 }
@@ -1985,7 +1985,7 @@ func TestDroppingCatchUpsLeavesTheRowALaneIsLeasing(t *testing.T) {
 		must(t, err)
 		catchUp, err = records.EnqueueID(ctx, tx, row)
 		must(t, err)
-		must(t, records.ClaimKeptDecisions(ctx, tx, "LEGION-1", kept, catchUp))
+		must(t, records.ClaimKeptDecisionsOf(ctx, tx, "LEGION-1", []string{"LEGION-1"}, kept, catchUp))
 	})
 
 	// The lane's lease of the catch-up, a moment from committing.
@@ -2060,7 +2060,7 @@ func TestDroppingCatchUpsWaitsOnNoRowAFinishIsDeleting(t *testing.T) {
 		must(t, err)
 		catchUp, err = records.EnqueueID(ctx, tx, row)
 		must(t, err)
-		must(t, records.ClaimKeptDecisions(ctx, tx, "LEGION-1", kept, catchUp))
+		must(t, records.ClaimKeptDecisionsOf(ctx, tx, "LEGION-1", []string{"LEGION-1"}, kept, catchUp))
 	})
 	var leased OutboxRow
 	inTx(t, st, func(tx pgx.Tx) {
@@ -2075,7 +2075,7 @@ func TestDroppingCatchUpsWaitsOnNoRowAFinishIsDeleting(t *testing.T) {
 	txAdopt, err := st.BeginTx(ctx, pgx.TxOptions{})
 	must(t, err)
 	defer func() { _ = txAdopt.Rollback(ctx) }()
-	if _, _, err := records.UnclaimedKept(ctx, txAdopt, "LEGION-1"); err != nil {
+	if _, _, err := records.UnclaimedKeptOf(ctx, txAdopt, "LEGION-1", []string{"LEGION-1"}); err != nil {
 		t.Fatalf("lock the decisions owed to LEGION-1: %v", err)
 	}
 	// The lane's finish deletes the row and waits on those decisions.
@@ -2141,7 +2141,7 @@ func TestDroppingCatchUpsWaitsForTheClaimOfACopyAReholdQueued(t *testing.T) {
 		must(t, err)
 		catchUp, err = records.EnqueueID(ctx, tx, row)
 		must(t, err)
-		must(t, records.ClaimKeptDecisions(ctx, tx, "LEGION-1", kept, catchUp))
+		must(t, records.ClaimKeptDecisionsOf(ctx, tx, "LEGION-1", []string{"LEGION-1"}, kept, catchUp))
 	})
 
 	// The re-hold's copy, queued in a transaction of its own and carrying the row's claims.
@@ -2798,7 +2798,7 @@ func TestAParkedDecisionKeepsTheNewestPerRefAndIsForgottenOnlyWhereItWasNamed(t 
 	var named []ParkedDecision
 	inTx(t, st, func(tx pgx.Tx) {
 		var err error
-		named, err = records.ParkedDecisions(ctx, tx, "LEGION-210")
+		named, err = records.ParkedDecisionsOf(ctx, tx, []string{"LEGION-210"})
 		must(t, err)
 	})
 	want := []ParkedDecision{
@@ -2815,7 +2815,7 @@ func TestAParkedDecisionKeepsTheNewestPerRefAndIsForgottenOnlyWhereItWasNamed(t 
 		}
 	}
 	inTx(t, st, func(tx pgx.Tx) {
-		again, err := records.ParkedDecisions(ctx, tx, "LEGION-210")
+		again, err := records.ParkedDecisionsOf(ctx, tx, []string{"LEGION-210"})
 		must(t, err)
 		if len(again) != len(want) {
 			t.Fatalf("a second read = %#v, want the rows still kept: only a delivery forgets them", again)
@@ -2825,11 +2825,11 @@ func TestAParkedDecisionKeepsTheNewestPerRefAndIsForgottenOnlyWhereItWasNamed(t 
 	inTx(t, st, func(tx pgx.Tx) {
 		must(t, records.AddParkedDecision(ctx, tx, ParkedDecision{Issue: "LEGION-210", Ref: spec,
 			Decision: DecisionDesignChangesRequested, Actor: "user:carol", At: t0.Add(time.Hour)}))
-		must(t, records.ForgetKeptDecisions(ctx, tx, "LEGION-210", KeptDecisions{Decisions: []DecisionMark{
+		must(t, records.ForgetKeptDecisionsOf(ctx, tx, "LEGION-210", []string{"LEGION-210"}, KeptDecisions{Decisions: []DecisionMark{
 			{Ref: spec, At: t0.Add(2 * time.Second)}, {Ref: ask, At: t0.Add(time.Second)}}}, 0))
 	})
 	inTx(t, st, func(tx pgx.Tx) {
-		left, err := records.ParkedDecisions(ctx, tx, "LEGION-210")
+		left, err := records.ParkedDecisionsOf(ctx, tx, []string{"LEGION-210"})
 		must(t, err)
 		if len(left) != 1 || left[0].Ref != spec || left[0].Decision != DecisionDesignChangesRequested || left[0].Actor != "user:carol" {
 			t.Fatalf("after the forget %#v, want only the decision kept since it was named", left)
@@ -2869,13 +2869,13 @@ func TestAReadmittedApprovalIsKeptUntilTheStartThatNamedItIsDelivered(t *testing
 	// A re-admission since the start named the pair kept a newer one, which the forget leaves.
 	inTx(t, st, func(tx pgx.Tx) {
 		must(t, records.KeepReadmittedApproval(ctx, tx, "LEGION-211", KeptApproval{Step: DesignStepSpec, Approved: 4, Latest: 5}))
-		must(t, records.ForgetKeptDecisions(ctx, tx, "LEGION-211", KeptDecisions{KeptApproval: KeptApproval{Approved: 3, Latest: 4}}, 0))
+		must(t, records.ForgetKeptDecisionsOf(ctx, tx, "LEGION-211", []string{"LEGION-211"}, KeptDecisions{KeptApproval: KeptApproval{Approved: 3, Latest: 4}}, 0))
 		approved, latest, err := records.ReadmittedApproval(ctx, tx, "LEGION-211")
 		must(t, err)
 		if approved != 4 || latest != 5 {
 			t.Fatalf("after the forget = %d, %d, want the pair kept since, 4 and 5", approved, latest)
 		}
-		must(t, records.ForgetKeptDecisions(ctx, tx, "LEGION-211", KeptDecisions{KeptApproval: KeptApproval{Approved: 4, Latest: 5}}, 0))
+		must(t, records.ForgetKeptDecisionsOf(ctx, tx, "LEGION-211", []string{"LEGION-211"}, KeptDecisions{KeptApproval: KeptApproval{Approved: 4, Latest: 5}}, 0))
 		if approved, _, err := records.ReadmittedApproval(ctx, tx, "LEGION-211"); err != nil || approved != 0 {
 			t.Fatalf("after the forget of the pair it named = %d, %v, want zero", approved, err)
 		}

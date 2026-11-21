@@ -272,23 +272,6 @@ func TestTheProjectsRecordsReadNoRecordOfAnotherProjectsIssue(t *testing.T) {
 			return nil
 		})
 	})
-	t.Run("TreeIssues", func(t *testing.T) {
-		read(t, func(tx pgx.Tx) error {
-			theirs, err := raw.TreeIssues(ctx, tx, "OTHERPROJECT-1")
-			if err != nil || !reflect.DeepEqual(keysOf(theirs), []string{"OTHERPROJECT-1", "OTHERPROJECT-2"}) {
-				t.Fatalf("the raw store's tree of OTHERPROJECT-1 = %v, %v; want OTHERPROJECT's two records", keysOf(theirs), err)
-			}
-			got, err := records.TreeIssues(ctx, tx, "OTHERPROJECT-1")
-			if err != nil || len(got) != 0 {
-				t.Errorf("the project's tree of OTHERPROJECT-1 = %v, %v; want no member: the tree is OTHERPROJECT's", keysOf(got), err)
-			}
-			own, err := records.TreeIssues(ctx, tx, "LEGION-1")
-			if want := []string{"LEGION-1", "LEGION-2"}; err != nil || !reflect.DeepEqual(keysOf(own), want) {
-				t.Errorf("the project's tree of LEGION-1 = %v, %v; want %v", keysOf(own), err, want)
-			}
-			return nil
-		})
-	})
 	t.Run("Issues", func(t *testing.T) {
 		read(t, func(tx pgx.Tx) error {
 			got, err := records.Issues(ctx, tx)
