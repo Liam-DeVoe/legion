@@ -23,6 +23,15 @@
 #                 page by a part_of the transaction that wrote the message node wrote; the agent's
 #                 reply under it hangs from the message and never from the page; and the issue
 #                 message sent to the same agent has one part_of, to its issue, and none to the page.
+#   conversation  the issue message sent to the agent is in the agent's session-conversation read,
+#                 GET /api/v1/agents/{session_id}/conversation, through its own target or the
+#                 attempt that names the session (R7) and not through a delivered_to tuple: once
+#                 with the delivery the listener took, and once for a second message sent while the
+#                 fake Envoy answered the agent's sends 503, whose one attempt settled failed and
+#                 states no delivered_to. The listener answers again before that read, a retry of
+#                 the second message is taken and states one, and the conversation read answers
+#                 the rows GET /api/v1/agents/{session_id}/messages answers for the agent, the pair
+#                 read up to five times while another caller's write moves one of them.
 #   retractions   one tuple of each of the thirteen moved arms, and each of the three citations,
 #                 retracted: graph_edges answers it once before, not at all after while the row's
 #                 own column still names it, and once again when the tuple is stated again.
@@ -48,16 +57,12 @@
 #                 adds, the server serves the schema the store holds, a document socket admits a
 #                 writer, and a write over it is accepted and reaches the document's text.
 #
-# Two sentences of the check read what this build cannot serve yet, and their sections land with
-# what they read, each where the call list at the end of this file says:
-#
-#   - the session-conversation read, GET /api/v1/agents/{session_id}/conversation, which the
-#     issue message is read in through its delivered_to tuple and which answers the rows
-#     GET /api/v1/agents/{session_id}/messages answers (dispatch://INFRA-1152/artifact/plan-md#b-t18);
-#   - the reads that address, list and count a delivery_attempt, a person and a role: no address of
-#     those kinds exists at this build (text.ParseRef reads none) and no route counts one's
-#     backlinks, so they come with the addresses and the mention arm into a person, a session and a
-#     role (dispatch://INFRA-1152/artifact/plan-md#b-t13).
+# One sentence of the check reads what this build cannot serve yet, and its section lands with
+# what it reads, where the call list at the end of this file says: the reads that address, list
+# and count a delivery_attempt, a person and a role. No address of those kinds exists at this
+# build (text.ParseRef reads none) and no route counts one's backlinks, so they come with the
+# addresses and the mention arm into a person, a session and a role
+# (dispatch://INFRA-1152/artifact/plan-md#b-t13).
 #
 # Which clause is read which way, and why: what the store holds - a node, a tuple, a row's marker,
 # the transaction that wrote a row (its xmin) - is served by no route, so it is read through psql on
@@ -68,13 +73,16 @@
 # Inputs: DISPATCH_URL (the server), DISPATCH_TOKEN or DISPATCH_TOKEN_FILE (an agent bearer, read
 # here and never printed), PROJECT (an existing project key), ISSUE_DATABASE_URL (the database that
 # server serves, on this machine, which the pod's setup in the issue's Verification document
-# exports), envoy-dispatch on PATH (this build's packages/envoy/cmd/dispatch, which the backfill
-# section runs over that database, as the Verification preamble builds it) and optionally
-# DEV_SIGNIN_LOGIN (default alice), the person the dev sign-in route signs in: a direct message, a
-# broadcast and a document socket are a person's. Each unmet input is exit 2, but envoy-dispatch,
-# whose absence fails the backfill section. The server's agent list must hold a session that
-# claims no role, as the harness's Observer does; without one the setup fails, naming the
-# sessions it lists.
+# exports), FAKE_ENVOY_PORT (the port of the harness's fake Envoy listener, e2e/fake-envoy.ts, that
+# server sends to: the conversation section has it refuse the agent's sends for one message and
+# then answer them again, and the Verification preamble reads it from the dispatch:local log),
+# envoy-dispatch on PATH (this build's packages/envoy/cmd/dispatch, which the backfill section runs
+# over that database, as the Verification preamble builds it) and optionally DEV_SIGNIN_LOGIN
+# (default alice), the person the dev sign-in route signs in: a direct message, a broadcast, a
+# document socket and the session-conversation read are a person's. Each unmet input is exit 2,
+# but envoy-dispatch, whose absence fails the backfill section. The server's agent list must hold a
+# session that claims no role, as the harness's Observer does; without one the setup fails, naming
+# the sessions it lists.
 #
 # Each passing assertion prints `PASS: <section> <what>`; a failing one prints
 # `FAIL: <section> <what>: <observed>` and ends its section. Every section runs whatever an
@@ -93,10 +101,11 @@ usage() {
   cat >&2 <<'USAGE'
 Usage: ISSUE_DATABASE_URL=postgres://user@127.0.0.1:5433/db \
          DISPATCH_URL=http://127.0.0.1:8777 DISPATCH_TOKEN=e2e-token PROJECT=CORE \
-         [DEV_SIGNIN_LOGIN=alice] one-inbox-kinds.sh
+         FAKE_ENVOY_PORT=<port> [DEV_SIGNIN_LOGIN=alice] one-inbox-kinds.sh
        (DISPATCH_TOKEN_FILE=<file holding the bearer> in place of DISPATCH_TOKEN;
        ISSUE_DATABASE_URL must name the database that server serves, on this machine: the run
-       writes and removes rows in it)
+       writes and removes rows in it; FAKE_ENVOY_PORT is the port of the fake Envoy listener that
+       server sends to, which dispatch:local prints)
 USAGE
 }
 
@@ -106,8 +115,8 @@ USAGE
 token="" work="" answer=""
 # shellcheck source-path=SCRIPTDIR source=lib.sh disable=SC1091 # followed under shellcheck -x
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
-require_env DISPATCH_URL PROJECT ISSUE_DATABASE_URL
-require_commands bun curl jq psql sed sort paste sleep
+require_env DISPATCH_URL PROJECT ISSUE_DATABASE_URL FAKE_ENVOY_PORT
+require_commands bun cmp curl diff jq psql sed sort paste sleep
 read_bearer
 
 # shellcheck disable=SC2031 # the DISPATCH_URL lib.sh's `cli` exports is its own; this one is the caller's
@@ -119,6 +128,12 @@ readonly origin="${base%%://*}://${base_host%%/*}"
 # shellcheck disable=SC2153 # these are the caller's inputs, checked by name above
 readonly project="$PROJECT"
 readonly database_url="$ISSUE_DATABASE_URL"
+[[ "$FAKE_ENVOY_PORT" =~ ^[0-9]+$ ]] || {
+  printf 'one-inbox-kinds.sh: FAKE_ENVOY_PORT is %s, not a port number\n' "$FAKE_ENVOY_PORT" >&2
+  usage
+  exit 2
+}
+readonly fake_envoy="http://127.0.0.1:$FAKE_ENVOY_PORT"
 readonly person="${DEV_SIGNIN_LOGIN:-alice}"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly script_dir
@@ -140,10 +155,16 @@ printf 'Authorization: Bearer %s\n' "$token" >"$work/auth"
 
 # The issues the run writes, each closed when the run ends. The rows older_rows_section and
 # backfill_section write as an older build writes them are each section's own to remove, on its
-# way out.
+# way out. A fake Envoy the conversation section left refusing the agent's sends answers them
+# again.
 issues=()
 cleanup() {
   local code=$? key
+  if [[ -e "$work/envoy-refusing" && -n "${agent:-}" ]]; then
+    fake_envoy_sends 200 >"$work/envoy.out" ||
+      printf 'one-inbox-kinds.sh: could not have the fake Envoy answer sends to %s again: %s\n' \
+        "$agent" "$(<"$work/envoy.out")" >&2
+  fi
   for key in "${issues[@]}"; do
     send PATCH "/api/v1/issues/$key" "$(jq -cn --argjson a "$actor" '{status: "done", actor: $a}')"
     [[ "$status" == 200 ]] ||
@@ -657,6 +678,109 @@ agent_page_section() {
     select count(*) || '|' || count(*) filter (where to_kind = 'issue' and to_id = '$issue') || '|'
            || count(*) filter (where to_kind = 'page')
     from graph_tuples where from_kind = 'message' and from_id = '$message' and kind = 'part_of'"
+}
+
+# The states of an attempt the listener took (model.DeliveryTakenStatesSQL).
+readonly taken_states="('sent', 'queued')"
+
+# fake_envoy_sends STATUS: has the harness's fake Envoy listener answer every send to $agent with
+# STATUS (200, or the 503 of a listener behind its starting gate), and reads its answer back. A
+# section runs in a subshell of its own, so whether the listener is left refusing is a file,
+# $work/envoy-refusing, which the cleanup reads to put it back.
+fake_envoy_sends() {
+  local answer_status
+  [[ "$1" == 200 ]] || : >"$work/envoy-refusing"
+  answer_status="$(curl -sS -X PATCH -o "$work/envoy" -w '%{http_code}' -H 'Content-Type: application/json' \
+    --data-binary "{\"send_status\": $1}" "$fake_envoy/__fixture/sessions/$(q "$agent")" 2>"$work/curl")" ||
+    answer_status="curl failed: $(<"$work/curl")"
+  if [[ "$answer_status" != 200 ]] || ! jq -e --argjson s "$1" '.send_status == $s' "$work/envoy" >/dev/null 2>&1; then
+    printf 'the fake Envoy at %s answered %s: %s\n' "$fake_envoy" "$answer_status" "$(head -c 300 "$work/envoy" 2>/dev/null)"
+    return 1
+  fi
+  [[ "$1" != 200 ]] || rm -f "$work/envoy-refusing"
+}
+
+# deliveries_to_agent MESSAGE: the SQL that counts the attempts of MESSAGE whose node states a
+# delivered_to $agent now, each tuple's latest statement being the one that counts.
+deliveries_to_agent() {
+  printf '%s' "select count(*) from (
+      select distinct on (t.from_id) t.asserted
+      from graph_tuples t
+      join message_deliveries d on d.node_kind = t.from_kind and d.node_address = t.from_id
+      where d.message_id = '$1' and t.from_kind = 'delivery_attempt' and t.kind = 'delivered_to'
+        and t.to_kind = 'session' and t.to_id = '$agent'
+      order by t.from_id, t.seq desc) latest
+    where latest.asserted"
+}
+
+# in_conversation SECTION WHAT MESSAGE: $agent's session-conversation read, read as $person, holds
+# MESSAGE once, as a root.
+in_conversation() {
+  request person GET "/api/v1/agents/$(q "$agent")/conversation"
+  want_status 200 "$1" "$2"
+  expect "$1" "$2" 1 --arg m "$3" '[.[] | select(.message.id == $m)] | length'
+}
+
+conversation_section() {
+  local section=conversation
+  # A delivery the listener took: the issue message the seed sent $agent while the fake Envoy
+  # answered its sends.
+  settles "$section" "the listener took the issue message $message's delivery to $agent" "true" "
+    select coalesce((select state in $taken_states from message_deliveries
+                     where message_id = '$message' order by attempt desc limit 1)::text, '(no attempt)')"
+  settles "$section" "that attempt states a delivered_to $agent" 1 "$(deliveries_to_agent "$message")"
+  in_conversation "$section" "$agent's conversation holds $message, read through its delivery" "$message"
+
+  # An attempt the listener did not take: the fake Envoy answers every send to $agent 503 while a
+  # second issue message is sent it, so the sender waits out its take-over window and records the
+  # attempt failed, which states no delivered_to. The listener answers again before the read.
+  fake_envoy_sends 503 >"$work/envoy.out" ||
+    fail "$section" "have the fake Envoy refuse sends to $agent" "$(<"$work/envoy.out")"
+  pass "$section" "the fake Envoy answers every send to $agent 503"
+  post "$section" "an issue message sent to $agent while its listener refuses it" agent "/api/v1/issues/$issue/messages" \
+    "$(as_session "$(jq -cn --arg t "session:$agent" '{body: "Sent while the listener was starting.", target: $t, delivery: "btw"}')")"
+  local refused="$id"
+  settles "$section" "the attempt to deliver $refused settled failed, with the listener's refusal" "failed|true" "
+    select coalesce((select state || '|' || (coalesce(error, '') like 'envoy listener: %')::text
+                     from message_deliveries where message_id = '$refused' order by attempt desc limit 1),
+                    '(no attempt)')"
+  fake_envoy_sends 200 >"$work/envoy.out" ||
+    fail "$section" "have the fake Envoy answer sends to $agent again" "$(<"$work/envoy.out")"
+  pass "$section" "the fake Envoy answers sends to $agent again"
+  want_value "$section" "no attempt of $refused states a delivered_to $agent" 0 "$(deliveries_to_agent "$refused")"
+  in_conversation "$section" "$agent's conversation holds $refused, whose one attempt the listener did not take" "$refused"
+
+  # The retry the listener takes, which states the delivery the failed attempt did not.
+  send POST "/api/v1/messages/$refused/deliveries" "$(as_session '{"delivery": "btw"}')"
+  want_status 201 "$section" "retry delivering $refused"
+  expect "$section" "the retry is $refused's second attempt" 2 '.attempt'
+  settles "$section" "the listener took the retry" "true" "
+    select coalesce((select state in $taken_states from message_deliveries
+                     where message_id = '$refused' and attempt = 2)::text, '(no attempt)')"
+  settles "$section" "the retry states a delivered_to $agent" 1 "$(deliveries_to_agent "$refused")"
+  in_conversation "$section" "$agent's conversation still holds $refused once" "$refused"
+
+  # The conversation read answers the rows GET .../messages answers for $agent. A write another
+  # caller makes to $agent between the two reads moves one of them, so the pair is read again, up
+  # to five times, before a difference fails.
+  local pair=0 rows
+  while true; do
+    pair=$((pair + 1))
+    request person GET "/api/v1/agents/$(q "$agent")/conversation"
+    want_status 200 "$section" "read $agent's conversation ($pair)"
+    jq -S . "$work/body" >"$work/conversation.json" || fail "$section" "read $agent's conversation ($pair)" "$(body)"
+    request person GET "/api/v1/agents/$(q "$agent")/messages"
+    want_status 200 "$section" "read $agent's messages ($pair)"
+    jq -S . "$work/body" >"$work/messages.json" || fail "$section" "read $agent's messages ($pair)" "$(body)"
+    cmp -s "$work/conversation.json" "$work/messages.json" && break
+    [[ "$pair" -lt 5 ]] ||
+      fail "$section" "GET /api/v1/agents/$agent/conversation answers the rows GET /api/v1/agents/$agent/messages answers" \
+        "five pairs of reads differed; the last: conversation roots $(jq -c '[.[].message.id]' "$work/conversation.json"), messages roots $(jq -c '[.[].message.id]' "$work/messages.json"), first differing line: $(diff "$work/conversation.json" "$work/messages.json" | sed -n 2p | head -c 300)"
+    sleep 1
+  done
+  rows="$(jq 'length' "$work/conversation.json")"
+  [[ "$rows" -gt 0 ]] || fail "$section" "the two reads of $agent answer rows" "both answered none"
+  pass "$section" "GET /api/v1/agents/$agent/conversation answers the $rows rows GET /api/v1/agents/$agent/messages answers (pair $pair)"
 }
 
 # retract_arm NAME TUPLE-FROM-KIND FROM-ID KIND TUPLE-TO-KIND TO-ID EDGE-FROM-KIND EDGE-TO-KIND
@@ -1226,10 +1350,7 @@ run_section messages
 run_section comments
 run_section blocks
 run_section agent_page
-# The session-conversation section runs here once GET /api/v1/agents/{session_id}/conversation
-# exists: the issue message read in $agent's conversation through its delivered_to tuple, and that
-# read answering the rows GET /api/v1/agents/{session_id}/messages answers for $agent
-# (dispatch://INFRA-1152/artifact/plan-md#b-t18).
+run_section conversation
 run_section retractions
 run_section older_rows
 run_section backfill
