@@ -2116,7 +2116,9 @@ type AskEditEventPayload struct {
 	// (requested_version below the version it named), which changes only the version the request
 	// names, and a settlement's move that keeps the request waiting on the human because the new
 	// version, which a settlement wrote, holds byte for byte the text of the version the request
-	// names (docs.MoveApprovalAsk), which changes only the number that text is stored under; a
+	// names, or differs from it only in the server-owned attributes of its ask blocks, each block
+	// agreeing with its ask, as the version a person's answer, resolve or decline writes
+	// (docs.MoveApprovalAsk), which changes no text the person was asked about; a
 	// version a route writes moves the request to its agent whatever text it holds. Like a human's
 	// unnamed artifact.version, such a move wakes nobody (events.Broker.Notify) and reaches no
 	// follower (the outbox's follower routes), while the event log and the event feed carry it as

@@ -358,6 +358,66 @@ func TestAReopenKeepsTheRequestWithThePersonWhenAClosedSettlementWroteBackItsTex
 	}
 }
 
+// A reopen keeps a restored request with the person when the version its settlement writes differs
+// from the version the request names in the server-owned attributes of its ask blocks alone, each
+// block agreeing with its node (R10's turn rule, docs.MoveApprovalAsk): the request names a version
+// written while the release before served, whose open ask's block holds `state="open"`; on a fleet
+// of one build the close withdraws the request and its settlement writes the ask resolved, and the
+// reopen restores both, so the reopen's settlement writes the open ask's block with no state, the
+// form a version keeps of an open ask (docs.keptAskState). The request then names that version,
+// still waits on the person, requested at it, and its move is quiet and notifies nobody.
+func TestAReopenKeepsTheRequestWithThePersonWhenItsVersionDiffersOnlyInTheAskAttributes(t *testing.T) {
+	handler, database, documentService := settlingCarryDocuments(t, time.Hour)
+	ctx := context.Background()
+	issue := createInteractionIssue(t, handler, "TEST", "A reopen over the release before's form", reopenDecisionSpec)
+	spec := issue.PrimaryArtifactID
+	settle := func(what string) {
+		t.Helper()
+		if err := documentService.SettleIssueDocuments(ctx, issue.Key); err != nil {
+			t.Fatalf("settle %s: %v", what, err)
+		}
+		awaitSettled(t, database, spec)
+	}
+	var request carriedAsk
+	whileTheReleaseBeforeServes(t, database, func() {
+		settle("the spec")
+		awaitIndexedAskBlock(t, handler, spec, "reopen-decision", "Ship it?")
+		settle("the spec's block written in step")
+		request = requestApproval(t, handler, spec)
+	})
+	named := request.Approval.Version
+	if _, text := documentTexts(t, handler, spec); !strings.Contains(text, `#reopen-decision urgency="med" multiple="false" state="open"}`) {
+		t.Fatalf("the version the request names (%d) reads:\n%s\nwant the open decision's block holding state=\"open\", as the release before's pages read it", named, text)
+	}
+
+	closeArtifactIssue(t, handler, issue.Key)
+	settle("the closed issue's spec")
+	seq := latestIssueSeq(t, database, issue.Key)
+	if reopened := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "todo"}, "alice"); reopened.Code != http.StatusOK {
+		t.Fatalf("reopen: status=%d body=%s", reopened.Code, reopened.Body.String())
+	}
+	settle("the reopened issue's spec")
+	reopened := latestVersion(t, database, spec).Number
+	if _, text := documentTexts(t, handler, spec); reopened <= named || !strings.Contains(text, `#reopen-decision urgency="med" multiple="false"}`) {
+		t.Fatalf("the reopened issue's spec is at version %d reading:\n%s\nwant a version past %d whose open decision's block holds no state", reopened, text, named)
+	}
+	moved := readCarriedAsk(t, handler, request.ID)
+	if ask := readBlockAsk(t, handler, request.ID); ask.State != "open" || ask.WaitingOn != "human" ||
+		moved.Approval.Version != reopened || moved.Approval.RequestedVersion != reopened {
+		t.Errorf("the version the reopen's settlement wrote moved the approval request to its agent: the request reads %s waiting on %q at version %d requested at %d, want it waiting on the person at version %d requested at %d",
+			ask.State, ask.WaitingOn, moved.Approval.Version, moved.Approval.RequestedVersion, reopened, reopened)
+	}
+	var edits []loggedEvent
+	for _, event := range issueEventsAfter(t, database, issue.Key, seq) {
+		if event.kind == "ask.edited" && event.id == request.ID {
+			edits = append(edits, event)
+		}
+	}
+	if len(edits) == 0 || slices.ContainsFunc(edits, func(edit loggedEvent) bool { return !edit.quiet || edit.notify }) {
+		t.Errorf("the reopen moved the request with the ask.edited events %+v, want each quiet and notifying nobody", edits)
+	}
+}
+
 // Only a settlement's version keeps an approval request waiting on the person when it stores byte
 // for byte the text the request names (docs.MoveApprovalAsk's bySettlement). A version a route
 // writes moves the request to its agent whatever text it stores, as every move did before the

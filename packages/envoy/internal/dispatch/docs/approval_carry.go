@@ -977,6 +977,12 @@ func askNodes(tree *pmdoc.Node) (map[string]*pmdoc.Node, bool) {
 // trees only what stands the same in each - readings A holds and N holds unchanged - changed
 // nothing, and is not named. Its error is a refusal of this renderer.
 func carryVerdict(input carryInput) (string, bool, error) {
+	return carryVerdictOver(input, carryCases[:])
+}
+
+// carryVerdictOver is carryVerdict over cases alone, in their order: carryCases for the carry, and
+// R10's case alone for the turn of an approval request (changesAskAttributesAlone).
+func carryVerdictOver(input carryInput, cases []carryCase) (string, bool, error) {
 	if !input.agrees {
 		return "", false, nil
 	}
@@ -985,8 +991,8 @@ func carryVerdict(input carryInput) (string, bool, error) {
 		return "", false, err
 	}
 	// skipped names the cases a comparison is made without: none, for the verdict itself.
-	skipped := make([]bool, len(carryCases))
-	approved, version, took := input.neutral(skipped)
+	skipped := make([]bool, len(cases))
+	approved, version, took := input.neutral(cases, skipped)
 	if !took {
 		return "", false, nil
 	}
@@ -997,9 +1003,9 @@ func carryVerdict(input carryInput) (string, bool, error) {
 		return "", false, nil
 	}
 	var changes []string
-	for index, carried := range carryCases {
+	for index, carried := range cases {
 		skipped[index] = true
-		approvedWithout, versionWithout, _ := input.neutral(skipped)
+		approvedWithout, versionWithout, _ := input.neutral(cases, skipped)
 		same, err := renderSame(approvedWithout, versionWithout)
 		if err != nil {
 			return "", false, err
@@ -1015,15 +1021,15 @@ func carryVerdict(input carryInput) (string, bool, error) {
 	return strings.Join(changes, ", and ") + carriedReasonEnd, true, nil
 }
 
-// neutral is input's two trees, A's and N's, each taken through every carry case in carryCases'
+// neutral is input's two trees, A's and N's, each taken through every case of cases in their
 // order but those skipped names, and whether any of those cases took something out of either. The
 // pass takes each pointer line of the step's write out of A once, whichever of restoreCase and
 // conversionCase takes it (pointersLeft).
-func (input carryInput) neutral(skipped []bool) (approved, version *pmdoc.Node, took bool) {
+func (input carryInput) neutral(cases []carryCase, skipped []bool) (approved, version *pmdoc.Node, took bool) {
 	left := slices.Clone(input.steps.pointerLines)
 	input.pointersLeft = &left
 	approved, version = input.approved, input.version
-	for index, carried := range carryCases {
+	for index, carried := range cases {
 		if skipped[index] {
 			continue
 		}
@@ -1033,6 +1039,43 @@ func (input carryInput) neutral(skipped []bool) (approved, version *pmdoc.Node, 
 		took = took || tookApproved || tookVersion
 	}
 	return approved, version, took
+}
+
+// turnCases is the one case a version's change may be for an approval request to keep the person's
+// turn across it (changesAskAttributesAlone): R10's.
+var turnCases = []carryCase{attributeRemovalCase}
+
+// changesAskAttributesAlone reports whether the version number of artifactID, written as markdown
+// from tree, differs from its stored version earlier in the server-owned attributes of its ask
+// blocks alone, by the test R10's case makes for the carry: every ask block of the version agrees
+// with its node (asksAgreeWithTheirNodes), and the two texts, earlier's as stored and as this
+// build renders it, are byte for byte the same once the eight attributes are taken off every ask
+// block of each (carryVerdictOver with attributeRemovalCase alone), every block id earlier holds
+// still standing. It is MoveApprovalAsk's keep-turn rule beside restoresApprovedText: the version
+// a person's answer, resolve or decline writes, or a reopen's settlement, changes no more than
+// that. A nil tree is markdown's read-back, parsed here; a version holding no ask block differs in
+// no ask attribute. Its reads run where it is called.
+func changesAskAttributesAlone(ctx context.Context, tx pgx.Tx, artifactID string, earlier, number int, markdown string, tree *pmdoc.Node) (bool, error) {
+	if tree == nil {
+		parsed, err := pmdoc.ParseRendering(markdown)
+		if err != nil {
+			return false, skipUnreadableVersion(artifactID, number, err)
+		}
+		tree = parsed
+	}
+	shown, agrees, err := asksAgreeWithTheirNodes(ctx, tx, artifactID, tree)
+	if err != nil || !agrees || len(shown.nodes) == 0 {
+		return false, err
+	}
+	approved, approvedText, readable, err := approvedVersion(ctx, tx, artifactID, earlier)
+	if err != nil || !readable {
+		return false, err
+	}
+	_, alone, err := carryVerdictOver(carryInput{approved: approved, approvedText: approvedText, version: tree, agrees: agrees}, turnCases)
+	if err != nil {
+		return false, skipUnreadableVersion(artifactID, number, err)
+	}
+	return alone, nil
 }
 
 // renderSame reports whether the trees a and b render byte for byte the same.

@@ -2289,8 +2289,8 @@ Tree 1's document leaves one choice (where the smoke file goes) to the human.
 It then fails unless the architect's approval request at the approved version carries a summary after `Approve spec.md (version N)?`, a human answered at least one of the spec's ask blocks, and no approval request on the spec was early by either of two rules ([`lib/design-gate-verdict.jq`](lib/design-gate-verdict.jq), tested by `bun test scripts/e2e/lib`).
 The version rule judges every hand-back:
 the version its event records in `requested_version` must hold none of the spec's blocks open at the hand-back, each block read from the version by the block ids of the spec's block asks.
-A block the version holds is open when its ask held no answer and no resolution at the hand-back (the asks row's `answer.at` and `resolution.at` are each absent or later), since a person's answer is held on the ask alone and a version this release writes records no state on a block;
-a version the release before wrote records it, and a block that version records `state="open"` is open whatever its ask's times.
+A block the version holds is open when its ask held no answer and no resolution at the hand-back (the asks row's `answer.at` and `resolution.at` are each absent or later), since a person's answer is held on the ask alone and a version this release writes records a block's state only once its ask is answered or resolved, and none while it is open;
+a version the release before wrote records it always, and a block that version records `state="open"` is open whatever its ask's times.
 The ask's own `created_at` is never read, because Dispatch indexes a block as an ask only when it settles the document, after the edit that wrote it.
 An approval row follows versions in place, so `ask.opened` records its first hand-back and each `ask.handed_back` a later one;
 an `ask.edited` only rewords the request.

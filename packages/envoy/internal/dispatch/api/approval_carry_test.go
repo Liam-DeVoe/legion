@@ -508,6 +508,73 @@ func TestAnAnswerWritesOneVersionOfItsStateAndTheApprovalIsCarriedAcrossIt(t *te
 	}
 }
 
+// R3 and R10's turn rule: a person's answer, resolve or decline of an ask writes one version,
+// whose only change from the version an open approval request names is in the server-owned
+// attributes of the ask's block, every block agreeing with its node. So a request that waits on
+// the person moves to that version and still waits on the person, requested at it, and the move's
+// ask.edited is quiet and notifies nobody (docs.MoveApprovalAsk, by the test R10's carry case makes).
+// The reopen's settlement keeps the turn by the same rule
+// (TestAReopenKeepsTheRequestWithThePersonWhenItsVersionDiffersOnlyInTheAskAttributes).
+func TestAnAnswerAResolveAndADeclineLeaveAnApprovalRequestWithThePerson(t *testing.T) {
+	handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
+	issue := createInteractionIssue(t, handler, "TEST", "The request stays with the person", "# Plan\n\nThe service ships behind a flag.\n")
+	artifactID := issue.PrimaryArtifactID
+	windowAsk := ":::ask{#window urgency=\"low\" multiple=\"false\"}\nWhich window takes the rollout?\n\n- Night: The quiet hours.\n- Day: The busy hours.\n:::\n"
+	asks := insertDecisionBlocks(t, handler, issue.Key, artifactID, waveAsk+"\n"+regionAsk+"\n"+windowAsk, 2, map[string]string{
+		"wave": "How many regions take the first wave?", "region": "Which region goes first?", "window": "Which window takes the rollout?",
+	})
+	awaitSettled(t, database, artifactID)
+	request := requestApproval(t, handler, artifactID)
+	named := request.Approval.Version
+	if ask := readBlockAsk(t, handler, request.ID); ask.WaitingOn != "human" || request.Approval.RequestedVersion != named {
+		t.Fatalf("the request reads waiting on %q at version %d requested at %d, want it waiting on the person", ask.WaitingOn, named, request.Approval.RequestedVersion)
+	}
+	for _, act := range []struct {
+		what string
+		make func(t *testing.T)
+	}{
+		{"an answer", func(t *testing.T) {
+			answerDecisionBlock(t, handler, asks["wave"], "alice", []string{"Two"}, "Two regions first.", nil)
+		}},
+		{"a resolve", func(t *testing.T) {
+			if resolved := sessionRequest(t, handler, http.MethodPost, "/api/v1/asks/"+asks["region"]+"/resolve", map[string]any{
+				"kind": "resolved", "reason": "Decided in the kickoff.", "actor": sessionActor(),
+			}); resolved.Code != http.StatusOK {
+				t.Fatalf("resolve the region ask: status=%d body=%s", resolved.Code, resolved.Body.String())
+			}
+		}},
+		{"a decline", func(t *testing.T) {
+			if declined := dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+asks["window"]+"/decline",
+				map[string]any{"note": "Not mine to say."}, "alice"); declined.Code != http.StatusOK {
+				t.Fatalf("decline the window ask: status=%d body=%s", declined.Code, declined.Body.String())
+			}
+		}},
+	} {
+		seq := latestIssueSeq(t, database, issue.Key)
+		act.make(t)
+		wrote := requireStateVersionsPast(t, handler, database, artifactID, named, 1)
+		moved := readCarriedAsk(t, handler, request.ID)
+		if ask := readBlockAsk(t, handler, request.ID); ask.State != "open" || ask.WaitingOn != "human" ||
+			moved.Approval.Version != wrote || moved.Approval.RequestedVersion != wrote {
+			t.Errorf("the version %s wrote moved the approval request to its agent: the request reads %s waiting on %q at version %d requested at %d, want it waiting on the person at version %d requested at %d",
+				act.what, ask.State, ask.WaitingOn, moved.Approval.Version, moved.Approval.RequestedVersion, wrote, wrote)
+		}
+		var edits []loggedEvent
+		for _, event := range issueEventsAfter(t, database, issue.Key, seq) {
+			if event.kind == "ask.edited" && event.id == request.ID {
+				edits = append(edits, event)
+			}
+		}
+		if len(edits) != 1 || !edits[0].quiet || edits[0].notify {
+			t.Errorf("the move of the request to the version %s wrote = %+v, want one quiet ask.edited that notifies nobody", act.what, edits)
+		}
+		named = wrote
+	}
+	if read := readApproval(t, handler, artifactID); read.Approval == nil || read.Approval.State != "awaiting" || read.Approval.WaitingOn != "human" {
+		t.Errorf("the spec's approval after the answer, the resolve and the decline = %s, want awaiting the person", describeApproval(read))
+	}
+}
+
 // An agent's edit through the edits route versions the document in its own transaction, and a
 // person's answer given just before it reaches that version only as its block's kept state - its
 // state, who answered and when (R3) - never its words. So the version the edit writes holds the edit and no answer's words, and the edit, inside

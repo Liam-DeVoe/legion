@@ -9442,12 +9442,16 @@ describe("executeDispatchTool", () => {
     });
 
     // c-previous-release-cli, for this build's CLI: wherever the live text answers `asks`, as a
-    // Dispatch of this release's does, the server's ask judges each block in each place where a
-    // stored `state` judged it at 5a66d7b5 - a block whose own ask is answered while its stored
-    // line shows it open (run 1), a copy whose stored line shows it open while the `asks` member
-    // answers its source answered (run 2), and a block whose stored line shows it settled while its
-    // ask is open (run 3), each over a spec of its own. A server that answers no `asks`, as one of a
-    // release before this one, is still read by the stored line.
+    // Dispatch of this release's does, the server's ask judges each block, whatever state a stored
+    // line records, over five specs of their own. Runs 1 and 2 hold the line this build writes for
+    // an open ask, which holds no state, while the server already answers the ask as decided, as
+    // between an answer and the version it settles into: a block of its own ask (run 1) and a copy
+    // naming its source (run 2). Run 3 holds a decided state over an ask the server answers open.
+    // Runs 4 and 5 hold `state="open"`, which a write by a server of the release before puts back
+    // on the open asks of each document it renders while two builds serve, over an ask the server
+    // answers as decided: a block of its own ask (run 4) and a copy naming its source (run 5). A
+    // server that answers no `asks`, as one of a release before this one, is still read by the
+    // stored line.
     test("the stored state of an ask block decides nothing when the live text answers asks", async () => {
       const answered = {
         block_id: "b-1",
@@ -9456,35 +9460,52 @@ describe("executeDispatchTool", () => {
         answered_at: "2026-11-20T10:00:00Z",
         selected: [],
       };
-      const sent = ["/api/v1/artifacts/artifact-42/approval-requests"];
-
-      // Run 1: the stored line shows open a block whose own ask is answered.
-      const run1 = await requestOver(
-        ["b-1"],
-        [opening("b-1", "open")],
-        [blockAsk("b-1", "answered")],
-        [stateless("b-1")],
-        [answered]
-      );
-      expect((await run1.outcome).text).toStartWith("Approval requested for spec.md");
-      expect(run1.posts).toEqual(sent);
-
-      // Run 2: the stored line shows open a copy, naming its source, whose source is answered.
       const source = {
         copied_from: "ask-source",
         copied_from_document: "dispatch://DSP-42/artifact/plan",
       };
+      const copyLine = (state?: string) =>
+        `:::ask{#b-1 urgency="med" multiple="false"${state === undefined ? "" : ` state="${state}"`} copied_from="${source.copied_from}" copied_from_document="${source.copied_from_document}"}\nQuestion of b-1?\n:::`;
+      const sent = ["/api/v1/artifacts/artifact-42/approval-requests"];
+      // sends fails with failure and the refusal where the run refused, and otherwise requires the
+      // one request the run should have sent.
+      const sends = async (
+        run: { readonly outcome: Promise<unknown>; readonly posts: readonly string[] },
+        failure: string
+      ) => {
+        const refusal = await run.outcome.then(
+          () => undefined,
+          (error: Error) => error.message
+        );
+        if (refusal !== undefined) throw new Error(`${failure}:\n${refusal}`);
+        expect(run.posts).toEqual(sent);
+      };
+
+      // Run 1: the stored line holds no state on a block whose own ask is answered.
+      const run1 = await requestOver(
+        ["b-1"],
+        [stateless("b-1")],
+        [blockAsk("b-1", "answered")],
+        [stateless("b-1")],
+        [answered]
+      );
+      await sends(
+        run1,
+        "the command refused the ask ask-b-1 (block b-1), which the server answers as answered and whose stored line holds no state"
+      );
+
+      // Run 2: the stored line holds its source and no state on a copy whose source is answered.
       const run2 = await requestOver(
         ["b-1"],
-        [
-          `:::ask{#b-1 urgency="med" multiple="false" state="open" copied_from="${source.copied_from}" copied_from_document="${source.copied_from_document}"}\nQuestion of b-1?\n:::`,
-        ],
+        [copyLine()],
         [],
         [stateless("b-1")],
         [{ ...answered, ...source }]
       );
-      expect((await run2.outcome).text).toStartWith("Approval requested for spec.md");
-      expect(run2.posts).toEqual(sent);
+      await sends(
+        run2,
+        "the command refused the copy of ask-source (block b-1), whose source the server answers as answered and whose stored line holds no state"
+      );
 
       // Run 3: the stored line shows resolved a block whose ask the server answers open.
       const run3 = await requestOver(
@@ -9505,7 +9526,33 @@ describe("executeDispatchTool", () => {
       }
       expect(refused.split("\n")[1]).toBe('- "Question of b-1?" (block b-1, ask ask-b-1)');
 
-      // A server that answers no `asks`, over run 1's spec: the stored line still decides.
+      // Run 4: the stored line shows open a block whose own ask is answered.
+      const run4 = await requestOver(
+        ["b-1"],
+        [opening("b-1", "open")],
+        [blockAsk("b-1", "answered")],
+        [stateless("b-1")],
+        [answered]
+      );
+      await sends(
+        run4,
+        "the command refused an ask the server answers as decided: ask-b-1 (block b-1), whose stored line shows it open"
+      );
+
+      // Run 5: the stored line shows open a copy, naming its source, whose source is answered.
+      const run5 = await requestOver(
+        ["b-1"],
+        [copyLine("open")],
+        [],
+        [stateless("b-1")],
+        [{ ...answered, ...source }]
+      );
+      await sends(
+        run5,
+        "the command refused a copy whose source the server answers as decided: ask-source (block b-1), whose stored line shows it open"
+      );
+
+      // A server that answers no `asks`, over run 4's spec: the stored line still decides.
       const before = await requestOver(
         ["b-1"],
         [opening("b-1", "open")],

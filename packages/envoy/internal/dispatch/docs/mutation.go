@@ -2729,11 +2729,12 @@ func (s *Service) writeVersionTx(ctx context.Context, tx pgx.Tx, artifactID stri
 		// The open approval request follows the document version without leaving its thread or
 		// opening another Inbox row. The request then waits on its agent until it is handed back,
 		// unless this is a settlement's version (versionWrite.settlement), the request waited on
-		// the person and this version stores byte for byte the text it named, which keeps it with
-		// the person (MoveApprovalAsk). A move over versions written while the issue was closed
+		// the person and this version stores byte for byte the text it named, or differs from it
+		// in the server-owned attributes of its ask blocks alone, which keeps it with the person
+		// (MoveApprovalAsk). A move over versions written while the issue was closed
 		// names the editor a closed issue's settlement kept, where this version names
 		// SettlementActor only because it adds none of that editor's text (versionWrite.keptEditor).
-		if err := moveApprovalAsk(ctx, tx, s.events, artifactID, version, markdown, actor, spec.keptEditor, spec.settlement, s.serverURL); err != nil {
+		if err := moveApprovalAsk(ctx, tx, s.events, artifactID, version, markdown, tree, actor, spec.keptEditor, spec.settlement, s.serverURL); err != nil {
 			return versionWriteResult{}, err
 		}
 		// The document's newest approval carries to the version this writes by carryApproval's
