@@ -2651,6 +2651,10 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	// daemon without one leaves pauses the nil interface, which the API reads as no pause service
 	// and answers every pause and resume PAUSE_UNAVAILABLE.
 	var pauses api.PauseService
+	// The writer of legion-verdict exists only with the workflow too: without one the side-review
+	// routes name no verdict repository and ask for no write.
+	var verdictEntry func(ghrepo.Repository) (config.VerdictRepository, bool)
+	var writeVerdict func(repository string, number int, head string)
 	if workflow != nil {
 		records, handlers, client, tokens, grants = workflow.records, workflow.handlers, workflow.dispatch, workflow.apps, workflow.grants
 		claimReady, prepare, unread, await = workflow.claimReady, workflow.prepareObserved, workflow.repositoryUnread, workflow.awaitRecovery
@@ -2660,6 +2664,10 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		consumerLag = workflow.consumers.Lag
 		pauses = workflow.pauses.service
 		architectStalls = workflow.admission.ArchitectStallArms
+		verdictEntry = workflow.verdictEntry
+		writeVerdict = func(repository string, number int, head string) {
+			workflow.queueVerdictWrite("", repository, number, head)
+		}
 	}
 	// Under `controller: daemon` the keeper launches and keeps the project's controller, and takes
 	// its ready. The liveness sweep runs beside it under either mode, never behind it.
@@ -2743,6 +2751,8 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		ReleaseRecords:     st,
 		ClaimActivity:      st,
 		Pause:              pauses,
+		VerdictEntry:       verdictEntry,
+		WriteVerdict:       writeVerdict,
 	})
 
 	group, serving := errgroup.WithContext(ctx)

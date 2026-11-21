@@ -368,6 +368,8 @@ test("posts every Stage 3 workflow request through its matching route", async ()
     readonly handoffComplete: (body: object) => Promise<unknown>;
     readonly reviewVerdict: (body: object) => Promise<unknown>;
     readonly issueStatus: (body: object) => Promise<unknown>;
+    readonly pullRequestReviewer: (body: object) => Promise<unknown>;
+    readonly pullRequestVerdict: (body: object) => Promise<unknown>;
     readonly freshSession: (body: object) => Promise<unknown>;
     readonly compact: (body: object) => Promise<unknown>;
     readonly projectPause: (body: object) => Promise<unknown>;
@@ -421,6 +423,33 @@ test("posts every Stage 3 workflow request through its matching route", async ()
       "/legion/v1/issues/status",
       { grantId: "grant-208", issue: "LEGION-208", status: "todo" },
       "issue-status.json",
+    ],
+    // The controller's side review: it names the reviewer of a pull request no Legion issue
+    // owns at its head, then relays that reviewer's verdict there; each answers an empty object.
+    [
+      "pullRequestReviewer",
+      "/legion/v1/pull-request-reviewer",
+      {
+        grantId: "grant-208",
+        repository: "acme/widgets",
+        number: 7,
+        head: "51de000000000000000000000000000000000a01",
+        session: "ses_reviewer",
+      },
+      "pull-request-reviewer.json",
+    ],
+    [
+      "pullRequestVerdict",
+      "/legion/v1/pull-request-verdict",
+      {
+        grantId: "grant-208",
+        repository: "acme/widgets",
+        number: 7,
+        head: "51de000000000000000000000000000000000a01",
+        verdict: "approve",
+        session: "ses_reviewer",
+      },
+      "pull-request-verdict.json",
     ],
     [
       "freshSession",

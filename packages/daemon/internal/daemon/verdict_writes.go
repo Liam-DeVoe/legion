@@ -263,12 +263,32 @@ func (w *workflowRuntime) queueVerdictWrite(issue, repo string, number int, head
 }
 
 // verdictEntry is the verdict_repositories entry that names repository, under the name a record
-// keeps or the one GitHub serves it under now (repositories.serving), and whether one does.
+// keeps, the one GitHub serves it under now (repositories.serving), or the other name of a
+// configured rename (Renames.Partner), and whether one does: an entry written under the name a
+// rename moved the repository away from names it under its new name too.
 func (w *workflowRuntime) verdictEntry(repository ghrepo.Repository) (config.VerdictRepository, bool) {
 	if entry, ok := w.verdicts.entry(repository.String()); ok {
 		return entry, true
 	}
-	return w.verdicts.entry(w.repositories.serving(repository).String())
+	if entry, ok := w.verdicts.entry(w.repositories.serving(repository).String()); ok {
+		return entry, true
+	}
+	if partner, renamed := w.renames().Partner(repository.String()); renamed {
+		return w.verdicts.entry(partner.String())
+	}
+	return config.VerdictRepository{}, false
+}
+
+// namesVerdictRepository is whether repo, the name a webhook fact carries, is a verdict
+// repository under any of its names (verdictEntry). A name that does not parse is none, and so is
+// every name for a runtime with no writer.
+func (w *workflowRuntime) namesVerdictRepository(repo string) bool {
+	repository, err := ghrepo.Parse("the repository of a webhook fact", repo)
+	if err != nil || w.verdicts == nil {
+		return false
+	}
+	_, ok := w.verdictEntry(repository)
+	return ok
 }
 
 // writeVerdicts makes each write queueVerdictWrite queued, one at a time and oldest first, until
@@ -509,7 +529,13 @@ func outsideInputs(ctx context.Context, tx pgx.Tx, entry config.VerdictRepositor
 		if err != nil {
 			return verdict.Inputs{}, err
 		}
-		if found && given.Issue == "" {
+		// A side verdict stands only while its session is the reviewer the controller names at the
+		// head now: a later naming of another session withdraws it.
+		named, current, err := store.SideReviewerTx(ctx, tx, repository, number, head)
+		if err != nil {
+			return verdict.Inputs{}, err
+		}
+		if found && given.Issue == "" && current && named.Session == given.Session {
 			in.Side = given.Verdict
 		}
 	}
@@ -806,7 +832,7 @@ func (h verdictFacts) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (i
 // recordOutsidePullRequest records the sighting of an outside pull request of a verdict repository
 // at its head. A new head has no verdict, so nothing is written.
 func (w *workflowRuntime) recordOutsidePullRequest(ctx context.Context, tx pgx.Tx, fact intake.OutsidePullRequest) error {
-	if _, ok := w.verdicts.entry(fact.Repo); !ok {
+	if !w.namesVerdictRepository(fact.Repo) {
 		return nil
 	}
 	repository, err := ghrepo.Parse("the repository of an outside pull request", fact.Repo)
@@ -823,7 +849,7 @@ func (w *workflowRuntime) recordOutsidePullRequest(ctx context.Context, tx pgx.T
 // commit, for a write on that commit. A review of a pull request whose head the writer knows to be
 // another project's issue branch records nothing.
 func (w *workflowRuntime) recordOutsideReview(ctx context.Context, tx pgx.Tx, fact intake.OutsideReview) error {
-	if _, ok := w.verdicts.entry(fact.Repo); !ok || !fact.Deciding() || w.verdicts.otherIssue(fact.Repo, fact.Number) != "" {
+	if !w.namesVerdictRepository(fact.Repo) || !fact.Deciding() || w.verdicts.otherIssue(fact.Repo, fact.Number) != "" {
 		return nil
 	}
 	head, err := w.recordReview(ctx, tx, fact.Repo, fact.PullRequestReview)
@@ -842,7 +868,7 @@ func (w *workflowRuntime) recordOutsideReview(ctx context.Context, tx pgx.Tx, fa
 // cleared when the round ends, cannot hold. A review of another project's Legion head is that
 // project's, and logged once.
 func (w *workflowRuntime) recordLegionReview(ctx context.Context, tx pgx.Tx, fact intake.PullRequestReview) error {
-	if _, ok := w.verdicts.entry(fact.Repo); !ok || !fact.Deciding() || fact.Author == w.appLogin {
+	if !w.namesVerdictRepository(fact.Repo) || !fact.Deciding() || fact.Author == w.appLogin {
 		return nil
 	}
 	pr, err := ghrepo.Under(w.renames(), fact.Repo, func(name string) (*record.PullRequest, error) {
@@ -888,7 +914,7 @@ func (w *workflowRuntime) recordReview(ctx context.Context, tx pgx.Tx, repo stri
 // repository whose head is another project's issue branch (noteOtherProject).
 func (w *workflowRuntime) noteIssueBranch(ctx context.Context, repo string, number int, branch string) {
 	key, issueBranch := claim.BranchIssue(branch)
-	if _, ok := w.verdicts.entry(repo); !ok || !issueBranch || claim.KeyOfProject(w.dispatchProject, key) {
+	if !w.namesVerdictRepository(repo) || !issueBranch || claim.KeyOfProject(w.dispatchProject, key) {
 		return
 	}
 	intake.OnCommit(ctx, func() { w.noteOtherProject(repo, number, key) })

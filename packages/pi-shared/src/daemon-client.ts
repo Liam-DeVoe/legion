@@ -21,6 +21,8 @@ import {
   LegionProjectPauseResponse,
   LegionProjectResumeRequest,
   LegionProjectResumeResponse,
+  LegionPullRequestReviewerRequest,
+  LegionPullRequestVerdictRequest,
   type LegionReadyForUpdateRequest,
   type LegionReadyRequest,
   LegionRegisterResponse,
@@ -139,6 +141,18 @@ export interface LegionDaemonClient {
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
   readonly issueStatus: (
     input: z.input<typeof LegionIssueStatusRequest>
+  ) => Promise<z.output<typeof LegionEmptyResponse>>;
+  /** The controller's `pull_request_reviewer`: it names a running Legion reviewer's `session`
+   * the side reviewer of pull request `number` of `repository` at `head`, a pull request no Legion
+   * issue owns (`POST /legion/v1/pull-request-reviewer`). The daemon answers an empty object. */
+  readonly pullRequestReviewer: (
+    input: z.input<typeof LegionPullRequestReviewerRequest>
+  ) => Promise<z.output<typeof LegionEmptyResponse>>;
+  /** The controller's `pull_request_verdict`: it relays the verdict of the reviewer it named for
+   * that pull request and head (`POST /legion/v1/pull-request-verdict`), which the daemon's writer
+   * of `legion-verdict` reads as the verdict on the head. The daemon answers an empty object. */
+  readonly pullRequestVerdict: (
+    input: z.input<typeof LegionPullRequestVerdictRequest>
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
   /** The controller's `fresh_session`: the claim on `role` of `issue` leaves its recorded
    * session behind and starts again in a new one, the effect
@@ -544,6 +558,20 @@ export function createLegionDaemonClient(
       post("/legion/v1/review-verdict", LegionReviewVerdictRequest, LegionEmptyResponse, input),
     issueStatus: (input) =>
       post("/legion/v1/issues/status", LegionIssueStatusRequest, LegionEmptyResponse, input),
+    pullRequestReviewer: (input) =>
+      post(
+        "/legion/v1/pull-request-reviewer",
+        LegionPullRequestReviewerRequest,
+        LegionEmptyResponse,
+        input
+      ),
+    pullRequestVerdict: (input) =>
+      post(
+        "/legion/v1/pull-request-verdict",
+        LegionPullRequestVerdictRequest,
+        LegionEmptyResponse,
+        input
+      ),
     freshSession: (input) =>
       post(
         "/legion/v1/claims/fresh-session",
