@@ -175,11 +175,11 @@ func Command(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 }
 
 // ErrRecordsUnread is the census's read of the session consumers KV_envoy_session_consumers
-// records, which this build cannot make: the records are written by INFRA-4015's consumer-names,
+// records, which this build cannot make: the records are written by the writer hold's consumer-names step,
 // whose record format no package of this build reads yet. A census run from this command is
 // therefore UNKNOWN, as it must be rather than remove the session consumers it cannot tell from
 // planted ones; the writer hold's workflow calls Census with its own reader.
-var ErrRecordsUnread = errors.New("this build reads no session consumer records: consumer-names (INFRA-4015) owns their format")
+var ErrRecordsUnread = errors.New("this build reads no session consumer records: the writer hold's consumer-names step owns their format")
 
 func unreadRecords(context.Context) ([]ConsumerShape, error) { return nil, ErrRecordsUnread }
 

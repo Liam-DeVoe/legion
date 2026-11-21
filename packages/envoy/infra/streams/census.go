@@ -22,10 +22,10 @@ import (
 const SessionConsumerRecordsBucket = "envoy_session_consumers"
 
 // recordsStream is the records bucket's stream, which the census keeps: it is the hold's own, made
-// by INFRA-4015's create-bucket, and not of the declared set the build configures.
+// by the writer hold's create-bucket step, and not of the declared set the build configures.
 const recordsStream = "KV_" + SessionConsumerRecordsBucket
 
-// CutoverDone is a family's cutover row's state once INFRA-4015's convert has moved it.
+// CutoverDone is a family's cutover row's state once the writer hold's convert has moved it.
 const CutoverDone = "done"
 
 // ConsumerShape is one form of consumer the declared set names, compared by its whole
@@ -35,7 +35,7 @@ type ConsumerShape struct {
 	// Stream is the stream the consumer reads.
 	Stream string
 	// Name is the consumer's durable name. A consumer named Name, or Name~<nuid>, the form
-	// INFRA-4015's convert gives it, takes this shape. Empty for an ordered watcher (Ordered).
+	// the writer hold's convert gives it, takes this shape. Empty for an ordered watcher (Ordered).
 	Name string
 	// Ordered is a KV watcher's ordered consumer, which the server names: unnamed of its own, it
 	// acknowledges nothing, delivers to a reply inbox, filters within its bucket's subjects and is
@@ -97,7 +97,7 @@ type CensusInput struct {
 	// Families are the cutover families the declared set names: session, dispatch, and
 	// daemon/<project key> for each daemon. Cutovers reads each one's row, verified
 	// (holdrecord.Client.Cutovers), family to state: the census runs only once every family's is
-	// done, after INFRA-4015's convert.
+	// done, after the writer hold's convert.
 	Families []string
 	Cutovers func(ctx context.Context) (map[string]string, error)
 	// Barrier takes the hold's bucket barrier on bucket (holdrecord.Barrier with this hold's id),
@@ -157,7 +157,7 @@ func Census(ctx context.Context, conn *nats.Conn, in CensusInput) (Report, error
 		name := info.Config.Name
 		stream, ok := streamset.Find(declared, name)
 		if name == recordsStream {
-			// The records bucket is not the build's to configure (INFRA-4015's create-bucket makes it),
+			// The records bucket is not the build's to configure (the writer hold's create-bucket step makes it),
 			// so it is kept, and only read for what reads another stream.
 			stream, ok = streamset.Stream{Name: name, Protected: true}, true
 		}
