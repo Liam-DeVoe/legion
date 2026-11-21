@@ -19,15 +19,6 @@ import (
 	"github.com/sjawhar/envoy/natsgrant"
 )
 
-// The JetStream API's answers status reads by code.
-const (
-	statusNoMessageFound = 10037
-	statusStreamNotFound = 10059
-)
-
-// statusKVOperation is the header that marks a KV delete or purge marker (nats.go kv.go).
-const statusKVOperation = "KV-Operation"
-
 // statusKey is one key of the selection bucket, as its last message holds it.
 type statusKey struct {
 	// Key is the KV key: a session id, a listener durable's selection.DurableKey, or a system key
@@ -44,17 +35,17 @@ type statusKey struct {
 // statusSelectionKeys reads every key of the selection bucket on nc, by sequence: STREAM.INFO of
 // its stream, then STREAM.MSG.GET from the first sequence with next_by_subj on the bucket's
 // subjects, each answer's sequence + 1 the next request's, until the server answers that no
-// message is left (10037). These are the two calls natsgrant.Operator(released) names on the
-// bucket (natsgrant.go operatorReleased), so status, which runs in phase released, reads with no
-// key listing. The last message of each key is kept: a key written again during the walk is met
-// again past the end it had, so the walk ends only once it has passed every key's last write. A
-// missing bucket wraps selection.ErrNoStore; a walk that cannot end, a refused request or an answer
-// that does not decode is *Unknown. The keys are sorted.
+// message is left (jetstream.JSErrCodeMessageNotFound). These are the two calls
+// natsgrant.Operator(released) names on the bucket (natsgrant.go operatorReleased), so status,
+// which runs in phase released, reads with no key listing. The last message of each key is kept: a
+// key written again during the walk is met again past the end it had, so the walk ends only once
+// it has passed every key's last write. A missing bucket wraps selection.ErrNoStore; a walk that
+// cannot end, a refused request or an answer that does not decode is *Unknown. The keys are
+// sorted.
 func statusSelectionKeys(ctx context.Context, nc *nats.Conn) ([]statusKey, error) {
-	stream := "KV_" + selection.SessionBucket
+	stream := selectionStreamName
 	info, err := streamInfo(ctx, nc, stream)
-	var api *jetstream.APIError
-	if errors.As(err, &api) && api.ErrorCode == statusStreamNotFound {
+	if apiErrorIs(err, jetstream.JSErrCodeStreamNotFound) {
 		return nil, fmt.Errorf("%w: %s", selection.ErrNoStore, stream)
 	}
 	if err != nil {
@@ -67,38 +58,25 @@ func statusSelectionKeys(ctx context.Context, nc *nats.Conn) ([]statusKey, error
 	// messages the stream held, and a margin, bound it.
 	for range 2*info.State.Msgs + 10_000 {
 		raw, err := apiRequest(ctx, nc, "$JS.API.STREAM.MSG.GET."+stream, map[string]any{"seq": next, "next_by_subj": prefix + ">"})
-		if errors.As(err, &api) && api.ErrorCode == statusNoMessageFound {
-			out := make([]statusKey, 0, len(keys))
-			for _, key := range keys {
-				out = append(out, key)
-			}
-			slices.SortFunc(out, func(a, b statusKey) int { return strings.Compare(a.Key, b.Key) })
-			return out, nil
+		if apiErrorIs(err, jetstream.JSErrCodeMessageNotFound) {
+			return slices.SortedFunc(maps.Values(keys), func(a, b statusKey) int { return strings.Compare(a.Key, b.Key) }), nil
 		}
 		if err != nil {
 			return nil, unknownf(err, "the message of %s at or after sequence %d", stream, next)
 		}
-		var answer struct {
-			Message *struct {
-				Subject string `json:"subject"`
-				Seq     uint64 `json:"seq"`
-				Header  []byte `json:"hdrs"`
-				Data    []byte `json:"data"`
-			} `json:"message"`
-		}
-		if err := json.Unmarshal(raw, &answer); err != nil || answer.Message == nil || answer.Message.Seq < next {
+		// An answer that holds no message decodes as sequence 0, which is before next.
+		var answer msgGetAnswer
+		if err := json.Unmarshal(raw, &answer); err != nil || answer.Message.Seq < next {
 			return nil, unknownf(err, "the answer for %s at or after sequence %d holds no message past it", stream, next)
 		}
 		m := answer.Message
+		op, err := kvOperation(m.Header)
+		if err != nil {
+			return nil, unknownf(err, "the header of %s's message %d", stream, m.Seq)
+		}
 		key := statusKey{Key: strings.TrimPrefix(m.Subject, prefix), Seq: m.Seq, Value: m.Data}
-		if len(m.Header) > 0 {
-			header, err := nats.DecodeHeadersMsg(m.Header)
-			if err != nil {
-				return nil, unknownf(err, "the header of %s's message %d", stream, m.Seq)
-			}
-			if op := header.Get(statusKVOperation); op == "DEL" || op == "PURGE" {
-				key.Deleted, key.Value = true, nil
-			}
+		if op == "DEL" || op == "PURGE" {
+			key.Deleted, key.Value = true, nil
 		}
 		keys[key.Key] = key
 		next = m.Seq + 1
@@ -178,7 +156,7 @@ func (r *run) status(ctx context.Context) error {
 	} else {
 		families = append(families, session)
 	}
-	for _, family := range statusPGFamilies(r.o, cutovers, names) {
+	for _, family := range pgFamilies(r.o, cutovers, names...) {
 		got, err := r.statusPGFamily(ctx, family)
 		if err != nil {
 			unknown = append(unknown, err.Error())
@@ -213,7 +191,7 @@ func (r *run) status(ctx context.Context) error {
 // keys' too. A malformed value is kept by its key and why, never decoded leniently. A missing
 // bucket is a store status reports as missing, not an error; a walk that is not whole is.
 func statusSessionFamily(ctx context.Context, nc *nats.Conn) (statusFamily, error) {
-	f := statusFamily{family: familySession, where: "KV_" + selection.SessionBucket, records: map[string]selection.Record{}, malformed: map[string]string{}}
+	f := statusFamily{family: familySession, where: selectionStreamName, records: map[string]selection.Record{}, malformed: map[string]string{}}
 	keys, err := statusSelectionKeys(ctx, nc)
 	if errors.Is(err, selection.ErrNoStore) {
 		return f, nil
@@ -244,44 +222,12 @@ func statusSessionFamily(ctx context.Context, nc *nats.Conn) (statusFamily, erro
 	return f, nil
 }
 
-// statusPGFamilies are the families whose store is a Postgres intake_consumers table: Dispatch,
-// and each daemon that --daemon-database, the broker's cutover rows or a consumer on the stream
-// names, in order.
-func statusPGFamilies(o options, cutovers []holdrecord.CutoverRow, names []string) []string {
-	daemons := map[string]bool{}
-	for _, project := range o.daemonProjects() {
-		daemons[daemonFamily(project)] = true
-	}
-	for _, c := range cutovers {
-		if strings.HasPrefix(c.Family, familyDaemonPrefix) {
-			daemons[c.Family] = true
-		}
-	}
-	for _, name := range names {
-		if m, ok := classify(selection.LogicalOf(name)); ok && m.Project != "" {
-			daemons[m.Family] = true
-		}
-	}
-	families := []string{familyDispatch}
-	for family := range daemons {
-		families = append(families, family)
-	}
-	slices.Sort(families[1:])
-	return families
-}
-
 // statusPGFamily reads family's intake_consumers table: its sentinel row and every record
 // (selection.PGStore.List). A family whose store no flag names is an error, which status reports
 // as UNKNOWN; a missing table is a missing store.
 func (r *run) statusPGFamily(ctx context.Context, family string) (statusFamily, error) {
 	f := statusFamily{family: family, where: selection.IntakeConsumersTable, records: map[string]selection.Record{}}
-	named := r.o.dispatchDatabaseFile != ""
-	flagName := "--dispatch-database-file"
-	if project, ok := strings.CutPrefix(family, familyDaemonPrefix); ok {
-		_, named = r.o.daemonDatabase(project)
-		flagName = "--daemon-database " + project + "=<file>"
-	}
-	if !named {
+	if file, flagName := r.o.storeFile(family); file == "" {
 		return f, fmt.Errorf("%s's store: no %s names it", family, flagName)
 	}
 	db, err := r.database(ctx, family)
@@ -337,12 +283,7 @@ func statusPrintFamily(out io.Writer, f statusFamily, held map[string]bool) []st
 		fmt.Fprintf(out, "record %s %s: deleted\n", f.family, key)
 		blockers = append(blockers, fmt.Sprintf("%s %s: its record's last write is a delete marker", f.family, key))
 	}
-	logicals := make([]string, 0, len(f.records))
-	for logical := range f.records {
-		logicals = append(logicals, logical)
-	}
-	slices.Sort(logicals)
-	for _, logical := range logicals {
+	for _, logical := range slices.Sorted(maps.Keys(f.records)) {
 		record := f.records[logical]
 		fmt.Fprintf(out, "record %s %s: %s\n", f.family, logical, statusRecordLine(record, held))
 		if record.Current != "" && !held[record.Current] {

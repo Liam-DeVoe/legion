@@ -59,7 +59,7 @@ const censusCommandName = writerhold.CommandStreamsCensus
 func (rig *convertRig) admittedCensus(holdID string, families ...string) {
 	rig.t.Helper()
 	rig.censusClean(holdID, families...)
-	require.Equal(rig.t, "done", latestEntry(rig.journal(holdID), censusCommandName), "the clean census wrote no done entry")
+	require.Equal(rig.t, "done", rig.lastEntry(holdID, censusCommandName).State, "the clean census wrote no done entry")
 }
 
 // Completion covers the whole cutover (gate 1, red team F3): create-bucket succeeds and leaves the
@@ -84,7 +84,7 @@ func TestCompletionCoversTheWholeCutover(t *testing.T) {
 
 	code, _, stderr = rig.run(actionCreateBucket, "--hold", id)
 	require.Zero(t, code, stderr)
-	require.Equal(t, "done", latestEntry(rig.journal(id), actionCreateBucket))
+	require.Equal(t, "done", rig.lastEntry(id, actionCreateBucket).State)
 	require.False(t, rig.journal(id).Complete, "control: create-bucket's done entry completed the record, as round 17's rule did")
 	require.ErrorIs(t, rig.release(id), holdrecord.ErrOutOfOrder, "release after create-bucket alone")
 
@@ -102,7 +102,7 @@ func TestCompletionCoversTheWholeCutover(t *testing.T) {
 	kill()
 	require.NotZero(t, code, "the convert killed before its last listing ended clean")
 	require.Equal(t, 2, listings, "convert was not killed at its last listing")
-	require.Equal(t, "intent", latestEntry(rig.journal(id), actionConvert))
+	require.Equal(t, "intent", rig.lastEntry(id, actionConvert).State)
 	require.ErrorIs(t, rig.release(id), holdrecord.ErrBusy, "release after the killed convert")
 
 	nc, _ := rig.operator()

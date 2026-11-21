@@ -198,12 +198,12 @@ func createBucketBackupOf(t *testing.T, n int, sentinel selection.StoreState, re
 	}
 	mgr, err := jsm.New(nc, jsm.WithTimeout(30*time.Second))
 	require.NoError(t, err)
-	stream, err := mgr.LoadStream(createBucketStreamName)
+	stream, err := mgr.LoadStream(selectionStreamName)
 	require.NoError(t, err)
 	dir := filepath.Join(t.TempDir(), "backup")
 	_, err = stream.SnapshotToDirectory(ctx, dir)
 	require.NoError(t, err)
-	info, err := js.Stream(ctx, createBucketStreamName)
+	info, err := js.Stream(ctx, selectionStreamName)
 	require.NoError(t, err)
 	return dir, info.CachedInfo().State.Msgs
 }
@@ -633,7 +633,7 @@ func TestACompletedRecoveryAdopted(t *testing.T) {
 		nc, _ = h.operator()
 		mgr, err := jsm.New(nc, jsm.WithTimeout(30*time.Second))
 		require.NoError(t, err)
-		_, _, err = mgr.RestoreSnapshotFromDirectory(ctx, createBucketStreamName, dir)
+		_, _, err = mgr.RestoreSnapshotFromDirectory(ctx, selectionStreamName, dir)
 		require.Error(t, err, "control: the server restored over the present bucket")
 		t.Logf("control: a restore over the present bucket: %v", err)
 

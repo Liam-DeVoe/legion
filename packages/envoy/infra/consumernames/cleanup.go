@@ -11,7 +11,6 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	selection "github.com/sjawhar/envoy/consumernames"
-	"github.com/sjawhar/envoy/internal/holdrecord"
 	"github.com/sjawhar/envoy/natsgrant"
 )
 
@@ -28,13 +27,14 @@ type cleanupTarget struct {
 
 // cleanup deletes, with the row held under --hold, the retired names of every family's records
 // that the server still holds, and drops from each record every retired name the server reports
-// absent: the session family's and every listener durable's records in the selection bucket, read
-// after the hold's barrier on it (holdrecord.Barrier), and Dispatch's and each daemon's
-// intake_consumers rows. It is the one command that deletes a daemon's names, whose grant has no
-// consumer delete (§2, "Cleanup"). It deletes only names a record retired, never a name the record
-// still selects (its current, or its open operation's candidate or predecessor), and never by a
-// name pattern. Each record's write is conditional on the revision it read; a refused write
-// (selection.ErrConflict) reads the record again, which finds the names it deleted absent.
+// absent: the session family's and every listener durable's records in the selection bucket,
+// walked behind the hold's bucket barrier (behindBarrier, writerhold.ReadBucket), and Dispatch's
+// and each daemon's intake_consumers rows. It is the one command that deletes a daemon's names,
+// whose grant has no consumer delete (§2, "Cleanup"). It deletes only names a record retired, never
+// a name the record still selects (its current, or its open operation's candidate or predecessor),
+// and never by a name pattern. Each record's write is conditional on the revision it read; a
+// refused write (selection.ErrConflict) reads the record again, which finds the names it deleted
+// absent.
 //
 // It reads every store before it deletes anything: a store a family needs that no flag names
 // refuses the run (Dispatch's, and each daemon's that the broker's cutover rows or
@@ -53,21 +53,21 @@ func (r *run) cleanup(ctx context.Context) error {
 	if err != nil {
 		return unknownf(err, "the broker's cutover rows")
 	}
-	families := cleanupPGFamilies(r.o, cutovers)
+	families := pgFamilies(r.o, cutovers)
 	var unnamed []string
 	for _, family := range families {
-		if !cleanupNamed(r.o, family) {
+		if file, _ := r.o.storeFile(family); file == "" {
 			unnamed = append(unnamed, family)
 		}
 	}
 	if len(unnamed) > 0 {
 		return fmt.Errorf("cleanup reads every family's store before it deletes a name, and no flag names the store of %s (--dispatch-database-file, --daemon-database <project>=<file>)", strings.Join(unnamed, ", "))
 	}
-	nc, js, err := r.conn(ctx)
+	nc, _, err := r.conn(ctx)
 	if err != nil {
 		return unknownf(err, "the hub")
 	}
-	targets, err := r.cleanupSessionTargets(ctx, nc, js)
+	targets, err := r.cleanupSessionTargets(ctx, nc)
 	if err != nil {
 		return err
 	}
@@ -104,53 +104,24 @@ func (r *run) cleanup(ctx context.Context) error {
 	return nil
 }
 
-// cleanupPGFamilies are the families whose store is an intake_consumers table cleanup reads:
-// Dispatch's, and each daemon the broker's cutover rows or --daemon-database name, in order.
-func cleanupPGFamilies(o options, cutovers []holdrecord.CutoverRow) []string {
-	daemons := map[string]bool{}
-	for _, project := range o.daemonProjects() {
-		daemons[daemonFamily(project)] = true
-	}
-	for _, c := range cutovers {
-		if strings.HasPrefix(c.Family, familyDaemonPrefix) {
-			daemons[c.Family] = true
-		}
-	}
-	families := []string{familyDispatch}
-	for family := range daemons {
-		families = append(families, family)
-	}
-	slices.Sort(families[1:])
-	return families
-}
-
-// cleanupNamed reports whether a flag names family's store.
-func cleanupNamed(o options, family string) bool {
-	if project, ok := strings.CutPrefix(family, familyDaemonPrefix); ok {
-		_, named := o.daemonDatabase(project)
-		return named
-	}
-	return o.dispatchDatabaseFile != ""
-}
-
 // cleanupSessionTargets are the selection bucket's records that hold a retired name, a session's
-// or a listener durable's, read after the hold's barrier on the bucket, each value by its key's
-// kind (readSelectionValue). A missing bucket holds none. A malformed value anywhere in the bucket
-// is UNKNOWN, naming each such key, so cleanup deletes nothing.
-func (r *run) cleanupSessionTargets(ctx context.Context, nc *nats.Conn, js jetstream.JetStream) ([]cleanupTarget, error) {
-	stream := "KV_" + selection.SessionBucket
-	if _, err := streamInfo(ctx, nc, stream); err != nil {
-		var api *jetstream.APIError
-		if errors.As(err, &api) && api.ErrorCode == statusStreamNotFound {
+// or a listener durable's, walked behind the hold's bucket barrier (behindBarrier), as every held
+// reader of the bucket reads it, each value by its key's kind (readSelectionValue). A missing
+// bucket holds none. A malformed value anywhere in the bucket is UNKNOWN, naming each such key, so
+// cleanup deletes nothing.
+func (r *run) cleanupSessionTargets(ctx context.Context, nc *nats.Conn) ([]cleanupTarget, error) {
+	if _, err := streamInfo(ctx, nc, selectionStreamName); err != nil {
+		if apiErrorIs(err, jetstream.JSErrCodeStreamNotFound) {
 			return nil, nil
 		}
-		return nil, unknownf(err, "the info of %s", stream)
+		return nil, unknownf(err, "the info of %s", selectionStreamName)
 	}
-	if err := holdrecord.Barrier(ctx, js, selection.SessionBucket, r.o.holdID); err != nil {
-		return nil, unknownf(err, "the barrier on %s", selection.SessionBucket)
-	}
-	keys, err := statusSelectionKeys(ctx, nc)
-	if err != nil {
+	var keys []statusKey
+	if err := behindBarrier(ctx, nc, r.o.holdID, func(ctx context.Context) error {
+		var err error
+		keys, err = statusSelectionKeys(ctx, nc)
+		return err
+	}); err != nil {
 		return nil, err
 	}
 	store, err := r.store(ctx, familySession)

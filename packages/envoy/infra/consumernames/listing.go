@@ -80,6 +80,30 @@ func apiRefusal(nc *nats.Conn, subject string, err error) error {
 	return fmt.Errorf("%w; the server refused it: %w", err, last)
 }
 
+// connRefusal is err, a command's whole run's, with the server's refusal of a publish wrapped in
+// when the run's connection nc recorded one and err does not name it already: whichever request
+// the grant refused (a JetStream API call, a KV write, a restore's chunk), the error then names the
+// refused subject in the server's words, as apiRefusal names one request's, never a bare timeout.
+// create-bucket, replay, convert and repair-sentinel answer their error through it, the commands
+// whose writes also go through clients other than apiRequest (nats.go's KV and JetStream puts,
+// jsm.go's restore, the selection store's requests).
+func connRefusal(nc *nats.Conn, err error) error {
+	if err == nil || nc == nil {
+		return err
+	}
+	last := nc.LastError()
+	if !errors.Is(last, nats.ErrPermissionViolation) || strings.Contains(err.Error(), last.Error()) {
+		return err
+	}
+	return fmt.Errorf("%w; the server refused a publish of this run: %w", err, last)
+}
+
+// apiErrorIs reports whether err holds the JetStream API's answer code (jetstream.JSErrCode*).
+func apiErrorIs(err error, code jetstream.ErrorCode) bool {
+	var api *jetstream.APIError
+	return errors.As(err, &api) && api.ErrorCode == code
+}
+
 // consumerNames lists every consumer of stream, through CONSUMER.NAMES pages that each overlap
 // the page before by listingOverlap names. The listing ends only on one answer whose offset and
 // count reach its own total; a listing that cannot end so is UNKNOWN. The names are sorted.
@@ -126,15 +150,11 @@ func consumerNames(ctx context.Context, nc *nats.Conn, stream string) ([]string,
 	return nil, unknownf(nil, "the consumer names of %s did not end", stream)
 }
 
-// errConsumerNotFound is JetStream's answer for a consumer it does not hold (10014).
-const errConsumerNotFound = 10014
-
 // consumerInfo reads consumer name of stream, and answers nil with no error for one the server
 // does not hold.
 func consumerInfo(ctx context.Context, nc *nats.Conn, stream, name string) (*jetstream.ConsumerInfo, error) {
 	raw, err := apiRequest(ctx, nc, "$JS.API.CONSUMER.INFO."+stream+"."+name, nil)
-	var api *jetstream.APIError
-	if errors.As(err, &api) && api.ErrorCode == errConsumerNotFound {
+	if apiErrorIs(err, jetstream.JSErrCodeConsumerNotFound) {
 		return nil, nil
 	}
 	if err != nil {
@@ -184,8 +204,7 @@ func writeConsumer(ctx context.Context, nc *nats.Conn, stream string, config jet
 // deleteConsumer deletes consumer name of stream; one the server does not hold is no error.
 func deleteConsumer(ctx context.Context, nc *nats.Conn, stream, name string) error {
 	_, err := apiRequest(ctx, nc, "$JS.API.CONSUMER.DELETE."+stream+"."+name, nil)
-	var api *jetstream.APIError
-	if errors.As(err, &api) && api.ErrorCode == errConsumerNotFound {
+	if apiErrorIs(err, jetstream.JSErrCodeConsumerNotFound) {
 		return nil
 	}
 	return err

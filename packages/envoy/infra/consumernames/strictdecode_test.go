@@ -203,7 +203,7 @@ func TestTheCensusIsUnknownOnAMalformedSelectionValue(t *testing.T) {
 			require.Contains(t, stderr, familySession+"'s store "+selection.SessionBucket)
 			require.Contains(t, stderr, c.key)
 			require.NotContains(t, stdout, "CHANGED")
-			last := h.enrollLast(id)
+			last := h.lastEntry(id, "")
 			require.Equal(t, censusCommandName+" stop", last.Command+" "+last.State)
 			require.Equal(t, holdrecord.LeftUnchanged, last.Outputs["left"])
 			nc, _ = h.operator()

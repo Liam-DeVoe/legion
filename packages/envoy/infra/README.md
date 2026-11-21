@@ -3459,10 +3459,10 @@ envoy-infra consumer-names repair-sentinel --hold ID
   threshold to 7 days for the window.
 - In a `cutover` hold: `create-bucket` makes the selection bucket and its sentinel with the
   boundary; `convert` saves the whole fixed set, then replaces each fixed name by a fresh one at its
-  safe start (the lowest of its ack floor, Dispatch's hold token and any saved start), lists again
-  until no fixed name is left, and marks each family's broker cutover row and store marker `done`;
-  `streams census` then ends the hold. `cleanup` deletes the retired names the records hold; it
-  never deletes a name a record still selects.
+  safe start (the lowest of one past its ack floor, Dispatch's hold-token start and any saved
+  start), lists again until no fixed name is left, and marks each family's broker cutover row and
+  store marker `done`; `streams census` then ends the hold. `cleanup` deletes the retired names the
+  records hold; it never deletes a name a record still selects.
 - In a `selection-recovery` hold: `create-bucket --after-loss` records the recovery's inputs
   first, loads a held snapshot or a released walk of the bucket's records (`--backup`), adopts only
   a recovery of its own, lists the orphans and runs its postcheck; `replay` gives one logical name
@@ -3471,10 +3471,10 @@ envoy-infra consumer-names repair-sentinel --hold ID
   names, `restore --key` gives a name with no start its start, and `restore --finish` restarts and
   proves every declared server, recreates each fixed name at its start and marks every family
   `rolled_back`.
-- `replace` gives one listener's durable a fresh name at its floor (in fresh mode; the fixed
-  mode's procedure is in `deploy/README.md`). `enroll`, in an `enroll` hold, marks a daemon store
-  made after the cutover converted, with the stream's boundary and identity, only when no consumer,
-  checkpoint or record of its own already exists.
+- `replace` gives one listener's durable a fresh name at one past its ack floor (in fresh mode; the
+  fixed mode's procedure is in `deploy/README.md`). `enroll`, in an `enroll` hold, marks a daemon
+  store made after the cutover converted, with the stream's boundary and identity, only when no
+  consumer, checkpoint or record of its own already exists.
 - `repair-sentinel`, in a `sentinel-repair` hold, writes the selection bucket's sentinel
   `envoy.bucket` again from the broker's records alone, over whatever value was stored there
   (any client whose grant holds a JetStream API request can store the server's answer under it
@@ -3495,12 +3495,14 @@ file holds on its second line the Cloud SQL instance connection name that URL re
 `streams census` checks against the daemon's Deployment (every other command reads the first line
 alone). Before it changes anything, every held command reads the hub's servers, the protected
 streams, the writer census and the report again, and refuses while any client but itself and the
-auth service is connected. It writes its intent, then its done or stop entry, in the hold's
-journal; a stop records what every run of it in the hold left, so `hold release` ends only a hold
-that changed nothing and `hold abort` is the way out otherwise. `streams census` reads the session
-consumers and the fresh names these records hold, and brings each daemon store's stream identity
-to the stream's, through this package's readers. Exit codes: 0 done; 1 refused, naming what; 2 a
-usage error, or UNKNOWN, a reading that is not whole, which is never a pass.
+auth service is connected; it reads the selection bucket only behind the hold's barrier on it.
+Every held command a workflow of the hold's table names writes its intent, then its done or stop
+entry, in the hold's journal (`cleanup` and `replace`, which none names, write none); a stop
+records what every run of it in the hold left, so `hold release` ends only a hold that changed
+nothing and `hold abort` is the way out otherwise. `streams census` reads the session consumers
+and the fresh names these records hold, and brings each daemon store's stream identity to the
+stream's, through this package's readers. Exit codes: 0 done; 1 refused, naming what; 2 a usage
+error, or UNKNOWN, a reading that is not whole, which is never a pass.
 
 ## The listener's sender limit
 

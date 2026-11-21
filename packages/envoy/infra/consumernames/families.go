@@ -2,12 +2,21 @@ package consumernames
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"maps"
 	"slices"
+	"strconv"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/nats-io/nats.go"
+
 	selection "github.com/sjawhar/envoy/consumernames"
+	"github.com/sjawhar/envoy/infra/writerhold"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/holdrecord"
 )
 
 // The cutover families, as the broker's cutover rows name them (holdrecord.Client.PutCutover):
@@ -21,6 +30,31 @@ const (
 
 // daemonFamily is the cutover family of the daemon of project.
 func daemonFamily(project string) string { return familyDaemonPrefix + project }
+
+// selectionStreamName is the stream of the selection bucket (selection.SessionBucket), which holds
+// the session family's records.
+const selectionStreamName = "KV_" + selection.SessionBucket
+
+// pgFamilies are the families whose store is a Postgres intake_consumers table: Dispatch, and each
+// daemon that --daemon-database, the broker's cutover rows or a consumer of names (status passes
+// the notification stream's; cleanup none) names, in order.
+func pgFamilies(o options, cutovers []holdrecord.CutoverRow, names ...string) []string {
+	daemons := map[string]bool{}
+	for _, project := range o.daemonProjects() {
+		daemons[daemonFamily(project)] = true
+	}
+	for _, c := range cutovers {
+		if strings.HasPrefix(c.Family, familyDaemonPrefix) {
+			daemons[c.Family] = true
+		}
+	}
+	for _, name := range names {
+		if m, ok := classify(selection.LogicalOf(name)); ok && m.Project != "" {
+			daemons[m.Family] = true
+		}
+	}
+	return append([]string{familyDispatch}, slices.Sorted(maps.Keys(daemons))...)
+}
 
 // The fixed names' forms.
 const (
@@ -129,4 +163,76 @@ func (r *run) store(ctx context.Context, family string) (familyStore, error) {
 type familyStore interface {
 	selection.Store
 	WriteSentinel(ctx context.Context, state selection.StoreState, revision uint64) (uint64, error)
+}
+
+// pgUndefinedTable is Postgres's SQLSTATE for a relation that does not exist: a store whose table
+// no migration made.
+const pgUndefinedTable = "42P01"
+
+// pgNoTable reports whether err is Postgres's answer for a table that does not exist.
+func pgNoTable(err error) bool {
+	var pg *pgconn.PgError
+	return errors.As(err, &pg) && pg.Code == pgUndefinedTable
+}
+
+// readPGSentinel reads the sentinel row of the intake_consumers table on db, its record as stored
+// and its revision, which selection.PGStore.State does not answer and the conditional write needs
+// (selection.PGStore.WriteSentinel), and found false for a table that holds none. Its error is the
+// query's, which pgNoTable reads for a table that does not exist; each caller decodes the record by
+// its own rule (enrollReadMarker, censusReadSentinel).
+func readPGSentinel(ctx context.Context, db Database) (record []byte, revision uint64, found bool, err error) {
+	var stored int64
+	err = db.QueryRow(ctx, `select record, revision from `+selection.IntakeConsumersTable+` where logical = $1`, selection.PGSentinelKey).
+		Scan(&record, &stored)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return nil, 0, false, nil
+	case err != nil:
+		return nil, 0, false, err
+	}
+	return record, uint64(stored), true, nil
+}
+
+// behindBarrier runs read behind the hold's bucket barrier on the selection bucket, the one path
+// every held reader of the bucket takes (writerhold.ReadBucket: the barrier put
+// hold.barrier.<hold id>, then read, with the stream's leader read before the barrier and after
+// the read, and both made again when it changed), its UNKNOWN answered as this package's. read's
+// own error comes back as it is. The bucket must exist: ReadBucket's leader read of a stream the
+// server does not hold is UNKNOWN, so a reader that answers a missing bucket otherwise reads its
+// stream first.
+func behindBarrier(ctx context.Context, nc *nats.Conn, holdID string, read func(context.Context) error) error {
+	return hubUnknown(writerhold.ReadBucket(ctx, nc, selection.SessionBucket, holdID, read),
+		"the bucket barrier of "+selection.SessionBucket)
+}
+
+// errEscapeCut is a selection.DurableKey key that ends inside an escape (durableOf).
+var errEscapeCut = errors.New("ends inside an escape")
+
+// durableOf is the durable name a selection.DurableKey key names: the key's prefix cut, and each
+// '=' and the two hex digits after it written back as the byte they stand for. A key that ends
+// inside an escape is errEscapeCut, and one holding an escape that is not two hex digits is refused
+// too, each error naming what is wrong for its caller to name the key before it. It does not hold
+// key to the form DurableKey writes: replay and restore compare the member's key with it
+// (replayMember, restoreMember), and the census reads a key in another form as no durable's
+// (censusDurableOf).
+func durableOf(key string) (string, error) {
+	escaped, _ := strings.CutPrefix(key, selection.DurableKey(""))
+	var name strings.Builder
+	for rest := escaped; rest != ""; {
+		before, after, found := strings.Cut(rest, "=")
+		name.WriteString(before)
+		if !found {
+			break
+		}
+		if len(after) < 2 {
+			return "", errEscapeCut
+		}
+		b, err := strconv.ParseUint(after[:2], 16, 8)
+		if err != nil {
+			return "", fmt.Errorf("holds the escape =%s, which is not '=' and two hex digits", after[:2])
+		}
+		name.WriteByte(byte(b))
+		rest = after[2:]
+	}
+	return name.String(), nil
 }

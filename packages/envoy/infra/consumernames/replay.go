@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
-	"strconv"
 	"strings"
 
 	"github.com/nats-io/nats.go"
@@ -40,7 +38,7 @@ const replayWrites = 8
 // its retries or does not answer) is its stop (createBucketStopped), naming what the run left.
 func (r *run) replay(ctx context.Context) error {
 	err := r.replayRun(ctx)
-	return createBucketRefusal(r.nc, err)
+	return connRefusal(r.nc, err)
 }
 
 func (r *run) replayRun(ctx context.Context) error {
@@ -83,7 +81,7 @@ func (r *run) replayRun(ctx context.Context) error {
 	if r.o.final {
 		command = replayFinalCommand
 	}
-	a, err := r.admit(ctx, command, map[string]string{"key": m.Logical, "family": m.Family, "from": formatSeq(r.o.from)})
+	a, err := r.admitRead(ctx, command, map[string]string{"key": m.Logical, "family": m.Family, "from": formatSeq(r.o.from)})
 	if err != nil {
 		return err
 	}
@@ -113,7 +111,7 @@ func (r *run) replayHeld(ctx context.Context, nc *nats.Conn, store familyStore, 
 			// write acknowledged before the hold is applied on the stream's leader before replay
 			// reads the record it overwrites.
 			left.barrier = true
-			err = createBucketBehindBarrier(ctx, nc, r.o.holdID, read)
+			err = behindBarrier(ctx, nc, r.o.holdID, read)
 		} else {
 			err = read(ctx)
 		}
@@ -142,16 +140,11 @@ func (r *run) replayHeld(ctx context.Context, nc *nats.Conn, store familyStore, 
 // replayRecord is the record replay writes over old: start from and no current, old's retired
 // names kept, and every name old selected or had in flight retired.
 func replayRecord(old selection.Record, from uint64) selection.Record {
-	next := selection.Record{Start: from, Retired: slices.Clone(old.Retired), Restore: old.Restore}
-	retire := func(name string) {
-		if name != "" && !slices.Contains(next.Retired, name) {
-			next.Retired = append(next.Retired, name)
-		}
-	}
-	retire(old.Current)
+	next := selection.Record{Start: from, Retired: old.Retired, Restore: old.Restore}
+	next = retire(next, old.Current)
 	if old.Op != nil {
-		retire(old.Op.Candidate)
-		retire(old.Op.Old)
+		next = retire(next, old.Op.Candidate)
+		next = retire(next, old.Op.Old)
 	}
 	return next
 }
@@ -189,9 +182,6 @@ type replayMessage struct {
 	Op string
 }
 
-// The JetStream API's answer for a stream message it does not hold (10037).
-const errNoMessageFound = 10037
-
 // replayLeaderRead reads key's last message in bucket from the leader of the bucket's stream (a
 // STREAM.MSG.GET by last_by_subj, which the operator's grant names), and false for a key with no
 // message.
@@ -200,36 +190,47 @@ func replayLeaderRead(ctx context.Context, nc *nats.Conn, bucket, key string) (r
 }
 
 // replayStreamMessage is one STREAM.MSG.GET of bucket's stream, by request, and false for a
-// message the stream does not hold.
+// message the stream does not hold (jetstream.JSErrCodeMessageNotFound).
 func replayStreamMessage(ctx context.Context, nc *nats.Conn, bucket string, request map[string]any) (replayMessage, bool, error) {
 	raw, err := apiRequest(ctx, nc, "$JS.API.STREAM.MSG.GET.KV_"+bucket, request)
-	var api *jetstream.APIError
-	if errors.As(err, &api) && api.ErrorCode == errNoMessageFound {
+	if apiErrorIs(err, jetstream.JSErrCodeMessageNotFound) {
 		return replayMessage{}, false, nil
 	}
 	if err != nil {
 		return replayMessage{}, false, unknownf(err, "a message of KV_%s", bucket)
 	}
-	var answer struct {
-		Message struct {
-			Subject string `json:"subject"`
-			Seq     uint64 `json:"seq"`
-			Header  []byte `json:"hdrs"`
-			Data    []byte `json:"data"`
-		} `json:"message"`
-	}
+	var answer msgGetAnswer
 	if err := json.Unmarshal(raw, &answer); err != nil {
 		return replayMessage{}, false, unknownf(err, "a message of KV_%s", bucket)
 	}
 	m := replayMessage{Seq: answer.Message.Seq, Subject: answer.Message.Subject, Data: answer.Message.Data}
-	if len(answer.Message.Header) > 0 {
-		header, err := nats.DecodeHeadersMsg(answer.Message.Header)
-		if err != nil {
-			return replayMessage{}, false, unknownf(err, "the header of message %d of KV_%s", m.Seq, bucket)
-		}
-		m.Op = header.Get(kvOperationHeader)
+	if m.Op, err = kvOperation(answer.Message.Header); err != nil {
+		return replayMessage{}, false, unknownf(err, "the header of message %d of KV_%s", m.Seq, bucket)
 	}
 	return m, true, nil
+}
+
+// msgGetAnswer is a STREAM.MSG.GET answer: the stored message, zero when the answer holds none.
+type msgGetAnswer struct {
+	Message struct {
+		Subject string `json:"subject"`
+		Seq     uint64 `json:"seq"`
+		Header  []byte `json:"hdrs"`
+		Data    []byte `json:"data"`
+	} `json:"message"`
+}
+
+// kvOperation is the KV operation a stored message's encoded headers hdrs carry
+// (kvOperationHeader): "DEL" or "PURGE" for a marker, and "" for a value or no headers.
+func kvOperation(hdrs []byte) (string, error) {
+	if len(hdrs) == 0 {
+		return "", nil
+	}
+	header, err := nats.DecodeHeadersMsg(hdrs)
+	if err != nil {
+		return "", err
+	}
+	return header.Get(kvOperationHeader), nil
 }
 
 // replayMember is the member a logical name K belongs to, as `replay --key` and `restore --key`
@@ -243,9 +244,9 @@ func replayMember(key string) (member, error) {
 		if err := selection.CheckDurableKey(key); err != nil {
 			return member{}, fmt.Errorf("--key %q holds a '.', which only a system key or a listener durable's key (%s<durable>) holds: %w", key, selection.DurableKey(""), err)
 		}
-		durable, err := replayDurableName(key)
+		durable, err := durableOf(key)
 		if err != nil {
-			return member{}, err
+			return member{}, fmt.Errorf("--key %q %w", key, err)
 		}
 		m, ok := classify(durable)
 		if !ok || !strings.HasPrefix(durable, listenerFixedPrefix) || m.Logical != key {
@@ -267,28 +268,4 @@ func replayMember(key string) (member, error) {
 		return member{}, fmt.Errorf("--key %q names no logical name of any family", key)
 	}
 	return m, nil
-}
-
-// replayDurableName is the durable a selection.DurableKey key names: the key's prefix cut, and each
-// '=' and its two hex digits written back as the byte they stand for.
-func replayDurableName(key string) (string, error) {
-	escaped, _ := strings.CutPrefix(key, selection.DurableKey(""))
-	var name strings.Builder
-	for rest := escaped; rest != ""; {
-		before, after, found := strings.Cut(rest, "=")
-		name.WriteString(before)
-		if !found {
-			break
-		}
-		if len(after) < 2 {
-			return "", fmt.Errorf("--key %q ends inside an escape", key)
-		}
-		b, err := strconv.ParseUint(after[:2], 16, 8)
-		if err != nil {
-			return "", fmt.Errorf("--key %q holds the escape =%s, which is not '=' and two hex digits", key, after[:2])
-		}
-		name.WriteByte(byte(b))
-		rest = after[2:]
-	}
-	return name.String(), nil
 }

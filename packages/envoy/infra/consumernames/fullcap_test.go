@@ -2,7 +2,6 @@ package consumernames
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -72,8 +71,7 @@ func fullCapWindowRow(t *testing.T) {
 		pending["s-"+session] = seqs[1]
 	}
 	_, err := rig.writer.CreateConsumer(ctx, notifications, jetstream.ConsumerConfig{AckPolicy: jetstream.AckExplicitPolicy, InactiveThreshold: time.Minute})
-	var api *jetstream.APIError
-	require.True(t, errors.As(err, &api) && api.ErrorCode == errConsumerLimit, "control: an unnamed consumer at the full cap answered %v, not err_code %d", err, errConsumerLimit)
+	require.True(t, apiErrorIs(err, jetstream.JSErrCodeMaximumConsumersLimit), "control: an unnamed consumer at the full cap answered %v, not err_code %d", err, jetstream.JSErrCodeMaximumConsumersLimit)
 
 	id := h.prepared(holdrecord.WorkflowCutover)
 	code, _, stderr := h.run(actionPrepare, "--hold", id)
@@ -82,7 +80,7 @@ func fullCapWindowRow(t *testing.T) {
 	reading, err := writerhold.Set(ctx, h.records(), h.op, id, "the full-cap window", nil)
 	require.NoError(t, err, "hold set")
 	require.NotEmpty(t, reading.Servers)
-	require.Equal(t, "done", latestEntry(h.journal(id), holdrecord.CommandSet))
+	require.Equal(t, "done", h.lastEntry(id, holdrecord.CommandSet).State)
 	code, _, stderr = h.run(actionCreateBucket, "--hold", id)
 	require.Zero(t, code, stderr)
 	code, stdout, stderr := h.run(actionConvert, "--hold", id)
@@ -98,7 +96,7 @@ func fullCapWindowRow(t *testing.T) {
 	fresh := map[string]string{}
 	for name := range pending {
 		m, _ := classify(name)
-		fresh[name] = rig.kvRecord(m.Logical).Current
+		fresh[name] = rig.record(familySession, m.Logical).Current
 	}
 	rig.censusDone(id)
 	require.NoError(t, h.release(id))

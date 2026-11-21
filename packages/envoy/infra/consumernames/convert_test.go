@@ -143,7 +143,7 @@ func (rig *convertRig) heldForConvert() (string, prepareCohort) {
 	require.Zero(rig.t, code, stderr)
 	rig.closeWriter()
 	rig.held(id)
-	cohort, found, err := readPrepareCohort(ctx, rig.records(), id)
+	cohort, _, found, err := readPrepareCohort(ctx, rig.records(), id)
 	require.NoError(rig.t, err)
 	require.True(rig.t, found, "prepare wrote no cohort record")
 	nc, _ := rig.operator()
@@ -165,16 +165,6 @@ func (rig *convertRig) censusDone(id string) {
 	require.NoError(rig.t, rig.records().AppendDone(ctx, id, censusCommandName, nil))
 }
 
-// kvRecord reads logical's record in the selection bucket, as the operator.
-func (rig *convertRig) kvRecord(logical string) selection.Record {
-	rig.t.Helper()
-	nc, _ := rig.operator()
-	defer nc.Close()
-	record, _, err := selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: nc}).Read(context.Background(), logical)
-	require.NoError(rig.t, err, "%s's record", logical)
-	return record
-}
-
 // pgRecord reads logical's record in db's intake_consumers.
 func pgRecord(t *testing.T, db *pgxpool.Pool, logical string) selection.Record {
 	t.Helper()
@@ -194,16 +184,6 @@ func (rig *convertRig) fixedNames() []string {
 	return slices.DeleteFunc(names, func(name string) bool { _, ok := classify(name); return !ok })
 }
 
-// consumerOf reads name's info as the operator.
-func (rig *convertRig) consumerOf(name string) *jetstream.ConsumerInfo {
-	rig.t.Helper()
-	nc, _ := rig.operator()
-	defer nc.Close()
-	info, err := consumerInfo(context.Background(), nc, notifications, name)
-	require.NoError(rig.t, err)
-	return info
-}
-
 // requireFresh requires record to select a fresh name of m started at start, carrying m's
 // metadata, with fixed retired.
 func (rig *convertRig) requireFresh(m member, record selection.Record, start uint64) *jetstream.ConsumerInfo {
@@ -212,7 +192,7 @@ func (rig *convertRig) requireFresh(m member, record selection.Record, start uin
 	require.True(rig.t, strings.HasPrefix(record.Current, m.Prefix+"~"), "%s's record selects %q, not a fresh name", m.Logical, record.Current)
 	require.Equal(rig.t, start, record.Start, "%s's saved start", m.Logical)
 	require.Contains(rig.t, record.Retired, m.Fixed, "%s's record does not retire %s", m.Logical, m.Fixed)
-	info := rig.consumerOf(record.Current)
+	info := rig.consumer(record.Current)
 	require.NotNil(rig.t, info, "the server does not hold %s, %s's current", record.Current, m.Logical)
 	require.Equal(rig.t, jetstream.DeliverByStartSequencePolicy, info.Config.DeliverPolicy)
 	require.Equal(rig.t, start, info.Config.OptStartSeq)
@@ -281,7 +261,7 @@ func TestConvertConvertsEveryFamilysFixedNamesAtTheirFloors(t *testing.T) {
 		var record selection.Record
 		switch m.Family {
 		case familySession:
-			record = rig.kvRecord(m.Logical)
+			record = rig.record(familySession, m.Logical)
 		case familyDispatch:
 			record = pgRecord(t, dispatch, m.Logical)
 		default:
@@ -323,7 +303,7 @@ func TestConvertConvertsEveryFamilysFixedNamesAtTheirFloors(t *testing.T) {
 		require.Equal(t, prepareThreshold, name.Config.InactiveThreshold,
 			"control: %s's saved configuration carries prepare's raise, which its fresh name would carry without its creator's threshold", name.Fixed)
 	}
-	require.Equal(t, "done", latestEntry(rig.journal(id), actionConvert))
+	require.Equal(t, "done", rig.lastEntry(id, actionConvert).State)
 
 	rig.censusDone(id)
 	require.NoError(t, rig.release(id))
@@ -371,17 +351,6 @@ func (rig *convertRig) ackUpTo(consumer jetstream.Consumer, upTo uint64) error {
 	}
 }
 
-// latestEntry is the state of command's latest journal entry, or "".
-func latestEntry(d holdrecord.Done, command string) string {
-	state := ""
-	for _, op := range d.Ops {
-		if op.Command == command {
-			state = op.State
-		}
-	}
-	return state
-}
-
 // An interrupted Dispatch take-over (§7 family 4): the take-over saved its start 51 in the intake's
 // hold token and stopped, once after deleting the durable and creating nothing, and once before
 // deleting it, with the durable at floor 60. In both, convert starts the durable's fresh name at 51,
@@ -409,7 +378,7 @@ func TestConvertStartsAtDispatchsHoldTokenStart(t *testing.T) {
 			"delivery-intake-"+name, "_INBOX.dispatch.taken start=51")
 		require.NoError(t, err)
 	}
-	require.EqualValues(t, 60, rig.consumerOf(present).AckFloor.Stream, "control: the durable's floor alone")
+	require.EqualValues(t, 60, rig.consumer(present).AckFloor.Stream, "control: the durable's floor alone")
 
 	id, cohort := rig.heldForConvert()
 	// The take-over that deleted its durable did so after prepare listed it, as one killed between
@@ -461,7 +430,7 @@ func TestConvertStartsAGoneCohortMemberAtItsSavedFloorAndStopsForANameWithNoStar
 	// The inactivity removal, as the server makes it once the threshold passes.
 	require.NoError(t, deleteConsumer(ctx, nc, notifications, "s-expiring"))
 	nc.Close()
-	require.Nil(t, rig.consumerOf("s-expiring"), "control: the expired member is gone before convert lists")
+	require.Nil(t, rig.consumer("s-expiring"), "control: the expired member is gone before convert lists")
 
 	code, _, stderr := rig.run(actionConvert, "--hold", id, "--dispatch-database-file", "/dev/null")
 	require.Equal(t, 1, code, "convert wrote a durable with no safe start")
@@ -470,8 +439,8 @@ func TestConvertStartsAGoneCohortMemberAtItsSavedFloorAndStopsForANameWithNoStar
 		_, _, err := selection.NewPGStore(dispatch).Read(ctx, durable)
 		require.ErrorIs(t, err, selection.ErrNoRecord, "convert wrote %s's row with no safe start", durable)
 	}
-	require.Equal(t, "stop", latestEntry(rig.journal(id), actionConvert))
-	expired := rig.kvRecord("expiring")
+	require.Equal(t, "stop", rig.lastEntry(id, actionConvert).State)
+	expired := rig.record(familySession, "expiring")
 	require.Empty(t, expired.Current)
 	require.EqualValues(t, 3, expired.Start, "the expired member's start")
 
@@ -489,7 +458,7 @@ func TestConvertStartsAGoneCohortMemberAtItsSavedFloorAndStopsForANameWithNoStar
 	for _, durable := range dispatchDurables() {
 		require.EqualValues(t, 1, pgRecord(t, dispatch, durable).Start)
 	}
-	require.EqualValues(t, 3, rig.kvRecord("expiring").Start)
+	require.EqualValues(t, 3, rig.record(familySession, "expiring").Start)
 
 	rig.censusDone(id)
 	require.NoError(t, rig.release(id))
@@ -552,7 +521,7 @@ func TestConvertRerunAfterTheDeleteCreatesTheFreshNameFromTheSavedSet(t *testing
 	rig.fixed("s-ses3", "notifications.agent.ses3", 0)
 	id, _ := rig.heldForConvert()
 	nc, _ := rig.operator()
-	f2, f3 := rig.consumerOf("s-ses2"), rig.consumerOf("s-ses3")
+	f2, f3 := rig.consumer("s-ses2"), rig.consumer("s-ses3")
 	set := convertSet{Names: []convertSetName{
 		{Family: familySession, Logical: "ses2", Fixed: "s-ses2"},
 		{Family: familySession, Logical: "ses3", Fixed: "s-ses3", Config: &f3.Config},
@@ -577,7 +546,7 @@ func TestConvertRerunAfterTheDeleteCreatesTheFreshNameFromTheSavedSet(t *testing
 	code, _, stderr := rig.run(actionConvert, "--hold", id)
 	require.Equal(t, 2, code, "control: a rerun with no saved configuration of F")
 	require.Contains(t, stderr, "saved set holds no configuration")
-	require.NotNil(t, rig.kvRecord("ses2").Op, "control: the open replace of ses2 was settled with no configuration")
+	require.NotNil(t, rig.record(familySession, "ses2").Op, "control: the open replace of ses2 was settled with no configuration")
 
 	// The saved set as convert writes it, with F's configuration.
 	set.Names[0].Config = &f2.Config
@@ -591,7 +560,7 @@ func TestConvertRerunAfterTheDeleteCreatesTheFreshNameFromTheSavedSet(t *testing
 	require.Zero(t, code, stderr)
 	for _, logical := range []string{"ses2", "ses3"} {
 		m, _ := classify("s-" + logical)
-		record := rig.kvRecord(logical)
+		record := rig.record(familySession, logical)
 		info := rig.requireFresh(m, record, 2)
 		require.NotEqual(t, crashed[logical], record.Current, "the rerun reused the crashed run's candidate")
 		require.Contains(t, record.Retired, crashed[logical])
@@ -612,7 +581,7 @@ func TestConvertStopsNamingADaemonProjectWithNoStore(t *testing.T) {
 	code, _, stderr := rig.run(actionConvert, "--hold", id)
 	require.Equal(t, 1, code)
 	require.Contains(t, stderr, "project p2")
-	require.Equal(t, "stop", latestEntry(rig.journal(id), actionConvert))
+	require.Equal(t, "stop", rig.lastEntry(id, actionConvert).State)
 	require.Equal(t, []string{"legion-go-p2-wake"}, rig.fixedNames(), "convert changed a fixed name before it stopped")
 	_, _, found, err := readConvertSet(context.Background(), rig.records(), id)
 	require.NoError(t, err)
@@ -658,7 +627,7 @@ func TestConvertRereadCatchesAWriterConnectedAcrossTheHold(t *testing.T) {
 	require.Equal(t, 1, code, "convert acted beside the writer connected across the hold")
 	require.Contains(t, stderr, "the held re-read, the report")
 	require.Contains(t, stderr, `name "envoy-listener of today's build"`, "the re-read does not name the writer's connection")
-	require.Empty(t, latestEntry(rig.journal(id), actionConvert), "convert wrote an entry before its re-read passed")
+	require.Empty(t, rig.lastEntry(id, actionConvert).State, "convert wrote an entry before its re-read passed")
 	require.Equal(t, []string{"s-w1", "s-w2"}, rig.fixedNames(), "convert changed a fixed name before its re-read passed")
 
 	rig.closeWriter()

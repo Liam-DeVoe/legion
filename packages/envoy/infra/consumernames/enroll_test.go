@@ -261,27 +261,6 @@ func (h *stack) enrollWindow() {
 	require.NoError(h.t, h.release(window))
 }
 
-// enrollCutover is the broker's cutover record of family, and whether there is one.
-func (h *stack) enrollCutover(family string) (holdrecord.CutoverRow, bool) {
-	h.t.Helper()
-	rows, err := h.records().Cutovers(context.Background())
-	require.NoError(h.t, err)
-	for _, row := range rows {
-		if row.Family == family {
-			return row, true
-		}
-	}
-	return holdrecord.CutoverRow{}, false
-}
-
-// enrollLast is the last journal entry of hold id.
-func (h *stack) enrollLast(id string) holdrecord.Operation {
-	h.t.Helper()
-	ops := h.journal(id).Ops
-	require.NotEmpty(h.t, ops)
-	return ops[len(ops)-1]
-}
-
 // enrollRun runs enroll of project under hold id, with the store flag the command requires (the
 // stack's env hands over the test's database whatever file it names).
 func (h *stack) enrollRun(id, project string) (int, string, string) {
@@ -298,7 +277,7 @@ func (h *stack) enrollRequireStopped(project string, store *selection.PGStore, w
 	id := h.heldHold(holdrecord.WorkflowEnroll)
 	code, _, stderr := h.enrollRun(id, project)
 	require.Equal(h.t, 1, code, "enroll of %s refuses", project)
-	last := h.enrollLast(id)
+	last := h.lastEntry(id, "")
 	require.Equal(h.t, enrollCommand, last.Command)
 	require.Equal(h.t, "stop", last.State, "enroll of %s ends in its stop entry", project)
 	require.Equal(h.t, holdrecord.LeftUnchanged, last.Outputs["left"], "the stop records that no run of enroll changed anything")
@@ -310,7 +289,7 @@ func (h *stack) enrollRequireStopped(project string, store *selection.PGStore, w
 	if err == nil {
 		require.NotEqual(h.t, id, state.Hold, "the stopped enroll wrote no marker")
 	}
-	if row, ok := h.enrollCutover(daemonFamily(project)); ok {
+	if row, ok := h.cutoverRow(daemonFamily(project)); ok {
 		require.NotEqual(h.t, id, row.HoldID, "the stopped enroll wrote no cutover record")
 	}
 	require.NoError(h.t, h.release(id), "a hold whose enroll stopped is released")
@@ -354,8 +333,8 @@ func TestEnrollANewProjectAfterTheWindow(t *testing.T) {
 	require.Contains(t, stderr, "not done: "+daemonFamily(project)+" (no row)")
 	require.NotContains(t, censusOut, "CLEAN", "control: the refused census printed a report it did not make")
 	require.Equal(t, holdrecord.Operation{Command: censusCommandName, State: "stop"},
-		holdrecord.Operation{Command: h.enrollLast(census).Command, State: h.enrollLast(census).State})
-	require.Equal(t, holdrecord.LeftUnchanged, h.enrollLast(census).Outputs["left"])
+		holdrecord.Operation{Command: h.lastEntry(census, "").Command, State: h.lastEntry(census, "").State})
+	require.Equal(t, holdrecord.LeftUnchanged, h.lastEntry(census, "").Outputs["left"])
 	require.NoError(t, h.release(census))
 
 	// Control: a store holding a checkpoint stops enroll, naming it.
@@ -394,7 +373,7 @@ func TestEnrollANewProjectAfterTheWindow(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, selection.StoreState{Cutover: selection.CutoverDone, Hold: id, Boundary: last + 1, StreamID: identity}, state,
 		"the marker records the boundary, the stream's last sequence + 1 at the enrolment, and the stream's identity")
-	row, ok := h.enrollCutover(daemonFamily(project))
+	row, ok := h.cutoverRow(daemonFamily(project))
 	require.True(t, ok)
 	require.Equal(t, selection.CutoverDone, row.State)
 	require.Equal(t, id, row.HoldID)
@@ -488,7 +467,7 @@ func TestAnEnrollRerunAfterACrashCompletes(t *testing.T) {
 		state, err := selection.NewPGStore(db).State(ctx)
 		require.NoError(t, err)
 		require.Equal(t, selection.StoreState{Cutover: selection.CutoverDone, Hold: id, Boundary: boundary, StreamID: identity}, state)
-		row, ok := h.enrollCutover(daemonFamily(project))
+		row, ok := h.cutoverRow(daemonFamily(project))
 		require.True(t, ok)
 		require.Equal(t, holdrecord.CutoverRow{Family: daemonFamily(project), State: selection.CutoverDone, HoldID: id, HoldGen: row.HoldGen}, row)
 		require.True(t, h.journal(id).Complete)
@@ -515,7 +494,7 @@ func TestAnEnrollRerunAfterACrashCompletes(t *testing.T) {
 		code, _, stderr := h.enrollRun(id, project)
 		require.Equal(t, 1, code)
 		require.Contains(t, stderr, "consumer_positions holds a checkpoint of "+daemonFixedPrefix+project+"-wake")
-		last := h.enrollLast(id)
+		last := h.lastEntry(id, "")
 		require.Equal(t, enrollCommand, last.Command)
 		require.Equal(t, "stop", last.State)
 		require.Equal(t, daemonFamily(project)+": store marker done, hold "+id+"'s", last.Outputs["left"], "the stop records the marker an earlier run of enroll wrote")
@@ -530,7 +509,7 @@ func TestAnEnrollRerunAfterACrashCompletes(t *testing.T) {
 		code, _, stderr := h.enrollRun(id, project)
 		require.Equal(t, 1, code)
 		require.Contains(t, stderr, "this hold's marker records stream identity another-stream, and "+notifications+" carries "+identity)
-		stop := h.enrollLast(id)
+		stop := h.lastEntry(id, "")
 		require.Equal(t, "stop", stop.State)
 		left := daemonFamily(project) + ": store marker done and broker cutover record done, hold " + id + "'s"
 		require.Equal(t, left, stop.Outputs["left"])
@@ -552,7 +531,7 @@ func (h *stack) enrollAbort(id string) map[string]string {
 	ctx := context.Background()
 	_, err := h.s.Records.Admit(ctx, id, holdrecord.Request{Command: holdrecord.CommandAbort}, nil)
 	require.NoError(h.t, err, "hold abort is admitted once enroll stopped")
-	intent := h.enrollLast(id)
+	intent := h.lastEntry(id, "")
 	require.Equal(h.t, holdrecord.CommandAbort, intent.Command)
 	row := h.row()
 	_, err = h.s.Records.MoveRow(ctx, row.Gen, natsgrant.OperatorPhaseReleased, id, "the test's abort")

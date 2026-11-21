@@ -150,7 +150,7 @@ func TestReplayInARecoveryFollowsCreateBucketAfterLoss(t *testing.T) {
 
 	code, _, stderr := h.run("replay", "--hold", id, "--key", "ses_a", "--from", "2")
 	require.Equal(t, 1, code, stderr)
-	require.Contains(t, stderr, "KV_"+selection.SessionBucket+", which create-bucket makes first")
+	require.Contains(t, stderr, selectionStreamName+", which create-bucket makes first")
 	require.Empty(t, createBucketEntries(h.journal(id), replayCommand), "control: the refused replay wrote an entry")
 
 	code, _, stderr = h.run("create-bucket", "--hold", id, "--after-loss")

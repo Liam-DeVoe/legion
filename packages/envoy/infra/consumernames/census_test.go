@@ -28,7 +28,6 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/holdrecord"
 	"github.com/sjawhar/envoy/internal/testnats"
-	"github.com/sjawhar/envoy/internal/testpg/testdb"
 	"github.com/sjawhar/envoy/natscred"
 	"github.com/sjawhar/envoy/natsgrant"
 )
@@ -209,7 +208,7 @@ func TestTheCensusReadsTheRecordedSessionConsumers(t *testing.T) {
 	require.Equal(t, 2, code, "the census with no reader")
 	require.Contains(t, stdout, "UNKNOWN")
 	require.Contains(t, stderr, writerhold.ErrNoRecordReader.Error())
-	last := h.enrollLast(id)
+	last := h.lastEntry(id, "")
 	require.Equal(t, writerhold.CommandStreamsCensus+" stop", last.Command+" "+last.State, "the census with no reader ends in its stop entry")
 	require.Equal(t, holdrecord.LeftUnchanged, last.Outputs["left"])
 	nc, _ = h.operator()
@@ -221,7 +220,7 @@ func TestTheCensusReadsTheRecordedSessionConsumers(t *testing.T) {
 	require.Contains(t, stdout, "CHANGED "+notifications+" consumer "+stray+": removed")
 	require.Contains(t, stdout, "CHANGED "+notifications+" consumer "+planted+": removed", "control: the recorded name with another filter")
 	require.Contains(t, stdout, "CHANGED "+notifications+" consumer "+unrecordedSession+": removed", "the unrecorded session consumer")
-	last = h.enrollLast(id)
+	last = h.lastEntry(id, "")
 	require.Equal(t, writerhold.CommandStreamsCensus+" stop", last.Command+" "+last.State, "the census that removed consumers ends in its stop entry")
 	for _, removed := range []string{stray, planted, unrecordedSession} {
 		require.Contains(t, last.Outputs["left"], removed, "the stop entry names each removal")
@@ -238,7 +237,7 @@ func TestTheCensusReadsTheRecordedSessionConsumers(t *testing.T) {
 	code, stdout, _ = h.censusCommand(id, flags...)
 	require.Equal(t, 0, code, "the second census: %s", stdout)
 	require.True(t, slices.Contains(strings.Split(strings.TrimSpace(stdout), "\n"), "CLEAN"), stdout)
-	require.Equal(t, writerhold.CommandStreamsCensus+" done", h.enrollLast(id).Command+" "+h.enrollLast(id).State)
+	require.Equal(t, writerhold.CommandStreamsCensus+" done", h.lastEntry(id, "").Command+" "+h.lastEntry(id, "").State)
 	require.True(t, h.journal(id).Complete, "the clean census's done entry completes the streams-census hold's record")
 }
 
@@ -282,20 +281,10 @@ const censusInstance = "local:postgres:census-rows"
 // pool. It skips the test when BROKER_TEST_DATABASE_URL is unset, as the stack does.
 func censusStore(t *testing.T, name string, migrations ...string) (string, *pgxpool.Pool) {
 	t.Helper()
-	admin := os.Getenv("BROKER_TEST_DATABASE_URL")
-	if admin == "" {
+	if os.Getenv("BROKER_TEST_DATABASE_URL") == "" {
 		t.Skip("BROKER_TEST_DATABASE_URL is unset: the family stores are Postgres databases")
 	}
-	url := testdb.DatabaseOn(t, admin, "cnames")
-	pool, err := pgxpool.New(context.Background(), url)
-	require.NoError(t, err)
-	t.Cleanup(pool.Close)
-	for _, file := range migrations {
-		sql, err := os.ReadFile(filepath.FromSlash(file))
-		require.NoError(t, err)
-		_, err = pool.Exec(context.Background(), string(sql))
-		require.NoError(t, err, "migrate %s's store with %s", name, file)
-	}
+	url, pool := migratedDatabase(t, "cnames", migrations...)
 	file := filepath.Join(t.TempDir(), name+".url")
 	require.NoError(t, os.WriteFile(file, []byte(url+"\n"+censusInstance+"\n"), 0o600))
 	return file, pool
@@ -558,6 +547,58 @@ func TestTheCensusReportsAGoneDaemonStoreAndKeepsAnUnreachableOne(t *testing.T) 
 	require.Equal(t, "stream-1", state.StreamID, "a run with an unreachable store wrote nothing")
 }
 
+// The census's writer of the daemon stores' stream identity (ReconcileDaemonStreamIDs) writes the
+// stale stores one at a time, in the order of their project keys, after it has read every one. A
+// write that fails after an earlier store's write landed leaves that store written, and the result
+// says so: the written store in Changed, the store whose write failed in Unreconciled with the
+// failure, and each stale store after it in Unreconciled, not written. The second store's
+// intake_consumers refuses every write through a trigger, which its read does not meet, so the
+// writer reads all three stores whole and fails only at that write. Control: the stores' own rows
+// afterwards, the first at the stream's identity and the other two still at their stale one, so
+// the result names what the stores hold.
+func TestTheCensusAnswersTheStoreItChangedBeforeAWriteFailed(t *testing.T) {
+	ctx := t.Context()
+	conn, _ := censusHeldOperator(t, "stream-2")
+	stale := selection.StoreState{Cutover: selection.CutoverDone, Boundary: 7, StreamID: "stream-1"}
+	projects := []string{"FIRST", "REFUSED", "THIRD"}
+	pools := map[string]*pgxpool.Pool{}
+	var entries, families []string
+	var deployments []writerhold.DaemonDeployment
+	for _, project := range projects {
+		entry, pool := censusDaemonStore(t, project, daemonMigrations...)
+		_, err := selection.NewPGStore(pool).WriteSentinel(ctx, stale, 0)
+		require.NoError(t, err)
+		pools[project] = pool
+		entries = append(entries, entry)
+		families = append(families, daemonFamily(project))
+		deployments = append(deployments, censusDeploymentOf(project, pool))
+	}
+	_, err := pools["REFUSED"].Exec(ctx, `create function refuse_writes() returns trigger language plpgsql as $$
+begin
+	raise exception 'the row refuses writes';
+end $$;
+create trigger refuse_writes before insert or update on `+selection.IntakeConsumersTable+` for each row execute function refuse_writes()`)
+	require.NoError(t, err)
+
+	result, err := ReconcileDaemonStreamIDs(ctx, conn, censusListing(deployments...), families, entries)
+	require.NoError(t, err, "a write that fails after another landed is the result's, not the call's")
+	require.Equal(t, []writerhold.StreamIDChange{{Project: "FIRST", From: "stream-1", To: "stream-2"}}, result.Changed,
+		"the store written before the failed write")
+	require.Empty(t, result.Gone)
+	require.Len(t, result.Unreconciled, 2, "%+v", result.Unreconciled)
+	require.Equal(t, "REFUSED", result.Unreconciled[0].Project)
+	require.Contains(t, result.Unreconciled[0].Reason, selection.PGSentinelKey+" row's write failed")
+	require.Contains(t, result.Unreconciled[0].Reason, "the row refuses writes", "the failed write's reason")
+	require.Equal(t, writerhold.UnreconciledStore{Project: "THIRD", Reason: "not written, since daemon/REFUSED's write failed before it"},
+		result.Unreconciled[1])
+	state, _ := censusSentinel(t, pools["FIRST"])
+	require.Equal(t, "stream-2", state.StreamID, "control: the first store's write did not land")
+	for _, project := range projects[1:] {
+		state, _ := censusSentinel(t, pools[project])
+		require.Equal(t, "stream-1", state.StreamID, "control: %s's sentinel was written", project)
+	}
+}
+
 // A 3D000 calls a daemon store gone only at the address its Deployment names. Each case is a
 // store whose database the server answers 3D000 for, so a writer without the address check would
 // call each gone; with it, each is unreconciled, naming why, nothing is gone, and the stale store
@@ -815,7 +856,7 @@ func TestTheCensusIsUnknownWhenADeclaredFamilyIsUnread(t *testing.T) {
 	require.Contains(t, stderr, daemonFamily("PROJ"))
 	require.NotContains(t, stdout, "CHANGED")
 	require.NotContains(t, stdout, "CLEAN", "an UNKNOWN census printed a report it did not make")
-	last := h.enrollLast(id)
+	last := h.lastEntry(id, "")
 	require.Equal(t, writerhold.CommandStreamsCensus+" stop", last.Command+" "+last.State, "the UNKNOWN census ends in its stop entry")
 	require.Equal(t, holdrecord.LeftUnchanged, last.Outputs["left"])
 	nc, _ = h.operator()
@@ -953,7 +994,7 @@ func TestTheCensusLeavesAGoneDaemonsConsumers(t *testing.T) {
 	require.NotContains(t, stdout, "CHANGED")
 	require.NotContains(t, stdout, "LEFT")
 	require.NotContains(t, stdout, "GONE daemon/")
-	require.Equal(t, holdrecord.LeftUnchanged, h.enrollLast(id).Outputs["left"])
+	require.Equal(t, holdrecord.LeftUnchanged, h.lastEntry(id, "").Outputs["left"])
 	require.Subset(t, consumers(), []string{stray, declared, undeclared}, "an UNKNOWN census removed a consumer")
 
 	deployments := h.s.Kube.Client.AppsV1().Deployments(writerhold.DaemonNamespace)
@@ -977,7 +1018,7 @@ func TestTheCensusLeavesAGoneDaemonsConsumers(t *testing.T) {
 	require.Contains(t, stdout, "CHANGED "+notifications+" consumer "+stray+": removed")
 	left(stdout)
 	require.NotContains(t, consumers(), stray)
-	last := h.enrollLast(id)
+	last := h.lastEntry(id, "")
 	require.Equal(t, writerhold.CommandStreamsCensus+" stop", last.Command+" "+last.State)
 	require.Contains(t, last.Outputs["left"], stray)
 	require.NotContains(t, last.Outputs["left"], declared, "the stop names a gone daemon's consumer as removed")
@@ -988,7 +1029,7 @@ func TestTheCensusLeavesAGoneDaemonsConsumers(t *testing.T) {
 	gone := "database " + dropped + " on instance " + censusInstance + " (the operator's file states " + censusInstance + "): "
 	require.Contains(t, stdout, "GONE daemon/GONE: "+gone)
 	require.True(t, slices.Contains(strings.Split(strings.TrimSpace(stdout), "\n"), "CLEAN"), stdout)
-	done := h.enrollLast(id)
+	done := h.lastEntry(id, "")
 	require.Equal(t, writerhold.CommandStreamsCensus+" done", done.Command+" "+done.State)
 	require.True(t, strings.HasPrefix(done.Outputs["gone.daemon/GONE"], gone), "%q", done.Outputs["gone.daemon/GONE"])
 	require.Contains(t, done.Outputs["gone.daemon/GONE"], "SQLSTATE 3D000")

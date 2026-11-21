@@ -2,6 +2,7 @@ package consumernames
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -15,7 +16,6 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
-	selection "github.com/sjawhar/envoy/consumernames"
 	"github.com/sjawhar/envoy/infra/writerhold"
 	"github.com/sjawhar/envoy/internal/holdrecord"
 	"github.com/sjawhar/envoy/natsgrant"
@@ -38,11 +38,14 @@ type env struct {
 	// connect opens the operator's NATS connection to o's hub, its replies under
 	// natsgrant.OperatorInbox.
 	connect func(ctx context.Context, o options) (*nats.Conn, error)
-	// database opens the Postgres store of family: "dispatch", or "daemon/<project key>".
-	database func(ctx context.Context, o options, family string) (Database, error)
+	// database opens the Postgres store of family: "dispatch", or "daemon/<project key>", and
+	// answers with it the close of what the open made, which the run calls when it ends: realEnv's
+	// pool (openDatabase). nil is a store the caller owns and closes, as a test's.
+	database func(ctx context.Context, o options, family string) (Database, func(), error)
 	// hub opens the operator's reach of the clustered hub for o (writerhold.Operator): its
-	// Kubernetes objects and each declared server's monitoring port, which convert's meta barrier
-	// reads (writerhold.MetaBarrier) and restore --finish restarts.
+	// Kubernetes objects and each declared server's monitoring port, which the held re-read
+	// (heldReread), convert's meta barrier (writerhold.MetaBarrier) and restore --finish's restart
+	// read.
 	hub func(ctx context.Context, o options) (*writerhold.Operator, error)
 	// reread, when set, replaces the held re-read (heldReread): nil, as realEnv leaves it, is the
 	// re-read. Only the grant rows, whose hubs of static users have no callout stack, set it.
@@ -51,7 +54,7 @@ type env struct {
 }
 
 // run is one command's reach: its options, its env, and what it opened, each opened once, when
-// first needed, and closed when the command ends.
+// first needed, and closed when the command ends (close).
 type run struct {
 	o              options
 	e              env
@@ -65,12 +68,18 @@ type run struct {
 	// postcheck compares against (writerhold.Postcheck's step 1).
 	heldStreams []writerhold.StreamReading
 	databases   map[string]Database
-	closers     []func()
+	// closeDatabases are the closes env.database answered for the stores it opened.
+	closeDatabases []func()
 }
 
+// close closes the run's operator connection, the latest one reconnect made, and every store it
+// opened (env.database).
 func (r *run) close() {
-	for i := len(r.closers) - 1; i >= 0; i-- {
-		r.closers[i]()
+	for _, closeDatabase := range r.closeDatabases {
+		closeDatabase()
+	}
+	if r.nc != nil {
+		r.nc.Close()
 	}
 }
 
@@ -94,6 +103,28 @@ func (r *run) hold(ctx context.Context) (*holdrecord.Client, error) {
 	return r.records, nil
 }
 
+// readHoldRecord reads hold holdID's record of kind and key (holdrecord.Client.Records, which
+// verifies each record) into a T, with its gen, which a write of it is conditional on, and false
+// when the hold holds none. A value that does not decode is UNKNOWN, naming what.
+func readHoldRecord[T any](ctx context.Context, records *holdrecord.Client, holdID, kind, key, what string) (T, uint64, bool, error) {
+	var zero T
+	list, err := records.Records(ctx, holdID, kind)
+	if err != nil {
+		return zero, 0, false, err
+	}
+	for _, record := range list {
+		if record.Key != key {
+			continue
+		}
+		var value T
+		if err := json.Unmarshal(record.Value, &value); err != nil {
+			return zero, 0, false, unknownf(err, "%s", what)
+		}
+		return value, record.Gen, true, nil
+	}
+	return zero, 0, false, nil
+}
+
 // conn is the run's operator connection to the hub, and its JetStream.
 func (r *run) conn(ctx context.Context) (*nats.Conn, jetstream.JetStream, error) {
 	if r.nc == nil {
@@ -107,7 +138,6 @@ func (r *run) conn(ctx context.Context) (*nats.Conn, jetstream.JetStream, error)
 			return nil, nil, err
 		}
 		r.nc, r.js = nc, js
-		r.closers = append(r.closers, nc.Close)
 	}
 	return r.nc, r.js, nil
 }
@@ -136,10 +166,8 @@ func (r *run) reconnect(ctx context.Context) (*nats.Conn, jetstream.JetStream, e
 		if time.Now().After(deadline) {
 			return nil, nil, unknownf(err, "connect to the hub as the operator again, for %s", reconnectWithin)
 		}
-		select {
-		case <-ctx.Done():
+		if sleep(ctx, 250*time.Millisecond) != nil {
 			return nil, nil, unknownf(ctx.Err(), "connect to the hub as the operator again")
-		case <-time.After(250 * time.Millisecond):
 		}
 	}
 }
@@ -159,14 +187,17 @@ func (r *run) operatorHub(ctx context.Context) (*writerhold.Operator, error) {
 	return r.operator, nil
 }
 
-// database is family's Postgres store, opened once.
+// database is family's Postgres store, opened once, and closed when the run ends (close).
 func (r *run) database(ctx context.Context, family string) (Database, error) {
 	if db, ok := r.databases[family]; ok {
 		return db, nil
 	}
-	db, err := r.e.database(ctx, r.o, family)
+	db, closeDatabase, err := r.e.database(ctx, r.o, family)
 	if err != nil {
 		return nil, err
+	}
+	if closeDatabase != nil {
+		r.closeDatabases = append(r.closeDatabases, closeDatabase)
 	}
 	if r.databases == nil {
 		r.databases = map[string]Database{}
@@ -175,11 +206,12 @@ func (r *run) database(ctx context.Context, family string) (Database, error) {
 	return db, nil
 }
 
-// requirePhase reads the hold row and refuses, naming the phase it found, unless it is phase,
-// and, for prepare and held, under the run's hold id: each operator command runs only in the one
-// phase it needs, so a deploy during a hold changes nothing. For held, it then reads the hold's
-// journal and runs the held re-read (heldReread) before the command does anything else.
-func (r *run) requirePhase(ctx context.Context, phase natsgrant.OperatorPhase) (holdrecord.Row, error) {
+// requireRow reads the hold row and refuses, naming the phase it found, unless it is phase, and,
+// for prepare and held, under the run's hold id: each operator command runs only in the one phase
+// it needs, so a deploy during a hold changes nothing. A held command that ran the held re-read
+// when it started and has only read since checks the row with it alone before its intent
+// (admitRead).
+func (r *run) requireRow(ctx context.Context, phase natsgrant.OperatorPhase) (holdrecord.Row, error) {
 	records, err := r.hold(ctx)
 	if err != nil {
 		return holdrecord.Row{}, err
@@ -194,12 +226,17 @@ func (r *run) requirePhase(ctx context.Context, phase natsgrant.OperatorPhase) (
 	if phase != natsgrant.OperatorPhaseReleased && row.HoldID != r.o.holdID {
 		return row, fmt.Errorf("the hold row is %s under hold %q, not under --hold %q", row.Phase, row.HoldID, r.o.holdID)
 	}
-	if phase == natsgrant.OperatorPhaseHeld {
-		if err := r.heldReread(ctx); err != nil {
-			return row, err
-		}
-	}
 	return row, nil
+}
+
+// requirePhase is requireRow, and for held then the held re-read (heldReread), which reads the
+// hold's journal, before the command does anything else.
+func (r *run) requirePhase(ctx context.Context, phase natsgrant.OperatorPhase) (holdrecord.Row, error) {
+	row, err := r.requireRow(ctx, phase)
+	if err != nil || phase != natsgrant.OperatorPhaseHeld {
+		return row, err
+	}
+	return row, r.heldReread(ctx)
 }
 
 // The held re-read's writer census: read again while its answer is not whole, at most
@@ -248,11 +285,11 @@ func (r *run) heldReread(ctx context.Context) error {
 	}
 	render, err := writerhold.Precondition(ctx, op.Hub)
 	if err != nil {
-		return heldError(err, "the hub's render")
+		return hubError(err, "the held re-read, the hub's render")
 	}
 	declared, err := writerhold.Discover(ctx, op.Hub)
 	if err != nil {
-		return heldError(err, "the declared servers")
+		return hubError(err, "the held re-read, the declared servers")
 	}
 	restarted := heldRestarted(d)
 	report := make(writerhold.Declared, len(declared))
@@ -266,7 +303,7 @@ func (r *run) heldReread(ctx context.Context) error {
 	}
 	streams, err := writerhold.ReadProtectedStreams(ctx, nc, heldExpectedAbsent(d.Workflow))
 	if err != nil {
-		return heldError(err, "the protected streams")
+		return hubError(err, "the held re-read, the protected streams")
 	}
 	r.heldStreams = streams
 	var present []string
@@ -282,18 +319,14 @@ func (r *run) heldReread(ctx context.Context) error {
 			break
 		}
 		if !errors.As(err, &unknown) || reading == heldCensusReadings {
-			return heldError(err, "the writer census")
+			return hubError(err, "the held re-read, the writer census")
 		}
-		timer := time.NewTimer(heldCensusPause)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
+		if sleep(ctx, heldCensusPause) != nil {
 			return unknownf(ctx.Err(), "the writer census")
-		case <-timer.C:
 		}
 	}
 	if _, err := (writerhold.Report{Hub: op.Hub, Declared: report, AuthUser: render.AuthUser, Wait: op.Wait}).Run(ctx, nc); err != nil {
-		return heldError(err, "the report")
+		return hubError(err, "the held re-read, the report")
 	}
 	return nil
 }
@@ -323,21 +356,42 @@ func heldRestarted(d holdrecord.Done) map[string]string {
 func heldExpectedAbsent(w holdrecord.Workflow) []string {
 	switch w {
 	case holdrecord.WorkflowCutover, holdrecord.WorkflowSelectionRecovery:
-		return []string{"KV_" + selection.SessionBucket}
+		return []string{selectionStreamName}
 	case holdrecord.WorkflowStreamsUpdate:
 		return writerhold.ProtectedStreams()
 	}
 	return nil
 }
 
-// heldError is a reading of writerhold's that failed: its UNKNOWN stays UNKNOWN here (exit 2),
-// and its refusal a refusal, each naming what was read.
-func heldError(err error, what string) error {
-	var unknown *writerhold.Unknown
-	if errors.As(err, &unknown) {
-		return unknownf(err, "the held re-read, %s", what)
+// hubError is err, a writerhold reading or step that failed, as this package answers it: its
+// UNKNOWN (writerhold.Unknown) stays UNKNOWN here (exit 2), and its refusal a refusal, each naming
+// what.
+func hubError(err error, what string) error {
+	if errors.As(err, new(*writerhold.Unknown)) {
+		return unknownf(err, "%s", what)
 	}
-	return fmt.Errorf("the held re-read, %s: %w", what, err)
+	return fmt.Errorf("%s: %w", what, err)
+}
+
+// hubUnknown is hubError with a refusal answered as it is: a caller that names its refusal
+// itself, or answers it to its operator in the hub's own words (restore, behindBarrier).
+func hubUnknown(err error, what string) error {
+	if errors.As(err, new(*writerhold.Unknown)) {
+		return unknownf(err, "%s", what)
+	}
+	return err
+}
+
+// sleep waits d, and answers ctx's error when ctx ends first.
+func sleep(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // admission is a held command admitted to its hold: its intent entry is written, and it ends
@@ -349,12 +403,30 @@ type admission struct {
 }
 
 // admit reads the row, which must be held under the run's hold id, runs the held re-read
-// (requirePhase, heldReread), and writes command's intent entry with inputs
-// (holdrecord.Client.Admit): the decision and the entry are one write.
+// (requirePhase, heldReread), and writes command's intent entry (intent).
 func (r *run) admit(ctx context.Context, command string, inputs map[string]string) (*admission, error) {
 	if _, err := r.requirePhase(ctx, natsgrant.OperatorPhaseHeld); err != nil {
 		return nil, err
 	}
+	return r.intent(ctx, command, inputs)
+}
+
+// admitRead is admit for a command that ran the held re-read when it started (requirePhase) and
+// has only read since what can refuse it before its intent (create-bucket, replay,
+// repair-sentinel): it reads the row again, which must still be held under the run's hold id
+// (requireRow), and writes the intent with no second re-read, which would read again what the
+// first read with nothing changed between. The re-read still comes before the command's first
+// change, the intent.
+func (r *run) admitRead(ctx context.Context, command string, inputs map[string]string) (*admission, error) {
+	if _, err := r.requireRow(ctx, natsgrant.OperatorPhaseHeld); err != nil {
+		return nil, err
+	}
+	return r.intent(ctx, command, inputs)
+}
+
+// intent writes command's intent entry with inputs (holdrecord.Client.Admit): the decision and
+// the entry are one write.
+func (r *run) intent(ctx context.Context, command string, inputs map[string]string) (*admission, error) {
 	w, err := r.records.Admit(ctx, r.o.holdID, holdrecord.Request{Command: command}, inputs)
 	if err != nil {
 		return nil, err
@@ -415,14 +487,20 @@ var realHubOpeners = hubOpeners{
 }
 
 // envFromFlags is the env that reaches everything a run's flags name through open, and each
-// family's database from the file its flag names.
+// family's database from the file its flag names (openDatabase), closed when the run ends.
 func envFromFlags(open hubOpeners) env {
 	return env{
 		records: func(ctx context.Context, o options, signing bool) (*holdrecord.Client, error) {
 			return open.records(o.HubFlags, ctx, signing)
 		},
-		connect:  func(_ context.Context, o options) (*nats.Conn, error) { return open.connect(o.HubFlags) },
-		database: openDatabase,
+		connect: func(_ context.Context, o options) (*nats.Conn, error) { return open.connect(o.HubFlags) },
+		database: func(ctx context.Context, o options, family string) (Database, func(), error) {
+			pool, err := openDatabase(ctx, o, family)
+			if err != nil {
+				return nil, nil, err
+			}
+			return pool, pool.Close, nil
+		},
 		hub: func(ctx context.Context, o options) (*writerhold.Operator, error) {
 			return open.hub(o.HubFlags, ctx)
 		},
@@ -430,9 +508,9 @@ func envFromFlags(open hubOpeners) env {
 	}
 }
 
-// openDatabase opens family's database from the URL its file holds (familyDatabaseFile), closed
-// when the run ends.
-func openDatabase(ctx context.Context, o options, family string) (Database, error) {
+// openDatabase opens a pool on family's database from the URL its file holds
+// (familyDatabaseFile), which its caller closes.
+func openDatabase(ctx context.Context, o options, family string) (*pgxpool.Pool, error) {
 	f, err := familyDatabaseFile(o, family)
 	if err != nil {
 		return nil, err
@@ -461,15 +539,7 @@ type databaseFile struct {
 // whose first line holds no URL is refused: a pool opened on an empty URL would reach whatever
 // server the environment names.
 func familyDatabaseFile(o options, family string) (databaseFile, error) {
-	file, flagName := o.dispatchDatabaseFile, "--dispatch-database-file"
-	if project, ok := strings.CutPrefix(family, familyDaemonPrefix); ok {
-		var named bool
-		file, named = o.daemonDatabase(project)
-		flagName = "--daemon-database " + project + "=<file>"
-		if !named {
-			file = ""
-		}
-	}
+	file, flagName := o.storeFile(family)
 	if file == "" {
 		return databaseFile{}, fmt.Errorf("%s's store needs %s", family, flagName)
 	}

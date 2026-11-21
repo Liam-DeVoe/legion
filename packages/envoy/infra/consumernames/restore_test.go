@@ -186,16 +186,6 @@ func (rig *restoreRig) waitLeader(nc *nats.Conn, stream string) {
 	}, 30*time.Second, 100*time.Millisecond, "%s elected no leader", stream)
 }
 
-// familyStore is family's store on nc, the operator's connection, for the session consumers.
-func (rig *restoreRig) familyStore(nc *nats.Conn, family string) familyStore {
-	if family == familySession {
-		return selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: nc})
-	}
-	pool, ok := rig.pools[family]
-	require.True(rig.t, ok, "the rig made no store for %s", family)
-	return selection.NewPGStore(pool)
-}
-
 // cutover runs a cutover hold that leaves conversions as convert leaves them, completes its journal
 // as create-bucket, convert and a clean streams census write it, releases it, and answers its id.
 // The hold's cohort record holds B = 1, the boundary the row writes into the bucket's sentinel, as
@@ -207,13 +197,13 @@ func (rig *restoreRig) cutover(conversions ...restoreConversion) string {
 	id := rig.heldHold(holdrecord.WorkflowCutover)
 	createBucketCohort(t, rig.records(), id, 1)
 	nc, js := rig.operator()
-	if _, err := streamInfo(ctx, nc, "KV_"+selection.SessionBucket); err != nil {
+	if _, err := streamInfo(ctx, nc, selectionStreamName); err != nil {
 		// selection.CreateSessionBucket writes the sentinel at once, which on three copies can
 		// find no leader yet (no responders): the row creates the bucket, waits for its leader,
 		// then writes the sentinel, as create-bucket's rerun adopts an empty bucket.
 		_, err := js.CreateKeyValue(ctx, selection.SessionBucketConfig(rig.replicas))
 		require.NoError(t, err)
-		rig.waitLeader(nc, "KV_"+selection.SessionBucket)
+		rig.waitLeader(nc, selectionStreamName)
 		_, err = selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: nc}).
 			WriteSentinel(ctx, selection.StoreState{Boundary: 1, Hold: id}, 0)
 		require.NoError(t, err)
@@ -297,15 +287,6 @@ func (rig *restoreRig) restore(id string, mode ...string) (int, string, string) 
 	return rig.run(append(args, rig.flags...)...)
 }
 
-// record reads logical's record in family's store, as the operator under the row's phase now.
-func (rig *restoreRig) record(family, logical string) selection.Record {
-	rig.t.Helper()
-	nc, _ := rig.operator()
-	record, _, err := rig.familyStore(nc, family).Read(context.Background(), logical)
-	require.NoError(rig.t, err)
-	return record
-}
-
 // marker reads family's store marker.
 func (rig *restoreRig) marker(family string) selection.StoreState {
 	rig.t.Helper()
@@ -313,28 +294,6 @@ func (rig *restoreRig) marker(family string) selection.StoreState {
 	state, err := rig.familyStore(nc, family).State(context.Background())
 	require.NoError(rig.t, err)
 	return state
-}
-
-// cutoverRow is family's broker cutover row, and false for none.
-func (rig *restoreRig) cutoverRow(family string) (holdrecord.CutoverRow, bool) {
-	rig.t.Helper()
-	rows, err := rig.records().Cutovers(context.Background())
-	require.NoError(rig.t, err)
-	for _, row := range rows {
-		if row.Family == family {
-			return row, true
-		}
-	}
-	return holdrecord.CutoverRow{}, false
-}
-
-// consumer reads consumer name, nil when the server does not hold it.
-func (rig *restoreRig) consumer(name string) *jetstream.ConsumerInfo {
-	rig.t.Helper()
-	nc, _ := rig.operator()
-	info, err := consumerInfo(context.Background(), nc, notifications, name)
-	require.NoError(rig.t, err)
-	return info
 }
 
 // delivered pulls everything consumer name delivers, as the listener, the previous build's reach
@@ -363,18 +322,6 @@ func (rig *restoreRig) delivered(name string) []uint64 {
 			return slices.Compact(seqs)
 		}
 	}
-}
-
-// lastEntry is hold id's last journal entry of command, with its state.
-func (rig *restoreRig) lastEntry(id, command string) holdrecord.Operation {
-	rig.t.Helper()
-	var last holdrecord.Operation
-	for _, op := range rig.journal(id).Ops {
-		if op.Command == command {
-			last = op
-		}
-	}
-	return last
 }
 
 // sessionFamilyOrSkip skips a row of the session family on a server the session consumers refuse
@@ -576,7 +523,7 @@ func TestCutoverRollbackThenUpgradeAgain(t *testing.T) {
 			require.Equal(t, selection.CutoverDone, row.State)
 			require.Equal(t, again, row.HoldID)
 		}
-		cohort, found, err := readPrepareCohort(ctx, rig.records(), again)
+		cohort, _, found, err := readPrepareCohort(ctx, rig.records(), again)
 		require.NoError(t, err)
 		require.True(t, found, "the second cutover's prepare wrote no cohort record")
 		require.Equal(t, selection.StoreState{Cutover: selection.CutoverDone, Boundary: cohort.Boundary, Hold: again}, rig.marker(familySession),
@@ -897,7 +844,7 @@ func TestRestoreJournalLeftCountsEveryRunOfTheCommand(t *testing.T) {
 		{name: "the first run, which deleted a consumer", command: restoreCommandKey, setSaved: true, left: deleted,
 			d: journal(done(restoreCommandPrepare), intent(restoreCommandKey)), names: []string{"consumers deleted or found gone: session~A"}},
 		{name: "a rerun after a stop that left nothing changed", command: restoreCommandKey, setSaved: true, left: &restoreLeft{},
-			d: journal(done(restoreCommandPrepare), intent(restoreCommandKey), stop(restoreCommandKey, restoreLeftUnchanged), intent(restoreCommandKey)), unchanged: true},
+			d: journal(done(restoreCommandPrepare), intent(restoreCommandKey), stop(restoreCommandKey, holdrecord.LeftUnchanged), intent(restoreCommandKey)), unchanged: true},
 		{name: "a rerun after a done run", command: restoreCommandKey, setSaved: true, left: &restoreLeft{},
 			d: journal(done(restoreCommandPrepare), intent(restoreCommandKey), done(restoreCommandKey), intent(restoreCommandKey)), names: []string{"run 1 is done"}},
 		{name: "a rerun after a stop that recorded nothing of what it left", command: restoreCommandFinish, setSaved: true, left: &restoreLeft{},
@@ -914,10 +861,10 @@ func TestRestoreJournalLeftCountsEveryRunOfTheCommand(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			got := restoreJournalLeft(row.d, row.command, row.setSaved, row.left)
 			if row.unchanged {
-				require.Equal(t, restoreLeftUnchanged, got)
+				require.Equal(t, holdrecord.LeftUnchanged, got)
 				return
 			}
-			require.NotEqual(t, restoreLeftUnchanged, got)
+			require.NotEqual(t, holdrecord.LeftUnchanged, got)
 			require.NotEmpty(t, got, "AppendStopLeft refuses an empty left")
 			for _, name := range row.names {
 				require.Contains(t, got, name)

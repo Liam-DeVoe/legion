@@ -9,10 +9,8 @@ import (
 	"fmt"
 	"maps"
 	"slices"
-	"strconv"
 	"strings"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go"
@@ -256,16 +254,14 @@ func RecordedFreshNames(ctx context.Context, conn *nats.Conn, deployments writer
 }
 
 // censusStoreNames is every name family's intake_consumers records hold, read from the store its
-// file names (openDatabase, censusListNames).
+// file names (openDatabase, censusListNames), on a pool closed when it returns.
 func censusStoreNames(ctx context.Context, o options, family string) (map[string]bool, error) {
-	db, err := openDatabase(ctx, o, family)
+	pool, err := openDatabase(ctx, o, family)
 	if err != nil {
 		return nil, err
 	}
-	if pool, ok := db.(interface{ Close() }); ok {
-		defer pool.Close()
-	}
-	return censusListNames(ctx, db)
+	defer pool.Close()
+	return censusListNames(ctx, pool)
 }
 
 // censusListNames is every name the intake_consumers records on db hold, read through the store's
@@ -293,18 +289,12 @@ func censusAddNames(set map[string]bool, record selection.Record) {
 }
 
 // censusNamedProjects are the project keys daemonDatabases names, sorted: one for each entry,
-// <project>=<file> as consumer-names' --daemon-database takes it, each project once.
+// <project>=<file> as consumer-names' --daemon-database takes it, each project once
+// (parseDaemonDatabases), and the first entry's problem when one has one.
 func censusNamedProjects(daemonDatabases []string) ([]string, error) {
-	var projects []string
-	for _, entry := range daemonDatabases {
-		project, file, ok := strings.Cut(entry, "=")
-		if !ok || project == "" || file == "" {
-			return nil, fmt.Errorf("--daemon-database %q is not <project>=<file>", entry)
-		}
-		if slices.Contains(projects, project) {
-			return nil, fmt.Errorf("--daemon-database names project %s twice", project)
-		}
-		projects = append(projects, project)
+	projects, problems := parseDaemonDatabases(daemonDatabases)
+	if len(problems) > 0 {
+		return nil, errors.New(problems[0])
 	}
 	slices.Sort(projects)
 	return projects, nil
@@ -319,8 +309,9 @@ const censusUndefinedDatabase = "3D000"
 // unreconciled, and why.
 type censusDaemonRead struct {
 	project string
-	// db is the store, open at the address the rule checked, nil for one the rule did not open.
-	db       Database
+	// db is the store's pool, open at the address the rule checked, nil for one the rule did not
+	// open; the close censusReadDaemonStores answers closes it.
+	db       *pgxpool.Pool
 	state    selection.StoreState
 	revision uint64
 	// found is false for a store whose table holds no sentinel row.
@@ -345,8 +336,8 @@ func censusReadDaemonStores(ctx context.Context, deployments writerhold.DaemonDe
 	var stores []censusDaemonRead
 	closeStores := func() {
 		for _, s := range stores {
-			if pool, ok := s.db.(interface{ Close() }); ok {
-				pool.Close()
+			if s.db != nil {
+				s.db.Close()
 			}
 		}
 	}
@@ -485,45 +476,24 @@ func censusNamesOf(record selection.Record) []string {
 	return slices.Compact(names)
 }
 
-// censusDurableOf is the durable name a selection.DurableKey key was made from, its '=' and two
-// hex digits read back to their byte, and false for a key DurableKey did not make.
+// censusDurableOf is the durable name a selection.DurableKey key was made from (durableOf), and
+// false for a key DurableKey did not make: one CheckDurableKey refuses, one whose escape does not
+// read back, and one DurableKey would not make again (lowercase digits, an escaped byte it writes
+// plain), since it writes each escape in one form.
 func censusDurableOf(key string) (string, bool) {
 	if selection.CheckDurableKey(key) != nil {
 		return "", false
 	}
-	escaped := strings.TrimPrefix(key, "durable.")
-	var name strings.Builder
-	// The loop steps past each escape's two digits, so it keeps its own index.
-	for i := 0; i < len(escaped); i++ {
-		if escaped[i] != '=' {
-			name.WriteByte(escaped[i])
-			continue
-		}
-		if i+3 > len(escaped) {
-			return "", false
-		}
-		b, err := strconv.ParseUint(escaped[i+1:i+3], 16, 8)
-		if err != nil {
-			return "", false
-		}
-		name.WriteByte(byte(b))
-		i += 2
-	}
-	// DurableKey writes each escape in one form, so a key read back that it would not make again
-	// (lowercase digits, an escaped byte it writes plain) is no key it made.
-	if selection.DurableKey(name.String()) != key {
+	name, err := durableOf(key)
+	if err != nil || selection.DurableKey(name) != key {
 		return "", false
 	}
-	return name.String(), true
+	return name, true
 }
 
 // censusMaxConflicts is how many refused writes of one sentinel ReconcileDaemonStreamIDs reads
 // again past before it stops.
 const censusMaxConflicts = 10
-
-// censusUndefinedTable is Postgres's SQLSTATE for a relation that does not exist: a store whose
-// table no migration made.
-const censusUndefinedTable = "42P01"
 
 // ReconcileDaemonStreamIDs is the census's writer of the daemon stores' stream identity
 // (selection.StoreState.StreamID; writerhold.StreamIDWriter). A Legion daemon reads no stream info
@@ -604,22 +574,17 @@ func ReconcileDaemonStreamIDs(ctx context.Context, conn *nats.Conn, deployments 
 }
 
 // censusReadSentinel reads the sentinel row of the intake_consumers table on db with its
-// revision, which selection.PGStore.State does not answer and the conditional write needs, and
-// reports found false for a table that holds none. The row decodes as this build's
-// selection.StoreState, refusing a field it does not know.
+// revision (readPGSentinel), and reports found false for a table that holds none. The row decodes
+// as this build's selection.StoreState, refusing a field it does not know.
 func censusReadSentinel(ctx context.Context, db Database) (selection.StoreState, uint64, bool, error) {
-	var raw []byte
-	var revision int64
-	err := db.QueryRow(ctx, `select record, revision from `+selection.IntakeConsumersTable+` where logical = $1`, selection.PGSentinelKey).
-		Scan(&raw, &revision)
-	var pg *pgconn.PgError
+	raw, revision, found, err := readPGSentinel(ctx, db)
 	switch {
-	case errors.Is(err, pgx.ErrNoRows):
-		return selection.StoreState{}, 0, false, nil
-	case errors.As(err, &pg) && pg.Code == censusUndefinedTable:
+	case pgNoTable(err):
 		return selection.StoreState{}, 0, false, fmt.Errorf("it has no %s table", selection.IntakeConsumersTable)
 	case err != nil:
 		return selection.StoreState{}, 0, false, fmt.Errorf("read its %s row: %w", selection.PGSentinelKey, err)
+	case !found:
+		return selection.StoreState{}, 0, false, nil
 	}
 	var state selection.StoreState
 	decoder := json.NewDecoder(bytes.NewReader(raw))
@@ -627,7 +592,7 @@ func censusReadSentinel(ctx context.Context, db Database) (selection.StoreState,
 	if err := decoder.Decode(&state); err != nil {
 		return selection.StoreState{}, 0, false, fmt.Errorf("its %s row is no sentinel this build reads whole, and a rewrite would drop what it does not know: %w", selection.PGSentinelKey, err)
 	}
-	return state, uint64(revision), true, nil
+	return state, revision, true, nil
 }
 
 // censusRewriteStreamID writes s's sentinel with stream_id current over the revision s read, and

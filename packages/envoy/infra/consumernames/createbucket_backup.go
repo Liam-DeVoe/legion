@@ -87,8 +87,8 @@ func createBucketReadSnapshot(dir string) (*createBucketBackup, error) {
 	if err := json.Unmarshal(meta, &request); err != nil {
 		return nil, fmt.Errorf("--backup %s: its %s does not decode: %w", dir, jsm.SnapshotMetaFile, err)
 	}
-	if request.Config.Name != createBucketStreamName {
-		return nil, fmt.Errorf("--backup %s is a backup of %q, not of %s", dir, request.Config.Name, createBucketStreamName)
+	if request.Config.Name != selectionStreamName {
+		return nil, fmt.Errorf("--backup %s is a backup of %q, not of %s", dir, request.Config.Name, selectionStreamName)
 	}
 	data, err := os.Open(dataPath)
 	if err != nil {
@@ -119,7 +119,7 @@ func createBucketReadWalk(dir string) (*createBucketBackup, error) {
 	if err != nil {
 		return nil, fmt.Errorf("--backup %s: %w", dir, err)
 	}
-	if manifest.Bucket != selection.SessionBucket || manifest.Stream != createBucketStreamName {
+	if manifest.Bucket != selection.SessionBucket || manifest.Stream != selectionStreamName {
 		return nil, fmt.Errorf("--backup %s is a walk of %q (%s), not of %s", dir, manifest.Bucket, manifest.Stream, selection.SessionBucket)
 	}
 	walk, err := createBucketWalkFrom(records)
@@ -252,7 +252,7 @@ func createBucketCheckValues(ctx context.Context, nc *nats.Conn, last uint64) er
 			return nil
 		}
 		if m.Seq < seq {
-			return unknownf(nil, "%s answered sequence %d for the next message from %d", createBucketStreamName, m.Seq, seq)
+			return unknownf(nil, "%s answered sequence %d for the next message from %d", selectionStreamName, m.Seq, seq)
 		}
 		key := strings.TrimPrefix(m.Subject, prefix)
 		if _, err := createBucketExactValue(key, m.Op, m.Data); err != nil {
@@ -394,7 +394,7 @@ func createBucketPutNew(ctx context.Context, nc *nats.Conn, entry createBucketWa
 		return 0, fmt.Errorf("the acknowledgement of the replay's put of %s: %w", entry.Key, err)
 	}
 	switch {
-	case ack.Error != nil && ack.Error.ErrorCode == errWrongLastSubjectSeq:
+	case ack.Error != nil && ack.Error.ErrorCode == jetstream.JSErrCodeStreamWrongLastSequence:
 		return 0, fmt.Errorf("the replay's put of %s: %w", entry.Key, errKeyPresent)
 	case ack.Error != nil:
 		return 0, fmt.Errorf("the replay's put of %s: %w", entry.Key, ack.Error)
@@ -404,10 +404,6 @@ func createBucketPutNew(ctx context.Context, nc *nats.Conn, entry createBucketWa
 	return ack.Seq, nil
 }
 
-// errWrongLastSubjectSeq is JetStream's answer to a publish whose expected last subject sequence
-// the stream does not hold (10071).
-const errWrongLastSubjectSeq = 10071
-
 // createBucketAwaitConnected waits until nc is connected again, within createBucketReconnectWait.
 func createBucketAwaitConnected(ctx context.Context, nc *nats.Conn) error {
 	deadline := time.Now().Add(createBucketReconnectWait)
@@ -415,7 +411,7 @@ func createBucketAwaitConnected(ctx context.Context, nc *nats.Conn) error {
 		if nc.IsClosed() || time.Now().After(deadline) {
 			return unknownf(nil, "the operator's connection did not reconnect within %s during the replay of %s", createBucketReconnectWait, selection.SessionBucket)
 		}
-		if err := createBucketSleep(ctx, 50*time.Millisecond); err != nil {
+		if err := sleep(ctx, 50*time.Millisecond); err != nil {
 			return err
 		}
 	}

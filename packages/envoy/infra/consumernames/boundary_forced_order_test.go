@@ -64,7 +64,7 @@ func TestForcedOrderPrepareKeepsAFixedNameDeletedBeforeItsRaise(t *testing.T) {
 		t.Fatal("prepare did not end within a minute of the release")
 	}
 	require.Zero(t, got.code, "prepare failed on a fixed name deleted before its raise: %s", got.stderr)
-	cohort, found, err := readPrepareCohort(ctx, rig.records(), id)
+	cohort, _, found, err := readPrepareCohort(ctx, rig.records(), id)
 	require.NoError(t, err)
 	require.True(t, found)
 	gone := cohort.member("s-gone")

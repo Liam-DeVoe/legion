@@ -97,14 +97,14 @@ func newStack(t *testing.T) *stack {
 			return nats.Connect(s.Cluster.URL(), append(s.OperatorCredential(), nats.Name("envoy-infra consumer-names"),
 				nats.MaxReconnects(-1), nats.ReconnectWait(100*time.Millisecond), nats.Timeout(10*time.Second))...)
 		},
-		database: func(_ context.Context, _ options, family string) (Database, error) {
+		database: func(_ context.Context, _ options, family string) (Database, func(), error) {
 			h.mu.Lock()
 			defer h.mu.Unlock()
 			db, ok := h.dbs[family]
 			if !ok {
-				return nil, fmt.Errorf("the test made no database for %s", family)
+				return nil, nil, fmt.Errorf("the test made no database for %s", family)
 			}
-			return db, nil
+			return db, nil, nil
 		},
 		hub: func(context.Context, options) (*writerhold.Operator, error) { return op, nil },
 		now: time.Now,
@@ -227,7 +227,7 @@ func (h *stack) held(id string) {
 func (h *stack) protectedStreams(w holdrecord.Workflow) {
 	h.t.Helper()
 	ctx := context.Background()
-	skip := append([]string{bus.Stream, "KV_" + selection.SessionBucket}, heldExpectedAbsent(w)...)
+	skip := append([]string{bus.Stream, selectionStreamName}, heldExpectedAbsent(w)...)
 	declared := streamset.Declared(streamset.Settings{Replicas: 1})
 	nc, err := h.s.Connect(h.s.Cluster.URL(), h.s.OperatorCredential()...)
 	require.NoError(h.t, err)
@@ -279,9 +279,76 @@ func (h *stack) release(id string) error {
 // journal reads hold id's journal.
 func (h *stack) journal(id string) holdrecord.Done {
 	h.t.Helper()
-	d, _, err := h.s.Records.Journal(context.Background(), id)
-	require.NoError(h.t, err)
+	return readJournal(h.t, h.s.Records, id)
+}
+
+// readJournal reads hold id's journal through records.
+func readJournal(t *testing.T, records *holdrecord.Client, id string) holdrecord.Done {
+	t.Helper()
+	d, _, err := records.Journal(context.Background(), id)
+	require.NoError(t, err)
 	return d
+}
+
+// lastEntry is hold id's latest journal entry of command, or of any command when command is "":
+// the zero Operation when it holds none.
+func (h *stack) lastEntry(id, command string) holdrecord.Operation {
+	h.t.Helper()
+	var last holdrecord.Operation
+	for _, op := range h.journal(id).Ops {
+		if command == "" || op.Command == command {
+			last = op
+		}
+	}
+	return last
+}
+
+// cutoverRow is the broker's cutover row of family, and false when there is none.
+func (h *stack) cutoverRow(family string) (holdrecord.CutoverRow, bool) {
+	h.t.Helper()
+	rows, err := h.records().Cutovers(context.Background())
+	require.NoError(h.t, err)
+	for _, row := range rows {
+		if row.Family == family {
+			return row, true
+		}
+	}
+	return holdrecord.CutoverRow{}, false
+}
+
+// consumer reads consumer name of the notification stream as the operator, under the row's phase
+// now: nil when the server does not hold it.
+func (h *stack) consumer(name string) *jetstream.ConsumerInfo {
+	h.t.Helper()
+	nc, _ := h.operator()
+	defer nc.Close()
+	info, err := consumerInfo(context.Background(), nc, notifications, name)
+	require.NoError(h.t, err)
+	return info
+}
+
+// familyStore is family's store on nc, the operator's connection: the selection bucket for the
+// session family, and the database the test made for any other (database).
+func (h *stack) familyStore(nc *nats.Conn, family string) familyStore {
+	h.t.Helper()
+	if family == familySession {
+		return selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: nc})
+	}
+	h.mu.Lock()
+	pool, ok := h.dbs[family]
+	h.mu.Unlock()
+	require.True(h.t, ok, "the test made no store for %s", family)
+	return selection.NewPGStore(pool)
+}
+
+// record reads logical's record in family's store as the operator, under the row's phase now.
+func (h *stack) record(family, logical string) selection.Record {
+	h.t.Helper()
+	nc, _ := h.operator()
+	defer nc.Close()
+	record, _, err := h.familyStore(nc, family).Read(context.Background(), logical)
+	require.NoError(h.t, err, "%s's record in %s's store", logical, family)
+	return record
 }
 
 // operator connects to the hub as the operator, decided under the row's phase now: a test that
@@ -326,24 +393,32 @@ var (
 	}
 )
 
-// database makes family's store a database of its own on the test's Postgres server, with each
-// of migrations run in order (none: a store with no table), and answers its pool, which the
-// stack's env hands the commands.
+// database makes family's store a database of its own on the test's Postgres server
+// (migratedDatabase), and answers its pool, which the stack's env hands the commands.
 func (h *stack) database(family string, migrations ...string) *pgxpool.Pool {
 	h.t.Helper()
-	ctx := context.Background()
-	url := testdb.DatabaseOn(h.t, os.Getenv("BROKER_TEST_DATABASE_URL"), "cnames")
-	pool, err := pgxpool.New(ctx, url)
-	require.NoError(h.t, err)
-	h.t.Cleanup(pool.Close)
-	for _, file := range migrations {
-		sql, err := os.ReadFile(filepath.FromSlash(file))
-		require.NoError(h.t, err)
-		_, err = pool.Exec(ctx, string(sql))
-		require.NoError(h.t, err, "migrate %s with %s", family, file)
-	}
+	_, pool := migratedDatabase(h.t, "cnames", migrations...)
 	h.mu.Lock()
 	h.dbs[family] = pool
 	h.mu.Unlock()
 	return pool
+}
+
+// migratedDatabase makes a database of the test's own on the test's Postgres server
+// (BROKER_TEST_DATABASE_URL), its name beginning prefix, runs each of migrations in it in order
+// (none: a store with no table), and answers its URL and its pool, closed when t ends.
+func migratedDatabase(t *testing.T, prefix string, migrations ...string) (string, *pgxpool.Pool) {
+	t.Helper()
+	ctx := context.Background()
+	url := testdb.DatabaseOn(t, os.Getenv("BROKER_TEST_DATABASE_URL"), prefix)
+	pool, err := pgxpool.New(ctx, url)
+	require.NoError(t, err)
+	t.Cleanup(pool.Close)
+	for _, file := range migrations {
+		sql, err := os.ReadFile(filepath.FromSlash(file))
+		require.NoError(t, err)
+		_, err = pool.Exec(ctx, string(sql))
+		require.NoError(t, err, "migrate the store with %s", file)
+	}
+	return url, pool
 }

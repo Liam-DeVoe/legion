@@ -42,14 +42,11 @@ const (
 // and the sentinel.
 const createBucketNoBackup = "none"
 
-// createBucketStreamName is the selection bucket's stream.
-const createBucketStreamName = "KV_" + selection.SessionBucket
-
-// The JetStream API's answers create-bucket reads (nats-server errors.json): 10059 a stream the
-// server does not hold; 10130 a restore refused because the stream's name is still taken, the
-// leftover of a cut restore; 10049 a restore's store not made yet, which passes.
+// The JetStream API's answers create-bucket reads that nats.go's jetstream package does not name
+// (nats-server errors.json): 10130 a restore refused because the stream's name is still taken, the
+// leftover of a cut restore; 10049 a restore's store not made yet, which passes. jsm.go's
+// api.IsNatsError compares them.
 const (
-	errStreamNotFound   = 10059
 	errRestoreNameInUse = 10130
 	errCreatingStore    = 10049
 )
@@ -64,22 +61,7 @@ func (r *run) createBucket(ctx context.Context) error {
 	} else {
 		err = r.createBucketCutover(ctx)
 	}
-	return createBucketRefusal(r.nc, err)
-}
-
-// createBucketRefusal is err with the server's refusal of a publish wrapped in when the run's
-// connection recorded one and err does not name it already: whichever request the grant refused
-// (a JetStream API call, a KV write, a restore's chunk), the run's error then names the refused
-// subject in the server's words (apiRefusal), never a bare timeout.
-func createBucketRefusal(nc *nats.Conn, err error) error {
-	if err == nil || nc == nil {
-		return err
-	}
-	last := nc.LastError()
-	if !errors.Is(last, nats.ErrPermissionViolation) || strings.Contains(err.Error(), last.Error()) {
-		return err
-	}
-	return fmt.Errorf("%w; the server refused a publish of this run: %w", err, last)
+	return connRefusal(r.nc, err)
 }
 
 // createBucketReplicas is the selection bucket's copies: --replicas, else the deployment's
@@ -111,7 +93,7 @@ func (r *run) createBucketCutover(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	cohort, ok, err := readPrepareCohort(ctx, r.records, r.o.holdID)
+	cohort, _, ok, err := readPrepareCohort(ctx, r.records, r.o.holdID)
 	if err != nil {
 		return err
 	}
@@ -121,7 +103,7 @@ func (r *run) createBucketCutover(ctx context.Context) error {
 	if cohort.Boundary == 0 {
 		return unknownf(nil, "the cohort record of hold %s holds no boundary B, which is at least 1", r.o.holdID)
 	}
-	a, err := r.admit(ctx, createBucketCommand, map[string]string{"boundary": formatSeq(cohort.Boundary), "replicas": strconv.Itoa(replicas)})
+	a, err := r.admitRead(ctx, createBucketCommand, map[string]string{"boundary": formatSeq(cohort.Boundary), "replicas": strconv.Itoa(replicas)})
 	if err != nil {
 		return err
 	}
@@ -180,7 +162,7 @@ func (r *run) createBucketCutoverHeld(ctx context.Context, boundary uint64, repl
 	var sentinel createBucketSentinelRead
 	var found bool
 	left.barrier = true
-	if err := createBucketBehindBarrier(ctx, nc, r.o.holdID, func(ctx context.Context) error {
+	if err := behindBarrier(ctx, nc, r.o.holdID, func(ctx context.Context) error {
 		if info, _, err = createBucketStream(ctx, nc, true); err != nil {
 			return err
 		}
@@ -234,6 +216,9 @@ type createBucketLeft struct {
 
 // String names each change, or that the run changed nothing outside the journal.
 func (l *createBucketLeft) String() string {
+	if !l.changed() {
+		return "nothing outside the journal"
+	}
 	var parts []string
 	add := func(set bool, text string) {
 		if set {
@@ -241,34 +226,30 @@ func (l *createBucketLeft) String() string {
 		}
 	}
 	add(l.selectionRecord, "the hold's selection record")
-	add(l.deleted, "the leftover of a cut restore or load of "+createBucketStreamName+" deleted")
-	add(l.created, "the bucket "+createBucketStreamName+" created")
-	add(l.restored, "the bucket "+createBucketStreamName+" restored from the backup")
-	add(l.unloaded, "the bucket "+createBucketStreamName+" restored from the backup and deleted again")
-	add(l.replayed > 0, fmt.Sprintf("%d of the walk's records put in %s", l.replayed, createBucketStreamName))
-	add(l.barrier, "this hold's barrier key in "+createBucketStreamName)
-	add(l.sentinel, "the sentinel of "+createBucketStreamName+" written")
+	add(l.deleted, "the leftover of a cut restore or load of "+selectionStreamName+" deleted")
+	add(l.created, "the bucket "+selectionStreamName+" created")
+	add(l.restored, "the bucket "+selectionStreamName+" restored from the backup")
+	add(l.unloaded, "the bucket "+selectionStreamName+" restored from the backup and deleted again")
+	add(l.replayed > 0, fmt.Sprintf("%d of the walk's records put in %s", l.replayed, selectionStreamName))
+	add(l.barrier, "this hold's barrier key in "+selectionStreamName)
+	add(l.sentinel, "the sentinel of "+selectionStreamName+" written")
 	add(l.record != "", l.record)
 	add(l.unsure != "", l.unsure)
-	if len(parts) == 0 {
-		return createBucketLeftNothing
-	}
 	return strings.Join(parts, "; ")
 }
 
-// createBucketLeftNothing is createBucketLeft's text for a run that changed nothing outside the
-// journal.
-const createBucketLeftNothing = "nothing outside the journal"
+// changed reports whether the run changed anything outside the journal, a write whose answer was
+// lost among them: one change String names.
+func (l *createBucketLeft) changed() bool {
+	return l.selectionRecord || l.barrier || l.created || l.restored || l.deleted || l.unloaded || l.replayed > 0 ||
+		l.sentinel || l.record != "" || l.unsure != ""
+}
 
-// createBucketLeftUnchanged is what a stop records when its run changed nothing outside the
-// journal: holdrecord.LeftUnchanged's value, which this tree's holdrecord does not export yet.
-const createBucketLeftUnchanged = "unchanged"
-
-// journal is l as a stop entry records what its command left: createBucketLeftUnchanged when the
+// journal is l as a stop entry records what its command left: holdrecord.LeftUnchanged when the
 // run changed nothing outside the journal, and otherwise each change it made (String).
 func (l *createBucketLeft) journal() string {
-	if l.String() == createBucketLeftNothing {
-		return createBucketLeftUnchanged
+	if !l.changed() {
+		return holdrecord.LeftUnchanged
 	}
 	return l.String()
 }
@@ -285,16 +266,15 @@ func createBucketStopped(ctx context.Context, a *admission, err error, left *cre
 }
 
 // createBucketStream reads the selection bucket's stream, with each key's subject when subjects is
-// set, and false for a stream the server does not hold (10059). Any other failure is UNKNOWN: a
-// configuration that cannot be read is never a match.
+// set, and false for a stream the server does not hold (jetstream.JSErrCodeStreamNotFound). Any
+// other failure is UNKNOWN: a configuration that cannot be read is never a match.
 func createBucketStream(ctx context.Context, nc *nats.Conn, subjects bool) (*jetstream.StreamInfo, bool, error) {
 	var body any
 	if subjects {
 		body = map[string]string{"subjects_filter": "$KV." + selection.SessionBucket + ".>"}
 	}
-	raw, err := apiRequest(ctx, nc, "$JS.API.STREAM.INFO."+createBucketStreamName, body)
-	var apiErr *jetstream.APIError
-	if errors.As(err, &apiErr) && apiErr.ErrorCode == errStreamNotFound {
+	raw, err := apiRequest(ctx, nc, "$JS.API.STREAM.INFO."+selectionStreamName, body)
+	if apiErrorIs(err, jetstream.JSErrCodeStreamNotFound) {
 		return nil, false, nil
 	}
 	if err != nil {
@@ -471,23 +451,10 @@ type createBucketArchive struct {
 	Msgs     uint64 `json:"messages"`
 }
 
-// createBucketReadInputs reads the hold's selection record, and false for none.
+// createBucketReadInputs reads the hold's selection record with its gen, and false for none.
 func (r *run) createBucketReadInputs(ctx context.Context) (createBucketInputs, uint64, bool, error) {
-	records, err := r.records.Records(ctx, r.o.holdID, createBucketSelectionKind)
-	if err != nil {
-		return createBucketInputs{}, 0, false, err
-	}
-	for _, record := range records {
-		if record.Key != createBucketSelectionKey {
-			continue
-		}
-		var in createBucketInputs
-		if err := json.Unmarshal(record.Value, &in); err != nil {
-			return createBucketInputs{}, 0, false, unknownf(err, "the selection record of hold %s", r.o.holdID)
-		}
-		return in, record.Gen, true, nil
-	}
-	return createBucketInputs{}, 0, false, nil
+	return readHoldRecord[createBucketInputs](ctx, r.records, r.o.holdID, createBucketSelectionKind, createBucketSelectionKey,
+		fmt.Sprintf("the selection record of hold %s", r.o.holdID))
 }
 
 // createBucketAfterLoss is `create-bucket --after-loss`, in a selection-recovery hold: the
@@ -541,7 +508,7 @@ func (r *run) createBucketAfterLoss(ctx context.Context) error {
 			in.BackupSHA256, in.Format, in.Archive = backup.sha256, backup.format, backup.archive
 		}
 	}
-	a, err := r.admit(ctx, createBucketAfterLossCommand, map[string]string{"replay_from": formatSeq(in.ReplayFrom),
+	a, err := r.admitRead(ctx, createBucketAfterLossCommand, map[string]string{"replay_from": formatSeq(in.ReplayFrom),
 		"backup_sha256": in.BackupSHA256, "replicas": strconv.Itoa(replicas)})
 	if err != nil {
 		return err
@@ -582,7 +549,7 @@ func (r *run) createBucketAfterLossHeld(ctx context.Context, a *admission, in cr
 	step1 := r.heldStreams
 	if step1 == nil {
 		if step1, err = writerhold.ReadProtectedStreams(ctx, nc, heldExpectedAbsent(holdrecord.WorkflowSelectionRecovery)); err != nil {
-			return nil, heldError(err, "the postcheck's step 1")
+			return nil, hubError(err, "the held re-read, the postcheck's step 1")
 		}
 	}
 	outcome, made, err := r.createBucketRecover(ctx, a, nc, js, store, in, backup, replicas, step1, left)
@@ -631,7 +598,7 @@ func (r *run) createBucketPostcheck(ctx context.Context, nc *nats.Conn, step1 []
 		return err
 	}
 	if !present {
-		return fmt.Errorf("the postcheck: %s is absent after the command", createBucketStreamName)
+		return fmt.Errorf("the postcheck: %s is absent after the command", selectionStreamName)
 	}
 	from := made.base.LastSeq
 	if made.kind == writerhold.ChangeRecreated {
@@ -639,7 +606,7 @@ func (r *run) createBucketPostcheck(ctx context.Context, nc *nats.Conn, step1 []
 	}
 	last := info.State.LastSeq
 	if bound := uint64(len(made.own)) + createBucketArchiveMaxGap; last < from || last-from > bound {
-		return fmt.Errorf("the postcheck: %s's last_seq is %d, and this command's writes counted from %d are at most %d", createBucketStreamName, last, from, bound)
+		return fmt.Errorf("the postcheck: %s's last_seq is %d, and this command's writes counted from %d are at most %d", selectionStreamName, last, from, bound)
 	}
 	barrier := "$KV." + selection.SessionBucket + ".hold.barrier." + r.o.holdID
 	for seq := from + 1; seq <= last; seq++ {
@@ -648,19 +615,19 @@ func (r *run) createBucketPostcheck(ctx context.Context, nc *nats.Conn, step1 []
 			return err
 		}
 		if held && m.Subject != barrier && !made.own[seq] {
-			return fmt.Errorf("the postcheck: %s holds at sequence %d a write of %s, which this command did not make", createBucketStreamName, seq, m.Subject)
+			return fmt.Errorf("the postcheck: %s holds at sequence %d a write of %s, which this command did not make", selectionStreamName, seq, m.Subject)
 		}
 	}
 	readings := make([]writerhold.StreamReading, len(step1))
 	for i, reading := range step1 {
-		if reading.Name == createBucketStreamName && made.kind == writerhold.ChangeKept {
+		if reading.Name == selectionStreamName && made.kind == writerhold.ChangeKept {
 			reading = made.base
 		}
 		readings[i] = reading
 	}
-	changes := map[string]writerhold.Change{createBucketStreamName: {Kind: made.kind, Writes: last - from}}
+	changes := map[string]writerhold.Change{selectionStreamName: {Kind: made.kind, Writes: last - from}}
 	if _, err := writerhold.Postcheck(ctx, nc, readings, changes); err != nil {
-		return heldError(err, "the postcheck")
+		return hubError(err, "the held re-read, the postcheck")
 	}
 	return nil
 }
@@ -675,7 +642,7 @@ func createBucketReading(ctx context.Context, nc *nats.Conn) (writerhold.StreamR
 	if !present {
 		return writerhold.StreamReading{}, unknownf(nil, "selection bucket %s is absent after it was made", selection.SessionBucket)
 	}
-	return writerhold.StreamReading{Name: createBucketStreamName, Created: info.Created, LastSeq: info.State.LastSeq, Messages: info.State.Msgs}, nil
+	return writerhold.StreamReading{Name: selectionStreamName, Created: info.Created, LastSeq: info.State.LastSeq, Messages: info.State.Msgs}, nil
 }
 
 // createBucketSameInputs refuses a rerun's flags that name other inputs than the hold's selection
@@ -706,7 +673,7 @@ func createBucketSameInputs(in createBucketInputs, replayFrom uint64, backup *cr
 func (r *run) createBucketRecover(ctx context.Context, a *admission, nc *nats.Conn, js jetstream.JetStream, store familyStore, in createBucketInputs, backup *createBucketBackup, replicas int, step1 []writerhold.StreamReading, left *createBucketLeft) (string, createBucketMade, error) {
 	made := createBucketMade{kind: writerhold.ChangeKept, own: map[uint64]bool{}}
 	for _, reading := range step1 {
-		if reading.Name == createBucketStreamName {
+		if reading.Name == selectionStreamName {
 			made.base = reading
 		}
 	}
@@ -736,7 +703,7 @@ func (r *run) createBucketRecover(ctx context.Context, a *admission, nc *nats.Co
 		var orphans []string
 		// Every read of the bucket, the decision's and the orphans' records, is behind the barrier.
 		left.barrier = true
-		err := createBucketBehindBarrier(ctx, nc, r.o.holdID, func(ctx context.Context) error {
+		err := behindBarrier(ctx, nc, r.o.holdID, func(ctx context.Context) error {
 			info, present, err := createBucketStream(ctx, nc, true)
 			if err != nil {
 				return err
@@ -979,20 +946,6 @@ func createBucketArchiveIntact(ctx context.Context, nc *nats.Conn, info *jetstre
 	return true, nil
 }
 
-// createBucketBehindBarrier runs read behind the hold's bucket barrier on the selection bucket,
-// the one path every held reader of a bucket takes (writerhold.ReadBucket: the barrier put
-// hold.barrier.<hold id>, then read, with the stream's leader read before the barrier and after
-// the read, and both made again when it changed), its UNKNOWN answered as this package's. read's
-// own error comes back as it is.
-func createBucketBehindBarrier(ctx context.Context, nc *nats.Conn, holdID string, read func(context.Context) error) error {
-	err := writerhold.ReadBucket(ctx, nc, selection.SessionBucket, holdID, read)
-	var unknown *writerhold.Unknown
-	if errors.As(err, &unknown) {
-		return unknownf(err, "the bucket barrier of %s", selection.SessionBucket)
-	}
-	return err
-}
-
 // createBucketSentinelState is the sentinel a recovery writes: replay mode from the inputs, the
 // orphans listed now (with an adopted sentinel's own kept), the broker's cutover state of the
 // session family (holdrecord.Client.Cutovers, the one the commands decide on), and the boundary
@@ -1092,7 +1045,7 @@ func (r *run) createBucketMake(ctx context.Context, nc *nats.Conn, js jetstream.
 		made.kind = writerhold.ChangeKept
 		err := createBucketRestore(ctx, nc, backup)
 		if err != nil {
-			left.unsure = "whatever the failed restore of " + createBucketStreamName + " left, which its error names"
+			left.unsure = "whatever the failed restore of " + selectionStreamName + " left, which its error names"
 			return made, err
 		}
 		left.restored = true
@@ -1161,7 +1114,7 @@ func createBucketRestore(ctx context.Context, nc *nats.Conn, backup *createBucke
 }
 
 // createBucketRestoreSubject is the restore's start, which the operator's held grant names.
-const createBucketRestoreSubject = "$JS.API.STREAM.RESTORE." + createBucketStreamName
+const createBucketRestoreSubject = "$JS.API.STREAM.RESTORE." + selectionStreamName
 
 // createBucketRestoreOnce is one run of the restore, its start retried through its transients:
 // 10049 and "no responders" createBucketStartTries times, and 10130, a cut restore's leftover, once
@@ -1199,7 +1152,7 @@ func createBucketRestoreOnce(ctx context.Context, nc *nats.Conn, backup *createB
 		default:
 			return nil, false, err
 		}
-		if err := createBucketSleep(ctx, createBucketStartPause); err != nil {
+		if err := sleep(ctx, createBucketStartPause); err != nil {
 			return nil, false, err
 		}
 	}
@@ -1223,7 +1176,7 @@ func createBucketRestoreRun(ctx context.Context, mgr *jsm.Manager, dir string, n
 	}
 	done := make(chan result, 1)
 	go func() {
-		_, state, err := mgr.RestoreSnapshotFromDirectory(ctx, createBucketStreamName, dir, notify)
+		_, state, err := mgr.RestoreSnapshotFromDirectory(ctx, selectionStreamName, dir, notify)
 		done <- result{state, err}
 	}()
 	select {
@@ -1246,7 +1199,7 @@ func createBucketReconnect(ctx context.Context, nc *nats.Conn) error {
 		if time.Now().After(deadline) {
 			return unknownf(nil, "the reconnect before the restore of %s did not complete within %s", selection.SessionBucket, createBucketReconnectWait)
 		}
-		if err := createBucketSleep(ctx, 50*time.Millisecond); err != nil {
+		if err := sleep(ctx, 50*time.Millisecond); err != nil {
 			return err
 		}
 	}
@@ -1269,7 +1222,7 @@ func createBucketDeleteLeftover(ctx context.Context, nc *nats.Conn) error {
 			return err
 		}
 		if present {
-			if _, err := apiRequest(ctx, nc, "$JS.API.STREAM.DELETE."+createBucketStreamName, nil); err != nil {
+			if _, err := apiRequest(ctx, nc, "$JS.API.STREAM.DELETE."+selectionStreamName, nil); err != nil {
 				return unknownf(err, "the delete of %s's leftover", selection.SessionBucket)
 			}
 			return createBucketAwaitGone(ctx, nc, deadline)
@@ -1280,7 +1233,7 @@ func createBucketDeleteLeftover(ctx context.Context, nc *nats.Conn) error {
 		if time.Now().After(deadline) {
 			return unknownf(nil, "no leftover of the cut restore of %s appeared within %s", selection.SessionBucket, createBucketLeftoverWait)
 		}
-		if err := createBucketSleep(ctx, time.Second); err != nil {
+		if err := sleep(ctx, time.Second); err != nil {
 			return err
 		}
 	}
@@ -1303,7 +1256,7 @@ func createBucketAwaitGone(ctx context.Context, nc *nats.Conn, deadline time.Tim
 		case time.Now().After(deadline):
 			return unknownf(err, "read %s after the delete of its leftover", selection.SessionBucket)
 		}
-		if err := createBucketSleep(ctx, time.Second); err != nil {
+		if err := sleep(ctx, time.Second); err != nil {
 			return err
 		}
 	}
@@ -1329,7 +1282,7 @@ func createBucketAwaitLeader(ctx context.Context, nc *nats.Conn) error {
 		if time.Now().After(deadline) {
 			return unknownf(nil, "selection bucket %s named no leader within %s of its create", selection.SessionBucket, createBucketLeaderWait)
 		}
-		if err := createBucketSleep(ctx, 100*time.Millisecond); err != nil {
+		if err := sleep(ctx, 100*time.Millisecond); err != nil {
 			return err
 		}
 	}
@@ -1347,19 +1300,8 @@ func createBucketFreshWrite(ctx context.Context, write func() error) error {
 		if !errors.Is(err, nats.ErrNoResponders) || time.Now().After(deadline) {
 			return err
 		}
-		if err := createBucketSleep(ctx, 100*time.Millisecond); err != nil {
+		if err := sleep(ctx, 100*time.Millisecond); err != nil {
 			return err
 		}
-	}
-}
-
-func createBucketSleep(ctx context.Context, d time.Duration) error {
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
 	}
 }

@@ -11,7 +11,6 @@ import (
 	selection "github.com/sjawhar/envoy/consumernames"
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/holdrecord"
 	"github.com/sjawhar/envoy/natsgrant"
 )
 
@@ -24,14 +23,17 @@ const (
 )
 
 // replaceListener is `consumer-names replace --listener <machine id> --hold <id>`: it replaces one
-// listener's durable by a fresh name at its floor, through the durable's selection record in the
-// session consumers' bucket (selection.DurableKey of bus.ListenerDurable), as the selection
-// protocol's Replace does (selection.Names.Replace). It runs only while the hold row is held under
-// --hold, so no listener is connected and the durable's floor cannot move under it.
+// listener's durable by a fresh name at one past its ack floor, through the durable's selection
+// record in the session consumers' bucket (selection.DurableKey of bus.ListenerDurable), as the
+// selection protocol's Replace does (selection.Names.Replace). It runs only while the hold row is
+// held under --hold, so no listener is connected and the durable's floor cannot move under it.
 //
-// It first settles an operation a crashed run, or a listener before the hold, left open on the
-// record (Step 0, selection.Names.Select): a candidate the server holds is published, and one it
-// does not is retired. Then it reserves the replace with start = the current's ack floor + 1, and
+// It first reads the record behind the hold's bucket barrier (behindBarrier), as every held reader
+// of the bucket does, and settles an operation a crashed run, or a listener before the hold, left
+// open on it (Step 0, selection.Names.Select): a candidate the server holds is published, and one it
+// does not is retired. Step 0's writes are conditional on the revision it read, so when the
+// bucket's leader moved during the read and ReadBucket reads again, the second Select finds them
+// written. Then it reserves the replace with start = the current's ack floor + 1, and
 // a start past the sequence after the stream's last at the stream's first sequence, as every
 // session consumer create clamps one (internal/bus/session_consumers.go, create); creates the
 // candidate from the current's own configuration, corrected as the listener's policy needs it (no
@@ -61,27 +63,35 @@ func (r *run) replaceListener(ctx context.Context) error {
 	if _, err := r.requirePhase(ctx, natsgrant.OperatorPhaseHeld); err != nil {
 		return err
 	}
-	nc, js, err := r.conn(ctx)
+	nc, _, err := r.conn(ctx)
 	if err != nil {
 		return err
 	}
-	if err := holdrecord.Barrier(ctx, js, selection.SessionBucket, r.o.holdID); err != nil {
-		if errors.Is(err, nats.ErrNoResponders) || errors.Is(err, jetstream.ErrNoStreamResponse) {
-			return fmt.Errorf("the selection bucket %s is missing, so %s has no record to replace by: %w", selection.SessionBucket, durable, err)
-		}
-		return unknownf(err, "the barrier on %s", selection.SessionBucket)
+	// The bucket barrier reads the bucket's stream leader first, which a missing bucket answers
+	// UNKNOWN; a missing bucket is replace's refusal.
+	if _, err := streamInfo(ctx, nc, selectionStreamName); apiErrorIs(err, jetstream.JSErrCodeStreamNotFound) {
+		return fmt.Errorf("the selection bucket %s is missing, so %s has no record to replace by: %w", selection.SessionBucket, durable, err)
+	} else if err != nil {
+		return unknownf(err, "the info of %s", selectionStreamName)
 	}
 	store, err := r.store(ctx, familySession)
 	if err != nil {
 		return err
 	}
 	names := replaceNames(nc, store, m, r.o.holdID)
-	sel, err := names.Select(ctx, m.Logical, nil)
+	var sel selection.Selection
+	var selected error
+	if err := behindBarrier(ctx, nc, r.o.holdID, func(ctx context.Context) error {
+		sel, selected = names.Select(ctx, m.Logical, nil)
+		return nil
+	}); err != nil {
+		return err
+	}
 	switch {
-	case errors.Is(err, selection.ErrCutoverNotRun):
-		return fmt.Errorf("%s: the selection bucket's sentinel does not read cutover done, so the listener's durable is its fixed name, which replace does not take: %w", durable, err)
-	case err != nil:
-		return fmt.Errorf("%s's selection record (%s): %w", durable, m.Logical, err)
+	case errors.Is(selected, selection.ErrCutoverNotRun):
+		return fmt.Errorf("%s: the selection bucket's sentinel does not read cutover done, so the listener's durable is its fixed name, which replace does not take: %w", durable, selected)
+	case selected != nil:
+		return fmt.Errorf("%s's selection record (%s): %w", durable, m.Logical, selected)
 	case sel.Record.Current == "":
 		return fmt.Errorf("%s's selection record (%s) selects no current: the listener's start creates its durable at the record's start", durable, m.Logical)
 	case sel.Missing:
@@ -92,7 +102,7 @@ func (r *run) replaceListener(ctx context.Context) error {
 	if err != nil {
 		return unknownf(err, "the info of %s", notifications)
 	}
-	start := replaceStart(info.AckFloor.Stream, stream.State)
+	start := clampStart(info.AckFloor.Stream+1, stream.State)
 	replaced, err := names.Replace(ctx, sel, start, replaceCreate(nc, info.Config, m))
 	if err != nil {
 		return fmt.Errorf("replace %s (%s) at %d: %w", old, durable, start, err)
@@ -147,18 +157,6 @@ func (s replaceServer) Delete(ctx context.Context, name string) error {
 	return deleteConsumer(ctx, s.nc, notifications, name)
 }
 
-// replaceStart is the start of a replace of a consumer whose ack floor is floor, on a stream in
-// state: the sequence after the floor, and a start past the sequence after the stream's last at the
-// stream's first sequence (at least 1, the sequence an empty stream stores next), the clamp every
-// session consumer create applies (internal/bus/session_consumers.go, create and firstStart).
-func replaceStart(floor uint64, state jetstream.StreamState) uint64 {
-	start := floor + 1
-	if start > state.LastSeq+1 {
-		start = max(state.FirstSeq, 1)
-	}
-	return start
-}
-
 // replaceCreate is the selection.CreateFunc of the replace's candidate: the current's own
 // configuration, base, under the candidate's name, carrying m's metadata, at the start the protocol
 // gives by start sequence, corrected as packages/envoy/deploy/README.md's recreation corrected it
@@ -178,8 +176,7 @@ func replaceCreate(nc *nats.Conn, base jetstream.ConsumerConfig, m member) selec
 		config.AckPolicy = jetstream.AckExplicitPolicy
 		config.DeliverPolicy, config.OptStartSeq, config.OptStartTime = jetstream.DeliverByStartSequencePolicy, start.Seq, nil
 		info, err := writeConsumer(ctx, nc, notifications, config, actionCreateConsumer)
-		var api *jetstream.APIError
-		if errors.As(err, &api) && api.ErrorCode == jetstream.JSErrCodeMaximumConsumersLimit {
+		if apiErrorIs(err, jetstream.JSErrCodeMaximumConsumersLimit) {
 			return nil, fmt.Errorf("%w: %w", selection.ErrConsumerLimit, err)
 		}
 		return info, err

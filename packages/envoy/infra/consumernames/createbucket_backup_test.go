@@ -91,7 +91,7 @@ func createBucketWriteWalk(t *testing.T, dir string, records []kvrecords.Record,
 		lines.WriteByte('\n')
 	}
 	recordsSum := sha256.Sum256(lines.Bytes())
-	manifest, err := json.Marshal(kvrecords.Manifest{Format: kvrecords.Format, Bucket: selection.SessionBucket, Stream: createBucketStreamName,
+	manifest, err := json.Marshal(kvrecords.Manifest{Format: kvrecords.Format, Bucket: selection.SessionBucket, Stream: selectionStreamName,
 		TakenAt: time.Now().UTC(), FirstSeq: first, LastSeq: last, Records: len(records), RecordsSHA256: hex.EncodeToString(recordsSum[:])})
 	require.NoError(t, err)
 	manifestSum := sha256.Sum256(manifest)
@@ -282,7 +282,7 @@ func createBucketHeldSnapshot(t *testing.T, h *stack) string {
 	createBucketInHold(t, h, func(held *nats.Conn, _ jetstream.JetStream) {
 		mgr, err := jsm.New(held, jsm.WithTimeout(30*time.Second))
 		require.NoError(t, err)
-		stream, err := mgr.LoadStream(createBucketStreamName)
+		stream, err := mgr.LoadStream(selectionStreamName)
 		require.NoError(t, err)
 		_, err = stream.SnapshotToDirectory(context.Background(), dir)
 		require.NoError(t, err, "the snapshot as the held operator")
@@ -311,7 +311,7 @@ func TestTheReleasedOperatorsBackupRestoresTheSelectionBucket(t *testing.T) {
 
 	require.Equal(t, natsgrant.OperatorPhaseReleased, h.row().Phase, "the walk is the released operator's")
 	released, _ := h.operator()
-	before, err := streamInfo(ctx, released, createBucketStreamName)
+	before, err := streamInfo(ctx, released, selectionStreamName)
 	require.NoError(t, err)
 	dir := filepath.Join(t.TempDir(), "walk")
 	_, err = kvrecords.Write(ctx, released, selection.SessionBucket, dir)
@@ -325,9 +325,9 @@ func TestTheReleasedOperatorsBackupRestoresTheSelectionBucket(t *testing.T) {
 		name, without, at string
 	}{
 		{name: "the whole held grant"},
-		{name: "without the snapshot's restore", without: "$JS.API.STREAM.RESTORE." + createBucketStreamName},
+		{name: "without the snapshot's restore", without: "$JS.API.STREAM.RESTORE." + selectionStreamName},
 		{name: "without the load's publishes", without: "$KV." + selection.SessionBucket + ".>", at: "the replay's put of"},
-		{name: "without the bucket's create", without: "$JS.API.STREAM.CREATE." + createBucketStreamName, at: "create " + selection.SessionBucket},
+		{name: "without the bucket's create", without: "$JS.API.STREAM.CREATE." + selectionStreamName, at: "create " + selection.SessionBucket},
 	} {
 		grant := held
 		if row.without != "" {
@@ -540,7 +540,7 @@ func TestACutWalkLoadIsDeletedAndLoadedAgain(t *testing.T) {
 
 // createBucketHeldSnapshotGrant is the held operator's grant of the selection bucket's snapshot
 // (STREAM.SNAPSHOT and its chunks' acknowledgements), which natsgrant.Operator(held) alone names.
-var createBucketHeldSnapshotGrant = []string{"$JS.API.STREAM.SNAPSHOT." + createBucketStreamName, "$JS.SNAPSHOT.ACK." + createBucketStreamName + ".>"}
+var createBucketHeldSnapshotGrant = []string{"$JS.API.STREAM.SNAPSHOT." + selectionStreamName, "$JS.SNAPSHOT.ACK." + selectionStreamName + ".>"}
 
 // A snapshot of the selection bucket taken inside a hold, as the held operator, through jsm.go's
 // SnapshotToDirectory on its own connection, restores with create-bucket --after-loss --backup
@@ -594,7 +594,7 @@ func createBucketStoreAnswer(t *testing.T, sender, reader *nats.Conn, request, k
 
 // createBucketStreamInfo is the request whose answer a principal holding the selection bucket's
 // STREAM.INFO (the released operator, here) has the server store under a key.
-const createBucketStreamInfo = "$JS.API.STREAM.INFO." + createBucketStreamName
+const createBucketStreamInfo = "$JS.API.STREAM.INFO." + selectionStreamName
 
 // A value that is not exactly a value of its key's kind makes create-bucket --after-loss refuse,
 // naming the key and its sequence, and load nothing. Any principal with a JetStream API grant can
@@ -629,7 +629,7 @@ func TestAValueThatIsNoExactRecordRefusesTheLoad(t *testing.T) {
 			if c.copied {
 				listener, err := h.s.Connect(h.s.Cluster.URL(), h.s.ListenerCredential(holdtest.ListenerMachines[0]))
 				require.NoError(t, err)
-				seq, data = createBucketStoreAnswer(t, listener, released, "$JS.API.DIRECT.GET."+createBucketStreamName+".$KV."+selection.SessionBucket+".ses_backed", c.key)
+				seq, data = createBucketStoreAnswer(t, listener, released, "$JS.API.DIRECT.GET."+selectionStreamName+".$KV."+selection.SessionBucket+".ses_backed", c.key)
 				listener.Close()
 			} else {
 				seq, data = createBucketStoreAnswer(t, released, released, createBucketStreamInfo, c.key)
@@ -664,7 +664,7 @@ func TestAValueThatIsNoExactRecordRefusesTheLoad(t *testing.T) {
 		code, _, stderr := h.run("create-bucket", "--hold", id, "--after-loss", "--backup", dir)
 		require.Equal(t, 1, code, stderr)
 		require.Contains(t, stderr, fmt.Sprintf("selection bucket %s's key ses_forged at sequence %d holds no selection record", selection.SessionBucket, seq))
-		require.Contains(t, stderr, "the bucket "+createBucketStreamName+" restored from the backup and deleted again")
+		require.Contains(t, stderr, "the bucket "+selectionStreamName+" restored from the backup and deleted again")
 		require.False(t, h.journal(id).Complete)
 		_, present, _, _ := createBucketState(h)
 		require.False(t, present, "the refused snapshot's restored bucket was left")
@@ -773,7 +773,7 @@ func TestARecoveryRefusalAfterItsIntentStops(t *testing.T) {
 	createBucketMakeBucket(t, nc, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 3, Hold: "another-hold"})
 	code, _, stderr := h.run("create-bucket", "--hold", id, "--after-loss")
 	require.Equal(t, 1, code, stderr)
-	createBucketRequireStop(t, h, id, createBucketAfterLossCommand, "the hold's selection record", "this hold's barrier key in "+createBucketStreamName)
+	createBucketRequireStop(t, h, id, createBucketAfterLossCommand, "the hold's selection record", "this hold's barrier key in "+selectionStreamName)
 }
 
 // replay's refusal after its intent (a record that does not decode) writes its stop entry naming
@@ -793,5 +793,5 @@ func TestAReplayRefusalAfterItsIntentStops(t *testing.T) {
 	require.NoError(t, err)
 	code, _, stderr = h.run("replay", "--hold", id, "--key", "ses_bad", "--from", "2")
 	require.Equal(t, 1, code, stderr)
-	createBucketRequireStop(t, h, id, replayCommand, "this hold's barrier key in "+createBucketStreamName)
+	createBucketRequireStop(t, h, id, replayCommand, "this hold's barrier key in "+selectionStreamName)
 }

@@ -9,9 +9,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
-
 	selection "github.com/sjawhar/envoy/consumernames"
 	"github.com/sjawhar/envoy/internal/holdrecord"
 )
@@ -19,9 +16,6 @@ import (
 // enrollCommand is the enroll's command in the hold's journal, the one command of the workflow
 // holdrecord.WorkflowEnroll (internal/holdrecord/table.go, tableFor): final and Stoppable.
 const enrollCommand = "consumer-names enroll"
-
-// enrollUndefinedTable is Postgres's SQLSTATE for a relation that does not exist.
-const enrollUndefinedTable = "42P01"
 
 // enroll is `consumer-names enroll --daemon <project key> --hold <id>`: it marks a Legion daemon's
 // store made after the window, which no cutover converted, as converted, so its daemon in the
@@ -235,26 +229,21 @@ func enrollHoldName(holdID string) string {
 	return "hold " + holdID
 }
 
-// enrollReadMarker reads the store's sentinel row with its revision, which
-// selection.PGStore.State does not answer and the conditional write needs, and whether the row
-// exists. A missing table is selection.ErrNoStore.
+// enrollReadMarker reads the store's sentinel row with its revision (readPGSentinel), and whether
+// the row exists. A missing table is selection.ErrNoStore.
 func enrollReadMarker(ctx context.Context, db Database) (selection.StoreState, uint64, bool, error) {
-	var data []byte
-	var revision int64
-	err := db.QueryRow(ctx, `select record, revision from `+selection.IntakeConsumersTable+` where logical = $1`, selection.PGSentinelKey).Scan(&data, &revision)
+	data, revision, found, err := readPGSentinel(ctx, db)
 	switch {
-	case errors.Is(err, pgx.ErrNoRows):
-		return selection.StoreState{}, 0, false, nil
-	case enrollNoTable(err):
+	case pgNoTable(err):
 		return selection.StoreState{}, 0, false, fmt.Errorf("%w: %s (%w)", selection.ErrNoStore, selection.IntakeConsumersTable, err)
-	case err != nil:
+	case err != nil || !found:
 		return selection.StoreState{}, 0, false, err
 	}
 	var state selection.StoreState
 	if err := json.Unmarshal(data, &state); err != nil {
 		return selection.StoreState{}, 0, false, fmt.Errorf("the %s row of %s: %w", selection.PGSentinelKey, selection.IntakeConsumersTable, err)
 	}
-	return state, uint64(revision), true, nil
+	return state, revision, true, nil
 }
 
 // enrollWriteMarker writes the store's marker through store's conditional sentinel write: cutover
@@ -296,7 +285,7 @@ func enrollWriteMarker(ctx context.Context, db Database, store familyStore, stat
 // table is selection.ErrNoStore.
 func enrollCheckpoints(ctx context.Context, db Database) ([]string, error) {
 	rows, err := db.Query(ctx, `select consumer, stream_seq from consumer_positions order by consumer`)
-	if enrollNoTable(err) {
+	if pgNoTable(err) {
 		return nil, fmt.Errorf("%w: consumer_positions (%w)", selection.ErrNoStore, err)
 	}
 	if err != nil {
@@ -312,7 +301,7 @@ func enrollCheckpoints(ctx context.Context, db Database) ([]string, error) {
 		}
 		found = append(found, fmt.Sprintf("consumer_positions holds a checkpoint of %s at stream sequence %d", consumer, seq))
 	}
-	if err := rows.Err(); enrollNoTable(err) {
+	if err := rows.Err(); pgNoTable(err) {
 		return nil, fmt.Errorf("%w: consumer_positions (%w)", selection.ErrNoStore, err)
 	} else if err != nil {
 		return nil, err
@@ -337,10 +326,4 @@ func enrollSelectionRows(ctx context.Context, store familyStore) ([]string, erro
 		found = append(found, fmt.Sprintf("%s holds the selection row of %s", selection.IntakeConsumersTable, logical))
 	}
 	return found, nil
-}
-
-// enrollNoTable reports whether err is Postgres's answer for a table that does not exist.
-func enrollNoTable(err error) bool {
-	var pg *pgconn.PgError
-	return errors.As(err, &pg) && pg.Code == enrollUndefinedTable
 }

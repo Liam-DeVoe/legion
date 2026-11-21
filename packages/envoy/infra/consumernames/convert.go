@@ -39,9 +39,6 @@ const convertListings = 8
 // convertConflicts bounds how often one name's record is read again after a refused write.
 const convertConflicts = 16
 
-// errConsumerLimit is JetStream's refusal of a create at the stream's max_consumers (10026).
-const errConsumerLimit = 10026
-
 // convertSet is the hold's convert record: every fixed name convert converts, saved before its
 // first mutation, with the configuration it read from each one's info, so a rerun after a crash
 // between F's delete and N's create still creates N from F's configuration, and restore --finish
@@ -69,21 +66,8 @@ func (s convertSet) has(fixed string) bool {
 
 // readConvertSet reads hold holdID's convert record and its gen, and false when it has none.
 func readConvertSet(ctx context.Context, records *holdrecord.Client, holdID string) (convertSet, uint64, bool, error) {
-	list, err := records.Records(ctx, holdID, convertSetKind)
-	if err != nil {
-		return convertSet{}, 0, false, err
-	}
-	for _, record := range list {
-		if record.Key != convertSetKey {
-			continue
-		}
-		var set convertSet
-		if err := json.Unmarshal(record.Value, &set); err != nil {
-			return convertSet{}, 0, false, unknownf(err, "hold %s's convert record does not decode", holdID)
-		}
-		return set, record.Gen, true, nil
-	}
-	return convertSet{}, 0, false, nil
+	return readHoldRecord[convertSet](ctx, records, holdID, convertSetKind, convertSetKey,
+		fmt.Sprintf("hold %s's convert record does not decode", holdID))
 }
 
 // convertRule is convert's rule, with the seam its meta-leader row's control flips.
@@ -104,7 +88,7 @@ type convertRule struct {
 // and its store's marker cutover = done, marks the set complete, and writes its done entry. It is
 // resumable: a rerun settles an open operation (Step 0) and goes on from the saved set.
 func (r *run) convert(ctx context.Context) error {
-	return createBucketRefusal(r.nc, convertRule{}.run(ctx, r))
+	return connRefusal(r.nc, convertRule{}.run(ctx, r))
 }
 
 // convertNoStart is a logical name convert has no safe start for, and why.
@@ -117,7 +101,7 @@ func (c convertRule) run(ctx context.Context, r *run) error {
 	if err != nil {
 		return err
 	}
-	cohort, found, err := readPrepareCohort(ctx, r.records, r.o.holdID)
+	cohort, _, found, err := readPrepareCohort(ctx, r.records, r.o.holdID)
 	if err != nil {
 		return err
 	}
@@ -134,7 +118,7 @@ func (c convertRule) run(ctx context.Context, r *run) error {
 	}
 	declared, err := writerhold.Discover(ctx, op.Hub)
 	if err != nil {
-		return convertHubError(err, "the declared servers")
+		return hubError(err, "the declared servers")
 	}
 	barrier := writerhold.MetaBarrier{Hub: op.Hub, Declared: declared, HoldID: r.o.holdID}
 
@@ -308,16 +292,6 @@ func convertLeft(holdID string, set convertSet, saved bool) string {
 	return fmt.Sprintf("convert's saved set of %d fixed names under hold %s (its convert record), and every selection record, fresh name and fixed name's deletion a run of convert made of it", len(set.Names), holdID)
 }
 
-// convertHubError is a hub reading of writerhold's that failed: its UNKNOWN stays UNKNOWN here
-// (exit 2), and its refusal a refusal.
-func convertHubError(err error, what string) error {
-	var unknown *writerhold.Unknown
-	if errors.As(err, &unknown) {
-		return unknownf(err, "%s", what)
-	}
-	return fmt.Errorf("%s: %w", what, err)
-}
-
 // list is one listing of the notification stream's consumers behind the meta barrier: the barrier
 // stream made, listed and deleted, then CONSUMER.NAMES, counted only when every declared server
 // answered one meta term and leader before the barrier and after the listing; otherwise the
@@ -333,7 +307,7 @@ func (c convertRule) list(ctx context.Context, nc *nats.Conn, barrier writerhold
 	}
 	if c.noTermCheck {
 		if err := barrier.Run(ctx, nc, nil); err != nil {
-			return nil, convertHubError(err, "the meta barrier")
+			return nil, hubError(err, "the meta barrier")
 		}
 		if err := listing(ctx); err != nil {
 			return nil, err
@@ -345,7 +319,7 @@ func (c convertRule) list(ctx context.Context, nc *nats.Conn, barrier writerhold
 		if errors.As(err, &unknown) {
 			return nil, err
 		}
-		return nil, convertHubError(err, "the meta barrier and its listing")
+		return nil, hubError(err, "the meta barrier and its listing")
 	}
 	return names, nil
 }
@@ -568,7 +542,7 @@ func convertOwner() string {
 //   - A record whose current is a fresh name is converted already; a fixed name still present is
 //     a stray, retired and deleted.
 //   - With F present: the start S is the lowest of F's ack floor + 1, Dispatch's hold-token start
-//     and any start the record holds, with today's clamp (convertClamp). The record is written
+//     and any start the record holds, with today's clamp (clampStart). The record is written
 //     op = {replace, old F, candidate N} and start = S, then F is deleted, then N is created at S
 //     with F's configuration and the member's metadata, then published: F goes first, so no
 //     logical name holds two slots and no cap update is needed.
@@ -624,7 +598,7 @@ func (c convertRule) convertName(ctx context.Context, r *run, nc *nats.Conn, nam
 				return false, nil, nil
 			}
 			next := convertClone(record)
-			next = convertRetire(next, name.Fixed)
+			next = retire(next, name.Fixed)
 			if _, err := st.Write(ctx, m.Logical, next, revision); err != nil {
 				if errors.Is(err, selection.ErrConflict) {
 					continue
@@ -658,9 +632,9 @@ func (c convertRule) convertName(ctx context.Context, r *run, nc *nats.Conn, nam
 			next := convertClone(record)
 			if next.Current == name.Fixed {
 				next.Current = ""
-				next = convertRetire(next, name.Fixed)
+				next = retire(next, name.Fixed)
 			}
-			next.Start = convertClamp(slices.Min(starts), stream.State)
+			next.Start = clampStart(slices.Min(starts), stream.State)
 			next.LastFloor, next.Restore = nil, nil
 			if revision != 0 && next.Start == record.Start && next.Current == record.Current && len(next.Retired) == len(record.Retired) {
 				return false, nil, nil
@@ -673,14 +647,14 @@ func (c convertRule) convertName(ctx context.Context, r *run, nc *nats.Conn, nam
 			}
 			return true, nil, nil
 		}
-		starts = append(starts, convertClamp(convertFloor(info)+1, stream.State))
+		starts = append(starts, clampStart(convertFloor(info)+1, stream.State))
 		config := name.Config
 		if config == nil {
 			config = &info.Config
 		}
 		next := convertClone(record)
 		next.Current = name.Fixed
-		next.Start = convertClamp(slices.Min(starts), stream.State)
+		next.Start = clampStart(slices.Min(starts), stream.State)
 		next.Op = &selection.Op{Kind: selection.OpReplace, Owner: convertOwner(), Old: name.Fixed,
 			Candidate: selection.FreshName(m.Prefix), ReservedAt: r.now()}
 		next.LastFloor, next.Restore = nil, nil
@@ -745,7 +719,7 @@ func (c convertRule) settle(ctx context.Context, r *run, nc *nats.Conn, st famil
 		return err
 	}
 	if op.Kind == selection.OpReplace && record.Start == 0 {
-		next := convertRetire(convertClone(record), op.Candidate)
+		next := retire(convertClone(record), op.Candidate)
 		next.Op = nil
 		_, err := st.Write(ctx, m.Logical, next, revision)
 		return err
@@ -758,7 +732,7 @@ func (c convertRule) settle(ctx context.Context, r *run, nc *nats.Conn, st famil
 		return c.publish(ctx, nc, st, m, record, revision, info)
 	}
 	if op.Kind != selection.OpReplace {
-		next := convertRetire(convertClone(record), op.Candidate)
+		next := retire(convertClone(record), op.Candidate)
 		next.Op = nil
 		_, err := st.Write(ctx, m.Logical, next, revision)
 		return err
@@ -783,23 +757,18 @@ func (c convertRule) settle(ctx context.Context, r *run, nc *nats.Conn, st famil
 }
 
 // readStore runs read, a read of family's store that convert acts on: for the session family
-// behind the hold's bucket barrier, taken again before each read (writerhold.ReadBucket: the put
-// hold.barrier.<hold id>, acknowledged by the stream's leader once it has applied every entry
-// before it, and the leader read before the barrier and after the read, the barrier made again
-// when it changed), so neither a record committed before the barrier nor a new leader that answers
-// before it has applied its log can give convert a stale record (plan §3a, "The bucket barrier,
-// before the first read of each bucket" and "A later read follows the same rule"). The other
-// families' stores are Postgres, which needs none.
+// behind the hold's bucket barrier, taken again before each read (behindBarrier,
+// writerhold.ReadBucket: the put hold.barrier.<hold id>, acknowledged by the stream's leader once
+// it has applied every entry before it, and the leader read before the barrier and after the read,
+// the barrier made again when it changed), so neither a record committed before the barrier nor a
+// new leader that answers before it has applied its log can give convert a stale record (plan §3a,
+// "The bucket barrier, before the first read of each bucket" and "A later read follows the same
+// rule"). The other families' stores are Postgres, which needs none.
 func (c convertRule) readStore(ctx context.Context, r *run, family string, read func(context.Context) error) error {
 	if family != familySession {
 		return read(ctx)
 	}
-	err := writerhold.ReadBucket(ctx, r.nc, selection.SessionBucket, r.o.holdID, read)
-	var unknown *writerhold.Unknown
-	if errors.As(err, &unknown) {
-		return convertHubError(err, "the bucket barrier of "+selection.SessionBucket)
-	}
-	return err
+	return behindBarrier(ctx, r.nc, r.o.holdID, read)
 }
 
 // convertCreatorThreshold is config, F's configuration, with the inactive threshold of F's
@@ -822,12 +791,8 @@ func (c convertRule) awaitCandidate(ctx context.Context, r *run, nc *nats.Conn, 
 		return info, err
 	}
 	if wait := convertSettleAge - r.now().Sub(op.ReservedAt); wait > 0 {
-		timer := time.NewTimer(wait)
-		defer timer.Stop()
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-timer.C:
+		if err := sleep(ctx, wait); err != nil {
+			return nil, err
 		}
 		return consumerInfo(ctx, nc, notifications, op.Candidate)
 	}
@@ -837,7 +802,7 @@ func (c convertRule) awaitCandidate(ctx context.Context, r *run, nc *nats.Conn, 
 // rereserve retires record's open operation's candidate and reserves a fresh one, with the same
 // start, by a conditional write, and answers the record written and its revision.
 func (c convertRule) rereserve(ctx context.Context, r *run, st familyStore, m member, record selection.Record, revision uint64) (selection.Record, uint64, error) {
-	next := convertRetire(convertClone(record), record.Op.Candidate)
+	next := retire(convertClone(record), record.Op.Candidate)
 	retry := *record.Op
 	retry.Candidate, retry.ReservedAt, retry.Owner = selection.FreshName(m.Prefix), r.now(), convertOwner()
 	next.Op = &retry
@@ -861,7 +826,7 @@ func (c convertRule) launch(ctx context.Context, r *run, nc *nats.Conn, st famil
 		}
 		var api *jetstream.APIError
 		if errors.As(err, &api) {
-			if api.ErrorCode != errConsumerLimit {
+			if api.ErrorCode != jetstream.JSErrCodeMaximumConsumersLimit {
 				return fmt.Errorf("create %s, %s's fresh name, at %d: %w", op.Candidate, m.Logical, record.Start, err)
 			}
 			switch {
@@ -907,7 +872,7 @@ func (c convertRule) publish(ctx context.Context, nc *nats.Conn, st familyStore,
 		next.Start = info.Config.OptStartSeq
 	}
 	if op.Kind == selection.OpReplace {
-		next = convertRetire(next, op.Old)
+		next = retire(next, op.Old)
 	}
 	next.Op, next.LastFloor, next.Restore = nil, nil, nil
 	if _, err := st.Write(ctx, m.Logical, next, revision); err != nil {
@@ -976,9 +941,11 @@ func convertFloor(info *jetstream.ConsumerInfo) uint64 {
 	return floor
 }
 
-// convertClamp is today's clamp (internal/bus/session_consumers.go create, firstStart): a start
-// past the sequence after the stream's last becomes the stream's first sequence, at least 1.
-func convertClamp(start uint64, state jetstream.StreamState) uint64 {
+// clampStart is today's clamp (internal/bus/session_consumers.go create, firstStart) of a create's
+// start on a stream in state: a start past the sequence after the stream's last becomes the
+// stream's first sequence, at least 1, the sequence an empty stream stores next. convert,
+// convert's settle and replace start each fresh name through it.
+func clampStart(start uint64, state jetstream.StreamState) uint64 {
 	if start > state.LastSeq+1 {
 		return max(1, state.FirstSeq)
 	}
@@ -1004,8 +971,9 @@ func convertClone(record selection.Record) selection.Record {
 	return c
 }
 
-// convertRetire is record with name added to its retired names, once.
-func convertRetire(record selection.Record, name string) selection.Record {
+// retire is record with name added to its retired names, once, in a copy of its list: convert,
+// replay and restore each retire a name a record no longer selects through it.
+func retire(record selection.Record, name string) selection.Record {
 	if name != "" && !slices.Contains(record.Retired, name) {
 		record.Retired = append(slices.Clone(record.Retired), name)
 	}

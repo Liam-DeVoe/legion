@@ -22,10 +22,6 @@ import (
 // pull against it (:2266-2275).
 const prepareThreshold = 7 * 24 * time.Hour
 
-// prepareUpdateOfNoConsumer is JetStream's answer to a consumer update of a consumer that does not
-// exist (10149, "consumer does not exist").
-const prepareUpdateOfNoConsumer = 10149
-
 // The hold's cohort record (holdrecord.Client.PutRecord): kind cohort, key cohort, which prepare
 // writes and `hold abort` from prepare deletes (holdrecord.Client.DeleteCohort).
 const (
@@ -80,30 +76,11 @@ func (c prepareCohort) member(fixed string) *prepareCohortMember {
 	return &c.Members[i]
 }
 
-// readPrepareCohort reads hold holdID's cohort record, and false when it has none.
-func readPrepareCohort(ctx context.Context, records *holdrecord.Client, holdID string) (prepareCohort, bool, error) {
-	cohort, _, found, err := readPrepareCohortAt(ctx, records, holdID)
-	return cohort, found, err
-}
-
-// readPrepareCohortAt is readPrepareCohort with the record's gen, which a write of it is
-// conditional on (0 when there is none).
-func readPrepareCohortAt(ctx context.Context, records *holdrecord.Client, holdID string) (prepareCohort, uint64, bool, error) {
-	list, err := records.Records(ctx, holdID, prepareCohortKind)
-	if err != nil {
-		return prepareCohort{}, 0, false, err
-	}
-	for _, record := range list {
-		if record.Key != prepareCohortKey {
-			continue
-		}
-		var cohort prepareCohort
-		if err := json.Unmarshal(record.Value, &cohort); err != nil {
-			return prepareCohort{}, 0, false, unknownf(err, "hold %s's cohort record does not decode", holdID)
-		}
-		return cohort, record.Gen, true, nil
-	}
-	return prepareCohort{}, 0, false, nil
+// readPrepareCohort reads hold holdID's cohort record with its gen, which a write of it is
+// conditional on (0 when there is none), and false when it has none.
+func readPrepareCohort(ctx context.Context, records *holdrecord.Client, holdID string) (prepareCohort, uint64, bool, error) {
+	return readHoldRecord[prepareCohort](ctx, records, holdID, prepareCohortKind, prepareCohortKey,
+		fmt.Sprintf("hold %s's cohort record does not decode", holdID))
 }
 
 // prepareCutover is `consumer-names prepare --hold <id>`, before the hold is set and while every
@@ -152,9 +129,8 @@ func (r *run) prepareCutover(ctx context.Context) error {
 			config := info.Config
 			config.InactiveThreshold = prepareThreshold
 			updated, err := writeConsumer(ctx, nc, notifications, config, actionUpdateConsumer)
-			var api *jetstream.APIError
 			switch {
-			case errors.As(err, &api) && (api.ErrorCode == errConsumerNotFound || api.ErrorCode == prepareUpdateOfNoConsumer):
+			case apiErrorIs(err, jetstream.JSErrCodeConsumerNotFound) || apiErrorIs(err, jetstream.JSErrCodeConsumerDoesNotExist):
 				// Deleted since its info, by a creator's sweep, deregistration or reaper, which
 				// every client still runs in phase prepare: it needs no raise, and the floor its
 				// info answered stays a safe bound of its logical name, since a floor never goes
@@ -183,7 +159,7 @@ func (r *run) prepareCutover(ctx context.Context) error {
 // between; it answers the cohort it wrote.
 func (r *run) writePrepareCohort(ctx context.Context, read prepareCohort) (prepareCohort, error) {
 	for attempt := 1; ; attempt++ {
-		earlier, gen, found, err := readPrepareCohortAt(ctx, r.records, r.o.holdID)
+		earlier, gen, found, err := readPrepareCohort(ctx, r.records, r.o.holdID)
 		if err != nil {
 			return prepareCohort{}, err
 		}

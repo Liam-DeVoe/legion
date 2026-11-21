@@ -34,7 +34,7 @@ const repairCommand = "consumer-names repair-sentinel"
 // reads again after a write the store refused because the key moved (selection.ErrConflict). A
 // refusal after its intent is its stop (createBucketStopped), naming what the run left.
 func (r *run) repairSentinel(ctx context.Context) error {
-	return createBucketRefusal(r.nc, r.repairSentinelRun(ctx))
+	return connRefusal(r.nc, r.repairSentinelRun(ctx))
 }
 
 func (r *run) repairSentinelRun(ctx context.Context) error {
@@ -58,7 +58,7 @@ func (r *run) repairSentinelRun(ctx context.Context) error {
 		return err
 	}
 	inputs := map[string]string{"cutover": want.Cutover, "boundary": formatSeq(want.Boundary), "hold": want.Hold}
-	a, err := r.admit(ctx, repairCommand, inputs)
+	a, err := r.admitRead(ctx, repairCommand, inputs)
 	if err != nil {
 		return err
 	}
@@ -72,7 +72,7 @@ func (r *run) repairSentinelRun(ctx context.Context) error {
 		return err
 	}
 	fmt.Fprintf(r.stdout, "repair-sentinel: %s of %s reads the broker's records: cutover %s, boundary %d, hold %s (it held %s)\n",
-		selection.SentinelKey, createBucketStreamName, want.Cutover, want.Boundary, want.Hold, was)
+		selection.SentinelKey, selectionStreamName, want.Cutover, want.Boundary, want.Hold, was)
 	return nil
 }
 
@@ -107,7 +107,7 @@ func (r *run) repairWant(ctx context.Context) (selection.StoreState, error) {
 		}
 		cutoverHold = set.CutoverHold
 	}
-	cohort, found, err := readPrepareCohort(ctx, r.records, cutoverHold)
+	cohort, _, found, err := readPrepareCohort(ctx, r.records, cutoverHold)
 	if err != nil {
 		return selection.StoreState{}, unknownf(err, "the cohort record of hold %s", cutoverHold)
 	}
@@ -147,7 +147,7 @@ func (r *run) repairHeld(ctx context.Context, nc *nats.Conn, store familyStore, 
 		var last replayMessage
 		var found bool
 		left.barrier = true
-		if err := createBucketBehindBarrier(ctx, nc, r.o.holdID, func(ctx context.Context) error {
+		if err := behindBarrier(ctx, nc, r.o.holdID, func(ctx context.Context) error {
 			var err error
 			last, found, err = replayLeaderRead(ctx, nc, selection.SessionBucket, selection.SentinelKey)
 			return err
@@ -158,7 +158,7 @@ func (r *run) repairHeld(ctx context.Context, nc *nats.Conn, store familyStore, 
 		if err != nil || !write {
 			return was, err
 		}
-		left.unsure = "the sentinel of " + createBucketStreamName + ", if its unanswered write landed"
+		left.unsure = "the sentinel of " + selectionStreamName + ", if its unanswered write landed"
 		_, err = store.WriteSentinel(ctx, want, last.Seq)
 		if err == nil {
 			left.unsure, left.sentinel = "", true

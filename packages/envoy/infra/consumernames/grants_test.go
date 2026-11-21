@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -29,7 +28,6 @@ import (
 	"github.com/sjawhar/envoy/internal/holdrecord/holdrecordtest"
 	"github.com/sjawhar/envoy/internal/streamset"
 	"github.com/sjawhar/envoy/internal/testnats"
-	"github.com/sjawhar/envoy/internal/testpg/testdb"
 	"github.com/sjawhar/envoy/natsgrant"
 )
 
@@ -174,20 +172,11 @@ func (g *grantsRig) hold(w holdrecord.Workflow, phase natsgrant.OperatorPhase) s
 	return id
 }
 
-// database makes family's store a database of its own, migrated with migrations.
+// database makes family's store a database of its own, migrated with migrations
+// (migratedDatabase).
 func (g *grantsRig) database(family string, migrations ...string) {
 	g.t.Helper()
-	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, testdb.DatabaseOn(g.t, os.Getenv("BROKER_TEST_DATABASE_URL"), "cgrants"))
-	require.NoError(g.t, err)
-	g.t.Cleanup(pool.Close)
-	for _, file := range migrations {
-		sql, err := os.ReadFile(filepath.FromSlash(file))
-		require.NoError(g.t, err)
-		_, err = pool.Exec(ctx, string(sql))
-		require.NoError(g.t, err)
-	}
-	g.dbs[family] = pool
+	_, g.dbs[family] = migratedDatabase(g.t, "cgrants", migrations...)
 }
 
 // env is the run's env: the broker's routes, the hub as the static operator user with the
@@ -215,12 +204,12 @@ func (g *grantsRig) env() env {
 					go nc.Close()
 				}))
 		},
-		database: func(_ context.Context, _ options, family string) (Database, error) {
+		database: func(_ context.Context, _ options, family string) (Database, func(), error) {
 			db, ok := g.dbs[family]
 			if !ok {
-				return nil, fmt.Errorf("the test made no database for %s", family)
+				return nil, nil, fmt.Errorf("the test made no database for %s", family)
 			}
-			return db, nil
+			return db, nil, nil
 		},
 		// The hubs of static users have no callout stack, which the held re-read reads (its
 		// render, declared pods and report); the rows measure the command's own subjects, and
@@ -328,7 +317,7 @@ func TestTheGrantByPhase(t *testing.T) {
 				return []string{actionPrepare, "--hold", id}
 			},
 			success: func(g *grantsRig, id string) {
-				_, found, err := readPrepareCohort(context.Background(), g.records, id)
+				_, _, found, err := readPrepareCohort(context.Background(), g.records, id)
 				require.NoError(g.t, err)
 				require.True(g.t, found, "prepare wrote no cohort record")
 			}},
@@ -387,7 +376,7 @@ func TestTheGrantByPhase(t *testing.T) {
 			g, id, code, output, published := c.run(t, whole)
 			require.Equal(t, 0, code, "%s under exactly Operator(%s)\n%s", c.name, c.phase, output)
 			if c.journal != "" {
-				require.Equal(t, []string{"intent", "done"}, createBucketEntries(g.journalOf(id), c.journal), "%s's journal entries", c.name)
+				require.Equal(t, []string{"intent", "done"}, createBucketEntries(readJournal(g.t, g.records, id), c.journal), "%s's journal entries", c.name)
 			}
 			if c.success != nil {
 				c.success(g, id)
@@ -473,12 +462,4 @@ func grantsAdmits(entry, subject string) bool {
 		}
 	}
 	return len(tokens) == len(filter)
-}
-
-// journalOf reads hold id's journal.
-func (g *grantsRig) journalOf(id string) holdrecord.Done {
-	g.t.Helper()
-	d, _, err := g.records.Journal(context.Background(), id)
-	require.NoError(g.t, err)
-	return d
 }

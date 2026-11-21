@@ -71,7 +71,7 @@ func repairRecordsSentinel(t *testing.T, records *holdrecord.Client) []byte {
 		require.True(t, found, "rollback hold %s saved no set", row.HoldID)
 		hold = set.CutoverHold
 	}
-	cohort, found, err := readPrepareCohort(ctx, records, hold)
+	cohort, _, found, err := readPrepareCohort(ctx, records, hold)
 	require.NoError(t, err)
 	require.True(t, found, "hold %s has no cohort record", hold)
 	value, err := json.Marshal(selection.StoreState{Cutover: row.State, Boundary: cohort.Boundary, Hold: hold})
@@ -146,7 +146,7 @@ func TestRepairSentinelRewritesAMalformedSentinelSoSessionsServeAgain(t *testing
 	converted := repairSentinelValue(t, rig.stack)
 	records := repairRecordsSentinel(t, rig.records())
 	require.NoError(t, repairCheck(records, converted), "the broker's records give the sentinel convert wrote")
-	current := rig.kvRecord("r1").Current
+	current := rig.record(familySession, "r1").Current
 	require.Contains(t, current, sessionFreshPrefix+"~", "convert selected no fresh name for r1")
 
 	rig.connectWriter()

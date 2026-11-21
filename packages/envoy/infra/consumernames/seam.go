@@ -24,36 +24,34 @@ type Deps struct {
 	// natsgrant.OperatorInbox.
 	Connect func(ctx context.Context) (*nats.Conn, error)
 	// Database opens the Postgres store of family: "dispatch", or "daemon/<project key>". Nil is a
-	// run with no family store, which refuses a command that needs one, naming the family.
+	// run with no family store, which refuses a command that needs one, naming the family. The
+	// store is the caller's: the run does not close it.
 	Database func(ctx context.Context, family string) (Database, error)
 	// Operator is the operator's reach of the clustered hub: its Kubernetes objects and each
 	// declared server's monitoring port, which the held re-read, convert's meta barrier and restore
-	// --finish read. Nil is a run with no such reach, which refuses a command that needs it
-	// (run.operatorHub).
+	// --finish read. Nil is a run with no such reach, which refuses every held command, since each
+	// runs the held re-read (run.operatorHub).
 	Operator func(ctx context.Context) (*writerhold.Operator, error)
-	// Now is the clock; time.Now when nil.
+	// Now is the clock; time.Now when nil (run.now).
 	Now func() time.Time
 }
 
 // CommandOn is Command with deps in place of the broker, Secret Manager, the hub and the
 // databases its flags name.
 func CommandOn(ctx context.Context, args []string, stdout, stderr io.Writer, deps Deps) int {
-	now := deps.Now
-	if now == nil {
-		now = time.Now
-	}
 	e := env{
 		records: func(ctx context.Context, _ options, signing bool) (*holdrecord.Client, error) {
 			return deps.Records(ctx, signing)
 		},
 		connect: func(ctx context.Context, _ options) (*nats.Conn, error) { return deps.Connect(ctx) },
-		database: func(ctx context.Context, _ options, family string) (Database, error) {
+		database: func(ctx context.Context, _ options, family string) (Database, func(), error) {
 			if deps.Database == nil {
-				return nil, fmt.Errorf("this run has no store of %s", family)
+				return nil, nil, fmt.Errorf("this run has no store of %s", family)
 			}
-			return deps.Database(ctx, family)
+			db, err := deps.Database(ctx, family)
+			return db, nil, err
 		},
-		now: now,
+		now: deps.Now,
 	}
 	if deps.Operator != nil {
 		e.hub = func(ctx context.Context, _ options) (*writerhold.Operator, error) { return deps.Operator(ctx) }

@@ -46,11 +46,11 @@ func TestPrepareSavesTheBoundaryAndEachFixedNamesFloor(t *testing.T) {
 	require.Contains(t, stderr, "released")
 
 	id := rig.prepared("cutover")
-	daemonFloor := convertFloor(rig.consumerOf("legion-go-p1-github"))
+	daemonFloor := convertFloor(rig.consumer("legion-go-p1-github"))
 	code, stdout, stderr := rig.run(actionPrepare, "--hold", id)
 	require.Zero(t, code, stderr)
 	require.Contains(t, stdout, "boundary 5")
-	cohort, found, err := readPrepareCohort(ctx, rig.records(), id)
+	cohort, _, found, err := readPrepareCohort(ctx, rig.records(), id)
 	require.NoError(t, err)
 	require.True(t, found)
 	require.EqualValues(t, 5, cohort.Boundary, "B is not the stream's first retained sequence")
@@ -58,8 +58,8 @@ func TestPrepareSavesTheBoundaryAndEachFixedNamesFloor(t *testing.T) {
 		{Family: daemonFamily("p1"), Logical: "legion-go-p1-github", Fixed: "legion-go-p1-github", Floor: daemonFloor},
 		{Family: familySession, Logical: "a", Fixed: "s-a", Floor: 5, Threshold: threshold},
 	}, cohort.Members)
-	require.Equal(t, prepareThreshold, rig.consumerOf("s-a").Config.InactiveThreshold, "s-a's threshold was not raised")
-	require.Zero(t, rig.consumerOf("legion-go-p1-github").Config.InactiveThreshold, "a fixed name with no threshold was given one")
+	require.Equal(t, prepareThreshold, rig.consumer("s-a").Config.InactiveThreshold, "s-a's threshold was not raised")
+	require.Zero(t, rig.consumer("legion-go-p1-github").Config.InactiveThreshold, "a fixed name with no threshold was given one")
 
 	// The rerun: the daemon's consumer is gone, s-a's floor has risen and the stream has moved on.
 	require.NoError(t, rig.writer.DeleteConsumer(ctx, notifications, "legion-go-p1-github"))
@@ -67,13 +67,13 @@ func TestPrepareSavesTheBoundaryAndEachFixedNamesFloor(t *testing.T) {
 	require.NoError(t, rig.ackUpTo(consumer, 13))
 	code, _, stderr = rig.run(actionPrepare, "--hold", id)
 	require.Zero(t, code, stderr)
-	rerun, _, err := readPrepareCohort(ctx, rig.records(), id)
+	rerun, _, _, err := readPrepareCohort(ctx, rig.records(), id)
 	require.NoError(t, err)
 	require.Equal(t, cohort, rerun, "the rerun raised a bound or dropped a member")
 
 	time.Sleep(threshold + 5*time.Second)
-	require.Nil(t, rig.consumerOf("other"), "control: the consumer of no family with the same threshold was not removed")
-	require.NotNil(t, rig.consumerOf("s-a"), "the fixed name prepare raised was removed for inactivity")
+	require.Nil(t, rig.consumer("other"), "control: the consumer of no family with the same threshold was not removed")
+	require.NotNil(t, rig.consumer("s-a"), "the fixed name prepare raised was removed for inactivity")
 
 	rig.held(id)
 	code, _, stderr = rig.run(actionPrepare, "--hold", id)
@@ -117,7 +117,7 @@ func (rig *convertRig) boundaryWindow(afterPrepare, set func(id string), beforeC
 	rig.censusDone(id)
 	require.NoError(rig.t, rig.release(id))
 	rig.connectWriter()
-	cohort, found, err := readPrepareCohort(context.Background(), rig.records(), id)
+	cohort, _, found, err := readPrepareCohort(context.Background(), rig.records(), id)
 	require.NoError(rig.t, err)
 	require.True(rig.t, found)
 	return id, cohort
@@ -245,7 +245,7 @@ func boundaryExpiryRow(t *testing.T) {
 		require.True(t, <-expired, "F did not expire during the hold")
 		require.Positive(t, rig.s.Kube.Refused(), "no eviction was held back by the budget")
 	}, func() {
-		require.Nil(t, rig.consumerOf("s-"+boundarySession), "F is still there when convert lists")
+		require.Nil(t, rig.consumer("s-"+boundarySession), "F is still there when convert lists")
 	})
 	require.Nil(t, cohort.member("s-"+boundarySession), "F is in the cohort")
 	require.Greater(t, rig.boundaryFirstStart(), message, "control: the first-create rule")

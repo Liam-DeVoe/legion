@@ -21,9 +21,9 @@ import (
 
 // The rollback's commands as the hold's journal names them in workflow rollback
 // (internal/holdrecord/table.go tableFor): restore --prepare once, restore --key for each name it
-// left with no start (Repeatable), then restore --finish, which is final. Each is Stoppable from
-// cybermonklabs/legion#4679's next head on (restore --finish already is), so each refusal after
-// its intent ends it with a stop entry (restoreStop).
+// left with no start (Repeatable), then restore --finish, which is final. Each is Stoppable in
+// rollback (holdrecord's table marks every command of every workflow Stoppable), so each refusal
+// after its intent ends it with a stop entry (restoreStop).
 const (
 	restoreCommandPrepare = "restore --prepare"
 	restoreCommandKey     = "restore --key"
@@ -191,22 +191,21 @@ func (r *run) restoreReach(ctx context.Context, left *restoreLeft) (*restoreRun,
 		lastSeq: info.State.LastSeq, cutovers: cutovers, stores: map[string]familyStore{}, left: left}, nil
 }
 
-// store is family's store. The selection bucket is read only behind the hold's bucket barrier
-// (writerhold.ReadBucket), as convert reads it, so every read is past the last write a server
-// accepted before the hold or before the latest restart; a bucket that does not exist is
-// selection.ErrNoStore.
+// store is family's store. The selection bucket is read only after the hold's bucket barrier on
+// the run's connection (writerhold.ReadBucket with a read of nothing: the put, and the bucket's
+// leader read before and after it), put once on each connection, before its first read on it, and
+// again after each reconnect, so every read is past the last write a server accepted before the
+// hold or before the latest restart; a bucket that does not exist is selection.ErrNoStore.
 func (rr *restoreRun) store(ctx context.Context, family string) (familyStore, error) {
 	if family == familySession && !rr.barrier {
-		stream := "KV_" + selection.SessionBucket
-		if err := rr.answered(ctx, func(ctx context.Context) error { _, err := streamInfo(ctx, rr.nc, stream); return err }); err != nil {
-			var api *jetstream.APIError
-			if errors.As(err, &api) && api.ErrorCode == errStreamNotFound {
-				return nil, fmt.Errorf("%w: %s (%w)", selection.ErrNoStore, stream, err)
+		if err := rr.answered(ctx, func(ctx context.Context) error { _, err := streamInfo(ctx, rr.nc, selectionStreamName); return err }); err != nil {
+			if apiErrorIs(err, jetstream.JSErrCodeStreamNotFound) {
+				return nil, fmt.Errorf("%w: %s (%w)", selection.ErrNoStore, selectionStreamName, err)
 			}
-			return nil, unknownf(err, "the info of %s", stream)
+			return nil, unknownf(err, "the info of %s", selectionStreamName)
 		}
 		if err := writerhold.ReadBucket(ctx, rr.nc, selection.SessionBucket, rr.r.o.holdID, func(context.Context) error { return nil }); err != nil {
-			return nil, restoreHubError(err)
+			return nil, hubUnknown(err, "the hub's restart")
 		}
 		rr.barrier = true
 	}
@@ -249,10 +248,8 @@ func (rr *restoreRun) answered(ctx context.Context, request func(context.Context
 		if err == nil || !restoreUnanswered(err) || time.Now().After(deadline) {
 			return err
 		}
-		select {
-		case <-ctx.Done():
+		if sleep(ctx, 250*time.Millisecond) != nil {
 			return err
-		case <-time.After(250 * time.Millisecond):
 		}
 	}
 }
@@ -405,9 +402,12 @@ func restoreMember(family, logical string) (member, error) {
 	if family == familySession {
 		switch {
 		case selection.CheckDurableKey(logical) == nil:
-			durable, err := restoreDurableName(logical)
-			if err != nil {
-				return member{}, err
+			durable, err := durableOf(logical)
+			switch {
+			case errors.Is(err, errEscapeCut):
+				return member{}, fmt.Errorf("the durable key %q ends inside an escape", logical)
+			case err != nil:
+				return member{}, fmt.Errorf("the durable key %q holds a malformed escape", logical)
 			}
 			name = durable
 		case selection.CheckKey(logical) == nil:
@@ -421,29 +421,6 @@ func restoreMember(family, logical string) (member, error) {
 		return member{}, fmt.Errorf("%q is no logical name of family %s", logical, family)
 	}
 	return m, nil
-}
-
-// restoreDurableName is the durable name selection.DurableKey made key from: each "=" and two
-// hex digits written back as its byte.
-func restoreDurableName(key string) (string, error) {
-	escaped := strings.TrimPrefix(key, "durable.")
-	var name strings.Builder
-	for i := 0; i < len(escaped); i++ {
-		if escaped[i] != '=' {
-			name.WriteByte(escaped[i])
-			continue
-		}
-		if i+2 >= len(escaped) {
-			return "", fmt.Errorf("the durable key %q ends inside an escape", key)
-		}
-		b, err := strconv.ParseUint(escaped[i+1:i+3], 16, 8)
-		if err != nil {
-			return "", fmt.Errorf("the durable key %q holds a malformed escape", key)
-		}
-		name.WriteByte(byte(b))
-		i += 2
-	}
-	return name.String(), nil
 }
 
 // restoreKeyMember is the member --key names: a listener durable's key, any family's fixed name
@@ -473,21 +450,9 @@ func (rr *restoreRun) readSet(ctx context.Context) (restoreSet, bool, error) {
 // readRestoreSet reads hold holdID's saved set (restoreSetKind, restoreSetKey), verified as
 // holdrecord.Client.Records verifies every record, and false when the hold holds none.
 func readRestoreSet(ctx context.Context, records *holdrecord.Client, holdID string) (restoreSet, bool, error) {
-	list, err := records.Records(ctx, holdID, restoreSetKind)
-	if err != nil {
-		return restoreSet{}, false, err
-	}
-	for _, record := range list {
-		if record.Key != restoreSetKey {
-			continue
-		}
-		var set restoreSet
-		if err := json.Unmarshal(record.Value, &set); err != nil {
-			return restoreSet{}, false, unknownf(err, "hold %s's %s record %s", holdID, restoreSetKind, restoreSetKey)
-		}
-		return set, true, nil
-	}
-	return restoreSet{}, false, nil
+	set, _, found, err := readHoldRecord[restoreSet](ctx, records, holdID, restoreSetKind, restoreSetKey,
+		fmt.Sprintf("hold %s's %s record %s", holdID, restoreSetKind, restoreSetKey))
+	return set, found, err
 }
 
 // savedSet is the hold's saved set: the one an earlier run wrote, else one built now and written
@@ -738,7 +703,7 @@ func (r *run) restorePrepareAdmitted(ctx context.Context, a *admission, left *re
 	}
 	declared, err := writerhold.Discover(ctx, op.Hub)
 	if err != nil {
-		return restoreHubError(err)
+		return hubUnknown(err, "the hub's restart")
 	}
 	outputs := map[string]string{"names": strconv.Itoa(len(set.Names)), "no_start": strings.Join(unresolved, " ")}
 	for _, server := range declared {
@@ -804,14 +769,11 @@ func (rr *restoreRun) settle(ctx context.Context, name restoreSetName, start uin
 			}
 		}
 		next := record
-		next.Retired = slices.Clone(record.Retired)
 		for _, fresh := range restoreFreshNames(record, name.Target) {
 			if err := rr.delete(ctx, fresh); err != nil {
 				return "", unknownf(err, "the delete of %s", fresh)
 			}
-			if !slices.Contains(next.Retired, fresh) {
-				next.Retired = append(next.Retired, fresh)
-			}
+			next = retire(next, fresh)
 		}
 		if err := restoreAt("deleted", name.Logical); err != nil {
 			return "", err
@@ -1018,7 +980,7 @@ func (r *run) restoreFinishAdmitted(ctx context.Context, a *admission, left *res
 	round := func() (writerhold.Declared, error) {
 		after, err := writerhold.RestartProveAndBarrier(ctx, op, r.o.holdID)
 		if err != nil {
-			return nil, restoreHubError(err)
+			return nil, hubUnknown(err, "the hub's restart")
 		}
 		if err := restoreServersRestarted(recorded, after); err != nil {
 			return nil, err
@@ -1332,16 +1294,6 @@ func restoreServersRestarted(recorded map[string]string, after writerhold.Declar
 	return nil
 }
 
-// restoreHubError is err, a writerhold step's, as this command reports it: a writerhold.Unknown is
-// UNKNOWN, exit 2; a refusal stays one.
-func restoreHubError(err error) error {
-	var unknown *writerhold.Unknown
-	if errors.As(err, &unknown) {
-		return &Unknown{What: "the hub's restart", Err: err}
-	}
-	return err
-}
-
 // restoreStop writes a restore command's stop entry (admission.stop), its reason cause and what
 // this run left (restoreLeft), and answers the same text with cause wrapped, so an UNKNOWN cause
 // still exits 2. Every error after a restore command's intent comes here: restore --prepare,
@@ -1427,13 +1379,9 @@ func (l *restoreLeft) empty() bool {
 	return len(l.phases) == 0 && len(l.deleted) == 0 && len(l.created) == 0 && len(l.marked) == 0
 }
 
-// restoreLeftUnchanged is what a stop records as left when no run of its command in this hold
-// changed anything outside the journal: holdrecord.LeftUnchanged's value, which this tree's
-// holdrecord does not export yet (cybermonklabs/legion#4679's next head does).
-const restoreLeftUnchanged = "unchanged"
-
 // restoreStopLeftKey is the key of a stop entry's outputs that holds what its command left, as
-// holdrecord's AppendStopLeft writes it (internal/holdrecord/journal.go, Operation).
+// holdrecord's AppendStopLeft writes it (internal/holdrecord/journal.go, stopLeftKey, which
+// holdrecord does not export).
 const restoreStopLeftKey = "left"
 
 // journal is what a's stop entry records as left (holdrecord's AppendStopLeft): this run's
@@ -1447,8 +1395,8 @@ func (l *restoreLeft) journal(ctx context.Context, a *admission) string {
 	}
 	setSaved := true
 	if a.command == restoreCommandPrepare {
-		if records, err := a.r.records.Records(ctx, a.r.o.holdID, restoreSetKind); err == nil {
-			setSaved = slices.ContainsFunc(records, func(r holdrecord.Record) bool { return r.Key == restoreSetKey })
+		if _, found, err := readRestoreSet(ctx, a.r.records, a.r.o.holdID); err == nil {
+			setSaved = found
 		}
 	}
 	return restoreJournalLeft(d, a.command, setSaved, l)
@@ -1456,7 +1404,7 @@ func (l *restoreLeft) journal(ctx context.Context, a *admission) string {
 
 // restoreJournalLeft is what a stop of command records as left, from d, the hold's journal with
 // this run's intent as command's latest entry, and l, this run's account. It is
-// restoreLeftUnchanged only when no run of command in this hold changed anything outside the
+// holdrecord.LeftUnchanged only when no run of command in this hold changed anything outside the
 // journal: for restore --prepare while no run has saved the restore set (setSaved false), since
 // each of its changes outside the journal follows that save; for every command when this run
 // changed nothing and each earlier run of the command ended in a stop that recorded unchanged. A
@@ -1466,7 +1414,7 @@ func (l *restoreLeft) journal(ctx context.Context, a *admission) string {
 // rerun.
 func restoreJournalLeft(d holdrecord.Done, command string, setSaved bool, l *restoreLeft) string {
 	if command == restoreCommandPrepare && !setSaved {
-		return restoreLeftUnchanged
+		return holdrecord.LeftUnchanged
 	}
 	var ops []holdrecord.Operation
 	for _, op := range d.Ops {
@@ -1487,7 +1435,7 @@ func restoreJournalLeft(d holdrecord.Done, command string, setSaved bool, l *res
 		end, leftNothing := "ended with no entry (cut after its intent), and the records hold what it wrote", false
 		if i+1 < len(ops) {
 			switch next := ops[i+1]; {
-			case next.State == "stop" && next.Outputs[restoreStopLeftKey] == restoreLeftUnchanged:
+			case next.State == "stop" && next.Outputs[restoreStopLeftKey] == holdrecord.LeftUnchanged:
 				end, leftNothing = "stopped, and its stop recorded it left nothing changed", true
 			case next.State == "stop" && next.Outputs[restoreStopLeftKey] != "":
 				end = "stopped, and its stop entry records what it left"
@@ -1502,7 +1450,7 @@ func restoreJournalLeft(d holdrecord.Done, command string, setSaved bool, l *res
 	}
 	switch {
 	case unchanged:
-		return restoreLeftUnchanged
+		return holdrecord.LeftUnchanged
 	case len(earlier) == 0:
 		return l.String()
 	}

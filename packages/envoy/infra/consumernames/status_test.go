@@ -48,7 +48,7 @@ func statusPublishKV(t *testing.T, nc *nats.Conn, key string, data []byte, op st
 	t.Helper()
 	msg := &nats.Msg{Subject: "$KV." + selection.SessionBucket + "." + key, Data: data, Header: nats.Header{}}
 	if op != "" {
-		msg.Header.Set(statusKVOperation, op)
+		msg.Header.Set(kvOperationHeader, op)
 	}
 	reply, err := nc.RequestMsg(msg, requestTimeout)
 	require.NoError(t, err)

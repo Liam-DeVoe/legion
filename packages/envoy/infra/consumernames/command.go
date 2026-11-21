@@ -101,14 +101,42 @@ func (o options) daemonDatabase(project string) (string, bool) {
 	return "", false
 }
 
-// daemonProjects are the projects --daemon-database names, in its order.
+// daemonProjects are the projects --daemon-database names, in its order (parseDaemonDatabases).
 func (o options) daemonProjects() []string {
-	var out []string
-	for _, pair := range o.daemonDatabases {
-		p, _, _ := strings.Cut(pair, "=")
-		out = append(out, p)
+	projects, _ := parseDaemonDatabases(o.daemonDatabases)
+	return projects
+}
+
+// storeFile is the file the flag that names family's store names, "" when it names none, and that
+// flag as an error names it: --dispatch-database-file for Dispatch, --daemon-database
+// <project>=<file> for a daemon.
+func (o options) storeFile(family string) (file, flagName string) {
+	if project, ok := strings.CutPrefix(family, familyDaemonPrefix); ok {
+		file, _ = o.daemonDatabase(project)
+		return file, "--daemon-database " + project + "=<file>"
 	}
-	return out
+	return o.dispatchDatabaseFile, "--dispatch-database-file"
+}
+
+// parseDaemonDatabases reads --daemon-database's entries, each <project>=<file>, as the commands
+// and the census's readers take them (censusNamedProjects): the projects of the entries that are
+// well formed, in their order, and the problem of each entry that is not <project>=<file> or names
+// a project again.
+func parseDaemonDatabases(entries []string) (projects, problems []string) {
+	seen := map[string]bool{}
+	for _, entry := range entries {
+		project, file, ok := strings.Cut(entry, "=")
+		switch {
+		case !ok || project == "" || file == "":
+			problems = append(problems, fmt.Sprintf("--daemon-database %q is not <project>=<file>", entry))
+		case seen[project]:
+			problems = append(problems, "--daemon-database names project "+project+" twice")
+		default:
+			projects = append(projects, project)
+		}
+		seen[project] = true
+	}
+	return projects, problems
 }
 
 // Command runs `envoy-infra consumer-names` with args, the words after "consumer-names", and
@@ -278,17 +306,8 @@ func (o options) usageProblem() string {
 			}
 		}
 	}
-	seen := map[string]bool{}
-	for _, pair := range o.daemonDatabases {
-		project, file, ok := strings.Cut(pair, "=")
-		switch {
-		case !ok || project == "" || file == "":
-			add(fmt.Sprintf("--daemon-database %q is not <project>=<file>", pair))
-		case seen[project]:
-			add("--daemon-database names project " + project + " twice")
-		}
-		seen[project] = true
-	}
+	_, malformed := parseDaemonDatabases(o.daemonDatabases)
+	problems = append(problems, malformed...)
 	return strings.Join(problems, "; ")
 }
 

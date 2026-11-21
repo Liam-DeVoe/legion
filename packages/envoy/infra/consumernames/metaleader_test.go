@@ -142,7 +142,7 @@ func metaLeaderRow(t *testing.T) {
 		require.NotEmpty(t, moved, "%s: the meta leader was not moved", run.name)
 		require.Equal(t, run.want, listings, "%s: the listings convert made after the meta leader moved", run.name)
 		require.Empty(t, rig.fixedNames(), "%s: a fixed name is left", run.name)
-		require.Equal(t, "done", latestEntry(rig.journal(id), actionConvert), run.name)
+		require.Equal(t, "done", rig.lastEntry(id, actionConvert).State, run.name)
 		rig.censusDone(id)
 		require.NoError(t, rig.release(id), run.name)
 		rig.connectWriter()
