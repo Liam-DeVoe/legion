@@ -81,15 +81,26 @@ async function connectedClients(monitor: string): Promise<string[]> {
  * connected. Every client a test opens is closed before its server stops.
  */
 export async function startNatsServer(directory: string, nkeyUser?: string): Promise<NatsServer> {
+  return startNatsServerWithConfig(
+    directory,
+    nkeyUser === undefined
+      ? "jetstream {}\n"
+      : `jetstream {}\nauthorization {\n  users = [ { nkey: ${JSON.stringify(nkeyUser)} } ]\n}\n`
+  );
+}
+
+/**
+ * Runs a NATS server container as {@link startNatsServer} does, whose whole configuration is
+ * `config`: a row that needs users with grants of their own writes their `authorization` block.
+ * Its monitoring endpoint is on 8222 whatever `config` says (`-m`), for `stop`'s read.
+ */
+export async function startNatsServerWithConfig(
+  directory: string,
+  configuration: string
+): Promise<NatsServer> {
   const name = `legion-nats-test-${crypto.randomUUID()}`;
   const config = path.join(directory, `${name}.conf`);
-  writeFileSync(
-    config,
-    nkeyUser === undefined
-      ? "jetstream {}\nhttp: 8222\n"
-      : `jetstream {}\nhttp: 8222\nauthorization {\n  users = [ { nkey: ${JSON.stringify(nkeyUser)} } ]\n}\n`,
-    { mode: 0o644 }
-  );
+  writeFileSync(config, configuration, { mode: 0o644 });
   const remove = () => {
     // With -v, since the image declares a VOLUME a plain `docker rm -f` leaves on the host
     // (docs/testing.md).
@@ -119,7 +130,9 @@ export async function startNatsServer(directory: string, nkeyUser?: string): Pro
       `${config}:/etc/nats/test.conf:ro`,
       NATS_IMAGE,
       "-c",
-      "/etc/nats/test.conf"
+      "/etc/nats/test.conf",
+      "-m",
+      "8222"
     );
     const deadline = Date.now() + 90_000;
     // nats-server logs to stderr.
