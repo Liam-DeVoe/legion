@@ -279,6 +279,37 @@ func TestAnEdgeRelaysOnlyItsTokensProjects(t *testing.T) {
 		requireWithheld(t, rig, -1)
 	})
 
+	t.Run("a message on its own agent subject of no project its token lists", func(t *testing.T) {
+		rig := newScopeRig(t)
+		const session = "ses_scope_forwards"
+		client, _ := registerScopeSession(t, rig, session)
+		own := contracts.LegacyAgentSubject(session)
+		store := func(data []byte) {
+			t.Helper()
+			if _, err := rig.harness.client.JS().Publish(own, data); err != nil {
+				t.Fatalf("store a message on %s: %v", own, err)
+			}
+		}
+		// Each is stored on the session's own agent subject, where a forward lands, so only the
+		// topic its envelope names, or an envelope that does not decode, can withhold it.
+		for _, topic := range []string{
+			"notifications.github.acme.pub.pr.7",                   // a forward of a GitHub event
+			contracts.LegacyAgentSubject("ses_scope_someone_else"), // a forward of another session's message
+			contracts.AgentSubject(scopeOtherProject, session),     // its own agent subject under a project it does not hold
+			"notifications.team.priv",                              // a forward of a topic of no project
+		} {
+			store(marshalListenerEnvelope(t, listenerTestEnvelope(topic, "edge-scope-forward-"+id.New())))
+		}
+		store([]byte("not an envelope"))
+		direct := storeScopeEvent(t, rig, own, "")
+		frames := takeScopeFrames(t, client, 1, 10*time.Second)
+		if frames[0].item.EventID != direct.EventID {
+			t.Fatalf("the socket's first frame is %s, want the message %s to the session: a frame stored before it reached the socket", frames[0].raw, direct.EventID)
+		}
+		noScopeFrame(t, client, time.Second, "after the message to the session")
+		requireWithheld(t, rig, 5)
+	})
+
 	t.Run("a frame another user publishes on its relay subject", func(t *testing.T) {
 		rig := newScopeRig(t)
 		const session = "ses_scope_injected"
