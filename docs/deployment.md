@@ -350,8 +350,18 @@ image's wrapper, `/opt/legion/bin/jj`, which hands each `jj git push` to `legion
 that case the daemon writes no `jj` and removes one that an earlier boot wrote.
 `legion jj` runs the next `jj` on `PATH` after `bin/`, a host's own jj wrapper included, and it
 runs every command but a `jj git push` through that `jj` unchanged.
-Before a `jj git push`, it runs the push step, and every jj command of the step runs with
-`--ignore-working-copy`.
+Before a `jj git push`, it runs the push step.
+The step decides from reads with `--ignore-working-copy`.
+Where it changes nothing of the push, no commit and no word, or where the push itself carries
+`--ignore-working-copy`, every jj command of the step runs with `--ignore-working-copy`, so it
+takes no snapshot and adds no operation; a role's own `--ignore-working-copy` goes to the real
+push alone.
+Otherwise it first takes the one snapshot of the working copy that the push would take itself,
+with the push's own `-R` and `--config` arguments, and passes on what that snapshot prints, then
+reads what the push sends again and acts on no commit id it read before the snapshot: every id it
+reads then, `@` and each descendant of `@` included, stays valid through the push, whose own
+snapshot finds nothing new unless another process wrote the working copy in between.
+Each of its other commands runs with `--ignore-working-copy`.
 The daemon tells every workflow role's pane `LEGION_ROLE_IDENTITIES`, the git identity of each
 role of the issue as one JSON object (`docs/kubernetes.md`, daemon API contract 209).
 The step reads what the push sends from a dry run of the same push, and reads the author and the
@@ -375,8 +385,8 @@ moved: one reaches the push as written only where jj, resolving it again after t
 resolves it to that set, such as `@`, a bookmark or a change id of a rewritten commit.
 Any other argument can name other commits once the step has rewritten some, as a change offset
 `<change>/<n>`, `latest(...)`, `mine()` or `author(...)` can, even through another argument's
-rewrite, so the push gets the set as ids joined by ` | `, `@` for the working-copy commit, so that
-the push's own snapshot still resolves it, while that word is under 100,000 bytes.
+rewrite, so the push gets the set as ids joined by ` | `, `@` for the working-copy commit, while
+that word is under 100,000 bytes.
 Where it would not be, the push gets the primary form, `(<the argument as written>) [~ (<the old
 ids>)] [~ (<the ids it now names and must not>)] [| <the new ids>] [| <the ids it must send and no
 longer names>]`, with each empty part left out, where that word is under 100,000 bytes and jj,
@@ -384,13 +394,14 @@ resolving it once more, finds that it names the set.
 Else a `--change` or `--revisions` argument becomes as many words of that same option as keep each
 under 100,000 bytes, each with a part of the ids, since `jj git push` pushes the union of a
 repeated option; `--named` names one commit.
-Each argument that gets the ids, in one word or several, gets one `legion jj:` line that says so.
+Each argument that gets the ids, in one word or several, gets one `legion jj:` line that says so;
+an argument that named no commit before the step gets `none()`, and its line says that.
 No word the step writes passes 100,000 bytes, but for a role's own argument that is that long
 already, so none passes Linux's 131,072-byte limit on one argument.
 Only where the push would then pass Linux's 2,097,152-byte limit on a command's arguments and
 environment together, with each revision argument counted at the larger of its own word and the
 ids of its whole set, does the step decide, before any rewrite other than the fill of an empty
-author that a dry run refused, to set no other author:
+author that a dry run refused, and before its snapshot, to set no other author:
 it prints one `legion jj: could not set the author:` line that names the argument, the count and
 the limit, and the push runs as written, but where that fill ran, after which each revision
 argument is held to its set as above.
@@ -410,8 +421,9 @@ Where it cannot read the dry run, it prints one line, and the push runs as writt
 metaedit of the step ran first, such as the fill of an empty author, after which each revision
 argument is held to its set as above.
 A push that names a commit that no jj command has imported yet, such as one that a `git commit`
-made, has a dry run that the step cannot read: the step's commands import nothing from git, so the
-dry run cannot find the commit, and the push imports it and sends it as it is.
+made, has a dry run that the step cannot read: the step decides from reads that import nothing
+from git, so the dry run cannot find the commit, the step takes no snapshot, and the push imports
+the commit and sends it as it is.
 jj prints a commit id short, as its first 12 hex digits, and the step never has jj resolve such an
 id over the whole repository, hidden commits included: it matches the id against the commits of
 the repository's bookmarks and tags and of the push's revision arguments, or, for jj's refusal of
