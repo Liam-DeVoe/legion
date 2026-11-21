@@ -3632,6 +3632,10 @@ GATES = [
         ("scripts/e2e/lib/port-file.sh", "scripts/e2e/lib/rig.sh sources it"),
         ("scripts/e2e/lib/held-port.py", "scripts/e2e/lib/rig.sh:143 runs it (start_held), which two-builds.sh's "
                                          "start_server holds each Dispatch server's port through"),
+        ("scripts/e2e/lib/process-tree.sh", "scripts/e2e/lib/rig.sh sources it (its `. \"$root/scripts/e2e/lib/process-tree.sh\"` "
+                                            "line, the last): start_process records each service's start through its "
+                                            "record_start, and packages/dispatch/e2e/acceptance/access-lib.sh's stop_all stops "
+                                            "them through its signalable and rig.sh's stop_pid"),
     ) + ceiling_reads(PROJECT_ACCESS) + setup_go(PROJECT_ACCESS, f"{ENVOY}/go.mod")
       + bun_job(PROJECT_ACCESS) + CI_SELF),
 
