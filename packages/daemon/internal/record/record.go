@@ -460,6 +460,15 @@ func ReturnsAsTesting(held phase.Phase) bool {
 	return held == phase.Testing || held == phase.Reviewing || held == phase.Accepting
 }
 
+// ReturnsAsTestingInstead says whether a held start of held comes back as testing in place of the
+// start it held, which it does once no open child is left and the pull request has not merged: a
+// held reviewing or accepting (ReturnsAsTesting, less the held testing, which comes back as
+// itself). The refusals that say where the return takes a waiting parent read it (workflow's
+// goesBack, api's restartWorkedPhase).
+func ReturnsAsTestingInstead(held phase.Phase) bool {
+	return held != phase.Testing && ReturnsAsTesting(held)
+}
+
 // ParkedDecision is a person's decision on a tree nobody in it could hear, which the daemon
 // relayed to the controller (a parked-decision notice) or kept for a root that waits for its slot
 // (RelayParkedDecision). It is kept under the issue it was decided on, never under a root, so the
@@ -1998,6 +2007,10 @@ type Store interface {
 	// children has no entry, and no parents reads nothing. A later step reads it to decide whether
 	// a parent's own first phase waits for a child of its own that is still open.
 	DispatchChildren(ctx context.Context, tx pgx.Tx, project string, parents []string) (map[string][]DispatchIssueRow, error)
+	// HasDispatchChildren is whether the mirror holds an issue of the Dispatch project key project
+	// whose parent is parent, of any status: one row's existence, read without the rows
+	// themselves (DispatchChildren reads them).
+	HasDispatchChildren(ctx context.Context, tx pgx.Tx, project, parent string) (bool, error)
 	// DispatchClaim is who the claims mirror shows holding key's claim (`<kind>:<id>`, "" for
 	// nobody), "" when it holds no claim of key. It reads the claim alone (PutDispatchClaim), with
 	// or without a mirrored row of the issue: a claim event applied before the issue's first row is

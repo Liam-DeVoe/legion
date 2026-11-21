@@ -83,7 +83,7 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 	if err := e.untellUnresumedChanges(ctx, tx, issue); err != nil {
 		return err
 	}
-	if err := e.clearMergeForward(ctx, tx, issue.Key); err != nil {
+	if _, err := e.clearMergeForward(ctx, tx, issue.Key); err != nil {
 		return err
 	}
 	if claim.IsTreeRoot(issue.Key, issue.Tree) {

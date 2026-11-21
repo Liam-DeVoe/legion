@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -59,25 +60,30 @@ func TestTheAwaitingChildrenPhaseAndItsHeldStart(t *testing.T) {
 		t.Fatalf("an empty entry_from = %v, want a constraint to refuse it: an entry no move raised reads null", err)
 	}
 
-	// The new value is accepted with a full held start, and the outliving column stands beside it:
-	// children_waited_at set.
+	// The new value is accepted with a full held start, the children it waits on among it, and the
+	// outliving column stands beside it: children_waited_at set.
 	exec(`update issues set phase = 'awaiting_children', children_wait_start = 'implementing',
 		children_wait_task = 'merge the base and finish', children_wait_reason = 'a child of it is open',
-		children_wait_since = now(), children_waited_at = now() where key = 'LEGION-208'`)
+		children_wait_since = now(), children_wait_children = '{LEGION-209,LEGION-210}', children_waited_at = now()
+		where key = 'LEGION-208'`)
 
 	var waitedAt, since *string
-	if err := store.Pool().QueryRow(ctx, `select children_waited_at::text, children_wait_since::text
-		from issues where key = 'LEGION-208'`).Scan(&waitedAt, &since); err != nil {
+	var children []string
+	if err := store.Pool().QueryRow(ctx, `select children_waited_at::text, children_wait_since::text, children_wait_children
+		from issues where key = 'LEGION-208'`).Scan(&waitedAt, &since, &children); err != nil {
 		t.Fatalf("read the held start back: %v", err)
 	}
 	if waitedAt == nil || since == nil {
 		t.Fatalf("after the move children_waited_at = %v and children_wait_since = %v, want both times set", waitedAt, since)
 	}
+	if want := []string{"LEGION-209", "LEGION-210"}; !slices.Equal(children, want) {
+		t.Fatalf("after the move children_wait_children = %v, want %v, in the order written", children, want)
+	}
 
-	// Leaving the phase clears the held start; the outliving column may stand, so the move out
-	// clears only the held-start columns.
+	// Leaving the phase clears the held start, the children with it; the outliving column may
+	// stand, so the move out clears only the held-start columns.
 	exec(`update issues set phase = 'implementing', children_wait_start = null, children_wait_task = null,
-		children_wait_reason = null, children_wait_since = null where key = 'LEGION-208'`)
+		children_wait_reason = null, children_wait_since = null, children_wait_children = null where key = 'LEGION-208'`)
 	if err := store.Pool().QueryRow(ctx, `select children_waited_at::text from issues where key = 'LEGION-208'`).
 		Scan(&waitedAt); err != nil {
 		t.Fatalf("read the outliving column back: %v", err)
@@ -95,6 +101,7 @@ func TestTheAwaitingChildrenPhaseAndItsHeldStart(t *testing.T) {
 	for _, refused := range []struct{ why, statement string }{
 		{"a held start outside the phase", `update issues set children_wait_start = 'implementing', children_wait_task = 't',
 			children_wait_reason = 'r', children_wait_since = now() where key = 'LEGION-208'`},
+		{"the children of a wait outside the phase", `update issues set children_wait_children = '{LEGION-209}' where key = 'LEGION-208'`},
 		{"the phase with no held start", `update issues set phase = 'awaiting_children' where key = 'LEGION-208'`},
 		{"the phase with only part of the held start", `update issues set phase = 'awaiting_children',
 			children_wait_start = 'implementing' where key = 'LEGION-208'`},

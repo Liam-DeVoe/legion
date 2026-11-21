@@ -982,12 +982,13 @@ const pauseContract = 178
 //
 // shapedAnswersContract stands right below it, and the two bands touch no key of each other's:
 // shapedAnswersContract's takes `lowestPluginContract` and the claim views' `updateState` and
-// `wake`, and this one `treeRuns` and some `gatedSteps`. So a caller at 193 through 202 is served
-// the keys 193 added and none of this contract's keys and words; one that states a number from 194
-// to 198 is served 193's shape, and one that states 199 to 202 is served 199's, the nearest
-// recorded contract below it (recordedContractAtOrBelow), which is 193's, since 199 moves no shape
-// of an answer a plugin parses. Every such caller states its contract: podContracts leaves out a
-// claim at shapedAnswersContract or above, so a pod reading places no caller there.
+// `wake`, and this one `treeRuns` and some `gatedSteps`. So a caller from 193 up to the number
+// below this contract is served the keys 193 added and none of this contract's keys and words;
+// one that states a number from 194 to 198 is served 193's shape, and one that states 199 or a
+// number between it and this contract is served 199's, the nearest recorded contract below it
+// (recordedContractAtOrBelow), which is 193's, since 199 moves no shape of an answer a plugin
+// parses. Every such caller states its contract: podContracts leaves out a claim at
+// shapedAnswersContract or above, so a pod reading places no caller there.
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract these keys and values arrived at stays where it is.

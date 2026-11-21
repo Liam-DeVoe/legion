@@ -290,12 +290,17 @@ function stateSummary(state: LegionState): string {
       // A spec step open on an ancestor's approval holds in `approvedVersion` the version its root
       // registered, which no person approved (contract 203), so a step on a basis reads its entry
       // in `gatedSteps`: the status word, and the ancestor and version it opened on or waits on.
-      const spec = issue.gatedSteps?.find((step) => step.step === "spec");
-      lines.push(
-        spec?.basis === undefined
-          ? `  gate ${gate.currentVersion} approved ${gate.approvedVersion ?? "none"}`
-          : `  gate ${gate.currentVersion} ${spec.status} ${spec.basis.issue} ${spec.basis.version}`
-      );
+      // The loop binds each entry of `gatedSteps`, so the read census sees every field read off
+      // one, under the list's name (`LEGION_ANSWER_READS`).
+      let line = `  gate ${gate.currentVersion} approved ${gate.approvedVersion ?? "none"}`;
+      for (const gatedStep of issue.gatedSteps ?? []) {
+        if (gatedStep.step !== "spec") continue;
+        if (gatedStep.basis !== undefined) {
+          line = `  gate ${gate.currentVersion} ${gatedStep.status} ${gatedStep.basis.issue} ${gatedStep.basis.version}`;
+        }
+        break;
+      }
+      lines.push(line);
     }
     const claims: Array<readonly [string, SummaryClaim]> = [];
     if (issue.architect !== undefined) claims.push(["architect", issue.architect]);

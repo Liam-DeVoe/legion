@@ -46,12 +46,12 @@ const ServingFloor = 46
 // TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp (`version_test.go`) reads the entry
 // headers out of version.go and holds this list to them in both directions.
 //
-// 193 and 203 are constants rather than numbers, because the entries that added their shapes name
-// them: shapedAnswersContract is the number dispatch://INFRA-2694's entry took, and
-// gateBasisContract the number of the last entry, dispatch://INFRA-3320's. A renumber of either
-// entry moves its constant and this list with it, and moving one of the two alone would describe
-// a shape at a contract no entry declares. 199 moves no shape of an answer a plugin parses, so its
-// records are 193's under its own number.
+// shapedAnswersContract (193) and gateBasisContract are constants rather than numbers, because the
+// entries that added their shapes name them: shapedAnswersContract is the number
+// dispatch://INFRA-2694's entry took, and gateBasisContract the number of the last entry,
+// dispatch://INFRA-3320's. A renumber of either entry moves its constant and this list with it,
+// and moving one of the two alone would describe a shape at a contract no entry declares. 199
+// moves no shape of an answer a plugin parses, so its records are 193's under its own number.
 var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, gateBasisContract}
 
 // AnswerID names one answer a plugin parses. It is stable: every write of this package goes
@@ -461,8 +461,9 @@ var strandedStates = []EnumeratedValue{
 // daemon writes, since phase.All has never held it. The field is older than the floor, and the
 // list has lost one value since: `awaiting_merge`, which contract 86 took out of the workflow and
 // out of that enumeration (version.go's 86). It has gained one too: `awaiting_children`, a parent
-// that an open Dispatch child of it holds, arrived at gateBasisContract (version.go's 203), so the
-// list is written out value by value, sorted by value, as waitAnswers is.
+// that an open Dispatch child of it holds, arrived at gateBasisContract (version.go's entry of
+// dispatch://INFRA-3320), so the list is written out value by value, sorted by value, as
+// waitAnswers is.
 //
 // A removed value needs no serving-down, which is why no row below records `awaiting_merge` at
 // any contract. This table records each value's arrival (`Since`) and nothing else, and the one
@@ -550,8 +551,8 @@ var lineKinds = []EnumeratedValue{
 // record.HeldReasons, because a word added to the ladder later arrives at its own contract and
 // not at the field's. Eleven words arrived with `admission.held` at heldContract, and the list
 // grew once: `awaiting_children`, a parent waiting on its open children, arrived at
-// gateBasisContract (version.go's 203, record.HeldAwaitingChildren). So it is written out value
-// by value, sorted by value, as waitAnswers is.
+// gateBasisContract (version.go's entry of dispatch://INFRA-3320, record.HeldAwaitingChildren). So
+// it is written out value by value, sorted by value, as waitAnswers is.
 var heldReasons = []EnumeratedValue{
 	{Value: string(record.HeldAcceptedAncestor), Since: heldContract},
 	{Value: string(record.HeldAncestry), Since: heldContract},
@@ -631,7 +632,8 @@ var mergeWaitStates = valuesFrom(mergeWaitContract,
 // contract `gatedSteps` arrived at, and gatedStepStatuses every place an issue can stand in one.
 // Four statuses arrived with `gatedSteps`, and the list grew once: `open_on_basis` and
 // `pending_on_basis`, a step on an ancestor's basis, arrived at gateBasisContract (version.go's
-// 203). So it is written out value by value, sorted by value, as waitAnswers is.
+// entry of dispatch://INFRA-3320). So it is written out value by value, sorted by value, as
+// waitAnswers is.
 var designSteps = valuesFrom(gatedStepsContract,
 	record.DesignStepDecisions, record.DesignStepCriteria, record.DesignStepSpec)
 var gatedStepStatuses = []EnumeratedValue{

@@ -2767,19 +2767,26 @@ The statement takes each one where this release's return would have taken it (wo
 An issue whose pull request merged during the wait goes back to the very start it held, which the statement reads from `public.pull_requests` (`state = 'merged'`, one row per issue).
 It clears the held start, `children_wait_children` with it, which the shape check requires of every other phase.
 It clears `children_waited_at` as well: the earlier release's retry below hands a worker the phase entry its row already names, raised before the wait, and this release, rolled forward with the column standing, would refuse a completion of such an entry that arrives after the issue left its phase (workflow's `leftItsPhase`).
-Its `returning` list is the record of what it moved: the key and the phase it stands in now, and the held start, the held task, the held reason and the held children as they stood before the update, which the statement reads from the rows it moves (`moved`), since an update's `returning` gives the row it wrote.
+Its `returning` list is the record of what it moved: the key and the phase it stands in now, whether its pull request merged (`merged`), and the held start, the held task, the held reason and the held children as they stood before the update, which the statement reads from the rows it moves (`moved`), since an update's `returning` gives the row it wrote.
+It also returns the held children that merged during the wait (`held_merged`), as this release's return names them: each held child whose record stands at `done` with its pull request merged, with that pull request, in the order the wait recorded them.
 Keep it: the earlier release queues no start for any of these issues, and the statement clears the held task, the held reason and the held children, which say what each start was to hand its role.
 
 ```sql
 with moved as (
   select i.key, i.children_wait_start as held_start, i.children_wait_task as held_task, i.children_wait_reason as held_reason,
-    i.children_wait_children as held_children,
+    i.children_wait_children as held_children, pr.merged,
     case
-      when i.children_wait_start in ('planning', 'implementing') then i.children_wait_start
-      when exists (select 1 from public.pull_requests as p where p.issue = i.key and p.state = 'merged') then i.children_wait_start
+      when i.children_wait_start in ('planning', 'implementing') or pr.merged then i.children_wait_start
       else 'testing'
-    end as back_to
+    end as back_to,
+    (select string_agg(format('%s (pull request #%s)', w.child, p.number), ', ' order by w.position)
+       from unnest(i.children_wait_children) with ordinality as w(child, position)
+       join public.issues as c on c.key = w.child and c.project = i.project and c.phase = 'done'
+       join public.pull_requests as p on p.issue = w.child and p.state = 'merged') as held_merged
   from public.issues as i
+  cross join lateral (
+    select exists (select 1 from public.pull_requests as p where p.issue = i.key and p.state = 'merged') as merged
+  ) as pr
   where i.phase = 'awaiting_children'
 )
 update public.issues as i
@@ -2788,16 +2795,24 @@ update public.issues as i
     children_wait_children = null, children_waited_at = null
   from moved
   where i.key = moved.key
-  returning i.key, i.phase, moved.held_start, moved.held_task, moved.held_reason, moved.held_children;
+  returning i.key, i.phase, moved.merged, moved.held_start, moved.held_task, moved.held_reason, moved.held_children,
+    moved.held_merged;
 ```
 
 The earlier release's boot writes each moved issue's Dispatch status to its phase's (`correctStatuses` in that release's `workflow/resume.go`).
 Nothing of it starts the phase's worker: the move into the wait finished every start the issue owed, and the statement writes none.
 So, once the earlier daemon is up, start each one by hand, for the role of the phase the statement returned (`planning` the planner, `implementing` the implementer, `testing` the tester, `reviewing` the reviewer).
 The earlier release's retry below starts the phase with a task of its own, whose reason is the operator's retry (`restartPhase` and `retryPhase` in that release's `workflow/engine.go`), so it carries neither the held task nor the held reason.
-Give each worker that work in a comment on the issue before the retry: the held task where the issue went back to the start it held, since that task carries the reason (a tester's failures, a review's words), and the held start and the held reason where it went to `testing` from a held `testing`, `reviewing` or `accepting`, as this release's return names them in the tester's task.
-In either case, name each of the held children whose pull request merged, as this release's return does.
-For a tester, add the request every testing task of a parent carries in this release (workflow's `baseMergeRun`), which the earlier release's task lacks: test the head merged with the tip of the pull request's base branch once that tip carries each needed child's merge, in a checkout of its own that it never pushes, and record each result at the head with an `--observed` line naming that base commit.
+Give each worker that work in a comment on the issue before the retry.
+Where the held start is `planning` or `implementing`, or `merged` is true, give the held task, since that task carries the reason (a tester's failures, a review's words).
+Otherwise the issue went to `testing` from a held `testing`, `reviewing` or `accepting`: give the held start and the held reason, as this release's return names them in the tester's task.
+In either case, name each child in `held_merged` with its pull request, as this release's return does; where it is null, no held child merged.
+For a tester, add the sentence every testing task of a parent ends with in this release (workflow's `baseMergeRun`), which the earlier release's task lacks, word for word, unless the held task you give ends with it already:
+
+```text
+Test the head merged with the tip of the pull request's base branch, read at the round's start once that tip carries each needed child's merge, in a checkout of your own outside the issue's workspace that you never push; record each result at the head with an `--observed` line naming that base commit, a carried pass too; size the round over the whole tested tree's difference.
+```
+
 Read the claim's token on the issue's row for that role in `legion claims list --operator-token-file <file>`.
 The earlier release's `legion claims retry` starts a phase again only for a claim that failed or that an operator stopped (`retryStart` and `restartWorkedPhase` in its `api/operator.go`), so stop a claim in any other state first, which retires it, and then retry it:
 

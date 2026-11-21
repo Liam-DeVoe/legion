@@ -187,13 +187,13 @@ func pwClaimState(t *testing.T, pool *pgxpool.Pool, token claim.Token) (supervis
 }
 
 // The words of R10 on a merge forward that a move into awaiting_children drops before it landed
-// (dispatch://INFRA-3320 R10, with the pins INFRA-3320's architect set on it and INFRA-4728's
-// architect relayed), each sentence once: the implementer that has begun the merge finishes it,
-// pushes it and does nothing more, and one that has not begun it begins none; the daemon does not
-// ask for that merge forward again, and the implementer merges the base forward only once GitHub
-// reads the pull request CONFLICTING, since the tester's merge with the base finds a conflict that
-// is still there and fails its round; any other worker writes and pushes nothing more. They are
-// the words record.PhaseEnded.Message gives and the implementer's role message carries.
+// (dispatch://INFRA-3320 R10), each sentence once: the implementer that has begun the merge
+// finishes it, pushes it and does nothing more, and one that has not begun it begins none; the
+// daemon does not ask for that merge forward again, and the implementer merges the base forward
+// only once GitHub reads the pull request CONFLICTING, since the tester's merge with the base finds
+// a conflict that is still there and fails its round; any other worker writes and pushes nothing
+// more. They are the words record.PhaseEnded.Message gives and the implementer's role message
+// carries.
 // internal/record's TestAPhaseEndedMessageIntoAwaitingChildrenGivesTheWaitsOwnWords reads the
 // three forms of the phase-ended message word for word, and internal/daemon's
 // TestParentWaitsHoldsEveryPhaseStart reads the published texts.
@@ -692,7 +692,7 @@ type pwForward struct {
 }
 
 // pwForwards is the three states: no merge forward, one asked and not landed, and one that
-// landed, which the move drops as it does today with no new words.
+// landed, which the move drops with no word of it.
 func pwForwards() []pwForward {
 	return []pwForward{
 		{name: "no merge forward", asked: func(phase.Phase) *record.MergeForward { return nil }},
@@ -1121,9 +1121,9 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 
 	// The fifth parent: its tester is in the middle of testing. It moves at the pass, written
 	// in_progress over testing, its tester is sent the R10 message, and at the return the held
-	// testing start comes back as testing (dispatch://INFRA-3320 R12, on the person's answer
-	// "Children first"): the tester's start names the held start and its reason and the child that
-	// merged during the wait, and asks for the round on the head merged with the base's tip.
+	// testing start comes back as testing (dispatch://INFRA-3320 R12): the tester's start names the
+	// held start and its reason and the child that merged during the wait, and asks for the round
+	// on the head merged with the base's tip.
 	t.Run("a tester in the middle of testing, whose held testing comes back as testing", func(t *testing.T) {
 		pool, admission, _ := pwStopTester(t)
 
@@ -1241,7 +1241,7 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 	// move back raised, which the fence refuses HANDOFF_STALE_ENTRY whatever head it names
 	// (internal/api's TestParentWaitsHoldsEveryPhaseStart drives it through the route). Here the
 	// return's entry is read as the mark the fence reads.
-	t.Run("a late completion of the stopped phase is refused during the wait and after the return", func(t *testing.T) {
+	t.Run("a late completion of the stopped phase is refused during the wait, and the return raises the entry the route's fence refuses it behind", func(t *testing.T) {
 		pool, admission, token := pwStopTester(t)
 		stopped := spPhaseRow(t, pool, spParent, claim.RoleTester)
 
@@ -1257,7 +1257,7 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 			t.Fatalf("the parent after its child is done = %s, want testing", back.Phase)
 		}
 		if row := spPhaseRow(t, pool, spParent, claim.RoleTester); row.Entry != stopped.Entry+1 || !row.EntryMovedBack ||
-			row.EntryFrom != phase.AwaitingChildren || row.HandoffRecord == "test-late" {
+			row.EntryFrom != phase.AwaitingChildren {
 			t.Fatalf("the tester's row after the return = %+v, want the entry above the stopped one (%d) raised as a move back out of awaiting_children, which the route's entry fence refuses a completion behind",
 				row, stopped.Entry)
 		}

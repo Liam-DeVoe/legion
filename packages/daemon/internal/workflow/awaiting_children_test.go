@@ -275,6 +275,23 @@ func TestTheChildrenNoticesEndEachCycleSentenceWithAFullStop(t *testing.T) {
 	}
 }
 
+// The children-first notice suggests no move of a child under another issue of the parent's tree,
+// since an open child holds every phase start of the issue it stands under, so that issue would
+// wait too (dispatch://INFRA-3320 R11, "so the texts stop suggesting it"): the one move it names
+// takes a child out from under the parent to an issue outside its tree or to no parent, and it
+// says the child goes never under another issue of this tree, with the reason.
+func TestTheChildrenFirstNoticeNamesNoMoveUnderAnotherIssueOfTheTree(t *testing.T) {
+	reason := ChildrenFirstNotice(record.ChildWait{Parent: cwParent, Open: []record.OpenChild{{Key: cwChild, Status: "todo"}}}).Reason
+	for _, want := range []string{
+		"moved out from under " + cwParent + " to an issue outside its tree or to no parent;",
+		"Move out from under " + cwParent + ", to no parent, only a child you have not released and that should not run now, and never under another issue of this tree: an open child holds every phase start of the issue it stands under.",
+	} {
+		if !strings.Contains(reason, want) {
+			t.Errorf("the children-first notice's reason %q does not say %q", reason, want)
+		}
+	}
+}
+
 // The move writes what the return reads: the held start with the task the start would have given
 // its worker, its reason and the moment the wait began; the moment of the move, which outlives the
 // phase; and the status in_progress, written to Dispatch from the status the record held.
@@ -490,6 +507,16 @@ func TestFactsDuringTheWaitStartNothing(t *testing.T) {
 		t.Fatalf("the parent after the merge = phase %s, held start %+v; want it waiting still, the held start as it was",
 			got.Phase, got.ChildrenWait)
 	}
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		pr, err := record.NewStore().PullRequest(t.Context(), tx, cwParent)
+		if err != nil || pr == nil {
+			return fmt.Errorf("read the pull request of %s: %v", cwParent, err)
+		}
+		if pr.State != record.PullRequestMerged {
+			t.Errorf("pull request #%d of %s = %s after the merge, want it recorded merged", pr.Number, cwParent, pr.State)
+		}
+		return nil
+	})
 	if starts := superviseRowsOf(t, pool, cwParent, "start"); len(starts) != 0 {
 		t.Fatalf("start rows = %+v, want none", starts)
 	}
@@ -580,7 +607,7 @@ func TestAReleaseOfAHoldWithAnOpenChildWaitsOnTheChildren(t *testing.T) {
 // cwBackAsTesting is what waitingRefusal says of where a parent holding the start of testing,
 // reviewing or accepting (%[1]s, the start it holds) comes back once no child under it is open: as
 // testing, and to the start it holds only where its pull request merged during the wait
-// (ReturnFromChildren; dispatch://INFRA-3320 R12 on the person's answer "Children first").
+// (ReturnFromChildren; dispatch://INFRA-3320 R12).
 const cwBackAsTesting = "goes back to testing by itself, or to %[1]s, the start it holds, if its pull request merged during the wait"
 
 // request_backward_move — the architect's and a worker's — and sign_off on a parent in

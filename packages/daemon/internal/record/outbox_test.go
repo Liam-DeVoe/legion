@@ -1297,11 +1297,10 @@ func TestARowsBackoffDoublesFromOneSecondUpToSixtyFourSeconds(t *testing.T) {
 	}
 }
 
-// A phase-ended message gives R10's words (dispatch://INFRA-3320 R10, with the pins its architect
-// set on R10 and INFRA-4728's architect relayed), in one of three forms, word for word. Each says
-// that the phase ended and no task follows, that a completion of it is refused, and that the
-// issue's next task comes once its children are finished, and ends with the reason that names
-// the open children.
+// A phase-ended message gives R10's words (dispatch://INFRA-3320 R10) in one of three forms, word
+// for word. Each says that the phase ended and no task follows, that a completion of it is
+// refused, and that the issue's next task comes once its children are finished, and ends with the
+// reason that names the open children.
 //
 //   - The plain form, where the move dropped no merge forward that had not landed: the worker
 //     commits and pushes what it has and does no more work on the phase. The implementer is told

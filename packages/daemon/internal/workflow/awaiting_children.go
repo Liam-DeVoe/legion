@@ -144,22 +144,18 @@ func (e *Engine) awaitChildren(ctx context.Context, tx pgx.Tx, issue record.Issu
 			return err
 		}
 	}
-	// The merge forward is read before the clear drops it, so the move can name one that had not
-	// landed to the implementer.
-	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	// Nothing asks again during the wait (awaiting_children is in no phase of
+	// record.MergeForwardPhases), and the return asks for none: a conflict still there fails the
+	// tester's merge with the base, and the implementer merges forward once GitHub reads the pull
+	// request CONFLICTING (R10). The merge forward the clear drops is named to the implementer where
+	// it had not landed.
+	cleared, err := e.clearMergeForward(ctx, tx, issue.Key)
 	if err != nil {
 		return err
 	}
 	var dropped *record.DroppedMergeForward
-	if pr != nil && pr.MergeForward != nil && pr.MergeForward.Landed == "" {
-		dropped = &record.DroppedMergeForward{Head: pr.MergeForward.Head, Base: pr.MergeForward.Base}
-	}
-	// Nothing asks again during the wait (awaiting_children is in no phase of
-	// record.MergeForwardPhases), and the return asks for none: a conflict still there fails the
-	// tester's merge with the base, and the implementer merges forward once GitHub reads the pull
-	// request CONFLICTING (R10).
-	if err := e.clearMergeForward(ctx, tx, issue.Key); err != nil {
-		return err
+	if cleared != nil && cleared.Landed == "" {
+		dropped = &record.DroppedMergeForward{Head: cleared.Head, Base: cleared.Base}
 	}
 	e.logOnCommit(ctx, "workflow: a parent waits on its open children", "issue", issue.Key, "tree", issue.Tree,
 		"from", from, "holds", hold.Start, "children", openChildNames(hold.Open))
@@ -412,9 +408,8 @@ func (e *Engine) queuedTask(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 }
 
 // ReturnFromChildren takes issue back from awaiting_children once no open Dispatch child stands
-// under it (dispatch://INFRA-3320 R12, on the person's answer "Children first"): the admission
-// pass calls it on the pass that finds the last open child gone (admit's childrenWaits), with
-// nobody acting.
+// under it (dispatch://INFRA-3320 R12): the admission pass calls it on the pass that finds the
+// last open child gone (admit's childrenWaits), with nobody acting.
 //
 //   - A held start of planning or implementing starts that phase, with the task the start held,
 //     which carries the reason its transition wrote. A held start of testing, reviewing or
@@ -509,7 +504,8 @@ func (e *Engine) ReturnFromChildren(ctx context.Context, tx pgx.Tx, issue record
 // start and its reason. Every other start goes back on the task it held, which carries the reason
 // its transition wrote. Either task names the children of held that merged during the wait
 // (mergedChildren), and a testing task of a parent ends with the base-merge sentence once
-// (withBaseMergeRun), which a testing task held as it was (heldTask) may carry already.
+// (withBaseMergeRun), which a held testing task may carry already: the one the admission pass
+// held for a phase it stopped (StopForChildren's queuedTask or entryWork).
 func (e *Engine) returnTask(ctx context.Context, tx pgx.Tx, held record.ChildrenWait, back record.Issue, pr *record.PullRequest,
 	asTesting bool,
 ) (string, error) {
@@ -526,10 +522,7 @@ func (e *Engine) returnTask(ctx context.Context, tx pgx.Tx, held record.Children
 		if merged != "" {
 			work += " " + merged + "."
 		}
-		if back.Phase == phase.Testing {
-			work = withBaseMergeRun(work, parent)
-		}
-		return work, nil
+		return withBaseMergeRun(work, back.Phase, parent), nil
 	}
 	implementer, err := e.phaseRow(ctx, tx, back.Key, claim.RoleImplementer)
 	if err != nil {
@@ -636,10 +629,10 @@ func (e *Engine) waitingRefusal(ctx context.Context, tx pgx.Tx, issue record.Iss
 
 // goesBack is where the return takes a parent holding the start of held, as the refusals of an
 // act on it say (waitingRefusal): a held reviewing or accepting back as testing unless its pull
-// request merged during the wait (record.ReturnsAsTesting, ReturnFromChildren), and any other
-// held start to that start.
+// request merged during the wait (record.ReturnsAsTestingInstead, ReturnFromChildren), and any
+// other held start to that start.
 func goesBack(held phase.Phase) string {
-	if record.ReturnsAsTesting(held) && held != phase.Testing {
+	if record.ReturnsAsTestingInstead(held) {
 		return fmt.Sprintf("goes back to testing by itself, or to %s, the start it holds, if its pull request merged during the wait", held)
 	}
 	return fmt.Sprintf("goes back to %s, the start it holds, by itself", held)

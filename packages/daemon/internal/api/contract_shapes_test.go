@@ -482,7 +482,7 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 		}
 	}
 	// A root that holds its next phase start because an open Dispatch child of it stands under it
-	// (contract 203, dispatch://INFRA-3320 R11): its `phase` is the word that contract added, which
+	// (gateBasisContract, dispatch://INFRA-3320 R11): its `phase` is the word that contract added, which
 	// a reader below it is served as `admitted` (shaping.go's withoutUnadmittedPhases).
 	issues["VALUES-AWAITING"] = Issue{
 		Key: "VALUES-AWAITING", Generation: 1, Phase: phase.AwaitingChildren, Status: "in_progress",

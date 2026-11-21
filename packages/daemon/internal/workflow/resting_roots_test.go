@@ -40,7 +40,7 @@ func restingBasis() *record.GateBasis {
 // restingReturn is the sentence of the SIGNOFF_CHILD_OPEN refusal of P (LEGION-100) that says
 // where a parent in accepting goes once its open children are finished: into awaiting_children,
 // and back by itself to the start it held, a held acceptance as testing (workflow's
-// ReturnFromChildren; dispatch://INFRA-3320 R8 and R12, on the person's answer "Children first").
+// ReturnFromChildren; dispatch://INFRA-3320 R8 and R12).
 const restingReturn = "Unless the pull request of LEGION-100 has merged, the next admission pass moves it to awaiting_children, and once no child under it is open it goes back by itself to the start it held, a held acceptance as testing; otherwise sign off again. "
 
 // seedAcceptingAncestor records P as the root of a running tree of its own in accepting, on its

@@ -5077,8 +5077,8 @@ on_tree "$tree1" wait_for_worker "$tree1" reviewer
 # one the reviewer approved before the wait, but that approval names the entry of its own round,
 # so this round waits on a new decision, and the daemon's move out of reviewing is what is read.
 on_tree "$tree1" send_agent "$tree1" reviewer "Stage 4b proof review after the wait: review pull request #$pr_number in $repo at its head as your role requires, and complete the reviewer handoff. The decision is yours; take the round's steps in the order your role gives."
-reviewed_after_wait() { issue_phase "$tree1" accepting >/dev/null || issue_phase "$tree1" implementing >/dev/null; }
-on_tree "$tree1" until_true 1800 "$review_app's decision on pull request #$pr_number after the wait to move $tree1 out of reviewing" reviewed_after_wait
+on_tree "$tree1" until_true 1800 "$review_app's decision on pull request #$pr_number after the wait to move $tree1 out of reviewing" \
+  issue_phase_in "$tree1" accepting implementing
 issue_phase "$tree1" accepting >/dev/null ||
   fail "the reviewer requested changes on pull request #$pr_number after the wait: $tree1 is $(daemon_state | jq -r --arg i "$tree1" '.issues[$i].phase')"
 note "the round after the wait ran with real agents: the tester tested the head merged with $pr_base's tip, and the reviewer approved the head, which moved $tree1 to accepting"

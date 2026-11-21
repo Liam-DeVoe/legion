@@ -120,7 +120,8 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 // implementing - an ask in reviewing, then the round's end into accepting - asks nothing more.
 func (e *Engine) mergeForwardOnEntry(ctx context.Context, tx pgx.Tx, issue record.Issue, from phase.Phase) error {
 	if issue.Phase == phase.Implementing {
-		return e.clearMergeForward(ctx, tx, issue.Key)
+		_, err := e.clearMergeForward(ctx, tx, issue.Key)
+		return err
 	}
 	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
 	if err != nil || pr == nil || !classify.ConflictRound(*pr) {
@@ -141,14 +142,20 @@ func (e *Engine) mergeForwardOnEntry(ctx context.Context, tx pgx.Tx, issue recor
 // (record.PullRequest.MergeForward), on a move into implementing (mergeForwardOnEntry) or into
 // awaiting_children (awaitChildren) and when the issue leaves the workflow (leave): the ask, its
 // landing and the review it asked for are of a stretch of work that is over, and a later conflict
-// is asked about afresh. A record that holds none is not written.
-func (e *Engine) clearMergeForward(ctx context.Context, tx pgx.Tx, issue string) error {
+// is asked about afresh. A record that holds none is not written. It answers the merge forward it
+// dropped, nil where it dropped none, which the move into awaiting_children names to the
+// implementer where it had not landed.
+func (e *Engine) clearMergeForward(ctx context.Context, tx pgx.Tx, issue string) (*record.MergeForward, error) {
 	pr, err := e.store.PullRequest(ctx, tx, issue)
 	if err != nil || pr == nil || pr.MergeForward == nil {
-		return err
+		return nil, err
 	}
+	cleared := pr.MergeForward
 	pr.MergeForward = nil
-	return e.putPullRequest(ctx, tx, *pr)
+	if err := e.putPullRequest(ctx, tx, *pr); err != nil {
+		return nil, err
+	}
+	return cleared, nil
 }
 
 // mergeForwardLanded records that a merge forward landed (dispatch://INFRA-4374 R1): pr's head,

@@ -151,17 +151,17 @@ holds its next phase, and the daemon stops a phase that is under way and tells i
 what it has and stop. The issue then waits in `awaiting_children`: it holds no admission slot,
 Dispatch shows it `in_progress`, and no role of it works: the architect's `sign_off` and
 `request_backward_move` on it are refused (`WAITING_ON_CHILDREN`). Once no child under it is open,
-it goes back by itself to the phase it held, a held test, review or acceptance as `testing`, with
-a task that names the children that merged during the wait. The return asks for no merge of the
-base into its branch, which takes its base under the rules of any other pull request. Every test
-round of a parent runs on its head merged with the tip of the pull request's base branch, once that
-tip carries each needed child's merge, in the tester's own checkout and pushed nowhere, and each
-result names that base commit. A parent is accepted on its head once each check a role runs has a
-pass there that names a base commit carrying the merge of every child the check needs, and a pass
-that names an older commit, or none, sends it back to `testing`. The daemon also refuses a parent's
-acceptance, and a root's close, while an issue beneath it is still in the workflow. A child's own
-architect starts with the child's first phase, so a child it files stops the child's phase in this
-way.
+it goes back by itself to the phase it held, a held test, review or acceptance as `testing` unless
+its pull request merged during the wait, with a task that names the children that merged during
+the wait. The return asks for no merge of the base into its branch, which takes its base under the
+rules of any other pull request. Every test round of a parent runs on its head merged with the tip
+of the pull request's base branch, once that tip carries each needed child's merge, in the
+tester's own checkout and pushed nowhere, and each result names that base commit. A parent is
+accepted on its head once each check a role runs has a pass there that names a base commit
+carrying the merge of every child the check needs, and the architect sends one whose pass names an
+older commit, or none, back to `testing`. The daemon also refuses a parent's acceptance, and a
+root's close, while an issue beneath it is still in the workflow. A child's own architect starts
+with the child's first phase, so a child it files stops the child's phase in this way.
 
 ## Phase workers
 
@@ -176,7 +176,7 @@ head — brings the pod back and resumes the same sessions where they stopped.
 | Phase | Worker | What it does | GitHub identity |
 | --- | --- | --- | --- |
 | `awaiting_person` | none | The root keeps its admission slot while its live architect waits for and reads a person's answer to a question on the root. | none |
-| `awaiting_children` | none | A parent whose phases started waits here while Dispatch shows an open child under it. It holds no admission slot, Dispatch shows it `in_progress`, and no role of it works. It goes back to the phase it held once no child is open, a held test, review or acceptance as `testing`. | none |
+| `awaiting_children` | none | A parent whose phases started waits here while Dispatch shows an open child under it. It holds no admission slot, Dispatch shows it `in_progress`, and no role of it works. It goes back to the phase it held once no child is open, a held test, review or acceptance as `testing` unless its pull request merged during the wait. | none |
 | `planning` | planner | Writes the implementation plan into its handoff and the issue's document. | review App |
 | `implementing` | implementer | Writes the change, proves it works, pushes `legion/<KEY>` and opens the pull request. | implement App |
 | `testing` | tester | Runs the changed surface for real, tries to break it, judges whether the tests would catch what breaks, and reads CI for everything static; reports `pass` or `fail`. | review App |

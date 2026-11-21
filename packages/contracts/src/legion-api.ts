@@ -2177,7 +2177,8 @@ export const LegionChildRequest = z.strictObject({
  * issue's phase and its open check for `handoff_complete`, `phase-reminder.ts` and
  * `pi-legion/src/stall-evidence.ts` read the architect's claim state, and the controller's
  * `read_state` summary (`pi-legion/src/tools.ts`) reads each issue's status, hold reason, slot,
- * design gate, and the state and both turn times of the architect's claim and of every worker's.
+ * design gate, the spec step's entry in its gated steps (its step, status and basis), and the
+ * state and both turn times of the architect's claim and of every worker's.
  * The record route and the state's `issues{}` answer the same node, so the read set below names
  * these paths at both, `LegionIssueRecordResponse` as they stand and `LegionStateResponse` under
  * the state's prefix. They are written once here because the two entries must say the same thing.
@@ -2207,6 +2208,9 @@ const ISSUE_RECORD_READS = [
   "designGate.currentVersion",
   "designGate.approvedVersion",
   "gatedSteps",
+  "gatedSteps[].step",
+  "gatedSteps[].status",
+  "gatedSteps[].basis",
   "gatedSteps[].basis.issue",
   "gatedSteps[].basis.version",
   "slot",
@@ -2225,7 +2229,8 @@ const ISSUE_RECORD_READS = [
  * names `LegionHealthResponse`'s `project` and not its `status`, or off the same node reached by
  * another path, since one node several paths reach is named at each of them (below): the issue
  * record's root is the state's `issues{}` node, so the record names `status`, `holdReason`,
- * `designGate` and `slot`, which the `read_state` summary reads off the state's issues.
+ * `designGate`, `gatedSteps` and `slot`, which the `read_state` summary reads off the state's
+ * issues.
  * A path names each key from that schema's root, with a record's value written `{}` and a list's
  * element `[]`, as the object census in `legion-api.test.ts` writes them, and a discriminated
  * union's member by its index after `|` (`paused.by|0.session`, the controller's entry). An

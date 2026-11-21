@@ -225,17 +225,8 @@ func (p *liveIssueProof) publishPush(from, to, headSubject string) {
 // GitHub pull-request event (intake's decodePullRequest reads it).
 func (p *liveIssueProof) publishSynchronize(head string) {
 	p.t.Helper()
-	payload, err := json.Marshal(map[string]string{
-		"action": "synchronize", "kind": "pr", "repo": liveRepo, "number": strconv.Itoa(p.number),
-		"head_sha": head, "base_ref": p.base, "head_ref": "legion/" + p.key, "title": p.title,
-		"url":        "https://github.com/" + liveRepo + "/pull/" + strconv.Itoa(p.number),
-		"updated_at": time.Now().UTC().Format(time.RFC3339),
-	})
-	if err != nil {
-		p.t.Fatalf("encode the synchronize payload: %v", err)
-	}
-	subject := fmt.Sprintf("notifications.github.%s.pr.%d", p.subjectRepo(), p.number)
-	p.publish(subject, "github", fmt.Sprintf("pr-%d-synchronize-%s", p.number, head), string(payload))
+	p.publishPullRequest(livePullRequestEvent{action: "synchronize", number: p.number, issue: p.key, head: head, base: p.base,
+		title: p.title, updated: time.Now().UTC()}, fmt.Sprintf("pr-%d-synchronize-%s", p.number, head))
 }
 
 // publishBasePush publishes another pull request's merge onto the issue's base branch, as Envoy

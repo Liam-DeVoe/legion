@@ -2146,13 +2146,12 @@ func (e *Engine) childrenOpen(ctx context.Context, tx pgx.Tx, issue record.Issue
 }
 
 // isParent says whether issue is a parent: an issue with a Dispatch child of any status in the
-// daemon's copy of Dispatch (Store.DispatchChildren), whether or not it ever waited on one. Every
-// testing task of a parent asks for the round on the head merged with the tip of the pull
-// request's base branch (withBaseMergeRun), so the answer is read for a testing task alone
-// (testingParent).
+// daemon's copy of Dispatch (Store.HasDispatchChildren, one exists query), whether or not it ever
+// waited on one. Every testing task of a parent asks for the round on the head merged with the tip
+// of the pull request's base branch (withBaseMergeRun), so the answer is read for a testing task
+// alone (testingParent).
 func (e *Engine) isParent(ctx context.Context, tx pgx.Tx, issue record.Issue) (bool, error) {
-	children, err := e.store.DispatchChildren(ctx, tx, e.cfg.Project, []string{issue.Key})
-	return len(children[issue.Key]) > 0, err
+	return e.store.HasDispatchChildren(ctx, tx, e.cfg.Project, issue.Key)
 }
 
 // testingParent is the parent flag of a task of the phase issue stands in (task,
