@@ -139,6 +139,18 @@ func New(cfg Config) (*Client, error) {
 	return &Client{cfg: cfg}, nil
 }
 
+// VerifyKeys answers a copy of the keys the client verifies every answer under
+// (Config.VerifyKeys), so a command that reads other records the operator signed, the session
+// consumers' records copy among them, verifies them under the same keys. Changing the copy, a key's
+// bytes included, changes nothing the client verifies with.
+func (c *Client) VerifyKeys() []ed25519.PublicKey {
+	out := make([]ed25519.PublicKey, len(c.cfg.VerifyKeys))
+	for i, key := range c.cfg.VerifyKeys {
+		out[i] = append(ed25519.PublicKey(nil), key...)
+	}
+	return out
+}
+
 // Barrier publishes a plain put to `$KV.<bucket>.hold.barrier.<holdID>` and returns once its
 // acknowledgement arrives. Every held command calls it before its first read of each bucket.
 func Barrier(ctx context.Context, js jetstream.JetStream, bucket, holdID string) error {

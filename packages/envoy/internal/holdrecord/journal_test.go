@@ -2,6 +2,7 @@ package holdrecord_test
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -648,6 +649,27 @@ func TestTheHoldJournal(t *testing.T) {
 		}
 		if _, err := c.Row(ctx); !errors.As(err, &refusal) || refusal.Code != "no_row" {
 			t.Fatalf("after the refused Bootstrap Row answered %v, want no_row: it wrote a row", err)
+		}
+	})
+
+	// VerifyKeys answers the keys the client verifies the hold's rows under, as a copy: a caller
+	// that flips a byte of a key it got, or replaces one, changes nothing the client verifies with.
+	// Fails if VerifyKeys answers the client's own slice or keys: the row then reads as unknown.
+	t.Run("VerifyKeys answers a copy of the keys the client verifies with", func(t *testing.T) {
+		r := newRig(t)
+		c := r.client(t)
+		row(t, c)
+		keys := c.VerifyKeys()
+		if len(keys) != 1 || !keys[0].Equal(r.VerifyKey) {
+			t.Fatalf("VerifyKeys answered %v, want the rig's one key", keys)
+		}
+		keys[0][0] ^= 0xff
+		keys[0] = make(ed25519.PublicKey, ed25519.PublicKeySize)
+		if _, err := c.Row(ctx); err != nil {
+			t.Fatalf("after the caller changed the keys VerifyKeys answered, Row answered %v, want the verified row", err)
+		}
+		if again := c.VerifyKeys(); len(again) != 1 || !again[0].Equal(r.VerifyKey) {
+			t.Fatalf("VerifyKeys answered %v after the caller's change, want the rig's one key", again)
 		}
 	})
 
