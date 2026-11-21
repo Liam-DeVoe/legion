@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -447,6 +448,86 @@ func TestAnEdgeRelaysOnlyItsTokensProjects(t *testing.T) {
 		if published := relayTopics(t, relay); !slices.Equal(published, []string{contracts.RoleSubject(scopeProject, own)}) {
 			t.Fatalf("the relay published frames of %v on the relay subject, want only the role message of %s", published, contracts.RoleSubject(scopeProject, own))
 		}
+	})
+
+	// publishInfraRole publishes a message to role through a listener in no edge mode, the shared
+	// listener another project's sender uses, which forwards it to the claim's holder on the
+	// holder's own agent subject, the role lane its envelope's topic.
+	publishInfraRole := func(t *testing.T, rig *scopeRig, role string) {
+		t.Helper()
+		subject := contracts.RoleSubject(contracts.RoleProject(role), role)
+		recorder := httptest.NewRecorder()
+		rig.mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/messages/publish", strings.NewReader(
+			fmt.Sprintf(`{"topic":%q,"message":"for the role's holder","source":"agent","source_session":"ses_scope_sender"}`, subject))))
+		if recorder.Code != http.StatusOK && recorder.Code != http.StatusAccepted {
+			t.Fatalf("the publish to %s: status %d (%s), want it taken", subject, recorder.Code, recorder.Body.String())
+		}
+	}
+	// requireOnlyOwnIssue fails the test unless the socket's first frame, and the relay's only
+	// publish, is own, stored after the other project's forward: the forward was withheld.
+	requireOnlyOwnIssue := func(t *testing.T, rig *scopeRig, client *relaySocketClient, relay *natsgo.Subscription, own contracts.Envelope, other string) {
+		t.Helper()
+		frames := takeScopeFrames(t, client, 1, 15*time.Second)
+		if frames[0].item.EventID != own.EventID {
+			t.Fatalf("the socket's first frame is %s on %s (topic %s), want %s's event %s: the role message of %s reached its socket",
+				frames[0].item.EventID, frames[0].subject, frames[0].item.Topic, scopeProject, own.EventID, other)
+		}
+		noScopeFrame(t, client, time.Second, "after the event of "+scopeProject)
+		requireWithheld(t, rig, 1)
+		if published := relayTopics(t, relay); !slices.Equal(published, []string{ownIssue}) {
+			t.Fatalf("the relay published frames of %v on the relay subject, want only %s's event", published, scopeProject)
+		}
+	}
+
+	t.Run("D a role of another project another writer grants it after its registration", func(t *testing.T) {
+		rig := newScopeRig(t)
+		const session, infraRole = "ses_scope_late_claim", "legion-infra-infra-8-reviewer"
+		client, _ := registerScopeSession(t, rig, session, "notifications.dispatch.issue."+scopeProject+".>")
+		relay := watchRelay(t, rig, session)
+		if _, err := rig.deps.registry.SetRole(session, "shared-listener", infraRole, false); err != nil {
+			t.Fatalf("write the claim of %s naming %s: %v", infraRole, session, err)
+		}
+		testwait.Eventually(t, "the role claim copy to name the claim", func() bool {
+			held, err := rig.deps.registry.RolesHeldBy(session)
+			return err == nil && slices.Contains(held, infraRole)
+		})
+		publishInfraRole(t, rig, infraRole)
+		own := storeScopeEvent(t, rig, ownIssue, "")
+		requireOnlyOwnIssue(t, rig, client, relay, own, contracts.RoleSubject("INFRA", infraRole))
+	})
+
+	t.Run("E a role message of another project forwarded while it was away, then its registration here", func(t *testing.T) {
+		rig := newScopeRig(t)
+		const session, infraRole = "ses_scope_backlog", "legion-infra-infra-7-reviewer"
+		tokenOf := func(token string, projects ...string) string {
+			answer := sessionAnswer(session, "outside@example.com", rig.caller.JKT())
+			answer.Projects = projects
+			rig.broker.Says(token, answer)
+			return token
+		}
+		// A listener in no edge mode, as the session's earlier process registered through: its
+		// registration and its claim of an INFRA role under a token listing INFRA.
+		plain := apiAuth(listenerAPIAuth{brokers: listenerBrokerTokens(t, rig.broker), logger: rig.harness.config.logger}, rig.mux)
+		infraToken := tokenOf("scope-infra-token", "INFRA")
+		for _, call := range []struct{ path, body string }{
+			{"/v1/interests/subscribe", consumerRegistration(session, "epoch-1")},
+			{"/v1/roles/set", fmt.Sprintf(`{"session_id":%q,"role":%q}`, session, infraRole)},
+		} {
+			recorder := httptest.NewRecorder()
+			plain.ServeHTTP(recorder, brokerTokenRequest(t, rig.caller, http.MethodPost, call.path, infraToken, call.body))
+			requireStatus(t, recorder, http.StatusOK, "the earlier process's "+call.path)
+		}
+		// The role's message is forwarded to the session's own subject while no process of it
+		// reads its consumer, which holds the forward for its next registration.
+		publishInfraRole(t, rig, infraRole)
+
+		privToken := tokenOf("scope-priv-token", scopeProject)
+		client := rig.openSocket(t, session, privToken)
+		relay := watchRelay(t, rig, session)
+		requireStatus(t, rig.call(t, http.MethodPost, privToken, "/v1/interests/subscribe",
+			consumerRegistration(session, "epoch-2", "notifications.dispatch.issue."+scopeProject+".>")), http.StatusOK, "the registration at the edge")
+		own := storeScopeEvent(t, rig, ownIssue, "")
+		requireOnlyOwnIssue(t, rig, client, relay, own, contracts.RoleSubject("INFRA", infraRole))
 	})
 
 	t.Run("another project's subject added to its consumer", func(t *testing.T) {
