@@ -217,6 +217,76 @@ func TestAnEdgeMachineAnswersAnotherMachinesFrameAndReadsOnlyItsOwnReceipts(t *t
 	require.Equal(t, "edge-b's own", string(own.Data))
 }
 
+// The update of a bucket's stream can change its subjects and set a republish, so the edge holds
+// no bucket stream's create or update. On the hub's image:
+//   - the edge's update of the interest bucket's stream with a republish to
+//     $JS.API.STREAM.DELETE.SCRATCH_VICTIM is refused naming the update, and the edge's write of
+//     the key the republish would copy leaves SCRATCH_VICTIM as it was;
+//   - in the same run, the account's administrator sets the same republish on another bucket's
+//     stream to $JS.API.STREAM.DELETE.SCRATCH_VICTIM_ADMIN and writes the key: a client
+//     subscribed to that subject receives the republished copy, which shows the republish fired,
+//     and the stream it names is still there, so the JetStream API took no action on it.
+func TestTheEdgeCannotSetABucketToRepublishIntoTheJetStreamAPI(t *testing.T) {
+	edgeSeed, edgeKey := testnats.User(t)
+	adminSeed, adminKey := testnats.User(t)
+	edge := edge(t, "m", "PRIV")
+	_, uri := testnats.StartImageConfig(t, testnats.HubImage, testnats.GrantedUsersConfig(
+		testnats.StaticUser{NKey: edgeKey, Publish: edge.Publish, Subscribe: edge.Subscribe},
+		testnats.StaticUser{NKey: adminKey, Publish: []string{">"}, Subscribe: []string{">"}},
+	), []string{"-js"}, false)
+	adminConn, _ := grantedConnection(t, uri, adminSeed)
+	admin, err := adminConn.JetStream()
+	require.NoError(t, err)
+	for _, name := range []string{"SCRATCH_VICTIM", "SCRATCH_VICTIM_ADMIN"} {
+		_, err := admin.AddStream(&natsgo.StreamConfig{Name: name, Subjects: []string{"scratch." + strings.ToLower(name) + ".>"}, Storage: natsgo.MemoryStorage})
+		require.NoError(t, err)
+	}
+	for _, bucket := range []string{bus.InterestBucket, bus.LegionAgentBucket} {
+		_, err := admin.CreateKeyValue(&natsgo.KeyValueConfig{Bucket: bucket, Storage: natsgo.MemoryStorage})
+		require.NoError(t, err)
+	}
+	present := func(name string) bool {
+		_, err := admin.StreamInfo(name)
+		require.True(t, err == nil || errors.Is(err, natsgo.ErrStreamNotFound), "read %s: %v", name, err)
+		return err == nil
+	}
+	republishInto := func(js natsgo.JetStreamContext, bucket, victim string) error {
+		info, err := js.StreamInfo("KV_" + bucket)
+		if err != nil {
+			return err
+		}
+		config := info.Config
+		config.RePublish = &natsgo.RePublish{Source: "$KV." + bucket + ".rp", Destination: "$JS.API.STREAM.DELETE." + victim}
+		_, err = js.UpdateStream(&config)
+		return err
+	}
+	edgeConn, edgeErrs := grantedConnection(t, uri, edgeSeed, natsgo.CustomInboxPrefix(natsgrant.EdgeInboxPrefix("m")))
+	edgeJS, err := edgeConn.JetStream(natsgo.MaxWait(3 * time.Second))
+	require.NoError(t, err)
+
+	require.Error(t, republishInto(edgeJS, bus.InterestBucket, "SCRATCH_VICTIM"), "the edge set a republish on KV_%s", bus.InterestBucket)
+	refusedNaming(t, edgeErrs, `Publish to "$JS.API.STREAM.UPDATE.KV_`+bus.InterestBucket+`"`)
+	interests, err := edgeJS.KeyValue(bus.InterestBucket)
+	require.NoError(t, err)
+	_, err = interests.Put("rp", []byte("written by the edge"))
+	require.NoError(t, err, "the edge writes a key of the interest bucket")
+
+	const adminDelete = "$JS.API.STREAM.DELETE.SCRATCH_VICTIM_ADMIN"
+	republished, err := adminConn.SubscribeSync(adminDelete)
+	require.NoError(t, err)
+	require.NoError(t, adminConn.Flush())
+	require.NoError(t, republishInto(admin, bus.LegionAgentBucket, "SCRATCH_VICTIM_ADMIN"), "the administrator sets a republish on KV_%s", bus.LegionAgentBucket)
+	agents, err := admin.KeyValue(bus.LegionAgentBucket)
+	require.NoError(t, err)
+	_, err = agents.Put("rp", []byte("written by the administrator"))
+	require.NoError(t, err)
+	copied, err := republished.NextMsg(10 * time.Second)
+	require.NoError(t, err, "the administrator's republish to %s reached no subscriber within 10s, so the row cannot see it fire", adminDelete)
+	require.Equal(t, "written by the administrator", string(copied.Data))
+	require.True(t, present("SCRATCH_VICTIM_ADMIN"), "the administrator's republish into %s deleted the stream", adminDelete)
+	require.True(t, present("SCRATCH_VICTIM"), "the edge's write deleted SCRATCH_VICTIM")
+}
+
 // accountUserEntry is one nkey user of an account in a server configuration, held to its allow
 // lists, as a hub renders a static user.
 func accountUserEntry(user testnats.StaticUser) string {
@@ -406,10 +476,11 @@ func TestTheEdgeGrantsPushConsumerReachesItsAccountsJetStreamAPI(t *testing.T) {
 			case <-time.After(10 * time.Second):
 				t.Fatalf("the client subscribed to %s received no delivery within 10s", delivery.target)
 			}
-			// A change lands within the bound (the capture case is seen changed inside it); one
-			// judged unchanged has had the whole bound to land.
+			// The subject above is why an API path takes no action; no clock decides it. A case
+			// whose stream stores the delivery waits for that store, which lands just behind the
+			// client's copy, and every other case reads its state once.
 			after := delivery.state()
-			for deadline := time.Now().Add(2 * time.Second); after == before && time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+			for deadline := time.Now().Add(10 * time.Second); after == before && before != delivery.want && time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
 				after = delivery.state()
 			}
 			require.Equal(t, delivery.want, after, "%s after the edge's delivery (before: %s)", delivery.target, before)

@@ -112,6 +112,14 @@ func newEdgeLiveRig(t *testing.T, edge natsgrant.Permissions) *edgeLiveRig {
 	}
 	t.Cleanup(client.Close)
 	rig.dispatch = client
+	// The edge's grant creates and raises no bucket's stream, so it finds each bucket the shared
+	// listeners made at their start; Dispatch's user, whose grant holds each one's create, makes
+	// them here before any edge starts.
+	for _, bucket := range bus.ListenerBuckets() {
+		if _, err := client.JS().CreateKeyValue(&natsgo.KeyValueConfig{Bucket: bucket, Storage: natsgo.FileStorage}); err != nil {
+			t.Fatalf("Dispatch's user makes the %s bucket: %v", bucket, err)
+		}
+	}
 
 	rig.broker = brokertokentest.NewStubBroker(t)
 	rig.caller = brokertokentest.NewCaller(t)
