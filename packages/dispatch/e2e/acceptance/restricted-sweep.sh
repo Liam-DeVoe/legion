@@ -97,9 +97,10 @@
 #                (`live window <W0> <W1>`, UTC), and writes the member's own direct message alone:
 #                it holds only once a writer's delivered write falls strictly inside that window,
 #                begun after W0 and ended before W1, which whoever ran both joins. W1 leaves the
-#                writer's 15 s delivery bound before the feed closes, so SWEEP_LIVE_SECONDS is at
-#                least 30 on a runner. The agent view's line says it could fail when the fills
-#                were made: whether the project's session answers may have changed since.
+#                writer's 15 s delivery bound before the feed closes and holds two writes at the
+#                writer's 15 s pace, so SWEEP_LIVE_SECONDS is at least 45 on a runner. The agent
+#                view's line says it could fail when the fills were made: whether the project's
+#                session answers may have changed since.
 #   writer       SWEEP_MODE=writer, beside a runner's run, with the fills: the full member's own
 #                feed open, and every SWEEP_WRITE_EVERY s for SWEEP_WRITE_SECONDS one write, a
 #                comment on SWEEP_WRITE_ISSUE and a direct message to the fills' session of the
@@ -167,8 +168,9 @@
 #                            file are not filled, and the run is UNKNOWN.
 #   SWEEP_FILLS_FILE         [fills, runner, writer] the fills file to write, or to read.
 #   SWEEP_LIVE_SECONDS       [one run, runner] how long the feeds are read (default 60, maximum
-#                            2147413, within the socket probe's timer range; at least 30 on a
-#                            runner, whose window leaves the writer's 15 s delivery bound).
+#                            2147413, within the socket probe's timer range; at least 45 on a
+#                            runner, whose window leaves the writer's 15 s delivery bound and holds
+#                            two of its writes at 15 s).
 #   SWEEP_WRITE_SECONDS, SWEEP_WRITE_EVERY
 #                            [writer] how long the writer writes (default 600) and how often
 #                            (default 15): whole seconds.
@@ -420,10 +422,10 @@ is_count "$live_seconds" && [ "$live_seconds" -gt 0 ] && [ "$live_seconds" -le 2
   unknown "SWEEP_LIVE_SECONDS must be a whole number of seconds, at least 1 and at most 2147413: $live_seconds"
 # The probe accepts canonical decimal seconds, and its timers must fit a signed 32-bit millisecond delay.
 while [ "${live_seconds#0}" != "$live_seconds" ]; do live_seconds=${live_seconds#0}; done
-# A runner's window leaves the writer's delivery bound before its feed closes, and must hold at
-# least that long again for a write to fall inside it.
-[ "$mode" != runner ] || [ "$live_seconds" -ge "$((2 * delivery_seconds))" ] ||
-  unknown "SWEEP_LIVE_SECONDS must be at least $((2 * delivery_seconds)) on a runner, whose live window leaves the writer's $delivery_seconds s delivery bound before its feed closes: $live_seconds"
+# A runner's window leaves the writer's delivery bound before its feed closes, and must hold two
+# writes at the writer's pace for one to fall inside it (runner_live_floor).
+[ "$mode" != runner ] || [ "$live_seconds" -ge "$runner_live_floor" ] ||
+  unknown "SWEEP_LIVE_SECONDS must be at least $runner_live_floor on a runner, whose live window leaves the writer's $delivery_seconds s delivery bound before its feed closes and holds two of its writes at 15 s: $live_seconds"
 write_seconds=${SWEEP_WRITE_SECONDS:-600}
 write_every=${SWEEP_WRITE_EVERY:-15}
 if [ "$mode" = writer ]; then

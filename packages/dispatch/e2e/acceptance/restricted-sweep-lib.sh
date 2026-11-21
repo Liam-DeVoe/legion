@@ -159,3 +159,8 @@ sha256_of() {
 # so the margin a runner's live window leaves before its feed closes: a write the writer saw
 # delivered strictly inside the window reached the feeds while the member's was open.
 readonly delivery_seconds=15
+# The shortest live window a runner reads (SWEEP_LIVE_SECONDS): its window ends the delivery bound
+# before its feed closes, and what is left holds two writes at the writer's default pace
+# (SWEEP_WRITE_EVERY, 15 s), so one write falls inside it however the writes fall: 15 + 2 x 15.
+# At 30 the window is one write long, and a run can end with none inside it.
+readonly runner_live_floor=45

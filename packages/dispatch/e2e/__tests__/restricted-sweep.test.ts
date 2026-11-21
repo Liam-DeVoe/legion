@@ -293,10 +293,10 @@ describe("a runner's fills", () => {
       "UNKNOWN: a runner holds no full member's credential",
     ],
     [
-      "a live window shorter than the writer's delivery bound leaves for a write",
+      "a live window that holds fewer than two of the writer's writes",
       () => made(now()),
-      { SWEEP_LIVE_SECONDS: "29" },
-      "UNKNOWN: SWEEP_LIVE_SECONDS must be at least 30 on a runner",
+      { SWEEP_LIVE_SECONDS: "44" },
+      "UNKNOWN: SWEEP_LIVE_SECONDS must be at least 45 on a runner",
     ],
   ];
 
@@ -314,6 +314,21 @@ describe("a runner's fills", () => {
     "fresh fills of the project are read, and the run goes on to the deployment",
     async () => {
       const { code, stdout } = await script(runnerWith(made(now())));
+      expect(stdout).toContain("UNKNOWN: GET /api/v1/whoami as the member answered curl failed");
+      expect(code).toBe(2);
+    },
+    rowLimit("short")
+  );
+
+  // The control of the live-window refusal above: the shortest window a runner reads, 45 s, whose
+  // window after the writer's 15 s delivery bound holds two of its writes at 15 s.
+  test.skipIf(["curl", "jq", "bun"].some((tool) => hostTool(tool) === null))(
+    "a live window of 45 s is read, and the run goes on to the deployment",
+    async () => {
+      const { code, stdout } = await script({
+        ...runnerWith(made(now())),
+        SWEEP_LIVE_SECONDS: "45",
+      });
       expect(stdout).toContain("UNKNOWN: GET /api/v1/whoami as the member answered curl failed");
       expect(code).toBe(2);
     },

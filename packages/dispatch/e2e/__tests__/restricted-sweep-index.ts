@@ -74,14 +74,17 @@ export const noneUuid: string = (() => {
 /** How long a writer waits at most for a write to reach the full member's feed, as the helpers
  *  part sets it (`delivery_seconds`), and so how long before its feed closes a runner's live window
  *  ends. */
-export const deliverySeconds: number = (() => {
-  const set = /^readonly delivery_seconds=(\d+)$/m.exec(readFileSync(libPart, "utf8"));
-  if (set === null) throw new Error(`${libPart} sets no delivery_seconds`);
+export const deliverySeconds: number = setIn(libPart, "delivery_seconds");
+/** The shortest live window a runner reads (SWEEP_LIVE_SECONDS), as the helpers part sets it
+ *  (`runner_live_floor`): it leaves the delivery bound of it, and two of the writer's writes. */
+export const runnerLiveSeconds: number = setIn(libPart, "runner_live_floor");
+
+/** The whole number the part at `part` sets `name` to (`readonly name=N`). */
+function setIn(part: string, name: string): number {
+  const set = new RegExp(`^readonly ${name}=(\\d+)$`, "m").exec(readFileSync(part, "utf8"));
+  if (set === null) throw new Error(`${part} sets no ${name}`);
   return Number(set[1]);
-})();
-/** The shortest live window a runner reads (SWEEP_LIVE_SECONDS): it leaves the delivery bound of
- *  it before its feed closes, and holds that long again for a write to fall inside it. */
-export const runnerLiveSeconds = 2 * deliverySeconds;
+}
 
 /** The GitHub proxy reads the script makes, after `/api/github/rest/repos/{owner}/{repo}/`, as it
  *  lists them (SWEEP_LIST_PROXY=1, exit 4): asked of the script each time, never at import. */

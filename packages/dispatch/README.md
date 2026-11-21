@@ -1028,7 +1028,8 @@ never `blind`. The agent view's line says `(could fail when the fills were made)
 project's session answers is read then, and may have changed since. A runner reads the member's
 live feed over a window it prints,
 `live window <W0> <W1>` (UTC), whose end leaves the writer's 15 s delivery bound before the feed
-closes, so `SWEEP_LIVE_SECONDS` is at least 30 on a runner; it writes the member's own direct
+closes, and which holds two of the writer's writes at 15 s, so `SWEEP_LIVE_SECONDS` is at least 45
+on a runner; it writes the member's own direct
 message alone. Writer mode (`SWEEP_MODE=writer`) runs beside it with the full member's token and
 cookie and the fills: every `SWEEP_WRITE_EVERY` seconds it comments on `SWEEP_WRITE_ISSUE` and sends
 the fills' session of the project a direct message, and prints

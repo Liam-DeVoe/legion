@@ -91,8 +91,8 @@ live_writes() {
 # read once the member's feed subscribed, so a write begun after it was committed after the feed
 # subscribed. W1 leaves the writer's delivery bound (delivery_seconds) before the window's end, so
 # a write the writer saw delivered inside the window reached the feeds while the member's was
-# open; the entry script refuses a runner a window that leaves less than that bound again. A
-# refused upgrade is named by its status alone.
+# open; the entry script refuses a runner a window that, past that bound, holds fewer than two of
+# the writer's writes (runner_live_floor). A refused upgrade is named by its status alone.
 live_socket() {
   local watcher_restricted watcher_full='' ready_started observation_started window_start elapsed
   local restricted_exit full_exit feed pid refused_upgrade marker first_line frames own_message=''
