@@ -220,18 +220,26 @@ check "a closing brace alone is refused" "$(is "$(unread_filter 'docker/}')" 'do
 
 echo "case: UniqueKeyLoader refuses a key written again as an alias of it, as js-yaml does"
 # PyYAML composes an alias to the very node its anchor composed, so a key repeated through an alias
-# of it is one node twice in its mapping. js-yaml 4.1.0, which dorny/paths-filter v4.0.3 reads its
-# filters with, refuses it as a duplicated mapping key, in a block mapping and in a flow one. The
-# controls are documents js-yaml 4.1.0 reads: an alias as a value, an anchored key aliased only as
-# a value, and a merge key whose mapping a key written beside it overrides.
+# of it is one node twice in its mapping, and that node carries its anchor's line alone. js-yaml
+# 4.1.0, which dorny/paths-filter v4.0.3 reads its filters with, refuses it as a duplicated mapping
+# key, in a block mapping and in a flow one, and so where the alias names a key anchored in another
+# mapping or a value that repeats a plain key; each refusal names the line the repeat is written
+# on. The controls are documents js-yaml 4.1.0 reads: an alias as a value, an anchored key aliased
+# only as a value, and a merge key whose mapping a key written beside it overrides.
 check "a key written twice is refused, naming the line of each copy" \
   "$(is "$(unique_load $'app: [a]\nsite: [b]\napp: [c]\n')" \
     "refused: the mapping key 'app' of line 3 is the key of line 1 again: js-yaml (dorny/paths-filter's reader) and GitHub's workflow parser refuse a repeated key, where yaml.safe_load keeps the last copy and reports nothing")"
-check "a key written again as an alias of it is refused, naming its line and the alias" \
+check "a key written again as an alias of it is refused, naming the alias's line and the alias" \
   "$(is "$(unique_load $'site: [b]\n&name app: [a]\n*name : [c]\n')" \
-    "refused: the mapping key 'app' of line 2 is written again in the same mapping as an alias of it (*name): js-yaml (dorny/paths-filter's reader) and GitHub's workflow parser refuse a repeated key, where yaml.safe_load keeps the last copy and reports nothing")"
+    "refused: the mapping key 'app' of line 3, written as the alias *name, is the key of line 2 again: js-yaml (dorny/paths-filter's reader) and GitHub's workflow parser refuse a repeated key, where yaml.safe_load keeps the last copy and reports nothing")"
 check "and so in a flow mapping" \
-  "$(contains "$(unique_load '{ &name app: [a], *name : [c] }')" "^refused: the mapping key 'app' of line 1 is written again in the same mapping as an alias of it (\*name): ")"
+  "$(contains "$(unique_load '{ &name app: [a], *name : [c] }')" "^refused: the mapping key 'app' of line 1, written as the alias \*name, is the key of line 1 again: ")"
+check "an alias of a key anchored in another mapping, beside the plain key, is refused on the alias's line" \
+  "$(contains "$(unique_load $'a:\n  x: 1\n  &k app: [x]\nb:\n  app: [y]\n  *k : [z]\n')" "^refused: the mapping key 'app' of line 6, written as the alias \*k, is the key of line 5 again: ")"
+check "an alias of a value that repeats a plain key is refused on the alias's line" \
+  "$(contains "$(unique_load $'anchor: &k app\napp: [y]\n*k : [z]\n')" "^refused: the mapping key 'app' of line 3, written as the alias \*k, is the key of line 2 again: ")"
+check "an alias of a key anchored in another mapping, alone in its own, is read" \
+  "$(is "$(unique_load $'a:\n  x: 1\n  &k app: [x]\nb:\n  *k : [z]\n')" '{"a": {"app": ["x"], "x": 1}, "b": {"app": ["z"]}}')"
 check "an alias as a value is read" \
   "$(is "$(unique_load $'shared: &shared [go.work]\napp:\n  - *shared\n  - mod/**\n')" \
     '{"app": [["go.work"], "mod/**"], "shared": ["go.work"]}')"

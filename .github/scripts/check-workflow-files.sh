@@ -55,7 +55,7 @@ import sys
 from pathlib import Path
 
 import yaml
-from workflow_paths import repeated_keys
+from workflow_paths import KeyMarkLoader, key_mark, repeated_keys
 
 WORKFLOWS = Path(".github/workflows")
 SUFFIXES = {".yaml", ".yml"}
@@ -130,7 +130,7 @@ def composed(path: Path) -> tuple[object, object]:
     however many jobs call it."""
     if path not in nodes:
         try:
-            nodes[path] = (yaml.compose(path.read_text()), None)
+            nodes[path] = (yaml.compose(path.read_text(), Loader=KeyMarkLoader), None)
         except (OSError, UnicodeDecodeError, yaml.YAMLError) as error:
             nodes[path] = (None, error)
     return nodes[path]
@@ -157,20 +157,22 @@ def check_folded_keys(path: Path, root: object) -> None:
             continue
         seen.add(id(node))
         if isinstance(node, yaml.MappingNode):
-            for first, name in repeated_keys(node, lambda key: key.value.upper()):
-                line = name.start_mark.line + 1
-                if name is first:
-                    # A key written again as an alias of itself is one node twice, which carries
-                    # only its anchor's line.
+            for first, repeat in repeated_keys(node, lambda key: key.value.upper()):
+                name, first_name = node.value[repeat][0], node.value[first][0]
+                # A key written as an alias is the node its anchor composed, which carries only
+                # the anchor's line; KeyMarkLoader kept the line each key is written on.
+                (mark, alias), (first_mark, _) = key_mark(node, repeat), key_mark(node, first)
+                line = mark.line + 1
+                if alias is not None:
                     said = (
-                        f"the mapping key '{name.value}' of line {line} is written again in its "
-                        f"mapping as an alias of it. GitHub's workflow parser refuses a mapping key "
-                        f"written as an alias"
+                        f"the mapping key '{name.value}', written as the alias *{alias}, is the "
+                        f"key '{first_name.value}' of line {first_mark.line + 1} again. GitHub's "
+                        f"workflow parser refuses a mapping key written as an alias"
                     )
                 else:
                     said = (
-                        f"the mapping key '{name.value}' is the key '{first.value}' of line "
-                        f"{first.start_mark.line + 1} again after upper-casing. GitHub's workflow "
+                        f"the mapping key '{name.value}' is the key '{first_name.value}' of line "
+                        f"{first_mark.line + 1} again after upper-casing. GitHub's workflow "
                         f"parser compares keys without regard to case and refuses the file"
                     )
                 problem(

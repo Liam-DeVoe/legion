@@ -449,10 +449,11 @@ run_check "$root"
 check "an anchored filter name aliased nowhere passes" "$(is "$status" 0)"
 anchored=$(grep -n '^&image image:$' "$root/.github/ci-filters.yaml" | cut -d: -f1)
 printf "*image :\n  - 'docs/**'\n" >> "$root/.github/ci-filters.yaml"
+alias_line=$(grep -n '^\*image :$' "$root/.github/ci-filters.yaml" | cut -d: -f1)
 run_check "$root"
 check_input_parse_error ".github/ci-filters.yaml"
-check "names the file, the key, its line and the alias it is written again as" \
-  "$(contains "$out" "^::error file=.github/ci-filters.yaml::cannot read repository input: the mapping key 'image' of line $anchored is written again in the same mapping as an alias of it (\*image): ")"
+check "names the file, the key, the alias's line, the alias and the line of the key it repeats" \
+  "$(contains "$out" "^::error file=.github/ci-filters.yaml::cannot read repository input: the mapping key 'image' of line $alias_line, written as the alias \*image, is the key of line $anchored again: ")"
 check "and judges nothing by either copy" "$(is "$(contains "$out" '^report: ')" false)"
 
 echo "case: importing an unsafe data string cannot inject warning commands"

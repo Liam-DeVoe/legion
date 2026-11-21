@@ -149,27 +149,52 @@ MERGE_TAG = "tag:yaml.org,2002:merge"
 
 def repeated_keys(
     node: yaml.MappingNode, normal: Callable[[yaml.ScalarNode], str | None]
-) -> Iterator[tuple[yaml.ScalarNode, yaml.ScalarNode]]:
+) -> Iterator[tuple[int, int]]:
     """Each key of one composed mapping that repeats an earlier key of that same mapping, as the
-    node of its first copy and the node of the repeat, in the order they are written. Two keys are
-    one key when `normal` gives them the same text; a key it gives None is compared with none,
-    and so is a key that is not a scalar. A key written again as an alias of itself is a repeat,
-    though PyYAML composes the alias to the very node its anchor composed, so the two copies are
-    one node and the repeat is `first` itself. The mapping alone is read, not the nodes below it:
-    whoever walks a tree calls this on each mapping of it. check-workflow-files.sh folds keys to
-    upper case, as GitHub's workflow parser compares them; UniqueKeyLoader compares them exactly,
-    as js-yaml does."""
-    first_seen: dict[str, yaml.ScalarNode] = {}
-    for name, _ in node.value:
+    positions in node.value of its first copy and of the repeat, in the order they are written. Two
+    keys are one key when `normal` gives them the same text; a key it gives None is compared with
+    none, and so is a key that is not a scalar. A key written again as an alias of itself is a
+    repeat, though PyYAML composes the alias to the very node its anchor composed, so the two
+    copies are one node: positions tell them apart where nodes cannot, and key_mark says where
+    each is written. The mapping alone is read, not the nodes below it: whoever walks a tree calls
+    this on each mapping of it. check-workflow-files.sh folds keys to upper case, as GitHub's
+    workflow parser compares them; UniqueKeyLoader compares them exactly, as js-yaml does."""
+    first_seen: dict[str, int] = {}
+    for position, (name, _) in enumerate(node.value):
         if not isinstance(name, yaml.ScalarNode):
             continue
         key = normal(name)
         if key is None:
             continue
         if key in first_seen:
-            yield first_seen[key], name
+            yield first_seen[key], position
         else:
-            first_seen[key] = name
+            first_seen[key] = position
+
+
+class KeyMarkLoader(yaml.SafeLoader):
+    """yaml.SafeLoader recording, on each mapping node it composes, where each of its keys is
+    written and the alias it is written as, if any (`key_marks`, in the order of node.value). The
+    node of a key written as an alias is the node its anchor composed, whose mark is the anchor's,
+    so the node alone cannot say on which line a repeat through an alias stands."""
+
+    def compose_node(self, parent, index):
+        # A mapping's key is composed with no index; its value with the key as the index.
+        if isinstance(parent, yaml.MappingNode) and index is None:
+            event = self.peek_event()
+            alias = event.anchor if isinstance(event, yaml.AliasEvent) else None
+            parent.__dict__.setdefault("key_marks", []).append((event.start_mark, alias))
+        return super().compose_node(parent, index)
+
+
+def key_mark(node: yaml.MappingNode, position: int) -> tuple[yaml.Mark, str | None]:
+    """Where the key at `position` of a mapping is written, and the alias it is written as or None:
+    the record KeyMarkLoader kept while it composed the node, or the key node's own mark for a node
+    another loader composed."""
+    marks = node.__dict__.get("key_marks")
+    if marks is not None and len(marks) == len(node.value):
+        return marks[position]
+    return node.value[position][0].start_mark, None
 
 
 def written_key(name: yaml.ScalarNode) -> str | None:
@@ -178,7 +203,7 @@ def written_key(name: yaml.ScalarNode) -> str | None:
     return None if name.tag == MERGE_TAG else name.value
 
 
-class UniqueKeyLoader(yaml.SafeLoader):
+class UniqueKeyLoader(KeyMarkLoader):
     """yaml.SafeLoader, refusing a mapping that holds one key twice. yaml.safe_load keeps the last
     copy and reports nothing, so a second `ci_router:` holding only 'docs/**' would leave the
     filter that and nothing else; js-yaml, which dorny/paths-filter reads its filters with, and
@@ -191,17 +216,16 @@ class UniqueKeyLoader(yaml.SafeLoader):
     flatten_mapping rewrites a mapping's node in place once another mapping merges it, which can
     be before that mapping is itself constructed. Anchors and aliases read as yaml.safe_load reads
     them: an alias is the node its anchor composed, tested once, and a key written again as an
-    alias of itself is a repeated key, which js-yaml refuses as well. A merge key written as an
-    alias is refused at that alias: js-yaml reads it as a key named `<<` (once, and as a duplicated
-    key twice), where PyYAML merges it, so the two would read different mappings. The refusal names
-    both lines itself, or the line and the alias for a repeat through an alias, whose node carries
-    only its anchor's line, and carries no mark, whose snippet would only repeat the line, and whose
-    stream name is `<unicode string>` for the text every reader passes, where the reader names the
-    file."""
+    alias of a key or of a value is a repeated key, which js-yaml refuses as well. A merge key
+    written as an alias is refused at that alias: js-yaml reads it as a key named `<<` (once, and
+    as a duplicated key twice), where PyYAML merges it, so the two would read different mappings.
+    The refusal names the line each copy is written on (KeyMarkLoader) and the alias a repeat is
+    written as, and carries no mark, whose snippet would only repeat the line, and whose stream
+    name is `<unicode string>` for the text every reader passes, where the reader names the file."""
 
     def compose_node(self, parent, index):
-        # A mapping's key is composed with no index, and an alias there of a merge key is no merge
-        # to js-yaml (lib/loader.js, readBlockMapping and storeMappingPair).
+        # An alias as a mapping's key of a merge key is no merge to js-yaml (lib/loader.js,
+        # readBlockMapping and storeMappingPair).
         if isinstance(parent, yaml.MappingNode) and index is None and self.check_event(yaml.AliasEvent):
             event = self.peek_event()
             merge = self.anchors.get(event.anchor)
@@ -216,15 +240,11 @@ class UniqueKeyLoader(yaml.SafeLoader):
     def compose_mapping_node(self, anchor):
         node = super().compose_mapping_node(anchor)
         for first, repeat in repeated_keys(node, written_key):
-            line = first.start_mark.line + 1
-            if repeat is first:
-                alias = next(name for name, anchored in self.anchors.items() if anchored is first)
-                again = (f"the mapping key '{first.value}' of line {line} is written again in the same mapping as "
-                         f"an alias of it (*{alias})")
-            else:
-                again = (f"the mapping key '{repeat.value}' of line {repeat.start_mark.line + 1} is the key of "
-                         f"line {line} again")
+            (mark, alias), (first_mark, _) = key_mark(node, repeat), key_mark(node, first)
+            written = f", written as the alias *{alias}," if alias is not None else ""
             raise yaml.composer.ComposerError(
-                problem=f"{again}: js-yaml (dorny/paths-filter's reader) and GitHub's workflow parser refuse a "
-                        f"repeated key, where yaml.safe_load keeps the last copy and reports nothing")
+                problem=f"the mapping key '{node.value[repeat][0].value}' of line {mark.line + 1}{written} is the key "
+                        f"of line {first_mark.line + 1} again: js-yaml (dorny/paths-filter's reader) and GitHub's "
+                        f"workflow parser refuse a repeated key, where yaml.safe_load keeps the last copy and "
+                        f"reports nothing")
         return node
