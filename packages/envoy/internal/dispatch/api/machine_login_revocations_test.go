@@ -650,3 +650,66 @@ func TestARefusedRemovalHoldsUpNoApproveOfThePerson(t *testing.T) {
 	}
 	wantRefusal(t, refused, http.StatusForbidden, "PROJECT_OWNER_REQUIRED", accessCarol, "DELETE erin from ACC's list")
 }
+
+// TestAnOwnerWhoLosesTheProjectBeforeTheLocksIsRefused: ownerWrite refuses a caller who does not own
+// the project by a read that takes no lock (TestARefusedRemovalHoldsUpNoApproveOfThePerson), and
+// that read only refuses: the owner it reads under the project's owner lock decides. alice, ACC's
+// owner as the read with no lock finds her, sends the removal of erin from ACC while another write
+// of ACC's access, holding ACC's owner lock, gives ACC to carol; the removal waits on that lock and,
+// once the transfer commits, is 403 PROJECT_OWNER_REQUIRED, and erin stays on the list and owes
+// nothing.
+//
+// Control: ownerWrite not checking the owner LockForAccessWrite read under the locks, and alice's
+// removal answers 200 and takes erin off a project that is no longer hers, named.
+func TestAnOwnerWhoLosesTheProjectBeforeTheLocksIsRefused(t *testing.T) {
+	rig := newFakeBrokerRig(t)
+	served, database, _ := newRegisteredAccessServer(t, testServerOptions{
+		signInOutside:   true,
+		agentSecretsURL: rig.server.URL,
+	})
+	ctx := t.Context()
+	if listed := dispatchRequest(t, served, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); listed.Code != http.StatusOK {
+		t.Fatalf("alice names erin on ACC's list: status=%d body=%s", listed.Code, listed.Body.String())
+	}
+	// Another write of ACC's access, which gives ACC to carol under ACC's owner lock and commits
+	// when the row says.
+	transfer, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = transfer.Rollback(context.Background()) })
+	if err := store.LockOwner(ctx, transfer, store.ProjectOwner("ACC")); err != nil {
+		t.Fatalf("hold ACC's owner lock: %v", err)
+	}
+	if _, err := transfer.Exec(ctx, `update projects set owner = $1 where key = 'ACC'`, accessCarol); err != nil {
+		t.Fatalf("give ACC to carol: %v", err)
+	}
+
+	removal := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		removal <- dispatchRequest(t, served, http.MethodDelete, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice")
+	}()
+	for giveUp := time.Now().Add(30 * time.Second); advisoryLockWaiters(t, database) == 0; time.Sleep(20 * time.Millisecond) {
+		select {
+		case early := <-removal:
+			t.Fatalf("alice's removal of erin answered %d %s before the transfer committed, want it waiting on ACC's owner lock", early.Code, early.Body.String())
+		default:
+			if time.Now().After(giveUp) {
+				t.Fatalf("alice's removal of erin neither answered nor waited on a lock within 30 s")
+			}
+		}
+	}
+	if err := transfer.Commit(ctx); err != nil {
+		t.Fatalf("commit the transfer of ACC to carol: %v", err)
+	}
+	refused := <-removal
+	if refused.Code != http.StatusForbidden || !strings.Contains(refused.Body.String(), `"code":"PROJECT_OWNER_REQUIRED"`) {
+		t.Errorf("alice's removal of erin, ACC given to carol while it waited on ACC's owner lock = %d %s, want 403 PROJECT_OWNER_REQUIRED", refused.Code, refused.Body.String())
+	}
+	if people := readAccess(t, served, accessCarol).People; !slices.Contains(people, accessErin) {
+		t.Errorf("ACC's list after alice's refused removal names %v, want erin still on it", people)
+	}
+	if owed, _, err := store.NewMachineLoginRevocations(database.Pool).Owing(ctx, accessErin); err != nil || owed {
+		t.Errorf("the revocation of erin's machine logins is owed %t (%v) after alice's refused removal, want nothing owed", owed, err)
+	}
+}
