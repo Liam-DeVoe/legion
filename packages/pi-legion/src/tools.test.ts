@@ -1787,7 +1787,7 @@ function legionState(overrides: Record<string, unknown> = {}): LegionState {
     heldOutboxRows: [],
     strandedClaims: [],
     capabilities: [],
-    repositories: { owners: ["acme"], mapped: [], refused: [], withoutWebhookApp: [], caches: [] },
+    repositories: { live: [], withoutWebhookApp: [], caches: [] },
     consumers: [],
     settings: { review_round_cap: 3, worker_boot_timeout_seconds: 900 },
     ...overrides,
@@ -2686,19 +2686,27 @@ test("read_state with no field summarizes 92 issues under the tool's limit, nami
 
 // The controller files a clear defect only on a repository both role GitHub Apps are installed on
 // (finding-asks.md, step 1 of "File a clear defect no tree owns"), and its role prompt tells it
-// that the summary names each repository the daemon refused, with why
-// (packages/daemon/internal/prompts/roles/controller-root.md). No filter answers for
-// repositories, so the summary names each refused one, with the daemon's reason, after the
-// capabilities.
+// that the summary names each repository the live records name that the daemon does not serve,
+// with why (packages/daemon/internal/prompts/roles/controller-root.md). No filter answers for
+// repositories, so the summary names each such entry of `repositories.live`, after the
+// capabilities, with the reason the daemon's block in contract 152's shape gives it under
+// `refused`: GitHub's read error, the Apps GitHub answered are not installed on the name it is
+// served under, or GitHub's answer not come yet.
 test("read_state with no field names each repository the daemon refuses, with its reason", async () => {
   const state = legionState({
     capabilities: [{ name: "subagents", status: "present", detail: "6 agents discovered" }],
     repositories: {
-      owners: ["acme"],
-      mapped: [{ repo: "acme/widgets", default: true }],
-      refused: [
-        { repo: "acme/gadgets", reason: "the review App is not installed on acme/gadgets" },
-        { repo: "other/tools", reason: "the implement App is not installed on other/tools" },
+      live: [
+        { repo: "acme/gadgets", apps: { implement: true, review: false } },
+        { repo: "acme/widgets", apps: { implement: true, review: true } },
+        { repo: "other/tools", apps: { implement: false, review: true } },
+        {
+          repo: "sjawhar/legion",
+          servedAs: "cybermonklabs/legion",
+          apps: { implement: false, review: false },
+        },
+        { repo: "zeta/archive", readError: "GitHub answered 404 for zeta/archive" },
+        { repo: "zeta/new" },
       ],
       withoutWebhookApp: [],
       caches: [],
@@ -2720,6 +2728,9 @@ test("read_state with no field names each repository the daemon refuses, with it
       "\ncapability subagents present",
       "repository refused acme/gadgets the review App is not installed on acme/gadgets",
       "repository refused other/tools the implement App is not installed on other/tools",
+      "repository refused sjawhar/legion the implement and review Apps are not installed on cybermonklabs/legion",
+      "repository refused zeta/archive GitHub answered 404 for zeta/archive",
+      "repository refused zeta/new GitHub has not answered for it yet",
       "issues 0",
     ].join("\n")
   );

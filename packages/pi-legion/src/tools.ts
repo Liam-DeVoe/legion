@@ -267,7 +267,8 @@ const SUMMARY_LEGEND =
   "admission cap; active/waiting/blocked; wakes waiting <count> [next <earliest due time>], the " +
   "wakes the daemon's pacing holds until their turn, 0 outside a wave; " +
   "capability <name> <status> [detail] [config <legion.yaml line>]; " +
-  "repository refused <repo> <reason>; issues <count>; then " +
+  "repository refused <repo> <reason>, for each repository the live records name that the " +
+  "daemon does not serve; issues <count>; then " +
   "<KEY> <phase> <status> for every issue the daemon records, and under each issue Legion still " +
   "runs its slot, hold, gate <current> approved <version|none> and <role> <claim state> " +
   "<last turn start> <last turn end> lines, - for a value the daemon has none for. " +
@@ -276,8 +277,9 @@ const SUMMARY_LEGEND =
 /**
  * The whole state as the controller reads it between its filtered reads: the project, its pause
  * or its last pause, the admission lists, the wakes the pacing holds, each capability's status,
- * each repository the daemon refuses and why, one line per recorded issue, and under each issue
- * Legion still runs its slot, its hold, its gate and its claims.
+ * each repository the live records name that the daemon does not serve and why, one line per
+ * recorded issue, and under each issue Legion still runs its slot, its hold, its gate and its
+ * claims.
  *
  * Line-oriented, not JSON: the INFRA deployment's state is about 160 KB of JSON for the 92 issues
  * it records, and the tool's output reaches the controller cut at about 41 KB
@@ -317,14 +319,24 @@ function stateSummary(state: LegionState): string {
     const config = capability.configLine === undefined ? "" : ` config ${capability.configLine}`;
     lines.push(`capability ${capability.name} ${capability.status}${detail}${config}`);
   }
-  for (const refused of state.repositories?.refused ?? []) {
+  for (const liveRepository of state.repositories?.live ?? []) {
     // The controller files a clear defect only on a repository both role Apps are installed on
-    // (finding-asks.md), and no filter answers for repositories, so each refusal is named here.
-    // Every field of the block is optional (LEGION_ANSWER_READS), so a row with no repository is
-    // left out and a refusal with no reason is named without one.
-    if (refused.repo === undefined) continue;
-    const reason = refused.reason === undefined ? "" : ` ${refused.reason}`;
-    lines.push(`repository refused ${refused.repo}${reason}`);
+    // (finding-asks.md), and no filter answers for repositories, so each repository a live record
+    // names that the daemon does not serve is named here, with why. These are the entries the
+    // daemon's block in contract 152's shape lists as `refused`, with its reasons (api's at152):
+    // GitHub's last read did not name it (`readError`), GitHub answered that a role App is not
+    // installed on the name it is served under, or GitHub has not answered both Apps' reads yet.
+    // Every field of an entry is optional (LEGION_ANSWER_READS), so an entry with no repository
+    // is left out.
+    if (liveRepository.repo === undefined) continue;
+    const apps = liveRepository.apps;
+    if (apps?.implement === true && apps.review === true) continue;
+    const served = liveRepository.servedAs ?? liveRepository.repo;
+    const reason =
+      liveRepository.readError ??
+      appsNotInstalled(apps, served) ??
+      "GitHub has not answered for it yet";
+    lines.push(`repository refused ${liveRepository.repo} ${reason}`);
   }
   const keys = Object.keys(state.issues).sort();
   lines.push(`issues ${keys.length}`);
@@ -357,6 +369,25 @@ function stateSummary(state: LegionState): string {
     }
   }
   return lines.join("\n");
+}
+
+/** The sentence naming each role App GitHub answered is not installed on `repo`, in the words the
+ * daemon refuses an admission with (`appauth.NotInstalledOn`): "the review App is not installed on
+ * acme/gadgets", or "the implement and review Apps are not installed on acme/gadgets" for both.
+ * Undefined while GitHub has not answered both reads (no `apps`), and where it answered both
+ * installed. */
+function appsNotInstalled(
+  apps: { readonly implement?: boolean; readonly review?: boolean } | undefined,
+  repo: string
+): string | undefined {
+  if (apps === undefined) return undefined;
+  const missing = [
+    ...(apps.implement === true ? [] : ["implement"]),
+    ...(apps.review === true ? [] : ["review"]),
+  ];
+  if (missing.length === 0) return undefined;
+  const subject = missing.length === 1 ? "App is" : "Apps are";
+  return `the ${missing.join(" and ")} ${subject} not installed on ${repo}`;
 }
 
 /** `read_state`'s answer: the summary when the call names no filter, and the full records the one
