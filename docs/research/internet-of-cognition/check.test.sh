@@ -4720,6 +4720,43 @@ else
     case_failed "$killed_case" "exit $RUN_STATUS, kinds $(printf '%s' "$RUN_UNRUN" | cut -f2 | sort -u | tr '\n' ' ')last line: $RUN_LINE"
 fi
 
+# 158. A reader the machine ends by a signal while the replay prepares a row is no row that
+# passed (test round 45). The tester's fresh-clone --replay of e7518312 stopped at 13:18:01Z
+# on 2026-11-21 in run_recorded of row d-4636-merged, after it wrote .out.failed and
+# .out.unread and before .out.sh: the `python3 "$READER" names` of the row was gone, the
+# gate's shell had no child left, and it waited 2 h 58 min with no line printed until the
+# tester stopped it. A child the gate waits on that dies must end the run cannot-run, of the
+# kind environment, naming what died and the signal, as case 157 holds for count.py; so the
+# names step's status is read, and a reader that printed nothing does not run the row with
+# no function recording its programs' statuses. The case puts a python3 first on PATH that
+# runs the real one, except that a call of reader.py with the word names kills its own
+# process with SIGKILL before it prints anything, and runs --replay, which must end exit 2,
+# cannot run, every assertion it leaves of the kind environment, its last line naming the
+# reader and signal 9.
+READER_KILLED_LINE='^check\.sh cannot run --replay: .*reader.*signal 9'
+dir="$(fresh reader-killed)"
+mkdir -p "$dir/reader-killed-bin"
+cat >"$dir/reader-killed-bin/python3" <<SH
+#!/usr/bin/env bash
+# A python3 whose reader.py names call the machine ends by SIGKILL, as the pod ended one.
+for ((i = 1; i < \$#; i++)); do
+    j=\$((i + 1))
+    case "\${!i}" in */reader.py) [ "\${!j}" = names ] && kill -9 \$\$ ;; esac
+done
+exec $(command -v python3) "\$@"
+SH
+chmod +x "$dir/reader-killed-bin/python3"
+out="$(PATH="$dir/reader-killed-bin:$PATH" fixture_run "$dir" --replay)"
+reader_case="a reader.py the machine ends by SIGKILL while --replay prepares a row makes --replay cannot run, of the kind environment, naming the reader and the signal"
+if ! case_read "$reader_case" "$out" "^check\\.sh cannot run --replay: .*reader"; then
+    :
+elif [ "$RUN_STATUS" = 2 ] && printf '%s\n' "$RUN_LINE" | grep -qE -- "$READER_KILLED_LINE" &&
+    [ -n "$RUN_UNRUN" ] && ! printf '%s' "$RUN_UNRUN" | cut -f2 | grep -qvx environment; then
+    case_passed "$reader_case"
+else
+    case_failed "$reader_case" "exit $RUN_STATUS, kinds $(printf '%s' "$RUN_UNRUN" | cut -f2 | sort -u | tr '\n' ' ')last line: $RUN_LINE"
+fi
+
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending
 # reads every case this file counted, the ones that could not run among them, and this
