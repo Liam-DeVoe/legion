@@ -163,6 +163,61 @@ func TestAnEdgeRefusesEverySubjectOfNoProjectButGitHub(t *testing.T) {
 	}
 }
 
+// The topic rule against what an outside agent would name in its own registration: a topic of
+// another project named whole (an INFRA issue's event, in either form), a wildcard where the
+// project would be (an issue event, a role lane and a Legion lane of every project), and a role
+// lane naming under PRIV a Legion role that works for INFRA, read as the claim it names
+// (contracts.RoleClaimOf), as the claim, the publish and the role lane read it. Each is refused
+// 403 topic_not_in_project, named alone. The topics of PRIV beside them, a role lane of PRIV's in
+// either form and a free-form role under PRIV among them, are taken. Control: with edge mode off
+// each refused topic is taken.
+func TestAnEdgeRefusesAnotherProjectsTopicAndEveryWildcardAcrossProjects(t *testing.T) {
+	rig := newEdgeRig(t)
+	const sessionID = "ses_edge_reach"
+	token := rig.personToken(sessionID, "PRIV")
+	for _, topic := range []string{
+		"notifications.dispatch.issue.INFRA.INFRA-1.comment.created",
+		"notifications.dispatch.issue.INFRA-1.>",
+		"notifications.dispatch.issue.*.>",
+		"notifications.role.*.>",
+		"notifications.legion.*.>",
+		"notifications.role.PRIV.legion-infra-infra-1-tester",
+	} {
+		requireTopicRefusal(t, rig.subscribe(t, token, sessionID, topic), "topic_not_in_project", topic)
+	}
+	requireStatus(t, rig.subscribe(t, token, sessionID,
+		"notifications.dispatch.issue.PRIV.PRIV-1.comment.created",
+		"notifications.role.legion-priv-priv-1-tester",
+		"notifications.role.PRIV.legion-priv-priv-2-tester",
+		"notifications.role.PRIV.lead-reviewer",
+	), http.StatusOK, "a registration following PRIV's topics")
+}
+
+// A token that lists two projects the edge serves is admitted and held to both, as a token of
+// one project is held to it: its session follows the topics of each and claims a role of each,
+// and is refused another project's topic and role. Control: with edge mode off (the listener then
+// serves no project) the INFRA topic and the INFRA role are taken.
+func TestAnEdgeHoldsATokenOfTwoServedProjectsToBoth(t *testing.T) {
+	projects := edgeTestProjects(t)
+	if len(projects) > 0 {
+		projects = []string{"PRIV", "SECOND"}
+	}
+	rig := newEdgeRigServing(t, projects)
+	const sessionID = "ses_edge_two_projects"
+	token := rig.personToken(sessionID, "PRIV", "SECOND")
+	requireStatus(t, rig.subscribe(t, token, sessionID, "notifications.dispatch.issue.PRIV.>", "notifications.dispatch.issue.SECOND.>"),
+		http.StatusOK, "a registration following PRIV's and SECOND's issues")
+	requireTopicRefusal(t, rig.subscribe(t, token, sessionID, "notifications.dispatch.issue.SECOND.>", "notifications.dispatch.issue.INFRA.>"),
+		"topic_not_in_project", "notifications.dispatch.issue.INFRA.>")
+	claim := func(role string) *httptest.ResponseRecorder {
+		return rig.call(t, http.MethodPost, token, "/v1/roles/set", fmt.Sprintf(`{"session_id":%q,"role":%q,"soft":true}`, sessionID, role))
+	}
+	for _, role := range []string{"legion-priv-priv-1-tester", "legion-second-second-1-tester"} {
+		requireStatus(t, claim(role), http.StatusOK, "a claim of "+role)
+	}
+	requireEdgeRefusal(t, claim("legion-infra-infra-1-tester"), http.StatusForbidden, "role_not_in_project", "a claim of legion-infra-infra-1-tester")
+}
+
 // The publish rule: an edge session publishes only a role subject of its project in the form
 // that names the project, for a role that works for that project (contracts.ClaimProject): a
 // Legion role of the project, or a free-form role under it. Anything else is 403

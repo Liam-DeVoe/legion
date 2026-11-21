@@ -32,9 +32,9 @@ package main
 //   - Senders: a send or a publish is the session's own, source agent and the token's session
 //     (edgeSenderRefusal).
 //   - Roles: a claim or a read names a role that works for one of the token's projects
-//     (edgeRoleRefusal), and a read names the place and process of a holder of none of them (its
-//     directory, machine, host, title, client instance and capabilities) to nobody
-//     (edgeScope.holder). A registration first releases the session's claims of other projects'
+//     (edgeRoleRefusal), and a role held by a session of none of them reads as one no claim holds
+//     in a role read, a role send's answers and a claim's 409 (edgeScope.holder,
+//     edgeScope.namesHolder). A registration first releases the session's claims of other projects'
 //     roles, refused 503 when a release fails (edgeTopicHold.releaseRefusedRoles), renews its
 //     token's projects' roles alone (edgeTopicHold.holdsRole), and a claimant is handed the kept
 //     messages of those alone (edgeScope.roles).
@@ -67,6 +67,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/legionagents"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/listenerwire"
@@ -226,19 +227,31 @@ func (s *edgeScope) agents(agents []legionagents.Agent) []legionagents.Agent {
 	return slices.DeleteFunc(agents, func(agent legionagents.Agent) bool { return !s.showsAgent(agent) })
 }
 
-// holder is holder, the answer of GET /v1/roles/<role> about a live holder whose session entry is
-// entry, as the scope shows it: whole for a holder it shows (shows), and with the holder's place
-// and process left out (its directory, machine, host, title and client instance, and its
-// capabilities the empty list) for any other. The role, the holder's id and state and the claim's
-// revision stay, so a caller still sees who holds a role of its project, and can claim it with
-// if_claim_revision. A nil scope answers holder as it is.
-func (s *edgeScope) holder(entry session.SessionEntry, holder listenerwire.RoleHolder) listenerwire.RoleHolder {
-	if s.shows(entry) {
-		return holder
+// holder is result, the resolution of a role's holder, as the scope answers it: whole for a holder
+// whose session entry it shows (shows), and for any other, live or lapsed, the resolution of a
+// role no claim holds (roles.Unclaimed), which names no holder, process, state, last registration,
+// hand-back or claim revision. A role of one of the scope's projects can be claimed by any
+// session, and its claim record written by any writer of the role bucket, so the claim says
+// nothing of whose session it names: a holder outside the scope's projects is another project's
+// session, whose id and activity the scope shows nobody, as it shows no such session in a read. GET
+// /v1/roles/<role> and a role send through the publish route answer by it; the send still
+// forwards to the holder. A nil scope answers result as it is.
+func (s *edgeScope) holder(result roles.Resolution) roles.Resolution {
+	if result.State == roles.Unclaimed || s.shows(result.Entry) {
+		return result
 	}
-	holder.Capabilities = []string{}
-	holder.ClientInstanceID, holder.Dir, holder.Host, holder.MachineID, holder.Title = "", "", "", "", ""
-	return holder
+	return roles.Resolution{State: roles.Unclaimed}
+}
+
+// namesHolder reports whether an answer the scope holds may name holderID, the holder of a role an
+// answer names with no resolution beside it (a claim's 409): the entry sessions holds of it is one
+// the scope shows, as holder decides for a resolution. A nil scope names every holder.
+func (s *edgeScope) namesHolder(sessions *session.SessionRegistry, holderID string) bool {
+	if s == nil {
+		return true
+	}
+	entry, _ := sessions.Lookup(holderID)
+	return s.shows(entry)
 }
 
 // roleOfProjects reports whether role, named by its claim's key, works for one of projects: the
@@ -349,7 +362,11 @@ func newEdgeTopicHold(r *http.Request, repositories *edgeRepositories, sessionID
 // a GitHub topic of one repository, which only an answer can take, that repository's owner and
 // name as the topic's tokens write them. A GitHub topic naming no single repository is refused
 // repository_not_in_project; another session's agent subject, the listener's own
-// notifications.envoy. lanes and every subject of no project are refused topic_not_in_project.
+// notifications.envoy. lanes and every subject of no project are refused topic_not_in_project. A
+// role lane naming one role is read as the claim it names (contracts.RoleClaimOf), as the claim,
+// the publish and the role lane read it, so a lane naming under one of projects a Legion role of
+// another project is refused; a role lane with a wildcard is read for its project as every other
+// topic is (contracts.SubjectProject), a wildcard where the project would be naming none.
 func edgeTopicRule(sessionID string, projects []string, topic string) (reason, owner, name string) {
 	switch {
 	case ownAgentSubject(sessionID, projects, topic):
@@ -362,7 +379,13 @@ func edgeTopicRule(sessionID string, projects []string, topic string) (reason, o
 	case strings.HasPrefix(topic, contracts.AgentTopicPrefix), strings.HasPrefix(topic, listenerLanePrefix):
 		return edgeTopicNotInProject, "", ""
 	}
-	if project, _, ok := contracts.SubjectProject(topic); !ok || !projectHeld(projects, project) {
+	if lane, isRole := strings.CutPrefix(topic, contracts.RoleTopicPrefix); isRole && !strings.ContainsAny(lane, "*>") {
+		if claim, err := contracts.RoleClaimOf(lane); err != nil || !slices.Contains(projects, claim.Project) {
+			return edgeTopicNotInProject, "", ""
+		}
+		return "", "", ""
+	}
+	if project, _, ok := contracts.SubjectProject(topic); !ok || !slices.Contains(projects, project) {
 		return edgeTopicNotInProject, "", ""
 	}
 	return "", "", ""
