@@ -17,9 +17,8 @@ import (
 // as Run hands it on, as redact.Error prints it, and as the *oauth2.RetrieveError it unwraps to
 // prints, holds none of it: the trade holds the answer's words with every credential its request
 // carried redacted (redact.Carried, RemoteText.WithoutTokens), while the code the renewal loop
-// acts on is the one the answer gave (the red team's probe of #4368 at db7e4a0226). Captures
-// brokerclient.trade-echo/run, brokerclient.trade-echo/redact-error and
-// brokerclient.trade-echo/answer.
+// acts on is the one the answer gave. Captures brokerclient.trade-echo/run,
+// brokerclient.trade-echo/redact-error and brokerclient.trade-echo/answer.
 func TestATradeRefusalPrintsNoSubjectTokenItEchoes(t *testing.T) {
 	broker := newStubBroker(t, func(_ int, form url.Values) (int, map[string]any) {
 		return 400, map[string]any{"error": "invalid_grant", "error_description": "subject_token " + form.Get("subject_token") + " is not one this broker reads"}

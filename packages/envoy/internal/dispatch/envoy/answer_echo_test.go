@@ -19,8 +19,7 @@ import (
 // session list (listFailure), and a lapsed role refusal whose holder is the bearer
 // (lapsedRoleHolder). No error holds it, under Error, %v or %+v, and no route sends it back: the
 // client reads every refused answer through the record of the request it sent (redact.Carried),
-// the holder it would send back among it (the review of #4368 at 63bd188095, class A). Captures
-// envoy.answer-echo/<case>/<call>.
+// the holder it would send back among it. Captures envoy.answer-echo/<case>/<call>.
 func TestAListenerRefusalPrintsNoBearerItsAnswerEchoes(t *testing.T) {
 	calls := map[string]func(*Client) error{
 		"session": func(c *Client) error { _, err := c.Session(context.Background(), "s-echo"); return err },

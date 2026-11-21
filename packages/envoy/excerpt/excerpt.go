@@ -7,7 +7,7 @@
 // Go client and a TypeScript one name one body the same way, with one rule after them: the plain
 // text is then read by redact.Remote, which prints each URL with no user info and no parameter's
 // value and fails closed, so a text it cannot read prints as redact.WordsNotReadable. The token
-// rule is internal/redact's own (redact.Tokens), the one #4368's OAuth boundary names a refusal's
+// rule is internal/redact's own (redact.Tokens), the one redact's OAuth boundary names a refusal's
 // body with. Three differences are deliberate. A character here is a Unicode code point, where the
 // TypeScript counts UTF-16 units, and the two differ only past the Basic Multilingual Plane, where
 // a cut here never splits a character. And this one decodes a page's HTML character references

@@ -47,7 +47,7 @@ func TestAFailedExchangesLogLinePrintsNoCredentialTheServicesWordsQuote(t *testi
 // service's place refuses the exchange with words that echo the subject token the exchange sent.
 // The endpoint's failure line holds none of it: the exchange's client records what each refused
 // request carried (oauth2call.RefusalClient), and the boundary reads the library's error with it
-// redacted (the review of #4368 at db7e4a0226, finding 3). Capture launcher.exchange-echo.
+// redacted. Capture launcher.exchange-echo.
 func TestAFailedExchangesLogLinePrintsNoCredentialItsRefusalEchoes(t *testing.T) {
 	g := newMetadataRig(t)
 	writeSubjectToken(t, g.tokenFile, probeToken)

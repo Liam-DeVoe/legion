@@ -13,8 +13,7 @@ const unrelatedCredential = "unrelated-bearer-000000"
 // TestAnErrorJSONPrintsNoCredentialItHolds: a body that is an object whose "error" is a string, as
 // Dispatch's and the listener's error JSON is, can come from whatever stands in their place and
 // echo the request back or quote a URL that carries a credential. Its excerpt holds none of them:
-// only its error and code print, each with the request's credentials and every URL's redacted
-// (the red team's error-JSON probes of #4368 at db7e4a0226).
+// only its error and code print, each with the request's credentials and every URL's redacted.
 func TestAnErrorJSONPrintsNoCredentialItHolds(t *testing.T) {
 	for _, row := range []struct{ name, body, carried string }{
 		{"echo-member", `{"error":"bad gateway","echo":{"authorization":"Bearer ` + redacttest.Token + `"}}`, redacttest.Token},

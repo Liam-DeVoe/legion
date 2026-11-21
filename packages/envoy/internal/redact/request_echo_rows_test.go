@@ -59,10 +59,9 @@ type requestEchoRow struct {
 // body; whatever answers in the server's place can echo each back. RefusalClient hands the answer
 // on as it came, so a library parses what was answered (the control: the body holds the echo), and
 // the error a library makes of it, `status code <n>: <body>`, holds none of them once OAuth2 reads
-// it, each a designated assertion (the red team's header probes of #4368 at db7e4a0226: a Cookie
-// the client's jar adds, an instance metadata token's header, and the rest). Read with no scope,
-// the error holds no record and prints its class alone; TestEveryCredentialARequestCarriesIsInItsScopesRecord
-// reads the same errors under a scope.
+// it, each a designated assertion. Read with no scope, the error holds no record and prints its
+// class alone; TestEveryCredentialARequestCarriesIsInItsScopesRecord reads the same errors under a
+// scope.
 func TestEveryCredentialARequestCarriesIsRedactedFromItsRefusal(t *testing.T) {
 	srv := echoServer(t)
 	for _, row := range requestEchoRows(srv) {
@@ -147,8 +146,8 @@ func newRequest(t *testing.T, method, target, body string, headers map[string]st
 // TestAnAnswersCodeAndDescriptionPrintNoCredentialTheRequestCarried: an issuer that refuses a
 // refresh with an error code and a description echoing the refresh token or the client secret the
 // request carried. x/oauth2's text of such an answer prints the code and the description, so
-// OAuth2's reading of them holds none of the request's credentials (the review of #4368 at
-// db7e4a0226, finding 1), with no RefusalClient between: the boundary reads the request back.
+// OAuth2's reading of them holds none of the request's credentials, with no RefusalClient between:
+// the boundary reads the request back.
 func TestAnAnswersCodeAndDescriptionPrintNoCredentialTheRequestCarried(t *testing.T) {
 	for _, row := range []struct{ name, body string }{
 		{"description-echoes-refresh-token", `{"error":"invalid_grant","error_description":"refresh token ` + redacttest.Token + ` is not valid"}`},
@@ -185,7 +184,6 @@ func TestAnAnswersCodeAndDescriptionPrintNoCredentialTheRequestCarried(t *testin
 // came, so the closed code, which the refused-refresh branch reads, is invalid_grant, while the
 // code OAuth2 prints has the request's credential redacted from it.
 func TestARequestValueSharingTheCodeLeavesTheClosedCodeAsItCame(t *testing.T) {
-	// The refresh carries a value that shares the run "invalid_grant" with the code.
 	const sharing = "rt-invalid_grant-" + redacttest.Token
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

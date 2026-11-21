@@ -46,7 +46,6 @@ func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 			Exported: &brokerErrorExported{403, redacttest.Code, redacttest.Words, false},
 		},
 		{
-			// The envelope Broker.do decodes a refusal into.
 			Name: "helper.Broker.do.envelope",
 			Kind: "fields",
 			Boxed: struct {

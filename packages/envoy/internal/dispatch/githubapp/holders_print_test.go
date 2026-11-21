@@ -48,7 +48,6 @@ func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 			Exported: &statusErrorExported{422, body, redacttest.Words},
 		},
 		{
-			// The refusal answerMessage decodes GitHub's answer into.
 			Name: "githubapp.answerMessage",
 			Kind: "fields",
 			Boxed: struct {

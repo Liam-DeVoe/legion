@@ -144,8 +144,6 @@ func TestALoginRefusalPrintsNoCredentialItsDescriptionRepeats(t *testing.T) {
 		if !errors.As(err, &be) {
 			t.Fatalf("Login: %v, want the broker's refusal as a BrokerError", err)
 		}
-		// The description's URL carries the credential, so it prints with no user information:
-		// ordinary words print beside a clean address, and a URL in them only as the rule reads it.
 		want := "broker 400 REQUEST_INVALID: the request object names " + srv.URL + ", which is not this broker"
 		if be.Status != http.StatusBadRequest || !be.HasCode("REQUEST_INVALID") || err.Error() != want {
 			t.Errorf("the refusal is %q, want %q", err, want)
@@ -278,8 +276,6 @@ func TestAnEnrollRefusalPrintsNoCredentialItsWordsRepeat(t *testing.T) {
 
 	t.Run("a clean address", func(t *testing.T) {
 		got := enroll(t, srv.URL)
-		// The words print as the rule for remote text reads them: the URL in them with no user
-		// information, and every other word as the broker wrote it.
 		shown := "the slot names " + srv.URL + ", which is not this broker"
 		for what, text := range map[string]string{"the enrolment's error": got.err.Error(), "the helper's log": got.log, "the session's last error": got.lastError} {
 			for _, want := range []string{"broker 400", "INVALID_SLOT", shown} {

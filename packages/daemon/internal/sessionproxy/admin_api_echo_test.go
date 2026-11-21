@@ -23,8 +23,7 @@ const adminBearer = "admin-bearer-RDX-7c1e"
 // The connector hands that refusal back as text alone (googleapi's), so a dial reads it under a
 // scope of its own, whose record holds every request that dial sent: the Admin API client is the
 // proxy's own RefusalClient, and the connector refreshes in the dial (lazy refresh), not in the
-// background. The dial's error prints none of the bearer (the red team's Admin API probe of #4368
-// at fd07192703). Capture sessionproxy.admin-api-echo.
+// background. The dial's error prints none of the bearer. Capture sessionproxy.admin-api-echo.
 func TestAnAdminAPIRefusalPrintsNoBearerItEchoes(t *testing.T) {
 	usePodCredentials(t)
 	const account = "legion-sessions@example-project.iam.gserviceaccount.com"

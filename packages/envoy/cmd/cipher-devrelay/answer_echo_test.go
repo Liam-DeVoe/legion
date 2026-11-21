@@ -15,8 +15,8 @@ import (
 // TestAListedCallersRefusalPrintsNoBearerItsAnswerEchoes: an answer in the broker's place refuses
 // a listed caller's call with an envelope whose code and words echo the bearer the call carried.
 // The *apiError prints neither under Error, %v or %+v: apiClient.do reads the envelope through the
-// record of the request it sent (redact.Carried), while the status still prints (the review of
-// #4368 at 63bd188095, class A). Captures agent-secrets-devrelay.answer-echo/<case>.
+// record of the request it sent (redact.Carried), while the status still prints. Captures
+// agent-secrets-devrelay.answer-echo/<case>.
 func TestAListedCallersRefusalPrintsNoBearerItsAnswerEchoes(t *testing.T) {
 	for _, c := range []struct{ name, body string }{
 		{"words", `{"code":"UNAUTHORIZED","error":"the bearer {auth} is not on the list"}`},

@@ -13,8 +13,7 @@ import (
 // the generateAccessToken call with. The library prints it as `impersonate: status code 403:
 // <body>`, and the dial's error holds none of it: the impersonation's client records what each
 // refused request carried (oauth2call.RefusalClient), and the boundary reads the library's error
-// with it redacted (the red team's probe of #4368 at db7e4a0226). Capture
-// sessionproxy.impersonation-echo.
+// with it redacted. Capture sessionproxy.impersonation-echo.
 func TestAnImpersonationRefusalPrintsNoCredentialItEchoes(t *testing.T) {
 	usePodCredentials(t)
 	admin := newAdminAPIFake(t)

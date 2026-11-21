@@ -61,10 +61,8 @@ func bearerContext(stub http.RoundTripper, bearer string, after func()) context.
 //   - interleaved: a gateway's page that shares its first 64 bytes with every refusal and echoes
 //     the bearer; while the first discovery's answer is on its way back, a second discovery with
 //     another bearer is refused by the same page, and a third request is refused "Forbidden". The
-//     first error prints none of its bearer: its record came with it (the review of #4368 at
-//     fd07192703, finding 2, which a match on the error's text broke);
-//   - status-line-empty-body: an answer with no body whose status line echoes the bearer
-//     (the red team's reason-phrase probe).
+//     first error prints none of its bearer: its record came with it;
+//   - status-line-empty-body: an answer with no body whose status line echoes the bearer.
 //
 // The designated assertion is oidc.record/<case>.
 func TestADiscoveryRefusalPrintsOnlyItsOwnRequestsCredentials(t *testing.T) {

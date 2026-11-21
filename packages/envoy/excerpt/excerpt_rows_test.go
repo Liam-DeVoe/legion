@@ -32,8 +32,7 @@ func cutAt(head, tail string, styled bool) string {
 // HTML character references, which Text decodes once the tags are gone, before the rule reads
 // the text; the scan limit can fall inside a URL, so Text drops the last word of a body it cut;
 // and a tag inside a URL's start leaves a gap the rule's second reading reads across. Each row's
-// excerpt holds none of the credentials (the review of #4368 at db7e4a0226: finding 4 and the red
-// team's excerpt probes).
+// excerpt holds none of the credentials.
 func TestTextPrintsNoCredentialAReferenceOrTheScanLimitHides(t *testing.T) {
 	for _, row := range []struct{ name, body string }{
 		{"reference-question-equals", "<html><p>https://idp.example/cb&quest;session&equals;" + redacttest.Token + "</p></html>"},
@@ -67,8 +66,7 @@ func shiftedBody(t *testing.T, words []string, url, after string) string {
 // longer [redacted], cannot move it inside a URL to just before its '@'; and a page's character
 // references are decoded until none is left (redact.UnescapeHTML), so a double-encoded '@' or
 // '?' does not hide a URL's credential from the rule; and a split query after a URL, behind a
-// no-break space or an em dash a page writes as a reference, is not readable (the review of #4368
-// at fd07192703: the red team's excerpt probes).
+// no-break space or an em dash a page writes as a reference, is not readable.
 func TestTextCutsBeforeItRedactsAndDecodesEveryReference(t *testing.T) {
 	url := "https://" + redacttest.Token + "@gl.example/xy"
 	for _, row := range []struct {

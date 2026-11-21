@@ -541,7 +541,6 @@ func TestARoleRefusalsHolderIsSentBackOnlyAsTheRulePrintsIt(t *testing.T) {
 	}
 	asked = nil
 	_, err := client.Role(context.Background(), "credential")
-	// What this client sent back to the listener: no route may carry a secret the holder quotes.
 	redacttest.RequireNone(t, "envoy.role-sent-back", strings.Join(asked, "\n"))
 	if err == nil || len(asked) != 0 {
 		t.Fatalf("a holder that quotes a credential's URL: %v, session route asked %v; want the refusal and no read", err, asked)

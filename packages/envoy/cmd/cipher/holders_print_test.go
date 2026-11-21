@@ -48,7 +48,6 @@ func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 			Exported: &apiErrorExported{403, redacttest.Code, redacttest.Words, redacttest.FragmentWords, false},
 		},
 		{
-			// The envelope client.doStatus decodes a refusal into.
 			Name: "agent-secrets.client.doStatus.envelope",
 			Kind: "fields",
 			Boxed: struct {

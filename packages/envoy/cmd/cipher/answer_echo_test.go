@@ -26,8 +26,8 @@ import (
 // token), an envelope that repeats its Proof header, and a terminal envelope that repeats it too.
 // The renewal's error, the --pod refusal line (podRefusal) and renewLoop's stderr line hold none
 // of it: doStatus reads every word of a refused answer through the record of the request it sent
-// (redact.Carried), whatever the answer's shape (the review of #4368 at 63bd188095, class A).
-// Captures agent-secrets.answer-echo/<case>, /<case>/pod-refusal and /<case>/renew-stderr.
+// (redact.Carried), whatever the answer's shape. Captures agent-secrets.answer-echo/<case>,
+// /<case>/pod-refusal and /<case>/renew-stderr.
 func TestARenewalRefusalPrintsNoCredentialItsAnswerEchoes(t *testing.T) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -108,8 +108,8 @@ func TestARenewalRefusalPrintsNoCredentialItsAnswerEchoes(t *testing.T) {
 // separators as HTML character references, named, decimal and hexadecimal. The renewal's error,
 // the --pod refusal line and renewLoop's stderr line print none of the credential: the rule decodes
 // the references of a URL's separators before it reads a field (redact.Remote), so doStatus's page
-// is read as a reader of the page sees it (the review of #4368 at 63bd188095, class B). Captures
-// agent-secrets.page-references/<case>, /<case>/pod-refusal and /<case>/renew-stderr.
+// is read as a reader of the page sees it. Captures agent-secrets.page-references/<case>,
+// /<case>/pod-refusal and /<case>/renew-stderr.
 func TestARenewalRefusalPrintsNoCredentialItsPagesReferencesHide(t *testing.T) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -155,9 +155,8 @@ func TestARenewalRefusalPrintsNoCredentialItsPagesReferencesHide(t *testing.T) {
 // takes a pod's renewal, 200, and echoes the pod token its body carried into lease_expires_at,
 // which RenewEnrollment decodes as a time. time.Time's error quotes the value; the renewal's error
 // and renewLoop's stderr line name the member that did not decode and hold no part of the token:
-// the client reads the answer through redact.ReadAnswer, whose Decode quotes no value (the review
-// of #4368 round 4, finding 1). Captures agent-secrets.decode-echo and
-// agent-secrets.decode-echo/renew-stderr.
+// the client reads the answer through redact.ReadAnswer, whose Decode quotes no value. Captures
+// agent-secrets.decode-echo and agent-secrets.decode-echo/renew-stderr.
 func TestARenewalAnswerThatDoesNotDecodePrintsNoPodTokenItEchoes(t *testing.T) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {

@@ -36,7 +36,6 @@ func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 			Exported: bodyTwin{redacttest.Code},
 		},
 		{
-			// The refusal EntraTokenSource.exchange decodes Entra's answer into.
 			Name: "embed.EntraTokenSource.exchange.refusal",
 			Kind: "fields",
 			Boxed: struct {

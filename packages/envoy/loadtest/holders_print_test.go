@@ -79,7 +79,6 @@ func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 			Exported: &seedErrorExported{"quote", "session-1", 409, redacttest.Code},
 		},
 		{
-			// The body errorCode decodes.
 			Name: "loadtest.errorCode.refusal",
 			Kind: "fields",
 			Boxed: struct {

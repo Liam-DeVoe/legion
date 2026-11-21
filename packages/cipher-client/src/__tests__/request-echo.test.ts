@@ -1,9 +1,8 @@
 // An answer in the broker's place can echo back any credential the trade carried: the subject
 // token in its form, its DPoP proof, whatever it sent. openid-client parses the answer as it came
 // and throws over it; the error this client hands on prints none of the trade's credentials, while
-// its code, which the client acts on, is the one the answer gave (the review of #4368 at
-// db7e4a0226, finding 1 and the red team's echo probes). Each print is a designated assertion: it
-// writes `REDACT-CAPTURE <capture> <base64>` and fails with a message that begins
+// its code, which the client acts on, is the one the answer gave. Each print is a designated
+// assertion: it writes `REDACT-CAPTURE <capture> <base64>` and fails with a message that begins
 // `REDACT-ASSERT <capture>`.
 
 import { expect, test } from "bun:test";

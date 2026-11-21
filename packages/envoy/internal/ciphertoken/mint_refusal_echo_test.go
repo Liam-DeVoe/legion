@@ -14,8 +14,7 @@ import (
 // own access token, and quote a URL with a user and a password in it. The mint's error
 // holds none of them: the refusal's body is held as GitHub's and Google's words are
 // (redact.RemoteText), read by the rule with the request's credentials redacted, while its status
-// and its other words print (the merge of main's generateIdToken into #4368). Capture
-// brokertoken.mint-refusal.
+// and its other words print. Capture brokertoken.mint-refusal.
 func TestARefusedMintPrintsNoCredentialItsRefusalEchoes(t *testing.T) {
 	ciphertokentest.NewMetadataStand(t)
 	iam := ciphertokentest.NewIAMStand(t)

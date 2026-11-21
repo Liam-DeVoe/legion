@@ -15,7 +15,6 @@ func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 	}
 	for _, h := range []redacttest.Holder{
 		{
-			// The body CodeFlow.Revoke decodes a refusal into.
 			Name: "oidc.CodeFlow.Revoke.body",
 			Kind: "fields",
 			Boxed: struct {

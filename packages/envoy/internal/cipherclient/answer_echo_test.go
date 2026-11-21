@@ -20,9 +20,8 @@ import (
 // that is not this grant's (its token_type and its credential_expires_at). The trade's error, and
 // the log line the renewal loop writes of it (retriedTrade), hold none of it: every answer the
 // trade reads prints through the record of the request it sent (redact.Carried), whatever its
-// status, and a 200's values print nowhere, as in the TypeScript client (the review of #4368 at
-// 63bd188095, findings 1 and 2). Captures brokerclient.answer-echo/<case> and
-// brokerclient.answer-echo/<case>/log.
+// status, and a 200's values print nowhere, as in the TypeScript client. Captures
+// brokerclient.answer-echo/<case> and brokerclient.answer-echo/<case>/log.
 func TestATradeAnswerPrintsNoSubjectTokenItEchoes(t *testing.T) {
 	for _, c := range []struct {
 		name   string

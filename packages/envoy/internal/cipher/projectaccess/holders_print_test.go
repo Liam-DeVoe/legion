@@ -15,7 +15,6 @@ func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 	}
 	for _, h := range []redacttest.Holder{
 		{
-			// The refusal refusalCode decodes Dispatch's answer into.
 			Name: "projectaccess.refusalCode",
 			Kind: "fields",
 			Boxed: struct {

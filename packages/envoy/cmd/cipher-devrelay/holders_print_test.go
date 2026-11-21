@@ -46,7 +46,6 @@ func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 			Exported: &apiErrorExported{403, redacttest.Code, redacttest.Words},
 		},
 		{
-			// The envelope apiClient.do decodes a refusal into.
 			Name: "devrelay.apiClient.do.envelope",
 			Kind: "fields",
 			Boxed: struct {
@@ -57,7 +56,6 @@ func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 			Exported: doTwin{redacttest.Code, redacttest.Words},
 		},
 		{
-			// The lookup cmdMachineApprove decodes the broker's answer into.
 			Name: "devrelay.cmdMachineApprove.lookup",
 			Kind: "fields",
 			Boxed: struct {

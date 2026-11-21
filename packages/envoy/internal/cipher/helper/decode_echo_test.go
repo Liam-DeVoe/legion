@@ -21,8 +21,8 @@ import (
 // the identity's enrolment and its renewal, 200, and echoes the request's Proof header into
 // lease_expires_at, which the helper decodes as a time. time.Time's error, and encoding/json's,
 // quote the value; the helper's error names the member that did not decode and holds no part of
-// the proof: Broker.do reads the answer through redact.ReadAnswer, whose Decode quotes no value
-// (the review of #4368 round 4, finding 1). Captures helper.decode-echo/<call>.
+// the proof: Broker.do reads the answer through redact.ReadAnswer, whose Decode quotes no value.
+// Captures helper.decode-echo/<call>.
 func TestAnAcceptedAnswerThatDoesNotDecodePrintsNoProofItEchoes(t *testing.T) {
 	var mu sync.Mutex
 	var sent []string

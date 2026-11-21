@@ -41,8 +41,7 @@ func rawIssuer(t *testing.T, statusLine, body string) string {
 // separators as HTML character references (&sol;, &colon;, &commat;, &quest;, &equals;). NewKeys'
 // and CheckClient's errors print none of the credential: the rule decodes the references of a
 // URL's separators before it reads a field (redact.Remote), so every caller gets the decoding,
-// not only the two that decode a page themselves (the review of #4368 at 63bd188095, class B).
-// Captures oidc.discovery-references/<case>/<call>.
+// not only the two that decode a page themselves. Captures oidc.discovery-references/<case>/<call>.
 func TestADiscoveryErrorPrintsNoCredentialItsReferencesHide(t *testing.T) {
 	const userinfo = "https:&sol;&sol;" + redacttest.User + "&colon;" + redacttest.Password + "&commat;issuer.example&sol;path"
 	const query = "https://issuer.example/cb&quest;access_token&equals;" + redacttest.Token

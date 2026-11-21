@@ -15,8 +15,8 @@ import (
 // with a message that repeats the Authorization the read carried. The *StatusError a caller
 // makes of that answer (CheckResponse), and its message, hold none of it: send, the one function
 // that sends anything to GitHub, hands a refusal's body on with every credential its request
-// carried redacted (redact.Carried), as every client of this repository reads a refused answer
-// (the answer census of #4368's check). Captures githubapp.answer-echo.
+// carried redacted (redact.Carried), as every client of this repository reads a refused answer.
+// Captures githubapp.answer-echo.
 func TestAGitHubRefusalPrintsNoTokenItsAnswerEchoes(t *testing.T) {
 	stand := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

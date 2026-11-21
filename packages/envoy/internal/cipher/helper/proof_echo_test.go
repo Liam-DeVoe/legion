@@ -22,8 +22,7 @@ import (
 // identity's renewal with words that echo the signed Proof header the request carried. The
 // BrokerError's text holds none of it: Broker.do holds the answer's words with every credential
 // its request carried redacted (redact.Carried, RemoteText.WithoutTokens), while its code, which
-// the helper acts on, is the one the answer gave (the red team's probe of #4368 at db7e4a0226).
-// Capture helper.proof-echo.
+// the helper acts on, is the one the answer gave. Capture helper.proof-echo.
 func TestABrokerErrorPrintsNoProofItsAnswerEchoes(t *testing.T) {
 	var mu sync.Mutex
 	var sent string

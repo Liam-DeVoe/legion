@@ -14,8 +14,7 @@ import (
 // read with a code that repeats the bearer the read carried. The seed's error, and the code a
 // route's summary prints, hold none of it: the load test reads a refusal's code through the record
 // of the request it sent (redact.Carried), as every client of this repository reads a refused
-// answer (the answer census of #4368's check). Captures loadtest.answer-echo and
-// loadtest.answer-echo/code.
+// answer. Captures loadtest.answer-echo and loadtest.answer-echo/code.
 func TestASeedRefusalPrintsNoBearerItsAnswerEchoes(t *testing.T) {
 	stand := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

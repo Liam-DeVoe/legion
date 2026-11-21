@@ -20,9 +20,8 @@ import (
 // on, the *url.Error names the Location; followed to a second hop that echoes its own path, the
 // answer x/oauth2 makes an error of is that second hop's, a GET that carries no form. Each prints
 // none of the refresh token: the failed hop's error carries the record of every hop before it,
-// and so does the answer (the red team's redirect probes of #4368 at fd07192703). The refresh runs
-// as production code runs x/oauth2, through a RefusalClient and OAuth2, with no scope. The
-// designated assertion is redact.redirect/<case>.
+// and so does the answer. The refresh runs as production code runs x/oauth2, through a
+// RefusalClient and OAuth2, with no scope. The designated assertion is redact.redirect/<case>.
 func TestARedirectedRefreshPrintsNoCredentialOfAnEarlierHop(t *testing.T) {
 	mode := ""
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
