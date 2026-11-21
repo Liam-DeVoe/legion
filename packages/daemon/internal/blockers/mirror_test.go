@@ -55,16 +55,18 @@ func TestMirrorWritesTheRowOfADispatchIssueFact(t *testing.T) {
 	}
 }
 
-// Only a reading of Dispatch writes the copy. An issue event, the turn's observations (its
-// re-read of each issue it waits on, and its listing) and the release's read of the children it
-// adopts each write the row of the issue they read; a turn that observed nothing writes nothing;
-// a claim event writes the claim and no row. Every other fact writes neither, whatever issue it
-// names: a fact the daemon makes says what the daemon intends, never what Dispatch said, and a
-// seed's read of a document or of a new parent (PendingBasisRead, BasisChangesRead, ReparentRead)
-// carries no value of the copy at a Dispatch sequence. The kinds are read from package intake's
-// own source, each type that is an intake.Fact, so a kind added there fails this test until a row
-// here says what the mirror writes for it. Each row is applied in a transaction of its own, which
-// is rolled back, so each meets an empty copy.
+// Only a reading of Dispatch writes the copy. An issue event, a view release_children reads of a
+// child (an issue fact too) and the turn's observations (its re-read of each issue it waits on,
+// and its listing) each write the row of the issue they read; a turn that observed nothing writes
+// nothing; a claim event writes the claim and no row. Every other fact writes neither, whatever
+// issue it names: a fact the daemon makes says what the daemon intends, never what Dispatch said,
+// so an architect's close of an unrecorded child (CloseChild) and Dispatch's refusal of a close
+// the daemon queued (CloseRefused) write nothing either, and a seed's read of a document or of a
+// new parent (PendingBasisRead, BasisChangesRead, ReparentRead) carries no value of the copy at a
+// Dispatch sequence. The kinds are read from package intake's own source, each type that is an
+// intake.Fact, so a kind added there fails this test until a row here says what the mirror writes
+// for it. Each row is applied in a transaction of its own, which is rolled back, so each meets an
+// empty copy.
 func TestOnlyAReadingOfDispatchWritesTheCopy(t *testing.T) {
 	kinds := factKinds(t)
 	pool := migratedPool(t)
@@ -90,7 +92,8 @@ func TestOnlyAReadingOfDispatchWritesTheCopy(t *testing.T) {
 		intake.PullRequestMergeability{}, intake.PullRequestMerged{}, intake.PullRequestClosed{}, intake.PullRequestDequeued{},
 		intake.MergeQueueReadDone{}, intake.ConflictConfirmDone{}, intake.PullRequestMissing{}, intake.Push{}, intake.BasePush{},
 		intake.HandoffComplete{}, intake.BackwardMove{}, intake.RetryOrEscalate{}, intake.RestartPhase{}, intake.SignOff{},
-		intake.GateRegistered{}, intake.CloseRoot{}, intake.ClaimFailed{}, intake.SessionLost{}, intake.SessionStoreFault{},
+		intake.GateRegistered{}, intake.CloseRoot{}, intake.CloseChild{}, intake.CloseRefused{}, intake.ClaimFailed{},
+		intake.SessionLost{}, intake.SessionStoreFault{},
 		intake.MemoryGuardKill{}, intake.VolumeNearFull{}, intake.ClaimReady{}, intake.TaskConfirmed{}, intake.GateRequestFound{},
 		intake.CatchUpApplied{}, intake.DaemonBooted{}, intake.CutoverMergerRepair{}, intake.CheckReport{},
 		intake.CheckWakeDue{}, intake.CheckLookEnded{}, intake.CheckBound{}, intake.ListenerWake{}, intake.PodBackstopDue{},

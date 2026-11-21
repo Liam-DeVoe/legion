@@ -218,7 +218,9 @@ func TestARetainedEventOfAnUnrecordedIssueReadsItsRepositoryFromDispatch(t *test
 	}
 	run, cancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
-	go func() { done <- consumers.Run(run, engine, admission) }()
+	// The daemon's own handler order (workflow.go): the copy first, so admission reads the row
+	// this very event writes.
+	go func() { done <- consumers.Run(run, blockers.NewMirror(records, "LEGION"), engine, admission) }()
 	t.Cleanup(func() {
 		cancel()
 		if err := <-done; err != nil {
