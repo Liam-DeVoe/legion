@@ -94,9 +94,19 @@ func TestPeopleTableRefusesAnEmailThatIsNotLowercase(t *testing.T) {
 	}
 }
 
-// A sign-in whose read of the refresh token it replaces fails, here on a context already ended,
-// is an error that carries the cause and names no email, as Record's refusal names none.
-func TestASignInWhoseReadOfTheReplacedTokenFailsNamesNoEmail(t *testing.T) {
+// endingRevoker revokes every token it is asked to and then ends the context of the call that
+// asked, so the statement that follows the revocation fails.
+type endingRevoker struct{ end context.CancelFunc }
+
+func (r endingRevoker) Revoke(context.Context, string) error {
+	r.end()
+	return nil
+}
+
+// Every call of the people store whose statement fails, here on a context already ended or on one
+// a revocation ends before the revoked token is forgotten, is an error that carries the cause and
+// names no email, as Record's refusal names none: a handler or a sign-in route logs it.
+func TestAPeopleStoreCallWhoseStatementFailsNamesNoEmail(t *testing.T) {
 	database := openTestStore(t)
 	if err := database.Migrate(context.Background()); err != nil {
 		t.Fatalf("migrate: %v", err)
@@ -105,12 +115,37 @@ func TestASignInWhoseReadOfTheReplacedTokenFailsNamesNoEmail(t *testing.T) {
 	const email = "unnamed-signer@d.example"
 	ended, cancel := context.WithCancel(context.Background())
 	cancel()
-	err := people.SignIn(ended, email, "refresh-1")
-	if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "read the refresh token a sign-in replaces") {
-		t.Fatalf("a sign-in on an ended context = %v, want the failed read of the token it replaces", err)
-	}
-	if strings.Contains(err.Error(), email) {
-		t.Fatalf("the failed sign-in names the email: %v", err)
+	_, _, membership := people.Membership(ended, email)
+	_, endSubject := people.EndSubject(ended, email, "subject-1")
+	// The revoked token stays in its row, since its forget fails, so the row is the test's own and
+	// goes when it ends: no sweep of the shared database meets it.
+	revokedEmail := "unnamed-revoked-" + randomDatabaseSuffix(t) + "@d.example"
+	storePlainRefreshToken(t, database, revokedEmail, "plain-token")
+	t.Cleanup(func() {
+		if _, err := database.Pool.Exec(context.Background(), `delete from people where email = $1`, revokedEmail); err != nil {
+			t.Errorf("delete the revoked person's row: %v", err)
+		}
+	})
+	revoking, endRevoking := context.WithCancel(context.Background())
+	defer endRevoking()
+	revoked := NewPgPeopleStore(database.Pool, testSigningKey, endingRevoker{endRevoking}).SignIn(revoking, revokedEmail, "refresh-2")
+	for _, call := range []struct {
+		what, email, text string
+		err               error
+	}{
+		{"a sign-in's read of the token it replaces", email, "read the refresh token a sign-in replaces", people.SignIn(ended, email, "refresh-1")},
+		{"a sign-in's forget of the token the pool revoked", revokedEmail, "forget a person's revoked refresh token", revoked},
+		{"a read of a membership", email, "read a person's membership", membership},
+		{"a pool's confirmation", email, "confirm a person's membership", people.Confirm(ended, email, "refresh-1")},
+		{"a domain's confirmation", email, "confirm a person's membership", people.ConfirmSubject(ended, email, "subject-1", "refresh-1")},
+		{"an end", email, "end a person's membership", people.End(ended, email)},
+		{"a domain sign-in's end", email, "end a person's sign-in", endSubject},
+	} {
+		if !errors.Is(call.err, context.Canceled) || !strings.Contains(call.err.Error(), call.text) {
+			t.Errorf("%s that failed = %v, want %q carrying the cause", call.what, call.err, call.text)
+		} else if strings.Contains(call.err.Error(), call.email) {
+			t.Errorf("%s that failed names the email: %v", call.what, call.err)
+		}
 	}
 }
 

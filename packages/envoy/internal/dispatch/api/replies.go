@@ -805,7 +805,7 @@ func (s *server) putThreadRead(w http.ResponseWriter, r *http.Request) {
 	// project, the cycle markInboxReadThreads rules out.
 	owner := store.OwnerOf(issueKey, artifactID)
 	if owner == nil {
-		s.writeHandlerError(w, fmt.Errorf("%s's user_threads row of thread %s names no issue and no document", login, threadID))
+		s.writeHandlerError(w, fmt.Errorf("a user_threads row of thread %s names no issue and no document", threadID))
 		return
 	}
 	// Whether the mark moves at all, read under that lock in the statement after it
