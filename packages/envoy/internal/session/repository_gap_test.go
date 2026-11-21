@@ -1,13 +1,73 @@
 package session
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"sync/atomic"
 	"testing"
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 )
+
+// losingUpdateKV is a session bucket whose every conditional update loses, as to a writer that
+// landed first or to a copy of the bucket that answers each read a write behind; every other call
+// is the bucket's own. It counts the updates it refused, and once it has refused stop of them it
+// ends the writer's context, so a write loop with no bound of its own ends there.
+type losingUpdateKV struct {
+	nats.KeyValue
+	updates *atomic.Int64
+	stop    int64
+	cancel  context.CancelFunc
+}
+
+func (kv losingUpdateKV) Update(string, []byte, uint64) (uint64, error) {
+	if kv.updates.Add(1) >= kv.stop {
+		kv.cancel()
+	}
+	return 0, errors.New("nats: wrong last sequence: 1")
+}
+
+// A write of an entry ends once it has lost entryWriteLosses writes, whatever its context allows:
+// a lost write is another writer's progress, or a read a copy of a replicated bucket answered one
+// write behind (bus.KeyValue's direct get), and a copy that stays behind would otherwise keep the
+// write looping at the bucket's round trip, holding a registration or a relay's frames, for as
+// long as its context lasts. Both loops end so, a registration's (PutWithin) and a change of the
+// stored entry's (SetRepositoryGap through rewriteStoredEntry). Here every update loses. Control:
+// with the loops writing until a write lands or ctx ends (writeEntryAt's stop rule before this
+// row), each write loses until the bucket ends its context, a thousand updates in, and the row
+// fails.
+func TestAnEntryWriteStopsAfterABoundOfLostWrites(t *testing.T) {
+	client := setupNATS(t)
+	registry, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1))
+	if err != nil {
+		t.Fatalf("open the registry: %v", err)
+	}
+	t.Cleanup(registry.StopWatch)
+	const sessionID = "ses_lost_writes"
+	if err := registry.Put(sessionID, SessionEntry{MachineID: "listener-a"}); err != nil {
+		t.Fatalf("register %s: %v", sessionID, err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	var updates atomic.Int64
+	useKV(t, registry, losingUpdateKV{KeyValue: registry.watcher.KV().Legacy(), updates: &updates, stop: 1000, cancel: cancel})
+	for _, write := range []struct {
+		what  string
+		write func() error
+	}{
+		{"a registration (PutWithin)", func() error { return registry.PutWithin(ctx, sessionID, SessionEntry{MachineID: "listener-a"}) }},
+		{"a gap mark (SetRepositoryGap)", func() error { return registry.SetRepositoryGap(ctx, sessionID, "a-mark") }},
+	} {
+		updates.Store(0)
+		err := write.write()
+		if err == nil || ctx.Err() != nil || updates.Load() != entryWriteLosses {
+			t.Fatalf("%s whose every update loses answered %v after %d updates, with its context ended: %v; want an error once it has lost %d",
+				write.what, err, updates.Load(), ctx.Err() != nil, entryWriteLosses)
+		}
+	}
+}
 
 // An entry write carries the gap mark of the entry it replaces (SessionEntry.RepositoryGap),
 // whatever the written entry says, and never on the strength of a copy of the bucket that trails

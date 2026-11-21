@@ -796,8 +796,9 @@ func (r *SessionRegistry) Put(sessionID string, entry SessionEntry) error {
 // it replaces (writeEntryAt): the copy's own entry and revision first, with no bucket call, and
 // when the copy holds none, or another write landed since (another listener's mark among them),
 // the bucket's entry read again (readEntry) and entry written over it with that entry's mark,
-// until the write lands or ctx ends (writeEntryAt's stop rule). Every other field is entry's, so
-// against another listener's write it is last-writer-wins, as it always was.
+// until the write lands, ctx ends or entryWriteLosses writes are lost (writeEntryAt's stop rule).
+// Every other field is entry's, so against another listener's write it is last-writer-wins, as it
+// always was.
 func (r *SessionRegistry) PutWithin(ctx context.Context, sessionID string, entry SessionEntry) error {
 	// Several live processes can hold the same session (shared on-disk state) - a harness can
 	// keep a session's state on shared disk - and each heartbeats a claim of its own. The route
@@ -817,7 +818,7 @@ func (r *SessionRegistry) PutWithin(ctx context.Context, sessionID string, entry
 		entry.RepositoryGap = replaced.entry.RepositoryGap
 	}
 	r.mu.RUnlock()
-	for {
+	for range entryWriteLosses {
 		if !known {
 			stored, at, err := readEntry(ctx, kv, sessionID)
 			switch {
@@ -839,7 +840,19 @@ func (r *SessionRegistry) PutWithin(ctx context.Context, sessionID string, entry
 		}
 		known = false
 	}
+	return fmt.Errorf("write session %s to the bucket: %w", sessionID, errEntryWritesLost)
 }
+
+// entryWriteLosses bounds the writes one write of an entry may lose (writeEntryAt's stop rule):
+// far more than the writers of one session's entry at once - its processes registering and
+// heartbeating, a relay marking the entry, an outage renewal - each of which lands in turn, and
+// few enough that a copy of the bucket which keeps answering its reads a write behind ends the
+// write at once rather than holding a registration, or a relay and the session's frames behind
+// it, at the bucket's round trip for as long as the caller's context lasts.
+const entryWriteLosses = 32
+
+// errEntryWritesLost is the error of a write of an entry that lost entryWriteLosses writes.
+var errEntryWritesLost = fmt.Errorf("%d conditional writes lost, to other writers or to a copy of the bucket that answers its reads a write behind", entryWriteLosses)
 
 // errUndecodableEntry is readEntry's answer for a stored value no read decodes as an entry.
 var errUndecodableEntry = errors.New("the stored value is no session entry")
@@ -871,11 +884,13 @@ func readEntry(ctx context.Context, kv bus.KeyValue, sessionID string) (SessionE
 // as bus.IsCASConflict reads it (it reads a replicated bucket's answer too): the entry is left as
 // that writer wrote it, and the error is nil.
 //
-// The stop rule of every caller: a conditional write loses only to a write that landed, so each
-// lost write is another writer's progress, and the caller reads the entry again and writes again
-// until its write lands or ctx ends, never stopping on a count of writes it lost. Several
-// processes of one session claiming and heartbeating at once, and a relay marking the session's
-// entry beside them, each land in turn.
+// The stop rule of every caller: a conditional write loses to a write that landed, which is
+// another writer's progress, or to a read that a copy of a replicated bucket answered a write
+// behind (a direct get is answered by any copy near enough to current, Refresh). The caller reads
+// the entry again and writes again until its write lands, ctx ends, or it has lost
+// entryWriteLosses writes, when it ends with errEntryWritesLost. Several processes of one session
+// claiming and heartbeating at once, and a relay marking the session's entry beside them, each
+// land in turn well inside that bound.
 func (r *SessionRegistry) writeEntryAt(ctx context.Context, kv bus.KeyValue, epoch uint64, sessionID string, entry SessionEntry, revision uint64) (lost bool, err error) {
 	buf, err := json.Marshal(entry)
 	if err != nil {
@@ -909,7 +924,7 @@ func (r *SessionRegistry) writeEntryAt(ctx context.Context, kv bus.KeyValue, epo
 // each error.
 func (r *SessionRegistry) rewriteStoredEntry(ctx context.Context, sessionID, what string, missing error, change func(*SessionEntry) bool) error {
 	kv, epoch := r.watcher.Handle()
-	for {
+	for range entryWriteLosses {
 		entry, revision, err := readEntry(ctx, kv, sessionID)
 		if err != nil {
 			return fmt.Errorf("read session %s to %s: %w", sessionID, what, err)
@@ -928,6 +943,7 @@ func (r *SessionRegistry) rewriteStoredEntry(ctx context.Context, sessionID, wha
 			return nil
 		}
 	}
+	return fmt.Errorf("write session %s to %s: %w", sessionID, what, errEntryWritesLost)
 }
 
 // SetRepositoryGap writes mark as sessionID's RepositoryGap and nothing else, over any mark the

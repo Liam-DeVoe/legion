@@ -1163,14 +1163,17 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 // mark written since, by this relay or by another relay of the session, as two relays of one
 // session run while it moves, stays for the next frame. A relay that adopted the entry's mark
 // (owedRepositoryGap) and clears it after its frame therefore never clears the mark of an event
-// another relay withheld later. The entry is read from the bucket for the write
-// (session.SessionRegistry.SetRepositoryGap), not judged from this listener's copy, which can
-// trail a clear another listener made. A write that failed, and an entry the bucket does not
-// hold, are the error, and nothing is noted: the caller gives the event back (giveBackWithheld),
-// since a mark this process alone kept would be lost with a move.
+// another relay withheld later. The entry is read from the bucket for the write, within
+// repositoryGapWriteTimeout of ctx (session.SessionRegistry.SetRepositoryGap), not judged from
+// this listener's copy, which can trail a clear another listener made. A write that
+// failed or did not answer in time, and an entry the bucket does not hold, are the error, and
+// nothing is noted: the caller gives the event back (giveBackWithheld), since a mark this process
+// alone kept would be lost with a move.
 func (m *sessionRelays) noteRepositoryGap(ctx context.Context, sessionID string) (string, error) {
 	mark := id.New()
-	if err := m.sessions.SetRepositoryGap(ctx, sessionID, mark); err != nil {
+	writeCtx, cancel := context.WithTimeout(ctx, repositoryGapWriteTimeout)
+	defer cancel()
+	if err := m.sessions.SetRepositoryGap(writeCtx, sessionID, mark); err != nil {
 		return "", err
 	}
 	m.repositoryGapsMu.Lock()
@@ -1181,6 +1184,14 @@ func (m *sessionRelays) noteRepositoryGap(ctx context.Context, sessionID string)
 	m.repositoryGaps[sessionID] = mark
 	return mark, nil
 }
+
+// repositoryGapWriteTimeout bounds each write a relay makes of its session's gap mark, the mark
+// (noteRepositoryGap) and the clear after a frame (repositoryGapSent): a read and a write of the
+// session's entry, each of which answers in milliseconds on a bus that answers at all. The relay
+// run's own context has no deadline, and the session's frames wait behind the write, so a bucket
+// that stops answering holds them this long at most: the event is then given back, or the clear
+// logged and the mark sent again by the session's next run.
+const repositoryGapWriteTimeout = 2 * time.Second
 
 // owedRepositoryGap is the mark sessionID is owed, "" for none: the one this process noted, else
 // the one the session's entry carries (noteRepositoryGap).
@@ -1197,9 +1208,10 @@ func (m *sessionRelays) owedRepositoryGap(sessionID string) string {
 
 // repositoryGapSent clears mark, the one sessionID was owed, a frame carrying a gap mark having
 // been published: in this process, and on the session's entry while the entry carries that mark
-// (session.SessionRegistry.ClearRepositoryGap). A mark another relay wrote since is the other
-// relay's frame's to clear. A write of the entry that fails is logged; the entry then keeps the
-// mark, and the session's next relay run sends it once more.
+// (session.SessionRegistry.ClearRepositoryGap), within repositoryGapWriteTimeout of ctx. A mark
+// written since, for an event withheld later, is a later frame's to clear. A write of the entry
+// that fails or does not answer in time is logged; the entry then keeps the mark, and the
+// session's next relay run sends it once more.
 func (m *sessionRelays) repositoryGapSent(ctx context.Context, sessionID, mark string) {
 	m.forgetRepositoryGap(sessionID)
 	if mark == "" {
@@ -1208,7 +1220,9 @@ func (m *sessionRelays) repositoryGapSent(ctx context.Context, sessionID, mark s
 	if entry, _ := m.sessions.Lookup(sessionID); entry.RepositoryGap == "" {
 		return
 	}
-	if err := m.sessions.ClearRepositoryGap(ctx, sessionID, mark); err != nil {
+	writeCtx, cancel := context.WithTimeout(ctx, repositoryGapWriteTimeout)
+	defer cancel()
+	if err := m.sessions.ClearRepositoryGap(writeCtx, sessionID, mark); err != nil {
 		m.logger.Warn("edge listener could not clear the session's repository gap on its entry; its next relay run sends the mark again",
 			slog.String("session_id", sessionID), slog.String("error", err.Error()))
 	}

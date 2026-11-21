@@ -9,6 +9,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -279,6 +280,50 @@ func TestAClearAfterAHandoverLeavesTheMarkOfALaterWithheldEvent(t *testing.T) {
 	if owed := relayA.owedRepositoryGap(sessionID); owed != later {
 		t.Fatalf("relay A owes %q after relay B's clear, want its mark of the later withheld event, %q", owed, later)
 	}
+}
+
+// A relay's write of the gap mark, and its clear of one, end at their deadline
+// (repositoryGapWriteTimeout) while the session bucket does not answer them, whatever the relay
+// run's own context allows, so a bucket that stops answering holds the session's frames no longer
+// than that: the mark's write is then the error, on which the relay gives the withheld event back
+// (giveBackWithheld), and the clear's is logged. Here the bucket's read of the session's entry
+// stalls until the test ends. The row's minute decides nothing at the head: it only ends the wait
+// for a write with no deadline. The relays' writes are every listener's, so the row passes with
+// edge mode off by design. Control: with both written under the relay run's context, which has no
+// deadline (noteRepositoryGap and repositoryGapSent before this row), the mark's write is still
+// waiting a minute later and the row fails.
+func TestARelaysGapMarkWritesEndWhileTheSessionBucketDoesNotAnswer(t *testing.T) {
+	rig := newEdgeRig(t)
+	const sessionID = "ses_edge_gap_unanswered"
+	requireStatus(t, rig.subscribe(t, rig.personToken(sessionID, "PRIV"), sessionID), http.StatusOK, "the registration")
+	// The clear reads the bucket only for an entry this listener's copy holds marked.
+	if err := rig.deps.sessions.SetRepositoryGap(t.Context(), sessionID, "an-earlier-mark"); err != nil {
+		t.Fatalf("mark %s's entry: %v", sessionID, err)
+	}
+	released := make(chan struct{})
+	t.Cleanup(func() { close(released) })
+	swapSessionBucket(t, rig.deps.sessions, func(kv natsgo.KeyValue) natsgo.KeyValue {
+		return stalledSessionGetKV{KeyValue: kv, key: sessionID, released: released}
+	})
+	ends := func(what string, write func()) {
+		t.Helper()
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			write()
+		}()
+		select {
+		case <-done:
+		case <-time.After(time.Minute):
+			t.Fatalf("%s while the session bucket does not answer is still waiting a minute later: it holds the session's frames for as long as the bucket does not answer", what)
+		}
+	}
+	var markErr error
+	ends("the relay's mark of a withheld event", func() { _, markErr = rig.relays.noteRepositoryGap(t.Context(), sessionID) })
+	if !errors.Is(markErr, context.DeadlineExceeded) {
+		t.Errorf("the relay's mark of a withheld event while the session bucket does not answer ended with %v, want its deadline", markErr)
+	}
+	ends("the relay's clear of the mark a frame carried", func() { rig.relays.repositoryGapSent(t.Context(), sessionID, "an-earlier-mark") })
 }
 
 // A registration keeps the gap mark another listener set on the session's entry after this

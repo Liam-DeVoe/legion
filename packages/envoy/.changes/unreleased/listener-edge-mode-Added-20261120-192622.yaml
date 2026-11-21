@@ -47,7 +47,9 @@ body: |-
 
   On every listener a write of a session's `envoy_sessions` entry is conditional on the revision
   it replaces and keeps the `repository_gap` mark that entry holds, so a registration made over a
-  stale copy of the entry no longer clears a mark another listener set.
+  stale copy of the entry no longer clears a mark another listener set. Such a write ends with an
+  error once it has lost 32 writes, to other writers or to a copy of the bucket that answers its
+  reads a write behind, rather than retry for as long as its caller waits.
 
   Every listener that verifies broker tokens records the registering token's projects on the
   session's `envoy_sessions` entry (`projects`, `[]` for none). No API answer carries it.
