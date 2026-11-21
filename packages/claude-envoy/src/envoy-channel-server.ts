@@ -1384,23 +1384,30 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
    * is current as it is said, so a `/clear` while it waits its turn refuses it rather than showing
    * it to the conversation the process moved to, which is told its own (`bindStateFile`). The
    * outage notice's own outcome goes back to the report: one that could not be shown leaves the
-   * session untold, so no end is told for it.
+   * session untold, so no end is told for it, and the next refusal tells it again. The log says
+   * each outage's start and its end once, whatever the session was shown: an operator who read
+   * that the session receives nothing reads that it receives again.
    */
   const inboundOutage = inboundUnavailable(
-    (why) => {
+    (why, again) => {
       if (shuttingDown) return
-      process.stderr.write(
-        `envoy-channel: this session receives nothing (${why}); registering again every heartbeat\n`,
-      )
+      if (!again) {
+        process.stderr.write(
+          `envoy-channel: this session receives nothing (${why}); registering again every heartbeat\n`,
+        )
+      }
       return showInboundNotice(inboundUnavailableNoticeText(why), true)
+    },
+    () => {
+      if (shuttingDown) return
+      // A failed end is logged where it fails; nothing waits on it.
+      void showInboundNotice(inboundRestoredNoticeText(), false).catch(() => undefined)
     },
     () => {
       if (shuttingDown) return
       process.stderr.write(
         "envoy-channel: this session receives again: its registration was accepted\n",
       )
-      // A failed end is logged where it fails; nothing waits on it.
-      void showInboundNotice(inboundRestoredNoticeText(), false).catch(() => undefined)
     },
   )
 

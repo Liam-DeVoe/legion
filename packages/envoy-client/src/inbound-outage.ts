@@ -34,12 +34,14 @@ export function inboundRestoredNoticeText(): string {
 export interface InboundUnavailable {
   /**
    * A registration was refused or failed: tells the session, through the host's `tell`, unless
-   * this outage already told it. A notice the host could not show leaves the session untold.
+   * this outage already told it. A notice the host could not show leaves the session untold, so
+   * the next refusal of the same outage tells it again.
    */
   refused(error: unknown): void;
-  /** A registration was accepted: ends the outage, telling the session so through the host's
-   *  `restored` when it was shown the outage notice (once that notice is shown, where the host
-   *  is still showing it), and the next outage tells the session again. */
+  /** A registration was accepted: ends the outage, saying so at once through the host's
+   *  `outageEnded`, and telling the session so through `restored` when it was shown the outage
+   *  notice (once that notice is shown, where the host is still showing it); the next outage tells
+   *  the session again. */
   accepted(): void;
   /**
    * The host bound a session and read that session's own record of what it was last told of its
@@ -67,18 +69,29 @@ export interface InboundUnavailable {
  * A host whose notice is written later than it is asked for (claude-envoy's waits its turn behind
  * every frame queued before it) returns from `tell` a promise that settles once the notice was
  * shown, or rejects when it could not be. An outage notice that was not shown leaves the session
- * untold, so its next refusal tells it again, and no accepted registration tells it the end of an
- * outage it never heard of; an end accepted while the notice is still being shown is told only
- * once the notice was. A host whose `tell` returns nothing showed its notice as it returned.
+ * untold, as the record a host keeps of it does: the next refusal of the same outage tells it
+ * again (`again`), and no accepted registration tells it the end of an outage it never heard of;
+ * an end accepted while the notice is still being shown is told only once the notice was. A host
+ * whose `tell` returns nothing showed its notice as it returned.
+ *
+ * What the session was shown is the session's; the host's own log is told of each outage once.
+ * `again` is false at an outage's first `tell` only, and `outageEnded`, where the host gives one,
+ * is called at once at the end of every outage `tell` was asked for or a told record took up,
+ * whether or not the session was shown either notice, so a log that said an outage began says
+ * that it ended.
  */
 export function inboundUnavailable(
-  tell: (why: string) => void | Promise<void>,
-  restored: () => void
+  tell: (why: string, again: boolean) => void | Promise<void>,
+  restored: () => void,
+  outageEnded?: () => void
 ): InboundUnavailable {
   // Whether the session bound now was told an outage and not its end, by this process or, as its
   // record read at the bind says (`recordRead`), by an earlier one. Set as the outage notice is
   // asked for, and taken back if the host could not show it.
   let told = false;
+  // Whether an outage is open: `tell` was asked for it, or a told record took it up, and no
+  // registration was accepted since. It outlives an outage notice that was not shown.
+  let open = false;
   // The outage notice the host is still showing, which settles true once it was shown; undefined
   // when there is none.
   let telling: Promise<boolean> | undefined;
@@ -89,8 +102,10 @@ export function inboundUnavailable(
     refused(error) {
       if (told) return;
       told = true;
+      const again = open;
+      open = true;
       const asked = ++change;
-      const showing = tell(messageFor(error));
+      const showing = tell(messageFor(error), again);
       if (showing === undefined) return;
       telling = showing.then(
         () => {
@@ -107,6 +122,9 @@ export function inboundUnavailable(
       );
     },
     accepted() {
+      if (!open) return;
+      open = false;
+      outageEnded?.();
       if (!told) return;
       told = false;
       const ended = ++change;
@@ -121,6 +139,7 @@ export function inboundUnavailable(
     },
     recordRead(recordTold) {
       told = recordTold;
+      open = recordTold;
       change += 1;
       telling = undefined;
     },

@@ -1156,18 +1156,24 @@ describe("one registration", () => {
   /**
    * One session's outage report (`inboundUnavailable`), and a registration under it that the
    * listener refuses (`no_grant`) or accepts, as the row says. `told` lists what the report told
-   * the session, in order: the listener's reason for an outage, and `restored` for its end.
-   * `shown` is the host's answer for each outage notice: by default it was shown as it was told.
+   * the session, in order: the listener's reason for an outage (`again <reason>` when an earlier
+   * notice of the same outage was not shown), and `restored` for its end. `ends` lists each end
+   * of an outage the host's log was told. `shown` is the host's answer for each outage notice: by
+   * default it was shown as it was told.
    */
   function outageHarness(shown: () => void | Promise<void> = () => undefined) {
     const told: string[] = [];
+    const ends: string[] = [];
     const outage = inboundUnavailable(
-      (why) => {
-        told.push(why);
+      (why, again) => {
+        told.push(again ? `again ${why}` : why);
         return shown();
       },
       () => {
         told.push("restored");
+      },
+      () => {
+        ends.push("ended");
       }
     );
     const register = (answer: "refused" | "accepted") =>
@@ -1182,7 +1188,7 @@ describe("one registration", () => {
             : Promise.resolve("registered"),
         answered: () => undefined,
       }).catch(() => undefined);
-    return { told, outage, register };
+    return { told, ends, outage, register };
   }
 
   test("carries the topics the listener will store, and takes the answer", async () => {
@@ -1355,27 +1361,33 @@ describe("one registration", () => {
     return promise;
   };
 
-  test("an outage notice the host could not show leaves the session untold: no end is told for it, and the next refusal tells the outage again", async () => {
+  test("an outage notice the host could not show leaves the session untold: the next refusal of that outage tells it again, no end is told for it, and the host's log hears the end", async () => {
     let failing = true;
-    const { told, register } = outageHarness(() =>
+    const { told, ends, register } = outageHarness(() =>
       failing ? Promise.reject(new Error("the mod is not linked")) : Promise.resolve()
     );
 
     await register("refused");
     await nextTurn();
-    // The session never saw the outage, so it is told no end of it.
+    // The same outage's next refusal tells the session again, since it was never told.
+    await register("refused");
+    await nextTurn();
+    expect(told).toEqual(["no_grant", "again no_grant"]);
+    // The session never saw the outage, so it is told no end of it; the host's log is told.
     await register("accepted");
-    expect(told).toEqual(["no_grant"]);
+    expect(told).toEqual(["no_grant", "again no_grant"]);
+    expect(ends).toEqual(["ended"]);
     failing = false;
     await register("refused");
     await nextTurn();
     await register("accepted");
-    expect(told).toEqual(["no_grant", "no_grant", "restored"]);
+    expect(told).toEqual(["no_grant", "again no_grant", "no_grant", "restored"]);
+    expect(ends).toEqual(["ended", "ended"]);
   });
 
   test("an end accepted while the outage notice is still being shown is told once that notice is shown, and never when it could not be", async () => {
     const showing: { resolve: () => void; reject: (error: Error) => void }[] = [];
-    const { told, register } = outageHarness(() => {
+    const { told, ends, register } = outageHarness(() => {
       const shown = Promise.withResolvers<void>();
       showing.push(shown);
       return shown.promise;
@@ -1383,8 +1395,9 @@ describe("one registration", () => {
 
     await register("refused");
     await register("accepted");
-    // The end waits for the outage notice, which the host is still showing.
+    // The end waits for the outage notice, which the host is still showing; the log does not.
     expect(told).toEqual(["no_grant"]);
+    expect(ends).toEqual(["ended"]);
     showing[0]?.resolve();
     await nextTurn();
     expect(told).toEqual(["no_grant", "restored"]);

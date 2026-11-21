@@ -2,7 +2,7 @@
 // restart: the outage report reads the record of the id the server binds, a notice is addressed to
 // the id current as it is said, and it is recorded in that id's state file only. Each row drives
 // `startChannelSession` on `FakeNats`; the listener refuses a registration by its session id.
-import { expect, test } from "bun:test"
+import { expect, spyOn, test } from "bun:test"
 import type { ChannelNotification } from "../src/envoy-channel-server"
 import { startChannelSession } from "../src/envoy-channel-server"
 import { readReplayState, replayStateFile } from "../src/replay-state"
@@ -191,21 +191,38 @@ test("an end that could not be shown under one id leaves that id's record told, 
   }
 }, 30_000)
 
-// The outage notice is refused by the notifier (the mod is not linked), and the listener then
-// accepts a registration while notices can be written again. The session never saw the outage, so
-// it is told no end of it, and its file records nothing told; the next outage is told again.
-test("a session whose outage notice could not be shown is told no end of that outage, and its next outage is told", async () => {
+// The outage notice is refused by the notifier (the mod is not linked) at the first refusal and at
+// the next, which tells it again; the listener then accepts a registration, and only after that can
+// notices be written again. The session never saw the outage, so it is told no end of it, and its
+// file records nothing told; the next outage is told. The log says the outage began and ended once
+// each, however many times the session was told it.
+test("a session whose outage notice could not be shown is told it again at the next refusal and no end of that outage, the log says its start and end once, and its next outage is told", async () => {
+  const written: string[] = []
+  const stderr = spyOn(process.stderr, "write").mockImplementation((chunk) => {
+    written.push(String(chunk))
+    return true
+  })
+  const logged = (line: string) => written.filter((each) => each.includes(line)).length
   const notifier = new RefusingNotifier()
   notifier.failing = "Envoy inbound unavailable"
   const refusing = new Set([SESSION])
   const run = await startRefusable(notifier, refusing)
   try {
-    await waitFor(async () => notifier.refused >= 1, "the outage notice refused", run.state)
-    notifier.failing = undefined
+    await waitFor(
+      async () => notifier.refused >= 2,
+      "the outage notice refused, and refused again at a later refusal",
+      run.state,
+    )
     refusing.delete(SESSION)
-    await run.registrations(SESSION, 3)
+    // Accepted while notices still fail, so no outage notice queued before can be shown after it.
+    await run.registrations(SESSION, 2)
+    notifier.failing = undefined
+    await run.registrations(SESSION, 2)
+    expect(notices(notifier, "Envoy inbound unavailable")).toBe(0)
     expect(notices(notifier, "Envoy inbound restored")).toBe(0)
     expect(await toldIn(run.directory, SESSION)).not.toBe(true)
+    expect(logged("envoy-channel: this session receives nothing (")).toBe(1)
+    expect(logged("envoy-channel: this session receives again")).toBe(1)
     refusing.add(SESSION)
     await waitFor(
       async () =>
@@ -214,7 +231,9 @@ test("a session whose outage notice could not be shown is told no end of that ou
       "the next outage told, and its file recording it",
       run.state,
     )
+    expect(logged("envoy-channel: this session receives nothing (")).toBe(2)
   } finally {
+    stderr.mockRestore()
     await run.session.shutdown()
   }
 }, 30_000)
