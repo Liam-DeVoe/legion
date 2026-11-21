@@ -2469,6 +2469,15 @@ package api
 // cannot serve such a launch: its launcher would sweep and restore the review location, no
 // role-init of it makes the clone, and its shim's adoption fails in the missing directory. So the
 // image probe, which holds the image's plugin to this number, refuses an earlier image.
+// The same contract carries the reviewer's verdict: handoff_complete takes `approve` and `changes`
+// from a reviewer, with `commit` and, where the tester's pass carries, `testedCommit`, and refuses a
+// reviewer's completion with no such word (REVIEWER_VERDICT_REQUIRED), a reviewer's or a tester's
+// verdict with no commit (VERDICT_COMMIT_REQUIRED), and a verdict or a testedCommit from any other
+// role (VERDICT_ROLE_FORBIDDEN); a reviewer claim served on the contract before this one has its
+// `pass` read as `approve` and its `fail` as `changes`. POST /legion/v1/review-verdict takes the
+// round's recorded reviewer's verdict on a head past review, refusing another caller
+// (VERDICT_CALLER_FORBIDDEN), a head that is not the current one (VERDICT_HEAD_NOT_CURRENT) and a
+// phase that is not accepting, retro or merging (VERDICT_NOT_PAST_REVIEW).
 // (This entry takes 200: a reading of `const DaemonAPIVersion` at main and at refs/pull/<n>/head
 // for each open pull request of cybermonklabs/legion, made with
 // .github/scripts/check-daemon-api-contract.sh at 2026-11-20T21:14:22Z, found main at 193 and
