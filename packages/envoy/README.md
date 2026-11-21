@@ -157,6 +157,7 @@ The header of `cmd/listener/project_scope.go` lists the rules and the function t
   A message on the session's own agent subject is judged by the topic its envelope names: a send or a dead letter to the session passes, and a forward, such as a role's message forwarded to the claim's holder, passes only for a project of the token.
   Every frame withheld this way is acknowledged undelivered and counted in `envoy_edge_github_withheld_total` under `reason="project_not_held"`.
   A relay replica that admitted no registration of the session since it started relays it nothing until the session registers through it again, at its next heartbeat, and its messages wait in its consumer.
+  A replica forgets a session's admission once the session's record has left its cache and the admission is older than one prune pass (30 s), so it keeps no list for a session that deregistered or lapsed.
 
 Every edge refusal's body is `listenerwire.EdgeRefusal`, whose comment in `listenerwire/listenerwire.go` names each reason and says how a client reads a refused registration's `refused` list.
 
