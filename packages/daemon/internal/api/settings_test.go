@@ -638,6 +638,24 @@ func TestSettingsOfAMinimalConfigurationResolvesTheDefaults(t *testing.T) {
 	}
 }
 
+// The settings show omp_launch_prefix as its program and how many arguments follow
+// (omplaunch.PrefixShown), never an argument: here a made-up token an `env` prefix sets.
+func TestSettingsShowTheLaunchPrefixWithoutItsArguments(t *testing.T) {
+	const token = "madeUpLaunchToken0123456789"
+	cfg := minimalSettingsConfig(t)
+	cfg.OmpLaunchPrefix = []string{"/usr/bin/env", "OMP_TOKEN=" + token, "secrets"}
+	encoded, err := json.Marshal(SettingsOf(cfg))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if got, want := string(keysOf(t, encoded)["omp_launch_prefix"]), `["env","(2 arguments, not shown)"]`; got != want {
+		t.Fatalf("omp_launch_prefix = %s, want %s", got, want)
+	}
+	if strings.Contains(string(encoded), token[:10]) {
+		t.Fatalf("the settings hold the launch prefix's token: %s", encoded)
+	}
+}
+
 // A project's commit_issue_trailer_repos reaches no `settings`, at any depth: the value names a
 // deployment's own repositories, and the route that carries the block authenticates nobody
 // (settingsExcluded). The census above only forces the choice; this pins it, so a later

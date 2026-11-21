@@ -791,7 +791,7 @@ func TestTheLoadProbeRefusesALaunchThatFailsBeforeOhMyPi(t *testing.T) {
 			if err == nil {
 				t.Fatal("the gate passed a launch that failed")
 			}
-			for _, want := range []string{"OMP launch probe failed " + ending + " for launch command", f.prefix + " " + f.path, "secrets: ANTHROPIC_API_KEY was denied"} {
+			for _, want := range []string{"OMP launch probe failed " + ending + " for launch command", filepath.Base(f.prefix) + " " + f.path, "secrets: ANTHROPIC_API_KEY was denied"} {
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("the refusal does not say %q: %v", want, err)
 				}
@@ -800,6 +800,37 @@ func TestTheLoadProbeRefusesALaunchThatFailsBeforeOhMyPi(t *testing.T) {
 				t.Errorf("Oh My Pi ran %d times for a definitive failure, want once", n)
 			}
 		})
+	}
+}
+
+// A launch prefix with arguments is named by its program and how many arguments follow, and a
+// prefix that fails echoing its argument has that argument taken out of the stderr the refusal
+// quotes: the argument here is a made-up credential, as `env NAME=<token>` or a proxy URL with a
+// password would hand one.
+func TestTheLoadProbeQuotesNoArgumentOfTheLaunchPrefix(t *testing.T) {
+	const argument = "madeUpPrefixArgument0123"
+	f := newFakeOmp(t, "yes")
+	gate, _ := gateUnder(t, f, contractCurrent)
+	echoing := filepath.Join(t.TempDir(), "echoing-prefix")
+	if err := os.WriteFile(echoing, []byte("#!/bin/sh\necho \"proxy refused $1, and again: $1\" >&2\nexit 3\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gate.prefix = []string{echoing, argument}
+
+	err := gate.verify(context.Background())
+
+	if err == nil {
+		t.Fatal("the gate passed a launch whose prefix failed")
+	}
+	for _, want := range []string{"for launch command \"echoing-prefix (1 argument, not shown) " + f.path + "\"", "proxy refused <argument 1>, and again: <argument 1>"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not say %q: %v", want, err)
+		}
+	}
+	for i := 0; i+10 <= len(argument); i++ {
+		if strings.Contains(err.Error(), argument[i:i+10]) {
+			t.Fatalf("the refusal %v holds %q of the prefix's argument", err, argument[i:i+10])
+		}
 	}
 }
 

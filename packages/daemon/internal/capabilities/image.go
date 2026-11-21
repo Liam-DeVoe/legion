@@ -27,6 +27,10 @@ type Image struct {
 	// `sh -c`: the probe's --omp or LEGION_OMP_PATH. The shell parses it as a pod's shim parses
 	// its launch, so a prefix in it runs as it would there.
 	Launch string
+	// Shown is Launch as a refusal names it, when the daemon's launch prefix is in Launch: its
+	// program and how many arguments follow (omplaunch.WithPrefixShown), never an argument, which
+	// can carry a credential. Empty, the refusals name Launch, which then holds no prefix.
+	Shown string
 	// Env is the environment the checks run under (PATH, PUPPETEER_EXECUTABLE_PATH, HOME,
 	// OMP_PROFILE, PI_CONFIG_FILES, …): the one the pod's Oh My Pi starts with, after the pod
 	// baseline and the operator's pod env shaped it. A binary is looked up on Env's PATH, never
@@ -133,7 +137,7 @@ func CheckImage(ctx context.Context, img Image) ([]State, error) {
 // is unavailable. An error names the command and its output.
 func ReadModelFallback(ctx context.Context, img Image) (string, error) {
 	const args = "config get retry.modelFallback --json"
-	command := img.Launch + " " + args
+	command := img.shown() + " " + args
 	r := img.launch(ctx, args)
 	if r.err != nil {
 		return "", fmt.Errorf("%s: %w", command, r.err)
@@ -528,6 +532,14 @@ func (r ran) failure() string {
 // has it parsed, and exec replaces the shell with Oh My Pi, so a kill reaches it.
 func (img Image) launch(ctx context.Context, args string) ran {
 	return img.run(ctx, "sh", "-c", "exec "+img.Launch+" "+args)
+}
+
+// shown is the launch as a refusal names it (Image.Shown).
+func (img Image) shown() string {
+	if img.Shown != "" {
+		return img.Shown
+	}
+	return img.Launch
 }
 
 // run runs one command within commandTimeout, under img's environment, in its directory, in a

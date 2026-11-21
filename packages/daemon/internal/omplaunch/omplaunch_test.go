@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -241,5 +242,41 @@ func TestWithPrefix(t *testing.T) {
 	got := WithPrefix([]string{"env", "OMP_PROFILE=legion", "--", "nice", "-n 5"}, invocation)
 	if want := "env 'OMP_PROFILE=legion' -- nice '-n 5' " + invocation; got != want {
 		t.Errorf("prefix: got %q, want %q", got, want)
+	}
+}
+
+// PrefixShown names the prefix's program, without its directory, and how many arguments follow,
+// never an argument: a made-up token set with env, and a made-up proxy URL with a password, are
+// the arguments here. A first word that is a NAME=value word shows as one. WithPrefixShown puts
+// those words before the invocation, which holds no credential.
+func TestPrefixShownNamesNoArgument(t *testing.T) {
+	const token = "madeUpPrefixToken0123456789"
+	invocation := "/usr/bin/mise x 'github:sjawhar/oh-my-pi@18' -- omp"
+	for _, tc := range []struct {
+		name   string
+		prefix []string
+		want   []string
+	}{
+		{"none", nil, nil},
+		{"a program alone", []string{"/usr/bin/nice"}, []string{"nice"}},
+		{"env setting a token", []string{"/usr/bin/env", "OMP_TOKEN=" + token}, []string{"env", "(1 argument, not shown)"}},
+		{"a proxy wrapper handed a URL", []string{"proxywrap", "--upstream", "https://legion:" + token + "@proxy.example", "--"}, []string{"proxywrap", "(3 arguments, not shown)"}},
+		{"a NAME=value first word", []string{"OMP_TOKEN=" + token, "omp-wrapper"}, []string{"(a NAME=value word)", "(1 argument, not shown)"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := PrefixShown(tc.prefix)
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("PrefixShown(%q) = %q, want %q", tc.prefix, got, tc.want)
+			}
+			shown := WithPrefixShown(tc.prefix, invocation)
+			if want := strings.TrimSpace(strings.Join(tc.want, " ") + " " + invocation); shown != want {
+				t.Fatalf("WithPrefixShown = %q, want %q", shown, want)
+			}
+			for i := 0; i+10 <= len(token); i++ {
+				if strings.Contains(shown, token[i:i+10]) {
+					t.Fatalf("WithPrefixShown = %q, which holds %q of the token", shown, token[i:i+10])
+				}
+			}
+		})
 	}
 }

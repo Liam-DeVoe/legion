@@ -667,9 +667,11 @@ func (g pluginGate) probeLoad(ctx context.Context, launch, probe string, lane pl
 		return bootprobe.Outcome{Refusal: fmt.Errorf("%s: run the pi-legion load probe: %w", g.label(), err)}, loaded{}
 	}
 	// A budget kill is transient when the probe never answered; a probe that said "not loaded" and
-	// only then hung has answered, and is judged below like any other answer.
+	// only then hung has answered, and is judged below like any other answer. Every line names the
+	// launch as WithPrefixShown shows it, never the prefix's arguments.
+	shown := omplaunch.WithPrefixShown(g.prefix, g.invocation)
 	if r.timedOut && !strings.Contains(r.output, notLoadedMarker) {
-		return bootprobe.Outcome{Detail: r.killed(launch, g.timeout)}, loaded{}
+		return bootprobe.Outcome{Detail: r.killed(shown, g.timeout)}, loaded{}
 	}
 	isLoaded := strings.Contains(r.output, loadedMarker)
 	if r.exit == 0 && isLoaded {
@@ -690,7 +692,7 @@ func (g pluginGate) probeLoad(ctx context.Context, launch, probe string, lane pl
 	// that is not Oh My Pi: its own refusal, since "not loaded" would send the operator to
 	// `omp plugin list` when the fix is the prefix or the invocation.
 	if r.exit != 0 && !strings.Contains(r.output, notLoadedMarker) {
-		return bootprobe.Outcome{Refusal: errors.New(r.quoting(fmt.Sprintf("OMP launch probe failed (%s) for launch command %q", r.end, launch)))}, loaded{}
+		return bootprobe.Outcome{Refusal: errors.New(r.quoting(fmt.Sprintf("OMP launch probe failed (%s) for launch command %q", r.end, shown)))}, loaded{}
 	}
 	return bootprobe.Outcome{Refusal: lane.notLoaded(version)}, loaded{}
 }
@@ -740,7 +742,7 @@ func (g pluginGate) verifyAgentsCapability(ctx context.Context) error {
 		return err
 	}
 	defer os.RemoveAll(dir)
-	launch := omplaunch.WithPrefix(g.prefix, g.invocation)
+	launch, shown := omplaunch.WithPrefix(g.prefix, g.invocation), omplaunch.WithPrefixShown(g.prefix, g.invocation)
 	return bootprobe.Run(ctx, "OMP pi.agents", g.retry, g.log, func(ctx context.Context) bootprobe.Outcome {
 		r, err := g.run(ctx, `exec `+launch+` models --no-extensions --extension "$1" --json >/dev/null`, probe)
 		if err != nil {
@@ -748,16 +750,16 @@ func (g pluginGate) verifyAgentsCapability(ctx context.Context) error {
 		}
 		answeredNo := strings.Contains(r.output, noAgentsMarker)
 		if r.timedOut && !answeredNo {
-			return bootprobe.Outcome{Detail: r.killed(launch, g.timeout)}
+			return bootprobe.Outcome{Detail: r.killed(shown, g.timeout)}
 		}
 		available := strings.Contains(r.output, agentsMarker)
 		if r.exit == 0 && available {
 			return bootprobe.Outcome{Passed: true}
 		}
 		if r.exit != 0 && available && !answeredNo {
-			return bootprobe.Outcome{Detail: fmt.Sprintf("launch command %q %s after Oh My Pi answered: %s", launch, r.ended(), r.tail)}
+			return bootprobe.Outcome{Detail: fmt.Sprintf("launch command %q %s after Oh My Pi answered: %s", shown, r.ended(), r.tail)}
 		}
-		return bootprobe.Outcome{Refusal: errors.New(r.quoting(fmt.Sprintf("the OMP launch command %q does not expose pi.agents", launch)))}
+		return bootprobe.Outcome{Refusal: errors.New(r.quoting(fmt.Sprintf("the OMP launch command %q does not expose pi.agents", shown)))}
 	})
 }
 
@@ -777,7 +779,7 @@ func (g pluginGate) verifyAgentsCapability(ctx context.Context) error {
 // build that accepted the value, so predates the setting (refused). Any other failure is the
 // launch dying before the resolver ran (transient).
 func (g pluginGate) verifySessionStorage(ctx context.Context) error {
-	launch := omplaunch.WithPrefix(g.prefix, g.invocation)
+	launch, shown := omplaunch.WithPrefix(g.prefix, g.invocation), omplaunch.WithPrefixShown(g.prefix, g.invocation)
 	script := "export " + sessionStorageVariable + "=" + sessionStorageProbeValue + "; exec " + launch +
 		" --mode rpc --no-session --no-extensions --no-skills --no-rules --no-lsp --no-tools </dev/null >/dev/null"
 	return bootprobe.Run(ctx, "OMP session storage setting", g.retry, g.log, func(ctx context.Context) bootprobe.Outcome {
@@ -787,14 +789,14 @@ func (g pluginGate) verifySessionStorage(ctx context.Context) error {
 		}
 		switch {
 		case r.timedOut:
-			return bootprobe.Outcome{Detail: r.killed(launch, g.timeout)}
+			return bootprobe.Outcome{Detail: r.killed(shown, g.timeout)}
 		case r.exit != 0 && strings.Contains(r.stderr, sessionStorageVariable):
 			return bootprobe.Outcome{Passed: true}
 		case r.exit == 0:
 			return bootprobe.Outcome{Refusal: fmt.Errorf("OMP launch command %q started with %s=%s (exit 0): this build predates the session.storage setting and would silently keep sessions on files under a sql session store; pin a fork release that carries the setting",
-				launch, sessionStorageVariable, sessionStorageProbeValue)}
+				shown, sessionStorageVariable, sessionStorageProbeValue)}
 		}
-		return bootprobe.Outcome{Detail: r.quoting(fmt.Sprintf("launch command %q %s without naming %s", launch, r.ended(), sessionStorageVariable))}
+		return bootprobe.Outcome{Detail: r.quoting(fmt.Sprintf("launch command %q %s without naming %s", shown, r.ended(), sessionStorageVariable))}
 	})
 }
 
@@ -955,8 +957,10 @@ func (g pluginGate) run(ctx context.Context, script string, args ...string) (ran
 	}
 	// The tail of the probe's stderr is cut by redact.Tail, which reads it whole through the URL
 	// rule first: Oh My Pi and a plugin can quote a URL with a token, and a tail cut first could
-	// start inside its userinfo or its query, where the rule no longer finds either.
-	tail, _ := redact.Tail(strings.TrimSpace(stderr.String()), maxProbeStderr)
+	// start inside its userinfo or its query, where the rule no longer finds either. The launch
+	// prefix's arguments are taken out before that (prefixArgumentsMasked): a prefix that refuses
+	// or fails can echo them.
+	tail, _ := redact.Tail(prefixArgumentsMasked(strings.TrimSpace(stderr.String()), g.prefix), maxProbeStderr)
 	return ran{
 		exit:     cmd.ProcessState.ExitCode(),
 		end:      end,
@@ -967,6 +971,33 @@ func (g pluginGate) run(ctx context.Context, script string, args ...string) (ran
 		timedOut: timedOut,
 		elapsed:  time.Since(started),
 	}, nil
+}
+
+// maskedArgument is the shortest argument word of the launch prefix prefixArgumentsMasked takes
+// out of a probe's stderr: a shorter word (a flag, `--`, a short name) is too common to replace
+// without rewriting what Oh My Pi said, and holds no credential worth the name.
+const maskedArgument = 8
+
+// prefixArgumentsMasked is text with every copy of each argument of prefix (each word after the
+// program) of maskedArgument characters or more replaced by `<argument N>`, N its place after the
+// program, the longest first so a word holding another is replaced whole. A launch prefix such as
+// `env NAME=<token>` or a proxy wrapper handed a URL with a password carries a credential in an
+// argument, and one that refuses or fails can echo it in the stderr a refusal quotes.
+func prefixArgumentsMasked(text string, prefix []string) string {
+	if len(prefix) < 2 {
+		return text
+	}
+	order := make([]int, 0, len(prefix)-1)
+	for i := 1; i < len(prefix); i++ {
+		if len(prefix[i]) >= maskedArgument {
+			order = append(order, i)
+		}
+	}
+	slices.SortStableFunc(order, func(a, b int) int { return len(prefix[b]) - len(prefix[a]) })
+	for _, i := range order {
+		text = strings.ReplaceAll(text, prefix[i], fmt.Sprintf("<argument %d>", i))
+	}
+	return text
 }
 
 // ImageProbe is `legion probe-image`, run inside the worker image: by its build's final step, and
@@ -1104,8 +1135,10 @@ func ProbeController(ctx context.Context, p ControllerProbe) error {
 		name: "controller probe", log: p.Log,
 	}
 	// No refusal names a profile: which one Oh My Pi reads is its own resolution, which this does
-	// not port, so the words say only what Oh My Pi did, where it ran, and how.
-	launch := omplaunch.WithPrefix(p.Prefix, p.Omp)
+	// not port, so the words say only what Oh My Pi did, where it ran, and how. The launch is named
+	// as WithPrefixShown shows it, so the check names the prefix's program and how many arguments
+	// it takes, never the arguments: the operator runs it with their own.
+	launch := omplaunch.WithPrefixShown(p.Prefix, p.Omp)
 	where := fmt.Sprintf("Oh My Pi, launched as the controller launches it (%q, in %s),", launch, p.WorkDir)
 	check := fmt.Sprintf("`cd %s && %s plugin", shellprefix.Word(p.WorkDir), launch)
 	// The controller's lane is discovery's, with its own refusals: it reads no manifest, so it

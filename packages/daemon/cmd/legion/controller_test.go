@@ -823,8 +823,10 @@ func TestControllerStartLaunchesOhMyPiWithTheSharedControllerEnvironment(t *test
 		}
 	}
 	// Three lines: the probe, named before it runs so a prompt or a wait can be tied to it; the
-	// no-App line, since this default daemon has no Tokens; then the launch.
-	wantProbe := fmt.Sprintf("[legion] checking the controller's Oh My Pi (env 'LEGION_TEST_PREFIX_RAN=1' %s) in %s before the daemon mints a capability\n",
+	// no-App line, since this default daemon has no Tokens; then the launch. The probe line shows
+	// the launch prefix as its program and how many arguments follow (omplaunch.WithPrefixShown),
+	// never the `LEGION_TEST_PREFIX_RAN=1` it sets.
+	wantProbe := fmt.Sprintf("[legion] checking the controller's Oh My Pi (env (1 argument, not shown) %s) in %s before the daemon mints a capability\n",
 		filepath.Join(c.record, "omp"), filepath.Join(c.defaultDir, "controller"))
 	wantNoApp := "[legion] the daemon has no GitHub App to act as; the controller's gh acts as nobody\n"
 	wantLog := fmt.Sprintf("[legion] starting the controller for demo against %s; state in %s\n", d.url, c.defaultDir)

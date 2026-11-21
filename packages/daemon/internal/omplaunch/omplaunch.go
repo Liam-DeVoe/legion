@@ -167,3 +167,36 @@ func WithPrefix(prefix []string, invocation string) string {
 	}
 	return shellprefix.Command(prefix) + " " + invocation
 }
+
+// PrefixShown is prefix as a line, a refusal or the state's settings show it: its program's name
+// (prefix[0] without its directory) and how many arguments follow, never an argument, since a
+// prefix such as `env NAME=<token> …` or a proxy wrapper handed a URL with a password carries a
+// credential in its arguments. A first word holding "=" (a variable a shell sets before the
+// program) is a NAME=value word too, and shows as one. An empty prefix shows as nothing.
+func PrefixShown(prefix []string) []string {
+	if len(prefix) == 0 {
+		return nil
+	}
+	program := filepath.Base(prefix[0])
+	if strings.Contains(prefix[0], "=") {
+		program = "(a NAME=value word)"
+	}
+	switch rest := len(prefix) - 1; rest {
+	case 0:
+		return []string{program}
+	case 1:
+		return []string{program, "(1 argument, not shown)"}
+	default:
+		return []string{program, fmt.Sprintf("(%d arguments, not shown)", rest)}
+	}
+}
+
+// WithPrefixShown is WithPrefix as a line or a refusal shows it: PrefixShown's words before the
+// invocation, which holds no credential (the loader's omp_invocation, or the binary's path). What
+// runs is WithPrefix's; this is only ever printed.
+func WithPrefixShown(prefix []string, invocation string) string {
+	if len(prefix) == 0 {
+		return invocation
+	}
+	return strings.Join(PrefixShown(prefix), " ") + " " + invocation
+}

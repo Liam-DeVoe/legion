@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/omplaunch"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -39,7 +40,9 @@ type Settings struct {
 	AdmissionCap     int    `json:"admission_cap"`
 	DaemonURL        string `json:"daemon_url"`
 	WorkerStreamPort int    `json:"worker_stream_port"`
-	// OmpInvocation is absent while the file sets none; OmpLaunchPrefix is `[]` then.
+	// OmpInvocation is absent while the file sets none; OmpLaunchPrefix is `[]` then, and otherwise
+	// the prefix's program and how many arguments follow (omplaunch.PrefixShown), never an
+	// argument, which can carry a credential (`env NAME=<token>`, a proxy URL with a password).
 	OmpInvocation   string   `json:"omp_invocation,omitempty"`
 	OmpLaunchPrefix []string `json:"omp_launch_prefix"`
 	// ProviderKeys are the variable names of `provider_keys`, in file order, and never the store
@@ -533,7 +536,7 @@ func SettingsOf(cfg config.Config) Settings {
 		DaemonURL:                               endpointOf(cfg.DaemonURL),
 		WorkerStreamPort:                        cfg.WorkerStreamPort,
 		OmpInvocation:                           cfg.OmpInvocation,
-		OmpLaunchPrefix:                         stringsOf(cfg.OmpLaunchPrefix),
+		OmpLaunchPrefix:                         stringsOf(omplaunch.PrefixShown(cfg.OmpLaunchPrefix)),
 		ProviderKeys:                            make([]string, len(cfg.ProviderKeys)),
 		Instructions:                            cfg.InstructionsPath,
 		WorkerBootTimeoutSeconds:                seconds(cfg.WorkerBootTimeout),

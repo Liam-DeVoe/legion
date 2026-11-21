@@ -255,7 +255,7 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 		return 0, err
 	}
 	fmt.Fprintf(stderr, "[legion] checking the controller's Oh My Pi (%s) in %s before the daemon mints a capability\n",
-		omplaunch.WithPrefix(cfg.OmpLaunchPrefix, invocation), controllerDir)
+		omplaunch.WithPrefixShown(cfg.OmpLaunchPrefix, invocation), controllerDir)
 	secret, designSteps, err := probeAndMint(ctx, cfg.DaemonURL, daemon.ControllerProbe{
 		Omp: invocation, Prefix: cfg.OmpLaunchPrefix, Env: env, WorkDir: controllerDir, Stdin: os.Stdin, Stderr: stderr,
 		Contract: api.DaemonAPIVersion, Log: slog.New(slog.NewTextHandler(stderr, redact.HandlerOptions(nil))),
