@@ -218,9 +218,10 @@ func pluginsLine(cfg config.Config) string {
 // public key when there is one, never the seed.
 // Right after it comes one line per loader warning (config.Config.Warnings) — a key the file
 // still sets that this daemon no longer reads, whether a project sets it or the file does at its
-// top level — in the words boot logs it with: what the key would have been refused for, and what
-// to change. A deprecation is the first thing an operator reads that way, and the exit stays 0,
-// since such a key is ignored and never refused.
+// top level, then the line saying an `answers` block that names no connection to the conversation
+// store leaves the answer loop off — in the words boot logs it with: what the key would have been
+// refused for, or why the loop is off, and what to change. A deprecation is the first thing an
+// operator reads that way, and the exit stays 0, since such a key is ignored and never refused.
 // Then one line per project, in key order, naming its `production_check` and what the word
 // decides (productionCheckLine), so an operator reads back which projects open a production
 // check at a merge. After them, one line per configured repository rename
@@ -377,7 +378,8 @@ func start(ctx context.Context, configPath string, stderr io.Writer) int {
 	// start that never reaches a boot has logged them too, and the lines are the first a reader of
 	// the log meets
 	// (docs/solutions/envoy/a-setting-another-repositorys-deployment-sets-is-removed-in-two-releases-pr2674.md).
-	// The boot goes on: a key another deployment still sets is ignored, never refused.
+	// The boot goes on: a key another deployment still sets is ignored, never refused, and an
+	// `answers` block with no connection to the conversation store runs as no block.
 	for _, warning := range cfg.Warnings {
 		log.Warn(warning)
 	}

@@ -276,6 +276,9 @@ type Config struct {
 	// a project still sets such a key (readProject's `deploys`): the key is accepted and warned
 	// about rather than refused, since the deployment that writes it releases on its own schedule
 	// (docs/solutions/envoy/a-setting-another-repositorys-deployment-sets-is-removed-in-two-releases-pr2674.md).
+	// After them comes at most one more: the line saying the answer loop is off because the file
+	// sets `answers` and names no connection to the conversation store (resolveAnswers,
+	// answersOff), since the loader settles `answers` only once it has read every key.
 	// `legion start` logs each before any other work this boot does with the configuration, and
 	// `legion config check` prints each right after its OK line, so an operator reads the
 	// same sentence either way.

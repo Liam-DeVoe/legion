@@ -37,7 +37,8 @@ var answerModelID = regexp.MustCompile(`^(anthropic|openai)/\S+$`)
 
 // Answers is the settled `answers` block: what the daemon's model loop needs to answer a question
 // to an agent that is not running, from that agent's own conversation. Config.Answers is nil when
-// the file sets none, and the loop is then off.
+// the file sets none, or sets one that names no connection to the conversation store its
+// runtime.kubernetes.session_store reads through (answersOff), and the loop is then off.
 type Answers struct {
 	// Providers are the model providers the loop may call, each its endpoint and its key.
 	Providers map[AnswerProvider]AnswerEndpoint
@@ -383,15 +384,22 @@ func readNumber(value *yaml.Node, key string) (*float64, error) {
 }
 
 // resolveAnswers settles `answers` once the runtime is: each api_key_file against the file's
-// directory, and the conversation store the runtime's own store needs (conversationStoreOf).
+// directory, and the conversation store the runtime's own store needs (conversationStoreOf). A
+// block that names no such store leaves cfg.Answers nil, the loop off as with no block, and adds
+// one line to cfg.Warnings saying so; every other key of the block was already read and held to
+// its rules, so a malformed block is refused, never turned off.
 func resolveAnswers(file fileConfig, configDir string, cfg *Config) error {
 	read := file.Answers
 	if read == nil {
 		return nil
 	}
-	store, err := conversationStoreOf(read, configDir, cfg.Runtime)
+	store, off, err := conversationStoreOf(read, configDir, cfg.Runtime)
 	if err != nil {
 		return err
+	}
+	if off != "" {
+		cfg.Warnings = append(cfg.Warnings, off)
+		return nil
 	}
 	answers := &Answers{
 		Providers:         make(map[AnswerProvider]AnswerEndpoint, len(read.providers)),
@@ -415,38 +423,54 @@ func resolveAnswers(file fileConfig, configDir string, cfg *Config) error {
 // session_database's instance under cloudsql-iam; none under runtime tmux's files store, whose
 // conversations are files on the daemon's own host. Each store refuses the key it does not use, as
 // runtime.kubernetes' session keys do; under runtime tmux the block names nothing, since the daemon
-// reads the conversations where its panes keep them.
-func conversationStoreOf(read *answersFile, configDir string, rt Runtime) (ConversationStore, error) {
+// reads the conversations where its panes keep them. A database store whose own key is unset
+// answers off, the warning that the loop is off (answersOff), in place of a store: a deployment
+// that names no connection runs as one without `answers`.
+func conversationStoreOf(read *answersFile, configDir string, rt Runtime) (store ConversationStore, off string, err error) {
 	k := rt.Kubernetes
 	if k == nil {
 		if read.storeSet {
 			if rt.Tmux.InDatabase() {
-				return ConversationStore{}, fmt.Errorf("%s is not used under runtime tmux: the daemon reads every conversation from the database %s names, where its panes keep them; remove it", conversationStoreKey, tmuxSessionDSNFileKey)
+				return ConversationStore{}, "", fmt.Errorf("%s is not used under runtime tmux: the daemon reads every conversation from the database %s names, where its panes keep them; remove it", conversationStoreKey, tmuxSessionDSNFileKey)
 			}
-			return ConversationStore{}, fmt.Errorf("%s is not used under runtime tmux: every conversation is a file on the daemon's own host, which it reads where the pane wrote it; remove it", conversationStoreKey)
+			return ConversationStore{}, "", fmt.Errorf("%s is not used under runtime tmux: every conversation is a file on the daemon's own host, which it reads where the pane wrote it; remove it", conversationStoreKey)
 		}
-		return ConversationStore{DSNFile: rt.Tmux.SessionDSN()}, nil
+		return ConversationStore{DSNFile: rt.Tmux.SessionDSN()}, "", nil
 	}
 	switch kind := k.SessionStore.Kind; kind {
 	case ompsessions.StorePostgres:
 		if read.user != "" {
-			return ConversationStore{}, inertSessionKey(conversationStoreKey+".user", kind)
+			return ConversationStore{}, "", inertSessionKey(conversationStoreKey+".user", kind)
 		}
 		if read.dsnFile == "" {
-			return ConversationStore{}, fmt.Errorf("%s.dsn_file is required with %s postgres: the file holding the postgres:// URL of the database the conversations live in, which the daemon reads them through", conversationStoreKey, sessionStoreKey)
+			return ConversationStore{}, answersOff(conversationStoreKey+".dsn_file", kind,
+				"the file holding the postgres:// URL of the database the conversations live in"), nil
 		}
-		return ConversationStore{DSNFile: underConfig(read.dsnFile, configDir)}, nil
+		return ConversationStore{DSNFile: underConfig(read.dsnFile, configDir)}, "", nil
 	case ompsessions.StoreCloudSQLIAM:
 		if read.dsnFile != "" {
-			return ConversationStore{}, inertSessionKey(conversationStoreKey+".dsn_file", kind)
+			return ConversationStore{}, "", inertSessionKey(conversationStoreKey+".dsn_file", kind)
 		}
 		if read.user == "" {
-			return ConversationStore{}, fmt.Errorf("%s.user is required with %s cloudsql-iam: the IAM login the daemon signs in to %s's instance as", conversationStoreKey, sessionStoreKey, sessionDatabaseKey)
+			return ConversationStore{}, answersOff(conversationStoreKey+".user", kind,
+				"the IAM login the daemon signs in to "+sessionDatabaseKey+"'s instance as"), nil
 		}
 		database := k.SessionStore.Database
 		database.User = read.user
-		return ConversationStore{Database: database}, nil
+		return ConversationStore{Database: database}, "", nil
 	default:
-		return ConversationStore{}, fmt.Errorf("%s cannot read conversations under %s %q", answersKey, sessionStoreKey, kind)
+		// No file reaches this: readSessionStore admits only the two database stores.
+		return ConversationStore{}, "", fmt.Errorf("%s cannot read conversations under %s %q", answersKey, sessionStoreKey, kind)
 	}
+}
+
+// answersOff is the warning for a file that sets `answers` and leaves key unset, the one
+// connection to the conversation store its session store kind reads through. It says the loop is
+// off, that a message to a stopped agent is refused and dropped as with no block, and that setting
+// key to what, the value it names, turns the loop on. It is a warning and not a refusal so that a
+// deployment that sets `answers` before it has that connection still boots as it does without the
+// block.
+func answersOff(key string, kind ompsessions.StoreKind, what string) string {
+	return fmt.Sprintf("%s is set, but the answer loop is off: under %s %s, %s names the daemon's connection to the conversation store, and the file sets none, so a message to a stopped agent is refused and dropped as it is without %s; to turn the loop on, set %s to %s",
+		answersKey, sessionStoreKey, kind, key, answersKey, key, what)
 }

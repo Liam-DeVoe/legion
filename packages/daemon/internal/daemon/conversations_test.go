@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"maps"
 	"net/http"
@@ -21,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -209,6 +211,107 @@ func TestADaemonWithoutAnswersSaysAtBootItDoesNotAnswer(t *testing.T) {
 		if bearer != "Bearer listener-bearer" {
 			t.Errorf("a heartbeat carried %q, want the daemon's listener credential", bearer)
 		}
+	}
+}
+
+// answersOffKubernetesFile is a Kubernetes legion.yaml whose `answers` names no connection to the
+// conversation store, with its state directory, its kubeconfig and its session store lines left
+// to the caller; the token files it names sit beside it.
+const answersOffKubernetesFile = `project: DEMO
+postgres_dsn: postgres://legion@127.0.0.1:1/legion
+state_dir: %s
+bind: 10.0.0.5
+daemon_url: http://10.0.0.5:13370
+envoy_url: http://envoy-listener.internal.example:9020
+envoy_token_file: ./envoy-token
+operator_token_file: ./operator-token
+dispatch_url: https://dispatch.internal.example
+dispatch_token_file: ./dispatch-token
+nats_urls: [nats://nats.internal.example:4222]
+projects:
+  DEMO: {}
+github_apps:
+  implement: { app_id: "1", private_key_command: "exit 1" }
+  review: { app_id: "2", private_key_command: "exit 1" }
+runtime:
+  kubernetes:
+    namespace: legion
+    image: ghcr.io/cybermonklabs/legion-worker@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    storage_class: gp2
+    kubeconfig: %s
+    context: test
+%sanswers:
+  providers:
+    anthropic: {base_url: https://gateway.internal.example/anthropic, api_key_command: "exit 1"}
+  prices:
+    anthropic/claude-opus-5-5: {input: 5, output: 25, cache_write: 6.25, cache_read: 0.5}
+`
+
+// A Kubernetes daemon whose `answers` names no connection to the conversation store, under either
+// database store, runs as one without `answers`: the real loader leaves the loop off with its one
+// warning, boot reads no gh and no leak check for it, and the heartbeat the boot's history writes
+// says at once that it does not answer, so the listener refuses and drops a message to one of its
+// stopped agents as it does for a daemon without the block. The heartbeat's answering is the
+// daemon's own: run's, with the workflow open, where the loop runs only on a settled `answers`.
+func TestADaemonWhoseAnswersNameNoConversationStoreSaysAtBootItDoesNotAnswer(t *testing.T) {
+	for _, tc := range []struct{ name, store string }{
+		{"postgres", "    session_store: postgres\n    session_dsn_secret: SESSION_DSN\n"},
+		{"cloudsql-iam", "    session_store: cloudsql-iam\n" +
+			"    session_database: {instance: example-project:us-central1:example-instance, name: legion_sessions, user: legion-sessions@example-project.iam}\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "legion.yaml")
+			body := fmt.Sprintf(answersOffKubernetesFile, filepath.Join(dir, "state"),
+				writeKubeconfig(t, "https://192.0.2.20:6443", "test"), tc.store)
+			for name, contents := range map[string]string{
+				path: body, "envoy-token": "envoy\n", "operator-token": "operator\n", "dispatch-token": "dispatch\n",
+			} {
+				if !filepath.IsAbs(name) {
+					name = filepath.Join(dir, name)
+				}
+				if err := os.WriteFile(name, []byte(contents), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cfg, err := config.LoadForValidation(path, func(string) string { return "" })
+			if err != nil {
+				t.Fatalf("LoadForValidation: %v", err)
+			}
+			if cfg.Answers != nil || len(cfg.Warnings) != 1 || !strings.HasPrefix(cfg.Warnings[0], "answers is set, but the answer loop is off: ") {
+				t.Fatalf("the loader settled answers %+v with warnings %q, want no loop and the one line saying so", cfg.Answers, cfg.Warnings)
+			}
+			writes := registryListener(t, &cfg)
+			environ := []string{"PATH=" + t.TempDir(), "HOME=" + t.TempDir()}
+			reads, err := readBoot(cfg, environLookup(environ), func(string) string { return "" }, true, quietLogger())
+			if err != nil {
+				t.Fatalf("readBoot with no gh and no leak check: %v", err)
+			}
+			p := plan{project: reads.project, secrets: reads.secrets, answers: reads.answers, clock: supervise.RealClock{}}
+			// As run computes it once the workflow is open (daemon.go): the loop is attached only
+			// where the loader settled `answers`.
+			workflow := &workflowRuntime{}
+			if cfg.Answers != nil {
+				workflow.answers = &answering{project: p.project}
+			}
+			history := newConversationHistory(cfg, p, nil, environ, workflow.answers != nil, quietLogger())
+			if history.backfill != nil {
+				t.Errorf("the history backfills a conversation store; want none, as without answers")
+			}
+			stop := history.start(context.Background())
+			defer stop()
+
+			if bootHeartbeat(t, writes, cfg) {
+				t.Errorf("a daemon whose answers names no conversation store says it answers")
+			}
+			project, err := claim.ProjectToken(cfg.Project)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if paths := writes.paths(); !slices.Equal(paths, []string{"/v1/legion/projects/" + project}) {
+				t.Errorf("the listener took writes on %v, want the heartbeat's alone", paths)
+			}
+		})
 	}
 }
 

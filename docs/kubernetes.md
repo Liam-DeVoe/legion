@@ -1219,7 +1219,7 @@ A Claude Code start into such a pod is admitted: the launcher matches no agent's
 `postgres` holds the whole connection URL, password and all, in one providers-Secret key.
 The daemon holds no copy of the connection string for its pods:
 put it in the providers Secret (`legion-<project>-providers`) under the key `session_dsn_secret` names, as one `postgres://…` URL.
-With `answers` set, the daemon also holds a connection of its own to that database, for its answer loop, through `answers.conversation_store.dsn_file`, a file the daemon reads at boot ([The answer loop](#the-answer-loop)).
+With `answers` set, the daemon also holds a connection of its own to that database, for its answer loop, through `answers.conversation_store.dsn_file`, a file the daemon reads at boot, and a block without that key leaves the loop off ([The answer loop](#the-answer-loop)).
 Every issue pod, the controller's pod and the image probe mount that key read-only at `/var/run/legion/providers/OMP_SESSION_SQL_DSN`, whatever the key is called, so a Secret without it refuses boot at the image probe, naming the Secret and its keys (`internal/runtime/sandbox/manifest.go`, `providers`).
 
 With the store settled, every generation a launcher starts gets two variables in its start command (`mainEnvironment`):
@@ -1355,7 +1355,7 @@ Keep the route unchanged across the copy below in particular: there every sessio
 
 No session key, anywhere.
 No issue pod, no controller pod and no image-probe pod mounts one (`sessionSecretKey`, `internal/runtime/sandbox/manifest.go`, which answers for `postgres` alone), the daemon holds no connection string for its pods, and no URL sits in a Secret, a volume, an argv, an environment value or a log;
-with `answers` set, the daemon signs in to the same database itself, as `answers.conversation_store.user`, through a Cloud SQL proxy of its own ([The answer loop](#the-answer-loop)).
+with `answers` set, the daemon signs in to the same database itself, as `answers.conversation_store.user`, through a Cloud SQL proxy of its own, and a block without that key leaves the loop off ([The answer loop](#the-answer-loop)).
 What the pod's `legion launcher` is told instead is where the database is
 — `--session-instance <project:region:instance>`, `--session-database <name>` and `--session-user <login>`, in that order, the three values of `session_database` (`sessionProxyFlags` over `sessionProxyFlagNames`, `manifest.go`), once for every role it serves.
 When `impersonate_service_account` is set, a fourth flag follows the three: `--session-impersonate-service-account <email>` (`sessionProxyAccountFlag`, `manifest.go`).
@@ -1718,10 +1718,11 @@ answers:
   A model of a provider `providers` does not name is refused.
   A conversation on a model with no price is never answered on (`no_price`).
 
-- `conversation_store.dsn_file` (required under `runtime.kubernetes.session_store: postgres`): A file holding the `postgres://` URL of the session database, which boot reads and refuses unless it holds one.
-  The daemon reads and appends to conversations through it.
+- `conversation_store.dsn_file` (under `runtime.kubernetes.session_store: postgres`): The daemon's connection to the conversation store, a file holding the `postgres://` URL of the session database, which boot reads and refuses unless it holds one.
+  The daemon reads and appends to conversations through it, and without it the loop is off (below).
 
-- `conversation_store.user` (required under `session_store: cloudsql-iam`): The IAM login the daemon signs in as to `session_database`'s instance and database, through a Cloud SQL proxy of its own over the daemon's own cloud identity.
+- `conversation_store.user` (under `session_store: cloudsql-iam`): The daemon's connection to the conversation store, the IAM login the daemon signs in as to `session_database`'s instance and database, through a Cloud SQL proxy of its own over the daemon's own cloud identity.
+  Without it the loop is off (below).
 
 - `bounds.answer_seconds` (180): How long one answer may take, its model calls and `gh` calls together.
 
@@ -1751,9 +1752,14 @@ answers:
 Each count is a positive integer, each `_seconds` a positive whole number of seconds, and `daily_usd` a positive number;
 a key the block does not model is refused by name.
 Each store refuses the `conversation_store` key it does not use, as `runtime.kubernetes`' session keys do.
+Under `runtime: kubernetes`, a block that names no connection to the conversation store, its `conversation_store` left out or empty, leaves the loop off, as without `answers`:
+the daemon boots, resolving no `gh` and no leak check for the loop, and logs one line, `answers is set, but the answer loop is off: …`, naming the key that turns the loop on and what to set it to;
+`legion config check` prints the same line right after `Config OK` and exits 0;
+and every message to a stopped agent is refused and dropped as it is without `answers`.
+The rest of the block is still read first and held to its rules, so a malformed provider, price or bound is refused, never turned off.
 Under `runtime: tmux` the block names no `conversation_store` at all, and one is refused:
 the daemon reads each conversation where its panes keep it ([The conversation stores](#the-conversation-stores)).
-With `answers` set, either runtime resolves at boot the real `gh` the loop's tool runs, `LEGION_GH_PATH` or else the first `gh` on `PATH`, never a script (a tmux daemon reuses the one it resolves for its panes), and refuses to start without one.
+With the loop on, either runtime resolves at boot the real `gh` the loop's tool runs, `LEGION_GH_PATH` or else the first `gh` on `PATH`, never a script (a tmux daemon reuses the one it resolves for its panes), and refuses to start without one.
 A daemon running in the worker image, whose first `gh` on `PATH` is Legion's wrapper script, sets `LEGION_GH_PATH=/usr/local/bin/gh`, the image's real gh.
 Beside that `gh`, boot needs the shared public leak check the loop's tool runs before every call ([The `gh` tool, a security decision](#the-gh-tool-a-security-decision)), and refuses to start without one, naming the check and where it looked:
 a tmux daemon resolves the machine's check as it resolves a pane's (`PUBLIC_LEAK_CHECK`, then `public-leak-check.sh` on `PATH`, then the pointer file under the configuration home), and a Kubernetes daemon needs the deployment's leak check setting, `LEGION_LEAK_CHECK_REPOSITORY` and `LEGION_LEAK_CHECK_MANIFEST_SHA256` or the `leak_check` block ([Worker image](#worker-image)), and reads the tag it installs that check at, its own environment's `LEGION_LEAK_CHECK_TAG`, which the worker image sets.
@@ -1767,8 +1773,8 @@ each provider's `base_url` and `api_key_source` (which key names it), the prices
 
 The daemon records every conversation that worked one of its issues' roles, a phase worker's or a root architect's (never the controller's), in `agent_conversations`, at each registration and, for conversations older than this release, by a scan at boot that finds them by their titles (`Legion <role> · <ISSUE>`) and their own role claim, logging every one it skips with its path.
 A close forgets a claim's session; this record keeps it.
-With `answers` set, the daemon mirrors that record into the Envoy listener's agent registry (`PUT /v1/legion/agents`, in batches at boot and one write per registration) and writes its project's `answering` heartbeat (`PUT /v1/legion/projects/<project>`) every minute;
-the listener hands a project's messages off while that record last said `answering`, whatever its age, so a daemon that stops still gets its agents' messages and answers them when it returns, and one that loses `answers` or is taken down states `answering: false` at its next boot, which gives its agents' messages the listener's own answers again at once:
+With the loop on, the daemon mirrors that record into the Envoy listener's agent registry (`PUT /v1/legion/agents`, in batches at boot and one write per registration) and writes its project's `answering` heartbeat (`PUT /v1/legion/projects/<project>`) every minute;
+the listener hands a project's messages off while that record last said `answering`, whatever its age, so a daemon that stops still gets its agents' messages and answers them when it returns, and one that loses `answers`, or whose loop is off, or that is taken down states `answering: false` at its next boot, which gives its agents' messages the listener's own answers again at once:
 a send stored for a session Envoy still knows or a `404`, a role message kept for the role's next holder.
 A listener too old for these routes answers `404`, which the daemon logs once per boot and tries again every minute.
 The daemon writes these routes with its Envoy bearer (`envoy_token_file`, sent as `Authorization: Bearer`), which names no session.
@@ -1972,7 +1978,7 @@ So the tool runs only what is safe there, and decides before anything runs:
   Where the deployment names its leak check ([Worker image](#worker-image)), the guard is told that check's manifest digest as `LEGION_LEAK_CHECKER_MANIFEST_SHA256`, under either runtime (`ghtool.Host.LeakCheckManifestSHA256`), and holds the check it is handed to it as a pane's or a pod's guard does: a check whose manifest digest is anything else refuses the call, gh never started, with `LEAK CHECK SETUP ERROR: the gh call: the shared public leak check found is not the one the deployment names`, naming the digest told and the digest found.
   Under that digest the guard runs a private copy of the check it held to it, and the tool has it make that copy in the answer's own 0700 directory, `<state_dir>/answers/<question>/gh/leak-check-copies`, never in a role's private directory (`leakguard.Options.PrivateCopyBase`): the worker image holds that directory root-owned and empty, and nothing writable is bound over it in the daemon's container.
   Where the deployment names none, the guard is told no digest, a `LEGION_LEAK_CHECKER_MANIFEST_SHA256` of the daemon's own environment included.
-  Under `runtime: kubernetes` the repository the check is read from and its manifest digest are the deployment's setting, which `answers` needs there: boot refuses to start without it, naming `LEGION_LEAK_CHECK_REPOSITORY`, `LEGION_LEAK_CHECK_MANIFEST_SHA256` and the `leak_check` block, and a served check whose manifest digest is not the setting's is a cause no wait changes (below).
+  Under `runtime: kubernetes` the repository the check is read from and its manifest digest are the deployment's setting, which the loop needs there: boot refuses to start without it, naming `LEGION_LEAK_CHECK_REPOSITORY`, `LEGION_LEAK_CHECK_MANIFEST_SHA256` and the `leak_check` block, and a served check whose manifest digest is not the setting's is a cause no wait changes (below).
 
 - **The check under `runtime: kubernetes`.**
   The daemon hands the guard a copy it installs and runs itself, since its environment holds none of the three places a check is resolved from, and boot refuses to start without the tag it installs:
@@ -2002,8 +2008,8 @@ So the tool runs only what is safe there, and decides before anything runs:
 | --- | --- |
 | `runtime: tmux`, `runtime.tmux.session_store: files` (the default) | An Oh My Pi session file on the daemon's host at its recorded path, appended with one `O_APPEND` write; a Claude Code transcript under `<state_dir>/claude/<claim token>/`, the same way. |
 | `runtime: tmux`, `runtime.tmux.session_store: postgres` | An Oh My Pi session as a row of the session table, through `runtime.tmux.session_dsn_file`, the file the panes read; a Claude Code transcript as a file, as above. |
-| `runtime: kubernetes`, `session_store: postgres` | A row of the session table, through `answers.conversation_store.dsn_file`. |
-| `runtime: kubernetes`, `session_store: cloudsql-iam` | A row of the session table, through the daemon's own proxy as `answers.conversation_store.user`. |
+| `runtime: kubernetes`, `session_store: postgres` | A row of the session table, through `answers.conversation_store.dsn_file`; without that key the loop is off. |
+| `runtime: kubernetes`, `session_store: cloudsql-iam` | A row of the session table, through the daemon's own proxy as `answers.conversation_store.user`; without that key the loop is off. |
 
 An append to a row runs in one transaction that reads the row for update and is refused when the session moved past what the loop read; the question then goes to the agent.
 The boot scan reads the session table under a database store, and the pane home's session files and the Claude Code transcripts under tmux's files store.
@@ -8181,7 +8187,7 @@ a refusal is boot's own, on stderr, and exits 1.
   It also reads every secret file the configuration names, as `legion config check` does, so the host it runs on holds all of them.
   Of their contents, only the pane NATS seed's enters the probe: it decides the pane NATS user the probe checks the providers Secret's seed against.
   Every other file only has to pass boot's reads.
-  With `answers` set it also resolves the real `gh` the answer loop's tool runs, as boot does (`LEGION_GH_PATH`, else the first `gh` on `PATH`, never a script), so in the worker image, whose first `gh` on `PATH` is Legion's wrapper script, set `LEGION_GH_PATH=/usr/local/bin/gh`, the image's real gh.
+  With the loop on it also resolves the real `gh` the answer loop's tool runs, as boot does (`LEGION_GH_PATH`, else the first `gh` on `PATH`, never a script), so in the worker image, whose first `gh` on `PATH` is Legion's wrapper script, set `LEGION_GH_PATH=/usr/local/bin/gh`, the image's real gh.
 
 - **Its own probe Sandbox.**
   A booting daemon names its probe Sandbox for the project and the image;

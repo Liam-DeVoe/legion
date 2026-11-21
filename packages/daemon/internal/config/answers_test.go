@@ -13,17 +13,20 @@ import (
 )
 
 // The answers block's pieces a table row assembles: one provider of each credential source, a
-// price for each provider's model, and the two database stores' runtime.kubernetes lines.
+// price for each provider's model, the two database stores' runtime.kubernetes lines, and the
+// warning each of those stores gets for a block that names no connection to it.
 const (
-	anthropicByFile    = "    anthropic: {base_url: \"https://gateway.internal.example/anthropic/\", api_key_file: keys/anthropic}\n"
-	openaiByCommand    = "    openai: {base_url: https://gateway.internal.example/openai, api_key_command: printf openai-key}\n"
-	opusPrice          = "    anthropic/claude-opus-5-5: {input: 5, output: 25, cache_write: 6.25, cache_read: 0.5}\n"
-	gptPrice           = "    openai/gpt-6.1: {input: 1.25, output: 10, cache_write: 0, cache_read: 0.125}\n"
-	cloudSQLStore      = "    session_store: cloudsql-iam\n    session_database: {instance: example-project:us-central1:example-instance, name: legion_sessions, user: legion-sessions@example-project.iam}\n"
-	daemonDSNFile      = "  conversation_store: {dsn_file: conversations-dsn}\n"
-	daemonIAMLogin     = "  conversation_store: {user: legion-daemon@example-project.iam}\n"
-	answersRequiredDSN = "answers.conversation_store.dsn_file is required with runtime.kubernetes.session_store postgres: the file holding the postgres:// URL of the database the conversations live in, which the daemon reads them through"
-	tmuxPostgresStore  = "runtime: {tmux: {session_store: postgres, session_dsn_file: session-dsn}}\n"
+	anthropicByFile   = "    anthropic: {base_url: \"https://gateway.internal.example/anthropic/\", api_key_file: keys/anthropic}\n"
+	openaiByCommand   = "    openai: {base_url: https://gateway.internal.example/openai, api_key_command: printf openai-key}\n"
+	opusPrice         = "    anthropic/claude-opus-5-5: {input: 5, output: 25, cache_write: 6.25, cache_read: 0.5}\n"
+	gptPrice          = "    openai/gpt-6.1: {input: 1.25, output: 10, cache_write: 0, cache_read: 0.125}\n"
+	cloudSQLStore     = "    session_store: cloudsql-iam\n    session_database: {instance: example-project:us-central1:example-instance, name: legion_sessions, user: legion-sessions@example-project.iam}\n"
+	daemonDSNFile     = "  conversation_store: {dsn_file: conversations-dsn}\n"
+	daemonIAMLogin    = "  conversation_store: {user: legion-daemon@example-project.iam}\n"
+	noStoreKey        = "  conversation_store: {}\n"
+	answersOffDSN     = "answers is set, but the answer loop is off: under runtime.kubernetes.session_store postgres, answers.conversation_store.dsn_file names the daemon's connection to the conversation store, and the file sets none, so a message to a stopped agent is refused and dropped as it is without answers; to turn the loop on, set answers.conversation_store.dsn_file to the file holding the postgres:// URL of the database the conversations live in"
+	answersOffUser    = "answers is set, but the answer loop is off: under runtime.kubernetes.session_store cloudsql-iam, answers.conversation_store.user names the daemon's connection to the conversation store, and the file sets none, so a message to a stopped agent is refused and dropped as it is without answers; to turn the loop on, set answers.conversation_store.user to the IAM login the daemon signs in to runtime.kubernetes.session_database's instance as"
+	tmuxPostgresStore = "runtime: {tmux: {session_store: postgres, session_dsn_file: session-dsn}}\n"
 )
 
 // answersBlock is an `answers` block of providers, prices and whatever else rest adds.
@@ -124,12 +127,15 @@ func TestAnswersBoundsTheFileSetsOverrideTheDefaults(t *testing.T) {
 // conversation_store is the key the runtime's own store needs, and only that one: dsn_file under
 // session_store postgres, user under cloudsql-iam (with session_database's instance and database),
 // neither under tmux, whose postgres store's runtime.tmux.session_dsn_file is the conversation
-// store's.
+// store's. A Kubernetes file that sets the block and leaves that key out, the block's
+// conversation_store with it or empty, loads with the loop off, as with no block, and one warning
+// saying so; a file that names the key raises none.
 func TestAnswersConversationStoreFollowsTheRuntimesStore(t *testing.T) {
 	for _, tc := range []struct {
 		name, body string
 		want       ConversationStore // with dsn_file relative to the file's directory
 		refusal    string
+		warning    string // the one warning of a block the loader leaves off
 	}{
 		{
 			name: "postgres, dsn_file",
@@ -139,7 +145,12 @@ func TestAnswersConversationStoreFollowsTheRuntimesStore(t *testing.T) {
 		{
 			name:    "postgres, no conversation_store",
 			body:    kubernetesFile + answersBlock(anthropicByFile, opusPrice, ""),
-			refusal: answersRequiredDSN,
+			warning: answersOffDSN,
+		},
+		{
+			name:    "postgres, an empty conversation_store",
+			body:    kubernetesFile + answersBlock(anthropicByFile, opusPrice, noStoreKey),
+			warning: answersOffDSN,
 		},
 		{
 			name:    "postgres, user alone",
@@ -156,11 +167,21 @@ func TestAnswersConversationStoreFollowsTheRuntimesStore(t *testing.T) {
 		{
 			name:    "cloudsql-iam, no conversation_store",
 			body:    withSessionStore(cloudSQLStore) + answersBlock(anthropicByFile, opusPrice, ""),
-			refusal: "answers.conversation_store.user is required with runtime.kubernetes.session_store cloudsql-iam: the IAM login the daemon signs in to runtime.kubernetes.session_database's instance as",
+			warning: answersOffUser,
+		},
+		{
+			name:    "cloudsql-iam, an empty conversation_store",
+			body:    withSessionStore(cloudSQLStore) + answersBlock(anthropicByFile, opusPrice, noStoreKey),
+			warning: answersOffUser,
 		},
 		{
 			name:    "cloudsql-iam, dsn_file",
 			body:    withSessionStore(cloudSQLStore) + answersBlock(anthropicByFile, opusPrice, "  conversation_store: {dsn_file: conversations-dsn, user: legion-daemon@example-project.iam}\n"),
+			refusal: "answers.conversation_store.dsn_file is not used when runtime.kubernetes.session_store is cloudsql-iam; remove it",
+		},
+		{
+			name:    "cloudsql-iam, dsn_file alone",
+			body:    withSessionStore(cloudSQLStore) + answersBlock(anthropicByFile, opusPrice, daemonDSNFile),
 			refusal: "answers.conversation_store.dsn_file is not used when runtime.kubernetes.session_store is cloudsql-iam; remove it",
 		},
 		{
@@ -170,6 +191,11 @@ func TestAnswersConversationStoreFollowsTheRuntimesStore(t *testing.T) {
 		{
 			name:    "tmux, a conversation_store",
 			body:    minimalFile + answersBlock(anthropicByFile, opusPrice, daemonDSNFile),
+			refusal: "answers.conversation_store is not used under runtime tmux: every conversation is a file on the daemon's own host, which it reads where the pane wrote it; remove it",
+		},
+		{
+			name:    "tmux, an empty conversation_store",
+			body:    minimalFile + answersBlock(anthropicByFile, opusPrice, noStoreKey),
 			refusal: "answers.conversation_store is not used under runtime tmux: every conversation is a file on the daemon's own host, which it reads where the pane wrote it; remove it",
 		},
 		{
@@ -199,6 +225,18 @@ func TestAnswersConversationStoreFollowsTheRuntimesStore(t *testing.T) {
 			if err != nil {
 				t.Fatalf("LoadForValidation: %v", err)
 			}
+			if tc.warning != "" {
+				if cfg.Answers != nil {
+					t.Errorf("Answers = %+v, want nil: no connection to the conversation store, no loop", cfg.Answers)
+				}
+				if !reflect.DeepEqual(cfg.Warnings, []string{tc.warning}) {
+					t.Errorf("Warnings = %#v, want the one line %q", cfg.Warnings, tc.warning)
+				}
+				return
+			}
+			if len(cfg.Warnings) != 0 {
+				t.Errorf("Warnings = %#v, want none for a block that names its store", cfg.Warnings)
+			}
 			want := tc.want
 			if want.DSNFile != "" {
 				want.DSNFile = filepath.Join(filepath.Dir(path), want.DSNFile)
@@ -207,6 +245,57 @@ func TestAnswersConversationStoreFollowsTheRuntimesStore(t *testing.T) {
 				t.Errorf("ConversationStore = %+v, want %+v", cfg.Answers.ConversationStore, want)
 			}
 		})
+	}
+}
+
+// A block that names no connection to the conversation store is still read whole and held to its
+// rules before the store is looked at: a malformed provider, price or bound under either database
+// store is refused naming its key, never loaded with the loop off.
+func TestAnswersWithNoConversationStoreStillRefusesAMalformedBlock(t *testing.T) {
+	for _, store := range []struct{ name, file string }{
+		{"postgres", kubernetesFile},
+		{"cloudsql-iam", withSessionStore(cloudSQLStore)},
+	} {
+		for _, tc := range []struct{ name, block, want string }{
+			{"a provider with no key", answersBlock("    anthropic: {base_url: https://gateway.internal.example/anthropic}\n", opusPrice, ""),
+				"answers.providers.anthropic requires exactly one of api_key_file or api_key_command"},
+			{"a price of a provider not configured, conversation_store empty", answersBlock(anthropicByFile, opusPrice+gptPrice, noStoreKey),
+				"answers.prices.openai/gpt-6.1 prices a model of openai, which answers.providers does not name, so the loop never calls it; remove it or configure the provider"},
+			{"a zero daily limit", answersBlock(anthropicByFile, opusPrice, "  bounds: {daily_usd: 0}\n"), "answers.bounds.daily_usd must be a positive number"},
+			{"an unknown conversation_store key", answersBlock(anthropicByFile, opusPrice, "  conversation_store: {password: hunter2}\n"),
+				"unknown key answers.conversation_store.password"},
+		} {
+			t.Run(store.name+", "+tc.name, func(t *testing.T) {
+				_, err := LoadForValidation(writeConfigFile(t, store.file+tc.block), noEnv)
+				if err == nil || err.Error() != tc.want {
+					t.Fatalf("LoadForValidation = %v, want %q", err, tc.want)
+				}
+			})
+		}
+	}
+}
+
+// A Kubernetes file whose session store keeps sessions as files, `pvc` or an omitted
+// session_store, is refused with the session store's own sentence whether it sets `answers` or
+// not: the loop being off is no way past that refusal.
+func TestAnswersUnderAFileSessionStoreIsRefusedAsWithoutTheBlock(t *testing.T) {
+	for _, tc := range []struct{ name, file string }{
+		{"session_store omitted", withSessionStore("")},
+		{"session_store pvc", kubernetesWith("    session_store: postgres\n", "    session_store: pvc\n")},
+	} {
+		for name, block := range map[string]string{
+			"without answers":                 "",
+			"with answers, no store":          answersBlock(anthropicByFile, opusPrice, ""),
+			"with answers and a dsn_file":     answersBlock(anthropicByFile, opusPrice, daemonDSNFile),
+			"with answers and an empty store": answersBlock(anthropicByFile, opusPrice, noStoreKey),
+		} {
+			t.Run(tc.name+", "+name, func(t *testing.T) {
+				_, err := LoadForValidation(writeConfigFile(t, tc.file+block), noEnv)
+				if err == nil || err.Error() != sessionStoreRefusal {
+					t.Fatalf("LoadForValidation = %v, want %q", err, sessionStoreRefusal)
+				}
+			})
+		}
 	}
 }
 
