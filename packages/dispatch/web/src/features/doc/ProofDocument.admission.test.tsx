@@ -150,6 +150,7 @@ test("ProofDocument waits for a fresh text read before reconnecting from cached 
   queryClient.setQueryData(["artifact", artifact.id, "text"], {
     markdown: "cached document",
     version: null,
+    unsettled: true,
   });
   let resolveText: (value: ArtifactText) => void;
   const textRead = new Promise<ArtifactText>((resolve) => {

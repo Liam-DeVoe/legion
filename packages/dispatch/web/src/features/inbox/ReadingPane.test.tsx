@@ -108,7 +108,11 @@ function seedDocument(
   versions: Readonly<Record<number, string>> = {}
 ): void {
   client.setQueryData(["artifact", artifact.id], artifact);
-  client.setQueryData(["artifact", artifact.id, "text"], { markdown: "", version: null });
+  client.setQueryData(["artifact", artifact.id, "text"], {
+    markdown: "",
+    version: null,
+    unsettled: true,
+  });
   client.setQueryData(["artifact", artifact.id, "blocks"], []);
   client.setQueryData(["artifact", artifact.id, "asks"], []);
   if (artifact.issue_key !== null) {
