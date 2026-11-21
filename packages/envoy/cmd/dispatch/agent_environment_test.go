@@ -14,10 +14,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/sjawhar/envoy/going/agentwire"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
@@ -49,6 +52,58 @@ func requireTheContainerLimits(t *testing.T) {
 // 18 GiB, 6 GiB and none, and 8 slots (plan settlement 12, the background-runs design's section 5).
 func TestTheAgentLimitsOfAContainer(t *testing.T) {
 	requireTheContainerLimits(t)
+}
+
+// TestTheAgentRunsUnderSchedIdle: lowerPriority puts every thread of the agent under the SCHED_IDLE
+// policy, below every thread of the server's, or, where the kernel refuses SCHED_IDLE, sets each
+// to nice 10 and says so (check c29 holds the agent's threads at SCHED_IDLE on a real server). The
+// agent is this test binary as `agent`, its Go runtime's threads started, holding at the read of
+// the secret it waits for on its standard input, which the test never writes.
+func TestTheAgentRunsUnderSchedIdle(t *testing.T) {
+	child := exec.Command(os.Args[0], "agent")
+	child.Env = []string{"DISPATCH_AGENT_SOCKET=" + filepath.Join(t.TempDir(), "agent.sock")}
+	stdin, err := child.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = stdin.Close()
+		_ = child.Process.Kill()
+		_ = child.Wait()
+	})
+	pid := child.Process.Pid
+	deadline := time.Now().Add(10 * time.Second)
+	for len(threadsOf(pid)) < 2 {
+		if time.Now().After(deadline) {
+			t.Fatalf("the agent ran %d threads after 10 s, want its Go runtime's", len(threadsOf(pid)))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	lowerPriority(pid)
+	threads := threadsOf(pid)
+	for _, id := range threads {
+		// Each thread's policy and nice value as the kernel answers them for that thread
+		// (sched_getattr, getpriority, which answers 20 less the nice value). check c29 reads the
+		// same from /proc, which gVisor, where Legion's pods run this test, does not fill in.
+		attr, err := unix.SchedGetAttr(id, 0)
+		if err != nil && !lowerPriorityRefused.Load() {
+			t.Fatalf("read the policy of the agent's thread %d: %v", id, err)
+		}
+		priority, err := unix.Getpriority(unix.PRIO_PROCESS, id)
+		if err != nil {
+			t.Fatalf("read the nice value of the agent's thread %d: %v", id, err)
+		}
+		switch {
+		case !lowerPriorityRefused.Load() && attr.Policy != unix.SCHED_IDLE:
+			t.Errorf("the agent's thread %d runs under policy %d, want SCHED_IDLE (%d)", id, attr.Policy, unix.SCHED_IDLE)
+		case lowerPriorityRefused.Load() && 20-priority != agentNice:
+			t.Errorf("the kernel refused SCHED_IDLE, and the agent's thread %d runs at nice %d, want %d", id, 20-priority, agentNice)
+		}
+	}
+	t.Logf("%d threads of the agent lowered; the kernel refused SCHED_IDLE: %t", len(threads), lowerPriorityRefused.Load())
 }
 
 // TestTheAgentHoldsNoSecret: the server starts its agent with the chat model's settings and the

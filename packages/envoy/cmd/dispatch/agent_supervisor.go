@@ -18,6 +18,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/sjawhar/envoy/going/agentwire"
 )
 
@@ -41,13 +43,27 @@ const (
 	agentKillWindow = time.Hour
 	// agentMaxProcs is the most CPUs the agent's runtime schedules on (GOMAXPROCS).
 	agentMaxProcs = 4
-	// agentNice is the agent's lower priority, beside the server's 0.
+	// agentNice is the agent's priority where the kernel refuses it SCHED_IDLE (lowerPriority):
+	// nice 10, beside the server's 0.
 	agentNice = 10
-	// agentExitGrace is how long the server's close waits for the agent, whose standard input it
-	// closed, before it kills it.
+	// lowerPriorityPasses bounds the passes lowerPriority makes over the agent's threads.
+	lowerPriorityPasses = 10
+	// agentExitGrace is how long the server's close waits for the agent process, whose standard
+	// input it closed, to exit before it kills it, and then for the killed process to be reaped.
 	agentExitGrace = 2 * time.Second
 	// agentExitedTimeout bounds the database work of an exit: freeing the runs the agent held.
 	agentExitedTimeout = 10 * time.Second
+	// agentExitRecordWait is the record's share of the server's shutdown: how long the server's
+	// close waits for that database work once the agent process has exited, after which the
+	// record is cancelled and the runs it would have freed keep their leases, which run out. With
+	// the database answering the record takes milliseconds. With it unanswering, every moment
+	// waited here delays the shutdown's idle wait (waitUntilIdle), which counts the database
+	// silent only after silentProbes probes with no connection taken back, and a connection that
+	// failed when the database went silent is taken back, discarded, once pgx gives up the cancel
+	// request it sends, 15 s after the failure: the registry heartbeat's, whose timeout is 2 s,
+	// as early as 17 s after the silence began, while the HTTP drain's 11 s and the three probes'
+	// 6.75 s already reach 17.75 s. So the share is kept to half a second.
+	agentExitRecordWait = 500 * time.Millisecond
 )
 
 // errAgentStopping is a start refused because the server is stopping its agent.
@@ -74,7 +90,8 @@ type agentEnd interface {
 // an agent that renewed nothing for 30 s. Each exit frees the runs the agent held
 // (agentEnd.AgentExited); two kills for memory within an hour that no run alone caused halve the
 // agent's run slots, to 1 at the least, for an hour. It is the process's agentShutdown: Stop
-// closes the agent's standard input after the HTTP drain, and Close waits for the agent to exit.
+// closes the agent's standard input after the HTTP drain, and Close waits for the agent to exit
+// and, for its share of the shutdown, for the record of that exit.
 type agentSupervisor struct {
 	end     agentEnd
 	command []string
@@ -104,8 +121,15 @@ type agentSupervisor struct {
 	// unexplained is the latest kill for memory that no run alone caused.
 	unexplained time.Time
 
-	// done is closed once the supervisor starts no agent any more and the last one has exited.
-	done chan struct{}
+	// gone is closed once the supervisor starts no agent any more and no agent process runs,
+	// before the last exit's record (exited) is written; done once that record has ended too.
+	gone     chan struct{}
+	goneOnce sync.Once
+	done     chan struct{}
+	// records is the context of every exit's record, which Close cancels once the record's share
+	// of the shutdown is over (agentExitRecordWait).
+	records       context.Context
+	cancelRecords context.CancelFunc
 }
 
 // startAgentSupervisor starts the agent process, command run with env, for end, and supervises it
@@ -118,8 +142,10 @@ func startAgentSupervisor(end agentEnd, command, env []string, limits agentMemor
 
 // newAgentSupervisor is a supervisor that has started nothing yet.
 func newAgentSupervisor(end agentEnd, command, env []string, limits agentMemory) *agentSupervisor {
+	records, cancelRecords := context.WithCancel(context.Background())
 	s := &agentSupervisor{end: end, command: command, env: env, limits: limits, after: time.After,
-		renewalsMissed: agentRenewalsMissed, stopping: make(chan struct{}), slots: limits.Slots, done: make(chan struct{})}
+		renewalsMissed: agentRenewalsMissed, stopping: make(chan struct{}), slots: limits.Slots,
+		gone: make(chan struct{}), done: make(chan struct{}), records: records, cancelRecords: cancelRecords}
 	end.SetRunSlots(limits.Slots)
 	end.SetCloseStandardInput(s.closeStandardInput)
 	return s
@@ -201,6 +227,7 @@ func nextAgentRestart(previous, ran time.Duration) time.Duration {
 // run starts the agent, watches it until it exits, and starts it again, until the server stops it.
 func (s *agentSupervisor) run() {
 	defer close(s.done)
+	defer s.closeGone()
 	var wait time.Duration
 	for {
 		started := time.Now()
@@ -287,7 +314,7 @@ func (s *agentSupervisor) watch(cmd *exec.Cmd, started time.Time) bool {
 	pid := cmd.Process.Pid
 	ticker := time.NewTicker(agentMemoryEvery)
 	defer ticker.Stop()
-	killed, killedForMemory, lowered := false, false, false
+	killed, killedForMemory := false, false
 	for {
 		select {
 		case <-exited:
@@ -296,11 +323,6 @@ func (s *agentSupervisor) watch(cmd *exec.Cmd, started time.Time) bool {
 		}
 		if killed {
 			continue
-		}
-		// The threads its runtime made since the start are lowered too.
-		if !lowered && time.Since(started) >= time.Second {
-			lowerPriority(pid)
-			lowered = true
 		}
 		if memory, err := residentMemory(pid); err == nil && memory > s.limits.Ceiling {
 			_ = cmd.Process.Kill()
@@ -322,7 +344,10 @@ func (s *agentSupervisor) watch(cmd *exec.Cmd, started time.Time) bool {
 }
 
 // exited reports the agent's exit to the server's end, which frees the runs it held, and counts
-// a kill for memory that no run alone caused (noteUnexplainedKill).
+// a kill for memory that no run alone caused (noteUnexplainedKill). An exit after the server
+// stopped its agent is the last: the process is gone before its record is written. The record
+// runs under agentExitedTimeout and the supervisor's records context, which Close cancels once
+// the record's share of the shutdown is over.
 func (s *agentSupervisor) exited(killedForMemory bool) {
 	s.mu.Lock()
 	s.stdin, s.pid = nil, 0
@@ -333,7 +358,10 @@ func (s *agentSupervisor) exited(killedForMemory bool) {
 	default:
 	}
 	s.mu.Unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), agentExitedTimeout)
+	if stopping {
+		s.closeGone()
+	}
+	ctx, cancel := context.WithTimeout(s.records, agentExitedTimeout)
 	defer cancel()
 	alone, err := s.end.AgentExited(ctx, stopping)
 	if err != nil {
@@ -381,7 +409,8 @@ func (s *agentSupervisor) restoreSlots() {
 }
 
 // closeStandardInput is the stop of the agent, which the server's end calls at its Stop: no agent
-// starts from now on, and the running one's standard input closes, so it exits.
+// starts from now on, and the running one's standard input closes, so it exits. With none running,
+// the agent is gone at once.
 func (s *agentSupervisor) closeStandardInput() {
 	s.mu.Lock()
 	select {
@@ -393,10 +422,18 @@ func (s *agentSupervisor) closeStandardInput() {
 	close(s.stopping)
 	stdin, pid := s.stdin, s.pid
 	s.mu.Unlock()
+	if pid == 0 {
+		s.closeGone()
+	}
 	if stdin != nil {
 		_ = stdin.Close()
 		slog.Info("dispatch: closed the agent's standard input", "pid", pid)
 	}
+}
+
+// closeGone closes gone, once.
+func (s *agentSupervisor) closeGone() {
+	s.goneOnce.Do(func() { close(s.gone) })
 }
 
 // Stop is the first half of the agent's shutdown, after the HTTP drain: the server's end stops,
@@ -406,13 +443,15 @@ func (s *agentSupervisor) Stop() {
 }
 
 // Close is the second half: the server's end closes once the calls in flight have ended or by
-// passes, and the agent, whose standard input Stop closed, is waited for agentExitGrace, then
-// killed.
+// passes; the agent process, whose standard input Stop closed, is waited for agentExitGrace, then
+// killed and waited for as long again; and the record of its exit, the database write that frees
+// the runs it held, is waited for agentExitRecordWait, then cancelled, so the runs keep their
+// leases, which run out. After the calls in flight, then, the agent's part of the shutdown is the
+// agent's exit and at most agentExitRecordWait, whether the database answers or not.
 func (s *agentSupervisor) Close(by time.Time) {
+	defer s.cancelRecords()
 	s.end.Close(by)
-	select {
-	case <-s.done:
-	case <-time.After(agentExitGrace):
+	if !closedWithin(s.gone, agentExitGrace) {
 		s.mu.Lock()
 		pid := s.pid
 		s.mu.Unlock()
@@ -420,10 +459,15 @@ func (s *agentSupervisor) Close(by time.Time) {
 			slog.Warn("dispatch: the agent did not exit when its standard input closed; it is killed", "pid", pid)
 			_ = syscall.Kill(pid, syscall.SIGKILL)
 		}
-		select {
-		case <-s.done:
-		case <-time.After(agentExitGrace):
-			slog.Warn("dispatch: the agent's exit was not recorded before the shutdown went on")
+		if !closedWithin(s.gone, agentExitGrace) {
+			slog.Warn("dispatch: the agent process had not exited when the shutdown went on")
+		}
+	}
+	if !closedWithin(s.done, agentExitRecordWait) {
+		// The record's own error says the runs keep their leases (exited).
+		s.cancelRecords()
+		if !closedWithin(s.done, agentExitGrace) {
+			slog.Warn("dispatch: the record of the agent's exit had not ended when the shutdown went on")
 		}
 	}
 	s.mu.Lock()
@@ -431,6 +475,18 @@ func (s *agentSupervisor) Close(by time.Time) {
 		s.restore.Stop()
 	}
 	s.mu.Unlock()
+}
+
+// closedWithin waits up to within for ch to close, and reports whether it did.
+func closedWithin(ch <-chan struct{}, within time.Duration) bool {
+	timer := time.NewTimer(within)
+	defer timer.Stop()
+	select {
+	case <-ch:
+		return true
+	case <-timer.C:
+		return false
+	}
 }
 
 // running is when the running agent started, and false while none runs.
@@ -451,25 +507,75 @@ func (s *agentSupervisor) runSlots() int {
 // logged once for the process rather than at each start.
 var lowerPriorityRefused atomic.Bool
 
-// lowerPriority sets the nice value of each thread of process pid to agentNice: Linux keeps a
-// nice value for each thread, and a thread takes its maker's, so the agent's runtime makes its
-// later threads at the lower priority.
+// lowerPriority puts every thread of process pid under the SCHED_IDLE policy. The kernel gives a
+// thread under it a CPU only where no thread of the server's policy wants one, and takes the CPU
+// back as soon as such a thread wakes on it; at a nice value alone, a server thread that wakes on
+// a CPU the agent holds can wait out the agent thread's slice (check c29 measured the server's
+// threads waiting 224 ms in one second to run beside an agent at nice 10).
+//
+// Linux keeps a policy for each thread, and a thread takes its maker's. A thread the agent's
+// runtime makes while a pass runs, by a thread the pass has not reached, keeps the policy it was
+// made with, so a pass is made again until one finds every thread already under SCHED_IDLE: every
+// thread made after that pass is made by a thread under SCHED_IDLE and takes it, so none escapes.
+// Where the kernel refuses SCHED_IDLE, every thread is set to nice agentNice instead, the same
+// way, and that is logged once.
 func lowerPriority(pid int) {
-	tasks, _ := os.ReadDir(filepath.Join("/proc", strconv.Itoa(pid), "task"))
-	ids := []int{pid}
-	for _, task := range tasks {
-		if id, err := strconv.Atoi(task.Name()); err == nil && id != pid {
-			ids = append(ids, id)
-		}
-	}
-	for _, id := range ids {
-		if err := syscall.Setpriority(syscall.PRIO_PROCESS, id, agentNice); err != nil && !errors.Is(err, syscall.ESRCH) {
-			if !lowerPriorityRefused.Swap(true) {
+	idle := true
+	for range lowerPriorityPasses {
+		changed := false
+		for _, id := range threadsOf(pid) {
+			lowered, err := lowerThread(id, idle)
+			switch {
+			case errors.Is(err, unix.ESRCH):
+				// The thread has ended.
+			case err != nil && idle:
+				if !lowerPriorityRefused.Swap(true) {
+					slog.Warn("dispatch: the kernel refused the agent's threads SCHED_IDLE; they run at nice 10", "pid", pid, "thread", id, "error", err)
+				}
+				idle, changed = false, true
+			case err != nil:
 				slog.Warn("dispatch: lower the agent's priority", "pid", pid, "thread", id, "error", err)
+				return
+			case lowered:
+				changed = true
 			}
+		}
+		if !changed {
 			return
 		}
 	}
+}
+
+// threadsOf is the id of each thread of process pid, as /proc/<pid>/task lists them.
+func threadsOf(pid int) []int {
+	tasks, _ := os.ReadDir(filepath.Join("/proc", strconv.Itoa(pid), "task"))
+	ids := make([]int, 0, len(tasks))
+	for _, task := range tasks {
+		if id, err := strconv.Atoi(task.Name()); err == nil {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+// lowerThread puts thread id under SCHED_IDLE, or at nice agentNice where idle is false, and
+// reports whether it changed the thread: one already there is left as it is.
+func lowerThread(id int, idle bool) (bool, error) {
+	if idle {
+		attr, err := unix.SchedGetAttr(id, 0)
+		if err != nil {
+			return false, err
+		}
+		if attr.Policy == unix.SCHED_IDLE {
+			return false, nil
+		}
+		return true, unix.SchedSetAttr(id, &unix.SchedAttr{Policy: unix.SCHED_IDLE}, 0)
+	}
+	// getpriority(2) answers 20 less the nice value.
+	if priority, err := unix.Getpriority(unix.PRIO_PROCESS, id); err != nil || 20-priority == agentNice {
+		return false, err
+	}
+	return true, unix.Setpriority(unix.PRIO_PROCESS, id, agentNice)
 }
 
 // residentMemory is process pid's resident memory in bytes, its VmRSS in /proc/<pid>/status.

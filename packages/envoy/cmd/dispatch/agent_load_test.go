@@ -25,6 +25,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/sjawhar/envoy/going/agent/agenttest"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 )
@@ -695,7 +697,7 @@ func (s agentServer) watchWindow(t *testing.T, profiler string, agentPid int, pa
 // slowest - each by its start within the window, how long it took, and whether a pause of the
 // server's collector ended or a /livez request ran within it - and what the processes did.
 func (w cpuWindow) describe(slow time.Duration) string {
-	start, end := w.reads[0].at, w.reads[len(w.reads)-1].at.Add(w.reads[len(w.reads)-1].took)
+	start, end := w.span()
 	slowest := slices.Clone(w.reads)
 	slices.SortFunc(slowest, func(a, b cpuRead) int { return cmp.Compare(b.took, a.took) })
 	above := 0
@@ -729,6 +731,12 @@ func (w cpuWindow) describe(slow time.Duration) string {
 		w.server, w.test, w.databaseProcesses, w.database, w.agent, w.agentResidentBefore>>20, w.agent.resident>>20)
 }
 
+// span is when the window's first read started and its last ended.
+func (w cpuWindow) span() (time.Time, time.Time) {
+	last := w.reads[len(w.reads)-1]
+	return w.reads[0].at, last.at.Add(last.took)
+}
+
 // databaseTimes is how long each of count round trips of `select 1` from the test to the server's
 // database took, one after another: the part of a read the server's process does not run.
 func (s agentServer) databaseTimes(t *testing.T, count int) []time.Duration {
@@ -757,16 +765,19 @@ func spread(times []time.Duration) string {
 	return fmt.Sprintf("p50 %v, p90 %v, p99 %v", percentile(times, 0.5), percentile(times, 0.9), percentile(times, 0.99))
 }
 
-// threadNices is how many threads process pid runs at each nice value, each read from its
-// /proc/<pid>/task/<tid>/stat, whose fields after the command's closing parenthesis start at the
-// state, the third, so the nice value, the nineteenth, is the seventeenth of them.
-func threadNices(t *testing.T, pid int) map[int]int {
+// policyNames names the scheduling policies a thread's stat gives by number (sched(7)).
+var policyNames = map[int]string{0: "SCHED_OTHER", 1: "SCHED_FIFO", 2: "SCHED_RR", 3: "SCHED_BATCH", unix.SCHED_IDLE: "SCHED_IDLE", 6: "SCHED_DEADLINE"}
+
+// threadPolicies is how many threads process pid runs under each scheduling policy, each read from
+// its /proc/<pid>/task/<tid>/stat, whose fields after the command's closing parenthesis start at
+// the state, the third, so the policy, the forty-first, is the thirty-ninth of them.
+func threadPolicies(t *testing.T, pid int) map[string]int {
 	t.Helper()
 	tasks, err := os.ReadDir(fmt.Sprintf("/proc/%d/task", pid))
 	if err != nil {
 		t.Fatalf("list the agent's threads: %v", err)
 	}
-	nices := map[int]int{}
+	policies := map[string]int{}
 	for _, task := range tasks {
 		stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/task/%s/stat", pid, task.Name()))
 		if err != nil {
@@ -774,13 +785,20 @@ func threadNices(t *testing.T, pid int) map[int]int {
 		}
 		text := string(stat)
 		fields := strings.Fields(text[strings.LastIndexByte(text, ')')+1:])
-		nice, err := strconv.Atoi(fields[16])
-		if err != nil {
-			t.Fatalf("read the nice value of the agent's thread %s from %q: %v", task.Name(), text, err)
+		if len(fields) <= 38 {
+			t.Fatalf("the agent's thread %s has a stat of %d fields, want the policy at the forty-first: %q", task.Name(), len(fields)+2, text)
 		}
-		nices[nice]++
+		policy, err := strconv.Atoi(fields[38])
+		if err != nil {
+			t.Fatalf("read the policy of the agent's thread %s from %q: %v", task.Name(), text, err)
+		}
+		name, known := policyNames[policy]
+		if !known {
+			name = strconv.Itoa(policy)
+		}
+		policies[name]++
 	}
-	return nices
+	return policies
 }
 
 // processVariable is the value of name in process pid's environment, "" where it holds none.
@@ -807,7 +825,7 @@ const cpuAgentShare = 4
 // hook: a live heap of nine tenths of its GOMEMLIMIT, and allocation without pause on each CPU its
 // runtime schedules on). Meanwhile the p99 of one fixed read of the server, an issue, stays under
 // twice its p99 with the agent idle, and /livez, asked every 100 ms, answers each time in under
-// 1 s. Every thread of the agent runs at the lower priority of nice 10, idle and at the load. The
+// 1 s. Every thread of the agent runs under the SCHED_IDLE policy, idle and at the load. The
 // agent holds production's share of the runner's CPUs, a quarter, 1 at the least
 // (DISPATCH_TEST_AGENT_PROCS), where production gives it 4 of a container's 16: on a runner of 4
 // CPUs the 4 a server gives its agent would be every one. The test logs the CPUs it runs on, the
@@ -841,7 +859,7 @@ func TestTheAgentLeavesTheServerItsCPU(t *testing.T) {
 	server.timedReads(t, read, 100)
 	idleWindow := server.watchWindow(t, profiler, pid, read, cpuReads)
 	idleDatabase := server.databaseTimes(t, cpuReads)
-	idleThreads := threadNices(t, pid)
+	idleThreads := threadPolicies(t, pid)
 
 	const words = "work at the soft limit"
 	model.set(words, func(n int) agenttest.Reply {
@@ -888,7 +906,7 @@ func TestTheAgentLeavesTheServerItsCPU(t *testing.T) {
 	close(asking)
 	asked.Wait()
 	busyWindow.livez = livez
-	busyThreads := threadNices(t, pid)
+	busyThreads := threadPolicies(t, pid)
 	server.send(t, http.MethodPost, "/api/v1/going/runs/"+run+"/stop", "", asUser(dispatchTestLogin))
 	server.ended(t, run, time.Minute)
 
@@ -896,17 +914,25 @@ func TestTheAgentLeavesTheServerItsCPU(t *testing.T) {
 	idle, busy := percentile(idleReads, 0.99), percentile(busyReads, 0.99)
 	slowest := slices.Max(append(tookOf(livez), 0))
 	kernel, _ := os.ReadFile("/proc/sys/kernel/osrelease")
-	t.Logf("the test runs on %d CPUs (GOMAXPROCS %d) under kernel %s and the agent with GOMAXPROCS=%s; the agent's threads by nice value, idle %v and at its soft limit %v",
+	t.Logf("the test runs on %d CPUs (GOMAXPROCS %d) under kernel %s and the agent with GOMAXPROCS=%s; the agent's threads by scheduling policy, idle %v and at its soft limit %v",
 		runtime.NumCPU(), runtime.GOMAXPROCS(0), strings.TrimSpace(string(kernel)), processVariable(t, pid, "GOMAXPROCS"), idleThreads, busyThreads)
 	t.Logf("the fixed read with the agent idle: %s; at its soft limit: %s (the p99 %.2f times, the p99 of %d reads being the %d-th slowest); a round trip to the database idle: %s; at the soft limit: %s; /livez answered %d times, the slowest in %v",
 		spread(idleReads), spread(busyReads), float64(busy)/float64(idle), cpuReads, cpuReads-int(math.Ceil(0.99*cpuReads))+1,
 		spread(idleDatabase), spread(busyDatabase), len(livez), slowest)
 	t.Logf("the window with the agent idle: %s", idleWindow.describe(2*idle))
 	t.Logf("the window with the agent at its soft limit: %s", busyWindow.describe(2*idle))
-	for _, threads := range []map[int]int{idleThreads, busyThreads} {
-		for nice, count := range threads {
-			if nice != agentNice {
-				t.Errorf("%d of the agent's threads run at nice %d, want every one at %d (threads by nice value %v)", count, nice, agentNice, threads)
+	// What the agent's policy leaves the agent while the server works beside it: the CPU time its
+	// threads had in the busy window against the window's length and the agent's GOMAXPROCS, which
+	// says whether a run at the server's side would spend its time budget waiting for a CPU.
+	busyStart, busyEnd := busyWindow.span()
+	busyLength := busyEnd.Sub(busyStart)
+	t.Logf("the agent's threads ran %v of the %v the window at its soft limit lasted (%.0f%% of its %d CPUs) and waited %v to run",
+		busyWindow.agent.ran.Round(time.Millisecond), busyLength.Round(time.Millisecond), 100*float64(busyWindow.agent.ran)/float64(busyLength)/float64(procs),
+		procs, busyWindow.agent.waited.Round(time.Millisecond))
+	for _, threads := range []map[string]int{idleThreads, busyThreads} {
+		for policy, count := range threads {
+			if policy != policyNames[unix.SCHED_IDLE] {
+				t.Errorf("%d of the agent's threads run under %s, want every one under SCHED_IDLE (threads by policy %v)", count, policy, threads)
 			}
 		}
 	}
