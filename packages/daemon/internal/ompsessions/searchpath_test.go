@@ -111,6 +111,12 @@ func throughThePool(t *testing.T, pool, direct string) string {
 // pin, which reads the server's default and must fail naming it; a client that sets search_path
 // as a startup parameter, which holds on a direct connection and which the pool refuses, so it
 // must fail the pooled leg naming the refusal; and the package's own client, which passes both.
+//
+// The pooled leg reaches the test database through a PgBouncer 1.25.2 in transaction mode that
+// LEGION_TEST_PGBOUNCER_DSN names; packages/daemon/scripts/test-pgbouncer.sh starts one in Docker.
+// A pod has no Docker, so in a pod the test skips, naming that variable, and its pooled leg runs
+// in CI's daemon-go job alone, which starts the pool and where the test fails rather than skips
+// without it. Every other test of the package runs in a pod as usual.
 func TestEveryPoolPinsItsSearchPath(t *testing.T) {
 	// The database first: a host with no LEGION_TEST_PG_DSN skips here, as every test that needs
 	// a database does. Where there is one and no pool, the test skips outside CI and fails on
