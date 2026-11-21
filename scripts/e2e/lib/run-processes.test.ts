@@ -702,6 +702,44 @@ cat "$WORK/h.err" >&2`;
   }
 );
 
+test.skipIf(skip)(
+  "a marked process caught inside an exec is still named: an environment that reads empty is read again until the exec ends",
+  async () => {
+    // Inside an exec the kernel has given the process its new memory before the bounds of its
+    // arguments and environment, so a read of its /proc/<pid>/environ then comes back empty: grep
+    // finds no mark in it, names_dir reads it as gone, and the walk named nothing of a marked
+    // process, which a sweep then left running. The process here re-execs itself without end, each
+    // exec keeping its pid and its environment, the run's mark among it, so every exec opens that
+    // window again; the harness walks 60 times over a proc root of it and this test process, and
+    // every walk must name it. A walk that took an empty read for an answer missed it in about 1 of
+    // 10. The row's own timeout is a guard on a hang only: 60 walks took 3 to 5 s on a loaded devbox.
+    const work = join(dir, "exec-window");
+    mkdirSync(work);
+    const loop = 'exec "$0" -c "$1" "$0" "$1"';
+    const execing = Bun.spawn(ownGroup(["sh", "-c", loop, "sh", loop]), {
+      cwd: dir,
+      env: { PATH: process.env.PATH ?? "", LEGION_E2E_RUN: work },
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    started.push(execing.pid);
+    const r = harness(
+      work,
+      `named=0 failed=0
+for i in $(seq 1 60); do
+  st=0
+  out=$(procs_naming "$work" "\${run_marks[@]}") || st=$?
+  [ "$st" = 0 ] || failed=$((failed + 1))
+  case " $out " in *" ${execing.pid} "*) named=$((named + 1)) ;; esac
+done
+echo "named in $named of 60 walks, $failed failed"`
+    );
+    expect(r.err).toBe("");
+    expect(r.out).toBe("named in 60 of 60 walks, 0 failed\n");
+  },
+  60_000
+);
+
 // namespacesHold says whether this user may make a private user and pid namespace (util-linux
 // unshare, a user namespace that maps this user to itself) and so run the namespace row; a host that
 // refuses unprivileged user namespaces skips it, by this name.

@@ -535,6 +535,33 @@ unread_may_carry() {
   [ -n "$start" ] && [ "$(proc_start "$pid")" = "$start" ]
 }
 
+# exec_state PID START prints what one read of /proc/PID/stat says of PID's environment while PID is
+# still the process that started at START (proc_start): `gone` once it has ended, is a zombie, or
+# its pid is another's; `exec` inside an exec, which has given it its new memory and not yet the
+# bounds of its arguments and environment, so both bounds (fields 50 and 51, env_start and env_end)
+# read 0; `empty` for an environment of no variable, its bounds set and equal; `set` for one with
+# variables. The two bounds come from the one read, so they are one moment's. The kernel shows them
+# to a reader that may read the process's memory, as this user may read its own dumpable process's.
+exec_state() {
+  local stat=
+  local -a fields
+  { IFS= read -r -d '' stat <"/proc/$1/stat"; } 2>/dev/null || :
+  [ -n "$stat" ] || {
+    echo gone
+    return 0
+  }
+  read -r -a fields <<<"${stat##*) }"
+  if [ "${fields[0]}" = Z ] || [ "${fields[19]}" != "$2" ]; then
+    echo gone
+  elif [ "${fields[47]:-0}" = 0 ]; then
+    echo exec
+  elif [ "${fields[48]:-}" = "${fields[47]}" ]; then
+    echo empty
+  else
+    echo set
+  fi
+}
+
 # procs_naming DIR NAME… prints `PID START` (proc_start) for each process whose environment gives
 # one of the NAMEs the value DIR or a path under it (names_dir), this shell itself left out. It reads
 # the environment of every process of `${proc_root:-/proc}`: the host's /proc, unless a test points
@@ -553,10 +580,17 @@ unread_may_carry() {
 # mark makes procs_naming name it and fail with 2, since whether it carries the mark was not
 # checked, and one that cannot is passed, a zombie or a devbox's ssh-agent from before this shell
 # among them. The start is read before and after the environment, and a process that ended or whose
-# start moved between is left out. xargs exits 123 both for a batch whose command exits 1 and for
-# one whose command exits 2, and grep exits 1 for no match in its batch, as most batches of a busy
-# machine have, and 2 for an error. So each batch runs grep under a sh of its own (batch below),
-# which turns grep's no match into 0, passes grep's complaints on, and, for a grep that failed and
+# start moved between is left out. An environment whose read by grep may have fallen inside an
+# exec (the bound where it starts, read from the stat before and after grep, read 0 or moved), and
+# one that reads empty when read whole, is read again until the process's exec, if it is in one,
+# has ended (exec_state), so a marked process caught inside an exec is still named, and one still
+# in its exec at the walk's bound of 10 s makes procs_naming say so and fail with 2. Where the
+# kernel does not move a stack from one exec to the next (address space randomization off), a read
+# inside an exec that began and ended between the two reads of the bound is not seen. xargs exits
+# 123 both for a batch whose command exits 1 and for one whose command exits 2, and grep exits 1
+# for no match in its batch, as most batches of a busy machine have, and 2 for an error. So each
+# batch runs grep under a sh of its own (batch below), which turns grep's no match into 0, passes
+# grep's complaints on, and, for a grep that failed and
 # said nothing, says so itself: every failed batch leaves a line of its own, whatever another batch
 # printed, and a 123 is always a grep's error. A grep a signal ended ends its sh with that signal,
 # which xargs reads as 125. A grep's complaint about an environment this user may not read or
@@ -566,12 +600,20 @@ unread_may_carry() {
 # should be, or one whose pid entries this user cannot see), make procs_naming print why and fail
 # with 2, so no caller reads an unread machine as one with nothing left.
 procs_naming() {
-  local dir=$1 proc=${proc_root:-/proc} p pid before status=0 name err complaint line rest shell comm unread=
-  local child child_start at lost
-  # $0 is the batch's name and "$@" the patterns and the batch's entries; grep's matches go out on
-  # fd 3, the walk's own output, and its complaints on stderr.
-  local batch='said=$(grep -lzF "$@" 2>&1 >&3 3>&-)
+  local dir=$1 proc=${proc_root:-/proc} p pid before status=0 name err empties complaint line rest shell comm unread=
+  local child child_start at lost found deadline=
+  # $0 is the batch's name and "$@" the patterns (-e PATTERN pairs) and the batch's entries. grep's
+  # matches go out on fd 3, the walk's own output, and its complaints on stderr. Around grep the
+  # batch reads the bound where each entry's environment starts (env_start, field 50 of its stat;
+  # NAMING_SNAP) and puts out on fd 4 each entry whose bound read 0 or moved between the two reads
+  # (NAMING_MOVED): its process was inside an exec then, which gives it memory whose environment
+  # bounds read 0 until the exec is done and whose stack, so its environment, the kernel places
+  # anew (address space randomization), and grep's read of it may have come back empty.
+  local batch='before=$(awk "$NAMING_SNAP" "$@" 2>/dev/null)
+said=$(grep -lzF "$@" 2>&1 >&3 3>&- 4>&-)
 status=$?
+after=$(awk "$NAMING_SNAP" "$@" 2>/dev/null)
+{ printf "%s\n" "$before"; echo --; printf "%s\n" "$after"; } | awk -F "\t" "$NAMING_MOVED" >&4
 [ -z "$said" ] || printf "%s\n" "$said" >&2
 case $status in
   0 | 1) exit 0 ;;
@@ -582,7 +624,22 @@ case $status in
     ;;
 esac
 exit 2'
-  local -a names=("${@:2}") naming_patterns=() naming_files=() listed=() entries=() unread_pids=() ancestors=()
+  # One line an entry, the entry and its process's env_start, a tab between; none for a process
+  # gone. The -e PATTERN pairs among the batch's arguments are passed over. Fields after the
+  # command name start at the state, field 3, so field 50 is the 48th.
+  local snap='BEGIN {
+  for (i = 1; i < ARGC; i++) {
+    if (ARGV[i] == "-e") { i++; continue }
+    s = ARGV[i]; sub(/environ$/, "stat", s); line = ""
+    if ((getline line < s) > 0) { sub(/^.*\) /, "", line); n = split(line, v, " "); print ARGV[i] "\t" (n >= 48 ? v[48] : 0) }
+    close(s)
+  }
+  exit
+}'
+  local moved='!past { if ($0 == "--") { past = 1; next } start[$1] = $2; next }
+($1 in start) && (start[$1] != $2 || start[$1] == 0 || $2 == 0) { print $1 }'
+  local -a names=("${@:2}") naming_patterns=() naming_files=() empty_files=() listed=() entries=() unread_pids=() ancestors=()
+  local -A unread_seen=() named=()
   # An empty DIR would match `NAME=` followed by any absolute path (names_dir).
   [ -n "$dir" ] || {
     echo "procs_naming: no run directory given, so no process was named" >&2
@@ -598,7 +655,9 @@ exit 2'
       entries+=("$p")
     elif [ -O "${p%/environ}" ]; then
       pid=${p%/environ}
-      unread_pids+=("${pid##*/}")
+      pid=${pid##*/}
+      unread_seen[$pid]=1
+      unread_pids+=("$pid")
     fi
   done
   # This shell's own environment is always one of them on a /proc: none read is no answer.
@@ -607,16 +666,18 @@ exit 2'
     return 2
   }
   for name in "${names[@]}"; do naming_patterns+=(-e "$name=$dir"); done
-  err=$(mktemp "${TMPDIR:-/tmp}/procs-naming.XXXXXX") || {
-    echo "procs_naming: no file to keep grep's complaints in, so the processes naming $dir were not read" >&2
+  err=$(mktemp -d "${TMPDIR:-/tmp}/procs-naming.XXXXXX") || {
+    echo "procs_naming: no directory to keep grep's complaints in, so the processes naming $dir were not read" >&2
     return 2
   }
+  empties=$err/empty err=$err/said
   # `|| exit` keeps xargs's status for the wait below, and keeps a caller's ERR trap (`set -E`) from
   # firing inside the substitution for an entry whose process ended during the walk.
   # The C locale keeps grep's complaints in the words proc_walk_complaint reads.
   mapfile -t naming_files < <(printf '%s\0' "${entries[@]}" |
-    LC_ALL=C xargs -0 sh -c "$batch" procs_naming "${naming_patterns[@]}" 3>&1 2>"$err" || exit)
+    NAMING_SNAP=$snap NAMING_MOVED=$moved LC_ALL=C xargs -0 sh -c "$batch" procs_naming "${naming_patterns[@]}" 3>&1 2>"$err" 4>"$empties" || exit)
   wait "$!" || status=$?
+  mapfile -t empty_files <"$empties"
   complaint=
   if [ "$status" != 0 ]; then
     complaint=$(proc_walk_complaint "$err" "$proc") || complaint=
@@ -628,14 +689,62 @@ exit 2'
     while IFS= read -r line; do
       rest=${line#*grep: "$proc"/}
       [[ $rest =~ ^([0-9]+)/environ:\ Permission\ denied$ ]] || continue
-      [ ! -O "$proc/${BASH_REMATCH[1]}" ] || unread_pids+=("${BASH_REMATCH[1]}")
+      [ ! -O "$proc/${BASH_REMATCH[1]}" ] || [ -n "${unread_seen[${BASH_REMATCH[1]}]:-}" ] || {
+        unread_seen[${BASH_REMATCH[1]}]=1
+        unread_pids+=("${BASH_REMATCH[1]}")
+      }
     done <"$err"
   fi
-  rm -f -- "$err"
+  rm -rf -- "${err%/said}"
   if [ -n "$complaint" ]; then
     echo "procs_naming: xargs exited $status reading $proc/<pid>/environ: $complaint, so the processes naming $dir were not read" >&2
     return 2
   fi
+  # A process grep matched, and one whose read by grep may have fallen inside an exec (its
+  # environment's bound read 0 or moved around grep), is read whole, and read again while its
+  # environment reads empty (names_dir's 2) and it is still the process that started at its start:
+  # inside an exec the kernel has given it its new memory before the bounds of its arguments and
+  # environment, so a read then comes back empty, as 34 of 385 reads of a process that re-exec'd
+  # itself did, and the walk named nothing of a marked process in its exec. exec_state tells that
+  # from an environment of no variable, which no mark is in; the walk waits up to 10 s, its own
+  # bound for every such process together, for each exec to end, and past it prints why and fails
+  # with 2. One the kernel keeps from this user (it cannot be opened, as a process of this user in
+  # another user namespace's environment cannot; its stat then shows the bounds as 0 as well) is no
+  # exec: it goes to the judgment of this user's unreadable environments below, once. A process
+  # listed twice is printed once.
+  for p in ${naming_files[@]+"${naming_files[@]}"} ${empty_files[@]+"${empty_files[@]}"}; do
+    pid=${p%/environ}
+    pid=${pid##*/}
+    [ "$pid" != "$$" ] && [ "$pid" != "$BASHPID" ] && [ -z "${named[$pid]:-}" ] || continue
+    before=$(proc_start "$pid")
+    [ -n "$before" ] || continue
+    while :; do
+      found=0
+      names_dir "$dir" "${names[@]}" "$pid" || found=$?
+      if [ "$found" = 0 ]; then
+        [ "$(proc_start "$pid")" != "$before" ] || {
+          named[$pid]=1
+          printf '%s %s\n' "$pid" "$before"
+        }
+        break
+      fi
+      [ "$found" = 2 ] || break
+      { : <"/proc/$pid/environ"; } 2>/dev/null || {
+        [ ! -O "/proc/$pid" ] || [ -n "${unread_seen[$pid]:-}" ] || {
+          unread_seen[$pid]=1
+          unread_pids+=("$pid")
+        }
+        break
+      }
+      case $(exec_state "$pid" "$before") in gone | empty) break ;; esac
+      deadline=${deadline:-$((SECONDS + 10))}
+      [ "$SECONDS" -lt "$deadline" ] || {
+        echo "procs_naming: the environment of process $pid read empty inside an exec for 10 s, so whether it carries the run's mark was not checked and the processes naming $dir were not read" >&2
+        return 2
+      }
+      sleep 0.05
+    done
+  done
   if [ "${#unread_pids[@]}" -gt 0 ]; then
     # This shell's line of parents, read to its top (a parent of 0), each parent held to a start no
     # later than its child's. A line cut short, by a parent that ended and was reaped during the
@@ -669,16 +778,6 @@ exit 2'
     done
     [ -z "$unread" ] || return 2
   fi
-  for p in ${naming_files[@]+"${naming_files[@]}"}; do
-    pid=${p%/environ}
-    pid=${pid##*/}
-    [ "$pid" != "$$" ] && [ "$pid" != "$BASHPID" ] || continue
-    before=$(proc_start "$pid")
-    [ -n "$before" ] || continue
-    names_dir "$dir" "${names[@]}" "$pid" || continue
-    [ "$(proc_start "$pid")" = "$before" ] || continue
-    printf '%s %s\n' "$pid" "$before"
-  done
 }
 
 # run_marks are the variables that mark a process as one of a stage proof's run, each naming the
