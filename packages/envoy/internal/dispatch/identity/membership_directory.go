@@ -15,18 +15,20 @@ import (
 // Under IAP identity (DISPATCH_IDENTITY=iap) Identity-Aware Proxy signs people in and Dispatch
 // keeps no refresh token, so Google's refusal of a refresh cannot reach it. Membership follows each
 // person's Google Workspace account in the Directory instead (Membership.Directory): an Active
-// answer confirms the person, releases a hold and fixes a deadline 24 hours later; a Held answer
-// records a hold; a Failed check changes nothing but the time of the check; and an answer for an
-// address deleted and created again confirms the new account only once the address holds no
-// access that outlives the browser, and is Held until then.
+// answer confirms the person, releases a hold recorded before the check read the person's row and
+// fixes a deadline 24 hours later; a Held answer records a hold; a Failed check changes nothing but
+// the time of the check; and an answer for an address deleted and created again confirms the new
+// account only once the address holds no access that outlives the browser, and is Held until then.
 
 // DirectoryPeople is what the people store records of a Directory check:
 // store.PgPeopleStore's writes of an Active, a Held and a Failed outcome, and of an Active one that
-// stores a recreated address's new account (RecordDirectoryRebound). Under IAP identity
+// stores a recreated address's new account (RecordDirectoryRebound). The two Active writes take
+// readAt, the database time of the check's own read of the row, and write nothing, answering the
+// zero time, while the row holds a hold recorded at or after it. Under IAP identity
 // Membership.People must be one.
 type DirectoryPeople interface {
-	RecordDirectoryActive(ctx context.Context, email, userID string) (notHeldUntil time.Time, err error)
-	RecordDirectoryRebound(ctx context.Context, email, userID string) (notHeldUntil time.Time, err error)
+	RecordDirectoryActive(ctx context.Context, email, userID string, readAt time.Time) (notHeldUntil time.Time, err error)
+	RecordDirectoryRebound(ctx context.Context, email, userID string, readAt time.Time) (notHeldUntil time.Time, err error)
 	RecordDirectoryHeld(ctx context.Context, email string) error
 	RecordDirectoryFailed(ctx context.Context, email string) error
 }
@@ -83,7 +85,8 @@ func (m *Membership) directoryStanding(ctx context.Context, email string, read a
 // Its RefreshOutcome is the pass's count: RefreshConfirmed for an Active outcome, RefreshHeld for a
 // Held one, RefreshFailed for a Failed check and for an outcome whose write failed or missed the
 // check's deadline, and RefreshNone when the row it read under the flight needed no check (an
-// Active answer younger than MembershipMaxAge, nil) or is gone (ErrNoIdentity).
+// Active answer younger than MembershipMaxAge, nil) or is gone (ErrNoIdentity), and for an Active
+// outcome that wrote nothing (nil): another check recorded a hold after this one read the row.
 func (m *Membership) ConfirmDirectory(ctx context.Context, email string) (RefreshOutcome, error) {
 	return outcomeOf(<-m.directoryFlight(ctx, email))
 }
@@ -112,6 +115,12 @@ func (m *Membership) directoryFlight(ctx context.Context, email string) <-chan s
 // write fails is Failed, and records nothing more: its deadline has passed, or the database is
 // not answering. It records its start in m.started while it runs, and, as it ends, its end in
 // m.unavailable when it was Failed, deleting any entry otherwise, as a refresh does.
+//
+// An Active outcome rests on a Directory read made after the row read, at its ReadAt, and checks of
+// one person in other processes run beside this one, so a check that read the Directory later may
+// have recorded Held before this one writes. The Active writes are guarded by that ReadAt: one that
+// finds a hold recorded at or after it writes nothing, so the later read's Held stands, and the
+// check counts RefreshNone, as one that needed no check does.
 //
 // An answer for the address itself under another account (DirectoryRecreated: the address deleted
 // and created again for another person) is the earlier person's row, keyed by the address, so every
@@ -151,9 +160,13 @@ func (m *Membership) checkDirectory(ctx context.Context, email string) (outcome 
 	if answered == DirectoryRecreated {
 		outlives, err := m.Outliving.Holds(ctx, email)
 		if err == nil && !outlives {
-			if _, err := people.RecordDirectoryRebound(ctx, email, userID); err != nil {
+			until, err := people.RecordDirectoryRebound(ctx, email, userID, read.ReadAt)
+			if err != nil {
 				slog.Warn("dispatch: the Workspace Directory answered a recreated address's new account, and its write failed; the check is Failed", "email", email, "error", err)
 				return RefreshFailed, err
+			}
+			if until.IsZero() {
+				return activeUnwritten(email), nil
 			}
 			slog.Info("dispatch: the Workspace Directory answered a recreated address's new account, and the address holds no access that outlives the browser; the new account is confirmed", "email", email)
 			return RefreshConfirmed, nil
@@ -164,9 +177,13 @@ func (m *Membership) checkDirectory(ctx context.Context, email string) (outcome 
 	}
 	switch answered {
 	case DirectoryActive:
-		if _, err := people.RecordDirectoryActive(ctx, email, userID); err != nil {
+		until, err := people.RecordDirectoryActive(ctx, email, userID, read.ReadAt)
+		if err != nil {
 			slog.Warn("dispatch: a Workspace Directory check answered Active, and its write failed; the check is Failed", "email", email, "error", err)
 			return RefreshFailed, err
+		}
+		if until.IsZero() {
+			return activeUnwritten(email), nil
 		}
 		return RefreshConfirmed, nil
 	case DirectoryHeld:
@@ -182,6 +199,14 @@ func (m *Membership) checkDirectory(ctx context.Context, email string) (outcome 
 		err = errors.Join(err, fmt.Errorf("record the failed check: %w", recordErr))
 	}
 	return RefreshFailed, err
+}
+
+// activeUnwritten is the outcome of an Active answer whose write wrote nothing: the row is gone, or
+// another check recorded a hold after this one read the row, a Held outcome resting on a later
+// Directory read than this answer, which stands. It counts RefreshNone.
+func activeUnwritten(email string) RefreshOutcome {
+	slog.Info("dispatch: a Workspace Directory check answered Active, and wrote nothing: the person's row is gone, or holds a hold another check recorded after this one read it", "email", email)
+	return RefreshNone
 }
 
 // directoryFresh reports whether read's last Active Directory answer is younger than

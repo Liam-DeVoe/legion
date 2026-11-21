@@ -75,11 +75,16 @@ func (r *directoryStandingRig) record(email string) {
 	}
 }
 
-// active records an Active outcome for email under the Directory user id, and dates every
-// Directory column age back, so the row's confirmation is age old and its deadline 24 hours after.
+// active records an Active outcome for email under the Directory user id, resting on a read of the
+// row made now, as a check's write does, and dates every Directory column age back, so the row's
+// confirmation is age old and its deadline 24 hours after.
 func (r *directoryStandingRig) active(email, id string, age time.Duration) {
 	r.t.Helper()
-	if _, err := r.people.RecordDirectoryActive(context.Background(), email, id); err != nil {
+	read, _, err := r.people.Membership(context.Background(), email)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	if _, err := r.people.RecordDirectoryActive(context.Background(), email, id, read.ReadAt); err != nil {
 		r.t.Fatal(err)
 	}
 	r.age(email, age)

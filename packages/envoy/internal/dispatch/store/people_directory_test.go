@@ -103,7 +103,7 @@ func TestPgPeopleStoreRecordsEachDirectoryOutcome(t *testing.T) {
 	}
 
 	// No outcome writes a row for a login with none.
-	if until, err := people.RecordDirectoryActive(ctx, nobody, "directory-nobody"); err != nil || !until.IsZero() {
+	if until, err := people.RecordDirectoryActive(ctx, nobody, "directory-nobody", databaseNow(t, database)); err != nil || !until.IsZero() {
 		t.Fatalf("an Active outcome for a login with no row answered %s, %v; want the zero time and no error", until, err)
 	}
 	if err := people.RecordDirectoryHeld(ctx, nobody); err != nil {
@@ -112,7 +112,7 @@ func TestPgPeopleStoreRecordsEachDirectoryOutcome(t *testing.T) {
 	if err := people.RecordDirectoryFailed(ctx, nobody); err != nil {
 		t.Fatalf("a Failed outcome for a login with no row: %v", err)
 	}
-	if until, err := people.RecordDirectoryRebound(ctx, nobody, "directory-nobody"); err != nil || !until.IsZero() {
+	if until, err := people.RecordDirectoryRebound(ctx, nobody, "directory-nobody", databaseNow(t, database)); err != nil || !until.IsZero() {
 		t.Fatalf("a rebind for a login with no row answered %s, %v; want the zero time and no error", until, err)
 	}
 	var rows int
@@ -155,7 +155,7 @@ func TestPgPeopleStoreRecordsEachDirectoryOutcome(t *testing.T) {
 
 	// An Active outcome confirms, fixes the deadline 24 hours later, stores the id and releases.
 	before = databaseNow(t, database)
-	until, err := people.RecordDirectoryActive(ctx, ada, "directory-ada")
+	until, err := people.RecordDirectoryActive(ctx, ada, "directory-ada", before)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +219,7 @@ func TestPgPeopleStoreRecordsEachDirectoryOutcome(t *testing.T) {
 
 	// A later Active outcome keeps the stored id, moves the confirmation and the deadline, and
 	// releases the hold.
-	until, err = people.RecordDirectoryActive(ctx, ada, "directory-other")
+	until, err = people.RecordDirectoryActive(ctx, ada, "directory-other", databaseNow(t, database))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +243,7 @@ func TestPgPeopleStoreRecordsEachDirectoryOutcome(t *testing.T) {
 	}
 	rest := rowLeavingOut(t, database, ada, "directory_user_id", "directory_confirmed_at", "directory_checked_at", "not_held_until", "held_since")
 	before = databaseNow(t, database)
-	until, err = people.RecordDirectoryRebound(ctx, ada, "directory-new")
+	until, err = people.RecordDirectoryRebound(ctx, ada, "directory-new", before)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,6 +261,66 @@ func TestPgPeopleStoreRecordsEachDirectoryOutcome(t *testing.T) {
 	}
 	if membership, _, err = people.Membership(ctx, ada); err != nil || membership.DirectoryHeld || membership.DirectoryUserID != "directory-new" {
 		t.Fatalf("Membership reads %s, %v after a rebind; want not DirectoryHeld, with directory-new", directoryMembership(membership), err)
+	}
+}
+
+// TestPgPeopleStoreKeepsAHoldRecordedSinceTheActiveRead: an Active outcome and a rebind rest on
+// the check's read of the row (readAt), made before its Directory read. On a row whose hold was
+// recorded after that read, or at its very time, which is a later check's Held, each writes
+// nothing and answers the zero time: the whole row, the hold included, stays as it was. The same
+// write resting on a read made after the hold releases it.
+//
+// Control: drop the held_since guard from either write; its first case fails, naming the row.
+func TestPgPeopleStoreKeepsAHoldRecordedSinceTheActiveRead(t *testing.T) {
+	ctx := context.Background()
+	database := migratedEmptyStore(t)
+	people := NewPgPeopleStore(database.Pool, testSigningKey, nil)
+	for _, write := range []struct {
+		name, email string
+		record      func(email string, readAt time.Time) (time.Time, error)
+	}{
+		{"an Active outcome", "active@example.com", func(email string, readAt time.Time) (time.Time, error) {
+			return people.RecordDirectoryActive(ctx, email, "directory-"+email, readAt)
+		}},
+		{"a rebind", "rebind@example.com", func(email string, readAt time.Time) (time.Time, error) {
+			return people.RecordDirectoryRebound(ctx, email, "directory-new-"+email, readAt)
+		}},
+	} {
+		t.Run(write.name, func(t *testing.T) {
+			email := write.email
+			if err := people.Record(ctx, email); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := people.RecordDirectoryActive(ctx, email, "directory-"+email, databaseNow(t, database)); err != nil {
+				t.Fatal(err)
+			}
+			read := databaseNow(t, database)
+			if err := people.RecordDirectoryHeld(ctx, email); err != nil {
+				t.Fatal(err)
+			}
+			held := readDirectoryRow(t, database, email)
+			if held.heldSince == nil || !held.heldSince.After(read) {
+				t.Fatalf("the Held outcome after the read at %s left the row at %v; want a hold recorded after the read", read, held)
+			}
+			whole := rowLeavingOut(t, database, email, []string{}...)
+			for _, readAt := range []time.Time{read, *held.heldSince} {
+				until, err := write.record(email, readAt)
+				if err != nil || !until.IsZero() {
+					t.Fatalf("%s resting on a read at %s, with a hold recorded since %s, answered %s, %v; want the zero time and no error",
+						write.name, readAt, *held.heldSince, until, err)
+				}
+				if got := rowLeavingOut(t, database, email, []string{}...); got != whole {
+					t.Fatalf("%s resting on a read at %s wrote to a row held since %s:\nbefore %s\nafter  %s", write.name, readAt, *held.heldSince, whole, got)
+				}
+			}
+			if membership, _, err := people.Membership(ctx, email); err != nil || !membership.DirectoryHeld {
+				t.Fatalf("Membership reads %s, %v after %s that rested on an earlier read; want DirectoryHeld", directoryMembership(membership), err, write.name)
+			}
+			until, err := write.record(email, databaseNow(t, database))
+			if released := readDirectoryRow(t, database, email); err != nil || until.IsZero() || released.heldSince != nil {
+				t.Fatalf("%s resting on a read after the hold answered %s, %v and left the row at %v; want its deadline, and the hold released", write.name, until, err, released)
+			}
+		})
 	}
 }
 
@@ -297,7 +357,7 @@ func TestPgPeopleStoreClaimsDueDirectoryRows(t *testing.T) {
 	}
 	active := func(email string) {
 		t.Helper()
-		if _, err := people.RecordDirectoryActive(ctx, email, "directory-"+email); err != nil {
+		if _, err := people.RecordDirectoryActive(ctx, email, "directory-"+email, databaseNow(t, database)); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -16,21 +16,25 @@ import (
 // changed by none of them, and none makes a row.
 
 // RecordDirectoryActive records an Active outcome of email's Directory check: the person's own
-// account answered as not suspended. It sets directory_confirmed_at and directory_checked_at to
-// now, not_held_until to now plus 24 hours, after which a not-held answer is no longer served, and
-// held_since to null, which releases a recorded hold; it stores userID, the answer's Directory
-// user id, in directory_user_id when that is null and keeps a stored one otherwise, so later
-// answers are compared with the id of the first. It answers the deadline it fixed, the zero time
-// for a login with no row.
-func (s *PgPeopleStore) RecordDirectoryActive(ctx context.Context, email, userID string) (notHeldUntil time.Time, err error) {
+// account answered as not suspended. readAt is the database time of the check's own read of the
+// row (auth.PersonMembership.ReadAt), which came before its Directory read. It sets
+// directory_confirmed_at and directory_checked_at to now, not_held_until to now plus 24 hours,
+// after which a not-held answer is no longer served, and held_since to null, which releases a
+// recorded hold; it stores userID, the answer's Directory user id, in directory_user_id when that
+// is null and keeps a stored one otherwise, so later answers are compared with the id of the
+// first. It writes nothing while the row holds a hold recorded at or after readAt: a Held outcome
+// of a check that read the Directory after this one did, which this older answer must not
+// release. It answers the deadline it fixed, and the zero time when it wrote nothing: for a login
+// with no row, or a row held since readAt.
+func (s *PgPeopleStore) RecordDirectoryActive(ctx context.Context, email, userID string, readAt time.Time) (notHeldUntil time.Time, err error) {
 	err = s.pool.QueryRow(ctx, `
 		update people set directory_user_id = coalesce(directory_user_id, $2),
 			directory_confirmed_at = checked.at, directory_checked_at = checked.at,
 			not_held_until = checked.at + interval '24 hours', held_since = null
 		from (select clock_timestamp() as at) as checked
-		where email = $1
+		where email = $1 and (held_since is null or held_since < $3)
 		returning not_held_until
-	`, email, userID).Scan(&notHeldUntil)
+	`, email, userID, readAt).Scan(&notHeldUntil)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return time.Time{}, nil
 	}
@@ -72,17 +76,18 @@ func (s *PgPeopleStore) RecordDirectoryFailed(ctx context.Context, email string)
 // account's Directory user id, in directory_user_id in place of the earlier one, so later answers
 // are compared with it, and confirms as RecordDirectoryActive does: directory_confirmed_at and
 // directory_checked_at set to now, not_held_until to now plus 24 hours, and held_since to null,
-// which releases a recorded hold. It answers the deadline it fixed, the zero time for a login with
-// no row.
-func (s *PgPeopleStore) RecordDirectoryRebound(ctx context.Context, email, userID string) (notHeldUntil time.Time, err error) {
+// which releases a recorded hold, writing nothing while the row holds a hold recorded at or after
+// readAt, the database time of the check's own read of the row. It answers the deadline it fixed,
+// and the zero time when it wrote nothing: for a login with no row, or a row held since readAt.
+func (s *PgPeopleStore) RecordDirectoryRebound(ctx context.Context, email, userID string, readAt time.Time) (notHeldUntil time.Time, err error) {
 	err = s.pool.QueryRow(ctx, `
 		update people set directory_user_id = $2,
 			directory_confirmed_at = checked.at, directory_checked_at = checked.at,
 			not_held_until = checked.at + interval '24 hours', held_since = null
 		from (select clock_timestamp() as at) as checked
-		where email = $1
+		where email = $1 and (held_since is null or held_since < $3)
 		returning not_held_until
-	`, email, userID).Scan(&notHeldUntil)
+	`, email, userID, readAt).Scan(&notHeldUntil)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return time.Time{}, nil
 	}

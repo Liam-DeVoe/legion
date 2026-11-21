@@ -117,7 +117,8 @@ type RefreshOutcome int
 
 const (
 	// RefreshNone is no refresh: the confirmation was fresh, or a failure came before Google was
-	// asked.
+	// asked. Under IAP identity it is also an Active Directory answer that wrote nothing, since
+	// another check recorded a hold after this one read the row (ConfirmDirectory).
 	RefreshNone RefreshOutcome = iota
 	// RefreshConfirmed is Google's confirmation of the person, whether or not ConfirmSubject's
 	// guard missed.
