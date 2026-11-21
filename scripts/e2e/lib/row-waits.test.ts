@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { skipWithout } from "@legion/test-fixtures/host-tools";
+import { realpathSync } from "node:fs";
+import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import {
   libRowBoundMs,
   rowWaitMarginMs,
@@ -12,7 +13,7 @@ import {
 // The waits run against the real clock, since what they bound in the rows that use them, a process
 // starting or ending, is the kernel's: each row here gives them a short end of its own, so the
 // failure is read soon.
-const skip = skipWithout("sh", "sleep");
+const skip = skipWithout("bash", "sleep");
 // Each row's start lies between these two marks, which run just before and just after rowWaits'
 // own, in the order they were registered.
 let hooksBegan = 0;
@@ -98,8 +99,20 @@ test.skipIf(skip)(
     ended.kill("SIGKILL");
     await ended.exited;
     await untilGone(ended.pid, "a sleep that was killed and reaped", waits.end());
-    // sh's child `true` ends, and the sleep sh execs into never reaps it.
-    const parent = Bun.spawn(["sh", "-c", "true & echo $!; exec sleep 60"], { stderr: "ignore" });
+    // The child ends only once its parent runs sleep, which never reaps it: one that ended before
+    // the exec would be reaped by the parent's bash and never be a zombie.
+    const sleep = realpathSync(hostTool("sleep") ?? "sleep");
+    const parent = Bun.spawn(
+      [
+        "bash",
+        "-c",
+        `bash -c 'end=$((SECONDS + $2)); until [ "$(readlink "/proc/$PPID/exe")" = "$1" ]; do [ "$SECONDS" -lt "$end" ] || exit 1; sleep 0.05; done' child "$1" "$2" </dev/null >/dev/null 2>&1 & echo $!; exec sleep 60`,
+        "parent",
+        sleep,
+        String(waits.secondsLeft()),
+      ],
+      { stderr: "ignore" }
+    );
     started.push(parent.pid);
     // The first line alone: the sleep holds the pipe open for its whole minute.
     const said = await parent.stdout.getReader().read();

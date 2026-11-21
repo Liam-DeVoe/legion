@@ -745,11 +745,16 @@ echo "agent $agent"
 // names_dir) answer 2 for an environment that is empty, a process that has gone or one with no
 // variable at all, never 1, the answer of an environment that lacks the name.
 describe.skipIf(skip)("proc_start and the environment readers", () => {
+  // The zombie is a child of a bash that execs sleep, which never reaps it. The child ends only once
+  // its parent runs sleep: one that ended before the exec was reaped by the parent's bash and never
+  // became a zombie, which happened once in 60 runs and every time with a second's sleep before the
+  // exec. It gives up at the end of the row's waits, and the wait for the zombie then names it.
   test(
     "proc_start gives a zombie no start and a live process its own",
     () => {
       const r = run(`
-bash -c 'sleep 600 & "$0" 0 </dev/null >/dev/null 2>&1 & echo $!; exec sleep 600' "$program" </dev/null >"$scratch/zombie" 2>/dev/null &
+printf '%s\\n' 'end=$((SECONDS + $2))' 'until [ "$(readlink "/proc/$PPID/exe")" = "$1" ]; do [ "$SECONDS" -lt "$end" ] || exit 1; sleep 0.05; done' >"$scratch/child"
+bash -c 'sleep 600 & bash "$1" "$2" "$3" </dev/null >/dev/null 2>&1 & echo $!; exec sleep 600' parent "$scratch/child" "$(realpath -e -- "$(command -v sleep)")" "$((until_true_deadline - SECONDS))" </dev/null >"$scratch/zombie" 2>/dev/null &
 parent=$!
 started+=("$parent")
 until_true 10 "the child to be a zombie" sh -c 'read -r z <"$1" && read -r s </proc/$z/stat && s=\${s##*) } && [ "\${s%% *}" = Z ]' sh "$scratch/zombie"
