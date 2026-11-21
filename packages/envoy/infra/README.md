@@ -4029,8 +4029,12 @@ this set; its seed belongs to the daemon, not to a host or session.
 `ListenerPermissions(machineID)`, the session consumers' left out, the info, filtered create,
 delete and acknowledgements of Dispatch's `delivery-events` and `delivery-jobs`
 durables; the key-value calls for `envoy_webhook_redelivery`; publication of every session's
-agent-stream control subject; and subscription to every session's agent-stream frames. A
-`gcp:NatsHub` user with `dispatchMachineId` holds it. No session shares the user, so it holds none
+agent-stream control subject; for the listener beside it, the selection bucket's stream message
+get (`$JS.API.STREAM.MSG.GET.KV_envoy_session_consumers`, which reads the bucket's sentinel and that
+listener's record, and, taking the key in its body, any other key) and the write of that one
+listener's record alone, `$KV.envoy_session_consumers.durable.<listener-<machine id>>`
+(`consumernames.DurableKey`), never the bucket's wildcard; and subscription to every session's
+agent-stream frames. A `gcp:NatsHub` user with `dispatchMachineId` holds it. No session shares the user, so it holds none
 of `SessionPermissions`: it is a direct publish to a session's agent-stream frames, or a read of a session's relay subject, that is refused.
 Whatever holds its seed, `envoy-dispatch` or the listener beside it, can still read every session's
 frames and send control to any session; its filtered create on `delivery-events` lets it create
@@ -4083,6 +4087,15 @@ first (`--rbac-render`, `--iam-preview`), then the live grants, and exits 0 with
 naming each principal and right, or 2 naming each step it could not read. `--report <file>` writes
 the same as JSON. `scripts/operator-token-minters.test.sh` runs every plant and control against a
 fake `kubectl`, `gcloud`, `curl` and `agent-secrets`.
+The auth service grants a Dispatch connection more by the connection's own name
+(`natsgrant.ParseDispatchConnection`), for the fresh consumer names (`ENVOY_CONSUMER_NAMES=fresh`):
+`dispatch-intake/<durable>/<generation>[/<old generation>]` the create, info and acknowledgements
+of `<durable>~<generation>` and the info and delete of `<durable>~<old generation>`, for
+`delivery-events` or `delivery-jobs`; `dispatch-cleanup/<durable>/<generation>` the info and delete
+of that one generation; and `listener-intake/<machine id>/<generation>[/<old generation>]` the same
+calls on the generations of its own listener's durable, `listener-<machine id>~<generation>`, but
+only when the name's machine id is the one the auth service's entry grants: a name never chooses
+the machine. Every other name, and a hub's static user, holds the set above alone.
 
 A plugin release builds the sets from Envoy's names at its own commit, so a listener built from a
 later commit that publishes or subscribes to a subject those names lacked needs a hub rendered by
