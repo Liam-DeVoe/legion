@@ -549,8 +549,9 @@ What each part is for:
   `PI_CONFIG_FILES` after the operator's own and the role's own, in the order the project's file
   declares the experiments, and ends its system prompt with each arm's `instructions` in that same
   order.
-  The draw is made once, when the unit is opened, and is recorded with the arm, the mode in force
-  and the instant; the launch then follows that record and not the mode, so moving a mode to `off`
+  The draw is made once, when the unit is opened, and is recorded with the arm, its `plan` where it
+  names one, the mode in force and the instant; the launch then follows that record and not the
+  mode, so moving a mode to `off`
   stops new draws and takes nothing from a unit already running.
   Under `runtime: kubernetes` each overlay must be a file one of the operator's pod mounts
   carries, and the day a project declares an arm with overlay files every live issue pod of the
@@ -1453,13 +1454,15 @@ Closing the terminal leaves the project without one, and the daemon logs
   earlier release's own `legion state` prints it.
 
   **The same answers in `legion state --json`.** Each issue carries `assignments`, one
-  `{experiment, variant, mode, drawnAt}` per answer that applies to it, in that same declared
+  `{experiment, variant, mode, drawnAt, plan?}` per answer that applies to it, in that same declared
   order and then any experiment the file no longer names, in the order of their names; the
   declaration each answer of a declared experiment was drawn from is in the settings, under
   `settings.projects.<KEY>.memory` for the block's experiment and
   `settings.projects.<KEY>.experiments` for the rest. An issue carries its tree's answer for a
   tree experiment and its own for an issue experiment, `drawnAt` is absent where no draw was
-  made, and the key itself is absent from an issue no experiment holds an answer for. The three
+  made, `plan` is the group the arm set at the draw (`owner` or `default`), which the issue keeps
+  whatever the file says later, and is absent where the arm set none, and the key itself is absent
+  from an issue no experiment holds an answer for. The three
   fields the `memory` experiment fills — `memoryGroup` (`memory` or `none`), `memoryDrawMode`
   (the mode in force at the draw) and `memoryDrawnAt` — are still on every issue and answer
   exactly as they did, absent together where nothing was drawn for that tree. Read

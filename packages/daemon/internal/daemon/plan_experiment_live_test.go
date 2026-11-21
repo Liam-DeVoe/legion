@@ -102,8 +102,8 @@ func (l *experimentLive) declare(onVariant string) {
 
 // groupRecorded hands two issues to Legion with the arm a in force. `legion state` prints the
 // line `planning: 2 issues — 2 a (on)`, and `legion state --json` shows on each issue its
-// assignment of planning, the arm a at mode on with the instant of its draw. Control: before
-// either issue, the same command prints `planning: none`.
+// assignment of planning, the arm a at mode on with the instant of its draw and the group the arm
+// set, `owner`. Control: before either issue, the same command prints `planning: none`.
 func (l *experimentLive) groupRecorded() {
 	before := l.legionState()
 	if !slices.Contains(strings.Split(before, "\n"), "planning: none") {
@@ -127,10 +127,10 @@ func (l *experimentLive) groupRecorded() {
 	for _, issue := range l.drawnA {
 		assignments := state.Issues[issue.Key].Assignments
 		at := slices.IndexFunc(assignments, func(a api.AssignmentView) bool { return a.Experiment == "planning" })
-		if at < 0 || assignments[at].Variant != "a" || assignments[at].Mode != string(config.ExperimentOn) || assignments[at].DrawnAt == nil {
-			l.t.Fatalf("`legion state --json` shows %s's assignments as %+v; want planning at the arm a, mode on, with the instant of its draw", issue.Key, assignments)
+		if at < 0 || assignments[at].Variant != "a" || assignments[at].Mode != string(config.ExperimentOn) || assignments[at].DrawnAt == nil || assignments[at].Plan != string(config.PlanGroupOwner) {
+			l.t.Fatalf("`legion state --json` shows %s's assignments as %+v; want planning at the arm a, mode on, with the instant of its draw and the group owner", issue.Key, assignments)
 		}
-		l.note("`legion state --json` shows %s in planning, arm %s, mode %s, drawn at %s", issue.Key, assignments[at].Variant, assignments[at].Mode, assignments[at].DrawnAt)
+		l.note("`legion state --json` shows %s in planning, arm %s, mode %s, group %s, drawn at %s", issue.Key, assignments[at].Variant, assignments[at].Mode, assignments[at].Plan, assignments[at].DrawnAt)
 	}
 }
 

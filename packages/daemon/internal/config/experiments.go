@@ -549,7 +549,8 @@ func variantNames(variants []Variant) []string {
 // three memory fields (internal/projection's memoryOf), which are the draw of the issue's tree and
 // the same for every issue of it (packages/contracts/src/legion-api.ts, legionIssue's
 // memoryGroup), so an issue unit would serve each issue an answer of its own under fields that
-// promise its tree's. Every other name of the key declares whatever variants and unit it likes.
+// promise its tree's. Every other name of the key declares whatever variants and unit it likes,
+// but for one whose arms name `plan`, which draws for each issue (readExperiment).
 func checkExperimentMemory(experiments []Experiment, blockWritten bool, key string) error {
 	index := slices.IndexFunc(experiments, func(e Experiment) bool { return e.Name == MemoryExperimentName })
 	if index < 0 {

@@ -1129,9 +1129,11 @@ func TestStateGolden(t *testing.T) {
 // own state, asked through the route itself. 201 is no contract SupportedContracts records, so the
 // caller is served at 199, the recorded contract below it (recordedContractAtOrBelow), which the
 // mark names: its `repositories` block in the shape contract 152 gave it, written from the same
-// entries (withoutRepositoriesLive), and every other key as a caller at 199 is served it, since no
-// other row of stateNarrowings stands above 199. 199 moved no answer's shape, so those are the
-// keys a caller at 193 is served too. shapedAnswersContract's row and pauseContract's stand below
+// entries (withoutRepositoriesLive), each assignment without its `plan`, since
+// assignmentPlanContract's row stands above 199 too, and every other key as a caller at 199 is
+// served it, since no third row of stateNarrowings stands above 199. 199 moved no answer's shape,
+// so those are the keys a caller at 193 is served too. shapedAnswersContract's row and
+// pauseContract's stand below
 // it, which is why the golden carries `lowestPluginContract`, each claim view's `updateState` and
 // `paused`. `packages/contracts/src/legion-api.test.ts` parses it with a copy of contract 152's
 // schema of the block, so the narrowing is held to the reader it is written for, and its drift

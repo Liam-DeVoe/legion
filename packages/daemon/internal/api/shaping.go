@@ -511,7 +511,14 @@ type stateNarrowing struct {
 // all whichever runs first, and a caller below only the higher one keeps the field with its
 // `place` and its `length`, which is what the lower band's own contract describes.
 //
-// A second pair touches one block, and one band of it writes that block in an older shape
+// A second pair is of the same kind: assignmentsContract's band drops each issue's `assignments`
+// whole, and assignmentPlanContract's takes `plan` from inside each row of that same list. A
+// caller below both is served no `assignments` whichever runs first. The second reads what the
+// first left only to know whether it took anything: run after it, as this table runs them, it
+// finds no row and writes no line, so a caller below assignmentsContract is told of the
+// assignments and not of their `plan` (narrowingsExpected holds that line back).
+//
+// A third pair touches one block, and one band of it writes that block in an older shape
 // rather than taking a key out: repositoriesLiveContract's band writes `repositories` as
 // contract 152 gave it, keys this daemon no longer writes among them, from the entries of that
 // block alone, and repositoryAppsContract's takes `apps` off the entries of that older block.
@@ -987,8 +994,8 @@ const pauseContract = 178
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes
 // moves that constant, and the contract this block arrived at stays where it is. It moves only
-// with this change's own number, and it is the last number of answers.go's SupportedContracts,
-// which names the constant rather than its number for that reason.
+// with this change's own number, and it is a number of answers.go's SupportedContracts, which
+// names the constant rather than its number for that reason.
 const repositoriesLiveContract = 202
 
 // assignmentPlanContract is the daemon contract that added each assignment's `plan`, the group an

@@ -717,8 +717,8 @@ provider_keys:
   The system prompt ends with each such arm's `instructions` in that same order, after the
   deployment's own.
   The draw is made once, when the unit is opened — a tree's when its lifecycle row is first
-  created, an issue's when the daemon first records that issue — and is recorded with the arm, the
-  mode in force and the instant.
+  created, an issue's when the daemon first records that issue — and is recorded with the arm, its
+  `plan` where it names one, the mode in force and the instant.
   The launch follows the record, not the mode: a unit drawn into an arm keeps that arm's files
   while the project's file still names the arm, whatever the mode is now, and taking the files
   away is taking the arm out of the file.

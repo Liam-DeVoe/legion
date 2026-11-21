@@ -19,9 +19,10 @@ import (
 )
 
 // drawnAs is one experiment's answer for a unit, as one line, so two answers are compared whole and
-// a failure names what each holds: the arm drawn, the mode it was drawn under and the instant. An
-// answer with no instant reads the same whatever the other two say, which is what a hand-over
-// settles a unit at for an experiment the tree it left never answered.
+// a failure names what each holds: the arm drawn, the mode it was drawn under and the instant. The
+// arms these tests draw name no `plan`, so no answer they compare holds a group. An answer with no
+// instant reads the same whatever the other two say, which is what a hand-over settles a unit at
+// for an experiment the tree it left never answered.
 func drawnAs(variant, mode string, at *time.Time) string {
 	when := "no draw"
 	if at != nil {

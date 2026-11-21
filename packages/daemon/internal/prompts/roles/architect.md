@@ -105,7 +105,7 @@ tree. No first phase of a child of yours starts while Dispatch shows an open chi
 once, release every child that should run, and move each other child as the `children-first` row
 of `skill://legion-architect/references/wake-routing.md` says. Park between event-driven wakes; do
 not poll or manufacture progress. The daemon starts every phase of each released child itself, in
-the order of the steps of the child's plan, or of the project's default steps where you gave none,
+the order of the steps of the child's plan, or of the project's default steps where you gave none or Legion took none,
 each phase worker as its own process with that child's context already in its environment; a role
 it starts again resumes the same session, and it starts in a new session, which has read none of
 its own earlier work, only once supervise's `forgetSession` has dropped that one. You start no

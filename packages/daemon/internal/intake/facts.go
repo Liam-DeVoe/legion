@@ -1146,9 +1146,9 @@ func (f GateRegistered) namedIssue() (string, bool) { return f.Issue, true }
 // Dispatch at that version and held them to plan.Supported and plan.Validate, so a plan either
 // check refuses never reaches the workflow. Generation is the issue's generation the route read,
 // and 0 for an issue the daemon has not recorded, whose plan waits at generation 0 until the
-// issue's first step takes the newest plan its owner gave. GivenBy is the claim of the
-// architect whose grant gave it, which is how the first step tells its owner's plan from an
-// earlier owner's.
+// issue's first step takes the newest plan its owner gave, or, where the issue's experiment's
+// group takes no plan from its owner, passes it over. GivenBy is the claim of the architect whose
+// grant gave it, which is how the first step tells its owner's plan from an earlier owner's.
 //
 // The workflow judges the giver and the generation again in the fact's own transaction, since
 // the route read them before the fact lock: a giver that owns the issue no longer is refused
@@ -1176,10 +1176,11 @@ func (f PlanGiven) namedIssue() (string, bool) { return f.Issue, true }
 // claim of the architect whose grant asked for it, at Generation, the issue's generation the route
 // read. The workflow judges the stop again in the fact's own transaction: an architect that owns
 // the issue no longer is refused ISSUE_OUTSIDE_TREE (IssueOutsideTree), and a stop of a run the
-// issue has left TASK_STALE_GENERATION (TaskStaleGeneration), each left unspent. It then stops the
-// task, or answers TaskNotFound, TaskDone, or TaskNotStopped for an issue whose experiment's
-// group takes no plan from its owner; a stop of a task already stopped changes nothing and is no
-// refusal. Each request is its own fact, so a task the owner stops, starts again with a later
+// issue has left TASK_STALE_GENERATION (TaskStaleGeneration), each left unspent. It then answers
+// TaskNotStopped for every task of an issue whose experiment's group takes no plan from its owner,
+// whatever state the task stands in, and for any other issue stops the task or answers
+// TaskNotFound or TaskDone; a stop of a task already stopped changes nothing and is no refusal.
+// Each request is its own fact, so a task the owner stops, starts again with a later
 // version and stops once more is stopped twice.
 type TaskStopped struct {
 	Issue, Task string

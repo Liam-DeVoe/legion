@@ -174,7 +174,8 @@ func TestProjectExperimentsTakeMemoryUnderTheKey(t *testing.T) {
 // empty, one variant where the mode draws, a weight that is not a whole number above zero, an
 // overlay or an instructions path no role could load, a mode on that names no on_variant, an
 // on_variant that is no variant of its experiment, and the three shapes of `experiments.memory`
-// the name memory forbids: beside the block, with other variants, and drawn for each issue.
+// the name memory forbids: beside the block, with other variants, and drawn for each issue. The
+// rules of `plan` are refused as well, each by a row of TestThePlanOfAVariantIsRefused.
 func TestProjectExperimentsRefusals(t *testing.T) {
 	cases := []struct{ name, block, body, extra, want string }{
 		{name: "the key is not a mapping", block: "[alpha]",

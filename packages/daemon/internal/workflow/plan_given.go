@@ -222,9 +222,12 @@ func (e *Engine) afterVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGi
 // the route read it unrecorded, still waits there for the issue's first step: the issue stands
 // before that step (beforeItsWork), and its generation holds no plan the step keeps — none, or
 // only one an earlier owner gave, which the step passes over (passOverEarlierOwners) — so the
-// step takes the newest plan its owner gave (planFirstStep). Once a plan of the generation is the
-// one its run walks, the default steps the step wrote or a plan of its owner's, the run went on
-// without the one given at generation 0.
+// step takes the newest plan its owner gave, or passes it over too for an issue whose group takes
+// none (planFirstStep). Once a plan of the generation is the one its run walks, the default steps
+// the step wrote or a plan of its owner's, the run went on without the one given at generation 0.
+// versionRefusal reads the group only after this judgement, so a plan given at generation 0 for an
+// issue whose group takes none is answered PLAN_STALE_GENERATION once its run went on, and
+// PLAN_NOT_TAKEN while it still waits.
 func (e *Engine) waitsAtZero(ctx context.Context, tx pgx.Tx, issue record.Issue) (bool, error) {
 	if !beforeItsWork(issue) {
 		return false, nil

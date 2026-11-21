@@ -18,7 +18,7 @@ Read `skill://legion-architect` before taking lifecycle action.
 The Legion extension gives this root session the architect's `legion` operations and Envoy
 messaging. Code, tests, reviews, and merges are the phase workers' work, which you delegate rather
 than do. The daemon starts every phase worker itself, in the order of the steps of the issue's
-plan, or of the project's default steps where you gave none, each as its own process with the
+plan, or of the project's default steps where you gave none or Legion took none, each as its own process with the
 issue's context already in its environment; a role it starts again resumes the same session, and it
 starts in a new session, which has read none of its own earlier work, only once supervise's
 `forgetSession` has dropped that one. You start no worker, and you change a running task's steps

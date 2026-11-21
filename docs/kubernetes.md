@@ -2579,7 +2579,7 @@ The header of `20261117034837_issue_plans.up.sql` carries this same block.
 What the way back costs is every plan given before the rollback, which its owner gives again, and each delivery a deleted row had still to make.
 A deleted `task-stopped` notice is a stop its issue's architect is never told of: which task stopped, and which architect or which failed step stopped it.
 A deleted `retro-held` notice is a hold its parent's architect is never told of, with the issues beneath it that the retro waits for.
-A deleted `plan-not-taken` notice is a plan of an earlier owner that the issue's architect is never told its first step passed over, so it is not asked to give that plan again as its own.
+A deleted `plan-not-taken` notice is a plan an issue's first step passed over that the issue's architect is never told of: a plan of an earlier owner, which it is then not asked to give again as its own, or, once the release whose experiment sets how each issue is done has run, a plan of an issue whose experiment's group takes none.
 A deleted controller notice of one of those kinds is the same telling, lost to the controller.
 A deleted `step_stop` row costs the stop of one step's process: that process runs on until its issue closes, and the way back drops the task's stop with the plan rows.
 An issue whose `task-stopped` reason the way back cleared is a plain hold under the earlier release: its architect's retry, or a person's `todo` on a root, starts the role of the phase it is held from again, the step the stop ended, on today's line.
