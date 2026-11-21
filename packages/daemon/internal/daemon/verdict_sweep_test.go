@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"slices"
 	"strconv"
@@ -15,7 +16,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
-	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -23,7 +23,7 @@ import (
 )
 
 // sweptPull is one open pull request of acme/widgets as GitHub's GraphQL API lists it to the
-// writers' sweep: its number, head branch and head commit, and the latest review of each author.
+// writers' sweep: its number, head branch and head commit, and every review of it, oldest first.
 type sweptPull struct {
 	number  int
 	ref     string
@@ -31,9 +31,9 @@ type sweptPull struct {
 	reviews []sweptReview
 }
 
-// sweptReview is one author's latest review as GraphQL lists it: GitHub's id, the author's login as
-// REST spells it (a bot's ends in [bot], which GraphQL leaves off and marks by its type), GraphQL's
-// state (APPROVED, CHANGES_REQUESTED, COMMENTED) and the body.
+// sweptReview is one review of a pull request: GitHub's id, which orders an author's reviews, the
+// author's login as REST spells it (a bot's ends in [bot], which GraphQL leaves off and marks by
+// its type), GraphQL's state (APPROVED, CHANGES_REQUESTED, COMMENTED) and the body.
 type sweptReview struct {
 	id     int64
 	author string
@@ -41,11 +41,30 @@ type sweptReview struct {
 	body   string
 }
 
+// latestPerAuthor is each author's last review of reviews, of every state where opinionated is
+// false, as GraphQL's latestReviews lists them, and of approvals and requests for changes alone
+// where it is true, as latestOpinionatedReviews lists them.
+func latestPerAuthor(reviews []sweptReview, opinionated bool) []sweptReview {
+	var latest []sweptReview
+	for _, review := range reviews {
+		if opinionated && review.state != "APPROVED" && review.state != "CHANGES_REQUESTED" {
+			continue
+		}
+		if at := slices.IndexFunc(latest, func(kept sweptReview) bool { return kept.author == review.author }); at >= 0 {
+			latest[at] = review
+		} else {
+			latest = append(latest, review)
+		}
+	}
+	return latest
+}
+
 // sweepGitHub is verdictGitHub with what the writers' sweep reads besides: the open pull requests of
 // acme/widgets through the GraphQL API, one pull request to a page so the sweep must follow the
-// pages, with the latest reviews only where the query asks for them; and the merge queue's
-// gh-readonly-queue/ refs, each naming the commit of its group. lists counts the GraphQL pages
-// read, and requests every request GitHub saw.
+// pages, with each author's last review under whichever of latestReviews and
+// latestOpinionatedReviews the query names, and only where the query asks for them; and the merge
+// queue's gh-readonly-queue/ refs, each naming the commit of its group. lists counts the GraphQL
+// pages read, and requests every request GitHub saw.
 type sweepGitHub struct {
 	*verdictGitHub
 	open     []sweptPull
@@ -54,8 +73,9 @@ type sweepGitHub struct {
 	requests int
 }
 
-func (g *sweepGitHub) serve(t *testing.T) http.HandlerFunc {
-	verdicts := g.verdictGitHub.serve(t)
+// serve answers what the sweep reads, and hands every other request to verdicts, the rig's own
+// handler.
+func (g *sweepGitHub) serve(t *testing.T, verdicts http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		g.mu.Lock()
 		g.requests++
@@ -83,8 +103,9 @@ func (g *sweepGitHub) serve(t *testing.T) http.HandlerFunc {
 }
 
 // listOpen answers the sweep's GraphQL read of the open pull requests of acme/widgets, one to a
-// page from the cursor after, as GitHub answers it: a bot's login without its [bot], and the
-// latest reviews only where the query's reviews variable asks for them.
+// page from the cursor after, as GitHub answers it: a bot's login without its [bot], and each
+// author's last review only where the query's reviews variable asks for them, under the field the
+// query names.
 func (g *sweepGitHub) listOpen(t *testing.T, w http.ResponseWriter, r *http.Request) {
 	var sent struct {
 		Query     string         `json:"query"`
@@ -109,9 +130,13 @@ func (g *sweepGitHub) listOpen(t *testing.T, w http.ResponseWriter, r *http.Requ
 	if at < len(g.open) {
 		pull := g.open[at]
 		node := map[string]any{"number": pull.number, "headRefName": pull.ref, "headRefOid": pull.head}
+		field := "latestReviews"
+		if strings.Contains(sent.Query, "latestOpinionatedReviews") {
+			field = "latestOpinionatedReviews"
+		}
 		if sent.Variables["reviews"] == true {
 			reviews := []map[string]any{}
-			for _, review := range pull.reviews {
+			for _, review := range latestPerAuthor(pull.reviews, field == "latestOpinionatedReviews") {
 				author := map[string]any{"__typename": "User", "login": review.author}
 				if login, bot := strings.CutSuffix(review.author, "[bot]"); bot {
 					author = map[string]any{"__typename": "Bot", "login": login}
@@ -119,7 +144,7 @@ func (g *sweepGitHub) listOpen(t *testing.T, w http.ResponseWriter, r *http.Requ
 				reviews = append(reviews, map[string]any{"databaseId": review.id, "author": author, "state": review.state, "body": review.body,
 					"submittedAt": time.Date(2026, 11, 21, 7, 0, int(review.id), 0, time.UTC)})
 			}
-			node["latestReviews"] = map[string]any{"nodes": reviews}
+			node[field] = map[string]any{"nodes": reviews}
 		}
 		nodes = append(nodes, node)
 	}
@@ -136,15 +161,15 @@ type sweepRig struct {
 	sweep *sweepGitHub
 }
 
-// newSweepRig is newVerdictRig with its runtime pointed at a sweepGitHub over the rig's own fake,
-// before anything reads GitHub: the writer and the merge-state reader newVerdictRig started read
-// githubAPI only for a write or a read asked for after this, through the writer's queue or the
-// reader's wake set, both behind a lock this goroutine takes after setting it.
+// newSweepRig is newVerdictRig with its fake answering what the sweep reads (sweepGitHub), listing
+// open as acme/widgets' open pull requests.
 func newSweepRig(t *testing.T, tokens appauth.Tokens, entries []config.VerdictRepository, seed func(*testing.T, *store.Pool), open ...sweptPull) *sweepRig {
 	t.Helper()
-	rig := newVerdictRig(t, tokens, entries, seed)
-	sweep := &sweepGitHub{verdictGitHub: rig.github, open: open, groups: map[string]string{}}
-	rig.w.githubAPI = githubtest.Server(t, githubtest.Spec{Handle: sweep.serve(t)})
+	var sweep *sweepGitHub
+	rig := newVerdictRig(t, tokens, entries, seed, func(github *verdictGitHub, verdicts http.HandlerFunc) http.HandlerFunc {
+		sweep = &sweepGitHub{verdictGitHub: github, open: open, groups: map[string]string{}}
+		return sweep.serve(t, verdicts)
+	})
 	return &sweepRig{verdictRig: rig, sweep: sweep}
 }
 
@@ -246,27 +271,29 @@ func ciReviewBody(head string) string {
 }
 
 // C2's sweep cases: at boot and every 10 minutes the sweep lists the open pull requests of a verdict
-// repository whose entry names a ci_reviewer, with their latest reviews, and counts the CI
-// reviewer's listed review only where its body's ci-review-head line names the pull request's
-// current head: an approval there writes success and a request for changes failure. A listed
-// review naming another commit or none writes nothing, and so does a person's listed approval,
-// which GitHub lists at the current head whatever head it read. A comment decides nothing.
+// repository whose entry names a ci_reviewer, with each author's last approval or request for
+// changes, and counts the CI reviewer's listed review only where its body's ci-review-head line
+// names the pull request's current head: an approval there writes success and a request for
+// changes failure, and a comment the CI reviewer left after it hides neither. A listed review
+// naming another commit or none writes nothing, and so does a person's listed approval, which
+// GitHub lists at the current head whatever head it read. A comment decides nothing.
 func TestLegionVerdictSweepCountsTheCIReviewersListedReviewOfTheCurrentHeadAlone(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		review sweptReview
-		want   []string
+		name    string
+		reviews []sweptReview
+		want    []string
 	}{
-		{"the CI reviewer's approval naming the current head", sweptReview{1, ciReviewer, "APPROVED", ciReviewBody("out-1")}, []string{"success"}},
-		{"the CI reviewer's request for changes naming the current head", sweptReview{1, ciReviewer, "CHANGES_REQUESTED", ciReviewBody("out-1")}, []string{"failure"}},
-		{"the CI reviewer's approval naming another commit", sweptReview{1, ciReviewer, "APPROVED", ciReviewBody("out-0")}, nil},
-		{"the CI reviewer's approval naming no commit", sweptReview{1, ciReviewer, "APPROVED", "No blocking findings."}, nil},
-		{"the CI reviewer's comment naming the current head", sweptReview{1, ciReviewer, "COMMENTED", ciReviewBody("out-1")}, nil},
-		{"a person's listed approval", sweptReview{2, "a-writer", "APPROVED", ciReviewBody("out-1")}, nil},
+		{"the CI reviewer's approval naming the current head", []sweptReview{{1, ciReviewer, "APPROVED", ciReviewBody("out-1")}}, []string{"success"}},
+		{"the CI reviewer's request for changes naming the current head", []sweptReview{{1, ciReviewer, "CHANGES_REQUESTED", ciReviewBody("out-1")}}, []string{"failure"}},
+		{"the CI reviewer's approval, then its comment", []sweptReview{{1, ciReviewer, "APPROVED", ciReviewBody("out-1")}, {3, ciReviewer, "COMMENTED", "One question."}}, []string{"success"}},
+		{"the CI reviewer's approval naming another commit", []sweptReview{{1, ciReviewer, "APPROVED", ciReviewBody("out-0")}}, nil},
+		{"the CI reviewer's approval naming no commit", []sweptReview{{1, ciReviewer, "APPROVED", "No blocking findings."}}, nil},
+		{"the CI reviewer's comment naming the current head", []sweptReview{{1, ciReviewer, "COMMENTED", ciReviewBody("out-1")}}, nil},
+		{"a person's listed approval", []sweptReview{{2, "a-writer", "APPROVED", ciReviewBody("out-1")}}, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pull := openOutside
-			pull.reviews = []sweptReview{tc.review}
+			pull.reviews = tc.reviews
 			rig := newSweepRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, nothingSeeded, pull)
 			rig.swept(t)
 			rig.swept(t)
@@ -346,6 +373,73 @@ func TestLegionVerdictSweepWritesAHeldVerdictAFailedWriteLeftUnwritten(t *testin
 		got, _ := capturePhase(t, rig.pool)
 		return got == phase.Accepting
 	})
+}
+
+// A sweep queues a write on every open head, and a fact's write queued behind a long batch of them
+// is made first: the fact's issue holds its merge-state reads on that write (verdictWriter.await),
+// so a write behind the sweep's would hold them for the writer's whole bound. The sweep's writes
+// then go on in the order they were queued, and a fact queued while they run goes before the rest.
+func TestLegionVerdictAFactsWriteGoesBeforeTheSweepsWrites(t *testing.T) {
+	writer := newVerdictWriter([]config.VerdictRepository{widgetsEntry})
+	for n := 1; n <= 50; n++ {
+		writer.add(verdictTarget{repository: widgets, number: 100 + n, head: fmt.Sprintf("swept-%d", n), overForeign: true})
+	}
+	writer.add(verdictTarget{issue: "CAPTURE-1", repository: widgets, number: 86, head: "code"})
+	var order []string
+	take := func() {
+		t.Helper()
+		target, ok := writer.next()
+		if !ok {
+			t.Fatalf("the writer took nothing after %v", order)
+		}
+		order = append(order, target.head)
+		writer.done(target)
+	}
+	take()
+	take()
+	writer.add(verdictTarget{issue: "CAPTURE-2", repository: widgets, number: 87, head: "code-87"})
+	take()
+	take()
+	if want := []string{"code", "swept-1", "code-87", "swept-2"}; !slices.Equal(order, want) {
+		t.Fatalf("the writer made its writes in the order %v, want %v: each fact's before the sweep's that wait", order, want)
+	}
+}
+
+// A sweep over a Legion head whose success already stands, as the writer wrote it, writes nothing
+// and asks no more merge-state reads: the writer asks one more read only after a pass that wrote a
+// conclusion or changed one, for GitHub to count the run it wrote. The sweep still reads what R19
+// asks of the head: the head's legion-verdict runs and its commit statuses.
+func TestLegionVerdictSweepAsksNoMergeStateReadOfAnUnchangedSuccessHead(t *testing.T) {
+	rig := newSweepRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewingWithPass, openCapture)
+	rig.approvedAndWritten(t)
+	reads := func() int {
+		_, events := rig.github.recorded()
+		return len(slices.DeleteFunc(events, func(e string) bool { return !strings.HasPrefix(e, "read pull request 86") }))
+	}
+	// quiet waits until GitHub has seen no read of pull request 86 for 50 of the rig's waits between
+	// reads, and answers how many reads it has seen and how many requests in all.
+	quiet := func() (int, int) {
+		t.Helper()
+		for {
+			n := reads()
+			if !testwait.Holds(50*readRigWait, readRigWait, func() bool { return reads() > n }) {
+				_, requests := rig.sweep.counts()
+				return n, requests
+			}
+		}
+	}
+	readsBefore, requestsBefore := quiet()
+	rig.swept(t)
+	readsAfter, requestsAfter := quiet()
+	if readsAfter != readsBefore {
+		t.Fatalf("the sweep over an unchanged success head made %d more reads of pull request 86, want none", readsAfter-readsBefore)
+	}
+	if made := requestsAfter - requestsBefore; made != 4 {
+		t.Fatalf("the sweep made %d requests, want 4: its page of open pull requests, the merge queue's refs, and the head's runs and statuses", made)
+	}
+	if writes, _ := rig.github.recorded(); len(writes) != 1 {
+		t.Fatalf("writes = %+v, want only the approve's", writes)
+	}
 }
 
 // C56: the sweep writes the daemon's own conclusion over each legion-verdict run and status of the

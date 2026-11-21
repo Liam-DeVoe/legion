@@ -27,13 +27,15 @@ import (
 const verdictSweepInterval = 10 * time.Minute
 
 // openPullRequestsQuery reads one page of a repository's open pull requests, a hundred at most:
-// each one's number, head branch and head commit and, where $reviews asks for them, the latest
-// review of each author, with its id, author, state, body and submission time. GraphQL names a
-// bot by its login without the [bot] REST ends it with, and by its type.
+// each one's number, head branch and head commit and, where $reviews asks for them, each author's
+// last opinionated review - an approval or a request for changes - with its id, author, state,
+// body and submission time. That is the review verdict.Decide reads as an author's word: a comment
+// left after it decides nothing and hides nothing, where latestReviews would list the comment in
+// its place. GraphQL names a bot by its login without the [bot] REST ends it with, and by its type.
 const openPullRequestsQuery = `query($owner:String!,$name:String!,$after:String,$reviews:Boolean!){
 repository(owner:$owner,name:$name){pullRequests(states:OPEN,first:100,after:$after){
 pageInfo{hasNextPage endCursor}
-nodes{number headRefName headRefOid latestReviews(first:100)@include(if:$reviews){
+nodes{number headRefName headRefOid latestOpinionatedReviews(first:100)@include(if:$reviews){
 nodes{databaseId author{__typename login}state body submittedAt}}}}}}`
 
 // ciReviewHead is the line a CI reviewer's review body names the head it read with:
@@ -46,16 +48,16 @@ var mergeGroupRef = regexp.MustCompile(`^refs/heads/gh-readonly-queue/.+/pr-([1-
 
 // sweptPullRequest is one open pull request as openPullRequestsQuery lists it.
 type sweptPullRequest struct {
-	Number        int    `json:"number"`
-	HeadRefName   string `json:"headRefName"`
-	HeadRefOid    string `json:"headRefOid"`
-	LatestReviews struct {
+	Number                   int    `json:"number"`
+	HeadRefName              string `json:"headRefName"`
+	HeadRefOid               string `json:"headRefOid"`
+	LatestOpinionatedReviews struct {
 		Nodes []listedReview `json:"nodes"`
-	} `json:"latestReviews"`
+	} `json:"latestOpinionatedReviews"`
 }
 
-// listedReview is one author's latest review of a pull request as openPullRequestsQuery lists it.
-// A deleted account's review has no author.
+// listedReview is one author's last opinionated review of a pull request as openPullRequestsQuery
+// lists it. A deleted account's review has no author.
 type listedReview struct {
 	DatabaseID int64 `json:"databaseId"`
 	Author     *struct {
@@ -177,7 +179,8 @@ func (w *workflowRuntime) sweepRepository(ctx context.Context, entry config.Verd
 }
 
 // openPullRequests is every open pull request of repository, read a page of a hundred at a time
-// (openPullRequestsQuery) with token, with each author's latest review where reviews is set.
+// (openPullRequestsQuery) with token, with each author's last opinionated review where reviews is
+// set.
 func (w *workflowRuntime) openPullRequests(ctx context.Context, token string, repository ghrepo.Repository, reviews bool) ([]sweptPullRequest, error) {
 	var pulls []sweptPullRequest
 	var after *string
@@ -251,7 +254,7 @@ func (w *workflowRuntime) recordSwept(ctx context.Context, entry config.VerdictR
 	})
 }
 
-// ciReviewerReview is the latest review of pull at its head by entry's ci_reviewer, as a verdict
+// ciReviewerReview is the last opinionated review of pull by entry's ci_reviewer, as a verdict
 // reads it, and whether one counts: an approval or a request for changes whose body's
 // ci-review-head line names the pull request's current head (spec R4). The review is recorded as
 // no person's, which the CI reviewer, a bot, is not.
@@ -259,7 +262,7 @@ func ciReviewerReview(entry config.VerdictRepository, pull sweptPullRequest) (st
 	if entry.CIReviewer == "" {
 		return store.VerdictReview{}, false
 	}
-	for _, listed := range pull.LatestReviews.Nodes {
+	for _, listed := range pull.LatestOpinionatedReviews.Nodes {
 		if listed.Author == nil {
 			continue
 		}
