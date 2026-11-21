@@ -183,13 +183,7 @@ type declinedAsk struct {
 
 // address is the block's address in the spec once restored.
 func (r *restoredBlock) address(spec issueDocument) string {
-	return storeBlockAddress(spec.refKey, r.id)
-}
-
-// storeBlockAddress is the store's address of block id of the document whose ref_key is refKey,
-// as the block index keys it: a U+0000 reads as U+FFFD, as the rendering writes it.
-func storeBlockAddress(refKey, id string) string {
-	return refKey + "#" + strings.ReplaceAll(id, "\x00", "\uFFFD")
+	return refs.BlockAddress(spec.refKey, r.id)
 }
 
 // sectionFate is what becomes of one section of the decisions document.
@@ -361,10 +355,7 @@ func (s *Service) restoreIssueDecisions(ctx context.Context, tx pgx.Tx, issue st
 		return result, fmt.Errorf("issue %s holds no spec to restore its answered asks to", issue)
 	}
 	r.spec = spec
-	decisions, found, err := readIssueDocument(ctx, tx, `
-		select `+issueDocumentColumns+` from decisions_documents() d join artifacts a on a.id = d.id
-		where d.issue_key = $1 order by a.created_at, a.id limit 1
-	`, issue)
+	decisions, found, err := readIssueDocument(ctx, tx, `select `+issueDocumentColumns+` `+refs.DecisionsDocumentOf("$1"), issue)
 	if err != nil {
 		return result, fmt.Errorf("read the decisions document of %s: %w", issue, err)
 	}
@@ -645,7 +636,7 @@ func (r *issueRestore) planDocumentMoves(ctx context.Context) error {
 		}}
 		if row, named := r.decisionsRow(id); named {
 			restore.row, restore.work.Ask = row, row.ID
-			restore.from = storeBlockAddress(r.decisions.refKey, id)
+			restore.from = refs.BlockAddress(r.decisions.refKey, id)
 			restore.work.Address = restore.from
 		} else {
 			restore.rowless = true
@@ -971,7 +962,7 @@ func (r *issueRestore) planSections(ctx context.Context, tree *pmdoc.Node) (map[
 			// document holds under that ask's block id: either moves into the spec.
 			restore.moved = node
 			if restore.from == "" {
-				restore.from = storeBlockAddress(r.decisions.refKey, id)
+				restore.from = refs.BlockAddress(r.decisions.refKey, id)
 			}
 			movedBy[id] = restore
 			drop[id] = true
@@ -2051,7 +2042,7 @@ func (r *issueRestore) passMove(address, id string) (string, bool) {
 		}
 	}
 	for _, converted := range r.sections {
-		if storeBlockAddress(r.decisions.refKey, converted.section.headingID()) != address {
+		if refs.BlockAddress(r.decisions.refKey, converted.section.headingID()) != address {
 			continue
 		}
 		switch converted.fate {
@@ -2065,7 +2056,7 @@ func (r *issueRestore) passMove(address, id string) (string, bool) {
 }
 
 // blockPointer is the `shaped` value naming the block at address, a store address
-// (storeBlockAddress), and whether address is one of a document of the issue that stands.
+// (refs.BlockAddress), and whether address is one of a document of the issue that stands.
 func (r *issueRestore) blockPointer(address string) (string, bool) {
 	refKey, id, found := strings.Cut(address, "#")
 	if !found {
@@ -2227,10 +2218,10 @@ func (r *issueRestore) writeFacts(ctx context.Context, cause int64) error {
 	}
 	var keepRows []keepRow
 	for _, converted := range r.sections {
-		heading := storeBlockAddress(r.decisions.refKey, converted.section.headingID())
+		heading := refs.BlockAddress(r.decisions.refKey, converted.section.headingID())
 		switch converted.fate {
 		case fateDecision:
-			address := storeBlockAddress(r.spec.refKey, converted.decisionID)
+			address := refs.BlockAddress(r.spec.refKey, converted.decisionID)
 			moved(heading, address)
 			if converted.keep == nil || converted.keep.keptBy == "" {
 				continue
@@ -2256,7 +2247,7 @@ func (r *issueRestore) writeFacts(ctx context.Context, cause int64) error {
 			}
 			keepRows = append(keepRows, keepRow{block: converted.decisionID, sum: keptSum, keptBy: login, keptAt: converted.keep.keptAt})
 		case fateReading, fateDropped:
-			moved(heading, storeBlockAddress(converted.askDocument.refKey, converted.askBlock))
+			moved(heading, refs.BlockAddress(converted.askDocument.refKey, converted.askBlock))
 		case fateRemovedAsk:
 			tuples = append(tuples, graphstore.Tuple{
 				FromKind: refs.BlockNodeKind, FromID: heading, Kind: graphstore.TupleMovedTo,
