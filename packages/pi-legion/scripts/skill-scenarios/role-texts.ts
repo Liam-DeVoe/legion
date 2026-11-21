@@ -143,6 +143,30 @@ export function roleTexts(checkout: string, reader: Reader): RoleTexts {
   return { files: [...depth.keys()].sort(), missing, depth, via };
 }
 
+/** The texts several readers read in `checkout`: each text any of them reads, at the fewest links
+ * any of them needs, with the link that reached it there, and each missing text once. A label whose
+ * one checkout serves two roles searches this union, since every text either role reads can state
+ * its rule to that role. */
+export function readersTexts(checkout: string, readers: readonly Reader[]): RoleTexts {
+  const depth = new Map<string, number>();
+  const via = new Map<string, string>();
+  const missing: string[] = [];
+  for (const reader of readers) {
+    const texts = roleTexts(checkout, reader);
+    for (const file of texts.files) {
+      const at = texts.depth.get(file) ?? 0;
+      const held = depth.get(file);
+      if (held !== undefined && held <= at) continue;
+      depth.set(file, at);
+      const from = texts.via.get(file);
+      if (from === undefined) via.delete(file);
+      else via.set(file, from);
+    }
+    for (const file of texts.missing) if (!missing.includes(file)) missing.push(file);
+  }
+  return { files: [...depth.keys()].sort(), missing, depth, via };
+}
+
 /** The chain of links from an entry text to `file`, the entry text first. */
 export function chainOf(texts: RoleTexts, file: string): string[] {
   const chain = [file];

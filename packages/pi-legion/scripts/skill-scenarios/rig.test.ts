@@ -1902,7 +1902,7 @@ describe("services_up", () => {
   });
 });
 
-// cmd_batch of reviewer-own-head runs each of its four cases <runs> times for each label, each
+// cmd_batch of reviewer-own-head runs each of its six cases <runs> times for each label, each
 // as a run of its own. A stand-in rig.sh records each run's arguments, which cmd_batch hands to
 // `rig.sh run` through xargs, and a stand-in go records the build of the runs' natsd.
 describe("cmd_batch", () => {
@@ -1929,7 +1929,14 @@ describe("cmd_batch", () => {
       [here, rigWork]
     );
     expect({ code: result.code, stderr: result.stderr }).toEqual({ code: 0, stderr: "" });
-    const cases = ["sibling-fails", "ci-only", "no-implementer", "no-tester"];
+    const cases = [
+      "sibling-fails",
+      "ci-only",
+      "no-implementer",
+      "no-tester",
+      "no-verdict-fail",
+      "no-verdict-pass",
+    ];
     let index = 0;
     const want = ["head", "ablate-head"].flatMap((label) =>
       cases.flatMap((which) =>
@@ -1944,7 +1951,7 @@ describe("cmd_batch", () => {
   });
 
   // Catches: a run whose name leaves out its case, so the cases' batches of one label, each
-  // numbered from 1, replace each other's runs; a case outside the four; and a run directory whose
+  // numbered from 1, replace each other's runs; a case outside the six; and a run directory whose
   // own name tells its agent the scenario, the case or the label (each is in the map alone).
   test("cmd_run names a reviewer-own-head run by its case in the map, in a directory of a random name, and refuses another case", () => {
     // rig.sh resolves its work directory's path once (realpath), as this does.
@@ -1982,7 +1989,7 @@ describe("cmd_batch", () => {
     const refused = bash(script, [rigWork, "frobnicate"]);
     expect(refused.code).toBe(1);
     expect(refused.stderr).toContain(
-      "'frobnicate' is not sibling-fails, ci-only, no-implementer or no-tester"
+      "'frobnicate' is not sibling-fails, ci-only, no-implementer, no-tester, no-verdict-fail or no-verdict-pass"
     );
   });
 
@@ -2014,6 +2021,108 @@ describe("cmd_batch", () => {
     expect(bash(script, [rigWork, "head"])).toMatchObject({ code: 0, stderr: "" });
     const run = realpathSync(path.join(rigWork, "maps", "runs", "architect-pass-and-fail-head-1"));
     expect(readFileSync(path.join(run, "switch"), "utf8")).toBe("\n");
+  });
+
+  // Catches: an architect-pass-and-fail batch that runs its own world alone, or its cases alone; a
+  // case run whose name leaves out its case, so it replaces the scenario's own run of that number;
+  // and a case outside the two.
+  test("architect-pass-and-fail runs its own world and both no-verdict cases, each case run named by its case", () => {
+    const here = freshDir("architect-batch-here");
+    const rigWork = freshDir("architect-batch-work");
+    writeFileSync(path.join(here, "rig.sh"), `printf '%s\\n' "$*" >>"${here}/runs"\n`);
+    const batch = bash(
+      [
+        fn("fail"),
+        fn("heads_scenario"),
+        fn("hidden_needs_heads"),
+        fn("cmd_batch"),
+        "load_label() { :; }",
+        'lock_services() { S=$work/services; mkdir -p "$S"; }',
+        "on_exit() { :; }",
+        "services_up() { :; }",
+        "date() { echo 1700000000; }",
+        "go() { :; }",
+        `here=$1 work=$2 root=${root}`,
+        "cmd_batch architect-pass-and-fail 1 head ablate-states-read",
+      ].join("\n"),
+      [here, rigWork]
+    );
+    expect({ code: batch.code, stderr: batch.stderr }).toEqual({ code: 0, stderr: "" });
+    let index = 0;
+    const want = ["head", "ablate-states-read"].flatMap((label) =>
+      ["", " no-verdict-fail", " no-verdict-pass"].map(
+        (which) => `run architect-pass-and-fail ${label} 1 ${++index} 1700000000${which}`
+      )
+    );
+    const runs = readFileSync(path.join(here, "runs"), "utf8").split("\n").filter(Boolean);
+    expect(runs.toSorted()).toEqual(want.toSorted());
+
+    const work = realpathSync(freshDir("architect-run-work"));
+    mkdirSync(path.join(work, "services"), { recursive: true });
+    writeFileSync(path.join(work, "services", "env"), "");
+    const script = [
+      fn("fail"),
+      fn("heads_scenario"),
+      fn("hidden_needs_heads"),
+      fn("cmd_run"),
+      'load_label() { P=$work/profiles/0000000000000001; mkdir -p "$P"; echo "checkout /c/$1" >"$P/built-from"; }',
+      "on_exit() { :; }",
+      `run_architect_pass_and_fail() { printf '%s\\n' "$*" >"$R/ran"; echo exit=0 >"$R/out.txt"; }`,
+      `work=$1 maps=$1/maps services_env=$1/services/env root=${root} hide_state_file=''`,
+      'if [ -n "$2" ]; then cmd_run architect-pass-and-fail head 1 4 1700000000 "$2"; else cmd_run architect-pass-and-fail head 1 4 1700000000; fi',
+    ].join("\n");
+    expect(bash(script, [work, "no-verdict-fail"])).toMatchObject({ code: 0, stderr: "" });
+    expect(bash(script, [work, ""])).toMatchObject({ code: 0, stderr: "" });
+    const cased = realpathSync(
+      path.join(work, "maps", "runs", "architect-pass-and-fail-no-verdict-fail-head-1")
+    );
+    const own = realpathSync(path.join(work, "maps", "runs", "architect-pass-and-fail-head-1"));
+    expect(cased).not.toBe(own);
+    expect(readFileSync(path.join(cased, "ran"), "utf8")).toBe("4 1700000000 no-verdict-fail\n");
+    expect(readFileSync(path.join(own, "ran"), "utf8")).toBe("4 1700000000 \n");
+    const refused = bash(script, [work, "frobnicate"]);
+    expect(refused.code).toBe(1);
+    expect(refused.stderr).toContain("'frobnicate' is not no-verdict-fail or no-verdict-pass");
+  });
+
+  // Catches: a task that still names the tester's verdict for a label of today, where the daemon
+  // writes none, and an ablate label whose rule carries task words that never reach its task
+  // (ablate-states-read writes `Tester's verdict: pass.` back, and its -hidden copy too).
+  test("the reviewer's and the architect's tasks carry a label's task words and no verdict otherwise", () => {
+    const run = freshDir("task-words-run");
+    writeFileSync(
+      path.join(run, "fixture.json"),
+      JSON.stringify({ title: "A usage page", test: { version: 3 }, review: { version: 4 } })
+    );
+    const prompt = (fnName: string, label: string) => {
+      const result = bash(
+        [
+          fn("fail"),
+          fn("task_words"),
+          fn(fnName),
+          `R=$1 here=${path.join(root, "packages/pi-legion/scripts/skill-scenarios")} worker_key=LWEVAL-9 label=$2`,
+          fnName,
+        ].join("\n"),
+        [run, label]
+      );
+      expect({ code: result.code, stderr: result.stderr }).toEqual({ code: 0, stderr: "" });
+      return readFileSync(path.join(run, "prompt.txt"), "utf8");
+    };
+    expect(prompt("reviewer_prompt", "head")).toBe(
+      "Continue A usage page. Issue: LWEVAL-9. Phase: reviewing. Handoff: test version 3 (dispatch handoff-read --issue LWEVAL-9 --phase test --version 3). Pull request: #702.\n"
+    );
+    expect(prompt("reviewer_prompt", "ablate-two-roles")).not.toContain("verdict");
+    for (const label of ["ablate-states-read", "ablate-states-read-hidden"]) {
+      expect(prompt("reviewer_prompt", label)).toBe(
+        "Continue A usage page. Issue: LWEVAL-9. Phase: reviewing. Handoff: test version 3 (dispatch handoff-read --issue LWEVAL-9 --phase test --version 3). Tester's verdict: pass. Pull request: #702.\n"
+      );
+      expect(prompt("architect_prompt", label)).toContain(
+        "(dispatch handoff-read --issue LWEVAL-9 --phase review --version 4). Tester's verdict: pass. Pull request: #702.\n"
+      );
+    }
+    expect(prompt("architect_prompt", "head")).toContain(
+      "(dispatch handoff-read --issue LWEVAL-9 --phase review --version 4). Pull request: #702.\n"
+    );
   });
 
   // Catches: a -hidden label run in a scenario that never turns the switch on, so its agent sees

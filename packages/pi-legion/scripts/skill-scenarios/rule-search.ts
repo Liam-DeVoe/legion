@@ -14,7 +14,8 @@
 // of a reader, each with its depth and the chain of links that reaches it first.
 //
 // The texts of a role are those that role-texts.ts walks: the closure of the links of its prompt
-// parts and its skill, each with its depth. A text that a link of the first two kinds names and the
+// parts and its skill, each with its depth; a label of two roles reads the union of both
+// (readersTexts). A text that a link of the first two kinds names and the
 // checkout does not hold is a FAULT. Each text is cut into sentences as sentences.ts cuts it. A
 // sentence that one of the label's patterns (label-rules.ts) matches is a hit. Each hit must
 // match exactly one entry of the label: `cut` (the label deletes it or undoes T5.12's change of it)
@@ -35,9 +36,15 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { type Entry, RULES, type Tree } from "./label-rules";
-import { chainOf, depthText, roleTexts } from "./role-texts";
+import { type Entry, RULES, type Rule, type Tree } from "./label-rules";
+import { chainOf, depthText, readersTexts, roleTexts } from "./role-texts";
 import { type Sentence, sentences } from "./sentences";
+
+/** The roles a label's search reads, as its lines name them: `reviewer`, or `reviewer and
+ * architect`. */
+export function rolesOf(rule: Rule): string {
+  return rule.roles.join(" and ");
+}
 
 export interface Outcome {
   readonly lines: string[];
@@ -67,11 +74,11 @@ function ownersOf(entries: readonly Entry[], file: string, sentence: Sentence): 
 export function search(checkout: string, tree: Tree, label: string): Outcome {
   const rule = RULES[label];
   if (rule === undefined) throw new Error(`no rule for the label ${label}`);
-  const texts = roleTexts(checkout, rule.role);
+  const texts = readersTexts(checkout, rule.roles);
   const { files, missing } = texts;
   const cutFiles = new Set<string>();
   const faults = missing.map(
-    (file) => `${label}: a text the ${rule.role} reads is not in the checkout: ${file}`
+    (file) => `${label}: a text the ${rolesOf(rule)} reads is not in the checkout: ${file}`
   );
   const entries = rule.entries.filter((entry) => entry.at === undefined || entry.at === tree);
   const matched = new Map<Entry, number>();
@@ -114,7 +121,7 @@ export function search(checkout: string, tree: Tree, label: string): Outcome {
         `${label}: the entry "${entry.has}" of ${entry.file} matches ${count} hits at ${tree}, want 1`
       );
   }
-  if (files.length === 0) faults.push(`${label}: UNKNOWN: read no text of the ${rule.role}`);
+  if (files.length === 0) faults.push(`${label}: UNKNOWN: read no text of the ${rolesOf(rule)}`);
   if (hits === 0)
     faults.push(`${label}: UNKNOWN: no hit in ${files.length} texts, so the patterns see nothing`);
   return {
@@ -140,7 +147,7 @@ export function headSentences(
   const headEntries = rule.entries.filter((entry) => entry.at !== "base");
   const cuts = new Map<string, Sentence[]>();
   const kept = new Map<string, Set<string>>();
-  for (const file of roleTexts(head, rule.role).files) {
+  for (const file of readersTexts(head, rule.roles).files) {
     for (const sentence of sentences(file, readFileSync(path.join(head, file), "utf8"))) {
       if (!rule.patterns.some((pattern) => pattern.test(sentence.text))) continue;
       const owners = ownersOf(headEntries, file, sentence);
@@ -164,9 +171,9 @@ export function searchCut(checkout: string, head: string, label: string): Outcom
   if (rule === undefined) throw new Error(`no rule for the label ${label}`);
   const faults = search(head, "head", label).faults.map((fault) => `the head checkout: ${fault}`);
   const { cuts, kept } = headSentences(head, label);
-  const texts = roleTexts(checkout, rule.role);
+  const texts = readersTexts(checkout, rule.roles);
   for (const file of texts.missing)
-    faults.push(`${label}: a text the ${rule.role} reads is not in the checkout: ${file}`);
+    faults.push(`${label}: a text the ${rolesOf(rule)} reads is not in the checkout: ${file}`);
   const lines: string[] = [];
   const cutFiles = new Set<string>();
   let hits = 0;
@@ -227,7 +234,8 @@ export function searchCut(checkout: string, head: string, label: string): Outcom
         `${label}: the cut of "${entry.has}" in ${entry.file} restores the old rule ("${entry.restore}"), and the label's checkout holds no sentence with those words there: it deleted the rule instead`
       );
   }
-  if (texts.files.length === 0) faults.push(`${label}: UNKNOWN: read no text of the ${rule.role}`);
+  if (texts.files.length === 0)
+    faults.push(`${label}: UNKNOWN: read no text of the ${rolesOf(rule)}`);
   if (cuts.size === 0)
     faults.push(`${label}: UNKNOWN: the head's search cuts no sentence, so no cut is checked`);
   return {
@@ -291,7 +299,7 @@ function main(argv: string[]): number {
     console.log(`## ${label}: ${RULES[label]?.rule}`);
     for (const line of outcome.lines) console.log(line);
     console.log(
-      `${label} at ${tree === "cut" ? `the label's cuts of ${head}` : tree}: ${outcome.hits} hits in ${outcome.texts} texts of the ${RULES[label]?.role} (${outcome.depths}), ${outcome.cut} cut in ${outcome.cutTexts} texts, ${outcome.keep} kept with a reason, ${outcome.faults.length} faults`
+      `${label} at ${tree === "cut" ? `the label's cuts of ${head}` : tree}: ${outcome.hits} hits in ${outcome.texts} texts of the ${rolesOf(RULES[label] as Rule)} (${outcome.depths}), ${outcome.cut} cut in ${outcome.cutTexts} texts, ${outcome.keep} kept with a reason, ${outcome.faults.length} faults`
     );
     for (const fault of outcome.faults) console.error(`FAULT: ${fault}`);
     failed ||= outcome.faults.length > 0;

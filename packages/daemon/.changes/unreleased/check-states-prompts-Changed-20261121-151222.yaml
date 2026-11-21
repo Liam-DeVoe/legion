@@ -1,0 +1,17 @@
+kind: Changed
+body: |-
+  The role prompts follow the check states. The tester records each check's result with
+  `dispatch result`, then completes with a `summary` and no `verdict`; its prompt says the daemon
+  moves the issue by Dispatch's state of each `before_merge` check at the head its test record
+  names, to the reviewer when each reads yes and back to the implementer at once when one reads no
+  or not known for a pass and a fail, and that a check with no state yet holds the move. Its `test`
+  handoff's `implementerProof` is `{how}` alone, it records a check it runs and finds failing with
+  `--verdict fail`, and it is told Dispatch's own rule of a yes: a pass of any role with no fail at
+  that commit. The reviewer is told no phase completion carries a verdict (`VERDICT_NOT_TAKEN`) and
+  that the evidence of each check is the line of its head in `dispatch results`; the prompt no
+  longer names `VERDICT_ROLE_FORBIDDEN` or `Tester's verdict:`. The architect is told a tester's
+  `phase-finished` notice names, in its `reason`, each check that does not pass at the tested head
+  or the checks the move waits for, in place of a verdict.
+time: 2026-11-21T15:12:22Z
+custom:
+    Issue: check-states-prompts

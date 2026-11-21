@@ -80,7 +80,8 @@
 //                                          artifacts.json in <run dir>)
 //   seed.ts heads-issue <file> <scenario> [<case>]
 //                                          a heads scenario's issue (reviewer-own-head <case>,
-//                                          reviewer-pass-and-fail, architect-pass-and-fail or
+//                                          reviewer-pass-and-fail, architect-pass-and-fail
+//                                          [no-verdict-fail|no-verdict-pass] or
 //                                          ci-pass-and-fail <role>), before rig.sh's heads_fixture:
 //                                          the GitHub stand-in FAKE_GITHUB_PORT names holds the
 //                                          run's repository, the run's project is mapped to it,
@@ -885,7 +886,7 @@ async function captureBrainstorm(runDir: string): Promise<void> {
 }
 
 const USAGE =
-  "usage: seed.ts project | ask-on-message <file> | measure-before-ask <file> | capture <file> <run dir> | brainstorm | capture-brainstorm <file> <run dir> | spec-writing <file> <source dir> | spec-rewrite <file> <source dir> | state <file> <turn> <run dir> | answer <file> <answers file> | approve <file> | capture-spec <file> <run dir> | askgate <file> | capture-askgate <file> <run dir> | tester-proof <file> | implement-handoff <file> <body file> <commit> | capture-handoffs <file> <run dir> | heads-issue <file> <reviewer-own-head <sibling-fails|ci-only|no-implementer|no-tester>|reviewer-pass-and-fail|architect-pass-and-fail|ci-pass-and-fail <reviewer|tester|architect>> | heads-events <file> <heads file> <the same scenario>";
+  "usage: seed.ts project | ask-on-message <file> | measure-before-ask <file> | capture <file> <run dir> | brainstorm | capture-brainstorm <file> <run dir> | spec-writing <file> <source dir> | spec-rewrite <file> <source dir> | state <file> <turn> <run dir> | answer <file> <answers file> | approve <file> | capture-spec <file> <run dir> | askgate <file> | capture-askgate <file> <run dir> | tester-proof <file> | implement-handoff <file> <body file> <commit> | capture-handoffs <file> <run dir> | heads-issue <file> <reviewer-own-head <sibling-fails|ci-only|no-implementer|no-tester|no-verdict-fail|no-verdict-pass>|reviewer-pass-and-fail|architect-pass-and-fail [no-verdict-fail|no-verdict-pass]|ci-pass-and-fail <reviewer|tester|architect>> | heads-events <file> <heads file> <the same scenario>";
 
 /** Runs the mode `argv` names; false when argv names no mode, with its arguments. The first six
  * modes take extra arguments and ignore them, as they always did; each new mode takes exactly its

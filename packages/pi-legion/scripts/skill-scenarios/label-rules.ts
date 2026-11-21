@@ -18,10 +18,16 @@ export interface Entry {
 }
 
 export interface Rule {
-  readonly role: Role;
+  /** The roles whose texts the label's search reads: one role, or each role a label's runs drive
+   * when one checkout serves the scenarios of two. */
+  readonly roles: readonly Role[];
   readonly rule: string;
   readonly patterns: readonly RegExp[];
   readonly entries: readonly Entry[];
+  /** Words the label writes into its roles' tasks, before the task's `Pull request:` sentence
+   * (rig.sh's task_words): words the daemon of the release before wrote there, which the label
+   * puts back beside its cuts, since a checkout holds the prompts and never the task. */
+  readonly taskWords?: string;
 }
 
 const LATER_FAIL: readonly RegExp[] = [
@@ -268,9 +274,109 @@ const ENTRIES_ARCHITECT_LATER_FAIL: readonly Entry[] = [
   ...GUIDE_LATER_FAIL,
 ];
 
+// A sentence that sends a reader to `dispatch results`, or to the state of a check at a head, which
+// that command prints on the head's line under each check.
+const STATES_READ: readonly RegExp[] = [
+  /dispatch results/i,
+  /\bline (of|for) (your|its|the|this|that) head\b|\bhead's line\b|\bstate line\b|\bpass_stands\b|\ba pass (stands|standing)\b|\bpass stands for\b/i,
+];
+
+const ENTRIES_STATES_READ: readonly Entry[] = [
+  {
+    file: "packages/daemon/internal/prompts/go/architect-common.md",
+    has: "`dispatch results --issue <issue>` at the approved head",
+    cut: "Remove the read of the head's results from the evidence of the acceptance.",
+  },
+  {
+    file: "packages/daemon/internal/prompts/go/reviewer.md",
+    has: "the evidence of each check is the line of your head in `dispatch results`",
+    cut: "Delete the sentence on the reviewer's evidence.",
+  },
+  {
+    file: "packages/daemon/internal/prompts/roles/architect-root.md",
+    has: "You then read the tester's handoff, `dispatch results --issue <issue>` at the approved head",
+    cut: "Remove the read of the head's results from the evidence of the acceptance.",
+  },
+  {
+    file: "packages/daemon/internal/prompts/roles/architect-root.md",
+    has: "each needs a pass standing at that head, which `dispatch results --issue <issue>` shows",
+    cut: "Delete the acceptance's gate on each check's pass at the head.",
+  },
+  {
+    file: "packages/daemon/internal/prompts/roles/core/reviewer.md",
+    has: "Verify as forge facts, never from reports",
+    cut: "Remove each check's pass at the head and that head's line from the facts the reviewer verifies.",
+  },
+  {
+    file: "packages/daemon/internal/prompts/roles/core/reviewer.md",
+    has: "Until that run concludes, wait for it by its name, unless that head's line reads not known",
+    cut: "Remove the head's line from the wait for a CI run.",
+  },
+  {
+    file: "packages/daemon/internal/prompts/roles/reviewer.md",
+    has: "Wait for a `ci_check` run still going or unread, unless the head's line reads not known",
+    cut: "Remove the head's line from the wait for a CI run.",
+  },
+  {
+    file: "packages/daemon/internal/prompts/roles/reviewer.md",
+    has: "Your approval is gated by the `before_merge` checks of this issue's own Verification document",
+    cut: "Delete the approval's gate on each check's pass at the reviewed head.",
+  },
+  {
+    file: "skills/legion-architect/SKILL.md",
+    has: "Accept only when a pass stands for every `before_merge` check at the approved head",
+    cut: "Remove each check's pass at the approved head from the acceptance.",
+  },
+  {
+    file: "skills/legion-architect/references/acceptance.md",
+    has: "whether a pass stands for each check at the approved head",
+    cut: "Delete item 2 of the acceptance's list.",
+  },
+  {
+    file: "skills/legion-architect/references/acceptance.md",
+    has: "read each `ci_check` result in `dispatch results`",
+    cut: "Remove the read of each `ci_check` result from the last round.",
+  },
+  {
+    file: "skills/legion-architect/references/acceptance.md",
+    has: "Each check needs a pass at that head; one in another repository",
+    keep: "A parent's last round, once its children close, not the acceptance of an issue at its own approved head.",
+  },
+  {
+    file: "skills/legion-retro/SKILL.md",
+    has: "**Read the evidence**: the issue, `dispatch results --issue <issue>`",
+    keep: "Retro's read after the sign-off, not a decision of the reviewer or the architect.",
+  },
+  {
+    file: "skills/legion-worker/references/ci-checks.md",
+    has: "reads the named run at the head of the issue's pull request and prints the one result it derives",
+    keep: "What the command prints for a check CI proves, not where a role decides.",
+  },
+  {
+    file: "skills/legion-worker/references/ci-checks.md",
+    has: "The next role that writes the body reads `dispatch results` again",
+    keep: "Who writes the PR body's line again, not where a role decides.",
+  },
+  {
+    file: "skills/legion-worker/references/ci-checks.md",
+    fenced: true,
+    keep: "A format or command in a fenced block.",
+  },
+  {
+    file: "skills/legion-worker/references/merge-gate.md",
+    has: "Read CI on GitHub and the issue's results with `dispatch results --issue <issue>`, never from a handoff.",
+    cut: "Delete item 1 of the reviewer's list.",
+  },
+  {
+    file: "skills/legion-worker/references/pr-body.md",
+    fenced: true,
+    keep: "A format or command in a fenced block.",
+  },
+];
+
 export const RULES: Record<string, Rule> = {
   "ablate-two-roles": {
-    role: "reviewer",
+    roles: ["reviewer"],
     rule: "A check with no `ci_check` has a pass at a head only from the implementer and from the tester both.",
     patterns: [
       /implementer[^.]*\btester|tester[^.]*\bimplementer/i,
@@ -280,15 +386,22 @@ export const RULES: Record<string, Rule> = {
     entries: ENTRIES_TWO_ROLES,
   },
   "ablate-later-fail": {
-    role: "reviewer",
+    roles: ["reviewer"],
     rule: "A pass and a fail at one head leave it not known, whoever recorded them: request changes, with no wait.",
     patterns: LATER_FAIL,
     entries: ENTRIES_LATER_FAIL,
   },
   "ablate-architect-later-fail": {
-    role: "architect",
+    roles: ["architect"],
     rule: "A pass and a fail at one head leave it not known and the check's answer never yes: send the issue back, with no wait.",
     patterns: LATER_FAIL,
     entries: ENTRIES_ARCHITECT_LATER_FAIL,
+  },
+  "ablate-states-read": {
+    roles: ["reviewer", "architect"],
+    rule: "The reviewer and the architect each decide by the state of each check at their head, as `dispatch results` prints it, and no task names a verdict of the tester.",
+    patterns: STATES_READ,
+    entries: ENTRIES_STATES_READ,
+    taskWords: "Tester's verdict: pass.",
   },
 };

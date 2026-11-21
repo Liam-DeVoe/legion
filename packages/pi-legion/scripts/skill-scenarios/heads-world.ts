@@ -20,15 +20,25 @@ import { agentPost, IMPLEMENTER } from "./seed-requests";
 const HEADS_REPO = RIG_WORLD.repository;
 const HEADS_BASE = RIG_WORLD.defaultBranch;
 /** The cases of reviewer-own-head, each one batch of rig.sh's cmd_batch. */
-const OWN_HEAD_CASES = ["sibling-fails", "ci-only", "no-implementer", "no-tester"] as const;
+const OWN_HEAD_CASES = [
+  "sibling-fails",
+  "ci-only",
+  "no-implementer",
+  "no-tester",
+  "no-verdict-fail",
+  "no-verdict-pass",
+] as const;
+/** The cases of architect-pass-and-fail beside its own world, which names no case. */
+const ARCHITECT_CASES = ["no-verdict-fail", "no-verdict-pass"] as const;
 /** The cases of ci-pass-and-fail: the role its run drives through one world. */
 const CI_ROLES = ["reviewer", "tester", "architect"] as const;
-/** A heads scenario's world in one word: a case of reviewer-own-head, the scenario's name, or
- * ci-pass-and-fail with its role. */
+/** A heads scenario's world in one word: a case of reviewer-own-head, the scenario's name,
+ * architect-pass-and-fail with its case, or ci-pass-and-fail with its role. */
 type HeadsWorld =
   | (typeof OWN_HEAD_CASES)[number]
   | "reviewer-pass-and-fail"
   | "architect-pass-and-fail"
+  | `architect-pass-and-fail-${(typeof ARCHITECT_CASES)[number]}`
   | `ci-pass-and-fail-${(typeof CI_ROLES)[number]}`;
 /** The job of k1's `ci_check` in the case ci-only, whose check run the GitHub stand-in serves, and
  * the job of k1's `ci_check` in ci-pass-and-fail, whose third attempt at #702's head is still going
@@ -67,6 +77,10 @@ export function headsWorld(scenario: string, which: string | undefined): HeadsWo
   if (scenario === "ci-pass-and-fail") {
     const role = CI_ROLES.find((known) => known === which);
     return role === undefined ? undefined : `ci-pass-and-fail-${role}`;
+  }
+  if (scenario === "architect-pass-and-fail" && which !== undefined) {
+    const known = ARCHITECT_CASES.find((one) => one === which);
+    return known === undefined ? undefined : `architect-pass-and-fail-${known}`;
   }
   if (
     which === undefined &&
@@ -212,7 +226,7 @@ const TESTER_PASS: HeadsResult = { ...IMPLEMENTER_PASS, role: "tester" };
 
 /** `heads-events <file> <heads file> <scenario> [<case>]`, after heads_fixture: the GitHub
  * stand-in, seeded again since a seed replaces what it holds, now serves the repository's commits
- * and the open pull requests #702 and #703 (#702 alone in architect-pass-and-fail and
+ * and the open pull requests #702 and #703 (#702 alone in architect-pass-and-fail, its cases, and
  * ci-pass-and-fail), each at its head from <heads file>, with a title that names the issue; in the
  * case ci-only a `success` of k1's job at #702's head, and in ci-pass-and-fail that job's run
  * there `in_progress`. It serves no `commit_pulls`, so an event is the one thing that teaches
@@ -225,16 +239,24 @@ const TESTER_PASS: HeadsResult = { ...IMPLEMENTER_PASS, role: "tester" };
  *   - ci-only: no result, since the check run is the only evidence, then the `test` record;
  *   - no-implementer: a pass of the tester alone at #702's head, then the `test` record;
  *   - no-tester: a pass of the implementer alone at #702's head, then the `test` record;
+ *   - no-verdict-pass: a pass of the implementer and one of the tester at #702's head, then the
+ *     `test` record, and nothing at #703's;
+ *   - no-verdict-fail: a pass of the implementer at #702's head, the `test` record, then a fail of
+ *     the tester there that repeats k1's negative control, so the record lists no failure and
+ *     #702's line in `dispatch results` is the one place the fail shows;
  *   - reviewer-pass-and-fail: at #702's head a pass of the implementer, a pass of the tester, the
  *     `test` record, then a fail of the tester, the order a tester whose later run failed leaves;
- *   - architect-pass-and-fail: the same, then the `review` record;
+ *   - architect-pass-and-fail: the same, then the `review` record; its cases no-verdict-pass and
+ *     no-verdict-fail: the results and the record of the reviewer-own-head case of that name at
+ *     #702's head, then the `review` record;
  *   - ci-pass-and-fail: no result of a role, since k1 is CI's; the `implement` record for the
  *     tester, the `test` record for the reviewer, and the `test` and `review` records for the
  *     architect. The CI job's own pass and fail at #702's head are rig.sh's (ci_job_results), since
  *     only a job's results token records them through the route.
  * Each record is written as its role's session (IMPLEMENTER, TESTER, REVIEWER), with the fields its
- * role's prompt names (roles/tester.md, roles/reviewer.md) and no other. It adds each record's
- * `{id, version}` and each pull request body's line of k1 to <file>. */
+ * role's prompt names (roles/tester.md, roles/reviewer.md) and no other: the tester's
+ * `implementerProof` is `{how}` alone, since no phase completion or record carries its verdict. It
+ * adds each record's `{id, version}` and each pull request body's line of k1 to <file>. */
 export async function headsEvents(
   file: string,
   headsFile: string,
@@ -245,7 +267,7 @@ export async function headsEvents(
     .record(z.string(), z.string().regex(/^[0-9a-f]{40}$/))
     .parse(JSON.parse(readFileSync(headsFile, "utf8")));
   const ciRunning = world.startsWith("ci-pass-and-fail-");
-  const prs = world === "architect-pass-and-fail" || ciRunning ? ["702"] : ["702", "703"];
+  const prs = world.startsWith("architect-pass-and-fail") || ciRunning ? ["702"] : ["702", "703"];
   const headOf = (pr: string): string => {
     const head = heads[pr];
     if (head === undefined) throw new Error(`${headsFile} names no head of #${pr}`);
@@ -396,10 +418,7 @@ export async function headsEvents(
               phase,
               issue: fixture.issue,
               head,
-              implementerProof: {
-                verdict: "verified",
-                how: `read k1 at ${head} with dispatch results`,
-              },
+              implementerProof: { how: `read k1 at ${head} with dispatch results` },
               failures: [],
               failed: 0,
               classSearch: [],
@@ -459,6 +478,16 @@ export async function headsEvents(
   } else if (world === "no-tester") {
     await record(IMPLEMENTER_PASS);
     test = await handoff("test");
+  } else if (world === "no-verdict-pass" || world === "architect-pass-and-fail-no-verdict-pass") {
+    await record(IMPLEMENTER_PASS);
+    await record(TESTER_PASS);
+    test = await handoff("test");
+    if (world === "architect-pass-and-fail-no-verdict-pass") review = await handoff("review");
+  } else if (world === "no-verdict-fail" || world === "architect-pass-and-fail-no-verdict-fail") {
+    await record(IMPLEMENTER_PASS);
+    test = await handoff("test");
+    await record(laterFail);
+    if (world === "architect-pass-and-fail-no-verdict-fail") review = await handoff("review");
   } else if (world === "ci-pass-and-fail-tester") {
     implement = await handoff("implement");
   } else if (ciRunning) {

@@ -20,7 +20,7 @@ import { appendFileSync, cpSync, mkdtempSync, readFileSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { RULES } from "./label-rules";
-import { chainOf, roleTexts } from "./role-texts";
+import { chainOf, readersTexts } from "./role-texts";
 import { headSentences, search, searchCut } from "./rule-search";
 import { fileRowLimit } from "./test-limit";
 
@@ -42,7 +42,8 @@ function copy(): string {
   return dir;
 }
 
-// A prompt part of another role: prompts.Compose gives it to neither role, and no link names it.
+// A prompt part of another role: prompts.Compose gives it to none of the labels' roles, and no link
+// names it.
 const UNREAD = "packages/daemon/internal/prompts/roles/implementer.md";
 
 // For each label: a sentence of its rule, and the text it is planted in at each depth. Main's
@@ -74,12 +75,22 @@ const PLANTS: Record<string, { sentence: string; at: Record<1 | 2, string> }> = 
       2: "skills/legion-worker/references/pr-body.md",
     },
   },
+  // Read by both roles: tools.md one link from each, gvisor.md two links from each.
+  "ablate-states-read": {
+    sentence:
+      "Before you decide, read the line of your head under each check in `dispatch results`.",
+    at: {
+      1: "skills/legion-worker/references/tools.md",
+      2: "skills/legion-worker/references/gvisor.md",
+    },
+  },
 };
 
 describe("rule-search", () => {
   for (const [label, plant] of Object.entries(PLANTS)) {
-    const role = RULES[label]?.role;
-    if (role === undefined) throw new Error(`no rule for the label ${label}`);
+    const roles = RULES[label]?.roles;
+    if (roles === undefined) throw new Error(`no rule for the label ${label}`);
+    const role = roles.join(" and ");
 
     test(`${label}: the checkout as it is has no fault`, () => {
       const outcome = search(copy(), tree, label);
@@ -88,7 +99,7 @@ describe("rule-search", () => {
     });
 
     test(`${label}: the deepest plant is as deep as the ${role}'s deepest text`, () => {
-      const texts = roleTexts(copy(), role);
+      const texts = readersTexts(copy(), roles);
       expect(Math.max(...texts.depth.values())).toBe(
         Math.max(...Object.keys(plant.at).map(Number))
       );
@@ -97,7 +108,7 @@ describe("rule-search", () => {
     for (const [depth, file] of Object.entries(plant.at)) {
       test(`${label}: a sentence of the rule in ${file}, ${depth} links deep, is a fault naming that text`, () => {
         const dir = copy();
-        const texts = roleTexts(dir, role);
+        const texts = readersTexts(dir, roles);
         expect({ file, depth: texts.depth.get(file) }).toEqual({ file, depth: Number(depth) });
         appendFileSync(path.join(dir, file), `\n${plant.sentence}\n`);
         const outcome = search(dir, tree, label);
@@ -113,7 +124,7 @@ describe("rule-search", () => {
 
     test(`${label}: the same sentence in ${UNREAD}, which no chain of links reaches, is no fault`, () => {
       const dir = copy();
-      expect(roleTexts(dir, role).files).not.toContain(UNREAD);
+      expect(readersTexts(dir, roles).files).not.toContain(UNREAD);
       appendFileSync(path.join(dir, UNREAD), `\n${plant.sentence}\n`);
       expect(search(dir, tree, label).faults).toEqual([]);
     });
@@ -178,7 +189,7 @@ describe("rule-search", () => {
         const ablated = ablate(head, true);
         expect(searchCut(ablated, head, label).faults).toEqual([]);
         // A cut can take a link with it, so the plant goes in the first of its texts the copy reads.
-        const read = roleTexts(ablated, role).files;
+        const read = readersTexts(ablated, roles).files;
         const file = Object.values(plant.at).find((at) => read.includes(at));
         expect(file).toBeDefined();
         appendFileSync(path.join(ablated, file as string), `\n${plant.sentence}\n`);
@@ -208,13 +219,34 @@ describe("rule-search", () => {
   // Catches: a label the rig no longer runs left in the search (the approved checks dropped
   // ablate-head and ablate-ci-pass, which never scored below head on their own case), and a label
   // of the search with no plant, which no row above would test.
-  test("the search names the three labels the rig runs, each with its plants, and no other", () => {
+  test("the search names the four labels the rig runs, each with its plants, and no other", () => {
     expect(Object.keys(RULES).sort()).toEqual(Object.keys(PLANTS).sort());
     expect(Object.keys(RULES).sort()).toEqual([
       "ablate-architect-later-fail",
       "ablate-later-fail",
+      "ablate-states-read",
       "ablate-two-roles",
     ]);
+  });
+
+  // Catches: a two-role label whose search reads one role's texts alone, so a sentence of its rule
+  // in a text only the other role reads would never fail it. architect-root.md is the architect's
+  // alone, and core/reviewer.md the reviewer's alone.
+  test("ablate-states-read reads each text of the reviewer and each of the architect", () => {
+    const dir = copy();
+    const files = readersTexts(dir, ["reviewer", "architect"]).files;
+    expect(files).toContain("packages/daemon/internal/prompts/roles/architect-root.md");
+    expect(files).toContain("packages/daemon/internal/prompts/roles/core/reviewer.md");
+    for (const only of [
+      "packages/daemon/internal/prompts/roles/architect-root.md",
+      "packages/daemon/internal/prompts/roles/core/reviewer.md",
+    ]) {
+      const planted = copy();
+      appendFileSync(path.join(planted, only), `\n${PLANTS["ablate-states-read"]?.sentence}\n`);
+      const faults = search(planted, tree, "ablate-states-read").faults;
+      expect(faults).toHaveLength(1);
+      expect(faults[0]).toContain(`${only}:`);
+    }
   });
 
   test("a checkout with no texts is UNKNOWN for each label, never clean", () => {

@@ -109,13 +109,14 @@ const implementRecord = {
   created_at: "2026-09-30T17:20:00.123456Z",
   body: JSON.stringify({ schemaVersion: 1, phase: "implement", issue: "LWEVAL-1" }),
 };
-/** A test handoff the skill's rule asks for: the implementer's results verified, no failures. What
- * the tester ran is a result on the issue's check, not a field of the handoff. */
+/** A test handoff the skill's rule asks for: how the tester judged the implementer's results, no
+ * verdict, no failures. What the tester ran is a result on the issue's check, not a field of the
+ * handoff. */
 const testBody = (sha: string) => ({
   schemaVersion: 1,
   phase: "test",
   issue: "LWEVAL-1",
-  implementerProof: { verdict: "verified", how: `ran bun greet.ts Ada at ${sha.slice(0, 12)}` },
+  implementerProof: { how: `ran bun greet.ts Ada at ${sha.slice(0, 12)}` },
   failures: [],
   failed: 0,
 });
@@ -176,7 +177,7 @@ const completeCall = (id: string, refused: boolean) => [
           type: "toolCall",
           id,
           name: "legion",
-          arguments: { op: "handoff_complete", summary: "Verified.", verdict: "pass" },
+          arguments: { op: "handoff_complete", summary: "Verified." },
         },
       ],
     },
@@ -283,6 +284,17 @@ recordRun("tester-proof-rec-2", {
 });
 // The stand-in accepted a completion that names a version the record does not hold.
 recordRun("tester-proof-rec-3", { "daemon.log": accepted("h-test", 2) });
+// Followed the rule but for the record, whose implementerProof still carries the verdict the
+// tester's prompt no longer names: no phase completion or record carries one.
+recordRun("tester-proof-verdict-1", {
+  "handoffs.json": handoffs({
+    ...testRecord(),
+    body: JSON.stringify({
+      ...testBody(head),
+      implementerProof: { verdict: "verified", how: "ran bun greet.ts Ada at the head" },
+    }),
+  }),
+});
 // Pushed a change to the code under the PR's head before completing. The repository is staged
 // with every other run, in the hook above: `git init` here would make it whether or not a row of
 // this file runs.
@@ -3193,6 +3205,56 @@ run(
   }),
   [...header, said(10, "A check holds a pass and a fail at the head.")]
 );
+// The no-verdict cases: the task names no verdict of the tester, so the head's line decides. On
+// no-verdict-pass the reviewer approves #702 at its head and the architect signs off; on
+// no-verdict-fail the reviewer requests changes naming k1 and the architect sends the issue back
+// naming k1. Each is staged once as it passes and once as it fails.
+const noVerdictWorld = (line: string) =>
+  `Checks of LWEVAL-1:\n\n- k1 (before_merge). A pass stands: no, as 1 of 2 heads read yes.\n  - #702 at ${head}: ${line}\n  - #703 at ${"7".repeat(40)}: no, as nothing counts there.\n`;
+const noVerdictFiles = (calls: string, line: string) =>
+  headsFiles({
+    "calls.jsonl": calls,
+    "world.json": reviewWorld,
+    "results-before.txt": noVerdictWorld(line),
+  });
+const passLine = "yes, from implementer, tester.";
+const failLine = "not known, as pass p1 and fail f1 count at this commit.";
+run("reviewer-own-head-no-verdict-pass-head-91", noVerdictFiles(approvedAt(head), passLine), [
+  ...header,
+  said(10, "k1 reads yes at #702's head."),
+]);
+run("reviewer-own-head-no-verdict-pass-head-92", noVerdictFiles(requestedChangesAt(20), passLine), [
+  ...header,
+  said(10, "k1 needs another look."),
+]);
+run("reviewer-own-head-no-verdict-fail-head-91", noVerdictFiles(requestedChangesAt(20), failLine), [
+  ...header,
+  said(10, "k1 holds the tester's fail at #702's head."),
+]);
+run("reviewer-own-head-no-verdict-fail-head-92", noVerdictFiles(approvedAt(head), failLine), [
+  ...header,
+  said(10, "Tester's verdict: pass, so I approve."),
+]);
+run(
+  "architect-pass-and-fail-no-verdict-pass-head-91",
+  headsFiles({ "daemon.log": signedOffAt(20) }),
+  [...header, said(10, "k1 reads yes at the approved head.")]
+);
+run(
+  "architect-pass-and-fail-no-verdict-pass-head-92",
+  headsFiles({ "daemon.log": sentBackAt(20) }),
+  [...header, said(10, "k1 needs another round.")]
+);
+run(
+  "architect-pass-and-fail-no-verdict-fail-head-91",
+  headsFiles({ "daemon.log": sentBackAt(20) }),
+  [...header, said(10, "k1 holds the tester's fail at the head.")]
+);
+run(
+  "architect-pass-and-fail-no-verdict-fail-head-92",
+  headsFiles({ "daemon.log": signedOffAt(20) }),
+  [...header, said(10, "The tester passed it, so I sign off.")]
+);
 
 // ci-pass-and-fail (headsReview, headsTester, headsArchitect): at #702's head k1, a check CI proves,
 // holds the job's pass and later fail while its run is still going. Each role's answer is a
@@ -3231,10 +3293,7 @@ const ciTestRecords = (
         schemaVersion: 1,
         phase: "test",
         issue: "LWEVAL-1",
-        implementerProof: {
-          verdict: "rejected",
-          how: "k1 is CI's; its line at the head is not known.",
-        },
+        implementerProof: { how: "k1 is CI's; its line at the head is not known." },
         failures,
       }),
     },
@@ -3281,7 +3340,7 @@ run(
           schemaVersion: 1,
           phase: "test",
           issue: "LWEVAL-1",
-          implementerProof: { verdict: "verified", how: "another session" },
+          implementerProof: { how: "another session" },
           failures: [],
         }),
       },
@@ -3366,6 +3425,43 @@ test("an architect that sends the issue back naming k1 and also signs it off fai
 test("an architect's move back whose reason does not name k1 fails", () => {
   expect(rowOf("architect-pass-and-fail-head-94")).toMatch(
     /^architect-pass-and-fail-head-94\tpass=false\tref=false\tsentBack=false moves=1 signOffs=0 /
+  );
+});
+
+// Catches: a no-verdict case scored by another case's rule, or not at all: each case's two staged
+// runs read one pass and one fail, under rows of their own case, and the scenario's own world keeps
+// its row with no case.
+test("the no-verdict cases pass on the decision the head's line asks for, each under its own row", () => {
+  for (const [run, pass] of [
+    ["reviewer-own-head-no-verdict-pass-head-91", true],
+    ["reviewer-own-head-no-verdict-pass-head-92", false],
+    ["reviewer-own-head-no-verdict-fail-head-91", true],
+    ["reviewer-own-head-no-verdict-fail-head-92", false],
+    ["architect-pass-and-fail-no-verdict-pass-head-91", true],
+    ["architect-pass-and-fail-no-verdict-pass-head-92", false],
+    ["architect-pass-and-fail-no-verdict-fail-head-91", true],
+    ["architect-pass-and-fail-no-verdict-fail-head-92", false],
+  ] as const)
+    expect(rowOf(run)).toMatch(new RegExp(`^${run}\\tpass=${pass}\\t`));
+  expect(rowOf("reviewer-own-head-no-verdict-fail-head-91")).toContain("case=no-verdict-fail ");
+  for (const scenario of [
+    "reviewer-own-head:no-verdict-pass",
+    "reviewer-own-head:no-verdict-fail",
+    "architect-pass-and-fail:no-verdict-pass",
+    "architect-pass-and-fail:no-verdict-fail",
+  ])
+    expect(out).toMatch(new RegExp(`^${scenario}\\thead\\t1/2\\t`, "m"));
+  expect(out).toMatch(/^architect-pass-and-fail\thead\t\d+\/\d+\t/m);
+});
+
+// Catches: a test record that still carries the tester's verdict scored as the rule asks: no phase
+// completion or record carries one, and the record passes only with none and no failures.
+test("a test record whose implementerProof carries a verdict fails the proof, naming it", () => {
+  expect(rowOf("tester-proof-verdict-1")).toMatch(
+    /^tester-proof-verdict-1\tpass=false\t.* proof=false /
+  );
+  expect(rowOf("tester-proof-verdict-1")).toContain(
+    'implementerProof carries the verdict \\"verified\\"'
   );
 });
 
@@ -3466,7 +3562,7 @@ test("a tester handoff that carries no completed time is read, and one with no i
     schemaVersion: 1,
     phase: "test",
     issue: "LWEVAL-1",
-    implementerProof: { verdict: "verified", how: "ran `bun greet.ts Ada` at the head" },
+    implementerProof: { how: "ran `bun greet.ts Ada` at the head" },
     proof: [
       {
         criterion: "`bun greet.ts <name>` prints the greeting it returns",
@@ -3497,7 +3593,7 @@ test("a tester handoff of a checkout whose prompt asks for previousHandoff is re
     phase: "test",
     issue: "LWEVAL-1",
     previousHandoff: "4f1b8a0d1c2e3f4a5b6c7d8e9f0a1b2c3d4e5f60",
-    implementerProof: { verdict: "verified", how: "ran `bun greet.ts Ada` at the head" },
+    implementerProof: { how: "ran `bun greet.ts Ada` at the head" },
     proof: [
       {
         criterion: "`bun greet.ts <name>` prints the greeting it returns",
@@ -3511,8 +3607,8 @@ test("a tester handoff of a checkout whose prompt asks for previousHandoff is re
   };
   expect(handoff).not.toHaveProperty("completed");
   expect(TestHandoff.safeParse(handoff).success).toBe(true);
-  const { implementerProof: _proof, ...noVerdict } = handoff;
-  expect(TestHandoff.safeParse(noVerdict).success).toBe(false);
+  const { implementerProof: _proof, ...noProof } = handoff;
+  expect(TestHandoff.safeParse(noProof).success).toBe(false);
 });
 
 // The same for the shape before #2585, which a checkout older than it still spells.
@@ -3535,8 +3631,8 @@ test("a tester handoff of a checkout whose prompt still asks for a completed tim
     ],
   };
   expect(TestHandoff.safeParse(handoff).success).toBe(true);
-  const { implementerProof: _proof, ...noVerdict } = handoff;
-  expect(TestHandoff.safeParse(noVerdict).success).toBe(false);
+  const { implementerProof: _proof, ...noProof } = handoff;
+  expect(TestHandoff.safeParse(noProof).success).toBe(false);
 });
 
 test("a tool call reading the other label's checkout is a rig error wherever the path falls in it", () => {
