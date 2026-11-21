@@ -46,6 +46,7 @@ legion replay collect-merges	--branch string	--from string	--github-api string	-
 legion replay neutralize	--deny stringArray	--in string	--map string	--out string	--project string
 legion replay rules	--json bool
 legion replay run	--branch string	--keep-db bool	--out string	--pg-dsn string	--rule string	--seed int64	--slowdown float64	--trace-segments bool	--window string
+legion replay scorecard	--json bool	--window string
 legion restart
 legion sessions
 legion sessions import	--claims string	--dsn-file string	--tree string	--tree-volume string

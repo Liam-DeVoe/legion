@@ -89,20 +89,44 @@ func (d *driver) runningPiece(key string, role claim.Role) *piece {
 	return nil
 }
 
-// openPiece runs p from at: its length is its recorded length slowed by the issues in flight
-// (slowed), and each of its acts is queued at its offset from at, its end at at plus its length.
-// A piece under way at the window's start (seeded) runs at its recorded times, its acts before
-// the start already in the start state.
+// openPiece runs p from at: each of its acts is queued at its offset from at, and its end at at
+// plus its length, its recorded length slowed by the issues in flight (slowed). A piece under way
+// at the window's start (seeded) runs at its recorded times, its acts before the start already in
+// the start state. Any other piece is sized at the end of the instant it opens in (sizePiece), so
+// the issues in flight it is slowed by are the instant's, once every pass of the instant has run,
+// as the record's count it is set against is (script.inFlightAt): the starts of one instant, each
+// in a pass of its own, are each read at the instant's count, not at the count of the passes
+// before it. Its acts at its very start are queued at once.
 func (d *driver) openPiece(p *piece, at time.Time, seeded bool) {
 	p.state, p.at, p.turns = pieceRunning, at, map[claim.Role]bool{}
-	p.n = len(d.inFlight)
-	if seeded {
-		p.n = p.m
-	}
-	p.length = slowed(p.recorded(), d.cfg.Slowdown, p.n, p.m)
 	d.used[1] = true
+	if seeded {
+		d.sizePiece(p, at, p.m, true)
+		return
+	}
+	for _, a := range p.acts {
+		if a.offset <= 0 {
+			d.queueAct(p, a, at)
+		}
+	}
+	d.push(&item{at: at, class: classSize, rec: at, piece: p, run: func() error {
+		d.sizePiece(p, d.clock.Instant(), len(d.inFlight), false)
+		return nil
+	}})
+}
+
+// sizePiece sets p's length for n issues in flight at its start and queues its acts after its
+// start, at their offsets from at, and its end at at plus its length. An act the record shows at
+// the segment's end, the last turn's end among them, comes at the replay's end of it, and an act
+// the record shows after the end of a piece the replay shortened is queued at its end, so a turn
+// that ran to the end of its segment runs to the end of the replay's, however long the replay made
+// it. A seeded piece's acts before the window's start are left out but for the turns under way at
+// it.
+func (d *driver) sizePiece(p *piece, at time.Time, n int, seeded bool) {
+	p.n = n
+	p.length = slowed(p.recorded(), d.cfg.Slowdown, p.n, p.m)
 	if d.cfg.TraceSegments {
-		d.segments = append(d.segments, Segment{Issue: p.issue, Phase: p.phase, Start: at, N: p.n, M: p.m, Recorded: Duration(p.recorded()),
+		d.segments = append(d.segments, Segment{Issue: p.issue, Phase: p.phase, Start: p.at, N: p.n, M: p.m, Recorded: Duration(p.recorded()),
 			Length: Duration(p.length)})
 	}
 	for _, a := range p.acts {
@@ -112,8 +136,15 @@ func (d *driver) openPiece(p *piece, at time.Time, seeded bool) {
 			}
 			continue
 		}
+		if !seeded && a.offset <= 0 {
+			continue
+		}
 		when := at.Add(a.offset)
-		if !p.end.IsZero() && a.offset > p.length && a.kind != actTurnEnd {
+		switch {
+		case p.end.IsZero():
+		case a.offset >= p.recorded():
+			when = at.Add(p.length)
+		case a.offset > p.length && a.kind != actTurnEnd:
 			when = at.Add(p.length)
 		}
 		d.queueAct(p, a, when)
@@ -325,6 +356,9 @@ func (d *driver) enterMove(p *piece) error {
 			}
 			return d.refusedUnlessMoved(p.issue, move, to, refuse, phase.Merging)
 		case workflow.TriggerBackward:
+			if move.Drop != "" {
+				d.drops[p.issue] = move.Drop
+			}
 			result, err := d.apply("api", d.factID("backward", p.issue, to), intake.BackwardMove{Issue: p.issue,
 				Requester: phaseRole(move.From), To: to, Reason: fmt.Sprintf("the record's move back from %s to %s", move.From, to)})
 			if err != nil {

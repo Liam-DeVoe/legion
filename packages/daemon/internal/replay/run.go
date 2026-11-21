@@ -61,6 +61,10 @@ type RunConfig struct {
 	// its copy of Dispatch, between facts: a test's look at the replay's state as each pass leaves
 	// it (TestTheShadowMatchesTheMirrorAfterEveryFact).
 	afterFact func(ctx context.Context, pool *store.Pool, shadow *shadow) error
+	// atSettled, where set, runs at each instant the snapshot timeline takes a state at, once
+	// every act of the instant has run, with the replay's store and the instant: a test's look at
+	// the replay's database at the moments its timeline reads (TestReplayStatesAreTheProjectionsStates).
+	atSettled func(ctx context.Context, st *store.Store, at time.Time) error
 }
 
 // RunResult is what one replay made and measured.
@@ -69,10 +73,19 @@ type RunResult struct {
 	// (legion_replay_<run id>), which is dropped at the end of the run unless RunConfig.KeepDB
 	// kept it.
 	Database string
-	// Scorecard is the replay's measures, read from its own log. The run fills what it names of
-	// itself (its source, rule, branch, seed, slowdown, span, unplaced count, the assumptions it
-	// used and its scenario); the measures are the measures' own code's to fill.
+	// Scorecard is the replay's measures, read from its snapshot timeline (design 10.1 (a)): the
+	// states the daemon's own admission passes decided from, as each pass's observer handed them
+	// over, and the claims the worker stub holds. The run fills what it names of itself (its
+	// source, rule, branch, seed, slowdown, span, unplaced count, the assumptions it used and its
+	// scenario); the measures are Measure's.
 	Scorecard Scorecard
+	// LineScorecard is the same measures read from the replay's line timeline (design 10.1 (b)):
+	// BuildTrace over the replay's own log and its own copy of Dispatch's events, read through the
+	// window's line kinds as a record's scorecard is (Score), with the same run's own names.
+	LineScorecard Scorecard
+	// Gaps is each measure of the two scorecards side by side (Gaps): the error of reading a
+	// course from its lines, which a record's scorecard rests on.
+	Gaps []MeasureGap
 	// Segments is each work segment the replay ran, under RunConfig.TraceSegments.
 	Segments []Segment
 	// Unplaced is each issue the start state could not place at the window's start.
@@ -87,6 +100,9 @@ type RunResult struct {
 	// turn out, finished an outbox row without acting or seeded a slot the trace inferred, which
 	// run.json names beside them.
 	Assumptions []int
+
+	// snapshot is the snapshot timeline Scorecard is read from, which a test reads states from.
+	snapshot Timeline
 }
 
 // Segment is one work segment of an issue in a replay: the phase it worked, when it started, the
@@ -108,12 +124,14 @@ type Unplaced struct {
 	Reason string `json:"reason"`
 }
 
-// The files a run writes into RunConfig.Out beside its log (logFile): its scorecard, what it ran
-// and counted, and its segments under TraceSegments.
+// The files a run writes into RunConfig.Out beside its log (logFile): its scorecard, read from its
+// snapshot timeline, the same read from its line timeline, what it ran and counted, and its
+// segments under TraceSegments.
 const (
-	scorecardFile = "scorecard.json"
-	runFile       = "run.json"
-	segmentsFile  = "segments.jsonl"
+	scorecardFile     = "scorecard.json"
+	lineScorecardFile = "scorecard-line.json"
+	runFile           = "run.json"
+	segmentsFile      = "segments.jsonl"
 )
 
 // specAssumptionsTop is the highest number of an assumption of the spec and the plan (1 to 25),
@@ -126,8 +144,11 @@ const specAssumptionsTop = 25
 // pass of the daemon's handler chain (intake.ApplyFact over admit.Handlers), with the rule set on
 // the engine and the admission pass and one simulated clock set on the engine, the admission
 // pass and the store; runs a worker stub over the outbox rows the daemon's lanes would take after
-// each fact; and measures the replay from the log it writes. It makes no request outside the
-// database: no Dispatch, no GitHub and no NATS.
+// each fact; and measures the replay twice (design 10.1): from the states its admission passes
+// left and its stub's claims (the snapshot timeline, RunResult.Scorecard), and from the log and
+// the Dispatch events it wrote, read back as a record is read (the line timeline,
+// RunResult.LineScorecard), with the gap between the two per measure. It makes no request
+// outside the database: no Dispatch, no GitHub and no NATS.
 //
 // It runs the main branch (MainBranch) and draws no conflict: a knob set to another value is
 // refused, with its name, where the window gives it something to decide.
@@ -195,7 +216,8 @@ func Run(ctx context.Context, cfg RunConfig) (RunResult, error) {
 		shadow: newShadow(w.Project, firstStartRanks(trace)), token: token,
 		claims: map[claim.Token]supervise.Claim{}, working: map[claim.Token]*piece{},
 		inFlight: map[string]bool{}, started: map[string]time.Time{}, childWait: map[string]time.Time{}, placed: map[int]time.Time{},
-		signOffs: map[string]bool{}, used: map[int]bool{1: true},
+		signOffs: map[string]bool{}, drops: map[string]string{}, used: map[int]bool{1: true},
+		snap:     newSnapshots(w.From, w.To, ranksOf(trace)),
 		counters: Divergence{Refused: []RefusedMove{}, Finished: map[int]int{}, TurnsLeftOut: map[int]int{}},
 	}
 	runErr := d.run()
@@ -207,11 +229,27 @@ func Run(ctx context.Context, cfg RunConfig) (RunResult, error) {
 		return result, err
 	}
 	d.traceAssumptions()
+	// What the replay's own passes judged names two more: 4 where an issue waited on another issue
+	// (a gate's closing names it as the replay writes it, observe), and 7 where a hold other than
+	// the cap held the first start of an issue not yet started.
+	if d.snap.waitsOnIssues() {
+		d.used[4] = true
+	}
+	if d.snap.firstStartHeld {
+		d.used[7] = true
+	}
 	result.Unplaced, result.Divergence, result.Assumptions = d.unplaced, d.counters, d.assumptionsUsed(len(Assumptions))
 	if cfg.TraceSegments {
 		result.Segments = d.segments
 	}
-	result.Scorecard = d.scorecard()
+	result.snapshot = d.snap.timelineAt()
+	result.Scorecard = d.scorecard(Measure(result.snapshot))
+	lined, err := d.lineTimeline()
+	if err != nil {
+		return result, err
+	}
+	result.LineScorecard = d.scorecard(Measure(lined))
+	result.Gaps = Gaps(result.Scorecard, result.LineScorecard)
 	if err := d.writeOutputs(result, time.Since(began)); err != nil {
 		return result, err
 	}
@@ -322,43 +360,121 @@ func (d *driver) assumptionsUsed(top int) []int {
 	return used
 }
 
-// scorecard is the part of the replay's Scorecard the run itself names: its source, rule, branch,
-// seed, slowdown and span, the issues its start state could not place, the assumptions of the
-// spec and the plan its measures rest on, and its never-started scenario. The measures are left
-// to the measures' own code, which reads the run's log.
-func (d *driver) scorecard() Scorecard {
-	return Scorecard{Source: "replay", Rule: d.rule.Name, Branch: d.cfg.Branch.Name, Seed: d.cfg.Seed, Slowdown: d.cfg.Slowdown,
-		From: d.window.From, To: d.window.To, Unplaced: len(d.unplaced), Assumptions: d.assumptionsUsed(specAssumptionsTop),
-		Scenario: cmp.Or(d.cfg.Branch.NeverStarted, MainBranch.NeverStarted)}
+// scorecard is card, measured from one of the replay's timelines, with what the run itself names:
+// its source, rule, branch, seed, slowdown and span, the issues its start state could not place,
+// the assumptions of the spec and the plan its measures rest on, and its never-started scenario.
+func (d *driver) scorecard(card Scorecard) Scorecard {
+	card.Source, card.Rule, card.Branch, card.Seed, card.Slowdown = "replay", d.rule.Name, d.cfg.Branch.Name, d.cfg.Seed, d.cfg.Slowdown
+	card.From, card.To, card.Unplaced = d.window.From, d.window.To, len(d.unplaced)
+	card.Assumptions = d.assumptionsUsed(specAssumptionsTop)
+	card.Scenario = cmp.Or(d.cfg.Branch.NeverStarted, MainBranch.NeverStarted)
+	return card
+}
+
+// laterLines is the line kinds a later release writes where an older one wrote other lines that
+// BuildTrace reads the same facts from, the trace reading each where the window holds its kind and
+// the older lines where it does not: the record line of a pass that moves slots and the hold's
+// beginning (passMovedSlotsLine, phaseHeldLine).
+var laterLines = []string{passMovedSlotsLine, phaseHeldLine}
+
+// lineTimeline is the replay's line timeline (design 10.1 (b)): BuildTrace over a window that holds
+// the record's lines and events from before the window's start, which the replay's start state
+// was built from, and from the start on the replay's own log and the events its copy of Dispatch
+// applied, recorded and its own alike. It is measured by the record's true ranks (design 10.7)
+// under the rule the replay ran.
+//
+// The replay's log is read through the window's line kinds as the record is, so a later kind the
+// replay's daemon writes in place of the older lines a window holds (laterLines) is left out, and
+// the record and the replay are read by one path. Every other kind the trace reads is read where the
+// replay wrote it: a window lacks such a kind only because nothing it holds wrote one (a window in
+// which no slot went back holds no `admission: slot released`), and the replay's line is of what the
+// replay did.
+func (d *driver) lineTimeline() (Timeline, error) {
+	w := d.window
+	lined := w
+	lined.Log, lined.Events = nil, make(map[string][]json.RawMessage, len(w.Events)+len(d.shadow.issues))
+	lined.Lines = slices.Clone(w.Lines)
+	for i, raw := range w.Log {
+		var head struct {
+			Time time.Time `json:"time"`
+		}
+		if err := json.Unmarshal(raw, &head); err != nil {
+			return Timeline{}, fmt.Errorf("replay: line %d of the window's log has no time: %w", i+1, err)
+		}
+		if head.Time.Before(w.From) {
+			lined.Log = append(lined.Log, raw)
+		}
+	}
+	replayed, err := os.ReadFile(filepath.Join(d.cfg.Out, logFile))
+	if err != nil {
+		return Timeline{}, fmt.Errorf("replay: read the run's own log back: %w", err)
+	}
+	for i, line := range bytes.Split(replayed, []byte("\n")) {
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var head struct {
+			Msg string `json:"msg"`
+		}
+		if err := json.Unmarshal(line, &head); err != nil {
+			return Timeline{}, fmt.Errorf("replay: line %d of the run's own log is no JSON object: %w", i+1, err)
+		}
+		if TraceReads(head.Msg) && !slices.Contains(lined.Lines, head.Msg) && !slices.Contains(laterLines, head.Msg) {
+			lined.Lines = append(lined.Lines, head.Msg)
+		}
+		lined.Log = append(lined.Log, json.RawMessage(line))
+	}
+	for key, events := range w.Events {
+		for i, raw := range events {
+			event, err := ParseDispatchEvent(raw)
+			if err != nil {
+				return Timeline{}, fmt.Errorf("replay: event %d of %s: %w", i+1, key, err)
+			}
+			if event.At.Before(w.From) {
+				lined.Events[key] = append(lined.Events[key], raw)
+			}
+		}
+	}
+	for key, iss := range d.shadow.issues {
+		lined.Events[key] = append(lined.Events[key], iss.log...)
+	}
+	t, err := BuildTrace(lined)
+	if err != nil {
+		return Timeline{}, fmt.Errorf("replay: read the run's own log and events back as a record: %w", err)
+	}
+	return lineTimeline(t, ranksOf(d.trace), func(time.Time) record.SlotRule { return d.rule }), nil
 }
 
 // runRecord is a run's run.json: what it ran — the rule, the branch, the seed, the slowdown, the
 // scenario and every assumption it used by number — and what it counted: the facts it applied and
 // the passes they ran, the mean time of a pass, the run's wall time and peak memory, the issues the
-// start state could not place, the segments it ran and its divergence counters. It holds numbers
-// and names alone, never an assumption's text.
+// start state could not place, the segments it ran, its divergence counters and the gap of each
+// measure between its snapshot and line timelines. It holds numbers and names alone, never an
+// assumption's text.
 type runRecord struct {
-	Rule            string     `json:"rule"`
-	RuleCommit      string     `json:"ruleCommit"`
-	Branch          Branch     `json:"branch"`
-	Seed            int64      `json:"seed"`
-	Slowdown        float64    `json:"slowdown"`
-	Scenario        string     `json:"scenario"`
-	Assumptions     []int      `json:"assumptions"`
-	Database        string     `json:"database"`
-	KeptDatabase    bool       `json:"keptDatabase"`
-	Facts           int        `json:"facts"`
-	Passes          int        `json:"passes"`
-	MeanPassMillis  float64    `json:"meanPassMillis"`
-	WallSeconds     float64    `json:"wallSeconds"`
-	PeakMemoryBytes uint64     `json:"peakMemoryBytes"`
-	Unplaced        int        `json:"unplaced"`
-	Segments        int        `json:"segments"`
-	Divergence      Divergence `json:"divergence"`
+	Rule            string       `json:"rule"`
+	RuleCommit      string       `json:"ruleCommit"`
+	Branch          Branch       `json:"branch"`
+	Seed            int64        `json:"seed"`
+	Slowdown        float64      `json:"slowdown"`
+	Scenario        string       `json:"scenario"`
+	Assumptions     []int        `json:"assumptions"`
+	Database        string       `json:"database"`
+	KeptDatabase    bool         `json:"keptDatabase"`
+	Facts           int          `json:"facts"`
+	Passes          int          `json:"passes"`
+	MeanPassMillis  float64      `json:"meanPassMillis"`
+	WallSeconds     float64      `json:"wallSeconds"`
+	PeakMemoryBytes uint64       `json:"peakMemoryBytes"`
+	Unplaced        int          `json:"unplaced"`
+	Segments        int          `json:"segments"`
+	Divergence      Divergence   `json:"divergence"`
+	Gaps            []MeasureGap `json:"gaps"`
 }
 
-// writeOutputs writes the run's scorecard.json and run.json into its output directory, and its
-// segments.jsonl under TraceSegments.
+// writeOutputs writes the run's scorecard.json (its snapshot timeline's), scorecard-line.json (its
+// line timeline's) and run.json into its output directory, and its segments.jsonl under
+// TraceSegments.
 func (d *driver) writeOutputs(result RunResult, wall time.Duration) error {
 	mean := 0.0
 	if d.facts > 0 {
@@ -367,8 +483,9 @@ func (d *driver) writeOutputs(result RunResult, wall time.Duration) error {
 	ran := runRecord{Rule: d.rule.Name, RuleCommit: d.rule.Commit, Branch: d.cfg.Branch, Seed: d.cfg.Seed, Slowdown: d.cfg.Slowdown,
 		Scenario: result.Scorecard.Scenario, Assumptions: d.assumptionsUsed(len(Assumptions)), Database: result.Database,
 		KeptDatabase: d.cfg.KeepDB, Facts: d.facts, Passes: d.facts + d.boots, MeanPassMillis: mean, WallSeconds: wall.Seconds(),
-		PeakMemoryBytes: peakMemory(), Unplaced: len(result.Unplaced), Segments: len(d.segments), Divergence: result.Divergence}
-	for name, value := range map[string]any{scorecardFile: result.Scorecard, runFile: ran} {
+		PeakMemoryBytes: peakMemory(), Unplaced: len(result.Unplaced), Segments: len(d.segments), Divergence: result.Divergence,
+		Gaps: result.Gaps}
+	for name, value := range map[string]any{scorecardFile: result.Scorecard, lineScorecardFile: result.LineScorecard, runFile: ran} {
 		data, err := json.MarshalIndent(value, "", "  ")
 		if err != nil {
 			return fmt.Errorf("replay: write the run's %s: %w", name, err)

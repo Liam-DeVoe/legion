@@ -64,7 +64,8 @@ type FactSource struct {
 
 // The classes of the items of a replay's queue, which order the items of one instant: a boot
 // first, then the turns that end, then the record's facts in the record's own order, then the
-// ticks, the outbox rows woken at their next_at, and last the turns that begin.
+// ticks, the outbox rows woken at their next_at, then the turns that begin, and last the sizing of
+// each piece of work opened in the instant (sizePiece), once every pass of the instant has run.
 const (
 	classBoot = iota
 	classTurnEnd
@@ -72,6 +73,7 @@ const (
 	classTick
 	classWake
 	classTurnStart
+	classSize
 )
 
 // item is one thing a replay does at a moment of the simulated clock: apply a fact, end a
@@ -182,11 +184,20 @@ type driver struct {
 	// signOffs is each issue whose sign-off the engine holds behind a member beneath, which the
 	// replay applies again at each leave of a member of its tree.
 	signOffs map[string]bool
+	// drops is, for each issue whose recorded move back the replay is entering, the line of its
+	// pull request leaving the merge queue the record shows before it (Move.Drop), which names the
+	// move's cause in the snapshot timeline.
+	drops map[string]string
 	// moves counts the replay's own facts, which names each.
 	moves int
 	// releasedOrTook is what the slots of the current fact did: a slot released and a slot
 	// taken in one fact is a slot given out in the pass that freed it (assumption 11).
 	released, took bool
+
+	// snap is the replay's snapshot timeline (snapshots), which each admission pass's observer
+	// and each settle feed, and dirty says an act ran since the last settle.
+	snap  *snapshots
+	dirty bool
 
 	counters Divergence
 	used     map[int]bool
@@ -291,6 +302,7 @@ func (d *driver) newChain(at time.Time) {
 	d.admission.UseExperimentSource(draw)
 	d.admission.UseStalledTreeNotice(time.Duration(w.StalledTreeNotice))
 	d.admission.UseWorkerSilence(time.Duration(w.WorkerSilence), time.Duration(w.WorkerBackground))
+	d.admission.UsePassObserver(d.snap.pass)
 	d.handlers = append([]intake.Handler{replayHandler{engine: d.engine, clock: d.clock.Now}},
 		admit.Handlers(d.records, w.Project, d.engine, d.admission)...)
 }
@@ -364,6 +376,12 @@ func (d *driver) observe() error {
 		switch line.msg {
 		case phaseChangedLine:
 			from, to := phase.Phase(line.str("from")), phase.Phase(line.str("to"))
+			trigger, drop := workflow.TriggerKind(line.str("trigger")), ""
+			if trigger == workflow.TriggerBackward {
+				drop = d.drops[key]
+				delete(d.drops, key)
+			}
+			d.snap.moved(key, d.clock.Instant(), from, to, trigger, drop)
 			if to == phase.Accepting || to == phase.Retro || to == phase.Merging {
 				d.used[2] = true
 			}
@@ -486,6 +504,10 @@ func (d *driver) run() error {
 	if err := d.drain(); err != nil {
 		return err
 	}
+	if err := d.startView(); err != nil {
+		return err
+	}
+	d.dirty = true
 	for d.queue.Len() > 0 {
 		it := heap.Pop(&d.queue).(*item)
 		if !it.at.Before(w.To) {
@@ -502,6 +524,13 @@ func (d *driver) run() error {
 			continue
 		}
 		it.done = true
+		// Every act of the instant before this one has run: the snapshot timeline takes the
+		// state they left before the clock moves on.
+		if d.dirty && it.at.After(d.clock.Instant()) {
+			if err := d.settle(); err != nil {
+				return err
+			}
+		}
 		d.clock.advance(it.at)
 		if it.dispatch != nil {
 			if err := it.dispatch(); err != nil {
@@ -518,11 +547,42 @@ func (d *driver) run() error {
 		if err := d.drain(); err != nil {
 			return err
 		}
+		d.dirty = true
 	}
 	for _, i := range d.anchored {
 		if _, placed := d.placed[i]; !placed {
 			d.counters.Unanchored++
 		}
+	}
+	return d.settle()
+}
+
+// startView hands the snapshot timeline the view of the start state, read as a pass reads it
+// (admit.Admission.View), so the states from the window's start to its first pass are the start
+// state's.
+func (d *driver) startView() error {
+	return pgx.BeginTxFunc(d.ctx, d.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		view, err := d.admission.View(d.ctx, tx)
+		if err != nil {
+			return fmt.Errorf("replay: read the start state at %s as a pass reads it: %w", stamp(d.window.From), err)
+		}
+		d.snap.pass(view)
+		return nil
+	})
+}
+
+// settle takes the state every act of the clock's instant left into the snapshot timeline, where
+// an act ran since the last settle, and hands the instant to the test's look at it
+// (RunConfig.atSettled).
+func (d *driver) settle() error {
+	if !d.dirty {
+		return nil
+	}
+	d.dirty = false
+	at := d.clock.Instant()
+	d.snap.settle(at, d.claims, d.inFlight, d.shadow)
+	if d.cfg.atSettled != nil {
+		return d.cfg.atSettled(d.ctx, d.st, at)
 	}
 	return nil
 }

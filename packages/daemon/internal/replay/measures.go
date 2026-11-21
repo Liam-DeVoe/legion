@@ -1,0 +1,534 @@
+package replay
+
+import (
+	"fmt"
+	"maps"
+	"slices"
+	"sort"
+	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/record"
+)
+
+// firstDay is the span of a window's first day, which a scorecard of a longer window also gives
+// apart (Scorecard.FirstDayApart, assumption 6).
+const firstDay = 24 * time.Hour
+
+// Measure is the measures of R4 over tl's span (spec R4; the fixture windows' README, "The
+// measures"): the issues that reach done and the work left; the two readings of started work that
+// waits for a slot and the issues past their review with a slot and without; the share of pairs of
+// a holder and an issue that waits for a slot in which the holder ranks below; the rounds and
+// hours of the send-back loops by cause and the hours of the waits on other issues by what ended
+// them; the slot-hours with a worker in a turn and with none; the issues in flight; the slots
+// given out each day, the median wait for one and each issue's first; and, for a window longer
+// than a day, the same over its first day apart. It is the one code every scorecard is read by,
+// the record's (Score) and a replay's two timelines' (Run), so a gap between them is a gap of the
+// timelines and not of two readings. It fills the measures alone; the run or the record names the
+// rest.
+//
+// It reads each state of the timeline once, in time order, after one sort of all of them, and
+// keeps the pairs of priority taken by the places of their members in one order of the board
+// (rankOrder), so a window of hundreds of thousands of states is measured in O(n log n).
+func Measure(tl Timeline) Scorecard {
+	card := measureSpan(tl, tl.From, tl.To)
+	if tl.To.Sub(tl.From) > firstDay {
+		day := measureSpan(tl, tl.From, tl.From.Add(firstDay))
+		card.FirstDayApart = &day
+	}
+	return card
+}
+
+// measureSpan is the measures of tl over [from, to).
+func measureSpan(tl Timeline, from, to time.Time) Scorecard {
+	card := Scorecard{From: from, To: to, Loops: map[string]LoopHours{}, Waits: map[string]WaitHours{},
+		SlotsGivenByDay: map[string]int{}, FirstSlot: map[string]time.Time{}, DoneAt: map[string]time.Time{}}
+	span := to.Sub(from).Hours()
+	counted := newSweep(from, to, tl).run(tl)
+	occupy := func(o *occupancy) Occupancy {
+		if span <= 0 {
+			return Occupancy{Max: o.max}
+		}
+		return Occupancy{Average: o.hours / span, Max: o.max, Hours: o.hours}
+	}
+	card.InFlight = occupy(&counted.inFlight)
+	card.StartedWithoutSlot = occupy(&counted.startedWithoutSlot)
+	card.WaitOnlyForSlot = occupy(&counted.waitOnlyForSlot)
+	card.PastReviewHolding = occupy(&counted.pastReviewHolding)
+	card.PastReviewNotHolding = occupy(&counted.pastReviewNotHolding)
+	card.SlotHoursInTurn = counted.inTurn.hours
+	card.SlotHoursNoTurn = counted.noTurn.hours
+	if span > 0 {
+		card.PriorityTaken = counted.priority / span
+	}
+	within := func(at time.Time) bool { return !at.Before(from) && at.Before(to) }
+	var slotWaits []float64
+	for _, key := range sortedKeys(tl.Issues) {
+		c := tl.Issues[key]
+		if state, ok := c.stateBefore(to); ok && state.InFlight {
+			card.WorkLeft++
+		}
+		measureLoops(&card, key, c.Moves, from, to)
+		for _, wait := range c.Waits {
+			start, end := maxTime(wait.Start, from), to
+			if !wait.End.IsZero() {
+				end = minTime(wait.End, to)
+			}
+			if !end.After(start) {
+				continue
+			}
+			word := wait.EndedBy
+			if wait.End.IsZero() || !wait.End.Before(to) {
+				word = WaitOpen
+			}
+			waits := card.Waits[string(word)]
+			waits.Count++
+			waits.Hours += end.Sub(start).Hours()
+			card.Waits[string(word)] = waits
+		}
+		runs := c.waitRuns()
+		for _, given := range c.Given {
+			if !within(given) {
+				continue
+			}
+			card.SlotsGivenByDay[given.UTC().Format(time.DateOnly)]++
+			if first, ok := card.FirstSlot[key]; !ok || given.Before(first) {
+				card.FirstSlot[key] = given
+			}
+			slotWaits = append(slotWaits, given.Sub(c.waitingSince(given, runs)).Minutes())
+		}
+	}
+	card.Done = len(card.DoneAt)
+	card.MedianSlotWaitMinutes = median(slotWaits)
+	return card
+}
+
+// measureLoops adds to card the moves of key in [from, to): its move to done, and each move back
+// its cause names, one round of that cause, its hours from the move to the issue's next entry into
+// the phase the move left, or to to. The next entries are read in one walk back over the moves.
+func measureLoops(card *Scorecard, key string, moves []CourseMove, from, to time.Time) {
+	nextInto := map[phase.Phase]time.Time{}
+	for i := len(moves) - 1; i >= 0; i-- {
+		move := moves[i]
+		back, ok := nextInto[move.From]
+		nextInto[move.To] = move.At
+		if move.At.Before(from) || !move.At.Before(to) {
+			continue
+		}
+		if move.To == phase.Done {
+			if done, seen := card.DoneAt[key]; !seen || move.At.After(done) {
+				card.DoneAt[key] = move.At
+			}
+		}
+		if !phase.MovesBack(move.From, move.To) || move.Cause == "" {
+			continue
+		}
+		end := to
+		if ok && back.Before(to) {
+			end = back
+		}
+		loop := card.Loops[string(move.Cause)]
+		loop.Rounds++
+		loop.Hours += end.Sub(move.At).Hours()
+		card.Loops[string(move.Cause)] = loop
+	}
+}
+
+// stateBefore is the state the course stands in just before at, and false where it stands in
+// none yet.
+func (c *Course) stateBefore(at time.Time) (IssueState, bool) {
+	i := c.stintBefore(at)
+	if i < 0 {
+		return IssueState{}, false
+	}
+	return c.States[i].IssueState, true
+}
+
+// stintBefore is the index of the stint the course stands in just before at, -1 for none.
+func (c *Course) stintBefore(at time.Time) int {
+	return sort.Search(len(c.States), func(i int) bool { return !c.States[i].At.Before(at) }) - 1
+}
+
+// waitsForSlot says whether state is an issue that waits for a slot.
+func waitsForSlot(state IssueState) bool { return state.Waiting && !state.Holds }
+
+// waitRuns is, for each stint of the course, the index of the first stint of the run of stints in
+// which the issue waits for a slot that it stands in, or its own index where it does not wait.
+func (c *Course) waitRuns() []int {
+	runs := make([]int, len(c.States))
+	for i, stint := range c.States {
+		runs[i] = i
+		if i > 0 && waitsForSlot(stint.IssueState) && waitsForSlot(c.States[i-1].IssueState) {
+			runs[i] = runs[i-1]
+		}
+	}
+	return runs
+}
+
+// waitingSince is the moment the issue that took a slot at at began to wait for it: the start of
+// the run of stints in which it waited for a slot that stands just before at (runs, waitRuns); at
+// itself where it did not wait just before, having begun to wait in the pass that gave it the
+// slot.
+func (c *Course) waitingSince(at time.Time, runs []int) time.Time {
+	i := c.stintBefore(at)
+	if i < 0 || !waitsForSlot(c.States[i].IssueState) {
+		return at
+	}
+	return c.States[runs[i]].At
+}
+
+// median is the median of values, the mean of the two middle ones for an even count, 0 for none.
+func median(values []float64) float64 {
+	if len(values) == 0 {
+		return 0
+	}
+	sorted := slices.Sorted(slices.Values(values))
+	mid := len(sorted) / 2
+	if len(sorted)%2 == 1 {
+		return sorted[mid]
+	}
+	return (sorted[mid-1] + sorted[mid]) / 2
+}
+
+// minTime and maxTime are the earlier and the later of a and b.
+func minTime(a, b time.Time) time.Time {
+	if b.Before(a) {
+		return b
+	}
+	return a
+}
+
+func maxTime(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+	return a
+}
+
+// occupancy is a count's integral in issue-hours over a span and its largest value over any
+// stretch of it.
+type occupancy struct {
+	count int
+	hours float64
+	max   int
+}
+
+// sweep reads a timeline's states in time order over [from, to): the counts of the occupancies
+// and the pairs of a holder and an issue that waits for a slot, and their integrals.
+type sweep struct {
+	from, to time.Time
+
+	inFlight, startedWithoutSlot, waitOnlyForSlot, pastReviewHolding, pastReviewNotHolding, inTurn, noTurn occupancy
+	// places is the place of each holder and waiting issue in the board's order (rankOrder);
+	// holders and waiting count the holders and the issues that wait for a slot at each place,
+	// inverted is the pairs of them in which the waiting issue ranks above the holder, and
+	// priority the integral of the share of those pairs.
+	places             map[ranked]int
+	holders, waiting   fenwick
+	nHolders, nWaiting int
+	inverted           int
+	priority           float64
+}
+
+// ranked is what places an issue on the board: its key, its tree root's key and the Dispatch
+// ranks of the two.
+type ranked struct {
+	key, tree, rank, rootRank string
+}
+
+// rankedOf is what places state's issue key on the board.
+func rankedOf(key string, state IssueState) ranked {
+	tree := state.Tree
+	if tree == "" {
+		tree = key
+	}
+	return ranked{key: key, tree: tree, rank: state.Rank, rootRank: state.RootRank}
+}
+
+// compare orders r against other on the board: by their tree roots (record.RankLess over each
+// root's rank and key), and within one tree root's place by their own (record.RankLess over the
+// issue's rank and key), as the waiting line orders its starting part (record.Waiting) and the
+// slots reading places a holder against the first issue that waits for a slot
+// (record.SlotsReadingOf).
+func (r ranked) compare(other ranked) int {
+	root, otherRoot := record.Issue{Key: r.tree, Rank: r.rootRank}, record.Issue{Key: other.tree, Rank: other.rootRank}
+	own, otherOwn := record.Issue{Key: r.key, Rank: r.rank}, record.Issue{Key: other.key, Rank: other.rank}
+	switch {
+	case record.RankLess(root, otherRoot):
+		return -1
+	case record.RankLess(otherRoot, root):
+		return 1
+	case record.RankLess(own, otherOwn):
+		return -1
+	case record.RankLess(otherOwn, own):
+		return 1
+	}
+	return 0
+}
+
+// rankOrder is the place on the board of every issue tl holds as a holder or as an issue that
+// waits for a slot, each with the ranks it stood at then, in one sorted order.
+func rankOrder(tl Timeline) map[ranked]int {
+	seen := map[ranked]bool{}
+	for key, c := range tl.Issues {
+		for _, stint := range c.States {
+			if stint.Holds || waitsForSlot(stint.IssueState) {
+				seen[rankedOf(key, stint.IssueState)] = true
+			}
+		}
+	}
+	order := slices.SortedFunc(maps.Keys(seen), ranked.compare)
+	places := make(map[ranked]int, len(order))
+	for i, r := range order {
+		places[r] = i
+	}
+	return places
+}
+
+// fenwick counts the members standing at each place of an order and says how many stand below a
+// place, each in O(log n): a binary indexed tree.
+type fenwick []int
+
+// newFenwick is a fenwick of places places.
+func newFenwick(places int) fenwick { return make(fenwick, places+1) }
+
+// add adds delta members at place.
+func (f fenwick) add(place, delta int) {
+	for i := place + 1; i < len(f); i += i & -i {
+		f[i] += delta
+	}
+}
+
+// below is how many members stand at a place below place.
+func (f fenwick) below(place int) int {
+	n := 0
+	for i := place; i > 0; i -= i & -i {
+		n += f[i]
+	}
+	return n
+}
+
+// newSweep is a sweep over [from, to) of tl.
+func newSweep(from, to time.Time, tl Timeline) *sweep {
+	places := rankOrder(tl)
+	return &sweep{from: from, to: to, places: places, holders: newFenwick(len(places)), waiting: newFenwick(len(places))}
+}
+
+// run reads every stint of tl in time order, each moment's stints together, and adds each stretch
+// between two moments to the integrals.
+func (s *sweep) run(tl Timeline) *sweep {
+	type change struct {
+		at    time.Time
+		key   string
+		state IssueState
+	}
+	var changes []change
+	for _, key := range sortedKeys(tl.Issues) {
+		for _, stint := range tl.Issues[key].States {
+			changes = append(changes, change{at: stint.At, key: key, state: stint.IssueState})
+		}
+	}
+	slices.SortStableFunc(changes, func(a, b change) int { return a.at.Compare(b.at) })
+	states := map[string]IssueState{}
+	previous := s.from
+	for i := 0; i < len(changes); {
+		at := changes[i].at
+		s.add(previous, at)
+		for ; i < len(changes) && changes[i].at.Equal(at); i++ {
+			s.apply(changes[i].key, states[changes[i].key], changes[i].state)
+			states[changes[i].key] = changes[i].state
+		}
+		previous = at
+	}
+	s.add(previous, s.to)
+	return s
+}
+
+// add adds the stretch [a, b), clipped to the sweep's span, to every integral at the counts that
+// stand over it.
+func (s *sweep) add(a, b time.Time) {
+	a, b = maxTime(a, s.from), minTime(b, s.to)
+	if !b.After(a) {
+		return
+	}
+	hours := b.Sub(a).Hours()
+	for _, o := range []*occupancy{&s.inFlight, &s.startedWithoutSlot, &s.waitOnlyForSlot, &s.pastReviewHolding,
+		&s.pastReviewNotHolding, &s.inTurn, &s.noTurn} {
+		o.hours += float64(o.count) * hours
+		o.max = max(o.max, o.count)
+	}
+	if pairs := s.nHolders * s.nWaiting; pairs > 0 {
+		s.priority += float64(s.inverted) / float64(pairs) * hours
+	}
+}
+
+// apply moves the counts from key's old state to its new one.
+func (s *sweep) apply(key string, old, state IssueState) {
+	count := func(o *occupancy, was, is bool) {
+		if was {
+			o.count--
+		}
+		if is {
+			o.count++
+		}
+	}
+	returned := func(st IssueState) bool { return st.Part == record.PartReturned && !st.Holds }
+	count(&s.inFlight, old.InFlight, state.InFlight)
+	count(&s.startedWithoutSlot, returned(old), returned(state))
+	count(&s.waitOnlyForSlot, returned(old) && !old.Blocked, returned(state) && !state.Blocked)
+	count(&s.pastReviewHolding, old.PastReview && old.Holds, state.PastReview && state.Holds)
+	count(&s.pastReviewNotHolding, old.PastReview && !old.Holds, state.PastReview && !state.Holds)
+	count(&s.inTurn, old.Holds && old.InTurn, state.Holds && state.InTurn)
+	count(&s.noTurn, old.Holds && !old.InTurn, state.Holds && !state.InTurn)
+	if old.Holds {
+		s.holder(s.places[rankedOf(key, old)], -1)
+	}
+	if waitsForSlot(old) {
+		s.waiter(s.places[rankedOf(key, old)], -1)
+	}
+	if state.Holds {
+		s.holder(s.places[rankedOf(key, state)], 1)
+	}
+	if waitsForSlot(state) {
+		s.waiter(s.places[rankedOf(key, state)], 1)
+	}
+}
+
+// holder adds delta holders at place, and with them the pairs in which an issue that waits for a
+// slot at a place below ranks above it.
+func (s *sweep) holder(place, delta int) {
+	s.inverted += delta * s.waiting.below(place)
+	s.holders.add(place, delta)
+	s.nHolders += delta
+}
+
+// waiter adds delta issues that wait for a slot at place, and with them the pairs in which a
+// holder at a place above ranks below it.
+func (s *sweep) waiter(place, delta int) {
+	s.inverted += delta * (s.nHolders - s.holders.below(place+1))
+	s.waiting.add(place, delta)
+	s.nWaiting += delta
+}
+
+// Measured is one number of a scorecard by its name, the JSON path of its value in the Scorecard
+// (inFlight.hours, loops[send_back].rounds, slotsGivenByDay[2001-03-05]), and its value.
+type Measured struct {
+	Name  string
+	Value float64
+}
+
+// MeasuresOf is every number of card, in the order the Scorecard holds them, each loop's cause in
+// the order of Causes and each other map's entries by key, and the first day's apart under
+// firstDayApart.: what `legion replay scorecard` prints and what a gap between two scorecards is
+// read over (Gaps). Each issue's first slot and done are times, which MeasuresOf leaves to Gaps,
+// and the run's own numbers (seed, slowdown) and its assumptions name no measure.
+func MeasuresOf(card Scorecard) []Measured {
+	measured := measuresOf(card, "")
+	if card.FirstDayApart != nil {
+		measured = append(measured, measuresOf(*card.FirstDayApart, "firstDayApart.")...)
+	}
+	return measured
+}
+
+// measuresOf is MeasuresOf over card's own numbers, each name under prefix.
+func measuresOf(card Scorecard, prefix string) []Measured {
+	var measured []Measured
+	add := func(name string, value float64) {
+		measured = append(measured, Measured{Name: prefix + name, Value: value})
+	}
+	occupancy := func(name string, o Occupancy) {
+		add(name+".average", o.Average)
+		add(name+".max", float64(o.Max))
+		add(name+".hours", o.Hours)
+	}
+	add("unplaced", float64(card.Unplaced))
+	add("done", float64(card.Done))
+	add("workLeft", float64(card.WorkLeft))
+	occupancy("waitOnlyForSlot", card.WaitOnlyForSlot)
+	occupancy("startedWithoutSlot", card.StartedWithoutSlot)
+	occupancy("pastReviewHolding", card.PastReviewHolding)
+	occupancy("pastReviewNotHolding", card.PastReviewNotHolding)
+	add("priorityTaken", card.PriorityTaken)
+	for _, cause := range Causes {
+		if loop, ok := card.Loops[string(cause)]; ok {
+			add(fmt.Sprintf("loops[%s].rounds", cause), float64(loop.Rounds))
+			add(fmt.Sprintf("loops[%s].hours", cause), loop.Hours)
+		}
+	}
+	for _, word := range slices.Sorted(maps.Keys(card.Waits)) {
+		add(fmt.Sprintf("waits[%s].count", word), float64(card.Waits[word].Count))
+		add(fmt.Sprintf("waits[%s].hours", word), card.Waits[word].Hours)
+	}
+	add("slotHoursInTurn", card.SlotHoursInTurn)
+	add("slotHoursNoTurn", card.SlotHoursNoTurn)
+	occupancy("inFlight", card.InFlight)
+	for _, day := range slices.Sorted(maps.Keys(card.SlotsGivenByDay)) {
+		add(fmt.Sprintf("slotsGivenByDay[%s]", day), float64(card.SlotsGivenByDay[day]))
+	}
+	add("medianSlotWaitMinutes", card.MedianSlotWaitMinutes)
+	return measured
+}
+
+// MeasureGap is one measure of a replay read from its two timelines (design 10.1): its value in
+// the snapshot timeline, which the admission passes' own views give, and in the line timeline,
+// which BuildTrace reads from the replay's log through the window's line kinds as it reads a
+// record. Their difference is the error of the line reconstruction the record's scorecard rests on.
+type MeasureGap struct {
+	Measure  string  `json:"measure"`
+	Snapshot float64 `json:"snapshot"`
+	Line     float64 `json:"line"`
+}
+
+// Gap is the line timeline's value less the snapshot timeline's.
+func (g MeasureGap) Gap() float64 { return g.Line - g.Snapshot }
+
+// Gaps is each measure of snapshot and of line side by side (MeasuresOf), a measure one of them
+// lacks at zero there, and each issue's first slot and done, firstSlot[KEY] and doneAt[KEY], in
+// minutes from the window's start: an issue one of them gives no time for stands there at the
+// window's end, the soonest it could come.
+func Gaps(snapshot, line Scorecard) []MeasureGap {
+	lineValues := map[string]float64{}
+	for _, measure := range MeasuresOf(line) {
+		lineValues[measure.Name] = measure.Value
+	}
+	var gaps []MeasureGap
+	seen := map[string]bool{}
+	for _, measure := range MeasuresOf(snapshot) {
+		seen[measure.Name] = true
+		gaps = append(gaps, MeasureGap{Measure: measure.Name, Snapshot: measure.Value, Line: lineValues[measure.Name]})
+	}
+	for _, measure := range MeasuresOf(line) {
+		if !seen[measure.Name] {
+			gaps = append(gaps, MeasureGap{Measure: measure.Name, Line: measure.Value})
+		}
+	}
+	span := snapshot.To.Sub(snapshot.From).Minutes()
+	minutes := func(at time.Time, ok bool) float64 {
+		if !ok {
+			return span
+		}
+		return at.Sub(snapshot.From).Minutes()
+	}
+	times := func(name string, a, b map[string]time.Time) {
+		for _, key := range slices.Sorted(maps.Keys(unionKeys(a, b))) {
+			x, inA := a[key]
+			y, inB := b[key]
+			gaps = append(gaps, MeasureGap{Measure: fmt.Sprintf("%s[%s]", name, key), Snapshot: minutes(x, inA), Line: minutes(y, inB)})
+		}
+	}
+	times("firstSlot", snapshot.FirstSlot, line.FirstSlot)
+	times("doneAt", snapshot.DoneAt, line.DoneAt)
+	return gaps
+}
+
+// unionKeys is the keys of a and b together, each once.
+func unionKeys(a, b map[string]time.Time) map[string]struct{} {
+	keys := make(map[string]struct{}, len(a)+len(b))
+	for key := range a {
+		keys[key] = struct{}{}
+	}
+	for key := range b {
+		keys[key] = struct{}{}
+	}
+	return keys
+}

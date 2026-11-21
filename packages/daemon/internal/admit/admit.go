@@ -120,6 +120,11 @@ type Admission struct {
 	// released claim by (UseReleasedWakes, workflow.Stranded), for the tick's slots reading; nil
 	// until the daemon registers it, when the tick judges no released claim stranded.
 	releasedWakes func(ctx context.Context, tx pgx.Tx, claims []supervise.Claim) ([]workflow.ReleasedWake, error)
+
+	// observer is handed the view of each pass once its fact commits (UsePassObserver,
+	// observePass): a replay's measure of its own run. nil in the daemon, where a pass gathers no
+	// view.
+	observer func(PassView)
 }
 
 // ReportCapabilities registers open, whose answer every tick controller notice carries as its
@@ -1866,7 +1871,9 @@ func (a *Admission) promote(ctx context.Context, tx pgx.Tx) (int, []string, erro
 // It is also every path that moves one of the cap's slots, so it writes the record of the pass
 // (passMoves): each slot the releases take back and the promotion gives out, and each candidate
 // the promotion passes over, in one line once the fact commits where any slot moved
-// (logPassMoves), whichever return ends the pass.
+// (logPassMoves), whichever return ends the pass. A pass that ends with no error hands what it
+// read, judged and moved to the admission's observer once its fact commits (observePass), which
+// only a replay registers.
 func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bool) (int, []string, error) {
 	var moves passMoves
 	defer a.logPassMoves(ctx, &moves)
@@ -1988,9 +1995,13 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 		return 0, released, err
 	}
 	if a.cap <= 0 {
+		a.observePass(ctx, issues, slots, facts, rows, line, dropped, &moves, nil)
 		return 0, released, nil
 	}
 	admitted := 0
+	// promoted is each candidate the current round of the loop promoted, which the line the
+	// observer is handed leaves out (observePass).
+	var promoted []string
 	for {
 		own := ownSlots(issues, slots)
 		// The slots the holders of this round lend under a rule whose start may take a cover
@@ -1998,6 +2009,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 		lending := coversOf(own, rows, facts)
 		stopped, opened, resumed := false, false, false
 		moves.round()
+		promoted = promoted[:0]
 		for at, candidate := range line {
 			issue := candidate.Issue
 			// The candidate's place in this round's line, counted from 1, which the pass's record
@@ -2272,6 +2284,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				}
 			}
 			admitted++
+			promoted = append(promoted, issue.Key)
 		}
 		// A resume, or a tree opened above whose design gate already stands open, releases
 		// members of its own tree that stood at admitted on the snapshot this round read and
@@ -2288,7 +2301,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 		if issues, slots, facts, err = a.reread(ctx, tx); err != nil {
 			return admitted, released, err
 		}
-		if rows, facts, line, _, err = blockers.JudgeLine(ctx, tx, a.store, a.project, issues, ownSlots(issues, slots), facts, rows, a.now()); err != nil {
+		if rows, facts, line, dropped, err = blockers.JudgeLine(ctx, tx, a.store, a.project, issues, ownSlots(issues, slots), facts, rows, a.now()); err != nil {
 			return admitted, released, err
 		}
 	}
@@ -2301,6 +2314,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	// every pass rather than waiting for a fact about it. The other half that once needed a pass
 	// of its own — a merger's READY the dropped step refused — went with READY: the merger merges
 	// the head it read and no gate refuses a completion (dispatch://INFRA-714 R2).
+	a.observePass(ctx, issues, slots, facts, rows, line, dropped, &moves, promoted)
 	return admitted, released, nil
 }
 

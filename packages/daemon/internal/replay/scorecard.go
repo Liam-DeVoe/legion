@@ -87,3 +87,32 @@ type WaitHours struct {
 	Count int     `json:"count"`
 	Hours float64 `json:"hours"`
 }
+
+// Score is the scorecard of w read from its record alone, with no replay (spec R4: "The tool also
+// reads each measure from the record of a window"): the line timeline of its trace (lineTimeline),
+// the ranks its own Dispatch events show and, at each moment, the rule its daemon ran then, read by
+// Measure as a replay's two timelines are. Unplaced is how many issues a fact the trace could not
+// place leaves in doubt at the window's start (unplacedAtStart); a record runs under no rule,
+// branch, seed or scenario and rests on none of a replay's assumptions, so it names none.
+func Score(w Window) (Scorecard, error) {
+	t, err := BuildTrace(w)
+	if err != nil {
+		return Scorecard{}, err
+	}
+	card := Measure(lineTimeline(t, ranksOf(t), t.ruleAt))
+	card.Source, card.Unplaced, card.Assumptions = "record", unplacedAtStart(t), []int{}
+	return card, nil
+}
+
+// unplacedAtStart is how many issues of t a fact the trace could not place leaves in doubt at the
+// window's start (bearsOnStart), each once: the issues a start state at the window's start names
+// for the trace's own doubts (SeedAndReport).
+func unplacedAtStart(t Trace) int {
+	issues := map[string]bool{}
+	for _, fact := range t.Unplaced {
+		if _, considered := t.Issues[fact.Issue]; considered && bearsOnStart(fact, t.From) {
+			issues[fact.Issue] = true
+		}
+	}
+	return len(issues)
+}

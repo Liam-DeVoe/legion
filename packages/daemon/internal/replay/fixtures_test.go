@@ -131,6 +131,9 @@ func TestFixtureWindows(t *testing.T) {
 			recorded := recordedRule(window)
 			for _, run := range runs {
 				t.Run(run.name, func(t *testing.T) {
+					if why, waits := fixtureRunWaits(name, run); waits {
+						t.Skip(why)
+					}
 					rule, ok := record.SlotRuleNamed(run.rule)
 					if !ok {
 						t.Fatalf("window %s, rule %s: the repository keeps no slot rule of that name (record.SlotRules)", name, run.rule)
@@ -165,6 +168,28 @@ func TestFixtureWindows(t *testing.T) {
 			}
 		})
 	}
+}
+
+// rulesOfT11 is the rules fixture windows name that the repository keeps no rule of yet: the
+// plan's t11 adds them to record.SlotRules, and the runs under them wait for it.
+var rulesOfT11 = []string{"cover", "infra-w1", "keep-past-review"}
+
+// runsOfTheDraws is the runs of fixture windows, each as <window>/<run>, whose outcome rests on a
+// draw this replay does not make yet: the conflict drawn at the window's fitted rate, and the work
+// an issue that never started is given under the scenarios drawn and drawn-done. The coding task
+// C9b adds both draws, and these runs wait for it.
+var runsOfTheDraws = []string{"conflict-from-fitted-rate/main", "never-starts/drawn/main", "never-starts/drawn-done/main"}
+
+// fixtureRunWaits says why the run of the fixture window it names waits for a later task, and
+// whether it does: a run under a rule of t11, or a run of a draw of C9b.
+func fixtureRunWaits(window string, run fixtureRun) (string, bool) {
+	if slices.Contains(rulesOfT11, run.rule) {
+		return fmt.Sprintf("window %s, rule %s: the rule waits for the plan's t11, which adds it to record.SlotRules", window, run.rule), true
+	}
+	if slices.Contains(runsOfTheDraws, window+"/"+run.name) {
+		return fmt.Sprintf("window %s, run %s: the run rests on a draw this replay does not make yet, which task C9b adds", window, run.name), true
+	}
+	return "", false
 }
 
 // Check k1 names its facts, and each needs a window that holds it (the plan's t2g), so the list

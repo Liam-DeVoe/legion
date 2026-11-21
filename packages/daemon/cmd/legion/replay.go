@@ -6,8 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
+	"math"
 	"os"
 	"runtime/debug"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,14 +28,15 @@ import (
 // recorded window of a daemon's project through the daemon's own admission pass under a named
 // slot rule (internal/replay), so a rule is judged by the daemon's own decisions over a window it
 // lived through. Its commands collect a window (collect, collect-merges), neutralize one for the
-// repository's test data (neutralize), replay one (run) and name the rules a replay can run
-// (rules). None of them reaches a daemon.
+// repository's test data (neutralize), replay one (run), read the measures of a window's record
+// (scorecard) and name the rules a replay can run (rules). None of them reaches a daemon.
 func newReplayCommand(stdout, stderr io.Writer) *cobra.Command {
 	return group(&cobra.Command{Use: "replay", Short: "replay a recorded window of a daemon's project through the daemon's own admission pass under a named slot rule (a developer's tool)"},
 		newReplayCollectCommand(stdout, stderr),
 		newReplayCollectMergesCommand(stdout, stderr),
 		newReplayNeutralizeCommand(stdout, stderr),
 		newReplayRunCommand(stdout, stderr),
+		newReplayScorecardCommand(stdout, stderr),
 		newReplayRulesCommand(stdout, stderr),
 	)
 }
@@ -246,9 +251,12 @@ recorded times or offsets, a worker stub runs the outbox rows the daemon's lanes
 each fact, and each work segment runs its recorded length times f^((n − m)/42) at --slowdown f.
 Nothing outside is asked: no Dispatch, no GitHub, no NATS.
 
---out receives log.jsonl (the daemon's lines on the simulated clock), scorecard.json, run.json
-(what ran and what it counted) and, with --trace-segments, segments.jsonl. The output names each
-assumption the run rests on and the scenario it gave the work of an issue that never started.`
+--out receives log.jsonl (the daemon's lines on the simulated clock), scorecard.json (the
+measures read from the states the daemon's own admission passes left), scorecard-line.json (the
+same measures read back from log.jsonl and the replay's Dispatch events, as a record's are),
+run.json (what ran, what it counted and the gap of each measure between the two scorecards) and,
+with --trace-segments, segments.jsonl. The output names each assumption the run rests on and the
+scenario it gave the work of an issue that never started.`
 
 // newReplayRunCommand is `legion replay run` (replay.Run).
 func newReplayRunCommand(stdout, stderr io.Writer) *cobra.Command {
@@ -308,6 +316,12 @@ func newReplayRunCommand(stdout, stderr io.Writer) *cobra.Command {
 				refused.At.Format(time.RFC3339), refused.Reason)
 		}
 		fmt.Fprintf(stdout, "legion replay run: the scenario of the work of an issue that never started: %s\n", result.Scorecard.Scenario)
+		if widest, ok := widestGap(result.Gaps); ok && widest.Gap() != 0 {
+			fmt.Fprintf(stdout, "legion replay run: the widest gap between the snapshot and the line scorecards is %s: %v and %v\n",
+				widest.Measure, widest.Snapshot, widest.Line)
+		} else {
+			fmt.Fprintln(stdout, "legion replay run: the snapshot and the line scorecards agree on every measure")
+		}
 		fmt.Fprintln(stdout, "legion replay run: the assumptions it rests on:")
 		for _, number := range result.Assumptions {
 			for _, assumption := range replay.Assumptions {
@@ -320,6 +334,67 @@ func newReplayRunCommand(stdout, stderr io.Writer) *cobra.Command {
 					fmt.Fprintf(stdout, "  %d. %s\n", number, assumption.Text)
 				}
 			}
+		}
+		return 0
+	})
+	return cmd
+}
+
+// widestGap is the measure of gaps whose snapshot and line values stand furthest apart, and false
+// where gaps holds none.
+func widestGap(gaps []replay.MeasureGap) (replay.MeasureGap, bool) {
+	var widest replay.MeasureGap
+	for i, gap := range gaps {
+		if i == 0 || math.Abs(gap.Gap()) > math.Abs(widest.Gap()) {
+			widest = gap
+		}
+	}
+	return widest, len(gaps) > 0
+}
+
+// newReplayScorecardCommand is `legion replay scorecard` (replay.Score): the measures of a recorded
+// window read from its record alone, by the code a replay's are read by, with no replay and no
+// database.
+func newReplayScorecardCommand(stdout, stderr io.Writer) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "scorecard --window <dir> [--json]",
+		Short: "read every measure of a recorded window from its record alone, with no replay",
+		Args:  noArguments,
+	}
+	flags := cmd.Flags()
+	windowDir := flags.String("window", "", "the directory of the recorded window (required)")
+	asJSON := flags.Bool("json", false, "print the scorecard as JSON")
+	cmd.RunE = runs(func(context.Context, []string) int {
+		if missing := missingFlag(cmd, "window"); missing != "" {
+			return refuse(cmd, "--%s is required", missing)
+		}
+		window, err := replay.ReadWindow(*windowDir)
+		if err != nil {
+			fmt.Fprintf(stderr, "legion replay scorecard: %v\n", err)
+			return 1
+		}
+		card, err := replay.Score(window)
+		if err != nil {
+			fmt.Fprintf(stderr, "legion replay scorecard: %v\n", err)
+			return 1
+		}
+		if *asJSON {
+			encoder := json.NewEncoder(stdout)
+			encoder.SetIndent("", "  ")
+			if err := encoder.Encode(card); err != nil {
+				return 1
+			}
+			return 0
+		}
+		fmt.Fprintf(stdout, "the record of %s from %s to %s\n", window.Project, card.From.Format(time.RFC3339), card.To.Format(time.RFC3339))
+		for _, measured := range replay.MeasuresOf(card) {
+			fmt.Fprintf(stdout, "%s %s\n", measured.Name, strconv.FormatFloat(measured.Value, 'f', -1, 64))
+		}
+		for _, key := range slices.Sorted(maps.Keys(card.FirstSlot)) {
+			fmt.Fprintf(stdout, "firstSlot[%s] %s\n", key, card.FirstSlot[key].Format(time.RFC3339))
+		}
+		for _, key := range slices.Sorted(maps.Keys(card.DoneAt)) {
+			fmt.Fprintf(stdout, "doneAt[%s] %s\n", key, card.DoneAt[key].Format(time.RFC3339))
 		}
 		return 0
 	})
