@@ -351,20 +351,21 @@ test.skipIf(!live)(
   rowLimit("short")
 );
 
-// With no holder the watch's start returns, once its first observation has waited the bound, and
-// has observed more than once on the way: the driver sends its event only then.
+// With no holder the watch's start returns once its first observation has waited the bound, and
+// not before: the driver sends its event only then. How many observations it took on the way is
+// the machine's: a first judgement that starts the bound or more after its observation returns at
+// once, with one.
 test.skipIf(!live)(
   "start_horizon_watch returns once its first observation has waited the bound, where nothing holds the horizon back",
   async () => {
     const printed = await lib(
       `start_horizon_watch hold && printf "%s|%s" "$observation_age" "\${#horizon_observations[@]}"`
     );
-    const [age, observations] = printed.split("|").map(Number);
+    const age = Number(printed.split("|")[0]);
     expect(
       age,
-      `the age of the watch's first observation as it returned: ${printed}`
+      `the age of the watch's first observation as it returned, and the observations it kept: ${printed}`
     ).toBeGreaterThanOrEqual(boundSeconds);
-    expect(observations, `the observations the watch kept: ${printed}`).toBeGreaterThan(1);
   },
   rowLimit("short")
 );
