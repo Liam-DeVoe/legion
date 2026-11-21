@@ -207,3 +207,18 @@ func TestAnUnreachableHubIsNoRefusal(t *testing.T) {
 	require.Empty(t, stdout.String(), "the probe reported an answer of a hub it never reached")
 	require.Contains(t, stderr.String(), "natsprobe: connect: ")
 }
+
+// A --servers URL nats.go would read other than as written is refused before any dial, naming the
+// URL by its position and printing none of it: here a made-up password holding a "/", which
+// nats.go's URL parse reads as a port and quotes. The control is the same probe without the check,
+// whose `natsprobe: connect:` line quotes the password's head.
+func TestTheProbeRefusesAServerURLItCannotReadPrintingNoneOfIt(t *testing.T) {
+	const madeUp = "madeUpProbePassword"
+	var stdout, stderr bytes.Buffer
+	exit := run([]string{"--servers", "nats://127.0.0.1:4222,nats://legion:" + madeUp + "/rest@127.0.0.1:1", "--wait", "1s", "--no-credential",
+		"--subscribe", "notifications.envoy.deliver.ses_a"}, func(string) string { return "" }, &stdout, &stderr)
+	require.Equal(t, exitUsage, exit, "stdout:\n%s\nstderr:\n%s", stdout.String(), stderr.String())
+	require.Empty(t, stdout.String())
+	require.Contains(t, stderr.String(), "natsprobe: --servers: bus: NATS server URL 2 of 2 cannot be read")
+	require.NotContains(t, stderr.String(), madeUp, "the refusal quotes the password")
+}

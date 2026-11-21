@@ -36,6 +36,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/natscred"
@@ -87,13 +88,21 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		return usage("--wait must be positive")
 	}
 
+	// The bus's check, before any credential is read or dial made: nats.go's own refusal of a URL
+	// it cannot read quotes the URL whole, a credential in it included, and this one names the URL
+	// by its position.
+	urls, err := bus.CheckNATSURLs(strings.Split(*servers, ","))
+	if err != nil {
+		fmt.Fprintf(stderr, "natsprobe: --servers: %v\n", err)
+		return exitUsage
+	}
 	option, name, err := credential(getenv, *tokenFile, *googleAudience, *none)
 	if err != nil {
 		fmt.Fprintf(stderr, "natsprobe: %v\n", err)
 		return exitFailed
 	}
 	refusals := make(chan error, 8)
-	nc, err := nats.Connect(*servers, option, nats.Name("natsprobe"), nats.Timeout(connectTimeout), nats.NoReconnect(),
+	nc, err := nats.Connect(strings.Join(urls, ","), option, nats.Name("natsprobe"), nats.Timeout(connectTimeout), nats.NoReconnect(),
 		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
 			select {
 			case refusals <- err:
