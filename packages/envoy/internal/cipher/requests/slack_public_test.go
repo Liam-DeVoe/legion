@@ -1,9 +1,10 @@
 // packages/envoy/internal/cipher/requests/slack_public_test.go
 // The release half of the public Slack fence: a project-channels secret released to a credential
 // that names no private project carries Excluded, every channel a private project's owner named,
-// read from Dispatch's list of private projects once this broker knows a project is private, and
-// nothing at all, with no call to Dispatch, while it knows none. Outside the airlock, where no
-// fence can hold, such a secret goes to no credential while a private project names a channel.
+// read from Dispatch's list of private projects at every release on a broker with project access,
+// and nothing at all, with no call to Dispatch, on a broker with no project-access client. Outside
+// the airlock, where no fence can hold, such a secret goes to no credential while a private
+// project names a channel.
 package requests
 
 import (
