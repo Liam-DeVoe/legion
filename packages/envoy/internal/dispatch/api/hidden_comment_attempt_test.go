@@ -154,8 +154,9 @@ func TestACommentMentionOfAHiddenSessionNeverLeavesAnAttemptOwed(t *testing.T) {
 // back, its claim lapsed, pinned to privateSession, which alice may not see. alice's Retry of the
 // mention (deliverResolvedCommentMention, unbound, under her reader, as POST
 // /api/v1/comments/{id}/deliveries calls it) does not resume that attempt: it answers an attempt
-// of its own that names nothing of privateSession, and leaves attempt 1 pending. The delivery
-// sweep then settles attempt 1 as carol's, never with alice's refusal of privateSession.
+// of its own that names nothing of privateSession, and leaves attempt 1 to its own sender: pending,
+// or superseded once her own attempt reached the role's holder. Neither then, nor after the
+// delivery sweep, is attempt 1 settled with alice's refusal of privateSession.
 //
 // Control: claimCommentDeliveryAttempt's unbound read taking a pending attempt whatever session
 // it is pinned to; alice's Retry answers attempt 1, failed, "no live session" privateSession.
@@ -202,8 +203,11 @@ func TestARetryResumesNoAttemptPinnedToASessionItsCallerMayNotSee(t *testing.T) 
 		commentID, target).Scan(&state, &failure); err != nil {
 		t.Fatalf("read attempt 1: %v", err)
 	}
-	if state != "pending" {
-		t.Errorf("after alice's Retry attempt 1 is %s (%v), want it left pending for its own sender", state, failure)
+	// alice's own attempt reaches the role's holder, so attempt 1 either stays pending or is settled
+	// superseded by it (supersedeOvertakenAttempts: one copy of the mention to its recipient), and
+	// never with alice's refusal of privateSession.
+	if state != "pending" && deref(failure) != mentionSupersededError {
+		t.Errorf("after alice's Retry attempt 1 is %s (%s), want it pending or superseded by her own attempt, never settled with her refusal of %s", state, deref(failure), privateSession)
 	}
 	if err := walk.server.resumeOwedDeliveries(ctx); err != nil {
 		t.Fatalf("sweep: %v", err)
