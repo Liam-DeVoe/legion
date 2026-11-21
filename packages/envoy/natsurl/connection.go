@@ -44,11 +44,13 @@ const (
 // required"), the words a lookup, a time out and a TLS failure are named by, the reply a SOCKS5
 // proxy answered (socksClass), and the NATS client's own words where they are fixed: the text of
 // an error it defines (natsErrors), and a server's refusal it relays (relayed). The NATS client's
-// TLS error keeps its words before the class of what failed under it. Any other error of the NATS
-// client's own, written "nats: " and words it formatted, is ConnectionProtocolError: its parser
-// and its CONNECT handshake quote the bytes the server sent (`nats: Parse Error [%d]: '%s'`,
-// `nats: processMsgArgs Parse Error: '%s'`, `nats: expected 'PONG', got '%s'`), and those bytes
-// are whatever reached the socket. Any other error is ConnectionUnprinted, and nil is "unknown".
+// TLS error keeps its words before the class of what failed under it. nats.go's refusal of a root
+// certificate file it could not parse, which names the file, is ConnectionRootCertificate. Any
+// other error of the NATS client's own, written "nats: " and words it formatted, is
+// ConnectionProtocolError: its parser and its CONNECT handshake quote the bytes the server sent
+// (`nats: Parse Error [%d]: '%s'`, `nats: processMsgArgs Parse Error: '%s'`, `nats: expected
+// 'PONG', got '%s'`), and those bytes are whatever reached the socket. Any other error is
+// ConnectionUnprinted, and nil is "unknown".
 func ConnectionClass(err error) string {
 	if err == nil {
 		return "unknown"
@@ -73,6 +75,9 @@ func ConnectionClass(err error) string {
 	}
 	_, wraps := err.(interface{ Unwrap() error })
 	_, joins := err.(interface{ Unwrap() []error })
+	if !wraps && !joins && strings.HasPrefix(err.Error(), rootCertificatePrefix) {
+		return ConnectionRootCertificate
+	}
 	if !wraps && !joins && strings.HasPrefix(err.Error(), "nats: ") {
 		return ConnectionProtocolError
 	}
@@ -83,14 +88,28 @@ func ConnectionClass(err error) string {
 // text it formatted, from what the server sent among other things.
 const ConnectionProtocolError = "a protocol error from the server"
 
-// serverRefusals are a server's -ERR refusals the NATS client names (nats.go v1.55.0
-// nats.go:72-104), lower case: an error the client writes as "nats: " and one of these, in the
-// server's case, wrapping nothing, is the server's refusal as it wrote it (processErr's
-// errors.New("nats: " + …) for the last two, and sendConnect's natsProtoErr for any of them).
+// ConnectionRootCertificate is ConnectionClass's words for the NATS client's refusal of a root
+// certificate file it read and could not parse (nats.go v1.55.0 nats.go:1240), a local failure
+// whose text names the file.
+const ConnectionRootCertificate = "a root certificate the client could not parse"
+
+// rootCertificatePrefix begins the NATS client's refusal of a root certificate file it could not
+// parse, `nats: failed to parse root certificate from "<file>"`.
+const rootCertificatePrefix = "nats: failed to parse root certificate from "
+
+// serverRefusals are a server's -ERR refusals, lower case: the ones the NATS client names (nats.go
+// v1.55.0 nats.go:72-104), and nats-server's other refusals, each a fixed literal it sends with
+// nothing formatted into it (nats-server v2.15.1 server/client.go:863, 2561, 2619, 2997, 3050,
+// 3191; server/server.go:3561, 3738). An error the client writes as "nats: " and one of these, in
+// the server's case, wrapping nothing, is the server's refusal as it wrote it (processErr's
+// errors.New("nats: " + …), and sendConnect's natsProtoErr).
 var serverRefusals = []string{
 	nats.AUTHORIZATION_ERR, nats.AUTHENTICATION_EXPIRED_ERR, nats.AUTHENTICATION_REVOKED_ERR,
 	nats.ACCOUNT_AUTHENTICATION_EXPIRED_ERR, nats.MAX_CONNECTIONS_ERR, nats.MAX_ACCOUNT_CONNECTIONS_ERR,
 	nats.MAX_SUBSCRIPTIONS_ERR, nats.STALE_CONNECTION, "unknown protocol operation", "maximum control line exceeded",
+	"authentication timeout", "maximum payload violation", "failed account registration",
+	"connection throttling is active. please try again later.", "secure connection - tls required",
+	"invalid subject", "invalid publish subject",
 }
 
 // relayed reports whether err is the NATS client's own fixed words, printed as they are so a
