@@ -215,11 +215,22 @@ func TestForcedOrderHoldAKVWriteAcrossTheRestart(t *testing.T) {
 	config := jetstream.KeyValueConfig{Bucket: bucket, Replicas: 3}
 	_, err := f.js.CreateKeyValue(ctx, config)
 	require.NoError(t, err)
+	// recreate deletes the bucket and makes it again. Each request is bounded and sent again until
+	// it is answered: right after a member's restart the meta group may be electing, and a request
+	// sent then is answered by nobody, so one request on the row's context hung to its end
+	// (2.10.29, 15:3xZ). A bucket already gone counts as deleted.
 	recreate := func() {
 		t.Helper()
-		require.NoError(t, f.js.DeleteKeyValue(ctx, bucket))
+		testwait.Eventually(t, "the bucket deleted", func() bool {
+			attempt, cancel := context.WithTimeout(ctx, 10*time.Second)
+			defer cancel()
+			err := f.js.DeleteKeyValue(attempt, bucket)
+			return err == nil || errors.Is(err, jetstream.ErrBucketNotFound) || errors.Is(err, jetstream.ErrStreamNotFound)
+		})
 		testwait.Eventually(t, "the bucket made again", func() bool {
-			_, err := f.js.CreateKeyValue(ctx, config)
+			attempt, cancel := context.WithTimeout(ctx, 10*time.Second)
+			defer cancel()
+			_, err := f.js.CreateKeyValue(attempt, config)
 			return err == nil
 		})
 	}
