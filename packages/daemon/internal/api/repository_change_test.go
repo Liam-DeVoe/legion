@@ -4,6 +4,10 @@ import (
 	"testing"
 )
 
+// repositoryCorrectionKeys is the four keys repositoryCorrectionContract added to each issue, as
+// the wire names them.
+var repositoryCorrectionKeys = []string{"repoBefore", "repoCorrectedAt", "repoChangePending", "repoChangeReason"}
+
 // What the record holds about a correction of an issue's repository reaches an architect through
 // the state route, which is what every worker's `read_record` reads: the repository the issue
 // left and the moment the daemon applied the correction, and, for a change Dispatch has named
@@ -80,20 +84,25 @@ func TestTheStateShowsARepositoryCorrectionAndAChangeStillToBeApplied(t *testing
 	}
 
 	// LEGION-211 is an issue no correction and no waiting change has reached.
-	for _, field := range []string{"repoBefore", "repoCorrectedAt", "repoChangePending", "repoChangeReason"} {
+	for _, field := range repositoryCorrectionKeys {
 		if value, carried := issues["LEGION-211"][field]; carried {
 			t.Errorf("LEGION-211, whose repository nothing changed, carries %s = %v", field, value)
 		}
 	}
 }
 
-// A pod whose plugin is older than the four keys is served the issues without them: a plugin
+// A caller whose plugin is older than the four keys is served the issues without them: a plugin
 // before sjawhar/legion#2788 reads the state with a strict schema and refuses the whole body for
-// a key it does not name, which is every `read_record` of every worker in that pod.
-// repositoryCorrectionContract is the contract whose entry in version.go added the four keys, and
-// this daemon's own contract is never below it: a caller at this contract is served them.
+// a key it does not name, which is every `read_record` of every worker in that pod. Such a caller
+// is placed as every caller is: by the contract its header states, which every build from
+// shapedAnswersContract on states, else by the claims of its pod, which count no claim at
+// shapedAnswersContract or above (podContracts). So the band reaches a caller that states a
+// contract below repositoryCorrectionContract, and a pod whose claims record one below
+// shapedAnswersContract. repositoryCorrectionContract is the contract whose entry in version.go
+// added the four keys, and this daemon's own contract is never below it: a caller at this
+// contract is served them.
 func TestTheRepositoryCorrectionContractIsTheContractThatAddedTheKeys(t *testing.T) {
-	const addedRepositoryCorrection = 190
+	const addedRepositoryCorrection = 202
 	if repositoryCorrectionContract != addedRepositoryCorrection {
 		t.Fatalf("repositoryCorrectionContract = %d, want %d, the contract whose entry in version.go added what a correction of an issue's repository left on its record",
 			repositoryCorrectionContract, addedRepositoryCorrection)
@@ -102,15 +111,21 @@ func TestTheRepositoryCorrectionContractIsTheContractThatAddedTheKeys(t *testing
 		t.Fatalf("repositoryCorrectionContract = %d, above DaemonAPIVersion %d: no caller could be served the four keys",
 			repositoryCorrectionContract, DaemonAPIVersion)
 	}
-	behind := stateFrom(t, populatedState(t), statePodAddr+":41000", podClaims(repositoryCorrectionContract-1))
-	for key, view := range issueViews(t, behind) {
-		for _, field := range []string{"repoBefore", "repoCorrectedAt", "repoChangePending", "repoChangeReason"} {
-			if value, carried := view[field]; carried {
-				t.Errorf("the issue %s served to a pod a contract behind carries %s = %v", key, field, value)
+	handler := stateServer(t, populatedState(t), podClaims(pauseContract))
+	behind := map[string][]byte{
+		"a caller stating the contract below": stateStating(t, handler, "192.0.2.1:41000", repositoryCorrectionContract-1),
+		"a pod below shapedAnswersContract":   stateAsked(t, handler, statePodAddr+":41000"),
+	}
+	for caller, body := range behind {
+		for key, view := range issueViews(t, body) {
+			for _, field := range repositoryCorrectionKeys {
+				if value, carried := view[field]; carried {
+					t.Errorf("the issue %s served to %s carries %s = %v", key, caller, field, value)
+				}
 			}
-		}
-		if view["repo"] == nil {
-			t.Errorf("the issue %s served to a pod a contract behind carries no repo; the strip takes the four keys and leaves the repository the issue works", key)
+			if view["repo"] == nil {
+				t.Errorf("the issue %s served to %s carries no repo; the strip takes the four keys and leaves the repository the issue works", key, caller)
+			}
 		}
 	}
 }

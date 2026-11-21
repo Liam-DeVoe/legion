@@ -152,6 +152,13 @@ test.skipIf(skip)(
       toolCallId: evidence.toolCallId,
     });
 
+    // The notice asks the daemon what this claim owes for the architect that owns it, and never
+    // reads the whole project body (dispatch://INFRA-2694): the stall evidence takes that reader
+    // from the plugin's wiring.
+    const paths = pane.requests.map((request) => request.path);
+    expect(paths).toContain("/legion/v1/claims/owed");
+    expect(paths).not.toContain("/legion/v1/state");
+
     // The first step: the child, and only the child — the cell's own child gone, this session's
     // kernel untouched, and exactly one process ended. The count is pinned again because the
     // warming cell is what made it deterministic: the kernel was started by a turn that had

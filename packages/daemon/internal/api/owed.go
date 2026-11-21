@@ -78,7 +78,7 @@ type OwedResponse struct {
 // by a reminder.
 func (s *server) claimOwed(w http.ResponseWriter, r *http.Request) {
 	var req OwedRequest
-	if !s.readBody(w, r, &req, s.claimSecretCheck) || !requireFields(w,
+	if !s.readBody(w, r, &req, s.claimSecretCheck) || !s.requireFields(w, r,
 		field{"claimToken", string(req.ClaimToken)}, field{"sessionId", req.SessionID}, field{"secret", req.Secret},
 	) {
 		return
@@ -87,18 +87,18 @@ func (s *server) claimOwed(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		if failed, held := s.supervisor.Machine(req.ClaimToken); held {
 			if c := failed.Claim(); c.State == supervise.StateFailed && (c.Session == "" || c.HoldsSession(req.SessionID)) {
-				writeJSON(w, http.StatusOK, OwedResponse{})
+				s.writeAnswer(w, r, AnswerOwed, http.StatusOK, OwedResponse{})
 				return
 			}
 		}
-		writeJSON(w, claim.InvalidSecret.Status, claim.InvalidSecret)
+		s.writeAnswer(w, r, AnswerRefusal, claim.InvalidSecret.Status, claim.InvalidSecret)
 		return
 	}
 	// The claim is read once: the session it is held to, the stale check and the answer all come
 	// from the claim the secret was checked against (authenticated). The claim holds its session as
 	// the store keeps it, so the request's is compared as the store would keep it (HoldsSession).
 	if c.Session != "" && !c.HoldsSession(req.SessionID) {
-		writeJSON(w, claim.InvalidSecret.Status, claim.InvalidSecret)
+		s.writeAnswer(w, r, AnswerRefusal, claim.InvalidSecret.Status, claim.InvalidSecret)
 		return
 	}
 	if s.refuseIfStaleClaim(w, r, c) {
@@ -107,28 +107,28 @@ func (s *server) claimOwed(w http.ResponseWriter, r *http.Request) {
 	// The architect and the controller work no phase of their own, so they owe no phase's work
 	// and no look of a check, and no architect above them is named: nothing is read for them.
 	if !isPhaseWorker(c.Role) {
-		writeJSON(w, http.StatusOK, OwedResponse{})
+		s.writeAnswer(w, r, AnswerOwed, http.StatusOK, OwedResponse{})
 		return
 	}
 	if s.pool == nil || s.roleFor == nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody("the daemon reads no issue record, so it cannot say what this claim owes"))
+		s.refuse(w, r, http.StatusInternalServerError, "the daemon reads no issue record, so it cannot say what this claim owes")
 		return
 	}
 	position, err := s.handoffPosition(r.Context(), c.Issue, c.Role)
 	if err != nil {
 		s.logRequestFailure(r, err, "api: the record of a claim's issue could not be read for what it owes", "claim", req.ClaimToken)
-		writeJSON(w, http.StatusInternalServerError, errorBody("read the issue record: "+err.Error()))
+		s.refuse(w, r, http.StatusInternalServerError, "read the issue record: "+err.Error())
 		return
 	}
 	var owner claim.Token
 	if position.issue != nil {
 		if owner, err = s.owningArchitect(r.Context(), *position.issue); err != nil {
 			s.logRequestFailure(r, err, "api: the architect that owns a claim could not be read for what it owes", "claim", req.ClaimToken)
-			writeJSON(w, http.StatusInternalServerError, errorBody("read the architect that owns the claim: "+err.Error()))
+			s.refuse(w, r, http.StatusInternalServerError, "read the architect that owns the claim: "+err.Error())
 			return
 		}
 	}
-	writeJSON(w, http.StatusOK, owedBy(c, position, owner, s.roleFor))
+	s.writeAnswer(w, r, AnswerOwed, http.StatusOK, owedBy(c, position, owner, s.roleFor))
 }
 
 // owningArchitect is the architect claim that owns a phase worker on issue now (OwedResponse's

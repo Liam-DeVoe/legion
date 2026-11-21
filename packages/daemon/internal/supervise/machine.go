@@ -663,6 +663,14 @@ func PodRound(pod string) string { return PodRoundPrefix + pod }
 // no round it left; the workflow's idle rule, reading a round it was handed); IsPluginRound
 // is reached through InPluginRound alone, since the deletion of the plugin round left no caller
 // holding such an id on its own.
+//
+// The number a plugin round's id carries after `plugin:` is the daemon's contract number and not
+// the worker's: the round was opened by a daemon over a claim whose plugin spoke something else,
+// and the id records the contract that daemon spoke, which is what the claim's process had to
+// reach rather than what it had. So `plugin:59` in a claims row or a log line names a daemon at
+// 59 and says nothing of the worker's own contract, and a reader who takes it for the worker's
+// reads it backwards. No case asserts this wording: a test that pins prose goes red at every
+// rewording and proves nothing of behaviour (dispatch://INFRA-2694).
 func (c Claim) InPodRound() bool { return IsPodRound(c.UpdateRound) }
 
 func (c Claim) InPluginRound() bool { return IsPluginRound(c.UpdateRound) }
@@ -1341,11 +1349,12 @@ type Machine struct {
 	// that release spawned for the claim, registering as a session of its own on that release's
 	// older plugin contract: this release starts no fresh agent for a claim that still records its
 	// session, so the refusal stands, and the end of that process — its death, or its registration
-	// deadline — is charged nothing (endUncharged), so the launch failures the earlier release's
-	// loop charged do not fail the claim at the deploy, and its next launch resumes the session by
-	// its id or forgets it once. The next launch clears it (launchNow). It is memory only: it must
-	// hold across the one refusal and the end after it, in one daemon run, and a restart in that
-	// window costs the claim the one launch failure that end is then charged.
+	// deadline — names runtime.OutcomeEarlierReleaseProcessEnded (endOutcome), which the policy
+	// charges nothing, so the launch failures the earlier release's loop charged do not fail the
+	// claim at the deploy, and its next launch resumes the session by its id or forgets it once.
+	// The next launch clears it (launchNow). It is memory only: it must hold across the one
+	// refusal and the end after it, in one daemon run, and a restart in that window costs the
+	// claim the one launch failure that end is then charged.
 	refusedEarlierRelease uint64
 	// outstanding is every prompt of the pending task that Oh My Pi acknowledged and has not yet
 	// reported the end of (shimwire.PromptResult), by delivery id. The pinned Oh My Pi answers each
@@ -2604,7 +2613,8 @@ func (m *Machine) fenceOutcome(ctx context.Context, event string, generation uin
 // session before it spawns a fresh agent (start), so a process that registers as another session
 // is never that session's agent. A refused registration's plugin exits on the 409, and the end of
 // its process is charged as the end of any process that never registered is (died,
-// registrationDeadline), except the two ends that are charged nothing (endUncharged).
+// registrationDeadline), except the two ends that name an outcome the policy charges nothing
+// (endOutcome).
 func (m *Machine) fenceRequest(request string, generation uint64, session string) (bool, error) {
 	if generation != m.claim.Generation {
 		return false, fmt.Errorf("%s for %s at generation %d, the claim is at %d: %w",
@@ -2624,15 +2634,15 @@ func (m *Machine) fenceRequest(request string, generation uint64, session string
 // and starts no fresh agent for a claim that still records its session. At the deploy such a
 // claim can run a fresh agent the earlier release spawned and carry the launch failures its loop
 // charged, so the refusal marks the claim's generation (refusedEarlierRelease) and the end of
-// that process is charged nothing (endUncharged); the 409 stands. A refusal at the generation of a
-// start that had Oh My Pi resume the session by its id (Claim.AgentResumeGeneration) is no roll
-// edge: that process is this release's own start, and its end is the uncharged end of that start.
-// Every other refusal is marked nothing and keeps its charge: a process of this release adopted at
-// a restart registers at the daemon's own contract, and so does this release's resume by the id
-// through the pod's launcher; a daemon that knows no contract of its own (Deps.PluginContract 0)
-// marks nothing. The mark writes the one line a production check reads for the roll edge, once
-// for the generation: that check reads it because no launched line of this daemon run comes
-// before such a refusal.
+// that process names an outcome the policy charges nothing (endOutcome); the 409 stands. A
+// refusal at the generation of a start that had Oh My Pi resume the session by its id
+// (Claim.AgentResumeGeneration) is no roll edge: that process is this release's own start, and
+// its end is the uncharged end of that start. Every other refusal is marked nothing and keeps its
+// charge: a process of this release adopted at a restart registers at the daemon's own contract,
+// and so does this release's resume by the id through the pod's launcher; a daemon that knows no
+// contract of its own (Deps.PluginContract 0) marks nothing. The mark writes the one line a
+// production check reads for the roll edge, once for the generation: that check reads it because
+// no launched line of this daemon run comes before such a refusal.
 func (m *Machine) markRollEdge(ev RequestRegister) {
 	if m.claim.SessionFile != "" || m.deps.PluginContract <= 0 || ev.PluginContract >= m.deps.PluginContract ||
 		m.claim.Generation == m.claim.AgentResumeGeneration || m.refusedEarlierRelease == m.claim.Generation {
@@ -3328,13 +3338,14 @@ func (m *Machine) stopPrevious(ctx context.Context) error {
 // held leaves the claim suspended instead (endHeld). A process that ended with a pod the daemon
 // itself replaced is not a death at all (displaced).
 //
-// Two deaths of a claim that records a session and no file are charged nothing (endUncharged):
-// that of a process an earlier release started, whose registration the fence refused, and that of
-// a start that had Oh My Pi resume the session by its id and did not register as it. Each is
-// recorded, taken back from, stopped and written as any death is, and relaunched through launch,
-// which charges no launch failure and waits no backoff, in place of relaunchAfterFailure. Neither
-// counts a death: each is of a claim whose agent has not registered as its session, which
-// chargeDeath counts none of.
+// Two deaths of a claim that records a session and no file name an outcome of their own
+// (endOutcome), which the policy charges nothing (Charges): that of a process an earlier release
+// started, whose registration the fence refused, and that of a start that had Oh My Pi resume the
+// session by its id and did not register as it. Each is recorded, taken back from, stopped and
+// written as any death is, and relaunched through relaunchAfterFailure under that outcome, which
+// counts no launch failure, records no pending cause and waits no backoff. Neither counts a
+// death: each is of a claim whose agent has not registered as its session, which chargeDeath
+// counts none of.
 //
 // One dead process is one death, however often the runtime reports that process gone. The report
 // that reaches the charge below makes the charge decision and writes it (Claim.DeathCharged), and a
@@ -3403,12 +3414,9 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 	if m.held != nil {
 		return m.endHeld(ctx, false, stopSent)
 	}
-	relaunch := func(ctx context.Context) error { return m.relaunchAfterFailure(ctx, runtime.OutcomeProcessDied, ended) }
-	if m.endUncharged("died") {
-		relaunch = func(ctx context.Context) error { return m.launch(ctx, ended) }
-	}
+	o := m.endOutcome(runtime.OutcomeProcessDied, "died")
 	if m.claim.DeathCharged {
-		return relaunch(ctx)
+		return m.relaunchAfterFailure(ctx, o, ended)
 	}
 	m.claim.DeathCharged = true
 	if m.chargeDeath(runtime.OutcomeProcessDied) {
@@ -3423,46 +3431,48 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 	// a death that left the claim standing for want of a write would be a worse answer to an
 	// outage than a charge written late — and a launch that does run clears the charge with
 	// the process it replaces anyway (letGo).
-	return errors.Join(m.persist(ctx), relaunch(ctx))
+	return errors.Join(m.persist(ctx), m.relaunchAfterFailure(ctx, o, ended))
 }
 
-// endUncharged is whether the end of the claim's process is charged nothing, and it logs why
-// where it is; ended is how the process ended, which the line names. died and
-// registrationDeadline ask it once they have done what they do for any end, and relaunch an end
-// it answers true for through launch, which charges no launch failure and waits no backoff, in
-// place of relaunchAfterFailure. Both such ends are of a claim that records a session and no file,
-// at the generation of a process that never registered as that session (dispatch://INFRA-4108):
+// endOutcome is the outcome of the end of the claim's process, where named is the outcome the
+// site names for that end of any process — OutcomeProcessDied (died) or OutcomeNeverRegistered
+// (registrationDeadline) — and ended is how the process ended, which the line it logs names. It
+// is the one place that names the outcomes of two ends, each of a claim that records a session
+// and no file, at the generation of a process that never registered as that session
+// (dispatch://INFRA-4108), and it logs a line for each:
 //
-//   - The roll edge (R1): at this generation the fence refused the registration of a process an
-//     earlier release started (refusedEarlierRelease, markRollEdge).
-//   - A start that had Oh My Pi resume the session by its id itself (R3): the claim's mark names
-//     this generation (Claim.AgentResumeGeneration), and the start ended before it registered as
-//     the session, or its registration deadline passed, a registration as another session that
-//     the fence refused included. Through a launcher that cannot look the session up, nothing
-//     else can resume it, so the next try forgets it, charged nothing either (resumeByID).
+//   - The roll edge (R1), runtime.OutcomeEarlierReleaseProcessEnded: at this generation the fence
+//     refused the registration of a process an earlier release started (refusedEarlierRelease,
+//     markRollEdge).
+//   - A start that had Oh My Pi resume the session by its id itself (R3),
+//     runtime.OutcomeResumeByAgentUnregistered: the claim's mark names this generation
+//     (Claim.AgentResumeGeneration), and the start ended before it registered as the session, or
+//     its registration deadline passed, a registration as another session that the fence refused
+//     included. Through a launcher that cannot look the session up, nothing else can resume it,
+//     so the next try forgets it, charged nothing either (resumeByID).
 //
 // A claim whose agent registered as the session records its file (register), so the end of an
-// agent that registered and never said it was ready is charged as every such end is. Each mark
+// agent that registered and never said it was ready is named as every such end is. Each mark
 // names one generation, and the relaunch moves the claim past it.
 //
-// Which process ended is no outcome question, so the policy is not asked (Charges): the end is the
-// outcome its site names, OutcomeProcessDied or OutcomeNeverRegistered, and this guard keeps that
-// end from the launch budget's charge, as the lifecycle check keeps a refused relaunch from it.
-func (m *Machine) endUncharged(ended string) bool {
+// This names which process ended and decides nothing: whether its end charges is the policy's
+// (Charges), which the site's relaunch asks (relaunchAfterFailure). The lines say the end is
+// charged nothing because a production check reads them by those words.
+func (m *Machine) endOutcome(named runtime.Outcome, ended string) runtime.Outcome {
 	g := m.claim.Generation
 	switch {
 	case g == 0 || m.claim.SessionFile != "":
-		return false
+		return named
 	case g == m.refusedEarlierRelease:
 		m.log.Info("supervise: the process an earlier release started, whose registration was refused, ended; its end is charged nothing",
 			"session", m.claim.Session, "generation", g, "ended", ended)
-		return true
+		return runtime.OutcomeEarlierReleaseProcessEnded
 	case g == m.claim.AgentResumeGeneration:
 		m.log.Warn("supervise: a start that had Oh My Pi resume the recorded session by its id did not register; its end is charged nothing, and the next try forgets the session",
 			"session", m.claim.Session, "generation", g, "ended", ended)
-		return true
+		return runtime.OutcomeResumeByAgentUnregistered
 	}
-	return false
+	return named
 }
 
 // deathCause is what the claim records of a death: the runtime's own account of it, behind the

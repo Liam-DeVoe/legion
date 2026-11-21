@@ -2444,12 +2444,13 @@ func bootInterval(m *Machine, ctx context.Context, _ Event) error {
 // letGo) — what its agent never did is no turn, so a record comes only of background work the
 // process reported — and the relaunch that follows lets nothing more go.
 //
-// The deadline of a process of a claim that records a session and no file is charged nothing
-// where endUncharged says so: a process an earlier release started, whose registration the fence
-// refused, and a start that had Oh My Pi resume the session by its id and never registered as it.
-// Its process is retired all the same, and relaunched through launch, which charges no launch
-// failure and waits no backoff, in place of relaunchAfterFailure. An agent that registered as the
-// session records its file, so its deadline is charged as every other one is.
+// The deadline of a process of a claim that records a session and no file names an outcome of its
+// own where that process is one an earlier release started, whose registration the fence refused,
+// or a start that had Oh My Pi resume the session by its id and never registered as it
+// (endOutcome), and the policy charges neither (Charges). Its process is retired all the same, and
+// relaunched through relaunchAfterFailure under that outcome, which counts no launch failure,
+// records no pending cause and waits no backoff. An agent that registered as the session records
+// its file, so its deadline is named and charged as every other one is.
 func registrationDeadline(m *Machine, ctx context.Context, _ Event) error {
 	if m.held != nil && m.held.By == SuspendedByOperator {
 		return m.suspendHeld(ctx)
@@ -2468,18 +2469,18 @@ func registrationDeadline(m *Machine, ctx context.Context, _ Event) error {
 			m.arm(TimerRegistration, m.deps.Timeouts.Probe, "")
 			return fmt.Errorf("retire %s, whose agent %s: suspend: %w", m.claim.Token, never, err)
 		}
-		if m.endUncharged("the registration deadline") {
-			// An end charged nothing counts against no budget, so its line names none.
-			m.log.Warn("supervise: the agent "+never+"; retired its process", "incarnation", incarnation)
-			return m.launch(ctx, noEnd)
-		}
+		o := m.endOutcome(runtime.OutcomeNeverRegistered, "the registration deadline")
 		// The line names the claim (the machine's logger carries it), what its agent never did, and
 		// the launch this retirement counts against its budget (relaunchAfterFailure counts it next),
 		// so a controller whose role claim waits out its registration deadline shows in the daemon's
-		// log as that, attempt by attempt.
-		m.log.Warn("supervise: the agent "+never+"; retired its process", "incarnation", incarnation,
-			"launchFailure", m.claim.Budgets.LaunchFailures+1, "limit", m.deps.Limits.LaunchFailures)
-		return m.relaunchAfterFailure(ctx, runtime.OutcomeNeverRegistered, noEnd)
+		// log as that, attempt by attempt. An end the policy charges nothing counts against no
+		// budget, so its line names none.
+		args := []any{"incarnation", incarnation}
+		if Charges(o) {
+			args = append(args, "launchFailure", m.claim.Budgets.LaunchFailures+1, "limit", m.deps.Limits.LaunchFailures)
+		}
+		m.log.Warn("supervise: the agent "+never+"; retired its process", args...)
+		return m.relaunchAfterFailure(ctx, o, noEnd)
 	}, TimerRegistration, m.deps.Timeouts.Probe)
 }
 

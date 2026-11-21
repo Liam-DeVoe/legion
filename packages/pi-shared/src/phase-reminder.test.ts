@@ -12,6 +12,9 @@ import { createPhaseReminder, type EnvoyPublish, type PhaseReminder } from "./ph
 import { type PhaseStallEntry, phaseStallEntryFrom, reminderText } from "./phase-stall";
 import { DEFAULT_STALL_LIMITS } from "./stall-limits";
 
+/** The contract the build under test speaks, which its client states on every request. */
+const CONTRACT = 60;
+
 const implementer = {
   sessionID: "ses_implementer",
   tree: "LEGION-208",
@@ -78,6 +81,53 @@ test("the owed check aborts a daemon request that outlives its bound, and remind
   expect(handed[0]?.aborted).toBe(true);
   expect((handed[0]?.reason as Error).message).toBe("no answer within 20ms");
   expect(warned).toEqual([UNREAD_LINE]);
+});
+
+/** A reminder over a real daemon client whose fetch is `answer`, recording every route the
+ * check asks for and every line it logs at warn. */
+function overDaemon(answer: typeof fetch) {
+  const routes: string[] = [];
+  const warned: string[] = [];
+  const recording = (async (input, init) => {
+    routes.push(new URL(input.toString()).pathname);
+    return answer(input, init);
+  }) as typeof fetch;
+  const daemon = createLegionDaemonClient("http://daemon.test", {
+    pluginContract: CONTRACT,
+    fetch: recording,
+  });
+  const reminder = createPhaseReminder({
+    sendReminder: () => {},
+    armTimer: () => {},
+    saveEntry: () => {},
+    claim: () => implementer,
+    readOwed: (input, signal) => daemon.owed(input, { signal }),
+    publisher: () => undefined,
+    project: "LEGION",
+    limits: DEFAULT_STALL_LIMITS,
+    log: { debug: () => {}, warn: (message) => warned.push(message) },
+    wakeChanged: () => {},
+  });
+  return { reminder, routes, warned };
+}
+
+// The check keeps its two branches apart: the daemon's answer names the work the reminder gives,
+// and everything else is a read that failed, which reminds no one and writes its warn line
+// (dispatch://INFRA-2746 R2). It asks the owed route alone and never reads the whole project.
+test("the owed check asks one route: the answer names the work, a transport failure is the read that failed", async () => {
+  const answered = overDaemon((async (_input, _init) => Response.json(OWES)) as typeof fetch);
+
+  expect(await answered.reminder.settle(said("Pushed."))).toBe(reminderText("Pushed.", WORK));
+  expect(answered.routes).toEqual(["/legion/v1/claims/owed"]);
+  expect(answered.warned).toEqual([]);
+
+  const failed = overDaemon((async (_input, _init): Promise<Response> => {
+    throw new TypeError("fetch failed");
+  }) as typeof fetch);
+
+  expect(await failed.reminder.settle(said("Pushed."))).toBeUndefined();
+  expect(failed.routes).toEqual(["/legion/v1/claims/owed"]);
+  expect(failed.warned).toEqual([UNREAD_LINE]);
 });
 
 interface ArmedTimer {
@@ -254,7 +304,10 @@ test("a daemon that does not answer sends no reminder, and the log names each ca
     },
   };
   for (const [failure, { fetch: fetchFn, cause }] of Object.entries(failures)) {
-    const client = createLegionDaemonClient("http://daemon.test", fetchFn);
+    const client = createLegionDaemonClient("http://daemon.test", {
+      pluginContract: CONTRACT,
+      fetch: fetchFn,
+    });
     // The bound is the reminder's own, cut short so the hang is over in 20ms.
     const { reminder, timers, sent, warnings } = rig({
       owed: (input, signal) => client.owed(input, { signal }),
@@ -285,8 +338,10 @@ test("a daemon that does not answer sends no reminder, and the log names each ca
 // The other side of the rows above, over the same real client: the daemon's success that the
 // claim owes nothing reminds of nothing too, and its timer asks the daemon again.
 test("a daemon that answers 200 that the claim owes nothing is reminded of nothing", async () => {
-  const client = createLegionDaemonClient("http://daemon.test", (async () =>
-    Response.json(OWES_NOTHING)) as unknown as typeof fetch);
+  const client = createLegionDaemonClient("http://daemon.test", {
+    pluginContract: CONTRACT,
+    fetch: (async () => Response.json(OWES_NOTHING)) as unknown as typeof fetch,
+  });
   const { reminder, timers, sent, asked } = rig({
     owed: (input, signal) => client.owed(input, { signal }),
   });
@@ -324,17 +379,18 @@ interface StandInDaemon {
 function standInDaemon(owed: LegionOwed): StandInDaemon {
   let answer = owed;
   let stateReads = 0;
-  const client = createLegionDaemonClient("http://daemon.test", (async (
-    input: string | URL | Request
-  ) => {
-    const path = new URL(input instanceof Request ? input.url : input).pathname;
-    if (path === "/legion/v1/state") {
-      stateReads += 1;
-      return new Promise<Response>(() => {});
-    }
-    if (path === "/legion/v1/claims/owed") return Response.json(answer);
-    return Response.json({ error: "no stand-in route" }, { status: 404 });
-  }) as unknown as typeof fetch);
+  const client = createLegionDaemonClient("http://daemon.test", {
+    pluginContract: CONTRACT,
+    fetch: (async (input: string | URL | Request) => {
+      const path = new URL(input instanceof Request ? input.url : input).pathname;
+      if (path === "/legion/v1/state") {
+        stateReads += 1;
+        return new Promise<Response>(() => {});
+      }
+      if (path === "/legion/v1/claims/owed") return Response.json(answer);
+      return Response.json({ error: "no stand-in route" }, { status: 404 });
+    }) as unknown as typeof fetch,
+  });
   return {
     owed: (input, signal) => client.owed(input, { signal }),
     move: () => {
@@ -544,7 +600,7 @@ test("a read that times out sends no reminder and no notice", async () => {
     },
   });
   try {
-    const client = createLegionDaemonClient(daemon.url.href);
+    const client = createLegionDaemonClient(daemon.url.href, { pluginContract: CONTRACT });
     const { reminder, timers, sent, published } = rig({
       owed: (input, signal) => {
         asked += 1;

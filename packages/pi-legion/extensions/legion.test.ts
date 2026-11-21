@@ -1536,6 +1536,33 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     // The boot measures nothing: no capability host member was called before its ready.
     expect(calls).toEqual([]);
   });
+
+  // dispatch://INFRA-2694: the daemon serves each caller the shape that caller's own contract
+  // describes, and reads that contract from a request header. This pane states the contract of
+  // the module it loaded, its own manifest's `legion.daemonApiVersion`, on every request it
+  // makes, a GET included.
+  test("every daemon request of a pane states this build's own daemon API contract", async () => {
+    const stated: { readonly path: string; readonly contract: string | null }[] = [];
+    const pane = await bootPane({
+      role: "tester",
+      sessionId: "ses_worker",
+      extraRoutes: (url, _body, init) => {
+        if (url.pathname.startsWith("/legion/")) {
+          stated.push({
+            path: url.pathname,
+            contract: new Headers(init?.headers).get("Legion-Plugin-Contract"),
+          });
+        }
+        return undefined;
+      },
+    });
+
+    expect(pane.exits).toEqual([]);
+    expect(stated.length).toBeGreaterThan(0);
+    expect(stated.map((request) => request.contract)).toEqual(
+      stated.map(() => String(pkg.legion.daemonApiVersion))
+    );
+  });
   test("does nothing for a session with no Legion environment markers", async () => {
     const requests: { readonly path: string }[] = [];
     process.env.ENVOY_URL = "http://envoy.test";
@@ -2020,7 +2047,9 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         branch: options.branch,
         asyncJobs: options.asyncJobs,
         extraRoutes: (url, _body, init) => {
-          if (url.pathname === "/legion/v1/state") return Response.json(state);
+          if (url.pathname === "/legion/v1/issues/REPO-43/record") {
+            return Response.json(state.issues["REPO-43"]);
+          }
           if (url.pathname === "/legion/v1/claims/owed") return owed(init);
           if (url.pathname === "/legion/v1/grants") {
             return Response.json({ grantId: "grant-stall", expiresAt: "2099-01-01T00:00:00Z" });
@@ -2744,6 +2773,21 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       }
     });
 
+    // R5: the check asks the daemon what this claim owes, and never reads the whole project
+    // body — the read a field changed on another issue's view used to refuse
+    // (dispatch://INFRA-2694). This is the reader the plugin itself supplies.
+    test("the reminder's owed check asks the owed route and never for the project", async () => {
+      const worker = await bootStalling({});
+      const before = worker.requests.length;
+      await worker.arrives(assignment);
+
+      expect(await worker.settles("Pushed.")).toEqual(followUp("handoff_complete"));
+
+      const paths = worker.requests.slice(before).map((request) => request.path);
+      expect(paths).toContain("/legion/v1/claims/owed");
+      expect(paths).not.toContain("/legion/v1/state");
+    });
+
     test("a request_backward_move closes nothing of its own: the daemon's answer after it decides the next settle", async () => {
       const worker = await bootStalling({});
       await worker.arrives(assignment);
@@ -2825,11 +2869,12 @@ describe.skipIf(skip)("Legion OMP extension", () => {
 
       const { result, calls } = await worker.completes();
       expect(result).toEqual({ content: [{ type: "text", text: "{}" }], details: {} });
-      // The issue's phase is read from the daemon's state, the commit is found in the pane's
-      // workspace with its jj, and the grant is minted in-process and travels only in the request;
-      // nothing is written to the pane, and nothing of the completion is kept by the reminder.
+      // The issue's phase is read from the daemon's record of this issue, the commit is found in
+      // the pane's workspace with its jj, and the grant is minted in-process and travels only in
+      // the request; nothing is written to the pane, and nothing of the completion is kept by the
+      // reminder.
       expect(calls).toEqual([
-        { path: "/legion/v1/state", body: undefined },
+        { path: "/legion/v1/issues/REPO-43/record", body: undefined },
         {
           path: "/legion/v1/grants",
           body: {
@@ -2966,7 +3011,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         isError: true,
       });
       expect(calls.map((call) => call.path)).toEqual([
-        "/legion/v1/state",
+        "/legion/v1/issues/REPO-43/record",
         "/legion/v1/grants",
         "/legion/v1/handoff/complete",
       ]);
@@ -3813,7 +3858,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     });
 
     test("a row that failed on its budget is measured again, and the second report is a measurement of its own", async () => {
-      setLegionCapabilityBudgetsForTests({ checkMs: 20, reportMs: 500 });
+      setLegionCapabilityBudgetsForTests({ checkMs: 250, reportMs: 2000 });
       let searches = 0;
       const session = await capabilitySession({
         sessionId: "ses_capability_afresh",
@@ -3836,7 +3881,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       expect(first?.rows.find((row) => row.name === "web-search")).toEqual({
         name: "web-search",
         ok: false,
-        detail: "did not finish within 20 ms",
+        detail: "did not finish within 250 ms",
       });
       expect(first?.rows.filter((row) => row.ok)).toHaveLength(5);
 
@@ -4313,6 +4358,11 @@ async function launchedController(options: {
       });
     }
     if (url.pathname === "/legion/v1/state") return Response.json(daemonState);
+    // The controller's boot check reads the project here (dispatch://INFRA-2694), where it read
+    // the whole project body before.
+    if (url.pathname === "/healthz") {
+      return Response.json({ status: "ok", project: daemonState.daemon.project });
+    }
     if (url.pathname === "/legion/v1/issues/status") return Response.json({});
     if (url.pathname === "/legion/v1/claims/ready") return new Response(null, { status: 204 });
     if (url.pathname.startsWith("/legion/")) {
@@ -4597,8 +4647,12 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
 
     expect(await runStartCommand(controller, controller.context("ses_controller"))).toEqual([]);
 
+    // The boot check reads the daemon's project from the health answer and asks for no state
+    // (dispatch://INFRA-2694): the whole project body reached the controller's `read_state`
+    // alone from here on.
+    expect(controller.requests.map((request) => request.path)).toContain("/healthz");
+    expect(controller.requests.map((request) => request.path)).not.toContain("/legion/v1/state");
     expect(daemonRequests(controller.requests)).toEqual([
-      { path: "/legion/v1/state", body: undefined },
       {
         path: "/legion/v1/claims/register",
         body: {
@@ -5681,7 +5735,6 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       delete process.env.LEGION_BOOT_TOKEN_FILE;
     }
     expect(daemonRequests(controller.requests)).toEqual([
-      { path: "/legion/v1/state", body: undefined },
       {
         path: "/legion/v1/claims/register",
         body: {
@@ -7005,9 +7058,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       expect.stringContaining('"sessionId":"ses_controller_after"'),
     ]);
     expect(daemonRequests(controller.requests).map((request) => request.path)).toEqual([
-      "/legion/v1/state",
       "/legion/v1/claims/register",
-      "/legion/v1/state",
       "/legion/v1/claims/register",
     ]);
   });

@@ -111,29 +111,36 @@ var FailureCauses = []FailureCause{
 	CauseUnrecorded,
 }
 
-// relaunchAfterFailure charges one launch failure for a process that did not survive, and
-// relaunches the same session after it, once the backoff for the failures charged so far has
-// passed (backOff) and its turn in the wake pacing has come (reserveWake) — or fails the claim
-// when the budget is spent. Whether o charges is the policy's, which chargeLaunch asks (Charges);
-// every caller names an outcome it charges.
+// relaunchAfterFailure relaunches the same session after a process that did not survive, once its
+// turn in the wake pacing has come (reserveWake). Whether o charges is the policy's (Charges).
+// Where it does, one launch failure is counted (chargeLaunch) and the relaunch waits the backoff
+// for the failures charged so far (backOff), or the claim fails when the budget is spent. Where it
+// does not, nothing is counted and no backoff is waited (Charges says which ends those are): the
+// backoff spaces out the failures charged against the claim, and this end is none of them. That
+// relaunch is launch itself, with the one lifecycle check and the retry every launch has.
 //
 // A relaunch the tree lifecycle refuses (its cleanup reserved) is checked before the charge, so
 // it costs none; one whose process is already stopped is relaunchRefused's. That check is a guard
 // of this site's and no outcome question: it asks whether the tree may launch at all, which no
 // event of the claim's answers.
 //
-// o is what failed the process this relaunch replaces, from the caller that saw it, and the cause
-// derived from it (failureCause) is recorded on the claim before the charge: it is what the claim
-// fails under when this budget runs out, and what a launch the runtime refuses on the way fails
-// under too (launchNow, Claim.PendingCause). The retry of a relaunch the lifecycle check refused
-// carries the same outcome, which is why it is handed over in a closure rather than as the method
-// value.
+// o is what failed the process this relaunch replaces, from the caller that saw it. Where the
+// policy charges o, the cause derived from it (failureCause) is recorded on the claim before the
+// charge: it is what the claim fails under when this budget runs out, and what a launch the
+// runtime refuses on the way fails under too (launchNow, Claim.PendingCause). An outcome the
+// policy charges nothing records no cause and leaves the one pending as it was: it fails nothing
+// itself, so it has no word for the claim to fail under. The retry of a relaunch the lifecycle
+// check refused carries the same outcome, which is why it is handed over in a closure rather than
+// as the method value.
 //
 // ending is why the process the claim still records is let go, in the daemon's words, which the
 // launch records with what that process ended (launch, letGo); noEnd where the caller let it go
 // already (registrationDeadline). It is the record's words and no outcome: what the policy reads
 // is o alone.
 func (m *Machine) relaunchAfterFailure(ctx context.Context, o runtime.Outcome, ending string) error {
+	if !Charges(o) {
+		return m.launch(ctx, ending)
+	}
 	if err := m.checkLaunch(ctx); err != nil {
 		return m.relaunchRefused(ctx, func(ctx context.Context) error {
 			return m.relaunchAfterFailure(ctx, o, ending)

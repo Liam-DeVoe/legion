@@ -54,8 +54,8 @@ interface StallPane extends Omit<LegionPane, "resume"> {
   /** Each answer the stand-in's owed route gave from its record (`owedOf`), in order. An answer a
    * case gives through its own `answer` is not among them. */
   readonly owedAnswers: () => LegionOwed[];
-  /** How many times the pane read the daemon's whole state (`GET /legion/v1/state`). */
-  readonly stateReads: () => number;
+  /** How many times the pane read STALL-2's record (`GET /legion/v1/issues/STALL-2/record`). */
+  readonly recordReads: () => number;
   /** `LegionPane.resume`, with this file's steps (`StallStep`) among the prompts. */
   readonly resume: (
     replies: readonly Reply[],
@@ -266,19 +266,20 @@ function refuseNotCurrentPhase(record: StallRecord): Response {
 }
 
 /**
- * How long the stand-in takes to answer `GET /legion/v1/state`: past the owed read's bound, as
- * INFRA's daemon answered its whole state in 9.2 s to 9.6 s (the measurement under
- * `OWED_READ_BOUND_MS` in packages/pi-shared/src/phase-reminder.ts). Only the `legion` tool's own
- * calls read it (`stateReadingCalls`), and the both-sides rows assert that nothing else did: a
- * reminder that read it is what reminded every finished role on INFRA (D6 of
- * dispatch://INFRA-2746/artifact/plan-md).
+ * How long the stand-in takes to answer STALL-2's record (`GET /legion/v1/issues/STALL-2/record`):
+ * past the owed read's bound, as INFRA's daemon answered the whole state the `legion` tool read
+ * before dispatch://INFRA-2694 in 9.2 s to 9.6 s (the measurement under `OWED_READ_BOUND_MS` in
+ * packages/pi-shared/src/phase-reminder.ts). Only the `legion` tool's own calls read it
+ * (`recordReadingCalls`), and the both-sides rows assert that nothing else did: a reminder that
+ * read the daemon's record of the issue, the whole state then, is what reminded every finished
+ * role on INFRA (D6 of dispatch://INFRA-2746/artifact/plan-md).
  */
-const STATE_ANSWER_MS = OWED_READ_BOUND_MS + 1_000;
+const RECORD_ANSWER_MS = OWED_READ_BOUND_MS + 1_000;
 
-/** How long a pane whose runs make a `legion` call that reads the whole state waits for the
+/** How long a pane whose runs make a `legion` call that reads the issue's record waits for the
  * gateway to fall quiet: past that read and the tool's other requests after it, so the call is
  * not taken for a run that has settled. */
-const QUIET_PAST_STATE_MS = STATE_ANSWER_MS + 4_000;
+const QUIET_PAST_RECORD_MS = RECORD_ANSWER_MS + 4_000;
 
 /** What a step of a stall pane's life (`StallStep`) is handed. */
 interface StallScene {
@@ -379,7 +380,7 @@ interface PaneOptions
  * the implementer while the issue stands in implementing, and nothing once a completion has
  * moved it on, as the daemon's own record does once the workflow takes a completion (`owedBy` in
  * `packages/daemon/internal/api/owed.go`); a case that answers `claims/owed` itself decides
- * otherwise. Its `GET /legion/v1/state` answers after `STATE_ANSWER_MS`, as INFRA's did. A
+ * otherwise. Its record route for STALL-2 answers after `RECORD_ANSWER_MS`. A
  * `request_backward_move` moves the record to the phase it names.
  *
  * The pane's workspace is a jj repository whose change is committed and pushed to a bare
@@ -498,12 +499,14 @@ async function stallPane(
       answer: (url, body) => {
         const own = options.answer?.(url, body);
         if (own !== undefined) return own;
-        if (url.pathname === "/legion/v1/state") {
+        // `handoff_complete` and `read_record` read one issue's record (dispatch://INFRA-2694), here
+        // STALL-2's as the stand-in's record holds it now; nothing of this pane asks for the whole
+        // project body.
+        if (url.pathname === "/legion/v1/issues/STALL-2/record") {
           const issue = { ...STALL_STATE.issues["STALL-2"], phase: record.phase };
-          const state = { ...STALL_STATE, issues: { "STALL-2": issue } };
           // A real clock, deliberately: the reader is a real Oh My Pi process, whose own clock
           // decides whether an answer this late is inside any bound it reads with.
-          return Bun.sleep(STATE_ANSWER_MS).then(() => Response.json(state));
+          return Bun.sleep(RECORD_ANSWER_MS).then(() => Response.json(issue));
         }
         if (url.pathname === "/legion/v1/claims/owed") {
           const owed = owedOf(role, record);
@@ -599,18 +602,19 @@ async function stallPane(
     phaseEntries: () => pane.transcriptEntries(PHASE_STALL_ENTRY),
     pushedTip,
     owedAnswers: () => [...owedAnswers],
-    stateReads: () => pane.requests.filter((request) => request.path === "/legion/v1/state").length,
+    recordReads: () =>
+      pane.requests.filter((request) => request.path === "/legion/v1/issues/STALL-2/record").length,
     resume: (more, prompt) => pane.resume(more, stepsOf(prompt)),
   };
 }
 
 /**
- * How many `legion` calls the pane's conversation holds that read the daemon's whole state:
+ * How many `legion` calls the pane's conversation holds that read the issue's record:
  * `handoff_complete` and `read_record` read it once each (`executePhaseOp`,
  * packages/pi-shared/src/legion-phase-ops.ts), and nothing else a pane runs reads it. A pane that
  * read it more often than this read it for something else.
  */
-function stateReadingCalls(pane: StallPane): number {
+function recordReadingCalls(pane: StallPane): number {
   // Every turn carries the whole conversation so far, the lives before a resume included, so a
   // call is counted once by its id.
   const calls = new Set<string>();
@@ -636,8 +640,8 @@ function stateReadingCalls(pane: StallPane): number {
  * What every both-sides row asserts of a role that owes nothing
  * (dispatch://INFRA-2746/spec#b-r3 and #b-r5): no reminder reached it, as a turn's text, as a
  * timer's message or as a count its transcript records; its architect was told nothing; and the
- * pane read the daemon's whole state only for its own `legion` calls, never for the reminder
- * (`STATE_ANSWER_MS`).
+ * pane read the issue's record only for its own `legion` calls, never for the reminder
+ * (`RECORD_ANSWER_MS`).
  */
 async function expectRemindedOfNothing(pane: StallPane): Promise<void> {
   for (const turn of pane.turns()) {
@@ -648,7 +652,7 @@ async function expectRemindedOfNothing(pane: StallPane): Promise<void> {
   expect(await pane.transcriptEntries("legion-phase-reminder")).toEqual([]);
   expect(stallCounts(await pane.phaseEntries()).filter((count) => count !== 0)).toEqual([]);
   expect(pane.publishes()).toEqual([]);
-  expect(pane.stateReads()).toBe(stateReadingCalls(pane));
+  expect(pane.recordReads()).toBe(recordReadingCalls(pane));
 }
 
 test.skipIf(skip)(
@@ -684,7 +688,7 @@ test.skipIf(skip)(
       "/legion/v1/claims/ready",
       "/legion/v1/claims/owed",
       "/legion/v1/claims/turn-outcome",
-      "/legion/v1/state",
+      "/legion/v1/issues/STALL-2/record",
       "/legion/v1/grants",
       "/legion/v1/handoff/complete",
       "/legion/v1/claims/turn-outcome",
@@ -754,7 +758,7 @@ test.skipIf(skip)(
       ],
       {
         env: { LEGION_STALL_REMINDER_MS: "500", LEGION_STALL_ARCHITECT_AFTER: "2" },
-        quietMs: QUIET_PAST_STATE_MS,
+        quietMs: QUIET_PAST_RECORD_MS,
       }
     );
 
@@ -816,7 +820,7 @@ test.skipIf(skip)(
       ],
       {
         env: { LEGION_STALL_WAITING_MS: String(waitMs) },
-        quietMs: QUIET_PAST_STATE_MS,
+        quietMs: QUIET_PAST_RECORD_MS,
         answer: (url) => {
           seen.push({ path: url.pathname, at: Date.now() });
           return undefined;
@@ -897,7 +901,7 @@ test.skipIf(skip)(
       ],
       {
         env: { LEGION_STALL_REMINDER_MS: "500", LEGION_STALL_ARCHITECT_AFTER: "2" },
-        quietMs: QUIET_PAST_STATE_MS,
+        quietMs: QUIET_PAST_RECORD_MS,
         // No live session holds the architect's role the first time, as the listener answers
         // while that architect is between sessions; the second is taken.
         answer: (url) => {
@@ -1096,8 +1100,8 @@ test.skipIf(skip)(
 // which INFRA's finished roles were reminded at every turn end, while the control above, a role
 // whose phase is current and whose work is undone, is still reminded. In every row the stand-in
 // daemon answers what the claim owes from its record (`owedOf`), which the row sets and moves as
-// the daemon would, and it answers its whole state late (`STATE_ANSWER_MS`), so a reminder that
-// read the whole state would show as a state read that the pane's own calls do not explain.
+// the daemon would, and it answers the issue's record late (`RECORD_ANSWER_MS`), so a reminder that
+// read the record would show as a record read that the pane's own calls do not explain.
 
 /** The limits the both-sides rows run on: the reminder after a reminder and the wait a WAITING
  * reply buys each last half a second, and the architect is told at the second reminder of a run,
@@ -1232,7 +1236,7 @@ test.skipIf(skip)(
         record: { phase: "testing" },
         complete: refuseNotCurrentPhase,
         env: QUICK_LIMITS,
-        quietMs: QUIET_PAST_STATE_MS,
+        quietMs: QUIET_PAST_RECORD_MS,
         prompt: [
           "Implement STALL-2.",
           (scene) => scene.roleMessage("The tester has taken STALL-2 and runs its tests now."),
@@ -1276,7 +1280,7 @@ test.skipIf(skip)(
       ],
       {
         env: QUICK_LIMITS,
-        quietMs: QUIET_PAST_STATE_MS,
+        quietMs: QUIET_PAST_RECORD_MS,
         prompt: [
           "Implement STALL-2.",
           async (scene) => {
@@ -1425,7 +1429,7 @@ test.skipIf(skip)(
         role: "planner",
         record,
         env: QUICK_LIMITS,
-        quietMs: QUIET_PAST_STATE_MS,
+        quietMs: QUIET_PAST_RECORD_MS,
         prompt: "Plan STALL-2.",
       }
     );
@@ -1479,7 +1483,7 @@ test.skipIf(skip)(
       ],
       {
         env: QUICK_LIMITS,
-        quietMs: QUIET_PAST_STATE_MS,
+        quietMs: QUIET_PAST_RECORD_MS,
         prompt: ["Implement STALL-2.", (scene) => scene.roleMessage(UPDATE_ASK)],
       }
     );
@@ -1527,7 +1531,7 @@ test.skipIf(skip)(
       ],
       {
         env: QUICK_LIMITS,
-        quietMs: QUIET_PAST_STATE_MS,
+        quietMs: QUIET_PAST_RECORD_MS,
         prompt: [
           "Implement STALL-2.",
           (scene) => scene.roleMessage("Thank you for the change: the tester has STALL-2 now."),
@@ -1570,7 +1574,7 @@ test.skipIf(skip)(
         [{ type: "text", text: "Recorded version 2 of the implement handoff." }],
         NEVER,
       ],
-      { env: QUICK_LIMITS, quietMs: QUIET_PAST_STATE_MS }
+      { env: QUICK_LIMITS, quietMs: QUIET_PAST_RECORD_MS }
     );
 
     expect(pane.turns()).toHaveLength(3);
