@@ -72,6 +72,7 @@ read_other_cluster() {
   elif ! review "$KUBE" "$(principals_json "$WORK/principals.rec")" "$guard_rights"; then
     unknown "$cstep" "$REVIEW_ERROR"
   elif judge_reviews "$cstep" "$where" "$principal"; then
+    live_named "$KUBE" "$cstep" "$where" "$principal" "$guard_rights"
     follow_becomes "$KUBE" "$cstep" "$where" "$principal"
     ! unchanged ||
       pass "$cstep" "no guarded namespace ($GUARDED_TEXT), and none of its $accounts ServiceAccounts outside the system namespaces, $GROUPS_ADDED of Kubernetes' own groups, $BOUND binding subjects and anyone unauthenticated may make a namespace, a ServiceAccount, a pod or a custom resource in a guarded namespace, write a webhook or admission policy, or hold an escalation right"

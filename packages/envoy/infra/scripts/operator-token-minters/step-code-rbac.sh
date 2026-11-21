@@ -13,8 +13,10 @@ else
   done
   if [ "$readable" = true ]; then
     mark
-    if ! jq -r -n --argjson rights "$(rights_json db)" -L "$LIB" -f "$LIB/code-rbac.jq" \
-      "${RBAC_RENDERS[@]}" >"$WORK/render.rec" 2>"$WORK/render.err"; then
+    # The rights asked unnamed, and by name alone the guard rights (the CSR chain's included) and the
+    # admission rights, so a rule limiting any of them by name is read as the live roles are.
+    if ! jq -r -n --argjson rights "$(rights_json db)" --argjson named_rights "$(jq -c --argjson more "$ADMISSION_CODE_RIGHTS" '. + $more' <<<"$GUARD_RIGHTS")" \
+      --argjson live false -L "$LIB" -f "$LIB/code-rbac.jq" "${RBAC_RENDERS[@]}" >"$WORK/render.rec" 2>"$WORK/render.err"; then
       unknown "$step" "a render is not JSON: $(first_line "$WORK/render.err")"
     else
       declared=0

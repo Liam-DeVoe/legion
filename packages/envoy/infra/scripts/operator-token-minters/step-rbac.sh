@@ -93,6 +93,7 @@ else
     unknown "$step" "$REVIEW_ERROR"
   elif judge_reviews "$step" "" "cluster:$CLUSTER"; then
     RBAC_OK=true
+    live_named "$KUBE" "$step" "" "cluster:$CLUSTER" "$rights"
     follow_becomes "$KUBE" "$step" "" "cluster:$CLUSTER"
     if unchanged; then
       pass "$step" "$((accounts + ${#seen_accounts[@]} + GROUPS_ADDED + BOUND + 1)) principals ($accounts ServiceAccounts outside the system namespaces, $agents of them in the agent namespaces, ${#seen_accounts[@]} Google service accounts, $GROUPS_ADDED of Kubernetes' own groups, $BOUND binding subjects, and anyone unauthenticated), $(jq length <<<"$rights") rights each: none allowed"

@@ -34,10 +34,13 @@
 #                     stream of objects) is read as the RBAC authorizer reads it, and each binding
 #                     that gives a right below to a subject that is not a person, a system
 #                     namespace's, a system component or the operator's own Google service account
-#                     is a finding. A rule limited by resourceNames on impersonate, escalate or bind,
-#                     or on a patch or update of a binding, is a finding naming the names
-#                     (impersonating the group system:masters by name is cluster-admin, and RBAC
-#                     lets one who may bind a role by name write a binding to it). A binding to a
+#                     is a finding. A rule limited by resourceNames on any right the live steps ask
+#                     (the list below, the guard rights, the certificate chain's and the admission
+#                     rights) is a finding naming the names: impersonating the group system:masters
+#                     by name is cluster-admin, RBAC lets one who may bind a role by name write a
+#                     binding to it, and an update of one webhook configuration or a patch of one
+#                     Deployment by name is the unnamed right's path. RBAC never limits a create of
+#                     a whole object or a deletecollection by name. A binding to a
 #                     role the render does not hold (other than the
 #                     built-in cluster-admin, which gives every right, and view, which gives none)
 #                     or to an aggregated ClusterRole is UNKNOWN: its rights are not in the render.
@@ -106,7 +109,13 @@
 #                     on every binding's role and patch and update on every binding (RBAC lets one
 #                     who may bind a role by name write a binding to it), and update and patch on
 #                     each role bound to a reviewed principal (named-rights.jq); every other cluster
-#                     of the pool is asked them too. A
+#                     of the pool is asked them too. A rule limited by name on any other right asked
+#                     never answers a review that names nothing, so every cluster's Roles and
+#                     ClusterRoles (`kubectl get roles,clusterroles -A`) are read against its bindings
+#                     as the code step reads a render: a rule whose resourceNames limit a right asked
+#                     is a finding naming the names for a subject that is not a person (an approval
+#                     of certificate signing requests by name, whose name the requester picks, joins
+#                     the certificate chain), and a refused list is UNKNOWN. A
 #                     review without the groups would miss every grant made to a group. Its witness
 #                     is a review for the group the built-in
 #                     cluster-admin binding names, system:masters, which must be allowed: an API

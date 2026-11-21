@@ -249,6 +249,19 @@ case "${args[*]}" in
           subjects: [$g.subject | if .kind == "ServiceAccount" then . else . + {apiGroup: "rbac.authorization.k8s.io"} end]}])}' \
       "$dir/grants.json"
     ;;
+  "get roles,clusterroles --all-namespaces -o json")
+    # The built-in cluster-admin role, and one ClusterRole of each grant (planted-<its index>, as the
+    # bindings' list names it), holding the grant as a rule, limited by name when the grant names one.
+    [ ! -e "$dir/refuse-roles" ] || forbidden roles.rbac.authorization.k8s.io 'list resource "roles" in API group "rbac.authorization.k8s.io"' container.roles.list
+    jq '{apiVersion: "v1", kind: "List", items: (
+      [{apiVersion: "rbac.authorization.k8s.io/v1", kind: "ClusterRole", metadata: {name: "cluster-admin"},
+        rules: [{apiGroups: ["*"], resources: ["*"], verbs: ["*"]}]}]
+      + [to_entries[] | .key as $i | .value as $g | {
+          apiVersion: "rbac.authorization.k8s.io/v1", kind: "ClusterRole", metadata: {name: "planted-\($i)"},
+          rules: [{apiGroups: [$g.group], verbs: [$g.verb],
+                   resources: [if $g.resource == "*" or ($g.subresource // "") == "" then $g.resource else "\($g.resource)/\($g.subresource)" end]}
+                  + (if $g.name then {resourceNames: [$g.name]} else {} end)]}])}' "$dir/grants.json"
+    ;;
   "get namespace "*" -o name")
     namespace="${args[2]}"
     if grep -qxF -- "$namespace" "$dir/namespaces"; then

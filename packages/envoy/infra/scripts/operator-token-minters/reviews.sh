@@ -205,6 +205,61 @@ admission_rights() {
        | . + {key: ([.verb, .group, .resource, .sub, .ns, .name] | join("|"))}]')"
   [ -z "$ADMISSION_ERROR" ]
 }
+# live_named KUBECONFIG STEP SUFFIX RESOURCE RIGHTS: the rights a live role limits by name. RBAC
+# applies a rule with resourceNames only to a request that names one of them, so a review that names
+# nothing is refused for an update of one webhook configuration, a patch of one Deployment or a
+# pods/exec of one pod by name. The cluster's Roles and ClusterRoles (`kubectl get
+# roles,clusterroles -A`) are read against $WORK/bindings.json as the code step reads a render
+# (code-rbac.jq, by name alone): each rule whose resourceNames limit a right of RIGHTS (the JSON
+# array the cluster's reviews asked) is a finding for a binding subject k8s_subject does not allow,
+# its right followed by SUFFIX, on RESOURCE; a ServiceAccount so found is followed as judge_reviews'
+# are (FOUND_SAS). An approval of certificate signing requests by name (the requester picks the
+# name) joins the chain: with a signer judge_reviews' reviews allowed the same principal, it is the
+# chain's finding. Runs after judge_reviews, whose $WORK/review.rec it reads; a refused list is
+# UNKNOWN naming the permission.
+live_named() {
+  local what id detail kind ns name principal who label verdict names signers create chain
+  local -A approvals=()
+  [ "$BINDINGS_OK" = true ] || return 0
+  if ! kubectl --kubeconfig "$1" get roles,clusterroles --all-namespaces -o json >"$WORK/roles.json" 2>"$WORK/roles.err"; then
+    unknown "$2" "the API server refused the roles' list (it needs list on roles and clusterroles, container.roles.list and container.clusterRoles.list on GKE), so a right a role limits by name is not read: $(first_line "$WORK/roles.err")"
+    return 0
+  fi
+  if ! jq -r -n --argjson rights '[]' --argjson named_rights "$5" --argjson live true -L "$LIB" -f "$LIB/code-rbac.jq" \
+    "$WORK/bindings.json" "$WORK/roles.json" >"$WORK/named.rec" 2>"$WORK/named.err"; then
+    unknown "$2" "the API server's list of roles is not JSON: $(first_line "$WORK/named.err")"
+    return 0
+  fi
+  while IFS="$US" read -r -u 6 what id detail kind ns name; do
+    [ "$what" = grant ] || continue
+    k8s_subject "$kind" "$ns" "$name"
+    [ "$SUBJECT_OK" != true ] || continue
+    case "$detail" in
+      *" certificatesigningrequests/approval.certificates.k8s.io "*)
+        names="${detail#* certificatesigningrequests/approval.certificates.k8s.io }"
+        approvals[$SUBJECT]="${detail%% *} certificatesigningrequests/approval ${names% cluster-wide}"
+        continue
+        ;;
+    esac
+    finding "$SUBJECT" "$detail$3" "$detail" "$4" "$detail" "RBAC: $id limits it by name"
+    if [[ "$SUBJECT" =~ ^system:serviceaccount:([^:]+):([^:]+)$ ]] && [ -z "${FOUND_SAS[${BASH_REMATCH[1]}:${BASH_REMATCH[2]}]:-}" ]; then
+      FOUND_SAS["${BASH_REMATCH[1]}:${BASH_REMATCH[2]}"]="$detail"
+    fi
+  done 6<"$WORK/named.rec"
+  for principal in $(printf '%s\n' ${approvals[@]+"${!approvals[@]}"} | sort); do
+    signers="" create=""
+    while IFS="$US" read -r -u 6 who label verdict _; do
+      [ "$who" = "$principal" ] && [ "$verdict" = allowed ] || continue
+      case "$label" in
+        "$CSR_CREATE") create="create certificatesigningrequests, " ;;
+        "$CSR_SIGNER_PREFIX"*) label="${label#"$CSR_SIGNER_PREFIX"}"; signers="${signers:+$signers and }${label% cluster-wide}" ;;
+      esac
+    done 6<"$WORK/review.rec"
+    [ -n "$signers" ] || continue
+    chain="$create${approvals[$principal]} and approve signers $signers cluster-wide, so it can have a client certificate signed for any user or group but system:masters"
+    finding "$principal" "$chain$3" "$chain" "$4" "$chain" "RBAC: a role limits the approval by name"
+  done
+}
 # bound_subjects KUBECONFIG: the cluster's binding subjects (the header's "Binding subjects"), added
 # to $WORK/principals.rec when the file does not hold them already: each User subject k8s_subject
 # does not allow, with system:authenticated (system:anonymous with system:unauthenticated), each

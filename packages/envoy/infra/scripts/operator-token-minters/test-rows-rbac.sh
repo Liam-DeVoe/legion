@@ -73,7 +73,15 @@
 #        roles/container.admin) exits 1 naming that user;
 #   (br) legion/worker that may get, by name, a token Secret the operator's ServiceAccount lists
 #        exits 1 naming it; a list of bindings without the bootstrap cluster-admin binding, on the
-#        operator's cluster or another, reads UNKNOWN.
+#        operator's cluster or another, reads UNKNOWN;
+#   (bu) a right a live role limits by name, the reviewer's five probes: update of the mutating
+#        webhook configuration existing-webhook on the operator's cluster, and patch of it on
+#        another; create of certificate signing requests, update of the approval of my-csr and
+#        approve of kubernetes.io/kube-apiserver-client; patch of the Deployment secrets-broker in
+#        secrets-broker; update of the CronJob nightly in envoy-operator; and create of pods/exec of
+#        secrets-broker-0: each exits 1 naming the name; create pods limited by name, which RBAC
+#        never allows, exits 0;
+#   (bv) a refused list of roles, on the operator's cluster or another, reads UNKNOWN.
 
 # --- (b) Each right of the RBAC list, allowed to one agent ServiceAccount. Each entry is the grant
 # (verb, API group, resource, subresource, the binding's namespace or none for cluster-wide, the
@@ -733,4 +741,84 @@ secret_witness_row() {
 if row br; then
   each secret_witness_row named-secret no-bootstrap no-bootstrap-other
   passed "(br) a get of the operator's token Secret by name exits 1, and a list of bindings without the bootstrap binding reads UNKNOWN"
+fi
+
+# --- (bu) Rights a live role limits by name. RBAC applies a rule with resourceNames only to a request
+# that names one of them, so a review naming nothing is refused for each of these; the check reads
+# the roles the bindings name. ---
+name_limited_row() {
+  local who=system:serviceaccount:legion:worker cluster=operator-cluster subject suffix="" want
+  base_world
+  subject="$(sa_subject legion worker)"
+  case "$1" in
+    webhook-operator)
+      subject_grant "$cluster" "$subject" update admissionregistration.k8s.io mutatingwebhookconfigurations "" "" existing-webhook
+      want="update mutatingwebhookconfigurations.admissionregistration.k8s.io existing-webhook cluster-wide"
+      ;;
+    webhook-other)
+      add_cluster other-cluster us-east1
+      add_sa other-cluster ci runner
+      cluster=other-cluster subject="$(sa_subject ci runner)" who=system:serviceaccount:ci:runner
+      suffix=" on cluster $project/us-east1/other-cluster"
+      subject_grant "$cluster" "$subject" patch admissionregistration.k8s.io mutatingwebhookconfigurations "" "" existing-webhook
+      want="patch mutatingwebhookconfigurations.admissionregistration.k8s.io existing-webhook cluster-wide"
+      ;;
+    csr)
+      subject_grant "$cluster" "$subject" create certificates.k8s.io certificatesigningrequests "" "" ""
+      subject_grant "$cluster" "$subject" update certificates.k8s.io certificatesigningrequests approval "" my-csr
+      subject_grant "$cluster" "$subject" approve certificates.k8s.io signers "" "" kubernetes.io/kube-apiserver-client
+      want="create certificatesigningrequests, update certificatesigningrequests/approval my-csr and approve signers kubernetes.io/kube-apiserver-client cluster-wide, so it can have a client certificate signed for any user or group but system:masters"
+      ;;
+    deployment)
+      subject_grant "$cluster" "$subject" patch apps deployments "" secrets-broker secrets-broker
+      want="patch deployments.apps secrets-broker in secrets-broker"
+      ;;
+    cronjob)
+      subject_grant "$cluster" "$subject" update batch cronjobs "" envoy-operator nightly
+      want="update cronjobs.batch nightly in envoy-operator"
+      ;;
+    exec)
+      subject_grant "$cluster" "$subject" create "" pods exec secrets-broker secrets-broker-0
+      want="create pods/exec secrets-broker-0 in secrets-broker"
+      ;;
+    create-named)
+      subject_grant "$cluster" "$subject" create "" pods "" envoy-operator some-pod
+      run
+      want_status 0 "create pods limited by name, which RBAC never allows"
+      return
+      ;;
+  esac
+  run
+  want_status 1 "a right limited by name ($1)"
+  want_line "FINDING $who: $want$suffix" "a right limited by name ($1)"
+}
+if row bu; then
+  each name_limited_row webhook-operator webhook-other csr deployment cronjob exec create-named
+  passed "(bu) each right a live role limits by name (a webhook configuration on two clusters, a CSR approval, a Deployment, a CronJob, a pod's exec) exits 1 naming the name; create limited by name exits 0"
+fi
+
+# --- (bv) The roles' list, which the named rights are read from. ---
+roles_refused_row() {
+  base_world
+  case "$1" in
+    operator)
+      : >"$world/clusters/operator-cluster/refuse-roles"
+      run
+      want_status 2 "a refused list of roles on the operator's cluster"
+      want_text "UNKNOWN live: RBAC on operator-cluster: the API server refused the roles' list (it needs list on roles and clusterroles" \
+        "a refused list of roles on the operator's cluster"
+      ;;
+    other)
+      add_cluster other-cluster us-east1
+      : >"$world/clusters/other-cluster/refuse-roles"
+      run
+      want_status 2 "a refused list of roles on another cluster"
+      want_text "UNKNOWN live: Workload Identity on $project/us-east1/other-cluster: the API server refused the roles' list (it needs list on roles and clusterroles" \
+        "a refused list of roles on another cluster"
+      ;;
+  esac
+}
+if row bv; then
+  each roles_refused_row operator other
+  passed "(bv) a refused list of roles, on the operator's cluster or another, reads UNKNOWN naming the permission"
 fi

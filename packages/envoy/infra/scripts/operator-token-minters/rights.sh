@@ -77,6 +77,15 @@ create - secrets - ns
 # never a name it does not; every API server serves the two webhook configurations, so a discovery
 # that lists either one short is not whole.
 ADMISSION_ALWAYS=(mutatingwebhookconfigurations validatingwebhookconfigurations)
+# ADMISSION_CODE_RIGHTS: the admission rights the code step reads, with no cluster's discovery to
+# read: create, update and patch of the two webhook configurations and of the admission policies
+# and their bindings, mutating and validating.
+ADMISSION_CODE_RIGHTS="$(jq -n -c '[("mutatingwebhookconfigurations", "validatingwebhookconfigurations", "mutatingadmissionpolicies",
+    "mutatingadmissionpolicybindings", "validatingadmissionpolicies", "validatingadmissionpolicybindings") as $res
+  | ("create", "update", "patch")
+  | {verb: ., group: "admissionregistration.k8s.io", resource: $res, sub: "", ns: "", name: "",
+     label: "\(.) \($res).admissionregistration.k8s.io cluster-wide"}
+  | . + {key: ([.verb, .group, .resource, .sub, .ns, .name] | join("|"))}]')"
 # The certificate signing chain, asked cluster-wide on every cluster of the pool: a certificate
 # signed for kubernetes.io/kube-apiserver-client authenticates as any user and groups its request
 # names but system:masters, and GKE cannot turn the certificates API off. Whoever may update a
