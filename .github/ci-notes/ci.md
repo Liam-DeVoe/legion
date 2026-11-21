@@ -515,12 +515,14 @@ The reading of the stacks' PostgreSQL the shard and alone jobs run before the su
 the script the merge job runs to take each leg's newest attempt, and the script
 that makes the merge job's two reads of its own run, which reads this run's own
 attempt's jobs and says a refused blob download was a refused read. Beside them,
-the thirteen scripts that hold the bodies of the shard, the alone, the visual, the
-merge and the quarantine jobs' steps: the shard job's wait for the file store it
-starts, which the quarantine job runs too, its browser step and the record of what
-that run left behind, the alone job's
+the fourteen scripts that hold the bodies of the shard, the alone, the embedder, the
+two-process, the visual, the merge and the quarantine jobs' steps: the shard job's wait for
+the file store it starts, which the quarantine job runs too, its browser step and the record
+of what that run left behind, the alone job's
 browser step and its own record step, whose text differs from the shard job's
-because no file store runs on that machine, the visual job's run against the
+because no file store runs on that machine, the browser steps of the embedder and
+two-process jobs, which run on the runner and write their runs' blob reports, the visual
+job's run against the
 baselines, the merge job's merge of the legs' blob reports, its four
 readings - the rows, the flake rate, the leg exits and the row durations - and
 the verdict that fails the job on a red leg or a failed row, and the quarantine
@@ -1638,8 +1640,8 @@ Vite build aliases its sources, so that spawn is the whole of what the build is 
 Every browser row of the Dispatch suite, which .github/workflows/dispatch-browser.yaml
 holds: the binaries job that builds the Go commands the lanes run, the shard legs, the three
 `-alone` projects a machine each, the two-process job, the fake-embedder job that runs on both
-lanes, the containerised visual review, and the merge job that joins the shard and alone
-reports into one and posts this job's ci-ok report.
+lanes, the containerised visual review, and the merge job that joins the shard, alone,
+embedder and two-process reports into one and posts this job's ci-ok report.
 
 One input, `lane`, decides which projects each job runs: the called workflow reads it, so
 nothing here chooses them a second time. It picks no browser to install any more: the shard

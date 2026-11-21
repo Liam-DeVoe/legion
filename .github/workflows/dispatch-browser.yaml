@@ -286,7 +286,7 @@ jobs:
     if: inputs.lane == 'full'
     runs-on: ubuntu-24.04
     # why: .github/ci-notes/dispatch-browser.md#the-two-process-jobs-measured-steps-and-its-budgets
-    # 4 + 4 + 2 + 2 min plus 135 s and 120 s = 16 min 15 s -> 17 min.
+    # 4 + 4 + 2 + 2 min plus 135 s, 120 s and 3 + 3 + 4 s = 16 min 25 s -> 17 min.
     timeout-minutes: 17
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -334,6 +334,7 @@ jobs:
           echo "connections=$connections" >> "$GITHUB_OUTPUT"
         working-directory: packages/envoy
       - name: Browser-test dispatch dashboard against two server processes
+        id: multiprocess-dashboard
         # why: .github/ci-notes/dispatch-browser.md#what-the-two-process-dashboard-step-runs-against
         # 202 s x 1.15 = 232 s -> 4 min.
         timeout-minutes: 4
@@ -341,26 +342,41 @@ jobs:
           export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
           export DISPATCH_E2E_PG_CONNECTIONS=${{ steps.connections.outputs.connections }}
           export DISPATCH_E2E_PG_STALL_DIR="$RUNNER_TEMP/pg-stall"
-          bun run e2e:multiprocess
+          "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-host-suite.sh" multiprocess-dashboard bun run e2e:multiprocess
         working-directory: packages/dispatch
+      # why: .github/ci-notes/dispatch-browser.md#why-the-two-process-jobs-blob-uploads-are-always
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: dispatch-browser-blob-multiprocess-dashboard-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/leg-report/multiprocess-dashboard
       - name: Browser-test a sign-in across two server processes
         # why: .github/ci-notes/dispatch-browser.md#what-the-sign-in-row-across-two-processes-reads
         # 13 s x 1.15 = 15 s -> the two-minute floor.
+        if: ${{ !cancelled() && steps.multiprocess-dashboard.outcome != 'skipped' }}
         timeout-minutes: 2
         run: |
           export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
           export DISPATCH_E2E_PG_CONNECTIONS=${{ steps.connections.outputs.connections }}
-          DISPATCH_E2E_PROCESSES=2 DISPATCH_E2E_SIGNIN=oidc bunx playwright test --config e2e/playwright.config.ts
+          DISPATCH_E2E_PROCESSES=2 DISPATCH_E2E_SIGNIN=oidc "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-host-suite.sh" \
+            multiprocess-signin bunx playwright test --config e2e/playwright.config.ts
         working-directory: packages/dispatch
-      # why: .github/ci-notes/dispatch-browser.md#why-the-two-process-jobs-upload-runs-on-failure-alone
+      # why: .github/ci-notes/dispatch-browser.md#why-the-two-process-jobs-blob-uploads-are-always
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: failure()
+        if: always()
+        with:
+          name: dispatch-browser-blob-multiprocess-signin-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/leg-report/multiprocess-signin
+      # why: .github/ci-notes/dispatch-browser.md#why-the-two-process-job-uploads-the-failed-rows-traces-always
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
         with:
           name: dispatch-browser-multiprocess-test-results-${{ github.run_attempt }}
           path: packages/dispatch/e2e/test-results
+          if-no-files-found: ignore
 
   # why: .github/ci-notes/dispatch-browser.md#the-embedder-job-the-lanes-it-runs-on-and-its-budgets
-  # 4 + 4 + 2 min plus 135 s and 120 s = 14 min 15 s -> 15 min.
+  # 4 + 4 + 2 min plus 135 s, 120 s and 3 + 4 s = 14 min 22 s -> 15 min.
   embedder:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -416,15 +432,21 @@ jobs:
         run: |
           export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
           export DISPATCH_E2E_PG_CONNECTIONS=${{ steps.connections.outputs.connections }}
-          bun run e2e:embedder
+          "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-host-suite.sh" embedder bun run e2e:embedder
         working-directory: packages/dispatch
-      # `if: failure()`, as the multiprocess job's upload is: the chromium project retries a
-      # failed row, but a row that fails after its retries fails this job and this upload runs.
+      # why: .github/ci-notes/dispatch-browser.md#why-the-embedder-jobs-blob-upload-is-always
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: failure()
+        if: always()
+        with:
+          name: dispatch-browser-blob-embedder-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/leg-report/embedder
+      # why: .github/ci-notes/dispatch-browser.md#why-the-embedder-job-uploads-the-failed-rows-traces-always
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
         with:
           name: dispatch-browser-embedder-test-results-${{ github.run_attempt }}
           path: packages/dispatch/e2e/test-results
+          if-no-files-found: ignore
 
   # why: .github/ci-notes/dispatch-browser.md#the-visual-review-its-docker-run-and-its-budgets
   # 360 + 333 + 120 = 813 s -> 14 min; 14 + 6 = 20 min with the reverse-order step.

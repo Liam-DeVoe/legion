@@ -16,8 +16,8 @@ with the pull-request lane on a pull request that carries no `full-ci` label and
 on everything else, and the nightly workflow calls it with the full lane. The rows are spread
 over four shard machines, the three `-alone` projects get a machine each, the two-process job,
 the fake-embedder job and the containerised visual review take one each, and one merge job
-joins what the shard and alone legs wrote into a single report and publishes the run's flake
-rate.
+joins what the shard, alone, embedder and two-process legs wrote into a single report and
+publishes the run's flake rate.
 
 Two lanes, one input. `pull-request` runs the projects a pull request is held to - `chromium`,
 `iphone` and the two stubbed ones - over the rows tagged `@pr` and no others, with the
@@ -767,8 +767,8 @@ connections read, which takes the two-minute floor until runs of it are measured
 2 + 2 min plus 135 s and 120 s = 16 min 15 s -> 17 min. The dashboard step now also starts
 the stack's container and builds the stall library, and its four runs since took 118 s,
 114 s, 96 s and 106 s (runs 44480885813, 44501665975, 44528268121 and 44549420195), inside
-the 202 s its 4 min derives from. With budgets on the steps, the
-`if: failure()` upload of `dispatch-browser-multiprocess-test-results-${{ github.run_attempt }}` still runs, which a cancelled job skips.
+the 202 s its 4 min derives from. With budgets on the steps, the three
+`if: always()` uploads after them still run, which a cancelled job skips.
 
 The move into this workflow changed none of that: the job runs the same steps on the same
 machine, and full-lane run 42316487530 falls inside every figure above - 9 s install,
@@ -777,6 +777,15 @@ full-lane run after this job's Go cache restore moved from go-envoy to go-envoy-
 42614920253 (job 129152410448), is inside them too - 9 s install, 106 s dashboard, 8 s
 sign-in, 96 s in the steps without a budget, 219 s whole - and that restore reads
 go-envoy-test-Linux-go1.27.3, 677,668,128 bytes, 22 s of those 96.
+
+The two blob uploads and the traces upload then became `if: always()` steps of every run
+(.github/ci-notes/dispatch-browser.md#why-the-two-process-jobs-blob-uploads-are-always), where
+the one upload before them ran on a failure alone and so stood in none of the success jobs
+measured above. None carries a budget, so each counts at the shard job's measured maximum for
+the same upload (the table of
+.github/ci-notes/dispatch-browser.md#the-shard-jobs-shell-rule-its-measured-steps-and-its-budget):
+3 s for a blob report and 4 s for the traces. 4 + 4 + 2 + 2 min plus 135 s, 120 s and
+3 + 3 + 4 s = 16 min 25 s -> 17 min, the budget unchanged.
 
 ## Why the two-process job restores go-envoy-test
 
@@ -858,6 +867,33 @@ e2e/read-marker-disk-stall.multiprocess.e2e.ts needs: on GitHub Actions
 (GITHUB_ACTIONS=true) the row fails without it, and elsewhere, an agent's shell
 included, it is skipped. The runner's own cc builds it.
 
+The step's body is .github/scripts/dispatch-browser-host-suite.sh, given the leg
+`multiprocess-dashboard` and `bun run e2e:multiprocess`: it adds the list, blob and failure
+reporters to the run, as the shard and alone legs' scripts add theirs, so the run writes a blob
+report and its row count into $RUNNER_TEMP/leg-report/multiprocess-dashboard.
+
+## Why the two-process job's blob uploads are always
+
+Each of the job's two runs is a leg of the run's report, as a shard is: the upload after each
+browser step hands the merge job that run's blob report and row count, as
+`dispatch-browser-blob-multiprocess-dashboard-${{ github.run_attempt }}` and
+`dispatch-browser-blob-multiprocess-signin-${{ github.run_attempt }}`, two artifacts and two
+legs, so the step "Take the newest attempt of each leg's blob report" picks each one's newest
+attempt on its own. Until they existed no row of this job reached the merged report, so its
+project took no retry (e2e/playwright.config.ts says why it now takes the run's one): a row that
+failed and passed on its retry would have been counted in no flake rate and named in no list.
+
+Always, not on failure alone, for the reason the shard job's upload gives: the merge job reads
+every leg's blob, a green run's among them, and a leg whose blob is missing fails it by name.
+.github/scripts/dispatch-browser-run-reads.sh gives this job those two legs, so reading one owes
+both a blob whenever the job ran; on the pull-request lane the job is skipped by its own
+`if:` and owes none.
+
+One directory each, as the shard job's upload of this name is, though no container stands
+between them and the path here: the two runs write side by side on one machine, and a blob
+report's directory is emptied by the run that writes into it, so each leg's report has a
+directory of its own under $RUNNER_TEMP/leg-report.
+
 ## What the sign-in row across two processes reads
 
 Both processes sign people in through the dev OIDC issuer (DISPATCH_E2E_SIGNIN=oidc,
@@ -865,12 +901,25 @@ e2e/harness-signin.ts), and its one spec starts a sign-in on A and completes it 
 step before built the dashboard; B serves A's build, which this spec does not tell apart.
 Its Postgres is a second one the harness starts from the same image.
 
-## Why the two-process job's upload runs on failure alone
+The step's body is .github/scripts/dispatch-browser-host-suite.sh, given the leg
+`multiprocess-signin` and the Playwright command, so this run writes a blob report of its own.
 
-`if: failure()`, which this job can afford where the shard job cannot: its project sets
-`retries: 0` (e2e/playwright.config.ts), so a row that fails fails this job and this
-upload runs. The shard job's copy is `if: always()` because a retried row there can pass
-and leave the job green.
+It runs whenever the dashboard step ran, red or green (`!cancelled()` and that step's outcome
+not `skipped`), where it used to run after a green one alone. A red dashboard step would
+otherwise leave this leg without a blob, and reading one would report a blob missing from a
+leg that never ran rather than the dashboard rows that failed. Where the job failed before
+the dashboard step, both steps are skipped and both legs owe their blobs, as a shard that
+failed before its browser step owes its own. Its budget is in the job's sum already.
+
+## Why the two-process job uploads the failed rows' traces always
+
+Always, for the reason the shard job's upload of the traces gives: the project takes the run's
+one retry on CI, so a row that fails and passes on its retry leaves the job green, and the
+merge job's flake reading names it; `if: failure()` would keep no trace of the attempt that
+failed. The config's `trace: 'retain-on-first-failure'` records the first attempt and keeps it
+when that attempt failed. `if-no-files-found: ignore`, since a green run with no failed
+attempt leaves no trace to upload. This upload stood on `if: failure()` while the project took
+no retry and so no row of it could pass after failing.
 
 ## The embedder job, the lanes it runs on and its budgets
 
@@ -887,10 +936,19 @@ Chromium install and two rows of about 90 s, and it holds a check of the pull re
 on (check k2 of dispatch://INFRA-1042) rather than a clock reading or a second server shape.
 A lane that skipped it would leave the claim unread until the merge queue.
 
-Its rows upload no blob report, as the multiprocess job's do not: the merge job joins the
-shard and alone legs, and this job's own conclusion is what the caller's `dispatch-browser`
-job reads. It is in the merge job's `needs` and in that job's name filter, where it gets a
-null leg and is passed over by reading one, exactly as multiprocess is.
+Its rows reach the merged report, as the two-process job's do: the browser step's body is
+.github/scripts/dispatch-browser-host-suite.sh, given the leg `embedder` and
+`bun run e2e:embedder`, so the run writes a blob report and its row count, and the upload after
+it hands both to the merge job
+(.github/ci-notes/dispatch-browser.md#why-the-embedder-jobs-blob-upload-is-always).
+.github/scripts/dispatch-browser-run-reads.sh gives this job that one leg, on both lanes, so
+reading one owes it a blob in every run, and a row of it that failed and passed on its retry
+is counted in reading two's flake rate and named there. Before that upload no row of this job
+reached the merged report: in runs 44854372892, 44858725999, 44854495163 and 44854499318 the
+second row of e2e/search-tiers.e2e.ts failed its first attempt and passed its retry, this job's
+log said 1 flaky, and the merge job's flake rate could count none of it. This job's own
+conclusion is still what the caller's `dispatch-browser` job reads, and the verdict step is not
+given it; a failed row of it fails that step through the merged report as any other leg's does.
 
 No budget measured on this file's own runs yet, so the embedder job's two step budgets are derived from the
 multiprocess job's measured steps, which are the same steps on the same machine: its install
@@ -901,7 +959,12 @@ their own, as this file's head requires. Its Postgres then moved from a `service
 container to the harness's own, for the reason .github/ci-notes/dispatch-browser.md#what-the-two-process-job-runs gives, which
 added that job's two steps for it at that job's figures: the pull at 120 s and the
 connections read at its two-minute floor. 4 + 4 + 2 min plus 135 s and 120 s = 14 min 15 s
--> 15 min.
+-> 15 min. The blob upload and the traces upload then became steps of every run, which the
+135 s does not hold, and neither carries a budget, so each counts at the shard job's measured
+maximum for the same upload (the table of
+.github/ci-notes/dispatch-browser.md#the-shard-jobs-shell-rule-its-measured-steps-and-its-budget):
+3 s and 4 s. 4 + 4 + 2 min plus 135 s, 120 s and 3 + 4 s = 14 min 22 s -> 15 min, the budget
+unchanged.
 
 ## Why the embedder job builds contracts
 
@@ -916,6 +979,23 @@ run-server.sh builds it too, inside the harness's boot wait; built here, the ser
 finds it current and starts in seconds. The name carries the lane because
 .github/scripts/check-ci-filters.sh names a step of this workflow by its own name, and
 the multiprocess job has a step that builds the same binary.
+
+## Why the embedder job's blob upload is always
+
+This leg's part of the run's report, as `dispatch-browser-blob-embedder-${{ github.run_attempt }}`:
+its blob report and its row count, from the one directory the browser step writes them into,
+$RUNNER_TEMP/leg-report/embedder. Always, not on failure alone, for the reason the shard job's
+upload of this name gives: the merge job reads every leg's blob, and a leg whose blob is missing
+fails it by name. A flaky row leaves this job green, and its blob is the only place the merge
+job can read it from.
+
+## Why the embedder job uploads the failed rows' traces always
+
+Always, for the reason the shard job's upload of the traces gives: the chromium project retries
+a failed row once on CI, so a row that fails and passes on its retry leaves this job green and
+is named by the merge job's flake reading, and `if: failure()`, which this upload stood on
+before, kept no trace of the attempt that failed. `if-no-files-found: ignore`, since a green
+run with no failed attempt leaves no trace to upload.
 
 ## The visual review, its docker run and its budgets
 
@@ -945,11 +1025,13 @@ is exported on the command line rather than set in an `env:`, which keeps it to 
 shape as the shard job's browser step.
 The browser step's body, those exports included, is .github/scripts/dispatch-browser-visual-suite.sh.
 
-It writes no blob report. The merge job's row accounting reads legs out of the job names with
-a capture that knows `shard (N)` and `alone (P)` alone, and it fails the run when the merged
-report holds rows no leg printed; the multiprocess job writes none for the same reason. This
-job joins `merge`'s `needs:` and the verdict step's pair list instead, which is what makes a
-red visual job fail the workflow.
+It writes no blob report, and needs none for its flaky rows: both its projects set
+`retries: 0` (e2e/playwright.config.ts says why), so no row of it is ever retried or reported
+flaky, and a comparison that fails fails this job. The merge job's row accounting gives a job
+legs by its name (.github/scripts/dispatch-browser-run-reads.sh), and gives this one none, so
+reading one owes it no blob and the merged report holds no row of it. This job joins `merge`'s
+`needs:` and the verdict step's pair list instead, which is what makes a red visual job fail
+the workflow.
 
 The visual job's budgets, its `timeout-minutes` and its browser step's, are measured, from these runs of this job, in seconds. Later runs do not
 make this list stale: it names what the numbers were derived from, and a run that outran a
@@ -1185,10 +1267,15 @@ The step's body is .github/scripts/dispatch-browser-reading-quarantined-rows.sh.
 
 ## What the merge job reports, and why it is never skipped
 
-What the legs together ran. It joins every shard's and every alone leg's blob report into one
-report, publishes four readings of it - the rows, the flake rate, the legs that did not
-succeed and the row durations - and is the one job of this workflow that reports ci-ok, so a run gets one verdict
-and not seven.
+What the legs together ran. It joins every leg's blob report into one report - each shard's,
+each alone leg's, the embedder job's and the two-process job's two runs' - publishes four
+readings of it - the rows, the flake rate, the legs that did not succeed and the row
+durations - and is the one job of this workflow that reports ci-ok, so a run gets one verdict
+and not seven. A leg is one Playwright run that uploads a blob report; which legs a job runs is
+read from its name by .github/scripts/dispatch-browser-run-reads.sh, whose head lists them.
+The pull-request lane owes the four shards and the embedder; the full lane owes those, the
+three alone legs and the two-process job's two. The visual job runs no leg, for the reason
+.github/ci-notes/dispatch-browser.md#the-visual-review-its-docker-run-and-its-budgets gives.
 
 This job must never be skipped: .github/scripts/ci-ok.sh fails a selected job whose result is
 `skipped`, and a shard leg that failed would otherwise skip it and take ci-ok with it. It
@@ -1314,6 +1401,16 @@ per leg. The three output paths are exported here rather than in an `env:` block
 the reason the shard job's head gives.
 The step's body, those exports included, is .github/scripts/dispatch-browser-merge-reports.sh.
 
+The merge names a config of its own, `-c e2e/merge-reports.config.ts`. The shard and alone
+legs record their rows' paths under the container's checkout and the embedder and two-process
+legs under the runner's, and `merge-reports` refuses blobs of two test directories unless a
+config names the one it reads them all against; given one, each row is named by its file under
+the suite's own directory, whichever machine ran it. Driven with Playwright 1.64.1 over two
+blobs of two directories, the merge without the config printed "Blob reports being merged were
+recorded with different test directories" and wrote no JSON report, and with it wrote one
+holding both blobs' rows, a flaky row counted flaky. The file's head says why it is not the
+suite's own config.
+
 ## Why each reading goes to the step summary and to the log
 
 Reading one. Each reading is written to the step summary, for a person, and printed as a
@@ -1339,7 +1436,10 @@ The step's body is .github/scripts/dispatch-browser-reading-flake-rate.sh.
 
 Reading three. A leg that ended red with no failed row in the report died outside the
 suite - a budget, a runner fault, a step before the browser step - and that is a different
-fault from a failing row, so it is named apart.
+fault from a failing row, so it is named apart. A job is read with every leg it runs: the
+two-process job's two runs are merged together for it, so a job whose one run failed a row
+and whose other passed is named with that row, and a leg of it that uploaded nothing is named
+beside what the others hold.
 
 ## What reading four measures, and which rows it reads
 

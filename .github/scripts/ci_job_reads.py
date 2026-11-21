@@ -3114,6 +3114,10 @@ GATES = [
         (".github/scripts/dispatch-browser-alone-record.sh",
          f"{at_browser(BROWSER_RECORD_STEP, BROWSER_ALONE)} runs it to print and collect the "
          "stack's own logs, there being no file store on that machine"),
+        (".github/scripts/dispatch-browser-host-suite.sh",
+         f"{at_browser(BROWSER_EMBEDDER_SPECS, BROWSER_EMBEDDER)}, "
+         f"{at_browser(BROWSER_MP_SPECS, BROWSER_MP)} and {at_browser(BROWSER_MP_SIGNIN, BROWSER_MP)} "
+         "run it for the blob report and the row count of each of those runs on the runner"),
         (".github/scripts/dispatch-browser-visual-suite.sh",
          f"{at_browser(BROWSER_VISUAL_SPECS, BROWSER_VISUAL)} runs it for the stack and the "
          "e2e/visual-run.sh the comparison against the baselines needs"),

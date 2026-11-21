@@ -8,13 +8,8 @@
 // specs need no daemon to be reachable.
 import { type Refusal, routePath } from "../web/src/api/paths";
 import { baseUrl, userHeaders } from "./api";
-import {
-  legionDaemonsHeld,
-  removeLegionDaemon,
-  seedLegionDaemon,
-  seedLegionProject,
-} from "./legion-seed";
-import { expect, rowKey, test } from "./test";
+import { removeLegionDaemon, seedLegionDaemon, seedLegionProject } from "./legion-seed";
+import { emptyDatabase, expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 const DAEMON_URL = "http://legion.acme.internal:9731";
@@ -64,10 +59,15 @@ test("the Settings page refuses a state URL that is not a daemon's, and its Remo
   browser,
 }) => {
   const acme = rowKey("ACME");
-  // The daemons the stack names before this row adds its own, which the section lists again
-  // once its Remove has taken the row's away (`legionDaemonsHeld`).
-  const held = await legionDaemonsHeld();
+  // The claim after the Remove is a section that lists no daemon and says so, which only an
+  // empty stack holds: the section lists every project's daemon of the stack, so no key of this
+  // row's makes a list of its own, and a daemon another row left would stand in it. It empties
+  // through `emptyDatabase`, which counts the database as the worker's, so the datasets the
+  // worker keeps are written again for the rows after this one.
+  await emptyDatabase();
   await seedLegionDaemon(acme, DAEMON_URL);
+  // Signed in after the emptying, as e2e/issue.e2e.ts's row is: the emptying deletes every
+  // session a sign-in wrote but the ones it writes again for alice and bob (e2e/users.ts).
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   const bad = `${DAEMON_URL}/legion/v1/state`;
@@ -110,8 +110,7 @@ test("the Settings page refuses a state URL that is not a daemon's, and its Remo
     // The refusal changed nothing: the project still reads the daemon it did.
     await expect(daemon).toContainText(DAEMON_URL);
 
-    // Remove stops the reading, and the section lists no daemon but the ones it listed before
-    // this row named its own: none, where the stack named none.
+    // Remove stops the reading, and the section lists no daemon and says so.
     const removed = page.waitForResponse(
       (response) =>
         response.request().method() === "DELETE" &&
@@ -119,16 +118,8 @@ test("the Settings page refuses a state URL that is not a daemon's, and its Remo
     );
     await page.getByRole("button", { name: `Remove the Legion daemon of ${acme}` }).click();
     expect((await removed).status()).toBeLessThan(300);
-    await expect
-      .poll(() =>
-        section
-          .locator("[data-legion-daemon]")
-          .evaluateAll((rows) => rows.map((row) => row.getAttribute("data-legion-daemon")))
-      )
-      .toEqual(held);
-    await expect(section.locator("[data-legion-daemons-empty]")).toHaveCount(
-      held.length === 0 ? 1 : 0
-    );
+    await expect(section.locator("[data-legion-daemon]")).toHaveCount(0);
+    await expect(section.locator("[data-legion-daemons-empty]")).toHaveCount(1);
   } finally {
     await context.close();
     await removeLegionDaemon(acme);

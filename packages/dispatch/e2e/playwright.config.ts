@@ -266,23 +266,19 @@ const actionTimeout = 45_000;
 // Two-process mode's one project: the multiprocess specs, in Chromium, the sign-in spec alone under
 // DISPATCH_E2E_SIGNIN=oidc and every other one without it.
 //
-// `retries: 0`, against the one retry the run takes on CI, and for a reason of its own: the
-// `-alone` projects below also set it, but their argument is about the wall clock and does not
-// reach here. This project's argument is that nothing publishes its flaky rows. The job that
-// runs it (.github/workflows/dispatch-browser.yaml's multiprocess job) writes no blob report,
-// and the merge job that reports the run's flake rate reads the shard and alone legs' blobs
-// alone, so a row that failed and passed on a retry here would appear in no rate and no list.
-// Its test-results upload is `if: failure()`, so a retried row would leave no trace either. With
-// no retry the job stays what it has always been: a failed row fails it, the upload runs, and
-// the trace of that one attempt is kept (`trace: 'retain-on-first-failure'` below). A blob leg
-// for this job would end the argument, and there is none.
+// It takes the run's own retries, one on CI, as the shard legs' rows do. It set `retries: 0` while
+// nothing published its flaky rows: the job that runs it wrote no blob report, so a row that failed
+// and passed on a retry here would have appeared in no rate and no list. Each of that job's two runs
+// now writes one (.github/scripts/dispatch-browser-host-suite.sh), which the merge job joins into
+// the run's report, so a row retried here is counted and named in the flake rate like a shard row,
+// and the job uploads its rows' traces on a green run too, the trace of the attempt that failed
+// among them (`trace: 'retain-on-first-failure'` below).
 const multiprocessProjects = [
   {
     name: "chromium",
     testMatch: harnessSignIn === "oidc" ? signInSpecs : multiprocessSpecs,
     testIgnore: harnessSignIn === "oidc" ? undefined : signInSpecs,
     use: { ...devices["Desktop Chrome"] },
-    retries: 0,
   },
 ];
 
@@ -722,18 +718,19 @@ export default defineConfig({
   // `flaky` rather than failed, which is what the merged report of the dispatch-browser lane
   // publishes its flake rate from. Locally a retry would hide a failure the developer is looking
   // at, and `bun run e2e` is read as pass or fail. This is the value of every project that sets
-  // none of its own: the three `-alone` projects, the two `visual` ones, the two stubbed ones
-  // and the multiprocess one each set `retries: 0`, each for a reason its own comment gives.
+  // none of its own, the multiprocess one among them: the three `-alone` projects, the two
+  // `visual` ones and the two stubbed ones each set `retries: 0`, each for a reason its own
+  // comment gives.
   retries: process.env.CI ? 1 : 0,
   // `failure-reporter.ts` writes nothing and prints nothing, and is the one way `globalTeardown`
   // learns how this run's rows ended, which is what decides whether its stack logs are kept
   // (e2e/run-outcome.ts says why no other way reaches it). It is in every run that takes this
   // list - and a `--reporter` on the command line REPLACES this list rather than adding to it,
   // which is why a run given one keeps its logs whatever it did, and why
-  // .github/scripts/dispatch-browser-shard-suite.sh and dispatch-browser-alone-suite.sh name
-  // this file in theirs. With E2E_MEASURE_FILE set, the timing fixture's reporter writes one
-  // row per test beside the list reporter's own output (e2e/measure-reporter.ts); without it
-  // the run is untouched.
+  // .github/scripts/dispatch-browser-shard-suite.sh, dispatch-browser-alone-suite.sh and
+  // dispatch-browser-host-suite.sh name this file in theirs. With E2E_MEASURE_FILE set, the
+  // timing fixture's reporter writes one row per test beside the list reporter's own output
+  // (e2e/measure-reporter.ts); without it the run is untouched.
   reporter: [
     ["list"],
     [fileURLToPath(new URL("./failure-reporter.ts", import.meta.url))],

@@ -43,7 +43,9 @@ rows=$(jq -r 'def rows($path):
 } >> "$GITHUB_STEP_SUMMARY"
 echo "::notice title=dispatch-browser flake rate::$flaky flaky rows of $total, $rate per cent"
 # One line per flaky row, so a log reader gets what the summary got. A row's trace is in
-# its leg's dispatch-browser-test-results artifact, which is uploaded on a green run too.
+# its job's test-results artifact - dispatch-browser-test-results-<shard or alone leg>-<attempt>,
+# dispatch-browser-embedder-test-results-<attempt> or
+# dispatch-browser-multiprocess-test-results-<attempt> - which is uploaded on a green run too.
 [ -z "$rows" ] || echo "$rows" | while IFS= read -r row; do
   echo "::notice title=dispatch-browser flaky row::$row"
 done

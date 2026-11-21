@@ -25,7 +25,7 @@ import {
   patchPriority,
 } from "./api";
 import { sql } from "./psql";
-import { test as base, expect, type Locator, type Page, rowKey } from "./test";
+import { test as base, emptyDatabase, expect, type Locator, type Page, rowKey } from "./test";
 import { asUser } from "./users";
 
 /** This file's `test`: e2e/test.ts's, with the priorities a row wrote taken out again when it
@@ -34,11 +34,14 @@ import { asUser } from "./users";
  *  priority a row ended still stands as a node (`endPriority`), so each row deletes the records it
  *  wrote, as the reset does (`priority_nodes` and `priority_tuples`, which no foreign key
  *  reaches): every node the stack holds at the row's end that it did not hold at its start, and
- *  every tuple written after the newest one at its start. Rows of one worker run one at a time on
- *  that worker's own stack, so what the end holds beyond the start is this row's, and the next
- *  row's order starts where this one's did. Each priority's title also carries the row's own key
- *  (`rowKey`, e2e/test.ts), so its id, which the server derives from the title and refuses a
- *  second time (`PRIORITY_EXISTS`), is the row's own too. */
+ *  every tuple written after the newest one at its start or written of a node it deletes. The
+ *  second half is for a row that empties the database itself (`emptyDatabase`): the emptying
+ *  starts the tuples' `seq` again from 1, under the newest one at the row's start, so that row's
+ *  tuples are found by their node rather than by their place in the log. Rows of one worker run
+ *  one at a time on that worker's own stack, so what the end holds beyond the start is this
+ *  row's, and the next row's order starts where this one's did. Each priority's title also
+ *  carries the row's own key (`rowKey`, e2e/test.ts), so its id, which the server derives from
+ *  the title and refuses a second time (`PRIORITY_EXISTS`), is the row's own too. */
 const test = base.extend<{ ownPriorities: undefined }>({
   ownPriorities: [
     async ({ freshFakes: _resetFirst }, use) => {
@@ -48,11 +51,15 @@ const test = base.extend<{ ownPriorities: undefined }>({
       await use(undefined);
       await sql(`WITH held AS (
   SELECT $held$${held}$held$::jsonb AS rows
-), tuples AS (
-  DELETE FROM priority_tuples WHERE seq > (SELECT (rows ->> 'seq')::bigint FROM held)
+), gone AS (
+  DELETE FROM priority_nodes
+  WHERE kind || ':' || id NOT IN (SELECT jsonb_array_elements_text(rows -> 'nodes') FROM held)
+  RETURNING kind, id
 )
-DELETE FROM priority_nodes
-WHERE kind || ':' || id NOT IN (SELECT jsonb_array_elements_text(rows -> 'nodes') FROM held)`);
+DELETE FROM priority_tuples
+WHERE seq > (SELECT (rows ->> 'seq')::bigint FROM held)
+  OR (from_kind, from_id) IN (SELECT kind, id FROM gone)
+  OR (to_kind, to_id) IN (SELECT kind, id FROM gone)`);
     },
     { auto: true },
   ],
@@ -512,11 +519,14 @@ test("the priorities page draws the order first and the two fault lists under it
 test("with no priority the page reads the server's sentence, and writes the first one", async ({
   browser,
 }) => {
-  // No seed. Every row of this file takes its own priorities out again (`ownPriorities`), so what
-  // stands at the row's start is what no row of it wrote (`heldBefore`): nothing over an emptied
-  // database, which is the deployment this row is about, and the review corpus's priority where
-  // the worker seeded it (`reviewCorpus`, e2e/test.ts), which is not this row's to take away.
-  const held = await heldBefore();
+  // The claim is an empty stack: a priority belongs to no project, and the order is the whole
+  // stack's (`GET /api/v1/priorities` answers every live priority), so no key of this row's makes
+  // a deployment with none, and whatever another row or the review corpus left would stand here.
+  // It empties through `emptyDatabase`, which counts the database as the worker's, so the
+  // datasets the worker keeps are written again for the rows after this one.
+  await emptyDatabase();
+  // Signed in after the emptying, as e2e/issue.e2e.ts's row is: the emptying deletes every
+  // session a sign-in wrote but the ones it writes again for alice and bob (e2e/users.ts).
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
@@ -525,23 +535,13 @@ test("with no priority the page reads the server's sentence, and writes the firs
     await expect(page.getByRole("heading", { level: 1, name: "Priorities" })).toBeVisible();
 
     // The sentence is the server's own, and no table is drawn where there is nothing to order.
-    // The rail's entry carries no number: nothing is off a list that does not exist. Under a
-    // priority that stands none of that can be read, and the page draws the order the server
-    // holds instead, with no sentence, and the rail counts the two faults.
-    if (held.titles.length === 0) {
-      await expect(page.getByText(NONE_LIVE, { exact: true })).toBeVisible();
-      await expect(page.getByRole("table", { exact: true, name: "Priorities table" })).toHaveCount(
-        0
-      );
-      await expect(railEntry(page).locator("span")).toHaveCount(2);
-    } else {
-      await expectRowOrder(section(page, "Priorities"), orderAfter(held, []));
-      await expect(page.getByText(NONE_LIVE, { exact: true })).toHaveCount(0);
-      await expect(railEntry(page).locator("span").last()).toHaveText(String(held.faults));
-    }
+    // The rail's entry carries no number: nothing is off a list that does not exist.
+    await expect(page.getByText(NONE_LIVE, { exact: true })).toBeVisible();
+    await expect(page.getByRole("table", { exact: true, name: "Priorities table" })).toHaveCount(0);
+    await expect(railEntry(page).locator("span")).toHaveCount(2);
 
     // The page with no priority is where the first is written, with the control the table's
-    // toolbar carries once there is one; the priority takes the place after every one standing.
+    // toolbar carries once there is one; the priority takes the first place.
     const added = `Ship the daemon everywhere (${rowKey("CORE")})`;
     await page.getByRole("button", { exact: true, name: "New priority" }).click();
     await page.getByLabel("Title of the new priority").fill(added);
@@ -549,15 +549,15 @@ test("with no priority the page reads the server's sentence, and writes the firs
       .locator('form[aria-label="New priority"]')
       .getByRole("button", { name: "Add priority" })
       .click();
-    await expectRowOrder(section(page, "Priorities"), orderAfter(held, [added]));
+    await expectRowOrder(section(page, "Priorities"), [`P1 ${added}`]);
     await expect(page.getByText(NONE_LIVE, { exact: true })).toHaveCount(0);
 
     // The store's, not the page's: read back from the server, and from a page loaded again.
     await expect
       .poll(async () => (await listPriorities()).priorities?.map((row) => row.title))
-      .toEqual([...held.titles, added]);
+      .toEqual([added]);
     await page.reload();
-    await expectRowOrder(section(page, "Priorities"), orderAfter(held, [added]));
+    await expectRowOrder(section(page, "Priorities"), [`P1 ${added}`]);
     await expect(page.getByText(NONE_LIVE, { exact: true })).toHaveCount(0);
   } finally {
     await context.close();
@@ -695,10 +695,15 @@ test("a priority row opens its work by status, and four writes survive a reload"
 test("the rail's Priorities count falls as work leaves flight and as a parent link moves", async ({
   browser,
 }) => {
-  // The rail counts both faults over the whole deployment, so its number is the row's own five
-  // on top of what the faults held before the row wrote (`heldBefore`).
-  const held = await heldBefore();
+  // The row's last claim is the rail of a deployment with no priority, and only an empty stack
+  // holds one: a priority belongs to no project, and the order and the two faults the rail counts
+  // are the whole stack's, so no key of this row's makes them its own. It empties through
+  // `emptyDatabase`, which counts the database as the worker's, so the datasets the worker keeps
+  // are written again for the rows after this one. The rail's number is then the row's own five.
+  await emptyDatabase();
   const seed = await seedPriorities();
+  // Signed in after the emptying, as e2e/issue.e2e.ts's row is: the emptying deletes every
+  // session a sign-in wrote but the ones it writes again for alice and bob (e2e/users.ts).
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
@@ -707,36 +712,27 @@ test("the rail's Priorities count falls as work leaves flight and as a parent li
     await page.goto(`/issues/${seed.rollout}`);
     const entry = railEntry(page);
     await expect(entry).toBeVisible();
-    await expect(entry.locator("span").last()).toHaveText(String(held.faults + 5));
+    await expect(entry.locator("span").last()).toHaveText("5");
 
     // Four in flight under no priority plus one parked. An issue that leaves `in_progress` is
     // no longer in flight, so the first fault loses it - with no reload: the event that moved
     // it refreshes the two counts (`web/src/api/event-refresh.ts`).
     await patchIssue(seed.clock, { status: "done" });
-    await expect(entry.locator("span").last()).toHaveText(String(held.faults + 4));
+    await expect(entry.locator("span").last()).toHaveText("4");
 
     // And the child advances P3 only through the issue above it, so moving that link out
     // leaves it parked under nothing, which is no fault at all.
     await patchIssue(seed.child, { parent: null });
-    await expect(entry.locator("span").last()).toHaveText(String(held.faults + 3));
+    await expect(entry.locator("span").last()).toHaveText("3");
 
     // A deployment that has written no priority has nothing off a list that does not exist, so
     // the entry carries no number: its label and its line, and no badge beside them. Ending the
-    // row's three leaves the priorities that stood before it: none over an emptied database,
-    // which is that deployment, and the review corpus's where the worker seeded it, under which
-    // the entry still counts both faults as the server answers them now.
+    // row's three leaves that deployment, whose summary is the server's no-priority sentence.
     for (const id of seed.ids) await endPriority(id);
     await page.reload();
     await expect(railEntry(page)).toBeVisible();
-    const after = await listPriorities({ summary: true });
-    expect(after.empty ?? "").toBe(held.titles.length === 0 ? NONE_LIVE : "");
-    if (held.titles.length === 0) {
-      await expect(railEntry(page).locator("span")).toHaveCount(2);
-    } else {
-      await expect(railEntry(page).locator("span").last()).toHaveText(
-        String(after.work_under_no_priority.count + after.priority_work_parked.count)
-      );
-    }
+    expect((await listPriorities({ summary: true })).empty ?? "").toBe(NONE_LIVE);
+    await expect(railEntry(page).locator("span")).toHaveCount(2);
   } finally {
     await context.close();
   }
