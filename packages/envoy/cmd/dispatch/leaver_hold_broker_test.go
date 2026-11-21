@@ -88,11 +88,14 @@ func TestLeaverHoldRelease(t *testing.T) {
 
 	ageSignInCredential(t, r, ada)
 	r.signInAgain(t, adaEmail)
-	// The broker answered ada held at her enrollment above and keeps that answer 30 seconds. It must
-	// lapse for her sign-in trade below, made at once, to ask Dispatch, which this sign-in released.
-	r.pastBrokerCache(t)
+	// R4: her credentials are served again within 40 seconds of this sign-in: 30 of them the broker
+	// keeping the held answer it read at her enrollment above, 10 Dispatch keeping the broker's
+	// introspection answer. The broker's clock moves by its 30 seconds and no more, so a broker that
+	// keeps that answer longer refuses her sign-in trade below, made at once, and the test fails
+	// there; the wait after the trade gives Dispatch its 10 seconds on the wall clock.
+	r.advanceBrokerClock(t, leaverSpecBrokerCache)
 	r.personSignIn(t, ada)
-	waitForLeaverCredentials(t, r, ada, 40*time.Second)
+	waitForLeaverCredentials(t, r, ada, leaverSpecIntrospection)
 	expectLeaverSnapshot(t, before, snapshotLeaverCredentials(t, r))
 
 	// A 25-hour outage (c-release): Google answers none of ada's refreshes, so Dispatch holds her by

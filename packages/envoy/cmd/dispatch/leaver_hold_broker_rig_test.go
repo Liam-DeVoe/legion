@@ -71,23 +71,42 @@ func withBrokerGate() leaverOption {
 	}
 }
 
+// R4's release bound, in the spec's own numbers: a person's credentials are served again within 40
+// seconds of their sign-in to Dispatch, of which the broker keeps Dispatch's answer about them 30
+// seconds (leaverSpecBrokerCache) and Dispatch keeps the broker's introspection answer the other 10,
+// 5 cached and 5 in flight (leaverSpecIntrospection). They are the spec's, not the code's
+// (projectaccess.CacheTTL), so a test that measures the release by them fails on a broker that keeps
+// its answer longer than the spec allows.
+const (
+	leaverSpecBrokerCache   = 30 * time.Second
+	leaverSpecIntrospection = 10 * time.Second
+)
+
 // brokerNow is the clock the broker's project-access client and hold gate read: the wall clock,
-// ahead by what pastBrokerCache has moved it.
+// ahead by what advanceBrokerClock and pastBrokerCache have moved it.
 func (r *leaverRig) brokerNow() time.Time { return time.Now().Add(time.Duration(r.brokerAhead.Load())) }
+
+// advanceBrokerClock moves the clock of the broker's project-access client and hold gate d ahead,
+// as d passing would. It fails t on a rig built without withBrokerGate, whose broker asks Dispatch
+// nothing.
+func (r *leaverRig) advanceBrokerClock(t *testing.T, d time.Duration) {
+	t.Helper()
+	if r.brokerDispatch == nil {
+		t.Fatal("moving the broker's clock needs a rig built withBrokerGate: its broker asks Dispatch nothing")
+	}
+	r.brokerAhead.Add(int64(d))
+}
 
 // pastBrokerCache moves the clock of the broker's project-access client and hold gate past the
 // 30 seconds the client keeps Dispatch's answer about a person (projectaccess.CacheTTL), so the
 // broker's next check of each person asks Dispatch rather than reading an answer it was given
-// before. A test calls it where the answer the broker keeps predates a hold or a release whose
-// effect it measures at once; a test that measures that cache, as TestLeaverHoldBound does, never
-// calls it and keeps the wall clock. It fails t on a rig built without withBrokerGate, whose broker
-// asks Dispatch nothing.
+// before. A test calls it where the answer the broker keeps predates a hold whose effect it
+// measures at once; a test that measures that cache never calls it: TestLeaverHoldBound keeps the
+// wall clock, and TestLeaverHoldRelease moves the clock by the spec's 30 seconds at a sign-in
+// (advanceBrokerClock, leaverSpecBrokerCache). It fails t on a rig built without withBrokerGate.
 func (r *leaverRig) pastBrokerCache(t *testing.T) {
 	t.Helper()
-	if r.brokerDispatch == nil {
-		t.Fatal("pastBrokerCache needs a rig built withBrokerGate: its broker asks Dispatch nothing")
-	}
-	r.brokerAhead.Add(int64(projectaccess.CacheTTL + time.Second))
+	r.advanceBrokerClock(t, projectaccess.CacheTTL+time.Second)
 }
 
 // withPersonSignIns configures the broker to accept a person's Google trade with the machine's
