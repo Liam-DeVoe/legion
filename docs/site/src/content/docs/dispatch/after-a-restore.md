@@ -336,10 +336,11 @@ one of those addresses waits for it rather than moving a generation between this
 of it and the database's own check, which would refuse the whole statement with 23514. It owes
 again, too, each revocation of a restricted member's machine logins that a removal from an access
 list recorded and Dispatch settled since the same moment (`machine_login_revocations`): a broker
-restored from before it holds those logins live again, and their refresh works. The statement
-keeps each row's `recorded_at`, so the pass again revokes only the logins the member approved
-before that removal, and a login they approved after being put back on a list survives it; its
-write of `generation` wakes the loop, as a removal's does:
+restored from before it holds those logins live again, and their refresh works. The pass again
+revokes every machine login the member holds, one approved since that removal included, and until
+it has, their approve is `409 MACHINE_LOGIN_REVOCATION_OWED`; they approve a new login after it.
+The statement keeps each row's `recorded_at`, the age the debt's gauge reads, and its write of
+`generation` wakes the loop, as a removal's does:
 
 ```sh
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v backup='<the moment the broker''s backup was taken>' <<'SQL'

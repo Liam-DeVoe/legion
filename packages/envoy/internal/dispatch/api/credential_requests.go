@@ -291,6 +291,8 @@ func (s *server) listCredentialPending(w http.ResponseWriter, r *http.Request) {
 // the broker refuses it once a revocation of a replacement after that read reaches it first,
 // whatever account it names: a sign-in that commits between this check and the relay records its
 // revocation at a greater generation. A deny mints nothing and names no account.
+//
+// A restricted member's approve is relayed holding their approval lock (relayMachineLoginApproval).
 func (s *server) approveCredentialRecord(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -308,6 +310,10 @@ func (s *server) approveCredentialRecord(w http.ResponseWriter, r *http.Request)
 	if !s.restrictedDecisionAllowed(w, r, client, actor, decision.Code) {
 		return
 	}
+	restricted, ok := s.restrictedCaller(w, r)
+	if !ok {
+		return
+	}
 	account, generation, err := s.approverStanding(r, actor)
 	if err != nil {
 		s.writeAuthenticationError(w, err)
@@ -320,7 +326,40 @@ func (s *server) approveCredentialRecord(w http.ResponseWriter, r *http.Request)
 		}
 	}
 	decision.ApproverSessionGeneration = &generation
+	if restricted {
+		s.relayMachineLoginApproval(w, r, client, model.CanonicalLogin(actor.ID), decision)
+		return
+	}
 	body, err := client.Approve(r.Context(), r.PathValue("id"), decision)
+	relayBrokerResponse(w, body, err)
+}
+
+// relayMachineLoginApproval relays a restricted member's approve of their own machine login while
+// holding their approval lock shared (store.HoldMachineLoginApprovals), in a transaction it keeps
+// open until the broker has answered, so a removal that records a revocation of their machine logins
+// waits for it and the pass lists the login it mints. While a revocation is owed it relays nothing:
+// 409 MACHINE_LOGIN_REVOCATION_OWED, for the person to approve again once the pass has revoked their
+// earlier logins, a few seconds after a removal commits. A read that fails is 503.
+func (s *server) relayMachineLoginApproval(w http.ResponseWriter, r *http.Request, client *agentsecrets.Client, person string, decision agentsecrets.Decision) {
+	ctx := r.Context()
+	tx, err := s.deps.Store.Pool.Begin(ctx)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	owed, err := store.HoldMachineLoginApprovals(ctx, tx, person)
+	if err != nil {
+		writeError(w, "MACHINE_LOGIN_APPROVALS_UNREAD", http.StatusServiceUnavailable,
+			"whether a revocation of this person's machine logins is owed could not be read, so the approval was not relayed; try again in a minute")
+		return
+	}
+	if owed {
+		writeError(w, "MACHINE_LOGIN_REVOCATION_OWED", http.StatusConflict,
+			"this person's machine logins are being revoked after a removal from an access list; approve again once that is done, in a few seconds")
+		return
+	}
+	body, err := client.Approve(ctx, r.PathValue("id"), decision)
 	relayBrokerResponse(w, body, err)
 }
 

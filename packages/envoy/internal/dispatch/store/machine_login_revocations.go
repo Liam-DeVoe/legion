@@ -12,8 +12,16 @@ import (
 // MachineLoginRevocations is the revocations of restricted members' machine logins Dispatch owes
 // the secrets broker (migration 20261120150130): a removal from an access list records one in its
 // own transaction (RecordMachineLoginRevocation), and the server's revocation loop claims it, pays it
-// by revoking the machine logins the member approved for their own machines before the removal, and
-// settles it once the broker confirms every revoke.
+// by revoking every machine login the member approved for their own machines, and settles it once
+// the broker confirms every revoke.
+//
+// Dispatch's database orders the approvals of a restricted member's machine logins against these
+// records, so the pass compares no clock: an approval Dispatch relays holds the person's approval
+// lock shared from its check that nothing is owed until the broker answers it
+// (HoldMachineLoginApprovals), and a record takes the same lock exclusive first, so it waits for
+// every approval in flight and is ordered after it. While one is owed, Dispatch relays no approval
+// of the person's, so every machine login of theirs the broker lists when the pass runs was approved
+// before the record, and the pass revokes them all.
 type MachineLoginRevocations struct {
 	pool *Pool
 }
@@ -25,19 +33,27 @@ func NewMachineLoginRevocations(pool *Pool) *MachineLoginRevocations {
 
 // OwedMachineLoginRevocation is one revocation owed: the address, as people.email holds it, the
 // generation of it a claim read, which a settlement names, and when the removal that owes it was
-// recorded, on the database's clock: the pass ends only the logins the person approved before then,
-// so a login approved after the person was put back on a list survives it.
+// recorded, on the database's clock.
 type OwedMachineLoginRevocation struct {
 	Email      string
 	Generation int64
 	RecordedAt time.Time
 }
 
+// machineLoginApprovalsLockSQL is the person's approval lock: $1 the address, as people.email holds
+// it; %s is pg_advisory_xact_lock or pg_advisory_xact_lock_shared.
+const machineLoginApprovalsLockSQL = `select %s(hashtextextended('machine_login_approvals:' || lower(btrim($1)), 0))`
+
 // RecordMachineLoginRevocation records in tx that Dispatch owes the broker the revocation of every
 // machine login email approved: owed anew, under the next generation, when one is owed or paid
-// already, so a pass that read an earlier one never settles this one. Its commit wakes the
+// already, so a pass that read an earlier one never settles this one. It takes the person's approval
+// lock exclusive first, so it waits for every approval of theirs in flight
+// (HoldMachineLoginApprovals) and the login it mints is one the pass lists. Its commit wakes the
 // revocation loop (machine_login_revocations_notify).
 func RecordMachineLoginRevocation(ctx context.Context, tx pgx.Tx, email string) error {
+	if _, err := tx.Exec(ctx, fmt.Sprintf(machineLoginApprovalsLockSQL, "pg_advisory_xact_lock"), email); err != nil {
+		return fmt.Errorf("wait for the machine-login approvals of %s in flight: %w", email, err)
+	}
 	if _, err := tx.Exec(ctx, `
 		insert into machine_login_revocations (email) values (lower(btrim($1)))
 		on conflict (email) do update
@@ -46,6 +62,24 @@ func RecordMachineLoginRevocation(ctx context.Context, tx pgx.Tx, email string) 
 		return fmt.Errorf("record the revocation of %s's machine logins: %w", email, err)
 	}
 	return nil
+}
+
+// HoldMachineLoginApprovals takes, for the rest of tx, the person email's approval lock shared, and
+// reports whether a revocation of their machine logins is owed. An approval of theirs holds tx open
+// until the broker has answered it, and is relayed only when nothing is owed: a removal that records
+// a revocation meanwhile waits for it (RecordMachineLoginRevocation), so the login the approval mints
+// is listed when the pass runs, and once one is owed no approval is relayed until the pass settles
+// it.
+func HoldMachineLoginApprovals(ctx context.Context, tx pgx.Tx, email string) (owed bool, err error) {
+	if _, err := tx.Exec(ctx, fmt.Sprintf(machineLoginApprovalsLockSQL, "pg_advisory_xact_lock_shared"), email); err != nil {
+		return false, fmt.Errorf("hold the machine-login approvals of %s: %w", email, err)
+	}
+	if err := tx.QueryRow(ctx, `
+		select exists (select 1 from machine_login_revocations where email = lower(btrim($1)) and done_at is null)
+	`, email).Scan(&owed); err != nil {
+		return false, fmt.Errorf("read whether the revocation of %s's machine logins is owed: %w", email, err)
+	}
+	return owed, nil
 }
 
 // Claim takes up to limit owed revocations no pass claimed within retry, those never tried first,
