@@ -1080,22 +1080,25 @@ func (r *statesProof) noImplementerTask(issue *statesIssue) {
 func (r *statesProof) resultsHeld(issue *statesIssue) {
 	r.t.Helper()
 	var held []string
+	var rows []statesStored
 	for _, table := range []string{"check_results", "ci_check_results"} {
 		for _, stored := range r.storedResults(table, "issue_key = $1", issue.key) {
 			held = append(held, statesRecordedAs(stored.role, stored.check, stored.verdict, stored.commit))
+			rows = append(rows, stored)
 		}
 	}
 	want := slices.Clone(issue.recorded)
 	slices.Sort(held)
 	slices.Sort(want)
 	if !slices.Equal(held, want) {
-		r.fail("results", "Dispatch's check_results and ci_check_results hold %q of %s, and the case recorded %q", held, issue.key, want)
+		r.fail("results", "Dispatch's check_results and ci_check_results hold %d results of %s, %v, and the case recorded %d, %q",
+			len(rows), issue.key, rows, len(want), want)
 	}
 	if len(held) == 0 {
 		r.note("read back: Dispatch's check_results and ci_check_results hold no result of %s, and the case recorded none", issue.key)
 		return
 	}
-	r.note("read back: Dispatch's check_results and ci_check_results hold of %s exactly the %d results the case recorded: %s", issue.key, len(held), strings.Join(held, "; "))
+	r.note("read back: Dispatch's check_results and ci_check_results hold of %s exactly the results the case recorded (%d): %s", issue.key, len(held), strings.Join(held, "; "))
 }
 
 // noBeforeMergeCheck reads issue's checks as Dispatch answers them (GET /api/v1/issues/<key>/results)
