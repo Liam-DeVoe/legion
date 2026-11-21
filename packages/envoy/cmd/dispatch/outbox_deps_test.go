@@ -133,10 +133,18 @@ func (r *outboxRig) claim(t *testing.T, project, role, holder string) {
 	}
 }
 
-// register writes holder's session record, registered now, its token listing projects.
+// register writes holder's session record, registered now, a full member's whose token lists
+// projects.
 func (r *outboxRig) register(t *testing.T, holder string, projects ...string) {
 	t.Helper()
-	record, err := json.Marshal(session.SessionEntry{UpdatedAt: time.Now().UnixMilli(), Projects: append([]string{}, projects...)})
+	r.registerAs(t, holder, false, projects...)
+}
+
+// registerAs writes holder's session record, registered now, its token listing projects and its
+// person restricted or a full member.
+func (r *outboxRig) registerAs(t *testing.T, holder string, restricted bool, projects ...string) {
+	t.Helper()
+	record, err := json.Marshal(session.SessionEntry{UpdatedAt: time.Now().UnixMilli(), Projects: append([]string{}, projects...), Restricted: &restricted})
 	if err != nil {
 		t.Fatalf("encode %s's record: %v", holder, err)
 	}
@@ -198,23 +206,24 @@ func fallbackRows(ctx context.Context, claims roles.ClaimStore, sessions roles.S
 
 // requiredRows are the rows of the required mode, each a holder whose token does not see the
 // event's project: the outbox publishes no copy to it and keeps the event as for a role nobody
-// holds. A holder of planner under no project whose token lists PRIV alone, for an event of PUB;
-// a stale claim of tester under PUB by a session whose token lists another project, made in the
-// all-public mode; and a claim of auditor under PRIV by S, whose token lists no project, made while
-// PRIV was public and held across PRIV's switch to private. Each returns what it found wrong.
+// holds. A restricted member's holder of planner under no project whose token lists PRIV alone,
+// for an event of PUB; a stale claim of tester under PUB by a restricted member's session whose
+// token lists another project, made in the all-public mode; and a claim of auditor under PRIV by
+// S, a full member's session whose token lists no project, made while PRIV was public and held
+// across PRIV's switch to private. Each returns what it found wrong.
 func requiredRows(t *testing.T, rig *outboxRig, claims roles.ClaimStore, sessions roles.SessionLookup) []string {
 	t.Helper()
 	ctx := t.Context()
 	var wrong []string
 	if resolved, err := roles.ResolveHolder(ctx, claims, sessions, "PUB", "planner"); err != nil || resolved.State != roles.Unclaimed {
-		wrong = append(wrong, fmt.Sprintf("an event of PUB routed to planner resolved holder %q (state %v), err %v; want no holder: %s's token lists PRIV alone", resolved.Holder, resolved.State, err, sessionPRIVOnly))
+		wrong = append(wrong, fmt.Sprintf("an event of PUB routed to planner resolved holder %q (state %v), err %v; want no holder: %s is a restricted member whose token lists PRIV alone", resolved.Holder, resolved.State, err, sessionPRIVOnly))
 	}
 	if resolved, err := roles.ResolveHolder(ctx, claims, sessions, "PUB", "tester"); err != nil || resolved.State != roles.Unclaimed {
-		wrong = append(wrong, fmt.Sprintf("an event of PUB routed to tester resolved holder %q (state %v), err %v; want no holder: %s's token lists another project than PUB", resolved.Holder, resolved.State, err, sessionOther))
+		wrong = append(wrong, fmt.Sprintf("an event of PUB routed to tester resolved holder %q (state %v), err %v; want no holder: %s is a restricted member whose token lists another project than PUB", resolved.Holder, resolved.State, err, sessionOther))
 	}
 	rig.setVisibility(t, "PRIV", "public")
 	if resolved, err := roles.ResolveHolder(ctx, claims, sessions, "PRIV", "auditor"); err != nil || resolved.Holder != sessionS {
-		t.Fatalf("while PRIV is public an event of PRIV routed to auditor resolved holder %q (state %v), err %v; want %s, whose token lists no project", resolved.Holder, resolved.State, err, sessionS)
+		t.Fatalf("while PRIV is public an event of PRIV routed to auditor resolved holder %q (state %v), err %v; want %s, a full member's session", resolved.Holder, resolved.State, err, sessionS)
 	}
 	rig.setVisibility(t, "PRIV", "private")
 	if resolved, err := roles.ResolveHolder(ctx, claims, sessions, "PRIV", "auditor"); err != nil || resolved.State != roles.Unclaimed {
@@ -268,9 +277,9 @@ func TestTheOutboxWithholdsAPrivateProjectsRoleFromTheNoProjectHolder(t *testing
 
 	t.Run("required mode reads the holder", func(t *testing.T) {
 		rig.claim(t, contracts.NoProject, "planner", sessionPRIVOnly)
-		rig.register(t, sessionPRIVOnly, "PRIV")
+		rig.registerAs(t, sessionPRIVOnly, true, "PRIV")
 		rig.claim(t, "PUB", "tester", sessionOther)
-		rig.register(t, sessionOther, "OPS")
+		rig.registerAs(t, sessionOther, true, "OPS")
 		rig.claim(t, "PRIV", "auditor", sessionS)
 		claims, sessions := rig.deps(t, map[string]string{"DISPATCH_PROJECT_PRIVACY_REQUIRED": "true"}, rig.database.Pool)
 		for _, wrong := range requiredRows(t, rig, claims, sessions) {
@@ -284,6 +293,23 @@ func TestTheOutboxWithholdsAPrivateProjectsRoleFromTheNoProjectHolder(t *testing
 			if !strings.Contains(wrong, "resolved holder \""+holder+"\"") {
 				t.Errorf("control: with the holder unread the rows found %q, want them to name %s", wrong, holder)
 			}
+		}
+		// The member rule: the same planner holder as a full member's session listing PRIV is
+		// taken for PUB's event, which a fresh read says is public; and a holder record with no
+		// restricted claim (an earlier build's) is not, as a restricted member's.
+		rig.register(t, sessionPRIVOnly, "PRIV")
+		if resolved, err := roles.ResolveHolder(t.Context(), claims, sessions, "PUB", "planner"); err != nil || resolved.Holder != sessionPRIVOnly {
+			t.Errorf("a full member's session listing PRIV, holding planner, resolved PUB's event to %q (state %v), err %v; want it taken", resolved.Holder, resolved.State, err)
+		}
+		record, err := json.Marshal(session.SessionEntry{UpdatedAt: time.Now().UnixMilli(), Projects: []string{"PRIV"}})
+		if err != nil {
+			t.Fatalf("encode an earlier build's record: %v", err)
+		}
+		if _, err := rig.sessions.Put(sessionPRIVOnly, record); err != nil {
+			t.Fatalf("store an earlier build's record: %v", err)
+		}
+		if resolved, err := roles.ResolveHolder(t.Context(), claims, sessions, "PUB", "planner"); err != nil || resolved.State != roles.Unclaimed {
+			t.Errorf("a record without the restricted claim, listing PRIV, resolved PUB's event to %q (state %v), err %v; want no holder", resolved.Holder, resolved.State, err)
 		}
 	})
 }

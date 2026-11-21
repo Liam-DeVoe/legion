@@ -256,9 +256,10 @@ type SessionInfo struct {
 	UpdatedAt      int64    `json:"updated_at"`
 	LastSeen       int64    `json:"last_seen"`
 	// Projects is the projects the token that made the session's registration lists
-	// (session.SessionEntry.Projects, K6), sorted, the empty list and never null for a
-	// registration whose token listed none or presented no broker token.
-	Projects []string `json:"projects"`
+	// (session.SessionEntry.Projects, K6), sorted, the empty list for a registration whose token
+	// listed none or presented no broker token. A listener in the required privacy mode answers it;
+	// one in the all-public mode leaves it out, so its answers are as before the field existed.
+	Projects *[]string `json:"projects,omitempty"`
 	// The plugin the session registered through and its build; absent for a session whose plugin
 	// predates the fields.
 	Plugin        string `json:"plugin,omitempty"`
@@ -430,8 +431,9 @@ type SubscribeResponse struct {
 	// object.
 	Delivery *DeliveryAnswer `json:"delivery,omitempty"`
 	// Projects is the projects this registration recorded for the session (K6,
-	// SessionInfo.Projects): the registering broker token's list, the empty list for none.
-	Projects []string `json:"projects"`
+	// SessionInfo.Projects): the registering broker token's list, the empty list for none. Present
+	// only in the required privacy mode, as SessionInfo.Projects is.
+	Projects *[]string `json:"projects,omitempty"`
 }
 
 // DeliveryAnswer is the delivery field of a registration's answer. Every registration the
@@ -512,10 +514,10 @@ type RoleHolder struct {
 	LastSeen  *int64 `json:"last_seen"`
 	MachineID string `json:"machine_id"`
 	// Projects is the holder's registering token's projects (K6, SessionInfo.Projects), the empty
-	// list for none.
-	Projects []string `json:"projects"`
-	Role     string   `json:"role"`
-	Title    string   `json:"title"`
+	// list for none. Present only in the required privacy mode, as SessionInfo.Projects is.
+	Projects *[]string `json:"projects,omitempty"`
+	Role     string    `json:"role"`
+	Title    string    `json:"title"`
 }
 
 // RoleRefusal is the 404 of a role with no live holder, which GET /v1/roles/<role> answers and a

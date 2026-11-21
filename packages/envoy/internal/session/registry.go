@@ -97,16 +97,28 @@ type SessionEntry struct {
 	// token's own list, sorted, each once, and [] for a registration that presented none or
 	// whose token lists none. Every listener that verifies broker tokens writes it at each
 	// registration (cmd/listener's sessionEntryFromSubscribe), and an entry an earlier build
-	// wrote decodes it as nil, which every reader takes as none. The listener's API answers it on
-	// every session object, and its required privacy mode holds every delivery, route and send
-	// to it (cmd/listener's project_privacy.go).
+	// wrote decodes it as nil, which every reader takes as none. In the required privacy mode the
+	// listener's API answers it on every session object, and holds every delivery, route and send
+	// to it with Restricted (cmd/listener's project_privacy.go).
 	Projects []string `json:"projects"`
+	// Restricted is whether the registering token's person is a restricted member
+	// (brokertoken.Caller.Restricted): such a session sees only Projects, in every state of every
+	// project. False is a full member's session, whose Projects limit only the private projects
+	// it sees, or one registered with no broker token, which no member list holds. Every
+	// registration of this build writes it; an entry without it (one an earlier build wrote) reads
+	// as restricted (IsRestricted), so no reader widens what such a session sees.
+	Restricted *bool `json:"restricted,omitempty"`
 	// Held is set while the listener relaying this session holds frames for it in its memory,
 	// because their project's privacy could not be read (cmd/listener's privacy_hold.go), and
 	// cleared once it holds none: a listener that starts and finds it set lost those frames with
 	// its predecessor, so it marks the session's first frame Envoy-Gap. It is written only by
 	// SetHeld, at the revision it read, and every registration carries it over.
 	Held bool `json:"held,omitempty"`
+}
+
+// IsRestricted is e's Restricted, with an entry that carries none read as restricted.
+func (e SessionEntry) IsRestricted() bool {
+	return e.Restricted == nil || *e.Restricted
 }
 
 // TmuxPlace is a session's pane and the window and tmux session holding it, as the listener's

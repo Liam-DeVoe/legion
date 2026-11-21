@@ -189,11 +189,15 @@ func (m *sessionRelays) decideFrame(ctx context.Context, sessionID string, msg b
 	if !ok || project == contracts.NoProject || project == contracts.AnyToken {
 		return []bus.SessionMessage{msg}
 	}
+	// A project the session's token lists is relayed in every state, with nothing read; a
+	// restricted member's session (or one whose record carries no restricted claim) is withheld
+	// every other project; a full member's session is relayed one a fresh read says is public
+	// (roles.Sees).
 	entry, _ := m.sessions.Lookup(sessionID)
-	if len(entry.Projects) > 0 {
-		if slices.Contains(entry.Projects, project) {
-			return []bus.SessionMessage{msg}
-		}
+	if slices.Contains(entry.Projects, project) {
+		return []bus.SessionMessage{msg}
+	}
+	if entry.IsRestricted() {
 		m.withhold(sessionID, msg, true)
 		return nil
 	}

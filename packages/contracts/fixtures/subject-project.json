@@ -74,7 +74,11 @@
       "project": "PRIV",
       "ok": true
     },
-    { "subject": "notifications.dispatch.issue.PRIV-1.comment.created", "project": "PRIV", "ok": true },
+    {
+      "subject": "notifications.dispatch.issue.PRIV-1.comment.created",
+      "project": "PRIV",
+      "ok": true
+    },
     { "subject": "notifications.dispatch.issue.*.PRIV-1.>", "project": "_", "ok": true },
     { "subject": "notifications.dispatch.issue.>", "project": "_", "ok": true },
     {
@@ -118,7 +122,11 @@
       "project": "*",
       "ok": true
     },
-    { "subject": "notifications.github.acme.pub.pull_request.4.opened", "project": "*", "ok": true },
+    {
+      "subject": "notifications.github.acme.pub.pull_request.4.opened",
+      "project": "*",
+      "ok": true
+    },
     {
       "subject": "notifications.github.sjawhar._github.push.branch.main",
       "project": "*",
@@ -153,8 +161,16 @@
       "project": "PRIV",
       "ok": true
     },
-    { "subject": "notifications.envoy.kept.role.PRIV.lead-reviewer", "project": "PRIV", "ok": true },
-    { "subject": "notifications.envoy.kept.cursor.PRIV.lead-reviewer", "project": "PRIV", "ok": true },
+    {
+      "subject": "notifications.envoy.kept.role.PRIV.lead-reviewer",
+      "project": "PRIV",
+      "ok": true
+    },
+    {
+      "subject": "notifications.envoy.kept.cursor.PRIV.lead-reviewer",
+      "project": "PRIV",
+      "ok": true
+    },
     { "subject": "notifications.envoy.kept.cursor.lead-reviewer", "project": "_", "ok": true },
     { "subject": "notifications.envoy.resume.ses_a", "project": "_", "ok": true },
     { "subject": "notifications.envoy.deliver.ses_a", "project": "_", "ok": true },

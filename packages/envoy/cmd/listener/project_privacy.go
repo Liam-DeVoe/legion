@@ -39,7 +39,6 @@ import (
 	"github.com/sjawhar/envoy/internal/legionagents"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
-	"github.com/sjawhar/envoy/internal/projectscope"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/listenerwire"
@@ -472,23 +471,43 @@ func resolveAllProjectsAccounts(getenv func(string) string) ([]string, error) {
 	return accounts, nil
 }
 
-// projectScope is what one request's caller sees: a broker caller its token's list, an
-// ENVOY_ALL_PROJECTS_ACCOUNTS caller every project, and every other caller (the shared bearer, no
-// bearer, any other service account) an empty list.
+// projectScope is what one request's caller sees: a broker caller its token's list and whether its
+// person is a restricted member (brokertoken.Caller.Restricted), an ENVOY_ALL_PROJECTS_ACCOUNTS
+// caller every project, and every other caller (the shared bearer, no bearer, any other service
+// account) no list and no member list holding it, which sees the public projects.
 type projectScope struct {
 	listed      []string
+	restricted  bool
 	allProjects bool
 }
 
 // scopeOf is r's caller's scope.
 func scopeOf(r *http.Request, privacy *listenerPrivacy) projectScope {
 	if caller, ok := brokerCaller(r); ok {
-		return projectScope{listed: caller.Projects}
+		return projectScope{listed: caller.Projects, restricted: caller.Restricted}
 	}
 	if subject, ok := serviceAccountCaller(r); ok && privacy != nil && slices.Contains(privacy.allProjects, subject) {
 		return projectScope{allProjects: true}
 	}
 	return projectScope{}
+}
+
+// registrantScope is what a registration records of its token on its session's entry: the token's
+// projects (registeringProjects, session.SessionEntry.Projects) and whether its person is a
+// restricted member (session.SessionEntry.Restricted).
+type registrantScope struct {
+	projects   []string
+	restricted *bool
+}
+
+// registrantOf is r's registrantScope: its broker token's list and restricted claim, or no list
+// and false for a registration that presented no broker token, which no member list holds.
+func registrantOf(r *http.Request) registrantScope {
+	restricted := false
+	if caller, ok := brokerCaller(r); ok {
+		restricted = caller.Restricted
+	}
+	return registrantScope{projects: registeringProjects(r), restricted: &restricted}
 }
 
 // scopeDecision is one request's privacy decisions: its caller's scope, and the one privacy read
@@ -521,25 +540,19 @@ func (d *scopeDecision) answer() (privateSet, error) {
 
 // sees reports whether the caller sees project: in the all-public mode every project; for an
 // all-projects caller every project; for every caller a message of no project and a GitHub
-// subject's (AnyToken); otherwise by the bus's rule for a broker token
-// (projectscope.BrokerTokenAdmits), with the project's privacy read only for a caller listing
-// none, an unknown project counting as private. A read that fails is its error.
+// subject's (AnyToken); otherwise by the member rule (roles.Sees): a project its token lists, and,
+// for a caller that is no restricted member, a project a fresh read says is public, an unknown
+// project counting as private. A read that fails is its error.
 func (d *scopeDecision) sees(project string) (bool, error) {
-	if !d.privacy.isRequired() || d.scope.allProjects || project == contracts.NoProject || project == contracts.AnyToken {
+	if !d.privacy.isRequired() || d.scope.allProjects {
 		return true, nil
 	}
-	if len(d.scope.listed) > 0 {
-		return slices.Contains(d.scope.listed, project), nil
-	}
-	set, err := d.answer()
-	if err != nil {
-		return false, err
-	}
-	return projectscope.BrokerTokenAdmits(nil, project, set.private(project)), nil
+	return roles.Sees(d.ctx, d.privateOf, d.scope.listed, d.scope.restricted, project)
 }
 
 // seesSession reports whether the caller sees a session whose stored projects (K6) are projects:
-// one of them it sees, or, for a session that lists none, a caller that sees a public project.
+// one of them it sees, or, for a session that lists none, a caller that is no restricted member,
+// or that lists a public project.
 func (d *scopeDecision) seesSession(projects []string) (bool, error) {
 	if !d.privacy.isRequired() || d.scope.allProjects {
 		return true, nil
@@ -552,7 +565,7 @@ func (d *scopeDecision) seesSession(projects []string) (bool, error) {
 	if len(projects) > 0 {
 		return false, nil
 	}
-	if len(d.scope.listed) == 0 {
+	if !d.scope.restricted {
 		return true, nil
 	}
 	set, err := d.answer()

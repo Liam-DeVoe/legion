@@ -23,12 +23,12 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"time"
 
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/projectscope"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/listenerwire"
@@ -347,11 +347,11 @@ func resolveClaim(ctx context.Context, claims ClaimStore, sessions SessionLookup
 	return holderSeesProject(ctx, claims, resolved, project)
 }
 
-// holderSeesProject is resolved when its holder's stored projects see project (HolderSees), and
-// Unclaimed otherwise, so the message is kept for a holder that can see it. An unknown privacy
-// answer is a *ReadError at PrivacyRead.
+// holderSeesProject is resolved when its holder's stored scope sees project (Sees over the
+// entry's Projects and Restricted), and Unclaimed otherwise, so the message is kept for a holder
+// that can see it. An unknown privacy answer is a *ReadError at PrivacyRead.
 func holderSeesProject(ctx context.Context, claims ClaimStore, resolved Resolution, project string) (Resolution, error) {
-	sees, err := HolderSees(ctx, claims.Private, resolved.Entry.Projects, project)
+	sees, err := Sees(ctx, claims.Private, resolved.Entry.Projects, resolved.Entry.IsRestricted(), project)
 	if err != nil {
 		return Resolution{Holder: resolved.Holder}, &ReadError{Step: PrivacyRead, Holder: resolved.Holder,
 			Err: fmt.Errorf("read project %s's privacy for holder %s: %w", project, resolved.Holder, err)}
@@ -362,21 +362,24 @@ func holderSeesProject(ctx context.Context, claims ClaimStore, resolved Resoluti
 	return resolved, nil
 }
 
-// HolderSees reports whether a session whose stored projects (session.SessionEntry.Projects, the
-// registering token's list) are projects sees project, the rule the relay decides a frame by: a
-// message of no project, and a GitHub subject's (contracts.AnyToken), is every session's; a
-// session whose token lists projects sees those it lists; one that lists none sees a public
-// project. private reads project's privacy, and only for a session that lists none.
-func HolderSees(ctx context.Context, private func(context.Context, string) (bool, error), projects []string, project string) (bool, error) {
-	if project == contracts.NoProject || project == contracts.AnyToken {
+// Sees is the required privacy mode's rule for whether a session or a caller sees project, the
+// rule the relay decides a frame by: a message of no project, and a GitHub subject's
+// (contracts.AnyToken), is everyone's; a project its token lists (listed, the registering
+// token's list) it sees in every state; and a session of a full member (restricted false: a
+// person Dispatch answered a full member, or a token naming no person) also sees every project
+// a fresh read says is public. A restricted member's session sees its list alone, in every state,
+// and so does a session whose record or token carries no restricted claim. private reads
+// project's privacy, only when the answer turns on it.
+func Sees(ctx context.Context, private func(context.Context, string) (bool, error), listed []string, restricted bool, project string) (bool, error) {
+	if project == contracts.NoProject || project == contracts.AnyToken || slices.Contains(listed, project) {
 		return true, nil
 	}
-	if len(projects) > 0 {
-		return projectscope.BrokerTokenAdmits(projects, project, true), nil
+	if restricted {
+		return false, nil
 	}
 	isPrivate, err := private(ctx, project)
 	if err != nil {
 		return false, err
 	}
-	return projectscope.BrokerTokenAdmits(projects, project, isPrivate), nil
+	return !isPrivate, nil
 }

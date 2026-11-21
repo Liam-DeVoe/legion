@@ -792,7 +792,7 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			sees, err := decision.sees(project)
 			targetSees := sees
 			if err == nil && sees {
-				targetSees, err = roles.HolderSees(ctx, decision.privateOf, target.Projects, project)
+				targetSees, err = roles.Sees(ctx, decision.privateOf, target.Projects, target.IsRestricted(), project)
 			}
 			switch {
 			case err != nil:
@@ -1323,7 +1323,6 @@ func sessionInfoWith(entry session.ListEntry, held []string) listenerwire.Sessio
 		Roles:            held,
 		UpdatedAt:        entry.UpdatedAt,
 		LastSeen:         entry.UpdatedAt,
-		Projects:         storedProjects(entry.SessionEntry),
 		Plugin:           entry.Plugin,
 		PluginVersion:    entry.PluginVersion,
 		Delivery:         entry.Delivery,
@@ -1331,10 +1330,16 @@ func sessionInfoWith(entry session.ListEntry, held []string) listenerwire.Sessio
 	}
 }
 
-// storedProjects is the projects a session's registering token listed (K6), the empty list and
-// never null for an entry an earlier build wrote, which carries none.
-func storedProjects(entry session.SessionEntry) []string {
-	return append([]string{}, entry.Projects...)
+// projectsAnswer is the "projects" a session object carries: in the required privacy mode the
+// projects the session's registering token listed (K6), the empty list for an entry an earlier
+// build wrote, which carries none; in the all-public mode none, so the answer is as before the
+// field existed.
+func projectsAnswer(privacy *listenerPrivacy, projects []string) *[]string {
+	if !privacy.isRequired() {
+		return nil
+	}
+	answered := append([]string{}, projects...)
+	return &answered
 }
 
 // interestReadAnswered reports whether err, from a read of an interest record other than the
@@ -1509,7 +1514,9 @@ func sessionsHandlerFor(registry *store.Registry, sessions *session.SessionRegis
 				return
 			}
 			if seen {
-				result = append(result, listedSessionInfo(registry, entry, roles))
+				info := listedSessionInfo(registry, entry, roles)
+				info.Projects = projectsAnswer(privacy, entry.Projects)
+				result = append(result, info)
 			}
 		}
 		writeJSON(w, http.StatusOK, result)
@@ -1693,6 +1700,7 @@ func sessionEntryHandler(d *listenerDeps) http.HandlerFunc {
 				return
 			}
 			info, err := sessionInfoFor(ctx, d.registry, session.ListEntry{SessionID: sessionID, SessionEntry: entry, State: state})
+			info.Projects = projectsAnswer(d.privacy, entry.Projects)
 			if edge {
 				info.Roles = rolesOfProjects(info.Roles, projects)
 				info.Topics = edgeShownTopics(d.repositories, projects, sessionID, info.Topics)
@@ -2460,7 +2468,7 @@ func roleGetHandler(d *listenerDeps) http.HandlerFunc {
 			Host:             result.Entry.HostOrMachine(),
 			LastSeen:         &result.Entry.UpdatedAt,
 			MachineID:        result.Entry.MachineID,
-			Projects:         storedProjects(result.Entry),
+			Projects:         projectsAnswer(d.privacy, result.Entry.Projects),
 			Role:             role,
 			Title:            result.Entry.Title,
 		}))
@@ -2774,7 +2782,7 @@ func (e *sessionEntryWriteError) Unwrap() error { return e.cause }
 func (d *listenerDeps) registerSession(
 	ctx, registerCtx context.Context,
 	machineID string,
-	body listenerwire.SubscribeRequest, planned, projects []string,
+	body listenerwire.SubscribeRequest, planned []string, registrant registrantScope,
 	hold *edgeTopicHold,
 	logger *logging.Logger,
 ) (registeredSession, *deliveryRefusal, error) {
@@ -2842,7 +2850,7 @@ func (d *listenerDeps) registerSession(
 		if err != nil {
 			return registeredSession{}, nil, err
 		}
-		registered, answeredPass, refusal, err := d.registerPass(ctx, registerCtx, machineID, body, plan, projects)
+		registered, answeredPass, refusal, err := d.registerPass(ctx, registerCtx, machineID, body, plan, registrant)
 		if refusal != nil {
 			filtered = filtered || refusal.filtered
 			return registeredSession{}, refusal, nil
@@ -2920,7 +2928,7 @@ func (d *listenerDeps) registerSession(
 func (d *listenerDeps) registerPass(
 	ctx, registerCtx context.Context,
 	machineID string,
-	body listenerwire.SubscribeRequest, plan store.InterestPlan, projects []string,
+	body listenerwire.SubscribeRequest, plan store.InterestPlan, registrant registrantScope,
 ) (registeredSession, bool, *deliveryRefusal, error) {
 	outcome, refusal, unlock := d.consumers.register(registerCtx, body, plan.Topics)
 	defer unlock()
@@ -2961,7 +2969,8 @@ func (d *listenerDeps) registerPass(
 		previous, err := d.sessions.Get(body.SessionID)
 		registered.epochChanged = err != nil || previous.Delivery != session.DeliveryConsumer || previous.Epoch != outcome.epoch
 	}
-	stored := sessionEntryFromSubscribe(body, machineID, outcome, projects)
+	stored := sessionEntryFromSubscribe(body, machineID, outcome, registrant.projects)
+	stored.Restricted = registrant.restricted
 	// The held marker is the relay's, set and cleared at a revision it read (privacy_hold.go); a
 	// registration carries over the one the record holds, so a heartbeat never erases the mark a
 	// listener that restarts reads its lost frames by.
@@ -3124,7 +3133,7 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// loop below names each in its warning, after the private rule has had its say. The
 		// merge itself drops a private-subject topic from the plan (store.MergedTopics).
 		planned, uncaptured := d.consumers.splitUncapturedTopics(requested)
-		registered, refusal, err := d.registerSession(ctx, r.Context(), machineID, body, planned, registeringProjects(r), hold, logger)
+		registered, refusal, err := d.registerSession(ctx, r.Context(), machineID, body, planned, registrantOf(r), hold, logger)
 		if refusal != nil {
 			logger.Warn("listener refused a registration it can give no session consumer",
 				slog.String("session_id", body.SessionID), slog.String("reason", refusal.Reason), slog.Int("status", refusal.status))
@@ -3327,7 +3336,7 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 			}
 		}
 		writeJSON(w, http.StatusOK, listenerwire.SubscribeResponse{Interest: item, Warnings: warnings, Delivery: delivery.answer,
-			Projects: append([]string{}, registeringProjects(r)...)})
+			Projects: projectsAnswer(d.privacy, registeringProjects(r))})
 	}
 }
 
