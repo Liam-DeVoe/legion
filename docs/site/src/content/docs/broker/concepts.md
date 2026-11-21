@@ -755,11 +755,11 @@ A channel an owner names is fenced from every other credential before the owner'
 posts to it with a value read after the change. A private project's credential posts only to
 channels the broker's stored list holds for its project, and to none of them for 16 minutes and 30
 seconds after Dispatch last changed the list, after the project turned private, or after the store
-first held the channel, whichever is latest: the longest a pod holding a value read before the
-change goes on carrying calls to that channel for other credentials. `CHANNEL_NOT_ALLOWED` then
-ends with the time posting reopens. A value the project's own session read while the project was
-still public is not limited until the proxy reads it again, within five minutes. A channel an
-owner removes needs no wait.
+last began holding the channel, again after a forget included, whichever is latest: the longest a
+pod holding a value read before the change goes on carrying calls to that channel for other
+credentials. `CHANNEL_NOT_ALLOWED` then ends with the time posting reopens. A value the project's
+own session read while the project was still public is not limited until the proxy reads it again,
+within five minutes. A channel an owner removes needs no wait.
 
 A request of a private project is the project's own: one for a secret of the project, one from a
 credential that names the project (the list above), or one whose reason names one of the

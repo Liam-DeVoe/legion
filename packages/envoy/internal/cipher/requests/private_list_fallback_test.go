@@ -186,11 +186,12 @@ func publicRows() map[string]projectaccesstest.Row {
 // today's answer (R9); over a store holding PRIV with C1 it carries Excluded [C1] and is read again
 // within a minute, on a fresh pod too; over a held row of unknown channels, or a store the broker
 // cannot read, it is ExcludedUnread. Outside the airlock the token is released as today over an
-// empty store and denied over one holding C1. A fresh read keeps the list once per CacheTTL. With
-// every project public, a held row is the R9 exception's window alone: a refused switch's record
-// until its forget, a formerly private project until its forget, each fencing its own channel, and
-// nothing once forgotten or past the hold; a record made through a pod whose clock is 90 s behind
-// the pod that forgot the row holds the row again.
+// empty store and denied over one holding C1. A fresh read keeps the list, and a later release that
+// reads it from the client's cache inside CacheTTL writes nothing. With every project public, a
+// held row is the R9 exception's window alone: a refused switch's record until its forget, a
+// formerly private project until its forget, each fencing its own channel, and nothing once
+// forgotten or past the hold; a record made through a pod whose clock is 90 s behind the pod that
+// forgot the row holds the row again.
 func TestAFailedPrivateListReadFencesByTheStoredList(t *testing.T) {
 	ctx := context.Background()
 

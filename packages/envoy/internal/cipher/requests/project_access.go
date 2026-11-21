@@ -529,10 +529,15 @@ type privateFence struct {
 //
 // Before it asks, it takes a stamp from the broker's stored private list (store.StampPrivateList)
 // and reads this pod's clock beside it; an answer asked no earlier than that clock read is a fresh
-// question rather than the client's cache, and is kept under the stamp (keepPrivateList), at most
-// once per CacheTTL a pod. A stamp or keep that fails is logged and the live answer still decides.
-// A read that fails, whatever the failure (a transport error, a 5xx, a 401 or 403, a 404 of any
-// code, an answer that is no list), fences by the stored list instead (storedFence).
+// question rather than the client's cache, and is kept under the stamp (keepPrivateList). A pod
+// whose releases come one at a time keeps one answer in each CacheTTL. Releases that run together
+// can keep more often: each that misses the cache asks Dispatch and keeps its answer, and one that
+// took its stamp before another's answer came and then read it from the cache keeps it too. Each
+// keep writes under its own stamp, and the row keeps the greatest number, since listed takes the
+// greater, so the extra keeps change nothing a later one wrote. A stamp or keep that fails is
+// logged and the live answer still decides. A read that fails, whatever the failure (a transport
+// error, a 5xx, a 401 or 403, a 404 of any code, an answer that is no list), fences by the stored
+// list instead (storedFence).
 func (m *Machine) privateChannels(ctx context.Context) privateFence {
 	if m.PrivateList == nil {
 		return privateFence{}

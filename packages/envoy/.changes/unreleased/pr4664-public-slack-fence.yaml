@@ -25,8 +25,9 @@ body: |-
   read again within ten minutes, in every deployment, so a value released before the first
   private project learns of it. A private project's own credential posts only to channels the
   stored list holds for its project, and to none of them for 16 minutes 30 seconds after Dispatch
-  last changed the list, the project turned private, or the store first held the channel, and
-  `CHANNEL_NOT_ALLOWED` then ends with the time posting reopens.
+  last changed the list, the project turned private, or the store last began holding the channel,
+  again after a forget included, and `CHANNEL_NOT_ALLOWED` then ends with the time posting
+  reopens.
   While no private project lists a channel the proxy reads no body; a broker with no
   `BROKER_PROJECT_ACCESS_URL` asks Dispatch nothing for the fence. A broker whose
   `BROKER_PRIVATE_PROJECTS` names a project now refuses to start without
