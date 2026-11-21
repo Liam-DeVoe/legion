@@ -838,6 +838,10 @@ func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, 
 		if err != nil {
 			return err
 		}
+		// A child that is a view on its ancestor's spec takes no requirement of its own (R23).
+		if err := refuseRequirementOnViewOf(ctx, s.queryFrom(ctx), artifactID, current, target); err != nil {
+			return err
+		}
 		// A repair is a whole new document, held to every ask's content rule and to the bound
 		// an ask's wording shares, as RebuildDocument holds supplied markdown, and it keeps
 		// every open ask block, and every answered one where its writer is not a person.
@@ -2168,6 +2172,10 @@ func (s *Service) finishBatch(ctx context.Context, artifactID string, tree *pmdo
 		if err := s.refuseBatchDroppedAskBlocks(ctx, artifactID, dropped, next, by); err != nil {
 			return EditOutcome{}, pmdoc.ValidDocument{}, err
 		}
+	}
+	// A child that is a view on its ancestor's spec takes no requirement of its own (R23).
+	if err := refuseRequirementOnViewOf(ctx, s.queryFrom(ctx), artifactID, batch.beforeTree, next); err != nil {
+		return EditOutcome{}, pmdoc.ValidDocument{}, err
 	}
 	outcome, written, err := batch.outcome(ops)
 	if err != nil {

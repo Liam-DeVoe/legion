@@ -51,6 +51,11 @@ const codeDecisionsQuery = "DECISIONS_QUERY"
 // dispatch://INFRA-1253's plan).
 const codeNodeInOtherIssue = "NODE_IN_OTHER_ISSUE"
 
+// codeRequirementBelongsToAncestor refuses a document write that adds a requirement node to an
+// issue that is a view on its ancestor's spec, naming that ancestor (docs.ViewOf,
+// docs.ErrRequirementBelongsToAncestor).
+const codeRequirementBelongsToAncestor = "REQUIREMENT_BELONGS_TO_ANCESTOR"
+
 // documentErrorCode names an error a document operation returns when it could not read or serve
 // the document, and is empty for any other error. writeHandlerError and anchorBlock both name a
 // document error by it, and both in one order, so the two cannot name one error differently.
@@ -229,6 +234,11 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 	var answeredAskKept *docs.ErrAnsweredAskKept
 	if errors.As(err, &answeredAskKept) {
 		writeError(w, codeAnsweredAskKept, http.StatusConflict, answeredAskKept.Error())
+		return
+	}
+	var belongsToAncestor *docs.ErrRequirementBelongsToAncestor
+	if errors.As(err, &belongsToAncestor) {
+		writeError(w, codeRequirementBelongsToAncestor, http.StatusConflict, belongsToAncestor.Error())
 		return
 	}
 	var invalidAskBlock *docs.ErrInvalidAskBlock

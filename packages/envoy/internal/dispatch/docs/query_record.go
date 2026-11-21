@@ -492,6 +492,23 @@ func ReadQueryRecord(ctx context.Context, q Queryer, issueKey, query string, cut
 	return tree.QueryRecord(ctx, q, query)
 }
 
+// Takes is the index in the walk of each node the query takes, in the walk's order, by the one
+// definition its record is built by (queryDefinitions), and false where no definition names the
+// query. The tree read's view of a query answers these nodes as the query's.
+func (tree IssueTree) Takes(query string) ([]int, bool) {
+	takes, defined := queryDefinitions[query]
+	if !defined {
+		return nil, false
+	}
+	var taken []int
+	for index := range tree.Nodes {
+		if takes(tree, index) {
+			taken = append(taken, index)
+		}
+	}
+	return taken, true
+}
+
 // recordLeftOut are the values a record writes no field of among the node's values. It leaves out
 // a value only where another field of the record carries it: the rank, written in a field of its
 // own, and the text, written as the body, since a value written twice would let two builders write

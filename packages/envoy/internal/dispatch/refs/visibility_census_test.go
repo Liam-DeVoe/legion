@@ -234,11 +234,13 @@ var readsWithoutAViewer = map[string]string{
 	"ResolveFarEnds": "it answers node ids and nothing of any node: the block index resolves the far ends of the pointers it " +
 		"places a node by, and the pre-mortem conversion the checks its map names, whose nodes it then reads through Nodes, " +
 		"which binds each one's predicate, so a node who may not see is absent from what a reader is shown",
-	"ScopeSources":    serverWork,
-	"SourceText":      serverWork,
-	"TreeChildren":    treeWalk + " - the children of each node the walk reaches",
-	"TreeFactsOf":     treeWalk + " - what each node the walk reaches states at its cut",
-	"TreeMovedTo":     treeWalk + " - the nodes the address a comment's anchor names resolves to at the walk's cut",
+	"ScopeSources": serverWork,
+	"SourceText":   serverWork,
+	"TreeChildren": treeWalk + " - the children of each node the walk reaches",
+	"TreeFactsOf":  treeWalk + " - what each node the walk reaches states at its cut",
+	"TreeMovedTo":  treeWalk + " - the nodes the address a comment's anchor names resolves to at the walk's cut",
+	"TreeMembers": treeWalk + " - the blocks a document holds at a version's time, which the render of that version " +
+		"(docs.RenderAt) takes: a version renders as one set of bytes for every reader, as its stored markdown does",
 	"TreeNodeRows":    treeWalk + " - the row of each node the walk reaches",
 	"TreePlacedAbove": treeWalk + " - the nodes of the issue that stand under a node of an issue above it",
 }

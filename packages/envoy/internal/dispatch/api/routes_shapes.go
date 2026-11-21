@@ -743,6 +743,7 @@ var routeShapes = map[string]routeShape{
 		Request: checkResultRetractionInput{},
 	},
 	"GET /api/v1/issues/{key}/coverage": {Status: http.StatusOK, Response: model.IssueCoverage{}},
+	"GET /api/v1/issues/{key}/tree":     {Status: http.StatusOK, Response: model.IssueTreeRead{}, Params: issueTreeQuery{}},
 	"POST /api/v1/issues/{key}/messages": {
 		Status: http.StatusCreated, Response: shapedMessage{}, Request: createMessageInput{}, Advice: writeAdvice{},
 	},

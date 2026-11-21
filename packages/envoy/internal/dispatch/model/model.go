@@ -1663,16 +1663,35 @@ type IssueCoverage struct {
 // it holds no row: a requirement at proposed is a question still open, which raises no gap (spec
 // requirement r-proposed). A server of the release before answers no State during a roll, so the
 // OpenAPI document marks it optional (`required:"false"`) and a reader takes a requirement that
-// carries none as live.
+// carries none as live. Coverage and Proof are the coverage read over the tuples' own answer
+// (api's issueCoverageOverTuples), and absent from the read that walks the spec's markdown:
+// Coverage is `gap` for a requirement no check serves, `unproven` for one no check of which holds
+// a passing result against the words it holds now, `proved` for one a check of which does,
+// `proposed` for a requirement still a question, which raises no gap, and `closed` for one whose
+// node or a node above it is overtaken, which lists nothing; Proof is each check that serves it,
+// once, with where its newest result that stands leaves it.
 type RequirementCoverage struct {
-	BlockID   string      `json:"block_id"`
-	Ref       string      `json:"ref"`
-	Text      string      `json:"text"`
-	TextTree  DisplayTree `json:"text_tree,omitempty"`
-	State     string      `json:"state" enum:"live,gone,proposed,settled,overtaken" required:"false"`
-	Checks    int         `json:"checks"`
-	PlanTasks int         `json:"plan_tasks"`
-	Gaps      []string    `json:"gaps"`
+	BlockID   string             `json:"block_id"`
+	Ref       string             `json:"ref"`
+	Text      string             `json:"text"`
+	TextTree  DisplayTree        `json:"text_tree,omitempty"`
+	State     string             `json:"state" enum:"live,gone,proposed,settled,overtaken" required:"false"`
+	Checks    int                `json:"checks"`
+	PlanTasks int                `json:"plan_tasks"`
+	Gaps      []string           `json:"gaps"`
+	Coverage  string             `json:"coverage,omitempty" enum:"gap,unproven,proved,proposed,closed"`
+	Proof     []RequirementProof `json:"proof,omitempty"`
+}
+
+// RequirementProof is one check serving a requirement, as the coverage read over the tuples
+// answers it: the check's store id and its issue, and Proves, where its newest result that stands
+// leaves it: `none` where it holds no result or only retracted ones, `fail` where that result
+// failed, `reworded` where it passed against a text sum the check no longer holds, and `pass`
+// where it passed against the words the check holds now.
+type RequirementProof struct {
+	Check  string `json:"check"`
+	Issue  string `json:"issue"`
+	Proves string `json:"proves" enum:"none,fail,reworded,pass"`
 }
 
 // CheckResultEventPayload is the payload of result.recorded, appended on the check's issue: the
@@ -1730,7 +1749,10 @@ type ArtifactHumanEditedEventPayload struct {
 // sets and nothing that only indexes blocks does. Document is, for a block of an issue room
 // indexed under the issue's tree artifact, the artifact id of the document whose fragment of the
 // room holds it (dispatch://INFRA-1253 R5), which the block index states as the block's
-// in_document; "" for a block of the indexed document itself. No route answers it.
+// in_document; "" for a block of the indexed document itself. No route answers it. TextTree is
+// the display tree of the block's whole slice of the markdown (From to To), the text the block
+// index stores for it, which the blocks routes answer only to a caller that sent
+// `Dispatch-Trees: 1`, and which the tree read answers for the same block.
 type ArtifactBlock struct {
 	ID            string                `json:"id"`
 	Type          string                `json:"type"`
@@ -1741,6 +1763,7 @@ type ArtifactBlock struct {
 	Attributes    []BlockAttributeValue `json:"attributes,omitempty"`
 	Table         *BlockTable           `json:"table,omitempty"`
 	Embedding     string                `json:"embedding,omitempty"`
+	TextTree      DisplayTree           `json:"text_tree,omitempty"`
 	DescendantIDs []string              `json:"-"`
 	Document      string                `json:"-"`
 }

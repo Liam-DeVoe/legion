@@ -1009,6 +1009,23 @@ func (s *server) storeArtifact(
 			s.writeUploadDocumentError(r.Context(), w, tx, err, input.name, artifact.ID)
 			return
 		}
+		// A new document of a child that is a view on its ancestor's spec takes no requirement of
+		// its own, as an edit and a replacement of one of its documents take none (docs'
+		// RefuseRequirementOnView): the document's row is still queued, so its issue is the
+		// upload's own.
+		if created && target.IssueKey != nil {
+			written := ledger.ReadBackOf(artifact.ID, documentMarkdown)
+			if written == nil {
+				if written, err = pmdoc.ParseRendering(documentMarkdown); err != nil {
+					s.writeHandlerError(w, err)
+					return
+				}
+			}
+			if err := docs.RefuseRequirementOnView(r.Context(), tx, *target.IssueKey, nil, written); err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
+		}
 		version, err = ledger.QueueVersion(r.Context(), artifact.ID, documentMarkdown, []model.Actor{actor}, documentSummary)
 		if err != nil {
 			s.writeHandlerError(w, err)
@@ -1345,7 +1362,17 @@ func (s *server) getArtifactBlocks(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "NOT_DOCUMENT", http.StatusBadRequest, "artifact is not a document")
 		return
 	}
-	blocks, err := s.deps.Docs.Blocks(r.Context(), artifact.ID)
+	// A caller that asked for the display trees is given each block's, read from its slice of the
+	// markdown its range indexes, which is the text the block index stores for it, so the tree
+	// read of the block's node answers the same tree; the markdown and the ranges come from one
+	// rendering (docs.Service.TextWithBlocks).
+	var markdown string
+	var blocks []model.ArtifactBlock
+	if wantsDisplayTrees(r) {
+		markdown, blocks, err = s.deps.Docs.TextWithBlocks(r.Context(), artifact.ID)
+	} else {
+		blocks, err = s.deps.Docs.Blocks(r.Context(), artifact.ID)
+	}
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1354,6 +1381,11 @@ func (s *server) getArtifactBlocks(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+	for index := range blocks {
+		reader.text(&blocks[index].TextTree, sliceMarkdown(markdown, blocks[index].From, blocks[index].To))
+	}
+	reader.resolve()
 	WriteJSON(w, http.StatusOK, blocks)
 }
 

@@ -408,7 +408,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Apply quote-anchored edit ops with an optional optimistic-concurrency precondition. An issue's tree artifact (kind tree) takes an edit as a document does, into its own fragment of the issue room. An op naming, by its store address (<ref_key>#<block id>), a node of another issue is 409 NODE_IN_OTHER_ISSUE, naming that node's issue, and writes nothing. A batch that is not a person's own (one whose credential does not hold the person scope: an agent's session, a pod's service account, the deployment's shared token) whose result drops the block of an answered ask, or retypes it, is 409 ANSWERED_ASK_KEPT, quoting each such ask's question and naming its node and its block's address, and writes nothing; a person's own, at a browser or through a token of theirs that holds the person scope, is taken. An edit of the issue's decisions query, which renders the issue's decisions and takes no text, is 409 DECISIONS_QUERY and writes nothing. */
+    /** @description Apply quote-anchored edit ops with an optional optimistic-concurrency precondition. An issue's tree artifact (kind tree) takes an edit as a document does, into its own fragment of the issue room. An op naming, by its store address (<ref_key>#<block id>), a node of another issue is 409 NODE_IN_OTHER_ISSUE, naming that node's issue, and writes nothing. A batch that is not a person's own (one whose credential does not hold the person scope: an agent's session, a pod's service account, the deployment's shared token) whose result drops the block of an answered ask, or retypes it, is 409 ANSWERED_ASK_KEPT, quoting each such ask's question and naming its node and its block's address, and writes nothing; a person's own, at a browser or through a token of theirs that holds the person scope, is taken. A batch whose result adds a requirement block to an issue that is a view on its ancestor's spec - a converted issue holding no requirement of its own whose nearest ancestor holding requirements is not done, the view_of GET /api/v1/issues/{key}/tree answers - is 409 REQUIREMENT_BELONGS_TO_ANCESTOR, naming that ancestor, and writes nothing. An edit of the issue's decisions query, which renders the issue's decisions and takes no text, is 409 DECISIONS_QUERY and writes nothing. */
     post: operations["postApiV1ArtifactsByIdEdits"];
     delete?: never;
     options?: never;
@@ -1403,7 +1403,7 @@ export interface paths {
     /** @description List an issue's documents and files. */
     get: operations["getApiV1IssuesByKeyArtifacts"];
     put?: never;
-    /** @description Upload an issue document or file (JSON or multipart). A text/markdown upload is a document; any other is an image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its bytes are whatever was declared, and otherwise a file under its declared type. A name no artifact has yet is 400 INVALID_ARTIFACT when it, or the reference key <owner>/<slug> it gives the new artifact, is over 2692 bytes; an upload under an existing artifact's name is never refused for its length. A new version that is not a person's own and leaves out or retypes the block of an answered ask is 409 ANSWERED_ASK_KEPT, as POST /api/v1/artifacts/{id}/edits answers it, and writes no version. A new document whose name gives the slug of a decisions document is 409 DECISIONS_ARE_NODES, and so is an upload of that name once the issue's decisions document is retired: a decision is a `decision` block in the spec. An upload of that name while the issue's decisions document an earlier release stored still stands is that document's next version. An upload under the name or slug of the issue's decisions query, which renders the issue's decisions and takes no text, is 409 DECISIONS_QUERY and writes nothing. */
+    /** @description Upload an issue document or file (JSON or multipart). A text/markdown upload is a document; any other is an image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its bytes are whatever was declared, and otherwise a file under its declared type. A name no artifact has yet is 400 INVALID_ARTIFACT when it, or the reference key <owner>/<slug> it gives the new artifact, is over 2692 bytes; an upload under an existing artifact's name is never refused for its length. A new version that is not a person's own and leaves out or retypes the block of an answered ask is 409 ANSWERED_ASK_KEPT, as POST /api/v1/artifacts/{id}/edits answers it, and writes no version. A new version or a new document that adds a requirement block to an issue that is a view on its ancestor's spec - a converted issue holding no requirement of its own whose nearest ancestor holding requirements is not done, the view_of GET /api/v1/issues/{key}/tree answers - is 409 REQUIREMENT_BELONGS_TO_ANCESTOR, naming that ancestor, and writes nothing. A new document whose name gives the slug of a decisions document is 409 DECISIONS_ARE_NODES, and so is an upload of that name once the issue's decisions document is retired: a decision is a `decision` block in the spec. An upload of that name while the issue's decisions document an earlier release stored still stands is that document's next version. An upload under the name or slug of the issue's decisions query, which renders the issue's decisions and takes no text, is 409 DECISIONS_QUERY and writes nothing. */
     post: operations["postApiV1IssuesByKeyArtifacts"];
     delete?: never;
     options?: never;
@@ -1454,7 +1454,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Apply edit ops with an optional optimistic-concurrency precondition to an issue document, by slug or unambiguous filename. A batch that is not a person's own and drops or retypes the block of an answered ask is 409 ANSWERED_ASK_KEPT, and an edit of the issue's decisions query is 409 DECISIONS_QUERY, as POST /api/v1/artifacts/{id}/edits answers them. */
+    /** @description Apply edit ops with an optional optimistic-concurrency precondition to an issue document, by slug or unambiguous filename. A batch that is not a person's own and drops or retypes the block of an answered ask is 409 ANSWERED_ASK_KEPT, one that adds a requirement block to an issue that is a view on its ancestor's spec is 409 REQUIREMENT_BELONGS_TO_ANCESTOR, naming that ancestor, and an edit of the issue's decisions query is 409 DECISIONS_QUERY, as POST /api/v1/artifacts/{id}/edits answers them. */
     post: operations["postApiV1IssuesByKeyArtifactsBySlugEdits"];
     delete?: never;
     options?: never;
@@ -2073,6 +2073,23 @@ export interface paths {
     };
     /** @description What a reference to an issue shows, read without the full issue: {key, project, title, status, documents}, documents every artifact of the issue in the order the issue read lists them, each {id, slug, name, kind, latest_version, primary}, primary whether the document is the issue's spec; 404 NOT_FOUND for no such issue. */
     get: operations["getApiV1IssuesByKeySummary"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/issues/{key}/tree": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description One issue's tree as the caller may see it, in the tree's own order, from the scope GET /api/v1/issues/{key} reads in: {issue, view, version, converted, tree, view_of, documents, nodes, tuples, cursor}. With no ?view= it answers every node of the issue's tree but a document, a document version and the prose of a role document - the issue's own node, then each node before its children, ranked siblings by rank and then the rest by when each was made, each tie by the lower id, then each node of the issue whose parent is a node of an issue above - and each child issue, each node of an issue under it placed under one of its nodes, and each check and plan node of an issue under it whose serves names one of its requirements, with each such check's results, read-only and marked with their issue; then, marked as context, each lens_kind and constraint a has_kind or constrained_by of a node it holds names that the tree does not hold, one level out, each interaction a changed_by_run of such a node names, through the caller's visibility, and each decision's decided_by person or session. ?view=spec, verification or plan answers that query's nodes, each role query, and its fixed context, each role context: on a child, the requirements of the issues above that its checks serve and its design blocks; on the verification view, each requirement a check serves, and on a parent each check of an issue under it serving one of its requirements, with its results; on the plan view, every plan node of the whole tree and each issue as its two halves, each with its position, needs and size from the ordered read, in that one order. ?v= with a view reads the query as of the store revision that version of its query node recorded; a version it holds no such record of is 404 QUERY_VERSION_NOT_FOUND, and v with no view is 400 INVALID_QUERY. Each node: kind and id as the store keys it, block_id, supertag, issue and read_only for a node of another issue, role, parent {kind, id, supertag, first_line, issue}, rank, author, state, visibility, made_at, attributes, text and, for a caller that sent Dispatch-Trees: 1, text_tree, the tree its kind's own read answers; no_conversation where no conversation node stands above it; document {artifact_id, slug, position} on a typed block of a role document; decision, the Decisions read's members, on a decision and an answered ask; result {verdict, retracted, check_version, check_sha256}; check {text_sha256, changed_version}; plan on the plan view; and converted, tree, view_of and documents on an issue. A node the caller may not see is left out, and each node under it stands under the nearest node above it the caller may see, after that node's own children. tuples is every relation between two nodes of the answer, each end named by its kind and id. One page holds at most 12000 nodes; a larger tree answers cursor, the next node, which ?cursor= reads from, and the context on its last page. */
+    get: operations["getApiV1IssuesByKeyTree"];
     put?: never;
     post?: never;
     delete?: never;
@@ -3715,6 +3732,12 @@ export interface components {
       id: string;
       references: components["schemas"]["BlockReferences"];
       table?: components["schemas"]["BlockTable"];
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      text_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       to: number;
       token: string;
       type: string;
@@ -5953,6 +5976,107 @@ export interface components {
       offset: number;
       total: number;
     };
+    IssueTreeCheck: {
+      changed_version: number;
+      text_sha256: string;
+    };
+    IssueTreeDocument: {
+      artifact_id: string;
+      position: number;
+      slug: string;
+    };
+    IssueTreeDocuments: {
+      plan: null | string;
+      spec: null | string;
+      verification: null | string;
+    };
+    IssueTreeEnd: {
+      id: string;
+      kind: string;
+    };
+    IssueTreeHalfEnd: {
+      /** @enum {string} */
+      half?: "start" | "done";
+      id: string;
+      kind: string;
+    };
+    IssueTreeNode: {
+      attributes: {
+        [key: string]: string;
+      } | null;
+      author: components["schemas"]["Actor"][] | null;
+      block_id?: string;
+      check?: components["schemas"]["IssueTreeCheck"];
+      converted?: boolean;
+      decision?: components["schemas"]["Decision"];
+      document?: components["schemas"]["IssueTreeDocument"];
+      documents?: components["schemas"]["IssueTreeDocuments"] | null;
+      id: string;
+      issue?: string;
+      kind: string;
+      /** Format: date-time */
+      made_at: null | string;
+      no_conversation?: boolean;
+      parent: components["schemas"]["IssueTreeParent"] | null;
+      plan?: components["schemas"]["IssueTreePlan"];
+      rank: null | string;
+      read_only?: boolean;
+      result?: components["schemas"]["IssueTreeResult"];
+      /** @enum {string} */
+      role: "tree" | "query" | "context";
+      /** @enum {string} */
+      state: "live" | "gone" | "proposed" | "settled" | "overtaken";
+      supertag: string;
+      text: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      text_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
+      tree?: null | string;
+      view_of?: null | string;
+      /** @enum {string} */
+      visibility: "project" | "author";
+    };
+    IssueTreeParent: {
+      first_line: string;
+      id: string;
+      issue?: string;
+      kind: string;
+      supertag: string;
+    };
+    IssueTreePlan: {
+      cycle: boolean;
+      done?: components["schemas"]["IssueTreePlan"];
+      needs: components["schemas"]["IssueTreeHalfEnd"][] | null;
+      position: null | number;
+      size: null | string;
+      start?: components["schemas"]["IssueTreePlan"];
+    };
+    IssueTreeRead: {
+      converted: boolean;
+      cursor: null | string;
+      documents: components["schemas"]["IssueTreeDocuments"] | null;
+      issue: string;
+      nodes: components["schemas"]["IssueTreeNode"][] | null;
+      tree: null | string;
+      tuples: components["schemas"]["IssueTreeTuple"][] | null;
+      version: null | number;
+      view: string;
+      view_of: null | string;
+    };
+    IssueTreeResult: {
+      check_sha256: string;
+      check_version: number;
+      retracted?: components["schemas"]["CheckResultRetracted"];
+      verdict: string;
+    };
+    IssueTreeTuple: {
+      from: components["schemas"]["IssueTreeEnd"];
+      kind: string;
+      to: components["schemas"]["IssueTreeEnd"];
+    };
     ItemBlock: {
       /** Format: date-time */
       changed_at?: string;
@@ -6933,8 +7057,11 @@ export interface components {
     RequirementCoverage: {
       block_id: string;
       checks: number;
+      /** @enum {string} */
+      coverage?: "gap" | "unproven" | "proved" | "proposed" | "closed";
       gaps: string[] | null;
       plan_tasks: number;
+      proof?: components["schemas"]["RequirementProof"][];
       ref: string;
       /** @enum {string} */
       state?: "live" | "gone" | "proposed" | "settled" | "overtaken";
@@ -6945,6 +7072,12 @@ export interface components {
       } & {
         [key: string]: unknown;
       };
+    };
+    RequirementProof: {
+      check: string;
+      issue: string;
+      /** @enum {string} */
+      proves: "none" | "fail" | "reworded" | "pass";
     };
     ResidentRooms: {
       rooms: string[] | null;
@@ -12804,6 +12937,43 @@ export interface operations {
       };
     };
   };
+  getApiV1IssuesByKeyTree: {
+    parameters: {
+      query?: {
+        view?: "spec" | "verification" | "plan";
+        v?: number;
+        cursor?: string;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IssueTreeRead"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1Lenses: {
     parameters: {
       query?: {
@@ -16252,6 +16422,17 @@ export type IssueRoleHoldersInput = components["schemas"]["IssueRoleHoldersInput
 export type IssueSteps = components["schemas"]["IssueSteps"];
 export type IssueSummary = components["schemas"]["IssueSummary"];
 export type IssueSummaryPage = components["schemas"]["IssueSummaryPage"];
+export type IssueTreeCheck = components["schemas"]["IssueTreeCheck"];
+export type IssueTreeDocument = components["schemas"]["IssueTreeDocument"];
+export type IssueTreeDocuments = components["schemas"]["IssueTreeDocuments"];
+export type IssueTreeEnd = components["schemas"]["IssueTreeEnd"];
+export type IssueTreeHalfEnd = components["schemas"]["IssueTreeHalfEnd"];
+export type IssueTreeNode = components["schemas"]["IssueTreeNode"];
+export type IssueTreeParent = components["schemas"]["IssueTreeParent"];
+export type IssueTreePlan = components["schemas"]["IssueTreePlan"];
+export type IssueTreeRead = components["schemas"]["IssueTreeRead"];
+export type IssueTreeResult = components["schemas"]["IssueTreeResult"];
+export type IssueTreeTuple = components["schemas"]["IssueTreeTuple"];
 export type ItemBlock = components["schemas"]["ItemBlock"];
 export type ItemBlocks = components["schemas"]["ItemBlocks"];
 export type JsonArtifactUpload = components["schemas"]["JsonArtifactUpload"];
@@ -16373,6 +16554,7 @@ export type RenameArtifactInput = components["schemas"]["RenameArtifactInput"];
 export type ReplyBlockWithTrees = components["schemas"]["ReplyBlockWithTrees"];
 export type RepoProject = components["schemas"]["RepoProject"];
 export type RequirementCoverage = components["schemas"]["RequirementCoverage"];
+export type RequirementProof = components["schemas"]["RequirementProof"];
 export type ResidentRooms = components["schemas"]["ResidentRooms"];
 export type ResolveAskInput = components["schemas"]["ResolveAskInput"];
 export type ResultCommitStands = components["schemas"]["ResultCommitStands"];

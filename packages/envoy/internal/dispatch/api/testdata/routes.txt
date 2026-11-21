@@ -131,6 +131,7 @@ PUT /api/v1/issues/{key}/steps/{id}/rating any
 GET /api/v1/issues/{key}/subscribers any
 DELETE /api/v1/issues/{key}/subscribers/{session_id} any
 GET /api/v1/issues/{key}/summary any
+GET /api/v1/issues/{key}/tree any
 GET /api/v1/lenses any
 GET /api/v1/limits any
 GET /api/v1/machine-logins any
