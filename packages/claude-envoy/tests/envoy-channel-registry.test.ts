@@ -4,6 +4,7 @@ import {
   legacyDispatchIssueSubject,
   uncapturedTopicRefusal,
 } from "@legion/contracts"
+import { projectRefusal } from "@legion/envoy-client/test/subscribe-answer"
 import { EnvoyApiError } from "@legion/envoy-client/transport"
 import { startChannelSession } from "../src/envoy-channel-server"
 import { SessionIdentity, sessionHandoffFile, writeSessionHandoff } from "../src/session-identity"
@@ -723,11 +724,7 @@ test("a topic the edge refuses for the session's projects is dropped, and the he
           method: "POST",
           url: "http://listener.example/v1/interests/subscribe",
           status: 403,
-          responseBody: JSON.stringify({
-            error: "the edge serves the GitHub events of its projects' repositories alone",
-            reason: "repository_not_in_project",
-            refused,
-          }),
+          responseBody: JSON.stringify(projectRefusal(refused)),
         })
       }
       return noInterest()
@@ -791,11 +788,7 @@ test("a topic the edge refuses at a heartbeat is told to the session once, namin
           method: "POST",
           url: "http://listener.example/v1/interests/subscribe",
           status: 403,
-          responseBody: JSON.stringify({
-            error: "the edge serves the GitHub events of its projects' repositories alone",
-            reason: "repository_not_in_project",
-            refused,
-          }),
+          responseBody: JSON.stringify(projectRefusal(refused)),
         })
       }
       return noInterest()

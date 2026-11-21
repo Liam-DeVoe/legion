@@ -69,7 +69,7 @@ import {
 } from "@legion/envoy-client/test/envoy-stack";
 import { startStallProxy } from "@legion/envoy-client/test/stall-proxy";
 import { runFreezeScenario } from "@legion/envoy-client/test/stall-scenario";
-import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
+import { consumerDelivery, projectRefusal } from "@legion/envoy-client/test/subscribe-answer";
 import type { TmuxPlace, TmuxPlaceReading } from "@legion/envoy-client/tmux-place";
 import { envoyToolSpecs } from "@legion/envoy-client/tool-contract";
 import { UNRESPONSIVE_RULE } from "@legion/envoy-client/transport";
@@ -12320,16 +12320,7 @@ console.log(JSON.stringify(args));
         const topics: string[] = Array.isArray(body?.topics) ? body.topics : [];
         registrations.push(topics);
         const refused = topics.filter((topic) => topic.startsWith(refusedRoot));
-        if (refused.length > 0) {
-          return Response.json(
-            {
-              error: "the edge serves the GitHub events of its projects' repositories alone",
-              reason: "repository_not_in_project",
-              refused,
-            },
-            { status: 403 }
-          );
-        }
+        if (refused.length > 0) return Response.json(projectRefusal(refused), { status: 403 });
       }
       return responseWithRegistration(input, init, {});
     };
@@ -12396,14 +12387,7 @@ console.log(JSON.stringify(args));
         registrations.push(topics);
         const refused = topics.filter((topic) => topic.startsWith(refusedRoot));
         if (refusing && refused.length > 0) {
-          return Response.json(
-            {
-              error: "the edge serves the GitHub events of its projects' repositories alone",
-              reason: "repository_not_in_project",
-              refused,
-            },
-            { status: 403 }
-          );
+          return Response.json(projectRefusal(refused), { status: 403 });
         }
       }
       return responseWithRegistration(input, init, {});

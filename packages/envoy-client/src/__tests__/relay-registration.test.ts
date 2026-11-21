@@ -16,7 +16,7 @@ import {
   until,
 } from "../../test/relay-socket-fixtures";
 import { startRelaySocketStandIn } from "../../test/relay-socket-stand-in";
-import { consumerDelivery } from "../../test/subscribe-answer";
+import { consumerDelivery, projectRefusal } from "../../test/subscribe-answer";
 import { brokerCredential } from "../broker-credential";
 import {
   createConsumerDelivery,
@@ -51,7 +51,7 @@ describe("one registration", () => {
   const quiet = { drop: () => undefined, log: () => undefined } as const;
 
   /** The listener's refusal of a registration, with this status and body. */
-  function refusal(status: number, body: Record<string, unknown>): EnvoyApiError {
+  function refusal(status: number, body: Readonly<Record<string, unknown>>): EnvoyApiError {
     return new EnvoyApiError({
       method: "POST",
       url: "http://listener.example/v1/interests/subscribe",
@@ -257,11 +257,10 @@ describe("one registration", () => {
     const told: string[] = [];
     const dropped: (readonly string[])[] = [];
     const sent: (readonly string[])[] = [];
-    const refused = refusal(403, {
-      error: "no project",
-      reason: "topic_not_in_project",
-      refused: [AGENT, "notifications.slack.alerts"],
-    });
+    const refused = refusal(
+      403,
+      projectRefusal([AGENT, "notifications.slack.alerts"], "topic_not_in_project")
+    );
 
     const outcome = await registerWithRelay({
       relay: fakeRelay(),
@@ -306,13 +305,7 @@ describe("one registration", () => {
       send: (topics) => {
         sent.push(topics);
         return topics.includes(SLACK)
-          ? Promise.reject(
-              refusal(403, {
-                error: "no project",
-                reason: "topic_not_in_project",
-                refused: [SLACK],
-              })
-            )
+          ? Promise.reject(refusal(403, projectRefusal([SLACK], "topic_not_in_project")))
           : Promise.resolve("registered");
       },
       answered: () => undefined,
@@ -467,14 +460,7 @@ describe("a relay socket", () => {
         registered.push(body.topics);
         const refused = body.topics.filter((topic) => topic.startsWith(refusedRoot));
         if (refused.length > 0) {
-          return Response.json(
-            {
-              error: "the edge serves the GitHub events of its projects' repositories alone",
-              reason: "repository_not_in_project",
-              refused,
-            },
-            { status: 403 }
-          );
+          return Response.json(projectRefusal(refused), { status: 403 });
         }
         return Response.json({
           session_id: body.session_id,

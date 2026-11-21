@@ -3,7 +3,7 @@
 // read the report. That script and the rows of `extensions/envoy-relay-socket.test.ts` both read it
 // here: the script runs as it loads, so the rows cannot import it (as `test/session-pod-report.ts`
 // is to `test/session-pod-process.ts`).
-import { join } from "node:path";
+import { runReportingProcess } from "./report-process";
 
 /** What the process prints before its report, which is one JSON line. */
 export const RELAY_SESSION_REPORT = "relay-session-report ";
@@ -15,42 +15,24 @@ export interface RelaySessionReport {
 }
 
 /**
- * Starts `relay-session-process.ts` for `session` in `env`, and answers its report. It is killed at
- * `timeoutMs`, so a hung run leaves no process behind, and a run that reports nothing throws with
- * its stderr.
+ * Starts `relay-session-process.ts` for `session` in `env`, and answers its report
+ * (`runReportingProcess`). With `waitFor`, the process reports once a notice or a line holds that
+ * text, or 20 s after its start settled, whichever is first; without, once its start settled.
  */
 export async function runRelaySession(options: {
   readonly session: string;
   readonly env: Record<string, string | undefined>;
   readonly cwd: string;
   readonly timeoutMs: number;
+  readonly waitFor?: string;
 }): Promise<RelaySessionReport> {
-  const started = Bun.spawn(
-    [
-      process.execPath,
-      "--preload",
-      join(import.meta.dir, "..", "scripts", "role-takeover", "host-stub.ts"),
-      join(import.meta.dir, "relay-session-process.ts"),
-      options.session,
-    ],
-    {
-      cwd: options.cwd,
-      env: options.env,
-      stdout: "pipe",
-      stderr: "pipe",
-      timeout: options.timeoutMs,
-    }
-  );
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(started.stdout).text(),
-    new Response(started.stderr).text(),
-    started.exited,
-  ]);
-  const line = stdout.split("\n").find((entry) => entry.startsWith(RELAY_SESSION_REPORT));
-  if (exitCode !== 0 || line === undefined) {
-    throw new Error(
-      `the relay session process for ${options.session} reported nothing (exit ${exitCode}): ${stderr}`
-    );
-  }
-  return JSON.parse(line.slice(RELAY_SESSION_REPORT.length)) as RelaySessionReport;
+  return (await runReportingProcess({
+    script: "relay-session-process.ts",
+    args: [options.session, ...(options.waitFor === undefined ? [] : [options.waitFor])],
+    marker: RELAY_SESSION_REPORT,
+    what: `the relay session process for ${options.session}`,
+    env: options.env,
+    cwd: options.cwd,
+    timeoutMs: options.timeoutMs,
+  })) as RelaySessionReport;
 }
