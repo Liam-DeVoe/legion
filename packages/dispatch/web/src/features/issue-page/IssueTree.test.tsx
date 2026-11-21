@@ -7928,7 +7928,9 @@ test("Left on the row the tree is zoomed to, the whole tree drawn, says the tree
 // row out, or a read dropped it - is kept for when the row comes back, while the rows are drawn
 // from the issue. Left and `,` read that zoom rather than the tree drawn, so on a top-level row
 // they moved nothing and said nothing. They say the whole issue is drawn, as on a tree that was
-// never zoomed. The case drops the row with a read, which reaches both widths.
+// never zoomed. The case drops the row with a read, which reaches both widths; the read is no act
+// of the reader's, so the focus stays on the page's body (R13), and the reader comes back to the
+// tree with Tab.
 test("Left and , on a tree that no longer holds its zoom say the whole issue is drawn", async () => {
   for (const width of [1440, 390]) {
     setViewport(width);
@@ -7945,6 +7947,10 @@ test("Left and , on a tree that no longer holds its zoom say the whole issue is 
       })
     );
     await waitFor(() => expect(rowsFor(view.container, "comment-1").length).toBe(0));
+    expect(document.activeElement, "the read that dropped the zoom's row moved the focus").toBe(
+      document.body
+    );
+    await user.tab();
     await waitFor(() => expect(focusedRow(view.container)).toBe("comment-2"));
     for (const key of ["{ArrowLeft}", ","]) {
       await user.keyboard(key);
@@ -11244,12 +11250,16 @@ test("a comment the address landed on that leaves the tree leaves the outline dr
 });
 
 // A read of the comments that answers without the comment whose row holds the focus takes that
-// row out of the tree, and the browser dropped the focus to the page's body with it: the reader's
-// place in the outline was lost, and no row held the focus. The nearest row still drawn takes
-// it, as a key's move gives it - the tab stop and the row's body go with it: the row that now
-// stands where the dropped one stood, or the last row where the tree now ends before that place.
-// The issue holds three comments, each a thread of its own, so each is a row of the tree's top
-// level; `focus` is the key that takes the reader from the first row to `dropped`'s.
+// row out of the tree, and the browser drops the focus to the page's body with it. Who caused the
+// loss decides where the focus goes (R13 of dispatch://INFRA-3949, decision 356 of the parts). A
+// read the reader did nothing toward - another session's change - leaves the focus on the page's
+// body and scrolls nothing. A loss the reader caused - a key or a press of theirs since the tree
+// was last drawn, or a write of theirs that landed on the row - hands the focus to the nearest
+// row still drawn, as a key's move gives it - the tab stop and the row's body go with it: the row
+// that now stands where the dropped one stood, or the last row where the tree now ends before
+// that place. The issue holds three comments, each a thread of its own, so each is a row of the
+// tree's top level; `focus` is the key that takes the reader from the first row to `dropped`'s,
+// and `then` what the reader does after it, before the read.
 const THREE_COMMENTS: readonly Comment[] = [
   readComment("first", 1),
   readComment("second", 2),
@@ -11257,7 +11267,8 @@ const THREE_COMMENTS: readonly Comment[] = [
 ];
 async function dropFocusedComment(
   focus: string,
-  dropped: string
+  dropped: string,
+  then?: (user: UserEvent) => Promise<void>
 ): Promise<{ readonly container: HTMLElement; readonly unmount: () => void }> {
   const user = userEvent.setup();
   const body = renderAddressedBody(`/issues/${KEY}`, THREE_COMMENTS);
@@ -11265,6 +11276,7 @@ async function dropFocusedComment(
   await waitFor(() => expect(focusedRow(container)).toBe("first"));
   await user.keyboard(focus);
   await waitFor(() => expect(focusedRow(container)).toBe(dropped));
+  await then?.(user);
 
   await act(async () => {
     body.client.setQueryData(
@@ -11289,14 +11301,54 @@ async function expectReadersPlace(container: HTMLElement, id: string): Promise<v
   );
 }
 
-test("a read that drops the focused comment's row leaves the focus on the row that now stands in its place", async () => {
+test("a read that drops the focused row with no act of the reader's since leaves the focus on the page's body and scrolls nothing", async () => {
+  setViewport(1440);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const scrolls = [
+    spyOn(window, "scrollBy").mockImplementation(() => {}),
+    spyOn(window, "scrollTo").mockImplementation(() => {}),
+    spyOn(Element.prototype, "scrollIntoView").mockImplementation(() => {}),
+  ];
+  try {
+    let scrolledTo = Number.NaN;
+    const { container, unmount } = await dropFocusedComment("j", "second", async () => {
+      for (const spy of scrolls) spy.mockClear();
+      scrolledTo = window.scrollY;
+    });
+    // A frame a move of the focus asked for comes.
+    await nextFrame();
+    expect(
+      document.activeElement === document.body,
+      "a read that dropped the focused row, with no act of the reader's since, took the focus off the page's body"
+    ).toBe(true);
+    expect(
+      focusedRow(container),
+      "a read that dropped the focused row, with no act of the reader's since, gave the focus to a row"
+    ).toBeUndefined();
+    expect(window.scrollY, "a read that dropped the focused row scrolled the page").toBe(
+      scrolledTo
+    );
+    expect(
+      scrolls.map((spy) => spy.mock.calls.length),
+      "a read that dropped the focused row scrolled the page or a box"
+    ).toEqual([0, 0, 0]);
+    unmount();
+  } finally {
+    names.mockRestore();
+    for (const spy of scrolls) spy.mockRestore();
+  }
+});
+
+test("a read after a key of the reader's that drops the focused row hands the focus to the row now in its place", async () => {
   setViewport(1440);
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
   try {
-    const { container, unmount } = await dropFocusedComment("j", "second");
+    const { container, unmount } = await dropFocusedComment("j", "second", (user) =>
+      user.keyboard("{Shift}")
+    );
     expect(
       focusedRow(container),
-      "a read that dropped the focused comment's row left the focus on no row of the tree, or not on the next row"
+      "a read after a key of the reader's that dropped the focused row left the focus on no row of the tree, or not on the next row"
     ).toBe("third");
     await expectReadersPlace(container, "third");
     unmount();
@@ -11305,29 +11357,105 @@ test("a read that drops the focused comment's row leaves the focus on the row th
   }
 });
 
-test("a read that drops the focused comment's row, the tree's last, leaves the focus on the row before it", async () => {
+// The press is the reader's own act on the tree: the fold control keeps the focus where it was
+// (`button[data-node-bullet]` prevents its `mousedown`'s default), on the reply, and the fold
+// takes the reply's row out with it. Each thread is drawn folded, nothing under it open or
+// unanswered, so the reader opens the last thread with Right first.
+test("a press on the fold control over the focused row, the tree's last, drops the focused row and hands the focus to the row before it", async () => {
   setViewport(1440);
+  const user = userEvent.setup();
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
   try {
-    const { container, unmount } = await dropFocusedComment("{End}", "third");
+    const body = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS);
+    const { container } = body.view;
+    await waitFor(() => expect(focusedRow(container)).toBe("head-a"));
+    await user.keyboard("{End}");
+    await waitFor(() => expect(focusedRow(container)).toBe("head-b"));
+    await user.keyboard("{ArrowRight}");
+    await waitFor(() => expect(rowsFor(container, "reply-b")).toHaveLength(1));
+    await user.keyboard("j");
+    await waitFor(() => expect(focusedRow(container)).toBe("reply-b"));
+    const fold =
+      rowsFor(container, "head-b")[0]?.querySelector<HTMLElement>("button[data-node-bullet]") ??
+      null;
+    if (fold === null) throw new Error("the last thread draws no fold control");
+
+    await user.click(fold);
+    await waitFor(() => expect(rowsFor(container, "reply-b")).toEqual([]));
     expect(
       focusedRow(container),
-      "a read that dropped the tree's last row, which held the focus, left the focus on no row of the tree, or not on the row before it"
-    ).toBe("second");
-    await expectReadersPlace(container, "second");
-    unmount();
+      "a press that folded away the focused row, the tree's last, left the focus on no row of the tree, or not on the row before it"
+    ).toBe("head-b");
+    await expectReadersPlace(container, "head-b");
+    body.view.unmount();
   } finally {
     names.mockRestore();
   }
 });
 
-// A read that drops the row being edited takes the editor's focus out with it, and the nearest
-// row still drawn takes the focus, as for any row. The editing ends with it, as Escape ends it:
-// the page draws the document's editor nowhere, the panel holds the facts of the row the focus
-// went to, and the tree holds that row as any other. Left on, the editing waited for a row no
-// read draws, and the tree held every row the focus came to as the edited one: a Tab out of the
-// tree kept that row's body and its facts in Details.
-test("a read that drops the row being edited ends the editing, and a Tab out of the tree lets go of the row the focus went to", async () => {
+// The cycle key pressed in its last state, which draws every branch, goes back to its first,
+// which draws the reader's own folds: the reply that holds the focus, the tree's last row, is
+// folded away under its comment by a key of the reader's, and the last row now drawn takes the
+// focus. The browser row of the same half is `issue-page-l.e2e.ts`'s last.
+test("the cycle key that drops the focused row from the view hands the focus to the nearest row", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const view = renderTree(twoBranchesTree());
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+  await user.keyboard("zz");
+  await waitFor(() => expect(rowsFor(view.container, "reply-2")).toHaveLength(1));
+  await user.keyboard("{End}");
+  await waitFor(() => expect(focusedRow(view.container)).toBe("reply-2"));
+
+  await user.keyboard("z");
+  await waitFor(() => expect(rowsFor(view.container, "reply-2")).toEqual([]));
+  expect(
+    focusedRow(view.container),
+    "the cycle key that folded away the focused row left the focus on no row of the tree, or not on the last row"
+  ).toBe("comment-2");
+  view.unmount();
+});
+
+// A write of the reader's from the line at the foot lands on its row - here the line's landing
+// on a comment they edited (`to: "self"`) - and the read the write starts answers later, past
+// other reads that draw the tree again: a filter by words that the comment's new words no longer
+// match drops its row then. The drop is the reader's, though no key or press of theirs came
+// since the tree was last drawn, so the row now in its place takes the focus.
+test("a read that drops the focused row a write of the reader's landed on hands the focus to the row now in its place", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const comment = (id: string, text: string) =>
+    node({ author: { id: "alice", kind: "user" }, id, text, type: "comment" });
+  const first = comment("comment-1", "The first words.");
+  const edited = comment("comment-2", "The words the reader edits.");
+  const last = comment("comment-3", "The last words.");
+  const issue = (children: TreeNode[]) => node({ children, id: KEY, type: "issue" });
+  const tree = renderPageTree(issue([first, edited, last]));
+  const { container } = tree.view;
+  await waitFor(() => expect(focusedRow(container)).toBe("comment-1"));
+  // The reader's last act before the write's landing: the Save of their edit.
+  await user.keyboard("{Shift}");
+
+  await tree.land("comment-2", "self");
+  await waitFor(() => expect(focusedRow(container)).toBe("comment-2"));
+  // Another read draws the tree again before the write's own answers.
+  await act(async () => tree.redraw(issue([first, edited, last])));
+  await act(async () => tree.redraw(issue([first, last])));
+  expect(rowsFor(container, "comment-2"), "the read did not drop the edited comment").toEqual([]);
+  expect(
+    focusedRow(container),
+    "a read that dropped the row a write of the reader's landed on left the focus on no row of the tree, or not on the next row"
+  ).toBe("comment-3");
+});
+
+// A read that drops the row being edited, with no act of the reader's since the tree was last
+// drawn - a version a collaborator wrote - takes the editor's focus out with it, which the
+// browser drops to the page's body, and the focus stays there, as for any row. The editing ends
+// with it, as Escape ends it: the page draws the document's editor nowhere, and the panel holds
+// the facts of no row. Left on, the editing waited for a row no read draws, and the tree held
+// every row the focus came to as the edited one: a Tab out of the tree kept that row's body and
+// its facts in Details.
+test("a read that drops the focused row being edited ends the editing and leaves the focus on the page's body, and a Tab out of the tree lets go of the row the reader comes back to", async () => {
   setViewport(1440);
   const user = userEvent.setup();
   const last = node({ id: "comment-2", text: "The last words.", type: "comment" });
@@ -11337,27 +11465,32 @@ test("a read that drops the row being edited ends the editing, and a Tab out of 
   await act(async () => view.reread(node({ children: [first, last], id: KEY, type: "issue" })));
   expect(rowsFor(view.container, "spec#b-r1"), "the read did not drop the statement").toEqual([]);
   await waitFor(() =>
-    expect(
-      focusedRow(view.container),
-      "the focus did not go to the row now in the dropped row's place"
-    ).toBe("comment-2")
-  );
-  await waitFor(() =>
     expect(view.edited.at(-1), "the editing of the row the read dropped went on").toBeUndefined()
   );
   expect(
     document.querySelector(`[${EDITOR_BOX_ATTRIBUTE}]`),
     "the editor's box is still drawn"
   ).toBeNull();
+  // The frame the editing's end asks for comes.
+  await nextFrame();
   expect(
-    view.focusedNode()?.id,
-    "the panel does not hold the facts of the row the focus went to"
-  ).toBe("comment-2");
+    document.activeElement === document.body,
+    "a read that dropped the row being edited, with no act of the reader's since, took the focus off the page's body"
+  ).toBe(true);
+  expect(
+    view.focusedNode(),
+    "the panel still holds the facts of the row the read dropped"
+  ).toBeUndefined();
 
+  // The reader comes back to the tree with Tab, at its tab stop, and leaves it with Tab again.
+  await user.tab();
+  expect(focusedRow(view.container), "Tab did not come back to the tree's first row").toBe(
+    "comment-1"
+  );
   await user.tab();
   expect(document.activeElement, "Tab did not leave the outline").toBe(control);
-  const row = rowsFor(view.container, "comment-2")[0];
-  if (row === undefined) throw new Error("the last comment's row is not drawn");
+  const row = rowsFor(view.container, "comment-1")[0];
+  if (row === undefined) throw new Error("the first comment's row is not drawn");
   await waitFor(() =>
     expect(rowLetGo(row), "the row Tab left kept its body or its focused look").toBe(true)
   );

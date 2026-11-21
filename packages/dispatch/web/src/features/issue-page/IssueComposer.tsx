@@ -70,7 +70,7 @@ const KINDS: readonly OutlineKind[] = [
     kind: "comment",
     label: (
       <>
-        <span aria-hidden="true">❝</span>
+        <span aria-hidden="true">“</span>
         <span {...pageChrome}>{CONTROL_LABELS.composer_comment}</span>
       </>
     ),

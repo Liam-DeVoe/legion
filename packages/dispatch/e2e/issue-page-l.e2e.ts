@@ -74,14 +74,16 @@ import { asUser } from "./users";
  * c-replies, (5) and (6) c-box, (7) c-mark, (8) the outline's half of c-statement-reply, and (9)
  * its Spec view half, owed until the Spec view's keymap takes the box's writer and skipped until
  * then (`@owed`). Row (10) is R12's: the conversation's current point, which the outline marks on
- * one row (`r-current-point` of the spec).
+ * one row (`r-current-point` of the spec). Row (11) is R13's half of c-outline-focus that the
+ * reader causes, beside the row of `issue-page-i.e2e.ts` for the other half.
  *
  * The rows are on the real stack, each through `phase` (a reset database, alice signed in,
- * the new page turned on with `withIssuePage`): every row writes from the box and then reads its
- * own write, as Dispatch stored it and as the outline draws it from the server's reads. Rows (1)
- * to (5) are the checkpoint's (`git show 29111db16c41:packages/dispatch/e2e/issue-layout.e2e.ts`),
- * where the issue itself is no row of the outline now (ruling 5), so a node with no parent is read
- * at the outline's top level.
+ * the new page turned on with `withIssuePage`): every row but (11), which writes nothing, writes
+ * from the box and then reads its own write, as Dispatch stored it and as the outline draws it
+ * from the server's reads. Rows (1) to (5) are the checkpoint's
+ * (`git show 29111db16c41:packages/dispatch/e2e/issue-layout.e2e.ts`), where the issue itself is
+ * no row of the outline now (ruling 5), so a node with no parent is read at the outline's top
+ * level.
  */
 
 /** The widest window that draws the phone's form of the page (decision 72 of the parts). */
@@ -1570,7 +1572,7 @@ test("today's docked composer lifts nothing at the foot of a short wide window",
 // SLOW(>=2s): a seeded thread and three questions, the thread opened press by press twice, two
 // replies aimed and ended, and an answer and a comment written from the box, each waited on until
 // the outline marks it.
-test("the outline marks the conversation's current point on one row, and the mark follows the box and each new act", async ({
+test("the outline marks the current point of the conversation on one row, and the mark follows the box and each new act @phone", async ({
   browser,
 }) => {
   test.setTimeout(120_000);
@@ -1719,5 +1721,70 @@ test("the outline marks the conversation's current point on one row, and the mar
     const comment = (await commentWithBody(seeded.key, undefined, words)).id;
     await expect(nodeRow(page, comment), "the new comment is not drawn").not.toHaveCount(0);
     await expectPointOn(page, comment, "the new comment's row", "once it landed on the issue");
+  });
+});
+
+// (11) R13 of dispatch://INFRA-3949, decision 356 of the parts, the half the reader causes: a
+// key of the reader's that takes the focused row out of the view hands the focus to the nearest
+// row still drawn, as a key's move gives it - the row now at the dropped row's place among the
+// rows the tree draws, or the last row where the tree now ends before that place. The key is
+// the cycle key `z`, pressed in its last state, which draws every branch, to go back to its
+// first, which draws the reader's own folds: the thread's fourth level, which holds the focus,
+// is folded away under the thread. The other half, a read the reader did nothing toward, is
+// the row of `issue-page-i.e2e.ts` that leaves the focus on the page's body.
+// SLOW(>=2s): a seeded thread and three questions, the tree cycled to every branch and back.
+test("a key of the reader's that drops the focused row from the view hands the focus to the nearest row", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedReplyNesting, async (page, seeded) => {
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+    await focusRow(page, seeded.head);
+    // The cycle's last state draws every branch, the thread's fourth level among them.
+    await page.keyboard.press("z");
+    await page.keyboard.press("z");
+    await expect(
+      nodeRow(page, seeded.third),
+      "the cycle's last state does not draw the thread's fourth level"
+    ).not.toHaveCount(0);
+    await focusRow(page, seeded.third);
+    /** The keys of the rows the tree draws, in order, and the key of the one that holds the
+     *  focus, or null where no row of the tree holds it. */
+    const drawn = () =>
+      tree(page).evaluate((outline) => {
+        const focused = document.activeElement?.closest<HTMLElement>("[data-node-row]");
+        return {
+          focused:
+            focused !== null && focused !== undefined && outline.contains(focused)
+              ? (focused.dataset.rowKey ?? null)
+              : null,
+          keys: [...outline.querySelectorAll<HTMLElement>("[data-node-row]")].map(
+            (row) => row.dataset.rowKey ?? ""
+          ),
+        };
+      });
+    const before = await drawn();
+    const place = before.focused === null ? -1 : before.keys.indexOf(before.focused);
+    expect(place, "the thread's fourth level does not hold the focus").not.toBe(-1);
+
+    await page.keyboard.press("z");
+    await expect(
+      nodeRow(page, seeded.third),
+      "the cycle's first state still draws the thread's fourth level"
+    ).toHaveCount(0);
+    await expect
+      .poll(
+        async () => {
+          const after = await drawn();
+          const nearest = after.keys[Math.min(place, after.keys.length - 1)];
+          return after.focused !== null && after.focused === nearest;
+        },
+        {
+          message:
+            "the key that dropped the focused row left the focus on no row of the tree, or not on the row now at its place or the last row",
+        }
+      )
+      .toBe(true);
   });
 });

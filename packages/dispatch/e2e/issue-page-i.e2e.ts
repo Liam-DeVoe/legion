@@ -4483,14 +4483,19 @@ function focusOnATreeRow(page: Page): Promise<boolean> {
   });
 }
 
-// The tester's finding at #4205's 2ff6850a: when a read of the issue's comments no longer holds
-// the comment whose row has the focus, that row leaves the tree and the focus falls to the page's
-// body, so the reader's place in the outline is lost and no row of the tree holds the focus. The
-// comments read is answered without that comment as the server's answer reaches the page, and a
-// real event of the issue - another comment resolved - makes the page read the comments again.
+// R13 of dispatch://INFRA-3949, decision 356 of the parts: when a read of the issue's comments no
+// longer holds the comment whose row has the focus, that row leaves the tree and the focus falls
+// to the page's body. The reader caused no loss - another session resolved a comment, which made
+// the page read the comments again, and the row had the focus by a script's hand, no act of
+// theirs - so the focus stays on the body, where the page's keys work, no row of the tree takes
+// it, and the page does not scroll: the page, and not the reader, would have chosen what stands
+// near the lost place (decision 351). The comments read is answered without that comment as the
+// server's answer reaches the page. The row asserted the opposite before R13, the tester's
+// finding at #4205's 2ff6850a: a row of the tree took the focus. The half the reader causes is
+// the last row of `issue-page-l.e2e.ts`.
 // SLOW(>=2s): the whole issue seeded and loaded, then waited on until the read after the event
 // has drawn the outline without the comment.
-test("a read that drops the focused comment's row leaves the focus on a row of the tree", async ({
+test("a read that drops the focused row with no act of the reader's leaves the focus on the page's body and scrolls nothing", async ({
   browser,
 }) => {
   test.setTimeout(120_000);
@@ -4517,17 +4522,29 @@ test("a read that drops the focused comment's row leaves the focus on a row of t
       }
       await route.fulfill({ json, response: answer });
     });
+    // Where the page stands once the row holds the focus, before the event.
+    await nextFrames(page);
+    const scrolled = await page.evaluate(() => window.scrollY);
     await resolveComment(other);
     await expect(
       nodeRow(page, gone),
       "the read after the event still draws the comment its answer no longer holds"
     ).toHaveCount(0);
-    await expect
-      .poll(() => focusOnATreeRow(page), {
-        message: "the focus left the tree when a read dropped the focused comment's row",
-      })
-      .toBe(true);
-    await expectFocusedRowClear(page, "a read that dropped the focused comment's row");
+    // The frames a move of the focus, and the scroll a row makes as it takes the focus, would
+    // take to come.
+    await nextFrames(page);
+    expect(
+      await page.evaluate(() => document.activeElement === document.body),
+      "a read that dropped the focused row, with no act of the reader's, took the focus off the page's body"
+    ).toBe(true);
+    expect(
+      await focusOnATreeRow(page),
+      "a read that dropped the focused row, with no act of the reader's, gave the focus to a row of the tree"
+    ).toBe(false);
+    expect(
+      await page.evaluate(() => window.scrollY),
+      "a read that dropped the focused row, with no act of the reader's, scrolled the page"
+    ).toBe(scrolled);
   });
 });
 

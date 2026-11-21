@@ -639,9 +639,9 @@ export const STATE_LINES = freeze({
 /**
  * What the page says in answer to the reader's own act, and never on load: a copy they pressed,
  * a list they opened still being read, and a write of theirs still out (dispatch://INFRA-1196
- * R22). The page's other answers are tables of their own -
- * `BLOCKED_BY_REFUSALS` here, `HELP_LINES` and `KEY_REPORTS` in `page-structure.ts` - and
- * `ANSWER_SOURCES` gathers all four, so a test can tell what the page says unasked from what it
+ * R22). The page's other answers are tables of their own - `BLOCKED_BY_REFUSALS` and
+ * `ADDRESS_FALLBACK_WORDS` here, `HELP_LINES` and `KEY_REPORTS` in `page-structure.ts` - and
+ * `ANSWER_SOURCES` gathers all five, so a test can tell what the page says unasked from what it
  * says when asked. Each is at most one sentence and names no schema token.
  */
 export const ANSWER_LINES = freeze({
@@ -769,6 +769,68 @@ export const BLOCKED_BY_REFUSALS = freeze({
 
 /** One refusal of a blocked-by list the page has a sentence for. */
 export type BlockedByRefusalWords = keyof typeof BLOCKED_BY_REFUSALS;
+
+/**
+ * What the page says in the outline's place where the address the reader followed names nothing
+ * the outline draws a row for (`slots/body.tsx`): an ask, a comment or a message the issue holds
+ * none of, or whose read failed, by the kind of item the address names; a block of a document no
+ * row is drawn for; the child issues of an issue with none; and the link back to the issue's own
+ * address under each. Each is drawn in answer to an address followed, which is the reader's own
+ * act, as `KEY_REPORTS.agents_thread` is (`page-structure.ts`), so this is one of the page's
+ * answers (`ANSWER_SOURCES`). They are the words of today's page for the same states
+ * (`issue/IssuePage.tsx`'s `ItemLandingFailure`), which `slots/body.tsx` copies until that page
+ * is removed. A line that names the issue is cut where the issue's key goes, as
+ * `BLOCKED_BY_REFUSALS` cuts its sentences: the key is drawn between `before` and `after`.
+ */
+export const ADDRESS_FALLBACK_WORDS = freeze({
+  /** The link under each line that takes the reader to the issue's own address. */
+  back: { after: "", before: "Back to " },
+  /** A block of a document the outline draws no row for - a paragraph, a heading, a table - is
+   *  no node of the tree as much as a block id no document holds, so the words fit both. */
+  block: {
+    heading: "No row for this block",
+    line: { after: "'s outline.", before: "That link names no row of " },
+  },
+  children: {
+    heading: "No child issues",
+    line: { after: ", which has none.", before: "That link names the child issues of " },
+  },
+  /** An item the issue holds none of (`missing`), and one whose read failed (`unreadable`): the
+   *  heading over each, the line under a missing one, and the alert beside a failed read's
+   *  Retry (`FailedReadLine`). */
+  items: {
+    ask: {
+      missing: {
+        heading: "Ask not found",
+        line: {
+          after: " — it may have been deleted.",
+          before: "That link doesn't name an ask on ",
+        },
+      },
+      unreadable: { heading: "Couldn't load this ask", message: "Couldn't load this ask." },
+    },
+    comment: {
+      missing: {
+        heading: "Comment not found",
+        line: {
+          after: " — it may have been deleted.",
+          before: "That link doesn't name a comment on ",
+        },
+      },
+      unreadable: { heading: "Couldn't load this comment", message: "Couldn't load this comment." },
+    },
+    message: {
+      missing: {
+        heading: "Message not found",
+        line: {
+          after: " — it may have been deleted.",
+          before: "That link doesn't name a message on ",
+        },
+      },
+      unreadable: { heading: "Couldn't load this message", message: "Couldn't load this message." },
+    },
+  },
+} as const);
 
 /**
  * How a document of the issue stands with its reviewers, in words (R5): the head's "How it gets
@@ -1507,6 +1569,7 @@ export const UNASKED_SOURCES: readonly unknown[] = freeze([
 export const ANSWER_SOURCES: readonly unknown[] = freeze([
   ANSWER_LINES,
   BLOCKED_BY_REFUSALS,
+  ADDRESS_FALLBACK_WORDS,
   HELP_LINES,
   KEY_REPORTS,
 ]);
