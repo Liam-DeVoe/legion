@@ -680,7 +680,10 @@ The broker evaluates every name
   `github-app-no-profile`). A release holds one installation token for each account in effect,
   the profile's `github.accounts` or the request's target, cut to the profile's repositories or
   the target's: a JSON object of installations, or that one account's bare token for a profile
-  whose `github.value` is `token`. The broker asks GitHub for the profile's permissions cut to what
+  whose `github.value` is `token`. A profile that lists `github.repositories` names, in them, a
+  repository of every account it lists: the profiles file, at the boot and in `profiles check`,
+  refuses an account that no repository is of, since the broker would never mint for it.
+  The broker asks GitHub for the profile's permissions cut to what
   each installation holds, as its list of installations gives them: a permission the installation
   holds none of is left out, and one it holds at a lower level is asked for at that level. A GitHub
   profile names `metadata: read`, which GitHub grants with every installation token: the broker
