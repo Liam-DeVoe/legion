@@ -520,9 +520,9 @@ test("a refusal that names a dispatch command says what happened in the page's w
       ),
       refusedRow(
         2,
-        "dispatch_doc_edit",
-        "INVALID_OP",
-        "the quote was not found in the document; read it again with `dispatch doc-read` and quote what it holds"
+        "dispatch_edit_ask",
+        "ASK_BLOCK_TEXT",
+        'block: the edit drops option "B" of ask block "blk-9", whose list item holds more than its plain line; remove it with a document edit first (dispatch doc-edit, deleting a block by its id), then send the ask edit again'
       ),
       // The other empty-question refusal names no command, and keeps its words.
       refusedRow(

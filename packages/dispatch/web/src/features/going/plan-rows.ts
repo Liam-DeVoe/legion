@@ -149,16 +149,16 @@ export const ASK_EMPTY_QUESTION_REFUSAL =
 
 /** A refusal whose words name a command of the `dispatch` command-line tool - written for an
  *  agent that runs it - which the person who approved the row cannot run. */
-const NAMES_A_COMMAND = /`dispatch [a-z][a-z-]*`|\bdispatch [a-z][a-z-]* --/u;
+const NAMES_A_COMMAND = /\bdispatch [a-z][a-z-]*/u;
 
 /** What a row's result says to the person: the page's own words for an upload refused because
  *  its document moved (`UPLOAD_MOVED_REFUSAL`), an edit of an approval request
  *  (`ASK_KIND_FIXED_REFUSAL`) and a question written into a decision that cannot take one there
  *  (`ASK_EMPTY_QUESTION_REFUSAL`); any other refusal of a failed row whose words name a `dispatch`
- *  command, as the server writes one (backticked, or followed by its flags), in the page's
- *  general words, so no route's advice to run a command reaches the person; and every other
- *  result as Dispatch wrote it, a waiting or skipped row's words, which can name an item's title,
- *  among them. */
+ *  command, in whatever form the server writes it (backticked, followed by its flags, or in
+ *  parentheses beside its arguments), in the page's general words, so no route's advice to run a
+ *  command reaches the person; and every other result as Dispatch wrote it, a waiting or skipped
+ *  row's words, which can name an item's title, among them. */
 export function rowResultMessage(row: GoingPlanRow): string {
   const result = row.result;
   if (result === null) {
