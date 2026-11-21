@@ -431,6 +431,13 @@ function plainHttpOffMachine(url: string): string | undefined {
  * A caller that opens no NATS connection (`nats: false`: the `dispatch` command, `claude-envoy`'s
  * `envoy-send`, pi-legion's `legion.ts` extension) takes no inbound messages and resolves no NATS
  * credential, so a seed it would never send can neither run a command nor turn it off.
+ *
+ * `ENVOY_INBOUND` (or the file's `inbound`) `listener` takes inbound messages through the
+ * listener's relay socket (`listenerInbound`). With it, a listener at a plain http address of
+ * another machine turns Envoy off as a whole, for every caller and before any credential
+ * resolves, a NATS server named or not; with one named, the error names that conflict first.
+ * This machine's own listener may be plain http, and a session not set to `listener` keeps a
+ * plain http listener.
  */
 export function envoySettings(
   env: EnvoyEnvironment,
