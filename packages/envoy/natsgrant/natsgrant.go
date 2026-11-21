@@ -351,9 +351,14 @@ func (intake DispatchIntake) entries(machineID string) []string {
 // listenerSelection is what the listener beside Dispatch, as machine machineID, needs of the
 // session consumers' selection bucket (consumernames.SessionBucket): the stream's leader-answered
 // message get, which reads the bucket's sentinel and the listener's own record, and the write of
-// that one record's key (consumernames.DurableKey of its durable), never the bucket's wildcard. The
-// get takes the key in its body, so it reads any key of the bucket; no other call of the bucket's
-// stream is granted, so it changes none but its own.
+// that one record's key (consumernames.DurableKey of its durable), never the bucket's wildcard. No
+// other call of the bucket's stream is granted, so it changes no record but its own.
+//
+// The get takes the key in its body, so it reads any key of the bucket, and that is kept on
+// purpose: the listener runs with Dispatch's credential, which already reaches every delivery
+// (Dispatch), so reading other sessions' records, which hold session ids and physical consumer
+// names, gives it nothing it does not hold. A per-key direct get could be scoped by subject, but
+// a follower may answer it, and a stale selection record could name a retired generation.
 func listenerSelection(machineID string) []string {
 	return []string{
 		jsAPI + "STREAM.MSG.GET." + kvStream + consumernames.SessionBucket,
