@@ -237,15 +237,44 @@ func (s *Servers) Restart(t *testing.T, stream string) *natsgo.Conn {
 	t.Cleanup(conn.Close)
 	deadline := time.Now().Add(60 * time.Second)
 	for {
-		js, err := conn.JetStream()
-		if err == nil {
-			if _, err = js.StreamInfo(stream); err == nil {
-				return conn
-			}
+		ready, why := s.consumersReady(conn, stream)
+		if ready {
+			return conn
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("%s did not answer within 60 s of the restart: %v", stream, err)
+			t.Fatalf("%s's consumers did not all answer within 60 s of the restart: %s", stream, why)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+// consumersReady reports whether stream answers and every one of its consumers answers its info,
+// with a leader on a cluster: until then a row's read of a consumer after the restart would time
+// out on a replica group still electing, and read as nothing delivered. The consumers it reads must
+// number what the stream's own state counts, so a listing cut short is not read as every consumer.
+// why says what is not ready.
+func (s *Servers) consumersReady(conn *natsgo.Conn, stream string) (bool, string) {
+	js, err := conn.JetStream(natsgo.MaxWait(5 * time.Second))
+	if err != nil {
+		return false, err.Error()
+	}
+	info, err := js.StreamInfo(stream)
+	if err != nil {
+		return false, "the stream: " + err.Error()
+	}
+	read := 0
+	for name := range js.ConsumerNames(stream) {
+		consumer, err := js.ConsumerInfo(stream, name)
+		if err != nil {
+			return false, fmt.Sprintf("consumer %s: %v", name, err)
+		}
+		if s.Cluster != nil && (consumer.Cluster == nil || consumer.Cluster.Leader == "") {
+			return false, fmt.Sprintf("consumer %s has no leader yet", name)
+		}
+		read++
+	}
+	if read != info.State.Consumers {
+		return false, fmt.Sprintf("read %d consumers of the %d the stream counts", read, info.State.Consumers)
+	}
+	return true, ""
 }
