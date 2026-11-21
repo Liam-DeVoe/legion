@@ -175,8 +175,8 @@ func controllerStartGitHubCredential(ctx context.Context, daemonURL, secret, sta
 		return noop, "", nil, fmt.Errorf("write the controller's gh files: %w", err)
 	}
 	written := bundle.Dirs[bundle.Default]
-	fmt.Fprintf(stderr, "[legion] the controller's gh acts as the %s App for owners %s (read-only) from %s; this process refreshes the tokens before they expire (%s)\n",
-		written.App, strings.Join(bundle.DirNames(), ", "), ghDir, written.ExpiresAt.Format(time.RFC3339))
+	fmt.Fprintf(stderr, "[legion] the controller's gh acts as the App for owners %s (read-only) from %s; this process refreshes the tokens before they expire (%s)\n",
+		strings.Join(bundle.DirNames(), ", "), ghDir, written.ExpiresAt.Format(time.RFC3339))
 	stop, err = startControllerGitHubRefresh(daemonURL, secret, ghDir, bundle.Default, filepath.Join(stateDir, "github-credential.log"))
 	if err != nil {
 		return noop, "", nil, err

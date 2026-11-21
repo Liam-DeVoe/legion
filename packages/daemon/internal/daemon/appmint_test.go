@@ -33,16 +33,34 @@ import (
 // accounts discover names: installation discovery answers through discover, every installation
 // is granted every permission a role's set names, the exchange and identity lookups succeed,
 // and an App's slug is legion-test-<its id>, the bot login it answers.
-// It counts each App's installation discoveries by the App id its JWT names.
+// It counts each App's installation discoveries by the App id its JWT names, and the token
+// exchanges asked of it, of which it answers 502 to each refuseExchange names by its number,
+// from 1.
 type gitHubStandIn struct {
-	mu          sync.Mutex
-	discoveries map[string]int
+	mu             sync.Mutex
+	discoveries    map[string]int
+	exchanges      int
+	refuseExchange func(n int) bool
 }
 
 func (g *gitHubStandIn) Discoveries() map[string]int {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return maps.Clone(g.discoveries)
+}
+
+// Exchanges is how many token exchanges were asked of g.
+func (g *gitHubStandIn) Exchanges() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.exchanges
+}
+
+// refuseExchanges has g answer 502 to each token exchange refuse names by its number, from 1.
+func (g *gitHubStandIn) refuseExchanges(refuse func(n int) bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.refuseExchange = refuse
 }
 
 // jwtIssuer is the App id a request's App JWT names.
@@ -90,6 +108,14 @@ func appTokens(t *testing.T, discover func(w http.ResponseWriter, r *http.Reques
 		case strings.HasSuffix(r.URL.Path, "/installation"):
 			fmt.Fprint(w, `{"id":77}`)
 		case strings.HasSuffix(r.URL.Path, "/access_tokens"):
+			standIn.mu.Lock()
+			standIn.exchanges++
+			refused := standIn.refuseExchange != nil && standIn.refuseExchange(standIn.exchanges)
+			standIn.mu.Unlock()
+			if refused {
+				http.Error(w, "{}", http.StatusBadGateway)
+				return
+			}
 			// A mint names the permissions its token holds, and refuses an answer wider than it
 			// asked for (appauth), so the stand-in answers with them as the request named them,
 			// as GitHub does.
@@ -209,10 +235,10 @@ func TestABootWaitsOutAGitHubRequestThatNeverAnswers(t *testing.T) {
 	if err := bootsOrExits(t, workflowConfig(t, workflowNATS(t)), tokens, 60*time.Second); err != nil {
 		t.Fatalf("boot = %v, want it to mint again after one GitHub request that never answered", err)
 	}
-	// One App serves both roles, and the token manager reads installations per role, so the review
-	// role's discovery is a third one under the App's JWT.
-	if got := standIn.Discoveries(); !maps.Equal(got, map[string]int{"1": 3}) {
-		t.Errorf("installation discoveries by App = %v, want the implement role's that never answered and one more, and the review role's one, all the one App's", got)
+	// The token manager keeps the App's installation per owner, whichever set asks, so the
+	// reviewer's mint reads the acme installation the implementer's second attempt discovered.
+	if got := standIn.Discoveries(); !maps.Equal(got, map[string]int{"1": 2}) {
+		t.Errorf("installation discoveries by App = %v, want the implementer's that never answered and one more, and none for the reviewer: one discovery for the owner", got)
 	}
 }
 
@@ -224,43 +250,42 @@ func TestABootRefusesADefinitiveGitHubAnswerAtOnce(t *testing.T) {
 		http.Error(w, `{"message":"A JSON web token could not be decoded"}`, http.StatusUnauthorized)
 	})
 	err := bootsOrExits(t, workflowConfig(t, workflowNATS(t)), tokens, 60*time.Second)
-	if err == nil || !strings.Contains(err.Error(), "mint implement GitHub App token at boot for acme: ") || !strings.Contains(err.Error(), "(401)") {
-		t.Fatalf("boot = %v, want the refusal naming the implement mint, the owner acme and GitHub's 401", err)
+	if err == nil || !strings.Contains(err.Error(), "mint implementer GitHub App token at boot for acme: ") || !strings.Contains(err.Error(), "(401)") {
+		t.Fatalf("boot = %v, want the refusal naming the implementer's mint, the owner acme and GitHub's 401", err)
 	}
 	if got := standIn.Discoveries(); !maps.Equal(got, map[string]int{"1": 1}) {
-		t.Errorf("installation discoveries by App = %v, want the implement App's one: a 401 is not asked again", got)
+		t.Errorf("installation discoveries by App = %v, want the implementer's one: a 401 is not asked again", got)
 	}
 }
 
-// Both roles' tokens share one retry budget, so a boot waits at most appMintRetry before it
-// refuses, however the failures fall between the two mints. Here the implement role's discovery
-// fails twice and then answers, and the review role's never does: the budget's three attempts are
-// spent before the review token is asked for more than once. With a budget per role the boot would
-// wait both out, twice as long, which is what outlasted Stage 3's wait for /healthz. One App serves
-// both roles, so the discoveries are told apart by their order: the third is the implement role's
-// that answers, and the fourth is the review role's.
+// Both sets' tokens share one retry budget, so a boot waits at most appMintRetry before it
+// refuses, however the failures fall between the two mints. Here the implementer's token exchange
+// fails twice and then answers, and the reviewer's never does: the budget's three attempts are
+// spent before the reviewer's token is asked for more than once. With a budget per set the boot
+// would wait both out, twice as long, which is what outlasted Stage 3's wait for /healthz. The
+// token manager keeps the App's installation per owner, so both mints are made on the one
+// discovery of acme, and the exchanges are told apart by their order: the third is the
+// implementer's that answers, and the fourth is the reviewer's.
 func TestABootGivesBothAppTokensOneRetryBudget(t *testing.T) {
 	quickAppMints(t)
-	tokens, standIn := appTokens(t, func(w http.ResponseWriter, r *http.Request, app string, n int) {
-		if app == "1" && n == 3 {
-			installed(w)
-			return
-		}
-		http.Error(w, "{}", http.StatusBadGateway)
-	})
+	tokens, standIn := appTokens(t, func(w http.ResponseWriter, _ *http.Request, _ string, _ int) { installed(w) })
+	standIn.refuseExchanges(func(n int) bool { return n != 3 })
 	err := bootsOrExits(t, workflowConfig(t, workflowNATS(t)), tokens, 60*time.Second)
-	if err == nil || !strings.Contains(err.Error(), "retry budget (3 attempts)") || !strings.Contains(err.Error(), "mint review GitHub App token at boot") {
-		t.Fatalf("boot = %v, want the refusal after the one budget's three attempts, naming the review mint", err)
+	if err == nil || !strings.Contains(err.Error(), "retry budget (3 attempts)") || !strings.Contains(err.Error(), "mint reviewer GitHub App token at boot") {
+		t.Fatalf("boot = %v, want the refusal after the one budget's three attempts, naming the reviewer's mint", err)
 	}
-	if got := standIn.Discoveries(); !maps.Equal(got, map[string]int{"1": 4}) {
-		t.Errorf("installation discoveries by App = %v, want the implement role's three and the review role's one, all the one App's", got)
+	if got := standIn.Exchanges(); got != 4 {
+		t.Errorf("token exchanges = %d, want the implementer's three and the reviewer's one", got)
+	}
+	if got := standIn.Discoveries(); !maps.Equal(got, map[string]int{"1": 1}) {
+		t.Errorf("installation discoveries by App = %v, want one for the owner acme, which both sets mint on", got)
 	}
 }
 
-// bootMints counts the token mints the boot's App gate asks of a real token manager, by App role
-// and owner account, in the order it asks for them. It counts until the gate closes: the daemon
-// logs its "appauth" boot stage the moment the last owner is minted, and the GitHub reads of the
-// mapping that follow mint the implement App once for every repository they name
+// bootMints counts the token mints the boot's App gate asks of a real token manager, by set and
+// owner account, in the order it asks for them. It counts until the gate closes: the daemon logs
+// its "appauth" boot stage the moment the last owner is minted, and the GitHub reads of the
+// mapping that follow mint the read lease once for every repository they name
 // (defaultBranches.fetch), which is not what the gate proved. close is called from the log
 // (mintGateLog), after the gate's last mint returned and before any read that follows it.
 type bootMints struct {
@@ -270,13 +295,13 @@ type bootMints struct {
 	minted []string
 }
 
-func (b *bootMints) Token(ctx context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
+func (b *bootMints) Token(ctx context.Context, set appauth.TokenSet, owner string) (appauth.Lease, error) {
 	b.mu.Lock()
 	if !b.closed {
-		b.minted = append(b.minted, string(role)+" "+owner)
+		b.minted = append(b.minted, string(set)+" "+owner)
 	}
 	b.mu.Unlock()
-	return b.Manager.Token(ctx, role, owner)
+	return b.Manager.Token(ctx, set, owner)
 }
 
 func (b *bootMints) close() {
@@ -285,7 +310,7 @@ func (b *bootMints) close() {
 	b.closed = true
 }
 
-// Minted is what the gate asked for, "<role> <owner>" each, in order.
+// Minted is what the gate asked for, "<set> <owner>" each, in order.
 func (b *bootMints) Minted() []string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -345,16 +370,16 @@ func mappedWorkflowConfig(t *testing.T, natsURL string, mapped ...string) config
 	return cfg
 }
 
-// The boot proves the App's key once for each role on each owner account of the repositories the
-// mapping serves, not once for each repository: a token reaches every repository the account's
-// installation holds, so a second repository of an account already minted for proves nothing
-// further, while it costs the boot another mint and another retry budget to wait out. Here three
-// repositories belong to two accounts, one of them spelled in the mapping as the account is not,
-// and each role is minted twice, on the two accounts lowercased and in their sorted order, so one
-// boot's log reads like the next's.
+// The boot proves the App's key once for each set it mints at boot on each owner account of the
+// repositories the mapping serves, not once for each repository: a token reaches every repository
+// the account's installation holds, so a second repository of an account already minted for
+// proves nothing further, while it costs the boot another mint and another retry budget to wait
+// out. Here three repositories belong to two accounts, one of them spelled in the mapping as the
+// account is not, and each set is minted twice, on the two accounts lowercased and in their
+// sorted order, so one boot's log reads like the next's.
 //
 // The App is installed on a third account, initech, that no mapped repository belongs to, and no
-// role is minted on it: R1 asks only that an installed owner the mapping does not reach is not
+// set is minted on it: R1 asks only that an installed owner the mapping does not reach is not
 // PROVED at boot, and a bundle reads its App's installation when it is built, so nothing of that
 // owner is wanted before then. It is not that this project needs no work there: under R3 and R4
 // an issue of this project may name an initech repository, and the daemon records and runs it.
@@ -376,13 +401,13 @@ func TestABootMintsEachAppOnceForEachOwnerOfTheMapping(t *testing.T) {
 			t.Errorf("the boot's App gate asked for %q, want no mint on initech: the App is installed there, and no repository the mapping serves belongs to it", mint)
 		}
 	}
-	want := []string{"implement acme", "review acme", "implement globex", "review globex"}
+	want := []string{"implementer acme", "reviewer acme", "implementer globex", "reviewer globex"}
 	if !slices.Equal(minted, want) {
-		t.Errorf("the mints the boot's App gate asked for = %v, want %v: one for each role on each owner account of the mapping, and none for a second repository of an account", minted, want)
+		t.Errorf("the mints the boot's App gate asked for = %v, want %v: one for each set on each owner account of the mapping, and none for a second repository of an account", minted, want)
 	}
-	// One App serves both roles, and the token manager reads installations per role, so each role
-	// discovers once under the App's JWT.
-	if got := standIn.Discoveries(); !maps.Equal(got, map[string]int{"1": 2}) {
-		t.Errorf("installation discoveries by App = %v, want one for each role: one discovery names every installation the App has", got)
+	// The token manager keeps the App's installations per owner, and one discovery names every
+	// installation the App has, so the first mint's discovery serves every mint after it.
+	if got := standIn.Discoveries(); !maps.Equal(got, map[string]int{"1": 1}) {
+		t.Errorf("installation discoveries by App = %v, want one: one discovery names every installation the App has, and each owner's is kept whichever set asks", got)
 	}
 }

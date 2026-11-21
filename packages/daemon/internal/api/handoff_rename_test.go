@@ -148,7 +148,7 @@ func TestHandoffCompleteOfAnImplementerOnATransferredRepositoryListsTheHeadOfThe
 				t.Fatalf("the implementer's completion of a tree recorded as sjawhar/legion = %d %s; want 200 off %s",
 					recorder.Code, recorder.Body, tc.serving)
 			}
-			want := []string{"GET /repos/" + tc.serving + "/pulls head=" + owner + ":legion/LEGION-208 Bearer implement-token-for-" + owner}
+			want := []string{"GET /repos/" + tc.serving + "/pulls head=" + owner + ":legion/LEGION-208 Bearer read-token-for-" + owner}
 			if got := github.requests(); !slices.Equal(got, want) {
 				t.Fatalf("GitHub calls:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 			}

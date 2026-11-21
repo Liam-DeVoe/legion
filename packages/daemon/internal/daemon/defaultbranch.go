@@ -10,7 +10,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/ghbranch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
-	"github.com/sjawhar/legion/daemon/internal/githubrest"
 )
 
 // defaultBranchTTL is how long a repository's default branch, as GitHub named it, stands before the
@@ -20,8 +19,8 @@ import (
 const defaultBranchTTL = 10 * time.Minute
 
 // defaultBranches is each repository as GitHub names it (ghbranch.Read: its own spelling of owner
-// and name, and its default branch), read as the implement App — the App that creates an issue's
-// branch and provisions its workspace — and kept per repository, in any spelling, for ttl from
+// and name, and its default branch), read with the owner's read lease, and kept per repository,
+// in any spelling, for ttl from
 // the read. Reads of one repository that overlap share one request to GitHub. A read GitHub
 // refuses for any reason but its rate limit is returned and keeps nothing; one GitHub's rate limit
 // refuses is answered from the read kept, however old, which then stands until the limit ends
@@ -68,7 +67,7 @@ type pendingDefaultBranch struct {
 }
 
 // newDefaultBranches reads under githubAPI, the GitHub REST root ("" is https://api.github.com),
-// with tokens' implement App, for the repository repos serves each asked-for one under (nil: each
+// with tokens' read lease, for the repository repos serves each asked-for one under (nil: each
 // under its own name), keeping each answer it reads for ttl on now's clock (a branch held through
 // GitHub's rate limit stands until the limit ends instead).
 func newDefaultBranches(tokens appauth.Tokens, repos *repositories, githubAPI string, ttl time.Duration, now func() time.Time) *defaultBranches {
@@ -156,15 +155,15 @@ func (d *defaultBranches) hold(repo ghrepo.Repository, answer ghbranch.Repositor
 }
 
 // fetch asks GitHub about the repository it holds repo under now (repositories.serving), on the
-// implement App's token for that repository: after a configured rename's transfer the
+// owner's read lease for that repository: after a configured rename's transfer the
 // installation covering the repository is the owner it moved to, so a token minted for the owner
 // repo names would reach nothing, and the address follows the token even though GitHub answers
 // the old one by redirect.
 func (d *defaultBranches) fetch(ctx context.Context, repo ghrepo.Repository) (ghbranch.Repository, error) {
 	served := d.repos.serving(repo)
-	lease, err := d.tokens.Token(ctx, appauth.Implement, served.Owner())
+	github, err := readClient(ctx, d.tokens, d.githubAPI, served)
 	if err != nil {
-		return ghbranch.Repository{}, fmt.Errorf("mint the implement App token to read the default branch of %s: %w", served, err)
+		return ghbranch.Repository{}, fmt.Errorf("mint the read token to read the default branch of %s: %w", served, err)
 	}
-	return ghbranch.Read(ctx, githubrest.Client{Token: lease.Token, API: githubrest.RepositoryAPI(d.githubAPI, served)}, served)
+	return ghbranch.Read(ctx, github, served)
 }

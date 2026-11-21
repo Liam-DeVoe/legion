@@ -2757,32 +2757,36 @@ func (h *outboxFactHandler) facts() []intake.Fact {
 
 type outboxTokens struct{}
 
-func (outboxTokens) Token(context.Context, appauth.AppRole, string) (appauth.Lease, error) {
+func (outboxTokens) Token(context.Context, appauth.TokenSet, string) (appauth.Lease, error) {
 	return appauth.Lease{Token: "outbox-token", ExpiresAt: time.Now().Add(time.Hour)}, nil
 }
 
-func (t outboxTokens) ReadToken(context.Context, appauth.AppRole, string) (appauth.Lease, error) {
+func (t outboxTokens) ReadToken(context.Context, string) (appauth.Lease, error) {
 	return appauth.Lease{Token: "outbox-token-read", ExpiresAt: time.Now().Add(time.Hour)}, nil
 }
 
-// InstalledOwners is the owners each App is installed on, which a bundle reads from GitHub at
+func (t outboxTokens) VerdictToken(ctx context.Context, owner string) (appauth.Lease, error) {
+	return t.Token(ctx, appauth.SetVerdict, owner)
+}
+
+// InstalledOwners is the owners the App is installed on, which a bundle reads from GitHub at
 // every build (appauth.OwnerInstallations): the one account these rigs' project serves its
 // repository under.
-func (outboxTokens) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
+func (outboxTokens) InstalledOwners(context.Context) ([]string, error) {
 	return []string{"legion"}, nil
 }
 
 // legionRepos is a project whose one repository is legion/legion, as the sandbox rigs here name
 // it, and legionDirs the gh directories a bundle built over it holds. legionInstalled is the
 // record those bundles write and legionDirs reads, as the daemon's own three share one
-// (appauth.Installed, sandboxRuntime): before the first bundle of an App it names no directory
-// for that App and no pod is moved, as it does for a bundle it cannot describe.
+// (appauth.Installed, sandboxRuntime): before the first bundle it names no directory and no pod
+// is moved, as it does for a bundle it cannot describe.
 var legionInstalled = appauth.NewInstalled()
 
 func legionRepos() []ghrepo.Repository { return []ghrepo.Repository{ghrepo.MustParse("legion/legion")} }
 
-func legionDirs(repo ghrepo.Repository, roles []appauth.AppRole) []string {
-	return appauth.GitHubDirs(legionRepos, ghrepo.Renames{}, legionInstalled, nil, roles, repo)
+func legionDirs(repo ghrepo.Repository, sets []appauth.TokenSet) []string {
+	return appauth.GitHubDirs(legionRepos, ghrepo.Renames{}, legionInstalled, nil, sets, repo)
 }
 
 type outboxSpecs struct{}

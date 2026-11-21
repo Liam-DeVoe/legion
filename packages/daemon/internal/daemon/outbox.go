@@ -100,7 +100,7 @@ type outbox struct {
 	// releases no pod, and then a release arms none.
 	backstop time.Duration
 	// readPullRequest reads one pull request from GitHub (one GET /pulls/{number}) and answers the
-	// implement App's client of its repository with it; applyMergeability applies what that read
+	// read lease's client of its repository with it; applyMergeability applies what that read
 	// says about merging the head, reading the base's rules with that client on a conflicting
 	// answer, under the event id it is handed; and mergeStateWait is how long a read row waits
 	// before it reads again. The two rows that read a pull request use them: the merge-queue read
@@ -3349,7 +3349,7 @@ func (r *outbox) releaseResume(issue, tree string) store.ReleaseResumeRow {
 func (r *outbox) podsProvision() bool { return r.supervisor.deps.Runtime.ProvisionsWorkspaces() }
 
 // provisionWorkspace provisions issue's workspace in the repository its record names, at the
-// default branch the record names, as the implement App for that repository's owner.
+// default branch the record names, with the read lease for that repository's owner.
 func (r *outbox) provisionWorkspace(ctx context.Context, issue record.Issue) error {
 	if r.podsProvision() {
 		return nil
@@ -3432,7 +3432,7 @@ func (r *outbox) unprovisioned(ctx context.Context, key string, working workspac
 }
 
 // provisionIn provisions key's workspace in repo, at defaultBranch for an issue with no branch, as
-// the implement App for repo's owner; with onlyMissing, only when the workspace is still missing or
+// the read lease for repo's owner; with onlyMissing, only when the workspace is still missing or
 // not checked out once this provision's turn comes (unprovisioned), so two launches that both need
 // it provision it once. Provisions of one issue take turns; once it has its turn, a provision runs
 // beside other issues' provisions, handed its repository's store lock (provisionLocks.stores) and
@@ -3474,9 +3474,9 @@ func (r *outbox) provisionIn(ctx context.Context, key string, repo ghrepo.Reposi
 	// by, which a rename must not move.
 	served := r.repositories.serving(repo)
 	mint := func() (string, error) {
-		lease, err := r.tokens.Token(ctx, appauth.Implement, served.Owner())
+		lease, err := r.tokens.ReadToken(ctx, served.Owner())
 		if err != nil {
-			return "", fmt.Errorf("mint the implement App token for %s to provision %s: %w", served, key, err)
+			return "", fmt.Errorf("mint the read token for %s to provision %s: %w", served, key, err)
 		}
 		return lease.Token, nil
 	}
@@ -3841,8 +3841,8 @@ func (r *outbox) issueBranch(ctx context.Context, row record.OutboxRow, payload 
 
 // createBranch creates issue's branch on GitHub, in the repository GitHub holds the one its
 // record names under now (serving), at the default branch the record names, unless GitHub
-// already has it, as the implement App for that repository's owner: the App of the roles that
-// write an issue branch (appauth.AppRoleFor), and the one workspace provisioning clones with.
+// already has it, with the implementer's set for that repository's owner: the set of the role
+// that writes an issue branch's commits (appauth.SetImplementer).
 // The create is a REST write, so a tree recorded before a transfer gets its branch on the
 // repository as GitHub holds it today rather than a write to an owner whose installation has
 // lost it.
@@ -3854,10 +3854,11 @@ func (r *outbox) createBranch(ctx context.Context, issue record.Issue) error {
 		return err
 	}
 	repo := r.repositories.serving(recorded)
-	github, err := implementClient(ctx, r.tokens, r.githubAPI, repo)
+	lease, err := r.tokens.Token(ctx, appauth.SetImplementer, repo.Owner())
 	if err != nil {
-		return fmt.Errorf("mint the implement App token for %s: %w", repo, err)
+		return fmt.Errorf("mint the implementer token for %s: %w", repo, err)
 	}
+	github := githubrest.Client{Token: lease.Token, API: githubrest.RepositoryAPI(r.githubAPI, repo)}
 	return ghbranch.Create(ctx, github, repo, workspace.Bookmark(issue.Key), issue.DefaultBranch)
 }
 

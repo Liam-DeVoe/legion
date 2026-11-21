@@ -18,11 +18,11 @@ import (
 
 // installedOnBoth is namedTokens with the App installed on both accounts of the configured pair:
 // cybermonklabs, which holds the repository sjawhar/legion moved to, and sjawhar, which holds
-// every other repository of that account. That is this deployment's own case: the implement App's
-// sjawhar installation holds 151 repositories and not cybermonklabs/legion.
+// every other repository of that account. That is this deployment's own case: the App's sjawhar
+// installation holds 151 repositories and not cybermonklabs/legion.
 type installedOnBoth struct{ namedTokens }
 
-func (installedOnBoth) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
+func (installedOnBoth) InstalledOwners(context.Context) ([]string, error) {
 	return []string{"cybermonklabs", "sjawhar"}, nil
 }
 
@@ -56,9 +56,9 @@ func bothInstalledBundle(t *testing.T) (root, defaultDir string) {
 // App is installed on.
 func TestARenamedRepositoryKeepsItsNewOwnersLeaseWhileTheAppIsInstalledOnBothOwners(t *testing.T) {
 	for _, tc := range []struct{ path, token string }{
-		{"/sjawhar/legion.git", "ghs_implement_write_cybermonklabs"},
-		{"/cybermonklabs/legion.git", "ghs_implement_write_cybermonklabs"},
-		{"/sjawhar/ygo.git", "ghs_implement_write_sjawhar"},
+		{"/sjawhar/legion.git", "ghs_implementer_write_cybermonklabs"},
+		{"/cybermonklabs/legion.git", "ghs_implementer_write_cybermonklabs"},
+		{"/sjawhar/ygo.git", "ghs_implementer_write_sjawhar"},
 	} {
 		t.Run("git-credential "+tc.path, func(t *testing.T) {
 			root, defaultDir := bothInstalledBundle(t)
@@ -74,8 +74,8 @@ func TestARenamedRepositoryKeepsItsNewOwnersLeaseWhileTheAppIsInstalledOnBothOwn
 
 	run := bothInstalledGh(t)
 	for _, tc := range []struct{ repo, token string }{
-		{"sjawhar/legion", "ghs_implement_write_cybermonklabs"},
-		{"sjawhar/ygo", "ghs_implement_write_sjawhar"},
+		{"sjawhar/legion", "ghs_implementer_write_cybermonklabs"},
+		{"sjawhar/ygo", "ghs_implementer_write_sjawhar"},
 	} {
 		t.Run("gh api repos/"+tc.repo, func(t *testing.T) {
 			code, out := run(t, "api", "repos/"+tc.repo)
@@ -104,10 +104,10 @@ func TestLegionGhRefusesACommandWhoseRepositoriesRouteToTwoDirectories(t *testin
 	}{
 		{"the moved repository beside a sibling", []string{"search", "prs", "--repo", "sjawhar/legion", "--repo", "sjawhar/ygo"}, "",
 			[]string{"more than one owner", "cybermonklabs (--repo sjawhar/legion)", "sjawhar (--repo sjawhar/ygo)", "sends no token"}},
-		{"the moved repository by both of its names", []string{"search", "prs", "--repo", "cybermonklabs/legion", "--repo", "sjawhar/legion"}, "ghs_implement_write_cybermonklabs", nil},
-		{"the moved repository alone", []string{"search", "prs", "--repo", "sjawhar/legion"}, "ghs_implement_write_cybermonklabs", nil},
-		{"a sibling alone", []string{"search", "prs", "--repo", "sjawhar/ygo"}, "ghs_implement_write_sjawhar", nil},
-		{"the owner alone", []string{"search", "prs", "--owner", "sjawhar"}, "ghs_implement_write_sjawhar", nil},
+		{"the moved repository by both of its names", []string{"search", "prs", "--repo", "cybermonklabs/legion", "--repo", "sjawhar/legion"}, "ghs_implementer_write_cybermonklabs", nil},
+		{"the moved repository alone", []string{"search", "prs", "--repo", "sjawhar/legion"}, "ghs_implementer_write_cybermonklabs", nil},
+		{"a sibling alone", []string{"search", "prs", "--repo", "sjawhar/ygo"}, "ghs_implementer_write_sjawhar", nil},
+		{"the owner alone", []string{"search", "prs", "--owner", "sjawhar"}, "ghs_implementer_write_sjawhar", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			code, out := run(t, tc.args...)

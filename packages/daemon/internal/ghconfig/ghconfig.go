@@ -124,8 +124,9 @@ func TokenFromHosts(data []byte) (string, error) {
 }
 
 // Rendered is one role's two gh files, ready to write under its GH_CONFIG_DIR, with the label of
-// the App the token belongs to ("implement" or "review") and the lease's expiry, so the daemon's
-// log line can say whose token it wrote and how long it lasts.
+// the token they hold (appauth's dirEntry renders the set of the role the bundle is for, such as
+// "implementer", and "controller" for the controller's read leases) and the lease's expiry, so
+// the daemon's log line can say whose token it wrote and how long it lasts.
 type Rendered struct {
 	Hosts     string
 	Config    string

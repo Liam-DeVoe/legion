@@ -48,7 +48,7 @@ func (w *workflowRuntime) reviewBody(ctx context.Context, review intake.PullRequ
 	client, lease, repository, err := w.reviewAppClient(ctx, repository)
 	if errors.Is(err, appauth.ErrNotInstalled) {
 		w.log.Error("workflow: the review App is not installed on the owner GitHub holds its review's repository under, so its review's body is read as delivered",
-			"app", appauth.Review, "installation_owner", repository.Owner(), "repo", repository.String(), "review", review.ID, "error", err)
+			"set", appauth.SetReviewer, "installation_owner", repository.Owner(), "repo", repository.String(), "review", review.ID, "error", err)
 		return review.Body, nil
 	}
 	if err != nil {

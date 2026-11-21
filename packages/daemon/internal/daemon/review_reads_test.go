@@ -96,7 +96,10 @@ func reviewsStandIn(t *testing.T, reviews func() string, reads *atomic.Int64) *h
 // when asked, each read of it counted in outsiderReads.
 func reviewsStandInWith(t *testing.T, reviews func() string, reads *atomic.Int64, outsider func() string, outsiderReads *atomic.Int64) *httptest.Server {
 	t.Helper()
-	return githubtest.Serve(t, githubtest.Spec{Token: "outbox-token", Handle: func(w http.ResponseWriter, r *http.Request) {
+	return githubtest.Serve(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+		if !outboxAuthorized(w, r) {
+			return
+		}
 		switch r.URL.Path {
 		case "/repos/acme/widgets/pulls/86":
 			w.Write([]byte(`{"number":86,"base":{"ref":"main"},"mergeable":true,"mergeable_state":"clean"}`))

@@ -13,7 +13,7 @@ import (
 )
 
 // gitHubRefreshInterval is how often refreshGitHubCredentials walks the tracked panes. The daemon's
-// function (Options.GitHubCredential) holds each App's lease and re-mints it as the lease nears its
+// function (Options.GitHubCredential) holds each set's lease and re-mints it as the lease nears its
 // expiry, so most ticks render the hosts.yml the pane's directory already holds and write nothing;
 // a minute keeps the time a role's gh runs on a token the daemon has already replaced short against
 // an installation token's hour, at one file read per tracked pane.
@@ -64,12 +64,12 @@ func (r *Runtime) refreshGitHubCredentialsEvery(ctx context.Context, interval ti
 // (Options.GitHubCredential nil: a daemon with no GitHub Apps) wrote no pane any gh files, so it
 // has nothing to refresh.
 //
-// The walk builds each bundle once (appauth.Bundles): the daemon's function answers from the App
-// role the pane's claim role runs as (appauth.AppRoleFor) and the pane's repository alone, and
-// each build opens with a live read of every page of its App's installations under a fresh JWT
-// (appauth.GitHubCredential), so the panes of one issue running as one App cost the tick one
-// read rather than one apiece. The memo is the walk's and is dropped at its end, so every tick
-// reads GitHub for what its bundles hold (INFRA-2543 R2).
+// The walk builds each bundle once (appauth.Bundles): the daemon's function answers from the set
+// the pane's claim role holds (appauth.SetFor) and the pane's repository alone, and the walk reads
+// the App's installations once for every bundle it builds, where each build reading them anew is
+// a live read of every page under a fresh JWT (appauth.GitHubCredential), so the panes of one
+// issue cost the tick one read rather than one apiece. The memo is the walk's and is dropped at
+// its end, so every tick reads GitHub for what its bundles hold.
 func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 	if r.gitHubCredential == nil {
 		return

@@ -24,18 +24,18 @@ const managedUser = "mona-cat_octo"
 // spell it, which the bundle's directory lowercases.
 var managedIssue = ghrepo.MustParse("Mona-Cat_Octo/widgets")
 
-// servingManagedUser is a daemon whose two Apps are installed on sjawhar and managedUser and
-// whose mapping serves the smoke repository alone, with the daemon's own gh answers
+// servingManagedUser is a daemon whose App is installed on sjawhar and managedUser and whose
+// mapping serves the smoke repository alone, with the daemon's own gh answers
 // (appauth.GitHubCredential and appauth.GitHubDirs over the two records their bundles share):
 // the managed user's repository is no repository of the mapping, and an issue on it is run
-// because both Apps are installed on that account (INFRA-2543 R4).
+// because the App is installed on that account.
 func servingManagedUser(o *Options) {
 	served := func() []ghrepo.Repository { return []ghrepo.Repository{ghrepo.MustParse("sjawhar/legion-smoke")} }
 	installed, left := appauth.NewInstalled(), appauth.NewLeftOut()
 	apps := sourceOf(refusingOwnerTokens{refuse: new(atomic.Bool)}, installedOnOwners{managedUser, "sjawhar"})
 	o.GitHubCredential = appauth.GitHubCredential(apps, served, ghrepo.Renames{}, installed, left, o.Log)
-	o.GitHubDirs = func(repo ghrepo.Repository, roles []appauth.AppRole) []string {
-		return appauth.GitHubDirs(served, ghrepo.Renames{}, installed, left, roles, repo)
+	o.GitHubDirs = func(repo ghrepo.Repository, sets []appauth.TokenSet) []string {
+		return appauth.GitHubDirs(served, ghrepo.Renames{}, installed, left, sets, repo)
 	}
 }
 
@@ -47,7 +47,7 @@ func managedIssueSpec(t *testing.T) runtime.SpawnSpec {
 }
 
 // An issue whose own repository's owner is a managed user is launched as any other is: its pod
-// projects that owner's directory beside the other owner both Apps are installed on, the role's
+// projects that owner's directory beside the other owner the App is installed on, the role's
 // Secret records it as the default and holds that owner's own lease in it, and the role's
 // generation is started with GH_CONFIG_DIR naming it, the directory its own repository routes
 // to. A directory grammar narrower than ghrepo's let the daemon admit such an issue and then
@@ -66,7 +66,7 @@ func TestAManagedUsersIssueLaunchesWithItsOwnersDirectory(t *testing.T) {
 	if got := string(secret.Data[GitHubDefaultKey]); got != managedUser {
 		t.Errorf("the tester's Secret records the default %q, want %s", got, managedUser)
 	}
-	want := "ghs_" + string(appauth.AppRoleFor(claim.RoleTester)) + "_" + managedUser + "_write"
+	want := "ghs_" + string(appauth.SetFor(claim.RoleTester)) + "_" + managedUser + "_write"
 	if token, err := ghconfig.TokenFromHosts(secret.Data[GitHubHostsKey(managedUser)]); err != nil || token != want {
 		t.Errorf("the tester's Secret holds %q (%v) for %s, want %q, that owner's own lease", token, err, managedUser, want)
 	}
@@ -105,7 +105,7 @@ func TestAManagedUsersGhKeysReadBackAsItsDirectoryAndItsPodHasNotDrifted(t *test
 	if projected, _ := ghProjectionOf(pod, claim.RoleTester); !slices.Contains(projected.dirs, managedUser) {
 		t.Errorf("the tester's projection reads as the directories %q, want %s among them", projected.dirs, managedUser)
 	}
-	if served := g.r.gitHubDirs(managedIssue, podAppRoles(podKindFor(claim.RoleTester))); !slices.Contains(served, managedUser) {
+	if served := g.r.gitHubDirs(managedIssue, podTokenSets(podKindFor(claim.RoleTester))); !slices.Contains(served, managedUser) {
 		t.Fatalf("the daemon serves %q, want %s among them: the drift check would compare nothing of that owner's", served, managedUser)
 	}
 	if named := ghDriftReasons(t, g, loc, claim.RoleTester); len(named) != 0 {

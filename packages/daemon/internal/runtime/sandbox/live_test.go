@@ -269,7 +269,7 @@ type liveEnv struct {
 	// value.
 	runtimeIdentityKind string
 	// repoSecondOwner is LEGION_E2E_REPO_SECOND_OWNER: a repository under another owner than
-	// repo's, both Apps installed on it, where second-owner provisions an issue.
+	// repo's, the App installed on it, where second-owner provisions an issue.
 	repoSecondOwner    ghrepo.Repository
 	record, work, from string
 	// operatorPodFile is the run's copy of deploy/kubernetes/operator-route/pod.yml, its token

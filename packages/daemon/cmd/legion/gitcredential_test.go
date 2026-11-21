@@ -30,9 +30,9 @@ func gitCredentialBundle(t *testing.T) (root, defaultDir string) {
 	root = filepath.Join(t.TempDir(), "gh")
 	expires := time.Now().Add(time.Hour)
 	if _, err := ghconfig.WriteBundle(root, ghconfig.Bundle{Default: "acme", Dirs: map[string]ghconfig.Rendered{
-		"acme":        ghconfig.Render("ghs_acme_write", "implement", expires),
-		"sjawhar":     ghconfig.Render("ghs_sjawhar_write", "implement", expires),
-		"example-org": ghconfig.Render("ghs_example_org_write", "implement", expires),
+		"acme":        ghconfig.Render("ghs_acme_write", "implementer", expires),
+		"sjawhar":     ghconfig.Render("ghs_sjawhar_write", "implementer", expires),
+		"example-org": ghconfig.Render("ghs_example_org_write", "implementer", expires),
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestGitCredentialAnswersFromTheOwnersDirectory(t *testing.T) {
 	// A managed user's directory is written on its own (ghconfig.Write) rather than through
 	// WriteBundle, so the row reading it reads this command's own check of the path's owner and
 	// not the bundle's.
-	if _, err := ghconfig.Write(ghconfig.Dir(root, "mona-cat_octo"), ghconfig.Render("ghs_mona_cat_octo_write", "implement", time.Now().Add(time.Hour))); err != nil {
+	if _, err := ghconfig.Write(ghconfig.Dir(root, "mona-cat_octo"), ghconfig.Render("ghs_mona_cat_octo_write", "implementer", time.Now().Add(time.Hour))); err != nil {
 		t.Fatal(err)
 	}
 	both := map[string]string{"GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root}
@@ -263,23 +263,27 @@ func TestGitCredentialOperationsAnswerHelp(t *testing.T) {
 	}
 }
 
-// namedTokens is each lease named for the App, the owner and whether it reads or writes, as the
-// daemon's own token source answers one.
+// namedTokens names each lease for its set, or for reading where it is the owner's read lease,
+// and for its owner, as the daemon's own token source answers one.
 type namedTokens struct{}
 
-func (namedTokens) Token(_ context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
-	return appauth.Lease{Token: "ghs_" + string(role) + "_write_" + owner, ExpiresAt: time.Now().Add(time.Hour)}, nil
+func (namedTokens) Token(_ context.Context, set appauth.TokenSet, owner string) (appauth.Lease, error) {
+	return appauth.Lease{Token: "ghs_" + string(set) + "_write_" + owner, ExpiresAt: time.Now().Add(time.Hour)}, nil
 }
 
-func (namedTokens) ReadToken(_ context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
-	return appauth.Lease{Token: "ghs_" + string(role) + "_read_" + owner, ExpiresAt: time.Now().Add(time.Hour)}, nil
+func (namedTokens) ReadToken(_ context.Context, owner string) (appauth.Lease, error) {
+	return appauth.Lease{Token: "ghs_read_" + owner, ExpiresAt: time.Now().Add(time.Hour)}, nil
+}
+
+func (t namedTokens) VerdictToken(ctx context.Context, owner string) (appauth.Lease, error) {
+	return t.Token(ctx, appauth.SetVerdict, owner)
 }
 
 // namedTokens also answers which owners the App is installed on (appauth.OwnerInstallations),
 // which a bundle reads from GitHub at every build: cybermonklabs alone, the account this
 // deployment's App is installed on, so sjawhar's directory is the configured rename's and
 // holds the token of the installation its repository moved to.
-func (namedTokens) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
+func (namedTokens) InstalledOwners(context.Context) ([]string, error) {
 	return []string{"cybermonklabs"}, nil
 }
 
@@ -322,11 +326,11 @@ func TestGitCredentialAnswersARenamedRepositoryWithTheOwnerItMovedTo(t *testing.
 		renames ghrepo.Renames
 		token   string
 	}{
-		{name: "the pair configured", served: moved, renames: pair, token: "ghs_implement_write_cybermonklabs"},
+		{name: "the pair configured", served: moved, renames: pair, token: "ghs_implementer_write_cybermonklabs"},
 		{name: "the pair configured, and the project serves another repository of sjawhar",
 			served:  append(slices.Clone(moved), ghrepo.MustParse("sjawhar/oh-my-pi")),
-			renames: pair, token: "ghs_implement_write_cybermonklabs"},
-		{name: "no pair configured", served: moved, renames: ghrepo.Renames{}, token: "ghs_implement_write_sjawhar"},
+			renames: pair, token: "ghs_implementer_write_cybermonklabs"},
+		{name: "no pair configured", served: moved, renames: ghrepo.Renames{}, token: "ghs_implementer_write_sjawhar"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root, defaultDir := renamedCredentialBundle(t, tc.served, tc.renames)
@@ -387,7 +391,7 @@ func forkBundle(t *testing.T, dflt string, owners ...string) (root, defaultDir s
 	root = filepath.Join(t.TempDir(), "gh")
 	dirs := make(map[string]ghconfig.Rendered, len(owners))
 	for _, owner := range owners {
-		dirs[owner] = ghconfig.Render(forkToken(owner), "implement", time.Now().Add(time.Hour))
+		dirs[owner] = ghconfig.Render(forkToken(owner), "implementer", time.Now().Add(time.Hour))
 	}
 	if _, err := ghconfig.WriteBundle(root, ghconfig.Bundle{Default: dflt, Dirs: dirs}); err != nil {
 		t.Fatal(err)
@@ -597,8 +601,8 @@ func TestGitCredentialAnswersAForksParentToken(t *testing.T) {
 		},
 		{
 			name: "a parent that a configured rename moved", root: renamed, configDir: ghconfig.Dir(renamed, "cybermonklabs"),
-			readToken: "ghs_implement_write_cybermonklabs",
-			path:      "outside-author/sample-project.git", answer: movedParent, token: "ghs_implement_write_cybermonklabs",
+			readToken: "ghs_implementer_write_cybermonklabs",
+			path:      "outside-author/sample-project.git", answer: movedParent, token: "ghs_implementer_write_cybermonklabs",
 		},
 		{
 			name: "through legion gh auth git-credential get", root: root, configDir: acme, readToken: "ghs_acme_write",
@@ -808,7 +812,7 @@ func TestGitCredentialAnswersNothingWhenTheForkReadFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	const lineBreakToken = "ghs_line\nbreak_write"
-	lineBreak, rendered := ghconfig.Dir(root, "line-break"), ghconfig.Render(lineBreakToken, "implement", time.Now().Add(time.Hour))
+	lineBreak, rendered := ghconfig.Dir(root, "line-break"), ghconfig.Render(lineBreakToken, "implementer", time.Now().Add(time.Hour))
 	if token, err := ghconfig.TokenFromHosts([]byte(rendered.Hosts)); err != nil || token != lineBreakToken {
 		t.Fatalf("the hosts.yml rendered for %q reads back as %q, %v", lineBreakToken, token, err)
 	}
@@ -816,7 +820,7 @@ func TestGitCredentialAnswersNothingWhenTheForkReadFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	outside := filepath.Join(t.TempDir(), "acme")
-	if _, err := ghconfig.Write(outside, ghconfig.Render("ghs_outside_the_bundle_write", "implement", time.Now().Add(time.Hour))); err != nil {
+	if _, err := ghconfig.Write(outside, ghconfig.Render("ghs_outside_the_bundle_write", "implementer", time.Now().Add(time.Hour))); err != nil {
 		t.Fatal(err)
 	}
 	// fork-of-a-served-repository.http with its body's opening brace replaced by `<`, as a
@@ -1031,8 +1035,8 @@ func TestGitCredentialMakesNoReadForAServedOwner(t *testing.T) {
 	if _, err := ghconfig.WriteBundle(moved, ghconfig.Bundle{
 		Default: "acme",
 		Dirs: map[string]ghconfig.Rendered{
-			"acme":    ghconfig.Render(forkToken("acme"), "implement", expires),
-			"sjawhar": ghconfig.Render(forkToken("sjawhar"), "implement", expires),
+			"acme":    ghconfig.Render(forkToken("acme"), "implementer", expires),
+			"sjawhar": ghconfig.Render(forkToken("sjawhar"), "implementer", expires),
 		},
 		Pairs: []ghrepo.Rename{ghrepo.MustRename("sjawhar/legion", "cybermonklabs/legion")},
 	}); err != nil {

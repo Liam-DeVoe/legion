@@ -15,7 +15,7 @@ import (
 
 // The three GitHub clients a tree recorded before its repository's transfer reaches that no other
 // rename test drives: the required-checks pass's read of a recorded pull request
-// (required_checks.go's implementClient), the review App's read of a review author's permission
+// (github_reads.go's readPullRequest), the reviewer's read of a review author's permission
 // (review_permission.go's reviewAppClient) and the read a record's repository and default branch
 // are filled from (defaultbranch.go's fetch). Each is one of the places the issue's first
 // requirement names, and each takes a repository a record names — sjawhar/legion, the name the
@@ -31,8 +31,9 @@ func TestEachGitHubClientOfATreeRecordedBeforeItsTransferAddressesTheRepositoryG
 	recorded := ghrepo.MustParse("sjawhar/legion")
 	for _, site := range []struct {
 		name string
-		// app is the App whose installation token the call is made on.
-		app appauth.AppRole
+		// lease is the lease the call is made on, as roleTokens names it: a set's name, or
+		// "read" for the read lease.
+		lease string
 		// path is what the call asks for under the repository it addresses, "" for the read of
 		// the repository itself.
 		path string
@@ -43,8 +44,8 @@ func TestEachGitHubClientOfATreeRecordedBeforeItsTransferAddressesTheRepositoryG
 		call func(t *testing.T, repos *repositories, api string)
 	}{
 		{
-			name: "the required-checks pass's read of a recorded pull request",
-			app:  appauth.Implement, path: "/pulls/42",
+			name:  "the required-checks pass's read of a recorded pull request",
+			lease: "read", path: "/pulls/42",
 			answer: func(string) string { return `{"number":42,"state":"open","base":{"ref":"main"},"head":{"sha":"head"}}` },
 			call: func(t *testing.T, repos *repositories, api string) {
 				t.Helper()
@@ -60,8 +61,8 @@ func TestEachGitHubClientOfATreeRecordedBeforeItsTransferAddressesTheRepositoryG
 			},
 		},
 		{
-			name: "the review App's read of a review author's permission",
-			app:  appauth.Review, path: "/collaborators/a-writer/permission",
+			name:  "the reviewer's read of a review author's permission",
+			lease: string(appauth.SetReviewer), path: "/collaborators/a-writer/permission",
 			answer: func(string) string { return `{"permission":"write","user":{"login":"a-writer"}}` },
 			call: func(t *testing.T, repos *repositories, api string) {
 				t.Helper()
@@ -77,8 +78,8 @@ func TestEachGitHubClientOfATreeRecordedBeforeItsTransferAddressesTheRepositoryG
 			},
 		},
 		{
-			name: "the read a record's repository and default branch are filled from",
-			app:  appauth.Implement,
+			name:  "the read a record's repository and default branch are filled from",
+			lease: "read",
 			answer: func(addressed string) string {
 				return `{"full_name":"` + addressed + `","default_branch":"main"}`
 			},
@@ -105,9 +106,9 @@ func TestEachGitHubClientOfATreeRecordedBeforeItsTransferAddressesTheRepositoryG
 
 					site.call(t, renamedRepositories(tc.served, tc.renames), github.url)
 
-					github.assertAddressed(t, site.app, tc.want)
+					github.assertAddressed(t, site.lease, tc.want)
 					owner := ghrepo.MustParse(tc.want).Owner()
-					want := []string{"GET /repos/" + tc.want + site.path + " Bearer " + string(site.app) + "-app-token-for-" + owner}
+					want := []string{"GET /repos/" + tc.want + site.path + " Bearer " + site.lease + "-app-token-for-" + owner}
 					if got := github.requests(); !slices.Equal(got, want) {
 						t.Fatalf("GitHub calls:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 					}

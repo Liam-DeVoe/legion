@@ -21,7 +21,7 @@ import (
 // repository of that account.
 type bothOwnersInstalled struct{ namedTokens }
 
-func (bothOwnersInstalled) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
+func (bothOwnersInstalled) InstalledOwners(context.Context) ([]string, error) {
 	return []string{"cybermonklabs", "sjawhar"}, nil
 }
 
@@ -71,8 +71,8 @@ func TestThePairsRepositoryTakesTheDirectoryOfTheOwnerHoldingItAndItsSiblingsThe
 	// The same routing through the real `legion git-credential`, which is what a `jj git push`
 	// of a tree cloned from the name the record names presents a token for.
 	for _, tc := range []struct{ path, token string }{
-		{"/sjawhar/legion.git", "ghs_implement_write_cybermonklabs"},
-		{"/sjawhar/ygo.git", "ghs_implement_write_sjawhar"},
+		{"/sjawhar/legion.git", "ghs_implementer_write_cybermonklabs"},
+		{"/sjawhar/ygo.git", "ghs_implementer_write_sjawhar"},
 	} {
 		t.Run("git-credential "+tc.path, func(t *testing.T) {
 			t.Setenv("GH_CONFIG_DIR", ghconfig.Dir(root, "sjawhar"))
@@ -143,7 +143,7 @@ func TestAGhCommandRunsWithTheOneDirectoryEveryRepositoryItNamesRoutesTo(t *test
 	missing := filepath.Join(t.TempDir(), "gh")
 	if _, err := ghconfig.WriteBundle(missing, ghconfig.Bundle{
 		Default: "sjawhar",
-		Dirs:    map[string]ghconfig.Rendered{"sjawhar": ghconfig.Render("ghs_implement_write_sjawhar", "implement", time.Now().Add(time.Hour))},
+		Dirs:    map[string]ghconfig.Rendered{"sjawhar": ghconfig.Render("ghs_implementer_write_sjawhar", "implementer", time.Now().Add(time.Hour))},
 		Pairs:   []ghrepo.Rename{ghrepo.MustRename("sjawhar/legion", "cybermonklabs/legion")},
 	}); err != nil {
 		t.Fatal(err)
@@ -169,7 +169,7 @@ func TestAPairWhoseNewOwnerHasNoDirectoryRefusesNamingThePair(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "gh")
 	if _, err := ghconfig.WriteBundle(root, ghconfig.Bundle{
 		Default: "sjawhar",
-		Dirs:    map[string]ghconfig.Rendered{"sjawhar": ghconfig.Render("ghs_implement_write_sjawhar", "implement", time.Now().Add(time.Hour))},
+		Dirs:    map[string]ghconfig.Rendered{"sjawhar": ghconfig.Render("ghs_implementer_write_sjawhar", "implementer", time.Now().Add(time.Hour))},
 		Pairs:   []ghrepo.Rename{ghrepo.MustRename("sjawhar/legion", "cybermonklabs/legion")},
 	}); err != nil {
 		t.Fatal(err)
@@ -192,7 +192,7 @@ func TestAPairWhoseNewOwnerHasNoDirectoryRefusesNamingThePair(t *testing.T) {
 	// The owner's own repositories are served as ever: the pair moved one repository, and a
 	// refusal over it is no refusal of the account.
 	if code, stdout, _ := runGitCredentialHere(t, "protocol=https\nhost=github.com\npath=/sjawhar/ygo.git\n\n", "get"); code != 0 ||
-		stdout != "username=x-access-token\npassword=ghs_implement_write_sjawhar\n" {
+		stdout != "username=x-access-token\npassword=ghs_implementer_write_sjawhar\n" {
 		t.Fatalf("legion git-credential get for /sjawhar/ygo.git = exit %d, stdout %q; want sjawhar's own token", code, stdout)
 	}
 }
@@ -214,7 +214,7 @@ func TestABundleWithNoPairsFileRoutesByOwnerAsTheDaemonBeforeItWrote(t *testing.
 	t.Setenv("GH_CONFIG_DIR", ghconfig.Dir(root, "sjawhar"))
 	t.Setenv("LEGION_GH_OWNERS_DIR", root)
 	code, stdout, stderr := runGitCredentialHere(t, "protocol=https\nhost=github.com\npath=/sjawhar/legion.git\n\n", "get")
-	want := "username=x-access-token\npassword=ghs_implement_write_sjawhar\n"
+	want := "username=x-access-token\npassword=ghs_implementer_write_sjawhar\n"
 	if code != 0 || stdout != want || stderr != "" {
 		t.Fatalf("legion git-credential get with no %s = exit %d, stdout %q, stderr %q; want exit 0 and %q", ghconfig.PairsFile, code, stdout, stderr, want)
 	}

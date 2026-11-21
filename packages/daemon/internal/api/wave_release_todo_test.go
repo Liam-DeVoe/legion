@@ -151,7 +151,7 @@ func (r unreadRepositories) ResolveRepository(resolved string) (workflow.Resolut
 		return testRepositories.ResolveRepository(resolved)
 	}
 	if r.unread.Load() {
-		return workflow.Resolution{Refusal: "the implement App's installation on zeta/tools could not be read: GitHub answered 502; Legion reads it again", LeftOut: true, Unread: true}, nil
+		return workflow.Resolution{Refusal: "the App's installation on zeta/tools could not be read: GitHub answered 502; Legion reads it again", LeftOut: true, Unread: true}, nil
 	}
 	return workflow.Resolution{Repo: resolved, DefaultBranch: "main", GitHubRepo: resolved}, nil
 }

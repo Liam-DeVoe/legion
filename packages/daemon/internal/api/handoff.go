@@ -9,7 +9,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/credential"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
@@ -786,7 +785,7 @@ func (s *server) implementationPullRequest(w http.ResponseWriter, r *http.Reques
 	// installation covering the repository is the owner it moved to's. The log line above and the
 	// fact applied below go on naming issue.GitHubRepo, the name the record is held under.
 	repository := s.serving(recordedRepo)
-	lease, err := s.tokens.Token(ctx, appauth.Implement, repository.Owner())
+	lease, err := s.tokens.ReadToken(ctx, repository.Owner())
 	if err != nil {
 		logUnread(fmt.Errorf("mint the implement App token for %s: %w", repository, err))
 		return true

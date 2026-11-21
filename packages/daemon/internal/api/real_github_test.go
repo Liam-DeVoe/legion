@@ -55,17 +55,17 @@ func TestRealGitHubCredentialSurface(t *testing.T) {
 
 	// The implementer's lease, rendered as the role's gh files, is whose login the real gh
 	// reports.
-	role := appauth.Implement
-	lease, err := tokens.Token(h.ctx, role, "sjawhar")
+	set := appauth.SetImplementer
+	lease, err := tokens.Token(h.ctx, set, "sjawhar")
 	if err != nil {
-		t.Fatalf("mint the %s App's lease: %v", role, err)
+		t.Fatalf("mint the App's %s lease: %v", set, err)
 	}
 	dir := writeRealGhFiles(t, lease.Token)
 	viewer := runRealGh(t, gh, dir, "api", "graphql", "-f", "query={viewer{login}}", "--jq", ".data.viewer.login")
 	if viewer.code != 0 || strings.TrimSpace(viewer.stdout) != lease.Identity.Name {
-		t.Fatalf("%s App viewer login through gh = %q (exit %d, stderr %q), want %q", role, viewer.stdout, viewer.code, viewer.stderr, lease.Identity.Name)
+		t.Fatalf("%s lease's viewer login through gh = %q (exit %d, stderr %q), want %q", set, viewer.stdout, viewer.code, viewer.stderr, lease.Identity.Name)
 	}
-	t.Logf("%s App GraphQL login through gh: %s", role, strings.TrimSpace(viewer.stdout))
+	t.Logf("%s lease's GraphQL login through gh: %s", set, strings.TrimSpace(viewer.stdout))
 
 	// The negative control: a GH_CONFIG_DIR with no gh files authenticates nobody.
 	denied := runRealGh(t, gh, t.TempDir(), "api", "graphql", "-f", "query={viewer{login}}")

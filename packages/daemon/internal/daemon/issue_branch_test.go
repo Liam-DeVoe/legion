@@ -125,15 +125,28 @@ func (g *branchGitHub) answerWith(answer func() (int, string)) {
 	g.answer = answer
 }
 
-// roleTokens mints a token named for the App it is minted as, so a request shows which App made it.
+// roleTokens mints a token named for the set it is minted with (setToken), and the read lease
+// named "read" (readToken), so a request shows which lease made it.
 type roleTokens struct{}
 
-func (roleTokens) Token(_ context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
-	return appauth.Lease{Token: string(role) + "-app-token-for-" + owner, ExpiresAt: time.Now().Add(time.Hour)}, nil
+// setToken is the token roleTokens mints for set on owner's installation.
+func setToken(set appauth.TokenSet, owner string) string {
+	return string(set) + "-app-token-for-" + owner
 }
 
-func (t roleTokens) ReadToken(_ context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
-	return appauth.Lease{Token: string(role) + "-app-token-for-" + owner + "-read", ExpiresAt: time.Now().Add(time.Hour)}, nil
+// readToken is the read lease's token roleTokens mints on owner's installation.
+func readToken(owner string) string { return "read-app-token-for-" + owner }
+
+func (roleTokens) Token(_ context.Context, set appauth.TokenSet, owner string) (appauth.Lease, error) {
+	return appauth.Lease{Token: setToken(set, owner), ExpiresAt: time.Now().Add(time.Hour)}, nil
+}
+
+func (roleTokens) ReadToken(_ context.Context, owner string) (appauth.Lease, error) {
+	return appauth.Lease{Token: readToken(owner), ExpiresAt: time.Now().Add(time.Hour)}, nil
+}
+
+func (t roleTokens) VerdictToken(ctx context.Context, owner string) (appauth.Lease, error) {
+	return t.Token(ctx, appauth.SetVerdict, owner)
 }
 
 // branchAdmission is an outbox over a fresh database whose admission admits LEGION-208 when the
@@ -192,8 +205,8 @@ func (b *branchAdmission) launches() int {
 	return len(b.rt.CallsOf("Spawn")) + len(b.rt.CallsOf("Resume"))
 }
 
-// Admitting a root creates its branch on GitHub at the default branch its record names, as the
-// implement App, before its architect starts: the architect's start waits for the branch's row.
+// Admitting a root creates its branch on GitHub at the default branch its record names, with the
+// implementer's token, before its architect starts: the architect's start waits for the branch's row.
 // The row reads that branch's ref and creates the branch at its commit; it asks GitHub nothing of
 // the repository's default branch, which admission recorded. A branch GitHub already has (its
 // create answered 422 "Reference already exists") is the same success.
@@ -214,7 +227,7 @@ func TestAdmissionCreatesTheRootsBranchAtTheDefaultBranchBeforeItsArchitectStart
 			if got, want := github.read(), []string{"/repos/acme/widgets/git/ref/heads/release/v7.1"}; !slices.Equal(got, want) {
 				t.Fatalf("GitHub reads = %q, want %q", got, want)
 			}
-			want := branchCreate{ref: "refs/heads/legion/LEGION-208", sha: branchBaseCommit, authorization: "Bearer implement-app-token-for-acme"}
+			want := branchCreate{ref: "refs/heads/legion/LEGION-208", sha: branchBaseCommit, authorization: "Bearer " + setToken(appauth.SetImplementer, "acme")}
 			if got := github.created(); len(got) != 1 || got[0] != want {
 				t.Fatalf("GitHub creates = %+v, want one, %+v, before any launch", got, want)
 			}
@@ -308,15 +321,19 @@ func TestAnIssueBranchRowOfALeftRunFinishesWithoutACreate(t *testing.T) {
 // refusingOwnerTokens refuses every mint, naming nothing, so a test reads what the caller names.
 type refusingOwnerTokens struct{}
 
-func (refusingOwnerTokens) Token(context.Context, appauth.AppRole, string) (appauth.Lease, error) {
+func (refusingOwnerTokens) Token(context.Context, appauth.TokenSet, string) (appauth.Lease, error) {
 	return appauth.Lease{}, errors.New("GitHub is down")
 }
 
-func (refusingOwnerTokens) ReadToken(context.Context, appauth.AppRole, string) (appauth.Lease, error) {
+func (refusingOwnerTokens) ReadToken(context.Context, string) (appauth.Lease, error) {
 	return appauth.Lease{}, errors.New("GitHub is down")
 }
 
-// Branch creation mints the implement App's token for the owner of the repository the issue's
+func (refusingOwnerTokens) VerdictToken(context.Context, string) (appauth.Lease, error) {
+	return appauth.Lease{}, errors.New("GitHub is down")
+}
+
+// Branch creation mints the implementer's token for the owner of the repository the issue's
 // record names, and a mint that fails names that owner, so the outbox's failure line says whose
 // installation refused.
 func TestBranchCreationNamesTheOwnerItMintsFor(t *testing.T) {
@@ -326,7 +343,7 @@ func TestBranchCreationNamesTheOwnerItMintsFor(t *testing.T) {
 		Phase: phase.Admitted, Generation: 1, Status: "in_progress", Rank: "U"}
 	putOutboxIssue(t, pool, records, issue)
 	runner := &outbox{log: quietLogger(), pool: pool, records: records, tokens: refusingOwnerTokens{}}
-	want := "mint the implement App token for zeta/tools: GitHub is down"
+	want := "mint the implementer token for zeta/tools: GitHub is down"
 	if err := runner.createBranch(context.Background(), issue); err == nil || err.Error() != want {
 		t.Errorf("createBranch with a refused mint = %v, want %q", err, want)
 	}

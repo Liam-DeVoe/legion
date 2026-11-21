@@ -95,7 +95,7 @@ func testOptions() Options {
 		Tokens:                staticTokens{},
 		GitHubCredential:      staticCredential,
 		ControllerCredential:  staticControllerCredential,
-		GitHubDirs:            func(ghrepo.Repository, []appauth.AppRole) []string { return staticDirs },
+		GitHubDirs:            func(ghrepo.Repository, []appauth.TokenSet) []string { return staticDirs },
 		Conns:                 fake.NewConns(),
 		RepositoryCache: RepositoryCache{
 			Volume: resource.MustParse("20Gi"), Refresh: 10 * time.Minute, Retain: 168 * time.Hour,
@@ -116,25 +116,25 @@ func (staticTokens) Token(_ context.Context, repo ghrepo.Repository) (string, er
 // staticCredentialExpiry is the lease expiry every rendered test credential carries.
 var staticCredentialExpiry = time.Date(2026, 10, 8, 13, 0, 0, 0, time.UTC)
 
-// staticCredentialToken is the write token staticCredential renders for role: one per App, so a
-// review role's files and an implement role's differ as the two Apps' tokens do.
+// staticCredentialToken is the write token staticCredential renders for role: one per token set,
+// so a reviewer's files and an implementer's differ as their sets' tokens do.
 func staticCredentialToken(role claim.Role) string {
-	return "ghs_" + string(appauth.AppRoleFor(role)) + "_token"
+	return "ghs_" + string(appauth.SetFor(role)) + "_token"
 }
 
 // staticOwnerToken is the lease staticCredential renders for role on an owner other than the
 // issue's: that owner's own installation lease, which a role's bundle holds at the role's own
 // permissions and no narrower (appauth.GitHubCredential, INFRA-2543).
 func staticOwnerToken(role claim.Role, owner string) string {
-	return "ghs_" + string(appauth.AppRoleFor(role)) + "_lease_" + owner
+	return "ghs_" + string(appauth.SetFor(role)) + "_lease_" + owner
 }
 
 // staticCredential is the runtime's GitHubCredential in every test: a bundle of repo's owner —
 // sjawhar when repo is the zero Repository, which is how staticControllerCredential builds the
-// controller's — holding the role's App's token for that owner (appauth.AppRoleFor), and acme
+// controller's — holding the token of the role's set for that owner (appauth.SetFor), and acme
 // holding acme's own, rendered as gh's files with a fixed expiry; repo's owner is the default.
 func staticCredential(_ context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-	app := string(appauth.AppRoleFor(role))
+	app := string(appauth.SetFor(role))
 	owner := strings.ToLower(repo.Owner())
 	if owner == "" {
 		owner = "sjawhar"
@@ -160,12 +160,12 @@ func staticControllerCredential(ctx context.Context, defaultOwner string) (ghcon
 }
 
 // noOwnerControllerCredential is the ControllerCredential of a project with no GitHub owner to
-// mint for (runtime.ErrNoGitHubOwner: every mapped repository lacks an App): a controller's
+// mint for (runtime.ErrNoGitHubOwner: the App is installed on no owner): a controller's
 // launch then writes no gh files at all and its gh acts as nobody, its gh directory an empty one.
 // It is the controller's own function that refuses, the launch asking for no bundle of any role
 // (relaunch's gitHubBundles).
 func noOwnerControllerCredential(context.Context, string) (ghconfig.Bundle, error) {
-	return ghconfig.Bundle{}, fmt.Errorf("the review App for controller: %w", runtime.ErrNoGitHubOwner)
+	return ghconfig.Bundle{}, fmt.Errorf("the controller's gh bundle: %w", runtime.ErrNoGitHubOwner)
 }
 
 // staticDirs are the directories of every bundle staticCredential renders for the test specs,
@@ -191,13 +191,13 @@ var servedDirs = slices.Sorted(slices.Values(append(slices.Clone(staticDirs), ad
 // mapping). A pod created before it projects no directory for the new owner and never will
 // (movedGhDirs).
 func servingAddedOwner(o *Options) {
-	o.GitHubDirs = func(ghrepo.Repository, []appauth.AppRole) []string { return servedDirs }
+	o.GitHubDirs = func(ghrepo.Repository, []appauth.TokenSet) []string { return servedDirs }
 	credential := func(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 		bundle, err := staticCredential(ctx, role, repo)
 		if err != nil {
 			return bundle, err
 		}
-		bundle.Dirs[addedOwner] = ghconfig.Render(staticOwnerToken(role, addedOwner), string(appauth.AppRoleFor(role)), staticCredentialExpiry)
+		bundle.Dirs[addedOwner] = ghconfig.Render(staticOwnerToken(role, addedOwner), string(appauth.SetFor(role)), staticCredentialExpiry)
 		return bundle, nil
 	}
 	o.GitHubCredential = credential
@@ -224,13 +224,13 @@ var renamedDirs = slices.Sorted(slices.Values([]string{recordedSmoke.Owner(), se
 // owner predicate read as the project owning that owner.
 var otherOfRecordedOwner = ghrepo.MustParse(recordedSmoke.Owner() + "/other")
 
-// installedOnMapped is the owner accounts a role's App is installed on, as a bundle reads them
-// from GitHub at every build (appauth.OwnerInstallations): every owner of the repositories
-// served, which is the ordinary deployment and what a test that is not about an installation's
-// own reach wants.
+// installedOnMapped is the owner accounts the App is installed on, as a bundle reads them from
+// GitHub at every build (appauth.OwnerInstallations): every owner of the repositories served,
+// which is the ordinary deployment and what a test that is not about an installation's own
+// reach wants.
 type installedOnMapped struct{ served func() []ghrepo.Repository }
 
-func (i installedOnMapped) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
+func (i installedOnMapped) InstalledOwners(context.Context) ([]string, error) {
 	owners := make([]string, 0, 2)
 	for _, repo := range i.served() {
 		if owner := strings.ToLower(repo.Owner()); !slices.Contains(owners, owner) {
@@ -243,7 +243,7 @@ func (i installedOnMapped) InstalledOwners(context.Context, appauth.AppRole) ([]
 
 // sourceOf is tokens and installs as the one appauth.Source a credential takes, which the
 // daemon's Manager is by itself: a rig names the two apart, since the lease a mint answers with
-// and the owners each App is installed on are what its tests change one at a time.
+// and the owners the App is installed on are what its tests change one at a time.
 func sourceOf(tokens appauth.Tokens, installs appauth.OwnerInstallations) appauth.Source {
 	return struct {
 		appauth.Tokens
@@ -261,16 +261,16 @@ func servingRenamed(repos ...ghrepo.Repository) func(*Options) {
 		served := func() []ghrepo.Repository { return repos }
 		renames := ghrepo.MustRenames(smokeRename)
 		// The two records the bundles write, as the daemon builds one pair per project and
-		// hands them to both credentials and the directory set alike: the owners each App's
-		// last bundle read installed, and what the mints found GitHub refuses.
+		// hands them to both credentials and the directory set alike: the owners the App's last
+		// bundle read installed, and what the mints found GitHub refuses.
 		installed, left := appauth.NewInstalled(), appauth.NewLeftOut()
 		apps := sourceOf(&namedLeases{}, installedOnMapped{served: served})
 		o.Mapped = served
 		o.Tokens = servingTokens{served: served, renames: renames}
 		o.GitHubCredential = appauth.GitHubCredential(apps, served, renames, installed, left, nil)
 		o.ControllerCredential = appauth.ControllerCredential(apps, served, renames, installed, left, nil)
-		o.GitHubDirs = func(repo ghrepo.Repository, roles []appauth.AppRole) []string {
-			return appauth.GitHubDirs(served, renames, installed, left, roles, repo)
+		o.GitHubDirs = func(repo ghrepo.Repository, sets []appauth.TokenSet) []string {
+			return appauth.GitHubDirs(served, renames, installed, left, sets, repo)
 		}
 	}
 }

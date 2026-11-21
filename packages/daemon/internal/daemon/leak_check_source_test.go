@@ -129,7 +129,7 @@ func TestARefusedReadingLeaseForTheLeakCheckAsksForNoWiderToken(t *testing.T) {
 	)
 	repo := serveLeakCheckRepo(t)
 	_, err := leakCheckSource(github.tokens, repo.url).Get(context.Background(), leakCheckTag)
-	const want = leakguard.RefusalPrefix + "GitHub refused the daemon's implement App the reading permissions on theorem-labs, and the daemon reads theorem-labs/agent-infra with no wider token: "
+	want := leakguard.RefusalPrefix + "GitHub refused the daemon's App the reading permissions on " + leakguard.CheckRepository.Owner() + ", and the daemon reads " + leakguard.CheckSlug + " with no wider token: "
 	if err == nil || !strings.HasPrefix(err.Error(), want) {
 		t.Fatalf("a refused narrowing = %v, want the sentence %q", err, want)
 	}
@@ -346,7 +346,7 @@ func TestTheLeakCheckTokenInTokenModeIsTheCommandsReadOnlyRelease(t *testing.T) 
 				}
 				return
 			}
-			const want = leakguard.RefusalPrefix + "GitHub refused the daemon's implement App the reading permissions on theorem-labs, and the daemon reads theorem-labs/agent-infra with no wider token: "
+			want := leakguard.RefusalPrefix + "GitHub refused the daemon's App the reading permissions on " + leakguard.CheckRepository.Owner() + ", and the daemon reads " + leakguard.CheckSlug + " with no wider token: "
 			if err == nil || !strings.HasPrefix(err.Error(), want) {
 				t.Fatalf("a broker refusing the narrowing = %v, want the sentence %q", err, want)
 			}

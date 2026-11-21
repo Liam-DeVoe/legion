@@ -929,42 +929,36 @@ type plan struct {
 // owner's directory out of the bundle (appauth's mintBundle, recorded in left), and so does a
 // login that is no directory's name (appauth's bundleDirs). Under the Kubernetes runtime there
 // is a third way: an issue pod projects only the directories every one of its roles' bundles
-// holds (sandbox's gitHubBundles), and its roles run as two Apps, so an owner the other App is
-// not installed on, or whose directory the other App's mint left out, is in no container of
-// the pod, the implementer's included (sandbox.PodAppRoles). A tmux pane holds its own role's
-// bundle and no other, so there the role's own App is the whole answer. The clause says the
+// holds (sandbox's gitHubBundles), and each of its roles holds its own set, so an owner whose
+// directory another role's mint left out is in no container of the pod, the implementer's
+// included (sandbox.PodTokenSets). A tmux pane holds its own role's bundle and no other, so there
+// the role's own set is the whole answer. The clause says the
 // role's token reaches every repository of each owner it names, which is false of any such
 // owner, so it is not named. The rule is asked of the one place that holds it and not written
-// a second time: appauth.GitHubDirs is the directories a bundle of those Apps built now would
+// a second time: appauth.GitHubDirs is the directories a bundle of those sets built now would
 // hold, which is what the Kubernetes drift check reads a pod against, and the owners kept are
 // the installed ones it names. It names one more directory for each owner a configured rename
 // moved a repository away from, which is no installed owner and so is never one of these.
 //
 // The fallback is the honest answer there rather than a silence: a bundle is built by the
 // runtime, after the specs the launch is composed from, so the first launch of a daemon that
-// has built none has no read to report; and the mapping's owners are accounts both role Apps
-// are installed on (checkMapping), so the clause names a true part of the App's reach and
-// never more than it. Every launch after a bundle of each of those Apps names the App's own
-// owners, which is what an agent is owed: the Kubernetes runtime builds one of each App for
+// has built none has no read to report; and the mapping's owners are accounts the App is
+// installed on (checkMapping), so the clause names a true part of the App's reach and
+// never more than it. Every launch after a bundle names the App's own
+// owners, which is what an agent is owed: the Kubernetes runtime builds one of each set for
 // every live issue pod at its minute tick (sandbox's refreshGitHubCredentials), and the tmux
 // runtime one for every tracked pane.
 func (p plan) appOwners(runtimeName string) func(claim.Role) []string {
 	return func(role claim.Role) []string {
-		app := appauth.AppRoleFor(role)
-		apps := []appauth.AppRole{app}
-		if runtimeName == "kubernetes" {
-			apps = sandbox.PodAppRoles(role)
-		}
-		owners, read := p.installed.Owners(app)
-		for _, other := range apps {
-			if _, otherRead := p.installed.Owners(other); !otherRead {
-				read = false
-			}
-		}
+		owners, read := p.installed.Owners()
 		if !read {
 			return p.repositories.Owners()
 		}
-		held := appauth.GitHubDirs(p.repositories.Accepted, p.repositories.renames, p.installed, p.left, apps, ghrepo.Repository{})
+		sets := []appauth.TokenSet{appauth.SetFor(role)}
+		if runtimeName == "kubernetes" {
+			sets = sandbox.PodTokenSets(role)
+		}
+		held := appauth.GitHubDirs(p.repositories.Accepted, p.repositories.renames, p.installed, p.left, sets, ghrepo.Repository{})
 		return slices.DeleteFunc(owners, func(owner string) bool { return !slices.Contains(held, owner) })
 	}
 }

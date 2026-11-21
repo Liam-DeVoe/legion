@@ -191,8 +191,8 @@ func TestReviewBodyA401IsRetriedWithAFreshToken(t *testing.T) {
 	if !errors.As(err, &later) || later.After != tokenRefusedWait {
 		t.Fatalf("a 401 on the body read = %v; want a %s retry", err, tokenRefusedWait)
 	}
-	if tokens.forgot != "review acme" {
-		t.Fatalf("forgot %q, want the review App's token for acme", tokens.forgot)
+	if tokens.forgot != "reviewer acme" {
+		t.Fatalf("forgot %q, want the reviewer's token for acme", tokens.forgot)
 	}
 	if left := w.rateLimitLeft(); left > 0 {
 		t.Fatalf("a 401 held GitHub's rate limit for %s, want no hold", left)

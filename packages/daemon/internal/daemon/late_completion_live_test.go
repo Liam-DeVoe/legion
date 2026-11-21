@@ -550,7 +550,7 @@ func (r *lateCompletionLive) reviewerCompletesLate() {
 	reviewer := r.token(claim.RoleReviewer)
 	session := r.heldTurn(claim.RoleReviewer, phase.Reviewing, r.reviewerCall).Session
 	r.reviewRecord = r.writeRecord(session, "review")
-	login, err := r.tokens.AppLogin(context.Background(), appauth.Review)
+	login, err := r.tokens.AppLogin(context.Background())
 	if err != nil {
 		t.Fatalf("read the review App's login: %v", err)
 	}

@@ -101,8 +101,8 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	expires := time.Now().Add(time.Hour)
 	tokens := map[string]string{"acme": "ghs_acme_write", "sjawhar": "ghs_sjawhar_write"}
 	if _, err := ghconfig.WriteBundle(root, ghconfig.Bundle{Default: "acme", Dirs: map[string]ghconfig.Rendered{
-		"acme":    ghconfig.Render(tokens["acme"], "implement", expires),
-		"sjawhar": ghconfig.Render(tokens["sjawhar"], "implement", expires),
+		"acme":    ghconfig.Render(tokens["acme"], "implementer", expires),
+		"sjawhar": ghconfig.Render(tokens["sjawhar"], "implementer", expires),
 	}}); err != nil {
 		t.Fatal(err)
 	}

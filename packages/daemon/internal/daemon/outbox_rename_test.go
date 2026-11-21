@@ -163,9 +163,10 @@ func (g *renameGitHub) requests() []string {
 	return made
 }
 
-// assertAddressed holds every call GitHub received to one repository and one bearer: app's token
-// minted for that repository's owner, and no call naming any other repository.
-func (g *renameGitHub) assertAddressed(t *testing.T, app appauth.AppRole, repo string) {
+// assertAddressed holds every call GitHub received to one repository and one bearer: the lease
+// named lease (a set's name, or "read" for the read lease, as roleTokens names them) minted for
+// that repository's owner, and no call naming any other repository.
+func (g *renameGitHub) assertAddressed(t *testing.T, lease, repo string) {
 	t.Helper()
 	repos, bearers := g.named()
 	if len(repos) == 0 {
@@ -178,7 +179,7 @@ func (g *renameGitHub) assertAddressed(t *testing.T, app appauth.AppRole, repo s
 		}
 	}
 	for _, bearer := range bearers {
-		if want := "Bearer " + string(app) + "-app-token-for-" + owner; bearer != want {
+		if want := "Bearer " + lease + "-app-token-for-" + owner; bearer != want {
 			t.Errorf("a GitHub call carried %q, want %q: the token is minted for the owner whose installation holds the repository", bearer, want)
 		}
 	}
@@ -188,9 +189,9 @@ func (g *renameGitHub) assertAddressed(t *testing.T, app appauth.AppRole, repo s
 // the owner it was minted for.
 type identityTokens struct{ roleTokens }
 
-func (t identityTokens) Token(ctx context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
-	lease, err := t.roleTokens.Token(ctx, role, owner)
-	lease.Identity = runtime.GitIdentity{Name: "legion-" + string(role) + "[bot] of " + owner, Email: owner + "@users.noreply.github.com"}
+func (t identityTokens) Token(ctx context.Context, set appauth.TokenSet, owner string) (appauth.Lease, error) {
+	lease, err := t.roleTokens.Token(ctx, set, owner)
+	lease.Identity = runtime.GitIdentity{Name: "legion-" + string(set) + "[bot] of " + owner, Email: owner + "@users.noreply.github.com"}
 	return lease, err
 }
 
@@ -208,7 +209,7 @@ func TestTheGitIdentityOfATreeRecordedBeforeAConfiguredRenameIsMintedForTheOwner
 		t.Run(tc.name, func(t *testing.T) {
 			owner := ghrepo.MustParse(tc.want).Owner()
 			w := &workflowRuntime{tokens: identityTokens{}, repositories: renamedRepositories(tc.served, tc.renames)}
-			want := runtime.GitIdentity{Name: "legion-implement[bot] of " + owner, Email: owner + "@users.noreply.github.com"}
+			want := runtime.GitIdentity{Name: "legion-implementer[bot] of " + owner, Email: owner + "@users.noreply.github.com"}
 
 			launch, err := w.identity(context.Background(), claim.RoleImplementer, recorded)
 			if err != nil || launch != want {
@@ -228,7 +229,7 @@ func TestTheGitIdentityOfATreeRecordedBeforeAConfiguredRenameIsMintedForTheOwner
 // The branch of a tree recorded before its repository's transfer is created on the repository
 // GitHub holds it under now: the record keeps sjawhar/legion, and both calls the create costs —
 // the read of the base branch's ref and the create of the issue's own — are addressed at
-// cybermonklabs/legion on the implement App's token minted for cybermonklabs. The token is the
+// cybermonklabs/legion on the implementer's token minted for cybermonklabs. The token is the
 // half the old name cannot supply, and the address matters here as it does nowhere else: a
 // create is a write, and GitHub's redirect of a transferred repository carries no write, so a
 // branch created under the name the repository moved away from is created nowhere and every
@@ -253,8 +254,8 @@ func TestTheBranchOfATreeRecordedBeforeItsTransferIsCreatedOnTheRepositoryGitHub
 				t.Fatalf("create the branch of %s: %v", issue.Key, err)
 			}
 
-			github.assertAddressed(t, appauth.Implement, tc.want)
-			bearer := "Bearer implement-app-token-for-" + ghrepo.MustParse(tc.want).Owner()
+			github.assertAddressed(t, string(appauth.SetImplementer), tc.want)
+			bearer := "Bearer " + setToken(appauth.SetImplementer, ghrepo.MustParse(tc.want).Owner())
 			want := []string{
 				"GET /repos/" + tc.want + "/git/ref/heads/main " + bearer,
 				"POST /repos/" + tc.want + "/git/refs " + bearer,

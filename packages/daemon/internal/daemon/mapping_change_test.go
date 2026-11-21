@@ -24,8 +24,8 @@ import (
 
 // A mapping change at runtime reaches the daemon through its Dispatch consumer: on Dispatch's
 // settings.repo_project.updated of its project, it reads the mapping again. A newly mapped
-// repository both Apps are installed on is served (GitHub intake hears it, its owner joins the
-// owners), one missing an App is left out and not heard, and a repository unmapped while a
+// repository the App is installed on is served (GitHub intake hears it, its owner joins the
+// owners), one missing the App is left out and not heard, and a repository unmapped while a
 // record names it is still heard, so its running issue's facts still arrive. Its owner leaves the
 // mapping's owners, which decide nothing of any gh bundle: a bundle holds a directory for each
 // owner its App is installed on, read from GitHub at every build (appauth's GitHubCredential),
@@ -100,8 +100,8 @@ func mappingChangeAtRuntime(t *testing.T, ackWait, delay time.Duration) {
 	go func() { w.refreshOnMappingChange(ctx); close(refreshed) }()
 	t.Cleanup(func() { cancel(); <-done; <-refreshed })
 
-	// orbit/gadgets moves to another project; zeta/tools is mapped; acme/thing is mapped with no
-	// review App installed on it.
+	// orbit/gadgets moves to another project; zeta/tools is mapped; acme/thing is mapped with the
+	// App not installed on it.
 	client.set(
 		dispatch.RepoProject{Repo: "acme/widgets", Project: "CAPTURE", Default: true},
 		dispatch.RepoProject{Repo: "zeta/tools", Project: "CAPTURE"},
@@ -109,7 +109,7 @@ func mappingChangeAtRuntime(t *testing.T, ackWait, delay time.Duration) {
 		dispatch.RepoProject{Repo: "orbit/gadgets", Project: "OTHER"},
 	)
 	installs.mu.Lock()
-	installs.missing["review acme/thing"] = true
+	installs.missing["acme/thing"] = true
 	installs.mu.Unlock()
 	payload, err := json.Marshal(map[string]any{"id": 70, "issue_key": nil, "project": "CAPTURE", "seq": 0, "type": "settings.repo_project.updated",
 		"actor": map[string]string{"kind": "user", "id": "smoke"}, "notify": true, "created_at": "2026-10-16T18:00:00Z",
@@ -143,8 +143,8 @@ func mappingChangeAtRuntime(t *testing.T, ackWait, delay time.Duration) {
 		return slices.Equal(got, want) && slices.Equal(w.repositories.Owners(), []string{"acme", "zeta"})
 	})
 	refused := w.repositories.Refused()
-	if len(refused) != 1 || refused[0].Repo != "acme/thing" || !strings.Contains(refused[0].Reason, "the review App is not installed on acme/thing") {
-		t.Fatalf("Refused = %#v, want acme/thing left out for its review App", refused)
+	if len(refused) != 1 || refused[0].Repo != "acme/thing" || !strings.Contains(refused[0].Reason, "the App is not installed on acme/thing") {
+		t.Fatalf("Refused = %#v, want acme/thing left out, the App not installed on it", refused)
 	}
 	if accepted := w.repositories.Accepted(); slices.Contains(accepted, ghrepo.MustParse("orbit/gadgets")) {
 		t.Fatalf("Accepted = %v still serves orbit/gadgets, unmapped from the project", accepted)

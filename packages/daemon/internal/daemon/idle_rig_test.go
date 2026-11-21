@@ -580,15 +580,15 @@ func (r *idleWakeRig) newRuntime(ctx context.Context, listener *stream.Listener,
 	opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored = savedWorkspaceBundle(st, opts.Project), st.DeleteRestoredWorkspaceBundle
 	opts.Tokens = idleRigTokens{}
 	opts.GitHubCredential = func(_ context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-		rendered := ghconfig.Render("ghs_idle_rig", string(appauth.AppRoleFor(role)), time.Now().Add(time.Hour))
+		rendered := ghconfig.Render("ghs_idle_rig", string(appauth.SetFor(role)), time.Now().Add(time.Hour))
 		owner := strings.ToLower(repo.Owner())
 		return ghconfig.Bundle{Default: owner, Dirs: map[string]ghconfig.Rendered{owner: rendered}}, nil
 	}
 	// The controller's own bundle, which its launch and its refresh both ask for by owner
-	// (sandbox.Options.ControllerCredential, appauth.ControllerCredential): the review App's, over
-	// liveRepo's owner, the rig's one.
+	// (sandbox.Options.ControllerCredential, appauth.ControllerCredential): the controller's set,
+	// over liveRepo's owner, the rig's one.
 	opts.ControllerCredential = func(_ context.Context, defaultOwner string) (ghconfig.Bundle, error) {
-		rendered := ghconfig.Render("ghs_idle_rig", string(appauth.Review), time.Now().Add(time.Hour))
+		rendered := ghconfig.Render("ghs_idle_rig", string(appauth.SetController), time.Now().Add(time.Hour))
 		owner := strings.Split(liveRepo, "/")[0]
 		if defaultOwner != "" {
 			owner = defaultOwner
@@ -598,7 +598,7 @@ func (r *idleWakeRig) newRuntime(ctx context.Context, listener *stream.Listener,
 	// The directories the pods' gh is built from, which sandbox.New now requires
 	// (checkSupervision) and the runtime reads a running pod's gh projection against: the rig's
 	// issues are all on liveRepo, so its owner's directory is the whole set.
-	opts.GitHubDirs = func(ghrepo.Repository, []appauth.AppRole) []string {
+	opts.GitHubDirs = func(ghrepo.Repository, []appauth.TokenSet) []string {
 		return []string{strings.Split(liveRepo, "/")[0]}
 	}
 	opts.Mapped = func() []ghrepo.Repository { return nil }
@@ -635,8 +635,8 @@ func (r *idleWakeRig) toolsDir() string {
 // (appauth.GitIdentity).
 type idleRigAppTokens struct{ *workflowTokenRecorder }
 
-func (t idleRigAppTokens) Token(ctx context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
-	lease, err := t.workflowTokenRecorder.Token(ctx, role, owner)
+func (t idleRigAppTokens) Token(ctx context.Context, set appauth.TokenSet, owner string) (appauth.Lease, error) {
+	lease, err := t.workflowTokenRecorder.Token(ctx, set, owner)
 	if err != nil {
 		return lease, err
 	}

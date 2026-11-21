@@ -10,7 +10,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
-	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -256,11 +255,11 @@ func TestAReplacingLaunchMakesNoMoreCallsThanTheBoundCounts(t *testing.T) {
 		}
 		t.Fatalf("the replacing try made %d bounded calls, more than the %d relaunchCalls counts; its requests:\n%s", calls, relaunchCalls, strings.Join(listed, "\n"))
 	}
-	// One credential per App role of the pod, not per claim role: a bundle is the App role and
-	// the repository and nothing else, so the launch builds one for each of its two Apps and
-	// hands it to the roles that run as it (appauth.Bundles, gitHubBundles).
-	if frames != 1 || mints.Load() != 2 || renders.Load() != int32(len(appauth.Roles)) {
-		t.Fatalf("the replacing try sent %d launcher frames, minted %d tokens and rendered %d credentials, want one Start, two mints (the provisioning token and the repository cache's) and one credential per App role",
-			frames, mints.Load(), renders.Load())
+	// One credential per token set of the pod: a bundle is the set and the repository and
+	// nothing else, so the launch builds one for each of its roles' sets, six for an issue pod's
+	// six roles (appauth.Bundles, gitHubBundles).
+	if sets := podTokenSets(podKindFor(claim.RoleReviewer)); frames != 1 || mints.Load() != 2 || renders.Load() != int32(len(sets)) {
+		t.Fatalf("the replacing try sent %d launcher frames, minted %d tokens and rendered %d credentials, want one Start, two mints (the provisioning token and the repository cache's) and one credential per set of the pod's, %d",
+			frames, mints.Load(), renders.Load(), len(sets))
 	}
 }

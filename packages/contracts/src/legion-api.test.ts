@@ -1693,13 +1693,13 @@ test("the state golden carries each issue's repository and the repositories it s
   expect(state.repositories.refused).toEqual([
     {
       repo: "acme/gadgets",
-      reason: "the review App is not installed on acme/gadgets",
-      apps: { implement: true, review: false },
+      reason: "the App is not installed on acme/gadgets",
+      apps: { implement: false, review: false },
     },
     {
       repo: "zeta/archive",
       reason:
-        "the implement App's installation on zeta/archive could not be read: GitHub answered 502; Legion reads it again",
+        "the App's installation on zeta/archive could not be read: GitHub answered 502; Legion reads it again",
     },
   ]);
   expect(state.repositories.refused[1]?.apps).toBeUndefined();

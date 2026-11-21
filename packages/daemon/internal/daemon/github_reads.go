@@ -145,9 +145,9 @@ func (w *workflowRuntime) readPullRequest(ctx context.Context, pr record.PullReq
 		return githubrest.Client{}, githubPullRequest{}, err
 	}
 	repository := w.repositories.serving(recorded)
-	github, err := implementClient(ctx, w.tokens, w.githubAPI, repository)
+	github, err := readClient(ctx, w.tokens, w.githubAPI, repository)
 	if err != nil {
-		return githubrest.Client{}, githubPullRequest{}, fmt.Errorf("mint the implement App token for %s: %w", repository.Owner(), err)
+		return githubrest.Client{}, githubPullRequest{}, fmt.Errorf("mint the read token for %s: %w", repository.Owner(), err)
 	}
 	var pull githubPullRequest
 	if err := github.Get(ctx, fmt.Sprintf("/pulls/%d", pr.Number), &pull); err != nil {
@@ -156,13 +156,13 @@ func (w *workflowRuntime) readPullRequest(ctx context.Context, pr record.PullReq
 	return github, pull, nil
 }
 
-// implementClient is the client for repository's REST API on the implement App's installation
-// token for that repository's owner account: the App every read of an issue's own repository is
-// made as, the per-issue reads' and the outbox rows' alike. The token names no repository, so one
-// mint serves every repository of the owner the App is installed on. The mint failure is returned
-// bare, so each caller says in its own words what it was minting the token for.
-func implementClient(ctx context.Context, tokens appauth.Tokens, githubAPI string, repository ghrepo.Repository) (githubrest.Client, error) {
-	lease, err := tokens.Token(ctx, appauth.Implement, repository.Owner())
+// readClient is the client for repository's REST API on the App's read lease for that
+// repository's owner account: the token every read of an issue's own repository is made with, the
+// per-issue reads' and the outbox rows' alike. The token names no repository, so one mint serves
+// every repository of the owner the App is installed on. The mint failure is returned bare, so
+// each caller says in its own words what it was minting the token for.
+func readClient(ctx context.Context, tokens appauth.Tokens, githubAPI string, repository ghrepo.Repository) (githubrest.Client, error) {
+	lease, err := tokens.ReadToken(ctx, repository.Owner())
 	if err != nil {
 		return githubrest.Client{}, err
 	}

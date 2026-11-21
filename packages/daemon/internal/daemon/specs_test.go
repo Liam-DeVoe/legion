@@ -222,11 +222,11 @@ func TestAWorkersAddressingNamesItsRepositoryAndItsAppsReach(t *testing.T) {
 		})
 	}
 
-	// The owners named are the role's own App's: an implementer's and a reviewer's addressing
-	// differ where their Apps' installations do, which is what the clause promises and what the
-	// owners of the project's mapped repositories could not say (INFRA-2543 R6).
-	s.appOwners = func(role claim.Role) []string { return []string{string(appauth.AppRoleFor(role)) + "-owner"} }
-	if got, want := launch(), own+"your role's GitHub App is installed on the owner implement-owner, and its token reaches every repository of that owner."; !strings.HasSuffix(got, want) {
+	// The owners named are the role's own (plan.appOwners): an implementer's and a reviewer's
+	// addressing differ where the directories their sets' bundles hold do, which is what the clause
+	// promises and what the owners of the project's mapped repositories could not say.
+	s.appOwners = func(role claim.Role) []string { return []string{string(appauth.SetFor(role)) + "-owner"} }
+	if got, want := launch(), own+"your role's GitHub App is installed on the owner implementer-owner, and its token reaches every repository of that owner."; !strings.HasSuffix(got, want) {
 		t.Fatalf("the implementer's addressing = %q, want it to end with %q", got, want)
 	}
 

@@ -73,7 +73,7 @@ func (g *twoOwnersGitHub) called() []string {
 // Every repository-dependent action of the outbox reads the repository from the issue's record:
 // two issues on repositories of two owners, each at a default branch of its own, have their
 // branches created, their workspaces provisioned and removed and their pull requests disarmed in
-// their own repositories, each with the implement App's token minted for its own owner.
+// their own repositories, each with the implementer's token minted for its own owner.
 func TestEachIssuesActionsActOnTheRepositoryItsRecordNames(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -115,10 +115,10 @@ func TestEachIssuesActionsActOnTheRepositoryItsRecordNames(t *testing.T) {
 	}
 
 	want := []string{
-		"GET /repos/acme/widgets/git/ref/heads/main implement-app-token-for-acme",
-		"POST /repos/acme/widgets/git/refs implement-app-token-for-acme",
-		"GET /repos/zeta/tools/git/ref/heads/release/v7.1 implement-app-token-for-zeta",
-		"POST /repos/zeta/tools/git/refs implement-app-token-for-zeta",
+		"GET /repos/acme/widgets/git/ref/heads/main implementer-app-token-for-acme",
+		"POST /repos/acme/widgets/git/refs implementer-app-token-for-acme",
+		"GET /repos/zeta/tools/git/ref/heads/release/v7.1 implementer-app-token-for-zeta",
+		"POST /repos/zeta/tools/git/refs implementer-app-token-for-zeta",
 	}
 	if got := github.called(); !slices.Equal(got, want) {
 		t.Fatalf("GitHub calls:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
@@ -165,8 +165,8 @@ func TestARowQueuedBeforeTheFillActsOnTheFilledRepository(t *testing.T) {
 		t.Fatalf("run the queued rows: %v", err)
 	}
 	want := []string{
-		"GET /repos/Zeta/Tools/git/ref/heads/release/v7.1 implement-app-token-for-Zeta",
-		"POST /repos/Zeta/Tools/git/refs implement-app-token-for-Zeta",
+		"GET /repos/Zeta/Tools/git/ref/heads/release/v7.1 implementer-app-token-for-Zeta",
+		"POST /repos/Zeta/Tools/git/refs implementer-app-token-for-Zeta",
 	}
 	if got := github.called(); !slices.Equal(got, want) {
 		t.Fatalf("GitHub calls:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))

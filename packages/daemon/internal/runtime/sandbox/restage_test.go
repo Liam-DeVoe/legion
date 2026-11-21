@@ -456,7 +456,7 @@ func projectARepositoryDirectory(t *testing.T, g *rig, r *Runtime, name string) 
 		if g.secret(roleSecretName(name, role)) == nil {
 			continue
 		}
-		rendered := ghconfig.Render(staticOwnerToken(role, "acme"), string(appauth.AppRoleFor(role)), staticCredentialExpiry)
+		rendered := ghconfig.Render(staticOwnerToken(role, "acme"), string(appauth.SetFor(role)), staticCredentialExpiry)
 		editSecret(g, roleSecretName(name, role), func(secret *corev1.Secret) {
 			secret.Data[GitHubHostsKey(repositoryDirectory)] = []byte(rendered.Hosts)
 			secret.Data[GitHubConfigKey(repositoryDirectory)] = []byte(rendered.Config)
@@ -598,22 +598,23 @@ func ownerRuleOwners(repos []ghrepo.Repository, pair ghrepo.Rename) []string {
 }
 
 // servedOwnerDirs is the directory set a daemon serving repos with the smoke pair configured
-// answers for the issue recorded on recordedSmoke (appauth.GitHubDirs), over both Apps as an
-// issue pod's projection is read. GitHubDirs answers from the record each App's last bundle
-// build wrote and calls GitHub itself not at all, so a bundle of each App is built first, over
-// an App installed on every owner the mapping names, which is this deployment's.
+// answers for the issue recorded on recordedSmoke (appauth.GitHubDirs), over every set of an
+// issue pod as its projection is read. GitHubDirs answers from the record the last bundle build
+// wrote and calls GitHub itself not at all, so the bundles a launch of that pod builds are built
+// first, over an App installed on every owner the mapping names, which is this deployment's.
 func servedOwnerDirs(t *testing.T, repos []ghrepo.Repository) []string {
 	t.Helper()
 	served := func() []ghrepo.Repository { return repos }
 	renames := ghrepo.MustRenames(smokeRename)
 	installed := appauth.NewInstalled()
 	credential := appauth.GitHubCredential(sourceOf(&namedLeases{}, installedOnMapped{served: served}), served, renames, installed, nil, nil)
-	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleReviewer} {
+	kind := podKindFor(claim.RoleImplementer)
+	for _, role := range kind.roles() {
 		if _, err := credential(context.Background(), role, recordedSmoke); err != nil {
 			t.Fatalf("the %s's bundle: %v", role, err)
 		}
 	}
-	return appauth.GitHubDirs(served, renames, installed, nil, appauth.Roles, recordedSmoke)
+	return appauth.GitHubDirs(served, renames, installed, nil, podTokenSets(kind), recordedSmoke)
 }
 
 // A pod created before this change, whose gh volume projects one directory for each owner the
