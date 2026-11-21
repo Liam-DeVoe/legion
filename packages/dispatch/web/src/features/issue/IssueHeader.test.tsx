@@ -264,6 +264,7 @@ test("the Enter that confirms an input method's word in the title's box keeps th
     expect(view.q.getByRole("textbox", { name: "Issue title" })).toBe(box);
     expect(box).toHaveFocus();
 
+    // The plain Enter goes the same way as the two above, so only the composition mark differs.
     fireEvent.keyDown(box, { key: "Enter" });
     expect(view.q.queryByRole("textbox", { name: "Issue title" })).toBeNull();
   } finally {

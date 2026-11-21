@@ -663,6 +663,7 @@ test("RepoControl writes nothing on the Enter that confirms an input method's wo
     await act(async () => {});
     expect(patchIssue).not.toHaveBeenCalled();
 
+    // The plain Enter goes the same way as the two above, so only the composition mark differs.
     expect(fireEvent.keyDown(box(), { key: "Enter" })).toBe(false);
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "acme/gadgets" }, keyedAttempt)

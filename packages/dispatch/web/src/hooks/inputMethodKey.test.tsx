@@ -26,6 +26,7 @@ test("React's key event is read through its native event, the same three ways", 
   );
   try {
     const field = view.getByLabelText("Words");
+    // user-event cannot mark a key as an input method's, so all three keys are fired the same way.
     fireEvent.keyDown(field, { isComposing: true, key: "Enter" });
     fireEvent.keyDown(field, { isComposing: false, key: "Enter", keyCode: 229 });
     fireEvent.keyDown(field, { key: "Enter" });

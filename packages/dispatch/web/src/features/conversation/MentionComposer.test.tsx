@@ -1164,12 +1164,14 @@ test("the Enter that confirms an input method's word picks no mention, and a pla
     fireEvent.keyDown(field, { key: "ArrowDown" });
     expect(field.getAttribute("aria-activedescendant")).not.toBeNull();
 
+    // user-event cannot mark a key as an input method's, so the two such Enters are fired.
     expect(fireEvent.keyDown(field, { isComposing: true, key: "Enter" })).toBe(true);
     expect(fireEvent.keyDown(field, { isComposing: false, key: "Enter", keyCode: 229 })).toBe(true);
     expect(field.value).toBe("@");
     expect(screen.getByRole("listbox", { name: "Mention suggestions" })).not.toBeNull();
     expect(seen).toEqual([]);
 
+    // The plain Enter goes the same way as the two above, so only the composition mark differs.
     expect(fireEvent.keyDown(field, { key: "Enter" })).toBe(false);
     await waitFor(() => expect(field.value).toBe("@legion-planner"));
   } finally {
