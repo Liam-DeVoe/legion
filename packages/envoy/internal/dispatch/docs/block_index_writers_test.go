@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstorecopy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -58,10 +59,13 @@ func writeDocumentThroughTheRequestPath(t *testing.T, service *Service, database
 	if err != nil {
 		t.Fatalf("read the time of document %s: %v", slug, err)
 	}
-	documentNode, err := graphstore.WriteUncaused(ctx, tx,
+	documentNode := graphstore.PlanUncaused(
 		[]graphstore.Node{graphstore.Created(graphstore.ArtifactNode(refKey, "CORE", "", writer, createdAt))},
 		[]graphstore.Tuple{graphstore.ArtifactPartOf(refKey, "CORE-1", writer, createdAt)})
-	if err != nil {
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueNodes(b, documentNode)
+		return nil
+	}); err != nil {
 		t.Fatalf("write the node of document %s: %v", slug, err)
 	}
 	var artifactID string
@@ -102,14 +106,8 @@ func writeDocumentThroughTheRequestPath(t *testing.T, service *Service, database
 	if err != nil {
 		t.Fatalf("encode the created event's payload: %v", err)
 	}
-	var event int64
-	if err := tx.QueryRow(ctx, `
-		with bumped as (update issues set last_seq = last_seq + 1 where key = 'CORE-1' returning last_seq)
-		insert into events (issue_key, seq, type, actor, payload, notify)
-		select 'CORE-1', bumped.last_seq, 'artifact.created', '{"kind":"user","id":"alice"}', $1, false
-		from bumped
-		returning id
-	`, payload).Scan(&event); err != nil {
+	event, err := documentEvent(ctx, tx, "artifact.created", payload)
+	if err != nil {
 		t.Fatalf("record the document's event: %v", err)
 	}
 	if err := causeInWritePhase(joined, tx, documentNode, event); err != nil {
@@ -131,7 +129,10 @@ func writeDocumentThroughTheRequestPath(t *testing.T, service *Service, database
 // would run before the rows it settles exist. A transaction no ledger joins runs it at once
 // (write).
 func causeInWritePhase(ctx context.Context, tx pgx.Tx, written graphstore.Uncaused, event int64) error {
-	return write(ctx, tx, func(b *store.WriteBatch) error { return graphstore.QueueCaused(b, written, event) })
+	return write(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, written, event)
+		return nil
+	})
 }
 
 // countRows is one count over the document's rows of a table keyed by artifact_id.
@@ -550,12 +551,7 @@ var indexPasses = map[string]string{
 	"api/comment_actions.go#orphanCommentAnchor":      "the accept or reject request, the comment's row it locked and the block that row's anchor names",
 	"docs/anchor_refresh.go#stateRefreshedAnchoredIn": "the anchors the refresh orphaned or found again off the document's marks, the rows it updated and the events it appended",
 	"docs/anchor_blocks.go#pinCommentAnchorBlock":     "the live document's block that holds the legacy anchor's quote, and the row it pins it on",
-	// The comment path's two halves of one store write, split at its event (commentStoreWrite):
-	// the node and facts of the comment the request stores, then the same facts under the event
-	// that stored it. Neither reads a row of either side.
-	"api/comment_create.go#writeNode":      "the comment the create request stores, as its row is written",
-	"api/comment_create.go#caused":         "the facts writeNode stated and the event that stored the comment",
-	"api/comment_delivery.go#replyComment": "the reply a delivery recorded",
+	"api/comment_delivery.go#replyComment":            "the reply a delivery recorded",
 	// A delivery attempt's settle states the session it reached (graphstore.QueueReached).
 	"api/comment_delivery.go#completeCommentDelivery": "the delivery attempt the sender settles",
 	"api/message_delivery.go#completeMessageDelivery": "the delivery attempt the sender settles",
@@ -600,8 +596,8 @@ var indexPasses = map[string]string{
 	// build wrote, stated on the ask's node where the node does not state them yet.
 	"asks/followers.go#CatchUpFollower": "the follower rows another build recorded and what the ask's node already states of them",
 	// The boot step's backfill of the asks and their followers written before this release.
-	"graphcensus/backfill.go#writeAskBatch":         "each pre-store asks row's own content",
-	"graphcensus/backfill.go#writeAskFollowerBatch": "each pre-store ask_followers row's own content",
+	"graphcensus/backfill_asks.go#writeAskBatch":         "each pre-store asks row's own content",
+	"graphcensus/backfill_asks.go#writeAskFollowerBatch": "each pre-store ask_followers row's own content",
 	// A settlement states right after each event it appends what waited for it: its version's
 	// block index after the artifact.version, and each ask it opened, its node and its follow,
 	// after that ask's ask.opened, with those asks' ties and the answer states it wrote
@@ -667,8 +663,8 @@ var indexPasses = map[string]string{
 	// (writeOwedRun). Its input is that going_requests row's own content and the run's going_events
 	// rows, as the other backfill passes read each pre-store row's own, and a run whose node is
 	// already written it leaves alone rather than mending.
-	"api/going.go#lockGoingRun":            "one going_requests row an earlier build recorded with no node, and that run's going_events rows",
-	"graphcensus/backfill.go#writeOwedRun": "one going_requests row an earlier build recorded with no node, and that run's going_events rows",
+	"api/going.go#lockGoingRun":                 "one going_requests row an earlier build recorded with no node, and that run's going_events rows",
+	"graphcensus/backfill_runs.go#writeOwedRun": "one going_requests row an earlier build recorded with no node, and that run's going_events rows",
 	// The backfill's passes over what a process of the release before writes of a run during a
 	// roll: the frames it appended with no value, whose input is each going_events row's own
 	// content, found by an anti-join with the run's frame values and stated from the row, never
@@ -678,9 +674,9 @@ var indexPasses = map[string]string{
 	// asserted at a check it dropped or at a check of a document it retired: the store's own
 	// relations, read as the store reads them now (refs.PreventionRetractions), with no projection
 	// read to mend another.
-	"graphcensus/backfill.go#writeRunFrames":        "each going_events row an earlier build appended with no frame value, and the run's node row it takes first",
-	"graphcensus/backfill.go#writeGoneRun":          "the interaction node whose going_requests row an earlier build deleted, and that the row is gone",
-	"graphcensus/backfill.go#writeEndedPreventions": "the prevented_by tuples the store asserts now at a check whose block node is gone or whose document is retired",
+	"graphcensus/backfill_runs.go#writeRunFrames":               "each going_events row an earlier build appended with no frame value, and the run's node row it takes first",
+	"graphcensus/backfill_runs.go#writeGoneRun":                 "the interaction node whose going_requests row an earlier build deleted, and that the row is gone",
+	"graphcensus/backfill_preventions.go#writeEndedPreventions": "the prevented_by tuples the store asserts now at a check whose block node is gone or whose document is retired",
 	// A document's retirement states its artifact node gone, keeping every other fact of the
 	// node, retracts each prevented_by the store asserts at a block of the document - the store's
 	// own relations, which no projection holds, retracted because nobody runs a retired document's
@@ -752,26 +748,26 @@ var indexPasses = map[string]string{
 	// markStaleDocuments marks each document no pass of this build's rule has stated at its
 	// version, read off the record the document's own row holds (stated_version and stated_rule).
 	// That pass writes neither a projected table nor the store, so it is no entry here.
-	"graphcensus/backfill.go#writeBlockBatch":    "each pre-store document_blocks row's own content and the document it is in",
-	"graphcensus/backfill.go#writeBlockRefBatch": "each pre-store block_refs row's own content",
+	"graphcensus/backfill_blocks.go#writeBlockBatch":        "each pre-store document_blocks row's own content and the document it is in",
+	"graphcensus/backfill_block_refs.go#writeBlockRefBatch": "each pre-store block_refs row's own content",
 	// The comment write both of the comment batch's writers share - the backfill's comment batch
 	// and the block-index tick's write of the comments the events after its cursor name whose rows
-	// name no node (graphcensus.CommentsNamingNoNode) - each comment's node and facts, read from the
+	// name no node (refs.CommentsNamingNoNode) - each comment's node and facts, read from the
 	// row's own content with the event that stored it as its cause, named on that comment's own row
-	// (graphcensus.CommentWrite.Queue). It reads no side of a projection to mend the other and
+	// (refs.CommentWrite.Queue). It reads no side of a projection to mend the other and
 	// leaves alone a row that names its node.
-	"graphcensus/backfill.go#Queue": "each comments row whose node the write states, read from the row's own content, and the event that stored it",
+	"refs/comment_nodes.go#Queue": "each comments row whose node the write states, read from the row's own content, and the event that stored it",
 	// The backfill of the roles. A role, its page and the page's part_of it have no projection
 	// row, so there is no projection to read one side of: the batch's input is the roles the
 	// store census holds to a node, which a row addresses now or an event of the log ever
 	// addressed (addressedRoles), and it writes the nodes the store lacks of them, leaving a node
 	// another write made alone rather than mending it.
-	"graphcensus/backfill.go#writeRoleBatch": "the roles a row addresses now or an event ever addressed (addressedRoles)",
+	"graphcensus/backfill_roles.go#writeRoleBatch": "the roles a row addresses now or an event ever addressed (addressedRoles)",
 	// The backfill of the sessions, the same case as the roles': a session has no projection
 	// row, and the batch's input is the sessions the store census holds to a node, which a row
 	// names now or an ask.follower_added event ever named (recordedSessions). It writes the nodes
 	// the store lacks of them, and a node another write made it leaves alone.
-	"graphcensus/backfill.go#writeSessionBatch": "the sessions a row names now or an ask.follower_added event ever named (recordedSessions)",
+	"graphcensus/backfill_sessions.go#writeSessionBatch": "the sessions a row names now or an ask.follower_added event ever named (recordedSessions)",
 	// The backfill of the project of every node: the rows of the issues, documents, asks and
 	// messages that their marker does not mark, each read again under its owner lock before its node is
 	// written, and the comment and block nodes that name no project, each with the row its
@@ -884,12 +880,12 @@ var indexPasses = map[string]string{
 	// the store's own row to state what it writes into that row, never a projection to mend the
 	// store or the store to mend a projection.
 	"graphstore/write.go#queueNodes": "the nodes its caller states and the rows of them it moves",
-	// queueAppend is the second half of one write rather than a second look at it: it appends the
-	// tuples its caller states, and states the base attributes of the node rows its node write
-	// marked and moves them onto the write's cause, which it reads off those rows' marks
-	// (nodeMark). It reads the store's own rows its write just wrote, no projection, and mends
-	// nothing.
-	"graphstore/write.go#queueAppend": "the tuples its caller states and the node rows its own node write marked",
+	// queueAppendStatement, one statement of queueAppend's append, is the second half of one write
+	// rather than a second look at it: it appends the tuples its caller states, and states the base
+	// attributes of the node rows its node write marked and moves them onto the write's cause,
+	// which it reads off those rows' marks (graphstore's nodeMarks). It reads the store's own rows
+	// its write just wrote, no projection, and mends nothing.
+	"graphstore/write.go#queueAppendStatement": "the tuples its caller states and the node rows its own node write marked",
 	// FillScopes states the project of a node an earlier build stored with none: it locks and
 	// updates the rows of the nodes its caller names, reading of each only whether it carries a
 	// project already and its own made_at, made_by and cause, which the fact it states takes. The
@@ -926,7 +922,7 @@ var indexPasses = map[string]string{
 	// attribute names another target than the parent value the store holds of it, which is read
 	// with its placement and its part_of to state what moved, never to mend a row.
 	"refs/block_nodes.go#queueBlockParents": "the version's render, and of each authored node the placement, part_of and parent value the store holds of it",
-	"refs/blocks.go#queueBlockRefs":         "the version's render, and each decision's stored decided_by",
+	"refs/block_nodes.go#queueBlockRefs":    "the version's render, and each decision's stored decided_by",
 	// The typed-node pass: the decision and reading nodes of the version, their values and their
 	// authors, from the version's render and the credential the version's write proved, and above
 	// the deferral bound their part_of and the rows of their own ties, and the shaped ties of the
@@ -950,11 +946,12 @@ var projectedWrite = regexp.MustCompile(`(?is)\b(insert into|update|delete from)
 // own, and a scan of SQL alone would never see it. asks.Follow picks graphstore.WriteArms or
 // graphstore.WriteArmsUncaused by its cause and then calls what it picked, so a scan for calls
 // alone would read it as no writer, where graphstore's TestEveryStoreWriteCallSiteIsListed reads
-// the same use as one. The names are graphstore.WriteFunctions, the one list of every function a
-// write of the store from outside that package goes through, which that test and api's scan of
+// the same use as one. The names are graphstorecopy.WriteFunctions, the one list of every function
+// a write of the store from outside graphstore goes through, which that test and api's scan of
 // the projected tables' writers read too, so a writer the store gains is scanned here with no
-// second list to keep.
-var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(` + strings.Join(graphstore.WriteFunctions(), "|") + `)\b`)
+// second list to keep: QueueSessionRecorded writes a session's node through arms of its own, and a
+// pass that wrote the store through it alone would otherwise be read as no writer at all.
+var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(` + strings.Join(graphstorecopy.WriteFunctions(), "|") + `)\b`)
 
 // projectionRead matches one read of either side of a projection: a projected table or the
 // store. A `delete from` is a write and no read, so the match takes the delete with it, and the

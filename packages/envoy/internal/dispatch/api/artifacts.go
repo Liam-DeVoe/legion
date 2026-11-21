@@ -638,7 +638,10 @@ func (s *server) queueNewArtifact(
 			}
 		}
 		documentNode = graphstore.PlanUncaused([]graphstore.Node{node}, append(stated, facts...))
-		if err := ledger.Queue(func(b *store.WriteBatch) error { return graphstore.QueueNodes(b, documentNode) }); err != nil {
+		if err := ledger.Queue(func(b *store.WriteBatch) error {
+			graphstore.QueueNodes(b, documentNode)
+			return nil
+		}); err != nil {
 			return model.Artifact{}, graphstore.Uncaused{}, err
 		}
 		storeKind := graphstore.KindArtifact
@@ -1163,13 +1166,15 @@ func (s *server) storeArtifact(
 		published = append(published, event)
 	}
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
-		return graphstore.QueueCaused(b, indexedBlocks, blockCause)
+		graphstore.QueueCaused(b, indexedBlocks, blockCause)
+		return nil
 	}); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
-		return graphstore.QueueCaused(b, documentNode, blockCause)
+		graphstore.QueueCaused(b, documentNode, blockCause)
+		return nil
 	}); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1627,7 +1632,8 @@ func (s *server) commitArtifactVersionEvent(
 		if room != artifactID {
 			refs.QueueStamp(b, "artifact", room)
 		}
-		return graphstore.QueueCaused(b, written.Blocks, graphstore.LatestEvent)
+		graphstore.QueueCaused(b, written.Blocks, graphstore.LatestEvent)
+		return nil
 	}); err != nil {
 		return nil, err
 	}
@@ -2948,9 +2954,7 @@ func (s *server) createIssueTree(b *store.WriteBatch, written graphstore.Uncause
 	if err != nil {
 		return err
 	}
-	if err := graphstore.QueueNodes(b, written); err != nil {
-		return fmt.Errorf("write the issue tree's node: %w", err)
-	}
+	graphstore.QueueNodes(b, written)
 	b.Queue("create the issue tree", `
 		insert into artifacts (id, issue_key, project_key, slug, name, kind, is_primary, created_by, node_kind, node_address)
 		values ($1, $2, $3, $4, $5, 'tree', false, $6, $7, $8)

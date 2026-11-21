@@ -18,11 +18,11 @@ import (
 // nothing. Dispatch carries the document's newest approval to that version in the transaction
 // that writes it (docs.carryApproval), so the approval reads approved there, the write reports no
 // approval it superseded, and a request for approval finds nothing to ask. A person's answer is
-// held on the ask's node and changes no byte of the document, so text
-// restored around a block answered since is still the approved text. Text one character away
-// from the approved text is a change, and a version holding the approved text around a changed
-// ask block is judged by the carry's cases (docs.carryVerdict), which carry no question's
-// words.
+// held on the ask's node, and the one version it writes changes only the server-owned attributes
+// of the ask's block (R3), which R10's case carries an approval across, so text restored around a
+// block answered since still carries the approval. Text one character away from the approved text
+// is a change, and a version holding the approved text around a changed ask block is judged by the
+// carry's cases (docs.carryVerdict), which carry no question's words.
 
 // restoreSpec is the approved text the restore tests edit and restore.
 const restoreSpec = "# Plan\n\nThe service ships behind a flag.\n\n- Announce the dates.\n- Pick the regions.\n"
@@ -201,54 +201,70 @@ func TestAnUploadOfTheApprovedTextCarriesTheApproval(t *testing.T) {
 }
 
 // approveThenOthersAnswer writes restoreSpec and waveAsk into a new issue's spec, has alice approve
-// version 1 while the block is open, and has bob answer the block, which writes no version: the
-// block's row now holds bob's decision and alice's approval stands
-// at version 1. The agent cannot delete the block bob answered (R6): its delete is refused and
-// writes no version. Bob then deletes the block, which writes version 2 and stales the approval.
+// version 1 while the block is open, and has bob answer the block, which writes version 2, its
+// block's kept state alone (R3): the block's row now holds bob's decision, and R10's case carries
+// alice's approval to version 2. The agent cannot delete the block bob answered (R6): its delete
+// is refused and writes no version. Bob then deletes the block, which writes version 3 and stales
+// the approval.
 func approveThenOthersAnswer(t *testing.T, handler http.Handler, database *store.Store, title string) approvedDocument {
 	t.Helper()
 	issue := createInteractionIssue(t, handler, "TEST", title, restoreSpec+"\n"+waveAsk)
 	asks := indexedDecisionBlocks(t, handler, issue.Key, issue.PrimaryArtifactID, waveBlock)
 	approveVersion(t, handler, issue.PrimaryArtifactID, "alice", 1)
 	answerDecisionBlock(t, handler, asks["wave"], "bob", []string{"Two"}, "", nil)
-	requireNoVersionPast(t, handler, database, issue.PrimaryArtifactID, 1)
-	requireNoCarry(t, handler, issue.PrimaryArtifactID, 1, "approved")
+	requireStateVersionsPast(t, handler, database, issue.PrimaryArtifactID, 1, 1)
+	requireCarriedByTheAttributeCase(t, handler, issue.PrimaryArtifactID, "alice", 1, 2)
 	deleteWave := map[string]any{"actor": sessionActor(), "ops": []map[string]string{{"op": "delete", "block": "wave"}}}
 	if refused := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", deleteWave); refused.Code != http.StatusConflict ||
 		decodeBody[errorBody](t, refused).Code != codeAnsweredAskKept {
 		t.Fatalf("the agent deletes the block bob answered: status=%d body=%s, want 409 %s", refused.Code, refused.Body.String(), codeAnsweredAskKept)
 	}
-	requireNoVersionPast(t, handler, database, issue.PrimaryArtifactID, 1)
+	requireNoVersionPast(t, handler, database, issue.PrimaryArtifactID, 2)
 	if deleted := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", deleteWave, "bob"); deleted.Code != http.StatusOK {
 		t.Fatalf("bob deletes the block he answered: status=%d body=%s", deleted.Code, deleted.Body.String())
 	}
-	waitForArtifactVersion(t, handler, issue.PrimaryArtifactID, 2)
-	requireNoCarry(t, handler, issue.PrimaryArtifactID, 1, "stale")
+	waitForArtifactVersion(t, handler, issue.PrimaryArtifactID, 3)
+	requireNoCarry(t, handler, issue.PrimaryArtifactID, 2, "stale")
 	return approvedDocument{issueKey: issue.Key, artifactID: issue.PrimaryArtifactID, asks: asks}
 }
 
+// requireApprovedTextRestored fails t unless the write the test made since bob's delete wrote
+// version 4, version 1's text byte for byte - the block as an agent writes it, with none of the
+// server-owned attributes - and the settlement after it wrote version 5, version 2's text byte for
+// byte, with the block's kept state from its ask's node, which bob answered (docs.keptAskState),
+// and R10's case carried alice's approval to both.
+func requireApprovedTextRestored(t *testing.T, handler http.Handler, database *store.Store, document approvedDocument) {
+	t.Helper()
+	waitForArtifactVersion(t, handler, document.artifactID, 4)
+	if restored, approved := versionMarkdown(t, handler, document.artifactID, 4), versionMarkdown(t, handler, document.artifactID, 1); restored != approved {
+		t.Fatalf("version 4 = %q, want version 1's text %q", restored, approved)
+	}
+	latest := requireStateVersionsPast(t, handler, database, document.artifactID, 4, 1)
+	if kept, answered := versionMarkdown(t, handler, document.artifactID, latest), versionMarkdown(t, handler, document.artifactID, 2); kept != answered {
+		t.Fatalf("version %d = %q, want version 2's text %q, the block showing bob's answer's kept state", latest, kept, answered)
+	}
+	requireCarriedByTheAttributeCase(t, handler, document.artifactID, "alice", 1, latest)
+	if ask := readBlockAsk(t, handler, document.asks["wave"]); ask.State != "answered" || ask.Answer == nil || ask.Answer.User != "bob" {
+		t.Fatalf("the restored block's ask = state %q answer %#v, want bob's answer kept", ask.State, ask.Answer)
+	}
+}
+
 // The approved text over a block decided since is still the approved text: bob answered the block
-// alice approved open, which changes no byte of the document and leaves her approval standing
-// (R3: "a person's answer changes no byte of any document, and an approval of that document
-// stands through it"), bob deleted the block, and the agent inserts its approved markdown again.
-// Version 3 is version 1 byte for byte, and its block agrees with its row - it shows no answer
-// state, and asks the wording the row was decided on - so the restore carries alice's approval to
-// it, and answers the approval request the agent opened at version 2.
+// alice approved open, whose state that writes into the block (R3), which R10's case carries her
+// approval across; bob deleted the block, and the agent inserts its approved markdown again.
+// Version 4 is version 1 byte for byte, and its block agrees with its row and its node - it shows
+// no answer state, and asks the wording the row was decided on - so R10's case carries alice's
+// approval to it, and answers the approval request the agent opened at version 3; the settlement
+// after it writes the block's kept state back, and her approval is carried to that version too.
 func TestTheApprovedTextOverABlockDecidedSinceCarriesTheApproval(t *testing.T) {
 	handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
 	document := approveThenOthersAnswer(t, handler, database, "Approved text over a decided block")
 	request := requestApproval(t, handler, document.artifactID)
 
-	agentEdit(t, handler, document.artifactID, 3, map[string]string{"op": "insert", "after": "end", "markdown": waveAsk})
-	if restored, approved := versionMarkdown(t, handler, document.artifactID, 3), versionMarkdown(t, handler, document.artifactID, 1); restored != approved {
-		t.Fatalf("version 3 = %q, want version 1's text %q", restored, approved)
-	}
-	requireReviewCarriedWith(t, handler, document.artifactID, 3, 1, restoreSentence(1), &request.ID)
+	agentEdit(t, handler, document.artifactID, 4, map[string]string{"op": "insert", "after": "end", "markdown": waveAsk})
+	requireApprovedTextRestored(t, handler, database, document)
 	if ask := readBlockAsk(t, handler, request.ID); ask.State != "answered" {
-		t.Fatalf("approval request after version 3 = state %q answer %#v, want it answered by the restore", ask.State, ask.Answer)
-	}
-	if ask := readBlockAsk(t, handler, document.asks["wave"]); ask.State != "answered" || ask.Answer == nil || ask.Answer.User != "bob" {
-		t.Fatalf("the restored block's ask = state %q answer %#v, want bob's answer kept", ask.State, ask.Answer)
+		t.Fatalf("approval request after version 4 = state %q answer %#v, want it answered by the carry", ask.State, ask.Answer)
 	}
 }
 
@@ -266,11 +282,7 @@ func TestAnUploadOfTheApprovedTextOverABlockDecidedSinceCarriesTheApproval(t *te
 	if advice := adviceFromResponse(t, uploaded.Code, uploaded.Body.String()); advice.SupersededApproval != nil {
 		t.Fatalf("the upload's superseded_approval = %#v, want none: the approval was already stale", advice.SupersededApproval)
 	}
-	waitForArtifactVersion(t, handler, document.artifactID, 3)
-	if restored, approved := versionMarkdown(t, handler, document.artifactID, 3), versionMarkdown(t, handler, document.artifactID, 1); restored != approved {
-		t.Fatalf("version 3 = %q, want version 1's text %q", restored, approved)
-	}
-	requireReviewCarriedWith(t, handler, document.artifactID, 3, 1, restoreSentence(1), nil)
+	requireApprovedTextRestored(t, handler, database, document)
 }
 
 // (b) The undo misses by one character: version 3 is version 1 with its period an exclamation
@@ -311,23 +323,24 @@ func TestARestoredTextAroundADecisionBlockTheAgentRewordedLeavesTheApprovalStale
 }
 
 // (c) Text restored around the approver's own answer: alice answers the open block while the
-// paragraph is still changed, which writes no version (R3), and the agent then restores the
-// paragraph. Her answer is in no byte of the document, so version 3 is version 1's text byte for
-// byte, and the restore carries her approval to it with the restore's reason.
+// paragraph is still changed, which writes version 3, the block's kept state alone (R3), and the
+// agent then restores the paragraph. Version 4 is version 1's text but for what a version keeps of
+// her answer - the block's state, answerer and time - so R10's case carries her approval to it.
 func TestARestoredTextAroundTheApproversOwnAnswerIsTheApprovedText(t *testing.T) {
 	handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
 	document := approveThenChange(t, handler, "Restore around her answer", "\n"+waveAsk, waveBlock)
 	artifactID := document.artifactID
 
 	answerDecisionBlock(t, handler, document.asks["wave"], "alice", []string{"Two"}, "", nil)
-	requireNoVersionPast(t, handler, database, artifactID, 2)
+	requireStateVersionsPast(t, handler, database, artifactID, 2, 1)
 	requireNoCarry(t, handler, artifactID, 1, "stale")
 
-	agentEdit(t, handler, artifactID, 3, replaceOp("behind a flag and a canary.", "behind a flag."))
-	if restored, approved := versionMarkdown(t, handler, artifactID, 3), versionMarkdown(t, handler, artifactID, 1); restored != approved {
-		t.Fatalf("version 3 = %q, want version 1's text %q", restored, approved)
+	agentEdit(t, handler, artifactID, 4, replaceOp("behind a flag and a canary.", "behind a flag."))
+	restored, approved := versionMarkdown(t, handler, artifactID, 4), versionMarkdown(t, handler, artifactID, 1)
+	if askServerAttribute.ReplaceAllString(restored, "") != approved || !strings.Contains(restored, ` state="answered" answered_by="alice" answered_at="`) {
+		t.Fatalf("version 4 = %q, want version 1's text %q but for the block's kept state of her answer", restored, approved)
 	}
-	requireReviewCarriedWith(t, handler, artifactID, 3, 1, restoreSentence(1), nil)
+	requireReviewCarriedWith(t, handler, artifactID, 4, 1, attributeRemovalSentence(1), nil)
 	if ask := readBlockAsk(t, handler, document.asks["wave"]); ask.State != "answered" || ask.Answer == nil || ask.Answer.User != "alice" {
 		t.Fatalf("the block's ask = state %q answer %#v, want alice's answer on it", ask.State, ask.Answer)
 	}

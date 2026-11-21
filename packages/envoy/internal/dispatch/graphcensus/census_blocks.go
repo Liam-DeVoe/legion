@@ -1,10 +1,12 @@
 package graphcensus
 
 import (
+	"context"
 	"strconv"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
@@ -437,7 +439,12 @@ var roomNodeOwed = `exists (
 		where tree.kind = 'tree' and tree.ref_key = split_part(node.id, '#', 1) and ` + roomOwed("tree.id") + `)`
 
 // blockBackfills are the backfill's passes over the document blocks (backfillPasses): the blocks,
-// and the marking of every document no pass of this build's rule has stated (backfillBlocks), then
-// the links out of them, since a link's node is its block's and the pointer pass stamps a link
-// only where its block's node stands (blockNodeStands).
-var blockBackfills = []backfillPass{oneKind(backfillBlocks), oneKind(backfillBlockRefs)}
+// and the marking of every document no pass of the marking rule rule has stated, each mark of
+// that rule (backfillBlocks), then the links out of them, since a link's node is its block's and
+// the pointer pass stamps a link only where its block's node stands (blockNodeStands).
+func blockBackfills(rule int) []backfillPass {
+	blocks := func(ctx context.Context, database *store.Store) (KindBackfill, error) {
+		return backfillBlocks(ctx, database, rule)
+	}
+	return []backfillPass{oneKind(blocks), oneKind(backfillBlockRefs)}
+}

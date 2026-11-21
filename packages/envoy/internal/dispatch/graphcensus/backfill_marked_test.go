@@ -391,19 +391,19 @@ func TestABackfillKilledAfterOneBatchLeavesThatBatchsDocumentsOwed(t *testing.T)
 }
 
 // The backfill marks owed, on every run, each document no pass of this build's rule has stated at
-// its version: its document_block_versions row holds no mark, and its stated_version is not its
-// version or its stated_rule is below refs.BlockIndexMarkingRule, a null on either side counted as
-// not equal (refs.UnstatedBlockIndexSQL). store_version says nothing of it, since a build of an
-// earlier rule writes store_version for every version it indexes and states none of this rule's
-// facts of its blocks.
+// its version: its document_block_versions row holds no mark of this rule or a higher one, and its
+// stated_version is not its version or its stated_rule is below refs.BlockIndexMarkingRule, a null
+// on either side counted as not equal (refs.UnstatedBlockIndexSQL). store_version says nothing of
+// it, since a build of an earlier rule writes store_version for every version it indexes and
+// states none of this rule's facts of its blocks.
 //
 // Five documents, each row in one state: one no pass of this rule stated, whose store_version
 // stands at its version as a build of an earlier rule leaves it; one stated behind its version;
 // one stated at its version by a pass of the rule before this one; one stated at its version by a
-// pass of this rule; and one already marked. The marking (markStaleDocuments) marks exactly the
-// first three, the marked one keeps its mark's time, and a second run marks nothing new. The block
-// pass then names the node of a block of the marked document, which marks that document again
-// (writeBlockBatch), and the mark keeps its time.
+// pass of this rule; and one already marked, by a mark of this rule (store_owed_rule). The marking
+// (markStaleDocuments) marks exactly the first three, the marked one keeps its mark's time, and a
+// second run marks nothing new. The block pass then names the node of a block of the marked
+// document, which marks that document again (writeBlockBatch), and the mark keeps its time.
 func TestTheBackfillMarksEveryDocumentNoPassOfItsRuleStated(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -441,9 +441,9 @@ func TestTheBackfillMarksEveryDocumentNoPassOfItsRuleStated(t *testing.T) {
 			t.Fatalf("create the document %s: %v", state.name, err)
 		}
 		if _, err := database.Pool.Exec(ctx, `
-			insert into document_block_versions (artifact_id, version, store_version, stated_version, stated_rule, store_owed_at)
-			values ($1::uuid, $2, $3, $4, $5, $6)
-		`, id, state.version, state.storeVersion, state.statedVersion, state.statedRule, state.owedAt); err != nil {
+			insert into document_block_versions (artifact_id, version, store_version, stated_version, stated_rule, store_owed_at, store_owed_rule)
+			values ($1::uuid, $2, $3, $4, $5, $6, $7)
+		`, id, state.version, state.storeVersion, state.statedVersion, state.statedRule, state.owedAt, refs.BlockIndexMarkingRule); err != nil {
 			t.Fatalf("write the row of the document %s: %v", state.name, err)
 		}
 		documents[index], named[id] = id, state.name
@@ -475,7 +475,7 @@ func TestTheBackfillMarksEveryDocumentNoPassOfItsRuleStated(t *testing.T) {
 		return held
 	}
 
-	first, err := markStaleDocuments(ctx, database)
+	first, err := markStaleDocuments(ctx, database, refs.BlockIndexMarkingRule)
 	if err != nil {
 		t.Fatalf("run the marking: %v", err)
 	}
@@ -502,7 +502,7 @@ func TestTheBackfillMarksEveryDocumentNoPassOfItsRuleStated(t *testing.T) {
 		}
 	}
 
-	second, err := markStaleDocuments(ctx, database)
+	second, err := markStaleDocuments(ctx, database, refs.BlockIndexMarkingRule)
 	if err != nil {
 		t.Fatalf("run the marking a second time: %v", err)
 	}
@@ -523,7 +523,7 @@ func TestTheBackfillMarksEveryDocumentNoPassOfItsRuleStated(t *testing.T) {
 	`, marked); err != nil {
 		t.Fatalf("write a block of the marked document: %v", err)
 	}
-	blocks, err := backfillBlocks(ctx, database)
+	blocks, err := backfillBlocks(ctx, database, refs.BlockIndexMarkingRule)
 	if err != nil {
 		t.Fatalf("run the block pass: %v", err)
 	}
@@ -533,4 +533,67 @@ func TestTheBackfillMarksEveryDocumentNoPassOfItsRuleStated(t *testing.T) {
 	if owedAt := marks()["already marked"]; owedAt == nil || !owedAt.Equal(markedAt) {
 		t.Errorf("after the block pass named a block of the marked document its mark is at %v, want the mark it held, %s", owedAt, markedAt)
 	}
+}
+
+// A backfill of a lower marking rule run after a backfill of a higher rule records its own rule's
+// horizon and leaves the higher rule's as that run recorded it. Were one row shared by every rule,
+// the older build's backfill would move it above the newer rule's, and the newer rule's first
+// tick would pass over every event between the two, which the older backfill marked by its own
+// rule and not by the newer one (R13).
+func TestABackfillOfALowerMarkingRuleLeavesAHigherRulesHorizon(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	lower, higher := refs.BlockIndexMarkingRule, refs.BlockIndexMarkingRule+1
+	if _, err := database.Pool.Exec(ctx, `
+		insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice');
+		insert into issues (key, project_key, number, title, created_by, rank)
+		values ('CORE-1', 'CORE', 1, 'One', '{"kind":"user","id":"alice"}', 'U');
+	`); err != nil {
+		t.Fatalf("seed project CORE: %v", err)
+	}
+	appendHorizonEvent(t, database)
+	if _, err := backfillAt(ctx, database, io.Discard, higher); err != nil {
+		t.Fatalf("backfill at marking rule %d: %v", higher, err)
+	}
+	want := horizonOfRule(t, database, higher)
+	appended := appendHorizonEvent(t, database)
+	if _, err := backfillAt(ctx, database, io.Discard, lower); err != nil {
+		t.Fatalf("backfill at marking rule %d: %v", lower, err)
+	}
+	if got := horizonOfRule(t, database, higher); got != want {
+		t.Errorf("after a backfill of marking rule %d the horizon of rule %d is %d, want the %d the backfill of rule %d recorded",
+			lower, higher, got, want, higher)
+	}
+	if own := horizonOfRule(t, database, lower); own < appended {
+		t.Errorf("the backfill of marking rule %d recorded the horizon %d, below the event %d written before it began", lower, own, appended)
+	}
+}
+
+// appendHorizonEvent appends one event of issue CORE-1, its seq taken off the issue's own counter
+// as events.Append takes it, and answers its id.
+func appendHorizonEvent(t *testing.T, database *store.Store) int64 {
+	t.Helper()
+	var id int64
+	if err := database.Pool.QueryRow(context.Background(), `
+		with bumped as (update issues set last_seq = last_seq + 1 where key = 'CORE-1' returning last_seq)
+		insert into events (issue_key, seq, type, actor, payload, notify)
+		select 'CORE-1', bumped.last_seq, 'issue.updated', '{"kind":"user","id":"alice"}', '{}', false from bumped
+		returning id
+	`).Scan(&id); err != nil {
+		t.Fatalf("append an event of CORE-1: %v", err)
+	}
+	return id
+}
+
+// horizonOfRule reads the horizon the newest backfill of the marking rule rule recorded, which has
+// to be there.
+func horizonOfRule(t *testing.T, database *store.Store, rule int) int64 {
+	t.Helper()
+	var horizon int64
+	if err := database.Pool.QueryRow(context.Background(), `
+		select event_id from graph_backfill_horizon where marking_rule = $1
+	`, rule).Scan(&horizon); err != nil {
+		t.Fatalf("read the horizon of marking rule %d: %v", rule, err)
+	}
+	return horizon
 }

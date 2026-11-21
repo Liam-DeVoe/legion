@@ -51,7 +51,7 @@ func TestAWriteMadeForARunNamesEachNodeItMarksOnce(t *testing.T) {
 		node, tuples := CommentFacts(nil, id, author, at, NoEvent, "", "", "", nil)
 		node.Changed = true
 		authors, authored, _ := AuthorFacts(KindComment, id, author, at, NoEvent)
-		written, err := WriteUncaused(ctx, tx, append([]Node{node}, authors...), append(tuples, authored...))
+		written, err := writeHeldNodes(ctx, tx, append([]Node{node}, authors...), append(tuples, authored...))
 		if err != nil {
 			return err
 		}

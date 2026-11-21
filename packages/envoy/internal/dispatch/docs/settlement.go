@@ -726,9 +726,7 @@ func (st *settlement) appendEvents(ctx context.Context, events []model.Event, ca
 				refs.QueueStamp(b, sourceKind, sourceID)
 			}
 			for _, stated := range caused[index] {
-				if err := graphstore.QueueCaused(b, *stated, graphstore.LatestEvent); err != nil {
-					return err
-				}
+				graphstore.QueueCaused(b, *stated, graphstore.LatestEvent)
 			}
 		}
 		return nil
@@ -946,6 +944,15 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		var keptEditor *model.Actor
 		if st.credit.kept {
 			keptEditor = &st.credit.actor
+		}
+		// A person's edit in the room that took an answered ask's block out of the document is
+		// that person's removal, which the version's index pass states on the ask's node, as the
+		// same edit over HTTP records it (holdSettledRemovals). Only an answered ask the
+		// reconciled tree held no block of can be one, or any where the version is a later read.
+		if st.reconciliation.answeredGone || st.versioned != st.reconciled {
+			if err := holdSettledRemovals(ctx, tx, room, st.versioned, st.credit.authors); err != nil {
+				return settleDone, st.abandon(err)
+			}
 		}
 		result, writeErr := s.writeVersionTx(ctx, tx, room, renderedTree{tree: st.versioned, markdown: markdown, offsets: offsets}, st.credit.versionActor(), &versionWrite{
 			authors:          st.credit.authors,

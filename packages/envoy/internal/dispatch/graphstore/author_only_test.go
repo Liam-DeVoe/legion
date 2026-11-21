@@ -46,8 +46,8 @@ func TestTheStoreRefusesAuthorOnAKindItDoesNotAdmit(t *testing.T) {
 		{"Write", func(ctx context.Context, tx pgx.Tx, node Node) error {
 			return Write(ctx, tx, []Node{node}, nil)
 		}},
-		{"WriteUncaused", func(ctx context.Context, tx pgx.Tx, node Node) error {
-			write, err := WriteUncaused(ctx, tx, []Node{node}, nil)
+		{"QueueNodes", func(ctx context.Context, tx pgx.Tx, node Node) error {
+			write, err := writeHeldNodes(ctx, tx, []Node{node}, nil)
 			if err != nil {
 				return err
 			}

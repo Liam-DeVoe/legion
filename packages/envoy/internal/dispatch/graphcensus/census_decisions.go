@@ -299,14 +299,17 @@ const edgeSuffix = "_edge"
 // triple by triple (projection.tuples) as tieProjection holds block_refs: each row is an edge the
 // view answers out of a node of one of holders (graphEdgesOut), as the triple of that node, kind
 // and its far end, against every tuple of kind a node of one of holders that is not gone states
-// now. So an
-// edge the view answers that no tuple states is a row no tuple states, a tuple the view answers no
-// edge for is a tuple no row projects, and an edge that reaches the wrong node reads as both.
+// now. So an edge the view answers that no tuple states is a row no tuple states, a tuple the view
+// answers no edge for is a tuple no row projects, and an edge that reaches the wrong node reads as
+// both.
 //
-// The view's definition (store/migrations/20261116094101_graph_edges_asks.up.sql, whose arms for
-// these ties 20261117020856_graph_edges_asks_and_store_class.up.sql restates) answers each of
-// these ties from one arm, which the projection row decides. For a row that names its
-// node, the tuple arm answers the newest tuple of the triple while it asserts, out of a node not
+// The view's definition
+// (store/migrations/20261121090000_issue_tree_graph_edges_after_tuple_arm_filter.up.sql, which
+// restates the arms 20261116094101_graph_edges_asks.up.sql and
+// 20261117020856_graph_edges_asks_and_store_class.up.sql give these ties, with 20261120122700's
+// filter of the tuple arm) answers each of these ties from one arm, which the projection row
+// decides. For a row that names its node, the tuple arm answers the newest tuple of the triple
+// while it asserts, out of a node not
 // gone: shaped, from_ask and decided_by out of a block node, and shaped out of an ask's node, while
 // a block_refs row of that node, kind and far end stands (a block's pointer only while its target
 // is of a type the attribute lists, and shaped, from_ask and decided_by list none); anchored_to

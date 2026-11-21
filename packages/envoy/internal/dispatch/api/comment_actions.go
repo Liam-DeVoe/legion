@@ -243,7 +243,7 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 	previousBody := comment.Body
 	comment.Body = input.Body
 	comment.EditedAt = timestampPtr(&editedAt)
-	referenceChanges, err := s.queueEditedItemReferences(r.Context(), tx, ledger, refs.ItemComment, comment.ID, previousBody, comment.Body, editedAt, carried)
+	referenceChanges, err := s.queueEditedItemReferences(r.Context(), tx, ledger, comment.Author, refs.ItemComment, comment.ID, previousBody, comment.Body, editedAt, carried)
 	if carriedErr := (*itemblocks.CarriedError)(nil); errors.As(err, &carriedErr) {
 		writeError(w, "INVALID_COMMENT", http.StatusBadRequest, carriedErr.Error())
 		return
@@ -300,7 +300,10 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 				s.writeHandlerError(w, err)
 				return
 			}
-			if err := ledger.Queue(func(b *store.WriteBatch) error { return graphstore.QueueNodes(b, commentNode) }); err != nil {
+			if err := ledger.Queue(func(b *store.WriteBatch) error {
+				graphstore.QueueNodes(b, commentNode)
+				return nil
+			}); err != nil {
 				s.writeHandlerError(w, err)
 				return
 			}
@@ -323,7 +326,8 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 	// The stamp queueStampedEvent queues with the event appends no event, so the id sequence
 	// still names comment.edited here.
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
-		return graphstore.QueueCaused(b, commentNode, graphstore.LatestEvent)
+		graphstore.QueueCaused(b, commentNode, graphstore.LatestEvent)
+		return nil
 	}); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -606,9 +610,7 @@ func orphanCommentAnchor(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, id
 	}
 	retraction := graphstore.AnchoredIn(id, *block, false, actor, time.Now().UTC(), graphstore.NoEvent)
 	return ledger.Queue(func(b *store.WriteBatch) error {
-		if err := graphstore.QueueWrite(b, nil, []graphstore.Tuple{retraction}); err != nil {
-			return fmt.Errorf("retract the anchored_in of comment %s: %w", id, err)
-		}
+		graphstore.QueueWrite(b, nil, []graphstore.Tuple{retraction})
 		return nil
 	})
 }

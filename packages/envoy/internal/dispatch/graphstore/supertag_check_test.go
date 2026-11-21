@@ -34,7 +34,7 @@ func seedSupertags(t *testing.T, ctx context.Context, database *store.Store, nam
 // row, or one that is gone, refuses the whole write with ErrSupertagNotHeld, a
 // SupertagNotHeldError naming each such type, with no statement of the write failing, and once its
 // caller abandons the refused write's transaction the store holds nothing of it, the node of a
-// held type written beside it included, through Write and WriteUncaused alike. Once the type's
+// held type written beside it included, through Write and QueueNodes alike. Once the type's
 // row is written, the same write is taken, with nothing restarted and nothing read again but the
 // row: the store holds no copy of its types.
 func TestAWriteTakesANodeOnlyOfATypeTheStoreHolds(t *testing.T) {
@@ -59,8 +59,8 @@ func TestAWriteTakesANodeOnlyOfATypeTheStoreHolds(t *testing.T) {
 		{"Write", func(ctx context.Context, tx pgx.Tx, nodes []Node) error {
 			return Write(ctx, tx, nodes, nil)
 		}},
-		{"WriteUncaused", func(ctx context.Context, tx pgx.Tx, nodes []Node) error {
-			write, err := WriteUncaused(ctx, tx, nodes, nil)
+		{"QueueNodes", func(ctx context.Context, tx pgx.Tx, nodes []Node) error {
+			write, err := writeHeldNodes(ctx, tx, nodes, nil)
 			if err != nil {
 				return err
 			}

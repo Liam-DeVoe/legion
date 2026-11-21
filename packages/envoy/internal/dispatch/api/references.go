@@ -854,20 +854,20 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 // as long as the walk takes. dispatch://INFRA-4704 rewrites the walk.
 const referencesClosureBound = 2 * time.Second
 
-// boundedClosure runs refs.Closure for who in a read transaction of its own under
-// referencesClosureBound, with JIT off. The rollback runs on a context of its own, as the near-copy
-// gate's does (duplicates.go): the read's context has expired exactly when the rollback matters,
-// and pgx answers a rollback on an expired context by destroying the connection instead of
-// returning it to the pool.
+// boundedClosure runs refs.Closure, as who reads it, in a read transaction of its own under
+// referencesClosureBound, with JIT off. The rollback runs on a context of its own, as the
+// near-copy gate's does (duplicates.go): the read's context has expired exactly when the rollback
+// matters, and pgx answers a rollback on an expired context by destroying the connection instead
+// of returning it to the pool.
 //
 // JIT is off because compiling the walk costs more than running it. The walk is index probes and
 // sub-plans, and the planner charges the staleness walk of the lens a cited document moved to
 // (refs.StaleSQL, through the lens's predicate) to every row of the closure's arms, which puts the
 // statement above jit_above_cost: over c-read-cost's corpus (64,106 blocks) the walk cost 74,308
 // and read in 99 ms with no JIT before that test was bound, and 109,177 after, when Postgres
-// compiled its 514 expressions on every read, 0.76 to 0.84 s of a 0.9 s read
-// (dispatch://INFRA-1950). The settings carry no argument, so pgx sends them in one Exec over the
-// simple protocol, which takes a statement list.
+// compiled its 514 expressions on every read, 0.76 to 0.84 s of a 0.9 s read. The settings carry
+// no argument, so pgx sends them in one Exec over the simple protocol, which takes a statement
+// list.
 func (s *server) boundedClosure(ctx context.Context, who model.Actor, issueKey string) ([]refs.Member, bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, referencesClosureBound+time.Second)
 	defer cancel()

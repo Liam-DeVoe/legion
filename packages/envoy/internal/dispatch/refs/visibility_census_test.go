@@ -208,8 +208,6 @@ var readsWithoutAViewer = map[string]string{
 	"NamedBlock": "it answers a node id and nothing of any node: the pinned read of a block names the node an address " +
 		"names, which it then reads through Node and holds to the block's predicate at that node, so a block who may not " +
 		"see answers what an address nobody holds answers",
-	"NewReader":        serverWork + " - the index-time resolver acts for no person, and every edge it lets a write store is held to the predicates of both its ends when it is read",
-	"NewReaderInScope": serverWork + " - the index-time resolver of a source whose row is only queued acts for no person, as NewReader's does",
 	"NextExcerptRetry": serverWork,
 	"OwedItemBlocks":   serverWork,
 	"PartOfChains": serverWork + " - the block index climbs the part_of chain of each block an authored node may hang under, " +
@@ -225,6 +223,7 @@ var readsWithoutAViewer = map[string]string{
 	"PlanReplace":        serverWork + " - a write's read phase plans the reconciliation of a source's references against its edges",
 	"QueueAskPartIDs":    nodeDetail,
 	"ReadBlockIndex":     serverWork + " - a version write's read phase reads the document's block index it plans against",
+	"ReadBlockRefKinds":  serverWork + " - a version write's block index plan and the erase's blockers read bind the tuple kinds the block index writes into block_refs, which name no node",
 	"ReadIndexedVersion": serverWork + " - a version write's read phase reads the document's address and the version's writer",
 	"ReadItemIndex":      serverWork + " - a write's read phase reads the item's block index it plans against",
 	"RecordExcerpts":     serverWork,
@@ -493,6 +492,18 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 	record("TargetNames", "TargetNames of an issue and a document", func() error {
 		_, err := TargetNames(ctx, recorder, who, []Target{{Kind: "issue", ID: "CORE-1"}, {Kind: "artifact", ID: "CORE-1/spec"}})
 		return err
+	})
+	// The index-time resolver resolves the short ids a text writes for that text's writer
+	// (Reader.Items, through ResolvePrefix), so each constructor's reader is asked one: the
+	// statement that resolves it is the read of the graph the census holds it to.
+	const shortComment = "See dispatch://CORE-1/comment/00000000."
+	record("NewReader", "NewReader's resolution of a short comment id", func() error {
+		NewReader(ctx, recorder, who, "comment", "00000000-0000-4000-8000-000000000002", "https://dispatch.example").Mentions(shortComment)
+		return nil
+	})
+	record("NewReaderInScope", "NewReaderInScope's resolution of a short comment id", func() error {
+		NewReaderInScope(ctx, recorder, who, "comment", "00000000-0000-4000-8000-000000000002", "https://dispatch.example", nil).Mentions(shortComment)
+		return nil
 	})
 	// A document's own scope is its id, answered with no statement; the three kinds whose scope
 	// is read are read here.

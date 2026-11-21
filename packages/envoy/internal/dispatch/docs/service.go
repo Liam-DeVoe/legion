@@ -166,6 +166,11 @@ type Service struct {
 	editNoticeQuiet time.Duration
 	// buildCommit is Deps.BuildCommit.
 	buildCommit string
+	// markingRule is the block index's marking rule this build applies, refs.BlockIndexMarkingRule
+	// as New sets it: the rule its marks, its event cursor and its index passes carry
+	// (markVersionedDocuments, readEventsAfterCursor, refs.PlanBlocks). A test sets another to run
+	// a build of that rule beside this one.
+	markingRule int
 	// eventHorizon is the event log's safe horizon the block-index tick reads, which
 	// blockIndexHorizon builds under horizonOnce on the first tick that asks for it.
 	horizonOnce  sync.Once
@@ -932,6 +937,7 @@ func New(deps Deps) *Service {
 		unrecordedMarkTTL: unrecordedMarkTTL,
 		editNoticeQuiet:   editNoticeQuiet,
 		buildCommit:       deps.BuildCommit,
+		markingRule:       refs.BlockIndexMarkingRule,
 		reads:             newDocumentReads(readBudget),
 		roomCap:           roomCap,
 		connectionCap:     connectionCap,

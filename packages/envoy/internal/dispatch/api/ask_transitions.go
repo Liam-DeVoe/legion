@@ -531,7 +531,8 @@ func (s *server) closeAskTx(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger,
 	}
 	// What the transition stated on the ask's node learns the event the step before appended.
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
-		return graphstore.QueueCaused(b, held, graphstore.LatestEvent)
+		graphstore.QueueCaused(b, held, graphstore.LatestEvent)
+		return nil
 	}); err != nil {
 		return model.Ask{}, nil, err
 	}

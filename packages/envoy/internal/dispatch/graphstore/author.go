@@ -33,7 +33,7 @@ func ProvesAuthor(actor model.Actor) bool {
 
 // SameAuthor is the one rule stated in Go over two actors, as AuthorIsSQL states it in SQL: true
 // when the author writer's record proved (provedAuthor) and the author reader's credential proves
-// are one author, and false where either proves none.
+// are one author, and false where either proves none. api's maySettle reads it.
 func SameAuthor(writer, reader model.Actor) bool {
 	written, proved := provedAuthor(writer)
 	read, reads := provedAuthor(reader)

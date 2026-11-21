@@ -263,7 +263,9 @@ func seedAuthorOnlyComment(t *testing.T, database *store.Store, issue string, au
 	`, id, issue, encoded, body, graphstore.KindComment, at); err != nil {
 		t.Fatalf("write the comment's row: %v", err)
 	}
-	if err := graphstore.Authored(ctx, tx, graphstore.KindComment, id, author, at, graphstore.NoEvent); err != nil {
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		return graphstore.QueueAuthored(b, graphstore.KindComment, id, author, at, graphstore.NoEvent)
+	}); err != nil {
 		t.Fatalf("record who wrote the comment: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {

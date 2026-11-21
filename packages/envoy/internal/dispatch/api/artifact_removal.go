@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // removeArtifact removes a document of an issue that is still untouched: one made by typing a
@@ -310,8 +311,11 @@ func removedDocumentNodes(ctx context.Context, tx pgx.Tx, artifact model.Artifac
 			return removedNodes{}, fmt.Errorf("write the node of the removed document %s: %w", artifact.ID, err)
 		}
 	}
-	written, err := graphstore.WriteUncaused(ctx, tx, nodes, retractions)
-	if err != nil {
+	written := graphstore.PlanUncaused(nodes, retractions)
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueNodes(b, written)
+		return nil
+	}); err != nil {
 		return removedNodes{}, fmt.Errorf("state the nodes of the removed document %s gone: %w", artifact.ID, err)
 	}
 	return removedNodes{nodes: written, at: removedAt, lensed: lensed}, nil

@@ -220,8 +220,10 @@ func TestTwoIndexingsOfOneDocumentInOneTransactionStateEachFactOnce(t *testing.T
 		if err != nil {
 			t.Fatalf("read the record of version %d: %v", number, err)
 		}
-		indexing, err := PlanBlocks(ctx, tx, index, document.artifact, indexed, OneVersion(document.artifact, number, record.at), now,
-			doc.markdown, doc.blocks, nil, nil, TypedFacts{}, graphstore.Uncaused{})
+		indexing, err := PlanBlocks(ctx, tx, index, BlockIndexMarkingRule, now, VersionBlocks{
+			ArtifactID: document.artifact, Record: indexed, Versions: OneVersion(document.artifact, number, record.at),
+			Markdown: doc.markdown, Blocks: doc.blocks,
+		})
 		if err != nil {
 			t.Fatalf("plan the index of version %d: %v", number, err)
 		}
@@ -233,16 +235,11 @@ func TestTwoIndexingsOfOneDocumentInOneTransactionStateEachFactOnce(t *testing.T
 	secondPlan := plan(index, 2, second, secondRecord)
 	thirdPlan := plan(secondPlan.Held(), 3, third, thirdRecord)
 	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
-		if err := secondPlan.Queue(b); err != nil {
-			return err
-		}
-		if err := graphstore.QueueCaused(b, secondPlan.Stated(), secondRecord.event); err != nil {
-			return err
-		}
-		if err := thirdPlan.Queue(b); err != nil {
-			return err
-		}
-		return graphstore.QueueCaused(b, thirdPlan.Stated(), thirdRecord.event)
+		secondPlan.Queue(b)
+		graphstore.QueueCaused(b, secondPlan.Stated(), secondRecord.event)
+		thirdPlan.Queue(b)
+		graphstore.QueueCaused(b, thirdPlan.Stated(), thirdRecord.event)
+		return nil
 	}); err != nil {
 		t.Fatalf("write the two indexings: %v", err)
 	}

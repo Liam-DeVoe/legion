@@ -1454,7 +1454,8 @@ func writeRecordedResult(ctx context.Context, tx pgx.Tx, result *model.CheckResu
 		if !ok {
 			return nil
 		}
-		return graphstore.QueueWrite(b, nodes, tuples)
+		graphstore.QueueWrite(b, nodes, tuples)
+		return nil
 	})
 }
 

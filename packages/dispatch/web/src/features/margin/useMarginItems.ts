@@ -20,13 +20,9 @@ import { compareTimestamps } from "../../lib/timestamps";
 import type { ComposerOwner } from "../conversation/composer-model";
 import { rootOf } from "../conversation/conversation-model";
 import type { CarriedBlockIds } from "../conversation/send-request";
-import {
-  isDecisionEntry,
-  issueDecisionsQuery,
-  issueSpecAddress,
-  linkReachesDocument,
-} from "../doc/spec-marks";
+import { issueDecisionsQuery, issueSpecAddress, linkReachesDocument } from "../doc/spec-marks";
 import { useProjectArtifact } from "../document/useProjectArtifact";
+import { isDecisionEntry } from "../issue/decision-entries";
 import {
   type ConversationPinKind,
   conversationItemId,

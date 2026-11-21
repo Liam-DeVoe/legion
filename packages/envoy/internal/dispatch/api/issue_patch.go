@@ -748,7 +748,10 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		issueNode = graphstore.PlanUncaused([]graphstore.Node{graphstore.IssueNode(key, before.Project, creator, before.CreatedAt)}, nil)
 	}
 	if len(issueNode.Nodes) > 0 {
-		if err := ledger.Queue(func(b *store.WriteBatch) error { return graphstore.QueueNodes(b, issueNode) }); err != nil {
+		if err := ledger.Queue(func(b *store.WriteBatch) error {
+			graphstore.QueueNodes(b, issueNode)
+			return nil
+		}); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -761,9 +764,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	// The issue's node and the relations this write states learn the issue's own event the step
 	// before appended (queueIssueRelations).
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
-		if err := graphstore.QueueCaused(b, issueNode, graphstore.LatestEvent); err != nil {
-			return err
-		}
+		graphstore.QueueCaused(b, issueNode, graphstore.LatestEvent)
 		return queueIssueRelations(b, relations, actor)
 	}); err != nil {
 		s.writeHandlerError(w, err)

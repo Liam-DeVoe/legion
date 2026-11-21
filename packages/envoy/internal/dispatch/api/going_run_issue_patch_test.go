@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstorecopy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -123,7 +124,7 @@ func TestAPatchForARunGivesAnIssueWithNoNodeTheNodeTheBackfillGivesIt(t *testing
 			return string(data)
 		}
 		var lines []string
-		for _, attribute := range graphstore.BaseAttributes() {
+		for _, attribute := range graphstorecopy.BaseAttributes() {
 			stated, err := graphstore.History(ctx, database.Pool, graphstore.KindIssue, issue, attribute)
 			if err != nil {
 				t.Fatalf("read the %s of the issue's node %s: %v", attribute, what, err)

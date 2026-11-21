@@ -213,16 +213,25 @@ The live socket (`GET /ws/live`) re-resolves its caller every heartbeat from the
 the upgrade's proof authenticated it and cannot be presented a second time.
 Without `DISPATCH_AGENT_SECRETS_URL` there is no such credential, and a `DPoP` presentation is the `401 UNAUTHORIZED` `invalid bearer token` any Authorization header that is not a bearer has always been.
 
+No broker-issued token holds the OAuth scope `approve`, whatever its project scope: one acting for its person holds `person` alone, and every other holds none (`brokerTokenActor`).
+Each such token is made from a file on the machine that holds it, a machine login or a person's sign-in, so whoever copies that file holds it, and `approve` settles what only the person settles.
+So every route whose `scopes` name `approve` (`GET /api/v1`; `x-oauth-scopes` in `dispatch-openapi.json`) refuses every broker-issued token at its scope gate (`gateRouteScopes`), before the handler runs and before anything is relayed to the broker:
+`403 OAUTH_SCOPE_REQUIRED` naming `approve` for a token acting for its person, naming `person` for one that holds no scope, and `403 READ_ONLY_TOKEN` for a read-only token (below).
+The answer to an approval request (`POST /api/v1/asks/{id}/answer`) needs only `person` at that gate, because the ask's kind is known only once its row is read, so a token that holds no scope and a read-only token are refused there as above;
+a token acting for its person passes the gate and is refused inside the answer's transaction (`answerAsk`), once the ask's kind is read and before anything is written, with the same `403 OAUTH_SCOPE_REQUIRED` naming `approve`, and the request stays open.
+The person makes those calls from their browser session, or with a personal token they gave `approve`.
+A decision's Keep (`POST /api/v1/artifacts/{id}/blocks/{block_id}/keep`) needs `approve` because it records that the person agreed with the decision and takes it out of what waits on their review, so a personal token holding `person` alone is refused it too.
+
 A read-only token is the token the broker mints from a read entry (`BROKER_EXCHANGE_READ_ACCOUNTS`).
 It holds the OAuth scope `read` alone and the project scope `none`, names a service and a fixed session, and names no person and no project.
-`brokerTokenVerifier` builds the verifier with `brokertoken.Options.ServesReadOnly` set, so Dispatch accepts such a token and marks its credential read-only (`model.Credential.ReadOnly`), with no OAuth scope.
+`brokerTokenVerifier` builds the verifier with `ciphertoken.Options.ServesReadOnly` set, so Dispatch accepts such a token and marks its credential read-only (`model.Credential.ReadOnly`), with no OAuth scope.
 Dispatch serves it on the routes its read list names (`readScopeRoutes` in `internal/dispatch/api/routes_table.go`), today `GET /api/v1/projects/{key}/architecture` alone.
 Every other route of the table, and `GET /ws/live`, answers it `403 READ_ONLY_TOKEN` (`contracts.DispatchReadOnlyToken`, generated from `packages/contracts`) with no `WWW-Authenticate` challenge (`refuseReadOnlyToken`).
 That refusal comes before the route's scopes, the sign-in check, the `Idempotency-Key` and the handler, so a refused request claims no key and writes nothing but the row of its spent DPoP proof, which the token's verification records before the refusal.
 The other mounts outside the table read no broker token: `/ws/doc/{room}` answers such a token `401`, and `/auth/*`, `/api/github/rest/*`, `/healthz`, `/livez` and `/metrics` take no broker token at all.
 `/healthz`, `/livez` and `/metrics` take no credential (`dispatchHandler`), so they answer a request that carries such a token as they answer any other caller, and none of the five makes a write for it.
 The document socket's heartbeat re-checks the browser credential it was admitted with, the sign-in cookie or, under `DISPATCH_IDENTITY=iap`, the IAP assertion its upgrade carried (Identity, above), and nothing the request carries beside it (`api.signInStillResolves`), so a read-only token sent beside a cookie cannot keep that socket open once the cookie ends.
-A service whose verifier does not set the switch, the Envoy listener among them, answers a read-only token `401`, and the NATS auth service, which reads the broker's answer through `brokertoken.SessionCaller` with the switch off, refuses a connection that presents one as `not_a_session`.
+A service whose verifier does not set the switch, the Envoy listener among them, answers a read-only token `401`, and the NATS auth service, which reads the broker's answer through `ciphertoken.SessionCaller` with the switch off, refuses a connection that presents one as `not_a_session`.
 
 A credential that names one project may write that project and nothing else.
 Every mutating row of the route table declares what its write belongs to (`internal/dispatch/api/routes_table.go`, `writeClasses`;
@@ -294,7 +303,7 @@ see that component's README for its inputs, the IAM grant it writes and the one 
 GitHub does not redeliver a webhook delivery that failed.
 When NATS is configured and the App's private key (`DISPATCH_APP_PEM_B64`) is present, Dispatch redelivers them itself, following GitHub's documented approach.
 At start and every two minutes after (Background loops, below:
-each sweep two minutes plus up to a tenth after the last) it lists the App webhook's attempts (`GET /app/hook/deliveries`) and judges each delivery by its GUID, as GitHub's own redelivery script does:
+each sweep at most two minutes, and more than 0.9 of that, after the last) it lists the App webhook's attempts (`GET /app/hook/deliveries`) and judges each delivery by its GUID, as GitHub's own redelivery script does:
 a GUID with an `OK` attempt is delivered, whatever its failures, and it asks GitHub to redeliver each other GUID with an attempt whose status is not `OK` (`POST /app/hook/deliveries/{id}/attempts`).
 Both endpoints accept only an App JWT, which is why Dispatch runs this.
 The webhook the App delivers to is the Envoy listener's `/webhook/github`.
@@ -305,7 +314,8 @@ So redelivering a delivery that did reach the stream adds nothing to the stream.
 - Every failed delivery is asked for again, whatever status code its failed attempts carry:
   a 5xx, an attempt GitHub could not complete, and a 4xx alike (the listener's 401 for a signature it cannot check, 400 for a body it cannot use, 422 for a publish NATS refused), since what the listener cannot take now it may take later.
   The first request goes on the next sweep.
-  While no attempt is `OK`, the next request is due 2, 4, 8, 16 and 32 minutes after the one before, then every 60 minutes.
+  While no attempt is `OK`, the next request waits a backoff of 2, 4, 8, 16 and 32 minutes after the one before, then 60 minutes each time: one, two, four, eight and sixteen two-minute intervals, then thirty.
+  It is due nine tenths of that backoff after the sweep that made the request before it (`duty.LeasePeriod`), since a sweep comes more than nine tenths of two minutes after the one before: so the sweep that many intervals on makes it at the latest, and the first retry is the next sweep's.
   A redelivery request GitHub refuses (for example 422) delivers nothing and is asked again on the same schedule, as is an accepted request whose redelivery never appears in GitHub's log.
 
 - The sweep stops asking 72 hours after the first failed attempt it saw for the delivery, since GitHub keeps a delivery 72 hours, or when GitHub answers the redelivery request 404 (it no longer has the delivery).
@@ -337,7 +347,7 @@ So redelivering a delivery that did reach the stream adds nothing to the stream.
 
 - Every sweep logs an INFO `msg="webhook redelivery sweep"` line:
   `failed_attempts` (the failed attempts listed), `deliveries` (the deliveries the sweep decided:
-  the GUIDs of the listed failed attempts, plus the open deliveries the listing no longer returns that the index says are due, one whose claim was never answered included), `index_entries` (the entries the index read returned, none in the operator command, which reads no index), and one count per outcome, which add up to `deliveries`.
+  the GUIDs of the listed failed attempts, less any it left out (below), plus the open deliveries the listing no longer returns that the index says are due, one whose claim was never answered included), `index_entries` (the entries the index read returned, none in the operator command, which reads no index), and one count per outcome, which add up to `deliveries`.
   `closed` is a delivery an earlier sweep settled (GitHub recorded it `OK`, or it expired):
   its failed attempt stays listed until it is older than the sweep's look-back, so after a burst of failures is redelivered, the sweeps of the next hour and six minutes count the burst as `closed`.
   `waiting` is a delivery whose next request is not due yet:
@@ -345,6 +355,29 @@ So redelivering a delivery that did reach the stream adds nothing to the stream.
   and in the operator command every open delivery it reads that is not due and not claimed, listed or not.
   `claimed_elsewhere` is a delivery another sweep is asking GitHub for.
   A delivery the sweep's cap of 300 requests left over is not counted; the next sweep takes it.
+
+- A delivery whose GUID the sweep's bucket cannot key is left out of the sweep:
+  a GUID outside the characters a NATS key may hold (letters, digits, `-`, `/`, `_`, `=` and `.`), one holding a space or an empty token, or one so long that its index entry's key passes the bucket's bound for a write (`bus.KeyValue.RefusesWrite`).
+  No sweep could read or write such a delivery's record or index entry, so it would otherwise fail every sweep, or leave every sweep incomplete with its cursor held, for as long as GitHub lists it.
+  Each sweep that lists it logs `level=WARN msg="webhook redelivery left out a delivery whose GUID the bucket cannot key"` with `guid` and `error` (the bucket's refusal), decides the rest, and stays complete.
+
+- A delivery's GUID, event and action are GitHub's text, so every line and error of the sweep shows them, and an index entry's `key`, to a bound (`githubapp.ShownBody`):
+  whole up to 512 characters, and past that the first 512 and `… (<n> bytes)`, where `<n>` is the size of the text.
+  The GitHub App client (`githubapp`) shows a refusal's body in its errors as `githubapp.ShownBody` shows it, and `<n>` is the size of the body.
+  A value of an answer that the client cannot decode, in a time parse error or a JSON type error, is cut alone, and `<n>` is the size of the value.
+  That error still names the time layout, or the field and its Go type.
+  For a valid time with text after it, the time parse error's reason quotes that text (`extra text`).
+  The client cuts that reason alone too, and `<n>` is the size of the reason.
+  An error for a request that GitHub did not answer, or whose answer could not be read or passed the size limit, names the request's URL as `githubapp.ShownBody` shows it, and `<n>` is the size of the URL.
+  A transport error also cuts its cause, so it still names the cause after a long URL, for example `context deadline exceeded`.
+  A line the cause quotes is cut with the cause's text, and `<n>` is the size of the cause's text.
+  `githubapp.ShownErr` cuts whole any other error that quotes GitHub's text, such as an error of the bucket that quotes a key, and `<n>` is the size of the error's text.
+  No error that `githubapp.ShownErr` answers is longer than 4,414 bytes: two texts as `githubapp.ShownBody` shows them, each at most 2,079 bytes, and 256 bytes for the error's own words.
+  A time parse error, a JSON type error or a transport error whose text is still longer after the cuts above is cut whole, and `<n>` is the size of that text.
+  A time value past ASCII can make such a text, since package time writes each of its bytes past ASCII as `\xNN`.
+  The sweep's errors and lines therefore carry that text the same way.
+  A next page link longer than 2048 bytes is refused rather than followed, and shown as `githubapp.ShownBody` shows it.
+  The refusal of a shorter link that cannot be parsed, or that leaves GitHub's API origin, shows the link the same way, and so does an error that names a next page GitHub answered with a status other than 200.
 
 - The running sweep lists the last hour and six minutes (`redeliver.Lookback`, the longest backoff plus three sweep intervals), long enough that a delivery coming due still sees GitHub's answer to its last request in the listing.
   To that it adds the open deliveries the listing no longer returns that its index says are due, one still owed a request and one whose claim has run out alike.
@@ -371,6 +404,8 @@ a rate limit GitHub answers its listing with is recorded for every process, as a
 envoy-dispatch redeliver-webhooks --since 72h --dry-run   # list what would be redelivered
 envoy-dispatch redeliver-webhooks --since 72h             # redeliver under the sweep's rules
 ```
+
+Its table shows each delivery's GUID, event and action as `githubapp.ShownBody` shows them, as the sweep's lines do.
 
 It reads the same App credentials and NATS configuration as the server, and opens the database `DATABASE_URL` names for the rate limits every process shares;
 it migrates nothing, so it runs against a database the server of its release has already migrated.
@@ -573,6 +608,9 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
   the token expired, was revoked or is not the client's), or one whose ID token no longer passes the rule or names another email, ends every session they hold.
   A refresh that fails any other way (the issuer undiscovered, down or slow, a `5xx` or `429`, another OAuth error, or an answer without an ID token that verifies) ends nothing:
   the request that found the confirmation lapsed is refused `503 SIGNIN_UNAVAILABLE`, the sessions and the refresh token are kept, and the first request after the issuer answers again refreshes and is served.
+  A refresh is one request to the issuer's token endpoint, with the client's secret sent the way the issuer's discovery document lists in `token_endpoint_auth_methods_supported`: by HTTP Basic where it names `client_secret_basic` (Google's does), else in the form where it names `client_secret_post`.
+  Each request to the token endpoint has ten seconds, and the whole refresh, which also reads the person's row and, the first time, the discovery document, has fifteen; a refusal ends the sessions when its answer comes within both.
+  An issuer whose document names neither is asked by HTTP Basic and, when that fails, may be asked again in the form, so its refusal can need both requests to answer within the fifteen seconds.
   Logout ends Dispatch's session only, not the issuer's.
 
 - A person is their email, so an address passed from one account to another is one person.
@@ -1505,12 +1543,13 @@ The four that run passes (`duty.RunWoken`) start two passes no closer together t
 - The block schema is one value per process, built from the store's type nodes (`schemanodes.Installer`), installed at boot beside the migration run and again when a supertag or attribute node changes:
   the triggers of migration `20261109051232` notify `dispatch_block_schema`.
   A type is data, so a type added by a migration reaches a running server without a restart;
-  a read that fails is tried again 30 s later and leaves the schema in use where it is, and so does a value either of `installSchema`'s two checks refuses.
+  a read that fails is tried again 30 s later and leaves the schema in use where it is, and so does a value the install refuses; `schemanodes.Installer` makes both checks, the read's (`schemanodes.Read`) and the install's (`pmdoc.Install`).
   Migration `20261113230000` is the first type change after `20261109051232` seeded the types: it adds `check`'s `ci_check` attribute node and moves every block type to version 4, the version `pmdoc/schema/blocks.json` declares.
   Each read runs in one read-only transaction at repeatable read, so a migration that commits while it reads is read whole by the next read, never half.
   A store schema above the version this binary was built for is a store the next release migrated: the process installs it at its own version, with the elements whose `since` is at or below that version and nothing else, and keeps serving, its boot and `/healthz` unaffected, so a release that ships a type migration takes no process of the previous build out of service.
   A read that moved the schema the process serves first writes the numbers it serves now into its registry row (`processes.Registration.RefreshSchema`), then closes every document socket it holds (`docs.Service.CloseDocumentSockets`); the browser connects again presenting the schema its own build compiled, and that admission decides against the schema installed now.
   The subcommands that parse or write documents (`backfill-block-ids`, `backfill-anchor-blocks`, `backfill-graph-store`, `rebuild-refs`, `erase`) install the store's schema too, after their migration run, so they hold documents to the store's types and not to the file this binary embeds.
+  `backfill-files` moves file bytes and parses no document, so it installs no schema.
 
 - The record of GitHub reads, which `/healthz` answers as `github` (Routes, below), is one copy per process (`githubreads.Copy`), read at start and again each time any process writes `github_read_attempts`:
   the table's row trigger notifies `dispatch_github_read_attempts` (`20261118020802`) with the read's name, and each of the four loops that read GitHub under a lease (the delivery reconcile, the architecture import, the webhook redelivery sweep and the CI reconcile, below) writes its read's row at the end of each pass that asked GitHub anything or met a failure, unless this process's shutdown cut the pass short.
@@ -1535,11 +1574,12 @@ A process that finds it held tries again
   those are retried up to six more passes, the first a second later and doubling to at most a minute, and drift left after them is logged at WARN and left to the next start.
 
 **Timers that stay**, because nothing announces what they would miss
-— a webhook that never arrived, a delivery that failed, a source's branch head, an expired key, a delivery a process that died still owes:
+— a webhook that never arrived (a push to a component source's branch among them, which the architecture import repairs), a delivery that failed, an expired key, a delivery a process that died still owes:
 
 - The delivery reconcile (`delivery.ReconcileInterval`) and the architecture import (`architecture.SyncInterval`) run every 5 minutes through `duty.RunJittered`, the first pass after a random delay within one interval.
   The webhook redelivery sweep (Webhook redelivery, above; `redeliver.Interval`) runs every 2 minutes, its first sweep at start.
-  Each waits the interval plus up to a tenth again after every pass (`duty.Jittered`), drawn afresh every period, so two processes' passes drift apart rather than ticking in step.
+  Each waits the interval less up to a tenth of it after every pass (`duty.JitteredWithin`), drawn afresh every time, so no wait is longer than the interval and two processes' passes drift apart rather than ticking in step.
+  Each hands its lease a period of 0.9 of its interval (`duty.LeasePeriod`), which every wait is longer than, so a lone process's pass is never refused as a period its own last pass served.
   `DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL` replaces the delivery reconcile's 5 minutes for an end-to-end test, and a deployment never sets it.
   `DISPATCH_TEST_REDELIVERY_INTERVAL` replaces the sweep's 2 minutes for an end-to-end test, and a deployment never sets it.
   `DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START=1` runs the architecture import's first pass as the process starts, rather than after the random delay, for an end-to-end test that must see a pass inside its window, as `DISPATCH_TEST_RECONCILE_AT_START=1` does for the delivery reconcile, and a deployment never sets either.
@@ -1575,9 +1615,13 @@ No loop waits for the listener: each runs its boot pass whether or not it has co
 Postgres does not replay a notification sent while nothing listened, so the hub signals every loop after each successful LISTEN, the first included, and a change made while it was redialing (backing off 1 to 30 s) is caught up then.
 
 **The GitHub intake** (`delivery.Intake`) checks each message's subject before it decodes anything:
-only `notifications.github.<owner>.<repo>.pr.<n>`, with nothing after the number, and `notifications.github.<owner>.<repo>.workflow.<file>.<action>` can carry a kind it handles, and every other subject
-— checks, comments, issues, pushes, job events, `pr.<n>.review` — is acknowledged with no decode.
-A wanted message runs under its key: a pull request under its repository and number, read from the subject, and a workflow run under its payload's `repo` and `run_id`.
+only `notifications.github.<owner>.<repo>.pr.<n>`, with nothing after the number, `notifications.github.<owner>.<repo>.workflow.<file>.<action>` and `notifications.github.<owner>.<repo>.push.branch.<branch>` can carry a kind it handles, and every other subject
+— checks, comments, issues, a push of a tag, job events, `pr.<n>.review` — is acknowledged with no decode.
+A wanted message runs under its key: a pull request under its repository and number, read from the subject, a push of a branch under its repository, read from the subject, and a workflow run under its payload's `repo` and `run_id`.
+The intake hands a push of a branch to the architecture importer, which imports every enabled component source on that repository and branch at once rather than at its next five-minute pass (`delivery.PushImports`, `architecture.Importer.Pushed`).
+The intake runs only while `delivery_settings` holds a row (`Intake.Run`), so a push is imported this way only where delivery is configured, and elsewhere the five-minute pass is a source's only automatic import.
+A push is no delivery fact: a push of a branch calls the importer once, a push of a tag calls nothing, and neither records an `issue.deployed` or moves the Delivery page's event freshness, `last_event_at` (`TestTheIntakeHandsABranchPushToItsImporter`).
+A hand-off that fails is logged at `WARN` (`process event`) and the envelope acknowledged, as `Intake.deliver` does for a handler's error other than `ErrHeadNotStored`, since the importer's five-minute pass imports the source all the same.
 Messages of one key run in delivery order, each after the one before has finished, since each fetches its pull request's or run's current state from GitHub and writes it, and run at once an older fetch could be written over a newer one;
 messages of different keys run at once, at most 4, the durable's `MaxAckPending`.
 Its durable's `AckWait`, `MaxAckPending` and filter subject are unchanged.
@@ -2311,7 +2355,7 @@ The release before it never reads the index and serves beside it unchanged, exce
 the index is left for the next release that reads it.
 
 Migration `0150_dpop_proofs` creates `dpop_proofs`, the record of every RFC 9449 DPoP proof Dispatch has accepted, and its expiry index.
-A caller presenting an access token the secrets broker issued signs a fresh proof of that token's key for each request (`internal/brokertoken`), and the row keyed on the proof's `jti` and normalized `htu` is what refuses the same proof presented twice;
+A caller presenting an access token the secrets broker issued signs a fresh proof of that token's key for each request (`internal/ciphertoken`), and the row keyed on the proof's `jti` and normalized `htu` is what refuses the same proof presented twice;
 the maintenance pass deletes every record past its proof's acceptance window beside the idempotency-key sweep.
 It is a new table that touches no row, which the release before it neither reads nor writes; its census answers `0`.
 
@@ -2618,7 +2662,7 @@ That key is the first issue the five sources name that resolves to the repositor
 a pull request titled after another repository's issue therefore keeps its own, and one no candidate of which resolves to its repository is attributed to nobody, with the source `none`, as is one whose head branch is in another repository (`headInOwnRepository`).
 The hold is the server's own repository-resolution rule spliced into the statement that reads the candidates (`refs.IssueRepoTerms`, `attributionCandidatesQuery`), so the attribution and the issue page cannot disagree, and a pull request's best 25 candidates are the ones read (`attributionCandidateBound`).
 One rule picks both attributions: this row's `issue_key` (`headAttribution`) and the issue of a `delivery_pull_requests` row, which the reconcile resolves again from the database alone (`AttributePullRequests`).
-An older event arriving after a newer one leaves the row as it is, and the reconcile re-reads an open row older than five minutes.
+An older event arriving after a newer one leaves the row as it is, and the reconcile re-reads an open row older than 4.5 minutes (`delivery.PullRequestHeadStaleAfter`).
 That head pass runs whether or not the deployment has delivery settings, and before the deploy repository's permission check (`Reconcile.runOnce`):
 a recorded result is compared with those heads in every deployment, and behind the settings the pass never ran in one that had none, so a result recorded at a head a later push replaced went on standing at it for ever.
 A failed head pass is logged, and named in `delivery_settings.last_error` beside the other steps' failures when the pass reached them.
@@ -2696,7 +2740,7 @@ Migration `20261105070440_pull_request_heads_attribution_rule` gives `pull_reque
 `0` is what every row written before the column has:
 the rule that took the first candidate the five sources named outright, whatever repository that issue resolved to.
 A merged row is the one row nothing revisits:
-an open row comes round every five minutes, but the merged arm took a merged row only while no read of GitHub had reached it, a merge envelope that names a head repository stamps `checked_at` as such a read, and a read-through runs only for a commit that heads no pull request Dispatch knows.
+an open row comes round at every reconcile pass of one process, each starting at most five minutes after the one before it ended, but the merged arm took a merged row only while no read of GitHub had reached it, a merge envelope that names a head repository stamps `checked_at` as such a read, and a read-through runs only for a commit that heads no pull request Dispatch knows.
 So a pull request merged under an older rule kept for good whatever that rule concluded, and one that rule credited to nobody left every `before_merge` result at its merged head standing at no basis for ever.
 The column bounds the repair: the reconcile's merged arm takes a merged row credited to nobody that this build's rule has not judged, and the read stamps the row at that rule whether or not it could attribute it, so every such row stored before the deploy is judged once more and then left alone, and a later change to the attribution reaches the merged rows already stored by raising that constant by one.
 The migration replaces `pull_request_heads_merged_unread` to follow the arm it serves:
@@ -2726,7 +2770,7 @@ Its census answers `0`.
 Migration `20261105112616_pull_request_heads_repo_head` creates `pull_request_heads_repo_head` on `pull_request_heads (lower(repo), head_sha)`, the index behind the question the results read asks before it reads GitHub about a commit:
 has any open or merged stored pull request this commit of this repository as its head, whatever issue it is attributed to (`delivery.HeadStoredAt`)?
 A `before_merge` result whose commit heads no row attributed to the check's own issue is read through GitHub, which is how a result recorded before its pull request opened comes to stand at that head, and that read can repair nothing for a commit Dispatch already holds an open or merged pull request for:
-the reconcile re-reads an open row every five minutes and offers a merged one once per rule version, so asking GitHub again from a read teaches nothing.
+the reconcile re-reads an open row at every pass of one process, each starting at most five minutes after the one before it ended, and offers a merged one once per rule version, so asking GitHub again from a read teaches nothing.
 So the read asks this first, and a child's result on its parent's tab
 — whose commit heads the child's own pull request, attributed to the child
 — costs no GitHub call at all (`api/results_comparison.go`, `comparisonReader.readThroughHead`).
@@ -3317,10 +3361,11 @@ Where a write states facts beyond its node, each such fact is a term of its own,
 A backfill writes its rows once, beside the rate: `census: sizing backfill kind=version owed_rows=<n> nodes=<n> tuples=<n>` is the version nodes `backfill-graph-store` still owes the versions an older build stored, a node and six tuples each, and `census: sizing backfill-rows table=<table> rows=<n>` adds those rows to each store table's year projection.
 Each term a table can count is read from tables that exist before this branch's first migration, so the growth pass runs on a database the store does not exist in yet, which is where R4 takes its readings; there the census prints `census: store absent` and the growth pass alone decides the exit.
 No such table holds a block's parent, so the moved parents are counted by parsing each version the block index indexed in the window beside the one it indexed before, placing the blocks as `refs.PlaceBlocks` places them, and matching the two versions' blocks by their text, since a version's markdown names no paragraph's id; blocks of one document with equal text are matched in document order, so that term is exact except there, and its share line carries `versions_read=` and `versions_unreadable=`.
+Each version is parsed against the block schema the store's type nodes declare, read in the census's own transaction, and against the schema this binary embeds only where the store holds no type node, so a type the store holds and the file lacks does not read as unreadable.
 A kind production writes no row of before its child ships (a criterion, a decision, a reading, and every kind of `lenses-child`) has no history to read, so its term carries an assumed rate instead of reading zero, its `driver=` states that rate and the reason for it, and its share line ends `rate=assumed`.
 A decision, a reading and a criterion are blocks of a document, whose node and placement the block terms count already, so each of those terms counts only the tuples it states beyond a block's.
 It last prints the block-index reconciliation's backlog on two `census: sizing backlog ` lines, because a loop that falls behind fails nothing and nobody would otherwise see it:
-`owed_documents=` is how many documents are owed a block index (`document_block_versions.version` null, or this build's mark `store_owed_at` set, by the backfill or by the block-index tick's marking of the documents the events after its build's cursor name), and `oldest_owed_at=` is when the oldest of those debts was incurred, with `oldest_owed_age_seconds=` beside it and `against=` naming the time that age is measured to.
+`owed_documents=` is how many documents are owed a block index (`document_block_versions.version` null, or this build's mark `store_owed_at` set, by the backfill or by the block-index tick's marking of the documents the events after its build's cursor name, of a marking rule a build of this binary's rule lists, as the tick's own count reads it), and `oldest_owed_at=` is when the oldest of those debts was incurred, with `oldest_owed_age_seconds=` beside it and `against=` naming the time that age is measured to.
 No column dates a null version, so a debt is dated by the write that owed it — the `created_at` of the latest markdown version the document holds, or the document's own `created_at` where it holds no version — and a document holding the backfill's mark is dated the same way, and the line says so under `dated_by=`.
 The age is measured against the newest write the database recorded (the `created_at` of its highest `events` id) and not against `now()`, so two runs print one age; a database that recorded no event prints `none` and an age of zero.
 It exits non-zero when that projection puts either store table past the limit inside a year, and when a table this branch's migrations alter is already at or above it.
@@ -3407,7 +3452,7 @@ A version that release writes and indexes in one request, of a document this bui
 A block's parent is the one fact it does not write.
 The parent is the nesting of the rendered version, which no column of `document_blocks` holds, and the version's stored markdown cannot give it either, since a paragraph's id is no part of that text; only the server renders the document the ids belong to.
 So the run marks each document it touched, and the reconciliation's index pass writes every block's node, its `part_of` tuple and `parent_block_id`, which is that column's one writer, and clears the mark.
-The mark is `document_block_versions.store_owed_at`, a column migration `20261116221539` adds and only this release reads or writes, and not the null `version` that `rebuild-refs` sets and every release reads.
+The mark is `document_block_versions.store_owed_at`, a column migration `20261116221539` adds and only this release reads or writes, and not the null `version` that `rebuild-refs` sets and every release reads; beside it `store_owed_rule`, which migration `20261120122600` adds, records the marking rule of the build that set it (below).
 A process of the release before this one, during a roll or after a rollback, reads a null `version` as its own debt: it indexes the document, writes the rows and states nothing in the store, and the document would be owed nothing again.
 It never reads or clears `store_owed_at`, so this release's reconciliation, which lists a document holding it as it lists one whose `version` is null, still reaches the document and states every parent (`TestABackfillWhoseMarkThePreviousReleaseDrainedStillReachesEveryParent`).
 The batch that names a document's block nodes writes the mark in its own transaction, so a run stopped after any batch leaves every document of its committed batches marked (`TestABackfillKilledAfterOneBatchLeavesThatBatchsDocumentsOwed`).
@@ -3426,11 +3471,12 @@ The tick also reads `comment.created` and `comment.answered` events, each of whi
 That is the backfill's contract applied to the rows the log names: a row that names its node is left alone, so it is no reconcile.
 The tick does all of this before it lists the owed documents, so the same tick drains a document it marks when its batch has room.
 Because every tick reads its events, which build's ticks come first in each period of the shared block-index lease, and so whether this build ticks while the release before serves at all, decides nothing (`TestAVersionThePreviousReleaseWritesWhileItHoldsTheLeaseReachesTheStore`), and neither does a rollback or a roll forward that stops one build before it starts the other (`TestAVersionThePreviousReleaseWritesWhileThisBuildIsStoppedReachesTheStore`).
-The cursor is one row per build commit of `block_index_event_cursors`, a table migration `20261118115645` creates and the previous release never reads, and its `event_id` is the highest event id the build's ticks have read or passed.
+The cursor is one row per build commit of `block_index_event_cursors`, a table migration `20261118115645` creates and the previous release never reads, and its `event_id` is the highest event id the build's ticks have read or passed; its `marking_rule` (migration `20261120122600`) is the marking rule of that build.
 A build that holds a row starts at its own row, however old, and reads every event since, one page a tick.
-A build with no row of its own inserts one at its first tick that reads a proven safe horizon: at the earlier of the highest `event_id` another build's row holds and the horizon the newest backfill recorded when it began, where both exist; at whichever exists where only one does; and at that tick's horizon where neither does, so the cursor never starts at the beginning of the log (`TestAVersionThePreviousReleaseWritesBeforeTheNextBuildStartsReachesTheStore`, `TestADocumentThePreviousReleaseCreatesBeforeThisBuildsFirstTickReachesTheStore`).
-The backfill's horizon is the one row of `graph_backfill_horizon`, which the same migration creates.
-Before it reads any row, `backfill-graph-store` takes a mark of the event log, waits until no transaction that can still write an event took its transaction id before the mark (`events.Horizon.WriterFloor`), and records the newest event id the mark saw, at or below which every event was final by then, so every event the run cannot have seen is above it; it prints it as `backfill-graph-store: horizon=<id>`, and each run replaces it.
+A build with no row of its own inserts one at its first tick that reads a proven safe horizon: at the highest `event_id` a row of a build of its own marking rule holds; where no such row exists, at the horizon the newest backfill of its own rule recorded when it began; and where neither exists, at that tick's horizon, so the cursor never starts at the beginning of the log (`TestAVersionThePreviousReleaseWritesBeforeTheNextBuildStartsReachesTheStore`, `TestADocumentThePreviousReleaseCreatesBeforeThisBuildsFirstTickReachesTheStore`, `TestASecondBuildsFirstTickReadsNoEventBelowTheCursorAnotherBuildLeft`).
+A build reads no cursor and no horizon of another rule, since that build or that backfill marked what its own rule owes (`TestABuildOfANewerMarkingRuleReadsFromTheBackfillHorizon`, `TestAHigherRuleStartsAtItsOwnHorizonAboveALowerRulesBackfill`, `TestABuildWithOnlyALowerRulesHorizonStartsAtItsSafeHorizon`).
+The backfill's horizons are the rows of `graph_backfill_horizon`, which the same migration creates and migration `20261120122600` keys by `marking_rule`: one row for each rule.
+Before it reads any row, `backfill-graph-store` takes a mark of the event log, waits until no transaction that can still write an event took its transaction id before the mark (`events.Horizon.WriterFloor`), and records the newest event id the mark saw, at or below which every event was final by then, so every event the run cannot have seen is above it; it prints it as `backfill-graph-store: horizon=<id>`, and each run replaces the row of its own marking rule and leaves every other rule's (`TestABackfillOfALowerMarkingRuleLeavesAHigherRulesHorizon`).
 Every boot of a server records it the same way before its own run of the backfill, waiting at most 30 s (the end of this section).
 The cursor moves with each tick, so each tick reads only the events since the last one, and nothing scans a whole table.
 A tick reads at most 1,000 events, in id order, after the cursor and at or below the safe horizon (`events.Horizon.Safe`), because event ids are not commit order and an uncapped read could pass an event that is still committing.
@@ -3463,6 +3509,14 @@ A row whose node the store holds in another project, live or gone, which no writ
 Such a row, and a row between a party the store refuses, spends neither budget and opens no transaction: the pass leaves it before it writes the batch it falls in, and each pass reads it again, two index reads for each 200 of them.
 The pass reads the four tables whole and the document nodes through `artifacts`' and `issues`' unique keys: at production's row counts (2,000 issues, 4,000 documents, 8,000 asks and 6,000 messages, a tenth of `dispatch-seed --scale 1`'s) a write pass with nothing to write took 97 to 190 ms and the orphan read 7 to 8 ms, and at ten times them 0.9 to 1.8 s, with one run of seven at 8.6 s, and 30 to 35 ms.
 So each process that holds the lease spends one such pass every 10 minutes while this build serves alone, and one on every tick while a process of another build serves.
+The marking rule versions what a block-index pass and the tick owe: which documents a build marks and which comments its tick writes.
+The code declares it once, `refs.BlockIndexMarkingRule`, which is 1, the first rule this code ships, and raises it whenever what a pass owes changes; `TestTheMarkingRuleNamesTheStatementsItMarksWith` pins a digest of the statements that decide it for each value of the rule, so a change to one of them that keeps the rule fails.
+Every statement that marks a document writes its build's rule into `store_owed_rule` and keeps the higher of the stored rule and its own where a mark already stands; one that marks only a document holding no mark reads a mark of a lower rule as none and raises it (`TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States`).
+The column is `not null default 1`: the release before this one and the trigger `document_block_versions_owe` insert rows without naming it, so a mark no later rule wrote is rule 1's.
+A pass of rule r lists a document whose mark is of rule r or lower, and one marked by a higher rule only where its `store_version` is null or below its `version`, which is work of its own there; it wins the fence at the version the row stands at only where a mark stands and the same holds; and it clears the mark only where the mark's rule is r or lower, decided in the fence's own statement against the row as it then stands (`TestALowerRulesDrainLeavesAHigherRulesMark`, `TestAHigherRulesPassListsAndClearsALowerRulesMark`, `TestAHigherRulesMarkWrittenDuringALowerRulesPassSurvivesItsStand`).
+So a build of rule 1 that drains a document a build of rule 2 marked, during a roll or after a rollback, states the version and leaves the mark for the build of rule 2.
+The tick's `owed_documents` and the sizing's backlog count only the documents the build lists (`TestABuildsBacklogCountsOnlyTheDocumentsItLists`).
+Migration `20261120122600`'s census answers `0`: each column's constant default is kept in the catalog and rewrites no row, and every row that stands reads rule 1.
 
 A row the release before this one deleted is nothing the run reads.
 That release, indexing a version of a document the store has stated, deletes the `document_blocks` row of each block the version drops and the `block_refs` row of each link a block stops holding, and it states no node `gone` and retracts no tuple.
@@ -3528,18 +3582,21 @@ A tuple another writer commits into the node after the listing was read refuses 
 It rewrites, with a marker naming the node and the `graph_erasures` record where the bytes were, what derives from the node and may not go:
 
 - **The blocks that hold the erased block** (`document_block_texts.text` and `document_blocks.excerpt` of each block up its `parent_block_id` chain whose text quotes it): each projects a block node of its own, and a live node no row projects is a difference `census --store` reads.
-  The text is rewritten only where the erased text stands as a block of its own, at the start of a line after its markdown framing and at the end of a line, so a sibling's words inside a longer line stand.
+  The text is rewritten only at a version the erased block stands in, read as for the versions above, since at any other version the same words are the holding block's own, and the listing names each such text as a row the run leaves.
+  It is rewritten only where the erased text stands as a block of its own, at the start of a line after its markdown framing and at the end of a line, so a sibling's words inside a longer line stand.
   An excerpt is cut again from the rewritten text the way the indexer cuts it, and `text_sha256` is left where it is, since it is the digest the indexer compares a later version's block against.
+  An excerpt cut from a version the erased block does not stand in stays as it is, with the text it was cut from.
 
 - **The excerpt a mention of the document shows** (`refs.excerpt_text`) where it was cut from the erased block or one holding it: it is cleared and marked owed, so the reconciliation cuts it again from the latest version left.
 
 - **The events about the node** (`events.payload`): a comment's own events, whose payload is the comment or names it as `comment_id`, and a block's document events (`artifact.*`, `block.*`).
   A document event's payload quotes the whole document, so in it the erased text is replaced only where it stands as a block of its own, as in a container's text, and a sibling's line in a version's markdown or a diff stands.
+  A comment's own event quotes other nodes beside what its author wrote - the anchor's `quote` of the document it is anchored to, that document's `artifact_name`, the `ask_question` of the ask it replies to and the `text` of the `reply_block` it answers (`grapherase.quotedFields`) - and in those the erased text is replaced only where it stands as a block of its own, so another node's words around it stand.
   The log is append-only, so the row stays with its id, its time and its actor, and the bytes go only from inside the JSON string values that carry what somebody wrote.
   A key is never touched, and neither is a value under a structural key: an identifier (`id`, every key ending in `_id`, `_key`, `_slug` or `_logins`, `reply_to`, `answers`, `editors`, an actor's `owner`, `session`, `service` and `project`, and a digest, `sha256`, every key ending in `_sha256` and `content_sha256_source`), an address (`target`, `route` and every key ending in `_route`, `ref`, `node`, `slug`), a state or kind enumeration (`kind`, `type`, `state`, `status`, `role`, `delivery`, `turn`, `scopes`, `mime`, `waiting_on`, and every key ending in `_type`, `_kinds`, `_state`, `_status` or `_waiting_on`) or a time (`at` and every key ending in `_at`), at every depth of every event type alike (`grapherase.structuralKey`).
   So an erase of `kind` leaves every `"kind"` key and the kind each one names and redacts a body reading `kind`, an erase of `sent` leaves a receipt's `state` reading `sent`, and an erase of a text that is part of a session's id leaves that id whole.
   The rule names the structure rather than the content, so a field a later build adds is redacted until somebody names it structure, and the erased bytes never stand in a content field nobody listed.
-  An event about the node that holds the erased text only in its structural values is left whole, and the listing names it as a row the run leaves.
+  An event about the node whose payload still holds the erased text once redacted - in a structural value, or in a value that quotes another node - is listed as a row the run leaves holding it, beside the line naming it redacted where the redaction rewrote another of its values.
 
 - **The live editing state** of a block's document, and of each document whose margin record holds an erased comment's body (`doc_updates`, with `doc_checkpoints` and `doc_snapshots`), the ygo history its room loads from.
   A deleted item keeps its bytes in those rows until a fold collects it, and a text substitution inside an update would leave one no load decodes, so no row is edited: the erase replaces the whole history with one fresh update of the live document as it leaves it, through the statements a rebuild writes (`docs.ReadErasedLiveText`, `PgVersioned.RebuildTx`).
@@ -3556,7 +3613,13 @@ It rewrites, with a marker naming the node and the `graph_erasures` record where
 
 - **The search rows** standing on a version that went: `document_search` is written again from the latest version left, by touching its `search` so `20261101182454`'s trigger writes the row, and an issue whose spec lost a version has its own `search` written again by the statement `20261105145243`'s trigger runs.
 
-- **The term statistics** (`search_term_stats`, `search_term_totals`) of every project whose items moved are counted again in full as the items stand in the erase's transaction (`api.RecountSearchTermStatsTx`), and the queue rows that transaction wrote are deleted, since the count already holds what they say.
+- **The term statistics** (`search_term_stats`, `search_term_totals`) of every project whose items moved, in two steps.
+  Inside the transaction, under the locks, the erase takes out of each project's statistics every lexeme an item it deleted or rewrote no longer holds (`api.ForgetErasedTermsTx`): `search_term_stats` holds lexemes, and one of the erased text that stood there after the commit would be the erased words, still stored.
+  It reads them from the old vectors `search_term_queue` carries for those items: the rows its own writes queued, the row it queues itself for each `document_search` row it deletes (`20261101182522`'s trigger fires on an insert or an update of that table alone), and the rows queued before the erase for the same items and for the documents it deleted versions of, the oldest of which carries the vector the counts hold.
+  It deletes all of those queue rows, since any of them can carry the erased words, and clears the project's `search_term_totals.snapshot`, so the project's next refresh pass counts it in full.
+  Each of those statements reads the queue, the erased items and the rows it deletes by their keys, and one totals row; none reads another item of the project, so no writer of the node's issue or document waits on a count of the whole project.
+  After the commit, outside the locks, the erase counts each such project again in full, each in a transaction of its own, as a refresh pass counts one (`api.RefreshSearchTermStats`), which gives back the counts of the lexemes it took out that other items still hold; it prints the projects on a `term statistics counted again after the commit:` line.
+  A count that fails there is no failure of the erase, and the command exits 0: the statistics hold none of the erased words and lack only those counts, which the related-item check probes live until the project's next refresh pass, a full one, writes them again; the command prints the project, the error and that fallback.
 
 - **The embedding store** (`embeddings`, with `embedding_window_states`): the node's own rows and window state go, and for a block the windows of its document whose `covers` name it or whose snapshot holds its text, its document's whole-text row and, where the document is a spec, the issue's row; each such issue's row is written again by the statement migration `0140`'s trigger runs, and the document is marked owed its windows (`document_block_versions.windows_owed_at`) where a version with markdown is left.
 
@@ -3571,11 +3634,15 @@ Only a tuple of a kind the census digests against the stating node's row is such
 Two facts no row states block it too, at any state of the node that states them.
 A lens, a finding, a risk or a constraint whose current `part_of` points at the node, which is where it stands (`refs.StandingKinds`), refuses the erase, since that tuple is how every read finds the issue it stands under and an erase would leave it standing under nothing.
 And each interaction, lens, finding, risk and constraint whose `authored_by` names an erased person or session refuses that erase, since the census reads it.
+A person is refused as well while a comment a session the server proved theirs wrote still has its row: that row's `author` is the session, with the person as its `owner`, and `census --store` names the person from it, though the comment's `authored_by` names the session and only the session's `alias_of` names the person (`graphcensus.ProvedSessionComments`, the census's own reading of that row).
 
 It removes nothing until an operator has read what it would.
 Run with `--node` alone, it reads every row it would delete, rewrite, redact or leave in a read-only transaction, which takes no write lock and waits on no writer, prints that listing - each version and review with its document, its issue and its version, each event row with its id, each row it leaves with its table and key - with its SHA-256 on a `listing digest:` line, and exits 1.
-Run with `--confirm <digest>`, it takes its locks, reads the listing again in its own transaction under them, and erases only when that listing has the digest it was given; a listing that changed since is refused with both digests, exit 1, and nothing is removed.
-The listing's search for the rows it leaves reads every text, jsonb, bytea and tsvector column of every table, so a store a later build adds is listed without anyone naming it; it reads them under the confirmed run's locks, so a write to the node's issue or document waits for that search.
+Run with `--confirm <digest>`, it first searches again for the rows it leaves, in a read-only transaction of its own that takes no lock, then takes its locks, reads the rest of the listing again in a transaction of its own under them, and erases only when that listing has the digest it was given; a listing that changed since is refused with both digests, exit 1, and nothing is removed.
+The listing's search for the rows it leaves reads every text, jsonb, bytea and tsvector column of every table, so a store a later build adds is listed without anyone naming it; a pgvector `vector` holds the numbers an embedder made of a text and never the text, and is not searched.
+That search scans every table, and every writer of an issue or a document takes the owner's lock first, so a confirmed run searches before it takes its first lock and no write to the node's issue or document waits for the search.
+What that costs is that a row holding the erased bytes written between the search and the locks is not listed; the run leaves such a row as it leaves every row it lists.
+Once it holds its locks, a confirmed run holds the writers of the node's issue or document for the rest of its work: the read of the rest of the listing, the erase and the commit.
 Run with `--confirm` over a node that holds text, it prints nothing until the sweep of `text_trees` after the commit has waited out its 30 seconds.
 
 It takes its locks in the store's lock order, written down on `markInboxReadThreads` (`internal/dispatch/api/inbox_read.go`): the owner rows first, then the node's row, then the node's own projection rows `for update` (its `comments`, `document_blocks` and `block_refs` rows, table by table and by key), then everything else.
@@ -3585,7 +3652,7 @@ It takes no owner row of a row it leaves, since it writes none of them.
 It takes each once, in the order of their owner keys (`artifact:<id>` before `issue:<key>`), through `events.LockOwnerRows`; a person, a session, a role or a page has no owner row, and the run starts at its node.
 Which owners those are is read before they are locked, so it is read again under them, and a write that meanwhile moved the node under an owner the run had not taken makes it roll back and start again rather than take that owner after the node's row; after three tries it removes nothing and exits 2, naming each such owner.
 
-What went is recorded in `graph_erasures`: the node, the counts, the versions and reviews the erase ended, the document whose history it replaced and what that cost, the projects whose term statistics it counted again and the listing's digest, with who ran it (the database role, the account and the host) and when.
+What went is recorded in `graph_erasures`: the node, the counts, the versions and reviews the erase ended, the document whose history it replaced and what that cost, the projects whose term statistics it took the erased words out of and counts again after the commit, and the listing's digest, with who ran it (the database role, the account and the host) and when.
 For an ask's node, a block's, a run's, a lens's, a risk's or a constraint's it also records `writers`: the person or session each `authored_by`, `decided_by` and `answered_by` out of the node it deleted named, the one thing left that names who wrote or answered a decision, a reading, a finding, an ask, a run, a lens, a risk or a constraint once its tuples and rows are gone.
 `census --store` reads them, so the session no erase removes and the person the server proved owns it stay held to their nodes, and a person until an erase of that person runs after this one.
 That row holds no erased text and none of the rows the run left, nobody addresses it, and no read of the graph answers it, so the closed supertag list stays closed.
@@ -5673,11 +5740,13 @@ Each item below names a path with its method and identity, then its purpose.
   a first request carries no `approved` key.
   One open approval row follows every document version in place, rewording its question and emitting `ask.edited`;
   while its `requested_version` is below the new version it waits on the agent.
-  A row waiting on the human keeps its turn, quietly, at a settlement's version with the bytes of the named one;
+  A row waiting on the human keeps its turn, quietly, at a settlement's version with the bytes of the named one, or with those bytes but for the server-owned attributes of its ask blocks, each block agreeing with its ask, as the version a person's answer, resolve, decline or an issue's reopen writes;
   a version a route writes (a named version, an upload, an edit) moves it to the agent whatever its bytes.
   Only the first move since the request was opened or handed back notifies, even when a thread reply had already left it waiting on the agent;
   a later move, while `requested_version` is already below the version it named, is `quiet: true`, `notify: false`, and reaches no follower.
-  A human's answer to an ask block writes no version and carries no approval: the answer is the ask node's alone, so it neither moves the row nor answers it.
+  A person's answer, resolve, decline, close or reopen of an ask writes one version, which changes only the server-owned attributes of the ask's block: `state`, and `answered_by` and `answered_at` where the ask is answered.
+  After an answer, a resolve or a decline, a standing approval carries to that version and the row keeps whoever held its turn;
+  a close withdraws the row and its version, which a settlement of the closed issue writes, carries no approval, so the approval reads stale until the reopen, whose version keeps the restored row's turn and carries it.
   A second call does one of two things, by what the row waits on:
 
   - Calling this route again while the row waits on the agent - moved, or a thread reply newer than its last hand-back holds the turn - hands it back to the human:

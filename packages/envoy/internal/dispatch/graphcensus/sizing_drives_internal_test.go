@@ -227,7 +227,10 @@ func passDrives(t *testing.T) []StoreDrive {
 				if !whole || len(missing.nodes) != 1 {
 					return fmt.Errorf("the drain planned %d version node(s), whole %t, want drained-md's one", len(missing.nodes), whole)
 				}
-				return store.RunWrite(ctx, tx, missing.Queue)
+				return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+					missing.Queue(b)
+					return nil
+				})
 			})
 		},
 		Counts: versionKindsCounted(),

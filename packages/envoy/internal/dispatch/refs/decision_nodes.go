@@ -957,9 +957,7 @@ func (d DecisionIndexing) Held() BlockIndex {
 // (queueRoomTypedBlocks) and the reconcile of its ties' rows, each of which names a node that
 // write wrote or the store holds.
 func (d DecisionIndexing) Queue(batch *store.WriteBatch) error {
-	if err := graphstore.QueueNodes(batch, d.stated); err != nil {
-		return fmt.Errorf("write the decisions and readings of version %d of %s: %w", d.version, d.artifactID, err)
-	}
+	graphstore.QueueNodes(batch, d.stated)
 	if d.blocks.scope == nil {
 		return nil
 	}

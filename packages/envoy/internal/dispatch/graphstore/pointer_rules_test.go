@@ -160,7 +160,7 @@ func pointerBlockRow(t *testing.T, ctx context.Context, database *store.Store, a
 // refused write still runs one, and once its caller abandons it the log holds no tuple more than
 // it held (abandonRefusedWrite). A block's type is read off its document_blocks row whether or
 // not that row names its node yet. A second has_kind of a lens is ErrLensKindAsserted. Write,
-// WriteUncaused and Caused each hold the rule, and WriteArms refuses a ruled tuple it cannot
+// QueueNodes and Caused each hold the rule, and WriteArms refuses a ruled tuple it cannot
 // check. A retarget of a lens's kind appends a retraction and an assertion and touches no part_of
 // tuple; a retarget of a pre-mortem's away from pre-mortem is ErrLensKindKept in one body whether
 // a risk hangs under it or not, and a retarget to pre-mortem is taken. Two writes asserting a kind
@@ -245,9 +245,9 @@ func TestTheStoreHoldsEachPointerToItsTypeRule(t *testing.T) {
 					return Caused(ctx, tx, Uncaused{Tuples: []UncausedTuple{{Tuple: hasKindAtAConstraint}}}, NoEvent)
 				},
 				message: "the has_kind tuple from a lens at a constraint breaks its type rule: " + hasKindRule},
-			{name: "WriteUncaused then Caused, constrained_by out of a paragraph",
+			{name: "QueueNodes then Caused, constrained_by out of a paragraph",
 				write: func(ctx context.Context, tx pgx.Tx) error {
-					write, err := WriteUncaused(ctx, tx, nil, []Tuple{
+					write, err := writeHeldNodes(ctx, tx, nil, []Tuple{
 						pointerTuple(blockKind, fixture.paragraph, TupleConstrainedBy, KindConstraint, constraintHeld),
 					})
 					if err != nil {

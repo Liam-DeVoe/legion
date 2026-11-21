@@ -170,8 +170,8 @@ const legionIssueJourney: Walkthrough<Seeded> = {
         await expect(row(page, DECISION)).toHaveCount(0);
         await ring(page, page.getByText("Nothing needs you"));
         cue("answered");
-        // The answer is held on the ask, which reads answered and writes no version of the spec;
-        // the architect then asks for approval.
+        // The answer is held on the ask, which reads answered; the one version it writes changes
+        // only the block's state, answerer and time, and the architect then asks for approval.
         await decisionAnswered(seeded.next, DELIVERY_DATE);
         const approval = await requestSpecApproval(seeded.next, DELIVERY_DATE);
         const card = page.getByTestId(`ask-${approval}`);

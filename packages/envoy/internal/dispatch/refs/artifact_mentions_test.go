@@ -319,7 +319,7 @@ func TestTheReferencesAnArtifactMakesAreTuples(t *testing.T) {
 		`, remark).Scan(&comment); err != nil {
 			return err
 		}
-		reader := refs.NewReader(ctx, tx, graphstore.KindComment, comment, mentionsServer)
+		reader := refs.NewReader(ctx, tx, model.Actor{Kind: "user", ID: "alice"}, graphstore.KindComment, comment, mentionsServer)
 		replacement, err := refs.PlanReplace(ctx, tx, graphstore.KindComment, comment, text.Refs(reader.Mentions(remark)), nil)
 		if err != nil {
 			return err

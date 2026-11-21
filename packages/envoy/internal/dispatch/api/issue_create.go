@@ -568,8 +568,11 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		specNode = graphstore.Created(graphstore.QueryNode(specRef, input.Project, graphstore.QuerySpec, actor, createdAt))
 		specFacts = graphstore.AttributeFacts(specFacts, specNode)
 	}
-	issueNodes, err := graphstore.WriteUncaused(r.Context(), tx, []graphstore.Node{issueNode, specNode}, specFacts)
-	if err != nil {
+	issueNodes := graphstore.PlanUncaused([]graphstore.Node{issueNode, specNode}, specFacts)
+	if err := store.RunWrite(r.Context(), tx, func(b *store.WriteBatch) error {
+		graphstore.QueueNodes(b, issueNodes)
+		return nil
+	}); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -708,12 +711,8 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		if room.tree != "" {
 			refs.QueueStamp(b, "artifact", room.tree)
 		}
-		if err := graphstore.QueueCaused(b, graphstore.Joined(issueNodes, roomNodes), graphstore.LatestEvent); err != nil {
-			return err
-		}
-		if err := graphstore.QueueCaused(b, specBlocks, graphstore.LatestEvent); err != nil {
-			return err
-		}
+		graphstore.QueueCaused(b, graphstore.Joined(issueNodes, roomNodes), graphstore.LatestEvent)
+		graphstore.QueueCaused(b, specBlocks, graphstore.LatestEvent)
 		return queueIssueRelations(b, relations, actor)
 	}); err != nil {
 		s.writeHandlerError(w, err)
@@ -1126,9 +1125,7 @@ func (s *server) createDecisionsQuery(b *store.WriteBatch, written graphstore.Un
 	if err != nil {
 		return err
 	}
-	if err := graphstore.QueueNodes(b, written); err != nil {
-		return fmt.Errorf("write the decisions query's node: %w", err)
-	}
+	graphstore.QueueNodes(b, written)
 	b.Queue("create the decisions query", `
 		insert into artifacts (id, issue_key, project_key, slug, name, kind, is_primary, created_by, node_kind, node_address)
 		values ($1, $2, $3, $4, $5, 'doc', false, $6, $7, $8)

@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/workflowstore"
 )
 
@@ -21,9 +22,10 @@ import (
 // handoff a run reported. An issue born converted holds one requirement. In one transaction the
 // test seeds the types of the three kinds, which no migration of the store holds
 // (graphstoretest.SeedSupertags), writes one node of each kind and a lens visible to the project
-// through graphstore.WriteUncaused, with a part_of from each of the three to the issue's node and
-// from the lens to the step, and appends those tuples under the event that created the issue
-// (graphstore.Caused), as the store holds the records once the workflow store moves into it. It
+// through graphstore.PlanUncaused and its node write (graphstore.QueueNodes), with a part_of from
+// each of the three to the issue's node and from the lens to the step, and appends those tuples
+// under the event that created the issue (graphstore.Caused), as the store holds the records once
+// the workflow store moves into it. It
 // reads, in graph_tuples, the standing part_of from each of the three to the issue's node, so the
 // case proves the walk's rule and not a write that did not land. Neither the walk of the issue's
 // tree nor the tree read with no view answers the step, the plan, the handoff or the lens under
@@ -67,8 +69,11 @@ func TestTheTreeWalkLeavesOutTheWorkflowsRecords(t *testing.T) {
 		if err := graphstoretest.SeedSupertags(ctx, tx, kinds...); err != nil {
 			return err
 		}
-		write, err := graphstore.WriteUncaused(ctx, tx, nodes, tuples)
-		if err != nil {
+		write := graphstore.PlanUncaused(nodes, tuples)
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			graphstore.QueueNodes(b, write)
+			return nil
+		}); err != nil {
 			return err
 		}
 		return graphstore.Caused(ctx, tx, write, event)

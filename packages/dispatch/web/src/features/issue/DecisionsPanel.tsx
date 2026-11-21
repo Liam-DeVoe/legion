@@ -6,7 +6,6 @@ import { api } from "../../api/client";
 import { replaceQueryData } from "../../api/query-client";
 import type {
   Artifact,
-  Decision,
   DecisionEntry,
   DecisionLink,
   DisplayTree,
@@ -27,6 +26,8 @@ import {
   textPrimaryOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { issueDecisionsQuery } from "../doc/spec-marks";
+import { decisionBlockId, decisionDocumentId } from "../issue-page/decision-review";
 import { blockFragment } from "../refs/block-reference";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { markdownClassName } from "../refs/markdown-engine";
@@ -44,6 +45,18 @@ import { ownTree, ownWords, wordsOf } from "./decision-text";
 /** The word that opens a paragraph a decision's words give as its doubt, which the card draws
  *  with the unsure accent. */
 const UNSURE_PREFIX = "Unsure:";
+
+/** A decision as the cards below draw one (`entryDecision`): its name, the block it is, the asks
+ *  it answers and the spec nodes it shaped beside the entry's own words, sum and standing. */
+type DrawnDecision = Pick<
+  DecisionEntry,
+  "kept" | "kind" | "ref" | "replaced" | "text" | "text_sha256" | "text_tree" | "waiting_review"
+> & {
+  readonly asks: readonly string[];
+  readonly block_id: string;
+  readonly heading: string;
+  readonly links: readonly DecisionLink[];
+};
 
 /** One block of a decision's text below its heading, as a view draws one: the block's own text,
  *  the server's reading with that block alone in it where the answer carried one, and whether
@@ -112,7 +125,7 @@ function markdownBlocks(text: string): DecisionBlock[] {
  *  have been split into, already divided, so the browser splits nothing and parses nothing. A
  *  heading is the decision's own, drawn by the card above its text, or one written inside it,
  *  which the markdown split dropped too. */
-function readDecisionBlocks(decision: Decision): readonly DecisionBlock[] {
+function readDecisionBlocks(decision: DrawnDecision): readonly DecisionBlock[] {
   const tree = decision.text_tree;
   const content = tree?.content;
   if (tree === undefined || !Array.isArray(content)) {
@@ -146,26 +159,25 @@ function headingOf(tree: DisplayTree | undefined, text: string): string {
 /** An entry as the cards below draw a decision: an ask by its question, with the person's answer
  *  as its text and the server's reading of that answer as its tree (`answer_tree`), or the
  *  labels they chose where they wrote no words of their own; an agent's decision by its own
- *  content. */
-function entryDecision(entry: DecisionEntry): Decision {
+ *  content, with the asks its `from_ask` settles. Its block is the one the read names for it
+ *  (`decisionBlockId`), and an ask on the issue itself, which stands in no block, is named by its
+ *  node. */
+function entryDecision(entry: DecisionEntry): DrawnDecision {
   const ask = entry.node.kind === "ask";
   const tree = ask ? entry.answer_tree : ownTree(entry.text_tree);
   const text = ask ? (entry.answer ?? (entry.selected ?? []).join(", ")) : ownWords(entry.text);
   return {
-    asks: ask ? [entry.node.id] : [],
-    block_id: entry.document?.block_id ?? entry.node.id,
-    changed_at: entry.changed_at,
-    changed_version: entry.changed_version,
+    asks: ask ? [entry.node.id] : (entry.from_ask ?? []),
+    block_id: decisionBlockId(entry) ?? entry.node.id,
     heading: entry.question ?? headingOf(tree, text),
     kept: entry.kept,
     kind: entry.kind,
-    links: entry.shaped,
+    links: entry.shaped ?? [],
     ref: entry.ref,
     replaced: entry.replaced,
     text,
     text_sha256: entry.text_sha256,
     text_tree: tree,
-    unsure: entry.uncertainty === "high",
     waiting_review: entry.waiting_review,
   };
 }
@@ -175,7 +187,7 @@ function entryDecision(entry: DecisionEntry): Decision {
  *  text no stored text holds - the labels chosen, joined - so no reading of the server's covers
  *  it, and it is drawn as the plain words it is, as the Answers page draws a chosen label,
  *  rather than parsed. */
-function entryBlocks(entry: DecisionEntry, decision: Decision): readonly DecisionBlock[] {
+function entryBlocks(entry: DecisionEntry, decision: DrawnDecision): readonly DecisionBlock[] {
   if (entry.node.kind !== "ask" || entry.answer !== null) return readDecisionBlocks(decision);
   if (decision.text === "") return [];
   return [
@@ -267,7 +279,7 @@ function ChangeComposer({
   onDone,
   quote,
 }: {
-  decision: Decision;
+  decision: DrawnDecision;
   documentId: string;
   issueKey: string;
   onDone: () => void;
@@ -359,7 +371,7 @@ function DecisionCard({
   /** The blocks of this decision's text below its heading, read by the caller that also quotes
    *  the first of them (`readDecisionBlocks`). */
   blocks: readonly DecisionBlock[];
-  decision: Decision;
+  decision: DrawnDecision;
   /** The document the decision is written in, the one its node stands in, which its `#id`s name
    *  a question block of; undefined for an ask on the issue itself. */
   documentId: string | undefined;
@@ -436,7 +448,7 @@ function WaitingDecision({
   spec,
 }: {
   blocks: readonly DecisionBlock[];
-  decision: Decision;
+  decision: DrawnDecision;
   documentId: string | undefined;
   isClosed: boolean;
   issueKey: string;
@@ -562,26 +574,28 @@ export function DecisionsPanel({
   isClosed: boolean;
   issueKey: string;
 }): ReactNode {
-  const view = useQuery({
-    queryFn: () => api.getIssueDecisions(issueKey),
-    queryKey: ["decisions", issueKey],
-  });
+  const view = useQuery(issueDecisionsQuery(issueKey, true));
+  const spec = artifacts.find((artifact) => artifact.primary && artifact.kind === "doc");
   // Each decision beside the blocks of its text, read once per answer: a card draws them and
   // the Change composer quotes the first of them, so a block is a new object only when the
   // decisions were read again and a repaint of the tab repaints no body it already drew. The
   // three lists below are this one reading filtered, never three readings of it. An ask is a
   // decision once a person answered it; an open one is a question, and a declined one decided
-  // nothing.
-  const rows = useMemo(
-    () =>
-      (view.data?.entries ?? [])
-        .filter((entry) => entry.node.kind !== "ask" || entry.answered_at !== null)
-        .map((entry) => {
-          const decision = entryDecision(entry);
-          return { blocks: entryBlocks(entry, decision), decision, entry };
-        }),
-    [view.data?.entries]
-  );
+  // nothing. Each is written in the document the read names for it, or, where it names none, the
+  // one its own address names a block of (`decisionDocumentId`).
+  const rows = useMemo(() => {
+    const documents = { artifacts, key: issueKey, primary_artifact_id: spec?.id ?? "" };
+    return (view.data?.entries ?? [])
+      .filter((entry) => entry.node.kind !== "ask" || entry.answered_at !== null)
+      .map((entry) => {
+        const decision = entryDecision(entry);
+        // A decision a server of the release before answered names no document of its own
+        // (`withEntries`): its address is its section's heading block in the decisions document.
+        // kept for one release: compat-objects
+        const documentId = entry.document?.artifact_id ?? decisionDocumentId(documents, entry);
+        return { blocks: entryBlocks(entry, decision), decision, documentId };
+      });
+  }, [artifacts, issueKey, spec?.id, view.data?.entries]);
   if (view.isPending) {
     return <LoadingSkeleton label="Decisions loading" />;
   }
@@ -594,7 +608,6 @@ export function DecisionsPanel({
       />
     );
   }
-  const spec = artifacts.find((artifact) => artifact.primary && artifact.kind === "doc");
   const entries = view.data.entries ?? [];
   const questions = entries.filter((entry) => entry.answer_state === "open");
   const waiting = rows.filter((row) => row.decision.waiting_review);
@@ -615,11 +628,11 @@ export function DecisionsPanel({
         ))}
       </Section>
       <Section empty="Nothing waits for your review." title="Waiting for your review">
-        {waiting.map(({ blocks, decision, entry }) => (
+        {waiting.map(({ blocks, decision, documentId }) => (
           <WaitingDecision
             blocks={blocks}
             decision={decision}
-            documentId={entry.document?.artifact_id}
+            documentId={documentId}
             isClosed={isClosed}
             issueKey={issueKey}
             key={decision.ref}
@@ -628,11 +641,11 @@ export function DecisionsPanel({
         ))}
       </Section>
       <Section empty="No decisions of yours." title="Your decisions">
-        {mine.map(({ blocks, decision, entry }) => (
+        {mine.map(({ blocks, decision, documentId }) => (
           <DecisionCard
             blocks={blocks}
             decision={decision}
-            documentId={entry.document?.artifact_id}
+            documentId={documentId}
             issueKey={issueKey}
             key={decision.ref}
             spec={spec}
@@ -640,11 +653,11 @@ export function DecisionsPanel({
         ))}
       </Section>
       <Section empty="No replaced decisions." title="Replaced">
-        {replaced.map(({ blocks, decision, entry }) => (
+        {replaced.map(({ blocks, decision, documentId }) => (
           <DecisionCard
             blocks={blocks}
             decision={decision}
-            documentId={entry.document?.artifact_id}
+            documentId={documentId}
             issueKey={issueKey}
             key={decision.ref}
             spec={spec}

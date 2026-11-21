@@ -29,7 +29,7 @@ const containerListItems = 1980
 //
 // The upload is the function the upload route calls: api's uploadArtifactFor hands a document to
 // storeArtifact, which writes a new version of an existing document with Docs.ReplaceText, then
-// the version row (writeDocumentVersion), then Docs.IndexDocumentReferences, in one transaction
+// the version row (Ledger.QueueVersion), then Docs.IndexDocumentReferences, in one transaction
 // (uploadDocumentVersion). The test drains the block-index reconciliation after each version as
 // well, so the edit's blocks are read once indexed, whether the write indexed them or left them to
 // the reconciliation (deferBlockIndexBlocks).
@@ -156,12 +156,12 @@ func TestAnUploadKeepsAnUntypedContainersIDWhenItsContentsChange(t *testing.T) {
 }
 
 // uploadDocumentVersion writes markdown as the document's next version as the upload route writes
-// one (api's storeArtifact): the document's text replaced by Docs.ReplaceText, naming the token
-// the document stands at as an upload does, the version row, and the version's references
-// indexed by Docs.IndexDocumentReferences, whose store write the route appends under the event it
-// records, all in one transaction. This helper records no event, so the store write carries the
-// store's sentinel, as writeIndexedDocument's does. The document's settlement is cleared after
-// it, as the version it wrote settles it.
+// one (api's storeArtifact): the document's text replaced by Docs.ReplaceText under the token of
+// the version it replaces, the version row, and the version's references indexed by
+// Docs.IndexDocumentReferences, whose store write the route appends under the event it records,
+// all in one transaction. This helper records no event, so the store write carries the store's
+// sentinel, as writeIndexedDocument's does. The document's settlement is cleared after it, as the
+// version it wrote settles it.
 func uploadDocumentVersion(t *testing.T, database *store.Store, service *Service, artifactID, markdown string) {
 	t.Helper()
 	alice := model.Actor{Kind: "user", ID: "alice"}

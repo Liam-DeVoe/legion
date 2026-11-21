@@ -168,7 +168,11 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 		}),
 	}, {
 		// The settlement of a document of the issue holding a copy of the notes' ask block, whose
-		// ask is open: the copy opens none, and the settlement claims the copy's copied_from.
+		// ask is open: the copy opens none, and the settlement claims the copy's copied_from. The
+		// version it writes keeps the copy's source on the block's opener (docs' keptAskState), whose
+		// copied_from_document is a dispatch:// address the block index reads as the block's mention
+		// of the notes, as it read the same opener the release before stored, and the document's own
+		// mention of the notes beside it. That version states its node, and the block's text value.
 		Name: "docs/ask_blocks.go#claimCopies", Database: r.database,
 		Sites: []string{"docs/ask_blocks.go#claimCopies"},
 		Ready: func(t *testing.T) {
@@ -186,7 +190,12 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 					where d.artifact_id = $1::uuid and d.block_id = 'sizing-ask' and t.kind = $2)
 			`, copied, graphstore.TupleCopiedFrom)
 		},
-		Counts: map[graphcensus.StoredKind][]string{{refs.BlockNodeKind, graphstore.TupleCopiedFrom}: {"ask_copy"}},
+		Counts: merged(versionCounted, map[graphcensus.StoredKind][]string{
+			{refs.BlockNodeKind, graphstore.TupleCopiedFrom}:    {"ask_copy"},
+			{refs.BlockNodeKind, "mentions"}:                    {"block_ref"},
+			{refs.BlockNodeKind, graphstore.AttributeText}:      {"block_text"},
+			{graphstore.KindArtifact, graphstore.TupleMentions}: {"document_ref"},
+		}),
 	}, {
 		// The settlement of a document whose ask block, opened by an earlier settlement, a person's
 		// own editor left with no question: the block fails the strict read, and the settlement
@@ -503,7 +512,10 @@ func (r *writersRig) earlierDecisionsDocument(t *testing.T, issue, project, mark
 	if err != nil {
 		t.Fatalf("index the decisions document's version 1: %v", err)
 	}
-	if err := ledger.Queue(func(b *store.WriteBatch) error { return graphstore.QueueCaused(b, indexed, graphstore.NoEvent) }); err != nil {
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, indexed, graphstore.NoEvent)
+		return nil
+	}); err != nil {
 		t.Fatalf("queue the cause of the decisions document's index: %v", err)
 	}
 	if err := ledger.Commit(ctx); err != nil {
