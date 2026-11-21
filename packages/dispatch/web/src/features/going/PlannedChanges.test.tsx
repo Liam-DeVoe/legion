@@ -488,6 +488,69 @@ test("an upload refused because its document moved says so in the page's words, 
   }
 });
 
+// A refusal whose route words tell an agent to run a `dispatch` command says what happened in the
+// page's words: an edit of an approval request says to change its document, a question written
+// into a decision that cannot take one there says to write it in the document editor, and any
+// other such refusal says Dispatch refused it, with its code, and to change the item here.
+test("a refusal that names a dispatch command says what happened in the page's words", async () => {
+  const refusedRow = (number: number, tool: string, code: string, message: string): GoingPlanRow =>
+    row(number, {
+      arguments: { id: `ask-${number}`, question: "Ship it on Friday?" },
+      issue: "CORE-1",
+      item: `ask-${number}`,
+      result: { code, delivery: null, message, status: 409 },
+      state: "failed",
+      tool,
+    });
+  const ran: GoingPlanAnswer = {
+    ...plan,
+    rows: [
+      refusedRow(
+        0,
+        "dispatch_edit_ask",
+        "ASK_KIND_FIXED",
+        "an approval ask's question and options are fixed; revise its document, then, once the human has agreed to every point in it, hand the request back with `dispatch request-approval`"
+      ),
+      refusedRow(
+        1,
+        "dispatch_edit_ask",
+        "ASK_BLOCK_TEXT",
+        'block: ask block "blk-7" has an empty question, and writing a question into it would delete what one of its paragraphs holds, which is no text: "![]()"; no document edit writes a paragraph into a decision, so none reaches this block - upload the document again as a new version with the question written beside that paragraph (dispatch artifact --issue <KEY>, or --project <KEY> for a project\'s document, --name <the document> --content-file - --force), or write the question beside it in the document editor; either keeps what the paragraph holds'
+      ),
+      refusedRow(
+        2,
+        "dispatch_doc_edit",
+        "INVALID_OP",
+        "the quote was not found in the document; read it again with `dispatch doc-read` and quote what it holds"
+      ),
+    ],
+    state: "done",
+  };
+  const { restore } = await openPlan("over", async () => ran);
+  try {
+    renderWithQueries(<Card />);
+    const card = await screen.findByTestId("going-plan-card-rows");
+    const drawn = within(card).getAllByTestId("going-plan-row");
+    // No row tells the person to run a command.
+    expect(
+      drawn.map((one) => one.textContent ?? "").filter((text) => /\bdispatch [a-z]/u.test(text))
+    ).toEqual([]);
+    const [fixed, emptyQuestion, other] = drawn;
+    expect(fixed).toHaveTextContent(
+      "An approval request's question and options cannot be edited, so nothing was changed. Change the document it asks about instead."
+    );
+    expect(emptyQuestion).toHaveTextContent(
+      "Write the question beside that paragraph in the document editor."
+    );
+    expect(other).toHaveTextContent(
+      "Dispatch refused this change with advice for its command-line tool"
+    );
+    expect(other).toHaveTextContent("Open the item to change it here.");
+  } finally {
+    restore();
+  }
+});
+
 // No plan frame says that a row ran, so the plan is read again once the run ends: the rows it
 // ran show as done, and the run's result offers Undo.
 function Conversation(): ReactNode {

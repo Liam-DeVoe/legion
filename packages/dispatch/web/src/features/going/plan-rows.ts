@@ -134,17 +134,49 @@ const UPLOAD_MOVED_CODES: ReadonlySet<string> = new Set([
 export const UPLOAD_MOVED_REFUSAL =
   "The document under this name changed after the plan read it, so the upload wrote nothing. Read what it holds now before you ask for this upload again.";
 
+/** What the row says of an edit of an approval request (`ASK_KIND_FIXED`), whose question and
+ *  options are fixed: the route tells the agent that asked to hand the request back with its
+ *  command, and what the person can do instead is change the document the request is about. */
+export const ASK_KIND_FIXED_REFUSAL =
+  "An approval request's question and options cannot be edited, so nothing was changed. Change the document it asks about instead.";
+
+/** What the row says of an edit that writes a question into a decision whose question is empty
+ *  and which holds a paragraph that is no text (`ASK_BLOCK_TEXT`, the document service's "has an
+ *  empty question"): the route tells the agent to upload the document again with its command,
+ *  and the person can write the question in the document editor. */
+export const ASK_EMPTY_QUESTION_REFUSAL =
+  "This decision has no question, and writing one here would remove what one of its paragraphs holds, so nothing was changed. Write the question beside that paragraph in the document editor.";
+
+/** A refusal whose words name a command of the `dispatch` command-line tool - written for an
+ *  agent that runs it - which the person who approved the row cannot run. */
+const NAMES_A_COMMAND = /\bdispatch [a-z][a-z-]*/u;
+
 /** What a row's result says to the person: the page's own words for an upload refused because
- *  its document moved (`UPLOAD_MOVED_REFUSAL`), and every other result as Dispatch wrote it. */
+ *  its document moved (`UPLOAD_MOVED_REFUSAL`), an edit of an approval request
+ *  (`ASK_KIND_FIXED_REFUSAL`) and a question written into a decision that cannot take one there
+ *  (`ASK_EMPTY_QUESTION_REFUSAL`); any other refusal whose words name a `dispatch` command in the
+ *  page's general words, with Dispatch's code for it, so no route's advice to run a command
+ *  reaches the person; and every other result as Dispatch wrote it. */
 export function rowResultMessage(row: GoingPlanRow): string {
   const result = row.result;
   if (result === null) {
     return "";
   }
-  return row.tool === "dispatch_artifact" &&
+  if (
+    row.tool === "dispatch_artifact" &&
     row.state === "failed" &&
     UPLOAD_MOVED_CODES.has(result.code)
-    ? UPLOAD_MOVED_REFUSAL
+  ) {
+    return UPLOAD_MOVED_REFUSAL;
+  }
+  if (result.code === "ASK_KIND_FIXED") {
+    return ASK_KIND_FIXED_REFUSAL;
+  }
+  if (result.code === "ASK_BLOCK_TEXT" && result.message.includes("has an empty question")) {
+    return ASK_EMPTY_QUESTION_REFUSAL;
+  }
+  return NAMES_A_COMMAND.test(result.message)
+    ? "Dispatch refused this change with advice for its command-line tool, which this page does not run, so nothing was changed. Open the item to change it here."
     : result.message;
 }
 
