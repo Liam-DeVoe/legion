@@ -6,7 +6,7 @@ package main
 // where each project is public, and gives a session no message of no project but the GitHub
 // events of its projects' repositories.
 //
-// The rules, each held by a row of edge_mode_test.go:
+// The rules, each held by a row of edge_mode_test.go or edge_repositories_test.go:
 //
 //   - Admission: a broker token alone, whose projects are all among the ones the edge serves, of
 //     project scope named or person (EdgeAdmits), decided in apiAuth before any handler. The
@@ -20,13 +20,19 @@ package main
 //     topics the stored row brings in among them, so a topic another listener stored for the
 //     session is dropped from its row and its consumer's filter. At relay a GitHub frame reaches
 //     the session only while a fresh answer names the repository its event names
-//     (sessionRelays.edgeWithholds), and the refresh removes an interest in a repository that
-//     left (pruneEdgeInterests). What a session publishes is narrower: a role subject of its
-//     project in the form that names it (edgePublishRefusal). A refused registration names every
-//     topic it refused (listenerwire.EdgeRefusal).
+//     (sessionRelays.edgeWithholds), with the gap mark on the next frame while no answer stands,
+//     kept across the session's relay runs (sessionRelays.repositoryGaps), and the refresh removes
+//     an interest in a repository that left (pruneEdgeInterests). What a session publishes is
+//     narrower: a role subject of its project in the form that names it (edgePublishRefusal). A
+//     refused registration names every topic it refused (listenerwire.EdgeRefusal).
+//   - Senders: a send or a publish is the session's own, source agent and the token's session
+//     (edgeSenderRefusal).
 //   - Roles: a claim or a read names a role that works for one of the token's projects
-//     (edgeRoleRefusal), and a read names the place of a holder of none of them (its directory,
-//     machine, host, title and capabilities) to nobody (edgeRoleHolder).
+//     (edgeRoleRefusal), and a read names the place and process of a holder of none of them (its
+//     directory, machine, host, title, client instance and capabilities) to nobody
+//     (edgeRoleHolder). A registration renews the session's claims of its token's projects'
+//     roles alone and releases the rest (roleOfProjects, store.Registry.RenewRoleClaimsHeldTo),
+//     and a claimant is handed the kept messages of those roles alone.
 //   - Sends: the target session's token lists one of the token's projects, else the send is
 //     answered as to a missing session (sessionOfProjects).
 //   - Reads: the session list, the registry, the session rows' roles and topics and the Legion
@@ -101,12 +107,16 @@ const (
 	edgeRoleNotInProject         = "role_not_in_project"
 	edgeSessionNotInProject      = "session_not_in_project"
 	edgeLegionRegistryNotWritten = "legion_registry_not_written"
+	edgeSenderNotSession         = "sender_not_session"
 )
 
-// edgeRefusal is one answer an edge rule gives a request it refuses.
+// edgeRefusal is one answer an edge rule gives a request it refuses. cause is the failure behind
+// a refusal no rule decided, the repository read of a 503 (repositoriesUnknown), which the route
+// records as it records every registration that renewed nothing; nil for every other refusal.
 type edgeRefusal struct {
 	status int
 	body   listenerwire.EdgeRefusal
+	cause  error
 }
 
 // refuseEdge is the refusal of reason under status, its sentence message, about the request
@@ -152,15 +162,30 @@ func sessionOfProjects(entry session.SessionEntry, projects []string) bool {
 }
 
 // rolesOfProjects is the roles among roles, each named by its claim's key, that work for one of
-// projects (contracts.ParseRoleClaimKey), in their order.
+// projects (roleOfProjects), in their order.
 func rolesOfProjects(roles, projects []string) []string {
 	kept := make([]string, 0, len(roles))
 	for _, role := range roles {
-		if project, _ := contracts.ParseRoleClaimKey(role); projectHeld(projects, project) {
+		if roleOfProjects(role, projects) {
 			kept = append(kept, role)
 		}
 	}
 	return kept
+}
+
+// roleOfProjects reports whether role, named by its claim's key, works for one of projects: the
+// project its key gives (contracts.ParseRoleClaimKey) is one of them. It is the edge's rule for a
+// role the session already holds, as edgeRoleRefusal is for one it claims or reads.
+func roleOfProjects(role string, projects []string) bool {
+	project, _ := contracts.ParseRoleClaimKey(role)
+	return projectHeld(projects, project)
+}
+
+// edgeReleasedRoleWarning is the warning a registration's answer names a role by, one the edge
+// released from the session because it works for none of the token's projects
+// (store.Registry.RenewRoleClaimsHeldTo).
+func edgeReleasedRoleWarning(role string, projects []string) string {
+	return fmt.Sprintf("role %s was released and not renewed: a session at the edge holds only roles of %s", role, strings.Join(projects, ", "))
 }
 
 // legionAgentOfProjects reports whether a Legion agent registry entry is one of projects': the
@@ -321,21 +346,25 @@ func (h *edgeTopicHold) refusal(ctx context.Context, topics []string) *edgeRefus
 	return refusal
 }
 
-// holdPlan is plan without the topics the hold refuses (store.InterestPlan.Without): out of the
-// session consumer's filter, which the plan is, and out of the row its write stores. The topics
-// the registration named passed refusal already, so what it drops is a topic of the stored row.
-// It is asked of every plan of the registration, the one made again after a conflict among them,
-// whose row another writer stored since. A read that gave no whole answer is the error, which
-// the route answers with repositoriesUnknown.
-func (h *edgeTopicHold) holdPlan(ctx context.Context, plan store.InterestPlan) (store.InterestPlan, error) {
+// holdPlan is plan without the topics the hold refuses, and those topics: out of the session
+// consumer's filter and out of the row its write stores, since a plan is the complete topic set
+// both are set to (store.InterestPlan). The topics the registration named passed refusal
+// already, so what it drops is a topic of the stored row, which the answer's warnings name
+// (registeredSession.dropped). It is asked of every plan of the registration, the one made again
+// after a conflict among them, whose row another writer stored since. A read that gave no whole
+// answer is the error, which the route answers with repositoriesUnknown.
+func (h *edgeTopicHold) holdPlan(ctx context.Context, plan store.InterestPlan) (store.InterestPlan, []string, error) {
 	if h == nil {
-		return plan, nil
+		return plan, nil, nil
 	}
 	refused, _, err := h.refused(ctx, plan.Topics)
 	if err != nil {
-		return store.InterestPlan{}, err
+		return store.InterestPlan{}, nil, err
 	}
-	return plan.Without(refused), nil
+	if len(refused) > 0 {
+		plan.Topics = slices.DeleteFunc(slices.Clone(plan.Topics), func(topic string) bool { return slices.Contains(refused, topic) })
+	}
+	return plan, refused, nil
 }
 
 // repositoriesUnknown is the 503 repositories_unknown of a registration whose repository read,
@@ -345,8 +374,36 @@ func (h *edgeTopicHold) holdPlan(ctx context.Context, plan store.InterestPlan) (
 func (h *edgeTopicHold) repositoriesUnknown(err error) *edgeRefusal {
 	h.logger.Warn("edge listener could not read the repositories of the session's projects; the registration is refused 503",
 		slog.String("session_id", h.sessionID), slog.Any("projects", h.projects), slog.String("error", err.Error()))
-	return refuseEdge(http.StatusServiceUnavailable, edgeRepositoriesUnknown,
+	refusal := refuseEdge(http.StatusServiceUnavailable, edgeRepositoriesUnknown,
 		fmt.Sprintf("the repositories of %s's issues could not be read, so no GitHub topic is followed now; register again shortly", strings.Join(h.projects, ", ")))
+	refusal.cause = err
+	return refusal
+}
+
+// renewThroughOutage renews the session entry of a registration the edge refused for want of a
+// repository answer (repositoriesUnknown), so a session whose row follows a GitHub topic stays
+// registered, and keeps receiving its other messages, for as long as the broker cannot answer:
+// every heartbeat it sends meanwhile names that topic and is refused, and an entry no heartbeat
+// renews is gone at the session bucket's maximum age. Its GitHub frames are withheld meanwhile
+// (sessionRelays.edgeWithholds), and nothing else of the registration is stored. The entry is
+// written back as the session bucket holds it, stamped now (session.SessionRegistry.PutWithin),
+// and only when it is this listener's own registration of the session under the same projects:
+// an entry another listener wrote, or one no registration wrote, is left as it is. A read or a
+// write that fails is logged, and the refusal stands either way.
+func (h *edgeTopicHold) renewThroughOutage(ctx context.Context, sessions *session.SessionRegistry, machineID string) {
+	entry, err := bucketSessionEntry(ctx, sessions, h.sessionID, roleHolderReadTimeout)
+	if err != nil {
+		h.logger.Warn("edge listener could not read the session's entry to renew it through the repository outage",
+			slog.String("session_id", h.sessionID), slog.String("error", err.Error()))
+		return
+	}
+	if entry.MachineID != machineID || !slices.Equal(slices.Sorted(slices.Values(entry.Projects)), slices.Sorted(slices.Values(h.projects))) {
+		return
+	}
+	if err := sessions.PutWithin(ctx, h.sessionID, entry); err != nil {
+		h.logger.Warn("edge listener could not renew the session's entry through the repository outage",
+			slog.String("session_id", h.sessionID), slog.String("error", err.Error()))
+	}
 }
 
 // edgeFollowedTopics is the sentence that says what a session at the edge follows, which a
@@ -425,6 +482,25 @@ func edgePublishRefusal(r *http.Request, topic string) *edgeRefusal {
 			topic, strings.Join(projects, ", ")), "topic")
 }
 
+// edgeSenderRefusal is the edge's rule for who a send or a publish says it is from, or nil: a
+// session at the edge sends as itself and as nothing else, so the message's source is agent, or
+// left out (contracts.MessageEnvelope writes agent for none), and its source_session is the
+// session the token names. A message under another source (dispatch, human, github and the
+// rest), or with no source session, would reach its reader as an event or a person's message no
+// session sent; the edge refuses it 403 sender_not_session. Every other listener lets a message
+// name no source session, and sessionNotBound alone holds one that names another.
+func edgeSenderRefusal(r *http.Request, source, sourceSession string) *edgeRefusal {
+	if _, held := heldProjects(r); !held {
+		return nil
+	}
+	caller, _ := brokerCaller(r)
+	if (source == "" || source == "agent") && sourceSession != "" && sourceSession == caller.Session {
+		return nil
+	}
+	return refuseEdge(http.StatusForbidden, edgeSenderNotSession,
+		fmt.Sprintf("a session at the edge sends as itself: source agent, or none, and source_session %s", caller.Session), "source", "source_session")
+}
+
 // edgeRoleRefusal is the edge's role rule for a claim or a read of role, in either form, or nil:
 // the project the claim works for (contracts.ClaimProject, given the project the new form names)
 // is one of the token's. What passes is claimed and read under the key of that project
@@ -449,17 +525,18 @@ func edgeRoleRefusal(r *http.Request, role string) *edgeRefusal {
 
 // edgeRoleHolder is holder, the answer of GET /v1/roles/<role> about a live holder whose session
 // entry is entry, as a read held to the token's projects shows it: whole for a holder whose
-// registering token listed one of them (sessionOfProjects), and with the holder's place left out
-// (its directory, machine, host and title, and its capabilities the empty list) for any other, a
-// session the edge's reads do not show. The role, the holder's id and state and the claim's
-// revision stay, so a caller still sees who holds a role of its project, and can claim it with
-// if_claim_revision. Every other listener's answer is holder as it is.
+// registering token listed one of them (sessionOfProjects), and with the holder's place and
+// process left out (its directory, machine, host, title and client instance, and its
+// capabilities the empty list) for any other, a session the edge's reads do not show. The role,
+// the holder's id and state and the claim's revision stay, so a caller still sees who holds a
+// role of its project, and can claim it with if_claim_revision. Every other listener's answer is
+// holder as it is.
 func edgeRoleHolder(r *http.Request, entry session.SessionEntry, holder listenerwire.RoleHolder) listenerwire.RoleHolder {
 	if projects, held := heldProjects(r); !held || sessionOfProjects(entry, projects) {
 		return holder
 	}
 	holder.Capabilities = []string{}
-	holder.Dir, holder.Host, holder.MachineID, holder.Title = "", "", "", ""
+	holder.ClientInstanceID, holder.Dir, holder.Host, holder.MachineID, holder.Title = "", "", "", "", ""
 	return holder
 }
 

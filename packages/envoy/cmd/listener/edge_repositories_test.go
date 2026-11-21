@@ -1,0 +1,340 @@
+package main
+
+// edge_repositories_test.go holds the edge listener's GitHub rows on a real bus: which
+// repositories' events a session follows and receives, read from the broker's answer for its
+// token's projects (edge_repositories.go), how the answer's refresh, its failure and its case
+// decide that, and what a registration is told while no answer can be read. Each row runs under
+// the same edge-off control as the rows of edge_mode_test.go (edgeTestProjects).
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"slices"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/metrics"
+	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/listenerwire"
+)
+
+// An edge session may follow the GitHub events of each repository its project's issues
+// resolve to, read fresh through the broker at the registration with the listener's own account,
+// and an event of each reaches it.
+func TestAnEdgeRelaysTheGitHubEventsOfItsProjectsRepositories(t *testing.T) {
+	rig := newEdgeRig(t)
+	const sessionID = "ses_edge_github"
+	token := rig.personToken(sessionID, "PRIV")
+	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
+	before := rig.repositories.calls.Load()
+	topics := []string{"notifications.github.acme.pub.>", "notifications.github.acme.two.>"}
+	answer := rig.subscribe(t, token, sessionID, topics...)
+	requireStatus(t, answer, http.StatusOK, fmt.Sprintf("a registration following %v", topics))
+	if rig.repositories.calls.Load() == before {
+		t.Fatalf("the registration naming %v read no repository answer; the answer is read fresh at each one", topics)
+	}
+	if got := rig.repositories.lastBearer(); got != "Bearer "+edgeAccountToken {
+		t.Fatalf("the repository read presented %q, want the listener's own account", got)
+	}
+	pub := rig.storeGithubEvent(t, "acme/pub", "pr.1")
+	two := rig.storeGithubEvent(t, "acme/two", "issue.2")
+	requireFrames(t, standIn.collect(t, 2, 10*time.Second), pub, two)
+}
+
+// A GitHub interest in a repository no issue of the project resolves to, or in no single
+// repository, is refused 403 repository_not_in_project, and such a repository's event never
+// reaches the session.
+func TestAnEdgeRefusesAnotherRepositorysEvents(t *testing.T) {
+	rig := newEdgeRig(t)
+	const sessionID = "ses_edge_other_repository"
+	token := rig.personToken(sessionID, "PRIV")
+	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
+	for _, topic := range []string{"notifications.github.acme.priv.>", "notifications.github.acme.>", "notifications.github.>"} {
+		requireTopicRefusal(t, rig.subscribe(t, token, sessionID, topic), "repository_not_in_project", topic)
+	}
+	requireStatus(t, rig.subscribe(t, token, sessionID, "notifications.github.acme.pub.>"), http.StatusOK, "an interest in acme/pub")
+	rig.storeGithubEvent(t, "acme/priv", "pr.3")
+	pub := rig.storeGithubEvent(t, "acme/pub", "pr.4")
+	frames := standIn.collect(t, 1, 10*time.Second)
+	if frames[0].item.Topic != pub.Topic {
+		t.Fatalf("the session's first frame is %s, want acme/pub's: the event of acme/priv reached it", frames[0].item.Topic)
+	}
+	requireFrames(t, frames, pub)
+	standIn.none(t, time.Second)
+}
+
+// A repository that leaves the project's answer stops reaching the session at the first
+// refresh that reads the new answer, its event acknowledged undelivered and counted, and the
+// session's interest in it is gone at the refresh after. The production refresh runs every 30 s
+// and an answer lives 60 s, so both happen within 60 s of the change.
+func TestARepositoryThatLeavesTheProjectStopsReachingTheEdge(t *testing.T) {
+	if edgeRepositoryRefresh != 30*time.Second || edgeRepositoryAnswerLife != 60*time.Second {
+		t.Fatalf("the refresh runs every %s and an answer lives %s, want 30 s and 60 s", edgeRepositoryRefresh, edgeRepositoryAnswerLife)
+	}
+	rig := newEdgeRig(t)
+	const sessionID = "ses_edge_leaving"
+	token := rig.personToken(sessionID, "PRIV")
+	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
+	requireStatus(t, rig.subscribe(t, token, sessionID, "notifications.github.acme.pub.>", "notifications.github.acme.two.>"), http.StatusOK, "the registration")
+	first := rig.storeGithubEvent(t, "acme/two", "pr.1")
+	requireFrames(t, standIn.collect(t, 1, 10*time.Second), first)
+
+	rig.repositories.answer("PRIV", "acme/pub")
+	rig.tick(t)
+	left := rig.storeGithubEvent(t, "acme/two", "pr.2")
+	stays := rig.storeGithubEvent(t, "acme/pub", "pr.3")
+	// The frames go in stream order, so the event after it arriving first is the proof the one
+	// before it was not relayed.
+	frames := standIn.collect(t, 1, 10*time.Second)
+	if frames[0].item.EventID == left.EventID {
+		t.Fatalf("the acme/two event %s stored after acme/two left the answer reached the session", left.EventID)
+	}
+	requireFrames(t, frames, stays)
+	if got := rig.withheld(t, "not_in_project"); got != 1 {
+		t.Fatalf(`envoy_edge_github_withheld_total{reason="not_in_project"} = %d, want 1: the acme/two event withheld`, got)
+	}
+
+	rig.tick(t)
+	recorder := rig.call(t, http.MethodGet, token, "/v1/registry/"+sessionID, "")
+	requireStatus(t, recorder, http.StatusOK, "GET /v1/registry/"+sessionID)
+	var info listenerwire.SessionInfo
+	if err := json.Unmarshal(recorder.Body.Bytes(), &info); err != nil {
+		t.Fatalf("decode %s: %v", recorder.Body.String(), err)
+	}
+	for _, topic := range info.Topics {
+		if strings.HasPrefix(topic, "notifications.github.acme.two") {
+			t.Fatalf("the session still follows %s after acme/two left the answer: %v", topic, info.Topics)
+		}
+	}
+	if !slices.Contains(info.Topics, "notifications.github.acme.pub.>") {
+		t.Fatalf("the session no longer follows acme/pub, which stayed: %v", info.Topics)
+	}
+}
+
+// While no repository answer younger than 60 s stands, a registration naming a GitHub topic
+// is 503 repositories_unknown, every GitHub frame is acknowledged undelivered with the gap mark
+// on the next frame, named Envoy-Gap-Reason: repository_withheld so a client does not read it as
+// the stream's retention gap, and every frame that is not GitHub's flows as before.
+func TestAnUnknownRepositoryAnswerWithholdsOnlyGitHubFrames(t *testing.T) {
+	rig := newEdgeRig(t)
+	const sessionID = "ses_edge_unknown"
+	token := rig.personToken(sessionID, "PRIV")
+	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
+	requireStatus(t, rig.subscribe(t, token, sessionID, "notifications.github.acme.pub.>"), http.StatusOK, "the registration")
+
+	rig.repositories.failWith(http.StatusServiceUnavailable)
+	requireEdgeRefusal(t, rig.subscribe(t, token, sessionID, "notifications.github.acme.pub.>"), http.StatusServiceUnavailable, "repositories_unknown",
+		"a registration naming acme/pub while the answer is 503")
+	rig.clock.advance(edgeRepositoryAnswerLife + time.Second)
+	rig.storeGithubEvent(t, "acme/pub", "pr.5")
+	agent, _ := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
+	frames := standIn.collect(t, 1, 10*time.Second)
+	if frames[0].item.EventID != agent.EventID {
+		t.Fatalf("the session's next frame is %s on %s, want the agent message: the acme/pub event was delivered with an answer %s old",
+			frames[0].item.EventID, frames[0].item.Topic, edgeRepositoryAnswerLife+time.Second)
+	}
+	if got := frames[0].msg.Header.Get(relayHeaderGap); got != "true" {
+		t.Fatalf("the frame after the withheld GitHub event carries %s %q, want true", relayHeaderGap, got)
+	}
+	if got := frames[0].msg.Header.Get("Envoy-Gap-Reason"); got != "repository_withheld" {
+		t.Fatalf("the frame after the withheld GitHub event carries Envoy-Gap-Reason %q, want repository_withheld: a gap with no reason reads as the stream's retention gap", got)
+	}
+	if got := rig.withheld(t, "answer_unknown"); got != 1 {
+		t.Fatalf(`envoy_edge_github_withheld_total{reason="answer_unknown"} = %d, want 1`, got)
+	}
+}
+
+// The gap mark of a GitHub event the edge withheld while no fresh repository answer stood outlives
+// the relay run that withheld it: the session registers again under a new delivery epoch before
+// its next frame, which restarts its relay at the ack floor, past the withheld event, and that
+// frame still carries Envoy-Gap: true with Envoy-Gap-Reason: repository_withheld. Control: with
+// edge mode off nothing is withheld and no frame carries the mark.
+func TestARepositoryGapOutlivesARelayRestart(t *testing.T) {
+	rig := newEdgeRig(t)
+	const sessionID = "ses_edge_gap_epoch"
+	token := rig.personToken(sessionID, "PRIV")
+	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
+	requireStatus(t, rig.subscribe(t, token, sessionID, "notifications.github.acme.pub.>"), http.StatusOK, "the registration")
+	first, _ := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
+	requireFrames(t, standIn.collect(t, 1, 10*time.Second), first)
+
+	rig.repositories.failWith(http.StatusServiceUnavailable)
+	rig.clock.advance(edgeRepositoryAnswerLife + time.Second)
+	rig.storeGithubEvent(t, "acme/pub", "pr.1")
+	testwait.Eventually(t, "the edge to withhold the acme/pub event while no answer stands", func() bool {
+		return rig.withheld(t, "answer_unknown") >= 1
+	})
+	rig.repositories.failWith(0)
+	requireStatus(t, rig.call(t, http.MethodPost, token, "/v1/interests/subscribe", consumerRegistration(sessionID, "epoch-2", "notifications.github.acme.pub.>")),
+		http.StatusOK, "the registration under a new delivery epoch")
+	next, _ := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
+	frames := standIn.collect(t, 1, 10*time.Second)
+	requireFrames(t, frames, next)
+	if gap, reason := frames[0].msg.Header.Get(relayHeaderGap), frames[0].msg.Header.Get(relayHeaderGapReason); gap != "true" || reason != relayGapRepositoryWithheld {
+		t.Fatalf("the first frame after the withheld GitHub event and the relay's restart carries %s %q and %s %q, want true and %s",
+			relayHeaderGap, gap, relayHeaderGapReason, reason, relayGapRepositoryWithheld)
+	}
+}
+
+// Dispatch answers a repository in lower case and the intake keeps GitHub's case, so the
+// edge compares owner and name ignoring case: an interest in Acme/Pub is admitted through an
+// answer of acme/pub, and the event the intake publishes for Acme/Pub reaches the session.
+func TestAnEdgeComparesRepositoriesIgnoringCase(t *testing.T) {
+	rig := newEdgeRig(t)
+	const sessionID = "ses_edge_case"
+	token := rig.personToken(sessionID, "PRIV")
+	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
+	before := rig.repositories.calls.Load()
+	requireStatus(t, rig.subscribe(t, token, sessionID, "notifications.github.Acme.Pub.>"), http.StatusOK, "an interest in Acme/Pub")
+	if rig.repositories.calls.Load() == before {
+		t.Fatal("the registration naming Acme/Pub read no repository answer; the answer is read fresh at each one")
+	}
+	event := rig.storeGithubEvent(t, "Acme/Pub", "pr.9")
+	requireFrames(t, standIn.collect(t, 1, 10*time.Second), event)
+}
+
+// A registration the edge refuses 503 repositories_unknown is told the listener's own sentence:
+// nothing of what the broker answered reaches the client, its error code and its text among it.
+// It holds both for a GitHub topic the registration names and for one the session's row holds,
+// which the edge reads the answer for as well.
+func TestAnEdgeRepositoriesRefusalCopiesNoBrokerText(t *testing.T) {
+	rig := newEdgeRig(t)
+	const named, stored = "ses_edge_unknown_named", "ses_edge_unknown_stored"
+	rig.placeElsewhereFollowing(t, stored, []string{}, "notifications.github.acme.pub.>")
+	rig.repositories.failWith(http.StatusServiceUnavailable)
+	for _, call := range []struct {
+		session string
+		topics  []string
+	}{
+		{named, []string{"notifications.github.acme.pub.>"}},
+		{stored, nil},
+	} {
+		recorder := rig.subscribe(t, rig.personToken(call.session, "PRIV"), call.session, call.topics...)
+		requireEdgeRefusal(t, recorder, http.StatusServiceUnavailable, "repositories_unknown", fmt.Sprintf("%s's registration naming %v while the broker answers 503", call.session, call.topics))
+		for _, broker := range []string{"REPOSITORIES_UNKNOWN", "the stand-in answers"} {
+			if strings.Contains(recorder.Body.String(), broker) {
+				t.Errorf("%s's 503 copies the broker's answer (%q): %s", call.session, broker, recorder.Body.String())
+			}
+		}
+	}
+}
+
+// A subject writes a dot in a repository's name as an underscore, so acme/a.b and acme/a_b
+// publish on one subject (notifications.github.acme.a_b): the session follows it through an
+// answer that names acme/a.b, and the event of acme/a_b on that subject is withheld
+// not_in_project, while the event of acme/a.b reaches it. The relay holds each event to the
+// repository its own payload names.
+func TestAnEdgeRelaysOnlyTheEventsOfTheRepositoryItsAnswerNames(t *testing.T) {
+	rig := newEdgeRig(t)
+	const sessionID = "ses_edge_dotted"
+	rig.repositories.answer("PRIV", "acme/a.b")
+	token := rig.personToken(sessionID, "PRIV")
+	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
+	requireStatus(t, rig.subscribe(t, token, sessionID, "notifications.github.acme.a_b.>"), http.StatusOK, "an interest in acme/a.b, which its subject writes acme.a_b")
+	other := rig.storeGithubEvent(t, "acme/a_b", "pr.1")
+	own := rig.storeGithubEvent(t, "acme/a.b", "pr.2")
+	if otherPrefix, ownPrefix := contracts.GithubRepositoryPrefix("acme", "a_b"), contracts.GithubRepositoryPrefix("acme", "a.b"); otherPrefix != ownPrefix {
+		t.Fatalf("UNKNOWN: acme/a_b's events are under %s and acme/a.b's under %s, not one subject", otherPrefix, ownPrefix)
+	}
+	frames := standIn.collect(t, 1, 10*time.Second)
+	if frames[0].item.EventID == other.EventID {
+		t.Fatalf("the event of acme/a_b reached a session whose answer names acme/a.b alone")
+	}
+	requireFrames(t, frames, own)
+	if got := rig.withheld(t, "not_in_project"); got != 1 {
+		t.Fatalf(`envoy_edge_github_withheld_total{reason="not_in_project"} = %d, want 1: the acme/a_b event withheld`, got)
+	}
+}
+
+// A registration the edge refuses 503 for want of a repository answer for the GitHub topic it
+// names renews none of the session's claims, and records that against each role the session
+// holds, as the 503 for a stored GitHub topic does, so POST /v1/roles/set reads the claim as one
+// its holder did not renew.
+func TestAnEdgeRepositoriesRefusalRecordsTheUnrenewedClaims(t *testing.T) {
+	rig := newEdgeRig(t)
+	const sessionID, role = "ses_edge_unknown_renewal", "legion-priv-priv-8-tester"
+	token := rig.personToken(sessionID, "PRIV")
+	requireStatus(t, rig.subscribe(t, token, sessionID), http.StatusOK, "the session's registration")
+	requireStatus(t, rig.call(t, http.MethodPost, token, "/v1/roles/set", fmt.Sprintf(`{"session_id":%q,"role":%q}`, sessionID, role)),
+		http.StatusOK, "the claim of "+role)
+	rig.repositories.failWith(http.StatusServiceUnavailable)
+	requireEdgeRefusal(t, rig.subscribe(t, token, sessionID, "notifications.github.acme.pub.>"), http.StatusServiceUnavailable, "repositories_unknown",
+		"a registration naming acme/pub while the broker answers 503")
+	if _, recorded := rig.deps.registry.RenewalFailedWithin(role, sessionID, time.Minute); !recorded {
+		t.Fatalf("the 503 recorded no renewal failure of %s for %s: the claim reads as renewed though the registration renewed nothing", role, sessionID)
+	}
+}
+
+// edgeBrokerTransport answers each request the edge's repository reader sends with answer, on the
+// reader's own goroutine, as the broker would over the network.
+type edgeBrokerTransport func(*http.Request) (*http.Response, error)
+
+func (f edgeBrokerTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
+// One project whose broker read hangs holds back no other project's read: a refresh reads each
+// served project on its own, so PRIV's answer is read while SLOW's read is still waiting, and
+// PRIV's answer is fresh when the pass ends. Read one after the other, PRIV's would wait for
+// SLOW's to time out, and with enough slow projects ahead of it would age past its life.
+func TestAnEdgeRefreshReadsEachProjectOnItsOwn(t *testing.T) {
+	var slowWaiting atomic.Int32
+	slowEntered := make(chan struct{})
+	release := make(chan struct{})
+	var readWhileSlowWaited atomic.Bool
+	privRead := make(chan struct{})
+	transport := edgeBrokerTransport(func(request *http.Request) (*http.Response, error) {
+		project := request.URL.Query().Get("project")
+		if project == "SLOW" {
+			slowWaiting.Add(1)
+			close(slowEntered)
+			defer slowWaiting.Add(-1)
+			select {
+			case <-release:
+			case <-request.Context().Done():
+				return nil, request.Context().Err()
+			}
+			return &http.Response{StatusCode: http.StatusServiceUnavailable, Body: io.NopCloser(strings.NewReader("{}")), Request: request}, nil
+		}
+		// This read waits for SLOW's to have begun, whichever order the reads start in, and then
+		// sees whether that one is still waiting. A read that ends before SLOW's begins, its
+		// time spent while the refresh runs one read at a time, saw no read beside it.
+		defer close(privRead)
+		select {
+		case <-slowEntered:
+			readWhileSlowWaited.Store(slowWaiting.Load() == 1)
+		case <-request.Context().Done():
+			return nil, request.Context().Err()
+		}
+		body := fmt.Sprintf(`{"project":%q,"repositories":["acme/pub"]}`, project)
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+	})
+	reader := newEdgeRepositories("http://broker.example", listenerBrokerAccount(edgeAccountToken), []string{"SLOW", "PRIV"},
+		newEdgeWithheldCounter(metrics.New()), logging.New("test"))
+	reader.client = &http.Client{Transport: transport}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		reader.refresh(context.Background())
+	}()
+	select {
+	case <-privRead:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the refresh read no answer of PRIV within 30 s")
+	}
+	close(release)
+	<-done
+	if !readWhileSlowWaited.Load() {
+		t.Fatal("the refresh read PRIV's answer only once SLOW's read had ended: a project whose read hangs holds back every project after it")
+	}
+	if repositories, complete := reader.standing([]string{"PRIV"}); !complete || !slices.Equal(repositories, []string{"acme/pub"}) {
+		t.Fatalf("after the refresh PRIV stands %v (complete %t), want [acme/pub]", repositories, complete)
+	}
+}
