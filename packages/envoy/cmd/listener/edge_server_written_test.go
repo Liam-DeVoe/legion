@@ -101,13 +101,32 @@ func TestAServerWrittenRecordReadsAsAbsent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode O's row: %v", err)
 	}
-	testnats.RepublishesKey(t, conn, bus.InterestBucket, outside, rowBody)
+	stored := testnats.RepublishesKey(t, conn, bus.InterestBucket, outside, rowBody)
 	if recorder := rig.subscribe(t, token, outside, privTopic); recorder.Code != http.StatusOK {
 		t.Errorf("O's registration over the row republished at its interest key: status %d (%s), want 200", recorder.Code, recorder.Body.String())
 	}
+	// The write after the refusal reads the key from the leader and replaces the RePublished record
+	// at its true sequence with O's own row: the stream's newest message for O's key moves past the
+	// RePublished one, and O's row holds none of the PUB topic that record carried. Without the
+	// leader re-read the registration is a heartbeat skip over the fresh RePublished row, which keeps
+	// both and reaches the base's 200 with the PUB topic standing, so these two readings are what
+	// let the row fail there.
+	if after := testnats.LastSequence(t, conn, bus.InterestBucket, outside); after == stored {
+		t.Errorf("O's registration wrote no row: the RePublished record at sequence %d still stands", stored)
+	}
+	afterRow, _, err := rig.deps.registry.RefreshAt(context.Background(), outside)
+	if err != nil {
+		t.Fatalf("read O's row after its registration: %v", err)
+	}
+	if slices.Contains(afterRow.Topics, "notifications.dispatch.issue.PUB.>") {
+		t.Errorf("O's row after its registration holds the PUB topic the RePublished record carried: %v", afterRow.Topics)
+	}
+	// A PUB event stored before O's own PRIV event: if the RePublished row's PUB topic still stood in
+	// O's consumer filter, the PUB event would reach O and be its first frame.
+	pub, _ := rig.storeEvent(t, "notifications.dispatch.issue.PUB.PUB-9.comment.created")
 	own, _ := rig.storeEvent(t, "notifications.dispatch.issue.PRIV.PRIV-9.comment.created")
 	frames := standIn.collect(t, 1, 15*time.Second)
 	if frames[0].item.EventID != own.EventID {
-		t.Errorf("O's first frame after its registration is %s on %s, want its PRIV event %s", frames[0].item.EventID, frames[0].item.Topic, own.EventID)
+		t.Errorf("O's first frame after its registration is %s on %s, want its PRIV event %s (the PUB event was %s)", frames[0].item.EventID, frames[0].item.Topic, own.EventID, pub.EventID)
 	}
 }
