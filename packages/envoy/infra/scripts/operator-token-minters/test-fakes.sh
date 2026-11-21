@@ -39,6 +39,15 @@ case "${words[*]}" in
     jq -n --arg p "$project" --arg n "$number" \
       '{projectId: $p, projectNumber: $n, name: $p, lifecycleState: "ACTIVE", parent: {type: "organization", id: "100"}}'
     ;;
+  "projects describe "*)
+    # Another project the world holds a number for (numbers/<project>), or none: NOT_FOUND, as gcloud
+    # answers a project the caller cannot see.
+    other="${words[2]}"
+    [ -e "$world/numbers/$other" ] ||
+      { echo "ERROR: (gcloud.projects.describe) NOT_FOUND: Project $other not found or permission denied." >&2; exit 1; }
+    jq -n --arg p "$other" --arg n "$(<"$world/numbers/$other")" \
+      '{projectId: $p, projectNumber: $n, name: $p, lifecycleState: "ACTIVE", parent: {type: "organization", id: "100"}}'
+    ;;
   "projects get-ancestors "*)
     # A project's own ancestors when the world holds them (ancestors/<project>.json), else the
     # project under organization 100.

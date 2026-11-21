@@ -53,7 +53,10 @@
 #        names it, and GKE's service agent holding it exits 0;
 #   (cd) rv11: grade-ci, cluster-admin on a fleet member, has the Workload Identity member ci/runner,
 #        and legion/worker may create pods in ci on the operator's cluster: exits 1 naming
-#        legion/worker, who can become ci/runner and so act as grade-ci.
+#        legion/worker, who can become ci/runner and so act as grade-ci;
+#   (ch) GKE's service agent of a project number the check does not read (999999999999) holding
+#        roles/container.admin exits 1 naming the number; that of a fleet member's project
+#        (example-grade, 222222222222) holding it there exits 0.
 
 # --- (d) A project-level container.admin held by a CI account, and by an agent's Google service
 # account (the GKE IAM step's control). ---
@@ -416,4 +419,31 @@ if row cd; then
   want_text "FINDING system:serviceaccount:legion:worker: create pods in ci, so it can become system:serviceaccount:ci:runner" \
     "legion/worker may create pods in ci, whose runner is grade-ci's Workload Identity member"
   passed "(cd) rv11: who can become the Workload Identity member of an RBAC finding's Google account exits 1 naming it"
+fi
+
+# --- (ch) The service agents of the projects the check reads alone: another project's GKE robot acts
+# for whoever owns that project. ---
+foreign_agent_row() {
+  local agent
+  base_world
+  case "$1" in
+    unknown)
+      agent="service-999999999999@container-engine-robot.iam.gserviceaccount.com"
+      iam "$project_res" roles/container.admin "serviceAccount:$agent"
+      run
+      want_status 1 "the GKE service agent of an unknown project holding roles/container.admin"
+      want_text "FINDING serviceAccount:$agent: container.serviceAccounts.createToken," "the GKE service agent of an unknown project"
+      want_text "(the service agent of project number 999999999999, none of the projects this check reads)" "the GKE service agent of an unknown project"
+      ;;
+    member)
+      grade_member
+      iam "$grade_res" roles/container.admin "serviceAccount:service-222222222222@container-engine-robot.iam.gserviceaccount.com"
+      run
+      want_status 0 "the GKE service agent of a fleet member's project holding roles/container.admin there"
+      ;;
+  esac
+}
+if row ch; then
+  each foreign_agent_row unknown member
+  passed "(ch) GKE's service agent of an unknown project number holding roles/container.admin exits 1 naming the number; a fleet member project's exits 0"
 fi

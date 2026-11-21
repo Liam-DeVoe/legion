@@ -159,10 +159,13 @@ make_cluster() {
 # add_member JSON: one more membership of the fleet, last in its list: {id, location, gke:
 # {project, location, cluster}} for a GKE cluster, else {id, location, cluster: <its world's name>}.
 add_member() { edit "$world/fleet.json" '.memberships += [$m]' --argjson m "$1"; }
-# A GKE member of the fleet in another project, example-grade, whose cluster is grade-cluster.
+# A GKE member of the fleet in another project, example-grade (project number 222222222222), whose
+# cluster is grade-cluster.
 grade_member() {
   make_cluster grade-cluster
   add_member '{"id": "grade", "location": "global", "gke": {"project": "example-grade", "location": "us-east1", "cluster": "grade-cluster"}}'
+  mkdir -p "$world/numbers"
+  echo 222222222222 >"$world/numbers/example-grade"
 }
 # cluster_admin CLUSTER SUBJECT: the built-in cluster-admin role bound to SUBJECT there.
 cluster_admin() { subject_grant "$1" "$2" "*" "*" "*" "*" "" ""; }
