@@ -171,8 +171,9 @@ export function createStandInHost(options: { readonly zod?: typeof z } = {}) {
 /**
  * The context a script that runs one session in an OS process of its own hands `session_start`
  * (`test/session-pod-process.ts`, `test/relay-session-process.ts`): session `sessionID`, in `cwd`,
- * whose branch is `entries`, idle, with no timers of the host's, and the UI's notices handed to
- * `notify`.
+ * whose branch is `entries`, idle and holding no message (so the extension hands its transcript
+ * notices over, as to a real idle host), with no timers of the host's, and the UI's notices handed
+ * to `notify`.
  */
 export function processSessionContext(options: {
   readonly sessionID: string;
@@ -193,6 +194,7 @@ export function processSessionContext(options: {
       ensureOnDisk: async (): Promise<void> => undefined,
     },
     isIdle: () => true,
+    hasPendingMessages: () => false,
     setInterval: () => undefined,
     setTimeout: () => undefined,
     ui: {
