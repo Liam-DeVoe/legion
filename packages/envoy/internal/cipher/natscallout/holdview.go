@@ -106,7 +106,7 @@ func (v *HoldView) verified(ctx context.Context) (natsgrant.OperatorPhase, error
 	if err := signedrecord.Verify(v.keys, row.Sig, lines); err != nil {
 		return "", fmt.Errorf("natscallout: the writer hold's row at gen %d: %w", row.Gen, err)
 	}
-	if err := v.floor.Accept(row.Gen, lines); err != nil {
+	if err := v.floor.Accept(row.Gen, row.SignedAt, lines); err != nil {
 		return "", fmt.Errorf("natscallout: the writer hold's row: %w", err)
 	}
 	return phase, nil

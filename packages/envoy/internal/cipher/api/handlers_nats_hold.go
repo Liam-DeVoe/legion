@@ -267,13 +267,29 @@ func holdRowLines(row natshold.Row) []string {
 }
 
 // acceptRow puts row, read from the table, through this broker's floor of the row when a key of
-// BROKER_NATS_HOLD_SIGNING_KEYS signed it, and answers the floor's ErrReplay or ErrFork; a row that
-// does not verify moves nothing and is answered nil, for its reader to refuse.
+// BROKER_NATS_HOLD_SIGNING_KEYS signed it, and answers the floor's ErrReplay, ErrFork or
+// ErrBackdated; a row that does not verify moves nothing and is answered nil, for its reader to
+// refuse.
 func (s *server) acceptRow(row natshold.Row) error {
 	if signedrecord.Verify(s.deps.NATSHold.Keys, row.Sig, holdRowLines(row)) != nil {
 		return nil
 	}
-	return s.holdRowFloor.Accept(row.Gen, holdRowLines(row))
+	return s.holdRowFloor.Accept(row.Gen, row.SignedAt, holdRowLines(row))
+}
+
+// errWrittenUnverified is a write whose row, as the store answered it (its RETURNING row), does
+// not verify: a database trigger, say, changed it between the write and the answer.
+var errWrittenUnverified = errors.New("the row the store answered for the write does not verify")
+
+// acceptWritten puts row, the row a move or restore wrote as the store answered it, through this
+// broker's floor of the row once it verifies, and answers errWrittenUnverified otherwise, which
+// moves nothing: an unverified answer, a gen a trigger raised among them, would wedge the floor
+// above every genuine row until the process starts again.
+func (s *server) acceptWritten(row natshold.Row) error {
+	if err := signedrecord.Verify(s.deps.NATSHold.Keys, row.Sig, holdRowLines(row)); err != nil {
+		return fmt.Errorf("%w: gen %d: %w", errWrittenUnverified, row.Gen, err)
+	}
+	return s.holdRowFloor.Accept(row.Gen, row.SignedAt, holdRowLines(row))
 }
 
 // holdMoveBody is PUT /v1/nats-hold's body.
@@ -322,8 +338,8 @@ func (s *server) moveNATSHold(w http.ResponseWriter, r *http.Request, operator s
 	case errors.Is(err, signedrecord.ErrReplay):
 		writeHoldRefusal(w, http.StatusConflict, "gen_mismatch", fmt.Sprintf("the hold row the move starts from reads as unknown: %v: an older row put back", err), nil)
 		return
-	case errors.Is(err, signedrecord.ErrFork):
-		writeHoldRefusal(w, http.StatusConflict, "below_floor", fmt.Sprintf("the hold row the move starts from reads as unknown: %v: another row at the gen this broker served, read or wrote", err), nil)
+	case errors.Is(err, signedrecord.ErrFork), errors.Is(err, signedrecord.ErrBackdated):
+		writeHoldRefusal(w, http.StatusConflict, "below_floor", fmt.Sprintf("the hold row the move starts from reads as unknown: %v: another row at the gen this broker served, read or wrote, or a row of an earlier history", err), nil)
 		return
 	case !errors.As(err, &conflict):
 		writeUnavailable(w, "DATABASE_UNAVAILABLE", "move the hold row", err)
@@ -348,8 +364,11 @@ func (s *server) moveNATSHold(w http.ResponseWriter, r *http.Request, operator s
 		return
 	}
 	// The stored row is above the row the move started from, which the floor accepted, so it raises
-	// the floor, unless that row did not verify; then the floor stays and GET reads the new row.
-	_ = s.holdRowFloor.Accept(row.Gen, holdRowLines(row))
+	// the floor once it verifies as the store answered it.
+	if err := s.acceptWritten(row); err != nil {
+		writeHoldRefusal(w, http.StatusConflict, "below_floor", "the move's row reads as unknown: "+err.Error(), nil)
+		return
+	}
 	writeJSON(w, http.StatusOK, holdRowAnswer(row))
 }
 
@@ -400,7 +419,7 @@ func (s *server) restoreNATSHold(w http.ResponseWriter, r *http.Request, operato
 	var conflict *natshold.Conflict
 	switch {
 	case err == nil:
-	case errors.Is(err, errHoldLogUnknown), errors.Is(err, signedrecord.ErrReplay), errors.Is(err, signedrecord.ErrFork), errors.Is(err, natshold.ErrGenLogged):
+	case errors.Is(err, errHoldLogUnknown), errors.Is(err, signedrecord.ErrReplay), errors.Is(err, signedrecord.ErrFork), errors.Is(err, signedrecord.ErrBackdated), errors.Is(err, natshold.ErrGenLogged):
 		writeHoldRefusal(w, http.StatusConflict, "below_floor", "the restore stores nothing: "+err.Error(), nil)
 		return
 	case !errors.As(err, &conflict):
@@ -420,8 +439,11 @@ func (s *server) restoreNATSHold(w http.ResponseWriter, r *http.Request, operato
 		return
 	}
 	// The restored row is one above the log's latest entry, which the floor accepted, so it raises
-	// the floor.
-	_ = s.holdRowFloor.Accept(row.Gen, holdRowLines(row))
+	// the floor once it verifies as the store answered it.
+	if err := s.acceptWritten(row); err != nil {
+		writeHoldRefusal(w, http.StatusConflict, "below_floor", "the restored row reads as unknown: "+err.Error(), nil)
+		return
+	}
 	writeJSON(w, http.StatusOK, holdRowAnswer(row))
 }
 
@@ -442,7 +464,7 @@ func (s *server) restoreTrusted(latest *natshold.LogEntry) error {
 	if err := signedrecord.Verify(s.deps.NATSHold.Keys, latest.Sig, lines); err != nil {
 		return fmt.Errorf("%w: the entry at gen %d: %w", errHoldLogUnknown, latest.Gen, err)
 	}
-	return s.holdRowFloor.Accept(latest.Gen, lines)
+	return s.holdRowFloor.Accept(latest.Gen, latest.SignedAt, lines)
 }
 
 // restoreAdmitted is whether next may be restored after the log's latest entry, which verified
@@ -450,12 +472,26 @@ func (s *server) restoreTrusted(latest *natshold.LogEntry) error {
 // or prepare entry, since a prepare row refuses no client, or a held one whose hold's journal, the
 // done record, verifies and shows the hold ended (a done hold release or hold abort), as when the
 // row was lost between that done entry and the row's move; after any other held entry it would
-// free every client mid-hold. Held follows only a prepare or held entry of its own hold id, so a
-// hold the log shows ended, by a release or by abort from prepare, which leaves no journal entry,
-// is not held again.
-func (s *server) restoreAdmitted(latest *natshold.LogEntry, journal *natshold.Record, next natshold.Row) error {
+// free every client mid-hold. A released row naming a hold is refused, whatever the log shows,
+// while that hold's journal verifies and shows hold set done and no end: the hold is held by its
+// own record, and a log a database writer cut back to its prepare entry, on a replica whose floor
+// started again, would otherwise free every client mid-hold. Held follows only a prepare or held
+// entry of its own hold id, so a hold the log shows ended, by a release or by abort from prepare,
+// which leaves no journal entry, is not held again.
+func (s *server) restoreAdmitted(latest *natshold.LogEntry, journalOf func(holdID string) (*natshold.Record, error), next natshold.Row) error {
 	refuse := func(why string) error {
 		return &natshold.Conflict{Err: fmt.Errorf("%w: %s", natshold.ErrBadTransition, why)}
+	}
+	if next.Phase == string(natsgrant.OperatorPhaseReleased) && next.HoldID != "" {
+		named, err := journalOf(next.HoldID)
+		if err != nil {
+			return err
+		}
+		if d, ok := s.verifiedJournal(next.HoldID, named); ok {
+			if _, setDone := d.Latest(holdrecord.CommandSet, holdrecord.StateDone); setDone && !journalEnded(d) {
+				return refuse(fmt.Sprintf("hold %s's journal shows hold set done and no end, so a released row restored for it would free every client mid-hold; restore the row held with its hold id", next.HoldID))
+			}
+		}
 	}
 	if latest == nil {
 		if next.Phase == string(natsgrant.OperatorPhaseHeld) {
@@ -469,18 +505,30 @@ func (s *server) restoreAdmitted(latest *natshold.LogEntry, journal *natshold.Re
 		}
 		return refuse(fmt.Sprintf("the log's latest entry is %s with hold id %q, and a held row is restored only after a prepare or held entry of its own hold", latest.Phase, latest.HoldID))
 	}
-	if latest.Phase != string(natsgrant.OperatorPhaseHeld) || s.holdEnded(latest.HoldID, journal) {
+	if latest.Phase != string(natsgrant.OperatorPhaseHeld) {
+		return nil
+	}
+	journal, err := journalOf(latest.HoldID)
+	if err != nil {
+		return err
+	}
+	if s.holdEnded(latest.HoldID, journal) {
 		return nil
 	}
 	return refuse("the log's latest entry is held, and its hold's journal shows no done hold release or hold abort, so a released row restored after it would free every client mid-hold; restore the row held with its hold id")
 }
 
-// holdEnded reports whether journal, holdID's done record, verifies and shows the hold ended. It
-// asks the journal's own Decide: it answers hold release ErrAlreadyDone only once the hold has
-// ended, its first refusal (EndIsFinal).
+// holdEnded reports whether journal, holdID's done record, verifies and shows the hold ended
+// (journalEnded).
 func (s *server) holdEnded(holdID string, journal *natshold.Record) bool {
 	d, ok := s.verifiedJournal(holdID, journal)
-	return ok && errors.Is(holdrecord.Decide(d, holdrecord.Request{Command: holdrecord.CommandRelease}), holdrecord.ErrAlreadyDone)
+	return ok && journalEnded(d)
+}
+
+// journalEnded reports whether d shows the hold ended. It asks the journal's own Decide: it answers
+// hold release ErrAlreadyDone only once the hold has ended, its first refusal (EndIsFinal).
+func journalEnded(d holdrecord.Done) bool {
+	return errors.Is(holdrecord.Decide(d, holdrecord.Request{Command: holdrecord.CommandRelease}), holdrecord.ErrAlreadyDone)
 }
 
 // verifiedJournal is journal, holdID's done record, decoded, when it is there and its signature
@@ -574,6 +622,12 @@ func (s *server) putNATSHoldRecord(w http.ResponseWriter, r *http.Request, _ str
 		return
 	default:
 		writeInternal(w, "write the hold record", err)
+		return
+	}
+	// The record as the store answered it raises its floor only once it verifies: a trigger that
+	// changed it between the write and the answer would otherwise wedge the floor.
+	if err := signedrecord.Verify(s.deps.NATSHold.Keys, stored.Sig, signedrecord.Record(stored.HoldID, stored.Kind, stored.Key, stored.Gen, stored.Value)); err != nil {
+		writeHoldRefusal(w, http.StatusConflict, "below_floor", fmt.Sprintf("the record the store answered for the write does not verify: gen %d: %v", stored.Gen, err), nil)
 		return
 	}
 	s.holdFloors.raise(floorKey, stored.Gen)
@@ -774,9 +828,10 @@ func (f *recordFloors) serve(holdID, kind string, records []natshold.Record, del
 // ?gen=, ?sig=), for hold abort from prepare, and for hold abort on a row lost in prepare and
 // restored released: once the operator's signature over the record's delete at that gen verifies
 // (signedrecord.RecordDelete), only while the row is prepare with that hold id, or released with
-// it while that hold's done record verifies and its journal admits hold abort on the released row
-// (holdrecord.Request.RowReleased: the journal shows prepare), and only the record at that gen, so
-// neither the operator's token alone nor an old signature deletes a record.
+// it while the table admits hold abort on the released row (holdrecord.Request.RowReleased): the
+// hold's done record verifies and shows prepare, or the hold has no done record, which the table
+// reads as the zero Done; and only the record at that gen, so neither the operator's token alone
+// nor an old signature deletes a record.
 func (s *server) deleteNATSHoldCohort(w http.ResponseWriter, r *http.Request, _ string) {
 	query := r.URL.Query()
 	holdID, kind, key := query.Get("hold_id"), query.Get("kind"), query.Get("key")
@@ -790,9 +845,12 @@ func (s *server) deleteNATSHoldCohort(w http.ResponseWriter, r *http.Request, _ 
 		return
 	}
 	released := func(journal *natshold.Record) error {
-		d, ok := s.verifiedJournal(holdID, journal)
-		if !ok {
-			return &natshold.Conflict{Err: fmt.Errorf("%w: the row is released, and hold %s has no done record that verifies", natshold.ErrHoldMismatch, holdID)}
+		var d holdrecord.Done // no done record: the zero Done, a hold with no journal
+		if journal != nil {
+			var ok bool
+			if d, ok = s.verifiedJournal(holdID, journal); !ok {
+				return &natshold.Conflict{Err: fmt.Errorf("%w: the row is released, and hold %s's done record does not verify", natshold.ErrHoldMismatch, holdID)}
+			}
 		}
 		if err := holdrecord.Decide(d, holdrecord.Request{Command: holdrecord.CommandAbort, RowReleased: true}); err != nil {
 			return &natshold.Conflict{Err: fmt.Errorf("%w: the row is released, and hold %s's journal does not show prepare", natshold.ErrHoldMismatch, holdID)}

@@ -630,13 +630,14 @@ func TestTheHoldJournal(t *testing.T) {
 		if _, err := r.Pool.Exec(ctx, `delete from nats_hold`); err != nil {
 			t.Fatal(err)
 		}
+		operator := r.client(t) // a new process, which has seen no row
 		var mismatch *holdrecord.RestoreGenError
-		if err := c.Bootstrap(ctx); !errors.As(err, &mismatch) {
+		if err := operator.Bootstrap(ctx); !errors.As(err, &mismatch) {
 			t.Fatalf("Bootstrap mid-hold answered %v, want a RestoreGenError", err)
 		}
 		var refusal *holdrecord.RouteError
 		for _, holdID := range []string{"", "h-lost"} {
-			got, err := c.RestoreRow(ctx, mismatch.RestoreGen, natsgrant.OperatorPhaseReleased, holdID, "released mid-hold")
+			got, err := operator.RestoreRow(ctx, mismatch.RestoreGen, natsgrant.OperatorPhaseReleased, holdID, "released mid-hold")
 			if !errors.As(err, &refusal) || refusal.Code != "bad_transition" {
 				t.Fatalf("RestoreRow of released with hold id %q at restore_gen %d, mid-hold, answered %+v, %v; want 400 bad_transition",
 					holdID, mismatch.RestoreGen, got, err)
@@ -645,7 +646,7 @@ func TestTheHoldJournal(t *testing.T) {
 		if _, err := c.Row(ctx); !errors.As(err, &refusal) || refusal.Code != "no_row" {
 			t.Fatalf("after the refused restores Row answered %v, want no_row", err)
 		}
-		restored, err := c.RestoreRow(ctx, 1, natsgrant.OperatorPhaseHeld, "h-lost", "restored after a delete")
+		restored, err := operator.RestoreRow(ctx, 1, natsgrant.OperatorPhaseHeld, "h-lost", "restored after a delete")
 		if err != nil || restored.Gen != mismatch.RestoreGen || restored.Phase != natsgrant.OperatorPhaseHeld || restored.HoldID != "h-lost" {
 			t.Fatalf("RestoreRow of the held row = %+v, %v; want held h-lost at restore_gen %d", restored, err, mismatch.RestoreGen)
 		}
@@ -665,18 +666,19 @@ func TestTheHoldJournal(t *testing.T) {
 		if _, err := r.Pool.Exec(ctx, `delete from nats_hold`); err != nil {
 			t.Fatal(err)
 		}
+		operator := r.client(t) // a new process, which has seen no row
 		var mismatch *holdrecord.RestoreGenError
-		err := c.Bootstrap(ctx)
+		err := operator.Bootstrap(ctx)
 		if !errors.As(err, &mismatch) {
 			t.Fatalf("Bootstrap after the hold answered %v, want a RestoreGenError", err)
 		}
 		t.Logf("Bootstrap after the hold answers %v", err)
-		restored, err := c.RestoreRow(ctx, mismatch.RestoreGen, natsgrant.OperatorPhaseReleased, "", "restored after a delete")
+		restored, err := operator.RestoreRow(ctx, mismatch.RestoreGen, natsgrant.OperatorPhaseReleased, "", "restored after a delete")
 		if err != nil || restored.Gen != mismatch.RestoreGen || restored.Phase != natsgrant.OperatorPhaseReleased || restored.HoldID != "" {
 			t.Fatalf("RestoreRow of released at restore_gen %d = %+v, %v; want released, no hold id, at that gen", mismatch.RestoreGen, restored, err)
 		}
 		var refusal *holdrecord.RouteError
-		if _, err := c.RestoreRow(ctx, mismatch.RestoreGen+1, natsgrant.OperatorPhaseReleased, "", "again"); !errors.As(err, &refusal) || refusal.Code != "row_exists" {
+		if _, err := operator.RestoreRow(ctx, mismatch.RestoreGen+1, natsgrant.OperatorPhaseReleased, "", "again"); !errors.As(err, &refusal) || refusal.Code != "row_exists" {
 			t.Fatalf("a second RestoreRow answered %v, want 409 row_exists", err)
 		}
 		hold(t, c, "h-next", holdrecord.WorkflowBucketsCreate, nil)
@@ -717,7 +719,7 @@ func TestTheHoldJournal(t *testing.T) {
 			t.Fatalf("after Bootstrap the row is %+v, %v; want gen 1, released, no hold id", first, err)
 		}
 		var refusal *holdrecord.RouteError
-		if err := c.Bootstrap(ctx); !errors.As(err, &refusal) || refusal.Code != "row_exists" {
+		if err := r.client(t).Bootstrap(ctx); !errors.As(err, &refusal) || refusal.Code != "row_exists" {
 			t.Fatalf("Bootstrap with the row there answered %v, want 409 row_exists", err)
 		}
 		hold(t, c, "h-boot", holdrecord.WorkflowBucketsCreate, nil)
@@ -728,7 +730,7 @@ func TestTheHoldJournal(t *testing.T) {
 		if err := r.Pool.QueryRow(ctx, `select max(gen) from nats_hold_log`).Scan(&highest); err != nil {
 			t.Fatal(err)
 		}
-		err = c.Bootstrap(ctx)
+		err = r.client(t).Bootstrap(ctx)
 		var mismatch *holdrecord.RestoreGenError
 		if !errors.As(err, &mismatch) || mismatch.RestoreGen != uint64(highest)+1 || !errors.As(err, &refusal) || refusal.Code != "gen_mismatch" {
 			t.Fatalf("Bootstrap with the log at gen %d answered %v, want a RestoreGenError naming restore_gen %d (409 gen_mismatch)", highest, err, highest+1)
@@ -966,4 +968,5 @@ func TestTheHoldJournal(t *testing.T) {
 	restoreLogRows(t)
 	readerRows(t)
 	prepareAbortRows(t)
+	historyRows(t)
 }

@@ -58,7 +58,9 @@ type Proof struct {
 // targets with `--restored`, so a prove's request always holds restored targets. RowReleased says
 // the row is `released` with the hold's id, which Admit sets from the row it reads: Decide then
 // admits `hold abort` alone, and only while the journal shows prepare (a row lost in `prepare` and
-// restored `released`, ReleasedPrepareAbort), and the cohort-delete route asks Decide the same.
+// restored `released`, ReleasedPrepareAbort), or for the zero Done, which stands for a hold with no
+// journal (ReleasedNoJournalAbort); the cohort-delete route asks Decide the same, passing the zero
+// Done for a hold that has no done record.
 type Request struct {
 	Command     string
 	DisksMoved  bool
@@ -137,9 +139,11 @@ const CommandProve = "hold prove"
 // ended entry, only `hold set`'s and abort's own entries), Admit admits it (Request.RowReleased,
 // even over `hold set`'s pending intent, which can no longer move the row), it deletes the cohort,
 // which the cohort-delete route admits on that row too, and its `done` entry ends the journal; the
-// row is released already. Like every command, its own pending intent admits it again, so two
-// processes running abort at once are both admitted: the operator runs one command of a hold at a
-// time (assumption A2).
+// row is released already. When the row was lost before the journal was written, there is no
+// journal for Admit to read: the abort deletes the cohort alone, which the route admits on the
+// released row of a hold with no done record (ReleasedNoJournalAbort), and writes no entry. Like
+// every command, its own pending intent admits it again, so two processes running abort at once are
+// both admitted: the operator runs one command of a hold at a time (assumption A2).
 const CommandAbort = "hold abort"
 
 // LeftUnchanged is what a stop records (AppendStopLeft) when no run of its command in this hold
