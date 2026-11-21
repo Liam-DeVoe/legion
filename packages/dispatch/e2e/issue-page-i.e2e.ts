@@ -123,6 +123,7 @@ import {
   treeActiveDescendant,
   treeText,
 } from "./issue-page-i";
+import { composerField } from "./issue-page-l";
 import { withIssuePage } from "./issue-page-option";
 import { expect, test } from "./test";
 import { expectLoadSettled, watchApiRequests } from "./traffic";
@@ -1914,13 +1915,24 @@ test("a table a row's editor holds scrolls sideways inside itself, and the box a
       "the table is no wider than what it shows, so it does not scroll inside itself"
     ).toBeGreaterThan(before.table.client);
     expect(before.lastShown, "the table shows its last column before it is scrolled").toBe(false);
-    // A reader's sideways scroll over the table, as a trackpad makes it.
+    // A reader's sideways scroll over the table, as a trackpad makes it, with the table in the
+    // middle of the screen: the box to write in stands over the screen's last lines, and a wheel
+    // over it is the box's, not the table's.
+    await table.evaluate((drawn) => drawn.scrollIntoView({ block: "center" }));
     const at = await table.boundingBox();
     expect(at, "the table has no box on the page").not.toBeNull();
-    await page.mouse.move(
-      (at?.x ?? 0) + (at?.width ?? 0) / 2,
-      (at?.y ?? 0) + (at?.height ?? 0) / 2
-    );
+    const point = {
+      x: (at?.x ?? 0) + (at?.width ?? 0) / 2,
+      y: (at?.y ?? 0) + (at?.height ?? 0) / 2,
+    };
+    expect(
+      await page.evaluate(
+        ({ x, y }) => document.elementFromPoint(x, y)?.closest("table") != null,
+        point
+      ),
+      "the middle of the table is under something else the page draws"
+    ).toBe(true);
+    await page.mouse.move(point.x, point.y);
     await page.mouse.wheel(before.table.scroll, 0);
     await expect
       .poll(async () => (await widths()).lastShown, {
@@ -4780,9 +4792,8 @@ test("the keys of a row's editor move its caret and edit inside the node's own b
 // after its statements, and the ask's card draws controls of its own inside the editor. The
 // statement is the third, which no comment or ask is on, so the editor draws no references
 // button of its own block (the next row reads one), and the second's, which the seed's anchored
-// comment draws, is another block's, passed over too. Nothing of the page's own takes the focus
-// after the outline at this head, so a stand-in control under it is the tab stop Tab goes to
-// (`standInControlBelow`).
+// comment draws, is another block's, passed over too. The first tab stop after the outline is the
+// field of the box at the foot, so Tab goes there.
 // SLOW(>=2s): the whole issue seeded and loaded, then the row's editor opened twice, each waited
 // on until it takes the caret and the ask's card is drawn in it, and until it closes again.
 test("Tab from a row's editor passes over the controls of an ask another block draws, Shift+Tab goes to the row, and each ends the editing", async ({
@@ -4798,7 +4809,6 @@ test("Tab from a row's editor passes over the controls of an ask another block d
     const before = await storedMarkdown(seeded.specArtifactId);
     const row = nodeRow(page, statement).first();
     const editable = row.locator('[contenteditable="true"]');
-    const below = await standInControlBelow(page);
     // The tab stops the ask's card draws in the row's editor.
     const askControls = row
       .locator(`[data-block-id="${OPEN_QUESTION_BLOCK_ID}"]`)
@@ -4846,7 +4856,7 @@ test("Tab from a row's editor passes over the controls of an ask another block d
     ).toBe(false);
     expect(afterTab.inAsk, `Tab stopped on the ask's ${afterTab.name}`).toBe(false);
     await expect(
-      below.control,
+      composerField(page),
       `Tab from the row's editor went to ${afterTab.name}, not the first tab stop after its box`
     ).toBeFocused();
     await expect(editable, "Tab from the row's editor did not end the editing").toHaveCount(0);
@@ -4908,7 +4918,6 @@ test("Tab from a row's editor stops at the references button of the node's own b
       const references = row
         .locator("[data-editor-box]")
         .getByRole("button", { name: /references on block$/ });
-      const below = await standInControlBelow(page);
 
       await focusRow(page, statement);
       await page.keyboard.press("Enter");
@@ -4946,7 +4955,7 @@ test("Tab from a row's editor stops at the references button of the node's own b
       );
       await page.keyboard.press("Tab");
       await expect(
-        below.control,
+        composerField(page),
         "Tab from the statement's references button did not go past every other block's to the first tab stop after the editor's box"
       ).toBeFocused();
       await expect(editable, "Tab out of the editor's box did not end the editing").toHaveCount(0);

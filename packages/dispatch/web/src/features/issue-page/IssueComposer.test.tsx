@@ -2146,8 +2146,9 @@ test("a new act landing moves the current point to it, and the mark takes no foc
 });
 
 // R12: with nothing aimed, a question that waits on the reader is the point, though the reader's
-// comment came after it. Answered, it waits on nobody, and the point is the newest act: the
-// question itself, by its answer given after that comment, and then a newer act once one lands.
+// comment came after it. Once answered, it waits for no answer, and the point is the newest act:
+// the question itself, by its answer given after that comment, and then a newer act once one
+// lands.
 test("the current point is the question that waits on the reader, then the newest act once it is answered", async () => {
   const page = renderPage({}, questionOutline({}));
   expect(drawnPoint()).toEqual(pointOn("ask-1"));
