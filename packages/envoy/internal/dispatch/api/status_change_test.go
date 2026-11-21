@@ -969,6 +969,110 @@ func TestARefusalBeforeTheKeyedLayerAnswersChanged(t *testing.T) {
 	ruleRig{database: rig.database}.requireIssue(t, named, "todo", "")
 }
 
+// TestARepeatOfAStatusChangeAnswersTheIssuesItsStepsRead: every answer that carries a committed
+// step's entry carries that entry's issue as the step read it, not as the issue stands when the
+// answer is written, and the answer's own issue as the uninterrupted call answers it (spec v10: a
+// repeat "answers with the entries that the first run's committed steps read, which its recovery
+// point stores"; c-route-fence: "the entries of the first run's steps being the ones those steps
+// read"; the architect's ruling of 2026-11-21 in round 2 of testing). A client such as the Legion
+// daemon takes every event of an entry's issue after previous_last_seq up to issue.last_seq as the
+// call's own, so an issue read after another writer touched it hands that writer's events to the
+// call. Here another writer labels a step's issue after the step committed and before each answer:
+// a KEY_IN_FLIGHT while the first run holds the key, a replay of the finished call, and the answer
+// of an attempt that resumed a call whose holder died. Each answers the steps' reads: the named
+// issue's own step moves it into work (one event), and each child's step moves it with a comment
+// (two events), and no label the other writer added is in any issue of the answer.
+func TestARepeatOfAStatusChangeAnswersTheIssuesItsStepsRead(t *testing.T) {
+	rig := newRepeatRig(t)
+	label := func(t *testing.T, issue, label string) {
+		t.Helper()
+		if labelled := rig.send(t, patchOf(issue, map[string]any{"labels": []string{label}})); labelled.Code != http.StatusOK {
+			t.Fatalf("label %s: status=%d body=%s", issue, labelled.Code, labelled.Body.String())
+		}
+	}
+	requireNoLabel := func(t *testing.T, what string, response *httptest.ResponseRecorder) {
+		t.Helper()
+		answer := decodeBody[struct {
+			Issue   *model.Issue        `json:"issue"`
+			Changed []statusChangeEntry `json:"changed"`
+		}](t, response)
+		if answer.Issue != nil && len(answer.Issue.Labels) != 0 {
+			t.Errorf("%s answered its issue %s with the labels %v another writer added after the call's step, want the step's read",
+				what, answer.Issue.Key, answer.Issue.Labels)
+		}
+		for _, entry := range answer.Changed {
+			if entry.Issue != nil && len(entry.Issue.Labels) != 0 {
+				t.Errorf("%s answered the entry of %s with the labels %v another writer added after its step, want the step's read",
+					what, entry.Key, entry.Issue.Labels)
+			}
+		}
+	}
+	// expect is requireStatusChange that goes on after a mismatch, so a held run is always let go
+	// and each answer of the test is judged.
+	expect := func(t *testing.T, request string, response *httptest.ResponseRecorder, status int, want map[string]any) {
+		t.Helper()
+		if got := projectedStatusChange(t, response); response.Code != status || !reflect.DeepEqual(got, any(want)) {
+			gotJSON, _ := json.Marshal(got)
+			wantJSON, _ := json.Marshal(want)
+			t.Errorf("%s: status=%d body=%s\nwant %d %s", request, response.Code, gotJSON, status, wantJSON)
+		}
+	}
+
+	t.Run("while the first run holds the key, and after it finished", func(t *testing.T) {
+		named := rig.file(t, "Issue whose step another writer touches", "backlog", "")
+		child := rig.file(t, "Child whose step another writer touches", "backlog", named)
+		seq := rig.seqs(t, named, child)
+		const key = "read-by-its-steps"
+		write := statusChangeOf(named, map[string]any{"status": "todo", "include_children": true})
+		namedStep := wantChange{named, "todo", "", seq[named], seq[named] + 1}
+		want := wantAnswer(namedStep, namedStep, wantChange{child, "todo", named, seq[child], seq[child] + 2})
+
+		resume := rig.stopAfterStep(t, write, key, 0)
+		label(t, named, "touched-while-the-call-is-held")
+		inFlight := rig.keyedStatusChange(t, write, key)
+		expect(t, write.String()+" again while the first run holds the key", inFlight, http.StatusConflict,
+			wantRefusal(contracts.IdempotencyKeyInFlight, fmt.Sprintf(
+				"the first request under %s %q is still running; this one was not run: ask again under the same key",
+				contracts.IdempotencyKeyHeader, key), namedStep))
+		requireNoLabel(t, "the KEY_IN_FLIGHT", inFlight)
+		first := resume()
+		expect(t, write.String(), first, http.StatusOK, want)
+		requireNoLabel(t, "the first run", first)
+
+		label(t, named, "touched-after-the-call")
+		label(t, child, "touched-after-the-call")
+		again := rig.keyedStatusChange(t, write, key)
+		if !replayed(again) {
+			t.Errorf("the repeat of the finished call answered %d %s, not marked replayed", again.Code, again.Body.String())
+		}
+		expect(t, write.String()+" repeated after it finished", again, http.StatusOK, want)
+		requireNoLabel(t, "the replay", again)
+	})
+
+	t.Run("an attempt that resumed a call whose holder died", func(t *testing.T) {
+		named := rig.file(t, "Issue whose resumed call another writer touches", "backlog", "")
+		first := rig.file(t, "First child of the resumed call", "backlog", named)
+		second := rig.file(t, "Second child of the resumed call", "backlog", named)
+		seq := rig.seqs(t, named, first, second)
+		const key = "read-by-its-steps-resumed"
+		write := statusChangeOf(named, map[string]any{"status": "todo", "include_children": true})
+		namedStep := wantChange{named, "todo", "", seq[named], seq[named] + 1}
+
+		resume := rig.stopAfterStep(t, write, key, 1)
+		rig.lapse(t, key)
+		label(t, named, "touched-before-the-repeat")
+		label(t, first, "touched-before-the-repeat")
+		repeat := rig.keyedStatusChange(t, write, key)
+		expect(t, write.String()+" repeated past the lease", repeat, http.StatusOK, wantAnswer(namedStep,
+			namedStep,
+			wantChange{first, "todo", named, seq[first], seq[first] + 2},
+			wantChange{second, "todo", named, seq[second], seq[second] + 2},
+		))
+		requireNoLabel(t, "the resumed attempt", repeat)
+		resume()
+	})
+}
+
 // ruleState is an issue's status and parent, as a replay of the call's writes holds them.
 type ruleState struct {
 	status string
