@@ -1038,6 +1038,14 @@ test("a first line ends where every row of the sentence table ends its first sen
   }
 });
 
+// R1: a node that opens with a list draws its one line from the list's first item, never from the
+// whole list run together (`firstWords`). No row of the sentence table tells the two apart, since
+// each of its lists' first items ends at a full stop: an item that ends at none does.
+test("a node that opens with a list draws its first item's words, never the whole list's", () => {
+  expect(lineWordsRaw({ text: "- Keep the old page\n- Then drop it" })).toBe("Keep the old page");
+  expect(lineWordsRaw({ text: "1. Keep the old page\n2. Then drop it" })).toBe("Keep the old page");
+});
+
 // R1: a cut at the limit falls between two characters, never inside one. A character outside the
 // Basic Multilingual Plane is two UTF-16 units, and a line that ends on the first of them holds a
 // lone surrogate, which `encodeURIComponent` refuses and a row draws as a broken glyph.
