@@ -249,11 +249,7 @@ func (i *Issuer) handleRevoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if status != 0 {
-		if code == "" {
-			http.Error(w, http.StatusText(status), status)
-		} else {
-			tokenError(w, status, code)
-		}
+		tokenFailure{status: status, code: code}.answer(w)
 		return
 	}
 	i.mu.Lock()

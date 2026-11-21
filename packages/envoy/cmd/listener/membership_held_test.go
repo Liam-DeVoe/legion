@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -16,28 +15,9 @@ import (
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
-// heldTestClock is the broker-token check's clock in a test that outlives the answer the check
-// keeps (brokertoken.AffirmativeCacheTTL) without sleeping through it.
-type heldTestClock struct {
-	mu sync.Mutex
-	at time.Time
-}
-
-func (c *heldTestClock) now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.at
-}
-
-func (c *heldTestClock) advance(d time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.at = c.at.Add(d)
-}
-
 // heldTestTokens is the listener's broker-token credential over broker, its verifier reading clock,
 // as apiAuth reads it once the spent-proof bucket is open.
-func heldTestTokens(t *testing.T, broker *brokertokentest.StubBroker, clock *heldTestClock) *brokerTokens {
+func heldTestTokens(t *testing.T, broker *brokertokentest.StubBroker, clock *listenerClock) *brokerTokens {
 	t.Helper()
 	tokens := newBrokerTokens(listenerBrokerConfig{
 		BrokerURL:        broker.Server.URL,
@@ -50,7 +30,7 @@ func heldTestTokens(t *testing.T, broker *brokertokentest.StubBroker, clock *hel
 		Origin:    listenerBrokerOrigin,
 		Replay:    &spentProofsInMemory{},
 		Address:   listenerSourceAddress,
-		Now:       clock.now,
+		Now:       clock.Now,
 	})
 	if err != nil {
 		t.Fatalf("build the broker-token verifier: %v", err)
@@ -79,7 +59,7 @@ func listenerHeldText(person string) string {
 func TestAPIAuthRefusesAHeldBrokerToken(t *testing.T) {
 	broker := brokertokentest.NewStubBroker(t)
 	caller, stranger := brokertokentest.NewCaller(t), brokertokentest.NewCaller(t)
-	clock := &heldTestClock{at: time.Now()}
+	clock := &listenerClock{now: time.Now()}
 	tokens := heldTestTokens(t, broker, clock)
 
 	const person, token = "ada@example.com", "access-token-of-a-held-person"
@@ -119,7 +99,7 @@ func TestAPIAuthRefusesAHeldBrokerToken(t *testing.T) {
 	released := held
 	released.Held = false
 	broker.Says(token, released)
-	clock.advance(brokertoken.AffirmativeCacheTTL)
+	clock.Advance(brokertoken.AffirmativeCacheTTL)
 	response, logged = serve(brokerTokenRequest(t, caller, http.MethodPost, "/v1/messages/publish", token, `{}`))
 	if response.Code != http.StatusOK || served != 1 {
 		t.Fatalf("%s's broker token once the broker answers her not held = %d %s, served %d times; want 200", person, response.Code, response.Body.String(), served)
@@ -146,9 +126,9 @@ const brokerUnavailableText = "whether this token's person may still act could n
 func TestAPIAuthRefusesAnExpiredStanding(t *testing.T) {
 	broker := brokertokentest.NewStubBroker(t)
 	caller := brokertokentest.NewCaller(t)
-	clock := &heldTestClock{at: time.Now()}
+	clock := &listenerClock{now: time.Now()}
 	tokens := heldTestTokens(t, broker, clock)
-	deadline := clock.now().Truncate(time.Second).Add(3 * time.Second)
+	deadline := clock.Now().Truncate(time.Second).Add(3 * time.Second)
 	const person, heldPerson = "ada@example.com", "bob@example.com"
 	const token, heldToken = "access-token-served-until-a-deadline", "held-access-token-carrying-a-deadline"
 	served := sessionAnswer("ses_served", person, caller.JKT())
@@ -194,10 +174,10 @@ func TestAPIAuthRefusesAnExpiredStanding(t *testing.T) {
 		}
 	}
 	expect("before her deadline", true)
-	clock.advance(deadline.Sub(clock.now()) - time.Millisecond)
+	clock.Advance(deadline.Sub(clock.Now()) - time.Millisecond)
 	expect("a millisecond before her deadline, from the kept answer", true)
-	clock.advance(time.Millisecond)
+	clock.Advance(time.Millisecond)
 	expect("at her deadline", false)
-	clock.advance(time.Second)
+	clock.Advance(time.Second)
 	expect("a second past her deadline", false)
 }

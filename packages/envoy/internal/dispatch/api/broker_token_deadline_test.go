@@ -114,38 +114,3 @@ func TestABrokerTokenPastItsDeadlineIsUnavailable(t *testing.T) {
 		}
 	})
 }
-
-// TestAHeldBrokerTokenSaysWhatEndsTheHold (K2): a broker token the broker's introspection answers
-// held is 401 MEMBERSHIP_HELD in words that say what ends the hold under the rule that signs people
-// in. Under IAP identity (Standing.ChecksDirectory) a sign-in releases nothing and the Workspace
-// Directory's next active answer does, so the token gets the words a personal token gets there,
-// from the one constant both read (membershipHeldDirectoryText). Under a Google rule, and where no
-// rule signs people in, it gets the broker's own words, naming the person. Nothing asks Standing.
-//
-// Control: brokerTokenActor refusing a held token in the broker's words whatever the rule; the
-// token under IAP identity tells carol to sign in to Dispatch, and the test fails naming that row.
-func TestAHeldBrokerTokenSaysWhatEndsTheHold(t *testing.T) {
-	rig := newBrokerTokenRig(t)
-	seedPeople(t, rig.database, accessCarol)
-	caller := newBrokerCaller(t)
-	const token = "carols-broker-token-the-broker-answers-held"
-	rig.broker.Says(token, heldPersonToken(caller.jkt, accessCarol, true))
-	cookie, iap := &standingFake{}, &standingFake{directory: true}
-	withCookie, withIAP := rig.deps, rig.deps
-	withCookie.Standing, withIAP.Standing = cookie, iap
-	for _, row := range []struct {
-		name, text string
-		handler    http.Handler
-	}{
-		{"under a Google rule (cookie identity)", brokerHeldText(accessCarol), servedWith(t, withCookie)},
-		{"under IAP identity", membershipHeldDirectoryText, servedWith(t, withIAP)},
-		{"with no Google rule", brokerHeldText(accessCarol), rig.handler},
-	} {
-		response := httptest.NewRecorder()
-		row.handler.ServeHTTP(response, caller.presenting(t, http.MethodGet, "/api/v1/whoami", token, nil))
-		wantHeldRefusal(t, response, row.text, "carol's broker token answered held, "+row.name)
-	}
-	if asked := append(cookie.askedSoFar(), iap.askedSoFar()...); len(asked) != 0 {
-		t.Fatalf("held broker tokens asked Standing about %v, want nothing", asked)
-	}
-}

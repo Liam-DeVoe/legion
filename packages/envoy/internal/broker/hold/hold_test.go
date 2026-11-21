@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/store"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testport"
 )
@@ -56,35 +57,20 @@ type line struct {
 }
 
 // logs keeps every line a gate logs.
-type logs struct {
-	mu    sync.Mutex
-	lines []line
-}
-
-func (l *logs) Enabled(context.Context, slog.Level) bool { return true }
-func (l *logs) WithAttrs([]slog.Attr) slog.Handler       { return l }
-func (l *logs) WithGroup(string) slog.Handler            { return l }
-func (l *logs) Handle(_ context.Context, r slog.Record) error {
-	attrs := map[string]string{}
-	r.Attrs(func(a slog.Attr) bool {
-		attrs[a.Key] = a.Value.String()
-		return true
-	})
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.lines = append(l.lines, line{level: r.Level, message: r.Message, attrs: attrs})
-	return nil
-}
+type logs struct{ logtest.Recorder }
 
 // at is every line logged at level whose message is message (any message for "") and whose
 // person attribute is person (any for "").
 func (l *logs) at(level slog.Level, message, person string) []line {
-	l.mu.Lock()
-	defer l.mu.Unlock()
 	var found []line
-	for _, logged := range l.lines {
-		if logged.level == level && (message == "" || logged.message == message) && (person == "" || logged.attrs["person"] == person) {
-			found = append(found, logged)
+	for _, record := range l.Records() {
+		attrs := map[string]string{}
+		record.Attrs(func(a slog.Attr) bool {
+			attrs[a.Key] = a.Value.String()
+			return true
+		})
+		if record.Level == level && (message == "" || record.Message == message) && (person == "" || attrs["person"] == person) {
+			found = append(found, line{level: record.Level, message: record.Message, attrs: attrs})
 		}
 	}
 	return found

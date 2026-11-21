@@ -40,6 +40,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
+	"github.com/sjawhar/envoy/internal/dispatch/identity/directorytest"
 	"github.com/sjawhar/envoy/internal/dispatch/routes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -519,7 +520,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			t.Run("iap router", func(t *testing.T) {
 				keys, signing := iapKeySet(t)
 				people := peopleStore(t)
-				handler := routerFor(t, iapBoot(t, keys, nil), routes.AppContextOptions{People: people, Store: storetest.Open(t)})
+				handler := routerFor(t, iapBoot(t, keys, directorytest.ServeGoogle(t), nil), routes.AppContextOptions{People: people, Store: storetest.Open(t)})
 				member := iapWhoami(handler, iapAssertion(t, keys, signing, testIAPAudience, "example.com"), nil)
 				if member.Code != http.StatusOK || !strings.Contains(member.Body.String(), `"login":"a.person@example.com"`) {
 					t.Errorf("DISPATCH_IDENTITY=iap: a member's assertion: GET /auth/whoami answered %d %s, want a.person@example.com", member.Code, member.Body.String())
@@ -548,7 +549,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			// another backend service is refused, the same assertion for this one admitted.
 			t.Run("router", func(t *testing.T) {
 				keys, signing := iapKeySet(t)
-				handler := routerFor(t, iapBoot(t, keys, nil), routes.AppContextOptions{People: peopleStore(t), Store: storetest.Open(t)})
+				handler := routerFor(t, iapBoot(t, keys, directorytest.ServeGoogle(t), nil), routes.AppContextOptions{People: peopleStore(t), Store: storetest.Open(t)})
 				if response := iapWhoami(handler, iapAssertion(t, keys, signing, "/projects/123456789012/global/backendServices/1", "example.com"), nil); response.Code != http.StatusUnauthorized {
 					t.Errorf("an assertion for another audience: GET /auth/whoami answered %d %s, want 401", response.Code, response.Body.String())
 				}

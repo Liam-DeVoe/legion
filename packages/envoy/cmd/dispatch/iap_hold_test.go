@@ -42,8 +42,7 @@ func newIAPHoldRig(t *testing.T) *iapHoldRig {
 	t.Helper()
 	keys, signing := iapKeySet(t)
 	r := &iapHoldRig{t: t, keys: keys, signing: signing, google: directorytest.ServeGoogle(t), database: storetest.Open(t)}
-	boot := iapBoot(t, keys, nil)
-	boot.DirectoryOptions = r.google.ClientOptions()
+	boot := iapBoot(t, keys, r.google, nil)
 	r.people = testPeople{PgPeopleStore: store.NewPgPeopleStore(r.database.Pool, testSigningKey, nil), pool: r.database.Pool}
 	built := routes.AppContextOptions{
 		Lifetime: t.Context(), SigningKey: testSigningKey, People: r.people, Store: r.database,
@@ -72,7 +71,7 @@ func newIAPHoldRig(t *testing.T) *iapHoldRig {
 func (r *iapHoldRig) browser(method, path, body string) *httptest.ResponseRecorder {
 	r.t.Helper()
 	request := httptest.NewRequest(method, "http://dispatch.test"+path, strings.NewReader(body))
-	request.Header.Set("X-Goog-IAP-JWT-Assertion", iapAssertion(r.t, r.keys, r.signing, testIAPAudience, "example.com"))
+	request.Header.Set(identity.IAPAssertionHeader, iapAssertion(r.t, r.keys, r.signing, testIAPAudience, "example.com"))
 	if method != http.MethodGet {
 		request.Header.Set("Origin", "http://dispatch.test")
 		request.Header.Set("Content-Type", "application/json")

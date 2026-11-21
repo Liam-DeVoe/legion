@@ -134,9 +134,6 @@ func (g *Google) ClientOptions() []option.ClientOption {
 	return []option.ClientOption{option.WithHTTPClient(g.client)}
 }
 
-// Client is the client ClientOptions names.
-func (g *Google) Client() *http.Client { return g.client }
-
 // SetUser makes users.get answer key with u.
 func (g *Google) SetUser(key string, u User) {
 	body, err := json.Marshal(map[string]any{
