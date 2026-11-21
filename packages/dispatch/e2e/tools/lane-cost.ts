@@ -11,7 +11,8 @@
  *  `run` prints one run's reading as JSON, by verification.md's "How a lane's cost is read". It
  *  reads the run's jobs whose name starts `dispatch-browser`, each at the attempt it last ran in
  *  (`filter=latest`), or the jobs of attempt `<attempt>` where the command names one, and leaves
- *  out a job that was skipped and one that has no `started_at` or no `completed_at`:
+ *  out a job that was skipped and one that has no `started_at` or no `completed_at`. A run of the
+ *  nightly workflow, whose jobs are named `full / …`, is not read: its jobs fail the filter above.
  *
  *  - cost: the sum over those jobs of `completed_at` less `started_at`, in seconds. `per_job`
  *    holds each job's, under its name after `dispatch-browser / `;
@@ -26,17 +27,19 @@
  *  Run 44823289704 reads cost 2,719 s, own 1,223 s, wall 1,229 s, queue 18 s and 1,609 rows.
  *
  *  `base` prints, as JSON and sorted by `updated_at`, the completed runs of ci.yaml created on
- *  `<day>` (UTC) that count for the base set: event merge_group, push or schedule, a schedule run
- *  only on main; concluded success; updated at or before `<until>`; at least 8 dispatch-browser
- *  jobs that were not skipped, every one of them successful; and a merged report of at least
- *  1,000 rows. Each is printed with its run, event, head, cost, rows, jobs, own and updated_at.
+ *  `<day>` (UTC) that count for the base set: event merge_group, the merge queue's runs, which
+ *  are how ci.yaml runs the full lane on the tree the default branch lands as (ci.yaml runs on
+ *  pull_request, merge_group and workflow_dispatch alone, and a dispatch is a run started by
+ *  hand); concluded success; updated at or before `<until>`; at least 8 dispatch-browser jobs
+ *  that were not skipped, every one of them successful; and a merged report of at least 1,000
+ *  rows. Each is printed with its run, event, head, cost, rows, jobs, own and updated_at.
  *
  *  THE DAY'S LISTING. GitHub lists at most 1,000 runs for a filtered query and drops the rest
  *  without saying so: ci.yaml had 1,695 completed runs on 2026-11-20, and the listing of that day
  *  lost the oldest of them. verification.md's lane command says how one run is read and nothing
- *  of how the day's runs are listed, which is how a short base set went unnoticed. So each of the
- *  three events is listed on its own, and its `total_count` is read first. A listing GitHub
- *  counts at or over 1,000 runs is refused, naming the event, the day and the count, and so is a
+ *  of how the day's runs are listed, which is how a short base set went unnoticed. So the listing
+ *  names its event, and its `total_count` is read first. A listing GitHub counts at or over
+ *  1,000 runs is refused, naming the event, the day and the count, and so is a
  *  listing whose length differs from its `total_count`. A day refused at the cap is read in
  *  parts: `<day>` also takes a range of GitHub's `created` filter, such as
  *  `2026-11-20T00:00:00Z..2026-11-20T11:59:59Z`, and the parts' base sets are joined.
@@ -63,8 +66,8 @@ const REPO = "cybermonklabs/legion";
 /** The most runs GitHub lists for one filtered query (see THE DAY'S LISTING, above). */
 const LISTING_CAP = 1000;
 
-/** The events the default branch's full lane runs on. */
-const EVENTS: readonly string[] = ["merge_group", "push", "schedule"];
+/** The event ci.yaml runs the default branch's full lane on: the merge queue's. */
+const EVENTS: readonly string[] = ["merge_group"];
 
 /** The fewest dispatch-browser jobs, not skipped, of a run of the full lane. */
 const FULL_LANE_JOBS = 8;
@@ -299,7 +302,6 @@ function base(day: string, until: string): BaseRun[] {
   const picked: BaseRun[] = [];
   for (const run of dayRuns(day)) {
     if (!EVENTS.includes(run.event) || run.conclusion !== "success") continue;
-    if (run.event === "schedule" && run.head_branch !== "main") continue;
     if (run.updated_at > until) continue;
     const jobs = jobsOf(String(run.id));
     const notSkipped = jobs.filter((job) => job.conclusion !== "skipped");

@@ -179,7 +179,7 @@ const PAGE_READ_INTERVALS = [50, 50, 100, 200, 500];
 /** How far ahead of the page's own reading of its clock `holdPageClockWhen` pauses it. `pauseAt`
  *  takes a time on the page's clock and refuses one the clock has already passed ("Cannot
  *  fast-forward to the past"), and the clock runs on between that reading and the call, so the
- *  pause is set a second ahead, as this suite's other pauses are. */
+ *  pause is set a second ahead. */
 const PAGE_HOLD_LEAD_MS = 1_000;
 
 /**

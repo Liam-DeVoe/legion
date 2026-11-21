@@ -265,7 +265,8 @@ test("a list that starts refilling after a complete read claims no agent absent,
 }) => {
   // Four pages and a dozen loads of them, each a few seconds' work on a busy machine; the waits
   // on the agent list are page timers the clock spends, so they cost this deadline only the real
-  // round trips of the reads they wait on (`spendPageTimeUntil`, `e2e/agents.ts`).
+  // round trips of the reads they wait on and the short pauses between two readings of the page
+  // (`spendPageTimeUntil`, `e2e/agents.ts`).
   test.setTimeout(120_000);
   const fixture = await seedRefillFixture([planner, watcher]);
   const alice = await asUser(browser, "alice");
@@ -372,7 +373,8 @@ test("a list that starts refilling after a complete read claims no agent absent,
 test("an empty list that starts refilling never says nobody is connected", async ({ browser }) => {
   // Four pages and ten loads of them, each a few seconds' work on a busy machine; the waits on
   // the agent list are page timers the clock spends, so they cost this deadline only the real
-  // round trips of the reads they wait on (`spendPageTimeUntil`, `e2e/agents.ts`).
+  // round trips of the reads they wait on and the short pauses between two readings of the page
+  // (`spendPageTimeUntil`, `e2e/agents.ts`).
   test.setTimeout(120_000);
   const fixture = await seedRefillFixture([]);
   const alice = await asUser(browser, "alice");

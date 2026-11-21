@@ -42,8 +42,9 @@ export const MAX_ASSET_BYTES = 8 * 1024 * 1024;
  * of `bafd3618`, which brought the default branch's draft-keeping (2026-11-20), wrote 519,305,
  * and `9ccacce3` the same day answered it by making the kinds of write a chunk the take-up waits
  * for and taking the draft hook out of the entry. At `381b29ad` (2026-11-20) the entry was
- * 496,982 bytes, 3,018 under this budget, and at `1293f3d9` the same day, the last commit to
- * change what it carries, it is 497,475 bytes, 2,525 under.
+ * 496,982 bytes, 3,018 under this budget, at `1293f3d9` the same day 497,475, and at `06c1e7b2`
+ * (2026-11-21), built with a 40-character build id as CI builds it, it is 497,539 bytes, 2,461
+ * under.
  * No hash is recorded with these sizes: that hash carries the build id, which falls back to the clock
  * (`__DISPATCH_BUILD__`, `web/vite.config.ts`), so two builds of one tree write the same bytes
  * under two names. The id is in the entry too, so CI's build, whose id is the 40-character

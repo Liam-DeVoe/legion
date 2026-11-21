@@ -201,15 +201,16 @@ the step compiled the server nearly from nothing on every run. Measured in clust
 CPUs with golang:1.27.3, building the step's commands as it builds them at b1634bff of #3513,
 after a build cache filled by building the same commands at main's 278138ea, the commit main's
 go-envoy-test entry was saved at on 2026-11-18: 95 s when that fill ran with cgo on (Job
-infra-1109-gocgo-dv7gl, where the head's cgo-on build after the same fill took 26 s), and 16 s,
+infra-1109-gocgo-dv7gl, where b1634bff's cgo-on build after the same fill took 26 s), and 16 s,
 12 s for the first `go build` and 4 s for the broker's, when it ran with CGO_ENABLED=0 (Job
-infra-1109-gobuild-894l9). The same Job built them in 5 s on a build cache of the head's own,
+infra-1109-gobuild-894l9). The same Job built them in 5 s on a build cache of b1634bff's own,
 and in 69 s on an empty build cache with the modules already downloaded. On the runner the step
 took 108 to 150 s across the full lanes of #3513 on 2026-11-19 and 20, and in run 44823289704
 (job 136589534717) both Vite builds beside it took 2 min 5 s, where the same build alone takes
-37 s on the same runner type ("built in 36.97s", dispatch-ui job 136589534807): the cold go
-build held the runner's four CPUs for most of the step, and the bundles waited on it. That
-job's restore of go-envoy-test read 723,666,370 bytes, in 19 s.
+37 s on the same runner type ("built in 36.97s", dispatch-ui job 136589534807). The go build ran
+beside them on the same four CPUs, and on a build cache that held none of its objects it is the
+cold build those Jobs time at a minute and more. That job's restore of go-envoy-test read
+723,666,370 bytes, in 19 s.
 
 The connections step's `go run` carries no CGO_ENABLED, so it builds with cgo on, and
 go-envoy-test held its closure, the store package's among it: the step took 1.4 s in job
