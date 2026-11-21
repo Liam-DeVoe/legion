@@ -2083,7 +2083,8 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 		defer cancel()
 		// In the required privacy mode a claim is held to the projects the caller sees, a public
 		// project's too, so no claim is made for a project the claimant's token does not list.
-		if sees, err := d.privacy.decide(ctx, r).sees(claimed); err != nil {
+		decision := d.privacy.decide(ctx, r)
+		if sees, err := decision.sees(claimed); err != nil {
 			writePrivacyUnknown(w)
 			return
 		} else if !sees {
@@ -2112,6 +2113,19 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 		// was without the bucket read.
 		if fresh, freshErr := bucketSessionEntry(ctx, d.sessions, body.SessionID, roleHolderReadTimeout); freshErr == nil {
 			entry = fresh
+		}
+		// In the required privacy mode the session the claim names must see the role's project
+		// too, by its own stored scope (roles.Sees over its entry): a caller that sees every
+		// project, or a shared credential claiming for a session, makes no claim the session it
+		// names could not hold, as the send route holds its target (census cell M3').
+		if d.privacy.isRequired() {
+			if sees, err := roles.Sees(ctx, decision.privateOf, entry.Projects, entry.IsRestricted(), claimed); err != nil {
+				writePrivacyUnknown(w)
+				return
+			} else if !sees {
+				writeJSON(w, http.StatusForbidden, projectNotListedAnswer(claimed, body.SessionID))
+				return
+			}
 		}
 		// The process this claim is made by is the one the request states, and the claim records
 		// it: a session id names no process, since a second process can resume a live session's
@@ -2222,6 +2236,19 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 					claimantInstance = registeredInstanceID
 				}
 				verdict, err = roleSupersessionVerdict(ctx, d.sessions, holder, previous, claimantInstance)
+				// In the required privacy mode a holder whose stored scope does not see the
+				// role's project is no holder of it (roles.ResolveHolder delivers it nothing), so
+				// a soft claim by a session that sees the project takes the role from it, as from
+				// a holder that is not live: a claim written over a private project's holder for
+				// a session of another project gives the role back (census cell M6).
+				if err == nil && verdict != roleTakenFromHolder && verdict != roleTakenFromUnidentifiedPredecessor && d.privacy.isRequired() {
+					held, _ := d.sessions.Lookup(holder)
+					if sees, seesErr := roles.Sees(ctx, decision.privateOf, held.Projects, held.IsRestricted(), claimed); seesErr != nil {
+						return nil, claim, roleHolderUnread, seesErr
+					} else if !sees {
+						verdict = roleTakenFromHolder
+					}
+				}
 			}
 			if verdict == roleTakenFromHolder || verdict == roleTakenFromUnidentifiedPredecessor {
 				supersedable = append(supersedable, holder)
