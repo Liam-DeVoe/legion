@@ -83,16 +83,24 @@ func growAgentHeap(after time.Duration, stderr io.Writer) {
 
 // collectAgentOnSignal is the agent's collection on demand under its test hooks
 // (DISPATCH_TEST_AGENT_HOOKS=1), which the soak of background runs reads the agent's memory by
-// (agent_soak_test.go): each SIGUSR1 collects the heap, then writes to stderr, which the server
-// logs, the number of the last collection the runtime completed, the heap it found live and the
-// goroutines running, read again until no collection completed between two reads of the number,
-// so the heap is that collection's.
+// (agent_soak_test.go): each SIGUSR1 closes the idle connections the process's HTTP transport
+// pools, collects the heap, then writes to stderr, which the server logs, the number of the last
+// collection the runtime completed, the heap it found live and the goroutines running, read again
+// until no collection completed between two reads of the number, so the heap is that
+// collection's. An idle connection to the chat model is two goroutines (its read and write loops)
+// and its buffers, which net/http keeps, at most two to a host, for 90 s after its last call: the
+// count would show how many the pool holds at that moment, not what a run left behind. A
+// connection's loops end once it is closed, which collectAgentOnSignal waits idleClosed for.
 func collectAgentOnSignal(stderr io.Writer) {
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGUSR1)
 	go func() {
 		samples := []metrics.Sample{{Name: "/gc/cycles/total:gc-cycles"}, {Name: "/gc/heap/live:bytes"}}
 		for range signals {
+			if transport, pooled := http.DefaultTransport.(*http.Transport); pooled {
+				transport.CloseIdleConnections()
+				time.Sleep(idleClosed)
+			}
 			runtime.GC()
 			for {
 				metrics.Read(samples)
@@ -107,6 +115,10 @@ func collectAgentOnSignal(stderr io.Writer) {
 		}
 	}()
 }
+
+// idleClosed is how long collectAgentOnSignal waits for the loops of the idle connections it
+// closed to end.
+const idleClosed = 100 * time.Millisecond
 
 // The leaks a test's server plants for the negative control of the comparison of production's
 // heap (memory_leaks_test.go): a copy of each closed room's document, held on ygo's heap after the

@@ -13,6 +13,8 @@ import (
 	"sync"
 	"testing"
 
+	"go.uber.org/goleak"
+
 	"github.com/sjawhar/envoy/agentloop"
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/going/agent/agenttest"
@@ -384,4 +386,39 @@ func TestAnUploadedTextFileReadsAsItsBytes(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestARunLeavesNoGoroutineBehind: a run's turn - a search, a model call the content filter
+// refuses, the same call made again and refused again, and the call made with the result
+// withheld, which answers - starts no goroutine that outlives it, once the idle connections the
+// process's HTTP transport pools to the chat model are closed: the soak of background runs counts
+// the agent's goroutines the same way (cmd/dispatch collectAgentOnSignal). Each pooled connection
+// is two goroutines of net/http's, kept for 90 s after its last call.
+func TestARunLeavesNoGoroutineBehind(t *testing.T) {
+	var mu sync.Mutex
+	refused := 0
+	fake := agenttest.New(t, func(request *agenttest.Request) agenttest.Reply {
+		mu.Lock()
+		defer mu.Unlock()
+		results := strings.Join(request.ToolResults(), "\n")
+		switch {
+		case results == "":
+			return agenttest.Reply{Calls: []agenttest.Call{{Name: toolSearch, Arguments: map[string]any{"query": "architect"}}}}
+		case strings.Contains(results, injected) && refused < 2:
+			refused++
+			return agenttest.Reply{Status: http.StatusBadRequest, Error: filterRefusal}
+		}
+		return agenttest.Reply{Text: "No session is named the architect of DEMO-3."}
+	})
+	server, client := newFakeServer(t, func(agentwire.CallRequest) agentwire.CallAnswer {
+		body, _ := json.Marshal(map[string]any{"results": []any{map[string]any{"snippet": injected}}})
+		return agentwire.CallAnswer{Status: http.StatusOK, Body: body}
+	})
+	running := goleak.IgnoreCurrent()
+	workRun(t, fake.Model(), client, "ask the architect to review it")
+	if end, _ := server.end(t); end.State != agentwire.StateDone || fake.Count() != 4 {
+		t.Fatalf("the run ended %s with %q after %d model calls, want done after 4", end.State, end.Reason, fake.Count())
+	}
+	http.DefaultTransport.(*http.Transport).CloseIdleConnections()
+	goleak.VerifyNone(t, running)
 }
