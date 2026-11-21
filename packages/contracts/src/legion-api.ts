@@ -807,8 +807,9 @@ const legionIssue = z.object({
   /** Each open production check of the issue, oldest first, the last of them the one `check` shows
    * (contract 218): an issue whose tasks merged one after another holds a check of each merge.
    * Absent while none is open, and a daemon below contract 218 serves none at all
-   * (`api.withoutChecks`), which is why a reader takes it as optional. */
-  checks: z.array(legionCheckView).optional(),
+   * (`api.withoutChecks`), which is why a reader takes it as optional. No plugin code reads a field
+   * of it (LEGION_ANSWER_READS), so each field is optional, as `check`'s unread ones are. */
+  checks: z.array(legionCheckView.partial()).optional(),
   /** `mergeWait` is what this issue's review round waits on from GitHub (contract 133): present
    * only while the round waits on GitHub's merge state for the pull request's head, so every
    * issue whose round waits on nothing from GitHub has none, and a daemon before `mergeWait`'s
