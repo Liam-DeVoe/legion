@@ -28,10 +28,10 @@ const PROGRAM = path.join(import.meta.dir, "daemon-pane.go");
 /** Runs `./cmd/daemon-pane` in `module` and returns its stdout: for `run`, the program, `go run`,
  * with `args`; for `test`, its test binary, built by `go test -c`, with `args`, the binary's flags
  * (`-test.run`, `-test.v`). `input` is its stdin, the caller's own when there is none. Each key of
- * `files` is a file name under `<module>/cmd/daemon-pane/`, or a path of the module where it holds
- * a `/`, and the overlay stands the rig's file its value names there: `daemon-pane.go` as
- * `main.go`, for a test `daemon-pane_test.go` as `main_test.go` beside it, and a file of the module
- * for a run against a daemon that differs from this checkout's in that file alone. The
+ * `files` is a path of the module, and the overlay stands the rig's file its value names there:
+ * `daemon-pane.go` as `cmd/daemon-pane/main.go`, for a test `daemon-pane_test.go` as
+ * `cmd/daemon-pane/main_test.go` beside it, and a file of the module for a run against a daemon
+ * that differs from this checkout's in that file alone. The
  * `cmd/daemon-pane` directory is the overlay's alone, never made in the checkout, and `go test`
  * runs a test binary and its vet in the package's directory on disk, so a test is built with vet
  * off and its binary run in the run's scratch directory. */
@@ -46,12 +46,7 @@ export function goInDaemonModule(
   try {
     const overlay = path.join(scratch, "overlay.json");
     const replace = Object.fromEntries(
-      Object.entries(files).map(([name, file]) => [
-        name.includes("/")
-          ? path.join(module, name)
-          : path.join(module, "cmd", "daemon-pane", name),
-        file,
-      ])
+      Object.entries(files).map(([name, file]) => [path.join(module, name), file])
     );
     writeFileSync(overlay, JSON.stringify({ Replace: replace }));
     if (command === "run") {
@@ -98,7 +93,7 @@ function spawnOrThrow(argv: readonly string[], cwd: string, input?: string): str
 /** Runs daemon-pane.go in `module` with `args`, `input` on its stdin (the caller's own stdin when
  * there is none), and returns its stdout. */
 export function runDaemonPane(module: string, args: readonly string[], input?: string): string {
-  return goInDaemonModule(module, { "main.go": PROGRAM }, "run", args, input);
+  return goInDaemonModule(module, { "cmd/daemon-pane/main.go": PROGRAM }, "run", args, input);
 }
 
 /** The prompt a launch of `role` starts with, as the daemon in `module` composes it (daemon-pane.go

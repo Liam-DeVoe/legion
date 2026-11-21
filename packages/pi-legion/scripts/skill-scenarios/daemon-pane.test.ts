@@ -335,8 +335,8 @@ test.skipIf(skip)(
     const out = goInDaemonModule(
       DAEMON_MODULE,
       {
-        "main.go": path.join(import.meta.dir, "daemon-pane.go"),
-        "main_test.go": path.join(import.meta.dir, "daemon-pane_test.go"),
+        "cmd/daemon-pane/main.go": path.join(import.meta.dir, "daemon-pane.go"),
+        "cmd/daemon-pane/main_test.go": path.join(import.meta.dir, "daemon-pane_test.go"),
       },
       "test",
       [
@@ -365,15 +365,15 @@ test.skipIf(skip)(
   () => {
     const guidance = path.join(rig, "plan-guidance-unkeyed.md");
     writeFileSync(guidance, "Plant 7f3a.\n");
-    const keyTable = path.join("internal", "config", "keytable.go");
+    const keyTable = "internal/config/keytable.go";
     const without = path.join(rig, "keytable-without-plan-guidance.go");
     writeFileSync(
       without,
       keyTableWithout(readFileSync(path.join(DAEMON_MODULE, keyTable), "utf8"), "plan_guidance")
     );
     const unkeyed = {
-      "main.go": path.join(import.meta.dir, "daemon-pane.go"),
-      [keyTable.split(path.sep).join("/")]: without,
+      "cmd/daemon-pane/main.go": path.join(import.meta.dir, "daemon-pane.go"),
+      [keyTable]: without,
     };
 
     // The same prompt as this checkout's: the row above holds the key's own effect, and this
