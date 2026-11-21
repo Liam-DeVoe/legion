@@ -743,8 +743,8 @@ func (d *heldDurable) stop(ctx context.Context) {
 const intakeHoldFinalizing = "dispatch delivery: a hand-back has not reached NATS by the stop's deadline, so the intake's hold stays renewing until it does"
 
 // finalizeHandBacks keeps hold renewing while a hand-back of the stopped delivery is pending, and
-// releases it once that hand-back has landed and a flush of the connection answers, or once the
-// intake client's connection has closed. Close flushes a NATS client's outbound buffer before it
+// releases it once that hand-back has landed and a flush of the connection the delivery published
+// it on answers, or once that connection has closed (handBacksSettled). Close flushes a NATS client's outbound buffer before it
 // closes its socket, so a hand-back waiting then is either sent at close or dropped with the
 // connection; only then is it safe to release the hold. It runs on a goroutine of its own that
 // nothing in Run waits for, so it waits for nats.go's lock with no bound and makes one flush at a
@@ -760,7 +760,7 @@ func (d *heldDurable) finalizeHandBacks(delivery *intakeDelivery, hold *duty.Hol
 	retry := time.NewTicker(intakeFlushWait)
 	defer retry.Stop()
 	for {
-		if d.handBacksSettled() {
+		if d.handBacksSettled(delivery) {
 			if before := finalizerBeforeRelease.Load(); before != nil {
 				(*before)()
 			}
@@ -823,24 +823,27 @@ func (d *heldDurable) handBacksReached(ctx context.Context, delivery *intakeDeli
 	default:
 		return false
 	}
-	return d.flushHandBacks()
+	return d.flushHandBacks(delivery)
 }
 
 // flushHandBacks is handBacksSettled within intakeFlushWait, on a bound of its own as the release
 // that follows it is: both are part of what follows the stop's deadline (intakeStopBudget), and a
 // healthy link answers the flush in a round trip. A flush that has not answered by then is false.
-func (d *heldDurable) flushHandBacks() bool {
+func (d *heldDurable) flushHandBacks(delivery *intakeDelivery) bool {
 	flushing, cancel := context.WithTimeout(context.Background(), intakeFlushWait)
 	defer cancel()
-	settled, _, _ := bus.Bounded(flushing, func() (bool, error) { return d.handBacksSettled(), nil })
+	settled, _, _ := bus.Bounded(flushing, func() (bool, error) { return d.handBacksSettled(delivery), nil })
 	return settled
 }
 
-// handBacksSettled reports whether no hand-back nats.go had queued can reach the server later: a
-// flush of the intake client's connection answered within intakeFlushWait, so each has reached it,
-// or the connection has closed, which sent its outbound buffer or dropped it with the connection.
-func (d *heldDurable) handBacksSettled() bool {
-	conn := d.nats.Connection()
+// handBacksSettled reports whether no hand-back of delivery that nats.go had queued can reach the
+// server later: a flush of the connection delivery published its hand-backs on answered within
+// intakeFlushWait, so each has reached it, or that connection has closed, which sent its outbound
+// buffer or dropped it with the connection. It is the delivery's own connection, not the intake's:
+// in the fresh mode each generation delivers on a connection of its own, and an intake whose
+// take-over failed after its candidate delivered holds none (heldDurable.nats is nil).
+func (d *heldDurable) handBacksSettled(delivery *intakeDelivery) bool {
+	conn := delivery.nats.Connection()
 	return conn == nil || conn.IsClosed() || conn.FlushTimeout(intakeFlushWait) == nil
 }
 

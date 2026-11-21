@@ -513,6 +513,72 @@ func everyInterruptionOfAFreshTakeOverIsFinishedByTheNextHolder(t *testing.T, to
 	}
 }
 
+// A fresh process whose first take-over fails after its create stops cleanly. The take-over
+// subscribes its candidate, creates it, and is handed every message while its handler runs the
+// first; then its selection store stops answering, as in a database incident, so the publish of
+// the candidate fails, with the hold kept, and the take-over drops the candidate, which hands back
+// the messages behind the handler. Its intake then delivers from no generation, so it holds no
+// client of its own (heldDurable.nats is nil until a take-over succeeds), and every later attempt
+// fails at its first read of the store. The stop that follows confirms the hand-backs on the
+// connection they were published on and releases the hold, and the next holder is delivered every
+// message. Before the fix the stop flushed the intake's own client, nil here, and the process
+// panicked.
+func TestAStopAfterAFirstTakeOverFailedPastItsCreateCompletes(t *testing.T) {
+	for _, kind := range durableKinds {
+		t.Run(kind.logical, func(t *testing.T) {
+			hub, pool := freshRig(t, 0)
+			created, queued := make(chan string, 1), make(chan struct{})
+			var once sync.Once
+			process := startDurableProcess(t, hub, pool, kind, freshNames, blockingHandlers(), atStep(func(p *durableProcess, point, name string) error {
+				if point != stepCreated {
+					return nil
+				}
+				once.Do(func() {
+					created <- name
+					select {
+					case <-queued:
+					case <-time.After(30 * time.Second):
+					}
+					p.store.cut.Store(true)
+				})
+				return nil
+			}))
+			var candidate string
+			select {
+			case candidate = <-created:
+			case <-time.After(30 * time.Second):
+				t.Fatal("the first take-over never created its candidate")
+			}
+			sent := hub.publish(t, kind, 3)
+			_, js := hub.admin(t)
+			waitFor(t, 20*time.Second, func() bool {
+				info, err := js.ConsumerInfo(bus.Stream, candidate)
+				return err == nil && process.times(sent[0]) > 0 && info.NumAckPending == len(sent)
+			}, func() string { return "the candidate never handed the process every message" })
+			close(queued)
+			waitFor(t, 20*time.Second, func() bool {
+				process.held.mu.Lock()
+				defer process.held.mu.Unlock()
+				return process.held.delivering != nil && process.held.delivering.handedBack()
+			}, func() string { return "the failed take-over never handed its queued messages back" })
+
+			stopped := make(chan struct{})
+			go func() {
+				defer close(stopped)
+				process.stop()
+			}()
+			select {
+			case <-stopped:
+			case <-time.After(30 * time.Second):
+				t.Fatal("the stop did not complete")
+			}
+			next := startDurableProcess(t, hub, pool, kind, freshNames)
+			awaitDelivering(t, hub, pool, kind.logical)
+			awaitHandled(t, sent, next)
+		})
+	}
+}
+
 // Race regression, an auth service outage: the auth service stops after the standby reserved its
 // replace, so the connection its generations are granted on is never admitted. The take-over
 // stops there with nothing deleted: the current stays, and once the service is back the next
