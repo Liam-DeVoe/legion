@@ -1,19 +1,23 @@
 // The fields GitHub's REST API description marks required in the success answer of each REST
-// operation the world serves, and the reading of an answer against them: rest-required.json,
-// derived by this module's `derive` from github/rest-api-description at DESCRIPTION_COMMIT and
-// never written by hand. A REST route the world serves (gh-routes.ts's WORLD_ROUTES, the gh
-// stand-in's, and github-routes.ts's GITHUB_ROUTES, the HTTP stand-in Dispatch reads) answers
-// every field its operation's success schema requires, as the description reads it: through
-// `$ref`, every part of an `allOf`, the closest of a `oneOf` or an `anyOf` (the one the answer
-// lacks the fewest fields of), and each item of an array (`absentFields`), the reading of
-// INFRA-764's read search, which found the world's answers short of 79 fields of the repository,
-// 37 of the pull request and 17 of every user (2026-11-17).
+// operation the world serves, the fields it declares there, and the reading of an answer against
+// them: rest-required.json, derived by this module's `derive` from github/rest-api-description at
+// DESCRIPTION_COMMIT and never written by hand. A REST route the world serves (gh-routes.ts's
+// WORLD_ROUTES, the gh stand-in's, and github-routes.ts's GITHUB_ROUTES, the HTTP stand-in
+// Dispatch reads) answers every field its operation's success schema requires, as the
+// description reads it: through `$ref`, every part of an `allOf`, the closest of a `oneOf` or an
+// `anyOf` (the one the answer lacks the fewest fields of), and each item of an array
+// (`absentFields`), the reading of INFRA-764's read search, which found the world's answers short
+// of 79 fields of the repository, 37 of the pull request and 17 of every user (2026-11-17). An
+// answer GitHub's production read pins no shape of is held to the description's key set besides:
+// every field it answers is one the description declares there (`keyDiff`).
 //
 // The extract keeps, for each route, the operation it is and that operation's success status and
-// media type, and the required tree of its schema: each named schema it reaches once, under
-// `schemas`, and each part of a schema only where something below it is required, so a cycle of
-// schemas (a repository's template repository) is a name and no copy. A route's answer that is
-// no JSON (a raw file, a diff, a commit's SHA under its media type) has no schema to check.
+// media type, and the tree of its schema: each named schema it reaches once, under `schemas`, and
+// each part of a schema only where something below it is required or declared, so a cycle of
+// schemas (a repository's template repository) is a name and no copy. An object's `keys` are
+// every field it declares, where it takes no other (no `additionalProperties`); an object that
+// takes others, or declares none, has no `keys`, and any field passes there. A route's answer that
+// is no JSON (a raw file, a diff, a commit's SHA under its media type) has no schema to check.
 //
 //   bun rest-required.ts <api.github.com.json>
 //
@@ -45,6 +49,7 @@ export type Required =
   | { readonly anyOf: readonly Required[] }
   | {
       readonly required?: readonly string[];
+      readonly keys?: readonly string[];
       readonly properties?: Readonly<Record<string, Required>>;
     };
 const Node: z.ZodType<Required> = z.lazy(() =>
@@ -56,6 +61,7 @@ const Node: z.ZodType<Required> = z.lazy(() =>
     z.strictObject({ anyOf: z.array(Node) }),
     z.strictObject({
       required: z.array(z.string()).optional(),
+      keys: z.array(z.string()).optional(),
       properties: z.record(z.string(), Node).optional(),
     }),
   ])
@@ -141,6 +147,91 @@ export function absentFields(
         : [];
     }),
   ];
+}
+
+/** A schema read as an answer's one level meets it: every part of an `allOf` and every `$ref`
+ * read through, as the list of the nodes that level holds, a `oneOf` or an `anyOf` left whole. */
+function partsOf(schema: Required, schemas: Readonly<Record<string, Required>>): Required[] {
+  let node = schema;
+  while ("ref" in node) {
+    const named = schemas[node.ref];
+    if (named === undefined) throw new Error(`the extract holds no schema ${node.ref}`);
+    node = named;
+  }
+  return "allOf" in node ? node.allOf.flatMap((part) => partsOf(part, schemas)) : [node];
+}
+
+/** An object's node of the extract: the fields it requires, the fields it declares and the
+ * schema of each field below which something is required or declared. */
+type ObjectNode = {
+  readonly required?: readonly string[];
+  readonly keys?: readonly string[];
+  readonly properties?: Readonly<Record<string, Required>>;
+};
+
+/** The paths of the fields `value` lacks that `schema` requires (`missing`, as `absentFields`
+ * reads them) and of the fields it holds that `schema` declares nowhere (`extra`): at each level,
+ * the fields every part of an `allOf` declares are the level's, a `oneOf` or an `anyOf` is the
+ * variant `value` differs from in the fewest fields, an array's every item is read, and an object
+ * no part of which declares `keys` takes any field. Below a field, every part's schema of it is
+ * read. */
+export function keyDiff(
+  value: unknown,
+  schema: Required,
+  schemas: Readonly<Record<string, Required>> = loaded().schemas,
+  at = ""
+): { missing: string[]; extra: string[] } {
+  const join = (all: readonly { missing: string[]; extra: string[] }[]) => ({
+    missing: all.flatMap((one) => one.missing),
+    extra: all.flatMap((one) => one.extra),
+  });
+  const flat: Required[] = [];
+  for (const part of partsOf(schema, schemas)) {
+    if (!("oneOf" in part) && !("anyOf" in part)) {
+      flat.push(part);
+      continue;
+    }
+    const count = (variant: Required) => {
+      const diff = keyDiff(value, variant, schemas, at);
+      return diff.missing.length + diff.extra.length;
+    };
+    const variants = "oneOf" in part ? part.oneOf : part.anyOf;
+    const closest = variants.reduce((best, one) => (count(one) < count(best) ? one : best));
+    flat.push(...partsOf(closest, schemas));
+  }
+  const items = flat.flatMap((part) => ("items" in part ? [part.items] : []));
+  if (items.length > 0)
+    return join(
+      (Array.isArray(value) ? value : []).map((item) =>
+        keyDiff(item, { allOf: items }, schemas, `${at}[]`)
+      )
+    );
+  if (!isObject(value)) return { missing: [], extra: [] };
+  const objects = flat.filter((part): part is ObjectNode => !("items" in part));
+  const required = [...new Set(objects.flatMap((part) => part.required ?? []))];
+  const declaring = objects.filter((part) => part.keys !== undefined);
+  const keys = new Set([...declaring.flatMap((part) => part.keys ?? []), ...required]);
+  const below = Object.entries(value).flatMap(([field, held]) => {
+    const parts = objects.flatMap((part) => {
+      const one = part.properties?.[field];
+      return one === undefined ? [] : [one];
+    });
+    return typeof held === "object" && held !== null && parts.length > 0
+      ? [keyDiff(held, { allOf: parts }, schemas, `${at}.${field}`)]
+      : [];
+  });
+  return join([
+    {
+      missing: required.filter((field) => !(field in value)).map((field) => `${at}.${field}`),
+      extra:
+        declaring.length === 0
+          ? []
+          : Object.keys(value)
+              .filter((field) => !keys.has(field))
+              .map((field) => `${at}.${field}`),
+    },
+    ...below,
+  ]);
 }
 
 /** The REST routes the world serves: every WORLD_ROUTES route of an HTTP verb, written without
@@ -276,8 +367,15 @@ export function derive(description: Json, served = servedRoutes()): Extract {
     };
   }
 
-  // A schema holds something required where it requires a field, or a part of it does: read to a
-  // fixed point, since schemas name each other in cycles.
+  // The fields an object declares where it takes no other: every field of its `properties`, unless
+  // its `additionalProperties` lets it hold others.
+  const declared = (schema: Json): string[] =>
+    isObject(schema.properties) &&
+    (schema.additionalProperties === undefined || schema.additionalProperties === false)
+      ? Object.keys(schema.properties)
+      : [];
+  // A schema holds something where it requires a field or declares its fields, or a part of it
+  // does: read to a fixed point, since schemas name each other in cycles.
   const holds = new Map<string, boolean>([...reached.keys()].map((name) => [name, false]));
   const holding = (schema: unknown): boolean => {
     if (!isObject(schema)) return false;
@@ -293,6 +391,7 @@ export function derive(description: Json, served = servedRoutes()): Extract {
     if (variants !== undefined) return variants.every(holding);
     return (
       (Array.isArray(schema.required) && schema.required.length > 0) ||
+      declared(schema).length > 0 ||
       Object.values(isObject(schema.properties) ? schema.properties : {}).some(holding)
     );
   };
@@ -305,8 +404,8 @@ export function derive(description: Json, served = servedRoutes()): Extract {
       }
   }
 
-  // Each schema as `absentFields` reads it, in the order the tester's reading takes its parts:
-  // an array's items, then an `allOf`, then a `oneOf` or an `anyOf`, then an object.
+  // Each schema as `absentFields` and `keyDiff` read it, in the order the tester's reading takes
+  // its parts: an array's items, then an `allOf`, then a `oneOf` or an `anyOf`, then an object.
   const reduce = (schema: unknown): Required => {
     if (!isObject(schema) || !holding(schema)) return {};
     if (typeof schema.$ref === "string") return { ref: schema.$ref.split("/").pop() ?? "" };
@@ -315,11 +414,13 @@ export function derive(description: Json, served = servedRoutes()): Extract {
     if (Array.isArray(schema.oneOf)) return { oneOf: schema.oneOf.map(reduce) };
     if (Array.isArray(schema.anyOf)) return { anyOf: schema.anyOf.map(reduce) };
     const required = Array.isArray(schema.required) ? schema.required.map(String) : [];
+    const keys = declared(schema);
     const properties = Object.entries(isObject(schema.properties) ? schema.properties : {})
       .filter(([, below]) => holding(below))
       .map(([field, below]) => [field, reduce(below)] as const);
     return {
       ...(required.length > 0 ? { required } : {}),
+      ...(keys.length > 0 ? { keys } : {}),
       ...(properties.length > 0 ? { properties: Object.fromEntries(properties) } : {}),
     };
   };

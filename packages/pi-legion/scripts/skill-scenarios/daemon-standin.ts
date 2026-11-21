@@ -610,12 +610,17 @@ const startedAt = new Date().toISOString();
  * `mergedForwardRefusal`), the read of the merge state a push of the head or of the base asks for
  * (classify's `MergeStateReadOwed`), and the review it asks of the reviewer of an issue past its
  * review once the merge lands (`MergeForwardReview`); nor main `ff2a10ef`'s, which has no move of
- * its own on a conflict at all. Unreachable: no world's head conflicts with its base, and no
- * world's base moves during a run (the architect's ruling of 2026-11-19T19:03Z): rig.sh's three
- * fixture_write calls give no head a merge state of its own, which gh-call.ts's `mergeStateOn`
- * reads as `CLEAN`, and gh-threads.ts's `mergeStateOf` moves that only to `BLOCKED`, so no read
- * finds a head `DIRTY` or `CONFLICTING`; and the run's remote refuses every push to the base
- * (rig.sh's `fixture_first_commit`) and the world serves no merge (rig.sh's `fixture_write`).
+ * its own on a conflict at all. A run reaches it by a forced push to the issue branch, which the
+ * world's remote takes: its `proc-receive` hook (rig.sh's `fixture_first_commit`) checks no
+ * fast-forward on any branch but the base, and on a scratch copy of run 94caf2e09844's remote a
+ * forced push of another history answered `(forced update)`, exit 0, and `git merge-tree` of the
+ * base and that head then refused to merge unrelated histories, exit 128. The world still reports
+ * the head's merge state `CLEAN` or `BLOCKED` (gh-call.ts's `mergeStateOn`, gh-threads.ts's
+ * `mergeStateOf`), and this stand-in moves on no conflict. A residual of the class search (the
+ * architect's ruling of 2026-11-21T10:17:43Z, class-search.json): a run whose push leaves the
+ * issue branch at a head that does not hold the base's tip is unhealthy from that push on
+ * (health.ts's rule 24, `unmergedHead`), and an unhealthy run is replaced. The base itself never
+ * moves during a run: the remote refuses every push to it and the world serves no merge.
  *
  * The review decides the round and the completion does not, so this moves on what the run's
  * world reports and never on a completion (`roundOutcome`, read at each state read): the head is

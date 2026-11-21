@@ -79,6 +79,14 @@
       "ruled": "the implementer at 2026-11-21T09:31:11Z, on Main's instruction after the force-push read below; the architect may overrule it",
       "words": "GitHub's test merge (`refs/pull/<n>/merge`) of a head that does not merge into its base. GitHub keeps the last one it made: `gh api -i repos/cybermonklabs/legion/git/ref/pull/4532/merge` answered 200 at 815c2362 (Date: Sat, 21 Nov 2026 08:45:31 GMT) while the read of `pulls/4532` in the same command answered `merge_commit_sha` null; GitHub lists the pull refs after the branches (`git/refs?per_page=100&page=29`, read at 2026-11-21T08:40:07Z). The world answers none. The base never moves, but the world's remote takes a force-push of another history to the issue branch: on a copy of run 94caf2e09844's remote, `git push --force <remote> orphan:refs/heads/legion/WID-1` answered `+ a8dfa29...3b7b9ed orphan -> legion/WID-1 (forced update)`, exit 0, and `git merge-tree --write-tree` of the base and it answered `fatal: refusing to merge unrelated histories`, exit 128. A run whose push leaves a head without the base's tip in its history is unhealthy from that push on (`rig.sh health`'s rule 24, `unmerged head`), and the run is replaced.",
       "source": "packages/pi-envoy/scripts/README.md, \"Which of the world's answers are pinned, and to what\"; health.ts's rule 24"
+    },
+    {
+      "name": "a head that conflicts with its base",
+      "check": "stand-ins: a behaviour a stand-in declares not modelled",
+      "at": "daemon-standin\\.ts:\\d+ A head that conflicts with its base is not modelled, ",
+      "ruled": "the architect's ruling of 2026-11-21T10:17:43Z, which re-files as a residual the entry the ruling of 2026-11-19T19:03Z declared unreachable",
+      "words": "A head that conflicts with its base, and everything main's daemon does about one since #4464: the second read of the same head and base a minute after a first conflicting one, the messages that ask the implementer to merge the base forward and the phase's worker to stop writing, the refusal of a completion at the head a merge forward replaced, the read of the merge state a push asks for, and the review asked once the merge lands. An agent reaches it by a forced push to the issue branch: the world's `proc-receive` hook (rig.sh's fixture_first_commit) checks no fast-forward on any branch but the base. On a scratch copy of run 94caf2e09844's remote, `git push --force <remote> orphan:refs/heads/legion/WID-1` answered `+ a8dfa29...3b7b9ed orphan -> legion/WID-1 (forced update)`, exit 0, and `git merge-tree --write-tree` of the base and that head then refused, `fatal: refusing to merge unrelated histories`, exit 128. The world still reports such a head's merge state as `CLEAN` or `BLOCKED` (gh-call.ts's mergeStateOn, gh-threads.ts's mergeStateOf), and the daemon stand-in moves on no conflict. A run whose push leaves a head without the base's tip in its history is unhealthy from that push on (`rig.sh health`'s rule 24, `unmergedHead`, which names the first push to the issue branch whose head does not hold the base's tip), and the run is replaced.",
+      "source": "packages/pi-envoy/scripts/README.md, \"Which of the world's answers are pinned, and to what\"; health.ts's rule 24"
     }
   ],
   "unreachable": [
@@ -153,12 +161,6 @@
       "check": "stand-ins: a behaviour a stand-in declares not modelled",
       "at": "daemon-standin\\.ts:\\d+ The plan record's write \\(`PUT /api/v1/issues/\\{key\\}/plans/\\{id\\}`.* is not modelled\\. Unreachable: every run begins past `admitted`",
       "reason": "the daemon writes the plan at the run's move out of admitted and at a hand-over's re-admission, and no run begins in admitted or is re-admitted (rig.sh's worker_boots); the plan's one read, GET /api/v1/projects/{key}/plans, lists a project's finished issues alone, and no move of the stand-in takes the world's issue past accepting"
-    },
-    {
-      "name": "a head that conflicts with its base",
-      "check": "stand-ins: a behaviour a stand-in declares not modelled",
-      "at": "daemon-standin\\.ts:\\d+ A head that conflicts with its base is not modelled, .* Unreachable: no world's head conflicts with its base, and no world's base moves during a run",
-      "reason": "the architect's ruling of 2026-11-19T19:03Z: every fixture_write call in rig.sh gives no merge state, which gh-call.ts's mergeStateOn reads as CLEAN and gh-threads.ts's mergeStateOf moves only to BLOCKED, so no read is DIRTY or CONFLICTING; the run's remote refuses every push to the base (fixture_first_commit) and the world serves no merge"
     },
     {
       "name": "what the daemon tells of a head's CI",

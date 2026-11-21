@@ -7196,6 +7196,18 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
       argv: () => ["api", `${REPO}/tags`],
       answers: (got) => expect(got).toMatchObject({ code: 0, out: "[]" }),
     },
+    "GET repos/{owner}/{repo}/pulls/{number}/commits": {
+      argv: () => ["api", `${REPO}/pulls/1001/commits`, "--jq", ".[-1].sha"],
+      answers: (got, _, head) => expect(got).toMatchObject({ code: 0, out: head }),
+    },
+    // Every world's pull request adds greet.ts: fixture_cli writes it (rig.sh:3289-3292) after
+    // fixture_first_commit made the base, and fixture_head_commit commits it on the issue branch
+    // (rig.sh:3399-3401), in tester_proof_world (rig.sh:2811-2814) and in round_world
+    // (rig.sh:2855-2859), which review_world (rig.sh:2888) and approved_world (rig.sh:2989) build on.
+    "GET repos/{owner}/{repo}/pulls/{number}/files": {
+      argv: () => ["api", `${REPO}/pulls/1001/files`, "--jq", '[.[].filename] | index("greet.ts")'],
+      answers: (got) => expect(got).toMatchObject({ code: 0, out: expect.stringMatching(/^\d+$/) }),
+    },
     "GET user": {
       argv: () => ["api", "user", "--jq", ".login"],
       answers: (got) =>
@@ -7716,11 +7728,13 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
   // answers less than production (health.ts's UNROUTED for a read, its unmodelled-write rule for
   // a write). Catches a world that answers everything: the loose `pulls/<n>` regex answered the
   // pull request's files with the pull request, and a GraphQL route answered every mutation with
-  // the review threads.
+  // the review threads. The files are a route of the world's own since INFRA-764's reads of
+  // 2026-11-21 (gh-routes.ts's WORLD_ROUTES), so the read here is another endpoint under the pull
+  // request that the world serves no answer for, its requested reviewers.
   test("a call no route of the world answers is refused, with no route on its record", () => {
     const dir = build("approved_world");
     const refused = [
-      ["api", `${REPO}/pulls/1001/files`],
+      ["api", `${REPO}/pulls/1001/requested_reviewers`],
       [
         "api",
         "graphql",

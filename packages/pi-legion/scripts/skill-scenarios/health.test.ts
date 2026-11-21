@@ -1,5 +1,5 @@
 import { describe, expect, setDefaultTimeout, test } from "bun:test";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { ANSWERS, labelOf, SKIPS, scenarioOf } from "./completion-answers";
@@ -13,6 +13,7 @@ import {
   ownNames,
   serviceProvenance,
   unfinished,
+  unmergedHead,
   unmodelledWrite,
   writtenBy,
 } from "./health";
@@ -2277,5 +2278,74 @@ describe("health: rule 21, credential printed", () => {
         calls: [{ file: SESSION, tool: "write", args: { content: "gh auth token" }, at: 0 }],
       })
     ).toBeUndefined();
+  });
+});
+
+// Rule 24, unmerged head: a head that conflicts with its base is a residual of the class search
+// (class-search.json, the architect's ruling of 2026-11-21T10:17:43Z): no world's base moves, but
+// the world's remote takes an agent's forced push of another history to the issue branch (its
+// proc-receive hook checks no fast-forward there), and the world still reports that head's merge
+// state as one that merges. Measured on a scratch copy of run 94caf2e09844's remote, a forced push
+// of another history answered `(forced update)`, exit 0, and `git merge-tree` then refused to merge
+// unrelated histories, exit 128.
+describe("health: rule 24, unmerged head", () => {
+  const runs = temporaryDirectories("health-unmerged-head");
+  const git = (dir: string, ...args: string[]) => {
+    const ran = Bun.spawnSync(
+      ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-C", dir, ...args],
+      { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } }
+    );
+    return { code: ran.exitCode, out: ran.stdout.toString().trim(), err: ran.stderr.toString() };
+  };
+  const committed = (dir: string, text: string, message: string) => {
+    writeFileSync(path.join(dir, "greet.ts"), text);
+    git(dir, "add", "-A");
+    git(dir, "commit", "-qm", message);
+    return git(dir, "rev-parse", "HEAD").out;
+  };
+
+  // Catches: a health that passes a run whose push left the issue branch at a head that conflicts
+  // with its base — another history, which the world's merge state reads as merging and main's
+  // daemon would confirm a conflict of and ask the implementer to merge the base forward — and one
+  // that names a run whose every push holds the base's tip, the push the conflicting one replaced
+  // among them. The pushes are written as the remote's post-receive hook writes them.
+  test("a run whose head conflicts with its base is unhealthy under rule 24 from the push that left it", () => {
+    const dir = path.join(runs(), "threads-closed-correct-head-1");
+    const work = path.join(dir, "work");
+    mkdirSync(work, { recursive: true });
+    writeFileSync(
+      path.join(dir, "world.json"),
+      JSON.stringify({
+        key: "LWEVAL-1",
+        repo: "example/widgets",
+        pr: 1001,
+        branch: "legion/LWEVAL-1",
+        base: "main",
+        head: "0".repeat(40),
+      })
+    );
+    git(work, "init", "-q", "-b", "main");
+    const base = committed(work, "export const greet = () => 1;\n", "the base");
+    git(work, "checkout", "-q", "-b", "legion/LWEVAL-1");
+    const fix = committed(work, "export const greet = () => 2;\n", "the fix");
+    const remote = path.join(dir, "remote.git");
+    git(dir, "clone", "-q", "--bare", work, remote);
+    const log = path.join(dir, "pushes.log");
+    writeFileSync(log, `2026-11-21T10:30:00.000Z refs/heads/legion/LWEVAL-1 ${base} ${fix}\n`);
+    expect(unmergedHead({ dir })).toBeUndefined();
+    git(work, "checkout", "-q", "--orphan", "another");
+    const other = committed(work, "export const greet = () => 3;\n", "another history");
+    const forced = git(work, "push", "--force", remote, "another:refs/heads/legion/LWEVAL-1");
+    appendFileSync(log, `2026-11-21T10:31:00.000Z refs/heads/legion/LWEVAL-1 ${fix} ${other}\n`);
+    const merged = git(remote, "merge-tree", "--write-tree", "refs/heads/main", other);
+    expect([forced.code, forced.err.includes("(forced update)"), merged.code]).toEqual([
+      0,
+      true,
+      128,
+    ]);
+    expect(merged.err).toContain("refusing to merge unrelated histories");
+    expect(unmergedHead({ dir })).toBe(
+      `unmerged head: pushes.log:2 pushed ${other} to refs/heads/legion/LWEVAL-1, whose history does not hold main's tip, so it may not merge, and GitHub keeps the last test merge of such a head where the world answers none`
+    );
   });
 });

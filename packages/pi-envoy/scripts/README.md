@@ -1222,12 +1222,17 @@ names for the rows that read the base label's own contract.
 
 The world claims to answer as production does only where a pin holds it to production. Each pin
 is derived by a script in the rig from a reading of production, and keeps names, kinds, statuses
-and error texts, never production's values:
+and error texts, never production's values, but for `production-headers.json`, written from the
+implementer's reads of 2026-11-21, which keeps each read's `Date:` and the values of the headers
+that describe GitHub's service rather than one answer (`Server`, `Content-Security-Policy`, the
+edge that answers the pods, the rate limit of a role App, and the rest), which the world writes
+too:
 
 | Pin | What it holds | Read from | Made by |
 | --- | --- | --- | --- |
 | `production-shapes.json` | the exit, stderr and answer shape of 176 reads, and the line shapes of the 23 whose answer is text: the 5 reads of a branch a ruleset alone protects, the 90 distinct reads INFRA-764's round 25 made, the `read_record` record, the tester's 68 reads of each read the world served with no pin, the implementer's 9 reads that set does not hold, and 3 of the tester's 21 readings again, whole, of every text read, whose other 18 replace the earlier readings of their reads | cybermonklabs/legion `main` at 2026-11-19T05:35:00Z; its pull request #2827 at about 15:40Z on 2026-11-17, and a Legion issue pod's own record at 16:49Z that day; the open #2827, the merged #4326 and the repository at about 08:45Z (the tester) and 08:55Z (the implementer) on 2026-11-18, and every text read again at about 17:22Z (the tester) | `production-shapes.ts` |
-| `rest-required.json` | the required field tree of the success answer of each REST operation the world serves | github/rest-api-description at `DESCRIPTION_COMMIT` (`c9c95fe34ced`) | `rest-required.ts` |
+| `rest-required.json` | the required and declared field tree of the success answer of each REST operation the world serves: each object's required fields and, where it takes no other, every field it declares (`keys`) | github/rest-api-description at `DESCRIPTION_COMMIT` (`c9c95fe34ced`) | `rest-required.ts` |
+| `production-headers.json` | the status line, the header names in gh's order and each header's value but those that describe one answer (`<the answer's own>`) of 9 `gh api -i` reads — the repository, with and without `--jq .visibility`, a 404 of a served route and of an endpoint GitHub does not serve, a GraphQL query, a paged list, and a commit's diff and SHA and a file's raw bytes — each with its `Date:`, and the permission (`X-Accepted-Github-Permissions`) production named for the read of each of 30 REST routes the world serves | cybermonklabs/legion from 10:20:07Z to 10:35:20Z on 2026-11-21, read with gh 2.98.0 and a role App's installation token | the implementer, from those reads; no script of the rig |
 | `graphql-schema.json` | the field and return type of each GraphQL type the world serves, which the world's query check reads | GitHub's introspection at 2026-11-17T21:20:23Z | `graphql-schema.ts` |
 | each label's own `LegionStateResponse` | every state body the daemon stand-in can serve, parsed before the label starts | the label's own checkout | `services_up`'s `label_contract` |
 
@@ -1256,7 +1261,7 @@ measurement each, named where the answer is described: a reply to a reply filed 
 one App's update of another's review, GitHub's 404 body for an endpoint it does not serve, and
 the merge state of an approved, green head on a merge-queue base. A few are stated as
 unmeasured: GitHub's 404 for another App's read of a pending review by id, and the
-rule-violation lines of a refused push beyond the three measured. Nine differences are named
+rule-violation lines of a refused push beyond the three measured. Eleven differences are named
 residuals rather than defects, each an answer the world cannot give as production gives it:
 
 - `remote.origin.vcs`, the key that carries the world's remote. No production clone has it. The
@@ -1316,6 +1321,26 @@ residuals rather than defects, each an answer the world cannot give as productio
   the issue branch, as GitHub does for an unprotected branch. A run whose push leaves a head
   without the base's tip in its history is unhealthy from that push on (`rig.sh health`'s rule
   24, `unmerged head`), and the run is replaced.
+- A head that conflicts with its base, and everything main's daemon does about one since #4464:
+  the second read that confirms the conflict, the messages asking the implementer to merge the
+  base forward and the phase's worker to stop writing, the refusal of a completion at the head a
+  merge forward replaced, the merge-state read a push asks for, and the review asked once the
+  merge lands (`daemon-standin.ts`). An agent reaches it by a forced push to the issue branch: the
+  world's `proc-receive` hook (`fixture_first_commit`) checks no fast-forward on any branch but
+  the base, and on a scratch copy of run 94caf2e09844's remote a forced push of another history
+  answered `(forced update)`, exit 0, and `git merge-tree` of the base and that head then refused
+  to merge unrelated histories, exit 128. The world still reports such a head's merge state as
+  one that merges. A run whose push leaves a head without the base's tip in its history is
+  unhealthy from that push on (`rig.sh health`'s rule 24, `unmergedHead`, which names the first
+  such push), and the run is replaced (the architect's ruling of 2026-11-21T10:17:43Z, which
+  re-filed it from the entries no world reaches).
+- Two headers of `gh api -i` (`production-headers.json`): `Last-Modified` where its time is none
+  the world's objects give — production sent the commits, refs, trees, tags and contents one each,
+  and `git/ref/heads/main` answered the repository's `updated_at` where `git/refs/heads/main`
+  answered the commit's, at 10:24:58Z and 10:25:00Z on 2026-11-21 — and
+  `X-Accepted-Github-Permissions` on a write, which no pod makes in production to read its
+  headers. The world writes neither there; it writes `Last-Modified` for the repository and the
+  pull request and its commits and files, each production's own reading of it.
 
 **A read with no pin, and an answer this section and the sections below do not name, is not
 claimed to answer as production does.**
@@ -1354,7 +1379,10 @@ types, and GitHub's 422 `No commit found for SHA: <ref>` with its body for a ref
 cannot resolve; the commits a ref reaches, newest first and paged (a filter by path, author,
 committer or time is refused as a read the world does not model); a commit's git data, by its
 full SHA alone; a tree, recursive for any value of `recursive`; the branches, the base alone
-protected; the tags, none in any world; and the refs, the remote's and the two GitHub keeps for
+protected; the tags, none in any world; the pull request's commits, the ones its head holds and
+its base does not, oldest first, and its files, the comparison's of its base and its head, each
+list paged (GitHub's 404 of the list, its body naming the list's page, for a number the world
+holds no pull request of); and the refs, the remote's and the two GitHub keeps for
 the pull request (`refs/pull/<n>/head` at its head, `refs/pull/<n>/merge` at its test merge),
 one by its name and a list by a prefix of names. A ref, a tree or a list the remote cannot answer
 is GitHub's 404, its body naming GitHub's page of the read, and so is a comparison of two dots
@@ -1362,6 +1390,19 @@ is GitHub's 404, its body naming GitHub's page of the read, and so is a comparis
 answer is the one GitHub gave on 2026-11-21, read with `gh api -i` against cybermonklabs/legion;
 `gh-standin.ts` names each read and its `Date:`. GitHub's test merge of a head that does not
 merge into its base is a residual (*Which of the world's answers are pinned*, above).
+`gh api -i` (`--include`) prints GitHub's status line and headers before each page's body, as gh
+prints them (the protocol and the status on a line of their own, each header `Name: value` in the
+byte order of the names, ended `\r\n`, then a blank `\r\n`), on every route the stand-in serves,
+and `--jq` runs over the body alone. The status is the answer's: the operation's success, `201
+Created` for a create of a comment and `200 OK` for every other, or GitHub's refusal's. The
+headers are the ones production sent the same class of answer (`production-headers.json`): the
+service's own with production's values, and `Date`, `Etag`, the request id, `Last-Modified` and
+the rate limit with the world's (the call's time, a validator of the world's body, an id in
+GitHub's form, the world's object's time, and the pane's App's limit counted from the run's own
+`gh api` calls of that resource); a REST read's `X-Accepted-Github-Permissions` as production named
+it for that route; a list's `Link` to its other pages; no rate limit, API version or permission
+on an endpoint GitHub does not serve, and no caching, ETag or permission on a GraphQL answer. Two
+of them are residuals (*Which of the world's answers are pinned*, above).
 A call naming an owner outside the world's project is refused as the Legion gh wrapper of the
 run's label refuses it, for every role: exit 2 and the line the wrapper prints for the form that
 names the owner, never a 404. The world reads the call by the wrapper's own selector table
@@ -1672,9 +1713,11 @@ move back counts its pair and no round; an approval of a mergeable head moves th
 takes is written on its role's row. A head that conflicts with its base is not modelled: main's
 daemon since #4464 keeps the issue in its phase, confirms the conflict by a second read, asks the
 implementer to merge the base forward and the phase's worker to stop writing, and refuses a
-completion at the head the merge replaced (`HANDOFF_HEAD_MERGED_FORWARD`), and no world reaches
-any of it: every world's head is `CLEAN` but where its base's rules hold it `BLOCKED`, and no
-world's base moves during a run (the architect's ruling of 2026-11-19T19:03Z). The stand-in sent
+completion at the head the merge replaced (`HANDOFF_HEAD_MERGED_FORWARD`). It is a residual (the
+architect's ruling of 2026-11-21T10:17:43Z, *Which of the world's answers are pinned*, above): no
+world's base moves during a run, but an agent's forced push to the issue branch can leave a head
+that does not merge, which the world still reports `CLEAN` or `BLOCKED`, and `rig.sh health`'s
+rule 24 names that push. The stand-in sent
 a conflicting head back to `implementing` from every phase after the implementer's, as main's
 daemon did from #4291 until #4464; it no longer does. A completion's verdict is held to the
 route's rule first: a tester's that is not `pass` or `fail` is refused 400
@@ -1805,7 +1848,7 @@ claim no agent of the run booted, which the stand-in's daemon never recorded.
 Every REST route the world serves — each `GET`, `POST`, `PUT` and `PATCH` of `gh-routes.ts`'s
 `WORLD_ROUTES` and each route of `github-routes.ts`'s `GITHUB_ROUTES`, the HTTP stand-in
 Dispatch reads — answers every field GitHub's REST API description marks required in its
-success answer, as `rest-required.json` holds them: the required field tree of each route's
+success answer, as `rest-required.json` holds them: the required and declared field tree of each route's
 operation, derived by `rest-required.ts` from `descriptions/api.github.com/api.github.com.json`
 of github/rest-api-description at commit `c9c95fe34ced05fe076001f5c55704742bc8e7f8` and never
 written by hand. To regenerate it, fetch that file at that commit (`curl -fsSLO
@@ -1819,7 +1862,20 @@ it as INFRA-764's read search reads one (`absentFields`): through `$ref`, every 
 `allOf`, the closest of a `oneOf` or an `anyOf`, and every item of an array. `gh-standin.test.ts`
 calls every REST route of `WORLD_ROUTES` in a world and holds its answer to its operation, and
 fails naming a route the extract holds no operation of; `github-standin.test.ts` does the same
-for the HTTP stand-in. Three routes are GitHub's refusal of a role App and no success, which the
+for the HTTP stand-in. Each REST route of `WORLD_ROUTES` (each route of `fixture_write` among
+them) is held to GitHub's key set as well, a row of `gh-standin.test.ts` each (`the key set of
+<route> is GitHub's`): production's pinned answer to it where it is pinned (`shapeDiff`'s missing
+and extra paths), and otherwise the description's, every field required there and no field it
+declares nowhere, at every level (`keyDiff`, which takes any field where an object declares
+`additionalProperties` or no field at all). A row names each key missing or extra; a route with
+no key set fails its row and the one that holds every route to one. A key the world answers
+beyond its key set is declared with its evidence (`KEY_SET_DECLARED`): `copilot_code_review_severity`,
+null, on the pull request's review comments, a review's, and the comment a create or a reply
+makes, which production gives every review comment and neither the description at
+`c9c95fe34ced` nor the pin of 2026-11-17 holds (`gh api repos/cybermonklabs/legion/pulls/2827/
+comments --jq '.[0] | keys'`, `Date: Sat, 21 Nov 2026 10:21:12 GMT`, and `gh api -i` of
+`…/pulls/2827/comments?per_page=1` and `…/pulls/2827/reviews/5816301660/comments?per_page=1`,
+10:21:02 and 10:24:42 GMT, each null). Three routes are GitHub's refusal of a role App and no success, which the
 world gives as GitHub's error body and gh's line: a branch's classic protection and `user` (403:
 an installation token reads no administration and is no user's, measured from a Legion pod on
 2026-11-17; `rig.sh health` declares the second for every role), and the jobs of a run the world
@@ -1844,7 +1900,9 @@ base branch, beside the five ruleset reads above. So are the REST reads the test
 comparison as a diff, the base's ref, a directory as JSON and under the raw media type (GitHub
 answers a directory as JSON either way), and the App's read of its user (GitHub's 403). Each
 answers with no difference but one of state: production read its check runs while they ran, so
-their `conclusion` and `completed_at` are null there and the world's, concluded, are strings.
+their `conclusion` and `completed_at` are null there and the world's, concluded, are strings; and
+the review comments carry `copilot_code_review_severity`, which production has given since the pin
+was read.
 The run's GitHub stand-in, which the run's Dispatch reads, answers the repository and the pull
 request in the same pinned shapes, and a commit by its SHA and a commit's pull requests in the
 implementer's (`PINNED_HTTP`). Its fifth read, `GET /repos/<o>/<r>/installation`, Dispatch makes
@@ -1852,11 +1910,11 @@ with its App's JWT, which no pod holds. An installation token is refused it: `gh
 repos/cybermonklabs/legion/installation` exited 1 with `gh: A JSON web token could not be decoded
 (HTTP 401)` (measured at about 08:47Z on 2026-11-18). So no pod can read production's answer, and
 the installation is held to `rest-required.json` alone. A REST read the pin does not hold — the
-installation, the answer of a write — is held to the fields GitHub requires and no more, and is
-not claimed to answer in production's whole shape.
+installation, the answer of a write — is held to the fields GitHub requires and the fields its
+description declares, and no more, and is not claimed to answer in production's whole shape.
 
-The reads of the run's remote that no pin holds are held to the fields GitHub requires
-(`rest-required.json`) and to the answers GitHub gave on 2026-11-21, which a row of
+The reads of the run's remote that no pin holds are held to the fields GitHub requires and
+declares (`rest-required.json`) and to the answers GitHub gave on 2026-11-21, which a row of
 `gh-standin.test.ts` holds for each, and to no more, and are not claimed to answer in
 production's whole shape:
 
@@ -1864,7 +1922,9 @@ production's whole shape:
 - `GET repos/<o>/<r>/git/commits/<sha>`, a commit's git data;
 - `GET repos/<o>/<r>/git/refs` and `GET repos/<o>/<r>/git/refs/<ref>`, the refs;
 - `GET repos/<o>/<r>/git/trees/<sha>`, a tree;
-- `GET repos/<o>/<r>/branches`, the branches, and `GET repos/<o>/<r>/tags`, the tags.
+- `GET repos/<o>/<r>/branches`, the branches, and `GET repos/<o>/<r>/tags`, the tags;
+- `GET repos/<o>/<r>/pulls/<n>/commits` and `GET repos/<o>/<r>/pulls/<n>/files`, the pull
+  request's commits and files.
 
 gh's own reads of the pull request — `gh pr view`, `gh pr list` and `gh pr diff` — are the gh
 stand-in's reading of the world as gh 2.98.0 prints it (`gh-standin.ts`'s `prRead`, `gh-view.ts`),

@@ -61,6 +61,7 @@ import {
   DESCRIPTION_COMMIT,
   derive as deriveExtract,
   extractCommit,
+  keyDiff,
   restOperation,
   servedRoutes,
 } from "./rest-required";
@@ -3564,6 +3565,361 @@ test("the refs are GitHub's, the remote's and the pull request's, one by its nam
   expect(ghCall(dir, "api", `${repo}/git/ref/heads/ma`)).toEqual(refused("get-a-reference"));
 }, 60_000);
 
+// Catches: a stand-in with no answer for `gh api repos/<o>/<r>/pulls/<n>/commits` and `…/files`,
+// GitHub's lists of a pull request's commits and files, which it answered `gh: Not Found (HTTP
+// 404)` with the body of an endpoint GitHub does not serve; commits other than the ones the head
+// holds and the base does not, or newest first, where GitHub lists them oldest first; an item
+// short of a field GitHub requires, or carrying a commit's `stats` or `files`, which a list item
+// has not got; files other than the comparison's of the base and the head, which the read of a
+// commit and the comparison list through one reading (`diffFiles`); a list not paged by `per_page`
+// and `page`; and a number the world holds no pull request of answered otherwise than GitHub's 404
+// of the list, its body naming the list's page, which health reads as GitHub's own refusal.
+// gh-standin.ts's `pullList` names the reads of 2026-11-21 behind each.
+test("a pull request's commits and files are listed from the run's own remote, as GitHub lists them", () => {
+  const { dir, first, second } = runDir({ fixture: true });
+  const remote = path.join(dir, "remote.git");
+  git(remote, "update-ref", "refs/heads/main", first);
+  git(remote, "update-ref", "refs/heads/legion/LWEVAL-1", second);
+  const work = path.join(dir, "two-more");
+  git(dir, "clone", "-q", "-b", "legion/LWEVAL-1", remote, work);
+  for (const name of ["b.md", "a.md"]) {
+    writeFileSync(path.join(work, name), `${name}\n`);
+    git(work, "add", "-A");
+    git(work, "commit", "-qm", `add ${name}`);
+  }
+  git(work, "push", "-q", "origin", "legion/LWEVAL-1");
+  const fourth = git(work, "rev-parse", "HEAD");
+  const third = git(work, "rev-parse", "HEAD^");
+  const repo = "repos/example/widgets";
+  const listed = (jq: string, ...argv: string[]) => ghCall(dir, "api", ...argv, "--jq", jq).out;
+  const shas = '[.[].sha] | join(" ")';
+  const names = '[.[].filename] | join(" ")';
+  expect([
+    listed(shas, `${repo}/pulls/1001/commits`),
+    listed(shas, `${repo}/pulls/1001/commits?per_page=2&page=2`),
+    listed(shas, "--paginate", `${repo}/pulls/1001/commits?per_page=2`),
+    listed(names, `${repo}/pulls/1001/files`),
+    listed(names, `${repo}/pulls/1001/files?per_page=1&page=3`),
+    listed(names, "--paginate", `${repo}/pulls/1001/files?per_page=2`),
+  ]).toEqual([
+    `${second} ${third} ${fourth}`,
+    fourth,
+    `${second} ${third}\n${fourth}`,
+    "a.md b.md docs.md",
+    "docs.md",
+    "a.md b.md\ndocs.md",
+  ]);
+  const commits = JSON.parse(ghCall(dir, "api", `${repo}/pulls/1001/commits`).out);
+  const files = JSON.parse(ghCall(dir, "api", `${repo}/pulls/1001/files`).out);
+  const compared = JSON.parse(
+    ghCall(dir, "api", `${repo}/compare/main...legion/LWEVAL-1`, "--jq", ".files").out
+  );
+  expect([
+    heldTo("GET repos/{owner}/{repo}/pulls/{number}/commits", commits),
+    commits.map((item: Record<string, unknown>) => "stats" in item || "files" in item),
+    heldTo("GET repos/{owner}/{repo}/pulls/{number}/files", files),
+    files,
+  ]).toEqual([
+    ["GET /repos/{owner}/{repo}/pulls/{pull_number}/commits", []],
+    [false, false, false],
+    ["GET /repos/{owner}/{repo}/pulls/{pull_number}/files", []],
+    compared,
+  ]);
+  const refused = (docs: string) => ({
+    code: 1,
+    out: notFoundOf(`https://docs.github.com/rest/pulls/pulls#${docs}`),
+    err: "gh: Not Found (HTTP 404)\n",
+  });
+  expect([
+    ghCall(dir, "api", `${repo}/pulls/999999/commits`),
+    ghCall(dir, "api", `${repo}/pulls/999999/files`),
+  ]).toEqual([refused("list-commits-on-a-pull-request"), refused("list-pull-requests-files")]);
+  expect(
+    recordedCalls(dir)
+      .slice(-2)
+      .map((call) => [call.exit, call.handler])
+  ).toEqual([
+    [1, "pull-commits"],
+    [1, "pull-files"],
+  ]);
+  for (const scenario of ["tester-proof", "reviewer-text-findings", "threads-closed"])
+    expect([scenario, ghUndeclared({ dir, scenario })]).toEqual([scenario, undefined]);
+});
+
+/** Production's answers to `gh api -i`, as production-headers.json pins them: each read's status
+ * line, its headers by name in the order gh printed them and what gh printed after them, and the
+ * permission production named for each route's read. */
+const PRODUCTION_HEADERS = JSON.parse(
+  readFileSync(path.join(import.meta.dir, "production-headers.json"), "utf8")
+) as {
+  reads: Record<string, { status: string; headers: Record<string, string>; after_headers: string }>;
+  permissions: Record<string, { value: string | null; date: string }>;
+};
+/** The headers whose values describe one answer: the world writes its own, never production's. */
+const ANSWER_HEADERS = [
+  "Date",
+  "Etag",
+  "Last-Modified",
+  "X-Github-Request-Id",
+  "X-Ratelimit-Remaining",
+  "X-Ratelimit-Reset",
+  "X-Ratelimit-Used",
+];
+/** What gh printed for a `gh api -i` call: its status line, its headers by name, and its body. */
+interface Included {
+  status: string;
+  headers: [string, string][];
+  body: string;
+}
+/** `out`, what gh printed for a `gh api -i` call, read as gh prints it: the status line ends in
+ * `\n`, each header's line in `\r\n`, and a line of `\r\n` alone ends them, the body after it. */
+function included(out: string): Included {
+  const status = out.slice(0, out.indexOf("\n"));
+  const end = out.indexOf("\r\n\r\n");
+  const headers = out
+    .slice(status.length + 1, end)
+    .split("\r\n")
+    .map((line): [string, string] => [
+      line.slice(0, line.indexOf(": ")),
+      line.slice(line.indexOf(": ") + 2),
+    ]);
+  return { status, headers, body: out.slice(end + 4) };
+}
+/** The REST `gh api` calls of the run under `dir` GitHub counts against the core rate limit of
+ * the pane's App (gh-standin.ts's `headerBlock`): from a pane naming no role, each answered. */
+const ratedCalls = (dir: string) =>
+  recordedCalls(dir).filter((call) => {
+    const argv = call.argv as string[];
+    return (
+      argv[0] === "api" &&
+      !argv.includes("graphql") &&
+      call.by === undefined &&
+      !["unrouted", "wrapper"].includes(String(call.handler))
+    );
+  }).length;
+
+// Catches: a `gh api -i` (`--include`) answered with the body alone, where gh prints GitHub's
+// status line and its headers before it — the census of INFRA-764's runs found 14 such calls in 15
+// runs, round 29's run 2d821d91b790 calls.jsonl:2 among them; a header production sends the
+// repository's read with missing, or one it does not send written; a header of GitHub's service
+// with another value than production's; a value that describes the answer other than the world's
+// own (its `Date` the call's, its `Etag` a validator of the world's body, its `Last-Modified` the
+// world's repository's `updated_at`, a request id in GitHub's form, and the rate limit of the
+// pane's App counted from the run's own calls); and `--jq` run over the headers, or over nothing.
+// Production's two reads, each with its `Date:`, are production-headers.json's `repository` and
+// `repository --jq .visibility`.
+test("gh api --include prints GitHub's status line and headers before the body, --jq run over the body alone", () => {
+  const dir = pinnedWorldCopy();
+  const repository = "repos/example/widgets";
+  const plain = ghRaw(dir, "api", repository).out;
+  const rated = ratedCalls(dir);
+  const answers = [
+    ghRaw(dir, "api", "--include", repository, "--jq", ".visibility").out,
+    ghRaw(dir, "api", "-i", repository).out,
+  ].map(included);
+  const calls = recordedCalls(dir);
+  const firstRated = calls.find((call) => (call.argv as string[])[0] === "api")?.at;
+  const pins = [
+    PRODUCTION_HEADERS.reads["repository --jq .visibility"],
+    PRODUCTION_HEADERS.reads.repository,
+  ];
+  const sha = new Bun.CryptoHasher("sha256").update(plain).digest("hex");
+  expect(
+    answers.map(({ status, headers }, index) => {
+      const pin = pins[index]?.headers ?? {};
+      return [
+        status,
+        headers.map(([name]) => name),
+        headers.filter(([name, value]) => !ANSWER_HEADERS.includes(name) && value !== pin[name]),
+        Object.fromEntries(headers.filter(([name]) => ANSWER_HEADERS.includes(name))),
+      ];
+    })
+  ).toEqual(
+    pins.map((pin, index) => [
+      pin?.status,
+      Object.keys(pin?.headers ?? {}),
+      [],
+      {
+        Date: new Date(String(calls.at(index - 2)?.at)).toUTCString(),
+        Etag: `W/"${sha}"`,
+        "Last-Modified": new Date(JSON.parse(plain).updated_at).toUTCString(),
+        "X-Github-Request-Id": expect.stringMatching(/^[0-9A-F]{4}(:[0-9A-F]{6}){3}:[0-9A-F]{8}$/),
+        "X-Ratelimit-Remaining": String(15_000 - rated - index - 1),
+        "X-Ratelimit-Reset": String(Math.floor(Date.parse(String(firstRated)) / 1000) + 3600),
+        "X-Ratelimit-Used": String(rated + index + 1),
+      },
+    ])
+  );
+  expect(answers.map(({ body }) => body)).toEqual([pins[0]?.after_headers, plain]);
+}, 60_000);
+
+// Catches: a route the stand-in serves that prints no status line with `--include`, or another
+// status than GitHub's: a create of a comment answered `200 OK` where GitHub's description names
+// `201 Created`, a refusal printed with a success's status line, a 404 of an endpoint GitHub does
+// not serve with a rate limit GitHub does not count it in; a read's permission other than the one
+// production named for it (production-headers.json's `permissions`), or one named for a write,
+// which no pod measures; a GraphQL answer with REST's media type, resource or caching; headers out
+// of the byte order gh prints them in; the body after them other than the call's own; a list's
+// `Link` to its other pages missing, or not in GitHub's form (production-headers.json's `list`,
+// gh-standin.ts's `linkOf`); and `--paginate` printing a list's pages as one, where gh with
+// `--include` prints each page after its own headers.
+test("every route the stand-in serves prints its status line and headers with --include", () => {
+  const dir = worldDir("approved_world", "", { threadsCase: "correct" });
+  const head = builtHead(dir);
+  const base = git(path.join(dir, "remote.git"), "rev-parse", "refs/heads/main");
+  const reason: Record<number, string> = {
+    200: "OK",
+    201: "Created",
+    403: "Forbidden",
+    404: "Not Found",
+  };
+  const headerOf = (answer: Included, name: string) =>
+    answer.headers.find(([one]) => one === name)?.[1];
+  const verdicts = restCalls(head, base).map(([route, argv]) => {
+    const answer = included(ghRaw(dir, "api", "-i", ...argv.slice(1)).out);
+    const names = answer.headers.map(([name]) => name);
+    return [
+      route,
+      answer.status,
+      names.join() === [...names].sort().join(),
+      typeof answerOf(answer.body),
+      headerOf(answer, "X-Accepted-Github-Permissions"),
+    ];
+  });
+  expect(verdicts).toEqual(
+    restCalls(head, base).map(([route, , refusal]) => {
+      const code =
+        refusal === undefined
+          ? (restOperation(route)?.status ?? 0)
+          : Number(/\(HTTP (\d{3})\)/.exec(refusal)?.[1]);
+      return [
+        route,
+        `HTTP/2.0 ${code} ${reason[code]}`,
+        true,
+        "object",
+        PRODUCTION_HEADERS.permissions[route]?.value ?? undefined,
+      ];
+    })
+  );
+  const threads =
+    'query=query{repository(owner:"example",name:"widgets"){pullRequest(number:1001){reviewThreads(first:20){nodes{isResolved}}}}}';
+  const graphql = included(ghRaw(dir, "api", "-i", "graphql", "-f", threads).out);
+  const unrouted = included(ghRaw(dir, "api", "-i", "repos/example/widgets/no-such-endpoint").out);
+  expect([
+    graphql.status,
+    ...["X-Github-Media-Type", "X-Ratelimit-Resource", "X-Ratelimit-Limit"].map((name) =>
+      headerOf(graphql, name)
+    ),
+    ...["Etag", "Cache-Control", "X-Accepted-Github-Permissions"].map((name) =>
+      headerOf(graphql, name)
+    ),
+    JSON.parse(graphql.body).data.repository.pullRequest.reviewThreads.nodes.length > 0,
+    unrouted.status,
+    unrouted.headers.filter(([name]) => /^X-Ratelimit|^X-Accepted|^X-Github-Api/.test(name)),
+    unrouted.body,
+  ]).toEqual([
+    "HTTP/2.0 200 OK",
+    "github.v4; format=json",
+    "graphql",
+    "10000",
+    undefined,
+    undefined,
+    undefined,
+    true,
+    "HTTP/2.0 404 Not Found",
+    [],
+    GITHUB_404,
+  ]);
+  const commits = `repos/example/widgets/commits?sha=${head}&per_page=1`;
+  const total = Number(
+    ghCall(dir, "api", `repos/example/widgets/commits?sha=${head}`, "--jq", "length").out
+  );
+  const link = (page: number) =>
+    `<https://api.github.com/repositories/1/commits?sha=${head}&per_page=1&page=${page}>`;
+  const first = included(ghRaw(dir, "api", "-i", commits).out);
+  expect([total > 2, headerOf(first, "Link")]).toEqual([
+    true,
+    `${link(2)}; rel="next", ${link(total)}; rel="last"`,
+  ]);
+  const paged = ghRaw(dir, "api", "-i", "--paginate", commits, "--jq", ".[].sha").out;
+  expect([paged.split("HTTP/2.0 200 OK\n").length - 1, paged.endsWith("\n")]).toEqual([
+    total,
+    true,
+  ]);
+}, 120_000);
+
+// Catches: a review comment of the pull request's list or of a review's without
+// `copilot_code_review_severity`, which production gives each, null for a comment no Copilot
+// review made: measured on 2026-11-21, `gh api repos/cybermonklabs/legion/pulls/2827/comments --jq
+// '.[0] | keys'` named it (`Date: Sat, 21 Nov 2026 10:21:12 GMT`), and `gh api -i` of
+// `…/pulls/2827/comments?per_page=1` (10:21:02 GMT) and of
+// `…/pulls/2827/reviews/5816301660/comments?per_page=1` (10:24:42 GMT) each answered it null.
+test("each review comment carries copilot_code_review_severity, null, as production gives it", () => {
+  const dir = pinnedWorldCopy();
+  const severities = (endpoint: string) =>
+    JSON.parse(
+      ghCall(
+        dir,
+        "api",
+        endpoint,
+        "--jq",
+        '[.[] | [has("copilot_code_review_severity"), .copilot_code_review_severity]]'
+      ).out
+    );
+  const pulls = severities("repos/example/widgets/pulls/1001/comments");
+  const review = severities("repos/example/widgets/pulls/1001/reviews/5001/comments");
+  expect([pulls.length > 0, review.length > 0]).toEqual([true, true]);
+  expect([pulls, review]).toEqual([pulls.map(() => [true, null]), review.map(() => [true, null])]);
+}, 60_000);
+
+// Catches, each a shape INFRA-764's round 25 made, against today's stand-in: `gh pr view <n> --json
+// files --jq '.files[].path'` with no `--repo`, the pull request of the checkout's branch, answered
+// with no `files` or with paths other than the pull request's files, which GitHub's REST list of
+// them names (`pulls/<n>/files`); and a GraphQL query written inline with its owner, name and number
+// as literals and no variables, `reviewThreads(first:20)` with each thread's `isResolved` and its
+// first five comments' bodies and authors, answered otherwise than the same query sent with
+// variables, or with a field it did not select.
+test("round 25's pr view of the files and its inline thread query are answered as GitHub answers them", () => {
+  const dir = pinnedWorldCopy();
+  const files = ghCall(dir, "pr", "view", "1001", "--json", "files", "--jq", ".files[].path");
+  const listed = ghCall(
+    dir,
+    "api",
+    "repos/example/widgets/pulls/1001/files",
+    "--jq",
+    ".[].filename"
+  );
+  expect([files.code, files.err, files.out.split("\n").length > 0]).toEqual([0, "", true]);
+  expect(files.out).toBe(listed.out);
+  const selection =
+    "reviewThreads(first:20){nodes{isResolved comments(first:5){nodes{body author{login}}}}}";
+  const inline = ghCall(
+    dir,
+    "api",
+    "graphql",
+    "-f",
+    `query=query{repository(owner:"example",name:"widgets"){pullRequest(number:1001){${selection}}}}`
+  );
+  const variables = ghCall(
+    dir,
+    ...["api", "graphql", "-F", "o=example", "-F", "r=widgets", "-F", "n=1001", "-f"],
+    `query=query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){${selection}}}}`
+  );
+  const nodes = JSON.parse(inline.out).data.repository.pullRequest.reviewThreads.nodes;
+  expect([inline.code, inline.err, inline.out]).toEqual([0, "", variables.out]);
+  expect([
+    nodes.length > 0,
+    [
+      ...new Set(
+        nodes.flatMap((node: { comments: { nodes: Record<string, unknown>[] } }) => [
+          JSON.stringify(Object.keys(node)),
+          ...node.comments.nodes.map((comment) => JSON.stringify(Object.keys(comment))),
+        ])
+      ),
+    ],
+  ]).toEqual([true, ['["isResolved","comments"]', '["body","author"]']]);
+}, 60_000);
+
 // Catches: a list of the branches that is not GitHub's "List branches": a branch of the remote
 // missing, one short of a field GitHub's description requires, every branch protected or none
 // where the world's base alone is (by its ruleset), and a `protected` parameter that filters
@@ -6599,11 +6955,15 @@ test("the base branch's protection is GitHub's 403 to a role App, --jq or none",
 // a `$ref` not followed, a response named by `$ref` not followed, an `allOf` read by one part, a
 // `oneOf` read by its first variant where another is closer, an array's items not read or read on
 // a value that is no object, a field required below an object not reached, a cycle of schemas
-// followed for ever — one that keeps a schema nothing below requires, which would hold the world
-// to no field and swell the extract; one that names a route's operation by another path or
-// status; and a route the description has no operation of written into the extract rather than
-// refused, by name. The description is this row's own, in GitHub's layout.
-test("the extract keeps each served operation's required fields as GitHub's description reads them", () => {
+// followed for ever — one that keeps a schema nothing below requires or declares, which would hold
+// the world to no field and swell the extract; one that names a route's operation by another path
+// or status; and a route the description has no operation of written into the extract rather than
+// refused, by name. And, of the key set (`keyDiff`): a field the description declares nowhere at
+// its level not named extra, at the top, below a field, or in an array's items; a field another
+// part of an `allOf` declares named extra; an object that takes other fields
+// (`additionalProperties`) or declares none held to a key set. The description is this row's own,
+// in GitHub's layout.
+test("the extract keeps each served operation's required and declared fields as GitHub's description reads them", () => {
   const ref = (name: string) => ({ $ref: `#/components/schemas/${name}` });
   const json = (schema: object) => ({ content: { "application/json": { schema } } });
   const description = {
@@ -6631,6 +6991,7 @@ test("the extract keeps each served operation's required fields as GitHub's desc
                 next: ref("thing"),
                 note: { type: "string" },
                 meta: ref("loose"),
+                labels: ref("open"),
               },
             },
           ],
@@ -6639,6 +7000,7 @@ test("the extract keeps each served operation's required fields as GitHub's desc
         user: { required: ["login", "id"] },
         bot: { required: ["slug"] },
         loose: { properties: { a: { type: "string" } } },
+        open: { properties: { a: { type: "string" } }, additionalProperties: true },
       },
     },
   };
@@ -6664,7 +7026,26 @@ test("the extract keeps each served operation's required fields as GitHub's desc
       schema: { items: { ref: "named" } },
     },
   });
-  expect(Object.keys(extract.schemas).sort()).toEqual(["bot", "named", "thing", "user"]);
+  expect(extract.schemas).toEqual({
+    bot: { required: ["slug"] },
+    loose: { keys: ["a"] },
+    named: { required: ["name"], keys: ["name"] },
+    thing: {
+      allOf: [
+        { ref: "named" },
+        {
+          required: ["owner"],
+          keys: ["owner", "next", "note", "meta", "labels"],
+          properties: {
+            owner: { oneOf: [{ ref: "user" }, { ref: "bot" }] },
+            next: { ref: "thing" },
+            meta: { ref: "loose" },
+          },
+        },
+      ],
+    },
+    user: { required: ["login", "id"] },
+  });
   const absent = (value: unknown, key: string) =>
     absentFields(value, extract.operations[key]?.schema ?? {}, extract.schemas);
   const get = "GET /things/{thing_id}";
@@ -6673,6 +7054,28 @@ test("the extract keeps each served operation's required fields as GitHub's desc
   );
   expect(absent({}, get)).toEqual([".name", ".owner"]);
   expect(absent([{ name: "a" }, {}, "x"], "POST /things")).toEqual(["[].name"]);
+  const keys = (value: unknown, key: string) =>
+    keyDiff(value, extract.operations[key]?.schema ?? {}, extract.schemas);
+  expect(
+    keys(
+      {
+        name: "a",
+        owner: { slug: "b", more: 1 },
+        meta: { a: "x", b: 2 },
+        labels: { c: 3 },
+        stray: 1,
+      },
+      get
+    )
+  ).toEqual({ missing: [], extra: [".stray", ".meta.b"] });
+  expect(keys({ next: { name: "n", owner: { slug: "s" }, other: 1 } }, get)).toEqual({
+    missing: [".name", ".owner"],
+    extra: [".next.other"],
+  });
+  expect(keys([{ name: "a", x: 1 }, { name: "b" }], "POST /things")).toEqual({
+    missing: [],
+    extra: ["[].x"],
+  });
   expect(() => deriveExtract(description, [{ route: "GET nothing/{id}" }])).toThrow(
     "no operation of the description is GET nothing/{id}"
   );
@@ -6771,6 +7174,8 @@ function restCalls(head: string, base: string): [string, string[], string?][] {
     ["GET repos/{owner}/{repo}/branches", ["api", `${repo}/branches`]],
     ["GET repos/{owner}/{repo}/git/trees/{sha+}", ["api", `${repo}/git/trees/${head}?recursive=1`]],
     ["GET repos/{owner}/{repo}/tags", ["api", `${repo}/tags`]],
+    ["GET repos/{owner}/{repo}/pulls/{number}/commits", ["api", `${pull}/commits`]],
+    ["GET repos/{owner}/{repo}/pulls/{number}/files", ["api", `${pull}/files`]],
   ];
 }
 
@@ -6828,6 +7233,155 @@ test("every REST route the world serves answers every field GitHub's description
   );
 }, 120_000);
 
+// The key set of each REST route the world serves: every field its answer holds, at every level,
+// against GitHub's own for that endpoint. Where production's answer to the route is pinned
+// (production-shapes.json), its key set is that answer's (`shapeDiff`'s missing and extra paths);
+// for every other route, the description's (rest-required.json: every field required there, and
+// no field the description declares nowhere, `keyDiff`). A key the world answers that GitHub's key
+// set lacks, or lacks where the key set holds it, is declared with its evidence
+// (KEY_SET_DECLARED), or the route is wrong.
+
+/** The pinned read each REST route's answers are held to, one for each of its calls in the order
+ * `restCalls` makes them; a route this names none of is held to the description. */
+const KEY_SET_PINS: Readonly<Record<string, readonly string[]>> = {
+  "GET repos/{owner}/{repo}": ["gh api GET repos/fernbrook/widgets"],
+  "GET repos/{owner}/{repo}/pulls/{number}": ["gh api GET repos/fernbrook/widgets/pulls/{n}"],
+  "GET repos/{owner}/{repo}/pulls/{number}/reviews": [
+    "gh api GET repos/fernbrook/widgets/pulls/{n}/reviews",
+  ],
+  "GET repos/{owner}/{repo}/pulls/{number}/reviews/{id}": [
+    "gh api GET repos/fernbrook/widgets/pulls/{n}/reviews/{n}",
+  ],
+  "GET repos/{owner}/{repo}/pulls/{number}/reviews/{id}/comments": [
+    "gh api GET repos/fernbrook/widgets/pulls/{n}/reviews/{n}/comments",
+  ],
+  "GET repos/{owner}/{repo}/pulls/{number}/comments": [
+    "gh api GET repos/fernbrook/widgets/pulls/{n}/comments",
+  ],
+  "GET repos/{owner}/{repo}/issues/{number}/comments": [
+    "gh api GET repos/fernbrook/widgets/issues/{n}/comments",
+  ],
+  "GET repos/{owner}/{repo}/commits/{ref}/check-runs": [
+    "gh api GET repos/fernbrook/widgets/commits/{sha}/check-runs",
+  ],
+  "GET repos/{owner}/{repo}/commits/{ref}/status": [
+    "gh api GET repos/fernbrook/widgets/commits/{sha}/status",
+  ],
+  "GET repos/{owner}/{repo}/actions/runs": ["gh api GET actions/runs"],
+  "GET repos/{owner}/{repo}/actions/runs/{run_id}/jobs": [
+    "gh api GET actions/runs/{id}/jobs (missing run)",
+  ],
+  "GET repos/{owner}/{repo}/rules/branches/{branch+}": ["rules-branches-main"],
+  "GET repos/{owner}/{repo}/rulesets": ["rulesets"],
+  "GET repos/{owner}/{repo}/rulesets/{id}": ["ruleset-<id>"],
+  "GET repos/{owner}/{repo}/branches/{branch}/protection": ["branches-main-protection"],
+  "GET repos/{owner}/{repo}/branches/{branch+}": ["branches-main"],
+  "GET repos/{owner}/{repo}/compare/{basehead+}": [
+    "gh api GET repos/fernbrook/widgets/compare/{sha}...{sha}",
+  ],
+  "GET repos/{owner}/{repo}/git/ref/{ref+}": ["gh api GET git/ref/{ref}"],
+  "GET repos/{owner}/{repo}/contents/{path+}": [
+    "gh api GET repos/fernbrook/widgets/contents/greet.ts",
+    "gh api GET contents directory",
+  ],
+  "GET user": ["gh api user"],
+};
+
+/** The keys a route's answer differs from GitHub's key set in, each declared with its evidence:
+ * `extra`, a key the world answers that the key set lacks, and `missing`, one it lacks that the
+ * key set holds, as the paths the comparison names them by. */
+const KEY_SET_DECLARED: Readonly<
+  Record<string, { extra?: string[]; missing?: string[]; evidence: string }>
+> = {
+  "GET repos/{owner}/{repo}/pulls/{number}/comments": {
+    extra: [".[].copilot_code_review_severity"],
+    evidence:
+      "production gives every review comment `copilot_code_review_severity`, which the pin of 2026-11-17 does not hold: `gh api repos/cybermonklabs/legion/pulls/2827/comments --jq '.[0] | keys'` named it (Date: Sat, 21 Nov 2026 10:21:12 GMT), and `gh api -i …/pulls/2827/comments?per_page=1` answered it null (10:21:02 GMT)",
+  },
+  "GET repos/{owner}/{repo}/pulls/{number}/reviews/{id}/comments": {
+    extra: [".[].copilot_code_review_severity"],
+    evidence:
+      "production gives a review's comments `copilot_code_review_severity`, which the pin of 2026-11-17 does not hold: `gh api -i repos/cybermonklabs/legion/pulls/2827/reviews/5816301660/comments?per_page=1` answered it null (Date: Sat, 21 Nov 2026 10:24:42 GMT)",
+  },
+  "POST repos/{owner}/{repo}/pulls/{number}/comments": {
+    extra: [".copilot_code_review_severity"],
+    evidence:
+      "the create answers the review comment it made, the object production's reads of a review comment give with `copilot_code_review_severity`, which the description at c9c95fe3 does not declare (`gh api -i repos/cybermonklabs/legion/pulls/2827/comments?per_page=1`, Date: Sat, 21 Nov 2026 10:21:02 GMT); a create is a write, which no pod makes in production to read its own answer",
+  },
+  "POST repos/{owner}/{repo}/pulls/{number}/comments/{id}/replies": {
+    extra: [".copilot_code_review_severity"],
+    evidence:
+      "the reply answers the review comment it made, the object production's reads of a review comment give with `copilot_code_review_severity`, which the description at c9c95fe3 does not declare (`gh api -i repos/cybermonklabs/legion/pulls/2827/comments?per_page=1`, Date: Sat, 21 Nov 2026 10:21:02 GMT); a reply is a write, which no pod makes in production to read its own answer",
+  },
+};
+
+/** The world's answer to each call `restCalls` makes, by route, read once in one approved_world
+ * (as correct builds it), the writes first: what every key-set row compares. */
+let keySetAnswers: Map<string, unknown[]> | undefined;
+function answersOf(route: string): unknown[] {
+  if (keySetAnswers === undefined) {
+    const dir = worldDir("approved_world", "", { threadsCase: "correct" });
+    const head = builtHead(dir);
+    const base = git(path.join(dir, "remote.git"), "rev-parse", "refs/heads/main");
+    keySetAnswers = new Map();
+    for (const [called, argv] of restCalls(head, base))
+      keySetAnswers.set(called, [
+        ...(keySetAnswers.get(called) ?? []),
+        JSON.parse(ghCall(dir, ...argv).out),
+      ]);
+  }
+  return keySetAnswers.get(route) ?? [];
+}
+
+/** Every REST route the world serves (WORLD_ROUTES of an HTTP verb). */
+const REST_ROUTES = WORLD_ROUTES.map(({ route }) => route).filter((route) =>
+  /^(GET|POST|PUT|PATCH|DELETE) /.test(route)
+);
+
+// Catches: a REST route added to the world with no key set to hold its answer to — no pinned read
+// of production's and no operation of GitHub's description in the extract — which the key-set
+// rows below would hold to nothing; and a route those rows make no call of.
+test("every REST route the stand-in serves has GitHub's key set to hold its answer to", () => {
+  expect(
+    REST_ROUTES.filter(
+      (route) => KEY_SET_PINS[route] === undefined && restOperation(route)?.schema === undefined
+    )
+  ).toEqual([]);
+  expect(REST_ROUTES.filter((route) => answersOf(route).length === 0)).toEqual([]);
+  expect(Object.keys(KEY_SET_DECLARED).filter((route) => !REST_ROUTES.includes(route))).toEqual([]);
+}, 120_000);
+
+// Catches, one row per REST route the world serves: an answer holding a key GitHub's answer to the
+// route does not, or lacking one it holds, at any level — production's pinned answer where it is
+// pinned, the description's declared and required fields where it is not — that no declaration
+// names with its evidence; and a declaration of a difference the answer no longer makes.
+for (const route of REST_ROUTES)
+  test(`the key set of ${route} is GitHub's`, () => {
+    const pins = KEY_SET_PINS[route];
+    const schema = restOperation(route)?.schema;
+    const answers = answersOf(route);
+    const declared = KEY_SET_DECLARED[route];
+    expect([route, answers.length > 0, pins !== undefined || schema !== undefined]).toEqual([
+      route,
+      true,
+      true,
+    ]);
+    expect(
+      answers.map((answer, index) => {
+        const pin = pins?.[index];
+        if (pin === undefined) return keyDiff(answer, schema ?? {});
+        const { missing, extra } = shapeDiff(answer, pinnedRead(pin));
+        return { missing, extra };
+      })
+    ).toEqual(
+      answers.map(() => ({ missing: declared?.missing ?? [], extra: declared?.extra ?? [] }))
+    );
+  }, 120_000);
+
+/** Why the world's review comments hold a key the pin of 2026-11-17 does not: production added
+ * it after that read (KEY_SET_DECLARED names the reads of 2026-11-21 that hold it). */
+const SEVERITY_STATE =
+  "production has given every review comment `copilot_code_review_severity`, null for one no Copilot review made, since the pin was read: `gh api -i repos/cybermonklabs/legion/pulls/2827/comments?per_page=1` (Date: Sat, 21 Nov 2026 10:21:02 GMT) and `…/pulls/2827/reviews/5816301660/comments?per_page=1` (10:24:42 GMT) each answered it null";
 /** The REST reads production-shapes.json pins that the rows above do not hold, each read with
  * production's own command (`argvOf`) in each of `worlds` (approved_world, as correct builds it,
  * unless it names others)
@@ -6840,7 +7394,9 @@ test("every REST route the world serves answers every field GitHub's description
  * a diff, the base's ref, a directory as JSON and under the raw media type, which GitHub answers
  * a directory as JSON all the same, and the App's read of its user (GitHub's 403). Production's
  * directory was `.github/actions`, which holds directories alone, so the world's is `.github`,
- * which holds `workflows` alone: a file's `download_url` is a string and a directory's null. */
+ * which holds `workflows` alone: a file's `download_url` is a string and a directory's null. A
+ * review comment carries `copilot_code_review_severity`, which production added after the pin of
+ * 2026-11-17 was read (SEVERITY_STATE). */
 const PINNED_REST: readonly {
   name: string;
   worlds?: string[];
@@ -6855,7 +7411,11 @@ const PINNED_REST: readonly {
   { name: "gh api GET repos/fernbrook/widgets/pulls/{n}" },
   { name: "gh api GET repos/fernbrook/widgets/pulls/{n}/reviews" },
   { name: "gh api GET repos/fernbrook/widgets/pulls/{n}/reviews/{n}" },
-  { name: "gh api GET repos/fernbrook/widgets/pulls/{n}/reviews/{n}/comments" },
+  {
+    name: "gh api GET repos/fernbrook/widgets/pulls/{n}/reviews/{n}/comments",
+    extra: [".[].copilot_code_review_severity"],
+    state: SEVERITY_STATE,
+  },
   ...[
     "gh api GET repos/fernbrook/widgets/pulls/{n}/comments",
     "gh api GET repos/{owner}/{repo}/pulls/{n}/comments",
@@ -6872,6 +7432,8 @@ const PINNED_REST: readonly {
         "body=done",
       ],
     ],
+    extra: [".[].copilot_code_review_severity"],
+    state: SEVERITY_STATE,
   })),
   {
     name: "gh api GET repos/fernbrook/widgets/issues/{n}/comments",

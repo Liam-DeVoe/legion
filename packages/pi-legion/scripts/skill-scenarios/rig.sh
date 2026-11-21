@@ -3714,10 +3714,11 @@ $2
 # `check-runs|status` once answered the first three with the check-runs list, so a read of the
 # statuses or the runs failed on a shape GitHub never gives; the pull request's conversation and
 # its review comments; a ref, a list of the refs and a list of the branches; a commit, the
-# commits a ref reaches, a commit's git data, a tree and the tags, each the run's remote's as it
-# stands (the routes ahead of `contents`, each on the world's repository alone, so a read of
-# another owner's repository the pane's token runs stays the world's 404; the commit route's
-# regex leaves a commit's own
+# commits a ref reaches, a commit's git data, a tree, the tags, and the pull request's commits and
+# files (any number, so a number the world holds no pull request of is GitHub's 404 of the list),
+# each the run's remote's as it stands (the routes ahead of `contents`, each on the world's
+# repository alone, so a read of another owner's repository the pane's token runs stays the
+# world's 404; the commit route's regex leaves a commit's own
 # endpoints, `…/check-runs`, `…/pulls` and the rest, to their routes or to none); a file or a
 # directory at a ref; and GraphQL, whose queries the
 # stand-in answers from the graph written here (gh-standin.ts's `graphAnswer`): the pull request,
@@ -3900,11 +3901,13 @@ fixture_write() {
        methods:["GET"], answer:"commit"},
       {match:("^gh api .*repos/" + $repo_re + "/branches([?][^ ]*)?( |$)"), methods:["GET"], answer:"branches"},
       {match:("^gh api .*repos/" + $repo_re + "/tags([?][^ ]*)?( |$)"), methods:["GET"], answer:"tags"},
+      {match:("^gh api .*repos/" + $repo_re + "/pulls/[0-9]+/commits([?][^ ]*)?( |$)"), methods:["GET"], answer:"pull-commits"},
+      {match:("^gh api .*repos/" + $repo_re + "/pulls/[0-9]+/files([?][^ ]*)?( |$)"), methods:["GET"], answer:"pull-files"},
       {match:"^gh api .*repos/[^/ ]+/[^/ ]+/contents([/?][^ ]*)?( |$)", methods:["GET"], answer:"contents"},
       {match:("^gh api .*pulls/" + $n + "([ ?]|$)"), methods:["GET"], answer:"pull-request", stdout:$pr},
       {match:("^gh api (.* )?/?repos/" + $repo_re + "([?][^ ]*)?( |$)"), methods:["GET"], answer:"repository",
        stdout:$repository},
-      {match:"^gh api /?user([/?][^ ]*)?( |$)", methods:["GET"],
+      {match:"^gh api (.* )?/?user([/?][^ ]*)?( |$)", methods:["GET"],
        stdout:{message:"Resource not accessible by integration",
          documentation_url:"https://docs.github.com/rest/users/users#get-the-authenticated-user",
          status:"403"},

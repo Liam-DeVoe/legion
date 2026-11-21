@@ -99,6 +99,8 @@ import {
   type GraphError,
   isObject,
   type Operation,
+  routeOf,
+  worldRouteOf,
 } from "./gh-routes";
 import {
   type GhSelectors,
@@ -718,6 +720,226 @@ function diffFiles(range: readonly string[], at: string, before: string): Json[]
       };
     });
 }
+/** Whether gh prints the status line and the headers of GitHub's answer before its body: `gh api
+ * -i` (`--include`), which the census of INFRA-764's runs found 14 calls of in 15 runs (round 29's
+ * run 2d821d91b790, calls.jsonl:2, among them), each answered the body alone where gh prints both. */
+const include =
+  as === "gh" && args[0] === "api" && args.some((arg) => /^(?:-i|--include)$/.test(arg));
+/** The reason phrase Go's net/http gives each status the world answers with, which gh prints after
+ * the protocol (`resp.Status`). */
+const STATUS_TEXT: Readonly<Record<number, string>> = {
+  200: "OK",
+  201: "Created",
+  403: "Forbidden",
+  404: "Not Found",
+  422: "Unprocessable Entity",
+};
+/** The headers GitHub sends with every answer, REST or GraphQL, served or not, each a fact of
+ * GitHub's service and none of one request: production's values, as the pin holds them
+ * (production-headers.json's reads, made with `gh api -i` against cybermonklabs/legion on
+ * 2026-11-21, each with its `Date:`). `X-Github-Edge-Region` is the edge GitHub answers this
+ * cluster's pods from, which a world's agent, on the same pods, would be answered from. */
+const SERVICE_HEADERS: Readonly<Record<string, string>> = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Expose-Headers":
+    "ETag, Link, Location, Retry-After, X-GitHub-OTP, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Used, X-RateLimit-Resource, X-RateLimit-Reset, X-OAuth-Scopes, X-Accepted-OAuth-Scopes, X-Poll-Interval, X-GitHub-Media-Type, X-GitHub-SSO, X-GitHub-Request-Id, Deprecation, Sunset, Warning",
+  "Content-Security-Policy": "default-src 'none'",
+  "Referrer-Policy": "origin-when-cross-origin, strict-origin-when-cross-origin",
+  Server: "github.com",
+  "Strict-Transport-Security": "max-age=31536000; includeSubdomains; preload",
+  "X-Content-Type-Options": "nosniff",
+  "X-Frame-Options": "deny",
+  "X-Github-Edge-Region": "westus2",
+  "X-Xss-Protection": "0",
+};
+/** The permission GitHub names an App's read of each route needs (`X-Accepted-Github-Permissions`),
+ * as production answered each read of the pin's (production-headers.json's `permissions`, each
+ * with its `Date:`); null for a read it answered with none (`git/refs`). A route this table holds
+ * nothing of — the world's writes, which no pod may make in production to measure — is answered
+ * with no such header, a declared residual of the pin (the README's pin section). */
+const ACCEPTED_PERMISSIONS: Readonly<Record<string, string | null>> = {
+  "GET repos/{owner}/{repo}": "metadata=read",
+  "GET repos/{owner}/{repo}/pulls/{number}": "pull_requests=read; contents=read",
+  "GET repos/{owner}/{repo}/pulls/{number}/commits": "pull_requests=read",
+  "GET repos/{owner}/{repo}/pulls/{number}/files": "pull_requests=read",
+  "GET repos/{owner}/{repo}/pulls/{number}/reviews": "pull_requests=read",
+  "GET repos/{owner}/{repo}/pulls/{number}/reviews/{id}": "pull_requests=read",
+  "GET repos/{owner}/{repo}/pulls/{number}/reviews/{id}/comments": "pull_requests=read",
+  "GET repos/{owner}/{repo}/pulls/{number}/comments": "pull_requests=read",
+  "GET repos/{owner}/{repo}/issues/{number}/comments": "issues=read; pull_requests=read",
+  "GET repos/{owner}/{repo}/commits/{ref}/check-runs": "checks=read",
+  "GET repos/{owner}/{repo}/commits/{ref}/status": "statuses=read",
+  "GET repos/{owner}/{repo}/commits/{ref+}": "contents=read",
+  "GET repos/{owner}/{repo}/commits": "contents=read",
+  "GET repos/{owner}/{repo}/actions/runs": "actions=read",
+  "GET repos/{owner}/{repo}/actions/runs/{run_id}/jobs": "actions=read",
+  "GET repos/{owner}/{repo}/rules/branches/{branch+}": "metadata=read",
+  "GET repos/{owner}/{repo}/rulesets": "metadata=read",
+  "GET repos/{owner}/{repo}/rulesets/{id}": "metadata=read",
+  "GET repos/{owner}/{repo}/branches/{branch}/protection": "administration=read",
+  "GET repos/{owner}/{repo}/branches/{branch+}": "contents=read",
+  "GET repos/{owner}/{repo}/branches": "contents=read",
+  "GET repos/{owner}/{repo}/tags": "metadata=read",
+  "GET repos/{owner}/{repo}/compare/{basehead+}": "contents=read",
+  "GET repos/{owner}/{repo}/git/ref/{ref+}": "contents=read",
+  "GET repos/{owner}/{repo}/git/refs": null,
+  "GET repos/{owner}/{repo}/git/refs/{ref+}": "contents=read",
+  "GET repos/{owner}/{repo}/git/commits/{sha}": "contents=read",
+  "GET repos/{owner}/{repo}/git/trees/{sha+}": "contents=read",
+  "GET repos/{owner}/{repo}/contents/{path+}": "contents=read",
+  "GET user": "allows_permissionless_access=true",
+};
+/** The route of WORLD_ROUTES this call is, read only where the call asks for the headers
+ * (`include`), and undefined for one no row answers. */
+const worldRoute = include ? worldRouteOf(routeOf(args)?.key ?? "")?.route : undefined;
+/** The world's REST routes whose success GitHub answers `201 Created`, as its description names
+ * each operation's success (rest-required.json's `status`, which gh-standin.test.ts's row of the
+ * status lines holds this to): the creates of a review comment, of a reply and of a conversation
+ * comment. Every other success the world answers is `200 OK`, a GraphQL answer's among them. */
+const CREATED_ROUTES: Readonly<Record<string, true>> = {
+  "POST repos/{owner}/{repo}/pulls/{number}/comments": true,
+  "POST repos/{owner}/{repo}/pulls/{number}/comments/{id}/replies": true,
+  "POST repos/{owner}/{repo}/issues/{number}/comments": true,
+};
+/** How a REST list this call answers was paged (`restPages`): the first page it printed, the size
+ * of a page and the length of the whole list; undefined for an answer that is no paged list. */
+let paging: { first: number; perPage: number; total: number } | undefined;
+/** The status line and the headers gh prints before the body of GitHub's answer to `gh api -i`,
+ * as gh 2.98.0 prints them (pkg/cmd/api's `processResponse`): the protocol and the status on a
+ * line ended `\n`, then each header as `Name: value` in the byte order of the names, each line
+ * ended `\r\n`, then `\r\n` alone; the empty string for a call that asks for none. `status` is the
+ * answer's, `body` the bytes GitHub sends (the page's, before any `--jq`), `media` the text media
+ * type a call asked for (`diff`, `patch`, `sha`, `raw`), `page` the page of a paged list it is
+ * (from 0) and `modified` the time the answer's object last changed, where the world knows it.
+ *
+ * The headers are the ones production sent the same class of answer, measured on 2026-11-21 with
+ * `gh api -i` against cybermonklabs/legion (production-headers.json, each read with its `Date:`):
+ * every answer's service headers (SERVICE_HEADERS) and its `Date`, its `Content-Type` and its
+ * `X-Github-Media-Type`, and its `X-Github-Request-Id`; a served REST answer's
+ * `X-Github-Api-Version-Selected` and `X-Accepted-Github-Permissions` (ACCEPTED_PERMISSIONS); a
+ * served answer's rate limit; a REST success's `Cache-Control`, `Etag` and `Vary`, an error's or a
+ * GraphQL answer's own `Vary`; a text answer's `Content-Length`; a list's `Link` to its other
+ * pages, as GitHub writes it, the repository by its id (`repositories/<id>/…`) and the query
+ * string the call sent with `page` set; and `Last-Modified`, which production sent for the
+ * repository, as its `updated_at`, and for the pull request and its commits and files, as the pull
+ * request's. An endpoint GitHub does not serve was answered with no rate limit, no API version and
+ * no permission (`repos/cybermonklabs/legion/no-such-endpoint`, `Date: Sat, 21 Nov 2026 10:35:20
+ * GMT`); a GraphQL answer with no `Cache-Control`, `Etag`, API version or permission
+ * (`graphql`, 10:21:11 GMT).
+ *
+ * Each value that describes the answer is the world's: `Date` the call's time, `Etag` a weak
+ * validator of the world's own body (production's is no hash of the body it sent: its repository's
+ * 6814 bytes hash to cbc29673… and its ETag was W/"3019da26…"), `X-Github-Request-Id` one of the
+ * world's in GitHub's form, and the rate limit the role App's: production's limit for the
+ * resource (15000 a core hour and 10000 a GraphQL hour for a role App), used by every `gh api`
+ * call of that resource the run's record holds from the call's role and GitHub answered, this one
+ * counted, and reset an hour after the first of them. `Last-Modified` for every other route
+ * (production sent one for the commits, refs, trees, tags and contents, at times the world's
+ * objects do not give: `git/ref/heads/main` answered the repository's `updated_at` and
+ * `git/refs/heads/main` the commit's, at 10:24:58 and 10:25:00 GMT) and
+ * `X-Accepted-Github-Permissions` for a write are written by no answer: declared residuals of the
+ * pin (the README's pin section). */
+function headerBlock(
+  status: number,
+  body: string,
+  { media, page = 0, modified }: { media?: string; page?: number; modified?: unknown } = {}
+): string {
+  if (!include) return "";
+  const graphql = graphqlCall !== undefined;
+  const served = handler !== "unrouted";
+  const json = media === undefined;
+  const headers: Record<string, string> = {
+    ...SERVICE_HEADERS,
+    Date: new Date(at).toUTCString(),
+    "Content-Type": json
+      ? "application/json; charset=utf-8"
+      : `application/vnd.github.${media}; charset=utf-8`,
+    "X-Github-Media-Type": graphql
+      ? "github.v4; format=json"
+      : json
+        ? "github.v3; format=json"
+        : `github.v3; param=${media}`,
+    "X-Github-Request-Id": new Bun.CryptoHasher("sha256")
+      .update(`${run}\0${at}\0${args.join("\0")}`)
+      .digest("hex")
+      .toUpperCase()
+      .replace(/^(.{4})(.{6})(.{6})(.{6})(.{8}).*$/, "$1:$2:$3:$4:$5"),
+    Vary:
+      status < 400 && !graphql
+        ? "Accept, Authorization, Cookie, X-GitHub-OTP,Accept-Encoding, Accept, X-Requested-With"
+        : "Accept-Encoding, Accept, X-Requested-With",
+  };
+  if (!graphql && served) headers["X-Github-Api-Version-Selected"] = "2022-11-28";
+  const permission = worldRoute === undefined ? undefined : ACCEPTED_PERMISSIONS[worldRoute];
+  if (!graphql && served && typeof permission === "string")
+    headers["X-Accepted-Github-Permissions"] = permission;
+  if (status < 400 && !graphql) {
+    headers["Cache-Control"] = "private, max-age=60, s-maxage=60";
+    headers.Etag = `W/"${new Bun.CryptoHasher("sha256").update(body).digest("hex")}"`;
+  }
+  if (!json) headers["Content-Length"] = String(Buffer.byteLength(body));
+  if (status < 400 && typeof modified === "string")
+    headers["Last-Modified"] = new Date(modified).toUTCString();
+  if (served) {
+    const resource = graphql ? "graphql" : "core";
+    const limit = graphql ? 10_000 : 15_000;
+    const by = process.env.LEGION_ROLE || undefined;
+    const counted = recordedCalls(RECORD).filter(
+      (call) =>
+        call.as === "gh" &&
+        call.argv[0] === "api" &&
+        call.by === by &&
+        !["unrouted", "wrapper"].includes(call.handler ?? "") &&
+        (endpointPath(call.argv) === "graphql") === graphql
+    );
+    const since = Date.parse(counted[0]?.at ?? at);
+    headers["X-Ratelimit-Limit"] = String(limit);
+    headers["X-Ratelimit-Remaining"] = String(limit - counted.length - 1);
+    headers["X-Ratelimit-Reset"] = String(Math.floor(since / 1000) + 3600);
+    headers["X-Ratelimit-Resource"] = resource;
+    headers["X-Ratelimit-Used"] = String(counted.length + 1);
+  }
+  const link = paging === undefined ? undefined : linkOf(paging.first + page, paging);
+  if (link !== undefined) headers.Link = link;
+  return [
+    `HTTP/2.0 ${status} ${STATUS_TEXT[status] ?? ""}\n`,
+    ...Object.keys(headers)
+      .sort()
+      .map((name) => `${name}: ${headers[name]}\r\n`),
+    "\r\n",
+  ].join("");
+}
+/** GitHub's `Link` header of page `page` of a paged list: the previous page and the next, the
+ * last and the first, each where it is another page, in GitHub's order, each the call's own URL on
+ * the repository by its id with `page` set where the query string names it, or added after it.
+ * Measured on 2026-11-21 against cybermonklabs/legion: `pulls/2827/files?per_page=2&page=2` linked
+ * `…/repositories/1146927990/pulls/2827/files?per_page=2&page=1` as `prev`, then `page=3` as `next`,
+ * `page=58` as `last` and `page=1` as `first` (`Date: Sat, 21 Nov 2026 10:25:05 GMT`);
+ * `?page=2&per_page=2` the same with `page` first (10:25:06 GMT); `?per_page=2&page=58` `prev` and
+ * `first` alone (10:25:07 GMT); and `pulls/2827/comments?per_page=1`, the first page, `next` and
+ * `last` alone (10:21:02 GMT). */
+function linkOf(page: number, { perPage, total }: { perPage: number; total: number }) {
+  const last = Math.max(1, Math.ceil(total / perPage));
+  const rest = endpointPath(args).replace(/^repos\/[^/]+\/[^/]+/, "");
+  const id = String(heldRepository().id ?? "");
+  const url = (to: number) => {
+    const query = new URLSearchParams([...parameters()]);
+    query.set("page", String(to));
+    return `<https://api.github.com/repositories/${id}${rest}?${query}>`;
+  };
+  const links = [
+    ...(page > 1 ? [`${url(page - 1)}; rel="prev"`] : []),
+    ...(page < last ? [`${url(page + 1)}; rel="next"`, `${url(last)}; rel="last"`] : []),
+    ...(page > 1 ? [`${url(1)}; rel="first"`] : []),
+  ];
+  return links.length === 0 ? undefined : links.join(", ");
+}
+/** The HTTP status gh names in its line for GitHub's error (`… (HTTP 404)`), or undefined for a
+ * line that names none. */
+function httpStatusOf(text: string): number | undefined {
+  const named = /\(HTTP (\d{3})\)\n?$/m.exec(text)?.[1];
+  return named === undefined ? undefined : Number(named);
+}
 /** The comparison this call asks for, when it asks for one the run's remote can answer. It is
  * read before the route check, since no route answers a comparison and a 404 there reads to the
  * agent as a repository that does not hold the two commits its own run made. */
@@ -729,8 +951,11 @@ const compared = comparison();
  * GitHub's 404 of a `gh api` call carries its JSON error body too (`notFoundBody`), which gh
  * prints on stdout before it reports the status; `documentation` is the page the body names. */
 function refuse(text: string, documentation?: string): never {
-  if (text === NOT_FOUND && as === "gh" && args[0] === "api")
-    process.stdout.write(notFoundBody(documentation));
+  const body =
+    text === NOT_FOUND && as === "gh" && args[0] === "api" ? notFoundBody(documentation) : "";
+  const status = httpStatusOf(text);
+  if (status !== undefined) process.stdout.write(headerBlock(status, body));
+  process.stdout.write(body);
   process.stderr.write(text);
   exit(1);
 }
@@ -766,7 +991,10 @@ function notFoundBody(documentation?: string): string {
  * repos/cybermonklabs/legion/installation` (a 401) each ended in the body's `}`, no line end after
  * it (the implementer's readings, m/installation.out). A body of none prints nothing. */
 function refuseWith(body: unknown, text: string, status: number): never {
-  if (body !== undefined) process.stdout.write(JSON.stringify(body));
+  const sent = body === undefined ? "" : JSON.stringify(body);
+  const http = httpStatusOf(text);
+  if (http !== undefined) process.stdout.write(headerBlock(http, sent));
+  process.stdout.write(sent);
   process.stderr.write(text);
   exit(status);
 }
@@ -789,6 +1017,8 @@ const COMMITS_DOCS = "https://docs.github.com/rest/commits/commits#list-commits"
 const GIT_COMMIT_DOCS = "https://docs.github.com/rest/git/commits#get-a-commit-object";
 const REFS_DOCS = "https://docs.github.com/rest/git/refs#get-all-references-in-a-namespace";
 const TREE_DOCS = "https://docs.github.com/rest/git/trees#get-a-tree";
+const PULL_COMMITS_DOCS = "https://docs.github.com/rest/pulls/pulls#list-commits-on-a-pull-request";
+const PULL_FILES_DOCS = "https://docs.github.com/rest/pulls/pulls#list-pull-requests-files";
 /** GitHub's 422 of a commit its repository does not hold, as `gh api -i
  * repos/cybermonklabs/legion/commits/<forty deadbeef digits>` answered it on 2026-11-21 (`Date:
  * Sat, 21 Nov 2026 08:42:54 GMT`): its body on stdout and gh's line on stderr (`refuseWith`). */
@@ -2328,6 +2558,29 @@ function tagList(): Json[] {
       };
     });
 }
+/** GitHub's list of a pull request's commits, `GET repos/<o>/<r>/pulls/<n>/commits`, and of its
+ * files, `…/files`: for the world's pull request, the commits its head holds and its base does
+ * not, oldest first, each as GitHub lists a commit (`commitJson`), and the files of its diff from
+ * its merge base, each as the comparison lists one (`diffFiles`); both paged by `per_page` and
+ * `page` (`restPages`). A number the world holds no pull request of is GitHub's 404 of the list,
+ * its body naming the list's page. Measured on 2026-11-21 with `gh api -i` against
+ * cybermonklabs/legion: `pulls/2827/commits?per_page=2` listed f9fb3400, then 3a777f13 whose parent
+ * it is, each with the keys of `commitJson` and no `stats` or `files` (`Date: Sat, 21 Nov 2026
+ * 10:21:06 GMT`); `pulls/2827/files?per_page=2` its first two files by path, each a `diff-entry`
+ * with its `patch` (10:21:07 GMT); and `pulls/999999/commits` (10:21:08 GMT) and
+ * `pulls/999999/files` (10:21:09 GMT) each answered `HTTP/2.0 404 Not Found` with that body. */
+function pullList(kind: "commits" | "files", number: string): Json[] {
+  const tip = branchTip();
+  if (world === undefined || number !== String(world.pr) || tip === undefined)
+    refuse(NOT_FOUND, kind === "commits" ? PULL_COMMITS_DOCS : PULL_FILES_DOCS);
+  const base = `refs/heads/${world.base}`;
+  if (kind === "commits")
+    return (fromRemote("rev-list", "--reverse", `${base}..${tip}`) ?? "")
+      .split("\n")
+      .filter((sha) => sha !== "")
+      .map(commitJson);
+  return diffFiles([`${base}...${tip}`], tip, fromRemote("merge-base", base, tip) ?? base) ?? [];
+}
 /** A route's answer read from what the run did (rig.sh's fixture_write names which, as `answer`),
  * with `held` the route's own `stdout`, what the world held before the run:
  *   - `repository`: the world's repository (`held`, its settings) as GitHub answers it whole
@@ -2357,6 +2610,8 @@ function tagList(): Json[] {
  *   - `branches`: GitHub's list of the branches (`branchList`);
  *   - `git-tree`: GitHub's read of a tree (`treeOf`), or its 404;
  *   - `tags`: GitHub's list of the tags (`tagList`);
+ *   - `pull-commits` and `pull-files`: GitHub's lists of the pull request's commits and files
+ *     (`pullList`), or its 404 for a pull request the world has not got;
  *   - `check-runs`: the world's check runs of the commit the path names, resolved on the run's own
  *     remote and reported on it as GitHub reports them (`reportedRuns`), and 422 for a ref the
  *     remote has not got;
@@ -2477,6 +2732,11 @@ function fromRun(kind: string, held: unknown): unknown {
     }
     case "tags":
       return tagList();
+    case "pull-commits":
+    case "pull-files": {
+      const number = /\/pulls\/([^/]+)\/(?:commits|files)$/.exec(path)?.[1] ?? "";
+      return pullList(kind === "pull-commits" ? "commits" : "files", number);
+    }
     case "check-runs": {
       const ref = /\/commits\/([^/]+)\/check-runs$/.exec(path)?.[1] ?? "";
       const sha = REF.test(ref)
@@ -2769,7 +3029,12 @@ function diffAt(
  * comments and a comment's create are answered in (`pull-request-review-comment`), where a reply
  * names the comment it replies to (`in_reply_to_id`); `review` the older one GitHub lists a
  * review's comments in (`review-comment`), which carries no line, side or start of its own
- * (production-shapes.json's `…/reviews/{n}/comments`). */
+ * (production-shapes.json's `…/reviews/{n}/comments`). Both carry `copilot_code_review_severity`,
+ * null for a comment no Copilot review made, which neither the description at c9c95fe3 nor the
+ * pin of 2026-11-17 holds and production gives in both: measured on 2026-11-21, `gh api
+ * repos/cybermonklabs/legion/pulls/2827/comments --jq '.[0] | keys'` named it (`Date: Sat, 21 Nov
+ * 2026 10:21:12 GMT`), `gh api -i …/pulls/2827/comments?per_page=1` answered it null (10:21:02
+ * GMT), and so did `gh api -i …/pulls/2827/reviews/5816301660/comments?per_page=1` (10:24:42 GMT). */
 function reviewCommentJson(thread: Json, comment: Json, form: "pull" | "review"): Json {
   const api = `https://api.github.com/repos/${world?.repo ?? ""}/pulls`;
   const id = Number(comment.databaseId);
@@ -2804,6 +3069,7 @@ function reviewCommentJson(thread: Json, comment: Json, form: "pull" | "review")
     _links: { self: { href: self }, html: { href: comment.url }, pull_request: { href: pull } },
     reactions: reactionsJson(self),
     is_copilot_code_review: false,
+    copilot_code_review_severity: null,
     copilot_code_review_sources: [],
   };
   if (form === "review") return shared;
@@ -3058,6 +3324,7 @@ function restPages(answer: unknown): unknown[] {
       ? (answer[key] as unknown[])
       : undefined;
   if (list === undefined) return [answer];
+  paging = { first, perPage, total: list.length };
   const pageOf = (page: number) => {
     const items = list.slice((page - 1) * perPage, page * perPage);
     return isObject(answer) && key !== undefined ? { ...answer, [key]: items } : items;
@@ -3091,20 +3358,54 @@ if (jsonIndex >= 0) {
 const jqIndex = args.findIndex((arg) => arg === "--jq" || arg === "-q");
 const filter = jqIndex >= 0 ? args[jqIndex + 1] : undefined;
 const texts = docs.map((doc) => (typeof doc === "string" ? doc : JSON.stringify(doc)));
+/** What gh prints before each page with `--include` (`headerBlock`), none without it: the
+ * success's status, the operation's own (rest-required.json's: 201 for a create of a comment, 200
+ * for a read), the text media type a call asked for where its answer is text, and the time the
+ * answer's object last changed, where production sends it and the world knows it. */
+const heads = !include
+  ? []
+  : texts.map((one, page) =>
+      headerBlock(CREATED_ROUTES[worldRoute ?? ""] ? 201 : 200, one, {
+        page,
+        media:
+          typeof output !== "string"
+            ? undefined
+            : DIFF_MEDIA_TYPE.test(joined)
+              ? "diff"
+              : /application\/vnd\.github(?:\.v3)?\.patch/.test(joined)
+                ? "patch"
+                : /application\/vnd\.github(?:\.v3)?\.sha/.test(joined)
+                  ? "sha"
+                  : RAW_MEDIA_TYPE.test(joined)
+                    ? "raw"
+                    : undefined,
+        modified:
+          handler === "repository" || (handler === "pull-request" && verb === "GET")
+            ? isObject(output) && output.updated_at
+            : handler === "pull-commits" || handler === "pull-files"
+              ? pullRest().updated_at
+              : undefined,
+      })
+    );
 // gh runs `--jq` over each page on its own, and without it prints the pages of a list as the one
-// list they make and every other answer's pages back to back, as they came.
+// list they make and every other answer's pages back to back, as they came; with `--include`, each
+// page after its own status line and headers, and the pages of a list each as it came (gh reads a
+// list's pages as one only where it prints no headers).
 let text: string;
 if (filter !== undefined) {
   text = "";
-  for (const one of texts) {
+  for (const [page, one] of texts.entries()) {
+    text += heads[page] ?? "";
     const jq = Bun.spawnSync(["jq", "-r", filter], { stdin: new TextEncoder().encode(one) });
     text += jq.stdout.toString();
     if (jq.exitCode !== 0) {
+      if (include) process.stdout.write(text);
       process.stderr.write(jq.stderr.toString());
       exit(1);
     }
   }
-} else if (docs.length > 1 && docs.every(Array.isArray)) text = JSON.stringify(docs.flat());
+} else if (include) text = texts.map((one, page) => `${heads[page] ?? ""}${one}`).join("");
+else if (docs.length > 1 && docs.every(Array.isArray)) text = JSON.stringify(docs.flat());
 else text = texts.join("");
 // GitHub answers a GraphQL query it refuses, or finds part of it naming nothing, with `errors`
 // beside whatever data it found, and gh prints its body as GitHub sent it, then `gh: ` and each

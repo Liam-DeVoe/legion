@@ -975,6 +975,24 @@ export const WORLD_ROUTES: readonly WorldRoute[] = [
       "world.json and the remote: the pull request at the branch's tip, as GitHub's REST API answers it",
   },
   {
+    route: "GET repos/{owner}/{repo}/pulls/{number}/commits",
+    answer:
+      "the remote: the commits the pull request's head holds and its base does not, oldest first, paged, or GitHub's 404 for a pull request the world has not got",
+    evidence: {
+      world:
+        "GitHub's REST list of the pull request's commits, the read `gh pr view --json commits` makes through GraphQL",
+    },
+  },
+  {
+    route: "GET repos/{owner}/{repo}/pulls/{number}/files",
+    answer:
+      "the remote: the files of the pull request's diff from its merge base, as the comparison lists them, paged, or GitHub's 404 for a pull request the world has not got",
+    evidence: {
+      world:
+        "GitHub's REST list of the pull request's files, the read `gh pr view --json files` and `gh pr diff --name-only` make",
+    },
+  },
+  {
     route: "GET repos/{owner}/{repo}/pulls/{number}/reviews",
     answer: "the world's reviews, then the reviews calls.jsonl records the run creating",
   },
