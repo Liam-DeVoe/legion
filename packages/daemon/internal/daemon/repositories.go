@@ -1360,7 +1360,7 @@ func (w *workflowRuntime) recoverRepositories(ctx context.Context) {
 	}
 	if err := w.tellReleaseWaits(attempt, answered, told); err != nil {
 		w.putBackSilenced(taken)
-		w.log.Warn("workflow: the release waits of the repositories GitHub answered for again were not told; recovering them again",
+		w.log.Warn("workflow: the release waits of the repositories GitHub answered for again, or that GitHub's answer for another name answers for, were not told; recovering them again",
 			"repositories", answered, "error", err)
 		return
 	}
@@ -1376,7 +1376,7 @@ func (w *workflowRuntime) recoverRepositories(ctx context.Context) {
 	}
 	w.recoveringMu.Unlock()
 	if len(answered) != 0 {
-		w.log.Info("workflow: recovered the issues of the repositories GitHub answered for again", "repositories", answered)
+		w.log.Info("workflow: recovered the issues of the repositories GitHub answered for again, or that GitHub's answer for another name answers for", "repositories", answered)
 	}
 }
 

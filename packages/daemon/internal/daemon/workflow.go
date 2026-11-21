@@ -186,7 +186,8 @@ type workflowRuntime struct {
 	// installation on a repository (prepareName). recovering is each repository,
 	// lowercased, GitHub answered for again whose issues are still to recover from Dispatch's
 	// listing (recoverRepositories): one a preparation left unread and whose reads a later
-	// preparation got answered (readAnswered), under recoveringMu. silenced is, by the same
+	// preparation got answered, or that a recovery found an entry of another name answering for
+	// (readAnswered, deferUnreadIssues), under recoveringMu. silenced is, by the same
 	// repository, each issue whose apply said nothing because the repository was unread
 	// (noteUnread), which the repository's recovery takes into its scope whatever the issue
 	// resolves to by then; releaseWaits is, by repository, each child a release_children left
