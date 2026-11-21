@@ -1184,7 +1184,7 @@ func TestHorizonACallerAcrossAResetAnswersFromAnObservationOfTheNewGeneration(t 
 			}
 			call := func(answers chan<- answer) {
 				safe, err := horizon.Safe(ctx)
-				answers <- answer{safe, horizon.Gap(), err}
+				answers <- answer{safe, horizon.Gap(safe), err}
 			}
 			// check reports a call's answer and goes on, so a run shows each call's.
 			check := func(who string, got answer, want int64) {
