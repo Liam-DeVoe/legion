@@ -23,7 +23,16 @@ import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { useKeymapScope } from "../../shell/keymap";
 import { measureNearWords } from "../clamp-fixtures";
-import { artifact, issueTree, KEY, node, READER } from "../decisions-filter/decisions-fixtures";
+import {
+  artifact,
+  askRef,
+  decisionsRead as entriesRead,
+  issueTree,
+  KEY,
+  node,
+  READER,
+  specRef,
+} from "../decisions-filter/decisions-fixtures";
 import { FocusedNodeProvider, useFocusedNode } from "../focused-node";
 import type { OutlineRequest } from "../IssueTree";
 import { buildIssueTree, type TreeNode } from "../issue-tree";
@@ -42,7 +51,7 @@ import {
 import { presetView } from "../presets";
 import { ReferenceNamesProvider, usePublishReferenceNames } from "../reference-names";
 import { decisionBehind } from "../tree-keys";
-import { treeAnswer, treeNode } from "../tree-read/tree-fixtures";
+import { treeAnswer, treeNode, treeTuple } from "../tree-read/tree-fixtures";
 import { issueTreeQuery, type TreeAnswer } from "../tree-read/tree-read";
 import { check, checkNode, result } from "../verification-filter/verification-fixtures";
 import { SpecFilterBody } from "./SpecFilterBody";
@@ -1031,37 +1040,55 @@ test("a gap the mark does not say is drawn after the statement's words, and no c
 });
 
 // R5, review finding 4590606091: `w` on a statement goes to the cell beside it, which draws the
-// decision its run is headed by. The page's model hangs a person's decision under the question it
-// answers, at the tree's end, and an agent's under the issue, before the statements, so the
-// first decision of the tree's order that names r4 is the agent's, which only informed it and
-// heads no run.
+// decision its run is headed by. A person's decision is the question they answered, which stands
+// at the tree's end, and an agent's is a `decision` block of the spec, which stands under the
+// issue, before the statements, so the first decision of the tree's order that names r4 is the
+// agent's, which only informed it and heads no run.
 test("w on a statement goes to the cell beside it, whichever decision the tree's order names first", async () => {
-  const made = [
-    decision({
-      asks: ["ask-1"],
-      block_id: "d2",
-      kind: "person",
-      links: [shaped(statementRef("r3")), shaped(statementRef("r4"))],
-    }),
-    decision({ block_id: "d5", kind: "agent", links: [shaped(statementRef("r4"))] }),
-  ];
-  // The tree read's answer: the spec's two statements, and the question the person's decision
-  // answers, each under the issue.
+  const person = decision({
+    asks: ["ask-1"],
+    block_id: "",
+    kind: "person",
+    links: [shaped(statementRef("r3")), shaped(statementRef("r4"))],
+    ref: askRef("ask-1"),
+  });
+  const agent = decision({
+    block_id: "d5",
+    kind: "agent",
+    links: [shaped(statementRef("r4"))],
+    ref: specRef("d5"),
+  });
+  const made = [person, agent];
+  // The tree read's answer: the agent's decision and the spec's two statements, then the
+  // question the person's decision answers, each under the issue, each decision carried on its
+  // node with what it shaped as that node's `shaped` tuples; and the decisions read's entry for
+  // each decision.
   const tree = buildIssueTree({
     asks: [askRead("ask-1", "Keep both statements.")],
     coverage: coverageRead(["r3", "r4"]),
-    decisions: decisionsRead(made),
+    decisions: entriesRead(made),
     issue: issueDetails(),
-    tree: treeAnswer([
-      ...["r3", "r4"].map((id, position) =>
-        treeNode(id, "requirement", KEY, {
-          document: { artifact_id: "artifact-spec", position, slug: "spec" },
-        })
-      ),
-      treeNode("ask-1", "ask", KEY),
-    ]),
+    tree: treeAnswer(
+      [
+        treeNode("d5", "decision", KEY, {
+          decision: agent,
+          document: { artifact_id: "artifact-spec", position: 0, slug: "spec" },
+        }),
+        ...["r3", "r4"].map((id, index) =>
+          treeNode(id, "requirement", KEY, {
+            document: { artifact_id: "artifact-spec", position: index + 1, slug: "spec" },
+          })
+        ),
+        treeNode("ask-1", "ask", KEY, { decision: person }),
+      ],
+      [
+        treeTuple("shaped", "d5", "r4"),
+        treeTuple("shaped", "ask-1", "r3"),
+        treeTuple("shaped", "ask-1", "r4"),
+      ]
+    ),
   });
-  expect(decisionBehind(tree, "spec#b-r4")?.id).toBe("decisions-md#b-d5");
+  expect(decisionBehind(tree, "spec#b-r4")?.id).toBe("spec#b-d5");
   const user = userEvent.setup();
   const { read, view } = drawBody(tree, made);
   try {

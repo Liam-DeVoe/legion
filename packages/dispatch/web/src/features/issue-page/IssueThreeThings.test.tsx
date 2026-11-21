@@ -7,12 +7,13 @@ import { MemoryRouter } from "react-router-dom";
 import { displayTree } from "../../__tests__/display-trees";
 import { api } from "../../api/client";
 import { issueCoverageQuery, issueResultsQuery } from "../../api/queries";
-import type { Artifact, Decision, IssueDetails, ReferenceTarget } from "../../api/types";
+import type { Artifact, IssueDetails, ReferenceTarget } from "../../api/types";
 import { MarginProvider } from "../margin/margin-context";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { buildDispatchReference } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
+import { decision, decisionsRead } from "./decisions-filter/decisions-fixtures";
 import { IssueThreeThings } from "./IssueThreeThings";
 import { IssueTree } from "./IssueTree";
 import { buildIssueTree, type TreeNode } from "./issue-tree";
@@ -566,23 +567,6 @@ function issueDetails(): IssueDetails {
   } satisfies IssueDetails;
 }
 
-const decision: Decision = {
-  asks: [],
-  block_id: "d1",
-  changed_at: null,
-  changed_version: 1,
-  heading: "Ship behind a flag",
-  kept: null,
-  kind: "agent",
-  links: [],
-  ref: `dispatch://${KEY}/artifact/decisions#b-d1`,
-  replaced: false,
-  text: "## Ship behind a flag\n\nWe ship it behind a flag.",
-  text_sha256: "sha256:one",
-  unsure: false,
-  waiting_review: false,
-};
-
 /** A typed block of the spec as the tree read answers it, under the issue, at `position`. */
 function block(id: string, type: string, position: number, text: string): TreeAnswerNode {
   return answerNode(id, type, KEY, {
@@ -609,9 +593,10 @@ function summaryTarget(): ReferenceTarget {
   };
 }
 
-/** The issue the drawn-gap case reads: a spec with a summary and one requirement no check
- *  serves, and a decisions document with one decision, as the page's reads answer them. */
+/** The issue the drawn-gap case reads: a spec with a summary, one requirement no check serves
+ *  and one decision, a `decision` block of the spec, as the page's reads answer them. */
 function fullyReadIssue(): TreeNode {
+  const words = "## Ship behind a flag\n\nWe ship it behind a flag.";
   return buildIssueTree({
     coverage: {
       gaps: ["r1 has no check"],
@@ -629,15 +614,21 @@ function fullyReadIssue(): TreeNode {
       ],
       spec_artifact_id: specDocument.id,
     },
-    decisions: {
-      decisions: [decision],
-      document: decisionsDocument.id,
-      entries: [],
-      open_questions: [],
-    },
+    // An agent's decision that waits for no review: an entry of the decisions read, and a
+    // `decision` block of the spec in the tree read.
+    decisions: decisionsRead([
+      decision("d1", {
+        changed_at: null,
+        heading: "Ship behind a flag",
+        text: `:::decision{#d1}\n${words}\n:::\n`,
+        text_sha256: "sha256:one",
+        waiting_review: false,
+      }),
+    ]),
     tree: treeAnswer([
       block("summary", "callout", 0, "What this is. Why it matters. What is different when done."),
       block("r1", "requirement", 1, "The page draws the whole issue in one reading."),
+      block("d1", "decision", 2, words),
     ]),
     issue: issueDetails(),
     targets: [summaryTarget()],
@@ -774,7 +765,7 @@ test("a requirement, a decision and the head of a fully read issue draw no gap t
           <MarginProvider>
             <IssueScope />
             <IssueTree
-              artifacts={new Map([[decisionsDocument.slug, decisionsDocument]])}
+              artifacts={new Map([[specDocument.slug, specDocument]])}
               context={new Set()}
               emptyLine="Nothing here."
               filtering={false}
@@ -798,7 +789,7 @@ test("a requirement, a decision and the head of a fully read issue draw no gap t
   );
   try {
     const requirement = blockNodeId("spec", "r1");
-    const settled = blockNodeId("decisions", "d1");
+    const settled = blockNodeId("spec", "d1");
     await waitFor(() => expect(rowsFor(view.container, requirement).length).toBe(1));
     expect(rowsFor(view.container, settled).length).toBe(1);
     const kinds = (element: Element | undefined) =>
