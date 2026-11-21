@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"reflect"
 	"slices"
 	"strconv"
@@ -104,6 +105,9 @@ func privateListenersSetting(value string, hubs []string) ([]busprojects.Listene
 				return nil, fmt.Errorf("%s has no %s", entry, field.name)
 			}
 		}
+		if !brokerBaseURL(listener.Source) {
+			return nil, fmt.Errorf("%s has a source that is not the secrets broker's base URL, an absolute http(s) URL with no path, query or fragment: a replica reports the base URL it joins its privacy route to, and the proof compares the two", entry)
+		}
 		if strings.TrimSpace(listener.Instances) == "" {
 			return nil, fmt.Errorf("%s has no instances: each proof reads every replica of a workload at its instances, a headless Service whose addresses are every replica", entry)
 		}
@@ -130,6 +134,16 @@ func privateListenersSetting(value string, hubs []string) ([]busprojects.Listene
 func validPort(port string) bool {
 	number, err := strconv.Atoi(port)
 	return err == nil && number >= 1 && number <= 65535
+}
+
+// brokerBaseURL reports whether source is the secrets broker's base URL as a listener's privacy
+// source names it: an absolute http(s) URL with a host and no user, path (a trailing slash
+// included), query or fragment. A listener joins /v1/project-privacy to it, and its readiness
+// answer reports it unchanged, which the proof compares with its workload's source byte for byte.
+func brokerBaseURL(source string) bool {
+	parsed, err := url.Parse(source)
+	return err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Host != "" && parsed.User == nil &&
+		parsed.Path == "" && parsed.RawQuery == "" && parsed.Fragment == "" && !parsed.ForceQuery
 }
 
 // hubAdmission is what main runs of the private-hub admission proof (busprojects.HubAdmission):
