@@ -471,6 +471,31 @@ export function envoySettings(
   }
   const listener = section.url ?? DEFAULT_ENVOY_URL;
   const url = namedUrl ?? listener;
+  // How the session takes inbound messages: `ENVOY_INBOUND`, else the file's `envoy.inbound`, an
+  // empty variable counting as unset. Unset, and `nats`, are NATS, resolved as they always were.
+  const namedInbound = nonEmpty(env.ENVOY_INBOUND);
+  const choice =
+    namedInbound !== undefined
+      ? { value: namedInbound, source: ENVOY_INBOUND_VAR }
+      : section.inbound === undefined
+        ? undefined
+        : { value: section.inbound, source: `envoy.inbound in ${config.path}` };
+  // A session that takes its messages through the socket is on a machine outside the deployment:
+  // over plain http to another machine its token, its proofs and every body would cross networks
+  // unencrypted, on the socket and on every call of its tools, so Envoy is off as a whole, for a
+  // caller that opens no inbound connection (`nats: false`: a send command, the `dispatch`
+  // command, a notice publisher) as much as for the session, and before any credential is
+  // resolved, so a file's `!` token command does not run for it. A NATS session keeps a plain
+  // http listener: a pod reaches its listener so inside its cluster's network, with a token each
+  // request binds to a fresh proof.
+  if (choice?.value === "listener") {
+    const host = plainHttpOffMachine(url);
+    if (host !== undefined) {
+      return offWithError(
+        `${choice.source} is listener, but the listener's address is plain http to ${host}, which is not this machine, so the session's token would cross the network unencrypted: Envoy is off; use an https address`
+      );
+    }
+  }
   let credential: RequestCredential | undefined;
   // Why this machine has no broker credential, where it has none and no bearer either.
   let noBrokerRoute = "";
@@ -503,32 +528,12 @@ export function envoySettings(
     return offWithError(messageFor(error));
   }
   const natsUrls = namedNatsUrls.length > 0 ? namedNatsUrls : (section.natsUrls ?? []);
-  // How the session takes inbound messages: `ENVOY_INBOUND`, else the file's `envoy.inbound`, an
-  // empty variable counting as unset. Unset, and `nats`, are NATS, resolved as they always were.
-  const namedInbound = nonEmpty(env.ENVOY_INBOUND);
-  const choice =
-    namedInbound !== undefined
-      ? { value: namedInbound, source: ENVOY_INBOUND_VAR }
-      : section.inbound === undefined
-        ? undefined
-        : { value: section.inbound, source: `envoy.inbound in ${config.path}` };
   let inbound: EnvoyInbound;
   if (options.nats === false) inbound = { off: NO_NATS_CONNECTION };
   else if (choice !== undefined && choice.value !== "nats" && choice.value !== "listener") {
     // Never echoed: a credential pasted into the wrong setting would be.
     inbound = { off: `${choice.source} is neither nats nor listener` };
   } else if (choice?.value === "listener") {
-    // A session that takes its messages through the socket is on a machine outside the
-    // deployment: over plain http to another machine its token and every frame would cross
-    // networks unencrypted, on the socket and on every call of its tools, so Envoy is off as a
-    // whole. A NATS session keeps a plain http listener: a pod reaches its listener so inside its
-    // cluster's network, with a token each request binds to a fresh proof.
-    const host = plainHttpOffMachine(url);
-    if (host !== undefined) {
-      return offWithError(
-        `${choice.source} is listener, but the listener's address is plain http to ${host}, which is not this machine, so the session's token would cross the network unencrypted: Envoy is off; use an https address`
-      );
-    }
     const natsSetting =
       namedNatsUrls.length > 0
         ? "ENVOY_NATS_URL"

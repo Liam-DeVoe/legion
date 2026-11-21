@@ -450,8 +450,11 @@ edge mode refuses a whole registration that names a topic of no project of the s
 registration carried it (`EnvoyApiError.refused`): `registerWithRelay`
 (`@legion/envoy-client/relay-registration`) has the host drop exactly those and tell the session
 which, once, with the reason (`drop`, worded by `refusedTopicsNoticeText`), logs one line naming
-them, and registers the rest at once, whichever path registered; its 503 `repositories_unknown`
-and 403 `token_not_admitted` drop nothing.
+them, and registers the rest at once, whichever path registered. The resend names only the topics
+the session still follows (`followed` is read again before it), so one unsubscribed while the
+registration waited is not put back, and the relay forgets only the refused topics
+(`ConsumerDelivery.unfollow`), so one another registration added meanwhile stays followed. Its 503
+`repositories_unknown` and 403 `token_not_admitted` drop nothing.
 
 ## envoy.json
 

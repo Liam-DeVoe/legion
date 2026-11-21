@@ -29,8 +29,10 @@ export interface RelayRegistration<Result> {
   readonly relayMissing?: string;
   /** This session's own agent subject, which every registration carries. */
   readonly ownAgentSubject: string;
-  /** Every topic the session follows now, filtered by `registrationTopics`. */
-  readonly followed: Iterable<string>;
+  /** Every topic the session follows now, filtered by `registrationTopics`: read when the
+   *  registration starts and again before each resend, so a topic the session stopped following
+   *  while this one waited is not named again. */
+  readonly followed: () => Iterable<string>;
   /** The Legion roles this session holds, which decide the controller notice lane it may follow. */
   readonly roles?: readonly string[];
   /** This session's outage report, told once per outage. */
@@ -142,7 +144,7 @@ export async function registerWithRelay<Result>({
     outage.refused(refused);
     throw refused;
   }
-  let topics = registrationTopics(ownAgentSubject, followed, roles);
+  let topics = registrationTopics(ownAgentSubject, followed(), roles);
   relay.setFollowed(topics);
   for (;;) {
     let result: Result;
@@ -163,7 +165,11 @@ export async function registerWithRelay<Result>({
       // names into the session's row, goes on relaying it. Taking this call's own list again
       // would drop that topic here, and its frames would be answered done unhandled.
       relay.unfollow(refused.topics);
-      topics = topics.filter((topic) => !refused.topics.includes(topic));
+      // The resend names only this call's topics the session still follows: the listener merges
+      // a registration's topics into the row, so one unsubscribed while this call waited would
+      // be put back. Leaving a topic out removes nothing there.
+      const still = new Set(registrationTopics(ownAgentSubject, followed(), roles));
+      topics = topics.filter((topic) => !refused.topics.includes(topic) && still.has(topic));
       continue;
     }
     outage.accepted();

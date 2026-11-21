@@ -3506,7 +3506,7 @@ export default function envoyExtension(hostApi: PiApi): void {
               ? passFailure.text
               : undefined),
       ownAgentSubject: legacyAgentSubject(registeringFor),
-      followed,
+      followed: () => followed,
       roles: role === undefined ? [] : [role],
       outage: inboundOutage,
       send: (topics, delivery) =>

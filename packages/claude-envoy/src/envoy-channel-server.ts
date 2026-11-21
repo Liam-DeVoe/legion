@@ -1425,7 +1425,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       relay: asking?.delivery,
       ...(relayMissing === undefined ? {} : { relayMissing }),
       ownAgentSubject: directSubject,
-      followed: followedTopics.topics(),
+      followed: () => followedTopics.topics(),
       roles: heldRole === undefined ? [] : [heldRole],
       outage: inboundOutage,
       send: (topics, deliveryRequest) => {

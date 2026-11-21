@@ -117,7 +117,7 @@ export async function registerOnce(
       registration: () => ({ consumer: true, epoch: "epoch-1" }) as const,
     },
     ownAgentSubject: "notifications.agent.ses_a",
-    followed: [],
+    followed: () => [],
     outage,
     send: () =>
       refuse()

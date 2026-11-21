@@ -75,7 +75,7 @@ describe("one registration", () => {
       ownAgentSubject: AGENT,
       // The bare base a stored row or a transcript brings back: the listener stores it for no
       // session and warns about it, so it never goes out.
-      followed: [TEAM, UNCAPTURED, "notifications.agent.ses_b"],
+      followed: () => [TEAM, UNCAPTURED, "notifications.agent.ses_b"],
       outage: inboundUnavailable(
         (why) => told.push(why),
         () => told.push("restored")
@@ -104,7 +104,7 @@ describe("one registration", () => {
       registerWithRelay({
         relay: undefined,
         ownAgentSubject: AGENT,
-        followed: [TEAM],
+        followed: () => [TEAM],
         outage,
         send: (topics) => {
           sent.push(topics);
@@ -129,7 +129,7 @@ describe("one registration", () => {
       relay: undefined,
       relayMissing: "Authentication Timeout",
       ownAgentSubject: AGENT,
-      followed: [TEAM],
+      followed: () => [TEAM],
       outage: inboundUnavailable(
         (why) => told.push(why),
         () => told.push("restored")
@@ -156,7 +156,7 @@ describe("one registration", () => {
       registerWithRelay({
         relay,
         ownAgentSubject: AGENT,
-        followed: [TEAM],
+        followed: () => [TEAM],
         outage: inboundUnavailable(
           (why) => told.push(why),
           () => told.push("restored")
@@ -182,7 +182,7 @@ describe("one registration", () => {
       registerWithRelay({
         relay: fakeRelay(),
         ownAgentSubject: AGENT,
-        followed: [TEAM],
+        followed: () => [TEAM],
         outage,
         send: () =>
           refuse ? Promise.reject(new Error("no_grant")) : Promise.resolve("registered"),
@@ -229,7 +229,7 @@ describe("one registration", () => {
       const outcome = await registerWithRelay({
         relay: fakeRelay(),
         ownAgentSubject: AGENT,
-        followed: [TEAM],
+        followed: () => [TEAM],
         outage: inboundUnavailable(
           (why) => told.push(why),
           () => told.push("restored")
@@ -269,7 +269,7 @@ describe("one registration", () => {
     const outcome = await registerWithRelay({
       relay: fakeRelay(),
       ownAgentSubject: AGENT,
-      followed: [TEAM],
+      followed: () => [TEAM],
       outage: inboundUnavailable(
         (why) => told.push(why),
         () => told.push("restored")
@@ -297,11 +297,12 @@ describe("one registration", () => {
     const dropped: (readonly string[])[] = [];
     const logs: string[] = [];
     const sent: (readonly string[])[] = [];
+    const relay = fakeRelay();
 
     const result = await registerWithRelay({
-      relay: fakeRelay(),
+      relay,
       ownAgentSubject: AGENT,
-      followed: [ISSUE_TOPIC, SLACK],
+      followed: () => [ISSUE_TOPIC, SLACK],
       outage: inboundUnavailable(
         (why) => told.push(why),
         () => told.push("restored")
@@ -317,7 +318,7 @@ describe("one registration", () => {
       log: (line) => logs.push(line),
     });
 
-    expect({ result, sent, dropped, told }).toEqual({
+    expect({ result, sent, dropped, told, unfollowed: relay.unfollowed }).toEqual({
       result: "registered",
       sent: [
         [AGENT, ISSUE_TOPIC, SLACK],
@@ -325,6 +326,8 @@ describe("one registration", () => {
       ],
       dropped: [[SLACK]],
       told: [],
+      // The relay forgets the refused topic alone; what it follows otherwise stays as stamped.
+      unfollowed: [[SLACK]],
     });
     expect(logs).toEqual([
       `the listener refused ${SLACK} for this session's projects (topic_not_in_project); the session no longer follows them and registers the rest`,
@@ -363,7 +366,7 @@ describe("one registration", () => {
       registerWithRelay({
         relay: delivery,
         ownAgentSubject: AGENT,
-        followed,
+        followed: () => followed,
         outage: inboundUnavailable(
           () => undefined,
           () => undefined
@@ -410,6 +413,59 @@ describe("one registration", () => {
     );
     expect(handed).toEqual(["notifications.dispatch.issue.DSP-3.comment"]);
     delivery.close();
+  });
+
+  test("a refusal answered after the session unsubscribed a topic resends without that topic", async () => {
+    // The listener merges a registration's topics into the session's row, so a resend that named
+    // a topic the session dropped while it waited would put the topic back. One registration
+    // waits; the session unsubscribes a topic; a second registration is refused and resends; then
+    // the first is refused, and its resend names neither the refused topic nor the dropped one.
+    const kept = "notifications.dispatch.issue.DSP-4.>";
+    const gone = "notifications.dispatch.issue.DSP-5.>";
+    const denied = "notifications.github.acme.priv.>";
+    const followed = new Set([kept, gone, denied]);
+    const sent: (readonly string[])[] = [];
+    const refusedNow = () => refusal(403, projectRefusal([denied]));
+    const registration = (answer: (topics: readonly string[]) => Promise<string>) =>
+      registerWithRelay({
+        relay: fakeRelay(),
+        ownAgentSubject: AGENT,
+        followed: () => followed,
+        outage: inboundUnavailable(
+          () => undefined,
+          () => undefined
+        ),
+        send: (topics) => {
+          sent.push(topics);
+          return answer(topics);
+        },
+        answered: () => undefined,
+        drop: (topics) => {
+          for (const topic of topics) followed.delete(topic);
+        },
+        log: () => undefined,
+      });
+
+    const firstAnswer = Promise.withResolvers<string>();
+    let firstSent = false;
+    const first = registration(() => {
+      if (firstSent) return Promise.resolve("registered again");
+      firstSent = true;
+      return firstAnswer.promise;
+    });
+    followed.delete(gone);
+    await registration((topics) =>
+      topics.includes(denied) ? Promise.reject(refusedNow()) : Promise.resolve("registered")
+    );
+    firstAnswer.reject(refusedNow());
+    await first;
+
+    expect(sent).toEqual([
+      [AGENT, kept, gone, denied],
+      [AGENT, kept, denied],
+      [AGENT, kept],
+      [AGENT, kept],
+    ]);
   });
 });
 
@@ -558,7 +614,7 @@ describe("a relay socket", () => {
       registerWithRelay({
         relay: delivery,
         ownAgentSubject: "notifications.agent.ses_a",
-        followed,
+        followed: () => followed,
         outage,
         send: (topics, request) =>
           client.subscribe({

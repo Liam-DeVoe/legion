@@ -842,6 +842,63 @@ describe("which inbound a session takes", () => {
     }).toEqual({ enabled: true, credential: "DPoP" });
   });
 
+  test("ENVOY_INBOUND=listener with a plain http listener off this machine turns Envoy off for a caller that opens no inbound connection too", () => {
+    // A send command, the `dispatch` command and a notice publisher resolve Envoy with
+    // `nats: false`: they send the same token and the message bodies to the same listener, so the
+    // same rule holds for them; on this machine they keep it.
+    const resolve = (env: EnvoyEnvironment) =>
+      envoySettings(
+        env,
+        readEnvoyConfig(path.join(tempDir(), "envoy.json"), env, { cwd: tempDir() }),
+        { nats: false, session: "ses_a" }
+      );
+    expect(
+      resolve({ ...pod(), ENVOY_INBOUND: "listener", ENVOY_URL: "http://envoy.example:9020" })
+    ).toEqual({
+      enabled: false,
+      notice: null,
+      error:
+        "ENVOY_INBOUND is listener, but the listener's address is plain http to envoy.example, which is not this machine, so the session's token would cross the network unencrypted: Envoy is off; use an https address",
+    });
+    const local = resolve({
+      ...pod(),
+      ENVOY_INBOUND: "listener",
+      ENVOY_URL: "http://127.0.0.1:9020",
+    });
+    expect({
+      enabled: local.enabled,
+      credential: local.enabled ? local.credential?.scheme : undefined,
+    }).toEqual({ enabled: true, credential: "DPoP" });
+  });
+
+  test("ENVOY_INBOUND=listener with a plain http listener off this machine runs no token command of the file's", () => {
+    // The refusal comes before any credential resolves, so a file's `!` token, which runs a
+    // command, does not run for a setting that is off; on this machine's listener it runs.
+    const home = tempDir();
+    const runs = path.join(home, "runs");
+    const withListener = (url: string) =>
+      configFrom({
+        envoy: {
+          enabled: true,
+          url,
+          inbound: "listener",
+          token: `!echo run >> ${runs}; echo ${FILE_TOKEN}`,
+        },
+      });
+    expect(
+      envoySettings({ PATH: process.env.PATH }, withListener("http://envoy.example:9020"), {
+        nats: false,
+        session: "ses_a",
+      })
+    ).toMatchObject({ enabled: false });
+    expect(existsSync(runs)).toBe(false);
+    envoySettings({ PATH: process.env.PATH }, withListener("http://127.0.0.1:9020"), {
+      nats: false,
+      session: "ses_a",
+    });
+    expect(existsSync(runs)).toBe(true);
+  });
+
   test("another value is refused naming the setting and its two values, not the value", () => {
     expect(settings({ ...pod(), ENVOY_INBOUND: "Listener" }).inbound).toEqual({
       off: "ENVOY_INBOUND is neither nats nor listener",

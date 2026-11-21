@@ -36,7 +36,9 @@ body: |-
   and tell the session which, once, with the reason (`registerWithRelay`'s `drop`,
   `refusedTopicsNoticeText`), logs one line naming them, and registers the rest at once; the refusal
   forgets only those topics on the relay (`ConsumerDelivery.unfollow`), so a topic another
-  registration added meanwhile keeps being handed to the host. A trade that fails for a session the
+  registration added meanwhile keeps being handed to the host, and the resend names only the topics
+  the session still follows (`RelayRegistration.followed` is read again before it), so one
+  unsubscribed meanwhile is not put back. A trade that fails for a session the
   socket has since followed away from tells no outage.
   `registerWithRelay`, `RelayRegistration`, `RegisteringRelay` and `NoRelaySubjectError` move from
   `@legion/envoy-client/consumer-delivery` to `@legion/envoy-client/relay-registration`.
