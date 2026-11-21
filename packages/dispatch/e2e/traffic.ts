@@ -152,10 +152,17 @@ const LOAD_QUIET_MS = 1_500;
  *  on this pod, the same unchanged page counted 39, 35 and 38 requests when the count was taken
  *  at Playwright's `networkidle` instead: that window closes after 500 ms of quiet, which is
  *  less than a read waiting on another read's answer takes under load, so what it yields is
- *  whatever had arrived by then rather than what the load costs. */
+ *  whatever had arrived by then rather than what the load costs.
+ *
+ *  The quiet is asked every 50 ms. `quietFor` reads this process's own record of the page's
+ *  requests and asks the browser nothing, so a probe costs the page nothing. With the poll's
+ *  default probes - at 0, 100, 350, 850 and 1,850 ms, then a second apart - every wait of the
+ *  outline's rows ended at the probe of 1,850 ms, the window having closed up to a second
+ *  before it. */
 export async function expectLoadSettled(traffic: ApiRequests): Promise<void> {
   await expect
     .poll(() => traffic.quietFor(LOAD_QUIET_MS), {
+      intervals: [50],
       message: "the page never went quiet, so its first load has no settled cost",
       timeout: 30_000,
     })

@@ -177,6 +177,24 @@ async function expectTreeDrawn(page: Page): Promise<void> {
   await expect(tree(page), 'the page draws no role="tree" named "Issue tree"').toHaveCount(1);
 }
 
+/** Loads `path` cold at `size` (`gotoIssue`). A page of another size is sent to `about:blank`
+ *  before it is resized, so the page it leaves is not laid out and drawn again at the new size
+ *  just before the load throws it away: on an issue of some ninety rows that cost 0.2 to 0.5 s
+ *  a resize, and the load reads nothing of the page it replaces. A page already at `size` loads
+ *  at once. */
+async function gotoIssueAt(
+  page: Page,
+  size: { readonly height: number; readonly width: number },
+  path: string
+): Promise<void> {
+  const drawn = page.viewportSize();
+  if (drawn?.height !== size.height || drawn.width !== size.width) {
+    await page.goto("about:blank");
+    await page.setViewportSize(size);
+  }
+  await gotoIssue(page, path);
+}
+
 /** The ids of the rows a reader can see, in the order the keys move through them. */
 async function visibleIds(page: Page): Promise<string[]> {
   return (await drawnRows(page)).filter((row) => row.visible).map((row) => row.id ?? "<no id>");
@@ -956,11 +974,10 @@ test("a folded branch's line is its first line, cut at a word @phone @phone-only
     const questionId = blockNodeId(specSlug, OPEN_QUESTION_BLOCK_ID);
     const question = (await getAsk(seeded.openQuestion.askId)).ask.question;
     for (const width of ONE_LINE_WIDTHS) {
-      await page.setViewportSize({ height: PHONE.height, width });
       // Every read of the load settles before the rows are measured: the comments and messages
       // come by reads of their own, and the phone's bullet reading below reads every row drawn.
       const settling = watchApiRequests(page);
-      await gotoIssue(page, `/issues/${seeded.key}`);
+      await gotoIssueAt(page, { height: PHONE.height, width }, `/issues/${seeded.key}`);
       await expectLoadSettled(settling);
       await expectIssuePageDrawn(page);
       await expect(
@@ -1069,16 +1086,50 @@ test("a folded branch's line is its first line, cut at a word @phone @phone-only
 // them; a lens under its node and a finding under its lens; a reading under its decision; and a
 // comment anchored to a node under that node, an edge the model does not store, so the anchored
 // comment sits under the issue as any node with no stored parent does.
-// SLOW(>=2s): three seeds, each loaded cold with its branches unfolded press by press, and the
-// first seed's parents read off the page one whole read at a time.
+// SLOW(>=2s): three seeds, each loaded cold with its branches unfolded control by control, and
+// the first seed's parents read off the page one whole read at a time.
 test("each node sits under the parent the model stores", async ({ browser }) => {
   test.setTimeout(180_000);
+  /**
+   * Opens every branch a fold left shut, as `unfoldEveryBranch` (`e2e/issue-page-g.ts`) does, by
+   * a click inside the page on each control in turn until none is drawn, at most 200 times, and
+   * leaves the focus on no row as that helper does. A pointer's press also focuses the row it
+   * lands on and scrolls the control into view, and Playwright's click first waits until the
+   * control stands still and takes the pointer: fifteen of those cost three seconds of this row.
+   * The row reads where each node is drawn - its level, its id and type, the words that name its
+   * other parent, and its chips - none of which a press's focus or scroll changes, so the
+   * controls' own click is all it needs. A row that reads what a press focuses keeps
+   * `unfoldEveryBranch`.
+   */
+  const unfoldInPage = async (page: Page): Promise<void> => {
+    const most = 200;
+    const left = await issuePage(page).evaluate(
+      async (root, { label, openings }) => {
+        const controls = `[data-node-row] button[aria-label="${label}"], [data-branch-more] button`;
+        for (let opened = 0; opened < openings; opened += 1) {
+          const shut = [...root.querySelectorAll<HTMLElement>(controls)].find((control) =>
+            control.checkVisibility()
+          );
+          if (shut === undefined) return 0;
+          shut.click();
+          // The branch the click opens is drawn by the next frame, with any control it holds.
+          const drawn = Promise.withResolvers<void>();
+          requestAnimationFrame(() => drawn.resolve());
+          await drawn.promise;
+        }
+        return root.querySelectorAll(controls).length;
+      },
+      { label: CONTROL_LABELS.unfold, openings: most }
+    );
+    expect(left, `the tree still draws a folded branch after ${most} openings`).toBe(0);
+    await focusThePage(page);
+  };
   await phase(browser, seedSpineCases, async (page, seeded) => {
     const settling = watchApiRequests(page);
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
     await expectLoadSettled(settling);
-    await unfoldEveryBranch(page);
+    await unfoldInPage(page);
     const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
     const verificationSlug = (await getArtifact(seeded.verificationArtifactId)).slug;
     const decisionsSlug = (await getArtifact(seeded.decisionsArtifactId)).slug;
@@ -1161,7 +1212,7 @@ test("each node sits under the parent the model stores", async ({ browser }) => 
     // A folded branch draws one line and no chip, so the tree is read open. A chip names its
     // target by the target's stored words, cut as a title is (`NodeRow.tsx`'s `Chip`), so each is
     // found by the words the seed stored.
-    await unfoldEveryBranch(page);
+    await unfoldInPage(page);
     const chips = (await drawnRows(page)).flatMap((row) => row.chips);
     expect(
       chipsNaming(chips, seededBlockWords(SPINE_SPEC, SPINE_REQUIREMENTS.shapedElsewhere)).length,
@@ -1182,7 +1233,7 @@ test("each node sits under the parent the model stores", async ({ browser }) => 
     const settling = watchApiRequests(page);
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectLoadSettled(settling);
-    await unfoldEveryBranch(page);
+    await unfoldInPage(page);
     const rows = await drawnRows(page);
     const parentOf = (id: string) => ancestorsIn(rows, id).at(-1);
 
@@ -1324,10 +1375,10 @@ test("each node sits under the parent the model stores", async ({ browser }) => 
 // opens with the focus on the outline's first row. The second question is asked after forty
 // older nodes, so the scroll is what puts it in the viewport: on a seed whose one question is
 // the outline's first row, the row is on the first screen whatever the page does.
-// SLOW(>=2s): forty comments and a question written, then ten cold loads at three sizes, of this
+// SLOW(>=2s): forty comments and a question written, then nine cold loads at three sizes, of this
 // issue and of a second one of one long comment, each waited on until the focus lands.
 test("an open question is unfolded and on the first screen @phone", async ({ browser }) => {
-  // Ten cold loads at three sizes, eight of them of an issue of some ninety rows.
+  // Nine cold loads at three sizes, seven of them of an issue of some ninety rows.
   test.setTimeout(240_000);
   /** Whether node `id`'s row starts inside what the reader sees: the top of its card under the
    *  band that stays at the top of the screen and above the box at its foot. Only the top is
@@ -1362,11 +1413,11 @@ test("an open question is unfolded and on the first screen @phone", async ({ bro
       asPlanner
     );
 
-    // Both wait on the reader: the page opens on the first of them in the outline's order.
-    for (const size of [DESKTOP, PHONE]) {
+    // Both wait on the reader: the page opens on the first of them in the outline's order. The
+    // phone's size loads first, so the desktop's load is the page the next-question key reads.
+    for (const size of [PHONE, DESKTOP]) {
       const at = `${size.width}x${size.height}`;
-      await page.setViewportSize({ height: size.height, width: size.width });
-      await gotoIssue(page, `/issues/${seeded.key}`);
+      await gotoIssueAt(page, size, `/issues/${seeded.key}`);
       await expectIssuePageDrawn(page);
       await expect
         .poll(() => focusedNodeId(page), {
@@ -1380,9 +1431,8 @@ test("an open question is unfolded and on the first screen @phone", async ({ bro
     }
 
     // The next-question key moves to the next open question and says so, at the row, when there
-    // is none; the reader's next move lets that line go.
-    await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    // is none; the reader's next move lets that line go. It is pressed on the load at 1440 by 900
+    // above, which opened with the focus on the first question.
     await expect.poll(() => focusedNodeId(page)).toBe(first);
     await page.keyboard.press("q");
     await expect
@@ -1415,8 +1465,7 @@ test("an open question is unfolded and on the first screen @phone", async ({ bro
     });
     for (const size of [DESKTOP, PHONE]) {
       const at = `${size.width}x${size.height}`;
-      await page.setViewportSize({ height: size.height, width: size.width });
-      await gotoIssue(page, `/issues/${seeded.key}`);
+      await gotoIssueAt(page, size, `/issues/${seeded.key}`);
       await expectIssuePageDrawn(page);
       await expect
         .poll(() => focusedNodeId(page), {
@@ -1440,8 +1489,7 @@ test("an open question is unfolded and on the first screen @phone", async ({ bro
     await answerAsk(later.id, { expected_edited_at: null, selected: ["Left"] });
     for (const size of [DESKTOP, PHONE, { height: 664, width: 390 }]) {
       const at = `${size.width}x${size.height}`;
-      await page.setViewportSize({ height: size.height, width: size.width });
-      await gotoIssue(page, `/issues/${seeded.key}`);
+      await gotoIssueAt(page, size, `/issues/${seeded.key}`);
       await expectIssuePageDrawn(page);
       await expect
         .poll(async () => (await focusedNodeId(page)) !== null, {
@@ -1474,8 +1522,7 @@ test("an open question is unfolded and on the first screen @phone", async ({ bro
     });
     for (const size of [DESKTOP, { height: 664, width: 390 }]) {
       const at = `${size.width}x${size.height} on a first row taller than the window`;
-      await page.setViewportSize({ height: size.height, width: size.width });
-      await gotoIssue(page, `/issues/${tall.key}`);
+      await gotoIssueAt(page, size, `/issues/${tall.key}`);
       await expectIssuePageDrawn(page);
       await expect
         .poll(() => focusedNodeId(page), {
@@ -2313,10 +2360,10 @@ test("the words the caret Enter puts in a statement stand still while the editor
 // title, its status, what blocks it and who holds it, with its key as the tag; and `/children`
 // and `t h` move the focus to that group. The header's bar and counts are the header's own to
 // read.
-// SLOW(>=2s): two seeds and twenty-one cold loads - each view's address at two sizes, each waited
+// SLOW(>=2s): two seeds and seventeen cold loads - each view's address at two sizes, each waited
 // out until its reads settle - and the children's keys pressed at two sizes.
 test("the children are one group of rows of the outline @phone", async ({ browser }) => {
-  // Two seeds and twenty-one cold loads of the issue page.
+  // Two seeds and seventeen cold loads of the issue page.
   test.setTimeout(180_000);
   await phase(browser, seedWholeIssue, async (page, seeded) => {
     // No seed claims a child, and the check reads who holds the running one, so this test puts a
@@ -2325,18 +2372,43 @@ test("the children are one group of rows of the outline @phone", async ({ browse
     await patchIssue(running, { status: "in_progress" });
     await claimIssue(running, asPlanner);
     const blocked = seeded.children.blocked;
+    const [firstChild = "", secondChild = ""] = seeded.children.keys;
+    /** `t h`, pressed `from` where the reader is, waited on until the group's first row has the
+     *  focus, at the width `at` names. */
+    const toChildren = async (from: string, at: string) => {
+      await page.keyboard.press("t");
+      await page.keyboard.press("h");
+      await expect
+        .poll(() => focusedNodeId(page), {
+          message: `t h ${from} does not focus the group's first row at ${at}`,
+        })
+        .toBe(firstChild);
+    };
+    /** `j` on the first child's row, waited on until the next child's row has the focus. */
+    const toSecondChild = async (at: string) => {
+      await page.keyboard.press("j");
+      await expect
+        .poll(() => focusedNodeId(page), {
+          message: `j does not move to the next child's row at ${at}`,
+        })
+        .toBe(secondChild);
+    };
 
+    // Each view's address, loaded at each size. The Conversation view's address is the issue's
+    // own, and its load at each size is the page every reading of the children's rows and keys
+    // at that size is made on: a load of its own for each read the same address, at the same
+    // size, of the same issue again.
     for (const size of [DESKTOP, PHONE]) {
-      await page.setViewportSize({ height: size.height, width: size.width });
+      const at = `${size.width} px`;
       for (const preset of PRESET_ORDER) {
         // A view's body draws rows of its own shape, or nothing until its part fills its slot,
         // so the page is waited for until it has stopped reading rather than for a row.
         const traffic = watchApiRequests(page);
-        await gotoIssue(page, presetPath(seeded.key, preset));
+        await gotoIssueAt(page, size, presetPath(seeded.key, preset));
         await expectLoadSettled(traffic);
         expect(
           await childrenSection(page).count(),
-          `the ${PRESET_NAMES[preset]} view draws a children's section above the outline at ${size.width} px`
+          `the ${PRESET_NAMES[preset]} view draws a children's section above the outline at ${at}`
         ).toBe(0);
         if (preset !== "conversation") continue;
         await expectIssuePageDrawn(page);
@@ -2345,85 +2417,90 @@ test("the children are one group of rows of the outline @phone", async ({ browse
         // under no other row: the issue itself is no row.
         await expect(
           childRows(page),
-          `the outline draws other than one row a child at ${size.width} px`
+          `the outline draws other than one row a child at ${at}`
         ).toHaveCount(seeded.children.keys.length);
         const rows = await drawnRows(page);
         const places = seeded.children.keys.map((key) => idsOf(rows).indexOf(key));
         expect(
           places.map((place, index) => place - (places[0] ?? 0) - index),
-          `the children are not one group of rows at ${size.width} px`
+          `the children are not one group of rows at ${at}`
         ).toEqual(places.map(() => 0));
         for (const key of seeded.children.keys) {
           expect(
             ancestorsIn(rows, key),
-            `the child ${key} sits under another row at ${size.width} px`
+            `the child ${key} sits under another row at ${at}`
           ).toEqual([]);
         }
+
+        // What a child's row holds, read at 1440 px: its title as its words, how it stands, what
+        // blocks it, who holds it, and its key as the tag, which opens the child's own page.
+        if (size === DESKTOP) {
+          await expect(childRows(page)).toHaveCount(seeded.children.keys.length);
+          for (const key of seeded.children.keys) {
+            const child = await getIssue(key);
+            const row = childRow(page, key).first();
+            await expect(rowWords(row), `the row for ${key} does not draw its title`).toContainText(
+              child.title
+            );
+            expect(
+              await row.locator("[data-child-facts]").getAttribute("data-child-status"),
+              `the row for ${key} does not name its status`
+            ).toBe(child.status);
+            const tag = row.locator("[data-child-key]");
+            await expect(tag, `the row for ${key} does not carry its key as the tag`).toHaveText(
+              key
+            );
+            expect(await tag.getAttribute("href"), `the tag of ${key} opens another page`).toBe(
+              `/issues/${key}`
+            );
+            // Every colour is the page's own palette: the old application's link blue is gone.
+            expect(
+              await row
+                .locator("a")
+                .evaluateAll((links) => links.map((link) => getComputedStyle(link).color)),
+              `a link of the row for ${key} is drawn in the old application's blue`
+            ).not.toContain("rgb(0, 105, 168)");
+          }
+          expect(
+            (await childRow(page, blocked).first().innerText()).replace(/\s+/g, " "),
+            "the blocked child's row does not name the issue that blocks it"
+          ).toContain(`Blocked by ${running}`);
+          expect(
+            (await childRow(page, running).first().innerText()).replace(/\s+/g, " "),
+            "the running child's row does not say who holds it"
+          ).toMatch(/Claimed by \S/);
+        }
+
+        // `t h` from the issue's address puts the focus on the group's first row, on screen; from
+        // there the rows are moved through like any other. `t h` takes the reader there each
+        // time it is pressed: again after a move, and from a zoom that holds no child. The next
+        // view's load starts the page again from its address.
+        await expect(childRows(page)).toHaveCount(seeded.children.keys.length);
+        await toChildren("from the issue's address", at);
+        await expect(page).toHaveURL(new RegExp(`/issues/${seeded.key}/children$`));
+        await expect
+          .poll(() => onScreen(childRow(page, firstChild).first()), {
+            message: `t h leaves the first child off screen at ${at}`,
+          })
+          .toBe(true);
+        await toSecondChild(at);
+        await toChildren("a second time, after j", at);
+        await toSecondChild(at);
+        await page.keyboard.press(".");
+        await expect(
+          childRow(page, firstChild),
+          `. on the second child still draws the first at ${at}`
+        ).toHaveCount(0);
+        await toChildren("from a zoom into the second child", at);
       }
     }
 
-    // What a child's row holds: its title as its words, how it stands, what blocks it, who
-    // holds it, and its key as the tag, which opens the child's own page.
-    await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
-    await gotoIssue(page, `/issues/${seeded.key}`);
-    await expect(childRows(page)).toHaveCount(seeded.children.keys.length);
-    for (const key of seeded.children.keys) {
-      const child = await getIssue(key);
-      const row = childRow(page, key).first();
-      await expect(rowWords(row), `the row for ${key} does not draw its title`).toContainText(
-        child.title
-      );
-      expect(
-        await row.locator("[data-child-facts]").getAttribute("data-child-status"),
-        `the row for ${key} does not name its status`
-      ).toBe(child.status);
-      const tag = row.locator("[data-child-key]");
-      await expect(tag, `the row for ${key} does not carry its key as the tag`).toHaveText(key);
-      expect(await tag.getAttribute("href"), `the tag of ${key} opens another page`).toBe(
-        `/issues/${key}`
-      );
-      // Every colour is the page's own palette: the old application's link blue is gone.
-      expect(
-        await row
-          .locator("a")
-          .evaluateAll((links) => links.map((link) => getComputedStyle(link).color)),
-        `a link of the row for ${key} is drawn in the old application's blue`
-      ).not.toContain("rgb(0, 105, 168)");
-    }
-    expect(
-      (await childRow(page, blocked).first().innerText()).replace(/\s+/g, " "),
-      "the blocked child's row does not name the issue that blocks it"
-    ).toContain(`Blocked by ${running}`);
-    expect(
-      (await childRow(page, running).first().innerText()).replace(/\s+/g, " "),
-      "the running child's row does not say who holds it"
-    ).toMatch(/Claimed by \S/);
-
-    // The children's own address, and `t h`, put the focus on the group's first row, on screen;
-    // from there the rows are moved through like any other. `t h` takes the reader there each
-    // time it is pressed: again after a move, and from a zoom that holds no child.
-    const [firstChild = "", secondChild = ""] = seeded.children.keys;
-    for (const size of [DESKTOP, PHONE]) {
+    // The children's own address puts the focus on the group's first row, on screen, and the
+    // rows are moved through from there. The phone's size comes first, the size the loads above
+    // ended at.
+    for (const size of [PHONE, DESKTOP]) {
       const at = `${size.width} px`;
-      const toChildren = async (from: string) => {
-        await page.keyboard.press("t");
-        await page.keyboard.press("h");
-        await expect
-          .poll(() => focusedNodeId(page), {
-            message: `t h ${from} does not focus the group's first row at ${at}`,
-          })
-          .toBe(firstChild);
-      };
-      const toSecondChild = async () => {
-        await page.keyboard.press("j");
-        await expect
-          .poll(() => focusedNodeId(page), {
-            message: `j does not move to the next child's row at ${at}`,
-          })
-          .toBe(secondChild);
-      };
-      await page.setViewportSize({ height: size.height, width: size.width });
-      await gotoIssue(page, `/issues/${seeded.key}/children`);
+      await gotoIssueAt(page, size, `/issues/${seeded.key}/children`);
       await expect
         .poll(() => focusedNodeId(page), {
           message: `/children does not focus the group's first row at ${at}`,
@@ -2433,26 +2510,7 @@ test("the children are one group of rows of the outline @phone", async ({ browse
         await onScreen(childRow(page, firstChild).first()),
         `/children leaves it off screen at ${at}`
       ).toBe(true);
-      await toSecondChild();
-
-      await gotoIssue(page, `/issues/${seeded.key}`);
-      await expect(childRows(page)).toHaveCount(seeded.children.keys.length);
-      await toChildren("from the issue's address");
-      await expect(page).toHaveURL(new RegExp(`/issues/${seeded.key}/children$`));
-      await expect
-        .poll(() => onScreen(childRow(page, firstChild).first()), {
-          message: `t h leaves the first child off screen at ${at}`,
-        })
-        .toBe(true);
-      await toSecondChild();
-      await toChildren("a second time, after j");
-      await toSecondChild();
-      await page.keyboard.press(".");
-      await expect(
-        childRow(page, firstChild),
-        `. on the second child still draws the first at ${at}`
-      ).toHaveCount(0);
-      await toChildren("from a zoom into the second child");
+      await toSecondChild(at);
     }
   });
 
@@ -2468,35 +2526,37 @@ test("the children are one group of rows of the outline @phone", async ({ browse
         await childRows(page).count(),
         `an issue with no children draws a child's row with the ${PRESET_NAMES[preset]} view`
       ).toBe(0);
-    }
+      if (preset !== "conversation") continue;
 
-    // With no child, `t h` has nowhere to go: the Keys list greys its line rather than hiding
-    // it, and a press moves no focus and reports nothing at the row.
-    await gotoIssue(page, `/issues/${seeded.key}`);
-    await expectIssuePageDrawn(page);
-    await expect(outlineRows(page).first(), "the issue draws no row").toBeVisible();
-    await focusThePage(page);
-    await filterRow(page).getByRole("button", { exact: true, name: CONTROL_LABELS.keys }).click();
-    const keys = page.getByRole("dialog", { name: "Keyboard shortcuts" });
-    await expect(keys).toBeVisible();
-    expect(
-      await keysListLines(page, "t h"),
-      "the Keys list does not draw t h as disabled on an issue with no children"
-    ).toEqual(["false"]);
-    await page.keyboard.press("Escape");
-    await expect(keys).toBeHidden();
-    await expect(tabStopRow(page)).toBeFocused();
-    const before = await focusedNodeId(page);
-    await page.keyboard.press("t");
-    await page.keyboard.press("h");
-    await nextFrames(page);
-    expect(await focusedNodeId(page), "t h moved the focus on an issue with no children").toBe(
-      before
-    );
-    expect(
-      await pageStatus(page).count(),
-      "t h reported something on an issue with no children"
-    ).toBe(0);
+      // With no child, `t h` has nowhere to go: the Keys list greys its line rather than hiding
+      // it, and a press moves no focus and reports nothing at the row. Read on the issue's own
+      // address, which is the Conversation view's load above; the next view's load starts the
+      // page again from its own.
+      await expectIssuePageDrawn(page);
+      await expect(outlineRows(page).first(), "the issue draws no row").toBeVisible();
+      await focusThePage(page);
+      await filterRow(page).getByRole("button", { exact: true, name: CONTROL_LABELS.keys }).click();
+      const keys = page.getByRole("dialog", { name: "Keyboard shortcuts" });
+      await expect(keys).toBeVisible();
+      expect(
+        await keysListLines(page, "t h"),
+        "the Keys list does not draw t h as disabled on an issue with no children"
+      ).toEqual(["false"]);
+      await page.keyboard.press("Escape");
+      await expect(keys).toBeHidden();
+      await expect(tabStopRow(page)).toBeFocused();
+      const before = await focusedNodeId(page);
+      await page.keyboard.press("t");
+      await page.keyboard.press("h");
+      await nextFrames(page);
+      expect(await focusedNodeId(page), "t h moved the focus on an issue with no children").toBe(
+        before
+      );
+      expect(
+        await pageStatus(page).count(),
+        "t h reported something on an issue with no children"
+      ).toBe(0);
+    }
   });
 });
 
@@ -2897,12 +2957,13 @@ async function expectRowLetGo(page: Page, after: string): Promise<void> {
 
 // c-focus-opens.
 // SLOW(>=2s): the whole issue seeded and loaded, every row and every link rested on past the
-// delay a card opens after, the rows read three times and their shapes' colours once, three
-// controls outside the outline pressed, one of them the header's and one a view's, which the
-// outline is waited for after, and the Inbox loaded.
+// delay a card opens after, on the page's own clock, the rows read three times and their shapes'
+// colours once, three controls outside the outline pressed, one of them the header's and one a
+// view's, which the outline is waited for after, and the Inbox loaded.
 test("a body opens on focus and nothing opens on hover", async ({ browser }) => {
   // The row rests the pointer on every row and every reference the page draws, each for longer
-  // than a card takes to open elsewhere: half a second of absence each, on top of its own walk.
+  // than a card takes to open elsewhere: half a second of the page's own clock each, which the
+  // row spends at once, on top of its own walk.
   test.setTimeout(120_000);
   await phase(browser, seedWholeIssue, async (page, seeded) => {
     const settling = watchApiRequests(page);
@@ -3026,7 +3087,33 @@ test("a body opens on focus and nothing opens on hover", async ({ browser }) => 
       "a body is drawn with the keyboard focus on no control"
     ).toBe(0);
     await expectLoadSettled(settling);
+    // The rests below wait out a page timer, the delay a card opens after elsewhere
+    // (`REF_PREVIEW_OPEN_DELAY_MS`), so the page's own clock spends them, as the hover rows of
+    // `pictures.e2e.ts` spend it, and the clock is the page's from here, for the walks alone,
+    // running with the wall clock between rests (`resume`); a timer set through the page's
+    // `setTimeout` from here on is the clock's to fire. Installed before the load instead, the
+    // clock ran the page's own frames late: the frame in which the outline drawn again after
+    // Spec puts the focus on the question that waits on the reader (`landOnRow`) came some
+    // 230 ms after the press on Conversation, after the focus above had been taken off the
+    // tree, where it comes within the press on the browser's own frames, and its body was read
+    // as one the pointer opened on the first row it rested on.
+    await page.clock.install();
+    await page.clock.resume();
     const resting = REF_PREVIEW_OPEN_DELAY_MS + 200;
+    /** Rests the pointer where it was moved for `resting` of the page's own time, which fires
+     *  every page timer that falls due in it - a card's open delay among them - and waits out the
+     *  two frames that draw what those timers set (`nextFrames`). The page's date then goes back
+     *  to the wall clock's, as `spendPageTime` (`e2e/agents.ts`) puts it back, and for its
+     *  reason: the two walks below spend some thirty seconds of page time in fifteen seconds of
+     *  real time, and the live socket, which hears the server's heartbeat every 15 s of real
+     *  time, replaces itself, every subscription sent again, once the page's date says 45 s
+     *  passed with no frame: with the date left ahead, a run ended its walks 32 s ahead of the
+     *  wall clock. Only the date goes back: the timers keep the time the rest moved them to. */
+    const rest = async (): Promise<void> => {
+      await page.clock.runFor(resting);
+      await page.clock.setSystemTime(Date.now());
+      await nextFrames(page);
+    };
     const before = await treeText(page);
     const rows = nodeRows(page);
     // Every read the page made went quiet above, after Conversation drew the outline again, so
@@ -3037,7 +3124,7 @@ test("a body opens on focus and nothing opens on hover", async ({ browser }) => 
       // The pointer rests on each row, as on each link below, past the delay a card opens after
       // on every other page, so a body that opens for a resting pointer a moment after it arrives
       // is drawn by the time the row reads its absence: read at once after each hover, it was not.
-      await page.waitForTimeout(resting);
+      await rest();
       expect(
         await nodeBodies(page).count(),
         `the pointer resting on row ${index} opened a body with the focus elsewhere`
@@ -3078,8 +3165,8 @@ test("a body opens on focus and nothing opens on hover", async ({ browser }) => 
     for (let index = 0; index < linkCount; index += 1) {
       await links.nth(index).hover();
       // A pointer resting on the link past the delay a card opens after on every other page:
-      // the absence is the claim, so the wait is the span the card would have taken to open.
-      await page.waitForTimeout(resting);
+      // the absence is the claim, so the rest is the span the card would have taken to open.
+      await rest();
       expect(
         await page.getByRole("tooltip").count(),
         `the pointer resting on link ${index} of the issue page opened a card`
@@ -4586,8 +4673,14 @@ test("the keys of a row's editor move its caret and edit inside the node's own b
      *  write of its selection after the focus passed. */
     const enter = async (blockId: string) => {
       await page.keyboard.press("Enter");
+      // The caret is read every 25 ms: it lands within the first 100 ms or so of the key, and
+      // the poll's own probes, at 100 and 350 ms, held each Enter up to a quarter of a second
+      // after it had landed. Each read is one look at the page's selection.
       await expect
-        .poll(() => caretInRowBlock(page, blockId), { message: "Enter put no caret in the block" })
+        .poll(() => caretInRowBlock(page, blockId), {
+          intervals: [25],
+          message: "Enter put no caret in the block",
+        })
         .toBe(true);
       // ProseMirror writes its own selection back over the page's 20 ms after it takes the focus
       // (prosemirror-view's focus handler), undoing a caret move it has not read yet: an arrow
@@ -4702,9 +4795,12 @@ test("the keys of a row's editor move its caret and edit inside the node's own b
       edited: "Y",
       keys: ["Control+a"],
       name: "select-all",
+      // The words go back in as one insertion, as a paste or an input method puts them: what
+      // the undo is read for is the block put back, and the key under test, select-all, is
+      // still pressed first. Typed key by key, the 57 characters took a second.
       undo: async () => {
         await page.keyboard.press("Control+a");
-        await page.keyboard.type(words);
+        await page.keyboard.insertText(words);
       },
     });
 
