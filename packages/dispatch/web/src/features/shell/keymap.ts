@@ -246,7 +246,11 @@ const TEXT_INPUT_TYPES: Record<string, true> = {
 /** Whether `element` takes typed text: a content-editable element, an `<input>` of a text-entry
  *  type (`TEXT_INPUT_TYPES`), or a `<textarea>`. A key pressed on one is the control's own
  *  (`isEditableTarget`), and the page's focus rescue reads a character typed in one as no press
- *  of the reader's (`focus-place.ts`'s `isPress`), since it only edits the field. */
+ *  of the reader's (`focus-place.ts`'s `isPress`), since it only edits the field. A walk-back
+ *  that hands the focus on passes over every such control (`focus-place.ts`'s `walkBack`), since
+ *  the reader's next key would go into it. A date or time box plays two parts: it takes the
+ *  reader's keys, so a walk-back passes over it as over a text box, and its `change` and `input`
+ *  are the reader's pick, so they count as a press (`isPress`), as a select's do. */
 export function takesText(element: Element): boolean {
   if (element instanceof HTMLElement && element.isContentEditable) {
     return true;

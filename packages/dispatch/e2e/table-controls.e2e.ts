@@ -4465,7 +4465,9 @@ test("no press in the shared controls drops the keyboard focus onto the page, at
         next: filters.getByRole("button", { exact: true, name: "Status" }),
         nextName: "the Status menu",
       },
-      { menu: "Status", option: "Todo", next: author, nextName: "the Author box" },
+      // The Author box now at the Status menu's place takes typed text, and no control before it
+      // takes none, so the hand-off passes over the box to the panel's own stop.
+      { menu: "Status", option: "Todo", next: filters, nextName: "the Filter panel" },
     ] as const;
     for (const { menu, option, next, nextName } of panelSteps) {
       const opener = filters.getByRole("button", { exact: true, name: menu });
@@ -4485,12 +4487,9 @@ test("no press in the shared controls drops the keyboard focus onto the page, at
     await author.fill("alice");
     await page.keyboard.press("Enter");
     await expect(author, `${where}: Enter on the Author box left it drawn`).toHaveCount(0);
-    await focusOn(
-      where,
-      "Enter on the Author box",
-      filters.getByLabel("Updated since"),
-      "the Updated since box"
-    );
+    // The Updated since box now at its place takes typed text too, so the focus goes to the
+    // panel's own stop.
+    await focusOn(where, "Enter on the Author box", filters, "the Filter panel");
   }
   // A press that drops the focus onto the page sends a keyboard reader back to its first link,
   // from which the control they were using is a walk through everything above it.
@@ -6026,7 +6025,10 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
       word: "prog",
       left: ["In progress"],
       picked: /^Remove Status In progress filter$/,
-      focusAfterPick: filters.getByRole("searchbox", { name: "Author" }),
+      // The control now at its place is the Author box, which takes typed text, and no control
+      // that takes none stands before it, so the hand-off passes over the box to the panel's own
+      // stop.
+      focusAfterPick: filters,
     },
     {
       name: "the List's Move to epic",

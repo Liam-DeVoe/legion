@@ -441,7 +441,10 @@ function pressedBy(event: Event): number | string | null {
  *  reader's pick, which Playwright and assistive tech make without a key or a pointer. Firefox
  *  fires `input` alone as the digit that completes a date is typed, and a value set without keys
  *  fires `input` and then a `change` the page may already have taken the control away from at that
- *  `input`. */
+ *  `input`. A date or time box is thus a pick control for a press - its `change` and `input` are
+ *  one - and a control that takes typed text for a landing: a walk-back passes over it
+ *  (`walkBack`), since it takes the reader's keys and a page shortcut would not reach the page
+ *  from it (`takesText`). */
 function isPress(event: Event): event is Event & { readonly target: Element } {
   const { target } = event;
   if (!(target instanceof Element)) return false;
