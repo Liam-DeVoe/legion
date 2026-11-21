@@ -2,12 +2,33 @@
 //
 // One registration of a session that holds a relay (`../relay-registration.ts`): the topics it
 // carries, the outage told once, and the topics an edge listener refuses for the projects of the
-// session's token dropped while every other refusal stays a refusal.
+// session's token dropped while every other refusal stays a refusal. Then the same registrations
+// beside a relay socket (`../listener-relay.ts`) on the stand-in of
+// `../../test/relay-socket-stand-in.ts`: the outage report the two share, and a refused topic
+// dropped while a kept one goes on being delivered.
 
 import { describe, expect, test } from "bun:test";
-import { inboundRestoredNoticeText, inboundUnavailable } from "../consumer-delivery";
+import {
+  frame,
+  opens,
+  registerOnce,
+  relaySocketFixtures,
+  until,
+} from "../../test/relay-socket-fixtures";
+import { startRelaySocketStandIn } from "../../test/relay-socket-stand-in";
+import { consumerDelivery } from "../../test/subscribe-answer";
+import { brokerCredential } from "../broker-credential";
+import {
+  createConsumerDelivery,
+  inboundRestoredNoticeText,
+  inboundUnavailable,
+} from "../consumer-delivery";
 import { NoRelaySubjectError, registerWithRelay } from "../relay-registration";
-import { EnvoyApiError } from "../transport";
+import { createEnvoyClient, EnvoyApiError, expandSubscriptionTopics } from "../transport";
+
+const { started, standIn, podEnvironment, opened } = relaySocketFixtures("relay-registration");
+
+const encoder = new TextEncoder();
 
 const AGENT = "notifications.agent.ses_a";
 const ISSUE_TOPIC = "notifications.dispatch.issue.DSP-1.>";
@@ -311,5 +332,179 @@ describe("one registration", () => {
     expect(logs).toEqual([
       `the listener refused ${SLACK} for this session's projects (topic_not_in_project); the session no longer follows them and registers the rest`,
     ]);
+  });
+});
+
+describe("a relay socket", () => {
+  test("a refused registration and then a 4401 tell the session no restored until a registration is accepted", async () => {
+    // The socket shares the host's outage report with its registrations. Its reopen says nothing
+    // of a registration it did not make: an outage the listener's refusal told ends only once a
+    // registration is accepted.
+    const server = standIn();
+    const told: string[] = [];
+    const outage = inboundUnavailable(
+      (why) => told.push(why),
+      () => told.push("restored")
+    );
+    const relay = await opened(server, "ses_a", { outage });
+    let refuse = true;
+    await registerOnce(outage, () => refuse);
+    expect(told).toEqual([expect.stringContaining("repositories_unknown")]);
+
+    server.close(4401, "credential_expired");
+    await until(
+      () => opens(server).length === 2,
+      5_000,
+      () => `no reopen after the 4401 close; upgrades ${JSON.stringify(server.upgrades)}`
+    );
+    await relay.flush();
+    await registerOnce(outage, () => refuse);
+    if (told.includes("restored")) {
+      throw new Error(
+        `the session was told its inbound was restored while every registration was refused: ${JSON.stringify(told)}`
+      );
+    }
+
+    refuse = false;
+    await registerOnce(outage, () => refuse);
+    expect(told.slice(1)).toEqual(["restored"]);
+  });
+
+  test("a topic the edge refuses for the session's projects is dropped, and the rest go on being delivered", async () => {
+    // An edge listener refuses a registration naming a topic of no project of the token's
+    // (`repository_not_in_project`, `topic_not_in_project`) and names each refused topic as the
+    // registration carried it. The session drops exactly those, says so once, and registers the
+    // rest at once and at every heartbeat after; a frame on a topic it kept still reaches it.
+    const kept = "notifications.dispatch.issue.PRIV-1.>";
+    const refusedRoot = "notifications.github.acme.priv";
+    const registered: (readonly string[])[] = [];
+    const server = startRelaySocketStandIn({
+      routes: async (request) => {
+        if (new URL(request.url).pathname !== "/v1/interests/subscribe") return undefined;
+        const body = (await request.json()) as {
+          readonly session_id: string;
+          readonly dir: string;
+          readonly topics: readonly string[];
+        };
+        registered.push(body.topics);
+        const refused = body.topics.filter((topic) => topic.startsWith(refusedRoot));
+        if (refused.length > 0) {
+          return Response.json(
+            {
+              error: "the edge serves the GitHub events of its projects' repositories alone",
+              reason: "repository_not_in_project",
+              refused,
+            },
+            { status: 403 }
+          );
+        }
+        return Response.json({
+          session_id: body.session_id,
+          machine_id: "test",
+          dir: body.dir,
+          topics: body.topics,
+          delivery: consumerDelivery(body.session_id),
+        });
+      },
+    });
+    started.push(() => server.stop());
+    const relay = await opened(server, "ses_a");
+    const handed: string[] = [];
+    const delivery = createConsumerDelivery({
+      sessionID: "ses_a",
+      host: {
+        deliver: (frame) => {
+          handed.push(frame.subject);
+          frame.done();
+        },
+        gap: () => undefined,
+        log: () => undefined,
+      },
+      publish: (reply, body) => relay.publish(reply, encoder.encode(body)),
+      ledger: { delivered: () => false, liveFailed: async () => true },
+      persist: () => true,
+    });
+    const subscription = relay.subscribe(delivery.subject);
+    void (async () => {
+      for await (const message of subscription) delivery.receive(message);
+    })();
+    await relay.flush();
+    const client = createEnvoyClient({
+      baseUrl: server.url,
+      fetch,
+      credential: brokerCredential(podEnvironment(server), "ses_a"),
+    });
+    const followed = new Set(expandSubscriptionTopics([kept, `${refusedRoot}.>`]));
+    const logs: string[] = [];
+    const told: string[] = [];
+    const outage = inboundUnavailable(
+      (why) => told.push(why),
+      () => told.push("restored")
+    );
+    const heartbeat = () =>
+      registerWithRelay({
+        relay: delivery,
+        ownAgentSubject: "notifications.agent.ses_a",
+        followed,
+        outage,
+        send: (topics, request) =>
+          client.subscribe({
+            sessionID: "ses_a",
+            directory: "/work",
+            topics,
+            port: 0,
+            title: "",
+            driving: false,
+            selfSubscribed: true,
+            plugin: { name: "test", version: "0.0.0" },
+            delivery: request,
+          }),
+        answered: () => undefined,
+        drop: (topics) => {
+          for (const topic of topics) followed.delete(topic);
+        },
+        log: (line) => logs.push(line),
+      });
+
+    await heartbeat();
+    await heartbeat();
+
+    const carriedRefused = registered
+      .slice(1)
+      .filter((topics) => topics.some((topic) => topic.startsWith(refusedRoot)));
+    if (carriedRefused.length > 0) {
+      throw new Error(
+        `the stand-in saw a refused topic again after it refused it: ${JSON.stringify(carriedRefused)}`
+      );
+    }
+    const keptTopics = [...expandSubscriptionTopics([kept])];
+    expect(registered).toEqual([
+      [
+        "notifications.agent.ses_a",
+        ...keptTopics,
+        ...expandSubscriptionTopics([`${refusedRoot}.>`]),
+      ],
+      ["notifications.agent.ses_a", ...keptTopics],
+      ["notifications.agent.ses_a", ...keptTopics],
+    ]);
+    expect([...followed]).toEqual(keptTopics);
+    expect(logs).toEqual([
+      `the listener refused ${expandSubscriptionTopics([`${refusedRoot}.>`]).join(", ")} for this session's projects (repository_not_in_project); the session no longer follows them and registers the rest`,
+    ]);
+    expect(told).toEqual([]);
+
+    // A frame on the topic the session kept still reaches it, through its own consumer.
+    const reply = server.deliver(
+      "ses_a",
+      frame("ses_a", 3, { "Envoy-Subject": ["notifications.dispatch.issue.PRIV-1.comment"] })
+    );
+    if (reply === undefined) throw new Error("the stand-in holds no relay subscription of ses_a");
+    await until(
+      () => server.receipts.some((receipt) => receipt.reply === reply && receipt.body === "done"),
+      5_000,
+      () =>
+        `the frame on the kept topic was never answered done; the host was handed ${JSON.stringify(handed)}`
+    );
+    expect(handed).toEqual(["notifications.dispatch.issue.PRIV-1.comment"]);
   });
 });
