@@ -118,6 +118,42 @@ func TestTLSCertificateErrorRecognizesClientRefusals(t *testing.T) {
 	}
 }
 
+// What node and bun printed on 2026-11-21 in an INFRA issue pod at a local site whose chain ends
+// at a root of its own, served as its leaf alone and as its leaf with that root, as the probe's
+// clients ran there and with the probe's trim (CodeGraph's node printed node's). A run of each is a
+// refusal, and a run that exited 0, or whose output the client's answer marker reads, stays an
+// acceptance whatever else it printed: a client that trusts the chain is judged as it was before
+// these codes were read.
+func TestTLSNodeAndBunUnknownIssuerCodesAreRefusals(t *testing.T) {
+	const (
+		nodeLeafAlone = `node:internal/modules/run_main:107 triggerUncaughtException( ^ [TypeError: fetch fail…mit (node:events:514:28) at TLSSocket._finishInit (node:internal/tls/wrap:1216:8) at ssl.onhandshakedone (node:internal/tls/wrap:997:12) { code: 'UNABLE_TO_VERIFY_LEAF_SIGNATURE' } } Node.js v24.22.1`
+		nodeWithRoot  = `node:internal/modules/run_main:107 triggerUncaughtException( ^ [TypeError: fetch fail…cket.emit (node:events:514:28) at TLSSocket._finishInit (node:internal/tls/wrap:1216:8) at ssl.onhandshakedone (node:internal/tls/wrap:997:12) { code: 'SELF_SIGNED_CERT_IN_CHAIN' } } Node.js v24.22.1`
+		bunLeafAlone  = `TypeError: unable to verify the first certificate path: "https://localhost:61629/", errno: 0, code: "UNABLE_TO_VERIFY_LEAF_SIGNATURE" Bun v1.4.4 (Linux x64)`
+		bunWithRoot   = `TypeError: self signed certificate in certificate chain path: "https://localhost:41365/", errno: 0, code: "SELF_SIGNED_CERT_IN_CHAIN" Bun v1.4.4 (Linux x64)`
+	)
+	dir := t.TempDir()
+	for _, testCase := range []struct {
+		name, output string
+		status       int
+		want         tlsStatus
+	}{
+		{"node, the leaf alone", nodeLeafAlone, 1, tlsCertificateRefused},
+		{"node, the leaf and its root", nodeWithRoot, 1, tlsCertificateRefused},
+		{"bun, the leaf alone", bunLeafAlone, 1, tlsCertificateRefused},
+		{"bun, the leaf and its root", bunWithRoot, 1, tlsCertificateRefused},
+		{"node that trusts the chain", "", 0, tlsConnectionAccepted},
+		{"node that trusts the chain and prints a code", "(node:1) a warning naming UNABLE_TO_VERIFY_LEAF_SIGNATURE", 0, tlsConnectionAccepted},
+		{"node whose network fails", "TypeError: fetch failed { [cause]: Error: getaddrinfo ENOTFOUND dv-g3b-emudhra.we-have-a-problem.com }", 1, tlsNetworkUnavailable},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			client := shTLSClient("node", dir, tlsAnswers, func(tlsSite) (string, int) { return testCase.output, testCase.status })
+			if got := client.probe(context.Background(), emSignTLSSite, tlsRunTerms{}); got.status != testCase.want {
+				t.Fatalf("probe = %+v, want %s", got, testCase.want)
+			}
+		})
+	}
+}
+
 // curl names one refusal in several ways, by version and by TLS backend, and an image may carry
 // any of them: an image built on another distribution keeps that distribution's curl. git 2.53.0's
 // https transport, through libcurl's GnuTLS build, printed the Ubuntu row in the image probe of a

@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
+	"github.com/sjawhar/legion/daemon/internal/tlssites"
 )
 
 const (
@@ -37,10 +38,10 @@ type tlsSite struct {
 }
 
 var (
-	emSignTLSSite    = tlsSite{name: "emSign", url: "https://dv-g3b-emudhra.we-have-a-problem.com/", root: "/usr/share/legion/tls-roots/emsign-ecc-root-ca-g3.pem"}
-	aaaTLSSite       = tlsSite{name: "AAA", url: "https://dv-g3b-aaa-emudhra.we-have-a-problem.com/", root: "/usr/share/legion/tls-roots/aaa-certificate-services.pem"}
-	controlTLSSite   = tlsSite{name: "control", url: "https://example.com/", control: true}
-	isolationTLSSite = tlsSite{name: "isolation", url: "https://letsencrypt.org/"}
+	emSignTLSSite    = tlsSite{name: tlssites.EmSign.Name, url: tlssites.EmSign.URL, root: tlssites.EmSign.Root}
+	aaaTLSSite       = tlsSite{name: tlssites.AAA.Name, url: tlssites.AAA.URL, root: tlssites.AAA.Root}
+	controlTLSSite   = tlsSite{name: tlssites.Control.Name, url: tlssites.Control.URL, control: true}
+	isolationTLSSite = tlsSite{name: tlssites.Isolation.Name, url: tlssites.Isolation.URL}
 	tlsSites         = []tlsSite{emSignTLSSite, aaaTLSSite, controlTLSSite}
 )
 
@@ -635,11 +636,26 @@ func trimTLSDetail(detail string) string {
 	return head + "…" + tail
 }
 
+// tlsCertificateError reports whether detail is a client's refusal of a certificate. A run that
+// accepted the chain is judged before this is asked (tlsCommandRun.outcome), so a marker here
+// never turns an acceptance into a refusal.
 func tlsCertificateError(detail string) bool {
 	lower := strings.ToLower(detail)
 	for _, marker := range []string{
 		"cert_revoked",
 		"certificate revoked",
+		// node's and bun's codes for a chain that ends at a root their store does not hold (the
+		// OpenSSL verify results node names, which bun names the same): a served leaf alone,
+		// UNABLE_TO_VERIFY_LEAF_SIGNATURE ("unable to verify the first certificate"), and the leaf
+		// with its self-signed root, SELF_SIGNED_CERT_IN_CHAIN, as node 24.22.1, bun 1.4.4 and
+		// CodeGraph's node printed them on 2026-11-21 in an INFRA issue pod at a local site of
+		// a root of their own; the same refusal with an intermediate served,
+		// UNABLE_TO_GET_ISSUER_CERT(_LOCALLY); and a self-signed leaf, DEPTH_ZERO_SELF_SIGNED_CERT.
+		// Each was read as unavailable before, which fails a client that refuses.
+		"unable_to_verify_leaf_signature",
+		"self_signed_cert_in_chain",
+		"unable_to_get_issuer_cert",
+		"depth_zero_self_signed_cert",
 		"certificate verify failed",
 		"invalid peer certificate",
 		// git's https transport through libcurl built with GnuTLS words its refusal of a
