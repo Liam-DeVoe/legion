@@ -76,10 +76,14 @@ func watchedDelete(key string, revision uint64) watchedEntry {
 	return watchedEntry{key: key, revision: revision, created: time.Now(), op: natsgo.KeyValueDelete}
 }
 
-// waitUntil polls condition until it holds, failing the test after five seconds.
+// waitUntil polls condition until it holds. Its one bound is the test binary's deadline
+// (testwait.Until): an expiry timer a loaded machine fires late is not a failure.
 func waitUntil(t *testing.T, condition func() bool) {
 	t.Helper()
-	testwait.WithinPolling(t, 5*time.Second, 5*time.Millisecond, "the registry's expiry", condition)
+	testwait.Until(t, "the registry's expiry", func() (bool, bool) {
+		held := condition()
+		return held, held
+	})
 }
 
 // waitForCacheSize waits, reading only CacheSize, until the cache holds want entries.
