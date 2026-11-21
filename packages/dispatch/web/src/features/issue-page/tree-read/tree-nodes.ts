@@ -4,7 +4,7 @@ import type {
   BlockAttributeValue,
   CheckBlock,
   CheckResult,
-  Decision,
+  DecisionEntry,
   DisplayTree,
   IssueChild,
   IssueDetails,
@@ -88,8 +88,8 @@ export interface KeptReads {
   readonly checks: ReadonlyMap<string, CheckBlock>;
   /** Each child of the issue read, by its key. */
   readonly children: ReadonlyMap<string, IssueChild>;
-  /** Each decision of the decisions read. */
-  readonly decisions: ReadonlyMap<string, Decision>;
+  /** Each entry of the decisions read that a decision node of the answer is (`decisionNodes`). */
+  readonly decisions: ReadonlyMap<string, DecisionEntry>;
   /** Each requirement of the coverage read: the statements, with their counts and gaps. */
   readonly requirements: ReadonlyMap<string, RequirementCoverage>;
   /** Each result of the results read, by its own id. */
@@ -508,18 +508,18 @@ function draftResult(
 
 /**
  * A decision node, with the review state the read answers on it as the decisions read answers it
- * for a decision (`model.Decision`'s members): its state in the page's words (`decisionState`),
+ * for a decision (`DecisionEntry`'s members): its state in the page's words (`decisionState`),
  * who kept it, whether it was replaced and whether its agent was unsure, and its `shaped` tuples
  * as chips, each stale where the decision changed after it named that node. Its time is its
  * words' last change, the decisions read's `changed_at` as the outline draws it, and its links
- * are that read's, where it holds a row for the decision; the read answers both on the node by
- * the same names and values where it holds none. A person's Change the read hangs under it says
- * it waits on its agent (`decisionNodeChanges`), and it waits on the reader by the outline's
+ * are that read's `shaped` edge, where it holds an entry for the decision; the read answers both
+ * on the node by the same values where it holds none. A person's Change the read hangs under it
+ * says it waits on its agent (`decisionNodeChanges`), and it waits on the reader by the outline's
  * review list rule (`inReviewList`), where a link ties it to a statement the coverage read holds.
  *
- * A decision of today's decisions read is no node of the answer - a section of `decisions.md` -
- * and is drawn as the outline draws it, by `buildIssueTree`, until the page draws decisions from
- * the tree read's nodes.
+ * An agent's decision of the decisions read that is no node of the answer - a section of
+ * `decisions.md` a server of the release before answers - is drawn as the outline draws it, by
+ * `buildIssueTree` (`tree-drafts.ts`'s `addDecisions`).
  */
 function draftDecision(
   node: TreeAnswerNode,
@@ -531,7 +531,7 @@ function draftDecision(
   const kept = context.kept.decisions.get(draft.id);
   const changedAt = kept === undefined ? node.changed_at : kept.changed_at;
   if (typeof changedAt === "string") draft.at = changedAt;
-  const links = kept?.links ?? node.links ?? [];
+  const links = kept?.shaped ?? node.links ?? [];
   const stale = new Set(
     links.flatMap((link) =>
       link.stale && link.to.ref !== undefined ? [context.nodeIdOf(link.to.ref) ?? link.to.ref] : []
@@ -548,7 +548,7 @@ function draftDecision(
   draft.waiting =
     context.viewer !== undefined &&
     inReviewList(
-      { links, waiting_review: node.waiting_review === true },
+      { shaped: links, waiting_review: node.waiting_review === true },
       (reference) => context.kept.requirements.has(context.nodeIdOf(reference) ?? ""),
       changed
     );
@@ -842,7 +842,7 @@ function keptReads(
   idOf: (node: TreeAnswerNode) => string
 ): KeptReads {
   const rows = reads.results?.checks ?? [];
-  const decisions = reads.decisions?.decisions ?? [];
+  const decisions = reads.decisions?.entries ?? [];
   const nodes = decisionNodes(decisions, answer);
   const verification = roleDocument(reads.issue, "verification")?.id;
   const checks = indexBy(rows, (check) => {
@@ -913,8 +913,8 @@ function askNodeId(ask: TreeAsk, slugOf: (artifactId: string) => string | undefi
 /**
  * The node each ask of the issue is drawn by, by the ask's own id, for each ask a draft stands
  * for: an ask the page keeps (`asksOf`) by the node id the outline drew it by (`askNodeId`), and
- * an ask node of the answer by its tree id. It is how a decision of today's decisions read names
- * the question it answers (`Decision.asks`, `tree-drafts.ts`'s `addDecisions`).
+ * an ask node of the answer by its tree id. It is how a decision of the decisions read names the
+ * question it settles (`DecisionEntry.from_ask`, `tree-drafts.ts`'s `addDecisions`).
  */
 export function askNodeIds(
   drafts: ReadonlyMap<string, Draft>,

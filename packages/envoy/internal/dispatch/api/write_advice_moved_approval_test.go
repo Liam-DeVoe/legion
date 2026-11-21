@@ -121,6 +121,8 @@ func TestMovedApprovalRequestComesFromTheReplaceRoute(t *testing.T) {
 	replaced := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+state.key+"/artifacts", map[string]any{
 		"actor": adviceSessionActor("session-editor"),
 		"name":  "verification.md", "content": "# Verification\n\nOne, rewritten.\n",
+		// A replacement names the token of the version it replaces, or Dispatch refuses it.
+		"precondition": map[string]string{"document": readDocumentPrecondition(t, handler, state.verification).Token},
 	})
 	advice := adviceFromResponse(t, replaced.Code, replaced.Body.String())
 	moved := advice.MovedApprovalRequest
@@ -152,6 +154,8 @@ func TestMovedApprovalRequestRidesTheUploadAdviceWhenIssueAdviceFails(t *testing
 	replaced := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+state.key+"/artifacts", map[string]any{
 		"actor": adviceSessionActor("session-editor"),
 		"name":  "verification.md", "content": "# Verification\n\nOne, rewritten.\n",
+		// A replacement names the token of the version it replaces, or Dispatch refuses it.
+		"precondition": map[string]string{"document": readDocumentPrecondition(t, handler, state.verification).Token},
 	})
 	var envelope struct {
 		Advice map[string]json.RawMessage `json:"advice"`
@@ -248,8 +252,7 @@ func TestMovedApprovalRequestIsAbsentWhenNoRequestNamesTheDocument(t *testing.T)
 // the agent edited it, and the request stands at version 2; the agent's next edit undoes the
 // first, in the route's own transaction, so its version holds the text he approved, carries his
 // approval (docs.carryApproval) and answers the request. The request is answered, not moved onto
-// the agent's turn, so the edit's answer names it nowhere. (A person's answer writes no version,
-// so the carry is the restore's.)
+// the agent's turn, so the edit's answer names it nowhere. (The carry is the restore's.)
 func TestMovedApprovalRequestIsAbsentWhenTheWritesOwnCarryAnsweredIt(t *testing.T) {
 	handler := approvalCarryHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Carried, not moved", "Context\n")

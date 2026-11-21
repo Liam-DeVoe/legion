@@ -373,15 +373,19 @@ test("the names already in hand stand while a tree that grew reads the new set",
 // A names read that fails under a new key - the tree grew by one comment - holds no answer of its
 // own, where a refetch that fails under the same key keeps one. The names the last answer gave
 // stand all the same: the task row keeps its words and the page keeps publishing the name of what
-// a comment cites, while the view says the read failed (`namesFailed`). A read under that key that
-// succeeds draws its own names, and nothing has failed any more.
+// a comment cites, while the view says the read failed (`namesFailure`), and goes on saying so
+// while its Retry reads it again. A read under that key that succeeds draws its own names, and
+// nothing has failed any more.
 test("a names read that fails for a tree that grew keeps the names in hand, and says it failed", async () => {
   const cited = "dispatch://CORE-7";
   const citing: Comment = { ...comment, body: `Read ${cited} first.` };
   let title = "The cited issue";
   let failing = false;
+  // Where set, a names read stays out until it settles.
+  let out: Promise<void> | undefined;
   const stubs = stubTreeReads(
     async (refs) => {
+      await out;
       if (failing) throw new Error("the names read failed");
       return {
         targets: namedTargets(refs).targets.map((target) =>
@@ -408,7 +412,7 @@ test("a names read that fails for a tree that grew keeps the names in hand, and 
     );
     await waitFor(() => expect(view.result.current.name).toBe("The cited issue"));
     expect(taskWords(view.result.current.tree.root)).toBe(TASK_WORDS);
-    expect(view.result.current.tree.namesFailed).toBe(false);
+    expect(view.result.current.tree.namesFailure).toBeUndefined();
 
     // A second comment arrives with the tree read's next answer: the tree holds one address more,
     // and the names read of that set fails.
@@ -418,10 +422,23 @@ test("a names read that fails for a tree that grew keeps the names in hand, and 
       client.setQueryData(issueTreeKey(KEY), treeAnswer([citing, second]));
       await Promise.resolve();
     });
-    await waitFor(() => expect(view.result.current.tree.namesFailed).toBe(true));
+    await waitFor(() => expect(view.result.current.tree.namesFailure).toBeDefined());
     const grown = view.result.current.tree.root;
     expect(nodesInOrder(grown).some((node) => node.id === second.id)).toBe(true);
     expect(taskWords(grown)).toBe(TASK_WORDS);
+    expect(view.result.current.name).toBe("The cited issue");
+
+    // Its Retry reads it again: while that read is out the names still stand failed, busy, and
+    // once it fails again they say a second failure.
+    const again = Promise.withResolvers<void>();
+    out = again.promise;
+    await act(async () => view.result.current.tree.namesFailure?.retry());
+    await waitFor(() => expect(view.result.current.tree.namesFailure?.retrying).toBe(true));
+    expect(view.result.current.tree.namesFailure?.failure).toBe(1);
+    out = undefined;
+    await act(async () => again.resolve());
+    await waitFor(() => expect(view.result.current.tree.namesFailure?.retrying).toBe(false));
+    expect(view.result.current.tree.namesFailure?.failure).toBe(2);
     expect(view.result.current.name).toBe("The cited issue");
 
     // The cited issue is renamed, and the failed read is read again, as window focus reads a
@@ -432,7 +449,7 @@ test("a names read that fails for a tree that grew keeps the names in hand, and 
       await client.refetchQueries({ predicate: (query) => query.state.status === "error" });
     });
     await waitFor(() => expect(view.result.current.name).toBe("The cited issue, renamed"));
-    expect(view.result.current.tree.namesFailed).toBe(false);
+    expect(view.result.current.tree.namesFailure).toBeUndefined();
     expect(taskWords(view.result.current.tree.root)).toBe(TASK_WORDS);
     view.unmount();
   } finally {
@@ -978,7 +995,7 @@ test("one more read that fails for words that cite more keeps the names it gave,
       expect(view.result.current.names).toEqual([NODE_TYPE_NAMES.document, undefined])
     );
     expect(asked.at(-1)).toEqual([NOTES_REF]);
-    expect(view.result.current.tree.namesFailed).toBe(false);
+    expect(view.result.current.tree.namesFailure).toBeUndefined();
 
     // The task's source comes to cite the log too, which the first read of a tree that grew by a
     // comment answers; the one more read, of both documents, fails.
@@ -988,7 +1005,7 @@ test("one more read that fails for words that cite more keeps the names it gave,
       client.setQueryData(issueTreeKey(KEY), treeAnswer([comment]));
       await Promise.resolve();
     });
-    await waitFor(() => expect(view.result.current.tree.namesFailed).toBe(true));
+    await waitFor(() => expect(view.result.current.tree.namesFailure).toBeDefined());
     expect(asked.at(-1)).toEqual([LOG_REF, NOTES_REF]);
     expect(view.result.current.names).toEqual([NODE_TYPE_NAMES.document, undefined]);
 
@@ -1003,7 +1020,72 @@ test("one more read that fails for words that cite more keeps the names it gave,
         NODE_TYPE_NAMES.document,
       ])
     );
-    expect(view.result.current.tree.namesFailed).toBe(false);
+    expect(view.result.current.tree.namesFailure).toBeUndefined();
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
+// The names' line stands for the one more read alone where that read fails and the first holds:
+// it counts that read's failures, says it runs again while it does, and its Retry asks that read
+// again and not the first. Once that read answers, nothing has failed any more.
+test("one more read that fails while the first holds says so, and its Retry asks that read again", async () => {
+  let failing = true;
+  // Where set, the one more read stays out until it settles.
+  let out: Promise<void> | undefined;
+  const asked: string[][] = [];
+  const stubs = stubTreeReads(async (refs) => {
+    asked.push([...refs]);
+    // The one more read names only what the task's source cites, so it never names the task.
+    if (!refs.includes(TASK_REF)) {
+      await out;
+      if (failing) throw new Error("the names read failed");
+    }
+    return sourceTargets(refs, `The words are in ${NOTES_REF}.`);
+  });
+  // No retry: the one more read fails on its first attempt.
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>
+      <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
+    </QueryClientProvider>
+  );
+  try {
+    const view = renderHook(
+      () => {
+        const tree = useIssueTree(withNotes);
+        return { name: useKnownReferenceName(NOTES_REF), tree };
+      },
+      { wrapper }
+    );
+    await waitFor(() => expect(view.result.current.tree.namesFailure).toBeDefined());
+    expect(asked, "the first read was not read once, and the one more read after it").toHaveLength(
+      2
+    );
+    expect(asked[1]).toEqual([NOTES_REF]);
+    expect(view.result.current.tree.namesFailure?.failure).toBe(1);
+    expect(view.result.current.tree.namesFailure?.retrying).toBe(false);
+    expect(view.result.current.name).toBeUndefined();
+
+    // Its Retry reads the one more read again, and the first not: while that read is out the
+    // names still stand failed, busy.
+    failing = false;
+    const again = Promise.withResolvers<void>();
+    out = again.promise;
+    await act(async () => view.result.current.tree.namesFailure?.retry());
+    await waitFor(() => expect(view.result.current.tree.namesFailure?.retrying).toBe(true));
+    expect(view.result.current.tree.namesFailure?.failure).toBe(1);
+    expect(asked, "the Retry read other than the one more read again").toEqual([
+      asked[0],
+      [NOTES_REF],
+      [NOTES_REF],
+    ]);
+    out = undefined;
+    await act(async () => again.resolve());
+    await waitFor(() => expect(view.result.current.tree.namesFailure).toBeUndefined());
+    expect(view.result.current.name).toBe(NODE_TYPE_NAMES.document);
+    expect(asked).toHaveLength(3);
     view.unmount();
   } finally {
     for (const stub of stubs) stub.mockRestore();
@@ -1060,7 +1142,7 @@ test("a failed one more read's kept answer stands over no name the first read no
       );
       await Promise.resolve();
     });
-    await waitFor(() => expect(view.result.current.tree.namesFailed).toBe(true));
+    await waitFor(() => expect(view.result.current.tree.namesFailure).toBeDefined());
     expect(asked.some((refs) => refs.length === 1 && refs[0] === LOG_REF)).toBe(true);
     await waitFor(() =>
       expect(view.result.current.names).toEqual([undefined, NODE_TYPE_NAMES.document])
@@ -2809,8 +2891,8 @@ const NAMING_ELSEWHERE = [
 // change under the parent, reads the child's names again, where the parent's new title, and an
 // older server's update that names none of its changes, does. A new comment is a new address,
 // which the tree reads under a key of its own, a person's edit of a document is the notice after
-// the versions that already refreshed them, and an issue's write that leaves its title alone
-// renames nothing.
+// the versions that already refreshed them, and an issue's write that leaves its title alone and
+// a follower joining an ask rename nothing.
 test("an edit on an issue refreshes the names reads whose key names the issue and no other, a new comment none", () => {
   const editsWords = [
     feedEvent("comment.edited", { anchor: null, ask_id: null, id: "comment-1" }),
@@ -2839,6 +2921,7 @@ test("an edit on an issue refreshes the names reads whose key names the issue an
     feedEvent("comment.created", { anchor: null, ask_id: null, id: "comment-2" }),
     feedEvent("artifact.human_edited", { artifact_id: plan.id, from_version: 1, to_version: 2 }),
     feedEvent("issue.updated", { changed: ["status"] }),
+    feedEvent("ask.follower_added", { ask_id: "ask-1", session_id: "s1" }),
   ];
   for (const event of editsNoWords) {
     expect(refreshedNames(event, [...NAMING_KEY, ...NAMING_ISSUE]), event.type).toEqual([]);
@@ -2971,7 +3054,9 @@ test("a project document's event refreshes the names reads naming that document,
 // A page can cite a document before it exists: the names read answers that address with nothing
 // until the document is created, and the creation is what gives the address words. So a
 // document's creation refreshes the names reads that cite it, of an issue and of a project, and
-// leaves a read naming another owner alone.
+// leaves a read naming another owner alone. Its payload carries the document's slug, so a project
+// document's creation leaves a read naming another document of the project alone too,
+// `roadmap-md-2` among them.
 test("an artifact.created event refreshes the names read that cites that document", () => {
   const citesPlan = [[`dispatch://${KEY}/artifact/${PLAN}`]];
   expect(
@@ -2988,7 +3073,12 @@ test("an artifact.created event refreshes the names read that cites that documen
         { artifact: roadmap },
         { artifact_id: roadmap.id, issue_key: null }
       ),
-      [...citesRoadmap, ["dispatch://ACME/artifact/roadmap-md"], [`dispatch://${KEY}`]]
+      [
+        ...citesRoadmap,
+        ["dispatch://ACME/artifact/roadmap-md"],
+        ["dispatch://CORE/artifact/roadmap-md-2"],
+        [`dispatch://${KEY}`],
+      ]
     )
   ).toEqual(citesRoadmap);
 });
@@ -3874,6 +3964,7 @@ function pressWrite(
     issue,
     kind: plainWrite,
     label,
+    method: "POST",
     presentation: "indicator",
     write: attempt,
   });

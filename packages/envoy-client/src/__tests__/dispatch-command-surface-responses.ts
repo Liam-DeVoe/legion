@@ -301,56 +301,6 @@ export function handoffBody() {
   };
 }
 
-/** `GET /api/v1/issues/{key}/steps`: one ended run and one still running, so the record holds a
- *  line of each and the `-` of a field with no value. */
-export function stepsBody() {
-  const run = {
-    issue: ISSUE,
-    task: "default",
-    kind: "step",
-    generation: 1,
-    attempt: 1,
-    returned_to: null,
-    report: null,
-  };
-  return {
-    issue: ISSUE,
-    tasks: [
-      {
-        task: "default",
-        steps: [
-          {
-            ...run,
-            id: UUID,
-            step: 2,
-            role: "implementer",
-            type: "implementation",
-            agent: "legion-dsp-dsp-1-implementer",
-            session: SESSION,
-            model: "anthropic/claude-opus-5",
-            started_at: AT,
-            ended_at: AT,
-            result: "passed",
-          },
-          {
-            ...run,
-            id: OTHER_UUID,
-            step: 3,
-            role: "tester",
-            type: "testing",
-            agent: "legion-dsp-dsp-1-tester",
-            session: "",
-            model: "",
-            started_at: AT,
-            ended_at: null,
-            result: "",
-          },
-        ],
-      },
-    ],
-  };
-}
-
 /** The lens every reasoning write here names, its one finding, and who wrote them: the person a
  *  personal token proves, as Dispatch's `authored_by` tuple names her. */
 export const LENS = `dispatch://lens/${UUID}`;
@@ -569,6 +519,56 @@ export function lensesBody() {
     lens: null,
     lenses: [tradeOff, preMortem],
     chains: [{ lenses: [tradeOff, preMortem], stopped_at: null }],
+  };
+}
+
+/** `GET /api/v1/issues/{key}/steps`: one ended run and one still running, so the record holds a
+ *  line of each and the `-` of a field with no value. */
+export function stepsBody() {
+  const run = {
+    issue: ISSUE,
+    task: "default",
+    kind: "step",
+    generation: 1,
+    attempt: 1,
+    returned_to: null,
+    report: null,
+  };
+  return {
+    issue: ISSUE,
+    tasks: [
+      {
+        task: "default",
+        steps: [
+          {
+            ...run,
+            id: UUID,
+            step: 2,
+            role: "implementer",
+            type: "implementation",
+            agent: "legion-dsp-dsp-1-implementer",
+            session: SESSION,
+            model: "anthropic/claude-opus-5",
+            started_at: AT,
+            ended_at: AT,
+            result: "passed",
+          },
+          {
+            ...run,
+            id: OTHER_UUID,
+            step: 3,
+            role: "tester",
+            type: "testing",
+            agent: "legion-dsp-dsp-1-tester",
+            session: "",
+            model: "",
+            started_at: AT,
+            ended_at: null,
+            result: "",
+          },
+        ],
+      },
+    ],
   };
 }
 

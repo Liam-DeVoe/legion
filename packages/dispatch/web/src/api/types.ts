@@ -199,6 +199,7 @@ export type {
   ItemBlock,
   ItemBlocks,
   LauncherCredentialResp,
+  LauncherCredentialsResponse,
   LegionSetting,
   LiveAgentFrame,
   LiveClientFrame,

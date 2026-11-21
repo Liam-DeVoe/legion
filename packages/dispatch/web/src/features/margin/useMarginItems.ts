@@ -15,17 +15,14 @@ import type {
   DispatchEvent,
   DisplayTree,
 } from "../../api/types";
+import { commentWritten } from "../../api/write-events";
 import { compareTimestamps } from "../../lib/timestamps";
 import type { ComposerOwner } from "../conversation/composer-model";
 import { rootOf } from "../conversation/conversation-model";
 import type { CarriedBlockIds } from "../conversation/send-request";
-import {
-  isDecisionEntry,
-  issueDecisionsQuery,
-  issueSpecAddress,
-  linkReachesDocument,
-} from "../doc/spec-marks";
+import { issueDecisionsQuery, issueSpecAddress, linkReachesDocument } from "../doc/spec-marks";
 import { useProjectArtifact } from "../document/useProjectArtifact";
+import { isDecisionEntry } from "../issue/decision-entries";
 import {
   type ConversationPinKind,
   conversationItemId,
@@ -563,6 +560,12 @@ export function useMarginItems(
   const { actionFailure, mutateItem, pendingActionIds, retryItem } = useCommentActionQueue<{
     previous: Comment[] | undefined;
   }>({
+    // A read of the comments asked while an action is out waits until Dispatch has taken it - its
+    // answer, or the comment's own event (`comment.resolved`, `comment.reopened`,
+    // `suggestion.accepted`, `suggestion.rejected`) - for at most `SEND_DEADLINE_MS`: Dispatch can
+    // answer it before, with the comment as it was. The owner's comments are everyone's, so the
+    // hold ends on the event rather than wait out an answer that is late.
+    holds: ({ id, kind }) => ({ endsOn: commentWritten(id, kind), keys: [commentsQueryKey] }),
     issue: issueKey,
     onError: (_error, _input, context) => {
       queryClient.setQueryData(commentsQueryKey, context?.previous);

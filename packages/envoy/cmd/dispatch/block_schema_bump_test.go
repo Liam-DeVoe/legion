@@ -8,19 +8,20 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // issueTreeMigration is the name every migration of dispatch://INFRA-1253 takes,
 // <timestamp>_issue_tree_<what>.up.sql, as store's TestThisChildsMigrationsTouchNoTableAboveTheCensusLimit
-// finds them: the type migrations this branch adds are the ones of typeMigrations it names.
+// finds them: the type migrations this branch adds are the ones of store.TypeMigrations it names.
 var issueTreeMigration = regexp.MustCompile(`^[0-9]{14}_issue_tree_[a-z0-9_]+\.up\.sql$`)
 
 // The branch moves the block schema one version, once (dispatch://INFRA-1253/spec R21): its
 // elements stand at the version after the one the type migrations before it carry, however many
 // type migrations it adds. The test reads the version blocks.json gives at this head and the one
 // the store's type nodes build once every migration has run, which must agree, and then runs again,
-// in order, the type migrations of typeMigrations this branch did not add - the seed and each
+// in order, the type migrations of store.TypeMigrations this branch did not add - the seed and each
 // later one, which every set the version on every block type - and reads the version the nodes
 // build then, which is the version the store held before this branch's type migrations. A second
 // bump - blocks.json, or a type migration of this branch, moving past the version after that one
@@ -40,23 +41,23 @@ func TestTheBlockSchemaMovesOneVersionPastTheTypeMigrationsBeforeThisBranch(t *t
 	}
 
 	var before, ours []string
-	for _, migration := range typeMigrations {
-		if issueTreeMigration.MatchString(filepath.Base(migration)) {
-			ours = append(ours, filepath.Base(migration))
+	for _, name := range store.TypeMigrations {
+		if issueTreeMigration.MatchString(name) {
+			ours = append(ours, name)
 			continue
 		}
-		before = append(before, migration)
+		before = append(before, name)
 	}
 	if len(ours) == 0 {
-		t.Fatal("typeMigrations names no type migration of this branch, so nothing moves the block schema's version")
+		t.Fatal("store.TypeMigrations names no type migration of this branch, so nothing moves the block schema's version")
 	}
-	for _, migration := range before {
-		text, err := os.ReadFile(filepath.Clean(migration))
+	for _, name := range before {
+		text, err := os.ReadFile(filepath.Join(storeMigrations, name))
 		if err != nil {
-			t.Fatalf("read the type migration %s: %v", filepath.Base(migration), err)
+			t.Fatalf("read the type migration %s: %v", name, err)
 		}
 		if _, err := database.Pool.Exec(ctx, string(text)); err != nil {
-			t.Fatalf("run the type migration %s again: %v", filepath.Base(migration), err)
+			t.Fatalf("run the type migration %s again: %v", name, err)
 		}
 	}
 	earlier, err := schemanodes.Read(ctx, database.Pool)

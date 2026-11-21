@@ -49,12 +49,13 @@ type StoreDrive struct {
 	Counts map[StoredKind][]string
 }
 
-// ImportedDrives builds the drives of the sites whose packages import this one, and so cannot be
-// imported by its internal tests: the API's, the document service's and the erase's, since docs
-// imports graphcensus (the block-index tick queues CommentWrite), api imports docs and grapherase
-// imports api. Its value is set by this package's external test package as it starts
-// (imported_drives_test.go), and writeTheStore runs the drives it builds beside its own; while it
-// is nil, every site only those drives run is listed and not driven, and the test fails naming it.
+// ImportedDrives builds the drives this package's external test package runs on one rig: the
+// API's, the document service's and the erase's. The erase's package imports this one (its
+// readBlockers reads ProvedSessionComments), so it cannot be imported by this package's internal
+// tests, and the erase's drive takes a comment the API's drives wrote on that rig. Its value is
+// set by this package's external test package as it starts (imported_drives_test.go), and
+// writeTheStore runs the drives it builds beside its own; while it is nil, every site only those
+// drives run is listed and not driven, and the test fails naming it.
 var ImportedDrives func(*testing.T) []StoreDrive
 
 // requireEveryListedSiteDriven fails on every site the register of the store's writers lists that
@@ -83,21 +84,30 @@ func requireEveryListedSiteDriven(t *testing.T, drives []StoreDrive) {
 	}
 }
 
-// The drives of graphstore's own writers that no site of another package runs: Authored, Reached,
-// SessionRecorded and WriteUncaused. Each runs in a transaction of its own, as a writer with no
-// write phase calls it; a write held for its cause (Reached, SessionRecorded, WriteUncaused) is
-// then caused at the sentinel (graphstore.Caused), as a write no event recorded is.
+// The drives of graphstore's own writers, each run on its own over an input of this test's: the
+// queued forms of the writers of the people and agents Dispatch records (QueueAuthored,
+// QueueReached, QueueSessionRecorded), and the cause of a node write held for it (Caused over
+// QueueNodes). Each runs as a batch of its own (store.RunWrite) in a transaction of its own, as a
+// writer with no write phase runs it. QueueReached and QueueSessionRecorded take their cause in
+// hand, as the settle hands them the receipt it appended before them (drivenReceipt); the write
+// QueueNodes held for its cause is caused at the sentinel (graphstore.Caused), as a write no event
+// recorded is.
 const (
-	authoredDrive        = "graphstore/people.go#Authored"
-	reachedDrive         = "graphstore/people.go#Reached"
-	sessionRecordedDrive = "graphstore/people.go#SessionRecorded"
-	writeUncausedDrive   = "graphstore/write.go#WriteUncaused"
+	authoredDrive        = "graphstore/people.go#QueueAuthored"
+	reachedDrive         = "graphstore/people.go#QueueReached"
+	sessionRecordedDrive = "graphstore/people.go#QueueSessionRecorded"
+	heldNodeDrive        = "graphstore/write.go#Caused, over a node QueueNodes held for its cause"
 )
 
-// graphstoreDrives are the drives of graphstore's own writers that no other site runs, over a
-// database of their own: who wrote a comment a build before the store wrote, as "Dana", whose
-// canonical login is dana, so the write states the recorded_as alias beside the authored_by; a
-// sent attempt's session; a session a write records; and a person's node held for its cause.
+// drivenReceipt is the event the reached and the recorded drives state their session under, as
+// the receipt a settle appends before the session it records. No row reads it back: a drive is
+// read for the kinds of tuple it appends.
+const drivenReceipt = int64(9700001)
+
+// graphstoreDrives are the drives of graphstore's own writers run on their own, over a database
+// of their own: who wrote a comment a build before the store wrote, as "Dana", whose canonical
+// login is dana, so the write states the recorded_as alias beside the authored_by; a sent
+// attempt's session; a session a write records; and a person's node held for its cause.
 func graphstoreDrives(t *testing.T) []StoreDrive {
 	t.Helper()
 	database := storetest.Open(t)
@@ -120,7 +130,7 @@ func graphstoreDrives(t *testing.T) []StoreDrive {
 	var comment string
 	var commented time.Time
 	return []StoreDrive{{
-		Name: authoredDrive, Sites: []string{"graphstore/people.go#Authored", "graphstore/people.go#QueueAuthored"},
+		Name: authoredDrive, Sites: []string{"graphstore/people.go#QueueAuthored"},
 		Database: database,
 		Ready: func(t *testing.T) {
 			t.Helper()
@@ -141,7 +151,9 @@ func graphstoreDrives(t *testing.T) []StoreDrive {
 		},
 		Drive: func(t *testing.T) {
 			inTransaction(t, "record who wrote the comment", func(tx pgx.Tx) error {
-				return graphstore.Authored(ctx, tx, graphstore.KindComment, comment, dana, commented, graphstore.NoEvent)
+				return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+					return graphstore.QueueAuthored(b, graphstore.KindComment, comment, dana, commented, graphstore.NoEvent)
+				})
 			})
 		},
 		Counts: map[StoredKind][]string{
@@ -152,15 +164,12 @@ func graphstoreDrives(t *testing.T) []StoreDrive {
 		},
 	}, {
 		Name: reachedDrive, Database: database,
-		Sites: []string{"graphstore/people.go#Reached", "graphstore/people.go#QueueReached",
-			"graphstore/people.go#QueueSessionRecorded", "graphstore/write.go#Caused"},
+		Sites: []string{"graphstore/people.go#QueueReached", "graphstore/people.go#QueueSessionRecorded"},
 		Drive: func(t *testing.T) {
 			inTransaction(t, "record the session a sent attempt reached", func(tx pgx.Tx) error {
-				write, err := graphstore.Reached(ctx, tx, model.DeliveryStateSent, "ses_reached", dana, time.Now())
-				if err != nil {
-					return err
-				}
-				return graphstore.Caused(ctx, tx, write, graphstore.NoEvent)
+				return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+					return graphstore.QueueReached(b, model.DeliveryStateSent, "ses_reached", dana, time.Now(), drivenReceipt)
+				})
 			})
 		},
 		Counts: map[StoredKind][]string{
@@ -169,15 +178,12 @@ func graphstoreDrives(t *testing.T) []StoreDrive {
 		},
 	}, {
 		Name: sessionRecordedDrive, Database: database,
-		Sites: []string{"graphstore/people.go#SessionRecorded", "graphstore/people.go#QueueSessionRecorded",
-			"graphstore/write.go#Caused"},
+		Sites: []string{"graphstore/people.go#QueueSessionRecorded"},
 		Drive: func(t *testing.T) {
 			inTransaction(t, "record a session a write names", func(tx pgx.Tx) error {
-				write, err := graphstore.SessionRecorded(ctx, tx, "ses_recorded", dana, time.Now(), graphstore.NoEvent)
-				if err != nil {
-					return err
-				}
-				return graphstore.Caused(ctx, tx, write, graphstore.NoEvent)
+				return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+					return graphstore.QueueSessionRecorded(b, "ses_recorded", dana, time.Now(), drivenReceipt)
+				})
 			})
 		},
 		Counts: map[StoredKind][]string{
@@ -185,13 +191,16 @@ func graphstoreDrives(t *testing.T) []StoreDrive {
 			{graphstore.KindSession, graphstore.AttributeState}:      {graphstore.KindSession},
 		},
 	}, {
-		Name: writeUncausedDrive, Database: database,
-		Sites: []string{"graphstore/write.go#WriteUncaused", "graphstore/write.go#Caused"},
+		Name: heldNodeDrive, Database: database,
+		Sites: []string{"graphstore/write.go#Caused"},
 		Drive: func(t *testing.T) {
 			inTransaction(t, "write a person's node held for its cause", func(tx pgx.Tx) error {
-				write, err := graphstore.WriteUncaused(ctx, tx,
+				write := graphstore.PlanUncaused(
 					[]graphstore.Node{graphstore.PersonNode("erin", dana, time.Now(), graphstore.NoEvent)}, nil)
-				if err != nil {
+				if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+					graphstore.QueueNodes(b, write)
+					return nil
+				}); err != nil {
 					return err
 				}
 				return graphstore.Caused(ctx, tx, write, graphstore.NoEvent)
@@ -204,11 +213,119 @@ func graphstoreDrives(t *testing.T) []StoreDrive {
 	}}
 }
 
+// The drives of the lens catalogue's writer and of the backfill's passes over what a process of
+// the release before leaves of a run and of a prevented_by, each a site no drive over the seeded
+// history or the API runs.
+const (
+	addLensKindDrive      = "graphstore/lens_catalogue.go#AddLensKind"
+	owedRunDrive          = "graphcensus/backfill_runs.go#writeOwedRun"
+	runFramesDrive        = "graphcensus/backfill_runs.go#writeRunFrames"
+	goneRunDrive          = "graphcensus/backfill_runs.go#writeGoneRun"
+	endedPreventionsDrive = "graphcensus/backfill_preventions.go#writeEndedPreventions"
+)
+
+// runAndCatalogueDrives are those drives, over a database of their own, one after another: a kind
+// added to the lens catalogue as `envoy-dispatch lens-kind-add` adds one, its lens_kind node and
+// the constraint node of its source, which the term lens_kind counts; then the backfill's passes
+// over the rows a process of the release before writes of a run during a roll (olderPodRun): the
+// node of a run it recorded with no node, written through graphstore.WriteRun with a frame value of
+// its one frame, which the terms interaction and frame count, and the node of its asker, the first
+// write of alice in this database, which the term person counts; the value of a frame it appended
+// to a run this build gave its node, which the term frame counts; and the gone state of a run whose
+// row it deleted, which the term interaction_gone counts. Last, the backfill's retraction of the
+// prevented_by at a check of a document that process retired and at a check its version dropped
+// (seedEndedPreventions), which the term risk counts.
+func runAndCatalogueDrives(t *testing.T) []StoreDrive {
+	t.Helper()
+	database := storetest.Open(t)
+	ctx := context.Background()
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	pass := func(backfill func(context.Context, *store.Store) (KindBackfill, error)) func(*testing.T) {
+		return func(t *testing.T) {
+			t.Helper()
+			if done, err := backfill(ctx, database); err != nil {
+				t.Fatalf("backfill the %s kind: %v", done.Kind, err)
+			} else if done.Rows == 0 {
+				t.Fatalf("the backfill of the %s kind wrote nothing, where the drive readied a row it owes", done.Kind)
+			}
+		}
+	}
+	return []StoreDrive{{
+		Name: addLensKindDrive, Sites: []string{"graphstore/lens_catalogue.go#AddLensKind"},
+		Database: database,
+		Drive: func(t *testing.T) {
+			if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+				_, err := graphstore.AddLensKind(ctx, tx, graphstore.LensKind{
+					ID: "sizing-kind", Words: "Weigh what the store holds against what it costs.",
+					Source: "The sizing of the store", Reference: "its tuples a day",
+				}, time.Now().UTC())
+				return err
+			}); err != nil {
+				t.Fatalf("add a kind to the lens catalogue: %v", err)
+			}
+		},
+		Counts: map[StoredKind][]string{
+			{graphstore.KindLensKind, graphstore.AttributeVisibility}:   {graphstore.KindLensKind},
+			{graphstore.KindLensKind, graphstore.AttributeState}:        {graphstore.KindLensKind},
+			{graphstore.KindLensKind, graphstore.AttributeWords}:        {graphstore.KindLensKind},
+			{graphstore.KindLensKind, graphstore.TupleConstrainedBy}:    {graphstore.KindLensKind},
+			{graphstore.KindConstraint, graphstore.AttributeVisibility}: {graphstore.KindLensKind},
+			{graphstore.KindConstraint, graphstore.AttributeState}:      {graphstore.KindLensKind},
+			{graphstore.KindConstraint, graphstore.AttributeStandard}:   {graphstore.KindLensKind},
+			{graphstore.KindConstraint, graphstore.AttributeReference}:  {graphstore.KindLensKind},
+		},
+	}, {
+		Name: owedRunDrive, Sites: []string{owedRunDrive, "graphstore/interaction.go#WriteRun"},
+		Database: database,
+		Ready:    func(t *testing.T) { olderPodRun(t, database, alice, "CORE", "who answers this?", "Half an answer.") },
+		Drive:    pass(backfillRuns),
+		Counts: map[StoredKind][]string{
+			{graphstore.KindInteraction, graphstore.AttributeVisibility}: {graphstore.KindInteraction},
+			{graphstore.KindInteraction, graphstore.AttributeState}:      {graphstore.KindInteraction},
+			{graphstore.KindInteraction, graphstore.AttributeProject}:    {graphstore.KindInteraction},
+			{graphstore.KindInteraction, graphstore.AttributeWords}:      {graphstore.KindInteraction},
+			{graphstore.KindInteraction, graphstore.AttributeEndsAt}:     {graphstore.KindInteraction},
+			{graphstore.KindInteraction, graphstore.TupleAuthoredBy}:     {graphstore.KindInteraction},
+			{graphstore.KindInteraction, graphstore.AttributeFrame}:      {graphstore.AttributeFrame},
+			{graphstore.KindPerson, graphstore.AttributeVisibility}:      {graphstore.KindPerson},
+			{graphstore.KindPerson, graphstore.AttributeState}:           {graphstore.KindPerson},
+		},
+	}, {
+		Name: runFramesDrive, Sites: []string{runFramesDrive},
+		Database: database,
+		Ready: func(t *testing.T) {
+			framed := olderPodRun(t, database, alice, "", "and this one?", "One ")
+			giveRunItsNode(t, database, framed)
+			appendOlderPodFrame(t, database, framed, 2, "two.")
+		},
+		Drive:  pass(backfillRunFrames),
+		Counts: map[StoredKind][]string{{graphstore.KindInteraction, graphstore.AttributeFrame}: {graphstore.AttributeFrame}},
+	}, {
+		Name: goneRunDrive, Sites: []string{goneRunDrive},
+		Database: database,
+		Ready: func(t *testing.T) {
+			deleted := olderPodRun(t, database, alice, "", "asked and deleted an hour on", "Gone ")
+			giveRunItsNode(t, database, deleted)
+			if _, err := database.Pool.Exec(ctx, `delete from going_requests where id = $1::uuid`, deleted); err != nil {
+				t.Fatalf("delete run %s as an older pod's sweep does: %v", deleted, err)
+			}
+		},
+		Drive:  pass(backfillGoneRuns),
+		Counts: map[StoredKind][]string{{graphstore.KindInteraction, graphstore.AttributeState}: {"interaction_gone"}},
+	}, {
+		Name: endedPreventionsDrive, Sites: []string{endedPreventionsDrive},
+		Database: database,
+		Ready:    func(t *testing.T) { seedEndedPreventions(t, database, "PREV") },
+		Drive:    pass(backfillEndedPreventions),
+		Counts:   map[StoredKind][]string{{graphstore.KindRisk, graphstore.TuplePreventedBy}: {graphstore.KindRisk}},
+	}}
+}
+
 // The drives of the boot step's ask passes (backfillAsks, backfillAskFollowers), each over the
 // rows a build before the store wrote.
 const (
-	askBatchDrive         = "graphcensus/backfill.go#writeAskBatch"
-	askFollowerBatchDrive = "graphcensus/backfill.go#writeAskFollowerBatch"
+	askBatchDrive         = "graphcensus/backfill_asks.go#writeAskBatch"
+	askFollowerBatchDrive = "graphcensus/backfill_asks.go#writeAskFollowerBatch"
 )
 
 // askBackfillDrives are the drives of the boot step's two ask passes, over a database of their

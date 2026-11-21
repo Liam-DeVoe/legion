@@ -88,7 +88,7 @@ type runReads struct {
 }
 
 // TestTheReferencesReadAnswersARunToThePersonWhoseRunItWas is c-interaction-page
-// (dispatch://INFRA-1950/spec#b-r-interaction). Two people read the issue's references both
+// (spec requirement r-interaction). Two people read the issue's references both
 // ways, its backlink count and the backlink count of alice's person node. Alice's run is recorded
 // with two frames; under the run's header and with her credential a comment is written on the
 // issue, the issue's labels are changed through its PATCH, an open ask of the issue is answered,

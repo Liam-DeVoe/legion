@@ -147,7 +147,9 @@ func roomFixture(t *testing.T, tx pgx.Tx) (spec, specRef, verification, tree, tr
 // its newest text row, so the text a reader asks of the block at that document's version is
 // there. Block x stands in the spec's fragment at the spec's version 4, then in the Verification
 // document's fragment at its version 2; a pass that kept x's row because its text did not change
-// would keep version 4, and the Verification document's version 2 would hold no text of x.
+// would keep version 4, and the Verification document's version 2 would hold no text of x. Each
+// pass over the room records each document's row stated at the version it covers of that
+// document, by BlockIndexMarkingRule (queueStand's arm over several documents).
 func TestIndexBlocksRecordsARoomBlockMovedIntoAnotherFragmentAtItsNewDocumentsVersion(t *testing.T) {
 	ctx := context.Background()
 	tx := windowFixture(t)
@@ -162,6 +164,9 @@ func TestIndexBlocksRecordsARoomBlockMovedIntoAnotherFragmentAtItsNewDocumentsVe
 	}, first, firstBlocks, nil, nil, TypedFacts{}); err != nil || !won {
 		t.Fatalf("index the room with x in the spec's fragment: won %t, %v", won, err)
 	}
+	for document, version := range map[string]int{tree: 1, spec: 4, verification: 1} {
+		requireStated(t, tx, document, version, "after the room's first pass")
+	}
 	specNext := writeStoredVersion(t, tx, spec, 5, "")
 	verificationNext := writeStoredVersion(t, tx, verification, 2, "Check.\n\nMoved words.")
 	second, secondBlocks := documentOf([]part{{"y", "paragraph", "Check."}, {"x", "paragraph", "Moved words."}})
@@ -170,6 +175,9 @@ func TestIndexBlocksRecordsARoomBlockMovedIntoAnotherFragmentAtItsNewDocumentsVe
 		tree: {Number: 1, At: treeAt}, spec: {Number: 5, At: specNext}, verification: {Number: 2, At: verificationNext},
 	}, second, secondBlocks, nil, nil, TypedFacts{}); err != nil || !won {
 		t.Fatalf("index the room with x in the Verification document's fragment: won %t, %v", won, err)
+	}
+	for document, version := range map[string]int{tree: 1, spec: 5, verification: 2} {
+		requireStated(t, tx, document, version, "after the room's second pass")
 	}
 
 	var document string

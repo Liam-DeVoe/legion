@@ -11,7 +11,7 @@ import { expect, test } from "./test";
 // Every block id comes from `GET /api/v1/artifacts/<id>/blocks` (`blockId`), never from a guess,
 // and every seed goes through the API the agent uses.
 
-const STALE_TITLE = "A decision that shaped this block changed after it.";
+const STALE_TITLE = "This block changed after a decision that shaped it.";
 const DECISION = "Store notices in a table";
 const REASON = "Chosen for the simplest storage.";
 /** The decision whose text is no plain paragraph: a list below its heading, with a reference in

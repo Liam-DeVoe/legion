@@ -1,6 +1,9 @@
 package store
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // GraphEdgesArms names one set of the arms graph_edges is stated with from
 // dispatch://INFRA-1253's split of the issue relations on: each migration that states the view
@@ -36,6 +39,15 @@ const (
 	// store's bound (ReferenceNotStated), and the tuple arm renders a document's mentions while the
 	// refs row that names the edge stands, naming the document by its uuid.
 	GraphEdgesArtifactRefs
+	// GraphEdgesTupleArmFilter is the set 20261121090000_issue_tree_graph_edges_after_tuple_arm_filter
+	// states: GraphEdgesArtifactRefs with the tuple arm's sub-select keeping only the kinds the arm
+	// renders before its `distinct on` sorts the tuples, the test spelled over the tuple's own
+	// columns as the `when` arms of the `projects` case (tupleArmFilter), and the outer
+	// `edge.projects is not null` test gone, as the sibling branch's
+	// 20261120122700_graph_edges_tuple_arm_filter has it for its own arms. It is stated last, after
+	// 20261121034242_graph_edges_asks_and_tuple_arm_filter, which restates the view from the arms of
+	// 20261116094101 alone, so a database that ran either holds every arm of this branch again.
+	GraphEdgesTupleArmFilter
 )
 
 // GraphEdgesView is the statement that states graph_edges with the arms of set arms. A set no
@@ -79,6 +91,12 @@ const (
 // tuple arm reads its mentions through a join to that row (artifactRefTuples), which names the
 // document by its uuid, as the arm over refs and every reader of the view does, and still binds a
 // read of one source or one far end to an index of each relation it reads.
+//
+// From GraphEdgesTupleArmFilter on, the tuple arm's sub-select keeps only the tuples whose
+// `projects` is not null, by the test tupleArmFilter spells from the `when` arms of that case:
+// both columns the test reads, the tuple's from_kind and kind, are columns of the `distinct on`
+// key, so it keeps or drops a whole group and never changes which tuple of a kept group is the
+// newest, and a read keyed on one end of an edge sorts only that node's tuples of those kinds.
 func GraphEdgesView(arms GraphEdgesArms) string {
 	components, stated := componentArms[arms]
 	if !stated {
@@ -94,8 +112,39 @@ func GraphEdgesView(arms GraphEdgesArms) string {
 		classes += artifactRefClass
 		probes += artifactRefProbe
 	}
+	projects := graphEdgesStoreClasses + classes + graphEdgesOwnClasses
+	newest, tested := graphEdgesNewest, graphEdgesProbesNotNull
+	if arms >= GraphEdgesTupleArmFilter {
+		newest, tested = graphEdgesNotValue+tupleArmFilter(projects)+graphEdgesNewestOrder, graphEdgesProbesHead
+	}
 	return graphEdgesCreate + references + graphEdgesHead + components + graphEdgesBlocks + nodeColumn + graphEdgesTupleKinds +
-		classes + graphEdgesOwnClasses + tuples + graphEdgesNewest + nodes + graphEdgesProbes + probes + graphEdgesTail
+		projects + graphEdgesProjectsEnd + tuples + newest + nodes + tested + graphEdgesProbes + probes + graphEdgesTail
+}
+
+// tupleArmFilter is the tuple arm's test that a tuple's `projects` is not null, spelled over the
+// tuple's own columns: each `when` arm of classes, the `projects` case as a set states it, as one
+// alternative of a disjunction, each on a line of its own and its own continuation lines joined
+// onto it.
+func tupleArmFilter(classes string) string {
+	var alternatives []string
+	condition := ""
+	for _, line := range strings.Split(strings.TrimSuffix(classes, "\n"), "\n") {
+		line = strings.TrimSpace(line)
+		if rest, opens := strings.CutPrefix(line, "when "); opens {
+			line = rest
+		} else {
+			line = condition + " " + line
+		}
+		head, _, closes := strings.Cut(line, " then '")
+		if !closes {
+			condition = line
+			continue
+		}
+		alternatives = append(alternatives, "("+head+")")
+		condition = ""
+	}
+	return `      and (` + strings.Join(alternatives, "\n           or ") + `)
+`
 }
 
 // IssueParentMoved is the test that the issues row aliased i, which names its node, names a parent
@@ -163,8 +212,9 @@ var componentArms = map[GraphEdgesArms]string{
   select 'issue', m.issue_key, 'affects', 'component', m.project_key || '/' || m.component_id, c.updated_at, null
   from issue_component_members m join issue_components c using (issue_key)
 `,
-	GraphEdgesComponents:   unmarkedComponentArms,
-	GraphEdgesArtifactRefs: unmarkedComponentArms,
+	GraphEdgesComponents:     unmarkedComponentArms,
+	GraphEdgesArtifactRefs:   unmarkedComponentArms,
+	GraphEdgesTupleArmFilter: unmarkedComponentArms,
 }
 
 // unmarkedComponentArms are the arms over a component's three relations over the rows no writer
@@ -375,8 +425,8 @@ const graphEdgesBlocks = `  union all
 const artifactRefNodeColumn = `           tuple.node_id,
 `
 
-// graphEdgesTupleKinds is the tuple arm from the kind it renders to its class of an issue's wait,
-// the last class every set states before a set's own.
+// graphEdgesTupleKinds is the tuple arm from the kind it renders to the head of its `projects`
+// case, whose classes every set states from graphEdgesStoreClasses on.
 const graphEdgesTupleKinds = `           case
              when tuple.kind = 'in_document' then 'part_of'
              when tuple.from_kind = 'issue' and tuple.kind = 'needs' and tuple.to_kind = 'issue' then 'blocked_by'
@@ -389,7 +439,11 @@ const graphEdgesTupleKinds = `           case
            tuple.kind as stated,
            tuple.asserted,
            case
-             when tuple.from_kind = 'block' and tuple.kind = 'in_document' then 'block'
+`
+
+// graphEdgesStoreClasses are the tuple arm's classes from a block's membership to an issue's wait,
+// the classes every set states before a set's own.
+const graphEdgesStoreClasses = `             when tuple.from_kind = 'block' and tuple.kind = 'in_document' then 'block'
              when not (tuple.from_kind = 'block' and tuple.from_id like 'lens/%')
                and (tuple.kind in ('changed_by_run', 'has_kind', 'triggered_by', 'constrained_by', 'prevented_by')
                     or (tuple.kind in ('part_of', 'authored_by')
@@ -410,14 +464,17 @@ const artifactRefClass = `             when tuple.from_kind = 'artifact' and tup
 const artifactRefProbe = `          when 'artifact_ref' then true
 `
 
-// graphEdgesOwnClasses is the tuple arm from the class of a block's link to the end of its
-// classes, which every set states after a set's own.
+// graphEdgesOwnClasses are the tuple arm's classes from a block's link to the last, which every
+// set states after a set's own.
 const graphEdgesOwnClasses = `             when tuple.from_kind = 'block' and tuple.kind <> 'part_of' then 'block_ref'
              when tuple.from_kind = 'comment' and tuple.kind in ('anchored_to', 'owned_by') then 'comment'
              when tuple.from_kind = 'ask' and tuple.kind in ('anchored_to', 'owned_by') then 'ask'
              when tuple.from_kind = 'ask' and tuple.kind = 'followed_by' then 'ask_follower'
              when tuple.from_kind = 'ask' and tuple.kind = 'shaped' then 'block_ref'
-           end as projects
+`
+
+// graphEdgesProjectsEnd closes the tuple arm's `projects` case.
+const graphEdgesProjectsEnd = `           end as projects
 `
 
 // graphEdgesTuples is the relation the tuple arm reads its tuples from in every set before
@@ -438,14 +495,17 @@ const graphEdgesTuples = `    from graph_tuples tuple
 // appended before, cannot. The two parts of the log are read apart rather than through one
 // expression over both, so a read of one source or one far end is pushed into each part and binds
 // an index there: graph_tuples' own for every other tuple, and artifacts_id_text, then
-// graph_tuples_current, for a document's mentions read by the document.
+// graph_tuples_current, for a document's mentions read by the document. The second part names its
+// from_kind as the constant it is, 'artifact', so a read that names the kinds of the nodes it reads
+// out of (graphcensus' graphEdgesOut) cuts that part from its plan where artifact is none of them,
+// as it cuts every other arm whose source kind is a constant.
 const artifactRefTuples = `    from (
       select tuple.from_kind, tuple.from_id, tuple.from_id as node_id, tuple.kind, tuple.to_kind, tuple.to_id,
              tuple.at, tuple.legacy_source_seq, tuple.asserted, tuple.seq
       from graph_tuples tuple
       where tuple.from_kind <> 'artifact' or tuple.kind <> 'mentions'
       union all
-      select tuple.from_kind, mentioning.id::text, tuple.from_id, tuple.kind, tuple.to_kind, tuple.to_id,
+      select 'artifact', mentioning.id::text, tuple.from_id, tuple.kind, tuple.to_kind, tuple.to_id,
              projected.created_at, projected.source_seq, tuple.asserted, tuple.seq
       from graph_tuples tuple
       join artifacts mentioning on mentioning.ref_key = tuple.from_id and mentioning.node_kind is not null
@@ -458,9 +518,19 @@ const artifactRefTuples = `    from (
     ) tuple
 `
 
-// graphEdgesNewest is the tuple arm's pick of the newest tuple of each relation.
-const graphEdgesNewest = `    where tuple.to_kind <> 'value'
-    order by tuple.to_kind, tuple.to_id, tuple.kind, tuple.from_kind, tuple.from_id, tuple.seq desc
+// graphEdgesNewest is the tuple arm's pick of the newest tuple of each relation in every set
+// before GraphEdgesTupleArmFilter: its test that the far end is no value
+// (graphEdgesNotValue), then its order (graphEdgesNewestOrder).
+const graphEdgesNewest = graphEdgesNotValue + graphEdgesNewestOrder
+
+// graphEdgesNotValue is the tuple arm's test that a tuple's far end is no value, which the
+// filter of GraphEdgesTupleArmFilter follows (tupleArmFilter).
+const graphEdgesNotValue = `    where tuple.to_kind <> 'value'
+`
+
+// graphEdgesNewestOrder is the tuple arm's order, newest tuple of each relation first, and the
+// end of its sub-select.
+const graphEdgesNewestOrder = `    order by tuple.to_kind, tuple.to_id, tuple.kind, tuple.from_kind, tuple.from_id, tuple.seq desc
   ) edge
 `
 
@@ -474,10 +544,21 @@ const graphEdgesNodes = `  join graph_nodes node on node.kind = edge.from_kind a
 const artifactRefNodes = `  join graph_nodes node on node.kind = edge.from_kind and node.id = edge.node_id
 `
 
-// graphEdgesProbes is the tuple arm from its tests of an edge to the probe of an issue's wait,
-// the last probe every set states before a set's own.
-const graphEdgesProbes = `  where edge.asserted and node.state <> 'gone' and edge.projects is not null
-    and (edge.projects <> 'block_ref' or edge.stated = 'mentions'
+// graphEdgesProbesNotNull is the head of the tuple arm's tests of an edge in every set before
+// GraphEdgesTupleArmFilter, which keeps no row whose `projects` is null after the sub-select has
+// sorted it.
+const graphEdgesProbesNotNull = `  where edge.asserted and node.state <> 'gone' and edge.projects is not null
+`
+
+// graphEdgesProbesHead is the head of the tuple arm's tests of an edge from
+// GraphEdgesTupleArmFilter on, whose sub-select has kept only the rows whose `projects` is not
+// null (tupleArmFilter).
+const graphEdgesProbesHead = `  where edge.asserted and node.state <> 'gone'
+`
+
+// graphEdgesProbes is the tuple arm from its tests of an edge, after their head, to the probe of
+// an issue's wait, the last probe every set states before a set's own.
+const graphEdgesProbes = `    and (edge.projects <> 'block_ref' or edge.stated = 'mentions'
          or block_ref_listed(block_pointer_targets(edge.from_id, edge.stated), edge.to_id))
     and case edge.projects
           when 'store' then true

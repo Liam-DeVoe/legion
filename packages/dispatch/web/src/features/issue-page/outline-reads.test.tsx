@@ -177,3 +177,76 @@ test("the body and a second caller of the outline's reads send each read once an
     for (const spy of [...Object.values(reads), ...others]) spy.mockRestore();
   }
 });
+
+/** The outline's reads of `issue`, alone under the page's providers, holding what they gave. */
+function renderReads(issue: IssueDetails, client: QueryClient, held: Held) {
+  const route = { key: issue.key, kind: "issue" } as const;
+  return render(
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <KeymapProvider>
+          <MarginProvider>
+            <ProvidersSlot issue={issue} route={route}>
+              <SecondCaller held={held} issue={issue} />
+            </ProvidersSlot>
+          </MarginProvider>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+}
+
+// The page's first focus waits until every read the rows come from has answered, so it lands
+// once where no read still out draws rows above it (`IssueTree`'s opening). A read that answers
+// with a failure has answered too: waiting for a read to hold data, a failed one held the first
+// focus back for ever. Each of the six reads counts, and so does the tree read, which the outline
+// reads in place of each document's blocks: the case leaves one of each out in turn, answers the
+// other, and then fails the one left out.
+test("the outline's reads are settled once each read and the tree read have answered, a failure among them", async () => {
+  for (const last of ["messages", "tree"] as const) {
+    const issue = issueDetails();
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+    });
+    const messages = Promise.withResolvers<never[]>();
+    const tree = Promise.withResolvers<TreeAnswer>();
+    const spies = [
+      spyOn(api, "listIssueAsks").mockResolvedValue([] as never),
+      spyOn(api, "listComments").mockResolvedValue(TWO_THREADS as never),
+      spyOn(api, "getIssueCoverage").mockResolvedValue({ requirements: [] } as never),
+      spyOn(api, "getIssueDecisions").mockResolvedValue({
+        decisions: [],
+        document: null,
+        entries: [],
+        open_questions: [],
+      } as never),
+      spyOn(api, "listIssueMessages").mockReturnValue(messages.promise as never),
+      spyOn(api, "getIssueResults").mockResolvedValue({ checks: [] } as never),
+      spyOn(api, "getIssueTree").mockReturnValue(tree.promise),
+      spyOn(api, "whoAmI").mockResolvedValue({ kind: "user", login: "alice" } as never),
+      spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never),
+    ];
+    const held: Held = {};
+    try {
+      const view = renderReads(issue, client, held);
+      await waitFor(() => expect(api.listIssueMessages).toHaveBeenCalled());
+      // The read that is not the last answers.
+      if (last === "messages") tree.resolve(treeOf(TWO_THREADS));
+      else messages.resolve([]);
+      await waitInAct(20);
+      expect(held.second?.readsSettled, `settled with the ${last} read still out`).toBe(false);
+      // The last fails.
+      if (last === "messages") messages.reject(new Error("the messages' read failed"));
+      else tree.reject(new Error("the tree read failed"));
+      await waitFor(() =>
+        expect(held.second?.readsSettled, `a failed ${last} read held the reads unsettled`).toBe(
+          true
+        )
+      );
+      expect(held.second?.readsHeld, `a failed ${last} read held its answer`).toBe(false);
+      view.unmount();
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+    }
+  }
+});

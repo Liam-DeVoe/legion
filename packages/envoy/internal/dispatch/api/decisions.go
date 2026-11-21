@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/decisionread"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -181,7 +183,7 @@ func (s *server) specOpenQuestions(
 // itself. kind says whose it is: `person` for an ask, which a person decides, `agent` for a
 // decision, and `declined` for an ask the person declined to answer, which records no decision.
 // state is the node state of its node, which is any state but gone (decisionEntriesRead), so a
-// proposed, settled or overtaken entry is told from a live one (dispatch://INFRA-1950's R5).
+// proposed, settled or overtaken entry is told from a live one (the spec's R5).
 //
 // An ask carries its wording from its row (question, options, urgency, multiple) and its answer
 // from its node (answer_state, answer, selected, answered_by, answered_at, resolution), each null
@@ -189,7 +191,10 @@ func (s *server) specOpenQuestions(
 // person's note as declined_note, and carries no answer and no decided_by. A decision carries
 // uncertainty, uncertainty_reason, kept_by and kept_text_sum from its node, each null on an ask
 // and where the node holds none. decided_by is the far end of the node's decided_by tuple: the
-// person who answered, or the person or session whose credential wrote the decision.
+// person who answered, or the person or session whose credential wrote the decision. A session
+// decider carries title, the newest title that session stamped on anything it wrote
+// (decisionDeciderTitles), which outlives Envoy's registry; a person, and a session that never
+// stamped one, carry none.
 //
 // text, text_sha256, replaced, kept, waiting_review, changed_version, changed_at and shaped are
 // decisionread.Decisions' for the node, so they read as the Keep and every other read of a
@@ -232,11 +237,11 @@ type decisionEntry struct {
 	Declined     bool                 `json:"declined"`
 	DeclinedNote *string              `json:"declined_note"`
 
-	Uncertainty       *string            `json:"uncertainty"`
-	UncertaintyReason *string            `json:"uncertainty_reason"`
-	DecidedBy         *decisionEntryNode `json:"decided_by"`
-	KeptBy            *string            `json:"kept_by"`
-	KeptTextSum       *string            `json:"kept_text_sum"`
+	Uncertainty       *string          `json:"uncertainty"`
+	UncertaintyReason *string          `json:"uncertainty_reason"`
+	DecidedBy         *decisionDecider `json:"decided_by"`
+	KeptBy            *string          `json:"kept_by"`
+	KeptTextSum       *string          `json:"kept_text_sum"`
 
 	Replaced       bool                 `json:"replaced"`
 	Kept           *model.DecisionKeep  `json:"kept"`
@@ -244,7 +249,10 @@ type decisionEntry struct {
 	ChangedVersion int                  `json:"changed_version"`
 	ChangedAt      *time.Time           `json:"changed_at"`
 	Shaped         []model.DecisionLink `json:"shaped"`
-	Readings       []decisionReading    `json:"readings"`
+	// FromAsk is, for a decision node, the id of each ask its from_ask tuples reach (the questions
+	// it settles, decisionread's Decision.Asks), and [] for an ask's own entry.
+	FromAsk  []string          `json:"from_ask"`
+	Readings []decisionReading `json:"readings"`
 
 	// openedAt is the ask row's created_at, which orders the open asks among themselves.
 	openedAt time.Time
@@ -257,6 +265,15 @@ type decisionEntry struct {
 type decisionEntryNode struct {
 	Kind string `json:"kind"`
 	ID   string `json:"id"`
+}
+
+// decisionDecider is an entry's decided_by: the node its decided_by tuple reaches, named as
+// decisionEntryNode names a node, and for a session the title it stamped, empty and left out of
+// the answer for a person and for a session that never stamped one.
+type decisionDecider struct {
+	Kind  string `json:"kind"`
+	ID    string `json:"id"`
+	Title string `json:"title,omitempty"`
 }
 
 // decisionEntryDocument is the document whose block shows an entry: its id and dispatch://
@@ -527,6 +544,9 @@ func (s *server) decisionEntries(ctx context.Context, who model.Actor, key strin
 	if err != nil {
 		return nil, nil, err
 	}
+	if err := decisionDeciderTitles(ctx, tx, entries); err != nil {
+		return nil, nil, fmt.Errorf("name the deciders of the decisions of %s: %w", key, err)
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, nil, fmt.Errorf("close the read of the decisions of %s: %w", key, err)
 	}
@@ -548,6 +568,10 @@ func (s *server) decisionEntries(ctx context.Context, who model.Actor, key strin
 			entry.KeptBy, entry.KeptTextSum = &keptBy, &keptSum
 		}
 		entry.ChangedVersion, entry.ChangedAt, entry.Shaped = decision.ChangedVersion, decision.ChangedAt, decision.Links
+		entry.FromAsk = []string{}
+		if entry.Node.Kind != graphstore.KindAsk {
+			entry.FromAsk = append(entry.FromAsk, decision.Asks...)
+		}
 		read = append(read, entry)
 	}
 	entries = read
@@ -653,7 +677,7 @@ func (entry *decisionEntry) readFacts(encoded []byte) error {
 		case graphstore.TupleAnsweredBy:
 			entry.AnsweredBy = &value
 		case graphstore.TupleDecidedBy:
-			entry.DecidedBy = &decisionEntryNode{Kind: fact.ToKind, ID: value}
+			entry.DecidedBy = &decisionDecider{Kind: fact.ToKind, ID: value}
 		case refs.ValueUncertainty:
 			switch value {
 			case "low", "medium", "high":
@@ -672,6 +696,31 @@ func (entry *decisionEntry) readFacts(encoded []byte) error {
 			entry.DeclinedNote = &note
 		}
 		entry.Answer, entry.Selected, entry.AnsweredBy, entry.AnsweredAt, entry.DecidedBy = nil, nil, nil, nil, nil
+	}
+	return nil
+}
+
+// decisionDeciderTitles gives each session decider of entries the newest title that session
+// stamped on anything it wrote (delivery.ResolveSessionTitles), in one read in tx for every
+// session the entries name, as the issue's collaborators and a person's agent threads name a
+// session the registry no longer lists. A person decider, and a session that stamped no title,
+// are left with none.
+func decisionDeciderTitles(ctx context.Context, tx pgx.Tx, entries []decisionEntry) error {
+	sessions := []string{}
+	for _, entry := range entries {
+		if entry.DecidedBy != nil && entry.DecidedBy.Kind == graphstore.KindSession {
+			sessions = append(sessions, entry.DecidedBy.ID)
+		}
+	}
+	slices.Sort(sessions)
+	titles, err := delivery.ResolveSessionTitles(ctx, tx, slices.Compact(sessions))
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.DecidedBy != nil && entry.DecidedBy.Kind == graphstore.KindSession {
+			entry.DecidedBy.Title = titles[entry.DecidedBy.ID]
+		}
 	}
 	return nil
 }
@@ -883,9 +932,7 @@ func (s *server) keepDecisionNode(ctx context.Context, tx pgx.Tx, actor model.Ac
 	keep := model.DecisionKeep{ArtifactID: document.ID}
 	var event model.Event
 	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
-		if err := graphstore.QueueNodes(b, held); err != nil {
-			return err
-		}
+		graphstore.QueueNodes(b, held)
 		b.Queue("", `
 			insert into decision_keeps (artifact_id, block_id, text_sha256, changed_version, kept_by, kept_at)
 			values ($1::uuid, $2, $3, $4, $5, $6)
@@ -903,7 +950,8 @@ func (s *server) keepDecisionNode(ctx context.Context, tx pgx.Tx, actor model.Ac
 		}), func(written model.Event) { event = written }); err != nil {
 			return err
 		}
-		return graphstore.QueueCaused(ctx, b, held, graphstore.LatestEvent)
+		graphstore.QueueCaused(b, held, graphstore.LatestEvent)
+		return nil
 	}); err != nil {
 		return model.DecisionKeep{}, model.Event{}, err
 	}

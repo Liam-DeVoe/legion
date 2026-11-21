@@ -15,8 +15,8 @@ import (
 )
 
 // The sessions of the ask seedSessionAsk writes: the session that asks it, which follows its own
-// ask as every asking session does (asks.FollowAuthor, which appends no follower event), and the
-// session that follows it through the follow route, which appends an ask.follower_added.
+// ask as every asking session does (asks.PlanFollowAuthor, which appends no follower event), and
+// the session that follows it through the follow route, which appends an ask.follower_added.
 const (
 	sessionAsker    = "erase-asking-session"
 	sessionFollower = "erase-following-session"

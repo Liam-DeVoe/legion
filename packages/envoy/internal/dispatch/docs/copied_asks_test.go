@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -29,13 +30,14 @@ const copiedAsksDocument = "Context\n\n" +
 	":::ask{#copy-open urgency=\"med\" multiple=\"false\"}\nWhich region?\n:::\n"
 
 // copiedAskSource settles document's three ask blocks, answers the first and resolves the second
-// as their routes store them, and returns the block ids' asks.
+// as their routes store them - on each ask's node and its row (answerAskOnItsNode,
+// resolveAskOnItsNode) - and returns the block ids' asks.
 func copiedAskSource(t *testing.T, service *Service, document string) map[string]string {
 	t.Helper()
 	seedServiceText(t, service, document, copiedAsksDocument)
 	settleCurrentGeneration(t, service, document)
 	ctx := context.Background()
-	asks := map[string]string{}
+	ids := map[string]string{}
 	rows, err := service.store.Pool.Query(ctx, `select block_id, id::text from asks where block_artifact_id = $1`, document)
 	if err != nil {
 		t.Fatalf("read source asks: %v", err)
@@ -45,21 +47,52 @@ func copiedAskSource(t *testing.T, service *Service, document string) map[string
 		if err := rows.Scan(&block, &id); err != nil {
 			t.Fatalf("scan source ask: %v", err)
 		}
-		asks[block] = id
+		ids[block] = id
 	}
 	rows.Close()
-	if len(asks) != 3 {
-		t.Fatalf("source asks = %v, want three", asks)
+	if len(ids) != 3 {
+		t.Fatalf("source asks = %v, want three", ids)
 	}
-	answer, _ := json.Marshal(model.AskAnswer{User: "alice", Selected: []string{"Yes"}, At: time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)})
-	if _, err := service.store.Pool.Exec(ctx, `update asks set state = 'answered', answer = $2 where id = $1`, asks["copy-answered"], answer); err != nil {
-		t.Fatalf("answer source ask: %v", err)
+	answerAskOnItsNode(t, service, ids["copy-answered"], model.AskAnswer{User: "alice", Selected: []string{"Yes"}, At: time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)})
+	resolveAskOnItsNode(t, service, ids["copy-resolved"], model.AskResolution{Kind: "resolved", Reason: "Waived.", Actor: model.Actor{Kind: "user", ID: "alice"}, At: time.Now().UTC()})
+	return ids
+}
+
+// answerAskOnItsNode answers the ask askID with answer as the answer route stores it: through the
+// one writer of an ask's answer state (asks.Settle), on the ask's node and its row, in a
+// transaction of its own. It writes no block: the route's write of the block's kept state
+// (KeepAskBlockInStep) is no part of what the copy tests read.
+func answerAskOnItsNode(t *testing.T, service *Service, askID string, answer model.AskAnswer) {
+	t.Helper()
+	change := asks.Answered(answer)
+	change.Who, change.At = model.Actor{Kind: "user", ID: answer.User}, answer.At
+	settleAskOnItsNode(t, service, askID, change)
+}
+
+// resolveAskOnItsNode resolves the ask askID with resolution as the resolve route stores it, on
+// the ask's node and its row (answerAskOnItsNode).
+func resolveAskOnItsNode(t *testing.T, service *Service, askID string, resolution model.AskResolution) {
+	t.Helper()
+	change := asks.Resolved(resolution)
+	change.Who, change.At = resolution.Actor, resolution.At
+	settleAskOnItsNode(t, service, askID, change)
+}
+
+// settleAskOnItsNode writes change on the ask askID through asks.Settle in a transaction of its own.
+func settleAskOnItsNode(t *testing.T, service *Service, askID string, change asks.Change) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := service.store.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the answer state's write: %v", err)
 	}
-	resolution, _ := json.Marshal(model.AskResolution{Kind: "resolved", Reason: "Waived.", Actor: model.Actor{Kind: "user", ID: "alice"}, At: time.Now().UTC()})
-	if _, err := service.store.Pool.Exec(ctx, `update asks set state = 'resolved', resolution = $2 where id = $1`, asks["copy-resolved"], resolution); err != nil {
-		t.Fatalf("resolve source ask: %v", err)
+	defer tx.Rollback(ctx)
+	if _, err := asks.Settle(ctx, tx, askID, change); err != nil {
+		t.Fatalf("write the answer state of ask %s: %v", askID, err)
 	}
-	return asks
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the answer state's write: %v", err)
+	}
 }
 
 func asksOn(t *testing.T, service *Service, document string) int {
@@ -130,10 +163,7 @@ func TestADocumentCopiedOnItsIssueShowsItsSourcesAsksAndOpensNone(t *testing.T) 
 	requireCopiedStates(t, service, copied, copiedSourceStates(t, service, original, asks)...)
 
 	region := "us-east-1"
-	answer, _ := json.Marshal(model.AskAnswer{User: "bob", Selected: []string{}, Text: &region, At: time.Date(2026, 10, 9, 9, 0, 0, 0, time.UTC)})
-	if _, err := service.store.Pool.Exec(context.Background(), `update asks set state = 'answered', answer = $2 where id = $1`, asks["copy-open"], answer); err != nil {
-		t.Fatalf("answer the open source ask: %v", err)
-	}
+	answerAskOnItsNode(t, service, asks["copy-open"], model.AskAnswer{User: "bob", Selected: []string{}, Text: &region, At: time.Date(2026, 10, 9, 9, 0, 0, 0, time.UTC)})
 	editLiveTree(t, service, copied, func(tree *pmdoc.Node) *pmdoc.Node {
 		tree.Children[0].Children[0].Text = "Context, revisited"
 		return tree
@@ -325,6 +355,52 @@ func TestTheCopiesOfAnAskAreFoundByItsBlockIDAsWritten(t *testing.T) {
 	}
 }
 
+// A document of an issue room holds its own ask under its blocks' ids, keyed by the room's tree
+// (createAskBlock), so it is no copy of another document's ask under the same id: the spec of a
+// converted issue holding the ask of its block #shared is not among the copies of an ask under
+// #shared that another document of the issue holds, while a third document of the issue holding
+// that block with no ask of its own is.
+func TestARoomDocumentHoldingItsOwnAskIsNoCopyOfAnotherDocumentsAsk(t *testing.T) {
+	database := storetest.Open(t)
+	room := createIssueRoom(t, database, 1)
+	ctx := context.Background()
+	id := "shared"
+	block := ":::ask{" + pmdoc.TypedBlockIDAttribute(id) + " urgency=\"med\" multiple=\"false\"}\nWhich region?\n:::\n"
+	if _, err := database.Pool.Exec(ctx, `
+		with version as (
+			insert into artifact_versions (artifact_id, number, markdown, authors)
+			values ($1::uuid, 2, $3, '[{"kind":"user","id":"alice"}]')
+		), held as (
+			insert into issue_room_blocks (tree_artifact_id, block_id, document_id) values ($2::uuid, $4, $1::uuid)
+		)
+		insert into asks (issue_key, author, question, block_id, block_artifact_id)
+		values ($5, '{"kind":"user","id":"alice"}', 'Which region?', $4, $2::uuid)
+	`, room.spec, room.tree, "Context\n\n"+block, id, room.issue); err != nil {
+		t.Fatalf("write the spec's ask block and its ask, keyed by the issue room: %v", err)
+	}
+	source := createIssueDocument(t, database, 1, "Source\n\n"+block)
+	if _, err := database.Pool.Exec(ctx, `
+		insert into asks (issue_key, author, question, block_id, block_artifact_id)
+		values ($1, '{"kind":"user","id":"alice"}', 'Which region?', $2, $3::uuid)
+	`, room.issue, id, source); err != nil {
+		t.Fatalf("write the source document's own ask: %v", err)
+	}
+	copied := createIssueDocument(t, database, 1, "Copy\n\n"+block)
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	found, err := copiesOf(ctx, tx, documentAsks{artifactID: source, owner: artifactOwner{IssueKey: &room.issue}, asks: []model.Ask{{BlockID: &id}}})
+	if err != nil {
+		t.Fatalf("copiesOf: %v", err)
+	}
+	if !slices.Equal(found, []string{copied}) {
+		t.Fatalf("copies of the source's ask under %q = %v, want only the copy %s and not the spec %s, which holds the room's own ask of that block",
+			id, found, copied, room.spec)
+	}
+}
+
 // openAsksUnder is the documents holding an open ask under blockID, in the test's own database.
 func openAsksUnder(t *testing.T, service *Service, blockID string) []string {
 	t.Helper()
@@ -421,10 +497,7 @@ func TestACopyOfTwoMatchingAsksShowsTheEarlierAsked(t *testing.T) {
 	if err := service.store.Pool.QueryRow(context.Background(), `select id::text from asks where block_artifact_id = $1`, original).Scan(&earlier); err != nil {
 		t.Fatalf("read the earlier ask: %v", err)
 	}
-	answer, _ := json.Marshal(model.AskAnswer{User: "alice", Selected: []string{}, Text: new("eu-west-1"), At: time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)})
-	if _, err := service.store.Pool.Exec(context.Background(), `update asks set state = 'answered', answer = $2 where id = $1`, earlier, answer); err != nil {
-		t.Fatalf("answer the earlier ask: %v", err)
-	}
+	answerAskOnItsNode(t, service, earlier, model.AskAnswer{User: "alice", Selected: []string{}, Text: new("eu-west-1"), At: time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)})
 	later := createIssueDocument(t, service.store, 1, "# Later")
 	seedServiceText(t, service, later, block("Which regions?"))
 	settleCurrentGeneration(t, service, later)
@@ -648,7 +721,7 @@ func rewordAsAnEarlierRelease(t *testing.T, service *Service, document string, a
 		t.Fatalf("reword the decided ask's row: %v", err)
 	}
 	ask.EditedAt = askTimestamp(&editedAt)
-	changes, writeRefs, err := planAskReferences(ctx, tx, refs.NewReader(ctx, tx, "ask", ask.ID, service.serverURL), ask.ID, ask.Question)
+	changes, writeRefs, err := planAskReferences(ctx, tx, refs.NewReader(ctx, tx, ask.Author, "ask", ask.ID, service.serverURL), ask.ID, ask.Question)
 	if err != nil {
 		t.Fatalf("plan the reworded question's references: %v", err)
 	}
@@ -839,8 +912,9 @@ func TestTheBootsRestorationSettlesTheRestoredAsksOwnDocument(t *testing.T) {
 // it writes a copy's attributes into, naming the copy, its source ask, the source's document and
 // the state it shows, and never the question. A later settlement that leaves the copy's blocks as
 // they are logs nothing more, and one that shows a change of a source's state logs that block
-// again. Those attributes are written only while another build serves (serveTwoBuilds), for its
-// pages (rollWindowAskAttributes): on a fleet of one build no byte of a copy holds them.
+// again. The test writes them while another build serves (serveTwoBuilds), for its pages
+// (rollWindowAskAttributes); on a fleet of one build a copy keeps its provenance, and its source's
+// state where that is not open, alone (keptAskState).
 func TestASettlementLogsEachBlockItTakesForACopyOnce(t *testing.T) {
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -893,10 +967,7 @@ func TestASettlementLogsEachBlockItTakesForACopyOnce(t *testing.T) {
 	}
 
 	region := "us-east-1"
-	answer, _ := json.Marshal(model.AskAnswer{User: "bob", Selected: []string{}, Text: &region, At: time.Date(2026, 10, 9, 9, 0, 0, 0, time.UTC)})
-	if _, err := service.store.Pool.Exec(context.Background(), `update asks set state = 'answered', answer = $2 where id = $1`, asks["copy-open"], answer); err != nil {
-		t.Fatalf("answer the open source ask: %v", err)
-	}
+	answerAskOnItsNode(t, service, asks["copy-open"], model.AskAnswer{User: "bob", Selected: []string{}, Text: &region, At: time.Date(2026, 10, 9, 9, 0, 0, 0, time.UTC)})
 	editLiveTree(t, service, copied, func(tree *pmdoc.Node) *pmdoc.Node {
 		tree.Children[0].Children[0].Text = "Context, again"
 		return tree
@@ -1263,11 +1334,13 @@ func answerSource(ctx context.Context, service *Service, original string, source
 // closeSource answers source, the ask of blockID on original, with answer, or resolves it when
 // answer is nil, in its route's order (closeAskTx, the answer's WriteBlock, the resolve's Apply)
 // and its two phases: the source's owner lock and its read of the ask row, then SettleCopiesOf,
-// which takes the project's copy lock and queues the copies' pending rows, then the ask row, the
-// source's block kept in step with it while another build serves (KeepAskBlockInStep, which
-// writes nothing on a fleet of one build) and the ask.answered or ask.resolved event, with what
-// a resolution states on the ask's node right after it, queued as a route joined to the ledger
-// queues its own writes, and commits: the write phase writes the copies' pending rows first.
+// which takes the project's copy lock and queues the copies' pending rows, then the answer or the
+// resolution through the one writer of an ask's answer state (Ledger.PlanSettle, WriteAskResolution:
+// on the ask's node, then its row), the source's block kept in step with it
+// (KeepAskBlockInStep: the roll window's attributes while another build serves, the ones a version
+// keeps on a fleet of one build) and the ask.answered or ask.resolved event, with what the answer
+// or the resolution states on the ask's node right after it, queued as a route joined to the
+// ledger queues its own writes, and commits: the write phase writes the copies' pending rows first.
 // between, when set, runs while the write phase stands right after those rows, holding the copy
 // lock and the copies' pending rows: the batch waits there on a gate lock this helper holds
 // (closeSourceGate) until between has returned, so the statements after the rows run only then.
@@ -1320,22 +1393,21 @@ func closeSource(ctx context.Context, service *Service, original, blockID string
 		}
 	}
 	eventType := "ask.resolved"
+	var held graphstore.Uncaused
 	if answer != nil {
 		eventType = "ask.answered"
-		encoded, _ := json.Marshal(answer)
-		if err := ledger.Queue(func(b *store.WriteBatch) error {
-			b.Queue("answer the source ask", `update asks set state = 'answered', answer = $2 where id = $1`, source.ID, encoded)
-			return nil
-		}); err != nil {
+		change := asks.Answered(*answer)
+		change.Who, change.At, change.Held = alice, answer.At, &held
+		settled, err := ledger.PlanSettle(closing, source.ID, change)
+		if err != nil {
+			return fmt.Errorf("plan the source's answer: %w", err)
+		}
+		if err := ledger.Queue(settled.Queue); err != nil {
 			return fmt.Errorf("queue the source's answer: %w", err)
 		}
-		source.State, source.Answer = "answered", answer
-	}
-	var held graphstore.Uncaused
-	if answer == nil {
-		if source, err = WriteAskResolution(closing, tx, source, "resolved", "Waived.", alice, &held); err != nil {
-			return fmt.Errorf("resolve the source ask: %w", err)
-		}
+		source.State, source.Answer, source.Resolution = settled.Ask.State, settled.Ask.Answer, settled.Ask.Resolution
+	} else if source, err = WriteAskResolution(closing, tx, source, "resolved", "Waived.", alice, &held); err != nil {
+		return fmt.Errorf("resolve the source ask: %w", err)
 	}
 	source.BlockID, source.BlockArtifactID = &blockID, &original
 	if err := service.KeepAskBlockInStep(closing, source, alice); err != nil {
@@ -1347,7 +1419,8 @@ func closeSource(ctx context.Context, service *Service, original, blockID string
 		), func(model.Event) {}); err != nil {
 			return err
 		}
-		return graphstore.QueueCaused(ctx, b, held, graphstore.LatestEvent)
+		graphstore.QueueCaused(b, held, graphstore.LatestEvent)
+		return nil
 	}); err != nil {
 		return fmt.Errorf("queue the source's close: %w", err)
 	}
@@ -1407,7 +1480,9 @@ const closeSourceGate int64 = 0x434C4F5345474154
 // settlement holds the copy's owner row, which the answer's mark of the copy's pending row reaches
 // only through a foreign key's `for key share`. Both finish, nothing is owed once the settlement
 // after the answer has run, and the copy shows its source's answer as an agent reads it, rendered
-// from the source's ask, while no byte of the copy holds it.
+// from the source's ask, while the copy's latest version holds only what a version keeps of it, on
+// a fleet of one build: the source's state, who answered and when, and the copy's provenance, from
+// the source's node (keptAskState), never the answer's words.
 func TestACopyAndItsSourcesAnswerTakingTheCopyLockInEitherOrderBothFinish(t *testing.T) {
 	for _, order := range []string{"answer first", "settlement first"} {
 		t.Run(order, func(t *testing.T) {
@@ -1426,6 +1501,8 @@ func TestACopyAndItsSourcesAnswerTakingTheCopyLockInEitherOrderBothFinish(t *tes
 			requireCopiedStates(t, service, copied, `state="open" `+copiedFrom(t, service, source.ID, original))
 			answeredCopy := `state="answered" answered_by="alice" answered_at="2026-10-09T09:00:00Z" selected=[] answer="eu-west-1" ` +
 				copiedFrom(t, service, source.ID, original)
+			keptCopy := ":::ask{#shared urgency=\"med\" multiple=\"false\" state=\"answered\" answered_by=\"alice\" answered_at=\"2026-10-09T09:00:00Z\" " +
+				copiedFrom(t, service, source.ID, original) + "}\nWhich region?\n:::\n"
 			// The copy owes a settlement and still holds the block, so that settlement reads its source
 			// under the copy lock.
 			editLiveTree(t, service, copied, replaceRun("Kept", "Kept again"))
@@ -1448,9 +1525,9 @@ func TestACopyAndItsSourcesAnswerTakingTheCopyLockInEitherOrderBothFinish(t *tes
 				}
 				awaitDone(t, ctx, "the copy's settlement", settled)
 				// The answer's commit armed the copy's settlement again (scheduleSettle), which moves
-				// the room's generation, and the settlement it held off wrote nothing into the room,
-				// since no byte of the copy holds its source's state: so it stops at its supersession
-				// check and leaves the copy to the settlement the answer armed, which runs here.
+				// the room's generation, so the settlement it held off, which read the source as the
+				// answer left it, stops at its supersession check or versions the copy first, and
+				// leaves the rest to the settlement the answer armed, which runs here.
 				settleCurrentGeneration(t, service, copied)
 			case "settlement first":
 				// The copy's settlement holds the copy lock, reconciled, while the answer waits on it.
@@ -1475,8 +1552,8 @@ func TestACopyAndItsSourcesAnswerTakingTheCopyLockInEitherOrderBothFinish(t *tes
 				service.afterSettleReconcile = nil
 				awaitDone(t, ctx, "the answer", answered)
 				// The settlement read the source before the answer, and the copy owes the settlement
-				// the answer marked. No byte of the copy holds its source's state, so the copy shows
-				// the answer to an agent at once, read from the source's ask.
+				// the answer marked. The copy shows the answer to an agent at once, read from the
+				// source's node, before that settlement writes the kept state into the copy's bytes.
 				requireCopiedStates(t, service, copied, answeredCopy)
 				if owed := copyOwed(t, service, copied); owed != 1 {
 					t.Fatalf("the copy owes %d settlements after the answer, want the one it marked", owed)
@@ -1496,8 +1573,8 @@ func TestACopyAndItsSourcesAnswerTakingTheCopyLockInEitherOrderBothFinish(t *tes
 			`, copied).Scan(&markdown); err != nil {
 				t.Fatalf("read the copy's latest version: %v", err)
 			}
-			if !strings.Contains(markdown, "\n"+shared) {
-				t.Fatalf("the copy's latest version reads:\n%s\nwant its block whole and holding no state of its source's:\n%s", markdown, shared)
+			if !strings.Contains(markdown, "\n"+keptCopy) {
+				t.Fatalf("the copy's latest version reads:\n%s\nwant its block whole, holding its source's kept state from the source's node and none of the answer's words:\n%s", markdown, keptCopy)
 			}
 			requireCopiedStates(t, service, copied, answeredCopy)
 			if count, owed := asksOn(t, service, copied), copyOwed(t, service, copied); count != 0 || owed != 0 {

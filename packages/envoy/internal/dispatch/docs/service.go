@@ -166,6 +166,11 @@ type Service struct {
 	editNoticeQuiet time.Duration
 	// buildCommit is Deps.BuildCommit.
 	buildCommit string
+	// markingRule is the block index's marking rule this build applies, refs.BlockIndexMarkingRule
+	// as New sets it: the rule its marks, its event cursor and its index passes carry
+	// (markVersionedDocuments, readEventsAfterCursor, refs.PlanBlocks). A test sets another to run
+	// a build of that rule beside this one.
+	markingRule int
 	// eventHorizon is the event log's safe horizon the block-index tick reads, which
 	// blockIndexHorizon builds under horizonOnce on the first tick that asks for it.
 	horizonOnce  sync.Once
@@ -302,6 +307,15 @@ type Service struct {
 	// Nil outside tests; tests return an error from it to kill that transaction and find that
 	// none of the three survived it.
 	afterBlockIndexWrite func(artifactID string) error
+	// afterOwedDocumentsListed runs in the block-index tick once it has listed the documents owed a
+	// block index (owedDocuments), before it indexes any of them, with that list. Nil outside
+	// tests; tests hold the tick there to write a version of a listed document before its pass.
+	afterOwedDocumentsListed func(owed []owedDocument) error
+	// beforeNoVersionClear runs inside the tick's pass over a document listed with no markdown
+	// version, under the document owner's lock, once the re-read has found it holds none, right
+	// before the statement that clears its marks and states it (indexOwedDocument). Nil outside
+	// tests; tests read from it which documents reach that clear.
+	beforeNoVersionClear func(artifactID string) error
 	// beforeSettleCommit runs once a settlement's room has taken in the versions the settlement
 	// appended and before the settlement's transaction commits (commitSettlement). Nil outside
 	// tests; tests use it to find the room ahead of the store's head in that window.
@@ -923,6 +937,7 @@ func New(deps Deps) *Service {
 		unrecordedMarkTTL: unrecordedMarkTTL,
 		editNoticeQuiet:   editNoticeQuiet,
 		buildCommit:       deps.BuildCommit,
+		markingRule:       refs.BlockIndexMarkingRule,
 		reads:             newDocumentReads(readBudget),
 		roomCap:           roomCap,
 		connectionCap:     connectionCap,
@@ -3610,14 +3625,18 @@ type documentRoom struct {
 }
 
 // roomLayoutSQL is, as SQL over the uuid expression room, an issue's tree, the documents the room
-// holds a fragment of - every document whose document_rooms row names room - as a text array in
-// the order the room renders them (roomLayout): verification-md, plan-md, the spec, then every
-// other document in the order it was created. Every read of a room's layout reads it here, so the
-// layout a room loaded and the one a settlement reads again compare element for element.
+// holds a fragment of - every document whose document_rooms row names room and that is not
+// retired - as a text array in the order the room renders them (roomLayout): verification-md,
+// plan-md, the spec, then every other document in the order it was created. Every read of a room's
+// layout reads it here, so the layout a room loaded and the one a settlement reads again compare
+// element for element. A retired document (RetireDocument) takes no new text, so its fragment
+// leaves the room's layout: the room reloads without it (AnnounceDocumentRooms), and nothing typed
+// into it is reconciled, versioned or indexed, while the room's block index keeps the blocks it
+// recorded of the document as the retirement left them (refs.PlanBlocks).
 func roomLayoutSQL(room string) string {
 	return `array(
 			select d.id::text from document_rooms held join artifacts d on d.id = held.artifact_id
-			where held.room = ` + room + `
+			where held.room = ` + room + ` and d.retired_at is null
 			order by ` + roomLayoutRankSQL(refs.DocumentBandSQL("d")) + `, d.created_at, d.id)`
 }
 
@@ -3642,7 +3661,7 @@ var joinedRoomLayoutStatement = `
 			select d.id::text as id, ` + roomLayoutRankSQL(refs.DocumentBandSQL("d")) + ` as rank,
 				false as joining, d.created_at as at
 			from document_rooms held join artifacts d on d.id = held.artifact_id
-			where held.room = $1::uuid
+			where held.room = $1::uuid and d.retired_at is null
 			union all
 			select joining.id, ` + roomLayoutRankSQL("joining.band") + `, true, null
 			from unnest($2::text[], $3::text[]) as joining(id, band)

@@ -281,8 +281,9 @@ func TestEveryNodeKindCarriesItsFacts(t *testing.T) {
 	}))).Ask
 
 	design := createProjectDocument(t, handler, "CORE", "Design notes", "# Design\n")
-	created(t, "write version 2 of the project document", dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects/CORE/artifacts", map[string]string{
+	created(t, "write version 2 of the project document", dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects/CORE/artifacts", map[string]any{
 		"name": "Design notes", "content": "# Design\n\nRevised.\n",
+		"precondition": uploadBase(t, handler, design.ID),
 	}, "alice"))
 	designRef := "dispatch://CORE/artifact/" + design.Slug
 	designComment := decodeBody[model.Comment](t, created(t, "comment on the project document", dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+design.ID+"/comments", map[string]any{
@@ -671,8 +672,9 @@ func TestAPinnedBlockCarriesItsFacts(t *testing.T) {
 
 // R12: a block ask belongs to its document at the version that added its block, the version
 // current when it was written. A later edit of the document leaves it there, and so does the
-// ask's answer, which is held on the ask's node and changes no byte of the document, so it
-// leaves the block's changed version where it was too.
+// ask's answer, which is held on the ask's node and writes one version, its block's kept state
+// alone (R3): that version is the block's changed version, and the ask still belongs to the
+// version that added the block.
 func TestABlockAskBelongsToTheVersionThatAddedIt(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
@@ -716,8 +718,9 @@ func TestABlockAskBelongsToTheVersionThatAddedIt(t *testing.T) {
 		"selected": []string{"Ship"}, "expected_edited_at": ask.EditedAt,
 	}, "alice"))
 	awaitSettled(t, database, spec)
-	if changed := readNode(t, handler, blockRef).ChangedVersion; changed != before {
-		t.Fatalf("the answer moved the block's changed version from %d to %d, want it left: an answer changes no byte of the document", before, changed)
+	latest := documentVersions(t, handler, spec)
+	if changed := readNode(t, handler, blockRef).ChangedVersion; changed == before || changed != latest[len(latest)-1].Number {
+		t.Fatalf("the answer left the block's changed version at %d (it was %d), want the version the answer wrote, %d: it changed the block's kept state", changed, before, latest[len(latest)-1].Number)
 	}
 	want("after its answer")
 }

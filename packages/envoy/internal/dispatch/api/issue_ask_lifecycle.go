@@ -151,17 +151,15 @@ func (s *server) readOpenIssueAsks(ctx context.Context, tx pgx.Tx, issueKey stri
 // of issueKey planWithdrawal planned resolved with kind withdrawn, and one ask.resolved event for
 // each, whose actor is actor, the closer, and whose owner is the issue, and right after it the
 // append of what that withdrawal stated on the ask's node, under that event. It reads nothing,
-// so it runs after the close's first write. ctx is the context the caller joined the ledger on,
-// whose run the writes it queues name (graphstore.WithRun). It answers the asks as withdrawn and
-// the events, filled in once Commit has run the write phase.
-func (s *server) recordWithdrawnAsksTx(ctx context.Context, ledger *docs.Ledger, issueKey string, planned withdrawal, actor model.Actor) ([]model.Ask, []*model.Event, error) {
+// so it runs after the close's first write. It answers the asks as withdrawn and the events,
+// filled in once Commit has run the write phase.
+func (s *server) recordWithdrawnAsksTx(ledger *docs.Ledger, issueKey string, planned withdrawal, actor model.Actor) ([]model.Ask, []*model.Event, error) {
 	appended := make([]*model.Event, 0, len(planned.asks))
 	for index, ask := range planned.asks {
 		// The withdrawal goes through the one writer of an ask's answer state, planned in the
 		// read phase (planWithdrawal) and queued here on the ledger; what it states on the ask's
 		// node waits for the ask.resolved queued below.
-		settled := planned.settled[index]
-		if err := ledger.Queue(func(b *store.WriteBatch) error { return settled.Queue(ctx, b) }); err != nil {
+		if err := ledger.Queue(planned.settled[index].Queue); err != nil {
 			return nil, nil, err
 		}
 		event, err := s.queueLoggedEvent(ledger, issueOwner(issueKey).event(
@@ -173,7 +171,8 @@ func (s *server) recordWithdrawnAsksTx(ctx context.Context, ledger *docs.Ledger,
 		// What the withdrawal stated on the ask's node learns the event the step before appended.
 		held := planned.held[index]
 		if err := ledger.Queue(func(b *store.WriteBatch) error {
-			return graphstore.QueueCaused(ctx, b, held, graphstore.LatestEvent)
+			graphstore.QueueCaused(b, held, graphstore.LatestEvent)
+			return nil
 		}); err != nil {
 			return nil, nil, err
 		}
@@ -289,7 +288,8 @@ func (s *server) recordRestoredAsksTx(ctx context.Context, ledger *docs.Ledger, 
 		// appended.
 		held := restored.held[index]
 		if err := ledger.Queue(func(b *store.WriteBatch) error {
-			return graphstore.QueueCaused(ctx, b, held, graphstore.LatestEvent)
+			graphstore.QueueCaused(b, held, graphstore.LatestEvent)
+			return nil
 		}); err != nil {
 			return nil, err
 		}

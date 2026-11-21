@@ -103,38 +103,46 @@ var personNodeTies = `
 		where current.asserted
 	)`
 
-// personNodeNotGone is the test that the node whose stored state and visibility the SQL stored
-// answers (refs.StoredNodeOf) is not gone, which a node the store holds no row of is not. Both
-// statements hold each tied node to it, after the visibility predicate of the node's own kind,
-// whatever kind that is (refs.VisibleNode, bound at the acting credential $2, refs.VisibilityArg):
-// so a node reserved for its author counts for its author alone, a node of a kind the registry
-// does not hold for nobody, and a node that is gone for nobody either.
-func personNodeNotGone(stored string) string {
-	return `(` + stored + `)[1] is distinct from '` + graphstore.StateGone + `'`
-}
+// personNodeNotGone is the test that the node whose stored state refs.StoredNodeJoin answers
+// (refs.StoredState) is not gone, which a node the store holds no row of is not. Both statements
+// hold each tied node to it, after the visibility predicate of the node's own kind, whatever kind
+// that is (refs.VisibleNode, bound at the acting credential $2, refs.VisibilityArg): so a node
+// reserved for its author counts for its author alone, a node of a kind the registry does not
+// hold for nobody, and a node that is gone for nobody either.
+const personNodeNotGone = refs.StoredState + ` is distinct from '` + graphstore.StateGone + `'`
 
 // personNodesHeld is the nodes one person holds that the reader may see (personNodeNotGone), each
 // once with every relation that ties it to them, and beside each the state and the visibility the
-// store holds for it (refs.StoredNodeOf), which its row answers.
+// store holds for it (refs.StoredNodeJoin), stored_state and stored_visibility, which its row
+// answers.
 var personNodesHeld = personNodeTies + `, related as (
 		select from_kind, from_id, array_agg(distinct relation order by relation) as relations
 		from (select * from authored union all select * from received) ties
 		group by from_kind, from_id
-	), seen as (
-		select r.from_kind, r.from_id, r.relations, ` + refs.StoredNodeOf("r.from_kind", "r.from_id") + ` as stored
-		from related r
-		where ` + refs.VisibleNode("r.from_kind", "r.from_id", "$2") + `
 	), held as (
-		select from_kind, from_id, relations, stored
-		from seen
-		where ` + personNodeNotGone("stored") + `
+		select r.from_kind, r.from_id, r.relations, ` + relatedStoredColumns + `
+		from related r
+		` + relatedStoredJoin + `
+		where ` + refs.VisibleNode("r.from_kind", "r.from_id", "$2") + `
+		  and ` + personNodeNotGone + `
 	)`
+
+// relatedStoredJoin and relatedStoredColumns are the stored state and visibility of each node
+// personNodesHeld ties to the person, and tieStoredJoin the same of each tie personPageShownQuery
+// reads.
+var (
+	relatedStoredJoin, relatedStoredColumns = refs.StoredNodeJoin("r.from_kind", "r.from_id")
+	tieStoredJoin, _                        = refs.StoredNodeJoin("tie.from_kind", "tie.from_id")
+)
 
 // personPageShownQuery is whether the page of the person $1 names answers anyone but that
 // person: the store holds the person, not gone and visible to the reader, and the person holds
-// at least one node the reader may see. That second test is made over the ties one by one, not
-// over the page's grouped rows (personNodesHeld), so it stops at the first tie the reader may see
-// rather than grouping and probing every tie first.
+// at least one node the reader may see that the page lists (personNodeListed). That second test
+// is made over the ties one by one, not over the page's grouped rows (personNodesHeld), so it
+// stops at the first tie the reader may see rather than grouping and probing every tie first. It
+// reads no tie the page would not list: a person tied to a node of a kind the page opens no row
+// of - a block of a document they wrote - holds no row there, and a decision that counted it would
+// answer 200 with no rows.
 var personPageShownQuery = personNodeTies + `
 	select exists (
 		select 1 from graph_nodes
@@ -142,19 +150,47 @@ var personPageShownQuery = personNodeTies + `
 		  and ` + refs.VisibleRow("graph_nodes", "$2") + `
 	) and exists (
 		select 1 from (select from_kind, from_id from authored union all select from_kind, from_id from received) tie
+		` + tieStoredJoin + `
 		where ` + refs.VisibleNode("tie.from_kind", "tie.from_id", "$2") + `
-		  and ` + personNodeNotGone(refs.StoredNodeOf("tie.from_kind", "tie.from_id")) + `
+		  and ` + personNodeNotGone + `
+		  and ` + personNodeListed("tie.from_kind", "tie.from_id") + `
 	)`
+
+// personNodeListed is the test that the page lists the node the store keys at kind and id (SQL
+// text), by the conditions personNodesQuery's items arm opens a held node by, arm for arm: a
+// comment with a place, its issue's or its document's; a lens, a finding, a risk or a
+// constraint (refs.StandingKinds, by the kind the graph addresses it by) that stands under an
+// issue (refs.StandingIssueSQL); and a run of the command bar. A node of any other kind is listed
+// by no arm, and the test is false for it. Each arm probes one row by its key, so the decision
+// that reads it stops at its first listed tie. A comment's node is keyed by the comment's id,
+// which the comment arm alone reads as a uuid.
+func personNodeListed(kind, id string) string {
+	return `(case
+		when ` + kind + ` = '` + graphstore.KindComment + `' then exists (
+			select 1 from comments c
+			left join issues i on i.key = c.issue_key
+			left join artifacts a on a.id = c.artifact_id
+			where c.id = (` + id + `)::uuid and (i.key is not null or a.id is not null))
+		when ` + graphstore.AddressKindSQL(kind, id) + ` in ('` + strings.Join(refs.StandingKinds(), `', '`) + `') then exists (
+			select 1 from graph_nodes n
+			where n.kind = ` + kind + ` and n.id = ` + id + ` and ` + refs.StandingIssueSQL("n.kind", "n.id") + ` is not null)
+		when ` + kind + ` = '` + graphstore.KindInteraction + `' then exists (
+			select 1 from graph_nodes n where n.kind = ` + kind + ` and n.id = ` + id + `)
+		else false
+	end)`
+}
 
 // personNodesQuery pages the nodes one person holds that the reader may see (personNodesHeld),
 // $3 and $4 being the page.
 //
 // The items arm resolves each held node into the row a reader opens. A node of a kind this build
 // cannot open is skipped rather than refused, exactly as refs.resolveNodes skips an end a newer
-// build wrote: today the page opens comments, and the lenses, findings, risks, constraints and
-// runs of dispatch://INFRA-1950, and a kind joins here when this build learns to open it, its
-// predicate already bound by the arm above. A lens, a finding, a risk or a constraint is a row of
-// the store alone: its title is its text (refs.StandingTextSQL), its time its row's made_at, and it
+// build wrote: today the page opens comments, the lenses, findings, risks and constraints, and the
+// runs of the command bar; a kind joins here when this build learns to open it, its predicate
+// already bound by the arm above, and joins personNodeListed with the same condition, so the
+// page's decision (personPageShownQuery) counts what this lists and nothing else. A lens, a
+// finding, a risk or a constraint is a row of the store alone: its title is its text
+// (refs.StandingTextSQL), its time its row's made_at, and it
 // opens the page of the issue it stands under (refs.StandingIssueSQL), so one that stands under no
 // issue - a constraint of the lens catalogue - is skipped as a comment with no place is. A run of
 // the command bar (an interaction) is a row of the store alone too, listed to the credential that
@@ -169,7 +205,7 @@ var personPageShownQuery = personNodeTies + `
 // carries no text into the page, and its own graph_nodes row, by the kind the store keys it by,
 // is read again for the rows the limit kept.
 var personNodesQuery = personNodesHeld + `, items as (
-		select h.from_kind as kind, c.id::text as id, h.relations, c.body as text, c.created_at, h.stored,
+		select h.from_kind as kind, c.id::text as id, h.relations, c.body as text, c.created_at, h.stored_state, h.stored_visibility,
 		       case
 		         when i.key is not null then '/issues/' || i.key || '/comments/' || c.id::text
 		         else '/projects/' || a.project_key || '/documents/' || a.slug || '?comment=' || c.id::text
@@ -181,11 +217,12 @@ var personNodesQuery = personNodesHeld + `, items as (
 		left join artifacts a on a.id = c.artifact_id
 		where (i.key is not null or a.id is not null)
 		union all
-		select standing.kind, standing.id, standing.relations, null::text, standing.made_at, standing.stored,
-		       '/issues/' || standing.issue_key, standing.stored_kind
+		select standing.kind, standing.id, standing.relations, null::text, standing.made_at, standing.stored_state,
+		       standing.stored_visibility, '/issues/' || standing.issue_key, standing.stored_kind
 		from (
 			select ` + graphstore.AddressKindSQL("h.from_kind", "h.from_id") + ` as kind, h.from_id as id, h.relations,
-			       n.made_at, h.stored, ` + refs.StandingIssueSQL("n.kind", "n.id") + ` as issue_key, h.from_kind as stored_kind
+			       n.made_at, h.stored_state, h.stored_visibility, ` + refs.StandingIssueSQL("n.kind", "n.id") + ` as issue_key,
+			       h.from_kind as stored_kind
 			from held h
 			join graph_nodes n on n.kind = h.from_kind and n.id = h.from_id
 			where ` + graphstore.AddressKindSQL("h.from_kind", "h.from_id") + ` in ('` + strings.Join(refs.StandingKinds(), `', '`) + `')
@@ -193,16 +230,16 @@ var personNodesQuery = personNodesHeld + `, items as (
 		) standing
 		where standing.issue_key is not null
 		union all
-		select h.from_kind, h.from_id, h.relations, coalesce(n.attributes->>'` + graphstore.AttributeWords + `', ''), n.made_at, h.stored, '',
-		       h.from_kind
+		select h.from_kind, h.from_id, h.relations, coalesce(n.attributes->>'` + graphstore.AttributeWords + `', ''), n.made_at,
+		       h.stored_state, h.stored_visibility, '', h.from_kind
 		from held h
 		join graph_nodes n on n.kind = h.from_kind and n.id = h.from_id
 		where h.from_kind = '` + graphstore.KindInteraction + `'
 	)
 	select page.total, page.kind, page.id, page.relations, coalesce(page.text, ` + refs.StandingTextSQL("n", "$2") + `, ''),
-	       page.created_at, page.href, page.stored
+	       page.created_at, page.href, page.stored_state, page.stored_visibility
 	from (
-		select count(*) over () as total, kind, id, relations, text, created_at, href, stored, stored_kind
+		select count(*) over () as total, kind, id, relations, text, created_at, href, stored_state, stored_visibility, stored_kind
 		from items
 		order by created_at desc, kind, id desc
 		limit $3 offset $4
@@ -299,15 +336,13 @@ func (s *server) listPersonNodes(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var row personNode
 		var body string
-		var stored []string
-		if err := rows.Scan(&response.Total, &row.Kind, &row.ID, &row.Relations, &body, &row.CreatedAt, &row.Href, &stored); err != nil {
+		var stored refs.StoredNode
+		if err := rows.Scan(&response.Total, &row.Kind, &row.ID, &row.Relations, &body, &row.CreatedAt, &row.Href,
+			&stored.State, &stored.Visibility); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
-		if row.State, row.Visibility, err = refs.StoredStateOf(row.Kind+" "+row.ID, stored); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
+		row.State, row.Visibility = refs.StoredStateAndVisibility(stored)
 		first, _, _ := strings.Cut(body, "\n")
 		row.Title = text.HeadRunes(first, personNodeTitleRunes)
 		row.CreatedAt = row.CreatedAt.UTC()

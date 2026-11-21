@@ -175,8 +175,7 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int, marke
 	// max(artifact_versions.number), so a seed that wrote 1 would leave every one of the
 	// 28-version documents owed, which settle.go's owedWorkCounts refuses and a server started
 	// on the data set would rewrite. They are queued after the reconciliation, whose rows the
-	// update reads (refs.QueueRecordExcerpts). What it states of the references it writes is
-	// appended at the sentinel, as the block index's is above.
+	// update reads (refs.QueueRecordExcerpts).
 	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
 		replacement.Queue(b)
 		refs.QueueRecordExcerpts(b, document.ID, document.Versions, refs.MentionExcerpts(latest, blocks, located))
@@ -184,16 +183,22 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int, marke
 	}); err != nil {
 		return fmt.Errorf("index references: %w", err)
 	}
-	record, err := refs.ReadIndexedVersion(ctx, tx, document.ID, document.ID, document.Versions)
-	if err != nil {
-		return fmt.Errorf("read the version the references are stated at: %w", err)
-	}
-	mentions, err := replacement.ArtifactMentions(ctx, tx, record)
-	if err != nil {
-		return fmt.Errorf("index references: %w", err)
-	}
-	if err := graphstore.Caused(ctx, tx, graphstore.Uncaused{Tuples: mentions}, graphstore.NoEvent); err != nil {
-		return fmt.Errorf("record what the references stated: %w", err)
+	// On this release's schema, what the reconciliation states of the references it writes is
+	// appended at the sentinel, as the block index's is above. On the one before, the release
+	// that wrote it states no mentions tuple, and its document rows name no node to state one
+	// out of (refs' ArtifactMentions reads that node column), so the backfill states them.
+	if marked {
+		record, err := refs.ReadIndexedVersion(ctx, tx, document.ID, document.ID, document.Versions)
+		if err != nil {
+			return fmt.Errorf("read the version the references are stated at: %w", err)
+		}
+		mentions, err := replacement.ArtifactMentions(ctx, tx, record)
+		if err != nil {
+			return fmt.Errorf("index references: %w", err)
+		}
+		if err := graphstore.Caused(ctx, tx, graphstore.Uncaused{Tuples: mentions}, graphstore.NoEvent); err != nil {
+			return fmt.Errorf("record what the references stated: %w", err)
+		}
 	}
 	if document.Primary {
 		if err := docs.RecordTaskProgressMarkdown(ctx, tx, document.ID, latest); err != nil {

@@ -14,6 +14,7 @@ import type {
   IssueDetails,
   RequirementCoverage,
 } from "../../../api/types";
+import { withEntries } from "../../issue/decision-entries";
 import { decisionChanges, decisionNodeChanges } from "../decision-review";
 import {
   assemble,
@@ -662,12 +663,13 @@ test("an ask's shaped ties are chips on its row, each naming a node the ask shap
   });
 });
 
-// R3: a decision of today's decisions read - a section of `decisions.md`, which no node of the
-// answer holds - finds its Change by its words, with no block of the decisions document read:
-// the change is the first decision whose words hold the anchor's quote. The read hangs the
-// comment under the issue, since no node holds the decision, and the outline draws it under the
-// decision it changes, which reads Change requested; a comment quoting words no decision holds is
-// no change and stays where the read hangs it.
+// R3: a decision of a decisions read of the release before - a section of `decisions.md`, which
+// no node of the answer holds, read as its entry (`withEntries`) - finds its Change by its words,
+// with no block of the decisions document read: the change is the first decision whose words
+// hold the anchor's quote. The read hangs the comment under the issue, since no node holds the
+// decision, and the outline draws it under the decision it changes, which reads Change
+// requested; a comment quoting words no decision holds is no change and stays where the read
+// hangs it.
 test("a decisions.md section finds its Change by its words", () => {
   const section = (id: string, heading: string, words: string): Decision => ({
     asks: [],
@@ -719,16 +721,20 @@ test("a decisions.md section finds its Change by its words", () => {
     anchored("c-change", "Draw it once."),
     anchored("c-stray", "Words no decision holds."),
   ];
-  const decisions = {
-    decisions: [keep, draw],
-    document: `dispatch://${KEY}/artifact/decisions-md`,
-  };
+  const decisions = withEntries(
+    {
+      decisions: [keep, draw],
+      document: `dispatch://${KEY}/artifact/decisions-md`,
+      open_questions: [],
+    },
+    KEY
+  );
 
-  const changes = decisionChanges(decisions, comments, issueDetails().artifacts, undefined);
+  const changes = decisionChanges(decisions, comments, issueDetails(), undefined);
   expect([...changes].map(([ref, comment]) => [ref, comment.id])).toEqual([[draw.ref, "c-change"]]);
   const root = buildIssueTree({
     comments,
-    decisions: { ...decisions, entries: [], open_questions: [] },
+    decisions,
     issue: issueDetails(),
     tree: answer(
       comments.map((one) =>

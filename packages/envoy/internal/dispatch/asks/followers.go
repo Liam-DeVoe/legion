@@ -48,8 +48,8 @@ type Followed struct {
 // a session from, so a follower that never wrote a comment and was never reached by a delivery
 // is still a node of the store, and the ask's followed_by edge to it has a far end every read
 // resolves: refs' loadStoreNodes answers a session from graph_nodes alone. Every server path that
-// adds a follower reaches this insert: FollowAuthor, PlanFollowAuthor and PlanFollowNewAsk at each
-// site that writes an ask or a reply to one, and PUT /api/v1/asks/{id}/followers/{session_id}.
+// adds a follower reaches this insert: PlanFollowAuthor and PlanFollowNewAsk at each site that
+// writes an ask or a reply to one, and PUT /api/v1/asks/{id}/followers/{session_id}.
 //
 // The node is made by who, the actor of the write, at at, and caused by event. A caller whose
 // event is appended after the follow passes graphstore.NoEvent and moves the node onto that event
@@ -83,8 +83,7 @@ func Follow(ctx context.Context, tx pgx.Tx, askID, sessionID string, who model.A
 	if !result.marked {
 		return followed, nil
 	}
-	relation := followedBy(askID, sessionID, true, who, result.since, event)
-	relation.Changes = true
+	relation := followChange(askID, sessionID, true, who, result.since, event)
 	if event == graphstore.NoEvent {
 		followed.Uncaused.Tuples = append(followed.Uncaused.Tuples, graphstore.UncausedTuple{Tuple: relation})
 		return followed, nil
@@ -113,7 +112,7 @@ type followResult struct {
 // existed. The node arm upserts `do nothing`, which locks no row that is already there, and
 // which of the two arms Postgres runs first moves no lock of the store's order. A session id past
 // the store's address bound is no node the store can key, and the follow then writes the follower
-// row alone, as graphstore.SessionRecorded writes nothing for such a session.
+// row alone, as graphstore.QueueSessionRecorded writes nothing for such a session.
 //
 // The same statement stamps the follower row's marker (ask_followers.node_kind and node_address),
 // which says the ask node's followed_by to the session is the record of this row: on a new row,
@@ -127,7 +126,7 @@ type followResult struct {
 // That relation is stated after the row: its time is the row's, which the insert gives it.
 // That followed_by changes the ask's node it goes out of (graphstore.Tuple's Changes), as a
 // pointer a request appends does, so a follow made for a run of the command bar names the ask
-// as changed by that run (graphstore.WithRun); the following session's node is never marked.
+// as changed by that run (store.WithRun); the following session's node is never marked.
 //
 // A follow whose cause comes later states no base attribute in that statement and holds the
 // node for the caller to cause under its event (graphstore.WriteArmsUncaused): no tuple may be
@@ -195,14 +194,14 @@ func followedBy(askID, sessionID string, asserted bool, who model.Actor, at time
 	}
 }
 
-// FollowAuthor follows askID for a session author, at once, and does nothing for a human, so
-// every insert site can call it with the actor it already has. The session's node is made by the
-// author at at and caused by event, as Follow makes it.
-func FollowAuthor(ctx context.Context, tx pgx.Tx, askID string, author model.Actor, at time.Time, event int64) (Followed, error) {
-	if author.Kind != "session" || author.ID == "" {
-		return Followed{}, nil
-	}
-	return Follow(ctx, tx, askID, author.ID, author, at, event)
+// followChange is followedBy marked as changing the ask's node (graphstore.Tuple's Changes): the
+// relation a follow or an unfollow states, which a write made for a run names the ask's node
+// changed by. CatchUpFollower states what another build's follow or unfollow did, which no run
+// made, through followedBy alone.
+func followChange(askID, sessionID string, asserted bool, who model.Actor, at time.Time, event int64) graphstore.Tuple {
+	relation := followedBy(askID, sessionID, asserted, who, at, event)
+	relation.Changes = true
+	return relation
 }
 
 // PlannedFollow is the follow of an ask by a session author as PlanFollowAuthor or
@@ -293,9 +292,8 @@ func PlanFollowAuthor(ctx context.Context, q RowQueryer, askID string, author mo
 // followed_by to the session where the statement marks the row, dated by the row's since - held
 // in the answer for the caller's graphstore.QueueCaused where event is graphstore.NoEvent, and
 // otherwise queued right after the statement under event, graphstore.LatestEvent for an event the
-// write phase appended just before it. It answers what it holds for that cause. ctx is the
-// write's own, whose run the followed_by names the ask changed by (graphstore.WithRun).
-func (p PlannedFollow) Queue(ctx context.Context, b *store.WriteBatch, event int64) (graphstore.Uncaused, error) {
+// write phase appended just before it. It answers what it holds for that cause.
+func (p PlannedFollow) Queue(b *store.WriteBatch, event int64) (graphstore.Uncaused, error) {
 	if p.sessionID == "" {
 		return graphstore.Uncaused{}, nil
 	}
@@ -313,15 +311,12 @@ func (p PlannedFollow) Queue(ctx context.Context, b *store.WriteBatch, event int
 	if err != nil || !p.marks {
 		return held, err
 	}
-	relation := followedBy(p.askID, p.sessionID, true, p.who, p.since, event)
-	relation.Changes = true
+	relation := followChange(p.askID, p.sessionID, true, p.who, p.since, event)
 	if event == graphstore.NoEvent {
 		held.Tuples = append(held.Tuples, graphstore.UncausedTuple{Tuple: relation})
 		return held, nil
 	}
-	if err := graphstore.QueueWrite(ctx, b, nil, []graphstore.Tuple{relation}); err != nil {
-		return graphstore.Uncaused{}, fmt.Errorf("state that %q follows ask %q: %w", p.sessionID, p.askID, err)
-	}
+	graphstore.QueueWrite(b, nil, []graphstore.Tuple{relation})
 	return held, nil
 }
 
@@ -353,8 +348,7 @@ func Unfollow(ctx context.Context, tx pgx.Tx, askID, sessionID string, who model
 	}
 	unfollowed := Unfollowed{Removed: true}
 	if marked {
-		retraction := followedBy(askID, sessionID, false, who, at, graphstore.NoEvent)
-		retraction.Changes = true
+		retraction := followChange(askID, sessionID, false, who, at, graphstore.NoEvent)
 		unfollowed.Uncaused.Tuples = []graphstore.UncausedTuple{{Tuple: retraction}}
 	}
 	return unfollowed, nil
