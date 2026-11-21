@@ -86,11 +86,12 @@ func (s *holdStub) called() int {
 	return s.calls
 }
 
-// holdUnknownGauge is envoy_broker_hold_unknown's value as registry renders it, or "" for none.
+// holdUnknownGauge is broker_nats_callout_hold_unknown's value as registry renders it, or "" for
+// none.
 func holdUnknownGauge(t *testing.T, registry *metrics.Registry) string {
 	t.Helper()
 	for _, line := range strings.Split(scrape(t, registry), "\n") {
-		if value, ok := strings.CutPrefix(line, "envoy_broker_hold_unknown "); ok {
+		if value, ok := strings.CutPrefix(line, "broker_nats_callout_hold_unknown "); ok {
 			return value
 		}
 	}
@@ -100,7 +101,7 @@ func holdUnknownGauge(t *testing.T, registry *metrics.Registry) string {
 // The hold view answers each phase the row holds, known, and unknown for everything else, at once
 // and whatever it read before: no row; a phase outside the three; a Postgres error; a timeout,
 // after a reading of each phase; a row no listed key signed, or none; and a verified gen below the
-// highest this view has read. It reads the row at every State, and envoy_broker_hold_unknown is 1
+// highest this view has read. It reads the row at every State, and broker_nats_callout_hold_unknown is 1
 // exactly while its last reading was unknown. A view over no read, the setting off, answers
 // released, known, and reads nothing.
 //
@@ -153,7 +154,7 @@ func TestTheHoldViewMapsEveryReading(t *testing.T) {
 				if !step.known {
 					gauge = "1"
 				}
-				require.Equal(t, gauge, holdUnknownGauge(t, registry), "reading %d: envoy_broker_hold_unknown", index+1)
+				require.Equal(t, gauge, holdUnknownGauge(t, registry), "reading %d: broker_nats_callout_hold_unknown", index+1)
 			}
 			require.Equal(t, len(row.steps), stub.called(), "the view did not read the row at every State")
 		})

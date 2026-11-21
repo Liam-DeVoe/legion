@@ -1471,7 +1471,7 @@ func TestAPostgresOutageRefusesOnlyWhileItLasts(t *testing.T) {
 	phase.Store(3)
 	require.Zero(t, during.admitted.Load(), "a listener or a session was admitted while the hold's Postgres was down (%d refused)", during.refused.Load())
 	require.Positive(t, refusedFor(t, r.registry, labelHoldUnknown), "no refusal was counted hold_unknown")
-	require.Equal(t, "1", holdUnknownGauge(t, r.registry), "envoy_broker_hold_unknown during the outage")
+	require.Equal(t, "1", holdUnknownGauge(t, r.registry), "broker_nats_callout_hold_unknown during the outage")
 
 	proxy.Restore()
 	testwait.WithinPolling(t, 10*time.Second, 50*time.Millisecond, "Postgres answering through the restored relay", func() bool {
@@ -1483,7 +1483,7 @@ func TestAPostgresOutageRefusesOnlyWhileItLasts(t *testing.T) {
 	})
 	phase.Store(3)
 	require.Zero(t, after.refused.Load(), "a client was refused after the hold's Postgres answered again (%d admitted)", after.admitted.Load())
-	require.Equal(t, "0", holdUnknownGauge(t, r.registry), "envoy_broker_hold_unknown after the outage")
+	require.Equal(t, "0", holdUnknownGauge(t, r.registry), "broker_nats_callout_hold_unknown after the outage")
 }
 
 // postgresAnswers connects to dsn on a connection of its own and pings it, within a second.
