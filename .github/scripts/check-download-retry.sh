@@ -1216,7 +1216,7 @@
 #      pull made that way is read by no rule and is named only in this text; a `docker pull` is
 #      a fetch, and one of this package is left unretried only where EXEMPTIONS names it.
 #      A SECOND STATED LIMIT, set here beside that one though it is no pull of this package:
-#      `elan toolchain install`, `elan default` and a `lake` that downloads the toolchain its
+#      `elan toolchain install` and a `lake` that downloads the toolchain its
 #      lean-toolchain file names are fetches this check does not read, since neither elan nor
 #      lake is one of THE VERBS. The tree's two such fetches are each a `retry_fetch "the Lean
 #      toolchain $toolchain" 120 -- elan toolchain install "$toolchain"` in a step of its own,
@@ -1308,7 +1308,7 @@
 #     exactly the rows the copy after it then writes. The copy itself, and the digest read that
 #     confirms it, do retry.
 #   * `docker buildx imagetools create` and `docker buildx imagetools inspect` in
-#     release-envoy-listener.yaml's `image_index` job (:456, :464) are a release's write to its
+#     release-envoy-listener.yaml's `image_index` job (:471, :479) are a release's write to its
 #     registry and its read of what it wrote: they join the platform images the docker legs pushed
 #     into the `envoy:<sha>` index and print that index, and bring no tool and no dependency into
 #     the job. `docker buildx` is none of THE VERBS, so no rule reads them. Exception (d) does

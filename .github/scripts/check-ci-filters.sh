@@ -178,12 +178,17 @@
 #      go-envoy and go-envoy-test for the dispatch-browser job - or of any other workflow of
 #      .github/workflows that restores it (the release builds, the nightly browser re-record,
 #      ci-caches.yaml's own lookups), since a drift there misses as silently (the keys compared as
-#      text, trailing whitespace aside, the paths as ordered lists of stripped lines), naming the file
+#      text, trailing whitespace aside, once each `${{ env.NAME }}` in them is read as the value
+#      the env of its step's job, else of its workflow, sets for NAME, a reference neither sets
+#      staying text; the paths as ordered lists of stripped lines), naming the file
 #      the restore is in, or that none of ci.yaml's files
 #      restores, and an actions/cache/restore of ci-caches.yaml that is not
 #      `lookup-only: true` or that carries restore-keys. ci-caches.yaml fills the entries ci.yaml
 #      restores, and a key or a path that drifts apart makes every restore miss silently: nothing
-#      fails, every job just rebuilds from nothing what the fill already built. A save is matched
+#      fails, every job just rebuilds from nothing what the fill already built. Two keys that both
+#      read `${{ env.FIRST_ROLLOUT_COMMIT }}` are such a drift when ci-caches.yaml's dispatch-builds
+#      job and ci-job-dispatch-two-builds.yaml set that pin apart, which is why the references are
+#      resolved. A save is matched
 #      to a restore by family, the key's text up to its first `${{`, which is the Go version the
 #      entry is keyed on. A family ci.yaml restores that ci-caches.yaml does not save is no
 #      failure: go-docs is saved by docs-pages.yaml, from the build job that workflow shares with

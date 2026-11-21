@@ -2393,6 +2393,41 @@ check "fails" "$(is "$status" 1)"
 check "names the family and both keys" \
   "$(contains "$out" 'job fill saves family go-app under key .*, but job app of .github/workflows/ci.yaml restores it under .*-v2')"
 
+# A key may read a pin from the env: the dispatch-builds job of ci-caches.yaml and
+# ci-job-dispatch-two-builds.yaml both key the first-rollout build on
+# `${{ env.FIRST_ROLLOUT_COMMIT }}`, and each of the two jobs holds its own copy of the commit. The
+# rule reads each reference as the value its job's env, else its workflow's, sets, so two keys
+# that say the same text and name two values are a drift.
+#
+# env_keys <root> <value>: cache_workflow's three go-app keys read that pin in place of the
+# runner's OS; ci-caches.yaml's fill job sets it to edb69e0d in its own env, and ci.yaml sets it
+# to <value> in its workflow env, which the app job holding the restore sets nothing over.
+env_keys() {
+  replace "$1/.github/workflows/ci-caches.yaml" $'  fill:\n    runs-on: ubuntu-24.04' \
+    $'  fill:\n    runs-on: ubuntu-24.04\n    env:\n      FIRST_ROLLOUT_COMMIT: edb69e0d'
+  # Twice, since replace takes the first of the lookup's key and the save's.
+  replace "$1/.github/workflows/ci-caches.yaml" 'key: go-app-${{ runner.os }}' 'key: go-app-${{ env.FIRST_ROLLOUT_COMMIT }}'
+  replace "$1/.github/workflows/ci-caches.yaml" 'key: go-app-${{ runner.os }}' 'key: go-app-${{ env.FIRST_ROLLOUT_COMMIT }}'
+  replace "$1/.github/workflows/ci.yaml" 'key: go-app-${{ runner.os }}' 'key: go-app-${{ env.FIRST_ROLLOUT_COMMIT }}'
+  replace "$1/.github/workflows/ci.yaml" $'env:\n  CI_OK_SELECTED_BY' $'env:\n  FIRST_ROLLOUT_COMMIT: '"$2"$'\n  CI_OK_SELECTED_BY'
+}
+
+echo "case: a save and a restore whose keys read one env name their workflows set alike"
+root=$(fixture cache-env-same)
+cache_workflow "$root"
+env_keys "$root" edb69e0d
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a save and a restore whose keys read one env name their workflows set apart"
+root=$(fixture cache-env-drift)
+cache_workflow "$root"
+env_keys "$root" 67659e61
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names both keys, each with the value its env sets" \
+  "$(contains "$out" 'job fill saves family go-app under key `go-app-edb69e0d`, but job app of .github/workflows/ci.yaml restores it under `go-app-67659e61`')"
+
 echo "case: a restore path the save of that family does not name"
 root=$(fixture cache-path-drift)
 cache_workflow "$root"

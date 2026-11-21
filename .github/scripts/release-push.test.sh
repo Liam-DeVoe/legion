@@ -37,9 +37,11 @@
 # from each checkout, with a stub `npm` first on PATH for the first-release
 # read, and read what `tag` leaves for a re-run and for the next commit. That
 # read goes through retry_fetch: npm's E404 starts from 0.0.0 with one call,
-# and a 504 is retried, once or on every attempt; the second waits out the
-# helper's 150 s of sleeps for real, which ci-job-test.yaml's `test` job key
-# carries.
+# and a 504 is retried, once or on every attempt, which wait out the helper's
+# sleeps for real: its first, 10 s, and all of them, 150 s, which
+# ci-job-test.yaml's `test` job key carries. A 504 whose message carries a
+# registry body's `npm error code E404` is retried too, and waits nothing: its
+# run has a stub sleep of its own that returns at once.
 # The `tag` cases run it with $GITHUB_SHA naming the clone's HEAD and check
 # that the tag names that commit and nothing else moves: no commit is added,
 # the manifests and the lockfile keep their blobs, the work tree stays clean
@@ -518,6 +520,28 @@ check "no tag, npm 504 on every attempt: asked npm five times, retry_fetch's att
 check "no tag, npm 504 on every attempt: release-push.sh's error names the package" \
   "$(contains "$err" '^::error::release-push\.sh version: npm did not give the published version of @example/pkg, ')"
 check "no tag, npm 504 on every attempt: npm's own error reaches the log" "$(contains "$err" '^npm error code E504$')"
+# A 504 whose message carries the text of an E404. npm appends a registry body's `error` field
+# to its own message, so npm 11.19.1 printed a gateway's 504 with `npm error code E404` at the end
+# of its message line (dispatch://INFRA-1545, round 50). Only npm's error-code line names the
+# code, and it says E504: a failure that is retried and fails the job, never a 0.0.0. The row has
+# a stub npm of its own, in a directory this one run takes as $work, since version_run puts
+# "$work/bin" first on PATH; beside it, a stub sleep that returns at once, so retry_fetch's five
+# attempts wait nothing.
+npm_body="$work/npm-504-body"
+mkdir -p "$npm_body/bin"
+cat > "$npm_body/bin/npm" <<'NPM'
+#!/usr/bin/env bash
+echo "npm error code E504" >&2
+echo "npm error 504 Gateway Timeout - GET https://registry.npmjs.org/@example%2fpkg - upstream said: npm error code E404" >&2
+exit 1
+NPM
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$npm_body/bin/sleep"
+chmod +x "$npm_body/bin/npm" "$npm_body/bin/sleep"
+# The clone's path is expanded before `work` is set for the call, so it is the outer $work's.
+work=$npm_body version_run "$work/v/c" pkg-v --first-npm @example/pkg -- packages/pkg/
+check "no tag, npm 504 whose message says code E404: exits non-zero printing nothing" \
+  "$(is "$([ "$rc" -ne 0 ] && echo nonzero)|$out" "nonzero|")"
+check "no tag, npm 504 whose message says code E404: starts from no 0.0.0" "$(is "$(contains "$err" 'v0\.0\.0')" false)"
 # @sjawhar/claude-envoy's case as it stood before its first release, which release.yaml's
 # claude_envoy_build ran: npm carried a 0.0.0 placeholder of the package, so npm answered and the
 # fallback above was never reached, and no claude-envoy-v tag existed yet. The first release comes

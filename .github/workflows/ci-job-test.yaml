@@ -281,14 +281,17 @@ jobs:
     # dispatch://INFRA-1545 added that the 325 s does not hold, because each waits out a time
     # bound rather than computing: the two steps it added to the end of the list, the retry
     # helper's test, 362 s measured, and the fault proxy's test, 15 s measured (job
-    # 130805958692); and release-push.test.sh's npm read that fails on every attempt (round 49),
-    # retry_fetch's 150 s of sleeps, 151 s measured in an issue pod — 2177 + 151 = 2328 s, the
+    # 130805958692); and release-push.test.sh's two npm reads that a 504 fails (round 49), which
+    # wait out retry_fetch's sleeps for real: the one that fails once waits the first sleep, 10 s,
+    # and the one that fails on every attempt waits all of them, 150 s, 151 s measured in an issue
+    # pod. Its third such read, a 504 whose message carries an E404's text (round 50), waits
+    # nothing: its run has a stub sleep that returns at once. 2177 + 10 + 151 = 2338 s, the
     # unretried term. To it the budget adds its slowest retried step alone: setup-bun's two
     # `ci_tools_fetch` calls at 3416 s, above the changelog render, whose run of release-push.sh
     # carries that script's retried calls, 2700 s as .github/scripts/check-download-retry.sh's
     # rule 8 sums them, install-changie's one at 1708 s, the workspace install's and the Go
     # module download's 1050 s each and the ci-ok report's 2160 s.
-    # 2328 + 3416 = 5744 s -> 96 min.
+    # 2338 + 3416 = 5754 s -> 96 min.
     timeout-minutes: 96
 
     steps:
