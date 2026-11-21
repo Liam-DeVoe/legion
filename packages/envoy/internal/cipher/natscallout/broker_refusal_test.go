@@ -57,8 +57,8 @@ func TestARefusalOfTheBrokersTokenBeforeAnyAnswerIsNamedSo(t *testing.T) {
 	deps.held = newHeldAccess(deps, services)
 	require.NotNil(t, deps.held)
 	deps.held.refresh(t.Context())
-	_, known := deps.held.answer(heldKey{project: "PUB", person: entryPerson})
-	require.False(t, known, "a refused question was held as an answer")
+	_, _, known := deps.held.read(entryPerson, []string{"PUB"})
+	require.False(t, known[0], "a refused question was held as an answer")
 
 	_, err := Decide(t.Context(), deps, services, serviceRequest("token"))
 	requireRefused(t, err, labelAccessRefused, "Dispatch refuses the broker's own account token")

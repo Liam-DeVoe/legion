@@ -95,8 +95,8 @@ func TestADaemonCalloutConnectionKeepsRetryingARefusal(t *testing.T) {
 // The token here lapses that long and two seconds from now; the kubelet's rewrite is a later token
 // in the same file; and the stand-in is shown that later token on a CONNECT of its own while the
 // first is still live, with the connection connected after it. The control is a connection whose
-// keeper does not run: it never presents the later token, and this test fails naming the CONNECTs
-// it saw.
+// keeper does not run: it never presents the later token, and this test times out waiting for the
+// connection to move to it.
 func TestConnectWithAServiceTokenReconnectsBeforeExpiry(t *testing.T) {
 	s := testnats.StartCallout(t, 0, natsgrant.InboxPrefix(daemonAccount)+".>")
 	tokenFile := filepath.Join(t.TempDir(), "nats-token")

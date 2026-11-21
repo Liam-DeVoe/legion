@@ -132,7 +132,7 @@ func TestASessionTokenGetsItsOwnChannel(t *testing.T) {
 }
 
 // A service's platform token, from an account the deployment lists, is answered with its kind's
-// grant from natsgrant, a daemon's with its account's own reply prefix beside it (scopeGrant),
+// grant from natsgrant, a daemon's with its account's own reply prefix beside it (serviceGrant),
 // named <kind>/<machine id or account>, expiring with the token.
 func TestAServiceTokenGetsItsKindsGrant(t *testing.T) {
 	now := time.Now()

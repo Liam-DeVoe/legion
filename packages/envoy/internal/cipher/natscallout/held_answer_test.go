@@ -1,8 +1,8 @@
 package natscallout
 
 import (
-	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -14,58 +14,13 @@ import (
 // otherFails is the error OTHER's question answers with in these tests.
 var otherFails = errors.New(`projectaccess: dispatch answered /api/v1/access/projects/OTHER 500 with the code ""`)
 
-// Each project's answer is held on its own, so a refusal applies as soon as it is answered: the
-// token exchange refuses a removed person's token within 30 s whatever else Dispatch answers, so
-// the connection may not wait on an unrelated question. PUB's daemon is admitted on a first
-// answer; then PUB is taken from its person (not visible) or from Dispatch (not found), while
-// another entry's project, OTHER, answers 500. The next decision is refused on PUB's own answer.
-// The control holds nothing of a refresh any question of which fails: each row is admitted.
-func TestARefusalAppliesWhileAnotherProjectFails(t *testing.T) {
-	for _, row := range []struct {
-		name   string
-		revoke func(d *dispatchAnswers)
-		label  string
-		reason string
-	}{
-		{"PUB hidden from its person", func(d *dispatchAnswers) { d.hide("PUB", true) },
-			"project_not_visible", "project not visible to the account's person: PUB"},
-		{"PUB gone from Dispatch", func(d *dispatchAnswers) { d.drop("PUB") },
-			"project_not_found", "project not found: PUB"},
-	} {
-		t.Run(row.name, func(t *testing.T) {
-			now := time.Now()
-			services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}, {Kind: KindDaemon, Account: otherDaemonAccount}}
-			tokens := map[string]platformToken{"pub-token": {account: pubDaemonAccount, issued: now, expiry: now.Add(time.Hour)}}
-			dispatch := &dispatchAnswers{
-				projects: map[string]bool{"PUB": true, "OTHER": true},
-				private:  map[string]bool{"PUB": true},
-			}
-			deps := heldDeps(t, tokens, map[string][]string{pubDaemonAccount: {"PUB"}, otherDaemonAccount: {"OTHER"}}, dispatch, services)
-			_, err := Decide(t.Context(), deps, services, serviceRequest("pub-token"))
-			require.NoError(t, err, "PUB's daemon was refused on its first answer")
-
-			row.revoke(dispatch)
-			deps.held.access = func(ctx context.Context, project, person string) (projectaccess.Answer, error) {
-				if project == "OTHER" {
-					return projectaccess.Answer{}, otherFails
-				}
-				return dispatch.access(ctx, project, person)
-			}
-			deps.held.refresh(t.Context())
-
-			_, err = Decide(t.Context(), deps, services, serviceRequest("pub-token"))
-			requireRefused(t, err, row.label, row.reason)
-		})
-	}
-}
-
-// No rule joins the answers of one refresh: a project answered visible admits its daemon while
-// another entry's project keeps failing. OTHER fails from the broker's start, so its daemon is
-// refused as not yet known, while PUB's daemon is admitted on PUB's first answer. Then PUB is
+// No rule joins the answers of one refresh: a project's own answer admits or refuses its daemon
+// while another entry's project keeps failing. OTHER fails from the broker's start, so its daemon
+// is refused as not yet known, while PUB's daemon is admitted on PUB's first answer. Then PUB is
 // hidden from its person and refused, and once its person is put back, PUB's daemon is admitted on
-// that answer, OTHER failing throughout. The control holds a refresh's answers only when every
-// question of it is answered: PUB's daemon is refused on the first refresh, and the test fails
-// naming PUB.
+// that answer; then PUB is taken out of Dispatch and refused as not found, OTHER failing
+// throughout. The control holds a refresh's answers only when every question of it is answered:
+// PUB's daemon is refused on the first refresh, and the test fails naming PUB.
 func TestAProjectIsAdmittedOnItsOwnAnswerWhileAnotherFails(t *testing.T) {
 	now := time.Now()
 	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}, {Kind: KindDaemon, Account: otherDaemonAccount}}
@@ -93,4 +48,45 @@ func TestAProjectIsAdmittedOnItsOwnAnswerWhileAnotherFails(t *testing.T) {
 	deps.held.refresh(t.Context())
 	_, err = Decide(t.Context(), deps, services, serviceRequest("pub-token"))
 	require.NoError(t, err, "PUB's daemon was refused after its person was put back, while OTHER failed: PUB")
+
+	dispatch.drop("PUB")
+	deps.held.refresh(t.Context())
+	_, err = Decide(t.Context(), deps, services, serviceRequest("pub-token"))
+	requireRefused(t, err, labelProjectNotFound, "project not found: PUB")
+}
+
+// An answer is held whatever else its refresh got, a refusal of the broker's token included, so a
+// revocation Dispatch answered beside that refusal is not lost once the refusal clears. A first
+// refresh admits PUB's daemon. In a second, Dispatch refuses the broker's token on OTHER's
+// question and answers that PUB's person no longer sees PUB: the daemon is refused
+// project_access_refused. In a third, OTHER is answered and PUB's question fails: the refusal
+// clears, and the daemon is refused project_not_visible on the revocation the second refresh
+// read. The control drops a refresh's answers when it holds a refusal: the third decision admits
+// the daemon on its answer from before the revocation, and the test fails naming PUB.
+func TestARevocationBesideARefusalOfTheBrokersTokenIsKept(t *testing.T) {
+	now := time.Now()
+	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}, {Kind: KindDaemon, Account: otherDaemonAccount}}
+	tokens := map[string]platformToken{"pub-token": {account: pubDaemonAccount, issued: now, expiry: now.Add(time.Hour)}}
+	dispatch := &dispatchAnswers{
+		projects: map[string]bool{"PUB": true, "OTHER": true},
+		private:  map[string]bool{"PUB": true},
+	}
+	deps := heldDeps(t, tokens, map[string][]string{pubDaemonAccount: {"PUB"}, otherDaemonAccount: {"OTHER"}}, dispatch, services)
+	_, err := Decide(t.Context(), deps, services, serviceRequest("pub-token"))
+	require.NoError(t, err, "PUB's daemon was refused on its first answer")
+
+	dispatch.mu.Lock()
+	dispatch.failingFor = map[string]error{"OTHER": fmt.Errorf("%w: dispatch answered /api/v1/access/projects/OTHER 403", projectaccess.ErrBrokerRefused)}
+	dispatch.mu.Unlock()
+	dispatch.hide("PUB", true)
+	deps.held.refresh(t.Context())
+	_, err = Decide(t.Context(), deps, services, serviceRequest("pub-token"))
+	requireRefused(t, err, labelAccessRefused, "Dispatch refuses the broker's own account token")
+
+	dispatch.mu.Lock()
+	dispatch.failingFor = map[string]error{"PUB": errors.New(`projectaccess: dispatch answered /api/v1/access/projects/PUB 500 with the code ""`)}
+	dispatch.mu.Unlock()
+	deps.held.refresh(t.Context())
+	_, err = Decide(t.Context(), deps, services, serviceRequest("pub-token"))
+	requireRefused(t, err, labelProjectNotVisible, "project not visible to the account's person: PUB")
 }
