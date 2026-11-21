@@ -1,8 +1,11 @@
 // Package streams is envoy-infra's streams commands: every JetStream stream Envoy declares
 // (internal/streamset) is made at deploy time by the operator, since beside the NATS auth service no
 // other client may create or change one (natsgrant.ForCallout) and every start there only reads its
-// streams (bus.StreamsOperatorMadeEnvVar). Four commands, each a function here and a word of
-// `envoy-infra streams`:
+// streams (bus.StreamsOperatorMadeEnvVar). Four functions, one per word of `envoy-infra streams`.
+// Check and Ensure are this package's own words (Command). Update and Census run inside a hold:
+// the writer hold registers `streams update` and `streams census` as its held commands, runs these
+// functions inside a hold of their workflow, and writes the hold journal's intent, done and stop
+// entries.
 //
 //   - Check, run by each deploy, unattended, as the measurement job's user: it reads each declared
 //     stream and reports what drifted, naming the stream, and sends no create and no update.

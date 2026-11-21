@@ -3183,11 +3183,13 @@ the caller's choosing. Its copies are held to the deployment's count like every 
 ```text
 envoy-infra streams check  --nats-url <urls> (--token-file <file> | --nkey-seed-file <file>) [settings]
 envoy-infra streams ensure --nats-url <urls> --token-file <file> --broker-url <url> --hold-verify-keys <keys> [settings]
-envoy-infra streams update --nats-url <urls> --token-file <file> --broker-url <url> --hold-verify-keys <keys> [settings]
-envoy-infra streams census --nats-url <urls> --token-file <file> --broker-url <url> --hold-verify-keys <keys>
-                           --hold-id <id> --family <family>... [--listener-machine-id <id>...]
-                           [--daemon-consumer <name>=<filter>[,<filter>...]...] [settings]
 ```
+
+`streams update` and `streams census` are the writer hold's held commands. It registers them
+under those names and runs each inside a hold of its own workflow (`streams-update`; `streams-census`,
+the cutover and `hub-restore`), around the `Update` and `Census` functions of this package, and
+writes the hold journal's intent, done and stop entries. The census is the final command of its
+workflows, so its done entry completes the record that `hold release` needs.
 
 - `check`, run by each deploy, unattended, as the measurement job: it reads each declared stream
   and prints `FAIL` for one that is missing, one with fewer copies than the deployment's count,
@@ -3197,19 +3199,19 @@ envoy-infra streams census --nats-url <urls> --token-file <file> --broker-url <u
   missing, and brings an existing `ENVOY_MEASURE` that drifts to its declared settings, copies
   included, with one update, so the shortfall `check` reports has a repair. It touches no other
   stream. The update of `ENVOY_MEASURE` is in the operator's `released` grant alone.
-- `update`, as the operator while the hold row is `held`: it makes each missing protected stream
-  with the build's configuration and raises each by a start's own rules (subjects only added,
-  limits only raised, copies raised, `envoy_stream_id` kept), and stops, naming the stream and the
-  setting, at any other difference.
-- `census`, as the operator while the hold row is `held`, once every `--family` has a cutover row
-  in state `done`: it lists every stream and consumer, removes a stream outside the declared set
-  and a consumer that matches no declared shape by its whole configuration, and puts a declared
-  stream's source, mirror, republish or subject transform back to the build's configuration. A
-  sealed stream, or one that allows per-message TTLs or message schedules, stops it. A listing it
-  cannot complete is `UNKNOWN`. This build reads no session consumer records, so a census run from
-  the command line is `UNKNOWN`; the writer hold's workflow runs it with its own reader.
+- `update` (the writer hold's, inside a `streams-update` hold): it makes each missing protected
+  stream with the build's configuration and raises each by a start's own rules (subjects only
+  added, limits only raised, copies raised, `envoy_stream_id` kept), and stops, naming the stream
+  and the setting, at any other difference.
+- `census` (the writer hold's, inside a hold whose workflow names it), once every family has a
+  cutover row in state `done`: it lists every stream and consumer, removes a stream outside the
+  declared set and a consumer that matches no declared shape by its whole configuration, and puts a
+  declared stream's source, mirror, republish or subject transform back to the build's
+  configuration. A sealed stream, or one that allows per-message TTLs or message schedules, stops
+  it. A listing it cannot complete is `UNKNOWN`. It reads the session consumers the hold records,
+  after the hold's barrier on their bucket.
 
-The operator's words read the hold row through the broker's `/v1/nats-hold` routes first, verified
+`ensure` reads the hold row through the broker's `/v1/nats-hold` routes first, verified
 with `--hold-verify-keys` (entries as `BROKER_NATS_HOLD_SIGNING_KEYS` writes them), and refuse any
 other phase by name. The token file holds the identity's platform token, presented as user `service`;
 the operator's is also its token at the broker's routes. The settings are `--replicas`,

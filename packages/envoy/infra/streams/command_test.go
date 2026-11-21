@@ -56,8 +56,8 @@ no_auth_user: "admin"
 	return url, js
 }
 
-// holdBroker is a broker's /v1/nats-hold read routes answering one hold row of phase, and every
-// family's cutover row done, each signed with key.
+// holdBroker is a broker's /v1/nats-hold read route answering one hold row of phase, signed with
+// key.
 func holdBroker(t *testing.T, key ed25519.PrivateKey, phase natsgrant.OperatorPhase) string {
 	t.Helper()
 	signedAt := time.Now().UTC()
@@ -71,17 +71,6 @@ func holdBroker(t *testing.T, key ed25519.PrivateKey, phase natsgrant.OperatorPh
 				"updated_at": signedAt.Format(time.RFC3339Nano), "updated_by": "operator",
 				"signed_at": signedAt.Format(time.RFC3339Nano), "sig": rowSig,
 			})
-		case "/v1/nats-hold/cutover":
-			var families []map[string]any
-			for _, family := range []string{"session", "dispatch"} {
-				sig, err := signedrecord.Sign(key, signedrecord.Cutover(family, streams.CutoverDone, "hold-a", 7))
-				if err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
-				}
-				families = append(families, map[string]any{"family": family, "state": streams.CutoverDone, "hold_id": "hold-a", "hold_gen": 7, "sig": sig})
-			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"families": families})
 		default:
 			http.NotFound(w, r)
 		}
@@ -104,20 +93,19 @@ func run(t *testing.T, args ...string) (int, string, string) {
 	return code, stdout.String(), stderr.String()
 }
 
-// The command's words: a usage it cannot run is exit 2 naming what is missing; check, as the
+// The command's words: a usage it cannot run is exit 2 naming what is missing, and update and
+// census, the writer hold's held commands, are words this command does not take; check, as the
 // measurement job's identity, fails naming a missing stream and is clean once every declared stream
-// is made; ensure, as the operator, reads the hold row through the broker and makes ENVOY_MEASURE
-// while it is released, and refuses, exit 1 naming the phase, while it is held; and a census from
-// the command line is UNKNOWN, exit 2, since this build reads no session consumer records.
+// is made; and ensure, as the operator, reads the hold row through the broker and makes
+// ENVOY_MEASURE while it is released, and refuses, exit 1 naming the phase, while it is held.
 func TestTheStreamsCommandWords(t *testing.T) {
 	for name, args := range map[string][]string{
 		"no word":                    {},
 		"an unknown word":            {"remove", "--nats-url", "nats://127.0.0.1:1", "--token-file", "x"},
 		"no NATS URL":                {"check", "--token-file", "x"},
 		"no credential":              {"check", "--nats-url", "nats://127.0.0.1:1"},
-		"an operator with a seed":    {"update", "--nats-url", "nats://127.0.0.1:1", "--nkey-seed-file", "x"},
+		"an operator with a seed":    {"ensure", "--nats-url", "nats://127.0.0.1:1", "--nkey-seed-file", "x"},
 		"an operator with no broker": {"ensure", "--nats-url", "nats://127.0.0.1:1", "--token-file", "x"},
-		"a census with no hold":      {"census", "--nats-url", "nats://127.0.0.1:1", "--token-file", "x", "--broker-url", "http://127.0.0.1:1", "--hold-verify-keys", "k"},
 		"a replica count past five":  {"check", "--nats-url", "nats://127.0.0.1:1", "--token-file", "x", "--replicas", "6"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -125,6 +113,11 @@ func TestTheStreamsCommandWords(t *testing.T) {
 			require.Equal(t, 2, code, "%s", stderr)
 			require.Contains(t, stderr, "usage:")
 		})
+	}
+	for _, word := range []string{"update", "census"} {
+		code, _, stderr := run(t, word, "--nats-url", "nats://127.0.0.1:1", "--token-file", "x", "--broker-url", "http://127.0.0.1:1", "--hold-verify-keys", "k")
+		require.Equal(t, 2, code, "streams %s: %s", word, stderr)
+		require.Contains(t, stderr, "streams update and streams census are the writer hold's held commands", "streams %s", word)
 	}
 
 	t.Run("check", func(t *testing.T) {
@@ -165,15 +158,5 @@ func TestTheStreamsCommandWords(t *testing.T) {
 		require.Contains(t, stdout, "CHANGED "+streamset.MeasureStream+": made")
 		_, err = js.StreamInfo(streamset.MeasureStream)
 		require.NoError(t, err)
-	})
-
-	t.Run("census", func(t *testing.T) {
-		url, _ := serviceHub(t, "operator-token", natsgrant.Operator(natsgrant.OperatorPhaseHeld))
-		token := writeFile(t, "token", "operator-token")
-		code, stdout, stderr := run(t, "census", "--nats-url", url, "--token-file", token,
-			"--broker-url", holdBroker(t, key, natsgrant.OperatorPhaseHeld), "--hold-verify-keys", verify,
-			"--hold-id", "hold-a", "--family", "session", "--family", "dispatch")
-		require.Equal(t, 2, code, "%s%s", stdout, stderr)
-		require.Contains(t, stdout, "UNKNOWN")
 	})
 }
