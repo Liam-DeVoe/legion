@@ -38,10 +38,12 @@ func TestNoNameOfNothingInsideABlockMovesAStateTowardTrue(t *testing.T) {
 	bases := setUp(t, "the sweeps' setup (sweepBases)", sweepBases)
 	floorsCover(t, "texts", bases)
 	floorsCover(t, "attributes", bases)
+	reader := newSweepReader(t)
 	for _, name := range slices.Sorted(maps.Keys(bases)) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			base := bases[name]
+			p := reader.start(t)
 			s, err := ReadScenario(base)
 			if err != nil {
 				t.Fatalf("the base: %v", err)
@@ -84,10 +86,10 @@ func TestNoNameOfNothingInsideABlockMovesAStateTowardTrue(t *testing.T) {
 					}
 				}
 			}
-			n := sweepAgainst(t, name, base, inputs)
+			n := sweepAgainst(t, p, name, base, inputs)
 			atFloor(t, "texts", name, n)
 			t.Logf("%d texts inside a block: %d refused, %d read as the base, %d read another state", n.inputs, n.refused, n.same, n.moved)
-			n = sweepAgainst(t, name, base, leftOutAttributes(t, base, tree))
+			n = sweepAgainst(t, p, name, base, leftOutAttributes(t, base, tree))
 			atFloor(t, "attributes", name, n)
 			t.Logf("%d attributes left out: %d refused, %d read as the base, %d read another state, %d of them toward true by right: %q",
 				n.inputs, n.refused, n.same, n.moved, n.byRight, n.rights)

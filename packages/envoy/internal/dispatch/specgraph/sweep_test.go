@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/json/v2"
 	"fmt"
-	"io/fs"
 	"maps"
 	"path"
 	"path/filepath"
@@ -113,15 +112,17 @@ func TestNoInputThatSaysNothingMovesAStateTowardTrue(t *testing.T) {
 	t.Parallel()
 	bases := setUp(t, "the sweeps' setup (sweepBases)", sweepBases)
 	floorsCover(t, "tree", bases)
+	reader := newSweepReader(t)
 	for _, name := range slices.Sorted(maps.Keys(bases)) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			base := bases[name]
+			p := reader.start(t)
 			inputs, roundTrip := sweepInputs(t, base)
-			if got, err := sweepStates(roundTrip); err != nil || !maps.Equal(got, baseStates(t, base)) {
+			if got, err := p.states(t, roundTrip); err != nil || !maps.Equal(got, baseStates(t, p, base)) {
 				t.Fatalf("each JSON file of the scenario written again by the sweep does not read as the scenario: %v", err)
 			}
-			n := sweepAgainst(t, name, base, inputs)
+			n := sweepAgainst(t, p, name, base, inputs)
 			atFloor(t, "tree", name, n)
 			legs := 0 // the inputs that write the leg of no matrix at the leg of a record
 			for _, in := range inputs {
@@ -135,10 +136,11 @@ func TestNoInputThatSaysNothingMovesAStateTowardTrue(t *testing.T) {
 	}
 }
 
-// baseStates is the state of each check, statement and wait of the base, as sweepStates gives it.
-func baseStates(t *testing.T, base fs.FS) map[string]string {
+// baseStates is the state of each check, statement and wait of the base, as the reader's process p
+// reads it.
+func baseStates(t *testing.T, p *readerProcess, base fstest.MapFS) map[string]string {
 	t.Helper()
-	whole, err := sweepStates(base)
+	whole, err := p.states(t, base)
 	if err != nil {
 		t.Fatalf("the base: %v", err)
 	}
@@ -149,9 +151,9 @@ func baseStates(t *testing.T, base fs.FS) map[string]string {
 // comparing each one's states with what the sweep wants of them, how many the reader or the
 // derivation refused, how many read as the base, how many read another state with no state moved
 // toward true or with a state moved by the input's right, how many of those moved a state toward
-// true by a right, with what each of them changed; and judged, the key of the base's own files
-// (inputKey of the base against no file), then each judged input's key (inputKey) and kind, in the
-// order of the inputs: 'r' read, 'x' refused. An input that fails the comparison fails the test
+// true by a right, with what each of them changed; and judged, the key of the base's line, the bytes
+// that the reader's process read of the base (readerLine), then each judged input's key and kind, in
+// the order of the inputs: 'r' read, 'x' refused. An input that fails the comparison fails the test
 // and is counted nowhere. So the floors (atFloor), which count the inputs judged and hold the
 // digest of judged, fail by name where the sweep skips an input that it built, drops one that it
 // judged, writes an input's bytes otherwise, or reads a base of other bytes. known is how many
@@ -203,15 +205,15 @@ func knownPositive(t *testing.T, base fstest.MapFS) sweepInput {
 	}
 }
 
-// sweepAgainst derives each input of the base name and compares its states with those of the base:
-// an input that moves a state toward true fails the test, unless the input has a right to it. The
-// base's states, and each comparison of an input's files with the base's, come from a separate
-// build of the base (sweepBase, inside the guard of the setup, setUp), which no writer, builder or
-// code of the sweep saw; base, the base that the sweep built its inputs from, must hold its files
-// byte for byte (baseAsBuilt), so that a writer or code of the sweep that changed the base, whose
-// change the sweep would read both as its input's and as its want's, fails by the base's name. A
-// right with allowed covers only the places where the input reads the state that allowed holds
-// there. Two rights name no place, so an input that has one is judged by its right alone: a
+// sweepAgainst derives each input of the base name in the reader's process p and compares its states
+// with those of the base: an input that moves a state toward true fails the test, unless the input
+// has a right to it. The base's states, and each comparison of an input's files with the base's, come
+// from a separate build of the base (sweepBase, inside the guard of the setup, setUp), which no
+// writer, builder or code of the sweep saw; base, the base that the sweep built its inputs from, must
+// hold its files byte for byte (baseAsBuilt), so that a writer or code of the sweep that changed the
+// base, whose change the sweep would read both as its input's and as its want's, fails by the base's
+// name. A right with allowed covers only the places where the input reads the state that allowed
+// holds there. Two rights name no place, so an input that has one is judged by its right alone: a
 // repository path of a tree written " " (pathOfOneSpace), whose tree then changed at a path that a
 // tie covers, so the carry of each result across that commit ends, at each subject after it; and a
 // parent left out of an approved block (parentLeftOut), whose statement then sits at the top of the
@@ -219,20 +221,23 @@ func knownPositive(t *testing.T, base fstest.MapFS) sweepInput {
 // places that such an input may move are those that the derivation itself reaches from its change,
 // so a list of them would be a second derivation. An input whose files are the base's (sameFiles)
 // fails the test too: its writer wrote nothing, and it would read as the base and pass. So does an
-// input whose files are those of an earlier input of the list, byte for byte (inputKey): the sweep
-// would read one case twice and the case that it means not at all, as when a writer or a table
-// turned one input into another. At knownPositiveBase, the sweep also judges its known positive,
-// last, by the same code as each input, and fails by name unless it reported that input once
-// (sweepCount.known); no floor counts it.
-func sweepAgainst(t *testing.T, name string, base fstest.MapFS, inputs []sweepInput) sweepCount {
+// input whose files are those of an earlier input of the list, byte for byte (the key of its line,
+// readerLine): the sweep would read one case twice and the case that it means not at all, as when a
+// writer or a table turned one input into another. At knownPositiveBase, the sweep also judges its
+// known positive, last, by the same code as each input, and fails by name unless it reported that
+// input once (sweepCount.known); no floor counts it.
+func sweepAgainst(t *testing.T, reader *readerProcess, name string, base fstest.MapFS, inputs []sweepInput) sweepCount {
 	t.Helper()
 	built := setUp(t, "a separate build of the base "+name, func(t *testing.T) map[string]fstest.MapFS {
 		return map[string]fstest.MapFS{name: sweepBase(t, name)}
 	})[name]
 	baseAsBuilt(t, name, base, built)
-	whole := baseStates(t, built)
+	line, baseKey := readerLine(t, built)
+	whole, err := reader.ask(t, line)
+	if err != nil {
+		t.Fatalf("the base: %v", err)
+	}
 	n := sweepCount{inputs: len(inputs)}
-	baseKey := inputKey(fstest.MapFS{}, built)
 	n.judged = append(n.judged, baseKey[:]...)
 	if name == knownPositiveBase {
 		inputs = append(slices.Clone(inputs), knownPositive(t, built))
@@ -243,13 +248,13 @@ func sweepAgainst(t *testing.T, name string, base fstest.MapFS, inputs []sweepIn
 			t.Errorf("%s: the input's files are the base's, so the sweep wrote nothing", in.what)
 			continue
 		}
-		key := inputKey(built, in.fsys)
+		line, key := readerLine(t, in.fsys)
 		if first, held := seen[key]; held {
 			t.Errorf("%s: the input's files are those of the input %s, byte for byte, so the sweep reads one case twice", in.what, first)
 			continue
 		}
 		seen[key] = in.what
-		got, err := sweepStates(in.fsys)
+		got, err := reader.ask(t, line)
 		switch {
 		case err != nil:
 			if n.counted(in, key, 'x') {
@@ -306,33 +311,6 @@ func baseAsBuilt(t *testing.T, name string, base, built fstest.MapFS) {
 	}
 }
 
-// inputKey is what the input fsys holds apart from base, as one sha256: each file of fsys that base
-// does not hold with the same bytes, by its name and its bytes, and each file of base that fsys does
-// not hold, by its name. Two inputs of one base hold the same files, byte for byte, exactly where
-// their keys are the same. Each JSON file that a sweep writes is as encodeTree writes it, with the
-// members of each object in the order of their names, so two inputs that write one tree have the
-// same key. Inputs that differ in bytes and that the reader reads the same are, by design, the
-// sweep's forms of one meaning (a member left out, "" and " ", each read as nothing), so the key
-// does not compare readings; a change of those forms is a change of the sweep's own text, which no
-// writer can make, and the floor's digest of each input's key and kind in their order fails it
-// (sweepCount.judged, sweepFloors). The key of a base against no file holds each of its files.
-func inputKey(base, fsys fstest.MapFS) [sha256.Size]byte {
-	h := sha256.New()
-	for _, name := range slices.Sorted(maps.Keys(fsys)) {
-		if was, held := base[name]; held && bytes.Equal(was.Data, fsys[name].Data) {
-			continue
-		}
-		fmt.Fprintf(h, "file %q, %d bytes:", name, len(fsys[name].Data))
-		h.Write(fsys[name].Data)
-	}
-	for _, name := range slices.Sorted(maps.Keys(base)) {
-		if _, held := fsys[name]; !held {
-			fmt.Fprintf(h, "no file %q;", name)
-		}
-	}
-	return [sha256.Size]byte(h.Sum(nil))
-}
-
 // sameFiles is whether the scenarios a and b hold the same files with the same contents: each JSON
 // file as its decoded tree, since the base's files are as their author wrote them and a write is as
 // encodeTree writes it, and each other file by its bytes.
@@ -377,10 +355,12 @@ func TestAddingARefusalOfCIMovesAStateTowardTrueOnlyByTakingOutItsCommitsResults
 	t.Parallel()
 	bases := setUp(t, "the sweeps' setup (sweepBases)", sweepBases)
 	floorsCover(t, "refusals", bases)
+	reader := newSweepReader(t)
 	for _, name := range slices.Sorted(maps.Keys(bases)) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			base := bases[name]
+			p := reader.start(t)
 			s, err := ReadScenario(base)
 			if err != nil {
 				t.Fatalf("the base: %v", err)
@@ -395,12 +375,12 @@ func TestAddingARefusalOfCIMovesAStateTowardTrueOnlyByTakingOutItsCommitsResults
 					fsys := refusalAdded(t, base, commit, c.ID)
 					in := sweepInput{what: fmt.Sprintf("uncited.json: a refusal of %s at %s", c.ID, commit), fsys: fsys}
 					if CountsAtACommit(c) && slices.ContainsFunc(s.Results, func(r Result) bool { return r.Check == c.ID && countedCommit(s, c, r) == commit }) {
-						in.right, in.allowed = refusedCommitsResults, withoutResultsOf(t, base, c, commit)
+						in.right, in.allowed = refusedCommitsResults, withoutResultsOf(t, p, base, c, commit)
 					}
 					inputs = append(inputs, in)
 				}
 			}
-			n := sweepAgainst(t, name, base, inputs)
+			n := sweepAgainst(t, p, name, base, inputs)
 			atFloor(t, "refusals", name, n)
 			t.Logf("%d refusals added: %d refused, %d read as the base, %d read another state, %d of them toward true by right: %q",
 				n.inputs, n.refused, n.same, n.moved, n.byRight, n.rights)
@@ -412,14 +392,15 @@ func TestAddingARefusalOfCIMovesAStateTowardTrueOnlyByTakingOutItsCommitsResults
 // check: those results count nowhere (R48), and the results of the other commits decide.
 const refusedCommitsResults = `the results of the refused commit count nowhere, and the results of the other commits decide (R48: "no earlier result of it counts")`
 
-// withoutResultsOf is the states of base with each result of the check c whose commit
-// (countedCommit) is commit taken out of results.json, and with no state of a subject at commit:
-// the places that a refusal of the check at commit may move toward true, each to the state given
-// here. The results that it means, those of base but each of c whose commit is commit, as the
-// reader reads them, and the place of each record to take out come from a decode of base of their
-// own, made before the writer runs; the writer (resultsWithout) is handed a copy of those places
-// and the tree of results.json decoded for it alone, and the reader reads its write back.
-func withoutResultsOf(t *testing.T, base fstest.MapFS, c Check, commit string) map[string]string {
+// withoutResultsOf is the states of base, as the reader's process p reads them, with each result of
+// the check c whose commit (countedCommit) is commit taken out of results.json, and with no state of a
+// subject at commit: the places that a refusal of the check at commit may move toward true, each to
+// the state given here. The results that it means, those of base but each of c whose commit is
+// commit, as the reader reads them, and the place of each record to take out come from a decode of
+// base of their own, made before the writer runs; the writer (resultsWithout) is handed a copy of
+// those places and the tree of results.json decoded for it alone, and the reader reads its write
+// back.
+func withoutResultsOf(t *testing.T, p *readerProcess, base fstest.MapFS, c Check, commit string) map[string]string {
 	t.Helper()
 	s := decodedScenario(t, base)
 	var out []int
@@ -433,7 +414,7 @@ func withoutResultsOf(t *testing.T, base fstest.MapFS, c Check, commit string) m
 	if read, err := ReadScenario(fsys); err != nil || !reflect.DeepEqual(read.Results, want) {
 		t.Fatalf("the sweep took the results of %s at %s out of results.json, and the reader reads %d results (%v), where it should read %d", c.ID, commit, len(read.Results), err, len(want))
 	}
-	states, err := sweepStates(fsys)
+	states, err := p.states(t, fsys)
 	if err != nil {
 		t.Fatalf("the base with the results of %s at %s taken out: %v", c.ID, commit, err)
 	}
@@ -474,11 +455,12 @@ func decodedScenario(t *testing.T, base fstest.MapFS) Scenario {
 // older evidence decides, as with no such record.
 const plantedOnElsewhere = `a planted_on that names a commit of the history counts only where R8 carries it; elsewhere older evidence decides`
 
-// withoutResult is the states of base with result i of results.json taken out.
-func withoutResult(t *testing.T, base fstest.MapFS, i int) map[string]string {
+// withoutResult is the states of base with result i of results.json taken out, as the reader's
+// process p reads them.
+func withoutResult(t *testing.T, p *readerProcess, base fstest.MapFS, i int) map[string]string {
 	t.Helper()
 	fsys := changedFile(t, base, "results.json", treeChange{place: []string{strconv.Itoa(i)}, out: true}, func() treeWriter { return leftOutAt })
-	states, err := sweepStates(fsys)
+	states, err := p.states(t, fsys)
 	if err != nil {
 		t.Fatalf("the base with result %d taken out: %v", i+1, err)
 	}
@@ -540,10 +522,12 @@ func TestAddingAMemberMovesNoStateTowardTrue(t *testing.T) {
 	t.Parallel()
 	bases := setUp(t, "the sweeps' setup (sweepBases)", sweepBases)
 	floorsCover(t, "members", bases)
+	reader := newSweepReader(t)
 	for _, name := range slices.Sorted(maps.Keys(bases)) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			base := bases[name]
+			p := reader.start(t)
 			s, err := ReadScenario(base)
 			if err != nil {
 				t.Fatalf("the base: %v", err)
@@ -589,7 +573,7 @@ func TestAddingAMemberMovesNoStateTowardTrue(t *testing.T) {
 							in := sweepInput{what: fmt.Sprintf("%s %s with %s %s", file, treePointer(place), m[0], encodeTree(t, v)), fsys: fsys}
 							if commit, named := v.(string); file == "results.json" && m[0] == "planted_on" && named {
 								if _, held, err := s.History.Changed(commit, commit); err == nil && held {
-									in.right, in.allowed = plantedOnElsewhere, withoutResult(t, base, i)
+									in.right, in.allowed = plantedOnElsewhere, withoutResult(t, p, base, i)
 								}
 							}
 							inputs = append(inputs, in)
@@ -597,7 +581,7 @@ func TestAddingAMemberMovesNoStateTowardTrue(t *testing.T) {
 					}
 				}
 			}
-			n := sweepAgainst(t, name, base, inputs)
+			n := sweepAgainst(t, p, name, base, inputs)
 			atFloor(t, "members", name, n)
 			t.Logf("%d members added: %d refused, %d read as the base, %d read another state", n.inputs, n.refused, n.same, n.moved)
 		})
@@ -759,38 +743,6 @@ func sweepInputs(t *testing.T, base fstest.MapFS) ([]sweepInput, fstest.MapFS) {
 	return inputs, roundTrip
 }
 
-// sweepStates is the state of each check, of each statement and its own state, and of each wait of
-// each unit, at each subject of the scenario fsys, by its place in the output: the subject by its
-// place in subjects.json, not its value, since an input that leaves out a member of a subject, such
-// as graph_tx, derives the states of that subject; or the refusal of the reader or of the derivation.
-func sweepStates(fsys fs.FS) (map[string]string, error) {
-	s, err := ReadScenario(fsys)
-	if err != nil {
-		return nil, err
-	}
-	states := map[string]string{}
-	for i := range s.Subjects {
-		state, err := Derive(s.Input(i))
-		if err != nil {
-			return nil, err
-		}
-		at := fmt.Sprintf("subject %d", i+1)
-		for _, c := range state.Checks {
-			states[at+" check "+c.ID] = c.State
-		}
-		for _, st := range state.Statements {
-			states[at+" statement "+st.ID] = st.State
-			states[at+" own state of "+st.ID] = st.Own
-		}
-		for _, u := range s.Units {
-			for _, statement := range u.WaitsOn {
-				states[at+" wait of "+u.ID+" on "+statement] = map[bool]string{true: "ends", false: "holds"}[state.WaitEnds(statement)]
-			}
-		}
-	}
-	return states, nil
-}
-
 // towardTrue is each state of got that reads true, met or ends where whole reads otherwise.
 func towardTrue(whole, got map[string]string) []string {
 	var toward []string
@@ -883,6 +835,8 @@ func TestTakingOutAWholeRecordMovesAStateOnlyByItsRight(t *testing.T) {
 			}
 		}
 	}
+	reader := newSweepReader(t)
+	p := reader.start(t)
 	for _, r := range rows {
 		base := scenarioFS(t, filepath.Join("testdata", "scenarios", r.scenario))
 		if r.setup != nil {
@@ -894,7 +848,7 @@ func TestTakingOutAWholeRecordMovesAStateOnlyByItsRight(t *testing.T) {
 			want string
 			form string
 		}{{base, r.with, "with"}, {without, r.without, "without"}} {
-			states, err := sweepStates(read.fsys)
+			states, err := p.states(t, read.fsys)
 			if err != nil {
 				t.Errorf("%s, %s the record: %v", r.kind, read.form, err)
 				continue
