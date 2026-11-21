@@ -308,15 +308,20 @@ func (c *Client) requestConfirmed(ctx context.Context, subject string, data []by
 }
 
 // requestConfirmedOn is requestConfirmed's request on conn, once conn can take it. Its error is
-// left for requestConfirmed to name. Its reply subscription ends with the wait (endReplies).
+// left for requestConfirmed to name. Its reply subscription ends with the wait (endReplies). The
+// request unsubscribes on the caller's goroutine only for a reply it took while conn was still in
+// the life it subscribed in (connLife). Once nats.go reports conn lost, a reconnect's handshake
+// can hold nats.go's connection lock, which the unsubscribe waits for. So a reply taken then, also
+// one that was waiting in the inbox, ends the inbox off the caller's goroutine.
 func (c *Client) requestConfirmedOn(ctx context.Context, conn *nats.Conn, subject string, data []byte) (*nats.Msg, error) {
+	life := lifeOf(conn).current()
 	inbox := conn.NewInbox()
 	replies, err := conn.SubscribeSync(inbox)
 	if err != nil {
 		return nil, err
 	}
 	replied := false
-	defer func() { endReplies(replies, replied) }()
+	defer func() { endReplies(replies, replied && lifeCurrent(life)) }()
 	err = c.publishConfirmed(ctx, conn, &nats.Msg{Subject: subject, Reply: inbox, Data: data}, conn.PublishMsg)
 	if err != nil && !errors.Is(err, ErrPublishUnconfirmed) {
 		return nil, err
@@ -362,6 +367,10 @@ func (c *Client) requestConfirmedOn(ctx context.Context, conn *nats.Conn, subjec
 // a request whose connection is closed or drained under it waits out ctx and returns ctx's error,
 // where requestConfirmed returns nats.ErrConnectionClosed at once. The probe counts both as
 // connected, and the case is a shutdown race.
+//
+// Its reply subscription ends as requestConfirmedOn's does (endReplies): on the caller's goroutine
+// only for a reply taken while the connection was still in the life it subscribed in, and off it
+// otherwise.
 func (c *Client) RequestCore(ctx context.Context, subject string, header nats.Header) (*nats.Msg, error) {
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
@@ -372,6 +381,7 @@ func (c *Client) RequestCore(ctx context.Context, subject string, header nats.He
 		return nil, err
 	}
 	conn := c.Connection()
+	life := lifeOf(conn).current()
 	inbox := conn.NewInbox()
 	replies := make(chan *nats.Msg, nats.RequestChanLen)
 	subscription, err := conn.ChanSubscribe(inbox, replies)
@@ -379,7 +389,7 @@ func (c *Client) RequestCore(ctx context.Context, subject string, header nats.He
 		return nil, err
 	}
 	replied := false
-	defer func() { endReplies(subscription, replied) }()
+	defer func() { endReplies(subscription, replied && lifeCurrent(life)) }()
 	err = c.publishConfirmed(ctx, conn, &nats.Msg{Subject: subject, Reply: inbox, Header: header}, conn.PublishMsg)
 	if err != nil && !errors.Is(err, ErrPublishUnconfirmed) {
 		return nil, err

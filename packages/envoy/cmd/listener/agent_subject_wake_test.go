@@ -457,9 +457,13 @@ func TestAnAgentMessageIsTheSessionConsumersAlone(t *testing.T) {
 			MachineID: aloneNoListener, SelfSubscribed: true, Delivery: session.DeliveryConsumer, Epoch: "e",
 			UpdatedAt: time.Now().Add(-(session.GoneHorizon + 10*time.Minute)).UnixMilli(),
 		})
-		// The listeners' caches follow the bucket in milliseconds; this lets both hold the record
-		// before the message, so the row reads the record's state and not its absence.
-		time.Sleep(500 * time.Millisecond)
+		// Both listeners' caches apply the bucket's records in the bucket's order (kvwatch), so a
+		// live record put after this one fences it: once both list the fence, both have applied
+		// this record before the message, and the row reads the record's state, not its absence.
+		fence := "ses_l1_d_fence_" + id.New()
+		putRecord(t, rig.publisher, fence, session.SessionEntry{MachineID: aloneNoListener, UpdatedAt: time.Now().UnixMilli()})
+		rig.a.awaitSessionMachine(t, fence, aloneNoListener)
+		rig.b.awaitSessionMachine(t, fence, aloneNoListener)
 		unowned(t, sessionID)
 	})
 
@@ -506,7 +510,10 @@ func TestAnAgentMessageIsTheSessionConsumersAlone(t *testing.T) {
 			MachineID: aloneNoListener, SelfSubscribed: true, Delivery: session.DeliveryConsumer, Epoch: "e",
 			UpdatedAt: time.Now().UnixMilli(), ConsumerStart: math.MaxUint32,
 		})
-		time.Sleep(500 * time.Millisecond)
+		// Both listeners' caches apply the bucket's records in the bucket's order (kvwatch), so once
+		// both list later, put last, both have applied all three records before the messages.
+		rig.a.awaitSessionMachine(t, later, aloneNoListener)
+		rig.b.awaitSessionMachine(t, later, aloneNoListener)
 
 		liveItem, _, stored := rig.store(t, live)
 		rig.store(t, unresponsive)

@@ -344,8 +344,10 @@ func (m *sessionDelivery) clk() clock.Clock {
 // changes is the filter.
 //
 // ctx bounds the repair: it carries the registration's deadline and not its client's cancel
-// (registerPass), so the repair ends inside the registration's budget (sendRequestBudget). The
-// answer waits for it.
+// (registerPass), so the repair ends inside the registration's budget (sendRequestBudget), but for
+// that budget's two gaps (subscribeHandler): each read of the connection's state made once ctx has
+// ended can add up to 100 ms (bus.ConnLockWait), and a send or subscribe that meets a handshake
+// begun just after its read waits for that attempt. The registration's answer waits for the repair.
 func (m *sessionDelivery) confirmRegistered(ctx context.Context, d *listenerDeps, sessionID string, ackFloor uint64) {
 	if m == nil || m.consumers == nil {
 		return

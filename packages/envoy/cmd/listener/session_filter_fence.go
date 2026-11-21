@@ -47,9 +47,12 @@ const (
 	// after a delete, the route's sendRequestBudget after a registration): a reaper pass
 	// deletes the record before the consumer delete that the repair after a delete follows
 	// (deleteConsumer), and the record a registration wrote is gone to the repair after that
-	// registration only where such a delete ran after that write (confirmRegistered). The fence
-	// ends on it by logging what stands rather than on the line that leaves the filter to the
-	// next heartbeat, since this loop has none to wait on (fenceFilterWrite).
+	// registration only where such a delete ran after that write (confirmRegistered). Each read
+	// of the connection's state the repair makes once that budget has ended can add up to 100 ms
+	// (bus.ConnLockWait), and a send or subscribe that meets a handshake begun just after its read
+	// waits for that attempt. The fence ends on it by logging what stands rather than on the line
+	// that leaves the filter to the next heartbeat, since this loop has none to wait on
+	// (fenceFilterWrite).
 	filterWriteSessionGone
 	// filterWriteNotMade is a pass that planned no write, or whose write the server refused with
 	// an answer of its own: nothing of this pass reached the consumer. The fence ends on it, and

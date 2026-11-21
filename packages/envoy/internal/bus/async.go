@@ -356,12 +356,7 @@ func (w *window) current() bool {
 	w.pinning.Lock()
 	life := w.life
 	w.pinning.Unlock()
-	select {
-	case <-life:
-		return false
-	default:
-		return true
-	}
+	return lifeCurrent(life)
 }
 
 // sendJetStream publishes data, an envelope's encoding, to the stream on subject, under msgID as

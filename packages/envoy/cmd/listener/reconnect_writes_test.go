@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptrace"
 	"strconv"
 	"strings"
 	"sync"
@@ -50,12 +51,27 @@ func (a reconnectWritesAnswer) String() string {
 // gives up on the answer after timeout. It reports a failure rather than failing the test, so it
 // runs on a goroutine of its own.
 func reconnectWritesCall(port int, path, body string, timeout time.Duration) reconnectWritesAnswer {
+	return reconnectWritesCallWritten(port, path, body, timeout, nil)
+}
+
+// reconnectWritesCallWritten is reconnectWritesCall, which calls written, when it is not nil, once
+// the whole request is written to the listener's socket.
+func reconnectWritesCallWritten(port int, path, body string, timeout time.Duration, written func()) reconnectWritesAnswer {
 	request, err := http.NewRequest(http.MethodPost, "http://127.0.0.1:"+strconv.Itoa(port)+path, strings.NewReader(body))
 	if err != nil {
 		return reconnectWritesAnswer{err: err}
 	}
 	request.Header.Set("Authorization", "Bearer "+listenerTestToken)
 	request.Header.Set("Content-Type", "application/json")
+	if written != nil {
+		request = request.WithContext(httptrace.WithClientTrace(request.Context(), &httptrace.ClientTrace{
+			WroteRequest: func(info httptrace.WroteRequestInfo) {
+				if info.Err == nil {
+					written()
+				}
+			},
+		}))
+	}
 	response, err := (&http.Client{Timeout: timeout}).Do(request)
 	if err != nil {
 		return reconnectWritesAnswer{err: err}
@@ -157,22 +173,33 @@ func TestAWriteThroughANATSReconnectWaitsOrFailsByName(t *testing.T) {
 	t.Run("a role claim refresh and a publish during an outage wait for the server or fail by name", func(t *testing.T) {
 		const role, topic = "reconnect-writes-waited", "notifications.team.reconnect-writes-waited"
 		stop(t)
-		// The calls run on a goroutine, so the server is started again on the test's own.
+		// The calls run on a goroutine, so the server is started again on the test's own, once
+		// both requests are written to the listener's socket while the server is down.
+		written := make(chan struct{}, 2)
+		wrote := func() { written <- struct{}{} }
 		answered := make(chan []reconnectWritesAnswer, 1)
 		go func() {
 			answered <- call(
 				func() reconnectWritesAnswer {
-					return reconnectWritesCall(listener.port, "/v1/roles/set", claim(role), answerWithin)
+					return reconnectWritesCallWritten(listener.port, "/v1/roles/set", claim(role), answerWithin, wrote)
 				},
 				func() reconnectWritesAnswer {
-					return reconnectWritesCall(listener.port, "/v1/messages/publish", publishBody(topic), answerWithin)
+					return reconnectWritesCallWritten(listener.port, "/v1/messages/publish", publishBody(topic), answerWithin, wrote)
 				},
 			)
 		}()
-		time.Sleep(time.Second)
+		for range 2 {
+			select {
+			case <-written:
+			case got := <-answered:
+				t.Fatalf("control: the calls answered %s and %s before both were written to the listener", got[0], got[1])
+			case <-time.After(15 * time.Second):
+				t.Fatal("control: the calls were not both written to the listener within 15 s")
+			}
+		}
 		server.Start(t)
 		got := <-answered
-		t.Logf("during a 1 s outage the role claim refresh answered %s and the publish %s", got[0], got[1])
+		t.Logf("during the outage the role claim refresh answered %s and the publish %s", got[0], got[1])
 		waitedOrNamed(t, "the role claim refresh", got[0])
 		waitedOrNamed(t, "the publish", got[1])
 		js := observe(t)

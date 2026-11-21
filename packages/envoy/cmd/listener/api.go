@@ -2920,9 +2920,11 @@ func (d *listenerDeps) registerPass(
 // bus-unavailable 503 with Retry-After: 1 inside the caller's attempt (writeStoreError); a
 // refused key is still its 413 or 400. Its consumer calls run on the same context, within the
 // same budget, and one that failed because NATS is reconnecting is answered that same 503,
-// naming the reconnect. The session's known-session record is written after all of that, on a
-// bound of its own, and the registration is answered 200 only once it has landed
-// (answerRegistration).
+// naming the reconnect. The budget has two gaps: each read of the connection's state made once it
+// has ended can add up to 100 ms (bus.ConnLockWait), and a send or subscribe that meets a
+// handshake begun just after its read waits for that attempt. The session's known-session record
+// is written after all of that, on a bound of its own, and the registration is answered 200 only
+// once it has landed (answerRegistration).
 //
 // The renewal is the one thing here that cannot fail the registration. It runs once the interest
 // row and the session entry are written, and whatever it could not do is logged and passed over: a
@@ -3228,7 +3230,9 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 // a loaded box it can take whole. One second is what the send route gives its one read of a target
 // (sendSessionReadTimeout); after the budget it keeps a registration's answer inside 4.5 s, within
 // the 5 s envoy-client gives each attempt (packages/envoy-client/src/transport.ts) and this
-// listener's 10 s write timeout (main.go).
+// listener's 10 s write timeout (main.go), but for the two gaps subscribeHandler names: a read of
+// the connection's state once a bound has ended, and a handshake begun just after a send's or
+// subscribe's read.
 const knownRecordWriteTimeout = 1 * time.Second
 
 // answerRegistration is the one place subscribeHandler answers a registration it accepted: it

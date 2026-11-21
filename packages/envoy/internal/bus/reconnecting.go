@@ -377,7 +377,9 @@ func waitWhileConnecting(ctx context.Context, conn *nats.Conn) error {
 //     publish (sendStored), and nats.go's own steps of a legacy JetStream request; a send left
 //     running could still go out after its caller was told it did not;
 //   - the subscribe of a request's reply inbox (requestConfirmedOn, RequestCore, window.request,
-//     StartRequestStoredTo), and the unsubscribe of one a reply answered (endReplies);
+//     StartRequestStoredTo), the status listener a request of the client's own registers before
+//     it on a connection nothing follows yet (lifeOf), and the unsubscribe of one a reply answered
+//     (endReplies);
 //   - a read of the state for a call that takes no ctx: the name of a legacy JetStream request made
 //     with no nats.Context (namedWith), and Connected, SubOK, CoreSubOK and a recovery's
 //     subscriptionsHealthy, which hold no lock of the client's across it (connOpen).
@@ -425,13 +427,15 @@ func init() { readFloor.Store(int64(ConnLockWait)) }
 
 // endReplies unsubscribes sub, the reply inbox of a request whose wait has ended. The unsubscribe
 // waits for nats.go's connection lock. replied says a reply answered the request over a live link
-// a moment ago: the request's wait took the reply as it arrived, and, for a window's request, the
-// window's connection is still current (window.request). Such a request unsubscribes at once on the
-// caller's goroutine. Any other request - one whose wait ended with no reply, at its caller's
-// bound, at a refusal or at the connection's loss, or found its reply already waiting once the
-// connection had changed - may end while nats.go holds that lock through a reconnect's handshake,
-// so it unsubscribes on a goroutine of its own and its caller answers at once. That goroutine ends
-// when nats.go lets the lock go; until then the inbox can take a late reply, which nothing reads.
+// a moment ago: the request's wait took the reply, and the connection is still in the life the
+// inbox was subscribed in (connLife). A window's request reads the window's life
+// (window.current); a request of the client's own reads the life it took before its subscribe
+// (requestConfirmedOn, RequestCore, PendingForward.Wait). Such a request unsubscribes at once on
+// the caller's goroutine. Any other request - one whose wait ended with no reply, at its caller's
+// bound, at a refusal or at the connection's loss, or took its reply once the connection had
+// changed - may end while nats.go holds that lock through a reconnect's handshake, so it
+// unsubscribes on a goroutine of its own and its caller answers at once. That goroutine ends when
+// nats.go lets the lock go; until then the inbox can take a late reply, which nothing reads.
 func endReplies(sub *nats.Subscription, replied bool) {
 	if replied {
 		_ = sub.Unsubscribe()

@@ -296,7 +296,7 @@ type Client struct {
 	// replyWaitBegins, when set, runs as a request this client builds itself begins its wait for
 	// the reply, its publish and flush confirmed (requestConfirmedOn, RequestCore). It is nil
 	// outside tests: a row sets it to know each request waits for its reply before it holds a
-	// reconnect's handshake.
+	// reconnect's handshake, or to keep each request there until the handshake is held.
 	replyWaitBegins atomic.Pointer[func()]
 	mu              sync.Mutex
 
@@ -2338,6 +2338,7 @@ func (c *Client) StartRequestStoredTo(subject string, item contracts.Envelope, m
 	}
 	deadline, _ := ctx.Deadline()
 	conn := c.Conn
+	life := lifeOf(conn).current()
 	inbox := nats.NewInbox()
 	replies, err := conn.SubscribeSync(inbox)
 	if err != nil {
@@ -2354,13 +2355,16 @@ func (c *Client) StartRequestStoredTo(subject string, item contracts.Envelope, m
 		endReplies(replies, false)
 		return nil, err
 	}
-	return &PendingForward{replies: replies, deadline: deadline, unconfirmed: err}, nil
+	return &PendingForward{replies: replies, life: life, deadline: deadline, unconfirmed: err}, nil
 }
 
 // PendingForward is a forward StartRequestStoredTo published, whose replies Wait reads.
 type PendingForward struct {
 	// replies is the forward's reply inbox, which the stream answers on.
-	replies  *nats.Subscription
+	replies *nats.Subscription
+	// life is the life of the connection replies was subscribed in (connLife), which says where
+	// Wait ends replies (endReplies).
+	life     <-chan struct{}
 	deadline time.Time
 	// unconfirmed is publishConfirmed's error for a publish it could not confirm, which the
 	// stream's acknowledgement may still overrule; nil when it confirmed the publish.
@@ -2372,9 +2376,14 @@ type PendingForward struct {
 // stream's error answer, and the server's no-responders answer (nothing captured the subject) are
 // each ErrForwardNotStored, wrapping the reason and, when publishConfirmed could not confirm the
 // publish, the reason for that.
+//
+// Wait unsubscribes on its caller's goroutine only for a reply it took while the connection was
+// still in the life replies was subscribed in. Once nats.go reports the connection lost, a
+// reconnect's handshake can hold nats.go's connection lock, which the unsubscribe waits for. So a
+// reply taken then, also one that was waiting in the inbox, ends the inbox off that goroutine.
 func (f *PendingForward) Wait() error {
 	replied := false
-	defer func() { endReplies(f.replies, replied) }()
+	defer func() { endReplies(f.replies, replied && lifeCurrent(f.life)) }()
 	for {
 		remaining := time.Until(f.deadline)
 		if remaining <= 0 {
