@@ -753,16 +753,22 @@ func forwardArm(role string, item contracts.Envelope, resolution roles.Resolutio
 // flight is handed by the keep itself (handOverKept). The keep carries no holder, so the route is
 // keyed on its role topic as the skip it replaced was, and holds back no session's later events.
 //
+// role is the role's claim key (contracts.RoleClaimKey of the copy's project and the role), and
+// the lane is keyed by that pair: a copy of PRIV and a copy of PUB for one free-form role keep
+// separate lanes, as the listener keys its own keep by the role topic, which names the project
+// (bus.KeptRoleSubject); a bare role keeps its bare key, so no lane of today moves.
+//
 // One role token is not kept for and skips as it did before the kept lane, under skipped: one no
 // claim can ever name (roles.Valid, the pattern POST /v1/roles/set refuses), since a copy kept
 // under such a token waits for a claim that cannot be made and expires unread. That is the rule
 // the listener's own keep follows (keepForNextHolder), which the two writers of a role's kept
 // lane must agree on.
 func keptOrSkipped(role, skipped string) *roleForward {
-	if !roles.Valid(role) {
+	project, name := contracts.ParseRoleClaimKey(role)
+	if !roles.Valid(name) {
 		return &roleForward{skip: skipped}
 	}
-	return &roleForward{keptFor: role}
+	return &roleForward{keptFor: contracts.RoleClaimKey(project, name)}
 }
 
 // send is the router of a role destination: it sends item, routed to that destination, as forward

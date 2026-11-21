@@ -225,13 +225,7 @@ func (rec *requestRecord) write(status int, outcome requestOutcome) {
 		slog.String("event_id", eventID),
 		slog.String("source", source),
 		slog.String("source_session", sourceSession))
-	// In the required mode the line carries the body only when the request's own read of the
-	// privacy answer lists no private project, so a request whose decisions needed no read makes
-	// the one read here.
-	if rec.privacy.isRequired() && rec.decision != nil {
-		_, _ = rec.decision.answer()
-	}
-	attrs = append(attrs, logPayload(rec.privacy, rec.decision, payloadSummary)...)
+	attrs = append(attrs, logPayload(rec.privacy, payloadSummary)...)
 	attrs = append(attrs,
 		slog.String("outcome", string(outcome)),
 		slog.Int("status", status))

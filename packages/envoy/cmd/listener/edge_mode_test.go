@@ -560,7 +560,8 @@ func TestARepositoryThatLeavesTheProjectStopsReachingTheEdge(t *testing.T) {
 
 // While no repository answer younger than 60 s stands, a registration naming a GitHub topic
 // is 503 repositories_unknown, every GitHub frame is acknowledged undelivered with the gap mark
-// on the next frame, and every frame that is not GitHub's flows as before.
+// on the next frame, named Envoy-Gap-Reason: repository_withheld so a client does not read it as
+// the stream's retention gap, and every frame that is not GitHub's flows as before.
 func TestAnUnknownRepositoryAnswerWithholdsOnlyGitHubFrames(t *testing.T) {
 	rig := newEdgeRig(t)
 	const sessionID = "ses_edge_unknown"
@@ -581,6 +582,9 @@ func TestAnUnknownRepositoryAnswerWithholdsOnlyGitHubFrames(t *testing.T) {
 	}
 	if got := frames[0].msg.Header.Get(relayHeaderGap); got != "true" {
 		t.Fatalf("the frame after the withheld GitHub event carries %s %q, want true", relayHeaderGap, got)
+	}
+	if got := frames[0].msg.Header.Get("Envoy-Gap-Reason"); got != "repository_withheld" {
+		t.Fatalf("the frame after the withheld GitHub event carries Envoy-Gap-Reason %q, want repository_withheld: a gap with no reason reads as the stream's retention gap", got)
 	}
 	if got := rig.withheld(t, "answer_unknown"); got != 1 {
 		t.Fatalf(`envoy_edge_github_withheld_total{reason="answer_unknown"} = %d, want 1`, got)
@@ -930,6 +934,53 @@ func TestAnEdgeClaimsPublishesAndReadsAFreeFormRoleOfItsProject(t *testing.T) {
 	requireRoleKeys(t, rig, map[string]string{"PRIV.lead-reviewer": holder, "lead-reviewer": bare})
 	published := publishToHeldRole(t, rig, senderToken, sender, contracts.RoleTopicPrefix+role)
 	requireFrames(t, standIn.collect(t, 1, 10*time.Second), published)
+}
+
+// On every listener, a role message on one project's lane that names a Legion role of another
+// project reaches no holder: the claim of a Legion role is keyed on its bare name, so without the
+// rule a message on notifications.role.PRIV.legion-infra-reviewer would be forwarded to the holder
+// of INFRA's legion-infra-reviewer. The role lane drops it before it resolves a holder, and the
+// publish route refuses it 400, as POST /v1/roles/set refuses the claim of that role under PRIV.
+// Control: a message on the role's own lane, before and after, reaches its holder.
+func TestARoleLaneOfAnotherProjectReachesNoHolderOfItsLegionRole(t *testing.T) {
+	rig := newEdgeRigServing(t, nil)
+	const holder, sender, role = "ses_lane_infra_holder", "ses_lane_sender", "legion-infra-reviewer"
+	holderToken, senderToken := rig.personToken(holder, "INFRA"), rig.personToken(sender, "INFRA")
+	standIn := startSessionStandIn(t, rig.url, holder, answerDone)
+	requireStatus(t, rig.subscribe(t, holderToken, holder), http.StatusOK, "the holder's registration")
+	requireStatus(t, rig.subscribe(t, senderToken, sender), http.StatusOK, "the sender's registration")
+	requireStatus(t, rig.call(t, http.MethodPost, holderToken, "/v1/roles/set", fmt.Sprintf(`{"session_id":%q,"role":%q}`, holder, role)),
+		http.StatusOK, "the claim of "+role)
+	cfg := wireTestRoleForwarder(t, rig.harness.config)
+	lane := func(project, key string) contracts.Envelope {
+		t.Helper()
+		item := listenerTestEnvelope(contracts.RoleSubject(project, role), key+"-"+id.New())
+		coreNATSDeliveryHandler(cfg)(&natsgo.Msg{Subject: item.Topic, Data: marshalListenerEnvelope(t, item)})
+		return item
+	}
+
+	own := lane("INFRA", "lane-own")
+	requireFrames(t, standIn.collect(t, 1, 10*time.Second), own)
+
+	other := lane("PRIV", "lane-other")
+	// The lane records its forward before it hands it on, in the call that took the message, so
+	// a forward to the holder is seen here as soon as that call returns.
+	if cfg.attemptCache.Seen(other.DedupeKey, holder) || cfg.dedupeCache.Seen(other.DedupeKey, holder) {
+		t.Fatalf("the role lane forwarded the message on %s to %s, the holder of INFRA's %s", other.Topic, holder, role)
+	}
+	after := lane("INFRA", "lane-after")
+	frames := standIn.collect(t, 1, 10*time.Second)
+	if frames[0].item.EventID == other.EventID {
+		t.Fatalf("the message on %s reached %s, the holder of INFRA's %s", other.Topic, holder, role)
+	}
+	requireFrames(t, frames, after)
+
+	body := fmt.Sprintf(`{"topic":%q,"message":"for INFRA's reviewer, under PRIV","source":"agent","source_session":%q}`, contracts.RoleSubject("PRIV", role), sender)
+	recorder := rig.call(t, http.MethodPost, senderToken, "/v1/messages/publish", body)
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "works for project INFRA") {
+		t.Fatalf("a publish to %s: status %d (%s), want 400 naming INFRA, the project the role works for",
+			contracts.RoleSubject("PRIV", role), recorder.Code, strings.TrimSpace(recorder.Body.String()))
+	}
 }
 
 // requireFreeFormRoleUnderItsProject is the free-form role row on rig: bare claims lead-reviewer,

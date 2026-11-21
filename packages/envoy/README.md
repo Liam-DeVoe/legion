@@ -134,7 +134,8 @@ The header of `cmd/listener/project_scope.go` lists the rules and the function t
   A subject writes a dot in a name as `_`, so `acme/a.b` and `acme/a_b` publish on one subject, and an answer that names one admits only that one's events.
   It acknowledges any other GitHub event undelivered and counts it in `envoy_edge_github_withheld_total`:
   under `reason="not_in_project"`, or under `reason="answer_unknown"` while a project of the session has no fresh answer.
-  In that second case the session's next frame carries `Envoy-Gap: true`, and every frame that is not GitHub's is delivered as before.
+  In that second case the session's next frame carries `Envoy-Gap: true` with `Envoy-Gap-Reason: repository_withheld`, and every frame that is not GitHub's is delivered as before.
+  A gap mark with no reason is the stream's own retention gap, and a frame that marks both carries no reason.
   A refresh removes a session's interest in a repository that left its projects.
 
 - **Publishes**: `POST /v1/messages/publish` takes only a role subject in the form that names the project, `notifications.role.<KEY>.<role>`, of one of the token's projects and for a role that works for that project;
@@ -160,6 +161,7 @@ On every listener, a role claim's key is `store.RoleClaimKeyOf` of the name it w
 A free-form role under a project (`PRIV.lead-reviewer`) is that project's own claim, keyed `<project>.<role>`, beside the claim of the same name under no project;
 every other name keeps its bare role name as its key.
 `POST /v1/roles/set` refuses with `400`, naming both projects, a Legion role under any project but the one its own name gives (`contracts.ClaimProject`), and the edge's role and publish rules read a role's project by that function too.
+A role message on a lane in the form that names a project, for a Legion role of another project (`notifications.role.PRIV.legion-infra-reviewer`), reaches no holder: the role lane drops it, and `POST /v1/messages/publish` refuses it with `400` naming the role's own project (`roleLaneProjectError`).
 
 ## The required privacy mode
 

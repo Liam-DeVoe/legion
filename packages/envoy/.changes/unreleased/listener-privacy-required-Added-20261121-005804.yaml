@@ -10,10 +10,12 @@ body: |-
   send, publish, role and subscribe routes refuse a project the caller does not see
   (`403 project_not_listed`), and the read routes show only the sessions, roles, topics and
   agents it sees. A Slack event of a private project's channel goes on that project's own lane.
-  `GET /v1/privacy-readiness` answers Dispatch whether the listener reads the source. Every
-  session object, and the registration's answer, now carries the token's `projects`. With both
-  variables unset the listener reads nothing and every project is public, as before; an
-  incomplete setting refuses startup.
+  `GET /v1/privacy-readiness` answers Dispatch whether the listener reads the source. In the
+  required mode every session object, and the registration's answer, carries the token's
+  `projects`, and no log line carries a message's text. A full member's session sees every
+  public project; a restricted member's sees only its token's list. With both variables unset
+  the listener reads nothing and every project is public, as before; an incomplete setting
+  refuses startup.
 time: 2026-11-21T00:58:04Z
 custom:
     Issue: listener-privacy-required

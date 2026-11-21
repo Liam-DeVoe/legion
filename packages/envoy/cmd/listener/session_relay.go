@@ -38,8 +38,17 @@ const (
 	// relayHeaderStoredAt is when the stream stored the message, RFC 3339 with nanoseconds, UTC.
 	relayHeaderStoredAt = "Envoy-Stored-At"
 	// relayHeaderGap is "true" on the first frame after a restart of the consumer that started below
-	// the stream's first sequence: messages the session had not taken are gone.
+	// the stream's first sequence: messages the session had not taken are gone. An edge listener
+	// sets it too on the first frame after GitHub events it withheld while it could read no fresh
+	// repository answer for the session's projects, and names that gap in relayHeaderGapReason.
 	relayHeaderGap = "Envoy-Gap"
+	// relayHeaderGapReason names a gap that is not the stream's own loss, beside relayHeaderGap:
+	// relayGapRepositoryWithheld for the edge's withheld GitHub events (sessionRelays.edgeWithholds).
+	// A gap mark with no reason is the stream's retention gap.
+	relayHeaderGapReason = "Envoy-Gap-Reason"
+	// relayGapRepositoryWithheld is relayHeaderGapReason's value for a gap of GitHub events the
+	// edge withheld because no fresh repository answer could say they were the session's.
+	relayGapRepositoryWithheld = "repository_withheld"
 )
 
 // The replies a session sends on a frame's reply subject, each exactly one ASCII word.
@@ -1033,7 +1042,9 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 		m.logger.Warn("session relay could not read the stream's identity; retrying", slog.String("session_id", sessionID), slog.String("error", bus.ErrNoStreamID.Error()))
 		return relayRetry
 	}
-	streamID, gap := start.StreamID, start.Gap
+	// gapReason names the gap the next frame marks, "" for the stream's retention gap
+	// (relayHeaderGapReason).
+	streamID, gap, gapReason := start.StreamID, start.Gap, ""
 	// A predecessor's held frames, which its record's marker names, are lost to this listener:
 	// the first frame this relay sends carries the hold's gap.
 	m.startHeld(ctx, sessionID)
@@ -1041,7 +1052,7 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 		// The privacy hold's frames are decided again, or dropped at their limit, when they are
 		// due, between pulls (privacy_hold.go).
 		if due, held := m.heldDue(sessionID); held && !time.Now().Before(due) {
-			if err := m.publishFrames(ctx, run, m.redecideHeld(ctx, sessionID), streamID, &gap); err != nil {
+			if err := m.publishFrames(ctx, run, m.redecideHeld(ctx, sessionID), streamID, &gap, &gapReason); err != nil {
 				return m.publishFailed(ctx, sessionID, err)
 			}
 			continue
@@ -1074,9 +1085,13 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 		// token's projects names the repository the event itself names (relayVerdict). One that
 		// does not is acknowledged undelivered and counted, and while no such answer can be read
 		// the session's next frame carries the gap mark, since the events withheld then are ones
-		// the session may have been owed.
+		// the session may have been owed, with the reason repository_withheld; a retention gap
+		// the same frame already marks keeps no reason, since it lost more.
 		if withhold, reason := m.edgeWithholds(sessionID, msg); withhold {
 			if reason == withheldAnswerUnknown {
+				if !gap {
+					gapReason = relayGapRepositoryWithheld
+				}
 				gap = true
 			}
 			continue
@@ -1087,25 +1102,28 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 		if m.holds != nil {
 			frames = m.decideFrame(ctx, sessionID, msg)
 		}
-		if err := m.publishFrames(ctx, run, frames, streamID, &gap); err != nil {
+		if err := m.publishFrames(ctx, run, frames, streamID, &gap, &gapReason); err != nil {
 			return m.publishFailed(ctx, sessionID, err)
 		}
 	}
 }
 
-// publishFrames publishes each of frames in order (publishFrame), the first carrying the stream's
-// gap mark when gap is set, which it then clears, and each carrying the privacy hold's gap when
-// the hold dropped a frame of the session's since its last relayed frame.
-func (m *sessionRelays) publishFrames(ctx context.Context, run *relayRun, frames []bus.SessionMessage, streamID string, gap *bool) error {
+// publishFrames publishes each of frames in order (publishFrame). The first carries the gap mark
+// gap names, with gapReason (the edge's repository_withheld, or none for the stream's retention
+// gap), which it then clears; a frame no such gap marks carries the privacy hold's gap when the
+// hold dropped a frame of the session's since its last relayed frame. A retention gap on the same
+// frame keeps no reason, since it lost more.
+func (m *sessionRelays) publishFrames(ctx context.Context, run *relayRun, frames []bus.SessionMessage, streamID string, gap *bool, gapReason *string) error {
 	for _, frame := range frames {
-		mark := relayGap{set: *gap}
-		if m.takeGap(run.sessionID) {
+		held := m.takeGap(run.sessionID)
+		mark := relayGap{set: *gap, reason: *gapReason}
+		if !mark.set && held {
 			mark = relayGap{set: true, reason: privacyHoldGap}
 		}
 		if err := m.publishFrame(ctx, run, frame, streamID, mark); err != nil {
 			return err
 		}
-		*gap = false
+		*gap, *gapReason = false, ""
 	}
 	return nil
 }
