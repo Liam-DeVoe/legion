@@ -17,6 +17,7 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -209,45 +210,24 @@ func slackBodyType(r *http.Request) (mediaType, why string) {
 	return mediaType, ""
 }
 
-// fenceRule is one rule of slackCallExcluded, by the name a test of this package skips it under
-// (Options.fenceSkip) to show what it refuses would reach Slack without it.
-type fenceRule string
+// fenceRule is one rule of slackCallExcluded, by the number its comment gives it. A test of this
+// package skips one (Options.fenceSkip) to show that a call the rule refuses would reach Slack
+// without it; which rule refuses which call is the test's to say.
+type fenceRule int
 
 // slackCallExcluded's rules, in the order its comment numbers them.
 const (
-	// fenceMethod is rule 1: a method fencedMethods names.
-	fenceMethod fenceRule = "method"
-	// fenceType, fenceEncoding and fenceSize are rule 2: a non-empty body's one Content-Type, its
-	// Content-Encoding and its size.
-	fenceType     fenceRule = "content-type"
-	fenceEncoding fenceRule = "content-encoding"
-	fenceSize     fenceRule = "size"
-	// fenceObject and fenceStrings are rule 3: a JSON body that is one object and nothing after
-	// it, and a channel key's value that is a JSON string.
-	fenceObject  fenceRule = "one-object"
-	fenceStrings fenceRule = "strings"
-	// fenceParse is rule 4: a query or a form url.ParseQuery refuses.
-	fenceParse fenceRule = "parse"
-	// The rest are rule 5. fenceQuery, fenceJSON and fenceForm are the three places a channel is
-	// read from; fenceChannelID and fenceChannels two of the three keys it is read under, and
-	// fenceKeyCase a key in any case; fenceEvery every occurrence of a key rather than the first;
-	// fenceSplit a value split on commas; fenceFold a part trimmed and upper-cased.
-	fenceQuery     fenceRule = "query"
-	fenceJSON      fenceRule = "json"
-	fenceForm      fenceRule = "form"
-	fenceChannelID fenceRule = "channel_id"
-	fenceChannels  fenceRule = "channels"
-	fenceKeyCase   fenceRule = "key-case"
-	fenceEvery     fenceRule = "every"
-	fenceSplit     fenceRule = "split"
-	fenceFold      fenceRule = "fold"
+	fenceMethod   fenceRule = iota + 1 // 1: a method fencedMethods names
+	fenceBody                          // 2: a non-empty body's one type, no encoding, its size
+	fenceJSON                          // 3: a JSON body that is one object, its channel keys strings
+	fenceParse                         // 4: a query or a form url.ParseQuery reads
+	fenceChannels                      // 5: no channel value names an excluded channel
+	fenceKeys                          // 6: every key plain: ASCII letters, digits and _
+	fenceIDs                           // 7: every channel value a conversation's id
 )
 
 // fenceSkip is the rules a test skips; nil, every production start's, skips none.
 type fenceSkip map[fenceRule]bool
-
-// on reports whether rule is checked.
-func (s fenceSkip) on(rule fenceRule) bool { return !s[rule] }
 
 // fencedMethods are the Slack methods a name the public fence holds may call, by their decoded
 // path: the ones this repository sends with the Legion Slack bot token, and no other. Two read or
@@ -282,28 +262,36 @@ var fencedMethods = map[string]bool{
 //  5. any value, at every occurrence of channel, channel_id or channels in the query, the JSON
 //     object or the form (keys compared once percent-decoded and in any case, so chann%65l and
 //     CHANNEL are channel), split on commas, trimmed of white space and upper-cased, is one of
-//     excluded upper-cased, as read and once more percent-decoded.
+//     excluded upper-cased, as read and once more percent-decoded;
+//  6. a key of the query, the JSON object or the form, as decoded, holds a character other than
+//     an ASCII letter, a digit or _. Every argument of the methods fencedMethods names is spelled
+//     so, and a receiver that parses keys as PHP does drops a key's leading spaces, ends it at a
+//     NUL and reads channel[] as channel, so " channel", "channel\x00x" and "channel[]" would be
+//     channel there while rule 5 reads them as other keys;
+//  7. a value of channel, channel_id or channels, split on commas, is not a conversation's id
+//     (slackID: C, D or G, then at least 8 capital letters or digits): Slack resolves a channel
+//     named in its place, a private one included, where rule 5 reads only ids.
 //
 // An empty body holds no key. The body answered is the bytes read, which the caller serves
 // upstream in place of r's own, so the call Slack receives is the call this read. skip is a
 // test's (Options.fenceSkip); nil checks every rule.
 func slackCallExcluded(r *http.Request, excluded []string, skip fenceSkip) (body []byte, why string) {
-	if skip.on(fenceMethod) && !fencedMethods[r.URL.Path] {
+	if !skip[fenceMethod] && !fencedMethods[r.URL.Path] {
 		return nil, "the Slack method is not one this secret is spent on outside a private project (chat.postMessage, conversations.replies, auth.test)"
 	}
-	if r.URL.RawQuery != "" && skip.on(fenceQuery) {
+	if r.URL.RawQuery != "" {
 		query, err := url.ParseQuery(r.URL.RawQuery)
 		switch {
-		case err != nil && skip.on(fenceParse):
-			return nil, "the query cannot be read"
 		case err == nil:
-			if why := skip.valuesExcluded(query, excluded); why != "" {
+			if why := argsExcluded(formArgs(query), excluded, skip); why != "" {
 				return nil, "the query " + why
 			}
+		case !skip[fenceParse]:
+			return nil, "the query cannot be read"
 		}
 	}
 	reader := io.Reader(r.Body)
-	if skip.on(fenceSize) {
+	if !skip[fenceBody] {
 		reader = io.LimitReader(r.Body, maxSlackPostBody+1)
 	}
 	body, err := io.ReadAll(reader)
@@ -312,152 +300,161 @@ func slackCallExcluded(r *http.Request, excluded []string, skip fenceSkip) (body
 		return nil, "the body could not be read"
 	case len(body) == 0:
 		return body, ""
-	case len(body) > maxSlackPostBody && skip.on(fenceSize):
+	case skip[fenceBody]:
+		// Rule 2 skipped: the whole body, whatever its size and encoding, read as it came.
+	case len(body) > maxSlackPostBody:
 		return nil, "the body is larger than 1 MiB"
-	case len(r.Header.Values("Content-Encoding")) != 0 && skip.on(fenceEncoding):
+	case len(r.Header.Values("Content-Encoding")) != 0:
 		return nil, "the body carries a Content-Encoding"
 	}
 	mediaType, why := slackBodyType(r)
 	switch {
-	case why != "" && skip.on(fenceType):
+	case why != "" && !skip[fenceBody]:
 		return nil, why
 	case why != "":
-		// The negative control of rule 2: a body of no type it reads is read as holding no key.
+		// Rule 2 skipped: a body of no type it reads is read as holding no key.
 		return body, ""
-	case mediaType == "application/json":
-		why = skip.jsonExcluded(body, excluded)
-	default:
-		why = skip.formExcluded(body, excluded)
+	}
+	var args []slackArg
+	where := "the JSON body"
+	if mediaType == "application/json" {
+		args, why = jsonArgs(body, skip)
+	} else {
+		where = "the form body"
+		form, err := url.ParseQuery(string(body))
+		switch {
+		case err == nil:
+			args = formArgs(form)
+		case !skip[fenceParse]:
+			why = "the form body cannot be read"
+		}
 	}
 	if why != "" {
 		return nil, why
 	}
+	if why := argsExcluded(args, excluded, skip); why != "" {
+		return nil, where + " " + why
+	}
 	return body, ""
 }
 
-// fenceKeys are the keys a Slack call names a channel under.
-var fenceKeys = []string{"channel", "channel_id", "channels"}
-
-// channelKey reports whether key, as decoded, is one of fenceKeys, in any case.
-func (s fenceSkip) channelKey(key string) bool {
-	for _, name := range fenceKeys {
-		if (name == "channel_id" && !s.on(fenceChannelID)) || (name == "channels" && !s.on(fenceChannels)) {
-			continue
-		}
-		if key == name || (s.on(fenceKeyCase) && strings.EqualFold(key, name)) {
-			return true
-		}
-	}
-	return false
+// slackArg is one occurrence of a key of a Slack call, as decoded, with its value when the key is
+// a channel key (channelKey). A query's and a form's values are strings; a JSON body's channel
+// value that is not a string never becomes one (rule 3).
+type slackArg struct {
+	key, value string
 }
 
+// formArgs is a query or a form, as url.ParseQuery read it, as its keys' occurrences: keys in
+// order, so the one a refusal names is the same on every read, and each value of a key in turn.
+func formArgs(values url.Values) []slackArg {
+	var args []slackArg
+	for _, key := range slices.Sorted(maps.Keys(values)) {
+		for _, value := range values[key] {
+			args = append(args, slackArg{key: key, value: value})
+		}
+	}
+	return args
+}
+
+// jsonArgs is rule 3's reading of a JSON body, walked token by token: never decoded into a
+// struct, whose case-insensitive match keeps one of two keys that differ in case, nor into a map,
+// which keeps one occurrence of a key given twice. It answers every key of the one object, each
+// occurrence on its own, with a channel key's string value; every other key's value is skipped
+// whole.
+func jsonArgs(body []byte, skip fenceSkip) ([]slackArg, string) {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	if token, err := decoder.Token(); err != nil || token != json.Delim('{') {
+		if skip[fenceJSON] {
+			return nil, ""
+		}
+		return nil, "the JSON body is not one object"
+	}
+	var args []slackArg
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			return nil, "the JSON body cannot be read"
+		}
+		// An object's key is always a string token; a body that is no JSON fails above.
+		key, _ := token.(string)
+		var raw json.RawMessage
+		if err := decoder.Decode(&raw); err != nil {
+			return nil, "the JSON body cannot be read"
+		}
+		arg := slackArg{key: key}
+		if channelKey(key) && json.Unmarshal(raw, &arg.value) != nil {
+			if !skip[fenceJSON] {
+				return nil, "the JSON body's " + key + " is not a string"
+			}
+			// Rule 3 skipped: a value that is no string is read as naming no channel.
+			continue
+		}
+		args = append(args, arg)
+	}
+	if token, err := decoder.Token(); err != nil || token != json.Delim('}') {
+		return nil, "the JSON body cannot be read"
+	}
+	if _, err := decoder.Token(); err != io.EOF && !skip[fenceJSON] {
+		return nil, "something follows the JSON body's object"
+	}
+	return args, ""
+}
+
+// argsExcluded is rules 5, 6 and 7 over one place's keys: why they name one of excluded, or a
+// key or a channel Slack may read otherwise than the fence does, or "" when they name none.
+func argsExcluded(args []slackArg, excluded []string, skip fenceSkip) string {
+	for _, arg := range args {
+		if !skip[fenceChannels] && channelKey(arg.key) && namesExcluded(arg.value, excluded) {
+			return "names a private project's channel under " + arg.key
+		}
+	}
+	for _, arg := range args {
+		if !skip[fenceKeys] && !plainKey(arg.key) {
+			return "carries a key with a character other than an ASCII letter, a digit or _, which Slack may read as another key"
+		}
+	}
+	for _, arg := range args {
+		if !skip[fenceIDs] && channelKey(arg.key) && slices.ContainsFunc(strings.Split(arg.value, ","), func(part string) bool { return !slackID.MatchString(part) }) {
+			return "names a channel under " + arg.key + " by something other than its id, which only Slack resolves"
+		}
+	}
+	return ""
+}
+
+// channelKeys are the keys a Slack call names a channel under.
+var channelKeys = []string{"channel", "channel_id", "channels"}
+
+// channelKey reports whether key, as decoded, is one of channelKeys, in any case.
+func channelKey(key string) bool {
+	return slices.ContainsFunc(channelKeys, func(name string) bool { return strings.EqualFold(key, name) })
+}
+
+// plainKey reports whether key, as decoded, is ASCII letters, digits and _ alone (rule 6).
+func plainKey(key string) bool {
+	return !strings.ContainsFunc(key, func(c rune) bool {
+		return c != '_' && (c < '0' || c > '9') && (c < 'A' || c > 'Z') && (c < 'a' || c > 'z')
+	})
+}
+
+// slackID is a Slack conversation's id as rule 7 reads one: C for a channel, G for an older
+// private channel, D for a direct message, then at least 8 capital letters or digits. A channel's
+// name, which Slack spells in lower case, with "-" or after "#", is none.
+var slackID = regexp.MustCompile(`^[CDG][A-Z0-9]{8,}$`)
+
 // namesExcluded reports whether value names one of excluded: rule 5's reading of one value.
-func (s fenceSkip) namesExcluded(value string, excluded []string) bool {
+func namesExcluded(value string, excluded []string) bool {
 	readings := []string{value}
 	if decoded, err := url.QueryUnescape(value); err == nil && decoded != value {
 		readings = append(readings, decoded)
 	}
 	for _, reading := range readings {
-		parts := []string{reading}
-		if s.on(fenceSplit) {
-			parts = strings.Split(reading, ",")
-		}
-		for _, part := range parts {
-			if s.on(fenceFold) {
-				part = strings.ToUpper(strings.TrimSpace(part))
-			}
+		for _, part := range strings.Split(reading, ",") {
+			part = strings.ToUpper(strings.TrimSpace(part))
 			if slices.ContainsFunc(excluded, func(id string) bool { return strings.ToUpper(id) == part }) {
 				return true
 			}
 		}
 	}
 	return false
-}
-
-// valuesExcluded is why a query or a form, as url.ParseQuery read it, names one of excluded, or ""
-// when it names none. Its keys are read in order, so the one it names is the same on every read.
-func (s fenceSkip) valuesExcluded(values url.Values, excluded []string) string {
-	for _, key := range slices.Sorted(maps.Keys(values)) {
-		if !s.channelKey(key) {
-			continue
-		}
-		occurrences := values[key]
-		if !s.on(fenceEvery) {
-			occurrences = occurrences[:1]
-		}
-		for _, value := range occurrences {
-			if s.namesExcluded(value, excluded) {
-				return "names a private project's channel under " + key
-			}
-		}
-	}
-	return ""
-}
-
-// formExcluded is rules 4 and 5 for a form body.
-func (s fenceSkip) formExcluded(body []byte, excluded []string) string {
-	form, err := url.ParseQuery(string(body))
-	switch {
-	case err != nil && s.on(fenceParse):
-		return "the form body cannot be read"
-	case err != nil || !s.on(fenceForm):
-		return ""
-	}
-	if why := s.valuesExcluded(form, excluded); why != "" {
-		return "the form body " + why
-	}
-	return ""
-}
-
-// jsonExcluded is rules 3 and 5 for a JSON body, walked token by token: never decoded into a
-// struct, whose case-insensitive match keeps one of two keys that differ in case, nor into a map,
-// which keeps one occurrence of a key given twice. Every other key's value is skipped whole.
-func (s fenceSkip) jsonExcluded(body []byte, excluded []string) string {
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	if token, err := decoder.Token(); err != nil || token != json.Delim('{') {
-		if s.on(fenceObject) {
-			return "the JSON body is not one object"
-		}
-		return ""
-	}
-	seen := map[string]bool{}
-	for decoder.More() {
-		token, err := decoder.Token()
-		if err != nil {
-			return "the JSON body cannot be read"
-		}
-		// An object's key is always a string token; a body that is no JSON fails above.
-		key, _ := token.(string)
-		var raw json.RawMessage
-		if err := decoder.Decode(&raw); err != nil {
-			return "the JSON body cannot be read"
-		}
-		if !s.channelKey(key) || !s.on(fenceJSON) {
-			continue
-		}
-		var value string
-		if err := json.Unmarshal(raw, &value); err != nil {
-			if s.on(fenceStrings) {
-				return "the JSON body's " + key + " is not a string"
-			}
-			continue
-		}
-		if !s.on(fenceEvery) {
-			folded := strings.ToLower(key)
-			if seen[folded] {
-				continue
-			}
-			seen[folded] = true
-		}
-		if s.namesExcluded(value, excluded) {
-			return "the JSON body names a private project's channel under " + key
-		}
-	}
-	if token, err := decoder.Token(); err != nil || token != json.Delim('}') {
-		return "the JSON body cannot be read"
-	}
-	if _, err := decoder.Token(); err != io.EOF && s.on(fenceObject) {
-		return "something follows the JSON body's object"
-	}
-	return ""
 }

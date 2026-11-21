@@ -82,15 +82,18 @@ func (a slackAnswer) refusedAs(t *testing.T, what string, p slackPost, code, wor
 	}
 }
 
-// fenceCase is one call a fenced grant must not carry: the call, the rules whose skipping lets it
-// reach Slack (its control), and, where the call has one, the same call naming a public channel,
-// which the grant carries.
+// fenceCase is one call a fenced grant must not carry: the call, the rules of slackCallExcluded
+// whose skipping lets it reach Slack (its control), and, where the call has one, the same call
+// naming a public channel, which the grant carries.
 type fenceCase struct {
 	name   string
 	call   slackPost
 	skip   fenceSkip
 	public *slackPost
 }
+
+// String names a rule by the number slackCallExcluded's comment gives it, for a control's failure.
+func (r fenceRule) String() string { return fmt.Sprintf("rule %d", int(r)) }
 
 // fenceCases are the calls naming PRIV's channel, calling a method the fence does not allow, or
 // that the fence cannot read as naming none.
@@ -108,21 +111,22 @@ func fenceCases(t *testing.T) []fenceCase {
 	jsonType := [][2]string{{"Content-Type", slackJSON}}
 	big := `{"channel":"` + pubChannel + `","text":"` + strings.Repeat("x", maxSlackPostBody) + `"}`
 	return []fenceCase{
-		{"conversations.history naming PRIV's channel in the query", historyOf(privChannel), skip(fenceMethod, fenceQuery), nil},
-		{"conversations.replies naming it in the query", readOf(privChannel), skip(fenceQuery), public(readOf(pubChannel))},
-		{"chat.postMessage naming it in JSON", jsonPost(postTo(privChannel)), skip(fenceJSON), public(jsonPost(postTo(pubChannel)))},
-		{"chat.postMessage naming it in a form", formPost("channel=" + privChannel + "&text=the+release+notes+are+out"), skip(fenceForm),
+		{"conversations.history naming PRIV's channel in the query", historyOf(privChannel), skip(fenceMethod, fenceChannels), nil},
+		{"conversations.replies naming it in the query", readOf(privChannel), skip(fenceChannels), public(readOf(pubChannel))},
+		{"chat.postMessage naming it in JSON", jsonPost(postTo(privChannel)), skip(fenceChannels), public(jsonPost(postTo(pubChannel)))},
+		{"chat.postMessage naming it in a form", formPost("channel=" + privChannel + "&text=the+release+notes+are+out"), skip(fenceChannels),
 			public(formPost("channel=" + pubChannel + "&text=the+release+notes+are+out"))},
-		{"channels=" + pubChannel + "," + privChannel, readAs("channels=" + pubChannel + "," + privChannel + "&ts=" + slackThread), skip(fenceSplit),
+		{"channels=" + pubChannel + "," + privChannel, readAs("channels=" + pubChannel + "," + privChannel + "&ts=" + slackThread), skip(fenceChannels),
 			public(readAs("channels=" + pubChannel + "&ts=" + slackThread))},
-		{"channel_id", readAs("channel_id=" + privChannel + "&ts=" + slackThread), skip(fenceChannelID), public(readAs("channel_id=" + pubChannel + "&ts=" + slackThread))},
-		{"channel=" + pubChannel + "&channel=" + privChannel, readAs("channel=" + pubChannel + "&channel=" + privChannel + "&ts=" + slackThread), skip(fenceEvery), nil},
-		{"channel=%20c0priv00001%20", readAs("channel=%20c0priv00001%20&ts=" + slackThread), skip(fenceFold), nil},
-		{`{"channel":["` + privChannel + `"]}`, jsonPost(`{"channel":["` + privChannel + `"],"text":"x"}`), skip(fenceStrings), nil},
-		{`{"channel":123}`, jsonPost(`{"channel":123,"text":"x"}`), skip(fenceStrings), nil},
-		{"a non-empty text/plain body", slackPost{method: http.MethodPost, path: slackPostPath, header: [][2]string{{"Content-Type", "text/plain; charset=utf-8"}}, body: "channel=" + privChannel + "&text=x"}, skip(fenceType), nil},
-		{"a body with no Content-Type", slackPost{method: http.MethodPost, path: slackPostPath, body: postTo(privChannel)}, skip(fenceType), nil},
-		{"a second JSON value after the object", jsonPost(postTo(pubChannel) + `{"channel":"` + privChannel + `"}`), skip(fenceObject), nil},
+		{"channel_id", readAs("channel_id=" + privChannel + "&ts=" + slackThread), skip(fenceChannels), public(readAs("channel_id=" + pubChannel + "&ts=" + slackThread))},
+		{"channel=" + pubChannel + "&channel=" + privChannel, readAs("channel=" + pubChannel + "&channel=" + privChannel + "&ts=" + slackThread), skip(fenceChannels), nil},
+		// Rule 7 refuses this spelling too, since it is no id as written, so its control skips both.
+		{"channel=%20c0priv00001%20", readAs("channel=%20c0priv00001%20&ts=" + slackThread), skip(fenceChannels, fenceIDs), nil},
+		{`{"channel":["` + privChannel + `"]}`, jsonPost(`{"channel":["` + privChannel + `"],"text":"x"}`), skip(fenceJSON), nil},
+		{`{"channel":123}`, jsonPost(`{"channel":123,"text":"x"}`), skip(fenceJSON), nil},
+		{"a non-empty text/plain body", slackPost{method: http.MethodPost, path: slackPostPath, header: [][2]string{{"Content-Type", "text/plain; charset=utf-8"}}, body: "channel=" + privChannel + "&text=x"}, skip(fenceBody), nil},
+		{"a body with no Content-Type", slackPost{method: http.MethodPost, path: slackPostPath, body: postTo(privChannel)}, skip(fenceBody), nil},
+		{"a second JSON value after the object", jsonPost(postTo(pubChannel) + `{"channel":"` + privChannel + `"}`), skip(fenceJSON), nil},
 		{"search.messages", get("/api/search.messages?query=release"), skip(fenceMethod), nil},
 		{"assistant.search.context", slackPost{method: http.MethodPost, path: "/api/assistant.search.context", header: jsonType, body: `{"query":"release"}`}, skip(fenceMethod), nil},
 		{"reactions.list", get("/api/reactions.list"), skip(fenceMethod), nil},
@@ -130,15 +134,32 @@ func fenceCases(t *testing.T) []fenceCase {
 		{"files.list naming no channel", get("/api/files.list"), skip(fenceMethod), nil},
 		{"files.info", get("/api/files.info?file=F0FILE00001"), skip(fenceMethod), nil},
 		{"conversations.list", get("/api/conversations.list"), skip(fenceMethod), nil},
-		{"a multipart body", multipartPost(t), skip(fenceType), nil},
-		{"CHANNEL in another case", jsonPost(`{"CHANNEL":"` + privChannel + `","text":"x"}`), skip(fenceKeyCase), nil},
-		{"chann%65l in a form", formPost("chann%65l=" + privChannel + "&text=x"), skip(fenceForm), nil},
-		{"a JSON channel spelled with an escape", jsonPost(`{"channel":"C0PRIV\u00300001","text":"x"}`), skip(fenceJSON), nil},
+		{"a multipart body", multipartPost(t), skip(fenceBody), nil},
+		{"CHANNEL in another case", jsonPost(`{"CHANNEL":"` + privChannel + `","text":"x"}`), skip(fenceChannels), nil},
+		{"chann%65l in a form", formPost("chann%65l=" + privChannel + "&text=x"), skip(fenceChannels), nil},
+		{"a JSON channel spelled with an escape", jsonPost(`{"channel":"C0PRIV\u00300001","text":"x"}`), skip(fenceChannels), nil},
 		{"a query url.ParseQuery refuses", readAs("channel=" + pubChannel + "&ts=" + slackThread + "&cursor=%zz"), skip(fenceParse), nil},
+		// Read as a form, the gzip bytes hold a key of bytes that are no letter, so rule 6
+		// refuses it too, and the control skips both.
 		{"Content-Encoding: gzip", slackPost{method: http.MethodPost, path: slackPostPath,
 			header: [][2]string{{"Content-Type", slackForm}, {"Content-Encoding", "gzip"}}, body: gzipped(t, "channel="+privChannel+"&text=x")},
-			skip(fenceEncoding, fenceParse), nil},
-		{"a body over 1 MiB", jsonPost(big), skip(fenceSize), nil},
+			skip(fenceBody, fenceKeys), nil},
+		{"a body over 1 MiB", jsonPost(big), skip(fenceBody), nil},
+		// A key Slack may read as channel although rule 5 reads another key: a receiver that
+		// parses keys as PHP does drops the leading space of %20channel and +channel, ends
+		// channel%00x at its NUL, and reads channel[] as channel. Each names PRIV's channel and is
+		// refused by rule 6 whatever channel it names, so none has a public call.
+		{"%20channel", readAs("%20channel=" + privChannel + "&ts=" + slackThread), skip(fenceKeys), nil},
+		{"+channel", readAs("+channel=" + privChannel + "&ts=" + slackThread), skip(fenceKeys), nil},
+		{"channel%00x", readAs("channel%00x=" + privChannel + "&ts=" + slackThread), skip(fenceKeys), nil},
+		{"channel[]", readAs("channel[]=" + privChannel + "&ts=" + slackThread), skip(fenceKeys), nil},
+		{"channel.", readAs("channel.=" + privChannel + "&ts=" + slackThread), skip(fenceKeys), nil},
+		{`a JSON key " channel"`, jsonPost(`{" channel":"` + privChannel + `","text":"x"}`), skip(fenceKeys), nil},
+		{"channel%5B0%5D in a form", formPost("channel%5B0%5D=" + privChannel + "&text=x"), skip(fenceKeys), nil},
+		// A channel named rather than given by its id, which Slack resolves to a private channel
+		// as readily as to a public one, while rule 5 reads ids alone.
+		{"chat.postMessage naming its channel #priv-team", jsonPost(postTo("#priv-team")), skip(fenceIDs), nil},
+		{"conversations.replies naming its channel priv-team", readOf("priv-team"), skip(fenceIDs), nil},
 	}
 }
 
@@ -151,8 +172,10 @@ func grantFenced(r *rig, placeholder, grantID string, secret requests.AirlockSec
 // TestAPublicSlackGrantNeverNamesAPrivateChannel: a grant of the token whose Excluded holds PRIV's
 // channel refuses 403 PRIVATE_CHANNEL, before any of it reaches Slack, every call of a method the
 // fence does not allow (reactions.list, stars.list, files.list, files.info, conversations.list and
-// the searches among them), every call that names PRIV's channel in any way Slack reads one, and
-// every call it cannot read as naming none; each case has a control, a proxy that skips the
+// the searches among them), every call that names PRIV's channel in any way Slack reads one, every
+// call carrying a key Slack may read as channel while the fence reads another (%20channel,
+// +channel, channel%00x, channel[], channel.), every call naming a channel other than by its id,
+// and every call it cannot read as naming none; each case has a control, a proxy that skips the
 // case's rule, which carries the call to the stand-in: for a method the fence does not allow, the
 // blocklist of channel arguments alone lets it through. The allowed calls naming a public channel,
 // and auth.test, reach the stand-in with the real token, and a grant with no Excluded carries
@@ -613,6 +636,10 @@ func (d *podDispatch) States(ctx context.Context, projects []string) (map[string
 
 func (d *podDispatch) PrivateProjects(ctx context.Context) ([]projectaccess.PrivateProject, error) {
 	return d.current().PrivateProjects(ctx)
+}
+
+func (d *podDispatch) PrivateProjectsAsOf(ctx context.Context) ([]projectaccess.PrivateProject, time.Time, error) {
+	return d.current().PrivateProjectsAsOf(ctx)
 }
 
 func (d *podDispatch) PrivateProjectsFresh(ctx context.Context) ([]projectaccess.PrivateProject, error) {

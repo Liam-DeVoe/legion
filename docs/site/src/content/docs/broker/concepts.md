@@ -688,34 +688,42 @@ Dispatch's answer carries no list. A pod holding the secret reads the owners' li
 ten minutes.
 
 Every other credential that gets the secret behind the airlock is fenced from the private
-projects' channels. Once the broker knows a project is private, because Dispatch has answered it
-so, and a private project's owner lists a channel, the proxy carries only the Slack methods
-Legion itself calls with the token: `chat.postMessage` and `conversations.replies`, each to a
-channel no private project lists, and `auth.test`. It refuses `PRIVATE_CHANNEL`, without calling
-Slack, every other method, since a method that names no channel can still answer a private
-channel's content (`reactions.list`, `stars.list`, `files.list`, `files.info`, the searches) or
-its name (`conversations.list`); any call naming a channel id a private project's owner listed,
-under `channel`, `channel_id` or `channels`, in the query, a JSON body or a form, in any case and
-with white space or commas around it; and a call whose body it cannot read: one of another type
-than JSON or a form, compressed, or over 1 MiB. The broker reads that list with its own token,
-keeps it 30 seconds, and reads it again for a pod holding the secret within ten minutes; while it
-cannot read the list, or a private project's entry carries no channel list, every call on the
-secret is refused `PRIVATE_CHANNELS_UNREAD`, and the broker reads it again within a minute. While
-no project is private, the broker asks Dispatch nothing for it and the proxy reads no body: every
-call is carried as before.
+projects' channels. Once the broker knows a project is private, because `BROKER_PRIVATE_PROJECTS`
+declares it or Dispatch has answered it so, and a private project's owner lists a channel, the
+proxy carries only the Slack methods Legion itself calls with the token: `chat.postMessage` and
+`conversations.replies`, each to a channel no private project lists, and `auth.test`. It refuses
+`PRIVATE_CHANNEL`, without calling Slack, every other method, since a method that names no channel
+can still answer a private channel's content (`reactions.list`, `stars.list`, `files.list`,
+`files.info`, the searches) or its name (`conversations.list`); any call naming a channel id a
+private project's owner listed, under `channel`, `channel_id` or `channels`, in the query, a JSON
+body or a form, in any case and with white space or commas around it; any call naming a channel
+by anything but its id, such as `#general`, since Slack resolves a name to a private channel as
+readily as to a public one; any call carrying a key with a character other than an ASCII letter,
+a digit or `_`, such as ` channel` or `channel[]`, which Slack may read as `channel`; and a call
+whose body it cannot read: one of another type than JSON or a form, compressed, or over 1 MiB.
+The broker reads that list with its own token, keeps it 30 seconds, and reads it again for a pod
+holding the secret within ten minutes; while it cannot read the list, or a private project's
+entry carries no channel list, every call on the secret is refused `PRIVATE_CHANNELS_UNREAD`, and
+the broker reads it again within a minute. While no project is private, the broker asks Dispatch
+nothing for it and the proxy reads no body: every call is carried as before. A broker whose
+`BROKER_PRIVATE_PROJECTS` names a project refuses to start without `BROKER_PROJECT_ACCESS_URL`,
+so a declared project's channels are fenced from the first call after every restart.
 
 The fence holds only behind the airlock. So while a private project's owner lists a channel, the
 broker gives a `project-channels` secret with no airlock entry to no credential at all, denying it
-`project-channels-need-airlock`, and a grant made before then is not released again. While it
-cannot read the list, such a request or release is answered `503 PROJECT_ACCESS_UNAVAILABLE` and
-decided once it can.
+`project-channels-need-airlock`, and a grant made before then is not released again: the
+session's next request for the secret is denied the same way rather than answered that grant.
+While it cannot read the list, such a request or release is answered
+`503 PROJECT_ACCESS_UNAVAILABLE` and decided once it can.
 
 A channel an owner names is fenced from every other credential before the owner's own project
-posts to it. A private project's credential posts to none of its project's channels for 16
-minutes and 30 seconds after Dispatch last changed the list, or after the project turned private:
-the longest a pod holding a value read before the change goes on carrying calls to that channel
-for other credentials. `CHANNEL_NOT_ALLOWED` then ends with the time posting reopens. A channel an
-owner removes needs no wait.
+posts to it with a value read after the change. A private project's credential posts to none of
+its project's channels for 16 minutes and 30 seconds after Dispatch last changed the list, or after
+the project turned private: the longest a pod holding a value read before the change goes on
+carrying calls to that channel for other credentials. `CHANNEL_NOT_ALLOWED` then ends with the time
+posting reopens. A value the project's own session read while the project was still public is not
+limited until the proxy reads it again, within five minutes. A channel an owner removes needs no
+wait.
 
 A request of a private project is the project's own: one for a secret of the project, one from a
 credential that names the project (the list above), or one whose reason names one of the

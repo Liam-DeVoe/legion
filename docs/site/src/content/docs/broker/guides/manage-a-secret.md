@@ -247,8 +247,9 @@ refuses names the identity it refused ([Which sign-in may do what](#which-sign-i
   lists a Slack channel. A credential that names no private project gets the secret as before,
   and behind the airlock, while a private project's owner lists a channel, the proxy carries for it
   only `chat.postMessage`, `conversations.replies` and `auth.test`, refusing `PRIVATE_CHANNEL` any
-  other method and any call naming a channel a private project's owner listed. Any other value,
-  and on `create` the word `none`, is refused before anything is written.
+  other method, any call naming a channel a private project's owner listed, and any call naming a
+  channel by anything but its id. Any other value, and on `create` the word `none`, is refused
+  before anything is written.
 - **`--max-grant`** is optional, except with `--admin true` and with
   `--type google-service-account`, where each needs it, of an hour or less. It is the longest
   `--ttl` a request for this secret may use.
