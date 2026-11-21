@@ -208,8 +208,11 @@ func (w *workflowRuntime) tickWorkspaceCopies(ctx context.Context) {
 // so the pass takes no copy of it and it keeps its retry, which runs at the first due tick after a
 // resumed or relaunched pod's role is live again. The skip is logged under runningCopyNoRole at
 // Info once a period for the issue, and at no other due tick (noLiveRole). The pass also forgets
-// every issue no claim of the project names at all (forgetUnclaimed), so the cadence's memory does
-// not grow with every issue that ever failed a copy.
+// every issue no claim of the project names but a retired one (forgetUnclaimed): an issue that
+// never ran in this project, and a finished one, whose claims are all retired and stay in the
+// store for ever. No copy of either can be stored to pay a retry, so the cadence's memory would
+// grow with every issue that ever failed a copy, and the log would name each finished one under
+// runningCopyNoRole once a period for as long as the daemon runs.
 //
 // Which issues are in a turn is read from the claims the daemon's own store holds rather than
 // from anything this process remembers, so a daemon that has just restarted reads it exactly as
@@ -232,7 +235,7 @@ func (w *workflowRuntime) copyWorkingWorkspaces(ctx context.Context) {
 	}
 	claimed := make(map[string]bool)
 	for _, c := range claims {
-		if c.Project == w.projectID && c.Issue != "" {
+		if c.Project == w.projectID && c.Issue != "" && c.State != supervise.StateRetired {
 			claimed[c.Issue] = true
 		}
 	}

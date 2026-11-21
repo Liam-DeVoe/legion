@@ -156,41 +156,70 @@ func TestATurnStartNamingAWaitedOutPromptLeavesNoPausesStopWaitingForItsAnswer(t
 // A busy answer to a later send of the task takes the task back unconfirmed under a new id while
 // the prompt whose wait ran out is still outstanding, and records the claim working for the turn
 // the agent named (promptResulted, recordBusyTurn). A pause's stop held over that turn waits at its
-// end for that earlier prompt's result. Its answer, saying it ran no turn, finds the task
+// end for that earlier prompt's answer. That answer, saying the prompt ran no turn, finds the task
 // unconfirmed and nothing more to take back (waitedOutAnswer's last branch), and it ends the
 // pause's wait as the other no-turn answers do: the stop begins its wait for the copy of the turn's
-// end, and the copy's end runs it.
-//
-// The control is the result's row without stopAfterAnswer: no wait for the copy begins, the copy's
-// end runs nothing, and the test fails at the stop it wants once the copy ended.
+// end, and the copy's end runs it. Each row is one answer the branch returns from, and names its
+// control.
 func TestAWaitedOutPromptsAnswerAfterABusyAnswerRunsThePausesHeldStopOnceTheTurnsCopyIsOver(t *testing.T) {
-	copies := &turnEndCopies{}
-	h, flag, _ := pauseHarness(t, queuedClaim(), func(d *Deps) { d.CopyTurnEnd = copies.start })
-	h.reach(StateReady)
-	h.must(RequestDeliver{Claim: h.token, Task: providerErrorTaskText})
-	var first string
-	waitedOut(t, h, &first)
-	// The next trigger sends the task again under its new id, and Oh My Pi answers that send busy.
-	h.observe(runtime.Alive)
-	later := h.wantPrompts(2)[1].DeliveryID
-	if err := h.handle(StreamPromptResult{Claim: h.token, DeliveryID: later, AgentInvoked: false, Error: busyAnswer}); err != nil {
-		t.Logf("the busy answer answered %v", err)
-	}
-	h.wantState(StateWorking)
-	if !h.pending().ConfirmedAt.IsZero() {
-		t.Fatal("the busy answer left the task confirmed, want it taken back unconfirmed")
-	}
-	pausesStop(t, h, flag)()
-	h.mustQuiet(StreamTurnEnd{Claim: h.token})
-	if started := copies.started(); len(started) != 1 {
-		t.Fatalf("the turn's end started %d copies, want one", len(started))
-	}
+	for _, tc := range []struct {
+		name   string
+		answer func(h *harness, first string) Event
+		// unread is whether the answer says the prompt was never read, so its read mark goes
+		// (markUnread); a result that ran no turn leaves the mark, since the agent may have read it.
+		unread bool
+	}{
+		// The prompt's result, saying it ran no turn (read).
+		//
+		// The control is the result's row without stopAfterAnswer: no wait for the copy begins,
+		// the copy's end runs nothing, and the row fails at the stop it wants once the copy ended.
+		{name: "ItsNoTurnResult", answer: func(h *harness, first string) Event { return noTurnResult(h, first) }},
+		// The agent's refusal of the acknowledged prompt with no turn running, as Oh My Pi gives
+		// when a provider rejects the prompt before any turn begins: no busy answer, so nothing is
+		// recorded working, and the prompt was never read (lateRefused, refusedElsewhere).
+		//
+		// The control is the late refusal's row without stopAfterAnswer, which fails the row the
+		// same way.
+		{name: "ItsLateRefusalWithNoTurnRunning", unread: true, answer: func(h *harness, first string) Event {
+			return StreamLateRefusal{Claim: h.token, DeliveryID: first, Error: "No API key found for anthropic"}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			copies := &turnEndCopies{}
+			h, flag, _ := pauseHarness(t, queuedClaim(), func(d *Deps) { d.CopyTurnEnd = copies.start })
+			h.reach(StateReady)
+			h.must(RequestDeliver{Claim: h.token, Task: providerErrorTaskText})
+			var first string
+			waitedOut(t, h, &first)
+			// The next trigger sends the task again under its new id, and Oh My Pi answers that send busy.
+			h.observe(runtime.Alive)
+			later := h.wantPrompts(2)[1].DeliveryID
+			if err := h.handle(StreamPromptResult{Claim: h.token, DeliveryID: later, AgentInvoked: false, Error: busyAnswer}); err != nil {
+				t.Logf("the busy answer answered %v", err)
+			}
+			h.wantState(StateWorking)
+			if !h.pending().ConfirmedAt.IsZero() {
+				t.Fatal("the busy answer left the task confirmed, want it taken back unconfirmed")
+			}
+			pausesStop(t, h, flag)()
+			h.mustQuiet(StreamTurnEnd{Claim: h.token})
+			if started := copies.started(); len(started) != 1 {
+				t.Fatalf("the turn's end started %d copies, want one", len(started))
+			}
+			if h.pending().DeliveredAt.IsZero() {
+				t.Fatal("the task carries no read mark before the waited-out prompt's answer, want the mark that prompt set")
+			}
 
-	if err := h.handle(noTurnResult(h, first)); err != nil {
-		t.Logf("the waited-out prompt's answer answered %v", err)
-	}
+			if err := h.handle(tc.answer(h, first)); err != nil {
+				t.Logf("the waited-out prompt's answer answered %v", err)
+			}
 
-	suspendedOnceAfterTheCopy(t, h, copies, SuspendedByReleased)
+			if unread := h.pending().DeliveredAt.IsZero(); unread != tc.unread {
+				t.Fatalf("the read mark is gone = %t after the waited-out prompt's answer, want %t", unread, tc.unread)
+			}
+			suspendedOnceAfterTheCopy(t, h, copies, SuspendedByReleased)
+		})
+	}
 }
 
 // The agent starts a turn of its own while the task's prompt waits acknowledged, and the turn's

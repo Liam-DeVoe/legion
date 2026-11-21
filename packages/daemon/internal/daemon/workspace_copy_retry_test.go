@@ -2,8 +2,8 @@ package daemon
 
 // The running copy's retry: a copy that came to nothing for a fault is taken again at the
 // cadence's next period, between turns too, once the issue has a live role to ask; the cadence
-// forgets an issue no claim names; and a copy refused for its size owes no retry. These cases
-// drive the copy rig of workspace_copies_test.go.
+// forgets an issue no claim names but a retired one; and a copy refused for its size owes no
+// retry. These cases drive the copy rig of workspace_copies_test.go.
 
 import (
 	"context"
@@ -116,11 +116,11 @@ func TestTheCadenceNamesARetryWithNoLiveRoleAtInfoOnceAPeriodAndAsksNothing(t *t
 }
 
 // The cadence forgets an issue that no claim of the project names at all — the issue of a branch
-// pushed from outside, never run in this project, or one whose claims are gone — retry and all,
-// since no copy of it can ever be stored to clear that retry, and the cadence's memory would grow
-// with every such issue. A push of such an issue's branch logs its copy that found no role as a
-// push of any issue does: at Info for the first in a period (noLiveRole). An issue with a claim
-// keeps its retry whatever state its claim is in.
+// pushed from outside, never run in this project — retry and all, since no copy of it can ever be
+// stored to clear that retry, and the cadence's memory would grow with every such issue. A push of
+// such an issue's branch logs its copy that found no role as a push of any issue does: at Info for
+// the first in a period (noLiveRole). An issue with a claim that is not retired keeps its retry,
+// whatever other state its claim is in.
 func TestTheCadenceForgetsTheRetryOfAnIssueNoClaimNamesAndKeepsAClaimedIssues(t *testing.T) {
 	rig := newCopyRig(t)
 	ctx := context.Background()
@@ -147,6 +147,41 @@ func TestTheCadenceForgetsTheRetryOfAnIssueNoClaimNamesAndKeepsAClaimedIssues(t 
 	rig.w.copies.mu.Unlock()
 	if remembered {
 		t.Fatalf("the cadence still remembers %s, which no claim names", unclaimed)
+	}
+}
+
+// A finished issue's claims are all retired, and the store keeps every claim for ever, so a retry
+// such an issue owes — here a push of its branch whose copy found no live role — could never be
+// paid: no role of it will be live again to ask. The cadence forgets it, as it forgets an issue
+// no claim names, so the due ticks after the push name it under no_live_role no more, ask nothing,
+// and owe it no retry. Kept, it was a line at Info every 5 minutes for as long as the daemon ran.
+//
+// The control is the cadence building the claims it keeps retries for from every claim, retired
+// ones included: the first due tick then names the issue again, and the test fails there.
+func TestTheCadenceForgetsTheRetryOfAnIssueWhoseClaimsAreAllRetired(t *testing.T) {
+	rig := newCopyRig(t)
+	ctx := context.Background()
+	rig.clock.advance(0)
+	rig.setClaimState(t, string(supervise.StateRetired))
+	rig.w.copyWorkspaceAtPush(rig.issue.Key)
+	seen := len(rig.awaitUnsaved(t, runningCopyNoRole, 1))
+	if owed := rig.w.copies.retries(); !slices.Equal(owed, []string{rig.issue.Key}) {
+		t.Fatalf("the push's copy that found no role left the cadence owing retries of %v, want %s", owed, rig.issue.Key)
+	}
+
+	for tick := range 2 {
+		rig.wind(t)
+		rig.w.copyWorkingWorkspaces(ctx)
+		if lines := rig.unsavedFor(t, runningCopyNoRole)[seen:]; len(lines) != 0 {
+			t.Fatalf("due tick %d after the push logged %v, want no %s line for an issue whose claims are all retired", tick+1, lines, runningCopyNoRole)
+		}
+	}
+
+	if owed := rig.w.copies.retries(); len(owed) != 0 {
+		t.Fatalf("the cadence owes retries of %v, want none for an issue whose claims are all retired", owed)
+	}
+	if asked := rig.bundler.reads(); len(asked) != 0 {
+		t.Fatalf("the bundler was asked %v for an issue whose claims are all retired", asked)
 	}
 }
 

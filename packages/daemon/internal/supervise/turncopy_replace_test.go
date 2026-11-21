@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -44,6 +45,9 @@ type copyWindow struct {
 	name string
 	// by is the source of the held stop, which the claim is suspended by once the stop runs.
 	by SuspendSource
+	// waitBegun is whether the stop has begun its wait for the copy in the window, which arms the
+	// wait's bound (waitForTurnCopy, TimerTurnCopy).
+	waitBegun bool
 	// open brings a claim whose daemon starts a copy at each turn's end into the window, the turn's
 	// end having started one copy. begin is what begins the stop's wait for that copy where the
 	// window has not begun it, so that the copy's end runs the stop.
@@ -56,7 +60,7 @@ type copyWindow struct {
 // (pauseHeldForTheResult), which its begin hands the machine.
 func copyWindows() []copyWindow {
 	return []copyWindow{
-		{name: "ADaemonsStopWaitingForTheCopy", by: SuspendedByDaemon, open: func(t *testing.T) (*harness, *turnEndCopies, func()) {
+		{name: "ADaemonsStopWaitingForTheCopy", by: SuspendedByDaemon, waitBegun: true, open: func(t *testing.T) (*harness, *turnEndCopies, func()) {
 			h, copies, _ := copyWaiting(t)
 			return h, copies, func() {}
 		}},
@@ -248,7 +252,9 @@ func TestAParkedWakeWaitsForTheTurnsCopyItsHeldStopWaitsFor(t *testing.T) {
 // over this turn replaces the process, which ends the hold (endHeld) while the copy still asks the
 // process's shim. So the backstop leaves the turn alone while the copy is taken, and the sweep's
 // next post, once the copy has ended, ends the stalled turn as before. The bound the backstop
-// carries is the daemon's to choose; a short one here reaches the wait.
+// carries is the daemon's to choose; a short one here reaches the wait. The line the deferral
+// writes names the wait's bound as until only where that bound is armed: in a pause's window no
+// bound is armed, and only the copy's reported end ends the deferral.
 //
 // The control is the backstop acting whatever the stop waits for: the claim is then suspended at
 // the first post, while the copy is still being taken, and the test fails there.
@@ -269,6 +275,10 @@ func TestTheStallBackstopWaitsForTheTurnsCopyItsHeldStopWaitsFor(t *testing.T) {
 			h.wantCalls("Suspend", 0)
 			if c := h.claim(); !c.SuspensionHeld || c.Locator == nil || *c.Locator != loc {
 				t.Fatalf("the claim is %+v, want it working on its process %+v, holding the stop held over the copy", c, loc)
+			}
+			deferred := h.logs.lines("supervise: the stall backstop found", "the turn is left to the next sweep")
+			if len(deferred) != 1 || strings.Contains(deferred[0], " until=") != window.waitBegun {
+				t.Fatalf("the backstop's deferral logged %q, want one line naming until only where the wait's bound is armed (%t)", deferred, window.waitBegun)
 			}
 			h.must(copies.copied(t, 0))
 			h.wantState(StateWorking)

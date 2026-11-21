@@ -152,11 +152,32 @@ func (m *Machine) backstopStalledTurn(ctx context.Context, ev StallBackstop) err
 	// A stop is held over the claim while the copy of an earlier turn's end is still being taken
 	// (stopHeldOverTurnCopy): the agent started this turn after that end. Replacing the process now
 	// would end that hold (replaceNow, endHeld) while the copy still asks the process's shim. The
-	// turn is left alone, as a refused replacement leaves it, and the next sweep posts it again: by
-	// then the copy has ended, or its budget has run out.
-	if m.stopHeldOverTurnCopy() {
-		m.log.Info("supervise: the stall backstop found the claim's held stop waiting for the copy of an earlier turn's end; the turn is left to the next sweep",
-			"copy", m.turnCopy.seq, "until", m.turnCopy.due, "bound", ev.Bound, "deadline", ev.Deadline, "lastStep", last)
+	// turn is left alone, as a refused replacement leaves it, and the next sweep posts it again;
+	// the first post after that copy is over decides the turn as any post does. What ends the copy
+	// for the machine depends on whether the held stop has begun its wait for it
+	// (turnCopy.stopWaits):
+	//
+	//   - Begun, by a stop held for that end or asked of the idle claim while the copy was taken
+	//     (waitForTurnCopy): the wait's bound is armed (TimerTurnCopy at turnCopy.due, the copy's
+	//     budget counted from the turn's end), so the copy is over at its reported end
+	//     (TurnEndCopied) or at that bound, whichever comes first (endTurnCopyWait). The line names
+	//     that bound as until.
+	//   - Not begun: a stop held over this running turn while the earlier turn's copy, which no
+	//     stop waited for, is still being taken, or a project pause's stop still waiting for the
+	//     prompt's answer (stopWaitsForResult). No bound is armed, and only the copy's reported end
+	//     ends it. The daemon reports every copy's end, whatever the copy came to, once the copy's
+	//     own budget has run out at the latest, but counted from the copy's own start
+	//     (internal/daemon's copyWorkspaceAtTurnEnd), which is later than the turn's end for a copy
+	//     owed behind another, so turnCopy.due bounds nothing here. The line names no until, since
+	//     the machine holds no time by which this ends, and says what ends it instead.
+	if c := m.turnCopy; m.stopHeldOverTurnCopy() {
+		if c.stopWaits {
+			m.log.Info("supervise: the stall backstop found the claim's held stop waiting for the copy of an earlier turn's end; the turn is left to the next sweep, and that wait ends by its bound at the latest",
+				"copy", c.seq, "until", c.due, "bound", ev.Bound, "deadline", ev.Deadline, "lastStep", last)
+			return nil
+		}
+		m.log.Info("supervise: the stall backstop found a stop held over the claim while the copy of an earlier turn's end is still being taken; the turn is left to the next sweep after the daemon reports that copy's end, which it does within the copy's own budget",
+			"copy", c.seq, "bound", ev.Bound, "deadline", ev.Deadline, "lastStep", last, "by", m.held.By)
 		return nil
 	}
 	suspended := m.held != nil

@@ -7489,7 +7489,7 @@ That retry comes between turns as well: the cadence takes an issue whose last co
 A retry waits for a live role of its issue, since an issue with none, released or with every role stopped, has no running pod whose work a copy could hold.
 The cadence takes no copy of such an issue and keeps its retry, which runs at the first tick after a resumed or relaunched pod's role is live again and the 5 minutes are up.
 It logs the skip as `running copy: no copy of the issue workspace was stored` with the issue and the reason `no_live_role`, at Info, once in each 5 minutes for that issue and at none of the ticks between, and a push whose copy finds no live role writes the same line under the same limit, at Debug for each further push inside it.
-An issue that no claim names at all is forgotten, retry included.
+An issue whose every claim is retired, as a finished issue's are, or that no claim names at all, is forgotten, retry included.
 A copy that is stored, a workspace that holds nothing unpushed, a copy a push overtook, a copy refused as `bundle_too_large`, and the refusals `release_bundle_saved`, `newer_copy_stands` and `issue_not_recorded` below, which are no fault, owe no retry.
 A copy that comes to nothing for a fault while another copy or an idle release's save of its issue is in flight owes its retry all the same, and the issue keeps that retry whatever the run in flight comes to, since that run read the workspace before whatever asked for the copy was written.
 A push whose copy finds no live role while a copy of its issue is in flight is the case that needs it: the copy in flight is not stored, as a push overtook it, and nothing else follows it.
