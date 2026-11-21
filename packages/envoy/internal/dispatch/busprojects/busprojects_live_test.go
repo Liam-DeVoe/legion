@@ -1,12 +1,17 @@
 package busprojects_test
 
 import (
+	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"net"
+	"net/url"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,6 +21,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/busprojects"
 	"github.com/sjawhar/envoy/internal/dispatch/busprojects/busprojectstest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testport"
 	"github.com/sjawhar/envoy/natscred"
 	"github.com/sjawhar/envoy/natsgrant"
 )
@@ -112,12 +119,16 @@ func TestRunProvesAgainWhenAHubsConnectionChanges(t *testing.T) {
 // TestTheProofConnectionHoldsNothing: a connection admitted for the proof holds only its own reply
 // inboxes and its ping subject: a subscribe to any other subject is refused, and so is a publish to
 // any subject but its ping, JetStream's API, a KV bucket, the shared reply inboxes and project
-// subjects among them, each tried and refused in turn. A token of another account, and Dispatch's
-// token for another audience, are refused the proof.
+// subjects among them, each tried and refused in turn. A proof token of another account, and
+// Dispatch's token for an audience the auth service takes no NATS token at, are refused the proof.
 //
-// The grant here is the stand-in auth service's (busprojectstest), which names the reply inboxes
-// and the ping subject the auth service's hub-admission grant names; run against the auth
-// service's private-hub admission in its place, this test holds that grant to the same.
+// The grant here is the stand-in auth service's (busprojectstest), which stands in for the auth
+// service's hub-admission grant, not written at this head; run against the auth service's
+// private-hub admission in its place, this test holds that grant to the same. Both refusals are
+// ones the auth service makes too (natsgrant.HubAdmissionAudience). Dispatch's token for the
+// services' own audience (BROKER_NATS_K8S_AUDIENCE) has no row: the auth service admits it as an
+// ordinary service connection on every hub, so its refusal here would be the stand-in's alone,
+// which admits nothing but proofs.
 func TestTheProofConnectionHoldsNothing(t *testing.T) {
 	hub := busprojectstest.StartHub(t, true)
 	var mu sync.Mutex
@@ -180,8 +191,8 @@ func TestTheProofConnectionHoldsNothing(t *testing.T) {
 	})
 
 	for name, token := range map[string]string{
-		"another account's proof token":             busprojectstest.ProofToken("system:serviceaccount:legion:example-daemon", natsgrant.HubAdmissionAudience),
-		"Dispatch's token for a service's audience": busprojectstest.ProofToken(busprojectstest.DispatchAccount, "envoy-nats"),
+		"another account's proof token":                     busprojectstest.ProofToken("system:serviceaccount:legion:example-daemon", natsgrant.HubAdmissionAudience),
+		"Dispatch's token for an audience of no NATS token": busprojectstest.ProofToken(busprojectstest.DispatchAccount, "example-not-a-nats-audience"),
 	} {
 		t.Run(name, func(t *testing.T) {
 			other, err := natsgo.Connect(hub.URL, natsgo.UserInfo(natscred.ServiceUser, token), natsgo.NoReconnect(), natsgo.Timeout(5*time.Second))
@@ -231,4 +242,147 @@ func TestTheProofClientLogsNoPermissionsViolation(t *testing.T) {
 			return true
 		})
 	}
+}
+
+// TestAHubWithNoAuthenticationRefusesTheProof: a hub that requires no authentication admits every
+// connection without asking an auth service, Dispatch's held connection included, so its
+// admission decides nothing: the proof refuses it, naming the hub, and the report reads it
+// refused.
+//
+// Control: drop bus.Client.ProveAdmission's AuthRequired check; the open hub admits the proof
+// connection, the proof passes, and the test fails naming the hub.
+func TestAHubWithNoAuthenticationRefusesTheProof(t *testing.T) {
+	_, open := testnats.Start(t)
+	a, clients := admissionOverURLs(t, open)
+	awaitConnected(t, clients[0])
+	a.SetListeners(busprojectstest.ReadyListener(t))
+
+	err := a.Prove(t.Context())
+	require.Error(t, err, "the proof passed on %s, a hub that requires no authentication", open)
+	require.ErrorContains(t, err, "hub "+open+" did not admit a new proof connection")
+	require.ErrorContains(t, err, "the server requires no authentication")
+	require.False(t, a.Ready())
+	require.Equal(t, busprojects.AdmissionRefused, a.Report().Hubs[0].Admission)
+}
+
+// TestEveryServerOfAHubClientAdmitsTheProof: a hub client that names two servers, one of them
+// rendered without the server tag, fails the proof naming that server, whichever comes first:
+// each server is proven on a connection of its own, so the tagged server's admission never stands
+// for the untagged one's, and the untagged one's refusal never moves the proof on to the tagged
+// one.
+//
+// Control: make bus.Client.ProveAdmission dial one connection over all the client's servers; with
+// the tagged server first it connects there alone, with the untagged one first it moves on to the
+// tagged one after the refusal, the proof passes either way, and both rows fail.
+func TestEveryServerOfAHubClientAdmitsTheProof(t *testing.T) {
+	tagged, untagged := busprojectstest.StartHub(t, true), busprojectstest.StartHub(t, false)
+	for _, row := range []struct {
+		name    string
+		servers []*busprojectstest.Hub
+	}{
+		{"the tagged server first", []*busprojectstest.Hub{tagged, untagged}},
+		{"the untagged server first", []*busprojectstest.Hub{untagged, tagged}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			a, _ := admissionOverURLs(t, row.servers[0].URL+","+row.servers[1].URL)
+			a.SetListeners(busprojectstest.ReadyListener(t))
+			err := a.Prove(t.Context())
+			require.Error(t, err, "the proof passed with %s, one of the hub's two servers, rendered without the server tag", untagged.URL)
+			require.ErrorContains(t, err, "admission proof: "+untagged.URL+": the new connection was not admitted")
+			require.False(t, a.Ready())
+			require.Contains(t, untagged.Refusals(), busprojectstest.RefusedUntagged, "the untagged server refused for another reason: %v", untagged.Refusals())
+		})
+	}
+}
+
+// TestAProofNeverDialsAServerTheHubNames: a hub client naming one server, which refuses the proof
+// and names a second server in its INFO, as a server that advertises its cluster's other servers
+// does, fails the proof: the proof connection never moves to a server its client does not name,
+// so the second server, which would admit it, is never asked.
+//
+// Control: drop IgnoreDiscoveredServers from bus.Client.ProveAdmission's connection; nats.go adds
+// the named server to the connection's servers during the refused handshake and connects there,
+// the proof passes, and the test fails naming the refusing server.
+func TestAProofNeverDialsAServerTheHubNames(t *testing.T) {
+	tagged := busprojectstest.StartHub(t, true)
+	refusing, refused := refusingServer(t, tagged.URL)
+	a, _ := admissionOverURLs(t, refusing)
+	a.SetListeners(busprojectstest.ReadyListener(t))
+
+	err := a.Prove(t.Context())
+	require.Error(t, err, "the proof passed through %s, which %s named, after %s refused it", tagged.URL, refusing, refusing)
+	require.ErrorContains(t, err, "admission proof: "+refusing+": the new connection was not admitted")
+	require.ErrorIs(t, err, natsgo.ErrAuthorization)
+	require.False(t, a.Ready())
+	require.Positive(t, refused(), "the refusing server refused no connection, so it never answered the proof")
+}
+
+// TestACancelledProofIsNotKept: a proof whose caller ended before it did answers the caller's
+// error and is not kept: Ready and the report keep the last proof that ran to its end, here one
+// that passed, rather than a refusal no hub made.
+//
+// Control: make Prove keep its result whatever its caller's context says; the cancelled proof is
+// kept as every hub and replica failing, the admission turns not ready, and the test fails.
+func TestACancelledProofIsNotKept(t *testing.T) {
+	hub := busprojectstest.StartHub(t, true)
+	a, clients := admissionOver(t, hub)
+	awaitConnected(t, clients[0])
+	a.SetListeners(busprojectstest.ReadyListener(t))
+	require.NoError(t, a.Prove(t.Context()))
+	require.True(t, a.Ready())
+	passed := a.Report()
+
+	cancelled, cancel := context.WithCancel(t.Context())
+	cancel()
+	err := a.Prove(cancelled)
+	require.ErrorIs(t, err, context.Canceled)
+	require.True(t, a.Ready(), "a proof its caller cancelled was kept: %v", err)
+	require.Equal(t, passed, a.Report(), "the report holds a proof its caller cancelled")
+}
+
+// refusingServer is a stand-in NATS server at a loopback address of its own that answers each
+// client with an INFO requiring authentication and naming advertised, a server's host:port or
+// URL, among its cluster's other servers (connect_urls), then refuses the client's CONNECT as a
+// hub whose auth service refused it does, with -ERR 'Authorization Violation'. It answers its
+// URL and how many clients it has refused; it stops when the test ends.
+func refusingServer(t *testing.T, advertised string) (string, func() int) {
+	t.Helper()
+	if parsed, err := url.Parse(advertised); err == nil && parsed.Host != "" {
+		advertised = parsed.Host
+	}
+	listener, err := testport.ListenLoopback()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = listener.Close() })
+	host, port, err := net.SplitHostPort(listener.Addr().String())
+	require.NoError(t, err)
+	info := fmt.Sprintf(`INFO {"server_id":"NREFUSING","server_name":"refusing","version":"2.15.1","proto":1,"host":%q,"port":%s,"headers":true,"auth_required":true,"max_payload":1048576,"connect_urls":[%q]}`+"\r\n", host, port, advertised)
+	var refused atomic.Int64
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
+				if _, err := conn.Write([]byte(info)); err != nil {
+					return
+				}
+				lines := bufio.NewReader(conn)
+				for {
+					line, err := lines.ReadString('\n')
+					if err != nil {
+						return
+					}
+					if strings.HasPrefix(line, "PING") {
+						refused.Add(1)
+						_, _ = conn.Write([]byte("-ERR 'Authorization Violation'\r\n"))
+						return
+					}
+				}
+			}()
+		}
+	}()
+	return "nats://" + listener.Addr().String(), func() int { return int(refused.Load()) }
 }

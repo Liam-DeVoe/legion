@@ -17,7 +17,10 @@ type ListenerTarget struct {
 	// Name is the workload's name, which the report and every error name it by.
 	Name string `json:"name"`
 	// Hub is the URL of the hub of DISPATCH_PRIVATE_HUBS the workload serves. The proof reads
-	// every workload whichever hub it serves; cmd/dispatch's settings check each hub has one.
+	// every workload whichever hub it serves, and never reads Hub: that every hub has a workload
+	// is for the code that builds the inventory to check, cmd/dispatch's settings, which do not
+	// check it at this head, so an inventory that leaves a hub out passes the proof with none of
+	// that hub's listeners read.
 	Hub string `json:"hub"`
 	// Source is the privacy source every replica must read from: the secrets broker's base URL.
 	Source string `json:"source"`
@@ -125,8 +128,9 @@ func unknownWorkload(target ListenerTarget, why string) replicaEntry {
 
 // readReplica asks one replica for a fresh privacy read, GET ReadinessPath at its address and
 // its workload's port with its workload's Host, and passes only a 200 whose body says the replica
-// runs in required privacy mode, reads the workload's source, and that its read answered. The
-// report carries what the replica said of itself whenever its body parsed.
+// runs in required privacy mode, reads the workload's source, and that its read answered. A 3xx
+// fails it: client follows no redirect (SetListeners), since the address a redirect names is not
+// the replica. The report carries what the replica said of itself whenever its body parsed.
 func readReplica(ctx context.Context, client *http.Client, slot replicaSlot) (ReplicaReport, error) {
 	report := ReplicaReport{Workload: slot.target.Name, Address: slot.address, Read: ReadFailed}
 	fail := func(format string, args ...any) (ReplicaReport, error) {
@@ -157,6 +161,8 @@ func readReplica(ctx context.Context, client *http.Client, slot replicaSlot) (Re
 		report.Instance, report.Required, report.Source = answer.Instance, answer.Required, answer.Source
 	}
 	switch {
+	case response.StatusCode >= 300 && response.StatusCode < 400:
+		return fail("answered %d, a redirect to %q, which the proof does not follow", response.StatusCode, response.Header.Get("Location"))
 	case response.StatusCode != http.StatusOK && parseErr == nil:
 		return fail("answered %d, read %q", response.StatusCode, answer.Read)
 	case response.StatusCode != http.StatusOK:

@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -79,9 +81,20 @@ func proofToken() string {
 
 func admissionOver(t *testing.T, hubs ...*busprojectstest.Hub) (*busprojects.HubAdmission, []*bus.Client) {
 	t.Helper()
-	clients := make([]*bus.Client, len(hubs))
+	urls := make([]string, len(hubs))
 	for i, h := range hubs {
-		clients[i] = busprojectstest.ProofClient(t, h.URL, proofToken())
+		urls[i] = h.URL
+	}
+	return admissionOverURLs(t, urls...)
+}
+
+// admissionOverURLs is the admission over one hub-admission client per hub at urls, each a hub's
+// client URL or several comma-separated (busprojectstest.ProofClient).
+func admissionOverURLs(t *testing.T, urls ...string) (*busprojects.HubAdmission, []*bus.Client) {
+	t.Helper()
+	clients := make([]*bus.Client, len(urls))
+	for i, url := range urls {
+		clients[i] = busprojectstest.ProofClient(t, url, proofToken())
 	}
 	a := busprojects.NewHubAdmission(clients)
 	require.NotNil(t, a)
@@ -166,6 +179,38 @@ func TestEveryListenerReplicaAnswersTheProof(t *testing.T) {
 		last := a.Report().Listeners[len(a.Report().Listeners)-1]
 		require.Equal(t, busprojects.ReplicaReport{Workload: "example-hub-listener", Read: busprojects.ReadUnknown, Error: `its instances "example-hub-listener-instances.example.invalid:9020" resolve to no address`}, last)
 	})
+}
+
+// TestAReplicaThatRedirectsFailsTheProof: a replica that answers its read with a redirect to
+// another address, which would answer a healthy read, fails the proof naming the replica and the
+// redirect, and the address it names is never asked: what another address answers is no read of
+// the replica.
+//
+// Control: let the proof's client follow redirects (drop the CheckRedirect SetListeners sets on
+// its copy); the proof takes the other address's answer as the replica's, passes, and the test
+// fails naming the redirect.
+func TestAReplicaThatRedirectsFailsTheProof(t *testing.T) {
+	hub := busprojectstest.StartHub(t, true)
+	a, clients := admissionOver(t, hub)
+	awaitConnected(t, clients[0])
+	var followed atomic.Int64
+	client := &http.Client{Transport: transport(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Hostname() == replicaBroken {
+			response := respond(r, http.StatusFound, "")
+			response.Header.Set("Location", "http://"+net.JoinHostPort(replicaHealthy1, "9020")+busprojects.ReadinessPath)
+			return response, nil
+		}
+		followed.Add(1)
+		return respond(r, http.StatusOK, answered("envoy-listener-a").body), nil
+	})}
+	a.SetListeners([]busprojects.ListenerTarget{{Name: workload, Source: workloadSource, Host: workloadHost, Instances: net.JoinHostPort(replicaBroken, "9020")}}, client)
+
+	err := a.Prove(t.Context())
+	require.Error(t, err, "the proof passed on what %s answered, where replica %s redirected it", replicaHealthy1, replicaBroken)
+	require.ErrorContains(t, err, "listener "+workload+" replica "+replicaBroken+": answered 302, a redirect to")
+	require.Zero(t, followed.Load(), "the proof followed replica %s's redirect to %s", replicaBroken, replicaHealthy1)
+	require.False(t, a.Ready())
+	require.Equal(t, busprojects.ReadFailed, replica(t, a.Report(), replicaBroken).Read)
 }
 
 // TestANoInventoryProofRefuses: an admission whose listeners were never set answers

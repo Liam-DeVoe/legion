@@ -28,9 +28,9 @@ const (
 )
 
 // Report is the go-live report: the last proof's result for every hub and every listener replica,
-// failed or passing, published whenever DISPATCH_PRIVATE_HUBS names a hub, whatever the database
-// holds, so an operator reads it before any project is private. It holds no project and no
-// channel.
+// failed or passing, whatever the database holds, so an operator can read it before any project is
+// private (ReportHandler serves it; no route mounts that handler at this head). It holds no
+// project and no channel.
 type Report struct {
 	// ProvedAt is when the proof the report holds ended; absent before any proof has.
 	ProvedAt time.Time `json:"proved_at,omitzero"`

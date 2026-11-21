@@ -75,6 +75,18 @@ func (o connectOpts) connectionSettings(credential nats.Option) nats.Option {
 	return allOf(settings...)
 }
 
+// freshSettings is connectionSettings with a credential of its own, read anew from the
+// environment at each call (credential): what an admission proof's connection applies
+// (Client.proofSettings), so the proof never presents through, or writes, the credential the
+// client's own connections share.
+func (o connectOpts) freshSettings() (nats.Option, error) {
+	credential, err := credential(o.environment)
+	if err != nil {
+		return nil, err
+	}
+	return o.connectionSettings(credential), nil
+}
+
 // parseConnectOptions applies options over the defaults every connect starts from.
 func parseConnectOptions[O ConnectOption](options []O) connectOpts {
 	opts := connectOpts{name: "envoy", replicas: 1, keepInterval: defaultKeepInterval, publishAcknowledgementClock: wallClock{}, environment: os.LookupEnv, streamSubjectsRefresh: streamSubjectsRefresh}
@@ -297,11 +309,17 @@ type recoverableSubscription struct {
 // other is refused with ErrSubscriptionHeld, so a caller that needs two durables takes one Client
 // per durable.
 type Client struct {
-	Conn                        *nats.Conn
-	js                          nats.JetStreamContext
-	urls                        []string
-	name                        string
-	connectionSettings          nats.Option
+	Conn               *nats.Conn
+	js                 nats.JetStreamContext
+	urls               []string
+	name               string
+	connectionSettings nats.Option
+	// proofSettings is connectionSettings for each admission proof (ProveAdmission), built afresh
+	// at each call with a credential of the proof's own, read anew from the client's environment
+	// (credential): a service credential records the token its last CONNECT presented, which the
+	// keeper beside the client's own connection reads, so a proof must never present through
+	// connectionSettings' credential.
+	proofSettings               func() (nats.Option, error)
 	dialer                      *socks5Dialer
 	publishAcknowledgementClock AcknowledgementClock
 	reconnectErrClock           func() time.Time
@@ -523,6 +541,7 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 		urls:                        urls,
 		name:                        opts.name,
 		connectionSettings:          opts.connectionSettings(credential),
+		proofSettings:               opts.freshSettings,
 		dialer:                      dialer,
 		publishAcknowledgementClock: opts.publishAcknowledgementClock,
 		reconnectErrClock:           opts.reconnectErrClock,
@@ -2404,25 +2423,56 @@ func (c *Client) Servers() string {
 	return serverList(c.urls)
 }
 
-// ProveAdmission asks the server afresh whether it admits this client: it dials one new connection
-// with the client's servers, name, credential and proxy, the credential read anew for this dial
-// as every connect of the client reads it, makes one round trip on it (a PING and its PONG), and
-// closes it. It answers nil only when a server admitted the connection and answered the round
-// trip, within ctx; otherwise why not, the server's refusal among them. It never reads or tests
-// c.Conn: a hub whose auth service admitted that connection keeps it after the service stops
-// answering, so only a new connection is a decision made now.
+// ProveAdmission asks each of the client's servers afresh whether it admits this client: for each
+// server, in the client's order, it dials one new connection to that server alone, with the
+// client's name and proxy and a credential of the proof's own, read anew from the client's
+// environment as every connect of the client reads it; it requires that the server asked for
+// authentication, makes one round trip on the connection (a PING and its PONG), and closes it. It
+// answers nil only when every server admitted its connection, required authentication and
+// answered the round trip, within ctx; otherwise why not for the first server that did not, which
+// it names without its userinfo, the server's refusal among them. It never reads or tests c.Conn:
+// a hub whose auth service admitted that connection keeps it after the service stops answering,
+// so only a new connection is a decision made now.
 //
-// The connection makes one attempt and never reconnects, carries none of the client's handlers
-// or its credential's keeper (natscred's Keeper, which a service credential starts beside each
-// connection), and so logs nothing: Dispatch proves every minute, and a proof's connect and close
-// are no connection event of the client's.
+// A connection reaches only the server it was dialled for, never one that server's INFO names
+// (IgnoreDiscoveredServers), so no server's refusal is passed by another server's admission. A
+// server that requires no authentication admits every CONNECT without asking an auth service, so
+// its admission decides nothing, and the proof refuses it.
+//
+// A connection makes one attempt and never reconnects, and carries none of the client's handlers
+// and not the client's credential: a service credential records the token its last CONNECT
+// presented, and the keeper beside the client's connection (natscred's Keeper) reads that record
+// to move the connection to a later token before its own lapses, so a proof that presented
+// through the client's credential would write it. The proof's own credential's keeper never
+// starts. So a proof logs nothing and changes nothing of the client's: Dispatch proves every
+// minute, and a proof's connect and close are no connection event of the client's.
 func (c *Client) ProveAdmission(ctx context.Context) error {
-	opts := options(c.name, c.urls, nil, nil, nil, nil, c.reconnectErrClock)
-	if c.connectionSettings != nil {
-		if err := c.connectionSettings(&opts); err != nil {
-			return fmt.Errorf("bus: admission proof: %w", err)
+	settings, err := c.proofSettings()
+	if err != nil {
+		return fmt.Errorf("bus: admission proof: %w", err)
+	}
+	for _, url := range c.urls {
+		if err := c.proveServer(ctx, url, settings); err != nil {
+			return fmt.Errorf("bus: admission proof: %s: %w", natsURLWithoutUserinfo(url), err)
 		}
 	}
+	return nil
+}
+
+// proveServer is ProveAdmission's proof of the one server at url, its connection applying
+// settings. Once ctx has ended it dials nothing, as connectWithContext makes no attempt then: a
+// dial begun after that would only be closed again when it lands.
+func (c *Client) proveServer(ctx context.Context, url string, settings nats.Option) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	opts := options(c.name, []string{url}, nil, nil, nil, nil, c.reconnectErrClock)
+	if settings != nil {
+		if err := settings(&opts); err != nil {
+			return err
+		}
+	}
+	opts.IgnoreDiscoveredServers = true
 	opts.AllowReconnect, opts.RetryOnFailedConnect = false, false
 	opts.ConnectedCB, opts.ReconnectedCB, opts.ClosedCB = nil, nil, nil
 	opts.DisconnectedErrCB, opts.ReconnectErrCB, opts.AsyncErrorCB = nil, nil, nil
@@ -2431,7 +2481,7 @@ func (c *Client) ProveAdmission(ctx context.Context) error {
 	if hasDeadline {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
-			return fmt.Errorf("bus: admission proof: %w", context.DeadlineExceeded)
+			return context.DeadlineExceeded
 		}
 		bound = min(bound, remaining)
 	}
@@ -2454,7 +2504,7 @@ func (c *Client) ProveAdmission(ctx context.Context) error {
 	select {
 	case d := <-result:
 		if d.err != nil {
-			return fmt.Errorf("bus: admission proof: the new connection was not admitted: %w", d.err)
+			return fmt.Errorf("the new connection was not admitted: %w", d.err)
 		}
 		conn = d.conn
 	case <-ctx.Done():
@@ -2463,9 +2513,12 @@ func (c *Client) ProveAdmission(ctx context.Context) error {
 				d.conn.Close()
 			}
 		}()
-		return fmt.Errorf("bus: admission proof: %w", ctx.Err())
+		return ctx.Err()
 	}
 	defer conn.Close()
+	if !conn.AuthRequired() {
+		return errors.New("the server requires no authentication, so no auth service decided the new connection")
+	}
 	var err error
 	if hasDeadline {
 		err = conn.FlushWithContext(ctx)
@@ -2473,7 +2526,7 @@ func (c *Client) ProveAdmission(ctx context.Context) error {
 		err = conn.FlushTimeout(bound)
 	}
 	if err != nil {
-		return fmt.Errorf("bus: admission proof: the admitted connection did not answer a round trip: %w", err)
+		return fmt.Errorf("the admitted connection did not answer a round trip: %w", err)
 	}
 	return nil
 }

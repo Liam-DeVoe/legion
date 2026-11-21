@@ -42,7 +42,11 @@ const (
 	RefusedUntagged = "hub_admission_untagged"
 	// RefusedNotDispatch is a proof whose token names an account other than DispatchAccount.
 	RefusedNotDispatch = "hub_admission_not_dispatch"
-	// RefusedNotAProof is any other credential: the stand-in admits nothing but proofs.
+	// RefusedNotAProof is any other credential: the stand-in admits nothing but proofs. The auth
+	// service refuses only some of these: it admits a service's token for its own audience
+	// (BROKER_NATS_K8S_AUDIENCE) as an ordinary service connection on every hub
+	// (natsgrant.HubAdmissionAudience), so a test asserts this label only for a credential the auth
+	// service refuses too, a token of an audience it takes no NATS token at, say.
 	RefusedNotAProof = "not_a_hub_admission_proof"
 )
 
@@ -52,8 +56,11 @@ const (
 // the request carries natsgrant.PrivateProjectsServerTag, which the server's configuration carries
 // while the hub is tagged; it answers every other connection with a refusal naming its label.
 //
-// It stands in for the auth service's private-hub admission (internal/cipher/natscallout), which
-// decides the same rules; a test that runs the real service there in its place replaces it.
+// It stands in for the auth service's private-hub admission, which is not written at this head:
+// natsgrant names what it will read (natsgrant.HubAdmissionAudience, PrivateProjectsServerTag).
+// It decides the proof's rules as natsgrant.HubAdmissionAudience states them, and admits nothing
+// else; its grant to a proof stands in for the auth service's hub-admission grant. A test that
+// runs the real service there in its place replaces it.
 type Hub struct {
 	// Server is the hub's server, which Retag restarts.
 	Server *testnats.Server
@@ -173,6 +180,9 @@ func (h *Hub) answer(t testing.TB, curve, issuer nkeys.KeyPair, m *natsgo.Msg) {
 	} else {
 		user := jwt.NewUserClaims(request.UserNkey)
 		user.Audience = "$G"
+		// The stand-in's grant, standing in for the auth service's hub-admission grant: a test
+		// of what an admitted proof connection can reach (TestTheProofConnectionHoldsNothing)
+		// holds this grant, not a grant the auth service ships.
 		user.Pub.Allow.Add(ProofPingSubject)
 		user.Sub.Allow.Add(ProofInboxPrefix + ".>")
 		user.Expires = time.Now().Add(time.Hour).Unix()
@@ -258,13 +268,15 @@ func ProofToken(account, audience string) string {
 	return header + "." + claims + ".unsigned"
 }
 
-// ProofClient is the hub-admission client of the hub at url, as cmd/dispatch builds one per hub
-// of DISPATCH_PRIVATE_HUBS: a bus client that connects as a service presenting token, which it
-// reads from a file at each connect, and that connects in the background, so a hub that refuses it
-// leaves it retrying rather than failing its construction. It stays inside the proof's grant, so
-// the hub refuses it nothing and it logs no permissions violation: its reply inboxes are under
-// ProofInboxPrefix (bus.WithInboxPrefix), and it never reads the stream's subjects, a publish the
-// grant refuses (bus.WithoutStreamSubjects). It closes when the test ends.
+// ProofClient is the hub-admission client of the hub at url, its client URL or several
+// comma-separated as nats.go takes a server list, as cmd/dispatch is to build one per hub of
+// DISPATCH_PRIVATE_HUBS (it builds none at this head): a bus client that connects as a service
+// presenting token, which it reads from a file at each connect, and that connects in the
+// background, so a hub that refuses it leaves it retrying rather than failing its construction.
+// It stays inside the proof's grant, so the hub refuses it nothing and it logs no permissions
+// violation: its reply inboxes are under ProofInboxPrefix (bus.WithInboxPrefix), and it never
+// reads the stream's subjects, a publish the grant refuses (bus.WithoutStreamSubjects). It closes
+// when the test ends.
 func ProofClient(t testing.TB, url, token string) *bus.Client {
 	t.Helper()
 	file := filepath.Join(t.TempDir(), "hub-admission-token")
@@ -272,7 +284,7 @@ func ProofClient(t testing.TB, url, token string) *bus.Client {
 		t.Fatalf("write the hub-admission token: %v", err)
 	}
 	environment := map[string]string{bus.ServiceTokenFileEnvVar: file}
-	client, err := bus.Connect([]string{url},
+	client, err := bus.Connect(strings.Split(url, ","),
 		bus.WithName("envoy-dispatch-hub-admission"),
 		bus.WithEnvironment(func(name string) (string, bool) { value, ok := environment[name]; return value, ok }),
 		bus.WithInboxPrefix(ProofInboxPrefix),

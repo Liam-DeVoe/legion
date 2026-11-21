@@ -2,8 +2,9 @@
 // reach keep it apart: every hub that serves private projects admits Dispatch afresh through its
 // auth service, which it does only on a hub rendered with private-project support, and every
 // listener replica that serves those hubs reads which projects are private afresh, in required
-// privacy mode, from its expected source. A switch of a project to private runs the proof last
-// before it commits, and the outbox holds private projects' events while the last proof failed.
+// privacy mode, from its expected source. A switch of a project to private is to run the proof
+// last before it commits, and the outbox to hold private projects' events while the last proof
+// failed (Ready); neither caller is wired at this head.
 //
 // It writes nothing, on the bus or anywhere else, and reads no project: Dispatch's database is the
 // one record of which projects are private, and every listener reads it at each decision, so no
@@ -103,17 +104,23 @@ func NewHubAdmission(conns []*bus.Client) *HubAdmission {
 
 // SetListeners gives the admission the listener workloads that serve its hubs
 // (DISPATCH_PRIVATE_LISTENERS) and the client that reads their replicas, which presents Dispatch's
-// own credential; nil is http.DefaultClient. Until it is called, and after a call that gives no
-// workload, every proof fails with ErrNoListenerInventory. A new inventory sets Ready false and the
-// report to unknown until a proof under it ends, and wakes Run for that proof. It needs a non-nil
-// admission: a deployment with no private hub has no listener to prove, and its caller sets none.
+// own credential; nil is http.DefaultClient. The proof reads through a copy of the client that
+// follows no redirect, so a replica's 3xx is its answer, and fails it: what the address a redirect
+// names answers is no read of the replica, and a transport that adds the credential would send it
+// there too.
+// Until it is called, and after a call that gives no workload, every proof fails with
+// ErrNoListenerInventory. A new inventory sets Ready false and the report to unknown until a
+// proof under it ends, and wakes Run for that proof. It needs a non-nil admission: a deployment
+// with no private hub has no listener to prove, and its caller sets none.
 func (a *HubAdmission) SetListeners(inv []ListenerTarget, client *http.Client) {
 	if client == nil {
 		client = http.DefaultClient
 	}
+	noRedirects := *client
+	noRedirects.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	targets := append([]ListenerTarget(nil), inv...)
 	a.mu.Lock()
-	a.listeners, a.client = targets, client
+	a.listeners, a.client = targets, &noRedirects
 	a.kept = max(a.kept, a.proofs.Load())
 	a.ready = false
 	a.report = a.unproven(targets)
@@ -123,8 +130,14 @@ func (a *HubAdmission) SetListeners(inv []ListenerTarget, client *http.Client) {
 
 // Ready reports whether the last proof succeeded: false before the first proof ends, while the
 // last one failed for any hub or listener replica, and from SetListeners until a proof under the
-// new inventory ends. A nil admission is ready, since no project can be private there. The outbox
-// reads it (outbox.Deps.PrivateHubsReady) and holds private projects' events while it is false.
+// new inventory ends. A nil admission is ready: it has no hub to prove, and a switch to private is
+// refused there (ErrNoBus). That rests on the deployment, since Dispatch's database, not
+// DISPATCH_PRIVATE_HUBS, is the record of which projects are private: a project can still be
+// private when the setting is emptied, and Ready true then lets its events go with no proof. They
+// stay apart only while its hub is still rendered private, so a deployment must not stop
+// rendering a hub private while Dispatch's database holds a private project. The outbox is to
+// hold private projects' events while Ready is false; at this head nothing reads it, since
+// outbox.Deps has no field its caller sets from it.
 func (a *HubAdmission) Ready() bool {
 	if a == nil {
 		return true
@@ -142,13 +155,14 @@ func (a *HubAdmission) Ready() bool {
 // answers ErrNoBus on a nil admission and an error that is ErrNoListenerInventory while the
 // admission holds no listener workload, after proving the hubs all the same, so the report shows
 // them. Either way the result becomes Ready's and Report's, unless a proof that started later has
-// already ended.
+// already ended, or ctx ended before the proof did: a proof its caller cancelled answers ctx's
+// error and is not kept, so Ready and Report keep the last proof that ran to its end.
 func (a *HubAdmission) Prove(ctx context.Context) error {
 	if a == nil {
 		return ErrNoBus
 	}
 	number := a.proofs.Add(1)
-	ctx, cancel := context.WithTimeout(ctx, proofTimeout)
+	proof, cancel := context.WithTimeout(ctx, proofTimeout)
 	defer cancel()
 	a.mu.Lock()
 	targets, client := a.listeners, a.client
@@ -160,12 +174,17 @@ func (a *HubAdmission) Prove(ctx context.Context) error {
 	var replicaErrs []error
 	var wg sync.WaitGroup
 	for i, h := range a.hubs {
-		wg.Go(func() { hubs[i], hubErrs[i] = proveHub(ctx, h) })
+		wg.Go(func() { hubs[i], hubErrs[i] = proveHub(proof, h) })
 	}
 	if len(targets) > 0 {
-		wg.Go(func() { replicas, replicaErrs = readListeners(ctx, a.lookup, client, targets) })
+		wg.Go(func() { replicas, replicaErrs = readListeners(proof, a.lookup, client, targets) })
 	}
 	wg.Wait()
+	// ctx, not proof: a proof that ran out of proofTimeout is a result, kept as every hub and
+	// replica it did not reach failing; one whose caller ended first says nothing of the hubs.
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("busprojects: the proof's caller ended before the proof did, so its result is not kept: %w", err)
+	}
 
 	var errs []error
 	if len(targets) == 0 {
