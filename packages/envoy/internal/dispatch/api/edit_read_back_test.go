@@ -236,6 +236,36 @@ func TestDocumentEditReadBackPastItsBoundCountsTheRemovedBlocksApart(t *testing.
 	}
 }
 
+// Past the bound, a line naming a block the edit removed is printed whole or not at all, since a
+// part of it names no block. The grown block here leaves 5 bytes of the read-back's room after it,
+// fewer than the line naming the deleted paragraph after it holds: the read-back leaves that line
+// out and counts it in its closing line, as it counts the block after it.
+func TestDocumentEditReadBackLeavesOutTheNamedLineItsBoundFallsIn(t *testing.T) {
+	handler := newTestHandler(t)
+	issue := createInteractionIssue(t, handler, "TEST", "Grown, deleted, grown", "Alpha.\n\nBravo.\n\nCharlie.\n")
+	blocks := listedBlocks(t, handler, issue.PrimaryArtifactID)
+	if len(blocks) != 3 {
+		t.Fatalf("blocks = %#v, want the three paragraphs", blocks)
+	}
+	charlie := strings.TrimSpace(strings.Repeat("charlie ", 40))
+	// The room is the 2,000-byte bound less a blank line and the closing line at the counts the
+	// read-back starts from: two blocks, whose characters run to four digits, and one line.
+	line := len(docs.ReadBackCutLine(1000, 2, 1))
+	grown := strings.Repeat("a", 2000-2-line-2-5)
+	if characters := len(grown) + len(charlie); characters < 1000 || characters > 9999 {
+		t.Fatalf("the two blocks hold %d characters, want four digits of them, as the room is measured at", characters)
+	}
+	named := blocks[1].ID + " paragraph: removed"
+	edited := applyEdit(t, handler, issue.PrimaryArtifactID, map[string]any{"ops": []map[string]any{
+		{"op": "replace", "find": "Alpha.", "with": grown},
+		{"op": "delete", "find": "Bravo."},
+		{"op": "replace", "find": "Charlie.", "with": charlie},
+	}})
+	if want := grown + "\n\n" + docs.ReadBackCutLine(len(charlie), 1, 1); edited.Written != want {
+		t.Fatalf("written = %q, want the grown block whole and the line closing the read-back, with no part of %q", edited.Written, named)
+	}
+}
+
 // The same edit under a block precondition, which resolves and writes the batch in the other
 // caller of the mutate closure, reads back the same field.
 func TestDocumentEditReadBackUnderABlockPreconditionIsTheSame(t *testing.T) {

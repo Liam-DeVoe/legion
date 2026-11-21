@@ -10712,7 +10712,8 @@ describe("executeDispatchTool", () => {
   });
 
   // An edit under a block guard that took blocks the guard did not name - the nested list of an
-  // item a marker delete removed - says so, with each block's token, under the Applied line.
+  // item a marker delete removed - says so, with each block's token to compare with the one the
+  // caller read, under the Applied line, and its details carry them for the session's ledger.
   test("names the blocks a guarded edit took that its guard did not name", async () => {
     const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
       const path = new URL(String(url)).pathname;
@@ -10757,9 +10758,17 @@ describe("executeDispatchTool", () => {
 
     expect(result.text).toBe(
       "Applied 1 ops (version 3)\n" +
-        "Block guard: this edit also took a block the guard did not name, and did not check it: nested-1 (token sha256:nested); name it in precondition.blocks to refuse the edit if it changed.\n" +
+        "Block guard: this edit also took a block the guard did not name: nested-1 (token sha256:nested); compare its token with the one you read.\n" +
         "Document token: sha256:after-edit"
     );
+    expect(result.details).toEqual({
+      issue: "DSP-42",
+      applied: 1,
+      version: 3,
+      lost_ops: [],
+      unguarded_blocks: [{ id: "nested-1", token: "sha256:nested" }],
+      token: "sha256:after-edit",
+    });
   });
 
   // A concurrent browser deletion that lands after the version is written is past undoing, so the

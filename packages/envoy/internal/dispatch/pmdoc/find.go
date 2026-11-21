@@ -630,26 +630,41 @@ type flattenedText struct {
 	value     string
 	positions []int
 	marks     []inlineMarkup
-	// links is the URL each run of linked units links to, in unit order, for a quote read as
-	// markdown alone (renderedMarkdownQuote): what a quote spells a link with is its markup and
-	// its URL (Spelling), and a document's link carries its own URL on its mark.
+	// links is the link each run of linked units is under, in unit order, for a quote read as
+	// markdown alone (renderedMarkdownQuote): what a quote spells a link with is its markup, its
+	// URL and its title (Spelling), and a document's link carries its own on its mark.
 	links []linkedUnits
 	forms *textForms
 }
 
-// linkedUnits is a run of a flattened text's units, from from up to to, under a link to href.
+// linkedUnits is a run of a flattened text's units, from from up to to, under link.
 type linkedUnits struct {
 	from, to int
-	href     string
+	link     linkTarget
 }
 
-// hrefIn is the URL of the first link over a unit of span, and "" where no link covers one.
-func (t flattenedText) hrefIn(span range16) string {
+// linkTarget is what a link mark carries beside its text: the URL it links to and its title, ""
+// for none. The renderer writes both (`[this](https://a.example/1 "Spec")`), so both are the
+// markup a find spells the link with.
+type linkTarget struct {
+	href, title string
+}
+
+// markLinkTarget is the URL and the title the link mark carries.
+func markLinkTarget(mark Mark) linkTarget {
+	href, _ := mark.Attrs["href"].(string)
+	title, _ := mark.Attrs["title"].(string)
+	return linkTarget{href: href, title: title}
+}
+
+// linkIn is the URL and title of the first link over a unit of span, and none where no link
+// covers one.
+func (t flattenedText) linkIn(span range16) linkTarget {
 	index := sort.Search(len(t.links), func(index int) bool { return t.links[index].to > span.from })
 	if index < len(t.links) && t.links[index].from < span.to {
-		return t.links[index].href
+		return t.links[index].link
 	}
-	return ""
+	return linkTarget{}
 }
 
 type textForms struct {
@@ -719,8 +734,8 @@ func flattenedTextSize(doc *Node) (units, bytes int) {
 // through. The string and the index are allocated once, at the size the document measures
 // (flattenedTextSize), rather than grown: growing the index copied the whole of it at every
 // doubling, which on a document whose paragraph is a mebibyte long was most of what a cold
-// one-word edit allocated (sjawhar/legion#2522). links says to record the URL of each link's
-// units (flattenedText.links), which only a quote's reading needs.
+// one-word edit allocated (sjawhar/legion#2522). links says to record the URL and title of each
+// link's units (flattenedText.links), which only a quote's reading needs.
 func buildFlattenedText(doc *Node, links bool) flattenedText {
 	units, bytes := flattenedTextSize(doc)
 	var out strings.Builder
@@ -755,7 +770,7 @@ func buildFlattenedText(doc *Node, links bool) flattenedText {
 			pos += width
 		}
 		if links && markup&inlineMarkupLink != 0 {
-			linked = append(linked, linkedUnits{from: from, to: len(positions), href: linkHref(node.Marks)})
+			linked = append(linked, linkedUnits{from: from, to: len(positions), link: linkOf(node.Marks)})
 		}
 		lastEnd = end
 		return true
@@ -763,15 +778,14 @@ func buildFlattenedText(doc *Node, links bool) flattenedText {
 	return flattenedText{value: out.String(), positions: positions, marks: marks, links: linked, forms: &textForms{}}
 }
 
-// linkHref is the URL of the link among marks, and "" where none is a link.
-func linkHref(marks []Mark) string {
+// linkOf is the URL and the title of the link among marks, and none where none is a link.
+func linkOf(marks []Mark) linkTarget {
 	for _, mark := range marks {
 		if mark.Type == "link" {
-			href, _ := mark.Attrs["href"].(string)
-			return href
+			return markLinkTarget(mark)
 		}
 	}
-	return ""
+	return linkTarget{}
 }
 
 func nodeInlineMarkup(node *Node) inlineMarkup {
@@ -813,24 +827,25 @@ type quoteMatch struct {
 // Spelling is the inline markup a quote spells over the range it matched, as the finder read it:
 // for a quote matched as markdown (markdownQuoteMatches), the markup the quote writes over each
 // UTF-16 unit of the match's text, as the matcher paired the quote's text with the document's,
-// and the URL of the link it writes there. A quote matched as written, exactly or with its
-// whitespace normalized, spells none: a `*`, `_` or backtick in it is text the document holds,
+// and the URL and title of the link it writes there. A quote matched as written, exactly or with
+// its whitespace normalized, spells none: a `*`, `_` or backtick in it is text the document holds,
 // not markup. The zero Spelling spells nothing.
 type Spelling struct {
 	units []spelledUnit
 }
 
 // spelledUnit is one UTF-16 unit of a match's text: its ProseMirror position, the inline markup
-// the quote writes over it, and the URL of the link the quote writes over it, "" for none.
+// the quote writes over it, and the URL and title of the link the quote writes over it, none for
+// no link.
 type spelledUnit struct {
 	pos    int
 	markup inlineMarkup
-	href   string
+	link   linkTarget
 }
 
 // spelling is how match's quote spells the text of t it matched: none for a match of the text as
 // written, and otherwise the markup of each quote rune over each unit of the text rune the
-// matcher paired it with, with the URL of the quote's link over that rune.
+// matcher paired it with, with the URL and title of the quote's link over that rune.
 func (t flattenedText) spelling(match quoteMatch) Spelling {
 	if match.quote == nil {
 		return Spelling{}
@@ -840,13 +855,13 @@ func (t flattenedText) spelling(match quoteMatch) Spelling {
 	units := make([]spelledUnit, 0, match.textTo-match.textFrom)
 	for index, quoteSpan := range quoteSpans {
 		markup := markupInRange(match.quote.marks, quoteSpan)
-		href := ""
+		var link linkTarget
 		if markup&inlineMarkupLink != 0 {
-			href = match.quote.hrefIn(quoteSpan)
+			link = match.quote.linkIn(quoteSpan)
 		}
 		textSpan := textSpans[match.offset+index]
 		for unit := textSpan.from; unit < textSpan.to; unit++ {
-			units = append(units, spelledUnit{pos: t.positions[unit], markup: markup, href: href})
+			units = append(units, spelledUnit{pos: t.positions[unit], markup: markup, link: link})
 		}
 	}
 	return Spelling{units: units}
@@ -854,26 +869,27 @@ func (t flattenedText) spelling(match quoteMatch) Spelling {
 
 // spells reports whether s writes mark's markup over every unit of its match at a position from
 // from to to, and over one at least: the quote spells that markup over that stretch of the match,
-// not over another stretch of it. A link is spelled only with its own URL: a find that writes the
-// link's text under another, copied from an older read after another writer changed the URL,
-// spells another link, and the URL the document holds would go with no word. A mark the markdown
-// matcher does not read (markTypeMarkup), strikethrough or an anchor, is never spelled.
+// not over another stretch of it. A link is spelled only with its own URL and its own title: a
+// find that writes the link's text under another URL, or with another title or none, copied from
+// an older read after another writer changed the link, spells another link, and what the document
+// holds would go with no word. A mark the markdown matcher does not read (markTypeMarkup),
+// strikethrough or an anchor, is never spelled.
 func (s Spelling) spells(mark Mark, from, to int) bool {
 	markup := markTypeMarkup(mark.Type)
 	if markup == 0 {
 		return false
 	}
 	link := markup == inlineMarkupLink
-	href := ""
+	var target linkTarget
 	if link {
-		href, _ = mark.Attrs["href"].(string)
+		target = markLinkTarget(mark)
 	}
 	spelled := false
 	for _, unit := range s.units {
 		if unit.pos < from || unit.pos >= to {
 			continue
 		}
-		if unit.markup&markup == 0 || (link && unit.href != href) {
+		if unit.markup&markup == 0 || (link && unit.link != target) {
 			return false
 		}
 		spelled = true
@@ -1415,8 +1431,9 @@ func (s *markSearch) close() {
 // it too or drops it by leaving it off; one that spells it over part of that text alone (`a **b**
 // c` over `**a b c**`) spells that part's markup, not the span's, so the span keeps it. A quote
 // matched as written spells nothing: its `*`, `_` or backtick is text the document holds (`2*3*4`
-// in `*a 2\*3\*4 b*`), and one that writes a link's text under another URL spells another link, so
-// the link keeps its own. Strikethrough is never markup the finder reads, so it is never taken off.
+// in `*a 2\*3\*4 b*`), and one that writes a link's text under another URL or another title spells
+// another link, so the link keeps its own. Strikethrough is never markup the finder reads, so it
+// is never taken off.
 func WithoutQuotedMarkup(marks []Mark, spelled Spelling) []Mark {
 	if len(spelled.units) == 0 {
 		return marks

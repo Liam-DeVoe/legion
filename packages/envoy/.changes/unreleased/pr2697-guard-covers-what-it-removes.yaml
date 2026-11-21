@@ -9,9 +9,8 @@ body: |-
   that the guard did not name: the nested lists and typed blocks of an item a marker delete
   removes, the list or quote a `delete` or `move` empties, and the typed block a `replace`'s
   `with` rewrites. A guard that names such a block is held to its token, so it refuses the edit
-  with `409 PRECONDITION_FAILED`, and writes nothing, when that block changed. No block an earlier
-  `insert` or `move` of the same edit wrote is listed, since its id is new on every request. A
-  task item's checked mark is in no listed block's token, so a guard does not see it change.
+  with `409 PRECONDITION_FAILED`, and writes nothing, when that block changed. A task item's
+  checked mark is in no listed block's token, so a guard does not see it change.
 time: 2026-11-19T20:30:00Z
 custom:
     Issue: pr2697

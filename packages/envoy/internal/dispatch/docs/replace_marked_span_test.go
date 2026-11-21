@@ -282,10 +282,11 @@ func TestReplaceInsideAMarkedSpanKeepsTheSpanWhole(t *testing.T) {
 // TestReplaceInsideAMarkedSpanKeepsTheSpanWhole once wrote outside the span, as `**Sami**'s loud`.
 // The next two are a find that spells one span's markup and covers a second span of that kind
 // whose markup it does not spell: the second link lost its URL, and the second bold its bold,
-// since the find was read as spelling every span of the kind once it spelled one. The last is a
-// find that spells a link's markup with another URL, as one copied from an older read after
-// another writer changed the URL: it was written, and the URL the document held went with no
-// word. Its refusal gives the link's markup with the URL it has.
+// since the find was read as spelling every span of the kind once it spelled one. The last two are
+// a find that spells a link's markup with another URL, and one that spells it with the link's URL
+// and not its title, as finds copied from an older read after another writer changed the URL or
+// gave the link a title: each was written, and the URL or the title the document held went with
+// no word. Each refusal gives the link's markup as the document holds it.
 func TestReplaceAcrossAMarkedSpansEdgeIsRefused(t *testing.T) {
 	for _, test := range []struct {
 		name, markdown, find, with, kind, span string
@@ -372,6 +373,15 @@ func TestReplaceAcrossAMarkedSpansEdgeIsRefused(t *testing.T) {
 			kind:     "link",
 			span:     "this",
 			markup:   "[this](https://a.example/1)",
+		},
+		{
+			name:     "a find that spells a link's markup without the title it has",
+			markdown: "I wrote [this](https://a.example/1 \"Spec\") today.\n",
+			find:     "wrote [this](https://a.example/1) today",
+			with:     "wrote that today",
+			kind:     "link",
+			span:     "this",
+			markup:   "[this](https://a.example/1 \"Spec\")",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {

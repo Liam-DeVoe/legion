@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -264,8 +263,8 @@ func (e *ErrQuoteSpansBlocks) Unwrap() error { return pmdoc.ErrTargetSpansBlocks
 // (pmdoc.TextblockAt.CrossedSpan). Text written over such a find lands outside the span, so a link
 // it covered went with its URL and no warning, and a span it cut to end on a space was written
 // with character references. The fix is to narrow the find to the span's inside, or to spell the
-// span's whole markup in it - a link's with the URL it has, and a bare link's as its own text -
-// which then replaces the markup too, so with decides that formatting.
+// span's whole markup in it - a link's with the URL and title it has, and a bare link's as its own
+// text - which then replaces the markup too, so with decides that formatting.
 type ErrFindCrossesSpan struct {
 	opIndex
 	Find string
@@ -690,8 +689,9 @@ func checkEditPrecondition(tree *pmdoc.Node, precondition model.EditPrecondition
 // rewrites - is warned of rather than refused, so no edit a guard took before is refused now: it
 // answers each such block the guard does not name, with the token the edit read it at
 // (unguarded). A guard that names one is held to that block's token as to any other
-// (checkEditPrecondition), so naming them refuses the edit when one of them changed. A block an
-// earlier operation of the batch wrote has no token a caller read, so none is answered for it.
+// (checkEditPrecondition), so naming them refuses the edit when one of them changed. A block the
+// tree the batch starts from does not hold - one an earlier insert of the batch wrote - has no
+// token a caller read, so none is answered for it.
 func requirePreconditionCoverage(tree *batchTree, ops []model.EditOp, precondition model.EditPrecondition, before string) (unguarded []model.EditBlockPrecondition, err error) {
 	if precondition.Document != "" {
 		return nil, nil
@@ -780,12 +780,13 @@ func operationPreconditionBlocks(tree *batchTree, op model.EditOp) (required, ta
 		if err != nil {
 			return nil, nil, err
 		}
-		if target.field == "block" {
-			required = []string{target.block}
+		named := op.Block != ""
+		if named {
+			required = []string{op.Block}
 		} else if required, err = rangePreconditionBlock(tree, target.text); err != nil {
 			return nil, nil, err
 		}
-		taken, err = deletePreconditionBlocks(tree, target)
+		taken, err = deletePreconditionBlocks(tree, target, named)
 		return required, taken, err
 	case "retype", "delete_row", "delete_column":
 		if err := requireBlock(tree, op, "block", op.Block); err != nil {
@@ -807,11 +808,9 @@ func operationPreconditionBlocks(tree *batchTree, op model.EditOp) (required, ta
 // operation that names the very block it removes (named) asks for that block, as it always has.
 // A list item, which a find's marker selects, is no block the listing names, so its delete asks
 // for the item's paragraph and the blocks after it - its nested lists, its typed blocks - whose
-// tokens cover every block the item holds. A block the removal keeps where it stood is none of
-// what it takes, so it asks for none such: an earlier insert of the batch wrote it, under an id
-// minted on each request, which no token a caller read names. The known limit is the item's own
-// attributes, which lie on the list_item and in no listed token: a guard on those blocks does not
-// see a task item's checked mark another writer set.
+// tokens cover every block the item holds. The known limit is the item's own attributes, which
+// lie on the list_item and in no listed token: a guard on those blocks does not see a task item's
+// checked mark another writer set.
 func removalPreconditionBlocks(tree *batchTree, id string, held map[string]struct{}, named bool) ([]string, error) {
 	valid, err := tree.validated("BlockRemoval")
 	if err != nil {
@@ -825,30 +824,22 @@ func removalPreconditionBlocks(tree *batchTree, id string, held map[string]struc
 		return []string{id}, nil
 	}
 	listed := pmdoc.ListedBlocks(removed)
-	// The blocks a removal keeps lie inside its own block, which BlockRemoval then answers; the
-	// list or quote a removal empties keeps nothing, and held names no such container.
-	if held != nil && blockID(removed) == id {
-		listed = slices.DeleteFunc(listed, func(listedID string) bool {
-			_, removes := held[listedID]
-			return !removes
-		})
-	}
 	if len(listed) > 0 {
 		return listed, nil
 	}
 	return []string{id}, nil
 }
 
-// deletePreconditionBlocks is what a block guard covers for the delete of target (resolveDelete):
-// for a block, the whole of what its removal takes (removalPreconditionBlocks), which for a list
-// item a find's marker selected is the item with the items nested in it; where a find covers a
-// textblock's whole text, the outermost node that removal takes
-// (pmdoc.ValidDocument.TextblockRemoval) - the textblock, the list item whose text it is, or the
-// list or quote that empties - as the listing names it; otherwise the block holding the text it
-// deletes.
-func deletePreconditionBlocks(tree *batchTree, target deleteTarget) ([]string, error) {
+// deletePreconditionBlocks is what a block guard covers for the delete of target (resolveDelete),
+// named where the delete names its block: for a block, the whole of what its removal takes
+// (removalPreconditionBlocks), which for a list item a find's marker selected is the item with the
+// items nested in it; where a find covers a textblock's whole text, the outermost node that
+// removal takes (pmdoc.ValidDocument.TextblockRemoval) - the textblock, the list item whose text
+// it is, or the list or quote that empties - as the listing names it; otherwise the block holding
+// the text it deletes.
+func deletePreconditionBlocks(tree *batchTree, target deleteTarget, named bool) ([]string, error) {
 	if target.block != "" {
-		return removalPreconditionBlocks(tree, target.block, target.held, target.field == "block")
+		return removalPreconditionBlocks(tree, target.block, target.held, named)
 	}
 	valid, err := tree.validated("TextblockRemoval")
 	if err != nil {
@@ -871,14 +862,14 @@ func deletePreconditionBlocks(tree *batchTree, target deleteTarget) ([]string, e
 // match's paragraph that the with holds exactly one block of under that block's type and id
 // (pmdoc.RewritesBlock, pmdoc's fitReplacement), up to the first that it does not, and writes the
 // with where the outermost of them stood. The with is the one the write reads
-// (readReplacementWith), with the line feeds applyOperation gives it first; one that reading
-// refuses rewrites nothing here, and the write refuses it.
+// (readReplacementWith), in the line feeds applyBatch gives an operation before its guard and its
+// write read it (withLineFeeds); one that reading refuses rewrites nothing here, and the write
+// refuses it.
 func rewrittenTypedBlock(tree *batchTree, r pmdoc.Range, op model.EditOp, byMarker bool) *pmdoc.Node {
 	at, ok := pmdoc.ContainingTextblock(tree.node, r.From)
 	if !ok || at.Node.Type != "paragraph" || len(at.Ancestors) == 0 || !pmdoc.IsTypedBlock(at.Ancestors[0].Type) {
 		return nil
 	}
-	op.With = pmdoc.LineFeeds(op.With)
 	with, err := readReplacementWith(tree, at, r, op, byMarker)
 	if err != nil || !with.blocks {
 		return nil
@@ -1507,6 +1498,8 @@ func applyBatch(start *batchTree, ops []model.EditOp, validate operationValidato
 		blockText = pmdoc.BlockText(tree.node)
 	}
 	for index, op := range ops {
+		// validate and the write read one operation: the one whose text is in line feeds alone.
+		op = withLineFeeds(op)
 		if removal, alreadyRemoved := removed[op.Block]; op.Block != "" && alreadyRemoved {
 			return editBatch{}, stampOperation(index, removedBlockError(op.Block, removal))
 		}
@@ -1516,16 +1509,12 @@ func applyBatch(start *batchTree, ops []model.EditOp, validate operationValidato
 			}
 		}
 		// A delete is resolved once, and both the write and the blocks this batch records as
-		// removed are read from that one resolution (resolveDelete).
+		// removed are read from that one resolution (deleteOperation).
 		var deleted deleteTarget
 		var next *pmdoc.Node
 		var err error
 		if op.Op == "delete" {
-			if err = refuseBothDeleteFields(op); err == nil {
-				if deleted, err = resolveDelete(tree, op); err == nil {
-					next, err = applyDelete(tree, op, deleted)
-				}
-			}
+			deleted, next, err = deleteOperation(tree, op)
 		} else {
 			next, err = applyOperation(tree, op, budget)
 		}
@@ -1564,7 +1553,7 @@ func applyBatch(start *batchTree, ops []model.EditOp, validate operationValidato
 		}
 		// A delete by block records every block it removed, so a later operation naming one is
 		// refused naming that delete; the blocks it kept are none of them.
-		if deleted.field == "block" {
+		if op.Op == "delete" && op.Block != "" {
 			for blockID := range deleted.held {
 				removed[blockID] = batchRemoval{
 					operation: index,
@@ -1864,28 +1853,25 @@ func (s *Service) rejectLiveTableAnchors(ctx context.Context, artifactID, axis s
 	}
 }
 
-// applyOperation applies op to tree, padding the tables and table rows it writes on budget, its
-// batch's. Every pmdoc call of it that would validate the tree takes the batch's one validation
-// of it instead (batchTree).
-func applyOperation(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget) (*pmdoc.Node, error) {
-	// Every text an operation writes - a replace's with, an insert's markdown, whether it becomes
-	// blocks or table rows, and a retype's attributes - reaches the document with line feeds
-	// alone (pmdoc.LineFeeds), before any check below reads it.
+// withLineFeeds is op with every text it writes - a replace's with, an insert's markdown, whether
+// it becomes blocks or table rows, and a retype's attributes - in line feeds alone
+// (pmdoc.LineFeeds), as it reaches the document. applyBatch gives each operation them before
+// anything reads it, so an operation's guard and its write read the same text.
+func withLineFeeds(op model.EditOp) model.EditOp {
 	op.With = pmdoc.LineFeeds(op.With)
 	op.Markdown = pmdoc.LineFeeds(op.Markdown)
 	op.Attributes = pmdoc.LineFeedAttrs(op.Attributes)
+	return op
+}
+
+// applyOperation applies op, its text in line feeds alone (withLineFeeds), to tree, padding the
+// tables and table rows it writes on budget, its batch's. A delete is deleteOperation's. Every
+// pmdoc call of it that would validate the tree takes the batch's one validation of it instead
+// (batchTree).
+func applyOperation(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget) (*pmdoc.Node, error) {
 	switch op.Op {
 	case "replace":
 		return applyReplace(tree, op, budget)
-	case "delete":
-		if err := refuseBothDeleteFields(op); err != nil {
-			return nil, err
-		}
-		target, err := resolveDelete(tree, op)
-		if err != nil {
-			return nil, err
-		}
-		return applyDelete(tree, op, target)
 	case "insert":
 		if op.Markdown == "" {
 			return nil, invalidOp("markdown")
@@ -2084,8 +2070,8 @@ func listItemSelected(tree *pmdoc.Node, r pmdoc.Range) (string, error) {
 // deleteTarget is what a delete removes, as resolveDelete reads it over the tree the delete
 // applies to: a block, with the ids of the blocks that delete takes with it, or a run of text.
 type deleteTarget struct {
-	// field is the operation field the target was written in: "block", or "find", whose text or
-	// whose list marker selected it.
+	// field is the operation field the target was written in, which its refusals name: "block",
+	// or "find", whose text or whose list marker selected it.
 	field string
 	// block is the id of the block the delete removes whole - the block it names, or the list item
 	// its find's marker selected - and "" for a delete of text.
@@ -2099,18 +2085,25 @@ type deleteTarget struct {
 	text pmdoc.Range
 }
 
-// refuseBothDeleteFields refuses a delete naming both a block and a find, before either is read,
-// as the write always has. A block guard reads the block first (resolveDelete), so its refusal of
-// such a delete naming a block the document does not carry names the block holding find's text.
-func refuseBothDeleteFields(op model.EditOp) error {
+// deleteOperation writes the delete op over tree, and answers what it removed, the one reading of
+// it (resolveDelete) that the batch records (applyBatch). A delete naming both a block and a find
+// is refused before either is read, as the write always has refused it. A block guard reads such
+// a delete by its block (operationPreconditionBlocks), so a guarded one naming a block the
+// document does not carry is refused naming that block.
+func deleteOperation(tree *batchTree, op model.EditOp) (deleteTarget, *pmdoc.Node, error) {
 	if op.Block != "" && op.Find != "" {
-		return &ErrInvalidOp{Field: "find", Reason: "delete takes find or block, not both"}
+		return deleteTarget{}, nil, &ErrInvalidOp{Field: "find", Reason: "delete takes find or block, not both"}
 	}
-	return nil
+	target, err := resolveDelete(tree, op)
+	if err != nil {
+		return deleteTarget{}, nil, err
+	}
+	next, err := applyDelete(tree, op, target)
+	return target, next, err
 }
 
 // resolveDelete is what the delete op removes from tree, the one reading of it that the write
-// (applyDelete), the block guard (deletePreconditionBlocks) and the batch's record of removed
+// (deleteOperation), the block guard (deletePreconditionBlocks) and the batch's record of removed
 // blocks (applyBatch) all take, so none of them can disagree with another on what goes. A find
 // whose list marker selected an item removes that item, as the marker selects it: all its text
 // and the items nested in it, where it deleted the words the find matched and left the rest of
@@ -2120,7 +2113,7 @@ func refuseBothDeleteFields(op model.EditOp) error {
 // wrote in place of text, or under the id of a typed block it rewrote, is no insert's, and goes
 // with the block holding it; so does everything inside a block an insert or a move wrote, which
 // is that block's own. A delete naming both a block and a find is read by its block; the write
-// refuses it first (refuseBothDeleteFields).
+// refuses it first (deleteOperation).
 func resolveDelete(tree *batchTree, op model.EditOp) (deleteTarget, error) {
 	if op.Block != "" {
 		return heldDelete(tree, op, "block", op.Block)
