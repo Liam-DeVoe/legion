@@ -8,7 +8,6 @@ package session
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -31,7 +30,7 @@ func (r *SessionRegistry) Delete(ctx context.Context, sessionID string) error {
 	kv, epoch := r.watcher.Handle()
 	revision := r.cache.FenceFor(epoch, sessionID)
 	r.mu.RUnlock()
-	read, answered, err := bus.Bounded(ctx, func() (uint64, error) { return kv.DeleteAtRead(sessionID) })
+	read, answered, err := bus.Bounded(ctx, func() (uint64, error) { return r.deleteAtRead(ctx, kv, sessionID) })
 	if !answered {
 		return fmt.Errorf("delete session %s from the bucket: %w", sessionID, err)
 	}
@@ -40,6 +39,40 @@ func (r *SessionRegistry) Delete(ctx context.Context, sessionID string) error {
 	}
 	r.reconcileDeleted(ctx, kv, epoch, sessionID, max(revision, read))
 	return nil
+}
+
+// deleteAtRead is bus.KeyValue.DeleteAtRead fenced on the revision the record is stored at. A
+// value that is not sessionID's registration (DecodeEntry) can be a copy the server stored from
+// another key, which carries its source's Nats-Sequence header ahead of its own, so the revision
+// the direct get reports for it is the source's and a delete fenced on it is refused at every
+// attempt: its revision is read from the stream's leader instead (leaderRecord).
+func (r *SessionRegistry) deleteAtRead(ctx context.Context, kv bus.KeyValue, sessionID string) (uint64, error) {
+	entry, err := kv.Get(sessionID)
+	switch {
+	case errors.Is(err, bus.ErrRefused):
+		return kv.DeleteAtRead(sessionID)
+	case errors.Is(err, nats.ErrKeyNotFound):
+		return 0, nil
+	case err != nil:
+		return 0, err
+	}
+	if _, err := DecodeEntry(sessionID, entry.Value(), r.requireID); err != nil {
+		if entry, err = leaderRecord(ctx, kv, sessionID); err != nil || entry == nil {
+			return 0, err
+		}
+	}
+	return entry.Revision(), kv.Delete(sessionID, nats.LastRevision(entry.Revision()))
+}
+
+// leaderRecord is sessionID's newest record read from the session bucket's stream leader
+// (bus.KeyValue.GetFromLeader), whose revision is the sequence the record is stored at, or nil
+// when the bucket holds none.
+func leaderRecord(ctx context.Context, kv bus.KeyValue, sessionID string) (nats.KeyValueEntry, error) {
+	entry, err := kv.GetFromLeader(ctx, sessionID)
+	if errors.Is(err, nats.ErrKeyNotFound) {
+		return nil, nil
+	}
+	return entry, err
 }
 
 // DeleteOutcome is what a conditional delete (DeleteIf) did with the entry it was asked to
@@ -161,22 +194,40 @@ func (r *SessionRegistry) DeleteIf(ctx context.Context, sessionID string, condit
 			return EntryUnanswered, err
 		}
 		revision := entry.Revision()
-		var stored SessionEntry
-		if err := json.Unmarshal(entry.Value(), &stored); err != nil {
+		stored, err := DecodeEntry(sessionID, entry.Value(), r.requireID)
+		if err != nil {
 			// A value this build cannot read names no instance and no moment, so it belongs
 			// to nobody and is older than every stop: it is deleted as an entry that meets
 			// every condition is, and the delete is not blocked by a record no reader can act
-			// on. What json.Unmarshal decoded before the error is dropped for that reason: on
-			// a type error it still fills every field it could read, wherever the bad field
-			// sits, so a value carrying a client instance id or a heartbeat would otherwise be
-			// compared against the caller's and kept — the opposite of what this branch
-			// decides.
+			// on. A value that is not this session's registration (DecodeEntry: another
+			// session's record copied here, a JetStream answer) is the same: every reader
+			// reads it as no record, and the instance and moment it names are another
+			// session's or none. What json.Unmarshal decoded before an error is dropped for
+			// that reason: on a type error it still fills every field it could read, wherever
+			// the bad field sits, so a value carrying a client instance id or a heartbeat
+			// would otherwise be compared against the caller's and kept — the opposite of what
+			// this branch decides.
 			stored = SessionEntry{}
 			r.logger().Warn("session registry deleting a malformed value under a conditional delete",
 				slog.String("key", entry.Key()),
 				slog.Uint64("revision", revision),
 				slog.String("error", err.Error()),
 			)
+			// The revision the direct get reports for such a value can be another key's: a
+			// copy the server stored carries its source's Nats-Sequence header ahead of its
+			// own, and a delete fenced on it is refused at every attempt. The stream's leader
+			// answers the sequence the value is stored at (leaderRecord).
+			leader, err := leaderRecord(ctx, kv, sessionID)
+			if err != nil {
+				return EntryUnanswered, err
+			}
+			if leader == nil {
+				return EntryDeleted, nil
+			}
+			revision = leader.Revision()
+			if decoded, err := DecodeEntry(sessionID, leader.Value(), r.requireID); err == nil {
+				stored = decoded
+			}
 		}
 		if kept := conditions.keeps(stored); kept != EntryDeleted {
 			return kept, nil

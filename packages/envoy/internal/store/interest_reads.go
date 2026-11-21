@@ -17,6 +17,34 @@ import (
 // error wrapping it carries the decode failure.
 var ErrMalformedInterest = errors.New("malformed interest record")
 
+// ErrInterestUnbound is an interest record that is no session's row of the key it is stored
+// under: one naming another session (Interest.SessionID), no machine or no update time. The server
+// itself stores such a record when a request names the key's subject as its reply subject: a copy
+// of another session's row, or a JetStream answer naming none. No reader takes its topics: the
+// cache keeps no such row (decodeInterest), and a bucket read answers it as ErrMalformedInterest
+// wrapping this error, so every writer replaces it with the session's own row, under the
+// session's own key, as it replaces a record it cannot decode.
+var ErrInterestUnbound = errors.New("the interest record is no row of its key")
+
+// boundInterest decodes value, the record stored under key, as key's interest row: a value that
+// does not decode is the decode error, and one naming another session, no machine or no update
+// time is ErrInterestUnbound.
+func boundInterest(key string, value []byte) (Interest, error) {
+	var item Interest
+	if err := json.Unmarshal(value, &item); err != nil {
+		return Interest{}, err
+	}
+	switch {
+	case item.SessionID != key:
+		return Interest{}, fmt.Errorf("%w: stored under %s, it names session %q", ErrInterestUnbound, key, item.SessionID)
+	case item.MachineID == "":
+		return Interest{}, fmt.Errorf("%w: stored under %s, it names no machine", ErrInterestUnbound, key)
+	case item.UpdatedAt <= 0:
+		return Interest{}, fmt.Errorf("%w: stored under %s, it names no update time", ErrInterestUnbound, key)
+	}
+	return item, nil
+}
+
 // Get returns the Interest for a session. Cache first, direct KV read on miss.
 // The KV fallback also repopulates the cache, bridging the warm-up window after
 // Open() before watch() has fully populated the cache. A cache hit answers in the
@@ -51,16 +79,28 @@ func (r *Registry) RefreshAt(ctx context.Context, sessionID string) (Interest, u
 // getWithRevision is Get with the bucket revision the record it answers was read at: the revision
 // the copy's fence holds on a cache hit, the entry's own on a bucket read, and 0 for a session the
 // bucket holds no record for. A record this build cannot decode carries its revision too, since
-// the write that replaces it is conditional on it (putInterestAt). A cache hit whose fence belongs
-// to another epoch answers 0 as well (kvwatch.Copy.FenceFor): the write that names it then creates
-// the record, the bucket refuses it for a record it holds (ErrInterestPlanConflict), and the plan
-// made again over the bucket's own row carries the revision that write needs.
+// the write that replaces it is conditional on it (putInterestAt), and so does a record naming
+// another session (ErrInterestUnbound), which is answered as one it cannot decode. A cache hit
+// whose fence belongs to another epoch answers 0 as well (kvwatch.Copy.FenceFor): the write that
+// names it then creates the record, the bucket refuses it for a record it holds
+// (ErrInterestPlanConflict), and the plan made again over the bucket's own row carries the
+// revision that write needs.
 //
 // fromBucket reads the bucket even when the cache holds the record, for a caller whose cache may
 // be behind a write its answer must hold: one whose compare-and-swap the bucket refused, since
 // the cache is then behind the row that refused it and a plan made from the cache would be
 // refused again (UpsertPlanned), and one reading the topics a registration on another listener
 // has just stored (RefreshAt).
+//
+// A record the direct get answers that is no row of the session's is read again from the stream's
+// leader (bus.KeyValue.GetFromLeader), and that read is what this answers, its revision included.
+// The direct get reports the first Nats-Sequence header of the message it answers, and a record
+// the server stored as its answer to a direct get of another key carries that key's header ahead
+// of its own: the read reports the source record's revision, not the one the copy is stored at.
+// A write replacing the copy at the revision the direct get reported is refused with wrong last
+// sequence on every attempt, and the session's every registration answers 503 for as long as the
+// copy stands; the leader's stream message get reports the sequence the message is stored at.
+// Only such a record costs the second read, so a session's own row is read once, as before.
 func (r *Registry) getWithRevision(ctx context.Context, sessionID string, fromBucket bool) (Interest, uint64, error) {
 	if !fromBucket {
 		r.mu.RLock()
@@ -80,9 +120,20 @@ func (r *Registry) getWithRevision(ctx context.Context, sessionID string, fromBu
 	if err != nil {
 		return Interest{}, 0, err
 	}
-	var fresh Interest
-	if err := json.Unmarshal(entry.Value(), &fresh); err != nil {
-		r.logger().Warn("registry read an interest record it cannot decode",
+	fresh, err := boundInterest(sessionID, entry.Value())
+	if err != nil {
+		entry, err = kv.GetFromLeader(ctx, sessionID)
+		if err != nil {
+			return Interest{}, 0, err
+		}
+		fresh, err = boundInterest(sessionID, entry.Value())
+	}
+	if err != nil {
+		msg := "registry read an interest record it cannot decode"
+		if errors.Is(err, ErrInterestUnbound) {
+			msg = "registry read an interest record naming another session"
+		}
+		r.logger().Warn(msg,
 			slog.String("session_id", sessionID),
 			slog.Uint64("revision", entry.Revision()),
 			slog.String("error", err.Error()),

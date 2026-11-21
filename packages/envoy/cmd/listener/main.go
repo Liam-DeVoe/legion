@@ -1347,6 +1347,7 @@ func main() {
 		session.WithSessionMaxAge(cfg.SessionMaxAge),
 		session.WithSessionLiveWindow(sessionLiveWindow),
 		session.WithSessionGoneHorizon(sessionGoneHorizon),
+		session.WithSessionRequireID(edgeMode(cfg)),
 	)
 	if err != nil {
 		log.Fatal(err)
