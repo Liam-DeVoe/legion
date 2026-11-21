@@ -415,6 +415,29 @@ func TestEdgeRefusesToStartBesideSharedCredentials(t *testing.T) {
 	}
 }
 
+// An edge listener refuses to start beside ENVOY_DISPATCH_PRINCIPAL, in either of its shapes,
+// naming the variable: Dispatch sends its role-marked messages through a shared listener, and no
+// session of the edge sends as Dispatch, so the edge names no principal whose send may carry a
+// role mark. A value of white space alone names no principal, and the edge starts.
+func TestAnEdgeRefusesToStartBesideDispatchsPrincipal(t *testing.T) {
+	projects := edgeTestProjects(t)
+	broker := []string{
+		"ENVOY_AGENT_SECRETS_URL=http://broker.example",
+		"ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE=/var/run/secrets/broker/token",
+		"ENVOY_PUBLIC_URL=https://edge.example",
+	}
+	for _, principal := range []string{"system:serviceaccount:dispatch:example-dispatch", "dispatch@example.iam.gserviceaccount.com"} {
+		env := append(slices.Clone(broker), "ENVOY_DISPATCH_PRINCIPAL="+principal)
+		err := validateEdgeMode(projects, env)
+		if err == nil || !strings.Contains(err.Error(), "ENVOY_DISPATCH_PRINCIPAL") || !strings.Contains(err.Error(), "ENVOY_EDGE_PROJECTS") {
+			t.Errorf("an edge listener of %v with ENVOY_DISPATCH_PRINCIPAL=%s: %v, want a refusal naming ENVOY_DISPATCH_PRINCIPAL and ENVOY_EDGE_PROJECTS", projects, principal, err)
+		}
+	}
+	if err := validateEdgeMode(projects, append(slices.Clone(broker), "ENVOY_DISPATCH_PRINCIPAL= ")); err != nil {
+		t.Fatalf("an edge listener whose ENVOY_DISPATCH_PRINCIPAL is white space alone: %v, want it to start", err)
+	}
+}
+
 // A registration the edge refuses names exactly the topics it refuses, as the
 // registration carried them, so the client drops those and registers the rest again; the allowed
 // topic beside them is named nowhere, and nothing of the registration is stored.

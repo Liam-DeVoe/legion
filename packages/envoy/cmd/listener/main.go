@@ -1009,8 +1009,8 @@ func main() {
 		log.Fatal(err)
 	}
 	// An edge listener admits a broker token alone, so it refuses to start beside any other
-	// credential, beside webhooks, and without the broker-token settings (validateEdgeMode),
-	// before any of them is read below.
+	// credential, beside Dispatch's principal, beside webhooks, and without the broker-token
+	// settings (validateEdgeMode), before any of them is read below.
 	if err := validateEdgeMode(cfg.EdgeProjects, os.Environ()); err != nil {
 		log.Fatal(err)
 	}

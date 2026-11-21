@@ -4,10 +4,11 @@ body: |-
   serves (project keys, separated by commas or white space); empty is no edge, and a set value
   that names no project, such as a lone comma, refuses the start. An edge listener admits a broker
   token alone, and only one whose projects it all serves, of project scope `named` or `person`
-  (`EdgeAdmits`); it refuses to start beside `ENVOY_API_TOKEN`, any `ENVOY_OIDC_*` setting, the
-  webhooks or a webhook secret, or without the broker-token settings. It holds every request to
-  the token's projects: a registration follows the session's own agent subject, the topics of
-  those projects, and the GitHub topics of one repository each that the secrets broker's
+  (`EdgeAdmits`); it refuses to start beside `ENVOY_API_TOKEN`, any `ENVOY_OIDC_*` setting,
+  `ENVOY_DISPATCH_PRINCIPAL`, the webhooks or a webhook secret, or without the broker-token
+  settings. It holds every request to the token's projects: a registration follows the session's
+  own agent subject, the topics of those projects, and the GitHub topics of one repository each
+  that the secrets broker's
   `GET /v1/project-repositories` answer names for them, read with the listener's own account at
   each such registration and every 30 seconds, each project's read on its own, compared ignoring
   case. The topics the session's interest record already holds are held to the same rule at
