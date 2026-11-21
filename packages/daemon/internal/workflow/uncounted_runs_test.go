@@ -190,6 +190,9 @@ func TestTheBootOpensTheRunOfEachIssueInAStepNoStartCounted(t *testing.T) {
 				t.Fatalf("a second boot opened %d runs and left the row %+v; want none and the row unchanged", again, readStepStartRow(t, pool, "LEGION-208", testing3))
 			}
 
+			// Dispatch shows both children done before the root's move, so no open child holds
+			// its start of reviewing (R9 of dispatch://INFRA-3320) and the move lands.
+			execSQL(t, pool, `update dispatch_issues set status = 'done' where key in ('LEGION-209', 'LEGION-210')`)
 			move(t, pool, stepEngine(nil), "LEGION-208", TriggerTesterPassed, "", record.PhaseRow{})
 			after := stepWrites(t, pool, "LEGION-208")[written:]
 			if len(after) != 2 {

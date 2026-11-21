@@ -323,7 +323,8 @@ func TestTheAdmissionPassLeavesTheseParentsWhereTheyStand(t *testing.T) {
 		name    string
 		at      phase.Phase
 		slotted bool
-		// queued is a root that waits in the line for its tree to be opened: its record alone,
+		// queued is a root that waits in the line for its first start, carried in at its
+		// generation by a hand-over of the release before (record.CarriedIn): its record alone,
 		// with no tree lifecycle.
 		queued bool
 		shape  func(*record.Issue)
@@ -344,7 +345,7 @@ func TestTheAdmissionPassLeavesTheseParentsWhereTheyStand(t *testing.T) {
 			if tc.queued {
 				putIssue(t, pool, record.Issue{Key: spParent, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 					Project: testProject, Title: spParent, Tree: spParent, Phase: tc.at, Generation: 1, Status: "todo", Rank: spParent,
-					HandedOver: true, HandedOverFrom: "LEGION-299"})
+					HandedOver: true, CarriedGeneration: 1})
 			} else {
 				spSeedParent(t, pool, spParent, tc.at, tc.slotted, tc.shape)
 			}

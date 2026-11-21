@@ -325,9 +325,11 @@ func TestAConflictEndsNoStep(t *testing.T) {
 func TestTwoEndsOfOneRunQueueOneRow(t *testing.T) {
 	pool := migratedPool(t)
 	stepRoot(t, pool, phase.Implementing)
-	stepChild(t, pool, "LEGION-209", phase.Testing, nil)
 	engine := stepEngine(nil)
 	move(t, pool, engine, "LEGION-208", TriggerImplementationReady, "", record.PhaseRow{})
+	// The child is recorded once the root's move has landed: an open child of a parent moving
+	// into testing holds that move (R9 of dispatch://INFRA-3320), and this test is about the ends.
+	stepChild(t, pool, "LEGION-209", phase.Testing, nil)
 	endTwice := func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 		if err := engine.endStep(ctx, tx, issue, stepStopped); err != nil {
 			return err

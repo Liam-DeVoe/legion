@@ -349,11 +349,9 @@ func TestSlotPerPhase(t *testing.T) {
 // A2. The cap counts the issues whose change is still to write, so one tree holds one row for
 // each issue the daemon has started and has not carried past its review: the root, which the
 // fixture stands in accepting with the row it took at its admission, gives that row up because
-// its work is past its review, and each child takes one as its first phase starts.
-//
-// The root's own work comes back when the architect sends it to a phase of its own. It holds no
-// row then, so it waits in the line among the issues whose work came back, and the row its own
-// release left free is the one it takes.
+// its work is past its review, and each child takes one as its first phase starts. The root's
+// children are open on Dispatch, so the same pass moves it to awaiting_children holding its
+// accepting (R9 of dispatch://INFRA-3320), where it holds no row either.
 func TestATreeHoldsOneRowForEachIssueTheDaemonHasStarted(t *testing.T) {
 	pool := migratedPool(t)
 	admission := quiet(t, 4)
@@ -378,26 +376,7 @@ func TestATreeHoldsOneRowForEachIssueTheDaemonHasStarted(t *testing.T) {
 		}
 	}
 	assertRowHolders(t, pool, "LEGION-2", "LEGION-3", "LEGION-4")
-	// The root's own first phase begins. It gave its row up in accepting, so it waits in the
-	// line for one, and the cap has the one its own release left free.
-	root = issue(t, pool, "LEGION-1")
-	root.Phase, root.Status = phase.Implementing, "in_progress"
-	putIssue(t, pool, root)
-	oweStart(t, pool, "LEGION-1", "LEGION-1", phase.Implementing)
-
-	assertWaiting(t, pool, []string{"LEGION-1"})
-
-	applyFact(t, pool, admission, "root-implementing", intake.ControllerTick{})
-
-	assertRowHolders(t, pool, "LEGION-1", "LEGION-2", "LEGION-3", "LEGION-4")
-	delivered := false
-	for _, start := range startsOf(t, pool, "LEGION-1") {
-		if start.task != "" && start.claimable {
-			delivered = true
-		}
-	}
-	if !delivered {
-		t.Fatalf("the root's starts = %#v, want its implementer's task claimable on the row the line gave it back",
-			startsOf(t, pool, "LEGION-1"))
+	if got := issue(t, pool, "LEGION-1"); got.Phase != phase.AwaitingChildren || got.ChildrenWait == nil || got.ChildrenWait.Start != phase.Accepting {
+		t.Fatalf("the root = phase %s, held start %+v; want awaiting_children holding its accepting while its children are open", got.Phase, got.ChildrenWait)
 	}
 }

@@ -224,7 +224,7 @@ func (a *Admission) ArchitectStallArms(ctx context.Context, tx pgx.Tx) (map[stri
 	if err != nil || paused {
 		return nil, err
 	}
-	issues, slots, facts, err := a.reread(ctx, tx)
+	issues, slots, facts, err := a.readPass(ctx, tx)
 	if err != nil {
 		return nil, err
 	}

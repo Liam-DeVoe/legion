@@ -980,9 +980,11 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 		{name: "an open child the daemon never recorded, in triage, holds the start", status: "triage", seed: func(t *testing.T, pool *pgxpool.Pool) {
 			seedMirrorChild(t, pool, spChild, "triage", spParent)
 		}},
-		{name: "an open child running as a tree of its own holds the start", status: "in_progress", seed: func(t *testing.T, pool *pgxpool.Pool) {
+		// A child that ran as a root of its own before Dispatch put it under the parent: a
+		// reading newer than the one its record was written with shows the parent above it.
+		{name: "an open child that ran as a root of its own holds the start", status: "in_progress", seed: func(t *testing.T, pool *pgxpool.Pool) {
 			seedStarted(t, pool, spChild, phase.Implementing, nil)
-			seedMirrorChild(t, pool, spChild, "in_progress", spParent)
+			spMirror(t, pool, spChild, "in_progress", spParent, 10)
 		}},
 		{name: "an open child itself in awaiting_children holds the start", status: "in_progress", seed: func(t *testing.T, pool *pgxpool.Pool) {
 			waited := fixedNow.Add(-time.Hour)

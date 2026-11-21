@@ -79,7 +79,8 @@ func TestAPersonsMoveToDoneEndsTheRunningStep(t *testing.T) {
 // A tree the operator holds runs no phase of the workflow, so its root's departure writes no step
 // record and counts no start, for the root or for its member, though the root's record carries a
 // phase, as a root taken back with its run does while it waits for its slot. The same departure of
-// a tree the workflow holds stops each one's step (leave, beginLinger).
+// a root the workflow holds stops the root's own step alone (leave): its member stays in work, as
+// Dispatch shows it (R20 of dispatch://INFRA-3320).
 func TestAnOperatorsTreeLeavesNoStepRecord(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -109,11 +110,12 @@ func TestAnOperatorsTreeLeavesNoStepRecord(t *testing.T) {
 				}
 				return
 			}
-			if len(rootWrites) != 1 || len(childWrites) != 1 || counted != 2 {
-				t.Fatalf("the workflow's tree left with step rows %+v and %+v and %d step_starts rows, want one end each", rootWrites, childWrites, counted)
+			// The boot before the fact opened a row for each run no start counted (bootBefore);
+			// the leave ends the root's, and the member's stays open with its run.
+			if len(rootWrites) != 1 || len(childWrites) != 0 || counted != 2 {
+				t.Fatalf("the workflow's tree left with step rows %+v and %+v and %d step_starts rows, want one end of the root's, none of its member's, and both rows kept", rootWrites, childWrites, counted)
 			}
 			assertEnd(t, rootWrites[0], "step", 2, 2, "stopped", nil)
-			assertEnd(t, childWrites[0], "step", 3, 3, "stopped", nil)
 		})
 	}
 }

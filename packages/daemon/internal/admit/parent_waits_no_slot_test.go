@@ -1258,50 +1258,11 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 		}
 	})
 
-	// A promotion of a re-admitted tree brings back the roles of its members that have run, and
-	// none of a member waiting on its children.
-	t.Run("a re-admission of its tree starts no role of a waiting parent", func(t *testing.T) {
-		const root, member, grandchild = "LEGION-208", "LEGION-209", "LEGION-210"
-		pool := migratedPool(t)
-		admission := pnAdmission(t, pool, 1)
-		putIssue(t, pool, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject,
-			Title: "root", Tree: root, Phase: phase.Done, Generation: 1, Status: "done", DispatchStatus: "done", Rank: "A", LastDispatchSeq: 1})
-		parent, waited := root, fixedNow.Add(-2*time.Hour)
-		held := record.ChildrenWait{Start: phase.Implementing, Task: "Continue member. Issue: LEGION-209. Phase: implementing.",
-			Reason: "a review asked for changes, while these Dispatch children of LEGION-209 were open: LEGION-210 (backlog)", Since: waited}
-		putIssue(t, pool, record.Issue{Key: member, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject,
-			Title: "member", Tree: root, Parent: &parent, Phase: phase.AwaitingChildren, Generation: 1, Status: "in_progress",
-			DispatchStatus: "in_progress", Rank: "B", LastDispatchSeq: 1, ChildrenWait: &held, ChildrenWaitedAt: &waited})
-		seedMirrorChild(t, pool, grandchild, "backlog", member)
-		var tokens []claim.Token
-		for _, role := range claim.Roles {
-			tokens = append(tokens, putWorkerClaim(t, pool, root, member, role, 1, supervise.StateSuspended, supervise.SuspendedByDaemon))
-		}
-
-		apply(t, pool, admission, "readmit", intake.DispatchIssue{Key: root, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated",
-			Status: "todo", Title: "root", Rank: "A", HandedOver: true}, pnLingering())
-
-		runBranchRows(t, pool, member)
-		if starts := startsOf(t, pool, member); len(starts) != 0 {
-			t.Fatalf("the starts of %s = %+v, want none: no role of a waiting parent is brought back", member, starts)
-		}
-		if got := issue(t, pool, member); got.Phase != phase.AwaitingChildren || !sameHeldStart(got.ChildrenWait, &held) {
-			t.Fatalf("%s after the re-admission = phase %s, held start %+v; want it waiting still with the start it held", member, got.Phase, got.ChildrenWait)
-		}
-		if architectStarts(t, pool, root) != 1 {
-			t.Fatalf("architect starts of %s = %d, want the promotion's one", root, architectStarts(t, pool, root))
-		}
-		states := claimStates(t, pool)
-		for _, token := range tokens {
-			if state := states[string(token)]; state != string(supervise.StateSuspended) {
-				t.Fatalf("the claim %s = %q after the re-admission, want it suspended still", token, state)
-			}
-		}
-	})
-
-	// The held list of dispatch://INFRA-2964, on main: a waiting parent in a tree a person moved to
-	// the backlog reads its tree's reason, which the ladder reads before awaiting_children.
-	t.Run("a waiting parent in a tree on the backlog reads its tree's reason in the held list", func(t *testing.T) {
+	// The held list of dispatch://INFRA-2964, on this model: a waiting parent under a root a person
+	// moved to the backlog reads its own wait, held by its open child. No tree parks its members
+	// (R20 of dispatch://INFRA-3320: the daemon acts on each issue's own status), so tree_parked
+	// answers it no more.
+	t.Run("a waiting parent under a root on the backlog reads its own wait in the held list", func(t *testing.T) {
 		const root, member, grandchild = "LEGION-420", "LEGION-421", "LEGION-422"
 		pool := migratedPool(t)
 		admission := pnAdmission(t, pool, 2)
@@ -1319,8 +1280,8 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 
 		state := pnState(t, pool, admission)
 
-		if row, listed := pnHeldRow(state, member); !listed || row.Reason != record.HeldTreeParked || !slices.Equal(row.HeldBy, []string{root}) {
-			t.Fatalf("admission.held names %s as %+v (listed %t), want tree_parked held by %s", member, row, listed, root)
+		if row, listed := pnHeldRow(state, member); !listed || row.Reason != record.HeldAwaitingChildren || !slices.Equal(row.HeldBy, []string{grandchild}) {
+			t.Fatalf("admission.held names %s as %+v (listed %t), want awaiting_children held by %s", member, row, listed, grandchild)
 		}
 		pnInNeitherList(t, state, member)
 	})

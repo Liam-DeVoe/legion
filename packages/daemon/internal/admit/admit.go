@@ -1882,18 +1882,10 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 }
 
 // reread takes this pass's shared reads again, after the pass has itself written something that
-// makes them stale: the project's live records, the slots, and the facts the line, the release
-// and the repair passes are all judged from.
+// makes them stale (readPass), and marks every root the read finds as holding its own gate: a
+// decision pass writes, so it keeps that mark for a root that later gets a parent in Legion's work.
 func (a *Admission) reread(ctx context.Context, tx pgx.Tx) ([]record.Issue, []record.Slot, record.LineFacts, error) {
-	issues, err := a.store.LiveIssues(ctx, tx, a.project)
-	if err != nil {
-		return nil, nil, record.LineFacts{}, fmt.Errorf("list admission issues: %w", err)
-	}
-	slots, err := a.store.Slots(ctx, tx)
-	if err != nil {
-		return nil, nil, record.LineFacts{}, fmt.Errorf("list admission slots: %w", err)
-	}
-	facts, err := record.ReadLineFacts(ctx, tx, a.store, a.project, issues, a.engine.GatedSteps())
+	issues, slots, facts, err := a.readPass(ctx, tx)
 	if err != nil {
 		return nil, nil, record.LineFacts{}, err
 	}
@@ -1910,6 +1902,27 @@ func (a *Admission) reread(ctx context.Context, tx pgx.Tx) ([]record.Issue, []re
 		if err := a.store.MarkHoldsGate(ctx, tx, roots); err != nil {
 			return nil, nil, record.LineFacts{}, fmt.Errorf("mark the roots that hold their own gate: %w", err)
 		}
+	}
+	return issues, slots, facts, nil
+}
+
+// readPass is the pass's shared reads alone: the project's live records, the slots, and the facts
+// the line, the release and the repair passes are all judged from. A reader in a read-only
+// transaction (OwesEntryWork, ArchitectStallArms, tickRows) takes these and writes nothing; an
+// unmarked root still holds its own gate while it stands a root (record.Chains.HoldsOwnGate), so
+// its answers are the ones the next decision pass, which marks it, reads.
+func (a *Admission) readPass(ctx context.Context, tx pgx.Tx) ([]record.Issue, []record.Slot, record.LineFacts, error) {
+	issues, err := a.store.LiveIssues(ctx, tx, a.project)
+	if err != nil {
+		return nil, nil, record.LineFacts{}, fmt.Errorf("list admission issues: %w", err)
+	}
+	slots, err := a.store.Slots(ctx, tx)
+	if err != nil {
+		return nil, nil, record.LineFacts{}, fmt.Errorf("list admission slots: %w", err)
+	}
+	facts, err := record.ReadLineFacts(ctx, tx, a.store, a.project, issues, a.engine.GatedSteps())
+	if err != nil {
+		return nil, nil, record.LineFacts{}, err
 	}
 	return issues, slots, facts, nil
 }
@@ -2288,7 +2301,7 @@ func (a *Admission) OwesEntryWork(ctx context.Context, tx pgx.Tx) (bool, error) 
 	if err != nil || paused {
 		return false, err
 	}
-	issues, slots, facts, err := a.reread(ctx, tx)
+	issues, slots, facts, err := a.readPass(ctx, tx)
 	if err != nil {
 		return false, err
 	}
