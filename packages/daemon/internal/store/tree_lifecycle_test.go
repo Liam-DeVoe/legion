@@ -183,20 +183,29 @@ func TestWorkHoldShareLockWaitsForTheOpeningAndReadsNoRowAfterIt(t *testing.T) {
 	testwait.Eventually(t, "the share lock to wait for the opening's lock of the row", func() bool { return waitingOnALock(t, store) })
 	select {
 	case got := <-locked:
+		if got.release != nil {
+			got.release()
+		}
 		t.Fatalf("the share lock answered %+v while the opening held the row, want it to wait for the opening's commit", got)
 	default:
 	}
 	if err := opening.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if got := <-locked; got.err != nil || got.stands {
-		t.Fatalf("the share lock after the opening committed = stands %t, %v; want no row", got.stands, got.err)
-	} else {
-		got.release()
+	got := <-locked
+	if got.release != nil {
+		t.Cleanup(got.release)
 	}
+	if got.err != nil || got.stands {
+		t.Fatalf("the share lock after the opening committed = stands %t, %v; want no row", got.stands, got.err)
+	}
+	got.release()
 
 	closeWorkHold(t, store, records)
 	stands, release, err := store.LockWorkHold(ctx, rootIssue)
+	if release != nil {
+		t.Cleanup(release)
+	}
 	if err != nil || !stands {
 		t.Fatalf("the share lock of the closed hold = stands %t, %v; want the row", stands, err)
 	}
@@ -231,7 +240,11 @@ func TestWorkHoldShareLockWaitsForTheOpeningAndReadsNoRowAfterIt(t *testing.T) {
 	}
 	bounded, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
 	defer cancel()
-	if stands, release, err := store.LockWorkHold(bounded, rootIssue); err == nil || release != nil {
+	stands, release, err = store.LockWorkHold(bounded, rootIssue)
+	if release != nil {
+		t.Cleanup(release)
+	}
+	if err == nil || release != nil {
 		t.Fatalf("the share lock past its deadline = stands %t, %v; want an error and no release", stands, err)
 	}
 }

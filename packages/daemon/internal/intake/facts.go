@@ -1447,12 +1447,14 @@ func (f PodBackstopDue) namedIssue() (string, bool) { return f.Issue, true }
 // the hold. The opening takes the tree's work hold row for update before it reads the claims, and
 // each decision that may make the hold's stop holds that row for share, so a stop made under that
 // lock is committed before the opening reads the claims, and the opening starts its claim. This
-// fact is left to a stop a decision made without the lock: one whose lock was not granted, one
-// made after its decision's report of a durable state ended the lock, or one whose lock the
-// database ended. The workflow starts each claim of the tree the hold stopped that no opening
-// start covers, with the opening's task. It is never decoded from an event: the outbox applies it
-// from the stop's row, under the row's id, so a retried row applies it once. It names the whole
-// tree rather than one issue.
+// fact is left to a stop a decision made without the lock: a stop held for a turn, a compaction
+// or a ready whose decision's lock was not granted, a held stop made after its decision's report
+// of a durable state or its launch check ended the lock, or a stop whose lock the database ended.
+// The hold's stop asked now is never made once its decision's report has ended its lock
+// (supervise.ErrWorkHoldLockEnded). The workflow starts each claim of the tree the hold stopped
+// that no opening start covers, with the opening's task. It is never decoded from an event: the
+// outbox applies it from the stop's row, under the row's id, so a retried row applies it once. It
+// names the whole tree rather than one issue.
 type WorkHoldOpened struct {
 	Tree string
 	// Version is the version of the gated document that closed the gate, as the hold's stop named

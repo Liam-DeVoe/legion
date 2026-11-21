@@ -119,9 +119,12 @@ func (m *Machine) EndHold(ctx context.Context, opening string, task *RequestDeli
 // finds the row gone (lockHoldStop). A stop the hold asked for and has not made, which no
 // decision has dropped yet, is dropped, as EndHold drops it, and dropped is true. Nothing is
 // started: a claim the hold has already stopped is left stopped, and stopped is true, so the
-// caller has the hold's opening start it with the opening's sentences. Such a stop was made by a
-// decision whose lock was not granted (lockHoldStop): the opening read the claims without waiting
-// for it. Any other claim is left as it is, and both are false.
+// caller has the hold's opening start it with the opening's sentences. Such a stop was made
+// without the lock on the tree's work hold row, so the opening read the claims without waiting
+// for it: a stop held over the claim that a decision made after its lock was not granted
+// (lockHoldStop), or after its report of a durable state or its launch check ended the lock
+// (report, checkLaunch), or a stop whose lock the database ended while its decision ran. Any
+// other claim is left as it is, and both are false.
 func (m *Machine) DropHoldStop(ctx context.Context) (dropped, stopped bool, err error) {
 	m.mu.Lock()
 	defer m.unlock()
@@ -148,29 +151,43 @@ func (m *Machine) dropHoldStop(ctx context.Context) (bool, error) {
 // may make the work hold's stop: one of a claim the hold's stop is held over (Machine.held, By
 // SuspendedByHold), or one of the hold's stop asked now (RequestSuspend, By SuspendedByHold).
 // Handle calls it after the claim's lock, before the fence, and ends the lock once the decision's
-// act, its writes and its send have run, unless a durable state's report ended it first. The
-// opening takes the same row for update before it reads the tree's claims, and deletes the row in
-// that same transaction (workflow's tellAndEndWorkHold). So either this decision commits its stop
-// first, and the opening reads the claim stopped and starts it, or the opening commits first, and
-// the lock reads no row:
+// act, its writes and its send have run, unless a durable state's report or the launch check ended
+// it first. The opening takes the same row for update before it reads the tree's claims, and
+// deletes the row in that same transaction (workflow's tellAndEndWorkHold). So either this
+// decision commits its stop first, and the opening reads the claim stopped and starts it, or the
+// opening commits first, and the lock reads no row:
 //
 //   - A stop held over the claim is not made: it is dropped (dropUnmadeHoldStop), and dropped is
 //     true, so the decision sends a task the stop held back once its row has run. A turn's end
 //     leaves the claim idle, a compaction's end gives the claim back, the hold's own deadline cuts
 //     nothing, and a launch's ready goes ahead.
-//   - The hold's stop asked now is not made: err is ErrWorkHoldEnded, and nothing of the claim
-//     changes.
+//   - The hold's stop asked now is not made: err is ErrWorkHoldEnded. Where the stop's row posts
+//     that stop again while it is held over the claim, the held stop is dropped as above, and the
+//     task it held back is sent.
 //
 // The wait for the lock ends at the claim-write deadline (Deps.claimWrite), as a claim write's
 // wait does. The machine keeps the lock's release (Machine.holdLock), and the lock lasts until
-// the first of two: a durable state's report (report), or the end of the decision (Handle,
-// releaseHoldLock). A lock that is not granted — the store failed, or the deadline passed — keeps
-// a stop held over the claim held, with a warning, and the decision goes on without the lock: the
-// stop's outbox row asks again on its backoff, and its drop starts a claim this decision stopped
-// without the lock (DropHoldStop, the outbox's holdStopUnmade). The hold's stop asked now answers
-// that error instead, so its outbox row asks again rather than make a stop under no lock. Any
-// other decision takes no lock and reads nothing.
+// the first of three: a durable state's report (report), the launch check (checkLaunch), or the
+// end of the decision (Handle, releaseHoldLock). The hold's stop asked now is not made once the
+// lock has ended (holdStopUnlocked). A lock that is not granted — the store failed, or the
+// deadline passed — keeps a stop held over the claim held, with a warning, and the decision goes
+// on without the lock: the stop's outbox row asks again on its backoff, and its drop starts a
+// claim this decision stopped without the lock (DropHoldStop, the outbox's holdStopUnmade). The
+// hold's stop asked now answers that error instead, so its outbox row asks again rather than make
+// a stop under no lock.
+//
+// A tool step and a model's answer take no lock, whatever the claim holds. Each kind's row in
+// every state records what the agent did and nothing else: toolStepped writes the claim's steps
+// and answered keeps the model in memory, in every live state, and a claim with no process ignores
+// both. Neither moves the claim, sends a task or fires a held suspension, so neither decision can
+// make the hold's stop. A tool step's write of the claim's steps has no claim-write deadline
+// (putStep), and under the lock it would hold a second connection of the pool for as long as the
+// database kept it waiting. Any other decision takes no lock and reads nothing.
 func (m *Machine) lockHoldStop(ctx context.Context, ev Event) (dropped bool, err error) {
+	switch ev.(type) {
+	case StreamToolStep, StreamAnswered:
+		return false, nil
+	}
 	request, stopping := ev.(RequestSuspend)
 	stopping = stopping && request.By == SuspendedByHold
 	held := m.held != nil && m.held.By == SuspendedByHold
@@ -202,6 +219,26 @@ func (m *Machine) lockHoldStop(ctx context.Context, ev Event) (dropped bool, err
 		err = ErrWorkHoldEnded
 	}
 	return dropped, err
+}
+
+// holdStopUnlocked is ErrWorkHoldLockEnded where request is the work hold's stop asked now and the
+// lock its decision took on the tree's work hold row (lockHoldStop) has ended already, and nil
+// otherwise. The lock ends early only at a durable state's report or the launch check (report,
+// checkLaunch). No row of RequestSuspend checks a launch or reports a state of its own before its
+// stop, so the lock of such a decision ends early only where an earlier write of it landed a write
+// a failed decision owed, and the reports owed with it ended the lock (settleOwedWrite). Each row
+// of RequestSuspend asks this at the point where it would make the stop at once: before the first
+// of the process's stop, the take-back of a dead turn, the takeover of a released claim and the
+// write, so a stop it refuses changes nothing of the claim. A stop held for a turn, a compaction or
+// a ready is no stop made now, and is not asked. Nor is a stop another source holds in the hold's
+// place (suspendRequest), since that stop is not the hold's.
+func (m *Machine) holdStopUnlocked(request RequestSuspend) error {
+	if request.By != SuspendedByHold || m.holdLock != nil {
+		return nil
+	}
+	m.log.Info("supervise: the lock on the work hold's row ended before the hold's stop was made; the stop waits for its row's next attempt",
+		"reason", request.Reason)
+	return ErrWorkHoldLockEnded
 }
 
 // dropUnmadeHoldStop drops the work hold's held stop, which is not made, and logs it.

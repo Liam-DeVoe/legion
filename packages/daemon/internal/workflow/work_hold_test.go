@@ -312,13 +312,14 @@ func asJSON(v any) string {
 	return string(encoded)
 }
 
-// workHoldOf is the hold the record keeps of tree, nil for none.
+// workHoldOf is the hold the record keeps of tree, nil for none, read with its row locked for the
+// read's own transaction.
 func workHoldOf(t *testing.T, pool *pgxpool.Pool, tree string) *record.WorkHold {
 	t.Helper()
 	var hold *record.WorkHold
 	seedRecord(t, pool, func(tx pgx.Tx) error {
 		var err error
-		hold, err = record.NewStore().WorkHold(t.Context(), tx, tree)
+		hold, err = record.NewStore().LockWorkHold(t.Context(), tx, tree)
 		return err
 	})
 	return hold

@@ -53,7 +53,7 @@ func TestTheWorkHoldsRecordAndItsWayBackLeaveWhatTheReleaseBeforeReads(t *testin
 		t.Fatalf("record the hold: %v", err)
 	}
 	if err := store.Tx(ctx, func(tx pgx.Tx) error {
-		read, err := record.NewStore().WorkHold(ctx, tx, "LEGION-208")
+		read, err := record.NewStore().LockWorkHold(ctx, tx, "LEGION-208")
 		if err == nil && (read == nil || !reflect.DeepEqual(*read, hold)) {
 			t.Fatalf("the hold reads back %+v, want %+v", read, hold)
 		}

@@ -36,6 +36,8 @@ var ErrPauseEnded = errors.New("the pause this stop names has ended, so nothing 
 // held for that turn as a stop that arrives in a turn is (holdSuspension), to its deadline. A claim
 // whose last turn ended after the message reached it has had that turn — the stop's row ran late,
 // or was posted again after a restart — and is stopped now, and so is one whose deadline has come.
+// The work hold's stop made now whose decision's lock on the tree's work hold row has ended is not
+// made (holdStopUnlocked).
 func suspend(m *Machine, ctx context.Context, ev Event) error {
 	request, err := suspendRequest(m, ev)
 	if err != nil {
@@ -45,6 +47,9 @@ func suspend(m *Machine, ctx context.Context, ev Event) error {
 		m.log.Info("supervise: the suspension waits for the turn its message starts", "reason", request.Reason, "by", request.By,
 			"messageAt", request.TurnAfter, "deadline", request.Deadline)
 		return holdSuspension(m, ctx, ev)
+	}
+	if err := m.holdStopUnlocked(request); err != nil {
+		return err
 	}
 	return m.suspendNow(ctx, request, false)
 }
@@ -132,6 +137,9 @@ func holdSuspension(m *Machine, ctx context.Context, ev Event) error {
 	// compaction in flight is a claim whose session Oh My Pi is writing a summary of, which the
 	// compaction's own end gives back (compactEnded): neither is this row's to end.
 	if m.claim.Locator != nil && m.processGone && !m.launchWaits() && m.compacting == nil {
+		if err := m.holdStopUnlocked(request); err != nil {
+			return err
+		}
 		m.log.Info("supervise: a suspension reached a claim stored working over a process the daemon found gone; deciding it here",
 			"reason", request.Reason, "by", request.By, "incarnation", m.claim.Locator.Incarnation)
 		return m.suspendOverADeadProcess(ctx, request)
@@ -246,6 +254,9 @@ func holdSuspendUntilReady(m *Machine, ctx context.Context, ev Event) error {
 		return err
 	}
 	if m.stoppedAStart() && m.launchRecordsNoProcess() {
+		if err := m.holdStopUnlocked(request); err != nil {
+			return err
+		}
 		m.log.Info("supervise: the suspension stopped the claim's start, so it suspends the claim now", "reason", request.Reason, "by", request.By)
 		return m.suspendedFor(ctx, request, true)
 	}
@@ -254,6 +265,9 @@ func holdSuspendUntilReady(m *Machine, ctx context.Context, ev Event) error {
 			Reason: "the claim's launch has not registered, and this suspension is not one that is held for it"}
 	}
 	if m.wake != nil && m.claim.Locator == nil {
+		if err := m.holdStopUnlocked(request); err != nil {
+			return err
+		}
 		m.log.Info("supervise: a suspension reached a claim whose paced wake waits over no process; deciding it here",
 			"reason", request.Reason, "by", request.By, "kind", m.wake.kind, "due", m.wake.at)
 		return m.suspendedFor(ctx, request, true)
@@ -285,7 +299,8 @@ func holdSuspendUntilReady(m *Machine, ctx context.Context, ev Event) error {
 // park, close or hand-over that asked for it owns the claim and neither a wake nor the hold's end
 // acts on it; and the work hold's stop of a released claim, a pause's stop among them, so no wake
 // resumes it while the hold stands and it keeps its bundle and its pending task. Anything else
-// changes nothing, and an operator's suspension is never taken over.
+// changes nothing, and an operator's suspension is never taken over. The work hold's takeover
+// whose decision's lock on the tree's work hold row has ended is not made (holdStopUnlocked).
 func suspendedAgain(m *Machine, ctx context.Context, ev Event) error {
 	request, err := suspendRequest(m, ev)
 	if err != nil {
@@ -293,6 +308,9 @@ func suspendedAgain(m *Machine, ctx context.Context, ev Event) error {
 	}
 	if suspensionRank(request.By) <= suspensionRank(m.claim.SuspendedBy) {
 		return nil
+	}
+	if err := m.holdStopUnlocked(request); err != nil {
+		return err
 	}
 	m.log.Info("supervise: a suspension takes the suspended claim over", "reason", request.Reason,
 		"by", request.By, "suspendedBy", m.claim.SuspendedBy)

@@ -113,14 +113,20 @@ func (s *Store) CheckLaunch(ctx context.Context, c supervise.Claim) error {
 // row at the hold's close, and the opening takes it for update and deletes it in its own
 // transaction (record.Store.PutWorkHold, LockWorkHold, DeleteWorkHold). The lock is held by a
 // transaction of its own, which writes nothing and lasts until release rolls it back, so a
-// decision of a claim holds it across its claim writes. Those writes take connections of their
-// own, and each waits at most the claim-write deadline for one, so a pool with no connection left
-// holds such a decision no longer than that bound. The transaction is the lock's alone: it is
-// begun apart from the caller's mark of the connection it holds (ForConcurrentWorker), so the
-// claim writes the caller makes while the lock lasts are not refused as a second connection
-// (ErrNestedAcquire). A caller that holds a connection already is refused, as any caller is. The
-// pool's idle bound (idleBound) still ends a lock whose decision runs past it, and its connection
-// with it.
+// decision of a claim holds it across its other store calls, each on a connection of its own.
+// Each claim and delivery write of that decision waits at most the claim-write deadline, for its
+// connection and for its answer (supervise's Machine.write), so a pool with no connection left
+// holds such a write no longer than that bound. Two calls with no such deadline never run under
+// the lock: a tool step's write of the claim's steps, whose decision takes no lock (supervise's
+// lockHoldStop), and the launch check, which ends the lock first (supervise's checkLaunch). A
+// turn's start writes its step only once its report of the claim working has ended the lock
+// (supervise's Machine.report). A call the decision makes under the lock with no deadline of its
+// own holds the lock, and its second connection, for as long as it waits. The transaction is the
+// lock's alone: it is begun apart from the caller's mark of the connection it holds
+// (ForConcurrentWorker), so the claim writes the caller makes while the lock lasts are not refused
+// as a second connection (ErrNestedAcquire). A caller that holds a connection already is refused,
+// as any caller is. The pool's idle bound (idleBound) still ends a lock whose decision runs past
+// it, and its connection with it.
 //
 // The wait for the row ends at ctx's deadline, laid twice as the state route lays its bound
 // (internal/api's projectState): the context ends the Go side's wait, and the same bound is the

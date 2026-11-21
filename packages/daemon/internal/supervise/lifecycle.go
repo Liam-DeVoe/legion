@@ -46,7 +46,16 @@ func (m *Machine) revive(ctx context.Context, exempt bool, admitted func()) erro
 // checkLaunch is the lifecycle recheck every launch makes first: a claim whose tree cleanup is
 // reserved, or whose bound epoch is no longer the open one, starts nothing and changes nothing, so
 // a relaunch refused here charges no budget.
+//
+// It ends the lock the decision holds on its tree's work hold row first (releaseHoldLock), for the
+// reason a durable state's report ends it (report): the store checks the epoch under the lock every
+// fact takes (treelifecycle.BindWork), and the hold's opening holds that lock while it waits for
+// the row, so a check made under the row would wait on the opening, and the opening on the check,
+// until the database ended the idle transaction. A stop held over the claim that this decision
+// makes after the check is made without the lock: the stop's outbox row starts the claim once it
+// meets the open gate (DropHoldStop's stopped case).
 func (m *Machine) checkLaunch(ctx context.Context) error {
+	m.releaseHoldLock()
 	return m.deps.Store.CheckLaunch(ctx, m.claim)
 }
 

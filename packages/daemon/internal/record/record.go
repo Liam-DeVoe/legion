@@ -2071,18 +2071,16 @@ type Store interface {
 	PutClearedSpecApproval(ctx context.Context, tx pgx.Tx, approval ClearedSpecApproval) error
 	ClearedSpecApproval(ctx context.Context, tx pgx.Tx, root string) (*ClearedSpecApproval, error)
 	DeleteClearedSpecApproval(ctx context.Context, tx pgx.Tx, root string) error
-	// PutWorkHold records the work hold of a tree, in place of any it held; WorkHold is the hold
-	// tree holds, nil for none; WorkHolds is every hold of project's trees, by tree; and
-	// DeleteWorkHold deletes tree's, if any.
+	// PutWorkHold records the work hold of a tree, in place of any it held; WorkHolds is every hold
+	// of project's trees, by tree; and DeleteWorkHold deletes tree's, if any.
 	PutWorkHold(ctx context.Context, tx pgx.Tx, hold WorkHold) error
-	WorkHold(ctx context.Context, tx pgx.Tx, tree string) (*WorkHold, error)
 	WorkHolds(ctx context.Context, tx pgx.Tx, project string) ([]WorkHold, error)
 	DeleteWorkHold(ctx context.Context, tx pgx.Tx, tree string) error
-	// LockWorkHold is WorkHold read with tree's row locked for update until tx ends: the hold's
-	// end takes it before it reads the tree's claims (workflow's tellAndEndWorkHold). A claim's
-	// decision that may make the hold's stop holds the row for share (supervise.Store.LockWorkHold),
-	// so the end waits for that decision's commit, and a decision that asks while the end holds
-	// the row waits for the end's commit and then reads no row.
+	// LockWorkHold is the hold tree holds, nil for none, read with tree's row locked for update
+	// until tx ends: the hold's end takes it before it reads the tree's claims (workflow's
+	// tellAndEndWorkHold). A claim's decision that may make the hold's stop holds the row for share
+	// (supervise.Store.LockWorkHold), so the end waits for that decision's commit, and a decision
+	// that asks while the end holds the row waits for the end's commit and then reads no row.
 	LockWorkHold(ctx context.Context, tx pgx.Tx, tree string) (*WorkHold, error)
 	// WorkHeldTrees is every tree of project, by the tree its issue stands in, that holds a claim
 	// stored suspended by the work hold (supervise.SuspendedByHold), in one read whatever the number

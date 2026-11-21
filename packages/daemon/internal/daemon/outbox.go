@@ -4003,13 +4003,17 @@ func (r *outbox) openingQueued(ctx context.Context, payload record.SuperviseRequ
 // (supervise.RequestSuspend, By hold) with the deadline and the moment of the message the row
 // stored:
 //
-//   - The claim's decision takes the tree's work hold row for share until it ends, or until it
-//     reports a durable state (supervise.Store.LockWorkHold). The opening takes that row for
-//     update before it reads the tree's claims, so a stop this decision makes under the lock is
-//     committed before the opening reads the claims, and the opening starts the claim. A
-//     decision that waited for the opening's commit reads no row and answers
-//     supervise.ErrWorkHoldEnded: the gate opened again after this row read it, the stop is not
-//     made, and the row finishes with one log line.
+//   - The claim's decision takes the tree's work hold row for share until it ends, until it
+//     reports a durable state, or until it checks a launch (supervise.Store.LockWorkHold). The
+//     opening takes that row for update before it reads the tree's claims, so a stop this
+//     decision makes under the lock is committed before the opening reads the claims, and the
+//     opening starts the claim. A decision that waited for the opening's commit reads no row and
+//     answers supervise.ErrWorkHoldEnded: the gate opened again after this row read it, the stop
+//     is not made, and the row finishes with one log line. A decision whose lock ended before its
+//     stop — an earlier write of the decision landed a write a failed decision owed, and the
+//     reports owed with it ended the lock — makes no stop and answers
+//     supervise.ErrWorkHoldLockEnded, a wait, so the row is asked again on its backoff, and that
+//     decision takes the lock again.
 //   - The claim holds the stop for the agent's turn — the one in flight, or the one the message
 //     starts in a ready or idle claim — and cuts it at the deadline. It answers
 //     supervise.ErrSuspendHeld meanwhile, a wait, so the row is asked again on its backoff, and a
@@ -4069,10 +4073,12 @@ func (r *outbox) logHoldStopUnmade(row record.OutboxRow, payload record.Supervis
 //     end (intake.WorkHoldOpened), which names the version the stop names, has the workflow start
 //     each claim of the tree the hold stopped that no opening start covers. A stop made under the
 //     lock on the tree's work hold row is committed before the opening reads the claims, and the
-//     opening starts its claim itself. So this is a stop a decision made without that lock: one
-//     whose lock was not granted, which kept the stop held and made it later, one made after its
-//     decision's report of a durable state ended the lock, or one whose lock the database ended
-//     while the decision ran.
+//     opening starts its claim itself. So this is a stop a decision made without that lock: a stop
+//     held for a turn, a compaction or a ready whose decision's lock was not granted, which kept
+//     the stop held and made it later, a held stop made after its decision's report of a durable
+//     state or its launch check ended the lock, or a stop whose lock the database ended while the
+//     decision ran. The stop asked now is never made after its decision's report ended the lock
+//     (supervise.ErrWorkHoldLockEnded).
 //   - Any other claim — a released one the stop never took over, one another source took over —
 //     is left as it is.
 func (r *outbox) holdStopUnmade(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest, issue record.Issue,

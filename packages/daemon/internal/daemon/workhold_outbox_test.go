@@ -3,11 +3,13 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1360,6 +1362,71 @@ func TestWorkHoldOpeningStartsAStopCommittedBeforeIt(t *testing.T) {
 	r.wantStarted(claim.RoleTester, 0, r.opening(4, 4)+"\n\n"+"The issue's other roles may ask you questions.")
 	if stops := r.holdStops(claim.RoleTester); len(stops) != 0 {
 		t.Fatalf("after the drain the tester's stops are %+v, want the row finished", stops)
+	}
+}
+
+// refusedHoldLock is the rig's store with every lock on a tree's work hold row refused while
+// refuse is set: the decision that asks for it goes on without it (supervise's lockHoldStop), so
+// a stop held over its claim is made under no lock. Every other call goes straight to the store.
+type refusedHoldLock struct {
+	supervise.Store
+	refuse *atomic.Bool
+}
+
+func (s refusedHoldLock) LockWorkHold(ctx context.Context, tree string) (bool, func(), error) {
+	if s.refuse.Load() {
+		return false, nil, errors.New("the database did not answer")
+	}
+	return s.Store.LockWorkHold(ctx, tree)
+}
+
+// Spec step 7, the backstop of a stop made without the lock on the tree's work hold row
+// (holdStopUnmade's stopped case). The close's stop is held for the implementer's turn, and the
+// opening commits while the turn runs, so it reads the implementer working and starts nothing of
+// it. The turn's end is refused its lock, so it makes the held stop under no lock, after the
+// opening. The stop's row then meets the open gate and finds the implementer stopped by the hold:
+// it logs that the stop was made after the gate opened again, naming the implementer and the
+// version that closed the gate, and the fact of the hold's end (intake.WorkHoldOpened) starts the
+// implementer once, with the opening's task.
+func TestWorkHoldStartsAStopMadeWithoutTheLockAfterTheOpening(t *testing.T) {
+	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
+	logs := &testlog.Buffer{}
+	r.runner.log = slog.New(slog.NewJSONHandler(logs, nil))
+	refuse := &atomic.Bool{}
+	r.sup.deps.Store = refusedHoldLock{Store: r.trees, refuse: refuse}
+	machine, token := r.working(claim.RoleImplementer), r.token(claim.RoleImplementer)
+	launched := r.launches(claim.RoleImplementer)
+	r.close(4)
+	r.runOnce()
+	r.runOnce()
+	if c := machine.Claim(); !c.WorkHeld() || c.State != supervise.StateWorking {
+		t.Fatalf("before the opening the implementer is %s, held %v; want its stop held for its turn", c.State, c.WorkHeld())
+	}
+
+	beforeTheOpening := r.newestRow()
+	r.approve(4, 12)
+	// The opening's message reaches the working implementer. The stop's row waits on its backoff.
+	r.runOnce()
+	if got := r.startsSince(claim.RoleImplementer, beforeTheOpening); got != 0 {
+		t.Fatalf("the opening queued %d starts of the implementer, want none: it read the implementer working", got)
+	}
+	refuse.Store(true)
+	endTurn(r.ctx, t, machine, token)
+	refuse.Store(false)
+	r.wantHeld(claim.RoleImplementer, launched, "after its turn's end made the stop under no lock")
+
+	r.clock.advance(65 * time.Second)
+	r.runOnce()
+	made := loggedMessages(t, logs.String(), "outbox: the work hold's stop was made after the design gate opened again")
+	if len(made) != 1 || made[0]["role"] != string(claim.RoleImplementer) || made[0]["version"] != float64(4) {
+		t.Fatalf("the stop's row logged %v, want one line naming the implementer and version 4", made)
+	}
+	r.drain()
+	want := holdSentence + " The work hold stopped your turn. The deployment no longer holds the work of " + r.tree.key + "'s tree." +
+		" Check what your turn already did: a tool call may not have finished.\n\n" + workflow.ResumePhaseTask(r.issue())
+	r.wantStarted(claim.RoleImplementer, launched, want)
+	if stops := r.holdStops(claim.RoleImplementer); len(stops) != 0 {
+		t.Fatalf("after the drain the implementer's stops are %+v, want the row finished", stops)
 	}
 }
 

@@ -234,7 +234,7 @@ func TestWorkHoldRecordGoesWithItsTreesGeneration(t *testing.T) {
 		must(t, records.PutWorkHold(ctx, tx, held))
 	})
 	inTx(t, st, func(tx pgx.Tx) {
-		read, err := records.WorkHold(ctx, tx, root.Key)
+		read, err := records.LockWorkHold(ctx, tx, root.Key)
 		must(t, err)
 		if read == nil || !reflect.DeepEqual(*read, hold) {
 			t.Fatalf("the hold of %s reads %+v, want %+v", root.Key, read, hold)
@@ -252,14 +252,14 @@ func TestWorkHoldRecordGoesWithItsTreesGeneration(t *testing.T) {
 		must(t, records.ClearTreeGeneration(ctx, tx, root.Key, closedAt))
 	})
 	inTx(t, st, func(tx pgx.Tx) {
-		if read, err := records.WorkHold(ctx, tx, root.Key); err != nil || read != nil {
+		if read, err := records.LockWorkHold(ctx, tx, root.Key); err != nil || read != nil {
 			t.Fatalf("after the tree's new generation its hold reads %+v, %v; want none", read, err)
 		}
-		if read, err := records.WorkHold(ctx, tx, other.Key); err != nil || read == nil {
+		if read, err := records.LockWorkHold(ctx, tx, other.Key); err != nil || read == nil {
 			t.Fatalf("another tree's hold reads %+v, %v; want it kept", read, err)
 		}
 		must(t, records.DeleteWorkHold(ctx, tx, other.Key))
-		if read, err := records.WorkHold(ctx, tx, other.Key); err != nil || read != nil {
+		if read, err := records.LockWorkHold(ctx, tx, other.Key); err != nil || read != nil {
 			t.Fatalf("the opened tree's hold reads %+v, %v; want it deleted", read, err)
 		}
 	})
