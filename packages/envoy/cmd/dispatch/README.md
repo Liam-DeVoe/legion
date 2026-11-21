@@ -184,8 +184,9 @@ it must equal the URL humans type into their browser, and the sign-in pool's app
 With no `DISPATCH_SIGNIN_*` setting nobody signs in through a browser, and the variable is the origin Dispatch builds its own links from and nothing more.
 
 `DISPATCH_OUTSIDE_ORIGIN` is a second origin Dispatch answers at, the one people from outside reach it at, whatever path the deployment gives them.
-A request whose `Host` is its host, compared without regard to case, is answered as that origin:
-its sign-in comes back to `<DISPATCH_OUTSIDE_ORIGIN>/auth/callback`, which the sign-in client must list too (except with `DISPATCH_SIGNIN_PASSKEY=1`, where the outside origin serves no Google sign-in and the client lists no outside callback), and a browser write carrying a session cookie passes the origin check only with that `Origin`, so a page on one origin cannot write as a person signed in on the other.
+A request whose `Host` is its host, compared without regard to case, is answered as that origin.
+With `DISPATCH_SIGNIN_OUTSIDE=1` its Google sign-in comes back to `<DISPATCH_OUTSIDE_ORIGIN>/auth/callback`, which the sign-in client must list too; under every other sign-in `/auth/start` and `/auth/callback` answer there the `404` a path no route serves answers, and the client lists no outside callback (`routes.googleSignInHere`).
+A browser write carrying a session cookie passes the origin check only with that origin's `Origin`, so a page on one origin cannot write as a person signed in on the other.
 Every other request is answered as `DISPATCH_SERVER_URL`'s.
 Its spelling is judged by the rule `envoy-infra:gcp:Dispatch` judges its `outsideOrigin` input by (`internal/weborigin`), and it must be `https` (`http` only with `DISPATCH_TEST_HOOKS=1`) on a host other than `DISPATCH_SERVER_URL`'s, which must be set;
 under Google sign-in its host must also be one Google takes in an OAuth redirect URI, a DNS name whose top-level domain is on the public suffix list and no IP address, by the rule the component holds its `outsideOrigin` to with sign-in on (`weborigin.GoogleRedirectHost`);
@@ -663,9 +664,9 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
   `people.sub_issuer` moves only with `sub`, and a row with no `sub` holds none (migration `20261120165538`'s guard), and a passkey's row holds no refresh token (`people_sign_in_stands`): its sign-in stands while `confirmed_at` holds a time.
   The hourly confirmation of a passkey's sign-in asks the rule again (`AdmitsRestricted`) and whether the person holds a passkey;
   a person no list names directly any more, or whose address is now on a domain the Workspace owns, has their sign-in ended and their passkeys deleted in one transaction (`PgPasskeys.End`), and is told why as above.
-  So does the owner's removal of the person from the last list that names them, in the removal's own transaction, and the owner's Reset (`POST .../access/people/{email}/reset`), which keeps the person on the list, ends their unused links and owes the secrets broker the revocation of the machine logins they approved, as a removal does.
+  So does the owner's removal of the person from the last list that names them, in the removal's own transaction, and the owner's Reset (`POST .../access/people/{email}/reset`), which keeps the person on the list and, in one transaction, owes the secrets broker the revocation of the machine logins they approved, as a removal does, ends their unused links of every project, and gives the address a new passkey account (`PgPasskeys.ResetTx`, through the account binding), which revokes their personal tokens and owes the broker the revocation of the old account, so a machine login approved with it while the Reset ran is refused or ended too.
   The owner's browser reads, on the project's access answer, when each passkey of a listed person was enrolled (`passkeys`) and whom it can make a link for now (`invitable`); no other caller reads either, and a deployment without the setting answers neither.
-  With the setting turned off, a passkey's cookie is refused at its next use, and the person's tokens are refused as below.
+  With the setting turned off, a passkey's cookie is refused at its next use, `401 NO_IDENTITY` with `reason` `OUTSIDE_SIGNIN_OFF` (below), and the person's tokens are refused as below.
 
 - A restricted member's personal `dsp_` token, and an access token the secrets broker issued naming them, are held to the rule that signs them in at every use, not hourly (`api.restrictedOwnerAdmitted`, the one check both call, asks the sign-in rule's own `AdmitsRestricted`, the decision `identity.OutsideRule.Person` makes for an account outside the Workspace):
   it acts only while `DISPATCH_SIGNIN_OUTSIDE=1` or `DISPATCH_SIGNIN_PASSKEY=1`, its owner's address is on no domain the Workspace owns (`DISPATCH_SIGNIN_DOMAIN`, `DISPATCH_SIGNIN_WORKSPACE_DOMAINS`), and some project names its owner directly, and is otherwise `401 TOKEN_OWNER_NOT_ADMITTED`, whose words say which failed;
@@ -688,7 +689,7 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
 - A person from outside the domain whom the hourly confirmation signs out (above) is told why: the request that ran it and every one after it, from any browser still holding the session, is `401 NO_IDENTITY` with `reason` and `login`, the address (`identity.SignedOut`), and the dashboard's sign-in page says it in words.
   `reason` is `WORKSPACE_ADDRESS` for a restricted member whose address is now on a domain the Workspace owns (`identity.ErrWorkspaceAddress`), whatever the lists say;
   `NOT_LISTED` once no list names the account;
-  or `OUTSIDE_SIGNIN_OFF` for a restricted member once `DISPATCH_SIGNIN_OUTSIDE` is off.
+  or `OUTSIDE_SIGNIN_OFF` for a restricted member once neither `DISPATCH_SIGNIN_OUTSIDE` nor `DISPATCH_SIGNIN_PASSKEY` is on (`DomainRule.SignedOutReason`), a passkey's account at its very next request, since the refusal of its cookie writes nothing.
   It is read from the address's row and the lists at each request (`SignInRule.SignedOutReason`), not kept from the request that ended the sign-in, so it reaches the person whichever of their requests ran the confirmation, a live socket's heartbeat included, and whichever server process answers the next one, and it needs no column of its own.
   A sign-out, an expired cookie, a person a list still names at an address on no domain the Workspace owns, an address another account or another sign-in holds now and a full member are told none;
   a deployment that never set `DISPATCH_SIGNIN_OUTSIDE` or `DISPATCH_SIGNIN_PASSKEY` holds no restricted member, so it answers as it always has.
@@ -4388,7 +4389,7 @@ Each item below names a path with its method and identity, then its purpose.
   The issuer sends the browser back to the callback of the origin the request came to: `DISPATCH_OUTSIDE_ORIGIN`'s when the request's `Host` is its host, else `DISPATCH_SERVER_URL`'s.
   `503 SIGNIN_UNCONFIGURED` on a server with no `DISPATCH_SIGNIN_*`;
   `503 SIGNIN_UNAVAILABLE`, and no cookie, while the issuer's discovery document has not been read.
-  With `DISPATCH_SIGNIN_PASSKEY=1` it answers, at `DISPATCH_OUTSIDE_ORIGIN`, the `404` a path no route serves answers, as `/auth/callback` does there: a person from outside signs in there with a passkey alone (below).
+  Unless `DISPATCH_SIGNIN_OUTSIDE=1`, it answers at `DISPATCH_OUTSIDE_ORIGIN` the `404` a path no route serves answers, as `/auth/callback` does there: a person from outside signs in there with a passkey (below), or not at all.
 
 - `/auth/callback` (GET; sign-in state)
 
