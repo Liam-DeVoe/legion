@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -222,75 +223,173 @@ func TestFailRefreshForFailsOnePerson(t *testing.T) {
 	wantRefreshed(t, issuer, ada, "ada@example.com", "once the failure that replaced her refusal is off")
 }
 
-// TestDelayTokenWaitsBeforeItAnswers makes the token endpoint wait d. Two refreshes sent together,
-// one of them refused, each answer no sooner than d after they were sent and well before 2d, so
-// the wait comes before whatever the endpoint answers, and neither request waited behind the
-// other's wait. A wait of zero answers at once again.
+// heldWait is one wait an issuer started while holdWaits held them: the request it holds back,
+// the length it was told to wait, and end, a send on which ends it as its time running out would.
+type heldWait struct {
+	request *http.Request
+	delay   time.Duration
+	end     chan<- time.Time
+}
+
+// holdWaits makes every wait an issuer's endpoints start, until the test ends, last until the test
+// ends it rather than until its time is up: each wait is sent on the channel holdWaits answers as
+// it starts, and it ends only on a send to its end or on its caller hanging up. A wait the test
+// leaves held is ended at cleanup, before the issuer's server is closed, so a test that fails with
+// a wait held fails rather than hangs. Every issuer's waits read the one waitTimer, so a test that
+// calls this does not run in parallel.
+func holdWaits(t *testing.T) <-chan heldWait {
+	t.Helper()
+	var (
+		mu       sync.Mutex
+		ends     []chan time.Time
+		finished bool
+	)
+	started := make(chan heldWait, 8)
+	previous := waitTimer
+	waitTimer = func(r *http.Request, delay time.Duration) <-chan time.Time {
+		end := make(chan time.Time)
+		mu.Lock()
+		over := finished
+		if over {
+			close(end)
+		} else {
+			ends = append(ends, end)
+		}
+		mu.Unlock()
+		if !over {
+			started <- heldWait{request: r, delay: delay, end: end}
+		}
+		return end
+	}
+	t.Cleanup(func() {
+		mu.Lock()
+		defer mu.Unlock()
+		finished = true
+		for _, end := range ends {
+			close(end)
+		}
+		waitTimer = previous
+	})
+	return started
+}
+
+// TestDelayTokenWaitsBeforeItAnswers makes the token endpoint wait d. Two refreshes are sent
+// together, and both are held in a wait of d at once, so neither waits behind the other's wait;
+// while they wait, neither is answered or counted. Ada is refused only while both wait, and once
+// their waits end her refresh is refused and bob's is served: the wait comes before whatever the
+// endpoint answers, and the answer is the one the issuer's state gives once the wait is over. With
+// the wait set to zero a refresh starts no wait and is answered at once. holdWaits ends each wait
+// when the test says, so what this reads is the order of events, never a clock.
 func TestDelayTokenWaitsBeforeItAnswers(t *testing.T) {
-	const d = time.Second
+	const d = time.Hour
 	issuer := codeFlowIssuer(t)
 	ada := signIn(t, issuer, "ada@example.com")
 	bob := signIn(t, issuer, "bob@example.com")
-	issuer.RefuseRefresh("ada@example.com", true)
+	waits := holdWaits(t)
 	issuer.DelayToken(d)
+	before := issuer.Refreshes()
 
 	type answered struct {
 		who    string
 		status int
-		took   time.Duration
 		err    error
 	}
-	answers := make(chan answered, 2)
-	start := make(chan struct{})
-	for _, person := range []struct{ who, token string }{{"ada", ada}, {"bob", bob}} {
+	answers := make(chan answered, 3)
+	send := func(who, refreshToken string) {
 		go func() {
-			<-start
-			sent := time.Now()
-			status, _, err := postToken(context.Background(), issuer, refreshForm(person.token))
-			answers <- answered{person.who, status, time.Since(sent), err}
+			status, _, err := postToken(context.Background(), issuer, refreshForm(refreshToken))
+			answers <- answered{who, status, err}
 		}()
 	}
-	close(start)
+	send("ada", ada)
+	send("bob", bob)
+	var held []heldWait
+	for len(held) < 2 {
+		select {
+		case hold := <-waits:
+			if hold.delay != d {
+				t.Errorf("a refresh is held in a wait of %v, want %v", hold.delay, d)
+			}
+			held = append(held, hold)
+		case got := <-answers:
+			t.Fatalf("%s's refresh was answered (status %d, %v) with %d of the two refreshes held in a wait, want both held before either is answered", got.who, got.status, got.err, len(held))
+		}
+	}
+	if got := issuer.Refreshes(); got != before {
+		t.Errorf("with both refreshes held in their wait the issuer counts %d refreshes, want %d", got, before)
+	}
+
+	issuer.RefuseRefresh("ada@example.com", true)
+	for _, hold := range held {
+		hold.end <- time.Time{}
+	}
 	want := map[string]int{"ada": http.StatusBadRequest, "bob": http.StatusOK}
 	for range 2 {
-		got := <-answers
-		switch {
+		switch got := <-answers; {
 		case got.err != nil:
 			t.Errorf("%s's refresh: %v", got.who, got.err)
 		case got.status != want[got.who]:
-			t.Errorf("%s's refresh: status %d, want %d", got.who, got.status, want[got.who])
-		case got.took < d || got.took >= 2*d:
-			t.Errorf("%s's refresh answered after %v, want at least %v and under %v", got.who, got.took, d, 2*d)
+			t.Errorf("%s's refresh once the waits ended: status %d, want %d", got.who, got.status, want[got.who])
 		}
 	}
 
 	issuer.DelayToken(0)
-	sent := time.Now()
-	wantRefreshed(t, issuer, bob, "bob@example.com", "with no wait")
-	if took := time.Since(sent); took >= d {
-		t.Errorf("bob's refresh with no wait answered after %v, want under %v", took, d)
+	send("bob", bob)
+	select {
+	case hold := <-waits:
+		t.Errorf("with the wait set to zero bob's refresh is held in a wait of %v, want it answered at once", hold.delay)
+	case got := <-answers:
+		if got.err != nil || got.status != http.StatusOK {
+			t.Errorf("bob's refresh with the wait set to zero: status %d, %v, want 200", got.status, got.err)
+		}
 	}
 }
 
-// TestDelayTokenEndsWhenTheCallerHangsUp hangs up on a refresh during the token endpoint's wait:
-// the issuer stops waiting and answers nothing, so even past the end of the wait the refresh
-// counts as none, and the issuer's server, which a test's cleanup closes, is not held for the
-// rest of the wait.
+// TestDelayTokenEndsWhenTheCallerHangsUp hangs up on a refresh the token endpoint holds in its
+// wait. The wait ends then and no longer listens for its end, so the issuer's server, which a
+// test's cleanup closes, closes without the rest of the wait; and the issuer answers nothing, so
+// the refresh counts as none. The wait is long and nothing but the hang-up ends it, so what this
+// reads is the order of events, never a clock.
 func TestDelayTokenEndsWhenTheCallerHangsUp(t *testing.T) {
-	const d = time.Second
 	issuer := codeFlowIssuer(t)
 	ada := signIn(t, issuer, "ada@example.com")
+	waits := holdWaits(t)
+	issuer.DelayToken(time.Hour)
 	before := issuer.Refreshes()
-	issuer.DelayToken(d)
 
-	ctx, cancel := context.WithTimeout(context.Background(), d/10)
-	defer cancel()
-	if status, _, err := postToken(ctx, issuer, refreshForm(ada)); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("a refresh given up after %v: status %d, %v, want the caller's deadline", d/10, status, err)
+	ctx, hangUp := context.WithCancel(context.Background())
+	defer hangUp()
+	gaveUp := make(chan error, 1)
+	go func() {
+		_, _, err := postToken(ctx, issuer, refreshForm(ada))
+		gaveUp <- err
+	}()
+	var hold heldWait
+	select {
+	case hold = <-waits:
+	case err := <-gaveUp:
+		t.Fatalf("the refresh was answered (%v) before it was held in a wait", err)
 	}
-	// A wait that went on would answer, and count, the refresh d after it arrived.
-	time.Sleep(d + d/2)
+	hangUp()
+	if err := <-gaveUp; !errors.Is(err, context.Canceled) {
+		t.Errorf("the refresh hung up on: %v, want the caller's cancellation", err)
+	}
+	// The issuer's server sees the hang-up once the connection closes, which follows the caller's
+	// giving up rather than coming with it. Once it has, the wait no longer listens for its end:
+	// the server closes, and a send to the end finds nobody to take it.
+	<-hold.request.Context().Done()
+	closed := make(chan struct{})
+	go func() {
+		issuer.server.Close()
+		close(closed)
+	}()
+	select {
+	case hold.end <- time.Time{}:
+		t.Errorf("the wait still listened for its end after the caller hung up")
+		<-closed
+	case <-closed:
+	}
 	if got := issuer.Refreshes(); got != before {
-		t.Fatalf("%v after the caller hung up the issuer counts %d refreshes, want %d", d+d/2, got, before)
+		t.Errorf("after the caller hung up the issuer counts %d refreshes, want %d", got, before)
 	}
 }

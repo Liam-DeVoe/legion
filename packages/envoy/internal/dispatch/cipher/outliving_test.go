@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -42,10 +43,7 @@ type personAccessStandIn struct {
 func (s *personAccessStandIn) serve(t *testing.T, answers map[string]func(http.ResponseWriter, *http.Request)) *httptest.Server {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		s.mu.Lock()
-		s.asked = append(s.asked, r.Method+" "+r.URL.RequestURI())
-		s.auths = append(s.auths, r.Header.Get("Authorization"))
-		s.mu.Unlock()
+		s.record(r)
 		if r.Method != http.MethodGet || r.URL.Path != "/v1/person-access" {
 			http.NotFound(w, r)
 			return
@@ -61,6 +59,43 @@ func (s *personAccessStandIn) serve(t *testing.T, answers map[string]func(http.R
 	t.Cleanup(server.Close)
 	return server
 }
+
+// record notes r's method, path and bearer as one ask of the broker.
+func (s *personAccessStandIn) record(r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.asked = append(s.asked, r.Method+" "+r.URL.RequestURI())
+	s.auths = append(s.auths, r.Header.Get("Authorization"))
+}
+
+// unanswered stands in for a broker slower than the client's window. It takes the client's
+// transport's place rather than a server's, so the ask reaches it before the window can end
+// however the machine schedules the two: it records the ask, then holds it, answering nothing,
+// until the request's context ends, and returns that context's error, as a transport does for a
+// request given up. A caller whose context never ends leaves the client's window as the only
+// thing that ends it. A client with no window would be held for ever, so a request that carries
+// no deadline is answered at once instead, with person's empty answer, and a test that wants the
+// client to give up fails rather than hangs.
+func (s *personAccessStandIn) unanswered(person string) roundTripFunc {
+	return func(r *http.Request) (*http.Response, error) {
+		s.record(r)
+		if _, windowed := r.Context().Deadline(); !windowed {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": {"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"person":"` + person + `","machine_logins":0,"signins":0,"exchange_entries":0,"pod_operator_mappings":0}`)),
+				Request:    r,
+			}, nil
+		}
+		<-r.Context().Done()
+		return nil, r.Context().Err()
+	}
+}
+
+// roundTripFunc is a function serving as a client's transport.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func (s *personAccessStandIn) take() (asked, auths []string) {
 	s.mu.Lock()
@@ -107,14 +142,12 @@ func TestOutlivingAccessCountsTokensThenTheBroker(t *testing.T) {
 		"gina@example.com":  answerJSON(http.StatusNotFound, `{"code":"NOT_FOUND","error":"not found"}`),
 		"hank@example.com":  answerJSON(http.StatusOK, `{"person":"someone@example.com","machine_logins":0,"signins":0,"exchange_entries":0}`),
 		"ivan@example.com":  answerJSON(http.StatusOK, `<html>default backend</html>`),
-		"jill@example.com": func(w http.ResponseWriter, r *http.Request) {
-			// Slower than the client's window: it answers only once the client has given up.
-			<-r.Context().Done()
-		},
-		"kate@example.com": answerJSON(http.StatusOK, `{"person":"kate@example.com","machine_logins":0,"signins":0,"exchange_entries":0,"pod_operator_mappings":1}`),
+		"kate@example.com":  answerJSON(http.StatusOK, `{"person":"kate@example.com","machine_logins":0,"signins":0,"exchange_entries":0,"pod_operator_mappings":1}`),
 	})
 	access := OutlivingAccess{Pool: database.Pool, Broker: New(broker.URL, tokenFile(t, "account-token"))}
-	short := OutlivingAccess{Pool: database.Pool, Broker: New(broker.URL, tokenFile(t, "account-token"), WithTimeout(200*time.Millisecond))}
+	slow := New("http://broker.test", tokenFile(t, "account-token"), WithTimeout(time.Millisecond))
+	slow.HTTP.Transport = standIn.unanswered("jill@example.com")
+	short := OutlivingAccess{Pool: database.Pool, Broker: slow}
 
 	for _, test := range []struct {
 		name   string
@@ -123,6 +156,7 @@ func TestOutlivingAccessCountsTokensThenTheBroker(t *testing.T) {
 		holds  bool
 		status int // the broker's status an error carries; 0 for an error that is not the broker's
 		failed bool
+		gaveUp bool   // the error is the client giving up at the end of its window
 		asked  string // the ask the broker records; "" for none
 	}{
 		{name: "an unrevoked personal token, its owner spelled otherwise", access: access, person: "ADA@example.com", holds: true},
@@ -135,7 +169,7 @@ func TestOutlivingAccessCountsTokensThenTheBroker(t *testing.T) {
 		{name: "a broker without the route (404)", access: access, person: "gina@example.com", failed: true, status: http.StatusNotFound, asked: "gina%40example.com"},
 		{name: "a 200 naming another person", access: access, person: "hank@example.com", failed: true, asked: "hank%40example.com"},
 		{name: "a 200 that is no JSON", access: access, person: "ivan@example.com", failed: true, asked: "ivan%40example.com"},
-		{name: "a broker slower than the client's window", access: short, person: "jill@example.com", failed: true, asked: "jill%40example.com"},
+		{name: "a broker slower than the client's window", access: short, person: "jill@example.com", failed: true, gaveUp: true, asked: "jill%40example.com"},
 		{name: "no broker client, an unrevoked personal token", access: OutlivingAccess{Pool: database.Pool}, person: "ada@example.com", holds: true},
 		{name: "no broker client, only a revoked personal token", access: OutlivingAccess{Pool: database.Pool}, person: "bob@example.com"},
 		{name: "no database", access: OutlivingAccess{Broker: access.Broker}, person: "carol@example.com", failed: true},
@@ -156,6 +190,9 @@ func TestOutlivingAccessCountsTokensThenTheBroker(t *testing.T) {
 				var brokerErr *Error
 				if test.status != 0 && (!errors.As(err, &brokerErr) || brokerErr.Status != test.status) {
 					t.Errorf("Holds(%q)'s error %v is not the broker's *Error with status %d", test.person, err, test.status)
+				}
+				if test.gaveUp && !errors.Is(err, context.DeadlineExceeded) {
+					t.Errorf("Holds(%q)'s error %v is not the client giving up at the end of its window (context.DeadlineExceeded)", test.person, err)
 				}
 			} else {
 				if err != nil {

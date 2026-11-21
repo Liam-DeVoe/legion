@@ -851,14 +851,20 @@ func tokenError(w http.ResponseWriter, status int, code string) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": code})
 }
 
+// waitTimer starts the timer a wait ends on: time.After, unless a test of this package replaces it
+// to learn which request is waiting and how long it was told to wait, and to end the wait on an
+// event of its own rather than once that time has passed. Every issuer's waits read it, so a test
+// that replaces it does not run in parallel.
+var waitTimer = func(_ *http.Request, delay time.Duration) <-chan time.Time { return time.After(delay) }
+
 // wait holds an answer back for delay, or until the client hangs up, and reports whether the
-// client is still there to answer.
+// client is still there to answer. A delay of zero or less starts no wait.
 func wait(r *http.Request, delay time.Duration) bool {
 	if delay <= 0 {
 		return true
 	}
 	select {
-	case <-time.After(delay):
+	case <-waitTimer(r, delay):
 		return true
 	case <-r.Context().Done():
 		return false
