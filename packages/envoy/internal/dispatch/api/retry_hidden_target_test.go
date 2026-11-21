@@ -425,3 +425,97 @@ func TestTheSweepSendsAMessageAttemptNoLaterAttemptStandsInThePlaceOf(t *testing
 		}
 	}
 }
+
+// writeRepliedComments writes, as carol on PUB's issue nobody claimed, a comment that mentions
+// nothing, one that mentions a role of PRIV (role:legion-priv-architect, whose attempt 1 reaches
+// session-pub), one that mentions session-priv and one that mentions session-pub, by name, and
+// waits for each mention's send.
+func writeRepliedComments(t *testing.T, seed hiddenHolderSeed) map[string]string {
+	t.Helper()
+	ids := map[string]string{}
+	for name, target := range map[string]string{
+		noMention:          "",
+		privateRoleMention: "role:" + privateProjectRole,
+		hiddenSession:      "session:" + sessionOfPrivate,
+		visibleOnly:        "session:" + sessionOfPublic,
+	} {
+		body := map[string]any{"body": "A remark carol makes."}
+		if target != "" {
+			body["mentions"] = []map[string]string{{"target": target}}
+		}
+		ids[name] = createdID(t, seed.request(t, callerCarol, http.MethodPost, "/api/v1/issues/"+seed.unclaimed+"/comments", body))
+	}
+	awaitBackgroundWrites(t, seed.server)
+	return ids
+}
+
+// replyAs is caller's reply, as session, to attempt 1 of comment id with body, naming target where
+// it is not empty.
+func replyAs(t *testing.T, seed hiddenHolderSeed, caller privateCaller, session, id, target string) *httptest.ResponseRecorder {
+	t.Helper()
+	body := map[string]any{"actor": map[string]string{"kind": "session", "id": session}, "attempt": 1, "body": "Done."}
+	if target != "" {
+		body["target"] = target
+	}
+	answer := seed.request(t, caller, http.MethodPost, "/api/v1/comments/"+id+"/reply", body)
+	awaitBackgroundWrites(t, seed.server)
+	return answer
+}
+
+// TestAReplyAnswersAMentionItsCallerDoesNotReadAsOneTheCommentDoesNotHave: the deployment's shared
+// token sees PUB alone, so it reads none of carol's mentions on PUB's issue of a role of PRIV and of
+// session-priv (leaveOutHiddenCommentSessions), and it may not act for them. Its reply as the
+// mentioned session - session-pub, which attempt 1 of the role's mention reached, and session-priv
+// - with no target, naming the hidden target, and naming a target nobody mentions, each answers
+// byte for byte as the same reply to carol's comment that mentions nothing does, and posts no
+// reply. The same token's reply as session-pub to carol's mention of session-pub, which it reads,
+// is posted, so the refusal is the target's alone.
+//
+// Control: replyComment reading the mentions as the server's reader (the unfiltered reads
+// restored); the shared token's reply with no target or naming the target is then posted, 201, and
+// the row fails naming the target.
+func TestAReplyAnswersAMentionItsCallerDoesNotReadAsOneTheCommentDoesNotHave(t *testing.T) {
+	seed := seedHiddenHolders(t, testServerOptions{})
+	ids := writeRepliedComments(t, seed)
+	for name, mention := range map[string]struct{ session, target string }{
+		privateRoleMention: {sessionOfPublic, "role:" + privateProjectRole},
+		hiddenSession:      {sessionOfPrivate, "session:" + sessionOfPrivate},
+	} {
+		for _, target := range []string{"", mention.target, unmentionedTarget} {
+			got := replyAs(t, seed, callerSharedToken, mention.session, ids[name], target)
+			want := replyAs(t, seed, callerSharedToken, mention.session, ids[noMention], target)
+			if got.Code != want.Code || got.Body.String() != want.Body.String() {
+				t.Errorf("the shared token's reply as %s naming %q to carol's mention of %s answers %d %s; to her comment that mentions nothing, %d %s: want one answer",
+					mention.session, target, mention.target, got.Code, strings.TrimSpace(got.Body.String()), want.Code, strings.TrimSpace(want.Body.String()))
+			}
+			if got.Code < http.StatusBadRequest {
+				t.Errorf("the shared token's reply as %s naming %q to carol's mention of %s was taken: %d %s", mention.session, target, mention.target, got.Code, strings.TrimSpace(got.Body.String()))
+			}
+		}
+	}
+	if taken := replyAs(t, seed, callerSharedToken, sessionOfPublic, ids[visibleOnly], ""); taken.Code != http.StatusCreated {
+		t.Errorf("the shared token's reply as session-pub to carol's mention of session-pub answers %d %s, want it posted", taken.Code, strings.TrimSpace(taken.Body.String()))
+	}
+}
+
+// TestWithNoPrivateProjectAReplyAnswersAsBefore (R9): once PRIV is public again the shared token
+// sees every object, so its replies as session-pub and session-priv to carol's mentions of the role
+// of PRIV and of session-priv are posted as the base posted them. Each answer is logged with its
+// times and ids blanked, beside the sha256 of what it logs, so a run at the base and a run at the
+// head compare byte for byte.
+//
+// Control: mentionsReadBy leaving every mention out; the replies then answer 400 and the row fails.
+func TestWithNoPrivateProjectAReplyAnswersAsBefore(t *testing.T) {
+	seed := seedHiddenHolders(t, testServerOptions{})
+	ids := writeRepliedComments(t, seed)
+	seed.setVisibility(t, seedPrivate, model.ProjectPublic)
+	for _, reply := range []struct{ name, session string }{{privateRoleMention, sessionOfPublic}, {hiddenSession, sessionOfPrivate}} {
+		answer := replyAs(t, seed, callerSharedToken, reply.session, ids[reply.name], "")
+		blanked := timestampsAndIDs.ReplaceAllString(answer.Body.String(), "<varies>")
+		t.Logf("R9 reply as %s to %s: %d sha256 %x: %s", reply.session, reply.name, answer.Code, sha256.Sum256([]byte(blanked)), strings.TrimSpace(blanked))
+		if answer.Code != http.StatusCreated {
+			t.Errorf("PRIV public: the shared token's reply as %s to carol's mention of %s answers %d %s, want 201, as before",
+				reply.session, reply.name, answer.Code, strings.TrimSpace(answer.Body.String()))
+		}
+	}
+}
