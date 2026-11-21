@@ -514,7 +514,11 @@ func (s *Server) Freeze(t testing.TB) func() {
 // client's lock (processPing, client.go:2805). So after the barrier Reload takes every client's
 // lock in turn (ordered), which orders each of those reads before the reload for the race detector
 // too: without that order, TestAReloadUnderDirectGetsAnswersEveryOne drew the race in every run.
-// That covers only what the relay holds and the clients' own goroutines run. A server whose
+// A JetStream API request (a stream create among them, which reads the options' stream limits
+// without the lock, stream.go:1013 in v2.15.1) is answered on the API's own goroutines instead,
+// which can still be serving it after the barrier: so Reload first waits until the server serves
+// none (apiSettled), which orders their reads before the reload as well.
+// That covers only what the relay holds and the goroutines named above run. A server whose
 // configuration, the one it runs or the one it is given, names routes, leafnodes or a gateway
 // answers the direct gets that come over those links on the stream's goroutine (mset.gets,
 // stream.go:6143 and 6206 in v2.15.1), so it refuses the reload and fails t, whether or not such a
@@ -565,6 +569,10 @@ func (s *Server) Reload(t testing.TB, config string) error {
 		release()
 		t.Fatalf("hold the NATS server's clients still for its reload: %v", err)
 	}
+	if err := apiSettled(t, srv); err != nil {
+		release()
+		t.Fatalf("testnats: a reload of the NATS server at %s: %v (Server.Reload)", s.url, err)
+	}
 	if err := s.ordered(srv); err != nil {
 		release()
 		t.Fatalf("testnats: a reload of the NATS server at %s: %v (Server.Reload)", s.url, err)
@@ -582,6 +590,33 @@ func (s *Server) Reload(t testing.TB, config string) error {
 		t.Fatalf("keep the configuration the server took: %v", err)
 	}
 	return nil
+}
+
+// apiSettled waits, within t's bound (boundOf), until srv serves no JetStream API request:
+// nats-server counts each request its client's goroutine queues for the API's own goroutines, and
+// takes it off once the request's handler has returned, by atomic adds (apiDispatch and
+// processJSAPIRoutedRequests, jetstream_api.go:1015 and 1069 in v2.15.1), and Jsz reads the count
+// (Inflight). With the clients held past the barrier no request joins it, so a count of 0 means
+// every handler is done, and the race detector orders what each did before the read that saw the
+// count fall: a stream create's unlocked read of the options among them
+// (addStreamWithAssignmentAndMode, stream.go:1013 in v2.15.1). It returns why the count did not
+// fall in time.
+func apiSettled(t testing.TB, srv *natsserver.Server) error {
+	bound := boundOf(t)
+	for {
+		jsz, err := srv.Jsz(nil)
+		if err != nil {
+			return fmt.Errorf("read its JetStream state: %w", err)
+		}
+		inflight := jsz.JetStreamStats.API.Inflight
+		if jsz.Disabled || inflight == 0 {
+			return nil
+		}
+		if bound.over() {
+			return fmt.Errorf("its JetStream API still served %d requests by %s, short of the test's deadline", inflight, bound)
+		}
+		time.Sleep(bound.step(barrierPoll))
+	}
 }
 
 // ordered takes the lock of each client connection of srv in turn, through Connz, which reads each

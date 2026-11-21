@@ -552,6 +552,136 @@ func TestAReloadUnderDirectGetsAnswersEveryOne(t *testing.T) {
 	}
 }
 
+// streamCreateReloads is how many reloads each form of TestAReloadUnderStreamCreatesAnswersEveryOne
+// makes while reloadConnections clients create streams, and streamCreateBurst how many creates a
+// client of the burst form sends before it reads their answers.
+const (
+	streamCreateReloads = 25
+	streamCreateBurst   = 50
+)
+
+// A reload while clients create streams answers every create, and under the race detector it is
+// no data race. nats-server answers a stream create on the JetStream API's own goroutines, where
+// it reads the options' stream limits without the lock (stream.go:1013 in v2.15.1), and a create a
+// client sent before the hold can still be served after the barrier; Reload waits until the API
+// serves none (apiSettled). In the burst form each client sends creates in bursts before it reads
+// their answers, so the API has a backlog when a reload holds the clients; in the fresh form each
+// client connects afresh and sends one create as its first request, so a reload holds clients
+// mid-handshake and finds clients the server has not yet dropped.
+func TestAReloadUnderStreamCreatesAnswersEveryOne(t *testing.T) {
+	for _, form := range []struct {
+		name   string
+		create func(t *testing.T, uri string, c int, stop <-chan struct{}, created *atomic.Int64) error
+	}{
+		{"burst", createInBursts},
+		{"fresh", createOnFreshClients},
+	} {
+		t.Run(form.name, func(t *testing.T) {
+			server, uri := Start(t)
+			Connect(t, uri).Close()
+			stop := make(chan struct{})
+			var created atomic.Int64
+			failures := make(chan error, reloadConnections)
+			var creators sync.WaitGroup
+			halt := sync.OnceFunc(func() {
+				close(stop)
+				creators.Wait()
+			})
+			defer halt()
+			for c := range reloadConnections {
+				creators.Go(func() {
+					if err := form.create(t, uri, c, stop, &created); err != nil {
+						failures <- err
+					}
+				})
+			}
+			for n := 1; n <= streamCreateReloads; n++ {
+				if err := server.Reload(t, hostOnlyConfig); err != nil {
+					t.Fatalf("reload %d: %v", n, err)
+				}
+			}
+			halt()
+			close(failures)
+			for err := range failures {
+				t.Errorf("a stream create across the reloads failed: %v", err)
+			}
+			if created.Load() == 0 {
+				t.Fatal("no stream was created; this test says nothing about a reload under stream creates")
+			}
+			if reloads := strings.Count(server.Log(), "Reloaded server configuration"); reloads != streamCreateReloads {
+				t.Fatalf("the server reloaded %d times, want %d", reloads, streamCreateReloads)
+			}
+			t.Logf("%d streams created across %d reloads", created.Load(), streamCreateReloads)
+		})
+	}
+}
+
+// createInBursts sends stream creates on one connection of client c in bursts of
+// streamCreateBurst, each burst's answers read before the next, until stop.
+func createInBursts(t *testing.T, uri string, c int, stop <-chan struct{}, created *atomic.Int64) error {
+	conn, err := natsgo.Connect(uri, natsgo.NoReconnect())
+	if err != nil {
+		return fmt.Errorf("connect: %w", err)
+	}
+	defer conn.Close()
+	inbox := natsgo.NewInbox()
+	replies := make(chan *natsgo.Msg, streamCreateBurst)
+	if _, err := conn.ChanSubscribe(inbox+".*", replies); err != nil {
+		return fmt.Errorf("subscribe to the answers: %w", err)
+	}
+	for burst := 0; ; burst++ {
+		select {
+		case <-stop:
+			return nil
+		default:
+		}
+		for i := range streamCreateBurst {
+			name := fmt.Sprintf("C%d_%d_%d", c, burst, i)
+			config := fmt.Sprintf(`{"name":%q,"subjects":["created.%s"],"storage":"memory"}`, name, name)
+			if err := conn.PublishRequest("$JS.API.STREAM.CREATE."+name, inbox+"."+name, []byte(config)); err != nil {
+				return fmt.Errorf("send the create of %s: %w", name, err)
+			}
+		}
+		for range streamCreateBurst {
+			select {
+			case reply := <-replies:
+				if strings.Contains(string(reply.Data), `"error"`) {
+					return fmt.Errorf("a create was answered %s", reply.Data)
+				}
+				created.Add(1)
+			case <-time.After(boundOf(t).step(connectTimeout)):
+				return fmt.Errorf("a burst's create went unanswered for %s", connectTimeout)
+			}
+		}
+	}
+}
+
+// createOnFreshClients connects client c afresh for each stream create, its first request, until
+// stop.
+func createOnFreshClients(_ *testing.T, uri string, c int, stop <-chan struct{}, created *atomic.Int64) error {
+	for n := 0; ; n++ {
+		select {
+		case <-stop:
+			return nil
+		default:
+		}
+		conn, err := natsgo.Connect(uri, natsgo.NoReconnect())
+		if err != nil {
+			return fmt.Errorf("connect: %w", err)
+		}
+		js, err := conn.JetStream(natsgo.MaxWait(30 * time.Second))
+		if err == nil {
+			name := fmt.Sprintf("C%d_%d", c, n)
+			_, err = js.AddStream(&natsgo.StreamConfig{Name: name, Subjects: []string{"created." + name}})
+		}
+		conn.Close()
+		if err != nil {
+			return fmt.Errorf("create a stream: %w", err)
+		}
+		created.Add(1)
+	}
+}
+
 // A Reload of a server that a client reached around the relay, at the server's own port, and sent
 // a message fails the test naming that client, and the server does not reload: the hold cannot stop
 // that client, so nothing orders its gets before the reload. Such a client that has sent nothing

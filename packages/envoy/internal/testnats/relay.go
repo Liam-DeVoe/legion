@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"strconv"
 	"strings"
@@ -39,8 +40,11 @@ type relay struct {
 	holds  int
 	closed bool
 	moved  *sync.Cond
-	// joins are the connections of a client port's relay that the server has not yet closed.
-	joins map[*joined]struct{}
+	// joins are the connections of a client port's relay that the server has not yet closed, and
+	// upstreamsHeld the address at the relay's end of every connection to the server it has
+	// joined, kept after the connection ends (upstreams).
+	joins         map[*joined]struct{}
+	upstreamsHeld map[string]bool
 }
 
 // joined is one connection a client port's relay joins to the server: upstream is the relay's own
@@ -66,22 +70,20 @@ type joined struct {
 // the client by.
 func (j *joined) port() int { return j.upstream.LocalAddr().(*net.TCPAddr).Port }
 
-// upstreams is the address at the relay's end of each connection to the server the relay holds,
-// "ip:port", as the server reports that client (Server.ordered).
+// upstreams is the address at the relay's end of every connection to the server the relay has
+// held, "ip:port", as the server reports that client (Server.ordered). It keeps the address of a
+// connection the relay has let go: the server can still list a client whose connection it has
+// closed, as the client of a connection that ended just before.
 func (r *relay) upstreams() map[string]bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	held := make(map[string]bool, len(r.joins))
-	for j := range r.joins {
-		held[j.upstream.LocalAddr().String()] = true
-	}
-	return held
+	return maps.Clone(r.upstreamsHeld)
 }
 
 // newRelay starts a relay that serves listener and dials target for each connection it accepts;
 // clientPort says it is the relay of a server's client port, which a hold can stop.
 func newRelay(listener net.Listener, target func() (string, error), clientPort bool) *relay {
-	r := &relay{listener: listener, target: target, clientPort: clientPort, done: make(chan struct{}), joins: map[*joined]struct{}{}}
+	r := &relay{listener: listener, target: target, clientPort: clientPort, done: make(chan struct{}), joins: map[*joined]struct{}{}, upstreamsHeld: map[string]bool{}}
 	r.moved = sync.NewCond(&r.mu)
 	go r.serve()
 	return r
@@ -138,6 +140,7 @@ func (r *relay) joinClient(client, upstream net.Conn) {
 	j := &joined{upstream: upstream, drop: map[int64]bool{}, received: protocolStream{fromServer: true}}
 	r.mu.Lock()
 	r.joins[j] = struct{}{}
+	r.upstreamsHeld[upstream.LocalAddr().String()] = true
 	r.mu.Unlock()
 	defer func() {
 		_ = upstream.Close()
@@ -324,12 +327,16 @@ func (r *relay) leave(j *joined, written []byte) {
 }
 
 // barrier sends the server a PING of the relay's own on each connection whose client has sent its
-// CONNECT, with a hold in force, and returns once the server has answered each with its PONG or
-// closed the connection, within connectTimeout. The server reads a connection in order and answers
-// a PING only once it has processed everything before it, so every request a client sent before
-// the hold has been processed: the server's unlocked read of a service import's account
-// (Server.Reload), and the importing account's lock it takes after that read, are behind it, which
-// orders them before a reload's write under that lock. The client never sees that PONG.
+// CONNECT and something after it, with a hold in force, and returns once the server has answered
+// each with its PONG or closed the connection, within connectTimeout. The server reads a
+// connection in order and answers a PING only once it has processed everything before it, so
+// every request a client sent before the hold has been processed: the server's unlocked read of a
+// service import's account (Server.Reload), and the importing account's lock it takes after that
+// read, are behind it, which orders them before a reload's write under that lock. The client never
+// sees that PONG. A client that has sent its CONNECT alone has sent nothing to order, and gets no
+// PING: the server follows the first PONG it sends on a connection with an INFO (processPing,
+// client.go:2805 in v2.15.1), and a client whose handshake PING the hold stopped after its CONNECT
+// would read that INFO before the PONG it waits for ("nats: expected 'PONG', got 'INFO …'").
 func (r *relay) barrier() error {
 	type ping struct {
 		j      *joined
@@ -338,7 +345,7 @@ func (r *relay) barrier() error {
 	var pings []ping
 	r.mu.Lock()
 	for j := range r.joins {
-		if !j.sent.connected {
+		if !j.sent.connected || j.sent.afterConnect == 0 {
 			continue
 		}
 		j.injected++
@@ -412,9 +419,11 @@ type protocolStream struct {
 	payload int
 	// broken is why the stream stopped reading as NATS protocol.
 	broken error
-	// connected says a client's stream has sent its CONNECT, and pings counts its PINGs.
-	connected bool
-	pings     int64
+	// connected says a client's stream has sent its CONNECT, afterConnect counts the operations it
+	// sent after it, and pings counts its PINGs.
+	connected    bool
+	afterConnect int64
+	pings        int64
 }
 
 // atBoundary reports whether the stream so far ends between two operations.
@@ -456,6 +465,9 @@ func (p *protocolStream) wrote(piece []byte) {
 		piece = rest
 		if !whole {
 			return
+		}
+		if p.connected {
+			p.afterConnect++
 		}
 		switch operation(p.line) {
 		case "CONNECT":

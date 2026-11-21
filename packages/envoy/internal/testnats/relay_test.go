@@ -17,21 +17,27 @@ const clientStream = "CONNECT {\"verbose\":false,\"headers\":true}\r\nPING\r\n" 
 	"pub notes.ping 6\r\nPING\r\n\r\n" +
 	"ping\r\nUNSUB 1\r\nPONG\r\n"
 
-// The relay's record of a client's stream finds its CONNECT and its PINGs, and where each operation
-// ends, however the stream is cut: a hold stops a client only between two operations, and the
-// relay's own PING goes in there, so a boundary inside a payload would put the PING inside a
-// message, and a PING counted from a payload would leave the relay waiting for a PONG the server
-// never sends.
+// The relay's record of a client's stream finds its CONNECT, its PINGs and the operations after
+// its CONNECT, and where each operation ends, however the stream is cut: a hold stops a client only
+// between two operations, and the relay's own PING goes in there, so a boundary inside a payload
+// would put the PING inside a message, and a PING counted from a payload would leave the relay
+// waiting for a PONG the server never sends. A stream of its CONNECT alone has nothing after it,
+// so the barrier sends it no PING (relay.barrier).
 func TestTheRelaysRecordOfAClientsStreamFindsItsOperationsWhereverTheStreamIsCut(t *testing.T) {
 	for _, cut := range []int{1, 2, 3, 7, 64, len(clientStream)} {
 		var stream protocolStream
 		for start := 0; start < len(clientStream); start += cut {
 			stream.wrote([]byte(clientStream[start:min(start+cut, len(clientStream))]))
 		}
-		if stream.broken != nil || !stream.connected || stream.pings != 2 || !stream.atBoundary() {
-			t.Errorf("pieces of %d bytes: broken %v, connected %v, pings %d, at a boundary %v; want nil, true, 2, true",
-				cut, stream.broken, stream.connected, stream.pings, stream.atBoundary())
+		if stream.broken != nil || !stream.connected || stream.pings != 2 || stream.afterConnect != 10 || !stream.atBoundary() {
+			t.Errorf("pieces of %d bytes: broken %v, connected %v, pings %d, after the CONNECT %d, at a boundary %v; want nil, true, 2, 10, true",
+				cut, stream.broken, stream.connected, stream.pings, stream.afterConnect, stream.atBoundary())
 		}
+	}
+	var connectOnly protocolStream
+	connectOnly.wrote([]byte("CONNECT {\"verbose\":false}\r\n"))
+	if !connectOnly.connected || connectOnly.afterConnect != 0 {
+		t.Errorf("a stream of its CONNECT alone: connected %v, after the CONNECT %d; want true, 0", connectOnly.connected, connectOnly.afterConnect)
 	}
 	// A message is whole at the LF after its payload, so neither the payload's last byte nor the CR
 	// after it ends the operation; toBoundary says how far the next bytes take it.
