@@ -326,6 +326,31 @@ test("an Alt letter on a Mac is read by its key's place, and the key it writes p
   expect(comboOf({ ...plain, key: "Dead" }, false)).toBeNull();
 });
 
+// Option with E, I, U or N types a dead key on a Mac (`key: "Dead"`), which names nothing a
+// binding can hold, but the press is the letter at its place, as the registry matches it.
+test("an Option key that types a dead key on a Mac is read by its key's place", () => {
+  const optionE = { altKey: true, code: "KeyE", ctrlKey: false, key: "Dead", metaKey: false };
+  expect(comboOf({ ...optionE, shiftKey: false }, true)).toBe("Alt+e");
+  // A place that is no letter or digit, Option+` among them, names no key, and the registry
+  // matches no key by such a place either.
+  expect(comboOf({ ...optionE, code: "Backquote", shiftKey: false }, true)).toBeNull();
+  // Elsewhere Alt leaves the character as it is, and a dead key is no press.
+  expect(comboOf({ ...optionE, shiftKey: false }, false)).toBeNull();
+
+  const ran: string[] = [];
+  const keymap = createKeymap({ isMac: true });
+  keymap.register("global", [
+    {
+      id: "recorded",
+      keys: comboOf({ ...optionE, shiftKey: false }, true) ?? "",
+      label: "Recorded",
+      run: (event) => ran.push(event.code),
+    },
+  ]);
+  keymap.handleKeyDown(new KeyboardEvent("keydown", { ...optionE, shiftKey: false }));
+  expect(ran).toEqual(["KeyE"]);
+});
+
 test("Remove takes one key away, and Reset gives the action its defaults again", async () => {
   const user = userEvent.setup();
   const view = drawSection();
@@ -345,6 +370,58 @@ test("Remove takes one key away, and Reset gives the action its defaults again",
     expect(line("inbox.copy-ref").hasAttribute("data-changed")).toBe(false);
     expect(within(line("inbox.copy-ref")).queryByRole("button", { name: "Reset" })).toBeNull();
     expect(document.activeElement).toBe(add);
+  } finally {
+    view.unmount();
+  }
+});
+
+// R14: a Reset gives back keys another action may hold now; it is refused, naming that action,
+// so no action loses a key the person gave it.
+test("Reset is refused, naming the action, where another action holds one of its defaults now", async () => {
+  const user = userEvent.setup();
+  // Dismiss gave up `e`, which Snooze then took; Create issue gave up `c`, which Copy reference
+  // took as the first press of a key of two.
+  setActionKeys("alice", "inbox.dismiss", []);
+  setActionKeys("alice", "inbox.snooze", ["b", "h", "e"]);
+  setActionKeys("alice", "global.create", []);
+  setActionKeys("alice", "inbox.copy-ref", ["c x"]);
+  const given = {
+    "global.create": [],
+    "inbox.copy-ref": ["c x"],
+    "inbox.dismiss": [],
+    "inbox.snooze": ["b", "h", "e"],
+  };
+  const view = drawSection();
+  try {
+    const reset = control("inbox.dismiss", "Reset");
+    await user.click(reset);
+    const refusal = within(line("inbox.dismiss")).getByRole("alert");
+    expect(refusal.textContent).toBe(
+      "Reset is refused: e is already the key of Snooze the focused ask, or every selected ask. Change that action's keys first."
+    );
+    expect(reset.getAttribute("aria-describedby")).toBe(refusal.id);
+    expect(document.activeElement).toBe(reset);
+    expect(stored()).toEqual(given);
+    expect(keysOf("inbox.snooze")).toEqual(["b", "h", "e"]);
+    expect(keysOf("inbox.dismiss")).toEqual([]);
+
+    // A default that is the first press of a key another action holds now.
+    await user.click(control("global.create", "Reset"));
+    expect(within(line("global.create")).getByRole("alert").textContent).toBe(
+      "Reset is refused: c is the first press of c x, Copy the row's reference. Change that action's keys first."
+    );
+    expect(stored()).toEqual(given);
+    expect(keysOf("inbox.copy-ref")).toEqual(["c", "x"]);
+
+    // Once the person takes the key from the other action, Reset gives the defaults back.
+    await user.click(control("inbox.snooze", "Remove e"));
+    expect(within(line("global.create")).queryByRole("alert")).toBeNull();
+    await user.click(control("inbox.dismiss", "Reset"));
+    expect(within(line("inbox.dismiss")).queryByRole("alert")).toBeNull();
+    expect(keysOf("inbox.dismiss")).toEqual(["e"]);
+    expect(keysOf("inbox.snooze")).toEqual(["b", "h"]);
+    // Snooze's keys are its defaults again, so the map holds no word of Snooze or Dismiss.
+    expect(stored()).toEqual({ "global.create": [], "inbox.copy-ref": ["c x"] });
   } finally {
     view.unmount();
   }

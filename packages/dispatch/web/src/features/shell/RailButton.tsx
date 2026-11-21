@@ -1,33 +1,33 @@
 import type { ReactNode } from "react";
 
 import { kbdHint, railHoverBg, railHoverText, railSecondaryText } from "../../theme/classes";
-import { ALT_KEY_LABEL, MOD_KEY_LABEL, stepsOf } from "./keymap";
+import { IS_MAC } from "./keymap";
 import type { KeymapActionId } from "./keymap-catalogue";
 import { useActionKeys } from "./keymap-keys";
-import { keyshortcutsOf } from "./ShortcutHelp";
+import { keyshortcutsOf, keyTokens } from "./ShortcutHelp";
 
-const ON_MAC = MOD_KEY_LABEL === "⌘";
-
-/** How the rail writes each modifier: the Mac's glyphs there, the words elsewhere. */
-const MODIFIER_TEXT: Record<string, string> = {
-  $mod: MOD_KEY_LABEL,
-  Alt: ALT_KEY_LABEL,
-  Control: ON_MAC ? "⌃" : "Ctrl",
-  Ctrl: ON_MAC ? "⌃" : "Ctrl",
-  Meta: ON_MAC ? "⌘" : "Meta",
-  Shift: ON_MAC ? "⇧" : "Shift",
+/** The modifiers a Mac's keycaps print as symbols, which `keyTokens` writes as words: on a Mac
+ *  the rail runs a press's parts together, as the Mac's menus write a key (`⇧N`, `⌘K`). */
+const MAC_MODIFIER_SYMBOLS: Record<string, string> = {
+  Control: "⌃",
+  Ctrl: "⌃",
+  Meta: "⌘",
+  Shift: "⇧",
 };
 
-/** One key as the rail writes it: `⌘K` on a Mac and `Ctrl K` elsewhere for `$mod+k`, a key with
- *  no modifier as it is typed (`c`), and each press of a chord in turn (`g i`). */
+/** One key as the rail writes it, in the glyphs `?` and Settings draw (`keyTokens`): `⌘K` on a
+ *  Mac and `Ctrl K` elsewhere for `$mod+k`, `Ctrl ↓` for `$mod+ArrowDown`, a key with no modifier
+ *  as it is typed (`c`), and each press of a chord in turn (`g i`). */
 function railText(key: string): string {
-  return stepsOf(key)
-    .map((step) => {
-      const parts = step.split("+");
-      const last = parts.pop() ?? "";
-      if (parts.length === 0) return last;
-      const modifiers = parts.map((part) => MODIFIER_TEXT[part] ?? part);
-      return [...modifiers, last.length === 1 ? last.toUpperCase() : last].join(ON_MAC ? "" : " ");
+  return keyTokens(key)
+    .map(({ parts }) => {
+      const last = parts[parts.length - 1] ?? "";
+      const modifiers = parts.slice(0, -1);
+      if (modifiers.length === 0) return last;
+      const shown = IS_MAC
+        ? modifiers.map((part) => MAC_MODIFIER_SYMBOLS[part] ?? part)
+        : modifiers;
+      return [...shown, last.length === 1 ? last.toUpperCase() : last].join(IS_MAC ? "" : " ");
     })
     .join(" ");
 }

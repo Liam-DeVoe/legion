@@ -8,6 +8,7 @@ import {
   keysOfAction,
   type PersonKeys,
 } from "./keymap-catalogue";
+import { LINK_COPY_KEY, LINK_COPY_LABEL } from "./link-copy";
 
 /**
  * What the check says of a person's keys for one action (R14): refused, with the reason, which
@@ -127,6 +128,40 @@ function isBrowsers(combo: KeyCombo): boolean {
   );
 }
 
+/** Keys that edit a text field's text or move its caret, with Option on a Mac too: Option+Backspace
+ *  deletes a word, Option+← moves the caret by a word, and Option+Space types a space of its own. */
+const FIELD_KEYS: Record<string, true> = {
+  ArrowDown: true,
+  ArrowLeft: true,
+  ArrowRight: true,
+  ArrowUp: true,
+  Backspace: true,
+  Delete: true,
+  End: true,
+  Home: true,
+  PageDown: true,
+  PageUp: true,
+  Space: true,
+};
+
+/** Whether a text field takes `combo` as its own, so that an `inEditable` binding of it would take
+ *  the press from every field: a press with no Ctrl, Cmd or Meta, unless it holds Alt with a key
+ *  that neither types a character nor edits the text (`Alt+Enter`). With Alt, a key of one
+ *  character types one on a Mac (Option+M types `µ`). */
+function actsInField(combo: KeyCombo): boolean {
+  if (combo.control || combo.meta || combo.mod) return false;
+  return !combo.alt || combo.key.length === 1 || FIELD_KEYS[combo.key] === true;
+}
+
+/** The bindings written out whole that are registered on every page: the `y` that copies a focused
+ *  link's address (`link-copy.ts`). An action's key may neither begin with one of their keys nor
+ *  be the first press of one, since the registry would find a prefix (`checkPrefixConflicts`,
+ *  `keymap.ts`). The command bar's own close is the keys of Search and actions
+ *  (`SearchPalette.tsx`), which the check reads as that action's. */
+const WRITTEN_WHOLE: readonly { readonly key: string; readonly label: string }[] = [
+  { key: LINK_COPY_KEY, label: LINK_COPY_LABEL },
+];
+
 function sameChord(a: readonly KeyCombo[], b: readonly KeyCombo[]): boolean {
   return a.length === b.length && a.every((combo, index) => sameCombo(combo, b[index] as KeyCombo));
 }
@@ -158,18 +193,21 @@ function refused(message: string, other?: KeymapActionId): KeyVerdict {
  * Whether `action` may take `keys` in place of the keys it has, with every other action on its
  * keys in `personKeys` or its defaults: the check Settings runs on every key a person gives.
  * Refused: a key that is no key; a key that keeps its own action (`RESERVED_KEYS`, a digit) or
- * that the browser keeps; any key for an action whose keys all keep their own action, since its
- * run reads the key pressed; a key listed twice, or two of the action's own keys of which one is
- * the first press of the other (`g` beside `g i`, while `g i` beside `g a` passes); a key another
- * action of the same surface, or of a surface drawn with it, has, unless the two are a pair of
- * `EXCLUSIVE_BY_FOCUS`; and a key that is the first press of another action's key, or whose first
- * press is another action's key, in any scope. The shell's keys are drawn on every page but those
- * `ON_EVERY_PAGE_BUT` names: a key another action of the `global` scope has on a page where both
- * are drawn is refused, since one scope holds a key once, and a key a global action has, taken by
- * a page's action where the global one is drawn, or the other way round, is accepted with the
- * notice that the global action does not work on that page, as the Agents page's `/` and `i` are
- * today. The notice says more than the registry does: where the page's action does not apply (its
- * `when` is false), `resolve` in `keymap.ts` passes the key on to the global action.
+ * that the browser keeps; for an action that also works while the reader types (`inEditable`), a
+ * key a text field takes as its own (`actsInField`), since the registry would take it from every
+ * field; any key for an action whose keys all keep their own action, since its run reads the key
+ * pressed; a key listed twice, or two of the action's own keys of which one is the first press of
+ * the other (`g` beside `g i`, while `g i` beside `g a` passes); a key another action of the same
+ * surface, or of a surface drawn with it, has, unless the two are a pair of `EXCLUSIVE_BY_FOCUS`;
+ * a key that is the first press of another action's key, or whose first press is another action's
+ * key, in any scope; and a key whose first press is the key of a binding written out whole
+ * (`WRITTEN_WHOLE`). The shell's keys are drawn on every page but those `ON_EVERY_PAGE_BUT`
+ * names: a key another action of the `global` scope has on a page where both are drawn is
+ * refused, since one scope holds a key once, and a key a global action has, taken by a page's
+ * action where the global one is drawn, or the other way round, is accepted with the notice that
+ * the global action does not work on that page, as the Agents page's `/` and `i` are today. The
+ * notice says more than the registry does: where the page's action does not apply (its `when` is
+ * false), `resolve` in `keymap.ts` passes the key on to the global action.
  */
 export function refusalOf(
   action: KeymapActionId,
@@ -190,6 +228,11 @@ export function refusalOf(
       );
     }
     if (chord.some(isBrowsers)) return refused(`${key} is the browser's own key.`);
+    if (entry.inEditable === true && chord.some(actsInField)) {
+      return refused(
+        `${key} would be taken from every text field: ${entry.label} also works while you type, so its key needs Ctrl or Cmd, or Alt with a key that types nothing, such as Alt+Enter.`
+      );
+    }
     for (const earlier of taken) {
       if (sameChord(earlier.chord, chord)) return refused(`${key} is listed twice.`);
       if (isStrictPrefix(earlier.chord, chord)) {
@@ -244,6 +287,18 @@ export function refusalOf(
         } else {
           notices.add(`${otherEntry.label} does not work on ${PAGE_NAMES[entry.surface]}.`);
         }
+      }
+    }
+  }
+  for (const whole of WRITTEN_WHOLE) {
+    const wholeChord = chordOf(whole.key);
+    if (wholeChord === null) continue;
+    for (const { chord, key } of taken) {
+      if (isStrictPrefix(wholeChord, chord)) {
+        return refused(`${whole.key}, ${whole.label}, is the first press of ${key}.`);
+      }
+      if (isStrictPrefix(chord, wholeChord)) {
+        return refused(`${key} is the first press of ${whole.key}, ${whole.label}.`);
       }
     }
   }

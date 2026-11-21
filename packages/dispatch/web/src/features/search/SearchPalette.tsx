@@ -53,9 +53,10 @@ import {
   appKeymap,
   DIALOG_SCOPE,
   type KeymapAction,
-  modKeyLabel,
+  MOD_KEY_LABEL,
   useKeymap,
 } from "../shell/keymap";
+import { useActionKeys } from "../shell/keymap-keys";
 import { openInNewTab } from "../shell/new-tab";
 import { KeyHints } from "../shell/ShortcutHelp";
 import { useCloseOnNavigation, useDialog } from "../shell/useDialog";
@@ -594,13 +595,15 @@ function PaletteDialog({
   // row bound to the card, row or control the reader was actually on.
   const [actions] = useState(() => appKeymap.actions());
   const dialog = useDialog<HTMLDivElement>({ initialFocusRef: inputRef, onClose, open: true });
-  // Every global key is masked while any dialog is open; the palette keeps `$mod+k` as its own
-  // close, so pressing it twice still opens and closes.
+  // Every global key is masked while any dialog is open; the palette keeps the keys of Search and
+  // actions as its own close, the person's where they changed them, so the key that opened it
+  // closes it again, and a `$mod+k` the person took from Search closes nothing.
+  const searchKeys = useActionKeys("global.search");
   useKeymap(DIALOG_SCOPE, [
     {
       id: "search-close",
       inEditable: true,
-      keys: "$mod+k",
+      keys: searchKeys,
       label: "Close search",
       run: onClose,
     },
@@ -1126,7 +1129,7 @@ function PaletteDialog({
             </span>
             <span className="inline-flex items-center gap-1">
               <kbd className={`rounded px-1 py-0.5 font-medium ${kbdHint}`}>
-                {modKeyLabel()}+Enter
+                {MOD_KEY_LABEL}+Enter
               </kbd>
               to open in a new tab
             </span>

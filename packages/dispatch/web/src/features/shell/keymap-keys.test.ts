@@ -122,3 +122,8 @@ test("a stored key the refusal check refuses now is dropped, and the rest of the
   window.localStorage.setItem(ALICE_KEY, "not a map");
   expect(storedPersonKeys("alice")).toEqual({});
 });
+
+test("a stored plain letter of Search and actions, which also works while the reader types, is dropped", () => {
+  window.localStorage.setItem(ALICE_KEY, JSON.stringify({ "global.search": ["u", "$mod+j"] }));
+  expect(storedPersonKeys("alice")).toEqual({ "global.search": ["$mod+j"] });
+});

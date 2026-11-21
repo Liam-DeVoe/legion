@@ -701,7 +701,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   useKeymap("global", [
     {
       // Opens only: while the bar is open the `dialog` scope is the only one consulted, and
-      // the bar's own `$mod+k` binding closes it.
+      // the bar's own binding of the person's keys for Search and actions closes it.
       action: "global.search",
       run: () => setBarOpen(true),
     },

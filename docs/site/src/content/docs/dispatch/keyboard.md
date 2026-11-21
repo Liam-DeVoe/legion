@@ -14,8 +14,8 @@ corner shows the keys pressed so far, and under them each key that can come next
 does.
 
 While you type in a text field, or while the focus is in an open menu, list or panel, only
-`Ctrl+K`, `Escape`, and in a document `Ctrl+Alt+M` and `Alt+Enter`, work as shortcuts. So single
-letters never interrupt your typing.
+`Ctrl+K`, `Escape`, and in a document `Ctrl+Alt+M` and `Alt+Enter`, work as shortcuts, or the keys
+you gave those actions in their place. So single letters never interrupt your typing.
 
 You can change each key, give an action a second key, or take its keys away. See
 [Change the keys](#change-the-keys).
@@ -210,8 +210,10 @@ A column does not become narrower or wider than its limits. A double-click on th
 the column its default width. The **Move** menu in a column's header moves the column one place to
 the left or to the right. The menu shows only the moves that the column can make. A pinned column
 has no **Move** menu, and no move takes a column past a pinned column. After a move, the focus
-stays on the menu's button. While a grip or a **Move** menu has the focus, `j` and `k` still go to
-the next and previous row.
+stays on the menu's button. On the List, on the Priorities page's table of priorities and on a
+priority's page, `j` and `k` still go to the next and previous row while a grip or a **Move** menu
+has the focus. The Delivery page's list moves between rows with `↓` and `↑` only while a row has
+the focus.
 
 ## Board
 
@@ -385,7 +387,7 @@ After `Escape`, the next `Tab` goes back into the document, and the cursor is wh
 | Keys | Action |
 | --- | --- |
 | `Escape` | Close the dialog |
-| `Ctrl+K` | Close the search palette |
+| `Ctrl+K`, or the key you gave **Search and actions** | Close the search palette |
 
 While a dialog is open, only its own keys work. `y` on a focused link works there too.
 
@@ -414,6 +416,8 @@ in to change a key.
 - **Add key** gives the action one more key.
 - **×** beside a key removes that key.
 - **Reset** puts one action back on its default keys, and **Reset all** puts every action back.
+  Where another action has one of those keys now, Dispatch refuses the **Reset** and names that
+  action.
 - An action you changed shows the keys it had before (**Changed from**), or **Added** where it had
   none.
 
@@ -431,12 +435,19 @@ Dispatch refuses a key, and names the action that has it, when:
   of **Approve** on a focused approval chip and of **Answer the focused question** on a focused
   row. Only one of the two can run at a time, so the two actions can have the same key.
 - it is the first key of another action's sequence, or another action's key is its first key.
+- it is a sequence that starts with `y`, the key that copies the address of a focused link.
 
 Dispatch also refuses the digits, the arrow keys, `Enter`, `Escape`, `Tab` and `Space`, alone or
 with `Shift`, which keep their own actions. It also refuses `Ctrl` with `L`, `N`, `Q`, `R`, `T`,
 `W` or `Tab`, which the browser keeps. It refuses one key given twice to an action, and two keys
 of one action where one is the first key of the other, such as `g` and `g i`. An action whose
 keys all keep their own actions shows **Fixed**, and you cannot change it.
+
+**Search and actions**, **Comment on selection** and **Open the link at the caret** also work
+while you type in a text field. So each key you give them needs `Ctrl`, or `Alt` with a key that
+neither types nor edits text, such as `Alt+Enter`. Dispatch refuses them a key without `Ctrl` or
+`Alt`, and `Alt` with a letter, a digit or another character, `Space`, `Backspace`, `Delete`, an
+arrow key, `Home`, `End`, `Page Up` or `Page Down`.
 
 A global key that you give to a page's action runs that action on its page whenever the action can
 run. Where it cannot, the key runs the global action. The list shows a note under each of the two

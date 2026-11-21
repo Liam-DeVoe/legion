@@ -23,8 +23,9 @@ import {
  *
  * Every page's binding names an action of the catalogue (`keymap-catalogue.ts`), which gives it
  * its id, its label and its keys, the person's where they changed them (`keymap-keys.ts`); only
- * a dialog's own Escape, the command bar's own `$mod+k`, the `y` that copies a focused link's
- * address (`link-copy.ts`) and tests write a binding out whole.
+ * a dialog's own Escape, the command bar's own close (on the person's keys for Search and
+ * actions), the `y` that copies a focused link's address (`link-copy.ts`) and tests write a
+ * binding out whole.
  */
 
 /** A scope of the stack: each scope of the catalogue, and `dialog`, which every open dialog
@@ -96,15 +97,11 @@ export interface KeymapAction {
 }
 
 export const DIALOG_SCOPE: KeymapScope = "dialog";
-const IS_MAC = navigator.userAgent.includes("Mac");
-/** How `$mod` is shown to the reader, read from the browser's name as it is now: the Command
- *  glyph on a Mac, `Ctrl` elsewhere. A hint that a test draws under another browser's name
- *  reads it as it draws (the command bar's Ctrl+Enter); every other reads `MOD_KEY_LABEL`. */
-export function modKeyLabel(): string {
-  return navigator.userAgent.includes("Mac") ? "⌘" : "Ctrl";
-}
+/** Whether the browser says it runs on a Mac, read once as the app loads: the registry matches an
+ *  Alt combo by the key's place there, and the key hints draw the Mac's glyphs. */
+export const IS_MAC = navigator.userAgent.includes("Mac");
 /** How `$mod` is shown to the reader: the Command glyph on a Mac, `Ctrl` elsewhere. */
-export const MOD_KEY_LABEL = modKeyLabel();
+export const MOD_KEY_LABEL = IS_MAC ? "⌘" : "Ctrl";
 /** How `Alt` is shown to the reader: the Option glyph on a Mac, `Alt` elsewhere. */
 export const ALT_KEY_LABEL = IS_MAC ? "⌥" : "Alt";
 /** How long a chord waits for its next key (`g` then `i`). */
@@ -241,23 +238,25 @@ const UNNAMED_KEYS: Record<string, true> = {
  * letter is lower case, and upper case with Shift; a character with no case already says whether
  * Shift was held (`?` is Shift+/), so its text leaves Shift out, as `matchesCombo` does. On a Mac
  * a press with Alt names its letter or digit by the key's place, as `matchesCombo` matches it,
- * because Option changes the character: Option+M types `µ`, and is `Alt+m`.
+ * because Option changes the character: Option+M types `µ`, and is `Alt+m`. That comes before
+ * the test for a key with no name, since Option with E, I, U or N types a dead key
+ * (`key: "Dead"`): Option+E is `Alt+e`.
  */
 export function comboOf(
   press: Pick<KeyboardEvent, "altKey" | "code" | "ctrlKey" | "key" | "metaKey" | "shiftKey">,
   isMac: boolean = IS_MAC
 ): string | null {
-  if (MODIFIER_KEYS[press.key] === true || UNNAMED_KEYS[press.key] === true) return null;
-  let key = press.key === " " ? "Space" : press.key;
+  if (MODIFIER_KEYS[press.key] === true) return null;
+  // The letter or digit the key's place names on a US keyboard (`KeyM` is `m`), which is
+  // `physicalCode` read the other way.
+  const placed =
+    press.altKey && isMac
+      ? (/^Key([A-Z])$/.exec(press.code)?.[1]?.toLowerCase() ??
+        /^Digit([0-9])$/.exec(press.code)?.[1])
+      : undefined;
+  if (placed === undefined && UNNAMED_KEYS[press.key] === true) return null;
+  let key = placed ?? (press.key === " " ? "Space" : press.key);
   if (/\s/.test(key)) return null;
-  if (press.altKey && isMac) {
-    // The letter or digit the key's place names on a US keyboard (`KeyM` is `m`), which is
-    // `physicalCode` read the other way.
-    key =
-      /^Key([A-Z])$/.exec(press.code)?.[1]?.toLowerCase() ??
-      /^Digit([0-9])$/.exec(press.code)?.[1] ??
-      key;
-  }
   const cased = key.length === 1 && key.toLowerCase() !== key.toUpperCase();
   if (cased) key = press.shiftKey ? key.toUpperCase() : key.toLowerCase();
   const modifiers = [
@@ -828,7 +827,9 @@ export function actionBinding(binding: ActionBinding, personKeys: PersonKeys): K
  * change to them registers the bindings again. The registration scope is `scope` whatever the
  * action's own: the Inbox's drawer registers the Inbox's actions, with the Inbox's keys, under
  * `dialog`. A binding written out whole (`KeyBinding`) is a dialog's own Escape, the command
- * bar's own `$mod+k`, the `y` that copies a focused link's address (`link-copy.ts`), or a test's.
+ * bar's own close (on the person's keys for Search and actions), the `y` that copies a focused
+ * link's address (`link-copy.ts`), or a test's; a key change of one is a new signature, which
+ * registers it again.
  */
 export function useKeymap(
   scope: KeymapScope,

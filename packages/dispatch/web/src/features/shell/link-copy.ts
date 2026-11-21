@@ -17,6 +17,12 @@ function focusedLinkAddress(): string | undefined {
   return linkAddress(active);
 }
 
+/** The key that copies a focused link's address, and its label. The refusal check reads both
+ *  (`keymap-refusal.ts`): no action may take a key whose first press is this one, since the
+ *  binding below is registered on every page. */
+export const LINK_COPY_KEY = "y";
+export const LINK_COPY_LABEL = "Copy the focused link's address";
+
 /**
  * `y` while a link has the keyboard's focus copies the link's address (dispatch://INFRA-2160, R23):
  * the `dispatch://` reference of a link to a Dispatch item, the URL of any other link
@@ -32,8 +38,8 @@ export function useLinkCopy(): void {
     {
       beforeScopes: true,
       id: "copy-link-address",
-      keys: "y",
-      label: "Copy the focused link's address",
+      keys: LINK_COPY_KEY,
+      label: LINK_COPY_LABEL,
       run: () => {
         const address = focusedLinkAddress();
         if (address !== undefined) {

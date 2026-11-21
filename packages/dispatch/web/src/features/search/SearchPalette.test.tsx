@@ -22,7 +22,8 @@ import { CONTROL } from "../../components/control-names";
 import { issue as issueFixture, specArtifact } from "../margin/margin-fixture";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
-import { appKeymap } from "../shell/keymap";
+import { appKeymap, MOD_KEY_LABEL } from "../shell/keymap";
+import { userPreferenceStorageKey } from "../shell/userPreference";
 import { ANSWER_PREVIEW_CHARS } from "./AskHitStatus";
 import { recordRecent } from "./recents";
 import { SearchPalette } from "./SearchPalette";
@@ -156,7 +157,7 @@ interface RenderPaletteOptions {
   entries?: string[];
   index?: number;
   /** Who is signed in, read before the bar opens, as the shell has it: the recent pages the
-   *  bar lists are that person's. */
+   *  bar lists are that person's, and so are the keys (`KeymapProvider`). */
   login?: string;
   onClose?: () => void;
 }
@@ -175,7 +176,7 @@ function renderPalette({
   const view = render(
     <MemoryRouter initialEntries={entries} initialIndex={index}>
       <QueryClientProvider client={queryClient}>
-        <KeymapProvider>
+        <KeymapProvider login={login}>
           <CurrentRoute />
           {control}
           <SearchPalette onClose={onClose} open />
@@ -676,32 +677,18 @@ test("Ctrl+Enter on a project row and on a recent page opens it in a new tab, an
   }
 });
 
-test("the key hint row names Ctrl+Enter for a new tab, and ⌘+Enter under a Mac's browser", async () => {
-  // The key's own box, and what the row says it does beside it.
-  const expectHint = (key: string) => {
-    const hints = screen.getByTestId("search-keyboard-hints");
-    const kbd = within(hints).getByText(/\+Enter$/);
-    expect(kbd).toHaveTextContent(key);
-    expect(kbd.closest("span")).toHaveTextContent("to open in a new tab");
-  };
+test("the key hint row names the platform's command key with Enter for a new tab", async () => {
+  // The key's own box, and what the row says it does beside it: `$mod` as every key hint draws
+  // it, ⌘ under a Mac's browser and Ctrl elsewhere.
   const view = renderPalette();
   try {
-    expectHint("Ctrl+Enter");
+    const hints = screen.getByTestId("search-keyboard-hints");
+    const kbd = within(hints).getByText(/\+Enter$/);
+    expect(kbd).toHaveTextContent(`${MOD_KEY_LABEL}+Enter`);
+    expect(kbd.closest("span")).toHaveTextContent("to open in a new tab");
   } finally {
     view.unmount();
     view.queryClient.clear();
-  }
-  Object.defineProperty(navigator, "userAgent", {
-    configurable: true,
-    value: "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 Safari/605.1.15",
-  });
-  const mac = renderPalette();
-  try {
-    expectHint("⌘+Enter");
-  } finally {
-    Reflect.deleteProperty(navigator, "userAgent");
-    mac.unmount();
-    mac.queryClient.clear();
   }
 });
 
@@ -1288,6 +1275,32 @@ test("Escape calls onClose", async () => {
     await user.keyboard("{Escape}");
     expect(closed).toBe(1);
   } finally {
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+// R14: the bar's own close is the key of Search and actions, the person's where they changed it,
+// so the key that opened the bar closes it, and the `$mod+k` they took from Search closes nothing.
+test("the bar closes on the person's key for Search and actions, and no more on $mod+k", async () => {
+  const user = userOnFakeClock();
+  const keys = userPreferenceStorageKey("alice", "shell.keymap");
+  window.localStorage.setItem(keys, JSON.stringify({ "global.search": ["$mod+j"] }));
+  let closed = 0;
+  const view = renderPalette({
+    login: "alice",
+    onClose: () => {
+      closed += 1;
+    },
+  });
+
+  try {
+    await user.keyboard("{Control>}k{/Control}");
+    expect(closed).toBe(0);
+    await user.keyboard("{Control>}j{/Control}");
+    expect(closed).toBe(1);
+  } finally {
+    window.localStorage.removeItem(keys);
     view.unmount();
     view.queryClient.clear();
   }

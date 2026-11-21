@@ -68,10 +68,67 @@ test("a key of the issue page's document is refused on the issue page", () => {
     kind: "refused",
     other: "document.open-link",
   });
-  expect(refusalOf("document.open-link", ["l"], NO_PERSON_KEYS)).toMatchObject({
-    kind: "refused",
-    other: "issue.labels",
-  });
+  // A key a document's action may take, since it types nothing in a text field, meets the issue
+  // page's key all the same.
+  expect(refusalOf("document.open-link", ["Alt+F2"], { "issue.labels": ["Alt+F2"] })).toMatchObject(
+    { kind: "refused", other: "issue.labels" }
+  );
+});
+
+// Search and actions, Comment on selection and Open the link at the caret also fire while the
+// reader types (`inEditable`), so a key of theirs that a text field takes as its own would be
+// taken from every field, whether or not another action holds it.
+test("an action that also works while the reader types takes no key a text field takes as its own", () => {
+  for (const [action, key] of [
+    ["global.search", "u"],
+    ["global.search", "Backspace"],
+    // No action holds these on the same page; the issue page's `s` does not fire in its fields.
+    ["global.search", "s"],
+    ["global.search", "Shift+U"],
+    ["global.search", "Delete"],
+    ["global.search", "Home"],
+    // Option types a character with a letter on a Mac, and deletes a word with Backspace.
+    ["global.search", "Alt+e"],
+    ["global.search", "Alt+Backspace"],
+    // Each press counts, the second of two too.
+    ["global.search", "$mod+j x"],
+    ["document.comment-on-selection", "m"],
+    ["document.open-link", "l"],
+  ] as const) {
+    const verdict = refusalOf(action, [key], NO_PERSON_KEYS);
+    expect(verdict, `${action} ${key}`).toMatchObject({ kind: "refused", other: undefined });
+    expect(verdict.kind === "refused" && verdict.message, `${action} ${key}`).toContain(
+      "also works while you type"
+    );
+  }
+  for (const [action, key] of [
+    ["global.search", "$mod+j"],
+    ["global.search", "Alt+F2"],
+    ["document.comment-on-selection", "$mod+Shift+m"],
+    ["document.open-link", "Alt+Enter"],
+  ] as const) {
+    expect(refusalOf(action, [key], NO_PERSON_KEYS).kind, `${action} ${key}`).toBe("accepted");
+  }
+  // An action that fires only outside a text field takes a plain letter.
+  expect(refusalOf("inbox.snooze", ["u"], NO_PERSON_KEYS).kind).toBe("accepted");
+});
+
+// The `y` that copies a focused link's address is a binding written out whole, registered on
+// every page (`link-copy.ts`), which the registry reads as the first press of `y i`.
+test("a key whose first press is the focused link's y is refused, though no action holds y", () => {
+  const noY = { "board.copy-ref": [], "inbox.copy-ref": [], "issue.copy-turn-ref": [] };
+  const verdict = refusalOf("global.go-inbox", ["y i"], noY);
+  expect(verdict).toMatchObject({ kind: "refused", other: undefined });
+  expect(verdict.kind === "refused" && verdict.message).toBe(
+    "y, Copy the focused link's address, is the first press of y i."
+  );
+  // With an action's `y` the refusal names that action, and `y` alone stays free for one.
+  const named = refusalOf("global.go-inbox", ["y i"], NO_PERSON_KEYS);
+  expect(named.kind).toBe("refused");
+  expect(["board.copy-ref", "inbox.copy-ref", "issue.copy-turn-ref"]).toContain(
+    named.kind === "refused" ? (named.other ?? "") : ""
+  );
+  expect(refusalOf("inbox.copy-ref", ["y"], NO_PERSON_KEYS).kind).toBe("accepted");
 });
 
 test("the List's and the Board's own o are no duplicate, but both meet the project page's keys", () => {

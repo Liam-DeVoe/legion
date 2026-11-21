@@ -34,6 +34,7 @@ import {
   KEYMAP_ACTIONS,
   type KeymapActionId,
   keepsOwnKeys,
+  type PersonKeys,
 } from "../shell/keymap-catalogue";
 import { resetAllKeys, setActionKeys } from "../shell/keymap-keys";
 import { refusalOf } from "../shell/keymap-refusal";
@@ -69,6 +70,14 @@ interface Recording {
   readonly replacing: number | undefined;
   readonly first: string | undefined;
   readonly refusal: string | undefined;
+}
+
+/** A Reset the section refused: the action, why, and the person's keys it was refused under,
+ *  since a later change of them may free the key it names. */
+interface RefusedReset {
+  readonly action: KeymapActionId;
+  readonly message: string;
+  readonly personKeys: PersonKeys;
 }
 
 /** A key as a control's name says it: each press as the help draws it, `g then r` for two. */
@@ -178,13 +187,16 @@ function RecorderButton({
  * Shift, and a second press within `CHORD_TIMEOUT_MS`, which makes one key of two presses. A
  * modifier alone ends nothing. Escape, Tab and leaving the control end it with nothing changed.
  * A key the refusal check refuses is not kept: the section says why, naming the action that
- * holds it, and waits for another.
+ * holds it, and waits for another. A Reset whose defaults the refusal check refuses, since
+ * another action holds one of them now, changes nothing: the section says why, naming that
+ * action, so no action loses a key the person gave it unless they take it away themselves.
  */
 export function KeyboardShortcutsSection(): ReactNode {
   const { login, personKeys } = useContext(KeymapPersonContext);
   const location = useLocation();
   const [filter, setFilter] = useState("");
   const [recording, setRecording] = useState<Recording>();
+  const [refusedReset, setRefusedReset] = useState<RefusedReset>();
   // The chord timer's callback outlives the render that started it, so it reads these.
   const recordingRef = useRef<Recording | undefined>(undefined);
   const personKeysRef = useRef(personKeys);
@@ -239,6 +251,7 @@ export function KeyboardShortcutsSection(): ReactNode {
   };
   const start = (action: KeymapActionId, replacing: number | undefined, from: HTMLElement) => {
     stopTimer();
+    setRefusedReset(undefined);
     record({ action, first: undefined, refusal: undefined, replacing });
     from.focus();
   };
@@ -294,6 +307,24 @@ export function KeyboardShortcutsSection(): ReactNode {
     cancel();
     setActionKeys(login, action, keys);
     addButtons.current.get(action)?.focus();
+  };
+
+  /** Gives `action` its defaults again, where the refusal check accepts them beside every other
+   *  action's keys; else changes nothing and says why, naming the action that holds the key. */
+  const reset = (action: KeymapActionId) => {
+    if (login === undefined) return;
+    const current = personKeysRef.current;
+    const verdict = refusalOf(action, catalogueEntry(action).keys, current);
+    if (verdict.kind === "accepted") {
+      change(action, undefined);
+      return;
+    }
+    cancel();
+    setRefusedReset({
+      action,
+      message: `Reset is refused: ${verdict.message}${verdict.other === undefined ? "" : " Change that action's keys first."}`,
+      personKeys: current,
+    });
   };
 
   const needle = filter.trim().toLowerCase();
@@ -367,6 +398,11 @@ export function KeyboardShortcutsSection(): ReactNode {
                 // takes no other (`refusalOf`).
                 const changeable = login !== undefined && !keepsOwnKeys(entry);
                 const ours = recording?.action === action ? recording : undefined;
+                // A refused Reset stands until the person's keys change, which may free its key.
+                const resetRefusal =
+                  refusedReset?.action === action && refusedReset.personKeys === personKeys
+                    ? refusedReset.message
+                    : undefined;
                 const refusalId = `${SHORTCUTS_SECTION_ID}-${action}-refusal`;
                 return (
                   <li
@@ -398,6 +434,11 @@ export function KeyboardShortcutsSection(): ReactNode {
                       {ours?.refusal === undefined ? null : (
                         <p className={`text-xs ${dangerText}`} id={refusalId} role="alert">
                           {ours.refusal} Press another key.
+                        </p>
+                      )}
+                      {resetRefusal === undefined ? null : (
+                        <p className={`text-xs ${dangerText}`} id={refusalId} role="alert">
+                          {resetRefusal}
                         </p>
                       )}
                     </div>
@@ -466,8 +507,9 @@ export function KeyboardShortcutsSection(): ReactNode {
                       ) : null}
                       {changeable && changed ? (
                         <button
+                          aria-describedby={resetRefusal === undefined ? undefined : refusalId}
                           className={textButtonClass}
-                          onClick={() => change(action, undefined)}
+                          onClick={() => reset(action)}
                           type="button"
                         >
                           Reset
