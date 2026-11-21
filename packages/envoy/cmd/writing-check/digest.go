@@ -9,8 +9,8 @@ import (
 	"github.com/sjawhar/envoy/cmd/writing-check/harness"
 )
 
-// The bundle's files and its digest are package harness's (harness.BundleFiles,
-// harness.BundleDigest), which `harness score` records for change 7a, the bundle run in process.
+// The bundle's digest and its files are package harness's (harness.BundleDigest), which
+// `harness score` records for change 7a, the bundle run in process.
 
 func runDigest(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("writing-check digest", flag.ContinueOnError)

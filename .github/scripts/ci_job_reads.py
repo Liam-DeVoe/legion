@@ -3140,8 +3140,9 @@ GATES = [
         # packages/contracts/src is no read of this table's either: the filter's listed block holds
         # the modules dispatch_ui's tsc programs compile and the dispatch command's bundle loads,
         # which check-ts-filters.sh writes, and ci_ts_programs.py's LISTED says why this suite
-        # loads those and no other; each job's `Build contracts for dispatch e2e` step runs
-        # `build:dispatch`, whose four entries compile nothing outside dispatch_ui's.
+        # loads those and no other; each job builds `build:dispatch` (its `Build contracts for
+        # dispatch e2e` step, or the build:contracts its `bun run e2e` script runs), whose four
+        # entries compile nothing outside dispatch_ui's.
         ("packages/envoy-client/bin/dispatch.ts", "packages/dispatch/e2e/inbox-cli.e2e.ts:328 runs it through e2e/dispatch-cli.ts:8"),
         (f"{ENVOY}/internal/dispatch/pmdoc/schema/blocks.json", "packages/dispatch/e2e/engine-reading.ts:13"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "read at packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts:48, whose path is the new URL at :44, in the module the browser rows of the seven markdown parity families it holds import; the web unit tests that read the same table run in dispatch-ui, which declares it too"),

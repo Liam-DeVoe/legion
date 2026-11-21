@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -121,18 +120,10 @@ func (s *server) recordPersonTyped(r *http.Request, actor model.Actor, input any
 	s.keepWritingCheck(r, event)
 }
 
-// WritingCheck is the writing check every server runs, over the bundle's structure rules
-// (writingcheck.EnabledRules): the checker and what the state route answers about it. No setting
-// turns it off. The phrase detector does not run in the check: it runs as the reviewer's detector
-// rule set (Decision 11 of INFRA-3231's plan).
-type WritingCheck struct {
-	checker *writingcheck.Checker
-}
-
-// theWritingCheck is the check, built once for the process on its first use.
-var theWritingCheck = sync.OnceValue(func() *WritingCheck {
-	return &WritingCheck{checker: writingcheck.New(writingcheck.Config{Rules: writingcheck.EnabledRules})}
-})
+// writingChecker is the writing check every server runs, over the bundle's structure rules
+// (writingcheck.EnabledRules). No setting turns it off. The phrase detector does not run in the
+// check: it runs as the reviewer's detector rule set (Decision 11 of INFRA-3231's plan).
+var writingChecker = writingcheck.New(writingcheck.Config{Rules: writingcheck.EnabledRules})
 
 // writingCheckReads applies the actor rule: the check reads a write when an agent session that is
 // not a project's Legion daemon makes it, or when a person's credential makes it for such a
@@ -161,7 +152,6 @@ func (s *server) writingCheck(r *http.Request, actor model.Actor, input any) {
 		s.recordPersonTyped(r, actor, input, "")
 		return
 	}
-	check := theWritingCheck()
 	fields := proseFieldsOf(input)
 	unread := ""
 	if carrier, ok := input.(unreadUploadCarrier); ok {
@@ -198,7 +188,7 @@ func (s *server) writingCheck(r *http.Request, actor model.Actor, input any) {
 	case readerOf == "":
 		event.Outcome = writingCheckNoReader
 	default:
-		checkFields(&event, check.checker.Check(r.Context(), fields), unread)
+		checkFields(&event, writingChecker.Check(r.Context(), fields), unread)
 	}
 	s.keepWritingCheck(r, event)
 }
@@ -396,8 +386,9 @@ type writingCheckDetector struct {
 // writingCheckDetectorElsewhere is why the check runs no detector.
 const writingCheckDetectorElsewhere = "the phrase detector runs as the reviewer's detector rule set (DISPATCH_REVIEWER_RULES), not in the check"
 
-// state is what GET /api/v1/writing-check answers.
-func (c *WritingCheck) state() writingCheckState {
+// writingCheckStateNow is what GET /api/v1/writing-check answers: the check as this process runs
+// it.
+func writingCheckStateNow() writingCheckState {
 	state := writingCheckState{
 		Rules: []string{}, RulesLeftOut: []writingCheckRuleLeftOut{},
 		Detector: writingCheckDetector{Reason: writingCheckDetectorElsewhere}, BundleModelID: writingcheck.BundleModelID,
@@ -424,7 +415,7 @@ func (s *server) getWritingCheck(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	WriteJSON(w, http.StatusOK, theWritingCheck().state())
+	WriteJSON(w, http.StatusOK, writingCheckStateNow())
 }
 
 // writingCheckCountsDays is the counts route's range when its query names none, the last 14 days

@@ -331,7 +331,7 @@ func (s *server) holdWrite(w http.ResponseWriter, r *http.Request, actor model.A
 	answered := write
 	if create, isIssue := write.request.(issueCreate); isIssue {
 		if dry != nil {
-			create.Assignee = dry.assignee
+			create.Assignee = dry.issue.Assignee
 		} else if create.Assignee, err = s.heldIssueAssignee(ctx, create, actor); err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -536,12 +536,32 @@ func heldIssueWrites(issue *model.Issue, create issueCreate, filed *model.Issue)
 	if chose := create.Components; create.ComponentsProvided && chose != nil && chose.Mode != "inherit" {
 		issue.Components.Mode = chose.Mode
 		if chose.Mode == "explicit" {
-			issue.Components.IDs = slices.Compact(slices.Sorted(slices.Values(chose.IDs)))
+			issue.Components.IDs = chose.IDs
 		} else {
 			issue.Components.Reason = &chose.Reason
 		}
 	}
 	issue.ExternalLinks = []model.ExternalLink{}
+}
+
+// heldCommentWrites sets on comment, a held comment's answer, what its dry run wrote (wrote) beside
+// the request's own fields: the comment it replies to and its ask, since the post climbs a reply
+// to the head of its thread, the root comment or the ask (threadHeadOf), and keeps the comment the
+// request named as answers; its anchor with no mark id (heldAnchor), its turn, the block it
+// replies to and the agent text it answers; and its mentions, where the dry run found any.
+func heldCommentWrites(comment *model.Comment, wrote *model.Comment) {
+	comment.ReplyTo, comment.AskID = wrote.ReplyTo, wrote.AskID
+	comment.Anchor, comment.Turn, comment.Answers = heldAnchor(wrote.Anchor), wrote.Turn, wrote.Answers
+	comment.ReplyBlock, comment.RepliesToBlock = wrote.ReplyBlock, wrote.RepliesToBlock
+	if wrote.Mentions != nil {
+		comment.Mentions = wrote.Mentions
+	}
+}
+
+// heldMessageWrites sets on message, a held message's answer, what its dry run wrote (wrote)
+// beside the request's own fields: the block it replies to.
+func heldMessageWrites(message *model.Message, wrote *model.Message) {
+	message.ReplyBlock, message.RepliesToBlock = wrote.ReplyBlock, wrote.RepliesToBlock
 }
 
 // heldAdvice is the advice a held write's answer carries, which is the advice the write's own
@@ -566,12 +586,12 @@ func (s *server) heldAdvice(r *http.Request, write reviewedWrite, actor model.Ac
 // answered), which the write gets as its own; otherwise advice, the write advice the write's own
 // answer would carry (nil where its path gives none), and what the dry run wrote and read back
 // before its rollback, the one of its kind: ask, comment, message, or, for a new issue, issue,
-// with markdown, its spec as its seed would store it, and assignee, the person it is filed under.
+// whose assignee is the person it is filed under, with markdown, its spec as its seed would store
+// it.
 type heldDryRun struct {
 	answered *replayAnswer
 	advice   *writeAdvice
 	markdown string
-	assignee *string
 	ask      *model.Ask
 	comment  *model.Comment
 	message  *model.Message

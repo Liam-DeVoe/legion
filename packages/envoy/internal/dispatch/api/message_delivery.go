@@ -1122,6 +1122,9 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		if posted != nil {
 			events = append(events, *posted)
 			status = http.StatusCreated
+			// A held follow-up's dry run keeps the reply it wrote, so its answer names the first
+			// reply it is filed under, as its post writes it (replayAnswerOf).
+			held.keep(read.Message)
 		}
 	case input.Error != nil && attempt.State == "failed":
 		// An error report repeated on an attempt already failed writes nothing, and records no

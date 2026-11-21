@@ -539,7 +539,8 @@ func TestAHeldIssuesAnswerReadsTriageAndTheAssigneeItPostsUnder(t *testing.T) {
 // A held reply's answer states what its post writes, read off the dry run of its route: a comment
 // reply in the thread of a project document's comment names that document, as the posted reply
 // does, with the comment it replies to, its ask and turn, the block it replies to and the text it
-// answers; a message reply names its issue, its target, the message and the block it replies to.
+// answers; a message reply names its issue, its target, the message and the block it replies to;
+// and a follow-up on the attempt that reply answered names the reply it is filed under.
 func TestAHeldRepliesAnswerStatesWhereItsPostWritesIt(t *testing.T) {
 	rig := newReviewRig(t, ReviewerConfig{Comments: ReviewHold, Messages: ReviewHold, WriterWindow: time.Minute}, nil)
 	uploaded := dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/projects/RVW/artifacts", map[string]any{"name": "guide", "content": "Seed paragraph here.\n"}, "alice")
@@ -561,7 +562,7 @@ func TestAHeldRepliesAnswerStatesWhereItsPostWritesIt(t *testing.T) {
 	rig.postedAsWritten(id)
 	posted := postedItem[model.Comment](t, rig.handler, "/api/v1/comments/"+id, id)
 	comment := func(c model.Comment) string {
-		return jsonOf(t, map[string]any{
+		return asJSON(t, map[string]any{
 			"issue_key": c.IssueKey, "artifact_id": c.ArtifactID, "reply_to": c.ReplyTo, "ask_id": c.AskID, "turn": c.Turn,
 			"answers": c.Answers, "reply_block": c.ReplyBlock,
 		})
@@ -576,10 +577,18 @@ func TestAHeldRepliesAnswerStatesWhereItsPostWritesIt(t *testing.T) {
 	rig.postedAsWritten(id)
 	postedReply := postedItem[model.Message](t, rig.handler, "/api/v1/messages/"+id, id)
 	message := func(m model.Message) string {
-		return jsonOf(t, map[string]any{"issue_key": m.IssueKey, "target": m.Target, "in_reply_to": m.InReplyTo, "reply_block": m.ReplyBlock})
+		return asJSON(t, map[string]any{"issue_key": m.IssueKey, "target": m.Target, "in_reply_to": m.InReplyTo, "reply_block": m.ReplyBlock})
 	}
 	if message(reply) != message(postedReply) {
 		t.Errorf("the held message reply states %s; it posted %s", message(reply), message(postedReply))
+	}
+	response = rig.asWriter(http.MethodPost, "/api/v1/messages/"+sent+"/reply?follow_up=true", map[string]any{"body": "Status\nWe spin up the second node. " + vacuousPhrase, "attempt": 1})
+	id = rig.held(response, "the held follow-up").ID
+	followUp := decodeBody[model.Message](t, response)
+	rig.postedAsWritten(id)
+	postedFollowUp := postedItem[model.Message](t, rig.handler, "/api/v1/messages/"+id, id)
+	if deref(followUp.InReplyTo) != postedReply.ID || message(followUp) != message(postedFollowUp) {
+		t.Errorf("the held follow-up states %s; it posted %s, under the reply %s", message(followUp), message(postedFollowUp), postedReply.ID)
 	}
 }
 
@@ -615,14 +624,9 @@ func TestAHeldIssuesAnswerStatesTheRepoAdvancesAndComponentsItPosts(t *testing.T
 	parent := decodeBody[model.Issue](t, recorded).Key
 	// writes is what the test compares of an issue, as its JSON reads.
 	writes := func(issue model.Issue) string {
-		t.Helper()
-		encoded, err := json.Marshal(map[string]any{
+		return asJSON(t, map[string]any{
 			"repo": issue.Repo, "resolved_repo": issue.ResolvedRepo, "advances": issue.Advances, "components": issue.Components,
 		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		return string(encoded)
 	}
 	hold := func(body map[string]any) (string, model.Issue) {
 		t.Helper()
@@ -694,20 +698,10 @@ func postedItem[T any](t *testing.T, handler http.Handler, target, id string) T 
 		t.Fatalf("alice's read of %s holds no %s: %s", target, id, response.Body.String())
 	}
 	var item T
-	if err := json.Unmarshal([]byte(jsonOf(t, found)), &item); err != nil {
+	if err := json.Unmarshal([]byte(asJSON(t, found)), &item); err != nil {
 		t.Fatalf("decode %s in %s: %v", id, target, err)
 	}
 	return item
-}
-
-// jsonOf is value as its JSON reads, for a test comparing two answers' fields.
-func jsonOf(t *testing.T, value any) string {
-	t.Helper()
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(encoded)
 }
 
 // specOf is the id of issue's own document.
@@ -744,12 +738,12 @@ func TestAHeldAsksAnswerStatesTheAnchorItPosts(t *testing.T) {
 	rig.postedAsWritten(id)
 	posted := postedItem[model.Ask](t, rig.handler, "/api/v1/asks/"+id, id)
 	if answer.Anchor == nil || posted.Anchor == nil || answer.Anchor.MarkID != "" || posted.Anchor.MarkID == "" {
-		t.Fatalf("the held ask's anchor %s, the posted one %s: want both, the held one with no mark id", jsonOf(t, answer.Anchor), jsonOf(t, posted.Anchor))
+		t.Fatalf("the held ask's anchor %s, the posted one %s: want both, the held one with no mark id", asJSON(t, answer.Anchor), asJSON(t, posted.Anchor))
 	}
 	held, wrote := *answer.Anchor, *posted.Anchor
 	held.MarkID, wrote.MarkID = "", ""
-	if jsonOf(t, held) != jsonOf(t, wrote) {
-		t.Errorf("the held ask's anchor is %s; it posted %s", jsonOf(t, held), jsonOf(t, wrote))
+	if asJSON(t, held) != asJSON(t, wrote) {
+		t.Errorf("the held ask's anchor is %s; it posted %s", asJSON(t, held), asJSON(t, wrote))
 	}
 }
 
@@ -775,13 +769,13 @@ func TestAHeldCommentsAnswerStatesTheAnchorAndTurnItPosts(t *testing.T) {
 		rig.postedAsWritten(id)
 		posted := postedItem[model.Comment](t, rig.handler, "/api/v1/comments/"+id, id)
 		if (answer.Anchor == nil) != (body["anchor"] == nil) || (answer.Turn == nil) != (body["ask_id"] == nil) || (answer.Anchor != nil && answer.Anchor.MarkID != "") {
-			t.Errorf("%s: the held comment states anchor %s turn %v, want the anchor with no mark id or the turn its request makes", name, jsonOf(t, answer.Anchor), answer.Turn)
+			t.Errorf("%s: the held comment states anchor %s turn %v, want the anchor with no mark id or the turn its request makes", name, asJSON(t, answer.Anchor), answer.Turn)
 		}
 		if posted.Anchor != nil {
 			posted.Anchor.MarkID = ""
 		}
 		writes := func(comment model.Comment) string {
-			return jsonOf(t, map[string]any{
+			return asJSON(t, map[string]any{
 				"anchor": comment.Anchor, "turn": comment.Turn, "answers": comment.Answers, "reply_block": comment.ReplyBlock,
 				"mentions": comment.Mentions, "reply_to": comment.ReplyTo, "ask_id": comment.AskID,
 			})
@@ -828,9 +822,9 @@ func TestAHeldCommentReplyingInsideAThreadAnswersTheThreadItPostsIn(t *testing.T
 		rig.postedAsWritten(id)
 		posted := postedItem[model.Comment](t, rig.handler, "/api/v1/comments/"+id, id)
 		thread := func(comment model.Comment) string {
-			return jsonOf(t, map[string]any{"reply_to": comment.ReplyTo, "ask_id": comment.AskID, "answers": comment.Answers, "turn": comment.Turn})
+			return asJSON(t, map[string]any{"reply_to": comment.ReplyTo, "ask_id": comment.AskID, "answers": comment.Answers, "turn": comment.Turn})
 		}
-		want := jsonOf(t, map[string]any{"reply_to": test.replyTo, "ask_id": test.askID, "answers": &test.repliesTo, "turn": posted.Turn})
+		want := asJSON(t, map[string]any{"reply_to": test.replyTo, "ask_id": test.askID, "answers": &test.repliesTo, "turn": posted.Turn})
 		if thread(answer) != want || thread(posted) != want {
 			t.Errorf("%s: the held reply states %s and posted %s, want %s", test.name, thread(answer), thread(posted), want)
 		}
@@ -852,8 +846,8 @@ func TestAHeldMessagesAnswerStatesTheBlockItRepliesTo(t *testing.T) {
 	answer := decodeBody[model.Message](t, response)
 	rig.postedAsWritten(id)
 	posted := postedItem[model.Message](t, rig.handler, "/api/v1/messages/"+id, id)
-	if answer.ReplyBlock == nil || jsonOf(t, answer.ReplyBlock) != jsonOf(t, posted.ReplyBlock) {
-		t.Errorf("the held message replies to %s; it posted replying to %s", jsonOf(t, answer.ReplyBlock), jsonOf(t, posted.ReplyBlock))
+	if answer.ReplyBlock == nil || asJSON(t, answer.ReplyBlock) != asJSON(t, posted.ReplyBlock) {
+		t.Errorf("the held message replies to %s; it posted replying to %s", asJSON(t, answer.ReplyBlock), asJSON(t, posted.ReplyBlock))
 	}
 }
 

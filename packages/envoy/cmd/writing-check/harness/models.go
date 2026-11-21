@@ -3,10 +3,8 @@ package harness
 import (
 	"flag"
 	"fmt"
-	"net"
 	"net/url"
 	"os"
-	"strings"
 
 	"github.com/sjawhar/envoy/cmd/writing-check/harness/claude"
 	"github.com/sjawhar/envoy/cmd/writing-check/harness/llm"
@@ -14,11 +12,11 @@ import (
 )
 
 // CredentialURL refuses raw, a URL that a key, a token or a bearer is sent to, unless it is https,
-// or http to a host inside the machine or the cluster: localhost, a loopback address, or a
+// or http to a host inside the machine or the cluster (embed.ClusterLocalHost, the rule
+// cmd/dispatch refuses a model group's endpoint by): localhost, a loopback address, or a
 // Kubernetes Service's name (ending .svc or .cluster.local). Over http to any other host the
-// credential would cross the network in clear text; cmd/dispatch refuses a model group's endpoint
-// by the same rule (clusterLocalHost). name is the flag or the setting raw came from. An empty raw
-// is no URL and sends nothing, so it passes; the caller that needs one says so.
+// credential would cross the network in clear text. name is the flag or the setting raw came
+// from. An empty raw is no URL and sends nothing, so it passes; the caller that needs one says so.
 func CredentialURL(name, raw string) error {
 	if raw == "" {
 		return nil
@@ -27,11 +25,7 @@ func CredentialURL(name, raw string) error {
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return fmt.Errorf("%s %q is not an absolute http or https URL with a host", name, raw)
 	}
-	if u.Scheme == "https" {
-		return nil
-	}
-	host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
-	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() || host == "localhost" || strings.HasSuffix(host, ".svc") || strings.HasSuffix(host, ".cluster.local") {
+	if u.Scheme == "https" || embed.ClusterLocalHost(u.Hostname()) {
 		return nil
 	}
 	return fmt.Errorf("%s %q is http to a host outside the cluster, which would carry the credential in clear text: use https, or http to localhost, a loopback address or a cluster Service (*.svc, *.cluster.local)", name, raw)

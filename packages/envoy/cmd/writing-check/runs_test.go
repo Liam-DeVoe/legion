@@ -1,9 +1,9 @@
 package main
 
-// The tests of test handoff version 4's findings and the class audit's instances in the commands
-// of package main: a run that reuses earlier results only under its own inputs, a run whose calls
-// failed or stopped that fails, an output a repository or an input does not take, and a claim made
-// after every refusal that reads no write.
+// The commands of package main that reuse, refuse or fail a run: a run that reuses earlier results
+// only under its own inputs, a run whose calls failed or stopped that fails, an output a
+// repository or an input does not take, and a claim made after every refusal that reads no write
+// (dispatch://INFRA-3231).
 
 import (
 	"context"
@@ -17,27 +17,11 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/writingcheck/eval"
 )
 
-// writeLines writes each value as one JSON line of path.
-func writeLines(t *testing.T, path string, lines ...any) {
-	t.Helper()
-	var b strings.Builder
-	for _, l := range lines {
-		data, err := json.Marshal(l)
-		if err != nil {
-			t.Fatal(err)
-		}
-		b.Write(append(data, '\n'))
-	}
-	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
-		t.Fatal(err)
-	}
-}
-
 // labelFixture is a cases file of one comment, a definition and a key file in dir.
 func labelFixture(t *testing.T, dir, text string) (cases, definition, key string) {
 	t.Helper()
 	cases, definition, key = filepath.Join(dir, "cases.jsonl"), filepath.Join(dir, "definition.md"), filepath.Join(dir, "key")
-	writeLines(t, cases, Case{EventID: 7, SourceID: "c7", Surface: "comment", Field: "body", Text: text})
+	writeJSONLines(t, cases, Case{EventID: 7, SourceID: "c7", Surface: "comment", Field: "body", Text: text})
 	for path, data := range map[string]string{definition: "A verb phrase is vacuous when it states no fact.\n", key: "stub-key\n"} {
 		if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 			t.Fatal(err)
@@ -129,7 +113,7 @@ func TestLabelResumeRefusesLabelsOfOtherInputs(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			out := filepath.Join(t.TempDir(), "labels.jsonl")
-			writeLines(t, out, c.record)
+			writeJSONLines(t, out, c.record)
 			before := stub.calls.Load()
 			code, _, stderr := runCmd(t, labelArgs(stub, cases, definition, key, out, "--resume")...)
 			if code != c.code || !strings.Contains(stderr, c.want) {
@@ -280,7 +264,7 @@ func TestRegressCountsAFailedCallApartAndFails(t *testing.T) {
 func TestReadersRefusesAStateOfAnotherDispatch(t *testing.T) {
 	dir := t.TempDir()
 	in, state := filepath.Join(dir, "cases.jsonl"), filepath.Join(dir, "state.json")
-	writeLines(t, in, Case{EventID: 3, SourceID: "c3", Surface: "comment", Field: "body", Text: "The run is green."})
+	writeJSONLines(t, in, Case{EventID: 3, SourceID: "c3", Surface: "comment", Field: "body", Text: "The run is green."})
 	s := newReplayState(0)
 	s.DispatchURL, s.Through, s.Events = "http://127.0.0.1:9", 2, 2
 	if err := saveReplayState(state, s); err != nil {
@@ -301,13 +285,13 @@ func TestFetchResumeRefusesCasesOfAnotherDispatch(t *testing.T) {
 	t.Setenv("DISPATCH_URL", "http://127.0.0.1:1")
 	t.Setenv("DISPATCH_TOKEN_FILE", filepath.Join(dir, "token"))
 	out := filepath.Join(dir, "cases.jsonl")
-	writeLines(t, out+".partial", Case{EventID: 3, SourceID: "c3", Surface: "comment", Field: "body", Text: "The run is green."})
+	writeJSONLines(t, out+".partial", Case{EventID: 3, SourceID: "c3", Surface: "comment", Field: "body", Text: "The run is green."})
 	args := []string{"fetch", "--after", "0", "--through", "10", "--out", out, "--resume"}
 	code, _, stderr := runCmd(t, args...)
 	if code != 2 || !strings.Contains(stderr, "which names the Dispatch and the --after they were read from, does not exist") {
 		t.Errorf("fetch --resume of a partial file with no record = %d:\n%s", code, stderr)
 	}
-	writeLines(t, fetchParamsPath(out+".partial"), fetchParams{DispatchURL: "http://127.0.0.1:9", After: 0})
+	writeJSONLines(t, fetchParamsPath(out+".partial"), fetchParams{DispatchURL: "http://127.0.0.1:9", After: 0})
 	code, _, stderr = runCmd(t, args...)
 	if code != 2 || !strings.Contains(stderr, "was read from http://127.0.0.1:9 after event 0; this run reads http://127.0.0.1:1 after event 0") {
 		t.Errorf("fetch --resume of another Dispatch's cases = %d:\n%s", code, stderr)
@@ -347,7 +331,7 @@ func TestClassifyKeepsOnlyAVerdictOfItsOwnInputs(t *testing.T) {
 		}
 	}
 	path := filepath.Join(t.TempDir(), "verdicts.jsonl")
-	writeLines(t, path, v, dsVerdict{Text: "t1", Error: "the call failed"}, dsVerdict{Text: "t2", Verdict: "plain"})
+	writeJSONLines(t, path, v, dsVerdict{Text: "t1", Error: "the call failed"}, dsVerdict{Text: "t2", Verdict: "plain"})
 	got, _, err := readVerdicts(path)
 	if err != nil {
 		t.Fatal(err)

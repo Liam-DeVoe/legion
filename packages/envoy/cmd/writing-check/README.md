@@ -1195,7 +1195,7 @@ refuses it.
 | --- | --- |
 | `--snapshot` | The snapshot that `fetch` wrote, which `build` reads. |
 | `--from` | A bundle that `pack` wrote, in place of `--snapshot`: the tarball, its manifest, or a directory that holds one of them. `owner-texts` reads the bundle's snapshot. |
-| `--out` | The directory for `owner-texts.jsonl.gz`. |
+| `--out` | The directory for `owner-texts.jsonl.gz`. A refused run leaves `--out` as it was, and an `--out` it made is removed again. |
 
 `owner-texts` writes each text that the owner wrote himself to `owner-texts.jsonl.gz`, in event
 order. The owner is the person the dataset is about. The snapshot's header gives his login.
@@ -2079,8 +2079,10 @@ the answers and grades of such a run whose inputs are the same. `writer_sha256` 
 prompts and the refusal lines change 2's writer reads before the rules. A run of a plan with 7a
 records the digest of the writing check's bundle it runs in process (`check_bundle_sha256`, as
 `writing-check digest` prints it), and a run that calls the local Dispatch records, among its
-settings, the digest of the reviewer that instance was built from (`reviewer_sha256`): a
-directory of another bundle or reviewer does not continue either.
+settings, the digest of the files the reviewer of that instance was built from
+(`reviewer_sha256`): the reviewer's prompts and Go files, the plain-words skill its rule sets and
+the written rules are cut from, and the writing check's bundle. A directory of another bundle or
+reviewer does not continue either.
 
 ### Grades of another run
 
@@ -2257,7 +2259,8 @@ loaded, with no reset and no seed (`DISPATCH_E2E_KEEP_DATABASE=1`). `local` make
 in `--out` with an exclusive create before it starts the instance, so a second `local` on that
 `--out` is refused at once, even before the first instance is up. Once the instance is up, the
 file holds its URL, its fake Envoy, its database, the settings, `seeded` and `reviewer_sha256`
-(the digest of the reviewer's prompts and Go files under `--repo`): a
+(the digest of the reviewer's prompts and Go files, package `plainwords` and its copy of the
+plain-words skill, and the writing check's bundle, under `--repo`): a
 start that reset and seeded the database writes a new mark on it (`COMMENT ON DATABASE`), and a
 `--keep` start reads that mark back. The file goes when the start ends, only while it is still the
 file that start made: `local` never removes a `local.json` another start wrote.

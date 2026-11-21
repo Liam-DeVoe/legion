@@ -18,9 +18,8 @@ import { DispatchClient } from "../dispatch-http";
 // `dispatch claim --release` printed a status of `undefined`. `dispatch artifact` threw one
 // reading `result.artifact.slug`, or, once the client knew Dispatch runs its keyed layer, failed
 // as a write that may or may not have landed: a Dispatch that kept an upload to a held issue
-// before that layer ran, as one built before INFRA-3231's last simplify pass did, carried no
-// `Idempotency-Key` back on its 202, and the client read it as an answer of something in
-// Dispatch's place. Its Markdown round trip carries its key back first. `dispatch
+// before that layer ran would carry no `Idempotency-Key` back on its 202, and the client must not
+// read that as an answer of something in Dispatch's place. Its Markdown round trip carries its key back first. `dispatch
 // issue-update` reads the issue before its write, and Dispatch answers
 // a session's read of a held issue 409 HELD_TEXT (`answerHeldRead`, held_routes.go), so its
 // update is never sent. Each row drives the `dispatch` command against a stub Dispatch that

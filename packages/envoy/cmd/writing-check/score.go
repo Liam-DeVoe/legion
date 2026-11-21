@@ -273,21 +273,21 @@ type exposure struct {
 // exposureFinalTest is the kind of an exposure-log line that records a final-test run.
 const exposureFinalTest = "final_test"
 
-// readExposures reads an exposure log; a log that does not exist holds no run.
-func readExposures(path string) ([]exposure, error) {
-	var out []exposure
-	err := eachLine(path, func(line []byte, _ int) error {
+// readExposures reads an exposure log; a log that does not exist holds no run, and missing says
+// so.
+func readExposures(path string) (logged []exposure, missing bool, err error) {
+	err = eachLine(path, func(line []byte, _ int) error {
 		var e exposure
 		if err := json.Unmarshal(line, &e); err != nil {
 			return err
 		}
-		out = append(out, e)
+		logged = append(logged, e)
 		return nil
 	})
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
+		return nil, true, nil
 	}
-	return out, err
+	return logged, false, err
 }
 
 func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -424,7 +424,7 @@ const figureDecimals = 4
 // otherwise appends the run to the log before any write is read, so a run that stops part way
 // still spends the set.
 func claimFinalTest(path string, e exposure) error {
-	logged, err := readExposures(path)
+	logged, _, err := readExposures(path)
 	if err != nil {
 		return err
 	}

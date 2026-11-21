@@ -2781,27 +2781,13 @@ func runDatasetBuild(args []string, stdout, stderr io.Writer) int {
 	if *from != "" {
 		// The bundle's files are joined in a directory under --out, removed once the build ends.
 		// A refused build leaves --out as it was (buildDataset), so an --out made for the bundle
-		// is removed again with it where the build left it empty.
-		_, err := os.Stat(*out)
-		made := errors.Is(err, os.ErrNotExist)
-		dir := ""
-		defer func() {
-			if dir != "" {
-				os.RemoveAll(dir)
-			}
-			if made {
-				os.Remove(*out)
-			}
-		}()
-		if err := os.MkdirAll(*out, 0o755); err != nil {
+		// is removed again with it where the build left it empty (dsMakeOut).
+		bundle, done, err := dsMakeOut(*out, *from)
+		if err != nil {
 			return fail(err)
 		}
-		if dir, err = os.MkdirTemp(*out, ".bundle-"); err != nil {
-			return fail(err)
-		}
-		if in, err = openBundle(*from, dir); err != nil {
-			return fail(err)
-		}
+		defer done()
+		in = bundle
 	}
 	in.ToDevelopment = toDev
 	started := time.Now()
@@ -2927,6 +2913,43 @@ func dsStaged[T any](out string, write func(dir string) (T, error)) (T, error) {
 		}
 	}
 	return res, nil
+}
+
+// dsMakeOut makes out, the directory a step writes to, and, where from names a bundle pack wrote,
+// joins the bundle's files in a directory under it (openBundle) and answers its inputs. done
+// removes that directory, and out again where this call made it and the step left it empty, so a
+// refused step leaves no out it made; the step calls it once it ends. A refusal here has removed
+// both already.
+func dsMakeOut(out, from string) (dsInputs, func(), error) {
+	_, err := os.Stat(out)
+	made := errors.Is(err, os.ErrNotExist)
+	dir := ""
+	done := func() {
+		if dir != "" {
+			os.RemoveAll(dir)
+		}
+		if made {
+			os.Remove(out)
+		}
+	}
+	refused := func(err error) (dsInputs, func(), error) {
+		done()
+		return dsInputs{}, nil, err
+	}
+	if err := os.MkdirAll(out, 0o755); err != nil {
+		return refused(err)
+	}
+	if from == "" {
+		return dsInputs{}, done, nil
+	}
+	if dir, err = os.MkdirTemp(out, ".bundle-"); err != nil {
+		return refused(err)
+	}
+	in, err := openBundle(from, dir)
+	if err != nil {
+		return refused(err)
+	}
+	return in, done, nil
 }
 
 // writeDataset is buildDataset's work: it builds the dataset and writes its four files to out,
@@ -3663,20 +3686,15 @@ func runDatasetOwnerTexts(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "writing-check dataset owner-texts: %v\n", err)
 		return 1
 	}
-	if err := os.MkdirAll(*out, 0o755); err != nil {
+	// The bundle's files, where --from names one, are joined in a directory under --out, removed
+	// once the step ends; a refused step leaves no --out it made (dsMakeOut).
+	in, done, err := dsMakeOut(*out, *from)
+	if err != nil {
 		return fail(err)
 	}
+	defer done()
 	path := *snapshot
 	if *from != "" {
-		dir, err := os.MkdirTemp(*out, ".bundle-")
-		if err != nil {
-			return fail(err)
-		}
-		defer os.RemoveAll(dir)
-		in, err := openBundle(*from, dir)
-		if err != nil {
-			return fail(err)
-		}
 		path = in.Snapshot
 	}
 	sum, texts, err := writeOwnerTexts(path, filepath.Join(*out, dsOwnerTextsFile))

@@ -37,9 +37,9 @@ type BundleFile struct {
 	SHA256 string `json:"sha256"`
 }
 
-// BundleFiles is the bundle's files under root, in the digest's order: each part's Go files
+// bundleFiles is the bundle's files under root, in the digest's order: each part's Go files
 // without tests, sorted by name (or the files the part names), then its extra files.
-func BundleFiles(root string) ([]BundleFile, error) {
+func bundleFiles(root string) ([]BundleFile, error) {
 	var out []BundleFile
 	for _, part := range bundleParts {
 		names := part.files
@@ -71,17 +71,24 @@ func BundleFiles(root string) ([]BundleFile, error) {
 }
 
 // BundleDigest is the bundle's digest: the SHA-256 of the lines "<sha256>  <path>\n" of its files
-// in order, which is what `sha256sum <files> | sha256sum` prints run from the module root.
+// in order (filesDigest), which is what `sha256sum <files> | sha256sum` prints run from the module
+// root.
 func BundleDigest(root string) (string, []BundleFile, error) {
-	files, err := BundleFiles(root)
+	files, err := bundleFiles(root)
 	if err != nil {
 		return "", nil, fmt.Errorf("reading the bundle under %s (give --root, the module root packages/envoy): %w", root, err)
 	}
+	return filesDigest(files), files, nil
+}
+
+// filesDigest is the SHA-256 of the lines "<sha256>  <path>\n" of files in order, which is what
+// `sha256sum <files> | sha256sum` prints for them.
+func filesDigest(files []BundleFile) string {
 	h := sha256.New()
 	for _, f := range files {
 		fmt.Fprintf(h, "%s  %s\n", f.SHA256, f.Path)
 	}
-	return hex.EncodeToString(h.Sum(nil)), files, nil
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // moduleRoot is the nearest directory at or above the working directory that holds the bundle
@@ -91,12 +98,18 @@ func moduleRoot() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	for d := wd; ; d = filepath.Dir(d) {
-		if _, err := os.Stat(filepath.Join(d, "internal", "dispatch", "writingcheck", "bundle.go")); err == nil {
+	return dirAbove(wd, "internal/dispatch/writingcheck/bundle.go", "run from packages/envoy")
+}
+
+// dirAbove is the nearest directory at or above dir that holds marker, a slash path; hint is what
+// the refusal tells the caller to do where none holds it.
+func dirAbove(dir, marker, hint string) (string, error) {
+	for d := dir; ; d = filepath.Dir(d) {
+		if _, err := os.Stat(filepath.Join(d, filepath.FromSlash(marker))); err == nil {
 			return d, nil
 		}
 		if filepath.Dir(d) == d {
-			return "", fmt.Errorf("no directory at or above %s holds internal/dispatch/writingcheck/bundle.go: run from packages/envoy", wd)
+			return "", fmt.Errorf("no directory at or above %s holds %s: %s", dir, marker, hint)
 		}
 	}
 }

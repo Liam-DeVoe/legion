@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"maps"
-	"net"
 	"net/url"
 	"os"
 	"slices"
@@ -499,21 +498,9 @@ var modelKinds = map[string]struct {
 	modelKindAzure: {schemes: []string{"https"}, route: "/chat/completions", notRead: []string{"KEY_FILE"},
 		why: "an azure group signs in with the shared Azure sign-in and presents no key"},
 	// The model gateway serves plain HTTP inside the cluster: http is taken for a cluster-local
-	// host alone (clusterLocalHost).
+	// host alone (embed.ClusterLocalHost).
 	modelKindAnthropic: {schemes: []string{"http", "https"}, route: "/v1/messages", notRead: []string{"API_VERSION", "SCOPE"},
 		why: "an anthropic group sends no api-version and asks for no Azure token"},
-}
-
-// clusterLocalHost reports whether host is reached inside the machine or the cluster: localhost, a
-// loopback address, or a Kubernetes Service's name (ending .svc or .cluster.local). A call over
-// plain http goes to such a host alone, since each call of a model group carries its key (OWASP
-// ASVS 5.0 12.3.1).
-func clusterLocalHost(host string) bool {
-	host = strings.ToLower(strings.TrimSuffix(host, "."))
-	if ip := net.ParseIP(host); ip != nil {
-		return ip.IsLoopback()
-	}
-	return host == "localhost" || strings.HasSuffix(host, ".svc") || strings.HasSuffix(host, ".cluster.local")
 }
 
 // resolveModelGroup reads the model group whose settings begin with prefix. A group none of whose
@@ -522,7 +509,7 @@ func clusterLocalHost(host string) bool {
 // endpoint, its deployment, its tokens-per-minute ceiling, and an anthropic group's key file);
 // when it sets one its kind does not read (an azure group's key file, an anthropic group's
 // api-version or scope); when its endpoint or its ceiling is malformed, or its endpoint is http
-// on a host outside the cluster (clusterLocalHost); and when an azure group finds the shared
+// on a host outside the cluster (embed.ClusterLocalHost); and when an azure group finds the shared
 // Azure sign-in unset or set in part. Under testModelURL, the stand-in takes the place of the
 // group's endpoint and credential: the group needs neither, refuses its endpoint, key file and
 // scope, and reads no sign-in.
@@ -578,7 +565,7 @@ func resolveModelGroup(env settingValues, prefix, whose, testModelURL string) (m
 		return modelGroup{}, fmt.Errorf("%sENDPOINT=%q (expected an absolute %s URL with a host and no query or fragment, the base URL %s is appended to)",
 			prefix, group.Endpoint, strings.Join(kind.schemes, " or "), kind.route)
 	}
-	if parsed.Scheme == "http" && !clusterLocalHost(parsed.Hostname()) {
+	if parsed.Scheme == "http" && !embed.ClusterLocalHost(parsed.Hostname()) {
 		return modelGroup{}, fmt.Errorf("%sENDPOINT=%q is http to a host outside the cluster, which would carry %s model group's key in clear text: use https, or http to localhost, a loopback address or a cluster Service (*.svc, *.cluster.local)",
 			prefix, group.Endpoint, whose)
 	}

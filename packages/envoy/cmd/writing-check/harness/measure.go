@@ -205,17 +205,17 @@ type phrasesRun struct {
 }
 
 // labelsDigest is the SHA-256 of the lines "<sha256>  <name>\n" of the two files of a labeller
-// round's directory that phrases-labels reads, cases.jsonl and labels.jsonl.
+// round's directory that phrases-labels reads, cases.jsonl and labels.jsonl (filesDigest).
 func labelsDigest(dir string) (string, error) {
-	var b strings.Builder
+	var files []BundleFile
 	for _, name := range []string{"cases.jsonl", "labels.jsonl"} {
 		sum, err := fileSHA256(filepath.Join(dir, name))
 		if err != nil {
 			return "", err
 		}
-		b.WriteString(sum + "  " + name + "\n")
+		files = append(files, BundleFile{Path: name, SHA256: sum})
 	}
-	return sha256Hex([]byte(b.String())), nil
+	return filesDigest(files), nil
 }
 
 // LabelResult is one labelled write the phrases judgement graded: the grade, the sentences its

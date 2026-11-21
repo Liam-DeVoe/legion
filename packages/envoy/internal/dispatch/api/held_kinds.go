@@ -61,6 +61,15 @@ func dryRunEnded(dry heldDryRun, err error) (heldDryRun, error) {
 	return heldDryRun{}, err
 }
 
+// dryRunAdvice is the write advice a comment's or a message's dry run found, as its held answer
+// merges it: none where the dry run found none, rather than a nil *writeAdvice inside an any.
+func dryRunAdvice(advice *writeAdvice) any {
+	if advice != nil {
+		return advice
+	}
+	return nil
+}
+
 // The new ask.
 
 func (c askCreate) answer(_ reviewer.Kind, id string, actor model.Actor, at time.Time, dry *heldDryRun, trees bool) any {
@@ -215,7 +224,7 @@ func (c issueCreate) dryRun(s *server, ctx context.Context, actor model.Actor, _
 	}
 	defer tx.Rollback(ctx)
 	written, err := s.writeIssue(ctx, tx, c, actor, 0, held)
-	return dryRunEnded(heldDryRun{advice: written.advice, markdown: written.markdown, assignee: written.assignee, issue: &written.issue}, err)
+	return dryRunEnded(heldDryRun{advice: written.advice, markdown: written.markdown, issue: &written.issue}, err)
 }
 
 // post files the issue under the number its hold reserved, after the near-copy gate's second
@@ -288,24 +297,14 @@ func (c commentCreate) answer(_ reviewer.Kind, id string, actor model.Actor, at 
 		comment.Suggestion = &model.Suggestion{ReplaceWith: c.Input.Suggestion.ReplaceWith}
 	}
 	if wrote := dry.comment; wrote != nil {
-		// The post climbs a reply to the head of its thread, the root comment or the ask
-		// (threadHeadOf), and keeps the comment the request named as answers.
-		comment.ReplyTo, comment.AskID = wrote.ReplyTo, wrote.AskID
-		comment.Anchor, comment.Turn, comment.Answers = heldAnchor(wrote.Anchor), wrote.Turn, wrote.Answers
-		comment.ReplyBlock, comment.RepliesToBlock = wrote.ReplyBlock, wrote.RepliesToBlock
-		if wrote.Mentions != nil {
-			comment.Mentions = wrote.Mentions
-		}
+		heldCommentWrites(&comment, wrote)
 	}
 	return commentWriteResponse{shapedComment: newShapedComment(comment, trees)}
 }
 
 // advice is the comment's write advice, which its dry run found.
 func (c commentCreate) advice(_ *server, _ *http.Request, _ model.Actor, advice *writeAdvice, _ *heldDryRun, _ *heldParent) any {
-	if advice != nil {
-		return advice
-	}
-	return nil
+	return dryRunAdvice(advice)
 }
 
 func (c commentCreate) dryRun(s *server, ctx context.Context, actor model.Actor, id string, held *heldPost) (heldDryRun, error) {
@@ -348,17 +347,14 @@ func (c messageCreate) answer(_ reviewer.Kind, id string, actor model.Actor, at 
 		InReplyTo: c.Input.InReplyTo, CreatedAt: at, Deliveries: []model.MessageDelivery{},
 	}
 	if wrote := dry.message; wrote != nil {
-		message.ReplyBlock, message.RepliesToBlock = wrote.ReplyBlock, wrote.RepliesToBlock
+		heldMessageWrites(&message, wrote)
 	}
 	return newShapedMessage(message, trees)
 }
 
 // advice is the message's write advice, which its dry run found.
 func (c messageCreate) advice(_ *server, _ *http.Request, _ model.Actor, advice *writeAdvice, _ *heldDryRun, _ *heldParent) any {
-	if advice != nil {
-		return advice
-	}
-	return nil
+	return dryRunAdvice(advice)
 }
 
 func (c messageCreate) dryRun(s *server, ctx context.Context, actor model.Actor, id string, held *heldPost) (heldDryRun, error) {

@@ -1009,7 +1009,7 @@ func dirFiles(t *testing.T, dir string) map[string]string {
 // build reads a snapshot whose last event is created at its header's end, and refuses one that
 // holds an event created after it, naming the first such event's id and time; owner-texts and
 // followups, which read the snapshot build reads, refuse it too (as classify does: each reads it
-// by loadIndex).
+// by loadIndex), and leave no --out they made, as build does.
 func TestDatasetBuildRefusesAnEventAfterTheEnd(t *testing.T) {
 	t.Parallel()
 	f := standardFixture()
@@ -1037,11 +1037,16 @@ func TestDatasetBuildRefusesAnEventAfterTheEnd(t *testing.T) {
 	}
 	for _, args := range [][]string{
 		{"owner-texts", "--snapshot", snapshot, "--out", filepath.Join(dir, "owner-texts")},
+		{"owner-texts", "--from", bundle, "--out", filepath.Join(dir, "owner-texts-from")},
 		{"followups", "--from", bundle, "--cases", built, "--out", filepath.Join(dir, "followups")},
 	} {
 		var stdout, stderr bytes.Buffer
 		if code := run(t.Context(), append([]string{"dataset"}, args...), &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), want) {
 			t.Errorf("dataset %s over a snapshot with events after its end: exit %d, %s; want 1 saying %q", args[0], code, stderr.String(), want)
+		}
+		out := args[len(args)-1]
+		if _, err := os.Stat(out); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("the refused dataset %s left the --out %s it made (%v)", args[0], out, err)
 		}
 	}
 }

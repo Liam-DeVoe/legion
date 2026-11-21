@@ -3,8 +3,6 @@ package harness
 import (
 	"bufio"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -43,7 +41,8 @@ type LocalInstance struct {
 	// Seeded is the mark of the start that last reset and seeded the database (databaseSeeded),
 	// which a start with --keep keeps: `harness load` continues a load only in records of one mark.
 	Seeded string `json:"seeded"`
-	// ReviewerSHA256 is the digest of the reviewer's prompts and code the instance was built from
+	// ReviewerSHA256 is the digest of the files the instance's reviewer was built from: its prompts
+	// and code, the plain-words skill its rule sets are cut from, and the writing check's bundle
 	// (reviewerDigest), which a change's run records with the settings it reads.
 	ReviewerSHA256 string `json:"reviewer_sha256"`
 }
@@ -52,38 +51,74 @@ type LocalInstance struct {
 // that fills them, runs its rules and reads its replies.
 const reviewerDir = "packages/envoy/internal/dispatch/reviewer"
 
-// reviewerDigest is the SHA-256 of the reviewer's files under root, as the instance `harness
-// local` starts there is built from them: each Go file but the tests, then each prompt, by its
-// path in order. A run of a change that calls the local Dispatch's reviewer reuses its results
-// only under the same digest (readSettings, checkParams).
+// plainWordsDir is package plainwords under the repository root: its copy of the plain-words
+// skill, whose text the reviewer's noslop and phrases rule sets and the written rules are cut
+// from (reviewer/rules.go, POST /api/v1/writing-rules), and the code that reads it.
+const plainWordsDir = "packages/envoy/internal/dispatch/writingcheck/plainwords"
+
+// reviewerDigest is the SHA-256 of the files under root that the reviewer of the instance
+// `harness local` starts there is built from, each by its path under root (filesDigest): the
+// reviewer's Go files but the tests, then its prompts; package plainwords' Go files but the tests,
+// then every file of its skill; then the writing check's bundle (bundleFiles), whose reader and
+// candidates the detector rule set runs. A run of a change that calls the local Dispatch's
+// reviewer reuses its results only under the same digest (readSettings, checkParams).
 func reviewerDigest(root string) (string, error) {
-	dir := filepath.Join(root, filepath.FromSlash(reviewerDir))
-	var paths []string
-	for _, pattern := range []string{"*.go", "prompts/*.md"} {
-		matches, err := filepath.Glob(filepath.Join(dir, pattern))
-		if err != nil {
-			return "", err
-		}
-		for _, m := range matches {
-			if !strings.HasSuffix(m, "_test.go") {
-				paths = append(paths, m)
-			}
-		}
-	}
-	if len(paths) == 0 {
-		return "", fmt.Errorf("%s holds no reviewer file: give the --repo the instance is built from", dir)
-	}
-	h := sha256.New()
-	for _, path := range paths {
+	var files []BundleFile
+	add := func(path string) error {
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return "", err
+			return err
 		}
-		rel, _ := filepath.Rel(dir, path)
-		fmt.Fprintf(h, "%s %d\n", filepath.ToSlash(rel), len(data))
-		h.Write(data)
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		files = append(files, BundleFile{Path: filepath.ToSlash(rel), SHA256: sha256Hex(data)})
+		return nil
 	}
-	return hex.EncodeToString(h.Sum(nil)), nil
+	addMatches := func(dir string, patterns ...string) error {
+		for _, pattern := range patterns {
+			matches, err := filepath.Glob(filepath.Join(root, filepath.FromSlash(dir), pattern))
+			if err != nil {
+				return err
+			}
+			for _, m := range matches {
+				if strings.HasSuffix(m, "_test.go") {
+					continue
+				}
+				if err := add(m); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	if err := addMatches(reviewerDir, "*.go", "prompts/*.md"); err != nil {
+		return "", err
+	}
+	if len(files) == 0 {
+		return "", fmt.Errorf("%s holds no reviewer file: give the --repo the instance is built from", filepath.Join(root, filepath.FromSlash(reviewerDir)))
+	}
+	if err := addMatches(plainWordsDir, "*.go"); err != nil {
+		return "", err
+	}
+	skill := filepath.Join(root, filepath.FromSlash(plainWordsDir), "skill")
+	if err := filepath.WalkDir(skill, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return err
+		}
+		return add(path)
+	}); err != nil {
+		return "", fmt.Errorf("reading the plain-words skill the reviewer is built from (give the --repo the instance is built from): %w", err)
+	}
+	bundle, err := bundleFiles(filepath.Join(root, "packages", "envoy"))
+	if err != nil {
+		return "", fmt.Errorf("reading the writing check's bundle the reviewer is built from (give the --repo the instance is built from): %w", err)
+	}
+	for _, f := range bundle {
+		files = append(files, BundleFile{Path: "packages/envoy/" + f.Path, SHA256: f.SHA256})
+	}
+	return filesDigest(files), nil
 }
 
 // localAgentToken is the agent bearer e2e/run-server.sh pins.
@@ -96,18 +131,6 @@ var (
 	localEnvoyLine  = regexp.MustCompile(`Fake Envoy: live sessions GET (http://127\.0\.0\.1:\d+)/v1/sessions`)
 	settingName     = regexp.MustCompile(`^DISPATCH_[A-Z0-9_]+$`)
 )
-
-// repoRoot is the nearest directory at or above dir that holds packages/dispatch/e2e/local-instance.ts.
-func repoRoot(dir string) (string, error) {
-	for d := dir; ; d = filepath.Dir(d) {
-		if _, err := os.Stat(filepath.Join(d, "packages", "dispatch", "e2e", "local-instance.ts")); err == nil {
-			return d, nil
-		}
-		if filepath.Dir(d) == d {
-			return "", fmt.Errorf("no directory at or above %s holds packages/dispatch/e2e/local-instance.ts: give --repo", dir)
-		}
-	}
-}
 
 // databaseURL is dsn with its database replaced by name.
 func databaseURL(dsn, name string) (string, error) {
@@ -256,7 +279,7 @@ func runLocal(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		if err != nil {
 			return fail(err)
 		}
-		if root, err = repoRoot(wd); err != nil {
+		if root, err = dirAbove(wd, "packages/dispatch/e2e/local-instance.ts", "give --repo"); err != nil {
 			return usage(err.Error())
 		}
 	}

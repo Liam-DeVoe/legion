@@ -751,10 +751,11 @@ func markKeptWritePosted(id string, marked *atomic.Bool) store.BeforeCommit {
 
 // replayAnswerOf is the answer a held reply's write gets: the reply route's own shape, built
 // from what the hold stored under the reserved id, and, where the hold's dry run ran the route
-// (dry, never nil), from the reply it wrote: a comment reply's issue or document, the comment it
-// replies to, its ask, turn, anchor and mentions, the block it replies to and the text it answers;
-// a message reply's issue, target and the block it replies to. A reply answered again, which runs
-// no dry run, states what the hold stored alone.
+// (dry, never nil), from the reply it wrote: a comment reply's issue or document, and what a held
+// comment states of its dry run (heldCommentWrites); a message reply's issue, target and the
+// message it answers, a follow-up's being the first reply it is filed under, and what a held
+// message states of its dry run (heldMessageWrites). A reply answered again, which runs no dry
+// run, states what the hold stored alone.
 func replayAnswerOf(kind reviewer.Kind, replay heldReplay, id string, actor model.Actor, at time.Time, dry *heldDryRun, trees bool) any {
 	parent := replay.Subject.InReplyTo
 	if kind == reviewer.KindComment {
@@ -770,12 +771,8 @@ func replayAnswerOf(kind reviewer.Kind, replay heldReplay, id string, actor mode
 			comment.IssueKey = &replay.Subject.IssueKey
 		}
 		if wrote := dry.comment; wrote != nil {
-			comment.IssueKey, comment.ArtifactID, comment.ReplyTo, comment.AskID = wrote.IssueKey, wrote.ArtifactID, wrote.ReplyTo, wrote.AskID
-			comment.Turn, comment.Anchor, comment.Answers = wrote.Turn, heldAnchor(wrote.Anchor), wrote.Answers
-			comment.ReplyBlock, comment.RepliesToBlock = wrote.ReplyBlock, wrote.RepliesToBlock
-			if wrote.Mentions != nil {
-				comment.Mentions = wrote.Mentions
-			}
+			comment.IssueKey, comment.ArtifactID = wrote.IssueKey, wrote.ArtifactID
+			heldCommentWrites(&comment, wrote)
 		}
 		return commentWriteResponse{shapedComment: newShapedComment(comment, trees)}
 	}
@@ -788,7 +785,7 @@ func replayAnswerOf(kind reviewer.Kind, replay heldReplay, id string, actor mode
 	}
 	if wrote := dry.message; wrote != nil {
 		message.IssueKey, message.Target, message.InReplyTo = wrote.IssueKey, wrote.Target, wrote.InReplyTo
-		message.ReplyBlock, message.RepliesToBlock = wrote.ReplyBlock, wrote.RepliesToBlock
+		heldMessageWrites(&message, wrote)
 	}
 	return replyRead{shapedMessage: newShapedMessage(message, trees)}
 }

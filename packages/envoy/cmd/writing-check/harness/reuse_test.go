@@ -1,15 +1,16 @@
 package harness
 
-// The tests of test handoff version 4's findings and the class audit's instances in the harness: a
-// run reuses earlier results only under the digests of every input that changes them, a second
-// `harness local` on one --out is refused, a credential goes over clear text only inside the
-// cluster, and the pacer charges a call as modelpace does.
+// The harness's reuse of earlier results and its refusals: a run reuses earlier results only under
+// the digests of every input that changes them, a second `harness local` on one --out is refused,
+// a credential goes over clear text only inside the cluster, and the pacer charges a call as
+// modelpace does (dispatch://INFRA-3231).
 
 import (
 	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -59,22 +60,14 @@ func TestWriterDigestChangesWithTheRefusalLines(t *testing.T) {
 	}
 }
 
-// The reviewer's digest moves with a prompt of the reviewer the instance is built from, and the
-// settings a change's run records hold it.
+// The reviewer's digest moves with a prompt of the reviewer the instance is built from, and not
+// with a test file, and the settings a change's run records hold it.
 func TestTheReviewerDigestMovesWithAReviewerPrompt(t *testing.T) {
-	root := t.TempDir()
-	dir := filepath.Join(root, filepath.FromSlash(reviewerDir))
-	if _, err := reviewerDigest(root); err == nil {
+	if _, err := reviewerDigest(t.TempDir()); err == nil {
 		t.Error("a root with no reviewer has a digest")
 	}
-	if err := os.MkdirAll(filepath.Join(dir, "prompts"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	for name, data := range map[string]string{"rules.go": "package reviewer\n", "prompts/rules.md": "Name the fact.\n", "rules_test.go": "package reviewer\n"} {
-		if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(name)), []byte(data), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
+	root := reviewerRoot(t)
+	dir := filepath.Join(root, filepath.FromSlash(reviewerDir))
 	before, err := reviewerDigest(root)
 	if err != nil {
 		t.Fatal(err)
@@ -95,6 +88,66 @@ func TestTheReviewerDigestMovesWithAReviewerPrompt(t *testing.T) {
 	if got := (LocalInstance{ReviewerSHA256: after}).readSettings()["reviewer_sha256"]; got != after {
 		t.Errorf("the settings a run records hold reviewer_sha256 %q, want %q", got, after)
 	}
+}
+
+// The reviewer's digest moves with a file of the plain-words skill its rule sets and the written
+// rules are cut from, and with a file of the writing check's bundle its detector rule set runs:
+// each changes what the reviewer finds.
+func TestTheReviewerDigestMovesWithThePlainWordsSkillAndTheBundle(t *testing.T) {
+	root := reviewerRoot(t)
+	before, err := reviewerDigest(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{
+		plainWordsDir + "/skill/SKILL.md",
+		plainWordsDir + "/skill/references/patterns.md",
+		"packages/envoy/internal/dispatch/writingcheck/reader/prompt.md",
+	} {
+		if err := os.WriteFile(filepath.Join(root, filepath.FromSlash(name)), []byte("Changed.\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		after, err := reviewerDigest(root)
+		if err != nil || after == before {
+			t.Errorf("a changed %s gave %s (%v), the digest before it", name, after, err)
+		}
+		before = after
+	}
+}
+
+// reviewerRoot is a repository root that holds one file of each part reviewerDigest reads: the
+// reviewer's code, a test of it and a prompt, package plainwords and its skill, and each part of
+// the writing check's bundle.
+func reviewerRoot(t *testing.T) string {
+	t.Helper()
+	files := map[string]string{
+		reviewerDir + "/rules.go":                       "package reviewer\n",
+		reviewerDir + "/rules_test.go":                  "package reviewer\n",
+		reviewerDir + "/prompts/rules.md":               "Name the fact.\n",
+		plainWordsDir + "/plainwords.go":                "package plainwords\n",
+		plainWordsDir + "/skill/SKILL.md":               "Say what changed.\n",
+		plainWordsDir + "/skill/references/patterns.md": "Name the owner.\n",
+	}
+	for _, part := range bundleParts {
+		names := part.files
+		if names == nil {
+			names = []string{"part.go"}
+		}
+		for _, name := range append(slices.Clone(names), part.extra...) {
+			files["packages/envoy/"+part.dir+"/"+name] = "package part\n"
+		}
+	}
+	root := t.TempDir()
+	for name, data := range files {
+		path := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return root
 }
 
 // phrases-labels reuses its results only for the labels' bytes they were graded from: labels

@@ -301,10 +301,6 @@ jobs:
           restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) || '' }}
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
-      # why: .github/ci-notes/dispatch-browser.md#why-the-two-process-job-builds-contracts
-      - name: Build contracts for dispatch e2e
-        run: bun run build:dispatch
-        working-directory: packages/contracts
       - name: Build the Dispatch server
         # why: .github/ci-notes/dispatch-browser.md#why-the-two-process-job-builds-the-dispatch-server-itself
         run: go build -o ./dispatch-e2e ./cmd/dispatch
@@ -378,10 +374,6 @@ jobs:
           restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-{0}-{1}-', runner.os, runner.arch) || '' }}
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
-      - name: Build contracts for dispatch e2e
-        # why: .github/ci-notes/dispatch-browser.md#why-the-embedder-job-builds-contracts
-        run: bun run build:dispatch
-        working-directory: packages/contracts
       - name: Build the Dispatch server for the embedder lane
         # why: .github/ci-notes/dispatch-browser.md#why-the-embedder-jobs-server-build-carries-the-lane-in-its-name
         run: go build -o ./dispatch-e2e ./cmd/dispatch
@@ -445,10 +437,6 @@ jobs:
           restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-{0}-{1}-', runner.os, runner.arch) || '' }}
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
-      - name: Build contracts for dispatch e2e
-        # why: .github/ci-notes/dispatch-browser.md#why-the-ask-card-job-builds-contracts
-        run: bun run build:dispatch
-        working-directory: packages/contracts
       - name: Build the Dispatch server for the ask-card lane
         # why: .github/ci-notes/dispatch-browser.md#why-the-ask-card-jobs-server-build-carries-the-lane-in-its-name
         run: go build -o ./dispatch-e2e ./cmd/dispatch

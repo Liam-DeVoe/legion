@@ -838,10 +838,12 @@ function isStoredKeyStatus(status: number): boolean {
  * empty or not JSON-typed where its status carries one (`notJson`), or it lacks exactly this
  * request's key after an earlier answer of the call carried it (`keyEchoed`), since Dispatch's
  * keyed layer answers every keyed write with the key once it reads it (`keyedWrites`,
- * request_keys.go), but for the answer of a write Dispatch kept beside a held text
- * (`keptAnswer`): Dispatch keeps an upload to a held issue before that layer runs
- * (`routeHandler`, server.go), so that 202 carries no key. A 2xx whose body is not the JSON it
- * says it is was cut short on the way (`body-malformed`). After the retries (`retriesUnderKey`,
+ * request_keys.go). The answer of a write Dispatch kept beside a held text (`keptAnswer`) is
+ * `applied` with or without the key: Dispatch keeps such a write inside that layer
+ * (`awaitHeldTarget`, `routeHandler` in server.go), so its 202 names the key as every keyed
+ * answer does, and its body, the kept write's id and `held` alone, is Dispatch's own whatever
+ * header it carries. A 2xx whose body is not the JSON it says it is was cut short on the way
+ * (`body-malformed`). After the retries (`retriesUnderKey`,
  * `409 KEY_IN_FLIGHT` among them), a non-2xx is final (`judged`) when:
  * - it carries `Idempotency-Replayed: ?1`, a stored replay or a recovery replay;
  * - it is `409 KEY_COMMITTED`, a write that landed (`#payloadOf` throws it as landed);

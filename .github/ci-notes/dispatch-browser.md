@@ -357,18 +357,20 @@ refusal would otherwise surface in a stack's own log, far from this cause.
 
 ## Why every job that runs the suite builds contracts first
 
-WHY EVERY JOB THAT RUNS THE SUITE CARRIES THIS STEP. Playwright loads
+WHY EVERY JOB THAT RUNS THE SUITE BUILDS CONTRACTS FIRST. Playwright loads
 packages/dispatch/e2e/playwright.config.ts before it runs anything of this suite's own,
 and that config imports e2e/api.ts, which imports `@legion/contracts`. Playwright's
 runner is Node, which takes that package's `default` export condition - `dist/`, which is
 gitignored - so a checkout that has never built it dies while the config loads, with
 `Cannot find module @legion/contracts/dist/index.js`. No hook of the suite can be early
 enough: `globalSetup` runs after the config has loaded. A workstation gets the build from
-`bun run e2e`, which carries `build:contracts`; a job that runs Playwright itself needs
-this step. It runs `build:dispatch`, the contracts entries Dispatch imports and no other
-(ci-job-dispatch-ui.yaml's `Build contracts for the suites that spawn Playwright` says
+`bun run e2e`, which carries `build:contracts`, and so do the embedder and ask-card jobs,
+whose browser steps run `bun run e2e:embedder` and `bun run e2e`; a job that runs Playwright
+itself needs this step. It runs `build:dispatch`, the contracts entries Dispatch imports and no
+other (ci-job-dispatch-ui.yaml's `Build contracts for the suites that spawn Playwright` says
 how that list grows), so it compiles no module the dispatch_browser filter's listed
-block leaves out - not ./legion-api, which no row loads.
+block leaves out - not ./legion-api, which no row loads. packages/dispatch's
+`build:contracts` runs the same `build:dispatch`.
 
 ## What the shard job's PostgreSQL reading records, and why it is a script
 
@@ -794,13 +796,6 @@ go-envoy-test, restored only, for the reason the binaries job's step of this nam
 this job builds the Dispatch server and the dev OIDC issuer, which only that family's
 entry holds. It saves none.
 
-## Why the two-process job builds contracts
-
-The shard job's step of this name, for the reason it gives: Playwright's Node runner
-reads `@legion/contracts` out of a build this checkout has to make before the config
-loads, and the entries Dispatch imports are all it needs. `bun run e2e:multiprocess`
-in the "Browser-test dispatch dashboard against two server processes" step makes the same build again (packages/dispatch's build:contracts).
-
 ## Why the two-process job builds the Dispatch server itself
 
 run-server.sh builds it too, inside the harness's boot wait for each server
@@ -915,13 +910,6 @@ added that job's two steps for it at that job's figures: the pull at 120 s and t
 connections read at its two-minute floor. 4 + 4 + 2 min plus 135 s and 120 s = 14 min 15 s
 -> 15 min.
 
-## Why the embedder job builds contracts
-
-The e2e helpers the specs import read some of contracts' values from its built dist/,
-through Playwright's own Node resolution (the shard job's step of the same name), which
-takes the entries Dispatch imports alone. `bun run e2e:embedder`, the "Browser-test the bar's two tiers against a counting embedder" step, makes the same
-build again (packages/dispatch's build:contracts).
-
 ## Why the embedder job's server build carries the lane in its name
 
 run-server.sh builds it too, inside the harness's boot wait; built here, the server
@@ -972,14 +960,6 @@ the harness's Postgres added the embedder job's two steps at that job's figures:
 120 s and the connections read at its two-minute floor. The browser step now also starts the
 stack's container, which those runs did not measure. 4 + 5 + 2 min plus 170 s and 120 s =
 15 min 50 s -> 16 min.
-
-## Why the ask-card job builds contracts
-
-The e2e helpers the specs import read some of contracts' values from its built dist/,
-through Playwright's own Node resolution (the shard job's step of the same name), which
-takes the entries Dispatch imports alone. `bun run e2e`, in the
-"Browser-test the ask card against the stand-in model" step, makes the same build again
-(packages/dispatch's build:contracts).
 
 ## Why the ask-card job's server build carries the lane in its name
 

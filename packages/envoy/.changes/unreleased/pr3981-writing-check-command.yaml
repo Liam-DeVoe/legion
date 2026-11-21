@@ -10,11 +10,12 @@ body: |-
   dataset against a local Dispatch, with a fresh reader and a Claude grader, and reports each
   score's interval, wait and cost. The harness, the dataset steps (`export-sessions.sh` among
   them), `fetch`, `readers`, `group`, `plant`, `label`, `recall` and `score` refuse to write their
-  output inside a repository, and a refused `dataset build`, `dataset sessions`, `dataset named`
-  or `dataset followups` leaves its output as it was: an earlier run's files stay, and an output
-  directory that did not exist is not left behind. A run that continues earlier results (`label
-  --resume`, `fetch --resume`, `readers --state`, `dataset fetch`, `dataset classify`, `harness
-  score` and `harness phrases-labels`) reuses them only under the same inputs, by their digests,
+  output inside a repository, and a refused `dataset build`, `dataset sessions`, `dataset named`,
+  `dataset owner-texts` or `dataset followups` leaves its output as it was: an earlier run's files
+  stay, and an output directory that did not exist is not left behind. A run that continues
+  earlier results (`label --resume`, `fetch --resume`, `readers --state`, `dataset fetch`,
+  `dataset classify`, `harness score` and `harness phrases-labels`) reuses them only under the
+  same inputs, by their digests,
   and refuses or redoes the rest; a run whose model calls failed or stopped (`probe-model`, `label`,
   `regress`) exits 1; and every command sends a key or a token over http only to a host inside the
   machine or the cluster. The harness's model calls escape

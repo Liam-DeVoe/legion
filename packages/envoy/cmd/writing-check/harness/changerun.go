@@ -86,9 +86,9 @@ func ruleSetList(sets []reviewer.RuleSet) string {
 }
 
 // readSettings are what a change reads of the local Dispatch, as the instance runs it: each
-// setting's value, or its default where the instance sets none, and the digest of the reviewer's
-// prompts and code it was built from (LocalInstance.ReviewerSHA256), so a run that continues
-// reuses no review made under other reviewer texts.
+// setting's value, or its default where the instance sets none, and the digest of the files its
+// reviewer was built from (LocalInstance.ReviewerSHA256), so a run that continues reuses no
+// review made under other reviewer texts or rules.
 func (inst LocalInstance) readSettings() map[string]string {
 	out := map[string]string{"database": inst.Database, "reviewer_sha256": inst.ReviewerSHA256}
 	for name, fallback := range localSettingDefaults {

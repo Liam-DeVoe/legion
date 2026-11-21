@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -51,15 +50,13 @@ func runValidate(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "validate: FAIL\n- the description file does not parse against the schema: %v\n", err)
 		return 1
 	}
-	logged, err := readExposures(*logPath)
+	// readExposures reads a log that does not exist as one with no run, and says it is missing;
+	// validateDescription refuses that where a run of the final-test set would show in the log.
+	logged, logMissing, err := readExposures(*logPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "writing-check validate: %v\n", err)
 		return 1
 	}
-	// readExposures reads a log that does not exist as one with no run; validateDescription
-	// refuses that where a run of the final-test set would show in the log.
-	_, statErr := os.Stat(*logPath)
-	logMissing := errors.Is(statErr, os.ErrNotExist)
 	if logMissing {
 		fmt.Fprintf(stdout, "exposure log: %s does not exist (read as no run)\n", *logPath)
 	} else {
