@@ -1478,11 +1478,11 @@ const legionProviderError = z.strictObject({
  * whose turn this was, absent for a turn of no task: the report that names the claim's taken task
  * finishes it, unless it carries `providerError`, which keeps the task under its number and starts
  * the wait before its value is written again (contract 207). `held` is the number of the accepted
- * take whose text the producer still held unrun when this turn ended — it was answered that take
- * during the turn — absent for none: this turn was not that take's, which puts the take back to
- * await its own turn even where the daemon has lost its count of the process's turns (a daemon
- * restarted under the process). It is optional: a report without it is read as before, and none is
- * refused for lacking it. */
+ * take whose text had not run when this turn ended — the producer was answered that take during
+ * the turn, or began the turn with its text and the agent never took it — absent for none: this
+ * turn was not that take's, which puts the take back to await its own turn even where the daemon
+ * has lost its count of the process's turns (a daemon restarted under the process). It is
+ * optional: a report without it is read as before, and none is refused for lacking it. */
 const turnOutcomeFields = {
   generation: z.number().int().positive(),
   sequence: z.number().int().positive(),

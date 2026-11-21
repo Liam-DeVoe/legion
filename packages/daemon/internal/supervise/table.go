@@ -611,10 +611,11 @@ type RequestExit struct {
 // the report that names the pending task's number is what finishes it (finishTask), and one that
 // names another number, or none, finishes nothing. ProviderError is the provider error the turn
 // ended in, nil for none, which keeps the task under its number and starts the ladder's wait
-// (providerErrored). Held is the number of the accepted take whose text the producer still held
-// unrun at this turn's end, 0 for none or a producer that does not say (claim.TurnOutcomeRequest):
-// this turn was not that take's, which the daemon reads where its own count of the process's
-// turns cannot say it (notTheTakesTurn, heldUnrun).
+// (providerErrored). Held is the number of the accepted take whose text had not run at this
+// turn's end, the producer still holding it or the agent never having taken it, 0 for none or a
+// producer that does not say (claim.TurnOutcomeRequest): this turn was not that take's, which the
+// daemon reads where its own count of the process's turns cannot say it (notTheTakesTurn,
+// heldUnrun).
 //
 // None of them is fenced by generation. A report naming a generation the claim has left is not
 // stale: it is a turn of that generation, which belongs in its own place in the order the run is

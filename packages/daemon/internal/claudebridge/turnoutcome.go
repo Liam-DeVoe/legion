@@ -68,11 +68,12 @@ func newTurnReports(ctx context.Context, d *daemonLink, refused func(task uint64
 }
 
 // turnEnded reports the turn the bridge has just ended: the task whose turn it was, 0 for a turn of
-// no task; held, the number of the take the daemon accepted during that turn whose text the
-// bridge holds unrun for a turn of its own (bridge.held), 0 for none, which tells the daemon
-// for certain that this turn was not that take's (claim.TurnOutcomeRequest.Held); and refused,
-// with how the provider failed it, when a step of it failed, and clean otherwise. It takes the
-// next sequence and returns at once.
+// no task; held, the number of the take whose text did not run in that turn — one the daemon
+// accepted during it, whose text the bridge holds for a turn of its own (bridge.held), or the task
+// whose text the turn began with and Claude Code never took (result) — 0 for none, which tells the
+// daemon for certain that this turn was not that take's (claim.TurnOutcomeRequest.Held); and
+// refused, with how the provider failed it, when a step of it failed, and clean otherwise. It
+// takes the next sequence and returns at once.
 func (r *turnReports) turnEnded(task, held uint64, refusal *claim.ProviderError) {
 	if r == nil {
 		return

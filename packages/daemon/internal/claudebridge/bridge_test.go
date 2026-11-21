@@ -2276,10 +2276,12 @@ func TestTakeOfANewerRevisionBeforeClaudeCodeTakesTheTextHandsNothingMore(t *tes
 // The plan's decision 9 in the bridge: the task's text has reached Claude Code only once Claude
 // Code re-emits it (--replay-user-messages), as an Envoy delivery has. A task's turn that ends with
 // no echo of the task's own text is a text Claude Code dropped: that turn is reported naming no
-// task, which puts the take back on the daemon (decision 8), nothing is held finished, and the
-// number is taken again at its value's next revision, whose accepted text is written once, at
-// idle, and runs once, re-emitted, its turn's report naming the number. An Envoy delivery's echo
-// in the dropped text's turn is no echo of the task's.
+// task and naming the task's number held, since the text never ran in it, which puts the take back
+// on the daemon (decision 8) also where the daemon's count of the process's turns is not known;
+// nothing is held finished, and the number is taken again at its value's next revision, whose
+// accepted text is written once, at idle, and runs once, re-emitted, its turn's report naming the
+// number and nothing held. An Envoy delivery's echo in the dropped text's turn is no echo of the
+// task's.
 func TestATaskTextClaudeCodeDoesNotReEmitIsTakenAgainAndRunsOnce(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -2314,8 +2316,8 @@ func TestATaskTextClaudeCodeDoesNotReEmitIsTakenAgainAndRunsOnce(t *testing.T) {
 				}
 			}
 			r.untilTurnEnds()
-			if report := d.reportOf(1); report.Task != 0 {
-				t.Fatalf("the turn whose text Claude Code never re-emitted was reported %+v, want a turn of no task", report)
+			if report := d.reportOf(1); report.Task != 0 || report.Held != testTask {
+				t.Fatalf("the turn whose text Claude Code never re-emitted was reported %+v, want a turn of no task holding task %d", report, testTask)
 			}
 			r.logged("Claude Code ended task 7's turn without re-emitting its text")
 			r.quiet()
@@ -2325,8 +2327,8 @@ func TestATaskTextClaudeCodeDoesNotReEmitIsTakenAgainAndRunsOnce(t *testing.T) {
 			r.handTask(testTask, 2)
 			r.expect("agent_start", nil)
 			r.untilTurnEnds()
-			if report := d.reportOf(2); report.Task != testTask {
-				t.Fatalf("the turn of the text taken again was reported %+v, want the turn of task %d", report, testTask)
+			if report := d.reportOf(2); report.Task != testTask || report.Held != 0 {
+				t.Fatalf("the turn of the text taken again was reported %+v, want the turn of task %d holding nothing", report, testTask)
 			}
 			// That turn's report finishes the task: a later revision of its number runs nothing.
 			r.handTask(testTask, 3)

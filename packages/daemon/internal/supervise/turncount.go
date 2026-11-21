@@ -48,10 +48,12 @@ const heldPassedOverLine = "supervise: a turn started that the producer said ran
 // text from the take's answer until the text starts a turn of its own — pi-shared's take holds it
 // through the run going when the answer came (task-take.ts, Accepted "held"), the Claude bridge
 // through the turn running then (take.go, bridge.held) — and a report sent before the answer
-// reached it names nothing held. So every report naming the take held is of a turn that ended
-// before the take's own turn began, and none is of a turn that ran the text, whatever the count
-// says or whenever the report comes: that is what makes the word exact, where a count lost to a
-// restart is a guess.
+// reached it names nothing held; the Claude bridge names the take held, too, for a turn it began
+// with the text that Claude Code never took, a text it writes again only at the value's next
+// revision (take.go). So every report naming the take held is of a turn that ended before the
+// take's own turn began, and none is of a turn that ran the text, whatever the count says or
+// whenever the report comes: that is what makes the word exact, where a count lost to a restart
+// is a guess.
 //
 // What the word does not say is whether the take's own turn has started by the time the report
 // comes: a start the machine saw after the reported turn's end may be it, and that turn's own

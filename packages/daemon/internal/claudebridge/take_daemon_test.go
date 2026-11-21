@@ -55,6 +55,12 @@ const (
 	// ladderFirstWait is the provider-error ladder's first wait (supervise's promptRetryDelay(1)),
 	// whose end writes the task's value again.
 	ladderFirstWait = 30 * time.Second
+	// crossSlashTask is a task's text Claude Code never takes: it begins with "/", so Claude Code
+	// runs it as a slash command and never re-emits it, as the stand-in's "/rename" does.
+	crossSlashTask = "/rename the task Claude Code runs as a slash command"
+	// crossTurnStartBound is R5's second bound where a test sets it (supervise's
+	// Timeouts.TurnStart): no other wait arms a timer for as long.
+	crossTurnStartBound = 25 * time.Minute
 )
 
 // A turn that ends in a provider error keeps the task under its number, and the ladder's wait ends
@@ -117,6 +123,57 @@ func TestTakeAcrossTheDaemonAndTheBridgeAfterAProviderErrorIsMadeOnce(t *testing
 	}
 }
 
+// A task's text Claude Code never takes leaves the turn the daemon gave the take a turn that was
+// not the take's, under a daemon restarted under the live process as well, whose count of the
+// process's turns is not known: the bridge reports that turn naming no task and naming the task's
+// number held, which gives the take its turn back (supervise's heldUnrun), and R5's second bound
+// then takes the task back and writes its value again, which the bridge takes. The report and
+// the turn's frames reach the machine in either order, and either way the take awaits its turn
+// once both have: a report ahead of the turn's start has that start given no take.
+//
+// The negative control is the bridge before R3-4, which reported that turn holding nothing: the
+// take keeps the turn the daemon gave it, no second bound is armed over it, and its value is
+// written no more.
+func TestATaskTextClaudeCodeNeverTookIsOfferedAgainAfterADaemonRestart(t *testing.T) {
+	d := startCrossDaemon(t, func(deps *supervise.Deps) { deps.Timeouts.TurnStart = crossTurnStartBound })
+	token, boot := d.launch()
+	registered := d.register(boot)
+	d.ready(token, registered)
+	m := d.restart(token)
+	b := startCrossBridge(t, d.server.URL, boot, registered.Generation)
+	b.handReady()
+
+	if err := m.Handle(d.ctx, supervise.RequestDeliver{Claim: token, Task: crossSlashTask}); err != nil {
+		t.Fatalf("queue the task: %v", err)
+	}
+	first := d.value(token)
+	b.handTask(first)
+	b.turn(t, d, m)
+	d.answered(t, "/legion/v1/claims/turn-outcome", 1)
+	m.Wait()
+
+	if p := m.Claim().Pending; p == nil || p.Number != first.Number || p.ConfirmedAt.IsZero() || p.TurnStarted {
+		t.Fatalf("after the turn Claude Code never took the text in, the claim holds %+v; want task %d's take awaiting its turn again", p, first.Number)
+	}
+	writes, takes := d.writes(token), d.posted("/legion/v1/claims/take")
+	if fired := d.clock.fire(crossTurnStartBound); fired != 1 {
+		t.Fatalf("%d timers of the second bound fired, want one", fired)
+	}
+	m.Wait()
+	if written := d.writes(token) - writes; written != 1 {
+		t.Fatalf("the end of the second bound wrote the task's value %d times, want once", written)
+	}
+	again := d.value(token)
+	if again.Number != first.Number || again.Revision <= first.Revision {
+		t.Fatalf("the value written again is %+v, want task %d at a revision after %d", again, first.Number, first.Revision)
+	}
+	b.handTask(again)
+	d.answered(t, "/legion/v1/claims/take", takes+1)
+	if texts := b.userTexts(t); len(texts) == 0 || texts[0] != crossSlashTask {
+		t.Fatalf("Claude Code read %q, want the task's text first", texts)
+	}
+}
+
 // crossDaemon is the daemon's claim routes over a real machine and store: the api server, served
 // over HTTP for the bridge, counting each request it answered by route.
 type crossDaemon struct {
@@ -124,6 +181,7 @@ type crossDaemon struct {
 	ctx     context.Context
 	store   *store.Store
 	runtime *fake.Runtime
+	conns   *fake.Conns
 	values  *supervisetest.TaskValues
 	clock   *ladderClock
 	claims  *crossClaims
@@ -133,18 +191,20 @@ type crossDaemon struct {
 	answers map[string]int
 }
 
-func startCrossDaemon(t *testing.T) *crossDaemon {
+// startCrossDaemon serves the routes over machines whose deps each of set shapes.
+func startCrossDaemon(t *testing.T, set ...func(*supervise.Deps)) *crossDaemon {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	st := testpg.CloneStore(t, "legion_claudebridge_test")
 	tokens := api.NewBootTokens(st)
 	rt := fake.NewRuntime()
+	conns := fake.NewConns()
 	values := supervisetest.NewTaskValues()
 	clock := &ladderClock{}
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
 	claims := &crossClaims{ctx: ctx, store: st, machines: map[claim.Token]*supervise.Machine{}, deps: supervise.Deps{
-		Runtime: rt, Conns: fake.NewConns(), Store: tokens.Recording(st), Specs: crossSpecs{}, Clock: clock, Log: quiet,
+		Runtime: rt, Conns: conns, Store: tokens.Recording(st), Specs: crossSpecs{}, Clock: clock, Log: quiet,
 		Limits: supervise.Limits{LaunchFailures: 3, PromptFailures: 3, PromptRetires: 2},
 		Timeouts: supervise.Timeouts{
 			Boot: time.Minute, RegistrationIntervals: 3, RPC: 5 * time.Second, Probe: 45 * time.Second, Stop: 10 * time.Second, LaunchBackoff: time.Millisecond,
@@ -154,12 +214,15 @@ func startCrossDaemon(t *testing.T) *crossDaemon {
 		RefreshGate:        supervise.NewRefreshGate(0),
 		TaskValues:         values,
 	}}
+	for _, s := range set {
+		s(&claims.deps)
+	}
 	routes := api.NewServer("127.0.0.1", 0, api.Options{
 		Supervisor: claims, BootTokens: tokens, Project: crossProject, Controller: st, Log: quiet,
 		Pool: st.Pool(), Record: record.NewStore(), Releaser: rt, Trees: st, ReleaseRecords: st, ClaimActivity: st,
 		PluginRelaunchable: true,
 	})
-	d := &crossDaemon{t: t, ctx: ctx, store: st, runtime: rt, values: values, clock: clock, claims: claims, answers: map[string]int{}}
+	d := &crossDaemon{t: t, ctx: ctx, store: st, runtime: rt, conns: conns, values: values, clock: clock, claims: claims, answers: map[string]int{}}
 	d.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		routes.Handler.ServeHTTP(w, r)
 		d.mu.Lock()
@@ -243,6 +306,29 @@ func (d *crossDaemon) machine(token claim.Token) *supervise.Machine {
 	if !ok {
 		d.t.Fatalf("no machine for %s", token)
 	}
+	return m
+}
+
+// restart is a daemon restarted under the claim's live process: the machine goes with what it
+// held in memory, its timers with it, and a new one is built from what the store holds, as a
+// daemon start builds one, whose count of the process's turns is not known; the shim then
+// connects to it again and says hello, its backlog whole.
+func (d *crossDaemon) restart(token claim.Token) *supervise.Machine {
+	d.t.Helper()
+	d.machine(token).Wait()
+	d.clock.dropAll()
+	m, err := supervise.NewMachine(d.claims.ctx, d.claims.deps, d.stored(token))
+	if err != nil {
+		d.t.Fatalf("rebuild the machine: %v", err)
+	}
+	d.claims.mu.Lock()
+	d.claims.machines[token] = m
+	d.claims.mu.Unlock()
+	d.conns.Register(token, fake.NewConn())
+	if err := m.Handle(d.ctx, supervise.StreamHello{Claim: token, Generation: m.Claim().Generation, BacklogWhole: true}); err != nil {
+		d.t.Fatalf("the shim's hello to the restarted daemon: %v", err)
+	}
+	m.Wait()
 	return m
 }
 
@@ -397,6 +483,16 @@ func (c *ladderClock) fire(after time.Duration) int {
 		timer.run()
 	}
 	return len(due)
+}
+
+// dropAll is every timer armed so far gone with the machine that armed it, as a daemon's stop
+// takes them.
+func (c *ladderClock) dropAll() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, timer := range c.timers {
+		timer.done = true
+	}
 }
 
 // crossBridge is the bridge of the claim's pane, run in this process over the package's stand-in

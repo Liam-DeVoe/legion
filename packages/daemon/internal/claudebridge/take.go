@@ -73,14 +73,18 @@ import (
 //     task's turn that ends with no echo of the task's own text — an Envoy delivery's echo in that
 //     turn is none — and that the provider did not fail is a text Claude Code dropped, as a step's
 //     result with no echo of the delivery it carried is a delivery it dropped (errNotTaken). That
-//     turn is reported naming no task (result), which puts the take back to awaiting its turn on
-//     the daemon (the plan's decision 8); nothing is held finished, and the number is taken again
-//     at its value's next revision, whose accepted text is written once, at idle, as Oh My Pi's
-//     take hands a text again after its host dropped one (packages/pi-shared/src/task-take.ts,
-//     hostDropped). A turn of the task the provider failed is reported naming the number with its
-//     provider error whether or not the echo came, so the daemon's provider-error ladder takes
-//     the task back and gives it again after its wait. A Claude
-//     Code that dropped every text written to it would go round that loop uncharged — the
+//     turn is reported naming no task and naming the number held (result,
+//     claim.TurnOutcomeRequest.Held): the text never ran in it, so it was not the take's turn,
+//     which puts the take back to awaiting its turn on the daemon (the plan's decision 8) also
+//     where the daemon's count of the process's turns is not known, as a text held through a
+//     turn does. Nothing is held finished, and the number is taken again at its value's next
+//     revision — the daemon writes one once it has taken the task back, as R5's second bound
+//     does for a take whose turn has not started — whose accepted text is written once, at idle,
+//     as Oh My Pi's take hands a text again after its host dropped one
+//     (packages/pi-shared/src/task-take.ts, hostDropped). A turn of the task the provider failed
+//     is reported naming the number with its provider error whether or not the echo came, so
+//     the daemon's provider-error ladder takes the task back and gives it again after its wait. A
+//     Claude Code that dropped every text written to it would go round that loop uncharged — the
 //     put-back, the text written again, and a turn of no cause each time, every turn's start and
 //     end resetting R5's count — which the plan states and leaves open: nothing measured says
 //     Claude Code drops a stdin message at all;
@@ -154,6 +158,24 @@ type takeAnswer struct {
 	call   *call
 	answer claim.TakeResponse
 	err    error
+}
+
+// taskRun is the task whose turn is running (startTask): its number, 0 for a turn of no task; the
+// text that turn began with; and whether Claude Code has re-emitted that text in the turn
+// (echoed). The text has reached Claude Code only then, and a task's turn that ends without it,
+// and that the provider did not fail, is reported as no task's, naming the task held (result). A
+// turn begins and ends with the zero value.
+type taskRun struct {
+	task  uint64
+	text  string
+	taken bool
+}
+
+// heldTake is a take the daemon accepted while a turn ran (bridge.held): the task's number and
+// the text its take was answered with, which starts a turn of its own once the turn ends.
+type heldTake struct {
+	number uint64
+	text   string
 }
 
 // owes is whether the claim is owed the task number: one above the highest number a task line or
@@ -359,10 +381,19 @@ func (b *bridge) takeAnswered(a takeAnswer) {
 // sent, or one accepted whose task has not started its turn yet.
 func (b *bridge) takePending() bool { return b.unasked() || b.asking != nil || b.held != nil }
 
+// heldNumber is the number of the take whose text is held for a turn of its own (bridge.held), 0
+// for none.
+func (b *bridge) heldNumber() uint64 {
+	if b.held == nil {
+		return 0
+	}
+	return b.held.number
+}
+
 // startTask starts the turn of the task number, whose accepted take answered text: a turn of the
 // bridge's own whose first user message is text, sent ahead of every queued delivery, and whose
-// outcome report names number once Claude Code has re-emitted text in it (echoed), and no task if
-// it never does (result). A delivery still queued is a later step of it.
+// outcome report names number once Claude Code has re-emitted text in it (echoed), and no task,
+// with number held, if it never does (result). A delivery still queued is a later step of it.
 func (b *bridge) startTask(number uint64, text string) {
 	b.log.Printf("task %d starts a turn", number)
 	b.startRun(text, nil)
