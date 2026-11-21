@@ -190,6 +190,19 @@ func TestAnAskEventReadWithNoBodyIsAFillBug(t *testing.T) {
 	}
 }
 
+// errNoRule is versionOf's answer for an event of a type versionRules holds no rule for.
+var errNoRule = errors.New("no keyword version rule reads this event type")
+
+// versionOf decodes e through the rule of its type as the first event of its item, which has no
+// version before it (noLatest): the version e starts, or started false where it starts none.
+func versionOf(e event) (v version, started bool, err error) {
+	decide, ok := versionRules[e.Type]
+	if !ok {
+		return version{}, false, fmt.Errorf("%w: %s", errNoRule, e.Type)
+	}
+	return decide(e, noLatest)
+}
+
 // captureScript is the script that captures this package's testdata.
 const captureScript = "testdata/capture.sh"
 

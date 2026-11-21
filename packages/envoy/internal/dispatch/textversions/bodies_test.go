@@ -3,9 +3,12 @@ package textversions
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -279,6 +282,79 @@ func TestAReversedPairOfCutEditsKeepsEachEditsText(t *testing.T) {
 			}
 			if stored != aBody || bodyFrom != bodyFromRow {
 				t.Fatalf("the row of A's edit holds %d bytes from %q, want A's whole %d bytes from %q", len(stored), bodyFrom, len(aBody), bodyFromRow)
+			}
+		})
+	}
+}
+
+// TestEachKindsPresentBodyStatementReadsNoPayloadItNeedNotRead holds what Postgres does with the
+// statement that reads each kind of post's present body (presentBodyReads) under the plan the
+// fill's connection may keep once it caches the statement, a generic one, which orders a
+// statement's conditions by their cost alone. A kind whose text no later event changes reads no
+// event: the statement's generic plan reads no events relation. A kind whose text later events
+// change unpacks the payload of no later event of another type: with its post's owner holding
+// 3,000 later events of another type, each with a payload of about 3 KB, which Postgres stores
+// out of line, the statement reads fewer buffers than one for each 2 of those events.
+//
+// That bound is stable, with a wide margin both ways. A buffer count does not depend on time or
+// on what the cache holds (the test sums buffers hit and read), only on how the rows lie on their
+// pages. Reading only the later events' types reads their rows, dozens to a page, and their
+// index: 77 buffers when this was written, 19 times under the bound. Unpacking each payload, as
+// the statement does with the payload's test outside the CASE, reads the out-of-line value's
+// index and pages for each event besides: 3 buffers an event, 9,077 in all, 6 times over it.
+func TestEachKindsPresentBodyStatementReadsNoPayloadItNeedNotRead(t *testing.T) {
+	database := storetest.Open(t)
+	textversionstest.SeedIssue(t, database)
+	broker := events.NewBroker()
+	for _, kind := range slices.Sorted(maps.Keys(presentBodyReads)) {
+		read := presentBodyReads[kind]
+		t.Run(kind, func(t *testing.T) {
+			if len(read.laterTypes) == 0 {
+				relations := genericPlan(t, database, read.sql).relations()
+				if len(relations) == 0 || slices.Contains(relations, "events") {
+					t.Fatalf("the generic plan of the %s statement reads relations %v; want its rows' table and no events", kind, relations)
+				}
+				return
+			}
+			if kind != kindComment {
+				t.Fatalf("the test writes a comment alone, and the text of a %s now changes after its event too (%v): write one of those", kind, read.laterTypes)
+			}
+			const later, otherType = 3000, "comment.resolved"
+			if slices.Contains(read.laterTypes, otherType) {
+				t.Fatalf("%s changes a %s's text, so its payload is read: pick another type", otherType, kind)
+			}
+			comment := writeComment(t, database, broker, "Rotate the staging key first.", false)
+			e := readLoggedEvents(t, database, comment.event)[0]
+			ctx := t.Context()
+			if _, err := database.Pool.Exec(ctx, `
+				insert into events (issue_key, seq, type, actor, payload, notify)
+				select $1, $2 + g, $3, '{"kind":"user","id":"alice"}',
+				       jsonb_build_object('id', $4::text, 'note',
+				         (select string_agg(md5(g::text || ':' || part::text), '') from generate_series(1, 96) part)),
+				       false
+				  from generate_series(1, $5::integer) g
+			`, e.IssueKey, e.Seq, otherType, comment.id, later); err != nil {
+				t.Fatalf("write the comment's later events: %v", err)
+			}
+			var outOfLine int64
+			if err := database.Pool.QueryRow(ctx,
+				`select pg_relation_size(reltoastrelid) from pg_class where oid = 'public.events'::regclass`).Scan(&outOfLine); err != nil {
+				t.Fatalf("measure the events' out-of-line values: %v", err)
+			}
+			if outOfLine < later*2048 {
+				t.Fatalf("the events' out-of-line values take %d bytes, under 2 KB for each of the %d later events, so their payloads are not stored out of line as the test needs",
+					outOfLine, later)
+			}
+
+			plan := analyzedGenericPlan(t, database, read, e, comment.id)
+			if plan.ActualRows != 1 {
+				t.Fatalf("the %s statement answered %v rows; want the comment's row, which no later event changes", kind, plan.ActualRows)
+			}
+			buffers := plan.SharedHit + plan.SharedRead
+			t.Logf("the %s statement read %d buffers past %d later events of another type", kind, buffers, later)
+			if buffers >= later/2 {
+				t.Fatalf("the %s statement read %d buffers past %d later events of another type; want fewer than %d, one for each 2 of them, as reading their types alone reads",
+					kind, buffers, later, later/2)
 			}
 		})
 	}
@@ -782,4 +858,89 @@ func loggedWarnings(t *testing.T, logs *bytes.Buffer) []map[string]string {
 		t.Fatalf("read the log: %v", err)
 	}
 	return warnings
+}
+
+// planNode is what the tests read of a node of a plan that explain (format json) answers: the
+// relation it reads, the buffers it and the nodes below it hit and read and the rows it answered
+// (with analyze and buffers), and the nodes below it, its subplans among them.
+type planNode struct {
+	Relation   string     `json:"Relation Name"`
+	SharedHit  int        `json:"Shared Hit Blocks"`
+	SharedRead int        `json:"Shared Read Blocks"`
+	ActualRows float64    `json:"Actual Rows"`
+	Plans      []planNode `json:"Plans"`
+}
+
+// relations is each relation p and the nodes below it read, in the plan's order.
+func (p planNode) relations() []string {
+	var relations []string
+	if p.Relation != "" {
+		relations = append(relations, p.Relation)
+	}
+	for _, below := range p.Plans {
+		relations = append(relations, below.relations()...)
+	}
+	return relations
+}
+
+// readPlan reads the plan of explained, what explain (format json) answers.
+func readPlan(t *testing.T, explained []byte) planNode {
+	t.Helper()
+	var plans []struct {
+		Plan planNode `json:"Plan"`
+	}
+	if err := json.Unmarshal(explained, &plans); err != nil || len(plans) != 1 {
+		t.Fatalf("read the plan %s: %v", explained, err)
+	}
+	return plans[0].Plan
+}
+
+// genericPlan is the generic plan of statement, the plan Postgres may keep for any arguments
+// once a connection caches the statement: explain (generic_plan), which takes the statement's
+// parameters with no values, so it is sent with no arguments, in the simple protocol.
+func genericPlan(t *testing.T, database *store.Store, statement string) planNode {
+	t.Helper()
+	connection, err := database.Pool.Acquire(t.Context())
+	if err != nil {
+		t.Fatalf("acquire a connection: %v", err)
+	}
+	defer connection.Release()
+	results, err := connection.Conn().PgConn().Exec(t.Context(), "explain (generic_plan, format json) "+statement).ReadAll()
+	if err != nil || len(results) != 1 || len(results[0].Rows) != 1 {
+		t.Fatalf("explain the generic plan of %s: %v", statement, err)
+	}
+	return readPlan(t, results[0].Rows[0][0])
+}
+
+// analyzedGenericPlan runs read's statement for post id, whose event e cut its body, as
+// presentBody runs it (presentBodyRead.arguments) under a generic plan, the plan the fill's
+// connection may keep once it caches the statement: prepared and executed under plan_cache_mode
+// force_generic_plan, with explain (analyze, buffers, format json). It answers the plan. execute
+// takes its arguments as literals, which format writes; the statement must read the later events,
+// whose five arguments it formats.
+func analyzedGenericPlan(t *testing.T, database *store.Store, read presentBodyRead, e event, id string) planNode {
+	t.Helper()
+	ctx := t.Context()
+	tx, _ := beginTransaction(t, database)
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if _, err := tx.Exec(ctx, `set local plan_cache_mode = force_generic_plan`); err != nil {
+		t.Fatalf("force generic plans: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `prepare present_body as `+read.sql); err != nil {
+		t.Fatalf("prepare the statement: %v", err)
+	}
+	var execute string
+	if err := tx.QueryRow(ctx,
+		`select format('explain (analyze, buffers, format json) execute present_body(%L, %L, %L, %s, %L)', $1::text, $2::text, $3::text, $4::integer, $5::text[])`,
+		read.arguments(e, id)...).Scan(&execute); err != nil {
+		t.Fatalf("write the statement's arguments: %v", err)
+	}
+	var explained []byte
+	if err := tx.QueryRow(ctx, execute).Scan(&explained); err != nil {
+		t.Fatalf("explain the statement: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `deallocate present_body`); err != nil {
+		t.Fatalf("deallocate the statement: %v", err)
+	}
+	return readPlan(t, explained)
 }

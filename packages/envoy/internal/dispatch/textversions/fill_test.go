@@ -357,6 +357,104 @@ func TestAFillStopsAtAnEventItsRulesCannotRead(t *testing.T) {
 	}
 }
 
+// TestAnIssueWithAnEmptyPrimaryDocumentIDHasVersionsThatNameNone writes an issue with no primary
+// document as the API writes one: its issue.created, and an issue.updated that retitles it, each
+// name "" as the issue's primary_artifact_id. Each starts a version that names no document
+// version, and the fill writes both and moves its cursor past them.
+func TestAnIssueWithAnEmptyPrimaryDocumentIDHasVersionsThatNameNone(t *testing.T) {
+	database := storetest.Open(t)
+	textversionstest.SeedIssue(t, database)
+	broker := events.NewBroker()
+	ctx := t.Context()
+	key := textversionstest.Issue
+	event := func(eventType, title string) model.Event {
+		return model.Event{IssueKey: &key, Type: eventType, Actor: model.Actor{Kind: "user", ID: "alice"},
+			Payload: map[string]any{"key": key, "title": title, "primary_artifact_id": ""}}
+	}
+	ids := textversionstest.CommitEvents(t, database, broker,
+		event("issue.created", "Rotate the signing keys"), event("issue.updated", "Rotate the signing keys, then audit"))
+
+	if err := FillToHorizon(ctx, database, events.NewHorizon(database.Pool)); err != nil {
+		t.Fatalf("the fill answered %v; want the issue's two versions written", err)
+	}
+	textversionstest.RequireOnlyRowsOf(t, database, textversionstest.OneEach(ids...))
+	var named int
+	if err := database.Pool.QueryRow(ctx, `
+		select count(*) from search_text_versions where spec_artifact_id is not null or spec_version is not null
+	`).Scan(&named); err != nil {
+		t.Fatalf("count the versions that name a document version: %v", err)
+	}
+	if named != 0 {
+		t.Fatalf("%d of the issue's versions name a document version; want none", named)
+	}
+	if got := readCursorRow(t, database).eventID; got != ids[len(ids)-1] {
+		t.Fatalf("the cursor is at event %d; want %d, the issue's last", got, ids[len(ids)-1])
+	}
+}
+
+// TestOnlyAnIDTheFillCastsMustBeAUUID holds each id a statement of the batch casts to uuid to
+// the rules: an issue's primary_artifact_id, an artifact.version's artifact_id and a cut post's
+// id. One that is not a uuid as Postgres reads one is a payload the rules cannot read, so the
+// fill writes the rows of every event before it and stops there, with an error that names it,
+// rather than failing a statement on every retry. A urn:uuid: id is one of them: uuid.Parse reads
+// it and Postgres does not. A whole post's id, which the fill never casts, need not be a uuid: its
+// version is written, and the fill moves past it.
+func TestOnlyAnIDTheFillCastsMustBeAUUID(t *testing.T) {
+	key := otherIssue
+	actor := model.Actor{Kind: "user", ID: "alice"}
+	issueEvent := func(eventType, primary string) model.Event {
+		return model.Event{IssueKey: &key, Type: eventType, Actor: actor,
+			Payload: map[string]any{"key": key, "title": "Audit the verifiers", "primary_artifact_id": primary}}
+	}
+	post := func(eventType, id string, cut bool) model.Event {
+		return model.Event{IssueKey: &key, Type: eventType, Actor: actor, Payload: map[string]any{
+			"id": id, "issue_key": key, "body": "The verifiers read the old key until Monday.", "body_truncated": cut}}
+	}
+	for _, test := range []struct {
+		name  string
+		event model.Event
+		stops bool
+	}{
+		{"an issue.created whose primary_artifact_id is no uuid", issueEvent("issue.created", "spec.md"), true},
+		{"an issue.updated whose primary_artifact_id is a urn:uuid:", issueEvent("issue.updated", "urn:uuid:"+uuid.NewString()), true},
+		{"an artifact.version whose artifact_id is no uuid", model.Event{IssueKey: &key, Type: "artifact.version", Actor: actor,
+			Payload: map[string]any{"artifact_id": "spec.md", "version": map[string]any{"number": 1, "size": 40}}}, true},
+		{"a cut comment.created whose id is no uuid", post("comment.created", "comment-1", true), true},
+		{"a cut message.created whose id is no uuid", post("message.created", "message-1", true), true},
+		{"a whole comment.created whose id is no uuid", post("comment.created", "comment-1", false), false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			database := storetest.Open(t)
+			textversionstest.SeedProject(t, database)
+			broker := events.NewBroker()
+			before := textversionstest.WriteIssue(t, database, broker, 1)
+			seedOtherIssue(t, database)
+			id := textversionstest.CommitEvents(t, database, broker, test.event)[0]
+			after := textversionstest.WriteIssue(t, database, broker, 3)
+
+			err := FillToHorizon(t.Context(), database, events.NewHorizon(database.Pool))
+			if !test.stops {
+				if err != nil {
+					t.Fatalf("the fill answered %v; want every event's rows written", err)
+				}
+				textversionstest.RequireOnlyRowsOf(t, database, slices.Concat(before, textversionstest.OneEach(id), after))
+				return
+			}
+			named := fmt.Sprintf("event %d (%s)", id, test.event.Type)
+			if !errors.Is(err, errUnreadablePayload) || !strings.Contains(err.Error(), named) {
+				t.Fatalf("the fill answered %v; want the rules' unreadable payload, naming %s", err, named)
+			}
+			textversionstest.RequireOnlyRowsOf(t, database, before)
+			if got := readCursorRow(t, database).eventID; got != before[len(before)-1].ID {
+				t.Fatalf("the cursor is at event %d; want %d, the event before the unreadable one", got, before[len(before)-1].ID)
+			}
+			if rows := textversionstest.RowsOf(t, database, after[0].ID); rows != 0 {
+				t.Fatalf("an event after the unreadable one has %d rows", rows)
+			}
+		})
+	}
+}
+
 // TestABatchCountsTheSpecMarkdownItsIssueRowsRead holds each batch, at the production bound of
 // 2 MB (batchBytes), to the text its vectors read, in three logs the fill writes from its first
 // event. What each batch reads the test measures itself, from the rows the batch wrote and the

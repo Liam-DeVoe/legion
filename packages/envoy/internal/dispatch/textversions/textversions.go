@@ -15,8 +15,6 @@ package textversions
 
 import (
 	"encoding/json"
-	"errors"
-	"fmt"
 	"time"
 )
 
@@ -38,9 +36,8 @@ type event struct {
 	// for an ask's event whose payload holds no question.
 	AskBody *string
 	// PayloadBytes and RowBodyBytes are what readEventsQuery counted of the event against the
-	// batch's bound: the bytes of its payload, for a type a rule reads, and the bytes of its
-	// present row's body, for a post whose event cut its body; 0 otherwise. decideVersions adds
-	// what the version the event starts reads besides.
+	// batch's bound (batchBytes): the bytes of its payload, for a type a rule reads, and of its
+	// present row's body, for a post whose event cut its body; 0 otherwise.
 	PayloadBytes, RowBodyBytes int64
 }
 
@@ -87,16 +84,3 @@ func noLatest(string, string) *version { return nil }
 // latest version. started is false for an event that changes none of the item's text, such as an
 // issue.updated that keeps the title.
 type rule func(e event, latest latestVersion) (v version, started bool, err error)
-
-// errNoRule is versionOf's answer for an event of a type versionRules holds no rule for.
-var errNoRule = errors.New("no keyword version rule reads this event type")
-
-// versionOf decodes e through the rule of its type as the first event of its item, which has no
-// version before it (noLatest): the version e starts, or started false where it starts none.
-func versionOf(e event) (v version, started bool, err error) {
-	decide, ok := versionRules[e.Type]
-	if !ok {
-		return version{}, false, fmt.Errorf("%w: %s", errNoRule, e.Type)
-	}
-	return decide(e, noLatest)
-}
