@@ -64,7 +64,6 @@ func TestATreeArchitectsFailedClaimIsNoticedAndHoldsNoPhase(t *testing.T) {
 // child's architect again (TestASubArchitectsFailedClaimTellsTheArchitectAboveIt).
 func TestAFinishedRolesFailedClaimIsNoticedAndHoldsNothing(t *testing.T) {
 	root := "LEGION-208"
-	until := time.Date(2026, 9, 26, 13, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
 		name      string
 		root      record.Issue
@@ -97,12 +96,6 @@ func TestAFinishedRolesFailedClaimIsNoticedAndHoldsNothing(t *testing.T) {
 			role: claim.RoleTester, wantPhase: phase.Held,
 			want: []record.OutboxPayload{record.Notice{Kind: "worker-died", Role: claim.RoleTester, Phase: phase.Held,
 				Reason: "the tester does not work LEGION-209's phase implementing; nothing is held"}},
-		},
-		{
-			name:  "the planner of a lingering tree",
-			root:  record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: "root", Phase: phase.Done, Generation: 1, Status: "done", Rank: "U", LingerUntil: &until},
-			child: record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Parent: &root, Project: "LEGION", Title: "child", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "V"},
-			role:  claim.RolePlanner, wantPhase: phase.Implementing,
 		},
 		{
 			name:  "the tester of a child that left the workflow",
@@ -700,5 +693,61 @@ func TestAnArchitectsClaimFailedHoldsNoIssueAndWritesNoHeldNotice(t *testing.T) 
 				t.Fatalf("notice rows = %+v, want %+v: no held notice is written for an architect", got, tc.want)
 			}
 		})
+	}
+}
+
+// A root a hand-over of the release before carried in held, from the phase whose worker's claim
+// failed, starts no worker at its promotion (StartCarriedRun): the hold's own retry is what starts
+// that worker again. Its own architect is told of the hold as a root's (HeldNotice), naming the
+// phase the hold came from and the role that works it (phase.RoleFor of a held phase, which is
+// never admitted), since the hold's first notice was routed in the tree it left.
+func TestACarriedRootHeldFromItsPhaseStartsNoWorkerAndTellsItsArchitectTheHold(t *testing.T) {
+	pool := migratedPool(t)
+	root := record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208",
+		Project: "LEGION", Title: "root", Phase: phase.Held, Hold: &record.Hold{From: phase.Testing, Reason: record.HoldEscalated},
+		Generation: 2, CarriedGeneration: 2, Status: "in_progress", Rank: "U", HandedOver: true, LastDispatchSeq: 1}
+	seedIssue(t, pool, root)
+	engine := testEngine(config.DesignGateRootIssues, nil)
+
+	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
+		return engine.StartCarriedRun(ctx, tx, root)
+	})
+
+	want := []record.OutboxPayload{record.Notice{Kind: "held", Role: claim.RoleTester, Phase: phase.Testing, Reason: string(record.HoldEscalated)}}
+	if got := noticeRows(t, pool); !sameNotices(got, want) {
+		t.Fatalf("notice rows = %+v, want %+v: the root's architect is told the hold, naming the tester's phase", got, want)
+	}
+	for _, start := range outboxOf(t, pool, string(record.OutboxKindSupervise)) {
+		if start.payload["op"] == "start" && start.payload["task"] != nil && start.payload["task"] != "" {
+			t.Fatalf("supervise row %+v hands out work, want none: a held root's worker is started by its hold's retry", start)
+		}
+	}
+	if got := storedIssue(t, pool, root.Key); got.Phase != phase.Held || got.Hold == nil || got.Hold.From != phase.Testing {
+		t.Fatalf("the carried root = phase %s, hold %+v; want it held from testing still", got.Phase, got.Hold)
+	}
+}
+
+// A held issue that a stop left and Dispatch shows back in work at a status other than todo comes
+// back held (ReturnToWork): the hold's retry is what starts the worker of the phase the hold came
+// from (phase.RoleFor of that phase, which is never admitted), so nothing hands that role work,
+// and the hold stays as it was.
+func TestAHeldIssueBackInWorkStaysHeldAndStartsNoWorkerOfItsHeldPhase(t *testing.T) {
+	pool := migratedPool(t)
+	hold := &record.Hold{From: phase.Testing, Reason: record.HoldEscalated}
+	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208",
+		Project: "LEGION", Title: "root", Phase: phase.Held, Hold: hold, Generation: 1, Status: "backlog", DispatchStatus: "backlog",
+		Rank: "U", HandedOver: true, LastDispatchSeq: 1})
+	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleTester, Claim: "tester"})
+
+	applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))("back", intake.DispatchIssue{Key: "LEGION-208", ResolvedRepo: "sjawhar/legion",
+		Seq: 2, Type: "issue.updated", Status: "in_progress", Title: "root", Rank: "U", HandedOver: true})
+
+	if got := storedIssue(t, pool, "LEGION-208"); got.Phase != phase.Held || got.Hold == nil || *got.Hold != *hold || got.Status != "in_progress" {
+		t.Fatalf("the returned issue = phase %s, status %s, hold %+v; want it held from testing, in_progress", got.Phase, got.Status, got.Hold)
+	}
+	for _, start := range outboxOf(t, pool, string(record.OutboxKindSupervise)) {
+		if start.payload["op"] == "start" && start.payload["role"] == string(claim.RoleTester) {
+			t.Fatalf("supervise row %+v starts the tester, want none: the hold's retry starts it", start)
+		}
 	}
 }

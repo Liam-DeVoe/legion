@@ -266,20 +266,41 @@ func TestEveryWayOutOfAStepEndsItsRun(t *testing.T) {
 		}
 		return fact
 	}
+	rootArchitect, err := claim.NewToken("legion", finishedRoot, claim.RoleArchitect)
+	if err != nil {
+		t.Fatal(err)
+	}
 	moves := map[string][]row{
 		"DispatchIssue": {
 			{name: "a person parks a child", arrange: none, fact: issueFact(planning, "backlog"), leaves: planning},
-			{name: "a person parks the root, and nothing under it stops", arrange: none, fact: issueFact(finishedRoot, "backlog"), leaves: finishedRoot},
-			{name: "a person sets a running child back to todo", arrange: none, fact: issueFact(planning, "todo"), leaves: planning},
+			// The root stands in merging, and a merge that can still land keeps its run though the
+			// root leaves Legion's work (workflow's runOver, mergeCanLand).
+			{name: "a person parks the root, and nothing under it stops", arrange: none, fact: issueFact(finishedRoot, "backlog"), keeps: finishedRoot},
+			// A todo on a running child keeps it in Legion's work: nothing of its step moves (R20 of
+			// dispatch://INFRA-3320; a todo opens a new run only on a record at done).
+			{name: "a person sets a running child back to todo", arrange: none, fact: issueFact(planning, "todo"), keeps: planning},
 			{name: "a person's todo on the closed root returns it to work", arrange: closed, fact: issueFact(finishedRoot, "todo")},
 		},
 		"BackwardMove": {{name: "the implementer moves its retro back", arrange: none,
 			fact: intake.BackwardMove{Issue: inRetro, Requester: claim.RoleImplementer, To: phase.Implementing, Reason: "redo"}, leaves: inRetro}},
 		"SignOff": {{name: "the architect accepts a child", arrange: none, fact: intake.SignOff{Issue: inAccepting}, leaves: inAccepting}},
+		// close_child queues the close and moves nothing: the child keeps its step until Dispatch
+		// shows it done (R24 of dispatch://INFRA-3320, workflow's closeLanded).
+		"CloseChild": {{name: "the architect's close of a child keeps its step until Dispatch shows it done", arrange: none,
+			fact: intake.CloseChild{Issue: planning, Reason: "moot", Architect: rootArchitect}, keeps: planning}},
+		// Dispatch's refusal of a close the daemon queued moves nothing either: the issue keeps its
+		// phase and its run, and the close is written again once its children are done (R24).
+		"CloseRefused": {{name: "a refused close keeps the issue in its step", arrange: func(t *testing.T, pool *pgxpool.Pool, admission *Admission, engine intake.Handler) {
+			if _, err := intake.ApplyFact(context.Background(), pool, "api", "close-child", intake.CloseChild{Issue: planning, Reason: "moot", Architect: rootArchitect}, engine, admission); err != nil {
+				t.Fatalf("queue the close: %v", err)
+			}
+		}, source: "outbox", fact: intake.CloseRefused{Issue: planning, Generation: 1, Entry: 1, Children: []string{"LEGION-777 (todo)"}}, keeps: planning}},
+		// A member's merge queues its close and moves nothing: it leaves merging, and its step's
+		// run ends, once Dispatch shows it done (R24 of dispatch://INFRA-3320, workflow's closeLanded).
 		"PullRequestMerged": {{name: "a member's merge lands while the root is parked", arrange: func(t *testing.T, pool *pgxpool.Pool, admission *Admission, engine intake.Handler) {
 			seedAwaitingPullRequest(t, pool)
 			parked(t, pool, admission, engine)
-		}, source: "github", fact: intake.PullRequestMerged{Repo: "acme/widgets", Number: 5, MergeSHA: "merge-5", HeadSHA: "head-5"}, leaves: awaiting}},
+		}, source: "github", fact: intake.PullRequestMerged{Repo: "acme/widgets", Number: 5, MergeSHA: "merge-5", HeadSHA: "head-5"}, keeps: awaiting}},
 		// A head that conflicts with its base moves no issue (dispatch://INFRA-4374): the second
 		// read that confirms the conflict asks the implementer to merge the base forward while the
 		// merger keeps merging's step (workflow's mergeForward, which writes no transition), and
@@ -340,9 +361,17 @@ func TestEveryWayOutOfAStepEndsItsRun(t *testing.T) {
 					t.Fatalf("apply %s: %v", kind, err)
 				}
 				if tc.leaves != "" {
+					// The fact takes the issue out of its step either by moving it on, or by taking
+					// it out of Legion's work where it stands, which keeps its phase (R20 of
+					// dispatch://INFRA-3320) and ends the step's run.
 					after := issue(t, pool, tc.leaves)
-					if stepPlaces[record.StandsAt(after)] == stepPlaces[record.StandsAt(before)] && after.Generation == before.Generation {
-						t.Fatalf("%s left %s in %s at generation %d, want it out of the step it stood in", kind, tc.leaves, record.StandsAt(after), after.Generation)
+					var open int
+					if err := pool.QueryRow(context.Background(), `select count(*) from step_starts where issue = $1 and run = 'open'`, tc.leaves).Scan(&open); err != nil {
+						t.Fatalf("read the open runs of %s: %v", tc.leaves, err)
+					}
+					moved := stepPlaces[record.StandsAt(after)] != stepPlaces[record.StandsAt(before)] || after.Generation != before.Generation
+					if !moved && (record.InLegionsWork(after) || open != 0) {
+						t.Fatalf("%s left %s in %s at generation %d with %d open runs, want it out of the step it stood in", kind, tc.leaves, record.StandsAt(after), after.Generation, open)
 					}
 				}
 				if tc.keeps != "" {

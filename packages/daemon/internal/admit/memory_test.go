@@ -259,6 +259,9 @@ func TestADrawnTreeKeepsItsMemoryGroupThroughEveryLaterPass(t *testing.T) {
 	closed := issue(t, pool, root)
 	closed.Phase, closed.Status, closed.DispatchStatus = phase.Done, "done", "done"
 	putIssue(t, pool, closed)
+	// The pass after the close gives the closed root's row back (record.NeedsSlot), as the
+	// close's own pass does, so its new run waits in the line for a row like any first start.
+	tick(t, pool, admission, "closed")
 	apply(t, pool, admission, "root-again", intake.DispatchIssue{Key: root, ResolvedRepo: "acme/widgets", Seq: 5,
 		Type: "issue.updated", Status: "todo", Title: root, Rank: "A", HandedOver: handed}, engine)
 	if again := issue(t, pool, root); again.Generation != 2 || again.Status != "in_progress" {

@@ -2045,6 +2045,11 @@ type Store interface {
 	// has already passed. A key the walk reaches and the copy holds no row of reads as a row that
 	// is not Present, which ends that walk. ReadChains is its one reader.
 	ChainRows(ctx context.Context, tx pgx.Tx, project string, extra []string) ([]ChainRow, error)
+	// ChainRowsOf is ChainRows for a walk that starts from keys alone and no other issue, in one
+	// query whatever the chains' depth: the rows of each key's chain and no others, so a decision
+	// about one issue reads its own chain whatever the number of issues the project has at work.
+	// ReadChainsOf is its one reader.
+	ChainRowsOf(ctx context.Context, tx pgx.Tx, keys []string) ([]ChainRow, error)
 	// DispatchClaim is who the claims mirror shows holding key's claim (`<kind>:<id>`, "" for
 	// nobody), "" when it holds no claim of key. It reads the claim alone (PutDispatchClaim), with
 	// or without a mirrored row of the issue: a claim event applied before the issue's first row is

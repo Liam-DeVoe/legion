@@ -150,15 +150,17 @@ func TestAPersonsResolutionAndReplyAreRelayed(t *testing.T) {
 	}
 }
 
-// A person's reply on an ask of a parked child goes to the controller on the child's issue, naming
-// the tree's root.
+// A person's reply on an ask of a parked child — one a person moved out of Legion's work under a
+// parked root — goes to the controller on the child's issue, naming the root above it. A child
+// still in work under a parked root is a root of its own whose architect hears it (R15 and R20 of
+// dispatch://INFRA-3320), so the child here is parked itself.
 func TestAPersonsReplyOnAParkedChildNamesItsRoot(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, nil)
 	parkedRoot(t, pool)
 	root := "LEGION-ROOT"
 	putIssue(t, pool, record.Issue{Key: "LEGION-KID", Tree: root, Parent: &root, Project: testProject, Title: "kid", Phase: phase.Planning,
-		Generation: 1, Status: "in_progress", Rank: "B", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"})
+		Generation: 1, Status: "backlog", Rank: "B", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"})
 	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "dispatch-61",
 		intake.DispatchAskReply{Key: "LEGION-KID", Ask: "ask-9", WaitingOn: "agent", Actor: alice, Comment: "c-9"}, admission.engine, admission); err != nil {
 		t.Fatalf("apply the reply: %v", err)

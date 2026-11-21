@@ -33,10 +33,11 @@ func childrenNotDone(chains *record.Chains, key string) []string {
 	return open
 }
 
-// childrenNotDoneOf is childrenNotDone over the Dispatch chains of issue's project, read here with
-// issue named (record.ReadChains).
+// childrenNotDoneOf is childrenNotDone over the Dispatch chain of issue, read from issue alone
+// (record.ReadChainsOf: its children are the walk's start's), so a close costs the same whatever
+// the number of other issues at work.
 func (e *Engine) childrenNotDoneOf(ctx context.Context, tx pgx.Tx, issue record.Issue) ([]string, error) {
-	chains, err := record.ReadChains(ctx, tx, e.store, issue.Project, []string{issue.Key})
+	chains, err := record.ReadChainsOf(ctx, tx, e.store, issue.Project, []string{issue.Key})
 	if err != nil {
 		return nil, err
 	}

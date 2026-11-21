@@ -111,6 +111,26 @@ func ReadChains(ctx context.Context, tx pgx.Tx, store Store, project string, ext
 	if err != nil {
 		return nil, err
 	}
+	return readChainsFrom(ctx, tx, store, project, rows)
+}
+
+// ReadChainsOf is ReadChains for a decision about keys alone: the walk starts from keys and from
+// no other issue (Store.ChainRowsOf), so the read costs the length of their chains whatever the
+// number of issues the project has at work. For each of keys and every link above it its Chains
+// answer as ReadChains's do (Chain, Above, IsRoot, HoldsOwnGate, GateRoot, TopIssue, and Children
+// of keys); Under and the issues at work cover only the issues this read holds, so a caller that
+// asks what stands under an issue reads ReadChains.
+func ReadChainsOf(ctx context.Context, tx pgx.Tx, store Store, project string, keys []string) (*Chains, error) {
+	rows, err := store.ChainRowsOf(ctx, tx, keys)
+	if err != nil {
+		return nil, err
+	}
+	return readChainsFrom(ctx, tx, store, project, rows)
+}
+
+// readChainsFrom is the rest of a chain read once its walk has read rows: the copy's children of
+// each key the walk started from, and the daemon's record of every key those two name.
+func readChainsFrom(ctx context.Context, tx pgx.Tx, store Store, project string, rows []ChainRow) (*Chains, error) {
 	keys := make([]string, 0, len(rows))
 	var starts []string
 	for _, row := range rows {

@@ -128,8 +128,10 @@ func TestRegisteredOpenGateRecordsChildAndStartsPlanningAtItsSlot(t *testing.T) 
 	if err := pool.QueryRow(ctx, "select issue, (payload->>'generation')::int from outbox where kind = 'issue_branch'").Scan(&branchIssue, &generation); err != nil {
 		t.Fatalf("read the branch row: %v", err)
 	}
-	if branchIssue != "LEGION-209" || generation != 4 {
-		t.Fatalf("branch row = %s at generation %d, want the child's at the generation it entered, 4", branchIssue, generation)
+	// The child runs its own first generation, not its root's (R17 of dispatch://INFRA-3320: each
+	// issue's run is its own fact).
+	if branchIssue != "LEGION-209" || generation != 1 {
+		t.Fatalf("branch row = %s at generation %d, want the child's at its own first run, 1", branchIssue, generation)
 	}
 }
 

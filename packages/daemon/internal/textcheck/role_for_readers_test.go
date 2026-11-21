@@ -51,14 +51,16 @@ type roleForReader struct {
 // none (ReturnFromChildren) or holds accepting with no role told (StopForChildren), since the
 // architect's notice tells it. The release of a hold reads the held phase's role twice
 // (retryPhase), for the entry that phase stands on and for the restart, and a held phase is never
-// admitted. The owner walk reads no role: where it starts is its caller's to say
-// (record.NoticeStartsAtParent, for a notice).
+// admitted; so do the return of a held issue (ReturnToWork) and the carried run of a held root
+// (StartCarriedRun), each naming the role whose claim it leaves for the hold's retry. The owner of
+// the phase a return or a carried run resumes (runOwner) is read past a guard that answers no
+// owner for admitted, as for every phase no worker owns. The owner walk reads no role: where it
+// starts is its caller's to say (record.NoticeStartsAtParent, for a notice).
 //
 // A reader this list does not hold fails the test, so a new one is decided rather than taking
 // whatever RoleFor answers at admitted.
 var roleForReaders = map[roleForSite]roleForReader{
 	{file: "cmd/legion/main.go", fn: "entriesBehind"}:                                 {calls: 1, test: "TestStatePlainNamesTheRolesBehindTheirEntryAndTheRootsTheStateNamesAnArmFor"},
-	{file: "internal/admit/admit.go", fn: "Admission.startMidPhaseMembers"}:           {calls: 1, test: "TestReadmissionStartsTheTreesMidPhaseChildren"},
 	{file: "internal/admit/stalled.go", fn: "stalledTreeReason"}:                      {calls: 1, test: "TestAWaitByDesignIsNeverToldAsAStall"},
 	{file: "internal/api/handoff.go", fn: "entryFence"}:                               {calls: 1, test: "TestArchitectUnchangedByItsCompletionAtAdmitted"},
 	{file: "internal/daemon/daemon.go", fn: "serve"}:                                  {calls: 1, test: "TestAnOperatorRetryOfAStoppedArchitectRelaunchesItThroughItsMachine"},
@@ -70,7 +72,7 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/workflow/awaiting_children.go", fn: "undeliveredStart"}:          {calls: 1, test: "TestTheAdmissionPassStopsAStartedParentAnOpenChildHolds"},
 	{file: "internal/workflow/awaiting_children.go", fn: "Engine.ReturnFromChildren"}: {calls: 1, test: "TestAParentWhosePullRequestMergedGoesBackToTheStartItHeld"},
 	{file: "internal/workflow/catch_up.go", fn: "Engine.readyWorkerTask"}:             {calls: 1, test: "TestArchitectUnchangedByAReadyWorkerOfAnIssueAtAdmitted"},
-	{file: "internal/workflow/effects.go", fn: "HeldNotice"}:                          {calls: 1, test: "TestACarriedRootResumesFromTheApprovedHeadAndTheHold"},
+	{file: "internal/workflow/effects.go", fn: "HeldNotice"}:                          {calls: 1, test: "TestACarriedRootHeldFromItsPhaseStartsNoWorkerAndTellsItsArchitectTheHold"},
 	{file: "internal/workflow/effects.go", fn: "RoleFor"}:                             {calls: 1, test: "TestRoleForAnswersEveryPhaseOfPhaseAll"},
 	{file: "internal/workflow/effects.go", fn: "backwardMoveReason"}:                  {calls: 1, test: "TestArchitectUnchangedByABackwardMoveFromAdmitted"},
 	{file: "internal/workflow/engine.go", fn: "Engine.claimFailed"}:                   {calls: 1, test: "TestAnArchitectsClaimFailedHoldsNoIssueAndWritesNoHeldNotice"},
@@ -85,6 +87,9 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/workflow/merge_forward.go", fn: "Engine.mergeForwardLanded"}:     {calls: 1, test: "TestAConflictKeepsPhaseAndAsksTheReviewerToReadTheMerge"},
 	{file: "internal/workflow/review.go", fn: "Engine.tellChecks"}:                    {calls: 1, test: "TestASettlementMovesNothingAndTellsTheThreeRoles"},
 	{file: "internal/workflow/reparent.go", fn: "Engine.reparentSeed"}:                {calls: 1, test: "TestAReparentSeedOfARootAtAdmittedCarriesItsArchitectsEntry"},
+	{file: "internal/workflow/return.go", fn: "Engine.ReturnToWork"}:                  {calls: 1, test: "TestAHeldIssueBackInWorkStaysHeldAndStartsNoWorkerOfItsHeldPhase"},
+	{file: "internal/workflow/return.go", fn: "Engine.StartCarriedRun"}:               {calls: 1, test: "TestACarriedRootHeldFromItsPhaseStartsNoWorkerAndTellsItsArchitectTheHold"},
+	{file: "internal/workflow/return.go", fn: "Engine.runOwner"}:                      {calls: 1, test: "TestAnIssueBackInWorkResumesItsPhaseAtANewEntry"},
 	{file: "internal/workflow/resume.go", fn: "Engine.suspendedPhaseOwners"}:          {calls: 1, test: "TestTheBootsResumeReadsRoleForAndStartsNoArchitectAtAdmittedOrAccepting"},
 	{file: "internal/workflow/steps.go", fn: "Engine.startAgent"}:                     {calls: 1, test: "TestAnIssueAtAdmittedRunsNoStep"},
 	{file: "internal/workflow/steps.go", fn: "Engine.upgradedStart"}:                  {calls: 2, test: "TestAnIssueAtAdmittedRunsNoStep"},

@@ -314,8 +314,12 @@ func TestSlotPerPhase(t *testing.T) {
 
 	assertRowHolders(t, pool, "LEGION-2", "LEGION-3", "LEGION-4", "LEGION-5", "LEGION-9", "LEGION-20",
 		"LEGION-30", "LEGION-32")
-	if want := []record.BlockedIssue{{Issue: "LEGION-1", BlockedBy: []string{"LEGION-99"}}}; !reflect.DeepEqual(blockedNow(t, pool, admission), want) {
-		t.Fatalf("blocked = %#v, want %#v: the root waits at admitted for an open Dispatch child, which is why it holds no row",
+	// Every member is an open Dispatch child of the root, so each holds the root's first phase
+	// beside the child filed and not released (R9 of dispatch://INFRA-3320: a parent starts no
+	// phase while a child of it is open).
+	if want := []record.BlockedIssue{{Issue: "LEGION-1", BlockedBy: []string{"LEGION-2", "LEGION-3", "LEGION-4", "LEGION-5", "LEGION-6",
+		"LEGION-7", "LEGION-8", "LEGION-9", "LEGION-99"}}}; !reflect.DeepEqual(blockedNow(t, pool, admission), want) {
+		t.Fatalf("blocked = %#v, want %#v: the root waits at admitted for its open Dispatch children, which is why it holds no row",
 			blockedNow(t, pool, admission), want)
 	}
 

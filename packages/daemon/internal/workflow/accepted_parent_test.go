@@ -173,36 +173,31 @@ func TestCloseRootIsRefusedWhileAnIssueBeneathIsInTheWorkflow(t *testing.T) {
 	assertOutboxCount(t, pool, "dispatch_status", 1)
 }
 
-// A6. A person's move of an issue to todo beneath an ancestor the daemon has already accepted is
-// recorded and held at admitted, and the architect is told why. The chain is walked past a
-// parent already done, so a grandchild under a done parent is held by whichever issue above it
-// is still merging.
-func TestAPersonsTodoUnderAnAcceptedAncestorIsHeldAtAdmitted(t *testing.T) {
+// A6 on the Dispatch chain. A person's move of an issue to todo under a parent that is done,
+// beneath an ancestor the daemon has already accepted (merging), records nothing and tells nobody:
+// its parent is out of Legion's work while an issue above it is in it, so the issue is that
+// issue's unreleased work, held where it stands (R19 of dispatch://INFRA-3320, `ancestry`). The
+// chain is walked past the done parent, so the accepted ancestor above it is still found
+// (AcceptedAncestorIn); the line's hold of such an issue is record's
+// TestTheLineHoldsAnIssueUnderAnAcceptedAncestorAboveADoneParent.
+func TestAPersonsTodoUnderAnAcceptedAncestorIsHeldUnrecorded(t *testing.T) {
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Merging, Generation: 1, Status: "needs_review", Rank: "U"})
 	seedTreeLifecycle(t, pool, "LEGION-208")
 	seedBeneath(t, pool, "LEGION-209", "LEGION-208", "LEGION-208", phase.Done, "done")
+	// The daemon's copy takes the event before the engine reads it (the daemon's handler order).
+	mirrorChild(t, pool, "LEGION-300", "LEGION-209", "todo", 3)
 
 	applyRefusingNothing(t, pool, testEngine(config.DesignGateRootIssues, nil),
 		intake.DispatchIssue{Key: "LEGION-300", ResolvedRepo: "sjawhar/legion", Seq: 3, Type: "issue.updated",
 			Status: "todo", Title: "grandchild", Parent: "LEGION-209", Rank: "Z"})
 
-	held := *issueRecord(t, pool, "LEGION-300")
-	if held.Tree != "LEGION-208" || held.Phase != phase.Admitted {
-		t.Fatalf("the person's todo = %#v, want it recorded in LEGION-208's tree at admitted", held)
+	if held := issueRecord(t, pool, "LEGION-300"); held != nil {
+		t.Fatalf("the person's todo = %#v, want nothing recorded: its parent is out of Legion's work and an issue above it is in it", held)
 	}
-	if got := record.AcceptedAncestorIn(projectChains(t, pool, held.Key, "LEGION-209"), held.Key, "LEGION-209"); got != "LEGION-208" {
+	if got := record.AcceptedAncestorIn(projectChains(t, pool, "LEGION-300", "LEGION-209"), "LEGION-300", "LEGION-209"); got != "LEGION-208" {
 		t.Fatalf("the accepted ancestor of the grandchild = %q, want LEGION-208, found by walking past the done parent", got)
 	}
-	var reason string
-	if err := pool.QueryRow(context.Background(),
-		"select payload->>'reason' from outbox where kind = 'notice' and issue = 'LEGION-300' and payload->>'kind' = 'child-status'").Scan(&reason); err != nil {
-		t.Fatalf("read the child-status notice: %v", err)
-	}
-	for _, want := range []string{"LEGION-300", "LEGION-208", "admitted"} {
-		if !strings.Contains(reason, want) {
-			t.Fatalf("the child-status notice %q does not say %q", reason, want)
-		}
-	}
+	assertOutboxCount(t, pool, "notice", 0)
 }

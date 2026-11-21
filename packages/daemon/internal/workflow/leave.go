@@ -111,7 +111,9 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 			return err
 		}
 	}
-	chains, err := record.ReadChains(ctx, tx, e.store, issue.Project, []string{issue.Key})
+	// The issues above this one on its Dispatch chain are its own chain's: the read walks it alone
+	// (ReadChainsOf), so a leave costs the same whatever the number of other issues at work.
+	chains, err := record.ReadChainsOf(ctx, tx, e.store, issue.Project, []string{issue.Key})
 	if err != nil {
 		return err
 	}

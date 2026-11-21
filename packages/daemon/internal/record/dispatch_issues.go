@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -215,32 +216,48 @@ func (s *Postgres) DispatchChildren(ctx context.Context, tx pgx.Tx, project stri
 // each start up to the bound, and the chain of each link above a start as far as those walks
 // reached (Chains.Chain, ChainUnread).
 func (s *Postgres) ChainRows(ctx context.Context, tx pgx.Tx, project string, extra []string) ([]ChainRow, error) {
-	rows, err := tx.Query(ctx, `with recursive starts (key) as (
-			select key from issues where project = $1 and phase <> 'done'
+	read, err := chainRows(ctx, tx, `select key from issues where project = $1 and phase <> 'done'
 			union select key from dispatch_issues where project = $1 and status = 'todo'
-			union select unnest($2::text[])
+			union select unnest($2::text[])`, project, extra)
+	if err != nil {
+		return nil, fmt.Errorf("read the chains of %s: %w", project, err)
+	}
+	return read, nil
+}
+
+// ChainRowsOf walks the chain of each of keys as ChainRows walks every chain of a pass, from keys
+// alone: the statement reads each key's chain and no other row of the copy.
+func (s *Postgres) ChainRowsOf(ctx context.Context, tx pgx.Tx, keys []string) ([]ChainRow, error) {
+	read, err := chainRows(ctx, tx, `select unnest($1::text[])`, keys)
+	if err != nil {
+		return nil, fmt.Errorf("read the chains of %v: %w", keys, err)
+	}
+	return read, nil
+}
+
+// chainRows is the one walk ChainRows and ChainRowsOf make, from the keys starts selects with
+// args, up each row's parent to MaxChainLinks+1 links, each key once at the fewest links above a
+// start it stands at.
+func chainRows(ctx context.Context, tx pgx.Tx, starts string, args ...any) ([]ChainRow, error) {
+	rows, err := tx.Query(ctx, `with recursive starts (key) as (`+starts+`
 		), walk (key, depth, parent, status, labels, present, path) as (
 			select s.key, 0, d.parent, d.status, d.labels, d.key is not null, array[s.key]
 			from starts s left join dispatch_issues d on d.key = s.key
 			union all
 			select w.parent, w.depth + 1, d.parent, d.status, d.labels, d.key is not null, w.path || w.parent
 			from walk w left join dispatch_issues d on d.key = w.parent
-			where w.present and w.parent is not null and w.depth < $3 and w.parent <> all(w.path)
+			where w.present and w.parent is not null and w.depth < `+strconv.Itoa(MaxChainLinks+1)+` and w.parent <> all(w.path)
 		)
 		select key, min(depth), coalesce(parent, ''), coalesce(status, ''), coalesce(labels, '{}'), present
-		from walk group by key, parent, status, labels, present order by key`, project, extra, MaxChainLinks+1)
+		from walk group by key, parent, status, labels, present order by key`, args...)
 	if err != nil {
-		return nil, fmt.Errorf("read the chains of %s: %w", project, err)
+		return nil, err
 	}
-	read, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (ChainRow, error) {
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (ChainRow, error) {
 		var chained ChainRow
 		err := row.Scan(&chained.Key, &chained.Depth, &chained.Parent, &chained.Status, &chained.Labels, &chained.Present)
 		return chained, err
 	})
-	if err != nil {
-		return nil, fmt.Errorf("read the chains of %s: %w", project, err)
-	}
-	return read, nil
 }
 
 // queryDispatchIssues is every row of the copy query selects with args, in its order; an empty
