@@ -652,6 +652,15 @@ func TestTheReadOnlyFoldAnswersAsTheWritersPath(t *testing.T) {
 			answered(timed(credited(head(5, sha("1")), foldIssue), at(1), read(20))),
 			answered(timed(incomplete(head(5, sha("2"))), at(2), nil)),
 		}},
+		// The request reads pull request 5, then pull request 6, then pull request 5 at its next
+		// push. The writer upserts each answer on its own pull request's row, so pull request 6's
+		// answer, whose event is the newest, never reaches pull request 5's row, which ends at the
+		// second push.
+		{"answers of the request for two pull requests interleaved", []foldStep{
+			answered(timed(credited(head(5, sha("1")), foldIssue), at(1), read(20))),
+			answered(timed(credited(head(6, sha("6")), foldIssue), at(3), read(22))),
+			answered(timed(credited(head(5, sha("2")), foldIssue), at(2), read(25))),
+		}},
 		// A row kept under the name the repository was renamed away from, and the answer of a read
 		// asked under that name, keyed by the canonical one: the store drops the old row.
 		{"an answer of a read asked under a name its repository was renamed away from", []foldStep{
@@ -669,6 +678,15 @@ func TestTheReadOnlyFoldAnswersAsTheWritersPath(t *testing.T) {
 		{"two answers of the request out of event order", []foldStep{
 			answered(timed(credited(head(5, sha("1")), foldIssue), at(3), read(20))),
 			answered(timed(credited(head(5, sha("2")), foldIssue), at(2), read(25))),
+		}},
+		// A delivery stored the pull request at one commit. The request then reads two answers of
+		// the next commit, equal but for their times: the first's event is newer than the row's and
+		// the second's older. The writer's upsert of the first applies and the event-time guard
+		// refuses the second, so the row ends at the first, with the time it was read.
+		{"two answers equal but for their event times around a stored row's event", []foldStep{
+			delivered(timed(credited(head(5, sha("1")), foldIssue), at(2), read(10))),
+			answered(timed(credited(head(5, sha("2")), foldIssue), at(3), read(20))),
+			answered(timed(credited(head(5, sha("2")), foldIssue), at(1), read(25))),
 		}},
 		// 61 answers in 14 runs (manyAnswers).
 		{"many answers for one pull request", manyAnswers},
