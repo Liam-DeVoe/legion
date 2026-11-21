@@ -87,7 +87,10 @@ func newLiveStore(t *testing.T, uri string, state *StoreState) *liveStore {
 	return newLiveStoreAt(t, uri, state, 1)
 }
 
-// newLiveStoreAt is newLiveStore with testStream and the bucket at replicas copies.
+// newLiveStoreAt is newLiveStore with testStream and the bucket at replicas copies. A rig with a
+// sentinel makes the bucket through CreateSessionBucket, which writes the sentinel only once the
+// new bucket's stream answers: on a cluster a write right after the create can find no responder
+// (run 44901606033's 2.10.29 step failed the protocol row's R1 subtest so, before any hold).
 func newLiveStoreAt(t *testing.T, uri string, state *StoreState, replicas int) *liveStore {
 	t.Helper()
 	conn := testnats.Connect(t, uri)
@@ -100,14 +103,15 @@ func newLiveStoreAt(t *testing.T, uri string, state *StoreState, replicas int) *
 	if _, err := js.CreateStream(ctx, jetstream.StreamConfig{Name: testStream, Subjects: []string{"names.>"}, Replicas: replicas}); err != nil {
 		t.Fatalf("create %s: %v", testStream, err)
 	}
-	if _, err := js.CreateKeyValue(ctx, SessionBucketConfig(replicas)); err != nil {
-		t.Fatalf("create %s: %v", SessionBucket, err)
-	}
 	live := &liveStore{conn: conn, js: js, store: NewKVStore(SessionBucket, ConnRequester{conn}), family: jsFamily{js}}
-	if state != nil {
-		if _, err := live.store.WriteSentinel(ctx, *state, 0); err != nil {
-			t.Fatalf("write the sentinel: %v", err)
+	if state == nil {
+		if _, err := js.CreateKeyValue(ctx, SessionBucketConfig(replicas)); err != nil {
+			t.Fatalf("create %s: %v", SessionBucket, err)
 		}
+		return live
+	}
+	if _, err := CreateSessionBucket(ctx, conn, replicas, *state); err != nil {
+		t.Fatalf("create %s and its sentinel: %v", SessionBucket, err)
 	}
 	return live
 }
