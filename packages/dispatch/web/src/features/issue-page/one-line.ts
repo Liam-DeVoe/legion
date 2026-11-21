@@ -245,7 +245,8 @@ const NO_TOKEN = "\ufffd";
  * form, as a link to it reads until its title resolves (`shortForm`). A one-line place names a
  * reference by the page's name wherever the page knows one, and by its short form only where it
  * does not. So the words `standIn` is given hold each bare address as its author wrote it
- * (`lineWordsRaw`, `plainWordsRaw`), since one already written short leaves it nothing to name.
+ * (`lineWordsRaw`, and a person's quote's `firstBlockWordsRaw`), since one already written short
+ * leaves it nothing to name.
  * A statement's name opens with its label where its spec numbers its statements ("R2. Every
  * address…"), so a cut made after the naming ended its author's sentence at that label, inside
  * the name.

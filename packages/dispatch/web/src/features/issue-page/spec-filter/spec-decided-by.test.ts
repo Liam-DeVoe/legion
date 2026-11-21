@@ -8,6 +8,7 @@ import type { TreeNode } from "../issue-tree";
 import { CHIP_LIMIT } from "../node-row-chip";
 import { useReferenceNames } from "../one-line";
 import { presetView } from "../presets";
+import { SENTENCE_TABLE } from "../sentence-table";
 import { treeContext } from "../tree-drafts";
 import {
   check,
@@ -22,7 +23,6 @@ import {
   decisionNode,
   decisionsRead,
   issueDetails,
-  SENTENCE_TABLE,
   shaped,
   statement,
   statementRef,
@@ -686,15 +686,19 @@ test("a first sentence that opens with a numbered label holds the sentence after
 
 // R5: a person's first sentence ends where the table of sentence ends (`SENTENCE_TABLE`) ends
 // each text's, read by the one function every reader splits words by, over the text as written.
+// A row whose first sentence depends on the blocks its text is stored as gives the function no
+// answer to meet, and is read by the quote alone.
 test("a first sentence ends where every row of the sentence table ends it", () => {
   for (const row of SENTENCE_TABLE) {
+    if (row.first === undefined) continue;
     expect(firstSentenceOf(row.text), row.id).toBe(row.first);
   }
 });
 
 // R5: a person's quote is the first sentence of the answer they stored, as the table states it
-// for a stored text, in a decision tied to one statement: an answer that opens with a list is
-// quoted from its first item, whose marker markdown reads as no word of it.
+// for a stored text, in a decision tied to one statement: the quote reads the answer's first
+// block alone, and an answer that opens with a list is quoted from its first item's own words,
+// whose marker markdown reads as no word of it.
 test("a person's quote of each row of the sentence table is the row's stored first sentence", () => {
   for (const row of SENTENCE_TABLE) {
     const groups = bodyOf(issueTree([answeredAsk("ask-1", { text: row.text }), statement("r1")]), [
@@ -724,9 +728,10 @@ test("a first sentence runs past an abbreviation that a number follows", () => {
   ).toBe("Keep the memo, e.g. in the pane, and draw it whole (see p. 4).");
 });
 
-// R5: a "1." after a full stop opens a numbered label only where the same text holds a "2." after
-// a full stop too, since a list has two items: a page or a figure 1 is an abbreviation that a
-// number follows, and ends no sentence. At ba0574f3 the rule cut "Draw it whole, as on p. 1.
+// R5: a full stop before a number ends no sentence only after a listed abbreviation, and a number
+// after one opens no label, so "p. 1" and "fig. 1" stay inside their sentence. After any other
+// word the full stop ends the sentence, and a "1." after it is the next sentence's label, as a
+// "1." that opens the text is the first's. At ba0574f3 the rule cut "Draw it whole, as on p. 1.
 // Then more words follow." to "Draw it whole, as on p.", which a running build quoted so in a
 // person's because line, and "See fig. 1. It shows the cut." to "See fig.".
 test("a first sentence runs past an abbreviation that 1 follows, and a list of two items starts at its 1", () => {
@@ -757,10 +762,11 @@ test("a person's quote that cites a labelled statement ends where their sentence
 });
 
 // R5: an answer the person wrote as a numbered list on one line, "1. Keep the old page. 2. Then
-// drop it.", ends its first sentence at "page.", as the tree's rule for a list of two items reads
-// the same words. On a running build at b0a0892f that answer was quoted "Keep the old page. 2.":
-// the quote is cut from the answer's plain words, where the list's "1." is no longer a word, so
-// the "2." after the first item read as no label.
+// drop it.", ends its first sentence at "page.": markdown reads its "1." as a list's marker, which
+// is no word, and a full stop before a number ends the sentence wherever no listed abbreviation
+// stands before it. On a running build at b0a0892f that answer was quoted "Keep the old page.
+// 2.": the quote was cut from the answer's plain words, where the list's "1." is no longer a
+// word, so the "2." after the first item read as no label.
 test("a person's answer written as a numbered list on one line is quoted to its first item", () => {
   const stored = "1. Keep the old page. 2. Then drop it.";
   const groups = bodyOf(issueTree([answeredAsk("ask-1", { text: stored }, [statement("r1")])]));
@@ -768,6 +774,24 @@ test("a person's answer written as a numbered list on one line is quoted to its 
   expect(quote, "the quote of a numbered answer ends at its first item's full stop").toMatch(
     /Keep the old page\.$/
   );
+});
+
+// R5: a person's answer written as a list is quoted from its first item alone, never from the
+// whole list run together, though the item ends at no full stop: "- keep it" over "- drop it" is
+// quoted "keep it".
+test("a person's answer written as a bulleted list is quoted by its first item alone", () => {
+  const groups = bodyOf(
+    issueTree([answeredAsk("ask-1", { text: "- keep it\n- drop it" }), statement("r1")]),
+    [
+      decision({
+        asks: ["ask-1"],
+        block_id: "d1",
+        kind: "person",
+        links: [shaped(statementRef("r1"))],
+      }),
+    ]
+  );
+  expect(groups[0]?.runs[0]?.decision?.quote).toBe("keep it");
 });
 
 // R1 and R5: the question line is the question's one line, cut from its first block's words

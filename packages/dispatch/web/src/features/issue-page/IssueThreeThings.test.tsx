@@ -24,9 +24,9 @@ import { IssueTree } from "./IssueTree";
 import { buildIssueTree, type TreeNode } from "./issue-tree";
 import { useIssueNames } from "./one-line";
 import { CONTROL_LABELS, EMPTY_STATE_LINES, type NodeType } from "./page-words";
+import { SENTENCE_TABLE } from "./sentence-table";
 import { ContentsSlot } from "./slots/contents";
 import { ProvidersSlot } from "./slots/providers";
-import { SENTENCE_TABLE } from "./spec-filter/spec-fixtures";
 import { specSummary } from "./spec-summary";
 import { blockNodeId, blockWords } from "./tree-drafts";
 import { nodeRowSelectorOf } from "./tree-focus";
@@ -389,8 +389,9 @@ test("a sentence is ended neither at a leading label nor before a word in lower 
 });
 
 // R1: the first of the issue's three sentences, after the page's own label, ends where the table
-// of sentence ends (`SENTENCE_TABLE`) ends a stored text's first sentence. A row whose text opens
-// with a list marker would make the summary a list, so it stands as no summary's sentence.
+// of sentence ends (`SENTENCE_TABLE`) ends a stored text's first sentence. A row the table marks
+// as no summary's sentence is passed over: a text that opens with a list marker, for one, would
+// make the summary a list.
 test("a summary of each row of the sentence table draws the row's stored sentence first", () => {
   for (const row of SENTENCE_TABLE.filter(({ summary }) => summary)) {
     const { labels, lines, unmount } = bullets(summaryNode(row.text));

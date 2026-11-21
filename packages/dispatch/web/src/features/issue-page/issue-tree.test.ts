@@ -39,7 +39,7 @@ import {
 import { NODE_TYPE_NAMES, nodeStateWord, PRESET_NAMES } from "./page-words";
 import { filterSignals, presetView } from "./presets";
 import { knownIssueKeys, rowReferences, rowReferenceWords } from "./row-references";
-import { SENTENCE_TABLE } from "./spec-filter/spec-fixtures";
+import { SENTENCE_TABLE } from "./sentence-table";
 import {
   addressesAsShortForms,
   blockNodeId,
@@ -1028,19 +1028,23 @@ test("a first line ends at a sentence, at a word, or at the limit where there is
 
 // R1: a row's first line ends where the page's one sentence end falls (`firstSentenceLength`),
 // as the table of sentence ends (`SENTENCE_TABLE`) states it for each text. Every row's text is
-// under the line's limit, so the line is its first sentence and no cut of the limit's.
+// under the line's limit, so the line is its first sentence and no cut of the limit's. A row
+// whose first sentence depends on the blocks its text is stored as gives the function no answer
+// to meet, and only its text's length is read here.
 test("a first line ends where every row of the sentence table ends its first sentence", () => {
   for (const row of SENTENCE_TABLE) {
     expect(row.text.length, `${row.id} is under the line's limit`).toBeLessThanOrEqual(
       FIRST_LINE_LIMIT
     );
+    if (row.first === undefined) continue;
     expect(firstLineOf(row.text).line, row.id).toBe(row.first);
   }
 });
 
 // R1: a node that opens with a list draws its one line from the list's first item, never from the
-// whole list run together (`firstWords`). No row of the sentence table tells the two apart, since
-// each of its lists' first items ends at a full stop: an item that ends at none does.
+// whole list run together (`firstBlockWordsRaw`). The sentence table's rows k3 and k4 pin the
+// same rule for an item that holds a nested list or a later paragraph; this case pins items with
+// no end mark.
 test("a node that opens with a list draws its first item's words, never the whole list's", () => {
   expect(lineWordsRaw({ text: "- Keep the old page\n- Then drop it" })).toBe("Keep the old page");
   expect(lineWordsRaw({ text: "1. Keep the old page\n2. Then drop it" })).toBe("Keep the old page");

@@ -370,7 +370,7 @@ const NUMBERED_LABEL = /^\d+\.(?=\s|$)/u;
  * in any case (`firstSentenceLength`): a full stop after one of these words, before a word that
  * opens with a digit, ends no sentence, as in `see p. 4`, `See Fig. 3` or `Keep v. 1.2`. A text
  * that uses another abbreviation before a number becomes a new row of the table that pins the
- * rule (`SENTENCE_TABLE` in `spec-filter/spec-fixtures.ts`), not a new rule.
+ * rule (`SENTENCE_TABLE` in `sentence-table.ts`), not a new rule.
  */
 const NUMBER_ABBREVIATIONS: ReadonlySet<string> = new Set([
   "art",
@@ -418,11 +418,13 @@ const WORD_CHARACTER = /[\p{L}\p{Nd}]/u;
  * label: its full stop ends nothing, and the scan goes on after it, so `Steps: 1. Open it. 2.`
  * ends at `it.`.
  *
- * One table pins this rule: each row of `SENTENCE_TABLE` (`spec-filter/spec-fixtures.ts`) is
- * one text and the first sentence the page must find in it, and every reader of the rule is
- * tested over every row. The rule has one accepted miss: `The answer is no. 3 rows changed.`
- * runs as one sentence, since `no.` before a number is far more often "number" than a
- * sentence's last word.
+ * One table pins this rule: each row of `SENTENCE_TABLE` (`sentence-table.ts`) is one text and
+ * the first sentence the page must find in it, and every reader of the rule is tested over every
+ * row. The rule has two accepted misses. `The answer is no. 3 rows changed.` runs as one
+ * sentence, since `no.` before a number is far more often "number" than a sentence's last word.
+ * `Ask Dr. Smith. Then more.` ends at `Ask Dr.`, since the list holds abbreviations before a
+ * number only, and a full stop before a word in upper case ends the sentence whatever word
+ * stands before it.
  */
 export function firstSentenceLength(text: string): number | undefined {
   const label = LEADING_LABEL.exec(text)?.[0] ?? "";
@@ -460,24 +462,17 @@ function abbreviationEndsAt(text: string, at: number): boolean {
 }
 
 /**
- * The node's own text to the end of its first sentence (`firstSentenceLength`) or
- * `FIRST_LINE_LIMIT` characters, whichever comes first, cut at a word wherever the limit falls
- * near one. A sentence ends at a mark with any closing quote or bracket after it, where the words
- * stop or a word follows that the mark ends a sentence before: a question or exclamation mark
- * ends one before any word, and a full stop before a word in lower case (`e.g. in`), or before a
- * number after one of the abbreviations a number follows (`see p. 4`), ends an abbreviation, not
- * the sentence. A leading label - a first word of at most five characters that ends in `.` and
- * holds a digit, as `R1.`, `12.` or `1.2.` - is part of the line and no sentence end, so a
- * statement's line runs on to the first sentence end after its label. A line held to the limit
- * that holds no space past its label -
- * one unbroken token, a URL or an identifier - is cut at the limit itself, because there is no
- * word boundary to cut at and the limit is the row's whole budget, and one unit short of it
- * where the limit falls inside a surrogate pair, as `textHead` cuts. `cut` says whether the
- * text carries on past the line, and `sentence` whether the line ends at a sentence end, the
- * first one after any label: the two are what the row draws its ellipsis by (`drawnLine`). A
- * line the limit cut, at a word or at the limit itself, ends at none, whatever its last
- * character: a token cut at the limit may end on a `.`, `!` or `?` of its own, as `x.yyyy` cut
- * after its dot does.
+ * The node's own text, its white space collapsed, to the end of its first sentence, which ends
+ * where `firstSentenceLength` says, or to `FIRST_LINE_LIMIT` characters, whichever comes first,
+ * cut at a word wherever the limit falls near one. A line held to the limit that holds no space
+ * past its leading label (`LEADING_LABEL`) - one unbroken token, a URL or an identifier - is cut
+ * at the limit itself, because there is no word boundary to cut at and the limit is the row's
+ * whole budget, and one unit short of it where the limit falls inside a surrogate pair, as
+ * `textHead` cuts. `cut` says whether the text carries on past the line, and `sentence` whether
+ * the line ends at its first sentence's end: the two are what the row draws its ellipsis by
+ * (`drawnLine`). A line the limit cut, at a word or at the limit itself, ends at none, whatever
+ * its last character: a token cut at the limit may end on a `.`, `!` or `?` of its own, as
+ * `x.yyyy` cut after its dot does.
  */
 export function firstLineOf(text: string): {
   readonly cut: boolean;
@@ -540,10 +535,11 @@ export function nodeWords(node: TreeNode): string {
 /**
  * The words a node's one line is cut from (R1's first-line rule, `firstLineOf`): the words of
  * the first top-level block of its reading that holds any, a heading or a paragraph, and where
- * that block is a bulleted or a numbered list, the words of the first of its items that holds
- * any (`firstWords`), never the whole list's; and where the node has no reading the same of its
- * stored text's reading (`storedReading`), in the shape of the server's reading. A heading so
- * ends at its own line and its marker is no word of it, so `## # 1 rule` reads `# 1 rule`. A
+ * that block is a bulleted or a numbered list, the own words of the first of its items that holds
+ * any (`firstWords`), never the whole list's, nor the item's nested list or later paragraphs; and
+ * where the node has no reading the same of its stored text's reading (`storedReading`), in the
+ * shape of the server's reading. A heading so ends at its own line and its marker is no word of
+ * it, so `## # 1 rule` reads `# 1 rule`. A
  * text typed as a numbered list on two lines, `1. Keep the old page.` over `2. Then drop it.`,
  * reads `Keep the old page.`: its marker is no word, and its second item no part of its line. A
  * list that follows a paragraph with no blank line ends that paragraph, so the paragraph alone
@@ -630,42 +626,52 @@ function lineWordsBy(
  *  written as its target's short form (`withShortAddresses`); `""` for a reading none of whose
  *  blocks holds a word. */
 function firstBlockWords(reading: DisplayTree): string {
-  return firstWords(reading, (block) => wordsOf(withShortAddresses(block)))?.words ?? "";
+  return firstWords(reading, (block) => wordsOf(withShortAddresses(block)));
 }
 
 /** The words of the first top-level block of a reading that holds any, as `firstBlockWords`
  *  reads them but with no address written short (`wordsOf`): a bare address stays as written.
  *  A caller that names each reference itself reads these, since a short form leaves it no
- *  address to name. `""` for a reading none of whose blocks holds a word. */
+ *  address to name: a node's line (`lineWordsRaw`) and a person's quote (`spec-decided-by.ts`).
+ *  `""` for a reading none of whose blocks holds a word. */
 export function firstBlockWordsRaw(reading: DisplayTree): string {
-  return firstWords(reading)?.words ?? "";
+  return firstWords(reading);
 }
 
 /**
- * The words a reading opens with, and whether they are a list's item: the words of the first
- * top-level block of `reading` that holds any, each block read to words by `read`, and where that
- * block is a bulleted or a numbered list, the words of the first of its items that holds any,
- * never the whole list's. Markdown reads a leading `1. ` or `- ` as a list's marker, which is no
- * word, and a list's items are read as items before any sentence end is looked for, so a first
- * sentence never runs from one item into the next: a text typed as a list on one line is one
- * item, and one typed on two lines is two. Undefined for a reading none of whose blocks holds a
- * word. A node's one line (`firstBlockWords`, `firstBlockWordsRaw`) and a person's quote
- * (`spec-decided-by.ts`) both read a reading's first block by this one walk.
+ * The words a reading opens with: the words of the first top-level block of `reading` that holds
+ * any, each block read to words by `read`, and where that block is a bulleted or a numbered list,
+ * the own words of the first of its items that holds any (`itemWords`), never the whole list's,
+ * nor the item's nested list or later paragraphs. A top-level block that is no list is read
+ * whole. Markdown reads a leading `1. ` or `- ` as a list's marker, which is no word, and a
+ * list's items are read as items before any sentence end is looked for, so a first sentence
+ * never runs from one item into the next: a text typed as a list on one line is one item, and
+ * one typed on two lines is two. `""` for a reading none of whose blocks holds a word. A node's
+ * one line and a person's quote both read a reading's first block by this one walk, through
+ * `firstBlockWords` and `firstBlockWordsRaw`.
  */
-export function firstWords(
-  reading: DisplayTree,
-  read: (block: DisplayTree) => string = wordsOf
-): { readonly item: boolean; readonly words: string } | undefined {
+function firstWords(reading: DisplayTree, read: (block: DisplayTree) => string = wordsOf): string {
   const blocks = Array.isArray(reading.content) ? (reading.content as DisplayTree[]) : [];
   for (const block of blocks) {
     const list = block.type === "bullet_list" || block.type === "ordered_list";
-    const items = list && Array.isArray(block.content) ? (block.content as DisplayTree[]) : [block];
-    for (const each of items) {
-      const words = read(each);
-      if (words.trim() !== "") return { item: list, words };
-    }
+    const words = list ? itemWords(block, read) : read(block);
+    if (words.trim() !== "") return words;
   }
-  return undefined;
+  return "";
+}
+
+/** The words of a list's first item that holds any, as the item's own blocks open with them
+ *  (`firstWords`): its first block that holds words, and where that block is a list of its own,
+ *  that list's first item by the same rule. So a nested list and a later paragraph of the item
+ *  are no part of its words: `- one` over an indented `- inner` reads `one`. `""` where no item
+ *  holds a word. */
+function itemWords(list: DisplayTree, read: (block: DisplayTree) => string): string {
+  const items = Array.isArray(list.content) ? (list.content as DisplayTree[]) : [];
+  for (const item of items) {
+    const words = firstWords(item, read);
+    if (words !== "") return words;
+  }
+  return "";
 }
 
 /** The line a chip names a block by, and the page publishes as the block's name: the line a row

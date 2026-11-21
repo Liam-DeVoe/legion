@@ -3,9 +3,9 @@ import type { TextSource } from "../../refs/text-references";
 import { askIdOf, isReading } from "../decisions-filter/decisions-parts";
 import {
   drawnLine,
+  firstBlockWordsRaw,
   firstLineOf,
   firstSentenceLength,
-  firstWords,
   isStatement,
   lineWordsRaw,
   type TreeNode,
@@ -14,7 +14,6 @@ import { chipWords } from "../node-row-chip";
 import { referenceStandIns } from "../one-line";
 import { isReader, type NodeState, type NodeType, type StatementState } from "../page-words";
 import { storedReading } from "../stored-reading";
-import { plainWordsRaw } from "../tree-drafts";
 import { nodesInOrder } from "../tree-keys";
 import { statementStandings } from "../verification-filter/statement-state";
 
@@ -42,11 +41,11 @@ import { statementStandings } from "../verification-filter/statement-state";
  *    missing tie visible (R35).
  *
  * What a person's decision quotes is the person's own answer, never a restatement of it: the
- * first sentence of the answer's plain words (`plainWordsRaw`, `firstSentenceOf`), or of its
- * first item where it opens with a list (`firstWords`), with each reference in it named in plain
- * words once the sentence is cut (`referenceStandIns`), or, where they wrote none, the options
- * they chose; the whole answer is carried beside it as stored, for the focus on the line to draw
- * character for character (R5).
+ * first sentence (`firstSentenceOf`) of the words of the answer's first block, or of its first
+ * item where that block is a list (`firstBlockWordsRaw`), with each reference in it named in
+ * plain words once the sentence is cut (`referenceStandIns`), or, where they wrote none, the
+ * options they chose; the whole answer is carried beside it as stored, for the focus on the line
+ * to draw character for character (R5).
  * A section of `decisions.md` the server marks a person's whose answered question this tree
  * does not hold is the agent's record of that decision, so it is drawn as an agent's words and
  * never quoted as the person's (R9).
@@ -59,9 +58,9 @@ import { statementStandings } from "../verification-filter/statement-state";
  * how sure it was (`Decision.unsure`).
  *
  * Every line and quote here is read with each bare address as its author wrote it
- * (`lineWordsRaw` and `plainWordsRaw`, not `lineWords` and `plainWords`, which write one as its
- * short form), so that `referenceStandIns` names it by the page's name wherever the page knows
- * one, and by its short form only where it does not.
+ * (`lineWordsRaw` and `firstBlockWordsRaw`, not `lineWords`, which writes one as its short
+ * form), so that `referenceStandIns` names it by the page's name wherever the page knows one,
+ * and by its short form only where it does not.
  *
  * Whether a statement's words changed after the decision beside it is the model's to say, and
  * the model says nothing of it yet, so the view draws nothing of it.
@@ -298,18 +297,9 @@ export function specDecidedBy({
 }
 
 /**
- * The first sentence of `text`, word for word: everything up to its first sentence end
- * (`firstSentenceLength`) - a full stop, question mark or exclamation mark, with the closing
- * quote or bracket the writer put after it, where the text stops or a word follows that the mark
- * ends a sentence before - and the whole text where it holds none, with no limit of characters
- * (R5). A question or exclamation mark ends the sentence before any word. A full stop before a
- * word in lower case (`e.g. in`), or before a number after one of the abbreviations a number
- * follows (`see p. 4`), ends an abbreviation, not the sentence (`firstSentenceLength` states the
- * rule). Line breaks inside it are spaces, because the line it is drawn on is one line. A
- * leading label is no sentence end (`LEADING_LABEL`): a first word of at most five characters
- * that ends in `.` and holds a digit (`R1.`, `12.`) opens the sentence, as `firstLineOf` reads
- * one. The issue's three sentences and `firstLineOf` read the same sentence end
- * (`firstSentenceLength`), so the page splits the same words one way.
+ * The first sentence of `text`, word for word: everything up to where `firstSentenceLength` says
+ * its first sentence ends, and the whole text where it holds no end, with no limit of characters
+ * (R5). Line breaks inside it are spaces, because the line it is drawn on is one line.
  *
  * It is not `firstLineOf`, which cuts a row's first line at 100 characters (R1): a person's
  * answer is quoted word for word, and a sentence of theirs is as long as they wrote it.
@@ -470,24 +460,24 @@ function decisionOf(
   };
 }
 
-/** A person's answer to `ask` as the column draws it: the first sentence of its plain words
- *  with each reference named, or the options they chose where they wrote none (R5), with the
- *  whole answer as stored wherever it is not what the quote draws. */
+/** A person's answer to `ask` as the column draws it: the first sentence of its first block's
+ *  words with each reference named, or the options they chose where they wrote none (R5), with
+ *  the whole answer as stored wherever it is not what the quote draws. */
 function answerDecision(
   ask: TreeNode,
   answer: NonNullable<TreeNode["answer"]>,
   reader: string | undefined,
   nameOf: (reference: string) => string | undefined
 ): SpecDecision {
-  // A link the person wrote reads as its words and a mark as nothing (`plainWordsRaw`), so the
-  // quote is their words and none of the markdown they were stored in. An answer written as a
-  // list is quoted from its first item, read as an item before any sentence end is looked for
-  // (`firstWords`), as a node's line reads one. Each reference is named after the sentence is
+  // The quote reads the answer's first block alone, as the Contents entry reads a comment's, and
+  // where that block is a list, its first item's own words (`firstBlockWordsRaw`): a quote
+  // never runs from one paragraph into the next, nor from a sentence into the list after it. A
+  // link the person wrote reads as its words and a mark as nothing, so the quote is their words
+  // and none of the markdown they were stored in. Each reference is named after the sentence is
   // cut, so a name that opens with a label ("R2.") ends none of it. The answer holds its stored
-  // text's reading, so the plain words read it again from memory rather than from a second parse.
+  // text's reading, so a redraw reads it again from memory rather than from a second parse.
   const references = referenceStandIns(nameOf);
-  const opening = firstWords(storedReading(answer.text, answer));
-  const words = opening?.item === true ? opening.words : plainWordsRaw(answer.text);
+  const words = firstBlockWordsRaw(storedReading(answer.text, answer));
   const written = firstSentenceOf(references.standIn(words));
   // An option's label is a plain line too, so each reference it cites is named as the quote
   // names one, wherever the options are drawn: the quote, the cell's line of what was chosen,

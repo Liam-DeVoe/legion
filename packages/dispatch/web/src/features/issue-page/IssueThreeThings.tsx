@@ -149,13 +149,12 @@ function sentencesOf(words: string): string[] {
  *
  * The words are read in the runs they were written in: each paragraph and each heading one, and
  * each item of a bulleted or numbered list one, its own list inside it included. A paragraph's
- * or a heading's run is split at its sentence ends (`sentencesOf`), of which a leading label and
- * a full stop before a word in lower case are none. A list item is a sentence of its own whether
- * or not its author ended it with a mark, because the item ends where the next one starts, so a
- * list's last item is drawn too. A run's words are the reading's own (`wordsOf`), with each
- * reference in them named in plain words once the sentences are split (`referenceStandIns`), so
- * a name that opens with a label ("R1.") ends no sentence; nothing else is added, reordered or
- * reflowed.
+ * or a heading's run is split where `firstSentenceLength` ends each of its sentences
+ * (`sentencesOf`). A list item is a sentence of its own whether or not its author ended it with a
+ * mark, because the item ends where the next one starts, so a list's last item is drawn too. A
+ * run's words are the reading's own (`wordsOf`), with each reference in them named in plain words
+ * once the sentences are split (`referenceStandIns`), so a name that opens with a label ("R1.")
+ * ends no sentence; nothing else is added, reordered or reflowed.
  *
  * A summary whose runs hold no sentence end and no list item has no sentence to split out, so
  * its first line, by the one-line rule every place that draws one line for a node keeps

@@ -10,7 +10,7 @@ import { FocusedNodeProvider, useSetFocusedNode } from "./focused-node";
 import { type ContentsEntry, ContentsList, contentsOf } from "./IssueContents";
 import type { TreeNode } from "./issue-tree";
 import { CONTROL_LABELS, type NodeType } from "./page-words";
-import { SENTENCE_TABLE } from "./spec-filter/spec-fixtures";
+import { SENTENCE_TABLE } from "./sentence-table";
 
 /**
  * The Contents list's entries (R14): each question and each thread the
