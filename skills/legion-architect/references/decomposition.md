@@ -56,9 +56,7 @@ A refused release writes nothing: release the rest again without the child it na
 
 - Pass no `--assignee` unless a person names one: the default keeps the tree's questions in one Inbox.
 
-- A child's own architect starts beside the agent of its child's first step, so decide first whether the child needs children.
-  If it does, file and release them.
-  Then tell the agent that holds the child's plan that the plan covers only the child's own part and the join of their work: its planner where the task names one, else its implementer, whose plan is its `Task text:`.
+- A child's own architect that files children tells the agent that holds the child's plan, which started on the whole child, that the plan now covers only the child's own part and the join of their work: its planner where the task names one, else its implementer, whose plan is its `Task text:`.
 
 - Every child names the running system its criteria are proven on (the command, service or page its implementer proves them on and a tester step drives) and the repository skill that drives it;
   building a missing path is this tree's work.
