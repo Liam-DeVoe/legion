@@ -301,4 +301,3 @@ func awaitPublishViolation(t *testing.T, errs <-chan error, subject string) {
 		}
 	}
 }
-
