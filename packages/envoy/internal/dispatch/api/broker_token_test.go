@@ -1101,7 +1101,9 @@ func TestANarrowedTokenActsAsItsIdentityAndOnlyReads(t *testing.T) {
 	writer := answers["machine-login"]
 	writer.ProjectScope, writer.Scope = ciphertoken.ProjectScopePerson, ""
 	rows := map[string]ciphertoken.Introspection{"the machine login's token with no read": writer}
-	want["the machine login's token with no read"] = identity{owner: &ada, scopes: model.Scopes}
+	// The same token without read writes: it holds the person scope alone, as every broker token
+	// that acts for its person does (brokerPersonScopes), and it is not read-only.
+	want["the machine login's token with no read"] = identity{owner: &ada, scopes: personOnly}
 	maps.Copy(rows, answers)
 
 	same := func(got, want *string) bool { return (got == nil) == (want == nil) && (got == nil || *got == *want) }
