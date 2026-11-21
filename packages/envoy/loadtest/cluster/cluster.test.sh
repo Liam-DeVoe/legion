@@ -241,11 +241,22 @@ for a in "$@"; do
 done
 $has_ns || printf '%s\n' "$*" >>"$FAKE_DIR/kubectl-no-ns.log"
 c=${cmd[*]:-}
+# perm_bits PATH: PATH's permission bits in octal, without the setgid, setuid or sticky digit a
+# directory made under a setgid $TMPDIR inherits (every Legion pod's is): 2700 reads 700.
+perm_bits() {
+  local m
+  m=$(stat -c %a "$1")
+  ((${#m} == 4)) && m=${m#?}
+  printf '%s' "$m"
+}
 # credential_reader JOB DIR LOG: the job a call that carries the copy's credentials starts here
 # (runner_start -c, replay_checksum) in place of loadgen: one line per file of DIR, "JOB FILE MODE
 # DIR-MODE CONTENT", appended to LOG -- what the job would read, and how the runner kept it.
+# DIR-MODE is the permission bits alone: a setgid, setuid or sticky digit, which a directory made
+# under a setgid $TMPDIR inherits (every Legion pod's is), is dropped, so 2700 reads 700 and 2750
+# still reads 750.
 # shellcheck disable=SC2016 # expanded by the runner's sh
-credential_reader='for f in "$2"/*; do printf "%s %s %s %s %s\n" "$1" "${f##*/}" "$(stat -c %a "$f")" "$(stat -c %a "$2")" "$(cat "$f")"; done >>"$3"'
+credential_reader='d=$(stat -c %a "$2"); case $d in ????) d=${d#?} ;; esac; for f in "$2"/*; do printf "%s %s %s %s %s\n" "$1" "${f##*/}" "$(stat -c %a "$f")" "$d" "$(cat "$f")"; done >>"$3"'
 # flags_name_dir DIR ARG...: every -token-file, -listener-token-file and -pg-file of the job's
 # command ARG... names a file in DIR, the directory its start claims, and there is one at least:
 # a job whose flags named another directory would open no file at all.
@@ -2292,8 +2303,8 @@ command -v dash >/dev/null ||
       ((++naps <= 200)) || fail "the $wrapper shell wrote no credentials into $dir"
       sleep 0.05
     done
-    [ "$(stat -c %a "$dir")" = 700 ] && [ "$(stat -c %a "$dir/pg-url")" = 600 ] ||
-      fail "the $wrapper shell's directory is mode $(stat -c %a "$dir") and its pg-url $(stat -c %a "$dir/pg-url"), not 700 and 600"
+    [ "$(perm_bits "$dir")" = 700 ] && [ "$(stat -c %a "$dir/pg-url")" = 600 ] ||
+      fail "the $wrapper shell's directory is mode $(perm_bits "$dir") and its pg-url $(stat -c %a "$dir/pg-url"), not 700 and 600"
     kill -"$sig" "$pid"
     rc=0
     if [ "$sig" = INT ]; then
