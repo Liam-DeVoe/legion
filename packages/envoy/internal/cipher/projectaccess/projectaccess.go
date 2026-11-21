@@ -30,6 +30,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -500,15 +501,14 @@ func (c *Client) PrivateProjectsFresh(ctx context.Context) ([]PrivateProject, er
 // PrivateProjectsFresh answer that lists one. It is never cleared, and a restart starts it false.
 func (c *Client) SawPrivate() bool { return c.sawPrivate.Load() }
 
-// readPrivateProjects asks Dispatch's private-projects route once. The answer is decoded with
-// projects held raw, and refused unless that value opens a JSON array before the array itself is
-// decoded: a missing key and a null would otherwise decode to the same nil a [] does, and a list
-// read short is the one answer no caller can tell from the truth.
+// readPrivateProjects asks Dispatch's private-projects route once. The answer is refused when any
+// of its objects holds one key twice (duplicateKey), and then decoded with projects held raw, and
+// refused unless that value opens a JSON array before the array itself is decoded: a missing key
+// and a null would otherwise decode to the same nil a [] does, and a list read short is the one
+// answer no caller can tell from the truth.
 func (c *Client) readPrivateProjects(ctx context.Context) ([]PrivateProject, error) {
-	var wire struct {
-		Projects json.RawMessage `json:"projects"`
-	}
-	status, err := c.get(ctx, privateProjectsPath, nil, maxPrivateProjectsBytes, &wire)
+	var body json.RawMessage
+	status, err := c.get(ctx, privateProjectsPath, nil, maxPrivateProjectsBytes, &body)
 	if err != nil {
 		return nil, err
 	}
@@ -516,6 +516,19 @@ func (c *Client) readPrivateProjects(ctx context.Context) ([]PrivateProject, err
 		// get answers a 404 carrying PROJECT_NOT_FOUND as a status, the project route's answer
 		// about one project; this route names no project, so that 404 is no list either.
 		return nil, fmt.Errorf("projectaccess: dispatch answered %s %d with the code %q, which is no list of private projects", privateProjectsPath, status, projectNotFoundCode)
+	}
+	// encoding/json keeps the last of two members that share a key, so an answer carrying projects
+	// twice, or an entry carrying slack_channels twice, would read as whichever came last: [] and
+	// no private project, or a project with no channel to fence. Such an answer has two readings,
+	// and is no list.
+	if key, err := duplicateKey(body); err != nil || key != "" {
+		return nil, fmt.Errorf("projectaccess: dispatch's answer to %s holds the key %q twice in one object, so it is no list of private projects (%v)", privateProjectsPath, key, err)
+	}
+	var wire struct {
+		Projects json.RawMessage `json:"projects"`
+	}
+	if err := json.Unmarshal(body, &wire); err != nil {
+		return nil, fmt.Errorf("projectaccess: decode dispatch's answer to %s: %w", privateProjectsPath, err)
 	}
 	raw := bytes.TrimSpace(wire.Projects)
 	switch {
@@ -550,6 +563,46 @@ func (c *Client) readPrivateProjects(ctx context.Context) ([]PrivateProject, err
 		c.sawPrivate.Store(true)
 	}
 	return projects, nil
+}
+
+// duplicateKey is the first key that an object of raw, at any depth, holds twice, compared without
+// regard to case, as encoding/json matches a key to a field; "" when no object does. raw is one
+// JSON value, which get has already decoded once.
+func duplicateKey(raw []byte) (string, error) {
+	return duplicateIn(json.NewDecoder(bytes.NewReader(raw)))
+}
+
+// duplicateIn reads the next value of decoder whole, and answers duplicateKey's answer for it.
+func duplicateIn(decoder *json.Decoder) (string, error) {
+	token, err := decoder.Token()
+	if err != nil {
+		return "", err
+	}
+	delim, open := token.(json.Delim)
+	if !open {
+		return "", nil
+	}
+	var keys []string
+	for decoder.More() {
+		if delim == '{' {
+			token, err := decoder.Token()
+			if err != nil {
+				return "", err
+			}
+			// An object's key is always a string token.
+			key, _ := token.(string)
+			if slices.ContainsFunc(keys, func(seen string) bool { return strings.EqualFold(seen, key) }) {
+				return key, nil
+			}
+			keys = append(keys, key)
+		}
+		if key, err := duplicateIn(decoder); key != "" || err != nil {
+			return key, err
+		}
+	}
+	// The closing delimiter.
+	_, err = decoder.Token()
+	return "", err
 }
 
 func (c *Client) cachedAnswer(key accessKey) (cachedAnswer, bool) {

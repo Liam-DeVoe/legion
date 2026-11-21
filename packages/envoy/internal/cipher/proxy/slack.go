@@ -215,8 +215,8 @@ type fenceRule string
 
 // slackCallExcluded's rules, in the order its comment numbers them.
 const (
-	// fenceSearch is rule 1: a search method.
-	fenceSearch fenceRule = "search"
+	// fenceMethod is rule 1: a method fencedMethods names.
+	fenceMethod fenceRule = "method"
 	// fenceType, fenceEncoding and fenceSize are rule 2: a non-empty body's one Content-Type, its
 	// Content-Encoding and its size.
 	fenceType     fenceRule = "content-type"
@@ -249,13 +249,29 @@ type fenceSkip map[fenceRule]bool
 // on reports whether rule is checked.
 func (s fenceSkip) on(rule fenceRule) bool { return !s[rule] }
 
+// fencedMethods are the Slack methods a name the public fence holds may call, by their decoded
+// path: the ones this repository sends with the Legion Slack bot token, and no other. Two read or
+// write one channel, which rule 5 checks by the channel they name: chat.postMessage, slack_post's
+// reply (packages/envoy-client/src/slack-post.ts), and conversations.replies, the controller's
+// read of a mention's thread (skills/legion-controller/references/slack-mentions.md). auth.test,
+// the token's own check (skills/agent-secrets/SKILL.md, scripts/airlock/slack.ts), names no
+// channel and answers none of a channel's content. Every other method is refused, whatever it
+// names: one that names no channel can still answer a private channel's content (reactions.list,
+// stars.list, files.list, files.info, search.messages) or its name and topic (conversations.list),
+// so no list of methods to refuse could be complete, and a method this file does not know of
+// cannot reach Slack.
+var fencedMethods = map[string]bool{
+	"/api/chat.postMessage":      true,
+	"/api/conversations.replies": true,
+	"/api/auth.test":             true,
+}
+
 // slackCallExcluded reads r as a Slack call on a name the public fence holds and answers its body
 // when the call names none of excluded, every channel a private project's owner named, or why it
 // may. A credential that names no private project may not read or write such a channel with the
 // bot token, so the call is refused when:
 //
-//  1. it is a search method (search.* or assistant.search.*, a segment of the decoded path,
-//     case-folded), which reads every channel the bot is in at once;
+//  1. its method, the decoded path, is not one fencedMethods names;
 //  2. its body, read once, is non-empty and has no single Content-Type that mime.ParseMediaType
 //     reads as application/json or application/x-www-form-urlencoded with at most a charset of
 //     utf-8, or has a Content-Encoding, or is over maxSlackPostBody;
@@ -272,8 +288,8 @@ func (s fenceSkip) on(rule fenceRule) bool { return !s[rule] }
 // upstream in place of r's own, so the call Slack receives is the call this read. skip is a
 // test's (Options.fenceSkip); nil checks every rule.
 func slackCallExcluded(r *http.Request, excluded []string, skip fenceSkip) (body []byte, why string) {
-	if skip.on(fenceSearch) && slackSearch(r.URL.Path) {
-		return nil, "the call is a Slack search, which reads every channel at once"
+	if skip.on(fenceMethod) && !fencedMethods[r.URL.Path] {
+		return nil, "the Slack method is not one this secret is spent on outside a private project (chat.postMessage, conversations.replies, auth.test)"
 	}
 	if r.URL.RawQuery != "" && skip.on(fenceQuery) {
 		query, err := url.ParseQuery(r.URL.RawQuery)
@@ -317,17 +333,6 @@ func slackCallExcluded(r *http.Request, excluded []string, skip fenceSkip) (body
 		return nil, why
 	}
 	return body, ""
-}
-
-// slackSearch reports whether path, as decoded, has a segment naming a Slack search method in any
-// case: search.* or assistant.search.*.
-func slackSearch(path string) bool {
-	for _, segment := range strings.Split(strings.ToLower(path), "/") {
-		if strings.HasPrefix(segment, "search.") || strings.HasPrefix(segment, "assistant.search.") {
-			return true
-		}
-	}
-	return false
 }
 
 // fenceKeys are the keys a Slack call names a channel under.
