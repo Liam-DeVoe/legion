@@ -67,11 +67,16 @@ export async function ompRoot(
 
 /**
  * Serves every request with `answer`, recording each first. `answer` gets the request's parsed JSON
- * body, empty for a GET. Returns the recorded requests and the server's base URL.
+ * body, empty for a GET, and its headers, for a case that records what the host sent beside the
+ * body. Returns the recorded requests and the server's base URL.
  */
 export function serveStandin(
   cleanup: Cleanup,
-  answer: (url: URL, body: Record<string, unknown>) => Response | Promise<Response>
+  answer: (
+    url: URL,
+    body: Record<string, unknown>,
+    headers: Headers
+  ) => Response | Promise<Response>
 ): { readonly requests: Request[]; readonly base: string } {
   const requests: Request[] = [];
   const server = Bun.serve({
@@ -82,7 +87,7 @@ export function serveStandin(
       const text = request.method === "POST" ? await request.text() : "";
       const body = text === "" ? {} : (JSON.parse(text) as Record<string, unknown>);
       requests.push({ path: url.pathname, body });
-      return answer(url, body);
+      return answer(url, body, request.headers);
     },
   });
   cleanup.push(async () => {
@@ -283,6 +288,12 @@ export interface StandinProvider {
   /** The model ids, in the order the profile lists them; the first of the first provider is what
    * every model role names. */
   readonly models: readonly string[];
+  /** What each of the models takes as input; text alone by default. Oh My Pi runs snapcompact
+   * only on a model that takes images. */
+  readonly input?: readonly ("text" | "image")[];
+  /** The `compat` flags each of the models sets in models.yml, which Oh My Pi merges over the
+   * catalog's own for that model id; none by default. */
+  readonly compat?: Readonly<Record<string, boolean>>;
 }
 
 /** What `writeStandinProfile` writes when a caller names no providers: the one model every pane
@@ -323,7 +334,7 @@ export async function writeStandinProfile(
     path.join(agent, "models.yml"),
     [
       "providers:",
-      ...providers.flatMap(({ provider, models }) => [
+      ...providers.flatMap(({ provider, models, input = ["text"], compat }) => [
         `  ${provider}:`,
         `    baseUrl: ${base}/anthropic`,
         "    auth: apiKey",
@@ -334,10 +345,17 @@ export async function writeStandinProfile(
           `      - id: ${id}`,
           `        name: Stand-in ${id}`,
           "        reasoning: false",
-          "        input: [text]",
+          `        input: [${input.join(", ")}]`,
           "        contextWindow: 200000",
           "        maxTokens: 8000",
           "        cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0}",
+          ...(compat === undefined
+            ? []
+            : [
+                `        compat: {${Object.entries(compat)
+                  .map(([flag, value]) => `${flag}: ${value}`)
+                  .join(", ")}}`,
+              ]),
         ]),
       ]),
       "",
@@ -883,6 +901,12 @@ export interface LegionPaneOptions {
   /** The providers and models the pane's profile offers (`writeStandinProfile`); the single
    * `standin/standin-model` by default. */
   readonly providers?: readonly StandinProvider[];
+  /** Extensions the pane loads after the Envoy and Legion entries, in order, as absolute paths:
+   * a case's own recorder of what those two hand the host. None by default. */
+  readonly extensions?: readonly string[];
+  /** Sees every request the stand-in serves, with its headers, before it is answered: a case
+   * that records what the host sent beside the body. */
+  readonly onRequest?: (url: URL, body: Record<string, unknown>, headers: Headers) => void;
   /** Tried first for every request the stand-in serves; `undefined` falls through to the runner's
    * own routes (the gateway, the daemon's claim and grant routes, the Envoy listener). An answer
    * may be a promise, which the stand-in awaits before it replies. */
@@ -933,11 +957,18 @@ export interface LegionPane {
    * root and against the same stand-in, and settles it as the first life settled: what the
    * daemon does when it relaunches a worker whose process is gone. `replies` are appended to the
    * script the first life left, and `prompt` is the assignment — or assignments — the second
-   * life is given.
+   * life is given: none, for a life a card starts. `whileUp` runs in that life once those
+   * assignments' runs have settled, as the first life's does.
    */
-  readonly resume: (replies: readonly Reply[], prompt: string | readonly string[]) => Promise<void>;
+  readonly resume: (
+    replies: readonly Reply[],
+    prompt: string | readonly string[],
+    whileUp?: (rpc: Rpc) => Promise<void>
+  ) => Promise<void>;
   /** The pane's issue workspace. */
   readonly workspace: string;
+  /** The pane's transcript directory, which a case edits between two lives. */
+  readonly sessions: string;
 }
 
 /**
@@ -987,11 +1018,12 @@ export async function runLegionPane(
    * gateway itself still has to settle on the gateway falling silent. */
   let served = 0;
   let lastAnsweredAt = 0;
-  const { requests, base } = serveStandin(cleanup, (url, body) => {
+  const { requests, base } = serveStandin(cleanup, (url, body, headers) => {
     if (url.pathname === "/anthropic/v1/messages") {
       served += 1;
       lastAnsweredAt = Date.now();
     }
+    options.onRequest?.(url, body, headers);
     const own = options.answer?.(url, body);
     if (own !== undefined) return own;
     if (url.pathname === "/anthropic/v1/messages") {
@@ -1087,6 +1119,7 @@ export async function runLegionPane(
           // entry refuses to run without it.
           path.resolve(import.meta.dir, "../../pi-envoy/extensions/envoy.ts"),
           path.resolve(import.meta.dir, "../../pi-legion/extensions/legion.ts"),
+          ...(options.extensions ?? []),
         ],
         home,
         workspace,
@@ -1195,13 +1228,15 @@ export async function runLegionPane(
       }
       return entries;
     },
-    resume: async (more, prompt) => {
+    resume: async (more, prompt, whileUp) => {
       scripted.push(...more);
-      await live(typeof prompt === "string" ? [prompt] : prompt, [
-        "--resume",
-        await resumeId(sessions),
-      ]);
+      await live(
+        typeof prompt === "string" ? [prompt] : prompt,
+        ["--resume", await resumeId(sessions)],
+        whileUp
+      );
     },
     workspace,
+    sessions,
   };
 }
