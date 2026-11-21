@@ -706,8 +706,8 @@ func MarkdownSHA256(markdown string) string {
 
 // ReplaceText replaces the entire live document tree so connected clients
 // receive document uploads as a regular server-side transaction. The precondition names the
-// token of the version the caller believes it is replacing, which every replacement names, and
-// is checked under the write's own locks.
+// token of the version the caller believes it is replacing and is checked under the write's own
+// locks; a replacement that names none is taken unchecked (see below).
 func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, actor model.Actor, precondition *model.EditPrecondition) (string, error) {
 	return s.ReplaceTextExpecting(ctx, artifactID, markdown, actor, precondition, "")
 }
@@ -767,14 +767,17 @@ func (s *Service) ReplaceTextExpecting(ctx context.Context, artifactID, markdown
 		}
 		// The token the upload names is checked here, inside the write's own locks and before
 		// the replacement is parsed, so no other writer can land between the check and the
-		// write, as a conditional edit checks it (ApplyOps); a replacement that names none is
-		// refused here, since every replacement says which version it replaces, unless the
-		// expected content checked above already said it. A repair turns that around: the live
-		// tree is outside the Proof schema, so it renders no markdown and has no token at all,
-		// and this upload is the only way to repair the document, so a repair names no token,
-		// and one that names a token names a token this document has never had. That token is
-		// refused rather than dropped, since a dropped guard tells the caller its write was
-		// conditional when nothing had checked it.
+		// write, as a conditional edit checks it (ApplyOps). A replacement that names no token
+		// is taken unchecked, as every replacement was before #3000: no deployed `dispatch`
+		// client can name one on `dispatch artifact`, so refusing it refused every agent's
+		// replacement (INFRA-4980). The upload route counts and logs each one it stores (api's
+		// noteUnguardedReplacement), and the refusal comes back in a later change, once every
+		// deployed client sends the token. A repair turns the check around: the live tree is
+		// outside the Proof schema, so it renders no markdown and has no token at all, and this
+		// upload is the only way to repair the document, so a repair names no token, and one
+		// that names a token names a token this document has never had. That token is refused
+		// rather than dropped, since a dropped guard tells the caller its write was conditional
+		// when nothing had checked it.
 		if repairing {
 			if precondition != nil {
 				return ErrPreconditionUnavailable
@@ -783,8 +786,6 @@ func (s *Service) ReplaceTextExpecting(ctx context.Context, artifactID, markdown
 			if _, err := checkEditPrecondition(current, *precondition); err != nil {
 				return err
 			}
-		} else if expectSHA256 == "" {
-			return ErrPreconditionRequired
 		}
 		var target *pmdoc.Node
 		target, read, err = parseWrittenReplacing(current, markdown)
