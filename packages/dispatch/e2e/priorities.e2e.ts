@@ -2308,6 +2308,7 @@ test("the fault tabs draw a holder's claim whole, and no status bar of these pag
         const narrow: string[] = [];
         const unsorted = await settledValue(`the ${tab} tab's columns`, () => columnFit(table));
         if (unsorted.title < least[tab]) narrow.push(`unsorted ${unsorted.title}`);
+        // The headers are the column definitions', drawn with the first row awaited above.
         const columns = await sortingColumns(table);
         // The sorted reads are read on a table whose columns sort, Claimed by among them.
         expect(columns.map((column) => column.words)).toContain("Claimed by");
@@ -2328,6 +2329,7 @@ test("the fault tabs draw a holder's claim whole, and no status bar of these pag
     // button or overlaps its filter: each column that sorts and filters is sorted in turn, and
     // its arrow read.
     const arrowsOverFilters = async (table: Locator) => {
+      // The headers are the column definitions', drawn with the rows the caller awaited.
       const columns = (await sortingColumns(table)).filter((column) => column.filters);
       const overlaps: string[] = [];
       for (const { id: column } of columns) {
