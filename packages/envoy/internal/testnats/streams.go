@@ -270,7 +270,7 @@ func describeCluster(cluster *natsgo.ClusterInfo) string {
 func awaitInfo[T any](t testing.TB, within time.Duration, failure string, read func() (*T, error), done func(*T) bool, describe func(*T) string) *T {
 	t.Helper()
 	deadline := time.Now().Add(within)
-	for wait := (backoff{}); ; wait.next() {
+	for wait := (backoff{}); ; wait.next(waitEnd{}) {
 		info, err := read()
 		if err == nil && done(info) {
 			return info

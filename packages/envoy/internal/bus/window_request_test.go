@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -116,28 +117,45 @@ func TestARequestNobodyAnswersIsNotAcknowledgedWithinItsTimeout(t *testing.T) {
 // not acknowledge under `unanswered` and a forward that may never have left this process under
 // `failed` - and both wrap ErrNotAcknowledged, so a caller that only backs the send off is
 // unaffected.
+//
+// The confirmed Request's flush runs on a goroutine of its own, bounded by the request's deadline,
+// and a timeout that came before that goroutine ran would end the flush unconfirmed, the verdict
+// the scheduler's rather than the flush's. So both confirmed Requests have an hour to their
+// deadline, and the test sets which of the two each settles first (WithRequestExpiry). The first
+// runs out of time at once: its timeout waits for its flush, which the hour bounds, so the answer
+// carries the flush's verdict however late the flush runs. The second runs out of time only once
+// it has settled its flush, so it settles a flush that beat its timeout, every time. The frozen
+// Request below keeps its timer.
 func TestAnUnansweredRequestSaysWhetherItsPublishWasConfirmed(t *testing.T) {
-	// Serial: its first leg's Request must run out its 5 s timeout with its flush's confirmation
-	// inside that timeout, which the flush shares (window.request), and a parallel test's load can
-	// hold the flush past it, which reads as an unconfirmed publish rather than a confirmed one.
-	server, _, client := requestClient(t)
+	var requests atomic.Int32
+	server, _, client := requestClient(t, bus.WithRequestExpiry(func(time.Time) (<-chan time.Time, func()) {
+		switch requests.Add(1) {
+		case 1:
+			expired := make(chan time.Time, 1)
+			expired <- time.Now()
+			return expired, nil
+		case 2:
+			expired := make(chan time.Time, 1)
+			return expired, func() { expired <- time.Now() }
+		}
+		return nil, nil
+	}))
 	window := client.WindowUntil(nil)
 
-	// The request's flush runs inside the request's own timeout, so the timeout is long enough for
-	// a loaded machine's flush to confirm the publish: this leg proves the answer a confirmed
-	// publish gets, not how soon the server answered. Nothing acknowledges the role subject, so the
-	// Request still runs out, at that cost.
-	err := answerOf(t, window.Request("notifications.role.request-confirmed", forwardEnvelope("confirmed"),
-		bus.RequestOptions{MsgID: bus.ForwardMsgID("confirmed", "notifications.role.request-confirmed"), Timeout: 5 * time.Second}))
-	if !errors.Is(err, bus.ErrNotAcknowledged) || errors.Is(err, bus.ErrPublishUnconfirmed) {
-		t.Fatalf("an unanswered Request whose publish was confirmed returned %v, want ErrNotAcknowledged and not ErrPublishUnconfirmed", err)
+	for _, name := range []string{"confirmed", "confirmed-flushed-first"} {
+		subject := "notifications.role.request-" + name
+		err := answerOf(t, window.Request(subject, forwardEnvelope(name),
+			bus.RequestOptions{MsgID: bus.ForwardMsgID(name, subject), Timeout: time.Hour}))
+		if !errors.Is(err, bus.ErrNotAcknowledged) || errors.Is(err, bus.ErrPublishUnconfirmed) {
+			t.Fatalf("an unanswered Request (%s) whose publish was confirmed returned %v, want ErrNotAcknowledged and not ErrPublishUnconfirmed", name, err)
+		}
 	}
 
 	// A frozen server answers the flush's PING with nothing, so the flush runs out of the
 	// request's own window while the connection stays connected: the publish is not known to have
 	// been accepted.
 	thaw := server.Freeze(t)
-	err = answerOf(t, window.Request("notifications.role.request-unconfirmed", forwardEnvelope("unconfirmed"),
+	err := answerOf(t, window.Request("notifications.role.request-unconfirmed", forwardEnvelope("unconfirmed"),
 		bus.RequestOptions{MsgID: bus.ForwardMsgID("unconfirmed", "notifications.role.request-unconfirmed"), Timeout: 500 * time.Millisecond}))
 	connected := client.Connected()
 	thaw()
@@ -344,9 +362,12 @@ func TestProbeAnswersWhetherTheWindowsConnectionStillAnswers(t *testing.T) {
 
 // A window with a deadline (WindowUntil) writes nothing at or past it. Its first send, made while
 // the client has no connection, waits for one only until the deadline, 200 ms on, and answers
-// ErrWindowDeadline then, though the connection comes back later and the window's wait for a
-// connection is otherwise 5 s: the stream holds nothing it sent once the client is connected again.
-// A window pinned to a live connection answers a send past its deadline the same way, at once.
+// ErrWindowDeadline then, though the window's wait for a connection is otherwise 5 s. The server
+// starts again only once that send has answered: a server started inside the 200 ms let the
+// connection come back before the deadline whenever the client's next reconnect attempt, due every
+// second from the loss, fell there, and the send was written. The stream holds nothing it sent
+// once the client is connected again. A window pinned to a live connection answers a send past its
+// deadline the same way, at once.
 func TestAWindowSendsNothingPastItsDeadline(t *testing.T) {
 	// Serial: its assertion is a time: it holds the send's answer to about its 200 ms deadline.
 	server, _, client := requestClient(t)
@@ -363,12 +384,6 @@ func TestAWindowSendsNothingPastItsDeadline(t *testing.T) {
 	started := time.Now()
 	deadline := started.Add(200 * time.Millisecond)
 	window := client.WindowUntil(func() time.Time { return deadline })
-	restarted := make(chan struct{})
-	go func() {
-		defer close(restarted)
-		time.Sleep(100 * time.Millisecond)
-		server.Start(t)
-	}()
 	item := forwardEnvelope("deadline")
 	item.Topic = subject
 	err := answerOf(t, window.PublishAsync(item))
@@ -384,7 +399,7 @@ func TestAWindowSendsNothingPastItsDeadline(t *testing.T) {
 		t.Fatalf("a Request past the window's deadline answered %v, want ErrWindowDeadline", err)
 	}
 
-	<-restarted
+	server.Start(t)
 	waitUntil = time.Now().Add(busWait)
 	for !client.Connected() {
 		if time.Now().After(waitUntil) {
