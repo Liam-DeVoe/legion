@@ -258,7 +258,8 @@ func TestAPublicSlackGrantNeverNamesAPrivateChannel(t *testing.T) {
 // - is carried byte for byte, since with no channel excluded the proxy reads no body at all, and
 // the value carries the release's ten-minute bound all the same. On a broker with no
 // project-access client (R9's case) Dispatch is asked nothing; on one with it, Dispatch is asked
-// its list of private projects, at most once a release, and nothing else.
+// its list of private projects, through its 30 s cache, and nothing else: a second release inside
+// the cache's window asks nothing more.
 func TestAPublicSlackGrantIsTodaysWithNoPrivateProject(t *testing.T) {
 	for _, access := range []bool{false, true} {
 		name := "a broker with no project-access client"
@@ -278,11 +279,14 @@ func TestAPublicSlackGrantIsTodaysWithNoPrivateProject(t *testing.T) {
 			for _, call := range unread {
 				p.send(t, call).served(t, "a call with no private project", call, slackValue)
 			}
+			// A second release of the grant on the same pod inside projectaccess.CacheTTL, as the
+			// proxy's read of a second grant comes: the list the first kept answers it.
+			p.grants.again(t)
 			w.clock.advance(ownerChangeHeard - mintAgainBefore + time.Second)
 			p.send(t, historyOf(privChannel)).served(t, "a read after the proxy read the grant again", historyOf(privChannel), slackValue)
 			reads := p.grants.all()
-			if len(reads) != 2 {
-				t.Fatalf("the proxy read the grant %d time(s); want twice, once at the first call and once after its bound", len(reads))
+			if len(reads) != 3 {
+				t.Fatalf("the grant was read %d time(s); want three times: at the first call, once more at once, and once after its bound", len(reads))
 			}
 			for i, values := range reads {
 				got := values[slackName]
@@ -294,8 +298,8 @@ func TestAPublicSlackGrantIsTodaysWithNoPrivateProject(t *testing.T) {
 			switch {
 			case !access && calls != 0:
 				t.Fatalf("Dispatch was asked %d time(s) by a broker with no project-access client; want none", calls)
-			case access && (calls != lists || lists < 1 || lists > len(reads)):
-				t.Fatalf("Dispatch was asked %d time(s), %d of them for the list of private projects, over %d releases; want the list alone, at most once a release", calls, lists, len(reads))
+			case access && (calls != lists || lists != 2):
+				t.Fatalf("Dispatch was asked %d time(s), %d of them for the list of private projects, over 3 releases in two windows of %v; want the list alone, once in each window", calls, lists, projectaccess.CacheTTL)
 			}
 		})
 	}
@@ -566,21 +570,38 @@ func (p *fencePod) send(t *testing.T, call slackPost) slackAnswer {
 }
 
 // readsOf is a pod's request machine as its proxy reads it, keeping every value AirlockValues
-// answered, so a row reads what the proxy held and how often it read the grant.
+// answered, and the grant it was asked for, so a row reads what the proxy held and how often it
+// read the grant.
 type readsOf struct {
 	*requests.Machine
-	mu    sync.Mutex
-	reads []map[string]requests.AirlockSecret
+	mu      sync.Mutex
+	reads   []map[string]requests.AirlockSecret
+	grantID string
 }
 
 func (g *readsOf) AirlockValues(ctx context.Context, grantID string) (map[string]requests.AirlockSecret, string, error) {
 	values, version, err := g.Machine.AirlockValues(ctx, grantID)
 	if err == nil {
 		g.mu.Lock()
-		g.reads = append(g.reads, values)
+		g.reads, g.grantID = append(g.reads, values), grantID
 		g.mu.Unlock()
 	}
 	return values, version, err
+}
+
+// again reads the grant the proxy last read once more, as the proxy's read of another grant on
+// the same pod would, and fails t when it cannot.
+func (g *readsOf) again(t *testing.T) {
+	t.Helper()
+	g.mu.Lock()
+	grantID := g.grantID
+	g.mu.Unlock()
+	if grantID == "" {
+		t.Fatal("the proxy has read no grant yet, so there is none to read again")
+	}
+	if _, _, err := g.AirlockValues(t.Context(), grantID); err != nil {
+		t.Fatalf("AirlockValues(%s) again: %v", grantID, err)
+	}
 }
 
 // all is every value read so far, in order.
