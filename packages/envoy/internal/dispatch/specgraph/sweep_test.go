@@ -2,6 +2,7 @@ package specgraph
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json/v2"
 	"fmt"
 	"io/fs"
@@ -157,16 +158,25 @@ type sweepCount struct {
 // state toward true fails the test, unless the input has a right to it. A right with allowed covers
 // only the places where the input reads the state that allowed holds there. An input whose files
 // are base's (sameFiles) fails the test too: its writer wrote nothing, and it would read as base and
-// pass.
+// pass. So does an input whose files are those of an earlier input of the list, byte for byte
+// (inputKey): the sweep would read one case twice and the case that it means not at all, as when a
+// writer or a table turned one input into another.
 func sweepAgainst(t *testing.T, base fstest.MapFS, inputs []sweepInput) sweepCount {
 	t.Helper()
 	whole := baseStates(t, base)
 	n := sweepCount{inputs: len(inputs)}
+	seen := map[[sha256.Size]byte]string{}
 	for _, in := range inputs {
 		if sameFiles(t, base, in.fsys) {
 			t.Errorf("%s: the input's files are the base's, so the sweep wrote nothing", in.what)
 			continue
 		}
+		key := inputKey(base, in.fsys)
+		if first, held := seen[key]; held {
+			t.Errorf("%s: the input's files are those of the input %s, byte for byte, so the sweep reads one case twice", in.what, first)
+			continue
+		}
+		seen[key] = in.what
 		got, err := sweepStates(in.fsys)
 		switch {
 		case err != nil:
@@ -197,9 +207,32 @@ func sweepAgainst(t *testing.T, base fstest.MapFS, inputs []sweepInput) sweepCou
 	return n
 }
 
+// inputKey is what the input fsys holds apart from base, as one sha256: each file of fsys that base
+// does not hold with the same bytes, by its name and its bytes, and each file of base that fsys does
+// not hold, by its name. Two inputs of one base hold the same files, byte for byte, exactly where
+// their keys are the same. Each JSON file that a sweep writes is as encodeTree writes it, with the
+// members of each object in the order of their names, so two inputs that write one tree have the
+// same key.
+func inputKey(base, fsys fstest.MapFS) [sha256.Size]byte {
+	h := sha256.New()
+	for _, name := range slices.Sorted(maps.Keys(fsys)) {
+		if was, held := base[name]; held && bytes.Equal(was.Data, fsys[name].Data) {
+			continue
+		}
+		fmt.Fprintf(h, "file %q, %d bytes:", name, len(fsys[name].Data))
+		h.Write(fsys[name].Data)
+	}
+	for _, name := range slices.Sorted(maps.Keys(base)) {
+		if _, held := fsys[name]; !held {
+			fmt.Fprintf(h, "no file %q;", name)
+		}
+	}
+	return [sha256.Size]byte(h.Sum(nil))
+}
+
 // sameFiles is whether the scenarios a and b hold the same files with the same contents: each JSON
-// file as its decoded tree, since encodeTree writes the members of an object in no fixed order, and
-// each other file by its bytes.
+// file as its decoded tree, since the base's files are as their author wrote them and a write is as
+// encodeTree writes it, and each other file by its bytes.
 func sameFiles(t *testing.T, a, b fstest.MapFS) bool {
 	t.Helper()
 	if !slices.Equal(slices.Sorted(maps.Keys(a)), slices.Sorted(maps.Keys(b))) {
@@ -428,6 +461,9 @@ func TestAddingAMemberMovesNoStateTowardTrue(t *testing.T) {
 			names := namesOf(t, base)
 			values := map[string][]any{"attempt": {2}}
 			for kind, other := range map[string]string{"commit": "c9", "deploy": "d9", "graph_tx": "g9", "job": "other-job", "author": "other-author", "path": "packages/envoy/cmd/other/main.go"} {
+				for slices.Contains(names[kind], other) {
+					other += "x" // the value that no record of the base names: carry with a failing example planted on c9 names c9
+				}
 				for _, v := range append(slices.Clone(names[kind]), other) {
 					values[kind] = append(values[kind], v)
 					switch kind {

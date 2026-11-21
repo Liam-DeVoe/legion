@@ -262,8 +262,8 @@ func valueAt(tree any, c treeChange) any   { return treeWith(tree, c.place, c.va
 // that write is handed is its own: before write runs, changedFile builds the meant tree from want
 // and from a decode of base of its own (treeChange.meant), and it hands write a tree of the file
 // decoded for write alone and a copy of want (treeChange.copied). After write returns, it compares
-// that copy, and want itself, with a copy of want taken before the call, as decoded values, not as
-// encodings, since encoding/json/v2 writes the members of an object in no fixed order (changeKept).
+// that copy, and want itself, with a copy of want taken before the call, as decoded values, so that
+// a difference names its place (changeKept).
 // So a writer that writes another value or at another place fails by the read back, and one that
 // changes the value or the place that it is handed, before or after a right write, or a value of the
 // package (packageValuesKept), fails by name too; and no later input of the sweep reads what a
@@ -513,10 +513,11 @@ func treePointer(place []string) string {
 	return b.String()
 }
 
-// encodeTree is the JSON text of the tree v.
+// encodeTree is the JSON text of the tree v, with the members of each object in the order of their
+// names, so that one tree has one text (inputKey).
 func encodeTree(t *testing.T, v any) []byte {
 	t.Helper()
-	data, err := json.Marshal(v)
+	data, err := json.Marshal(v, json.Deterministic(true))
 	if err != nil {
 		t.Fatal(err)
 	}
