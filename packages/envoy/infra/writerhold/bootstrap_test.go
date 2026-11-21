@@ -46,3 +46,50 @@ func TestHoldABootstrapAfterALossMidHoldIsRefused(t *testing.T) {
 	_, err = connectListener(h.s)
 	require.Error(t, err, "a writer was admitted under the restored held row")
 }
+
+// A hold row lost after a completed hold is restored released: the hold released, then the row
+// deleted (the log's latest entry released), `hold restore --bootstrap` gets the log's next gen
+// from the first-row write and sends the row released once at that gen, which the route stores
+// since the log's latest entry is released, so a listener is admitted again. The control is the
+// bootstrap as f0017ccb76 had it, which refused every log with entries, leaving no row, so every
+// client but the operator was refused hold_unknown with no command to end it.
+func TestHoldABootstrapAfterACompletedHoldRestoresReleased(t *testing.T) {
+	h := newHeldStack(t)
+	ctx := context.Background()
+	id := h.s.Prepare(t, holdrecord.WorkflowBucketsCreate)
+	h.s.HoldWithoutTheSteps(t, id)
+	h.s.Release(t, id)
+	_, err := h.s.Broker.Pool.Exec(ctx, `delete from nats_hold`)
+	require.NoError(t, err, "the test's admin deletes the row")
+	require.False(t, h.listenerAdmitted(), "a writer was admitted with no row")
+
+	code, stdout, stderr := h.run(actionRestore, "--bootstrap", "--reason", "the row is gone after the hold")
+	require.Zero(t, code, "the bootstrap after a completed hold: %s", stderr)
+	require.Contains(t, stdout, "phase released")
+	row := h.row()
+	require.Equal(t, natsgrant.OperatorPhaseReleased, row.Phase)
+	require.Empty(t, row.HoldID)
+	require.True(t, h.listenerAdmitted(), "a writer was refused after the released row came back")
+}
+
+// `hold restore --hold` of a hold that has ended is refused: its release is done, so a held row
+// restored for it would keep every client out with no command left to release it
+// (holdrecord.RestoreRow's ErrAlreadyDone). Nothing is written. The control is --bootstrap, which
+// restores the released row there.
+func TestHoldARestoreOfAnEndedHoldIsRefused(t *testing.T) {
+	h := newHeldStack(t)
+	ctx := context.Background()
+	id := h.s.Prepare(t, holdrecord.WorkflowBucketsCreate)
+	h.s.HoldWithoutTheSteps(t, id)
+	h.s.Release(t, id)
+	_, err := h.s.Broker.Pool.Exec(ctx, `delete from nats_hold`)
+	require.NoError(t, err)
+	code, _, stderr := h.run(actionRestore, "--hold", id, "--reason", "restore an ended hold")
+	require.NotZero(t, code, "a restore held of an ended hold")
+	require.Contains(t, stderr, "has ended")
+	var n int
+	require.NoError(t, h.s.Broker.Pool.QueryRow(ctx, `select count(*) from nats_hold`).Scan(&n))
+	require.Zero(t, n, "the refused restore wrote a row")
+	code, _, _ = h.run(actionRestore, "--bootstrap", "--reason", "the control")
+	require.Zero(t, code, "control: the released restore of the ended hold's row")
+}

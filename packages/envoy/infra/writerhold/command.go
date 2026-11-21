@@ -383,13 +383,16 @@ func mapLine(label string, m map[string]string) string {
 	return label + " " + strings.Join(parts, " ")
 }
 
-// restore writes a lost hold row back through POST /v1/nats-hold/restore: with --bootstrap the
-// first row, released at gen 1 with no hold id (holdrecord.Client.Bootstrap, sent once), which
-// lands only in an empty log; with --hold, the row held under that hold id, at the gen the route
-// names (holdrecord.RestoreRow signs it afresh there), so a lost row comes back closed and the hold
-// goes on. A bootstrap the route answers with the log's next gen is a row lost mid-hold, which
-// --bootstrap never replaces: it is refused, naming that gen and the way back, and nothing is
-// written, so no row reads released and every writer stays refused.
+// restore writes a lost hold row back through POST /v1/nats-hold/restore: with --bootstrap a
+// released row with no hold id, with --hold the row held under that hold id, at the gen the route
+// names (holdrecord.RestoreRow signs it afresh there), so a row lost mid-hold comes back closed and
+// the hold goes on. --bootstrap sends the first row, gen 1 (holdrecord.Client.Bootstrap), which
+// lands only in an empty log. A log that already holds entries answers its next gen, and the row is
+// sent released once more at that gen: the route stores it only while the log's latest entry is
+// released, the row a completed hold left, and refuses it 400 bad_transition after a held or
+// prepare entry, a row lost mid-hold, which --bootstrap never replaces. That refusal names the
+// log's next gen and `hold restore --hold`, and nothing is written, so no row reads released and
+// every writer stays refused.
 func restore(ctx context.Context, records *holdrecord.Client, o options, stdout io.Writer) error {
 	if o.bootstrap {
 		err := records.Bootstrap(ctx)
@@ -397,7 +400,15 @@ func restore(ctx context.Context, records *holdrecord.Client, o options, stdout 
 		var refused *holdrecord.RouteError
 		switch {
 		case errors.As(err, &lost):
-			return refusef(StepPreflight, "--bootstrap writes the first row only into an empty log, and the log's next gen is %d: the row was lost after the log began, perhaps mid-hold, so restore it with `hold restore --hold <its hold id>`, which keeps it held", lost.RestoreGen)
+			row, err := records.RestoreRow(ctx, lost.RestoreGen, natsgrant.OperatorPhaseReleased, "", o.reason)
+			if errors.As(err, &refused) && refused.Code == "bad_transition" {
+				return refusef(StepPreflight, "the log's next gen is %d and its latest entry is not released: the row was lost mid-hold, which --bootstrap never replaces, so restore it with `hold restore --hold <its hold id>`, which keeps it held", lost.RestoreGen)
+			}
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(stdout, "restored the row the last hold left: gen %d, phase released\n", row.Gen)
+			return nil
 		case errors.As(err, &refused) && refused.Code == "row_exists":
 			return refusef(StepPreflight, "--bootstrap writes the first row only into an empty log, and a row is there (row_exists)")
 		case err != nil:
