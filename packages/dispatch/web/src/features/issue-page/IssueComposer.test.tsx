@@ -569,6 +569,50 @@ test("a link to the agent the reader writes after their own word, in place of th
   expect(draft).toBe(`cc ${PLANNER_SEED}`);
 });
 
+/** The draft of a reader who empties the box after a Reply on the planner's comment and writes
+ *  the planner's link at its front themself, exactly as the box wrote it, then their words. */
+const OWN_LINK_IN_FRONT = `${PLANNER_SEED} the reader wrote this link.`;
+
+/** Empties the box and writes `OWN_LINK_IN_FRONT` in it: the reader's own link, in place of the
+ *  box's. */
+async function writeOwnLinkInFront(user: UserEvent): Promise<void> {
+  await user.keyboard("{Control>}a{/Control}{Backspace}");
+  await user.paste(PLANNER_SEED);
+  await user.keyboard(" the reader wrote this link.");
+  expect(writeField().value).toBe(OWN_LINK_IN_FRONT);
+}
+
+// The tester's finding on the same rule: a mention the box wrote stops being the box's once the
+// reader's own edit leaves the draft no longer opening with it. A reader who deletes the box's
+// link and writes the same link at the front themself names the planner: the reader's own end of
+// the reply keeps that link, though it reads exactly as the box's did.
+test("a link to the agent the reader writes at the front, in place of the box's they deleted, stays when they end the reply", async () => {
+  const user = userEvent.setup();
+  const page = renderWithPlannerComment();
+  await replyToPlanner(user, page);
+  await writeOwnLinkInFront(user);
+
+  await user.keyboard("{Escape}");
+  await waitFor(() => expect(targetWords()).toBeNull());
+  expect(writeField().value).toBe(OWN_LINK_IN_FRONT);
+});
+
+// The same finding through a move of the host's: the draft kept for the reply keeps no mention of
+// the box's that the reader deleted, so the move to bob's comment's row and back brings none back
+// with it, and the reader's own end of the reply keeps the reader's link at the front.
+test("a link to the agent the reader writes at the front, in place of the box's they deleted, stays through a new target", async () => {
+  const user = userEvent.setup();
+  const page = renderWithPlannerComment();
+  await replyToPlanner(user, page);
+  await writeOwnLinkInFront(user);
+
+  expect(await toBobAndBack(user, page)).toEqual(KEPT_FOR_PLANNER);
+  expect(writeField().value).toBe(OWN_LINK_IN_FRONT);
+  await user.keyboard("{Escape}");
+  await waitFor(() => expect(targetWords()).toBeNull());
+  expect(writeField().value).toBe(OWN_LINK_IN_FRONT);
+});
+
 // The mentions the box wrote for a reply are read where a draft is kept, as the box holds them
 // then. The reader's words in front of the agent's mention leave it no longer opening the draft,
 // so the reader's own end of the reply carries the draft to the issue whole, the mention the
@@ -833,6 +877,60 @@ test("a box mounted again over a refused reply retried keeps the reader's own li
   });
   expect(draft).toBe(OWN_HELLO);
   expect(sent).toEqual({ body: OWN_HELLO, delivery: "steer", reply_to: "comment-3" });
+});
+
+// The tester's finding through a box mounted again over a refused reply: what the reader writes
+// over the refusal is kept with the send, and so are the box's mentions as the box holds them
+// then. A reader who deletes the box's link after the refusal and writes the same link at the
+// front themself leaves the send no mention of the box's, so the box mounted again over it keeps
+// the reader's link when they end the reply.
+test("a link to the agent the reader writes at the front over a refused reply, in place of the box's they deleted, stays when they end the reply in a box mounted again", async () => {
+  const user = userEvent.setup();
+  stub(
+    spyOn(api, "createComment").mockRejectedValueOnce(
+      new ApiError(400, { code: "INVALID_INPUT", error: "The reply was refused." })
+    )
+  );
+  const first = renderWithPlannerComment();
+  await replyToPlanner(user, first);
+  await user.keyboard(" hello{Enter}");
+  await waitFor(() =>
+    expect(within(composerBox()).getByRole("alert")).toHaveTextContent("The reply was refused.")
+  );
+  await user.click(writeField());
+  await writeOwnLinkInFront(user);
+
+  first.view.unmount();
+  const page = renderPage({}, plannerOutline(), first.client);
+  await waitFor(() => expect(targetWords()).toContain("The relay is fixed"));
+  expect(page.writer().reply?.id).toBe("comment-3");
+  expect(writeField().value).toBe(OWN_LINK_IN_FRONT);
+  await user.click(writeField());
+  await user.keyboard("{Escape}");
+  await waitFor(() => expect(targetWords()).toBeNull());
+  expect(writeField().value).toBe(OWN_LINK_IN_FRONT);
+});
+
+// The same finding through a box mounted again over the draft kept for the reply, with no
+// refusal: the draft is kept for the planner's comment as the page goes, with the box's mentions
+// as the box holds them then, which is none once the reader deleted the box's link. The box
+// mounted again brings the draft back with the planner's Reply, and the reader's own end of the
+// reply keeps the reader's link at the front.
+test("a link to the agent the reader writes at the front, in place of the box's they deleted, stays when they end the reply in a box mounted again over the kept draft", async () => {
+  const user = userEvent.setup();
+  const first = renderWithPlannerComment();
+  await replyToPlanner(user, first);
+  await writeOwnLinkInFront(user);
+
+  first.view.unmount();
+  const page = renderPage({}, plannerOutline(), first.client);
+  await page.press(user, "comment-3", "r");
+  await waitFor(() => expect(targetWords()).toContain("The relay is fixed"));
+  await waitFor(() => expect(writeField()).toHaveFocus());
+  expect(writeField().value).toBe(OWN_LINK_IN_FRONT);
+  await user.keyboard("{Escape}");
+  await waitFor(() => expect(targetWords()).toBeNull());
+  expect(writeField().value).toBe(OWN_LINK_IN_FRONT);
 });
 
 // R5: an answer sends the options picked and the reader's words, and a change of the reader's own
@@ -2146,8 +2244,9 @@ test("a new act landing moves the current point to it, and the mark takes no foc
 });
 
 // R12: with nothing aimed, a question that waits on the reader is the point, though the reader's
-// comment came after it. Answered, it waits on nobody, and the point is the newest act: the
-// question itself, by its answer given after that comment, and then a newer act once one lands.
+// comment came after it. Once answered, it waits for no answer, and the point is the newest act:
+// the question itself, by its answer given after that comment, and then a newer act once one
+// lands.
 test("the current point is the question that waits on the reader, then the newest act once it is answered", async () => {
   const page = renderPage({}, questionOutline({}));
   expect(drawnPoint()).toEqual(pointOn("ask-1"));

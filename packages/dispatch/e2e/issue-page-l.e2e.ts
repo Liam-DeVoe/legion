@@ -16,6 +16,7 @@ import {
   getMyState,
   listComments,
 } from "./api";
+import { nextFrames } from "./frames";
 import { seedReplyNesting } from "./issue-layout-seed";
 import { gotoIssue, phase } from "./issue-page";
 import {
@@ -61,6 +62,7 @@ import {
   sendFromComposer,
   wordsInField,
 } from "./issue-page-l";
+import { withIssuePage } from "./issue-page-option";
 import { runClockUntil, watchWrites } from "./keyed-writes";
 import { commentWithBody } from "./margin-helpers";
 import { expect, test } from "./test";
@@ -131,11 +133,12 @@ async function expectControlsLeast(page: Page, when: string): Promise<void> {
 /**
  * Fails unless the box's refusal of a send - its Retry, and the Discard draft a send the reader
  * stopped offers beside it - draws each control of the box at least 24 by 24 px at `size` (R2,
- * decision 43 of the parts). Read on a page of its own in the same sign-in, whose comment sends
- * Dispatch answers `500` every time: a 5xx is no verdict, so the send is tried again under its
- * key until its deadline, goes late, and the reader stops it (`Stop trying`). The page's own
- * clock runs past the deadline (`runClockUntil`), which costs no real time, and the page this
- * row reads is left as it was.
+ * decision 43 of the parts). Read on a page of its own, signed in as the row's reader, whose
+ * comment sends Dispatch answers `500` every time: a 5xx is no verdict, so the send is tried again
+ * under its key until its deadline, goes late, and the reader stops it (`Stop trying`). That page's
+ * clock runs past the deadline (`runClockUntil`), which costs no real time. A page's clock is its
+ * browser context's, every page of the context and every load of one alike, so the page is in a
+ * context of its own, and the page this row reads keeps the browser's own clock.
  */
 async function expectRefusalControlsLeast(
   page: Page,
@@ -143,8 +146,12 @@ async function expectRefusalControlsLeast(
   size: { readonly height: number; readonly width: number },
   at: string
 ): Promise<void> {
-  const refusing = await page.context().newPage();
+  const browser = page.context().browser();
+  if (browser === null) throw new Error("the row's page has no browser to open a context in");
+  const context = await asUser(browser, READER);
   try {
+    await withIssuePage(context, READER);
+    const refusing = await context.newPage();
     await refusing.setViewportSize({ height: size.height, width: size.width });
     await refusing.route(`**/api/v1/issues/${key}/comments`, (route) =>
       route.request().method() === "POST"
@@ -172,7 +179,7 @@ async function expectRefusalControlsLeast(
     await discard.click();
     await expect(retry).toHaveCount(0);
   } finally {
-    await refusing.close();
+    await context.close();
   }
 }
 
@@ -707,6 +714,10 @@ test("the box at the foot is one line at rest, and says where a reply goes @phon
         phone ? CONTROL_LABELS.reply_placeholder_phone : CONTROL_LABELS.reply_placeholder
       );
       await page.keyboard.press("Escape");
+      // Escape at rest keeps the caret in the box, which the page puts back on a frame once the
+      // line is drawn (`OutlineWriter.focus`): the next row is taken after that frame, as a
+      // reader's next press is, rather than inside it, where the caret would take it back.
+      await nextFrames(page);
 
       // The box that answers a question: its field has room to type in.
       await focusRow(page, seeded.openAsk);
@@ -1766,6 +1777,7 @@ test("a key of the reader's that drops the focused row from the view hands the f
           ),
         };
       });
+    // One read is enough: focusRow above waited until the fourth level's row held the focus.
     const before = await drawn();
     const place = before.focused === null ? -1 : before.keys.indexOf(before.focused);
     expect(place, "the thread's fourth level does not hold the focus").not.toBe(-1);

@@ -31,6 +31,7 @@ import {
   useOutlineWriter,
 } from "./outline-writer";
 import { ANSWER_LINES, type NodeType } from "./page-words";
+import { publishedTree } from "./projection-fixture";
 
 /**
  * The new issue page's box at the foot of its outline, drawn as the page draws it, for a test of
@@ -265,6 +266,7 @@ function Page({
           isClosed={place.closed === true}
           onEditing={() => {}}
           point={point}
+          published={publishedTree(root)}
           reveal={undefined}
           root={root}
           rootRow

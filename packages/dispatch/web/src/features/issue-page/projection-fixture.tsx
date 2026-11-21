@@ -11,13 +11,20 @@ import {
   usePublishReferenceNames,
 } from "../refs/reference-names";
 import { parseNodeReference } from "../refs/routes";
-import { chipName, type IssueTreeReads, type NodeChip, targetNaming } from "./issue-tree";
-import { lineOrKindWord, useNodeLine } from "./NodeRow";
+import {
+  chipName,
+  chipNaming,
+  type IssueTreeReads,
+  type NodeChip,
+  type TreeNode,
+  targetNaming,
+} from "./issue-tree";
+import { lineOrKindWord, useNodeLine } from "./node-line";
 
 /**
  * What the shared reader makes of what the tree holds, read through the code the page's
  * surfaces draw with, for a test of the tree that holds a node or a chip rather than a row drawn
- * of it: a node's one line, as a row draws it (`NodeRow.tsx`'s `useNodeLine`); the names the
+ * of it: a node's one line, as a row draws it (`node-line.tsx`'s `useNodeLine`); the names the
  * store projects from what a page publishes (`ReferenceNamesProvider`); and a chip's name, cut as
  * a chip cuts it (`chipName`). The engine must have loaded (`warmMarkdownRenderer`), so each is
  * answered in the render that draws it.
@@ -37,7 +44,7 @@ export function nodeLineOf(node: Parameters<typeof useNodeLine>[0]): string {
   return line ?? "";
 }
 
-/** The one line a filter's row names a node's parent by (`NodeRow.tsx`'s `ParentLink`): its
+/** The one line a filter's row names a node's parent by (`node-line.tsx`'s `ParentLink`): its
  *  line (`nodeLineOf`), and the page's word for its kind where its words hold none. */
 export function parentLinkWords(node: Parameters<typeof useNodeLine>[0]): string {
   return lineOrKindWord(nodeLineOf(node), node.type);
@@ -75,6 +82,27 @@ export function publishedNames(
     readings: new Map([...names].map(([reference, words]) => [reference, { words }])),
     unnamed,
   };
+}
+
+/** What the page publishes for `chips`: every chip the batched read answered for, named by the
+ *  page's own rule (`issue-tree.ts`'s `chipNaming`, as `targetNaming` names the read's targets),
+ *  and every chip's reference as one the page asks for, answered or not yet. */
+export function publishedChips(chips: readonly NodeChip[]): PublishedReferences {
+  return {
+    ...chipNaming(chips.filter((chip) => chip.answered).map((chip) => [chip.ref, chip] as const)),
+    asked: new Set(chips.map((chip) => chip.ref)),
+  };
+}
+
+/** What the page publishes for every chip `root` holds, at any depth (`publishedChips`). */
+export function publishedTree(root: TreeNode): PublishedReferences {
+  const chips: NodeChip[] = [];
+  const walk = (node: TreeNode): void => {
+    chips.push(...node.chips, ...node.alsoUnder);
+    for (const child of node.children) walk(child);
+  };
+  walk(root);
+  return publishedChips(chips);
 }
 
 /** A wrapper that draws what it is handed under the names store, with `names` published as a
@@ -135,10 +163,10 @@ export function namesOf(reads: IssueTreeReads): ReadonlyMap<string, string> {
   return projectedNames(targetNaming(reads).readings);
 }
 
-/** The name a chip draws for its target, as a chip in a node's words draws it: a block's line,
- *  the first block of its words, and any other target's name, as the store projects them from the
- *  chip's reading (`KnownReferences.lines`, `.names`), cut as a chip cuts it (`chipName`); `""`
- *  where it has none. A tie's chip projects the same line itself (`NodeRow.tsx`'s `Chip`). */
+/** The name a chip draws for its target, as every chip draws it: a block's line, the first block
+ *  of its words, and any other target's name, as the store projects them from the chip's reading
+ *  (`KnownReferences.lines`, `.names`), cut as a chip cuts it (`chipName`); `""` where it has
+ *  none. A tie's chip (`NodeRow.tsx`'s `Chip`) and a chip in a node's words read the same. */
 export function nameOf(chip: NodeChip): string {
   if (chip.reading === undefined) return "";
   const { lines, names } = projectedKnown(new Map([[chip.ref, chip.reading]]));

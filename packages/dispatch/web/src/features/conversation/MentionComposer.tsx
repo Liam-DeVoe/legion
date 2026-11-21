@@ -80,6 +80,7 @@ import {
   type AskOptionDraft,
   type Draft,
   emptyAskOption,
+  openingSeeds,
   prefillMentions,
   replyPrefill,
   type SeededMention,
@@ -563,7 +564,9 @@ export function MentionComposer({
   // reply takes back out of the draft it carries (`useKeptDrafts`' `seeds`). A mount over a held
   // reply takes the ones its send keeps (`SentRequest.seeds`), so an end takes out what the mount
   // that wrote them would have, and no link the reader wrote. A held send that answers no reply -
-  // one the line let go of, its mentions taken out as it went - leaves none to take out.
+  // one the line let go of, its mentions taken out as it went - leaves none to take out. The
+  // reader's own edit that leaves the draft no longer opening with one lets it go for good
+  // (`onBodyChange`), so a link the reader writes in its place is theirs.
   const replySeeds = useRef<readonly SeededMention[]>(heldSeeds(outgoing.held?.request));
   const [body, setBody] = useState(initial.body);
   const [replacement, setReplacement] = useState(initial.replacement);
@@ -918,7 +921,12 @@ export function MentionComposer({
   /** One edit of the body field: the text, and the edit the browser named, which moves the
    *  edited comment's blocks with it. `mapSpans` takes that range only where it explains the
    *  edit of the value the spans follow, which is the textarea's own (LF for an edited body's
-   *  CR LF). */
+   *  CR LF). It keeps of the issue page's line's mentions those that still open the draft
+   *  (`openingSeeds`): one the reader's edit took out, changed or put words in front of is the
+   *  line's no more, so a link the reader writes in its place - at the front, exactly as the line
+   *  wrote it, included - is theirs, and the line's end of the reply leaves it. It is read at the
+   *  reader's edit and never from an effect over the body, which would read a draft put in the
+   *  field (`replaceDraft`) before the mentions set with it. */
   const onBodyChange = (change: MentionFieldChange) => {
     followedBlocks.current = followEdit(
       followedBlocks.current,
@@ -927,6 +935,9 @@ export function MentionComposer({
       change.inputType
     );
     previousBody.current = change.body;
+    if (replySeeds.current.length > 0) {
+      replySeeds.current = openingSeeds(change.body, replySeeds.current);
+    }
     setBody(change.body);
     setConfirmingDiscard(false);
   };

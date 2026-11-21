@@ -25,7 +25,7 @@ import { bringOnScreen, FOOT_HEIGHT_PROPERTY, IDENTITY_HEIGHT_PROPERTY } from ".
 import { pathToTarget } from "./issue-address";
 import type { TreeNode } from "./issue-tree";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
-import { lineOrKindWord, useNodeLine } from "./NodeRow";
+import { lineOrKindWord, useNodeLine } from "./node-line";
 import { type FailedRead, NO_FAILED_READS } from "./outline-reads";
 import { useFocusBranch, useTakeOutlineRequest } from "./outline-request";
 import { threadMarks } from "./outline-thread-read";
@@ -172,9 +172,9 @@ export function IssueTree({
    *  the tree hands every row and crumb it draws in the render that draws it
    *  (`PublishedReferenceNames`): a reference the page is asking for waits on the page's answer
    *  from a row's first render, rather than being read again by the row (R8). The page publishes
-   *  it to the names store as well, which names each target; nothing is handed where it is left
-   *  out. */
-  published?: PublishedReferences;
+   *  it to the names store as well, which names each target. Every caller hands it, so no tree
+   *  draws a row that reads what its page asks for. */
+  published: PublishedReferences;
   /** Whether each read the tree's nodes come from holds an answer, which a failed read never
    *  does: the six reads - the coverage, the decisions, the results, the asks, the comments and
    *  the messages - and each document's blocks (`outline-reads.ts`'s `readsHeld`). Until then a

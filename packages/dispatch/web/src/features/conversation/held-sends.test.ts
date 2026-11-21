@@ -452,6 +452,64 @@ test("a held reply keeps the mentions its box wrote across a reload, one kept wi
   }
 });
 
+// What the reader writes over a refused reply is kept with the mentions its box holds then
+// (`HeldDraft.seeds`): those still at the front of the draft as the box wrote them. They go into
+// the request, so a box that mounts again over the send after a reload takes out those and no
+// others. A keep that carries none - the reader deleted the box's link and wrote their own at the
+// front - leaves the request no mention of the box's, and the draft is kept as the reader wrote
+// it, with no mention of its own. A keep that carries no mentions at all writes the request as it
+// was (the refusal case above).
+test("a keep over a refused reply writes the mentions its box holds into the request, across a reload", async () => {
+  const tab = keptTab();
+  const createComment = spyOn(api, "createComment").mockRejectedValue(verdict);
+  const link = "[@Planner](dispatch://agent/planner-session)";
+  const seeds = [{ target: "session:planner-session", text: link }];
+  const reply: SentRequest = {
+    ...request,
+    draft: { body: `${link} hello`, replacement: "" },
+    replyTo: {
+      actor: { id: "planner-session", kind: "session" },
+      excerpt: "The relay is fixed",
+      id: "comment-3",
+      mentions: [{ target: "session:planner-session", title: "Planner" }],
+      parentKind: "comment",
+    },
+  };
+  const keyOf = (sendKey: string): MutationKey => ["issue-composer", sendKey];
+  const own = {
+    ask: reply.ask,
+    draft: { body: `${link} the reader wrote this link.`, replacement: "" },
+  };
+  try {
+    const before = heldOf(tab).held;
+    before.send(keyOf("send-seeded"), { ...reply, seeds, sendKey: "send-seeded" });
+    before.send(keyOf("send-let-go"), { ...reply, seeds, sendKey: "send-let-go" });
+    await waitFor(() => expect(before.get(keyOf("send-seeded"))?.status).toBe("refused"));
+    await waitFor(() => expect(before.get(keyOf("send-let-go"))?.status).toBe("refused"));
+    before.keep(keyOf("send-seeded"), { ...own, seeds });
+    before.keep(keyOf("send-let-go"), { ...own, seeds: [] });
+    const letGo = tab.kept("send-let-go") as { detail: { draft: object; request: object } };
+    expect(letGo.detail.draft).toEqual(own);
+    expect("seeds" in letGo.detail.request).toBe(false);
+
+    const { held: after, writes } = heldOf(tab);
+    writes.resume("alice");
+    await settle();
+    expect(after.get(keyOf("send-seeded"))).toMatchObject({ draft: own, status: "refused" });
+    expect(after.get(keyOf("send-seeded"))?.request).toEqual({
+      ...reply,
+      seeds,
+      sendKey: "send-seeded",
+    });
+    expect(after.get(keyOf("send-let-go"))).toMatchObject({ draft: own, status: "refused" });
+    expect(after.get(keyOf("send-let-go"))?.request).toEqual({ ...reply, sendKey: "send-let-go" });
+    expect(createComment).toHaveBeenCalledTimes(2);
+  } finally {
+    createComment.mockRestore();
+    tab.close();
+  }
+});
+
 // A record the build before this one wrote keeps a `mentions` array beside a body holding only
 // the cosmetic `@Planner` that build drew. A mention is a reference now, so each of those is
 // written back into the body as the party link naming it: the draft reads as who it addresses

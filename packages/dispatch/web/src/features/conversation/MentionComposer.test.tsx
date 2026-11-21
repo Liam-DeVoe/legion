@@ -2087,6 +2087,7 @@ test("an Escape that ends an IME composition ends no reply and asks nothing", as
     await user.click(field);
     await user.keyboard("{Control>}a{/Control}");
     await user.paste("Half a thought");
+    // user-event has no form for this: it cannot mark a key as an IME composition.
     fireEvent.keyDown(field, { isComposing: true, key: "Escape" });
     expect(screen.queryByRole("button", { name: "Discard" })).toBeNull();
     field.focus();

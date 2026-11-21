@@ -43,7 +43,7 @@ import {
   NODE_TYPE_NAMES,
   type NodeType,
 } from "./page-words";
-import { publishedNames } from "./projection-fixture";
+import { publishedChips, publishedNames } from "./projection-fixture";
 import { RowText } from "./RowText";
 import { ProvidersSlot } from "./slots/providers";
 import { treeContext } from "./tree-drafts";
@@ -87,27 +87,6 @@ const NOBODY_RECORDED: Author = {
   reader: false,
 };
 
-/** What the page's chips publish (`issue-tree.ts`'s `targetNaming`): each chip's reading, the
- *  chips that are gone or ambiguous, every answered chip with no reading as one the read
- *  answered with no words, and every chip's reference as one the page asks for. */
-function publishedChips(chips: readonly NodeChip[]): PublishedReferences {
-  return {
-    ambiguous: new Set(chips.filter((chip) => chip.ambiguous === true).map((chip) => chip.ref)),
-    asked: new Set(chips.map((chip) => chip.ref)),
-    gone: new Set(
-      chips.filter((chip) => chip.gone && chip.ambiguous !== true).map((chip) => chip.ref)
-    ),
-    readings: new Map(
-      chips.flatMap((chip) => (chip.reading === undefined ? [] : [[chip.ref, chip.reading]]))
-    ),
-    unnamed: new Set(
-      chips
-        .filter((chip) => chip.answered && !chip.gone && chip.reading === undefined)
-        .map((chip) => chip.ref)
-    ),
-  };
-}
-
 /** The parties Dispatch knows, as a party's own read finds them (`useReferenceTarget`): a
  *  session the registry lists, a role a listed session holds, and a person's login. */
 interface Parties {
@@ -128,6 +107,15 @@ function knowParties(queryClient: QueryClient, { login, role, session }: Parties
   if (login !== undefined) queryClient.setQueryData(["users"], [{ login }]);
 }
 
+/** What a page that has published nothing hands its rows: no reference at all. */
+const NO_PUBLICATION: PublishedReferences = {
+  ambiguous: new Set(),
+  asked: new Set(),
+  gone: new Set(),
+  readings: new Map(),
+  unnamed: new Set(),
+};
+
 /** Publishes `published` to the names store while it is drawn, and hands it to what it draws in
  *  the render that draws it, as the page publishes its one batched read and hands it its rows
  *  (`useIssueTree.ts`, `IssueTree.tsx`); nothing where it is undefined. */
@@ -139,7 +127,11 @@ function Named({
   published: PublishedReferences | undefined;
 }): ReactNode {
   usePublishReferenceNames(published);
-  return <PublishedReferenceNames published={published}>{children}</PublishedReferenceNames>;
+  return (
+    <PublishedReferenceNames published={published ?? NO_PUBLICATION}>
+      {children}
+    </PublishedReferenceNames>
+  );
 }
 
 /** One row, drawn with its body open, as the focused row draws it, unless `body` is false;

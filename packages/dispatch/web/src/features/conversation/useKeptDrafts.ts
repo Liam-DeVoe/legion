@@ -21,6 +21,7 @@ import {
   type SeededMention,
   seededDraft,
   submittedAskOptions,
+  withoutOpeningSeeds,
 } from "./composer-draft";
 import {
   type ComposerAnchor,
@@ -54,29 +55,6 @@ import type { DraftHomes } from "./useDraftHomes";
  *  edit opened on, and the statement the issue page's box comments on (`OutlineLook.anchor`). */
 interface ShownAddress extends Address {
   readonly edit: { readonly body: string; readonly id: string } | undefined;
-}
-
-/**
- * What is left of `draft` once the seeds of `seeds` that still open it, as the issue page's box
- * wrote them, are taken out. Each seed in turn is read against the start of what is left: one
- * whose link stands there exactly as written goes, with the space after it where one parts it
- * from what follows, as the box joins them. The link is matched as text: at the start nothing
- * before it can make it other than the link it was written as, and words the reader typed
- * straight after its `)` - which the draft's reference reader takes into its address - leave it
- * that link. The start moves past nothing else, so from the first text that is no seed on - the
- * reader's words before the seeds, after them or in place of them - nothing is taken out, a link
- * the reader wrote that matches a seed's included, and a seed the reader deleted, changed or moved
- * behind their own words stays where it is. The text is a draft's whole record (R4), so a link the
- * reader wrote at the very start exactly as a seed was written reads as that seed.
- */
-function withoutOpeningSeeds(draft: string, seeds: readonly SeededMention[]): string {
-  let body = draft;
-  for (const seed of seeds) {
-    if (!body.startsWith(seed.text)) continue;
-    const end = seed.text.length;
-    body = body.slice(body.slice(end, end + 1) === " " ? end + 1 : end);
-  }
-  return body;
 }
 
 /** What decides where a composer keeps what the reader has not sent: its own send name, and
@@ -433,8 +411,9 @@ const KEEP_DRAFT_MS = 300;
  * keeps one sets again. `replaceDraft` and `replaceAsk` put a draft, and an ask's options and
  * settings, in the fields that edit them, `discard` holds the composer's own Discard, and
  * `listsReply` says which replies the host lists. The issue page's box hands in `seeds`, the
- * mentions it wrote in front of the reply's draft it shows, which are kept and brought back with
- * that draft and which the reader's own move takes out of the draft it carries.
+ * mentions it wrote in front of the reply's draft it shows and that have opened that draft at each
+ * of the reader's edits since (`openingSeeds`), which are kept and brought back with that draft
+ * and which the reader's own move takes out of the draft it carries.
  */
 export function useKeptDrafts({
   anchor,
@@ -488,7 +467,9 @@ export function useKeptDrafts({
     readonly replaceDraft: (draft: Draft) => void;
     readonly seedMentions: readonly { readonly target: string; readonly title: string }[];
     /** The issue page's box's mentions written in front of the reply's draft the field shows
-     *  (`SentRequest.seeds`), as the box remembers them; undefined for every other composer. */
+     *  (`SentRequest.seeds`), as the box remembers them: those the reader's edits have not yet
+     *  left the draft no longer opening with (`openingSeeds`); undefined for every other
+     *  composer. */
     readonly seeds?: RefObject<readonly SeededMention[]>;
     /** The send the reader stopped at this compose's document, set aside for it, as its host
      *  offers it (`stoppedOfferOf`), or none. */
@@ -530,16 +511,19 @@ export function useKeptDrafts({
   // out ignores), so the composer that mounts next shows it - and so a reload does: a refusal's
   // draft is the only copy of that message, and the entry it is kept in is what survives the
   // page (`write-storage.ts`). It is written as this composer unmounts, a short wait after each
-  // keystroke, and as the page goes, which no unmount follows. A refusal the host has moved the
-  // composer off (`elsewhere`) keeps the draft it was written with: what is typed over it there
-  // is for that other address. So does an edit's refusal while it waits beside a newer body
-  // (`changed`): the field shows that body, not the reader's edit.
+  // keystroke, and as the page goes, which no unmount follows. The issue page's box keeps its
+  // mentions with it as it holds them then (`seeds`), so a box that mounts again over the send
+  // takes out none the reader's edits let go of. A refusal the host has moved the composer off
+  // (`elsewhere`) keeps the draft it was written with: what is typed over it there is for that
+  // other address. So does an edit's refusal while it waits beside a newer body (`changed`): the
+  // field shows that body, not the reader's edit.
   const keepDraft = useRef(() => {});
   keepDraft.current = () => {
     if (elsewhere !== undefined || changed !== undefined) return;
     outgoing.keep({
       ask: { multiple, options: submittedAskOptions(askOptions), urgency },
       draft: { body, replacement },
+      ...(seeds === undefined ? {} : { seeds: seeds.current }),
     });
   };
   useEffect(() => () => keepDraft.current(), []);
@@ -766,8 +750,11 @@ export function useKeptDrafts({
   // The box's mentions written in front of a reply's draft (`seeds`) go and come with that draft:
   // kept with it for the reply, back with it when the box is back there, and taken out of the
   // draft the reader's own move carries, where they still open it as written
-  // (`withoutOpeningSeeds`), so a comment on the issue reaches no party only that reply named, and
-  // a link the reader wrote stays.
+  // (`withoutOpeningSeeds`), so a comment on the issue reaches no party only that reply named. A
+  // mention the reader's own edit left the draft no longer opening with is the box's no more
+  // (`openingSeeds`): neither the draft kept for the reply nor its send - made after that edit,
+  // or refused and written over (`keepDraft`) - keeps it, so a link the reader wrote stays, even
+  // one written at the front exactly as it was.
   const shown = useRef<
     | {
         readonly address: Address;
@@ -822,8 +809,13 @@ export function useKeptDrafts({
     const ask = { multiple, options: submittedAskOptions(askOptions), urgency };
     const offRefusal = refusalAt(before.address);
     if (offRefusal) {
-      // Written now, since the debounced write reads the address the composer shows by then.
-      outgoing.keep({ ask, draft: leaving });
+      // Written now, since the debounced write reads the address the composer shows by then, and
+      // with the mentions of the address it leaves, which the box holds until it arrives.
+      outgoing.keep({
+        ask,
+        draft: leaving,
+        ...(seeds === undefined ? {} : { seeds: seeds.current }),
+      });
     } else if (awayName !== undefined) {
       if (wroteOver(before.fresh)) {
         unsent.keepAway(awayName, {

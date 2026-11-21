@@ -25,6 +25,7 @@ import {
   type StatementTarget,
   useOutlineWriter,
 } from "./outline-writer";
+import { publishedTree } from "./projection-fixture";
 
 /**
  * A statement as a target of the page's writer: `r` on a focused
@@ -78,6 +79,7 @@ function PageBody({ held, root }: { held: { writer?: OutlineWriter }; root: Tree
       holdsEscape={false}
       isClosed={false}
       onEditing={() => {}}
+      published={publishedTree(root)}
       reveal={undefined}
       root={root}
       rootRow

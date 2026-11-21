@@ -1634,12 +1634,19 @@ test("the band stays when the page scrolls, and on a phone the header goes @phon
       const wide = width > 760;
       await openScrollingPage(page, seeded.key, width);
 
-      // With the page at its top the band has no shadow, and the title is in its own type.
+      // With the page at its top the band has no shadow, and the title is in its own type. The
+      // band reads the page's scroll on the window's scroll event, which the browser fires after
+      // `scrollTo` returns, so a page scrolled before reads stuck until that event: the band's
+      // state at the top is waited for.
+      await expect
+        .poll(async () => (await stickyReading(page))?.condensed, {
+          message: `the band is stuck with the page at its top at ${width} px`,
+        })
+        .toBe(false);
+      // Read once the band has said it is at the top (the wait above), so this one reading is the
+      // settled state; the `if` only refuses a page that draws no header at all.
       const top = await stickyReading(page);
       if (top === null) throw new Error(`the page draws no header at ${width} px`);
-      expect(top.condensed, `the band is stuck with the page at its top at ${width} px`).toBe(
-        false
-      );
       expect(top.shadow, `the band draws a shadow at the top at ${width} px`).toBe("none");
       const type = [top.title.weight, top.title.size, top.title.line, top.title.spacing];
       expect(type, `the title's type at ${width} px with the page at its top`).toEqual(
