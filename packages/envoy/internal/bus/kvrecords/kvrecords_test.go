@@ -602,6 +602,27 @@ func TestARecordsCopyIsRefusedWhenItIsNotWhatWasWritten(t *testing.T) {
 			require.ErrorContains(t, err, row.refusal)
 		})
 	}
+	// A line is read strictly: a line that leaves out one of the six fields, or gives it as null, is
+	// refused naming the line and the field, where a reader that took the field's zero would read a
+	// line with no data as an empty value.
+	for _, field := range []string{"seq", "subject", "key", "time", "headers", "data"} {
+		for _, absent := range []struct {
+			how    string
+			change func(map[string]any)
+		}{
+			{"missing", func(f map[string]any) { delete(f, field) }},
+			{"null", func(f map[string]any) { f[field] = nil }},
+		} {
+			t.Run("a line with "+field+" "+absent.how, func(t *testing.T) {
+				dir := filepath.Join(t.TempDir(), "copy")
+				require.NoError(t, os.CopyFS(dir, os.DirFS(source)))
+				signed(func(t *testing.T, dir string) { line(t, dir, absent.change) })(t, dir)
+				_, _, err := kvrecords.Read(dir, r.keys)
+				require.ErrorContains(t, err, kvrecords.RecordsFile+" line 1", "a line with %s %s was read", field, absent.how)
+				require.ErrorContains(t, err, `holds no "`+field+`"`)
+			})
+		}
+	}
 	t.Run("no public key", func(t *testing.T) {
 		_, _, err := kvrecords.Read(source, nil)
 		require.ErrorIs(t, err, signedrecord.ErrBadSignature, "a copy read with no public key")
