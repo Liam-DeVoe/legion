@@ -165,10 +165,11 @@ fi
 step "the boundary census names each build target it read" "$boundary_targets"
 
 # Each package's inventory tests, and no other test of it: a row's test is `Top` or `Top/sub`, and
-# `-run '^(Top|...)$'` runs each Top whole, every subtest with it. Each scoped run's test binary
-# takes seconds at most even on a loaded box, so twice the longest is under a minute; the timeout
-# is that minute, since the same test's time varies more than twofold with the box's load.
-go_timeout=1m
+# `-run '^(Top|...)$'` runs each Top whole, every subtest with it. The timeout is twice the
+# longest package measured on the shared box under its load: daemon/internal/daemon took 35s
+# (build and run) in the full check of 2026-11-21 at 20:21Z-21:05Z, load about 900-1000 on 288
+# CPUs; the acceptance's two runs that day measured 20s and 30s.
+go_timeout=70s
 mapfile -t packages < <(awk -F'\t' '$1 == "go" { print $4 }' "$work/rows.tsv" | sort -u)
 : >"$work/go.json"
 : >"$work/go.err"
