@@ -29,6 +29,7 @@ import {
   RED_WORLDS,
   redWorlds,
 } from "./red-at-the-head.fixtures";
+import { RIG_FILES, stageRig } from "./rig-files";
 
 // Every test here runs rig.sh and its stand-ins as real processes. On a loaded machine one test
 // takes longer than bun's 5 s default (the eight-turn conversation took 11 s), so each test gets
@@ -1012,6 +1013,35 @@ echo done
   });
 });
 
+// Catches: a copy of the rig a test stages that lacks a file rig.sh sources or its library loads
+// at its start, as the copies here and in rig-isolation.test.ts lacked red-at-the-head.sh once
+// rig.sh came to source it, so every row on such a copy failed on the missing file and not on
+// what it tests. The list is rig-files.ts's, the one every staged copy takes.
+test("a staged rig carries every file rig.sh and its library load", () => {
+  const loaded = (file: string, dir: string) =>
+    [
+      ...readFileSync(path.join(import.meta.dir, file), "utf8").matchAll(
+        new RegExp(`(?:^\\. |-L )"\\$${dir}/([^"/]+)`, "gm")
+      ),
+    ].map((match) => match[1] as string);
+  const named = [...loaded("rig.sh", "here"), ...loaded("red-at-the-head.sh", "red_dir")];
+  expect(named).toEqual(["red-at-the-head.sh", "jq"]);
+  for (const file of named) expect(RIG_FILES as readonly string[]).toContain(file);
+  const top = freshDir("staged-rig");
+  const scripts = path.join(top, "packages/pi-legion/scripts/skill-scenarios");
+  mkdirSync(scripts, { recursive: true });
+  stageRig(scripts);
+  cpSync(path.join(root, "scripts/e2e/lib"), path.join(top, "scripts/e2e/lib"), {
+    recursive: true,
+  });
+  // With no command the rig prints its usage and exits 2, once every file it sources is read.
+  const usage = Bun.spawnSync(["bash", path.join(scripts, "rig.sh")], { env: childEnv });
+  expect({ code: usage.exitCode, stderr: usage.stderr.toString() }).toEqual({
+    code: 2,
+    stderr: "",
+  });
+});
+
 // rig.sh judge-omp, the whole script, in its Docker container (Docker is on the devbox and on CI's
 // ubuntu-24.04 runners), with the real key-file route and a stand-in omp that records its argv and
 // environment. SKILL_SCENARIOS_JUDGE_OMP puts the stand-in where the pinned omp's binary is
@@ -1370,7 +1400,7 @@ printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
     const top = freshDir("judge-root");
     const scripts = path.join(top, "packages/pi-legion/scripts/skill-scenarios");
     mkdirSync(scripts, { recursive: true });
-    writeFileSync(path.join(scripts, "rig.sh"), readFileSync(path.join(import.meta.dir, "rig.sh")));
+    stageRig(scripts);
     for (const file of [".omp-pin", "skills/asd-ste100/SKILL.md"]) {
       mkdirSync(path.dirname(path.join(top, file)), { recursive: true });
       writeFileSync(path.join(top, file), readFileSync(path.join(root, file)));

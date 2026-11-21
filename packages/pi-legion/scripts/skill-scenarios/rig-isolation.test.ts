@@ -12,6 +12,7 @@ import path from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { ownGroup } from "../../../../scripts/e2e/lib/own-group";
+import { stageRig } from "./rig-files";
 
 // Two runs of one batch, started at the same time as the batch's xargs starts them:
 // `rig.sh run askgate on <n> <index> <start>`. The rig.sh under test is this one, copied into a
@@ -57,13 +58,14 @@ function put(file: string, text: string, mode = 0o644) {
   });
 }
 
-// The checkout: this rig.sh and the e2e helpers it sources, with the two Dispatch stand-ins.
+// The checkout: this rig with the files it loads (rig-files.ts), the e2e helpers it sources, and
+// the two Dispatch stand-ins.
 const co = path.join(scratch, "checkout");
 const rig = path.join(co, "packages/pi-legion/scripts/skill-scenarios/rig.sh");
 const stub = path.join(scratch, "stub");
 stagings.push(() => {
   mkdirSync(path.dirname(rig), { recursive: true });
-  copyFileSync(path.join(import.meta.dir, "rig.sh"), rig);
+  stageRig(path.dirname(rig));
   for (const lib of [
     "rig.sh",
     "process-tree.sh",
