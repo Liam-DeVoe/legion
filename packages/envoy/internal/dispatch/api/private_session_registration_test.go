@@ -38,9 +38,9 @@ const (
 // from the same three.
 //
 // Control, in the test: with the pairs the listener's answers recorded taken away (today's
-// recording, a client with no WithRegistrations), the shared token, carol's token that lists no
-// project and alice each read the message to the session whose one event is on PUB, and the check
-// fails naming each of them.
+// recording, a client with no WithRegistrations), the session is placed in PUB alone by its event,
+// so the shared token, carol's token that lists no project and alice each read the message to it,
+// and carol's token that lists PRIV alone no longer does; the check fails naming all four.
 func TestADirectMessageToAPrivateSessionIsHiddenFromNonMembers(t *testing.T) {
 	listener, _ := newBroadcastListener(t, registrationRoster)
 	seed := seedPrivateProjectWith(t, testServerOptions{envoyURL: listener.URL})
@@ -119,8 +119,8 @@ func TestADirectMessageToAPrivateSessionIsHiddenFromNonMembers(t *testing.T) {
 	if _, err := seed.database.Pool.Exec(ctx, `delete from session_projects where proven_by = 'registration'`); err != nil {
 		t.Fatalf("control: forget the recorded registrations: %v", err)
 	}
-	if wrong := misread(t, registeredUnderPrivate, nonMembers); !slices.Equal(wrong, nonMembers) {
-		t.Fatalf("control: with no recorded registration the message to %s is misread by %v, want every non-member %v named",
-			registeredUnderPrivate, wrong, nonMembers)
+	if wrong, want := misread(t, registeredUnderPrivate, nonMembers), append(slices.Clone(nonMembers), callerCarolPrivToken); !slices.Equal(wrong, want) {
+		t.Fatalf("control: with no recorded registration the message to %s is misread by %v, want %v: every non-member reads it and the token that lists PRIV alone does not",
+			registeredUnderPrivate, wrong, want)
 	}
 }
