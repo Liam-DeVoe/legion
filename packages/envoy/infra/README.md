@@ -4004,9 +4004,9 @@ session's consumer); `notifications.envoy.resume.>` (where a deleted session con
 report, and an unheld role's refusal). So a direct publish of the edge's reaches no Dispatch,
 GitHub, Slack, team or Legion event, no other project's role lane and no role lane in the form
 that names no project, nothing on the kept role lane `notifications.envoy.kept.>` and no other
-exception lane. A message on a role lane of its own project that
-names a role of another project is the shared listeners' role lane to refuse, which it does once
-the edge mode of #4657 is in. It holds no `$JS.API.STREAM.CREATE` or `UPDATE` of
+exception lane. A message on a role lane of its own project that names a role of another project
+is the shared listeners' role lane to refuse, which it does (`roleLaneProjectError`). It holds no
+`$JS.API.STREAM.CREATE` or `UPDATE` of
 `ENVOY_NOTIFICATIONS` or of any bucket's stream (`KV_<bucket>`), and no `$JS.API.DIRECT.GET` of any
 bucket, so it can change no stream's subjects, limits or republish, and delete no stream:
 
@@ -4037,10 +4037,11 @@ connection of an edge listener names its inboxes under that prefix, and a shared
 a role message held at the edge to the holder's agent subject. Its lists name no `agentstream.`
 subject.
 
-The relay receipts, and the subscription to the relay subjects, are for the relay socket of #4658:
-no program at this head uses them. At this head the edge's session relay names a frame's receipt
-under its inbox prefix, which no session's grant publishes, so at this head alone no session
-answers an edge listener's relay frame over NATS. Since every edge machine publishes every
+The relay receipts, and the subscription to the relay subjects, are the relay socket's
+(`cmd/listener/relay_socket.go`): the replica serving a session's socket subscribes the session's
+relay subject and publishes each receipt the client sends on the receipt subject of the machine
+that relayed the frame, under which that machine's session relay names it. Since every edge machine
+publishes every
 machine's receipts, one edge machine can forge a receipt for another machine's frame. That adds
 nothing past the reach below: an edge machine can already update or delete any consumer.
 
