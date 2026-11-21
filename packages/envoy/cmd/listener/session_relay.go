@@ -206,8 +206,10 @@ type sessionRelays struct {
 	pauseFirst  time.Duration
 	pauseMax    time.Duration
 	receiptWait time.Duration
-	// repositories is the edge listener's repository reader (edge_repositories.go), which holds
-	// each GitHub frame to its session's projects (relayNATS); nil on every listener but an edge
+	// repositories is the edge listener's repository reader (edge_repositories.go), and its
+	// presence is what makes this relay an edge listener's: every frame is held to the projects
+	// of the token the session's registration was admitted on (edgeWithholds, edge_frames.go),
+	// GitHub frames to the repositories their answers name. nil on every listener but an edge
 	// one, which relays every frame as it always has. Set before the first relay starts and
 	// read-only after.
 	repositories *edgeRepositories

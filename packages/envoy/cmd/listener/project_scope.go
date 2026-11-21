@@ -6,7 +6,7 @@ package main
 // where each project is public, and gives a session no message of no project but the GitHub
 // events of its projects' repositories.
 //
-// The rules, each held by a row of edge_mode_test.go:
+// The rules, each held by a row of edge_mode_test.go (the frames' by edge_frame_rule_test.go):
 //
 //   - Admission: a broker token alone, whose projects are all among the ones the edge serves, of
 //     project scope named or person (EdgeAdmits), decided in apiAuth before any handler. The
@@ -33,6 +33,9 @@ package main
 //     agent routes answer only sessions, roles and topics of the token's projects
 //     (edgeShownTopics); the interest list and another session's interests are 403, and the
 //     Legion agent registry is not written here.
+//   - Frames: the relay and the relay socket hand a session a frame only of a project of its
+//     token, as its own message, or as a GitHub event the repository rule passes, judged by the
+//     token and never by a stored record (edgeFrameVerdict, edge_frames.go).
 //   - The start: refused beside every other credential, beside webhooks, and without the
 //     broker-token settings (validateEdgeMode).
 //
