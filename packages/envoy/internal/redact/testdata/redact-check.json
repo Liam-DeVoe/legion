@@ -247,6 +247,18 @@
       {
         "holder": "github.com/sjawhar/legion/daemon/internal/dispatch.Error",
         "test": "print-dispatch.Error"
+      },
+      {
+        "holder": "github.com/sjawhar/legion/daemon/internal/notify.ErrNotDelivered",
+        "test": "print-notify.ErrNotDelivered"
+      },
+      {
+        "holder": "github.com/sjawhar/legion/daemon/internal/notify.ErrRefusedByHolder",
+        "test": "print-notify.ErrRefusedByHolder"
+      },
+      {
+        "holder": "github.com/sjawhar/legion/daemon/internal/notify.ErrPublishDenied",
+        "test": "print-notify.ErrPublishDenied"
       }
     ],
     "reflection": [
@@ -4758,8 +4770,8 @@
       "capture": "notify.status-line/role-holder-unread-200",
       "mutation": {
         "file": "packages/daemon/internal/notify/notify.go",
-        "preimage": "answerBodyLimit)\n\t\tif readErr != nil {\n\t\t\treturn \"\", \"\", unreadAnswer(\"look up the holder of role \"+role, oauth2call.StatusLine(response.StatusCode)",
-        "replacement": "answerBodyLimit)\n\t\tif readErr != nil {\n\t\t\treturn \"\", \"\", unreadAnswer(\"look up the holder of role \"+role, response.Status"
+        "preimage": "answerBodyLimit)\n\t\tif readErr != nil {\n\t\t\treturn holder, \"\", unreadAnswer(\"look up the holder of role \"+role, oauth2call.StatusLine(response.StatusCode)",
+        "replacement": "answerBodyLimit)\n\t\tif readErr != nil {\n\t\t\treturn holder, \"\", unreadAnswer(\"look up the holder of role \"+role, response.Status"
       }
     },
     {
@@ -4772,8 +4784,8 @@
       "capture": "notify.status-line/role-holder-unread-404",
       "mutation": {
         "file": "packages/daemon/internal/notify/notify.go",
-        "preimage": "case http.StatusNotFound:\n\t\tif readErr != nil {\n\t\t\treturn \"\", \"\", unreadAnswer(\"look up the holder of role \"+role, oauth2call.StatusLine(response.StatusCode)",
-        "replacement": "case http.StatusNotFound:\n\t\tif readErr != nil {\n\t\t\treturn \"\", \"\", unreadAnswer(\"look up the holder of role \"+role, response.Status"
+        "preimage": "case http.StatusNotFound:\n\t\tif readErr != nil {\n\t\t\treturn holder, \"\", unreadAnswer(\"look up the holder of role \"+role, oauth2call.StatusLine(response.StatusCode)",
+        "replacement": "case http.StatusNotFound:\n\t\tif readErr != nil {\n\t\t\treturn holder, \"\", unreadAnswer(\"look up the holder of role \"+role, response.Status"
       }
     },
     {
@@ -5120,6 +5132,27 @@
       "production": "notify publishRefusal and RoleHolder: the listener's refusals decided on the body as it came (Answer.Decode)"
     },
     {
+      "id": "supervise-role-holder-state-words",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/supervise",
+      "test": "TestAForgetRefusalPrintsTheListenersHolderStateAsTheRuleReadsIt",
+      "production": "notify HTTPPublisher.RoleHolder and supervise mayForget: the holder state a role lookup names prints as one of the listener's words or as the rule reads it (roleHolderState)"
+    },
+    {
+      "id": "supervise-role-holder-as-it-came",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/supervise",
+      "test": "TestAForgetDecidesOnTheListenersHolderAsItCame",
+      "production": "notify HTTPPublisher.RoleHolder and supervise mayForget: the holder a role lookup names is compared with the claim's session as it came (RemoteText.Equal)"
+    },
+    {
+      "id": "daemon-rehold-holder-as-it-came",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestALaterCopyThatFailedOnTheArchitectsOwnSessionWaitsWhateverItsNoticeSays",
+      "production": "notify publishRefusal and the outbox's reholdNotice: a 504's holder is the listener's words as they came (ErrNotDelivered.Holder), which copyDueAtOnce compares as they came"
+    },
+    {
       "id": "legion-cli-decided-as-it-came",
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/cmd/legion",
@@ -5153,6 +5186,27 @@
       "package": "github.com/sjawhar/legion/daemon/internal/dispatch",
       "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/dispatch.Error",
       "production": "github.com/sjawhar/legion/daemon/internal/dispatch.Error: every printer at every placement (oauth2calltest.PrintTest)"
+    },
+    {
+      "id": "print-notify.ErrNotDelivered",
+      "requirement": "r2-held",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/notify.ErrNotDelivered",
+      "production": "github.com/sjawhar/legion/daemon/internal/notify.ErrNotDelivered: every printer at every placement (oauth2calltest.PrintTest)"
+    },
+    {
+      "id": "print-notify.ErrRefusedByHolder",
+      "requirement": "r2-held",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/notify.ErrRefusedByHolder",
+      "production": "github.com/sjawhar/legion/daemon/internal/notify.ErrRefusedByHolder: every printer at every placement (oauth2calltest.PrintTest)"
+    },
+    {
+      "id": "print-notify.ErrPublishDenied",
+      "requirement": "r2-held",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/notify.ErrPublishDenied",
+      "production": "github.com/sjawhar/legion/daemon/internal/notify.ErrPublishDenied: every printer at every placement (oauth2calltest.PrintTest)"
     },
     {
       "id": "daemon-boot-limit-names-github",
@@ -6571,6 +6625,21 @@
       "site": "GitHub's rate-limit headers, logged raw by the daemon's limit lines",
       "source": "the class search of the retried-trade finding",
       "guard": "daemon-answer-words-rate-limit"
+    },
+    {
+      "site": "a role lookup's 200 holder_state, printed raw in the supervisor's forget refusal",
+      "source": "round 5's deep review",
+      "guard": "supervise-role-holder-state-words"
+    },
+    {
+      "site": "a role lookup's holder decided on the rule's reading (SendBack) on its 404",
+      "source": "round 5's deep review",
+      "guard": "supervise-role-holder-as-it-came"
+    },
+    {
+      "site": "ErrNotDelivered.Holder held as the rule's reading, on which the re-hold decides whether a copy is due at once",
+      "source": "round 5's deep review",
+      "guard": "daemon-rehold-holder-as-it-came"
     }
   ]
 }

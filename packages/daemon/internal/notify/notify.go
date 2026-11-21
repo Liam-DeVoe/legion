@@ -5,7 +5,6 @@ package notify
 
 import (
 	"bytes"
-	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -72,7 +71,10 @@ const (
 // role's holder, or tried to, and the holder's session did not confirm it within the listener's
 // delivery window (publishDeliveryWindow, packages/envoy/cmd/listener/confirmed.go). Reason is
 // ReasonReceiptTimeout or ReasonDeliveryFailed; Holder is the session the listener last resolved,
-// "" when it resolved none; EventID names the envelope it forwarded. Only a listener
+// empty when it resolved none; EventID names the envelope it forwarded. Holder and EventID are the
+// listener's words as they came (oauth2call.RoleLookup), which a caller that decides on them
+// compares as they came (RemoteText.Equal: the re-hold's copyDueAtOnce) and which print only as
+// the rule reads them. Only a listener
 // that confirms a role message before it answers gives it. An earlier listener answers 200 once
 // the NATS server took the message and reports a forward that then fails as a role-lane exception
 // (notifications.envoy.exceptions.notifications.role.*), so a caller that acts on this answer
@@ -80,8 +82,8 @@ const (
 // reasons is a plain refusal, never ErrNotDelivered.
 type ErrNotDelivered struct {
 	Reason  string
-	Holder  string
-	EventID string
+	Holder  oauth2call.RemoteText
+	EventID oauth2call.RemoteText
 }
 
 func (e ErrNotDelivered) Error() string {
@@ -89,13 +91,14 @@ func (e ErrNotDelivered) Error() string {
 }
 
 // ErrRefusedByHolder is a role publish the listener answered 403 with reason "capability": the
-// role's holder, the session Holder names, does not advertise the delivery mode of the payload, or
+// role's holder, the session Holder names (the listener's words as they came), does not advertise
+// the delivery mode of the payload, or
 // the mode cannot be read unambiguously, so the listener forwarded nothing. Sending it again
 // changes nothing until another session holds the role. Only a listener that confirms a role
 // message before it answers gives it; an earlier listener's role lane drops such a message after
 // its 200 without a report.
 type ErrRefusedByHolder struct {
-	Holder string
+	Holder oauth2call.RemoteText
 }
 
 func (e ErrRefusedByHolder) Error() string {
@@ -105,12 +108,13 @@ func (e ErrRefusedByHolder) Error() string {
 // ErrPublishDenied is a role publish the listener answered 403 because the NATS server refused the
 // forward under the listener's own publish permissions, so the listener forwarded nothing: its body's
 // error opens with publishDeniedPrefix (writeBusUnavailable, packages/envoy/cmd/listener/api.go).
-// Message is that error, which names the subject the grant does not cover; it is bounded by
+// Message is that error, the listener's words as they came, which name the subject the grant does
+// not cover and print only as the rule reads them; it is bounded by
 // refusalBodyLimit as the refusal is. Sending it again changes nothing until an operator changes the
 // listener's grant. Any other 403 (one whose error does not open with the prefix, or whose body is
 // not JSON, as a proxy in front of the listener could write) stays a plain refusal, retried.
 type ErrPublishDenied struct {
-	Message string
+	Message oauth2call.RemoteText
 }
 
 // publishDeniedPrefix mirrors the listener's publishDeniedPrefix (packages/envoy/cmd/listener/api.go),
@@ -281,8 +285,8 @@ func (p *HTTPPublisher) publish(ctx context.Context, topic, message string, payl
 // status, is the plain refusal. Which refusal it is, is decided on the body as it came (the
 // listener's own shape, decoded from answer), never on the rule's reading of it, which is not
 // readable whole where an error names a URL beside the JSON quote that ends it; what an error
-// names of the body - a holder, an event id, the listener's error - prints as the rule reads it
-// (oauth2call.RoleLookup).
+// names of the body - a holder, an event id, the listener's error - is held as it came
+// (oauth2call.RoleLookup), so a caller decides on it as it came and it prints as the rule reads it.
 func publishRefusal(status int, answer oauth2call.Answer, refusal error) error {
 	var words oauth2call.RoleLookup
 	_ = answer.Decode(&words)
@@ -301,16 +305,16 @@ func publishRefusal(status int, answer oauth2call.Answer, refusal error) error {
 	case http.StatusGatewayTimeout:
 		var failure listenerwire.RoleSendFailure
 		if answer.Decode(&failure) == nil && (failure.Reason == ReasonReceiptTimeout || failure.Reason == ReasonDeliveryFailed) {
-			return fmt.Errorf("%w: %w", refusal, ErrNotDelivered{Reason: failure.Reason, Holder: words.Holder.String(), EventID: words.EventID.String()})
+			return fmt.Errorf("%w: %w", refusal, ErrNotDelivered{Reason: failure.Reason, Holder: words.Holder, EventID: words.EventID})
 		}
 	case http.StatusForbidden:
 		var capability listenerwire.CapabilityRefusal
 		if answer.Decode(&capability) == nil && capability.Reason == "capability" {
-			return fmt.Errorf("%w: %w", refusal, ErrRefusedByHolder{Holder: words.Holder.String()})
+			return fmt.Errorf("%w: %w", refusal, ErrRefusedByHolder{Holder: words.Holder})
 		}
 		var denied listenerwire.APIError
 		if answer.Decode(&denied) == nil && strings.HasPrefix(denied.Error, publishDeniedPrefix) {
-			return fmt.Errorf("%w: %w", refusal, ErrPublishDenied{Message: words.Error.String()})
+			return fmt.Errorf("%w: %w", refusal, ErrPublishDenied{Message: words.Error})
 		}
 	}
 	return refusal
@@ -416,8 +420,12 @@ func (p *HTTPPublisher) ReadSessionRegistration(ctx context.Context, session str
 // 200 the live holder, its state `live`; on the 404 of a lapsed holder, that holder and its
 // `holder_state`, `unresponsive` or `gone`, since the claim stands until the role claim reaper
 // takes it, or `lapsed` where an older listener names no state; on the 404 of a role no claim
-// names, reason roleholder.Unclaimed, no holder at all. A 200 is read within answerBodyLimit, an
-// error body within refusalBodyLimit. Every other answer is an error, which the caller reads as
+// names, reason roleholder.Unclaimed, no holder at all. Both answers are read through
+// oauth2call.RoleLookup, decoded from the answer as it came: the holder is the listener's words,
+// which a caller compares as they came (RemoteText.Equal) and prints only as the rule reads them,
+// and the state is one of the listener's own words or, for any other text, the rule's reading of
+// it (roleHolderState). A 200 is read within answerBodyLimit, an error body within
+// refusalBodyLimit. Every other answer is an error, which the caller reads as
 // an answer it does not have: the daemon's forget of a session its claim does not hold refuses on
 // one, and on every holder it names that is that session (supervise.Deps.RoleHolder). An answer
 // the listener gives the same way however often it is asked — a body read whole that does not
@@ -429,59 +437,79 @@ func (p *HTTPPublisher) ReadSessionRegistration(ctx context.Context, session str
 // can answer for the milliseconds after a claim write: the race any read of the bucket has, and
 // a forget made on such an answer is no worse than one made a moment earlier (review round 16 of
 // #4220, #64).
-func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder, state string, err error) {
+func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder oauth2call.RemoteText, state string, err error) {
 	target := fmt.Sprintf("%s/v1/roles/%s", p.baseURL, url.PathEscape(role))
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
-		return "", "", fmt.Errorf("build the role lookup for %s: %w", role, err)
+		return holder, "", fmt.Errorf("build the role lookup for %s: %w", role, err)
 	}
 	if p.token != "" {
 		request.Header.Set("Authorization", "Bearer "+p.token)
 	}
 	response, err := p.client.Do(request)
 	if err != nil {
-		return "", "", fmt.Errorf("look up the holder of role %s: %w", role, err)
+		return holder, "", fmt.Errorf("look up the holder of role %s: %w", role, err)
 	}
 	defer response.Body.Close()
 	refused := func(reason string) error {
 		return fmt.Errorf("look up the holder of role %s: %w", role, &RoleLookupRefused{Status: response.StatusCode, Reason: reason})
 	}
 	if response.StatusCode == http.StatusOK {
-		_, body, _, readErr := listenerAnswer(response, answerBodyLimit)
+		answer, _, _, readErr := listenerAnswer(response, answerBodyLimit)
 		if readErr != nil {
-			return "", "", unreadAnswer("look up the holder of role "+role, oauth2call.StatusLine(response.StatusCode), readErr)
+			return holder, "", unreadAnswer("look up the holder of role "+role, oauth2call.StatusLine(response.StatusCode), readErr)
 		}
-		var answer listenerwire.RoleHolder
-		if json.Unmarshal(body, &answer) != nil || answer.Holder == "" {
-			return "", "", refused("the listener's 200 names no holder")
+		var live oauth2call.RoleLookup
+		if answer.Decode(&live) != nil || live.Holder.IsEmpty() {
+			return holder, "", refused("the listener's 200 names no holder")
 		}
-		return answer.Holder, cmp.Or(string(answer.HolderState), "live"), nil
+		return live.Holder, roleHolderState(live.HolderState, StateLive), nil
 	}
 	answer, body, cut, readErr := listenerAnswer(response, refusalBodyLimit)
 	switch response.StatusCode {
 	case http.StatusNotFound:
 		if readErr != nil {
-			return "", "", unreadAnswer("look up the holder of role "+role, oauth2call.StatusLine(response.StatusCode), readErr)
+			return holder, "", unreadAnswer("look up the holder of role "+role, oauth2call.StatusLine(response.StatusCode), readErr)
 		}
-		// The 404 is decided on as it came (oauth2call.RoleLookup, decoded from the answer): the
-		// lapsed holder and its state are the listener's ids, answered where the rule prints each
-		// as it came (RemoteText.SendBack), and the reason is compared as it came.
 		var refusal oauth2call.RoleLookup
 		if answer.Decode(&refusal) != nil {
-			return "", "", refused("the listener's 404 is unreadable: " + excerpt(body, cut))
+			return holder, "", refused("the listener's 404 is unreadable: " + excerpt(body, cut))
 		}
-		if lapsed, named := refusal.Holder.SendBack(); named {
-			state, _ := refusal.HolderState.SendBack()
-			return lapsed, cmp.Or(state, "lapsed"), nil
+		if !refusal.Holder.IsEmpty() {
+			return refusal.Holder, roleHolderState(refusal.HolderState, StateLapsed), nil
 		}
-		if refusal.Holder.IsEmpty() && refusal.Reason.Equal(string(roleholder.Unclaimed)) {
-			return "", "", nil
+		if refusal.Reason.Equal(string(roleholder.Unclaimed)) {
+			return holder, "", nil
 		}
-		return "", "", refused(fmt.Sprintf("the listener's 404 names no holder and gives reason %q, not %q: %s", refusal.Reason, roleholder.Unclaimed, excerpt(body, cut)))
+		return holder, "", refused(fmt.Sprintf("the listener's 404 names no holder and gives reason %q, not %q: %s", refusal.Reason, roleholder.Unclaimed, excerpt(body, cut)))
 	case http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
-		return "", "", fmt.Errorf("look up the holder of role %s: listener returned %s: %s", role, oauth2call.StatusLine(response.StatusCode), excerpt(body, cut))
+		return holder, "", fmt.Errorf("look up the holder of role %s: listener returned %s: %s", role, oauth2call.StatusLine(response.StatusCode), excerpt(body, cut))
 	}
-	return "", "", refused(fmt.Sprintf("listener returned %s: %s", oauth2call.StatusLine(response.StatusCode), excerpt(body, cut)))
+	return holder, "", refused(fmt.Sprintf("listener returned %s: %s", oauth2call.StatusLine(response.StatusCode), excerpt(body, cut)))
+}
+
+// The states a role lookup names its holder in (RoleHolder): the listener's session states, live,
+// unresponsive and gone (listenerwire.SessionState), and lapsed, which an older listener's 404
+// gives by naming its lapsed holder with no state.
+const (
+	StateLive   = "live"
+	StateGone   = "gone"
+	StateLapsed = "lapsed"
+)
+
+// roleHolderState is the holder state a role lookup's answer names (said), as a message may print
+// it: the listener's word where said is one of its states, compared as it came; absent where said
+// is empty; and the rule's reading of any other text, which nothing decides on.
+func roleHolderState(said oauth2call.RemoteText, absent string) string {
+	for _, state := range []string{StateLive, StateUnresponsive, StateGone} {
+		if said.Equal(state) {
+			return state
+		}
+	}
+	if said.IsEmpty() {
+		return absent
+	}
+	return said.String()
 }
 
 // RoleLookupRefused is a role lookup the listener answered the same way however often it is

@@ -22,6 +22,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -1208,7 +1209,7 @@ func TestOutboxRoleMessageAnswersOfTheConfirmedPublishRoute(t *testing.T) {
 	row := mustOutboxRow(t, "LEGION-2", record.RoleMessage{Role: "implementer", Body: "CI settled at head"}, time.Now())
 	row.ID = 59
 	publisher := &outboxPublisher{err: fmt.Errorf(`publish notice to notifications.role.implementer: listener returned 403 Forbidden: {"reason":"capability","holder":"ses_impl"}: %w`,
-		notify.ErrRefusedByHolder{Holder: "ses_impl"})}
+		notify.ErrRefusedByHolder{Holder: oauth2calltest.Said("ses_impl")})}
 	client := &outboxDispatch{}
 	runner := &outbox{log: quietLogger(), notices: publisher, dispatch: client}
 
@@ -1216,12 +1217,12 @@ func TestOutboxRoleMessageAnswersOfTheConfirmedPublishRoute(t *testing.T) {
 		t.Fatalf("execute a role message its holder refused: %v", err)
 	}
 	const denial = `envoy: the message bus denied the publish under this listener's own permissions: bus: NATS denied the publish to "notifications.agent.ses_impl"`
-	publisher.err = fmt.Errorf(`publish notice to notifications.role.implementer: listener returned 403 Forbidden: {"error":%q}: %w`, denial, notify.ErrPublishDenied{Message: denial})
+	publisher.err = fmt.Errorf(`publish notice to notifications.role.implementer: listener returned 403 Forbidden: {"error":%q}: %w`, denial, notify.ErrPublishDenied{Message: oauth2calltest.Said(denial)})
 	if err := runner.execute(context.Background(), row); err != nil {
 		t.Fatalf("execute a role message the listener was denied: %v", err)
 	}
 	for _, reason := range []string{notify.ReasonReceiptTimeout, notify.ReasonDeliveryFailed} {
-		publisher.err = fmt.Errorf("publish notice to notifications.role.implementer: listener returned 504 Gateway Timeout: %w", notify.ErrNotDelivered{Reason: reason, Holder: "ses_impl"})
+		publisher.err = fmt.Errorf("publish notice to notifications.role.implementer: listener returned 504 Gateway Timeout: %w", notify.ErrNotDelivered{Reason: reason, Holder: oauth2calltest.Said("ses_impl")})
 		var notDelivered notify.ErrNotDelivered
 		if err := runner.execute(context.Background(), row); !errors.As(err, &notDelivered) || notDelivered.Reason != reason {
 			t.Fatalf("a role message answered %s = %v, want the answer as a failure, retried", reason, err)

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -158,9 +159,9 @@ func TestPodUpdateAskKeepsItsRetryOnEveryOtherFailure(t *testing.T) {
 	runner, logs := askRunner(t, publisher, map[claim.Role]string{claim.RoleImplementer: askedRound})
 	row := askRow(t, 77, claim.RoleImplementer)
 	for _, cause := range []error{
-		notify.ErrNotDelivered{Reason: notify.ReasonReceiptTimeout, Holder: "ses_i"},
-		notify.ErrRefusedByHolder{Holder: "ses_i"},
-		notify.ErrPublishDenied{Message: "envoy: the message bus denied the publish"},
+		notify.ErrNotDelivered{Reason: notify.ReasonReceiptTimeout, Holder: oauth2calltest.Said("ses_i")},
+		notify.ErrRefusedByHolder{Holder: oauth2calltest.Said("ses_i")},
+		notify.ErrPublishDenied{Message: oauth2calltest.Said("envoy: the message bus denied the publish")},
 	} {
 		publisher.err = fmt.Errorf("publish to the implementer's topic: %w", cause)
 		err := runner.execute(context.Background(), row)

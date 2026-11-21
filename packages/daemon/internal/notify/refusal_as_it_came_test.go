@@ -32,12 +32,12 @@ func TestAListenerRefusalIsReadFromItsWordsAsTheyCame(t *testing.T) {
 		{"not-delivered", `{"error":"no receipt; see https://listener.example/roles#receipts","reason":"receipt_timeout","event_id":"evt-1","holder":"ses_a","attempts":3}`,
 			http.StatusGatewayTimeout, func(err error) bool {
 				var undelivered ErrNotDelivered
-				return errors.As(err, &undelivered) && undelivered.Reason == ReasonReceiptTimeout && undelivered.Holder == "ses_a" && undelivered.EventID == "evt-1"
+				return errors.As(err, &undelivered) && undelivered.Reason == ReasonReceiptTimeout && undelivered.Holder.Equal("ses_a") && undelivered.EventID.Equal("evt-1")
 			}},
 		{"capability", `{"error":"the holder takes no prompt; see https://listener.example/roles#capabilities","reason":"capability","holder":"ses_a"}`,
 			http.StatusForbidden, func(err error) bool {
 				var refused ErrRefusedByHolder
-				return errors.As(err, &refused) && refused.Holder == "ses_a"
+				return errors.As(err, &refused) && refused.Holder.Equal("ses_a")
 			}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -64,7 +64,7 @@ func TestAListenerRefusalIsReadFromItsWordsAsTheyCame(t *testing.T) {
 		}))
 		t.Cleanup(server.Close)
 		holder, state, err := New(server.URL, "envoy-bearer").RoleHolder(ctx, "legion-demo-controller")
-		if err != nil || holder != "ses_a" || state != "unresponsive" {
+		if err != nil || !holder.Equal("ses_a") || state != "unresponsive" {
 			t.Errorf("RoleHolder = %q, %q, %v; want the lapsed holder ses_a, unresponsive", holder, state, err)
 		}
 	})

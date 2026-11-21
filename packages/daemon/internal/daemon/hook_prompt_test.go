@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -175,9 +176,9 @@ func TestAHookPromptRetriesEveryFailureButNoHolder(t *testing.T) {
 		name string
 		err  error
 	}{
-		{name: "a holder that did not confirm it", err: notify.ErrNotDelivered{Reason: notify.ReasonReceiptTimeout, Holder: "ses_t"}},
-		{name: "a holder that does not advertise the delivery mode", err: notify.ErrRefusedByHolder{Holder: "ses_t"}},
-		{name: "a forward the listener's grant denies", err: notify.ErrPublishDenied{Message: denial}},
+		{name: "a holder that did not confirm it", err: notify.ErrNotDelivered{Reason: notify.ReasonReceiptTimeout, Holder: oauth2calltest.Said("ses_t")}},
+		{name: "a holder that does not advertise the delivery mode", err: notify.ErrRefusedByHolder{Holder: oauth2calltest.Said("ses_t")}},
+		{name: "a forward the listener's grant denies", err: notify.ErrPublishDenied{Message: oauth2calltest.Said(denial)}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			publisher.err = fmt.Errorf("publish to the implementer's topic: %w", tc.err)
