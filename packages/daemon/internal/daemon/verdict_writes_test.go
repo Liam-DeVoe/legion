@@ -78,15 +78,18 @@ type fakeWrite struct {
 // request 86's merge state, `blocked` while its head has no legion-verdict run concluding success
 // and `clean` once it has, which is what a ruleset that requires the check answers; and any other
 // pull request named in pulls. Each write and each read of pull request 86 is recorded in order.
+// failCreates is how many of the next creates of a check run GitHub answers 502, as it does when
+// it fails a request.
 type verdictGitHub struct {
-	mu       sync.Mutex
-	nextID   int64
-	head86   string
-	runs     []fakeRun
-	statuses []fakeStatus
-	writes   []fakeWrite
-	events   []string
-	pulls    map[int]string
+	mu          sync.Mutex
+	nextID      int64
+	head86      string
+	runs        []fakeRun
+	statuses    []fakeStatus
+	writes      []fakeWrite
+	events      []string
+	pulls       map[int]string
+	failCreates int
 }
 
 func newVerdictGitHub() *verdictGitHub {
@@ -156,6 +159,11 @@ func (g *verdictGitHub) serve(t *testing.T) http.HandlerFunc {
 				}
 			}
 			answer(listed)
+		case r.Method == http.MethodPost && path == "/check-runs" && g.failCreates > 0:
+			body()
+			g.failCreates--
+			g.events = append(g.events, "refused a create with 502")
+			http.Error(w, `{"message":"Server Error"}`, http.StatusBadGateway)
 		case r.Method == http.MethodPost && path == "/check-runs":
 			sent := body()
 			g.nextID++
@@ -364,6 +372,24 @@ func TestLegionVerdictReviewerChangesWritesFailure(t *testing.T) {
 	rig.written(t)
 	if runs := rig.github.legionRuns("code"); len(runs) != 1 || runs[0].Conclusion != "failure" {
 		t.Fatalf("legion-verdict runs on code = %+v, want one concluding failure", runs)
+	}
+}
+
+// A write GitHub fails is logged naming what repairs it, the writers' sweep at boot and every 10
+// minutes, and leaves the head with no run: the writer makes no second attempt of its own.
+func TestLegionVerdictAFailedWriteIsLoggedForTheWritersSweep(t *testing.T) {
+	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewingWithPass)
+	rig.github.mu.Lock()
+	rig.github.failCreates = 1
+	rig.github.mu.Unlock()
+	rig.apply(t, reviewerVerdict("changes", "code", 1))
+	rig.written(t)
+	if runs := rig.github.legionRuns("code"); len(runs) != 0 {
+		t.Fatalf("legion-verdict runs on code = %+v, want none after GitHub failed the create", runs)
+	}
+	lines := loggedMessages(t, rig.logs.String(), "verdict: a write of legion-verdict failed; the writers' sweep at boot and every 10 minutes")
+	if len(lines) != 1 || lines[0]["head"] != "code" || lines[0]["issue"] != "CAPTURE-1" {
+		t.Fatalf("failed-write lines = %v, want one naming code and CAPTURE-1, and the sweep that repairs it", lines)
 	}
 }
 

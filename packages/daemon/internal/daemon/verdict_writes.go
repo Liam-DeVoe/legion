@@ -30,12 +30,14 @@ const (
 )
 
 // The lines the writer logs, besides each write's own legion_verdict_write: once per pull request
-// whose head is another project's issue branch, once while the App is in token mode, and each time
-// a merge-state read goes on after waiting its bound on its issue's write.
+// whose head is another project's issue branch, once while the App is in token mode, each time a
+// merge-state read goes on after waiting its bound on its issue's write, and each write that fails,
+// naming what repairs it.
 const (
-	otherProjectsHead = "verdict: no daemon writes legion-verdict here: the head is another project's issue branch"
-	verdictTokenMode  = "verdict: legion-verdict is not written: the App is in token mode, which mints no verdict token"
-	verdictReadWentOn = "verdict: a merge-state read went on before its issue's write of legion-verdict ended"
+	otherProjectsHead  = "verdict: no daemon writes legion-verdict here: the head is another project's issue branch"
+	verdictTokenMode   = "verdict: legion-verdict is not written: the App is in token mode, which mints no verdict token"
+	verdictReadWentOn  = "verdict: a merge-state read went on before its issue's write of legion-verdict ended"
+	verdictWriteFailed = "verdict: a write of legion-verdict failed; the writers' sweep at boot and every 10 minutes writes it again"
 )
 
 // verdictWriter is the state of the daemon's writer of the required check legion-verdict (spec
@@ -45,8 +47,8 @@ const (
 // (workflow.Config.WriteVerdict, queueVerdictWrite), and one goroutine writes them one at a time
 // (writeVerdicts), so a fact's transaction waits on no GitHub call and two writes of one head never
 // both make a run. A write a fact asked for is held in memory, and a restart loses one not made:
-// the writers' sweep writes each head whose verdict the record holds and GitHub shows no run of
-// this daemon's on.
+// the writers' sweep, at boot and every 10 minutes, writes each head whose verdict the record holds
+// and GitHub shows no run of this daemon's on.
 type verdictWriter struct {
 	entries []config.VerdictRepository
 	// bound is how long a merge-state read waits on its issue's write (await).
@@ -253,9 +255,9 @@ func (w *workflowRuntime) verdictEntry(repository ghrepo.Repository) (config.Ver
 }
 
 // writeVerdicts makes each write queueVerdictWrite queued, one at a time and oldest first, until
-// ctx ends. A write that fails is logged and not made again here: the writers' sweep writes each
-// head whose verdict the record holds and that GitHub shows no run of this daemon's on, and the
-// issue's next verdict writes again.
+// ctx ends. A write that fails - GitHub's error, its rate limit, a token that could not be minted -
+// is logged and not made again here: the writers' sweep, at boot and every 10 minutes, writes each
+// head whose verdict the record holds and that GitHub shows no run of this daemon's on.
 func (w *workflowRuntime) writeVerdicts(ctx context.Context) {
 	for {
 		target, ok := w.verdicts.next()
@@ -268,7 +270,7 @@ func (w *workflowRuntime) writeVerdicts(ctx context.Context) {
 			}
 		}
 		if err := w.writeVerdict(ctx, target.repository, target.number, target.head); err != nil && ctx.Err() == nil {
-			w.log.Warn("verdict: a write of legion-verdict failed; the writers' sweep or the head's next verdict writes it",
+			w.log.Warn(verdictWriteFailed,
 				"repository", target.repository.String(), "pull_request", target.number, "head", target.head, "issue", target.issue, "error", err)
 		}
 		w.verdicts.done(target)
