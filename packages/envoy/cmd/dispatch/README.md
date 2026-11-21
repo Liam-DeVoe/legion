@@ -1693,12 +1693,14 @@ The stop's drain and unsubscribe, and the acknowledgements and hand-backs of the
 A hand-back publish NATS has not taken in that time is published once NATS takes it (`intakeDelivery.publishHandBack`).
 The run loop releases the hold only once every hand-back the stop published has reached the server, which a flush of up to 1 s confirms (`heldDurable.handBacksReached`).
 With one still pending at the stop's deadline, or a flush that does not answer, `Run` returns and the hold stays renewing on a goroutine of its own (`heldDurable.finalizeHandBacks`).
-It releases only once a flush, begun after the hand-back's publish ended, has answered: the server handles one connection's protocol in order, so by then the hand-back has reached it.
-A closed connection confirms nothing: `Close` writes nats.go's outbound buffer to the socket and then closes it, so a hand-back written then can still be on its way to the server.
+It releases only once a flush on the socket the hand-back went out on, begun after its publish ended, has answered: the server handles one connection's protocol in order, so by then the hand-back has reached it.
+A flush on another socket confirms nothing: `Close` writes nats.go's outbound buffer to the socket and then closes it, and a reconnect keeps the connection and dials a new socket, so a hand-back written to the old socket can still be on its way to the server.
+A hand-back made outside a stop is confirmed the same way as soon as its publish ends, so a reconnect later in the delivery's life leaves in doubt only a hand-back that was still on its way when its socket went.
 Dispatch shutdown waits for the finalizer with that client open, up to 5 s from the finalizer's start (`intakeFinalizerConfirmWait`), then closes the client and waits for the finalizer to end, before it closes the pool.
 A finalizer whose hand-back a flush confirmed releases the hold through the still-open pool.
-A finalizer whose client closed before a flush confirmed its hand-back does not release the hold: it stops renewing and leaves the row to lapse at its expiry (`duty.Hold.Abandon`), so the standby takes the durable over at most 17 s later, the hold's 15 s TTL and the standby's 2 s poll, rather than at once.
-That normally finishes inside the shutdown reserve, but a write can hold nats.go's lock until its one-minute write deadline; `Client.Close` waits for that lock while the finalizer keeps the hold renewing.
+A finalizer whose hand-back went out on a socket that has gone before a flush confirmed it does not release the hold: it stops renewing and leaves the row to lapse at its expiry (`duty.Hold.Abandon`), so the standby takes the durable over at most 17 s later, the hold's 15 s TTL and the standby's 2 s poll, rather than at once.
+A finalizer starts at the stop's deadline or up to 1 s after it, so one that waits out its 5 s and then releases the hold ends by 26 s after the signal, 1 s after the document service's latest end and 4 s before the kill.
+A write can hold nats.go's lock until its one-minute write deadline; `Client.Close` waits for that lock while the finalizer keeps the hold renewing.
 A process killed before that ends the renewal with its connection, and the standby takes over at the lapse, up to the hold's TTL after its last renewal:
 a hand-back that reached the server after a standby had recreated the durable would move that message's pending entry on the standby's consumer.
 Every one of those answers, a given-up handler's, a held message's and one a refused acknowledgement makes alike, passes one rule (`intakeDelivery.handBack`).

@@ -123,12 +123,8 @@ func (h *HandshakeHold) Hold() <-chan struct{} {
 // the server, and the time that write ended, from now on. The relay of each connection calls it
 // from a goroutine of its own, so observe must be safe to call from more than one goroutine at a
 // time. The chunk is the relay's own buffer, which its next read writes over, so observe copies
-// what it keeps. A nil observe stops the calls.
+// what it keeps.
 func (h *HandshakeHold) Observe(observe func(at time.Time, chunk []byte)) {
-	if observe == nil {
-		h.observe.Store(nil)
-		return
-	}
 	h.observe.Store(&observe)
 }
 
@@ -140,13 +136,9 @@ func (h *HandshakeHold) Observe(observe func(at time.Time, chunk []byte)) {
 // the write, so match must be safe to call from more than one goroutine at a time. The chunk is
 // the relay's own buffer, which its next read writes over, so match keeps no part of it. A chunk
 // boundary falls where the relay's read ended, so a match that looks for bytes in the stream reads
-// across the boundaries itself. A nil match holds nothing.
+// across the boundaries itself.
 func (h *HandshakeHold) HoldChunks(t testing.TB, match func(chunk []byte) bool, release <-chan struct{}) {
 	t.Helper()
-	if match == nil {
-		h.chunks.Store(nil)
-		return
-	}
 	hold := &chunkHold{match: match, release: release, ended: make(chan struct{})}
 	h.chunks.Store(hold)
 	t.Cleanup(func() {

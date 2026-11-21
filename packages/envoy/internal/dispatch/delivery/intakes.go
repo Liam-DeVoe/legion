@@ -83,18 +83,19 @@ func ReserveDurableLeases(callers *store.LeaseCallers, durable string) (DurableL
 // closes both clients, and waits for a hand-back finalizer each Run left behind. A Run can return
 // at its stop deadline with a hand-back still waiting for NATS. Its finalizer releases the hold once
 // a flush confirms that hand-back reached the server, and stop closes the clients only once each
-// finalizer has done so or has had intakeFinalizerConfirmWait from its start to do so. A closed
-// connection confirms nothing: a hand-back written at the close may still be on its way to the
-// server, so a finalizer whose client closed before a flush confirmed its hand-back leaves the hold
-// to lapse at its expiry, and the next process takes the durable over only then. A message in its
-// handler finishes and is acknowledged before the Run returns; messages behind it are handed back
-// while the hold covers them, and the next process takes the durable over at once rather than at
-// the hold's lapse. Each Run's stop has one deadline, intakeStopBudget after ctx ends
-// (stopContext), which a take-over under way at that moment spends rather than extends: the
-// handlers still running then are given up and their messages handed back too. Every handler of
-// Intake's has returned by the time stop does, and each finalizer has released its hold or left it
-// to lapse, so a caller that closes the pool after stop returns, as cmd/dispatch's shutdown does,
-// closes it under neither's writes. A second call returns once the first has.
+// finalizer has done so or has had intakeFinalizerConfirmWait from its start to do so. A flush on
+// another socket confirms nothing: a hand-back written at a close, or before a reconnect, may still
+// be on its way to the server, so a finalizer whose hand-back's socket went before a flush on it
+// confirmed the hand-back leaves the hold to lapse at its expiry, and the next process takes the
+// durable over only then. A message in its handler finishes and is acknowledged before the Run
+// returns; messages behind it are handed back while the hold covers them, and the next process
+// takes the durable over at once rather than at the hold's lapse. Each Run's stop has one
+// deadline, intakeStopBudget after ctx ends (stopContext), which a take-over under way at that
+// moment spends rather than extends: the handlers still running then are given up and their
+// messages handed back too. Every handler of Intake's has returned by the time stop does, and each
+// finalizer has released its hold or left it to lapse, so a caller that closes the pool after stop
+// returns, as cmd/dispatch's shutdown does, closes it under neither's writes. A second call
+// returns once the first has.
 //
 // The intakes cannot share a client: a bus.Client holds one JetStream subscription, and refuses the
 // second intake's subscribe with bus.ErrSubscriptionHeld.
@@ -132,21 +133,13 @@ func StartIntakes(ctx context.Context, connect func(name string) (*bus.Client, e
 	}), nil
 }
 
-// stopIntakes waits for their Runs, then for each durable's hand-back finalizers to confirm their
-// hand-backs with the connection open, for up to intakeFinalizerConfirmWait from each one's start
-// (awaitConfirming). Then it closes their NATS clients through each durable (closeNATS) and waits
-// for the finalizers to end (waitFinalizers). After the close, a finalizer with a published
-// hand-back that no flush confirmed leaves its hold to lapse at its expiry, and one with none
-// releases its hold through the still-open database pool, before this stop returns (StartIntakes).
+// stopIntakes waits for their Runs, then stops their durables (stopDurables): it waits for each
+// durable's hand-back finalizers to confirm their hand-backs with the connection open, for up to
+// intakeFinalizerConfirmWait from each one's start, closes their NATS clients, and waits for the
+// finalizers to end. After the close, a finalizer with a published hand-back that no flush
+// confirmed leaves its hold to lapse at its expiry, and one with none releases its hold through the
+// still-open database pool, before this stop returns (StartIntakes).
 func stopIntakes(running *sync.WaitGroup, durables ...*heldDurable) {
 	running.Wait()
-	for _, durable := range durables {
-		durable.awaitConfirming()
-	}
-	for _, durable := range durables {
-		durable.closeNATS()
-	}
-	for _, durable := range durables {
-		durable.waitFinalizers()
-	}
+	stopDurables(durables...)
 }

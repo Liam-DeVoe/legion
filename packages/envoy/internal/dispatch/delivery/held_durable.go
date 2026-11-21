@@ -190,10 +190,10 @@ func (t *bindThrottle) reportStandby(name, message string) {
 //     (stop): a standby takes over at once and is redelivered those messages within seconds rather
 //     than after the ack wait. A stop with a hand-back still pending, or whose flush cannot
 //     confirm the hand-backs reached the server, keeps the hold renewing until a flush does, and
-//     releases it only then (finalizeHandBacks). When the intake's client closes before a flush
-//     confirms a hand-back that was published, that hand-back may still be on its way to the
-//     server, so the hold is not released: it stops renewing and lapses at its row's expiry
-//     (duty.Hold.Abandon).
+//     releases it only then (finalizeHandBacks). When the socket a published hand-back went out
+//     on goes before a flush on it confirms the hand-back -- the client closes, or its connection
+//     reconnects -- that hand-back may still be on its way to the server, so the hold is not
+//     released: it stops renewing and lapses at its row's expiry (duty.Hold.Abandon).
 //
 // The run loop owns hold, recorded and subject; mu guards delivering, which StopDelivering reads
 // from any goroutine.
@@ -319,30 +319,43 @@ func (h *HeldDurable) Run(ctx context.Context) {
 }
 
 // Stop, called once Run has returned, closes the durable's NATS client and waits for each hand-back
-// finalizer Run left behind, as stopIntakes does for the two intakes here. Run can return at its
-// stop deadline with a hand-back still waiting for NATS. Its finalizer has until
-// intakeFinalizerConfirmWait after it started to confirm that hand-back with a flush, and Stop
-// waits for that (awaitConfirming) before it closes the client. A finalizer that confirmed its
-// hand-backs releases the hold. After the close, a finalizer with a published hand-back that no
-// flush confirmed leaves the hold to lapse at its expiry, since that hand-back may still reach the
-// server, and a finalizer with none releases the hold (finalizeHandBacks). Stop returns once each
-// finalizer has. So an owner that closes the pool after Stop, as cmd/dispatch's shutdown does,
-// closes it under no finalizer's write.
+// finalizer Run left behind (stopDurables). Run can return at its stop deadline with a hand-back
+// still waiting for NATS. Its finalizer has until intakeFinalizerConfirmWait after it started to
+// confirm that hand-back with a flush, and Stop waits for that (awaitConfirming) before it closes
+// the client. A finalizer that confirmed its hand-backs releases the hold. After the close, a
+// finalizer with a published hand-back that no flush confirmed leaves the hold to lapse at its
+// expiry, since that hand-back may still reach the server, and a finalizer with none releases the
+// hold (finalizeHandBacks). Stop returns once each finalizer has. So an owner that closes the pool
+// after Stop, as cmd/dispatch's shutdown does, closes it under no finalizer's write.
 func (h *HeldDurable) Stop() {
-	h.awaitConfirming()
-	h.closeNATS()
-	h.waitFinalizers()
+	stopDurables(&h.heldDurable)
 }
 
-// closeNATS closes this intake's NATS client (HeldDurable.Stop, stopIntakes). A trace line marks
-// the start of the close and its end, with the client.
+// stopDurables stops durables whose Runs have returned (HeldDurable.Stop, stopIntakes): it waits
+// for each one's hand-back finalizers to confirm their hand-backs with the connection open, for up
+// to intakeFinalizerConfirmWait from each one's start (awaitConfirming), then closes each one's
+// NATS client (closeNATS), then waits for each one's finalizers to end (waitFinalizers).
+func stopDurables(durables ...*heldDurable) {
+	for _, durable := range durables {
+		durable.awaitConfirming()
+	}
+	for _, durable := range durables {
+		durable.closeNATS()
+	}
+	for _, durable := range durables {
+		durable.waitFinalizers()
+	}
+}
+
+// closeNATS closes this intake's NATS client (stopDurables). A trace line marks the start of the
+// close and its end, with the client.
 func (d *heldDurable) closeNATS() {
 	if tracing() {
-		slog.Debug(traceClientCloses, "name", d.name, "client", tracePointer(d.nats))
+		slog.Debug(traceClientCloses, d.traceAttrs()...)
 	}
 	d.nats.Close()
 	if tracing() {
-		slog.Debug(traceClientClosed, "name", d.name, "client", tracePointer(d.nats))
+		slog.Debug(traceClientClosed, d.traceAttrs()...)
 	}
 }
 
@@ -720,8 +733,8 @@ func (d *heldDurable) finishTakeOver(create natsgo.ConsumerConfig, deleteFirst b
 		d.mu.Lock()
 		delivery := d.delivering
 		d.mu.Unlock()
-		slog.Debug(traceTakeOverBound, "name", d.name, "client", tracePointer(d.nats), "delivery", tracePointer(delivery),
-			"deliver_subject", create.DeliverSubject, "start_seq", create.OptStartSeq)
+		slog.Debug(traceTakeOverBound, d.traceAttrs("delivery", tracePointer(delivery),
+			"deliver_subject", create.DeliverSubject, "start_seq", create.OptStartSeq)...)
 	}
 	if d.bound != nil {
 		d.bound()
@@ -831,12 +844,12 @@ func (d *heldDurable) check(ctx context.Context) {
 // the durable over, and recreated it under the same name, would move that message's pending entry on
 // the standby's consumer and have it delivered a second time. So the hold keeps renewing on a
 // goroutine of its own (finalizeHandBacks) until that hand-back lands and a flush confirms it, and
-// is released only then. A closed connection confirms nothing: Close writes nats.go's outbound
-// buffer to the socket before it closes it, so a hand-back written then is still on its way to the
-// server after the close. So when the intake's client closes first, the finalizer leaves the hold
-// to lapse at its expiry rather than releasing it. The finalizer starts here, and the caller that
-// closes the client waits up to intakeFinalizerConfirmWait from that start before the close
-// (awaitConfirming).
+// is released only then. A flush on another socket confirms nothing: Close writes nats.go's
+// outbound buffer to the socket before it closes it, and a reconnect keeps the connection and dials
+// a new socket, so a hand-back written to the old socket can still be on its way to the server. So
+// when that socket goes first, the finalizer leaves the hold to lapse at its expiry rather than
+// releasing it. The finalizer starts here, and the caller that closes the client waits up to
+// intakeFinalizerConfirmWait from that start before the close (awaitConfirming).
 func (d *heldDurable) stop(ctx context.Context) {
 	d.StopDelivering(ctx)
 	if d.hold == nil {
@@ -859,7 +872,7 @@ func (d *heldDurable) stop(ctx context.Context) {
 		d.finalizers.Add(1)
 		d.confirming.Add(1)
 		confirming := sync.OnceFunc(d.confirming.Done)
-		window := time.AfterFunc(intakeFinalizerConfirmWait, confirming)
+		window := time.AfterFunc(time.Duration(intakeFinalizerConfirmWait.Load()), confirming)
 		go func() {
 			defer d.finalizers.Done()
 			defer confirming()
@@ -878,17 +891,18 @@ const intakeHoldFinalizing = "dispatch delivery: a hand-back has not reached NAT
 // ended, has answered (handBacksSettled). It waits until no hand-back of the delivery is taken and
 // not settled, and then seals the delivery (intakeDelivery.seal); when a hand-back was taken during
 // that wait, the seal fails and it waits again. It flushes again each intakeFlushWait until a flush
-// answers. A closed connection confirms nothing a flush did not: once the connection a published
-// hand-back ran on has closed before a flush confirmed it -- the client's connection, or one the
-// client has replaced since -- that hand-back may still be on its way to the server, so the
-// finalizer leaves the hold to lapse at its row's expiry (duty.Hold.Abandon), which
-// no standby can take before. With nothing published left unconfirmed, a closed connection can send
-// nothing more, and it releases the hold. It runs on a goroutine of its own that nothing in Run
-// waits for, so it waits for nats.go's lock with no bound and makes one flush at a time. The caller
-// that closes the client waits for it to confirm with the connection open, for up to
-// intakeFinalizerConfirmWait from its start (awaitConfirming), and waits for its end after the close,
-// before it returns to a caller that can close the database pool (waitFinalizers). A lost hold ends
-// it: another holder may then act, as after any loss of the hold. Its trace line gives its outcome.
+// answers. A flush on another socket confirms nothing: once the socket a published hand-back went
+// out on has gone before a flush on it confirmed the hand-back -- the client's connection has
+// closed, the client has replaced it, or it has reconnected -- that hand-back may still be on its
+// way to the server, so the finalizer leaves the hold to lapse at its row's expiry
+// (duty.Hold.Abandon), which no standby can take before. With nothing published left unconfirmed,
+// nothing more can reach the server, and it releases the hold. It runs on a goroutine of its own
+// that nothing in Run waits for, so it waits for nats.go's lock with no bound and makes one flush
+// at a time. The caller that closes the client waits for it to confirm with the connection open,
+// for up to intakeFinalizerConfirmWait from its start (awaitConfirming), and waits for its end
+// after the close, before it returns to a caller that can close the database pool
+// (waitFinalizers). A lost hold ends it: another holder may then act, as after any loss of the
+// hold. Its trace line gives its outcome.
 func (d *heldDurable) finalizeHandBacks(delivery *intakeDelivery, hold *duty.Hold, lapse bool) {
 	if tracing() {
 		slog.Debug(traceFinalizerStarts, "name", d.name, "delivery", tracePointer(delivery), "client", tracePointer(d.nats), "lapse", lapse)
@@ -941,9 +955,9 @@ func (d *heldDurable) finalizeHandBacks(delivery *intakeDelivery, hold *duty.Hol
 }
 
 // intakeHoldLeftToLapse is the line of a finalizer that leaves its hold to lapse at its expiry,
-// because the intake's client closed before a flush confirmed a hand-back it published
+// because the socket a hand-back it published went out on has gone before a flush confirmed it
 // (finalizeHandBacks). The standby takes the durable over only after that expiry.
-const intakeHoldLeftToLapse = "dispatch delivery: the intake's NATS client closed before a flush confirmed a hand-back reached NATS, so the intake's hold is left to lapse at its expiry"
+const intakeHoldLeftToLapse = "dispatch delivery: the socket a hand-back went out on has gone before a flush confirmed it reached NATS, so the intake's hold is left to lapse at its expiry"
 
 // The outcomes a finalizer's trace line gives (traceFinalizerEnd).
 const (
@@ -973,7 +987,7 @@ var finalizerBeforeRelease atomic.Pointer[func()]
 
 // awaitConfirming waits until each hand-back finalizer of this durable has ended, or has had
 // intakeFinalizerConfirmWait from its start to confirm its hand-backs with the connection open. Its
-// caller then closes the durable's NATS client (HeldDurable.Stop, stopIntakes).
+// caller then closes the durable's NATS client (stopDurables).
 func (d *heldDurable) awaitConfirming() { d.confirming.Wait() }
 
 // waitFinalizers waits for the hand-back finalizers of this durable to end once its NATS client
@@ -995,7 +1009,7 @@ func (d *heldDurable) releaseHold(hold *duty.Hold, lapse bool) {
 		slog.Error("dispatch delivery: release the intake's hold", "name", d.name, "error", err)
 	}
 	if tracing() {
-		slog.Debug(traceHoldReleased, "name", d.name, "client", tracePointer(d.nats), "lapse", lapse, "error", err)
+		slog.Debug(traceHoldReleased, d.traceAttrs("lapse", lapse, "error", err)...)
 	}
 }
 
@@ -1071,63 +1085,92 @@ const (
 	handBacksUnconfirmed handBacksState = iota
 	// handBacksConfirmed is no hand-back that can reach the server later: the hold may be released.
 	handBacksConfirmed
-	// handBacksInDoubt is a published hand-back that no flush confirmed, on a connection that has
-	// closed: the client's connection, or one the client has replaced. That hand-back may still be
-	// on its way to the server, and no flush can tell any more.
+	// handBacksInDoubt is a published hand-back that no flush confirmed, on a socket that has
+	// gone: the client's connection has closed, the client has replaced it, or it has reconnected
+	// in place. That hand-back may still be on its way to the server, and no flush can tell any
+	// more.
 	handBacksInDoubt
 )
 
+// settledByFlush is the reason handBacksSettled's trace line gives for the answer of its flush.
+const settledByFlush = "flush"
+
 // handBacksSettled reads whether a hand-back of delivery that nats.go had queued can reach the
-// server later. A published hand-back has reached it once a flush of the connection it ran on,
-// begun after the hand-back's publish ended, has answered: the server handles one connection's
-// protocol in order, so its answer to the flush comes after the hand-back. So it flushes, within
-// intakeFlushWait, while a publish that ended is not confirmed yet (intakeDelivery.publishCounts),
+// server later. A published hand-back has reached it once a flush on the socket it ran on, begun
+// after the hand-back's publish ended, has answered: the server handles one connection's protocol
+// in order, so its answer to the flush comes after the hand-back. So it flushes, within
+// intakeFlushWait, while a publish that ended is not confirmed yet (intakeDelivery.publishRecord),
 // and confirms every publish that had ended before the flush began once the flush answers
 // (handBacksConfirmed). With nothing published left unconfirmed, nothing can reach the server later
-// either (handBacksConfirmed). A closed connection confirms nothing: nats.go's Close writes its
-// outbound buffer to the socket before it closes it, so a hand-back queued before the close may
-// still be on its way to the server, in the kernel's send buffer and on the network
-// (handBacksInDoubt). The same holds when the unconfirmed publishes ran on a connection the client
-// has since replaced, which has closed, or on more than one connection: a flush of the client's
-// connection now confirms nothing of another one (handBacksInDoubt). A flush that fails is
-// handBacksUnconfirmed. Its trace line gives the answer and its reason, with the delivery's counts.
+// either (handBacksConfirmed).
+//
+// A flush on another socket confirms nothing (handBacksInDoubt): nats.go's Close writes its
+// outbound buffer to the socket before it closes it, and a reconnect in place keeps the
+// *natsgo.Conn and dials a new socket, so a hand-back written to the old socket may still be on its
+// way to the server, in the kernel's send buffer and on the network. So it answers
+// handBacksInDoubt when the unconfirmed publishes ran on more than one socket, on a connection the
+// client has replaced, on a connection that has closed, or at another reconnect count than the
+// connection's now, read before the flush; and when that count moved while the flush ran, since
+// its PING can then have gone out on the new socket. A flush that fails is handBacksUnconfirmed,
+// unless the connection closed under it: then it reads the state again at once, which answers
+// what the next retry would. Its trace line gives the answer and its reason, with the delivery's
+// record.
 func (d *heldDurable) handBacksSettled(delivery *intakeDelivery) handBacksState {
-	conn := d.nats.Connection()
-	publishes := delivery.publishCounts()
-	switch {
-	case publishes.ended == publishes.confirmed:
-		d.traceSettled(conn, handBacksConfirmed, "no published hand-back is unconfirmed", publishes, nil)
+	for {
+		conn := d.nats.Connection()
+		publishes := delivery.publishRecord()
+		switch {
+		case !publishes.unconfirmed():
+			d.traceSettled(conn, handBacksConfirmed, "no published hand-back is unconfirmed", publishes, nil)
+			return handBacksConfirmed
+		case publishes.onMany:
+			d.traceSettled(conn, handBacksInDoubt, "the unconfirmed hand-backs ran on more than one socket", publishes, nil)
+			return handBacksInDoubt
+		case conn == nil || publishes.on != conn:
+			d.traceSettled(conn, handBacksInDoubt, "the unconfirmed hand-backs ran on a connection the client has replaced", publishes, nil)
+			return handBacksInDoubt
+		case conn.IsClosed():
+			d.traceSettled(conn, handBacksInDoubt, "the connection has closed with a published hand-back unconfirmed", publishes, nil)
+			return handBacksInDoubt
+		case conn.Stats().Reconnects != publishes.reconnects:
+			d.traceSettled(conn, handBacksInDoubt, "the connection has reconnected since the unconfirmed hand-backs ran on it", publishes, nil)
+			return handBacksInDoubt
+		}
+		err := conn.FlushTimeout(intakeFlushWait)
+		switch {
+		case err != nil && conn.IsClosed():
+			d.traceSettled(conn, handBacksUnconfirmed, settledByFlush, publishes, err)
+			continue
+		case err != nil:
+			d.traceSettled(conn, handBacksUnconfirmed, settledByFlush, publishes, err)
+			return handBacksUnconfirmed
+		case conn.Stats().Reconnects != publishes.reconnects:
+			d.traceSettled(conn, handBacksInDoubt, "the connection reconnected while the flush ran", publishes, nil)
+			return handBacksInDoubt
+		}
+		delivery.confirmFlushed(publishes.ended)
+		d.traceSettled(conn, handBacksConfirmed, settledByFlush, publishes, nil)
 		return handBacksConfirmed
-	case publishes.onMany:
-		d.traceSettled(conn, handBacksInDoubt, "the unconfirmed hand-backs ran on more than one connection", publishes, nil)
-		return handBacksInDoubt
-	case conn == nil || publishes.on != conn:
-		d.traceSettled(conn, handBacksInDoubt, "the unconfirmed hand-backs ran on a connection the client has replaced", publishes, nil)
-		return handBacksInDoubt
-	case conn.IsClosed():
-		d.traceSettled(conn, handBacksInDoubt, "the connection has closed with a published hand-back unconfirmed", publishes, nil)
-		return handBacksInDoubt
 	}
-	if err := conn.FlushTimeout(intakeFlushWait); err != nil {
-		d.traceSettled(conn, handBacksUnconfirmed, "flush", publishes, err)
-		return handBacksUnconfirmed
-	}
-	delivery.confirmFlushed(publishes.ended)
-	d.traceSettled(conn, handBacksConfirmed, "flush", publishes, nil)
-	return handBacksConfirmed
 }
 
 // traceSettled is the trace line of handBacksSettled's answer, state, for reason, on conn, with the
-// delivery's publishes as it read them before any flush: the publishes that had ended, those a
-// flush had confirmed, and the connection the others ran on (published_on), or whether they ran on
-// more than one (published_on_many).
+// delivery's record as it read it before any flush: the publishes that had ended, those a flush
+// had confirmed, and the connection and reconnect count the others ran on (published_on,
+// published_reconnects), or whether they ran on more than one (published_on_many).
 func (d *heldDurable) traceSettled(conn *natsgo.Conn, state handBacksState, reason string, publishes handBackPublishes, err error) {
 	if tracing() {
-		slog.Debug(traceHandBacksSettled, "name", d.name, "client", tracePointer(d.nats), "conn", tracePointer(conn),
+		slog.Debug(traceHandBacksSettled, d.traceAttrs("conn", tracePointer(conn),
 			"settled", state == handBacksConfirmed, "in_doubt", state == handBacksInDoubt, "reason", reason,
-			"ended", publishes.ended, "confirmed", publishes.confirmed,
-			"published_on", tracePointer(publishes.on), "published_on_many", publishes.onMany, "error", err)
+			"ended", publishes.ended, "confirmed", publishes.confirmed, "published_on", tracePointer(publishes.on),
+			"published_reconnects", publishes.reconnects, "published_on_many", publishes.onMany, "error", err)...)
 	}
+}
+
+// traceAttrs are the attributes of a trace line about this durable that come first: its name and
+// its bus client, then attrs.
+func (d *heldDurable) traceAttrs(attrs ...any) []any {
+	return append([]any{"name", d.name, "client", tracePointer(d.nats)}, attrs...)
 }
 
 // intakeFlushWait bounds each flush that confirms a stop's hand-backs reached the server before its
@@ -1136,22 +1179,29 @@ const intakeFlushWait = time.Second
 
 // intakeFinalizerConfirmWait is how long a hand-back finalizer has, from its start, to confirm its
 // hand-backs with the intake's connection open, before the stop of the process closes that
-// connection (awaitConfirming, HeldDurable.Stop, stopIntakes). It counts from the finalizer's own
-// start, not from the call that closes, so a caller that comes late -- the shutdown waits for the
-// document service before it stops the intakes, and stops the Legion state intake after the GitHub
-// intakes -- waits no longer than each finalizer's own bound.
+// connection (awaitConfirming, stopDurables). It counts from the finalizer's own start, not from the
+// call that closes, so a caller that comes late -- the shutdown waits for the document service
+// before it stops the intakes, and stops the Legion state intake after the GitHub intakes -- waits
+// no longer than each finalizer's own bound. It is 5 s outside tests, read as each finalizer
+// starts; a test may widen it, as a row whose own steps can outlast 5 s under the race detector
+// does when it does not test a stop that never confirms.
 //
-// A finalizer starts at the stop's deadline, intakeStopBudget (15 s) after the signal. Its
-// hand-back lands once nats.go lets its connection lock go; one flush then confirms it in a round
-// trip, at most intakeFlushWait (1 s), tried again each intakeFlushWait. So within 5 s, a
-// hand-back that lands up to about 4 s after the deadline still has a flush answered on the open
-// connection. After the close, the finalizer either leaves its hold to lapse, at the next flush
-// retry and with no statement (duty.Hold.Abandon), or releases it, a statement bounded by
-// intakeHoldRenew (5 s). So a finalizer whose client closes at this bound ends by 25 s after the
-// signal: 15 s + 5 s + 5 s, which is stopGrace (30 s, in cmd/dispatch) less the document service's
-// 5 s reserve, the latest the document service's budget ends. A longer bound would move that end
-// into the reserve that the shutdown keeps for what follows the intakes: the deregistration and
-// the close of the database pool. A shorter one gives a link that heals after the deadline less
-// time to confirm, and so lets the hold lapse, which costs the standby up to intakeHoldTTL plus
-// durableBindInterval before it takes the durable over, rather than a release's moment.
-const intakeFinalizerConfirmWait = 5 * time.Second
+// A finalizer starts at the stop's deadline, intakeStopBudget (15 s) after the signal, or up to
+// intakeFlushWait (1 s) after it, since the stop's last flush (flushHandBacks) can begin just
+// before the deadline. Its hand-back lands once nats.go lets its connection lock go; one flush then
+// confirms it in a round trip, at most intakeFlushWait, tried again each intakeFlushWait. So within
+// 5 s, a hand-back that lands up to about 4 s after the finalizer's start still has a flush
+// answered on the open connection. After the close, the finalizer either leaves its hold to lapse,
+// with no statement (duty.Hold.Abandon), at once when the close ends the flush it is in and
+// otherwise at its next flush retry, or releases it, a statement bounded by intakeHoldRenew (5 s).
+// So a finalizer whose client closes at this bound ends by 26 s after the signal: 15 s + 1 s + 5 s
+// + 5 s, 1 s after the latest end of the document service's budget (25 s, stopGrace less its 5 s
+// reserve) and 4 s before the kill at stopGrace (30 s, in cmd/dispatch). A longer bound would move
+// that end further into the reserve that the shutdown keeps for what follows the intakes: the
+// deregistration and the close of the database pool. A shorter one gives a link that heals after
+// the deadline less time to confirm, and so lets the hold lapse, which costs the standby up to
+// intakeHoldTTL plus durableBindInterval before it takes the durable over, rather than a release's
+// moment.
+var intakeFinalizerConfirmWait atomic.Int64
+
+func init() { intakeFinalizerConfirmWait.Store(int64(5 * time.Second)) }

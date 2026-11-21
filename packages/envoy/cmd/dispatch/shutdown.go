@@ -116,9 +116,11 @@ func serveUntilStopped(ctx context.Context, cancel context.CancelFunc, server *h
 // confirms nothing, since a hand-back written at the close may still be on its way to the server,
 // so a finalizer whose client closed first leaves the hold to lapse at its expiry, and the standby
 // takes the durable over only then. That wait normally ends 10 s inside the latest the document
-// service's budget ends (stopGrace less its 5 s reserve, 25 s after the signal), and by that end
-// when a finalizer waits out its bound and then releases its hold: 15 s, then 5 s, then a release of
-// up to intakeHoldRenew (5 s). One exception can outlive that bound: Client.Close waits for
+// service's budget ends (stopGrace less its 5 s reserve, 25 s after the signal). A finalizer starts
+// at the intakes' deadline or up to delivery's intakeFlushWait (1 s) after it, so one that waits
+// out its bound and then releases its hold ends by 26 s after the signal: 15 s, then up to 1 s,
+// then 5 s, then a release of up to intakeHoldRenew (5 s), 1 s into that reserve and 4 s before the
+// kill at stopGrace. One exception can outlive that bound: Client.Close waits for
 // nats.go's connection lock, which a write can hold until its one-minute write deadline, while the
 // finalizer keeps the hold renewing. The kubelet's kill is safe in that case: it closes the
 // connection and the renewal, and the hold lapses. It comes before the pool closes because nothing

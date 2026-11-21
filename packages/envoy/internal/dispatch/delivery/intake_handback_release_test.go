@@ -2,10 +2,12 @@ package delivery
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -13,7 +15,10 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // durableEvents records, in the order the server sent them, every answer published to the delivery
@@ -26,10 +31,8 @@ import (
 // also keeps when it recorded each event and the subject of each: an answer's subject is the reply
 // subject of the delivery it answers.
 type durableEvents struct {
-	mu       sync.Mutex
-	events   []string
-	at       []time.Time
-	subjects []string
+	mu     sync.Mutex
+	events []durableEvent
 }
 
 const durableCreated = "created"
@@ -57,9 +60,7 @@ func watchDurableEvents(t *testing.T, uri string) *durableEvents {
 				event = durableCreated
 			}
 			recorded.mu.Lock()
-			recorded.events = append(recorded.events, event)
-			recorded.at = append(recorded.at, time.Now())
-			recorded.subjects = append(recorded.subjects, msg.Subject)
+			recorded.events = append(recorded.events, durableEvent{at: time.Now(), event: event, subject: msg.Subject})
 			recorded.mu.Unlock()
 		}
 	}()
@@ -70,7 +71,11 @@ func watchDurableEvents(t *testing.T, uri string) *durableEvents {
 func (r *durableEvents) since(from int) []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return append([]string(nil), r.events[from:]...)
+	events := make([]string, 0, len(r.events)-from)
+	for _, event := range r.events[from:] {
+		events = append(events, event.event)
+	}
+	return events
 }
 
 func (r *durableEvents) count() int {
@@ -91,11 +96,7 @@ type durableEvent struct {
 func (r *durableEvents) timed() []durableEvent {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	timed := make([]durableEvent, len(r.events))
-	for i, event := range r.events {
-		timed[i] = durableEvent{at: r.at[i], event: event, subject: r.subjects[i]}
-	}
-	return timed
+	return slices.Clone(r.events)
 }
 
 // heldPublish names whose hand-back of the row's second message a row holds before its publish
@@ -507,42 +508,53 @@ func logFinalizerOutcome(t *testing.T, row heldHandBack) {
 }
 
 // flushConfirmed reports whether records hold a flush that confirmed a hand-back of client: a
-// trace line of a settle read (traceHandBacksSettled) that is settled by its flush.
+// trace line of a settle read (traceHandBacksSettled) that is settled by its flush, or of a flush
+// that confirmed hand-backs as they were made (traceHandBacksConfirmed).
 func flushConfirmed(records []map[string]any, client *bus.Client) bool {
-	for _, record := range records {
-		if record["msg"] == traceHandBacksSettled && record["client"] == tracePointer(client) &&
-			record["settled"] == true && record["reason"] == "flush" {
-			return true
+	_, found := logtest.LineWhere(records, func(record map[string]any) bool {
+		if record["client"] != tracePointer(client) {
+			return false
 		}
-	}
-	return false
+		return record["msg"] == traceHandBacksConfirmed ||
+			record["msg"] == traceHandBacksSettled && record["settled"] == true && record["reason"] == settledByFlush
+	})
+	return found
 }
 
 // tracedAt is when the first record of message about client was logged, and false when records
 // hold none.
 func tracedAt(records []map[string]any, message string, client *bus.Client) (time.Time, bool) {
-	for _, record := range records {
-		if record["msg"] != message || record["client"] != tracePointer(client) {
-			continue
-		}
-		stamp, _ := record["time"].(string)
-		at, err := time.Parse(time.RFC3339Nano, stamp)
-		return at, err == nil
+	record, found := logtest.LineWhere(records, func(record map[string]any) bool {
+		return record["msg"] == message && record["client"] == tracePointer(client)
+	})
+	if !found {
+		return time.Time{}, false
 	}
-	return time.Time{}, false
+	stamp, _ := record["time"].(string)
+	at, err := time.Parse(time.RFC3339Nano, stamp)
+	return at, err == nil
 }
 
-// deliveryHold reads the delivery durable's hold: the holder its row names and the row's expiry,
-// on the database's clock, or "" and the zero time when there is no row.
-func deliveryHold(t *testing.T, pool *store.Pool) (named string, expires time.Time) {
-	t.Helper()
-	if err := pool.QueryRow(t.Context(),
+// readDeliveryHold reads the delivery durable's hold: the holder its row names and the row's
+// expiry, on the database's clock, or "" and the zero time when there is no row.
+func readDeliveryHold(ctx context.Context, pool *store.Pool) (named string, expires time.Time, err error) {
+	if err := pool.QueryRow(ctx,
 		"select coalesce(max(holder::text), ''), coalesce(max(expires_at), 'epoch') from duty_holds where name = $1",
 		intakeHoldName(bus.DispatchDeliveryDurable)).Scan(&named, &expires); err != nil {
-		t.Fatalf("read the delivery durable's hold: %v", err)
+		return "", time.Time{}, fmt.Errorf("read the delivery durable's hold: %w", err)
 	}
 	if named == "" {
-		return "", time.Time{}
+		return "", time.Time{}, nil
+	}
+	return named, expires, nil
+}
+
+// deliveryHold is readDeliveryHold, failing the test when the read fails.
+func deliveryHold(t *testing.T, pool *store.Pool) (named string, expires time.Time) {
+	t.Helper()
+	named, expires, err := readDeliveryHold(t.Context(), pool)
+	if err != nil {
+		t.Fatal(err)
 	}
 	return named, expires
 }
@@ -558,11 +570,11 @@ type holdTakeOver struct {
 	err     error
 }
 
-// watchHoldTakeOver reads the delivery durable's hold every 20 ms from now on, until a read finds
+// watchHoldTakeOver reads the delivery durable's hold every 250 ms from now on, until a read finds
 // its row naming a process other than holder's, or the test ends. The take wrote the row's expiry
 // as its own now() plus intakeHoldTTL, and the new holder's first renewal moves it only
 // intakeHoldRenew later, so the expiry that the first such read finds, less intakeHoldTTL, is when
-// the take ran.
+// the take ran, exactly. seenAt is precise to the 250 ms between reads.
 func watchHoldTakeOver(t *testing.T, pool *store.Pool, holder *intakeProcess) *holdTakeOver {
 	t.Helper()
 	watch := &holdTakeOver{done: make(chan struct{})}
@@ -570,12 +582,9 @@ func watchHoldTakeOver(t *testing.T, pool *store.Pool, holder *intakeProcess) *h
 	go func() {
 		defer close(watch.done)
 		for {
-			var named string
-			var expires time.Time
-			if err := pool.QueryRow(ctx,
-				"select coalesce(max(holder::text), ''), coalesce(max(expires_at), 'epoch') from duty_holds where name = $1",
-				intakeHoldName(bus.DispatchDeliveryDurable)).Scan(&named, &expires); err != nil {
-				watch.err = fmt.Errorf("read the delivery durable's hold: %w", err)
+			named, expires, err := readDeliveryHold(ctx, pool)
+			if err != nil {
+				watch.err = err
 				return
 			}
 			if named != "" && named != holder.intake.holder.String() {
@@ -586,7 +595,7 @@ func watchHoldTakeOver(t *testing.T, pool *store.Pool, holder *intakeProcess) *h
 			case <-ctx.Done():
 				watch.err = ctx.Err()
 				return
-			case <-time.After(20 * time.Millisecond):
+			case <-time.After(250 * time.Millisecond):
 			}
 		}
 	}()
@@ -619,6 +628,23 @@ func carriesNAK() func(chunk []byte) bool {
 // the -NAK is let go after that creation.
 const inFlightHold = 10 * time.Second
 
+// lapseTakeOverBound is how long after a finalizer leaves its hold to lapse the shutdown subtest
+// with a frozen link lets the standby take the hold, on the database's clock. The design bound is
+// intakeHoldTTL + durableBindInterval (17 s): the abandoned row expires at most intakeHoldTTL after
+// the abandon, and the standby tries every durableBindInterval. The rest is slack for a loaded
+// runner.
+const lapseTakeOverBound = 26 * time.Second
+
+// databaseClock is now on the database's clock, which a hold's expiry is read on.
+func databaseClock(t *testing.T, pool *store.Pool) time.Time {
+	t.Helper()
+	var now time.Time
+	if err := pool.QueryRow(t.Context(), "select now()").Scan(&now); err != nil {
+		t.Fatalf("read the database's clock: %v", err)
+	}
+	return now
+}
+
 // A hand-back the holder made during its stop never reaches the durable a standby recreates.
 //
 // A hand-back is a publish at the message's reply subject, which names the durable rather than the
@@ -626,19 +652,20 @@ const inFlightHold = 10 * time.Second
 // created it again under the same name moves that message's pending entry on the standby's consumer
 // and has the standby delivered it a second time. The stop waits for each publish at most
 // bus.ConnLockWait (intakeDelivery.publishHandBack) and goes on without one NATS has not taken; so
-// the stop releases the hold only once every hand-back taken has settled and a flush, begun after
-// each published one's publish ended, has answered; one still pending at the stop's deadline keeps
-// the hold renewing until a flush confirms it (heldDurable.finalizeHandBacks). A closed connection
-// confirms nothing, so a finalizer whose client closes first leaves the hold to lapse at its expiry.
+// the stop releases the hold only once every hand-back taken has settled and a flush on the socket
+// it went out on, begun after its publish ended, has answered; one still pending at the stop's
+// deadline keeps the hold renewing until a flush confirms it (heldDurable.finalizeHandBacks). A
+// flush on another socket confirms nothing, so a finalizer whose client closes first leaves the
+// hold to lapse at its expiry.
 //
 // Every subtest holds a write on the holder's link while a hand-back waits before its publish: the
-// stop's own in the first three and the fifth, the callback's in the fourth
-// (stopWithAHeldHandBack). Each reads, in the order the server sent them, the answers published to
-// the durable and the durable's creations, on a connection of its own, and every step waits for an
-// event. Once the standby has acknowledged the messages the holder left, each also reads the
-// consumer the standby created and requires that it delivered each of them once: a hand-back can
-// make that consumer deliver a message again before the server sends its creation's advisory, where
-// the order alone passes it (requireDeliveredOnceAfterTakeOver).
+// stop's own in the first four and the sixth, the callback's in the fifth (stopWithAHeldHandBack).
+// Each reads, in the order the server sent them, the answers published to the durable and the
+// durable's creations, on a connection of its own, and every step waits for an event. Once the
+// standby has acknowledged the messages the holder left, each also reads the consumer the standby
+// created and requires that it delivered each of them once: a hand-back can make that consumer
+// deliver a message again before the server sends its creation's advisory, where the order alone
+// passes it (requireDeliveredOnceAfterTakeOver).
 //   - a hand-back that lands before the stop's deadline (landingBudget): the stop goes on without
 //     the publish (its log line). Then, before the link moves, the stop is seen waiting for its
 //     hand-back with its hold live (handBacksWaiting). Once the link moves, the hold is released by
@@ -652,11 +679,15 @@ const inFlightHold = 10 * time.Second
 //     renewed before the database's clock passes the expiry it had as the stop returned, so it does
 //     not lapse, and the standby still has not created the durable. Once the link moves, the
 //     hand-back reaches the server before the standby creates the durable;
-//   - a pending hand-back at shutdown: the Run returns at its deadline, then StartIntakes' stop
-//     waits for its finalizer with the client open. Once the link moves, the hand-back reaches the
-//     server and a flush confirms it, and the finalizer releases the hold before StartIntakes' stop
-//     closes the client and returns, so its caller can close the pool without leaving the hold to
-//     lapse. The hand-back does not reach the server after the standby creates the durable;
+//   - a pending hand-back at shutdown whose link thaws before the close: the Run returns at its
+//     deadline, then StartIntakes' stop waits for its finalizer with the client open, in a confirm
+//     window the subtest widens to 30 s. Once the link moves, the hand-back reaches the server and
+//     a flush confirms it, and the finalizer releases the hold before StartIntakes' stop closes the
+//     client and returns, so its caller can close the pool without leaving the hold to lapse. The
+//     hand-back does not reach the server after the standby creates the durable;
+//   - a pending hand-back at shutdown whose link stays frozen past the close: the same stop with
+//     the production window, and the link moves only once the close has begun. The finalizer
+//     leaves the hold to lapse, and the standby takes it after its expiry (its own comment);
 //   - a hand-back the callback takes during the drain (landingBudget): the callback of the second
 //     message runs once the stop has handed back what it held, and hands the message back itself.
 //     Its publish is held until the link moves. The stop's drain loop gives up while the write is
@@ -667,16 +698,17 @@ const inFlightHold = 10 * time.Second
 //     client. The finalizer leaves the hold to lapse, the standby takes the hold only after its
 //     row's expiry, and the -NAK lands before the standby creates the durable (its own comment).
 //
-// The shutdown subtest and the in-flight subtest each log the outcome of the holder's finalizer, as
-// "FINALIZER outcome=...", whether they pass or fail (logFinalizerOutcome). No step waits on a time
-// but the stop's own deadline (intakeStopBudget), the hold's own expiry and, in the in-flight
-// subtest, the link's hold of the -NAK (inFlightHold); each 30 s wait only guards against a stop
-// that never gets to the step the wait is for. The negative controls, each with the subtests that
-// it fails:
-//   - a release that does not wait for the hand-backs fails the first four. The first sees the
-//     hold released before the link moves. The second sees the hold released when the stop returns
-//     with the hand-back pending. The third sees no finalizer confirm the hand-back once the link
-//     moves. The fourth sees the hold released while the callback's publish is held;
+// The two shutdown subtests and the in-flight subtest each log the outcome of the holder's
+// finalizer, as "FINALIZER outcome=...", whether they pass or fail (logFinalizerOutcome). No step
+// waits on a time but the stop's own deadline (intakeStopBudget), the finalizer's confirm window,
+// the hold's own expiry and, in the in-flight subtest, the link's hold of the -NAK (inFlightHold);
+// each 30 s wait only guards against a stop that never gets to the step the wait is for. The
+// negative controls, each with the subtests that it fails:
+//   - a release that does not wait for the hand-backs fails the first three and the fifth. The
+//     first sees the hold released before the link moves. The second sees the hold released when
+//     the stop returns with the hand-back pending. The third sees no finalizer confirm the
+//     hand-back once the link moves. The fifth sees the hold released while the callback's publish
+//     is held;
 //   - a stop that never releases its hold when a publish was left running fails the first: the
 //     hold is still live after the stop returns;
 //   - a release made at the deadline with a hand-back pending fails the second: the hold is gone
@@ -689,12 +721,13 @@ const inFlightHold = 10 * time.Second
 //     the first three by that second delivery. The count does not fail a stop that gives up the
 //     holder's handler at its deadline, whose deferred answer hands the first message back too: the
 //     new consumer then starts at that message and delivers both once;
-//   - a hand-back counted only once its publish begins, in publishHandBack, fails the fourth: the
+//   - a hand-back counted only once its publish begins, in publishHandBack, fails the fifth: the
 //     stop finds no hand-back counted when its drain loop gives up, and releases its hold while the
 //     callback's publish is held;
-//   - a closed connection that settles a hand-back, with a close that does not wait for the
-//     finalizer and no hold left to lapse, fails the fifth: the held -NAK lands after the standby
-//     creates the durable (its own comment).
+//   - a closed connection that settles a hand-back fails the fourth at its outcome check: the
+//     finalizer releases the hold at the close. With a close that does not wait for the finalizer
+//     and no hold left to lapse, it fails the sixth: the held -NAK lands after the standby creates
+//     the durable (its own comment).
 func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 	t.Run("a hand-back that lands before the stop's deadline", func(t *testing.T) {
 		logs := captureLogs(t)
@@ -773,10 +806,20 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 
 	// The Run returns at its deadline with the hand-back's publish held, and the subtest then runs
 	// StartIntakes' stop (stopIntakes), which waits for the finalizer before it closes the holder's
-	// client (awaitConfirming), and thaws the link's write. The hand-back then lands, a flush of the
-	// open connection confirms it, and the finalizer releases the hold. The release waits in
-	// finalizerBeforeRelease, so the subtest sees that StartIntakes' stop does not return before it.
-	t.Run("a pending hand-back at shutdown", func(t *testing.T) {
+	// client (awaitConfirming), and thaws the link's write while the client is still open. The
+	// hand-back then lands, a flush of the open connection confirms it, and the finalizer releases
+	// the hold. The release waits in finalizerBeforeRelease, so the subtest sees that StartIntakes'
+	// stop does not return before it.
+	//
+	// The finalizer's confirm window (intakeFinalizerConfirmWait) only bounds a stop that never
+	// confirms, which this subtest does not test: its own steps before the thaw took more than the
+	// production 5 s under the race detector in CI, and the client then closed first. So the
+	// subtest widens the window to a 30 s guard before its stop starts, and puts it back in a
+	// cleanup registered before the row's, which runs after the row's teardown, so no finalizer
+	// reads it afterwards. The thaw comes once StartIntakes' stop has begun, inside that window.
+	t.Run("a pending hand-back at shutdown whose link thaws before the close", func(t *testing.T) {
+		window := intakeFinalizerConfirmWait.Swap(int64(30 * time.Second))
+		t.Cleanup(func() { intakeFinalizerConfirmWait.Store(window) })
 		row := stopWithAHeldHandBack(t, stopBudget, stopsHandBack)
 		logFinalizerOutcome(t, row)
 		select {
@@ -829,6 +872,86 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 		if outcome := finalizerOutcome(captureLogs(t)(), row.delivery); outcome != finalizerReleased {
 			t.Fatalf("the finalizer's outcome is %q, want %q", outcome, finalizerReleased)
 		}
+	})
+
+	// The same stop with the production confirm window (5 s), and the link frozen until
+	// StartIntakes' stop has begun to close the holder's client (its trace line,
+	// traceClientCloses), so the held publish ends during the close, as in CI's run of the shutdown
+	// subtest under the race detector. The publish waits for nats.go's connection lock ahead of the
+	// close, so it queues its -NAK and the close writes it to the socket. No flush can confirm it
+	// on the open connection, so the finalizer leaves the hold to lapse. The subtest requires:
+	//   - the finalizer's outcome finalizerLapse, with the hold's row still naming the holder once
+	//     StartIntakes' stop has returned;
+	//   - the standby's take of the hold after that row's expiry, and on the database's clock no
+	//     later than 26 s after the close began, which comes before the abandon. The design bound
+	//     is intakeHoldTTL + durableBindInterval = 17 s after the abandon;
+	//   - no hand-back after the standby's creation of the durable, and each of the row's messages
+	//     delivered once by the standby's consumer (requireNoHandBackAfterCreation).
+	//
+	// Control: with a closed connection taken to settle the hand-back (the product before
+	// 7ce70c15), the finalizer releases the hold at the close, and the subtest fails at the
+	// outcome check.
+	t.Run("a pending hand-back at shutdown whose link stays frozen past the close", func(t *testing.T) {
+		row := stopWithAHeldHandBack(t, stopBudget, stopsHandBack)
+		logFinalizerOutcome(t, row)
+		logs := captureLogs(t)
+		select {
+		case <-row.stopped:
+		case <-time.After(30 * time.Second):
+			t.Fatal("the holder's Run did not return within 30 s while its hand-back was held")
+		}
+		if !row.handBackPending() {
+			t.Fatal("control: the hand-back reached NATS before its client closed")
+		}
+		takeOver := watchHoldTakeOver(t, row.pool, row.holder)
+		var runs sync.WaitGroup
+		closed := make(chan struct{})
+		go func() {
+			stopIntakes(&runs, &row.holder.intake.heldDurable)
+			close(closed)
+		}()
+		waitFor(t, 30*time.Second, func() bool {
+			_, closing := tracedAt(logs(), traceClientCloses, row.holder.client)
+			return closing
+		}, func() string {
+			return "control: StartIntakes' stop did not begin to close the holder's client within 30 s: " + consumerState(row.publisher)
+		})
+		closeBegan := databaseClock(t, row.pool)
+		if !row.handBackPending() {
+			t.Fatal("control: the hand-back's publish ended before the close began, though the link was frozen")
+		}
+		row.thaw()
+		select {
+		case <-closed:
+		case <-time.After(30 * time.Second):
+			t.Fatal("StartIntakes' stop did not return within 30 s of the link moving")
+		}
+		records := logs()
+		heldBy, expiry := deliveryHold(t, row.pool)
+		if outcome := finalizerOutcome(records, row.delivery); outcome != finalizerLapse {
+			t.Fatalf("the finalizer's outcome is %q, want %q: the held publish ended during the close, so no flush on the open connection confirmed it", outcome, finalizerLapse)
+		}
+		if heldBy != row.holder.intake.holder.String() {
+			t.Fatalf("once StartIntakes' stop had returned, the hold's row named %q, want the holder %s, whose finalizer left it to lapse", heldBy, row.holder.intake.holder)
+		}
+		select {
+		case <-takeOver.done:
+		case <-time.After(60 * time.Second):
+			t.Fatal("the standby did not take the delivery durable's hold within 60 s of the close: " + consumerState(row.publisher))
+		}
+		if takeOver.err != nil {
+			t.Fatalf("watch the standby's take-over of the hold: %v", takeOver.err)
+		}
+		if takeOver.takenAt.Before(expiry) {
+			t.Fatalf("the standby took the hold at %s on the database's clock, %s before the expiry %s of the row the holder left to lapse",
+				takeOver.takenAt, expiry.Sub(takeOver.takenAt), expiry)
+		}
+		if after := takeOver.takenAt.Sub(closeBegan); after > lapseTakeOverBound {
+			t.Fatalf("the standby took the hold %s after the close began on the database's clock, want within %s of the abandon", after, lapseTakeOverBound)
+		}
+		requireNoHandBackAfterCreation(t, row.recorded, row.from, row.publisher, row.sequences)
+		t.Logf("TAKEOVER the standby took the hold %s after the close began and %s after the expiry of the row the holder left to lapse, on the database's clock",
+			takeOver.takenAt.Sub(closeBegan).Round(time.Millisecond), takeOver.takenAt.Sub(expiry).Round(time.Millisecond))
 	})
 
 	// The callback of the second message runs once the stop has handed back what it held, as
@@ -908,9 +1031,9 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 	// the abandon, since its last renewal came before it, and at least intakeHoldTTL less
 	// intakeHoldRenew (10 s) after it. The standby tries for the hold every durableBindInterval
 	// (2 s). So the standby takes the durable over at most intakeHoldTTL + durableBindInterval =
-	// 17 s after the abandon, which comes within one flush retry (intakeFlushWait, 1 s) of the close,
-	// where a release lets it take over at once. The subtest logs the time from the close to the
-	// take-over.
+	// 17 s after the abandon, which comes at once after the close, or within one flush retry
+	// (intakeFlushWait, 1 s) of it, where a release lets it take over at once. The subtest logs the
+	// time from the close to the take-over.
 	//
 	// Control: with the product code before the close waited and the lapse (a closed connection
 	// counted as settling the hand-back, the client closed at once, and the hold released), the
@@ -946,13 +1069,14 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 		case <-time.After(30 * time.Second):
 			t.Fatal("StartIntakes' stop did not return within 30 s of the link moving")
 		}
+		records := logs()
 		abandonedBy, expiry := deliveryHold(t, row.pool)
-		if flushConfirmed(logs(), row.holder.client) {
+		if flushConfirmed(records, row.holder.client) {
 			t.Fatal("control: a flush confirmed the holder's hand-back with the connection open, so the link did not keep its -NAK from the server, and this run reads nothing of a hand-back still on its way at the close")
 		}
-		for time.Now().Before(heldUntil) && !slices.Contains(row.recorded.since(row.from), durableCreated) {
-			time.Sleep(20 * time.Millisecond)
-		}
+		testwait.Holds(time.Until(heldUntil), 20*time.Millisecond, func() bool {
+			return slices.Contains(row.recorded.since(row.from), durableCreated)
+		})
 		close(letGo)
 		waitFor(t, 30*time.Second, func() bool { return slices.Contains(row.recorded.since(row.from), "-NAK") }, func() string {
 			return fmt.Sprintf("control: the holder's -NAK did not reach the server within 30 s of the link letting it go: %q", row.recorded.since(row.from))
@@ -966,7 +1090,7 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 			t.Fatalf("watch the standby's take-over of the hold: %v", takeOver.err)
 		}
 		requireNoHandBackAfterCreation(t, row.recorded, row.from, row.publisher, row.sequences)
-		if outcome := finalizerOutcome(logs(), row.delivery); outcome != finalizerLapse {
+		if outcome := finalizerOutcome(records, row.delivery); outcome != finalizerLapse {
 			t.Fatalf("the finalizer's outcome is %q, want %q: the holder's client closed with its -NAK still kept from the server", outcome, finalizerLapse)
 		}
 		if abandonedBy != row.holder.intake.holder.String() {
@@ -976,7 +1100,7 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 			t.Fatalf("the standby took the hold at %s on the database's clock, %s before the expiry %s of the row the holder left to lapse",
 				takeOver.takenAt, expiry.Sub(takeOver.takenAt), expiry)
 		}
-		closedAt, ok := tracedAt(logs(), traceClientClosed, row.holder.client)
+		closedAt, ok := tracedAt(records, traceClientClosed, row.holder.client)
 		if !ok {
 			t.Fatal("control: the trace holds no close of the holder's client")
 		}
@@ -995,11 +1119,14 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 // A hand-back published on one connection of the intake's client is not confirmed by a flush of
 // the connection that the client put in its place. The client installs a new connection only once
 // the one before it has closed, and a flush of the new connection says nothing of what the old one
-// wrote to its socket as it closed. The row publishes a hand-back on the client's first connection,
-// and reads it at the server on a connection of its own, so the publish ran there. Then it closes
-// that connection under the client and waits until the client's recovery has installed a
-// connected replacement. handBacksSettled must then answer handBacksInDoubt, and not flush the
-// replacement and answer handBacksConfirmed.
+// wrote to its socket as it closed. The row runs the client through a link
+// (testnats.HandshakeHold) and publishes a hand-back on the client's first connection. The link
+// keeps each chunk with a -NAK from the server (HoldChunks, carriesNAK), so the flush that confirms
+// a hand-back as it is made (confirmPublishes) cannot answer before the connection goes. Then the
+// row closes that connection under the client, lets the -NAK go, and reads it at the server on a
+// connection of its own, so the publish ran there, and waits until the client's recovery has
+// installed a connected replacement. handBacksSettled must then answer handBacksInDoubt, and not
+// flush the replacement and answer handBacksConfirmed.
 //
 // Control: with a flush of the client's current connection taken to confirm every publish that
 // had ended, whatever connection it ran on (the code before endPublish recorded the connection),
@@ -1007,7 +1134,9 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 // handBacksConfirmed.
 func TestAFlushOfTheReplacementConnectionDoesNotConfirmAHandBackOnTheOneBefore(t *testing.T) {
 	natsURL := testnats.URL(t)
-	client, err := bus.Connect([]string{natsURL}, bus.WithName(intakeConnectionName))
+	link := testnats.StartHandshakeHold(t, natsURL)
+	t.Cleanup(link.Restore)
+	client, err := bus.Connect([]string{link.URL()}, bus.WithName(intakeConnectionName))
 	if err != nil {
 		t.Fatalf("connect the intake's client: %v", err)
 	}
@@ -1039,6 +1168,8 @@ func TestAFlushOfTheReplacementConnectionDoesNotConfirmAHandBackOnTheOneBefore(t
 		t.Fatalf("control: the first connection was not handed the message: %v", err)
 	}
 
+	letGo := make(chan struct{})
+	link.HoldChunks(t, carriesNAK(), letGo)
 	delivery := &intakeDelivery{nats: client}
 	delivery.handBack(msg)
 	select {
@@ -1049,11 +1180,12 @@ func TestAFlushOfTheReplacementConnectionDoesNotConfirmAHandBackOnTheOneBefore(t
 	if !delivery.handedBack() {
 		t.Fatal("control: the hand-back was withheld rather than published")
 	}
+
+	first.Close()
+	close(letGo)
 	if answer, err := answers.NextMsg(10 * time.Second); err != nil || string(answer.Data) != "-NAK" {
 		t.Fatalf("control: the server was not sent the hand-back on the first connection: %v", err)
 	}
-
-	first.Close()
 	waitFor(t, 30*time.Second, func() bool {
 		replacement := client.Connection()
 		return replacement != nil && replacement != first && replacement.IsConnected()
@@ -1064,5 +1196,231 @@ func TestAFlushOfTheReplacementConnectionDoesNotConfirmAHandBackOnTheOneBefore(t
 	if state := durable.handBacksSettled(delivery); state != handBacksInDoubt {
 		t.Fatalf("handBacksSettled answered %d, want handBacksInDoubt (%d), where handBacksConfirmed is %d: a flush of the client's replacement connection counted as confirming a hand-back published on the first one",
 			state, handBacksInDoubt, handBacksConfirmed)
+	}
+}
+
+// A hand-back the stop wrote on its connection's socket before that connection reconnected in
+// place is never confirmed by a flush on the new socket: the stop does not release its hold.
+//
+// nats.go keeps the *natsgo.Conn through a reconnect and dials a new socket, so a -NAK written to
+// the old socket can still reach the server after the reconnect while a flush on the new one
+// answers. The row runs a holder through a link (testnats.HandshakeHold) against a real
+// nats-server and stops it with a second message waiting behind its key, which the stop hands
+// back. The link keeps each chunk with a -NAK from the server (HoldChunks, carriesNAK), so neither
+// the flush that confirms a hand-back as it is made (confirmPublishes) nor any flush on that socket
+// can answer. Once the stop is about to flush (handBacksWaiting) and the -NAK is held at the link,
+// the row cuts the link and restores it (Cut, Restore), and waits until the same connection has
+// reconnected (its reconnect count has grown and it is connected again). The stop's flush then
+// runs on the new socket. The row requires that the stop does not release the hold, that its
+// finalizer leaves the hold to lapse, and, once it lets the held -NAK go, that the server reads
+// it, after the reconnect.
+//
+// Control: with 7ce70c15's held_durable.go and intake_delivery.go, which read only the connection
+// a hand-back ran on and not its reconnect count, the row fails: the flush on the new socket
+// answers, and the stop releases its hold.
+func TestAHandBackWrittenBeforeAReconnectInPlaceIsNotConfirmedByAFlushOnTheNewSocket(t *testing.T) {
+	trace := traceStops(t)
+	logs := captureLogs(t)
+	pool, ctx := deliveryTestPool(t)
+	seedDeliverySettings(t, ctx, pool)
+	natsURL := testnats.URL(t)
+	link := testnats.StartHandshakeHold(t, natsURL)
+	t.Cleanup(link.Restore)
+	trace.watchLink(link, "holder")
+	publisher := intakeTestClient(t)
+	trace.name(publisher, "publisher")
+	recorded := watchDurableEvents(t, natsURL)
+	trace.watchDurable(recorded)
+
+	const inFlight = 100
+	holder := startIntakeProcess(t, pool, link.URL(), func(number int) bool { return number == inFlight })
+	trace.name(holder.client, "holder")
+	awaitBoundDurable(t, publisher)
+	conn := holder.client.Connection()
+	trace.name(conn, "holder")
+	publishMergedPullRequest(t, publisher, inFlight)
+	waitFor(t, 20*time.Second, func() bool { return holder.fetches(inFlight) == 1 }, func() string {
+		return "control: the holder never started on the first message: " + consumerState(publisher)
+	})
+	publishMergedPullRequest(t, publisher, inFlight)
+	waitFor(t, 20*time.Second, func() bool { return holder.keyedRunnerQueued() == 1 }, func() string {
+		return "control: the second message never waited behind its key in the holder: " + consumerState(publisher)
+	})
+	delivery := subscribedDelivery(holder.intake)
+	trace.name(delivery, "holder")
+
+	nak := carriesNAK()
+	nakHeld := make(chan struct{})
+	var heldOnce sync.Once
+	letGo := make(chan struct{})
+	link.HoldChunks(t, func(chunk []byte) bool {
+		if !nak(chunk) {
+			return false
+		}
+		heldOnce.Do(func() { close(nakHeld) })
+		return true
+	}, letGo)
+	before := conn.Stats().Reconnects
+	reconnected := make(chan string, 1)
+	var hooked sync.Once
+	hook := func() {
+		hooked.Do(func() {
+			select {
+			case <-nakHeld:
+			case <-time.After(30 * time.Second):
+				reconnected <- "control: the stop's -NAK did not reach the link within 30 s"
+				return
+			}
+			link.Cut()
+			link.Restore()
+			if !testwait.Holds(30*time.Second, 20*time.Millisecond, func() bool {
+				return conn.Stats().Reconnects > before && conn.IsConnected()
+			}) {
+				reconnected <- "control: the holder's connection did not reconnect in place within 30 s of the cut"
+				return
+			}
+			reconnected <- ""
+		})
+	}
+	handBacksWaiting.Store(&hook)
+	t.Cleanup(func() { handBacksWaiting.Store(nil) })
+	from := recorded.count()
+	trace.stopBegins(from)
+	trace.printAtFailure(t)
+
+	stopped := make(chan struct{})
+	go func() {
+		holder.stop()
+		close(stopped)
+	}()
+	waitFor(t, 20*time.Second, holder.keyedRunnerStopped, func() string {
+		return "control: the stopping holder has not stopped its keyed runner: " + consumerState(publisher)
+	})
+	holder.release()
+	select {
+	case failure := <-reconnected:
+		if failure != "" {
+			t.Fatal(failure)
+		}
+	case <-time.After(60 * time.Second):
+		t.Fatal("control: the stop never came to flush its hand-backs")
+	}
+	select {
+	case <-stopped:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the holder's stop did not return within 30 s of the reconnect")
+	}
+	if named, _ := deliveryHold(t, pool); named != holder.intake.holder.String() {
+		t.Fatalf("the stop released its hold: a flush on the socket its connection reconnected to confirmed a hand-back written to the socket before; the hold's row names %q, want the holder %s",
+			named, holder.intake.holder)
+	}
+	waitFor(t, 30*time.Second, func() bool { return finalizerOutcome(logs(), delivery) != "none" }, func() string {
+		return "the stop's finalizer did not end within 30 s of the stop"
+	})
+	if outcome := finalizerOutcome(logs(), delivery); outcome != finalizerLapse {
+		t.Fatalf("the finalizer's outcome is %q, want %q: its hand-back was written to a socket that has gone", outcome, finalizerLapse)
+	}
+	close(letGo)
+	waitFor(t, 30*time.Second, func() bool { return slices.Contains(recorded.since(from), "-NAK") }, func() string {
+		return fmt.Sprintf("control: the -NAK written before the reconnect did not reach the server within 30 s of the link letting it go: %q", recorded.since(from))
+	})
+}
+
+// A routine hand-back, made outside any stop, is confirmed by a flush as it is made, so a clean
+// stop after a reconnect in place releases the hold at once rather than leaving it to lapse.
+//
+// The Legion state intake hands messages back in its routine work (HeldMessage.HandBackAfter), and
+// the same delivery goes on delivering across a reconnect. The row runs a held durable
+// (NewHeldDurable) through a link (testnats.HandshakeHold) whose handler hands the first message
+// back and acknowledges its redelivery. It waits until the delivery's record shows the hand-back
+// confirmed, cuts the link and restores it (Cut, Restore), and waits until the same connection has
+// reconnected. Then it stops the durable, with no hand-back pending, and requires that the stop
+// released the hold by the time Run returned: the hold's row is gone, no finalizer started, and
+// the stop's settle read found no published hand-back unconfirmed.
+//
+// Control: with Part 1's code and no confirmation as a hand-back is made (the delivery's record
+// confirmed only by a stop's flush), the row fails: the routine hand-back stays unconfirmed at the
+// connection's old reconnect count, the stop reads it in doubt, and its finalizer leaves the hold
+// to lapse.
+func TestARoutineHandBackConfirmedAsItIsMadeLetsACleanStopAfterAReconnectReleaseTheHold(t *testing.T) {
+	trace := traceStops(t)
+	logs := captureLogs(t)
+	pool, _ := deliveryTestPool(t)
+	natsURL := testnats.URL(t)
+	link := testnats.StartHandshakeHold(t, natsURL)
+	t.Cleanup(link.Restore)
+	trace.watchLink(link, "holder")
+	publisher := intakeTestClient(t)
+	trace.name(publisher, "publisher")
+	second := storetest.SecondProcess(t, &store.Store{Pool: pool})
+	client, err := bus.Connect([]string{link.URL()}, bus.WithName(intakeConnectionName))
+	if err != nil {
+		t.Fatalf("connect the holder's client: %v", err)
+	}
+	t.Cleanup(client.Close)
+	trace.name(client, "holder")
+	var handled atomic.Int32
+	held := NewHeldDurable(client, storetest.Leases(t, second.Pool), deliveryConsumerConfig, intakeKey, func(message HeldMessage) {
+		if handled.Add(1) == 1 {
+			message.HandBack()
+			return
+		}
+		message.Ack()
+	}, nil)
+	runCtx, cancel := context.WithCancel(context.Background())
+	ran := make(chan struct{})
+	go func() {
+		defer close(ran)
+		held.Run(runCtx)
+	}()
+	t.Cleanup(sync.OnceFunc(func() {
+		cancel()
+		<-ran
+		held.Stop()
+	}))
+	trace.printAtFailure(t)
+	awaitBoundDurable(t, publisher)
+	conn := client.Connection()
+	trace.name(conn, "holder")
+
+	publishMergedPullRequest(t, publisher, 1)
+	waitFor(t, 30*time.Second, func() bool { return handled.Load() >= 2 }, func() string {
+		return fmt.Sprintf("control: the holder handled the message %d time(s), want the hand-back and the redelivery: %s", handled.Load(), consumerState(publisher))
+	})
+	awaitEverythingAcknowledged(t, publisher)
+	held.mu.Lock()
+	delivery := held.delivering
+	held.mu.Unlock()
+	trace.name(delivery, "holder")
+	confirmed := testwait.Holds(10*time.Second, 20*time.Millisecond, func() bool {
+		record := delivery.publishRecord()
+		return record.ended > 0 && !record.unconfirmed()
+	})
+
+	before := conn.Stats().Reconnects
+	link.Cut()
+	link.Restore()
+	waitFor(t, 30*time.Second, func() bool { return conn.Stats().Reconnects > before && conn.IsConnected() }, func() string {
+		return "control: the holder's connection did not reconnect in place within 30 s of the cut"
+	})
+
+	cancel()
+	select {
+	case <-ran:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the held durable's Run did not return within 30 s of its stop")
+	}
+	records := logs()
+	if named, _ := deliveryHold(t, pool); named != "" {
+		t.Fatalf("the clean stop after a reconnect did not release the hold, whose row names %q (the record showed the routine hand-back confirmed before the reconnect: %t); the holder logged %q",
+			named, confirmed, loggedMessages(records))
+	}
+	if loggedMessage(records, intakeHoldFinalizing) {
+		t.Fatalf("the clean stop left its hold to a finalizer (the record showed the routine hand-back confirmed before the reconnect: %t)", confirmed)
+	}
+	if _, found := logtest.LineWhere(records, func(record map[string]any) bool {
+		return record["msg"] == traceHandBacksSettled && record["settled"] == true && record["reason"] == "no published hand-back is unconfirmed"
+	}); !found {
+		t.Fatal("control: the stop's settle read did not find every published hand-back confirmed")
 	}
 }

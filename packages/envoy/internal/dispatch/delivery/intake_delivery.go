@@ -67,18 +67,11 @@ type intakeDelivery struct {
 	// published is set once the publish of any hand-back of this delivery has begun
 	// (publishHandBack). handedBack reads it.
 	published bool
-	// ended counts the hand-back publishes of this delivery that have ended and may have queued
-	// their negative acknowledgement in nats.go's outbound buffer (endPublish), and confirmed is
-	// ended as it stood before the last flush of the connection that answered
-	// (heldDurable.handBacksSettled, confirmFlushed). Each publish counted in confirmed has reached
-	// the server. While ended is above confirmed, a hand-back may still be on its way to the
-	// server, also once the connection has closed.
-	ended, confirmed int
-	// endedOn is the connection of the client that the publishes counted in ended and not in
-	// confirmed ran on, and endedOnMany is set when they ran on more than one. Only a flush of
-	// that one connection can confirm them. confirmFlushed clears both.
-	endedOn     *natsgo.Conn
-	endedOnMany bool
+	// publishes is the record of this delivery's hand-back publishes that have ended, and of those
+	// a flush has confirmed (handBackPublishes). confirming is set while a flush that confirms them
+	// as they are made runs (confirmPublishes), so at most one runs at a time.
+	publishes  handBackPublishes
+	confirming bool
 	// sealed is set once the stop is about to release the hold, with no hand-back taken and not
 	// settled (seal). From then on, no hand-back is taken: each is withheld (takeHandBack).
 	sealed bool
@@ -181,11 +174,12 @@ func subscribeDurable(client *bus.Client, wanted natsgo.ConsumerConfig, deliverS
 // most bus.ConnLockWait, the drain's end, which the given-up handlers' cancelled context cuts short,
 // and the clients closing. The flush that confirms the hand-backs (up to intakeFlushWait, 1 s)
 // and the hold's release (up to intakeHoldRenew, 5 s) run before Run returns. A hand-back still
-// pending at the deadline is left to its finalizer (heldDurable.finalizeHandBacks): the stop of
-// the process closes the intake's client only once the finalizer has ended or has had
-// intakeFinalizerConfirmWait (5 s) from the deadline to confirm the hand-back with a flush, and
-// the finalizer then releases the hold (up to intakeHoldRenew) or leaves it to lapse. So that
-// finalizer ends by 25 s after ctx ended, the document budget's latest end. Only Client.Close can
+// pending at the deadline is left to its finalizer (heldDurable.finalizeHandBacks), which starts at
+// the deadline or up to intakeFlushWait after it: the stop of the process closes the intake's
+// client only once the finalizer has ended or has had intakeFinalizerConfirmWait (5 s) from its
+// own start to confirm the hand-back with a flush, and the finalizer then releases the hold (up to
+// intakeHoldRenew) or leaves it to lapse. So that finalizer ends by 26 s after ctx ended, 1 s after
+// the document budget's latest end and 4 s before the kill at stopGrace. Only Client.Close can
 // outlast that: it waits for nats.go's connection lock, which a write can hold until its
 // one-minute write deadline, while the finalizer keeps the hold renewing; a kubelet kill then ends
 // the client and the renewal, and the hold's row lapses at its expiry. It is also well past what
@@ -397,13 +391,13 @@ func init() { callNATSWait.Store(int64(bus.ConnLockWait)) }
 // callLeftRunning is the line callNATS logs for a call it goes on without.
 const callLeftRunning = "dispatch delivery: NATS did not answer a call in time, so it goes on without waiting for it"
 
-// The DEBUG lines of a stop: each hand-back's course from its take to its settle, the stop's seal,
-// its read of whether the hand-backs reached NATS, the release of its hold, its finalizer, the close
-// of the intake's client, and a take-over's bind. Each names the delivery and the bus client as
-// pointers (tracePointer). A hand-back's lines also name the message's subject and its reply
-// subject, which is the subject its negative acknowledgement goes to. A test that fails prints them
-// in time order, so one failing run names its cause. Each line is made only while the default
-// logger writes DEBUG lines (tracing).
+// The DEBUG lines of a stop: each hand-back's course from its take to its settle, a flush that
+// confirms hand-backs as they are made, the stop's seal, its read of whether the hand-backs reached
+// NATS, the release of its hold, its finalizer, the close of the intake's client, and a take-over's
+// bind. Each names the delivery and the bus client as pointers (tracePointer). A hand-back's lines
+// also name the message's subject and its reply subject, which is the subject its negative
+// acknowledgement goes to. A test that fails prints them in time order, so one failing run names
+// its cause. Each line is made only while the default logger writes DEBUG lines (tracing).
 const (
 	traceHandBackTaken        = "dispatch delivery: a hand-back is taken"
 	traceHandBackRefused      = "dispatch delivery: a hand-back is not taken, because the delivery is sealed"
@@ -417,6 +411,7 @@ const (
 	traceHandBackConnection   = "dispatch delivery: the client's connection as a hand-back's publish begins"
 	traceHandBackPublished    = "dispatch delivery: a hand-back's publish ends"
 	traceHandBackSettled      = "dispatch delivery: a hand-back is settled"
+	traceHandBacksConfirmed   = "dispatch delivery: a flush confirmed the hand-backs that had ended"
 	traceSeal                 = "dispatch delivery: the stop tries to seal the delivery"
 	traceHandBacksSettled     = "dispatch delivery: the stop reads whether its hand-backs reached NATS"
 	traceHoldReleased         = "dispatch delivery: the intake gives up its hold"
@@ -621,15 +616,16 @@ func (d *intakeDelivery) settleHandBack(msg *natsgo.Msg) {
 // publishHandBack publishes msg's hand-back after after, for a caller that took it (takeHandBack),
 // waiting for NATS at most bus.ConnLockWait (callNATS). Before the publish, it marks this delivery
 // as one that published a hand-back (handedBack). A publish NATS has not taken by then goes on, on
-// a goroutine of its own. When that publish call ends, it is counted as ended (endPublish), and
-// then the hand-back settles (settleHandBack). The hold's release waits for every hand-back the
-// delivery it stopped took, and then for a flush of the connection, begun after the publishes
-// ended, to answer, so the server has each one it published: under the stop's deadline, and past
-// it on a goroutine that keeps the hold renewing (heldDurable.finalizeHandBacks), so none reaches a
-// durable a standby recreated. A publish that has ended can still be on its way to the server once
-// its connection has closed, so when the client closes before such a flush answers, the finalizer
-// leaves the hold to lapse rather than release it. On the hold-lost path, which the run takes when
-// the hold is lost before the stop, no such wait is made.
+// a goroutine of its own. When that publish call ends, it is counted as ended (endPublish), which
+// starts a flush that confirms it as soon as one can (confirmPublishes), and then the hand-back
+// settles (settleHandBack). The hold's release waits for every hand-back the delivery it stopped
+// took, and then for a flush on the socket the publishes went out on, begun after they ended, to
+// answer, so the server has each one it published: under the stop's deadline, and past it on a
+// goroutine that keeps the hold renewing (heldDurable.finalizeHandBacks), so none reaches a durable
+// a standby recreated. A publish that has ended can still be on its way to the server once its
+// socket has gone, by a close or a reconnect, so when that happens before such a flush answers,
+// the finalizer leaves the hold to lapse rather than release it. On the hold-lost path, which the
+// run takes when the hold is lost before the stop, no such wait is made.
 func (d *intakeDelivery) publishHandBack(msg *natsgo.Msg, after time.Duration) {
 	if hook := d.beforeHandBackPublish.Load(); hook != nil {
 		(*hook)()
@@ -639,14 +635,20 @@ func (d *intakeDelivery) publishHandBack(msg *natsgo.Msg, after time.Duration) {
 	d.mu.Unlock()
 	callNATS("hand a message back for redelivery", func() (struct{}, error) {
 		defer d.settleHandBack(msg)
-		if tracing() {
-			slog.Debug(traceHandBackPublishing, d.traceHandBack(msg, "delay", after)...)
-			go d.traceConnection(msg)
-		}
 		// Read before the publish: a publish that endPublish counts ran on this connection.
 		on := d.nats.Connection()
+		if tracing() {
+			slog.Debug(traceHandBackPublishing, d.traceHandBack(msg, "delay", after)...)
+			go d.traceConnection(msg, on)
+		}
+		// Read before the publish too, and after the trace line, since it waits for nats.go's
+		// connection lock as the publish does.
+		var reconnects uint64
+		if on != nil {
+			reconnects = on.Stats().Reconnects
+		}
 		err := msg.NakWithDelay(after)
-		d.endPublish(err, on)
+		d.endPublish(err, on, reconnects)
 		if tracing() {
 			slog.Debug(traceHandBackPublished, d.traceHandBack(msg, "error", err)...)
 		}
@@ -654,70 +656,134 @@ func (d *intakeDelivery) publishHandBack(msg *natsgo.Msg, after time.Duration) {
 	}, "subject", msg.Subject, "delay", after)
 }
 
-// endPublish counts a hand-back's publish that ended with err in ended, before the hand-back
-// settles, so a stop that seals the delivery finds every publish that ended counted. A publish
-// that nats.go refused because its connection had closed (natsgo.ErrConnectionClosed) is not
-// counted: nats.go reads that under its connection lock before it queues a byte, so nothing of it
-// can reach the server. Every other publish is counted, whether it returned an error or not, since
-// a write that fails can have sent part of the message.
+// endPublish counts a hand-back's publish that ended with err in the delivery's record, before
+// the hand-back settles, so a stop that seals the delivery finds every publish that ended counted.
+// A publish that nats.go refused because its connection had closed (natsgo.ErrConnectionClosed) is
+// not counted: nats.go reads that under its connection lock before it queues a byte, so nothing of
+// it can reach the server. Every other publish is counted, whether it returned an error or not,
+// since a write that fails can have sent part of the message.
 //
-// on is the client's connection as the publish began. The client installs a new connection only
+// on and reconnects are the client's connection as the publish began and that connection's
+// reconnect count (natsgo.Statistics.Reconnects) then. The client installs a new connection only
 // once the one before it has closed, and a message of a closed connection is refused as closed, so
-// a publish that is counted ran on on. endPublish records it in endedOn, and sets endedOnMany when
-// the publishes not yet confirmed ran on more than one connection.
-func (d *intakeDelivery) endPublish(err error, on *natsgo.Conn) {
+// a publish that is counted ran on on; a reconnect in place keeps on and dials a new socket, which
+// the count tells apart (handBackPublishes.end).
+func (d *intakeDelivery) endPublish(err error, on *natsgo.Conn, reconnects uint64) {
 	if errors.Is(err, natsgo.ErrConnectionClosed) {
 		return
 	}
 	d.mu.Lock()
-	defer d.mu.Unlock()
-	switch {
-	case d.ended == d.confirmed:
-		d.endedOn, d.endedOnMany = on, false
-	case on != d.endedOn:
-		d.endedOnMany = true
+	d.publishes.end(on, reconnects)
+	confirm := err == nil && !d.confirming
+	d.confirming = d.confirming || confirm
+	d.mu.Unlock()
+	if confirm {
+		go d.confirmPublishes()
 	}
-	d.ended++
 }
 
-// handBackPublishes is what publishCounts reads of a delivery's hand-back publishes: how many have
-// ended (endPublish) and how many of those a flush has confirmed (confirmFlushed). While ended is
-// above confirmed, a published hand-back may still be on its way to the server: on is the
-// connection those publishes ran on, and onMany reports that they ran on more than one.
+// confirmPublishes confirms the hand-back publishes of this delivery as they are made, so a
+// delivery that hands back in its routine work, as the Legion state intake does, does not carry
+// them unconfirmed into a stop that comes after a reconnect. endPublish starts it after a publish
+// that ended with no error, unless one is running; it runs on a goroutine of its own that nothing
+// waits for. Each round reads the record and makes one flush on the socket the unconfirmed
+// publishes ran on (flushConfirms), with d.mu not held, and confirms the publishes that had ended
+// when the round read the record once that flush answers. A publish that ends during a round is
+// covered by the next round, and it returns once a round finds nothing new that ended since the
+// round before, nothing unconfirmed, or publishes on more than one socket. A publish whose socket
+// has gone before a flush on it answered stays unconfirmed: it is the one still in doubt, and the
+// stop's own read finds it so (heldDurable.handBacksSettled).
+func (d *intakeDelivery) confirmPublishes() {
+	flushed := 0
+	for {
+		d.mu.Lock()
+		publishes := d.publishes
+		if !publishes.unconfirmed() || publishes.onMany || publishes.ended == flushed {
+			d.confirming = false
+			d.mu.Unlock()
+			return
+		}
+		d.mu.Unlock()
+		flushed = publishes.ended
+		if publishes.flushConfirms() {
+			d.confirmFlushed(publishes.ended)
+			if tracing() {
+				slog.Debug(traceHandBacksConfirmed, d.traceAttrs("conn", tracePointer(publishes.on), "ended", publishes.ended)...)
+			}
+		}
+	}
+}
+
+// flushConfirms makes one flush of on, within intakeFlushWait, and reports whether it confirms the
+// unconfirmed publishes of p: on is still at the reconnect count they ran at before the flush, the
+// flush answers, and on is still at that count once it has, so the flush went out on the socket
+// they were written to.
+func (p handBackPublishes) flushConfirms() bool {
+	return p.on != nil && p.on.Stats().Reconnects == p.reconnects &&
+		p.on.FlushTimeout(intakeFlushWait) == nil && p.on.Stats().Reconnects == p.reconnects
+}
+
+// handBackPublishes is the record of a delivery's hand-back publishes: how many have ended
+// (endPublish) and how many of those a flush has confirmed (confirm). While ended is above
+// confirmed, a published hand-back may still be on its way to the server. on and reconnects are
+// the connection, and its reconnect count, that those unconfirmed publishes ran on: only a flush on
+// that socket, a flush of on that answers with on's count unchanged, can confirm them. onMany is
+// set when they ran on more than one connection or reconnect count, so one of them ran on a socket
+// that has gone.
 type handBackPublishes struct {
 	ended, confirmed int
 	on               *natsgo.Conn
+	reconnects       uint64
 	onMany           bool
 }
 
-// publishCounts reads this delivery's hand-back publishes (handBackPublishes).
-func (d *intakeDelivery) publishCounts() handBackPublishes {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return handBackPublishes{ended: d.ended, confirmed: d.confirmed, on: d.endedOn, onMany: d.endedOnMany}
+// end counts one publish that ran on on at reconnect count reconnects: with nothing unconfirmed,
+// it records on and reconnects, and otherwise it sets onMany when they are not the ones recorded.
+func (p *handBackPublishes) end(on *natsgo.Conn, reconnects uint64) {
+	switch {
+	case !p.unconfirmed():
+		p.on, p.reconnects, p.onMany = on, reconnects, false
+	case on != p.on || reconnects != p.reconnects:
+		p.onMany = true
+	}
+	p.ended++
 }
 
-// confirmFlushed records that a flush of the connection, begun when ended publishes had ended
-// (publishCounts), has answered: each of those publishes has reached the server. Once that is every
-// publish that has ended, no publish is left unconfirmed, and it clears endedOn and endedOnMany.
-func (d *intakeDelivery) confirmFlushed(ended int) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.confirmed = max(d.confirmed, ended)
-	if d.confirmed == d.ended {
-		d.endedOn, d.endedOnMany = nil, false
+// unconfirmed reports whether a publish that has ended is not confirmed yet.
+func (p handBackPublishes) unconfirmed() bool { return p.ended > p.confirmed }
+
+// confirm records that a flush on the socket the publishes ran on, begun when ended publishes had
+// ended, has answered: each of those publishes has reached the server. Once that is every publish
+// that has ended, it clears on, reconnects and onMany.
+func (p *handBackPublishes) confirm(ended int) {
+	p.confirmed = max(p.confirmed, ended)
+	if !p.unconfirmed() {
+		p.on, p.reconnects, p.onMany = nil, 0, false
 	}
 }
 
-// traceConnection logs the bus client's connection as msg's hand-back's publish begins, and
-// whether that connection has closed (publishHandBack). It runs on a goroutine of its own. Both
-// reads take a lock: the client's own lock, and nats.go's connection lock. A write can hold each of
-// them for as long as it holds nats.go's lock, and the publish does not wait for them. So the line
-// is logged when both reads have answered, which can be after the publish has ended.
-func (d *intakeDelivery) traceConnection(msg *natsgo.Msg) {
-	conn := d.nats.Connection()
-	closed := conn != nil && conn.IsClosed()
-	slog.Debug(traceHandBackConnection, d.traceHandBack(msg, "conn", tracePointer(conn), "conn_closed", closed)...)
+// publishRecord reads this delivery's record of its hand-back publishes (handBackPublishes).
+func (d *intakeDelivery) publishRecord() handBackPublishes {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.publishes
+}
+
+// confirmFlushed records that a flush on the socket the publishes ran on, begun when ended
+// publishes had ended (publishRecord), has answered (handBackPublishes.confirm).
+func (d *intakeDelivery) confirmFlushed(ended int) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.publishes.confirm(ended)
+}
+
+// traceConnection logs on, the bus client's connection as msg's hand-back's publish begins, and
+// whether on has closed (publishHandBack). It runs on a goroutine of its own, since that read waits
+// for nats.go's connection lock, which a write can hold, so the line can come after the publish has
+// ended.
+func (d *intakeDelivery) traceConnection(msg *natsgo.Msg, on *natsgo.Conn) {
+	closed := on != nil && on.IsClosed()
+	slog.Debug(traceHandBackConnection, d.traceHandBack(msg, "conn", tracePointer(on), "conn_closed", closed)...)
 }
 
 // handBacksLanded is closed once no hand-back of this delivery is taken and not settled

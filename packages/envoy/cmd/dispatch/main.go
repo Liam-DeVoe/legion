@@ -1071,15 +1071,12 @@ func main() {
 		// intake a third, so each takes a client of its own (delivery.StartIntakes,
 		// legion.StartIntake). Their Runs begin stopping at the signal beside the HTTP drain and
 		// document shutdown, and return once a message in a handler has been acknowledged or given
-		// up at its stop budget and handed back. Each stop then waits for each pending hand-back's
-		// finalizer to confirm its hand-back with the client open, for its bound, closes its
-		// clients, waits for each finalizer to release the hold through the pool or leave it to
-		// lapse, and returns. Each
-		// connects in the background as the publisher does, and its poll takes the durable's hold
-		// once it has. While delivery settings are saved (the intake runs only then), the intake
-		// hands each push of a branch to the architecture importer the ticker and the routes share,
-		// which imports the enabled sources on that repository and branch at once; a push it hands
-		// over once the importer's Close has begun starts nothing (architecture.Importer.Pushed).
+		// up at its stop budget and handed back. Each connects in the background as the publisher
+		// does, and its poll takes the durable's hold once it has. While delivery settings are
+		// saved (the intake runs only then), the intake hands each push of a branch to the
+		// architecture importer the ticker and the routes share, which imports the enabled sources
+		// on that repository and branch at once; a push it hands over once the importer's Close
+		// has begun starts nothing (architecture.Importer.Pushed).
 		connectIntake := func(name string) (*bus.Client, error) {
 			return bus.Connect(envoyConfig.Envoy.NatsURLs, serverClient(bus.WithEnvironment(env.lookup), bus.WithName(name))...)
 		}
