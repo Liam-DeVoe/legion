@@ -3690,6 +3690,83 @@ test("Escape from the bulk picker while its snooze is out passes over the rows i
   }
 });
 
+// Escape from the bulk picker while its write is out goes to the row `h` was pressed on, when the
+// write is not taking that row away. When the write is taking that row away, Escape goes to the
+// first row the write is not taking away. The first pick marks two of four rows, so two rows stay:
+// `h` is pressed on the second of them, and the first is where Escape would go otherwise. The
+// second pick marks the first row left, `h` is pressed on that row, and Escape passes over it to
+// the row after it. Each part is its own pick: while a write is out with Later folded, the marked
+// rows are out of the selection's count, so `h` opens the row's own Snooze and not the bar's.
+test("Escape from the bar's Snooze list while its write is out goes to the row h was pressed on, else to the first row the write is not taking away", async () => {
+  const user = userEvent.setup();
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?"),
+    inboxIssue("ask-b", "CORE-2", "Which format?"),
+    inboxIssue("ask-c", "CORE-3", "Which owner?"),
+    inboxIssue("ask-d", "CORE-4", "Which date?"),
+  ];
+  let served: InboxRow[] = rows;
+  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  // Each pick's writes wait for the landing that is current when they are sent.
+  let landing = Promise.withResolvers<void>();
+  const snoozeAsk = answerAskSnoozes().mockImplementation(async (id, { snoozed_until: until }) => {
+    await landing.promise;
+    served = served.map((each) => (each.id === id ? { ...each, snoozed_until: until } : each));
+    return { snoozed_until: until };
+  });
+  const getAsk = mockAskReads(rows);
+  const { unmount } = renderInbox("/?group=waiting-on");
+  const mark = (askId: string) => within(rowOf(askId)).getByRole("checkbox", { name: /^Select / });
+  /** Opens the bar's Snooze list with `h` from where the focus stands, and picks a moment. */
+  const snoozeFromHere = async () => {
+    await user.keyboard("h");
+    const picker = screen.getByLabelText("Snooze selected asks");
+    expect(picker).toHaveFocus();
+    await user.selectOptions(picker, "tomorrow");
+  };
+  const land = async () => {
+    await act(async () => {
+      landing.resolve();
+      await landing.promise;
+    });
+  };
+  try {
+    await screen.findByText("Which date?");
+    await user.click(mark("ask-a"));
+    await user.click(mark("ask-b"));
+    await screen.findByText("2 selected");
+    // From the mark of row b, two steps down stand on row d, which is not marked.
+    await user.keyboard("jj");
+    expect(rowOf("ask-d")).toHaveFocus();
+    await snoozeFromHere();
+    await waitFor(() => expect(snoozeAsk).toHaveBeenCalledTimes(2));
+    expect(screen.getByText("Snoozing 2…")).toBeTruthy();
+    expect(rowIds()).toEqual(["ask-a", "ask-b", "ask-c", "ask-d"]);
+    await user.keyboard("{Escape}");
+    expect(rowOf("ask-d")).toHaveFocus();
+    await land();
+    await waitFor(() => expect(rowIds()).toEqual(["ask-c", "ask-d"]));
+
+    landing = Promise.withResolvers<void>();
+    // `h` is pressed on the mark of row c, a row the second write takes away.
+    await user.click(mark("ask-c"));
+    await screen.findByText("1 selected");
+    await snoozeFromHere();
+    await waitFor(() => expect(snoozeAsk).toHaveBeenCalledTimes(3));
+    expect(screen.getByText("Snoozing 1…")).toBeTruthy();
+    expect(rowIds()).toEqual(["ask-c", "ask-d"]);
+    await user.keyboard("{Escape}");
+    expect(rowOf("ask-d")).toHaveFocus();
+    await land();
+    await waitFor(() => expect(rowIds()).toEqual(["ask-d"]));
+  } finally {
+    unmount();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    snoozeAsk.mockRestore();
+  }
+});
+
 // Escape from a control inside a row goes back to that row, even while the row's own snooze is
 // saving. Here it is pressed on the row's mark, which the snooze does not hold: the key ends the
 // pick's press, and itself stops counting a frame and a task after it. The write's landing then

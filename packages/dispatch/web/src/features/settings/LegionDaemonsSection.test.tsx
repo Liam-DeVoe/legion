@@ -6,7 +6,7 @@ import userEvent from "@testing-library/user-event";
 
 import { realClock, settle } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { pickFromLabelled } from "../../__tests__/list-picks";
+import { listOf, pickFromLabelled, textBoxes } from "../../__tests__/list-picks";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
@@ -243,6 +243,36 @@ test("with no project picked, Save Legion daemon files nothing and says to choos
     expect(putLegionDaemon).toHaveBeenLastCalledWith("ACME", "http://127.0.0.1:9731", keyedAttempt)
   );
   expect(putLegionDaemon).toHaveBeenCalledTimes(1);
+});
+
+// The Legion project list's options are every project, which grow with the deployment. Opened
+// from its trigger, the list holds a text box of its own, and a word typed there leaves only the
+// projects whose key or name holds it.
+test("the Legion daemon's project list holds a text box that narrows its projects", async () => {
+  const user = userEvent.setup();
+  const section = await renderSection(legionServer([]));
+
+  const trigger = await section.findByLabelText("Legion project");
+  const before = new Set(textBoxes());
+  await user.click(trigger);
+  const own = textBoxes().filter((box) => !before.has(box));
+  expect(own, "the Legion project list holds no text box of its own").toHaveLength(1);
+  const box = own[0] as HTMLElement;
+  expect(box).toHaveAccessibleName("Search projects");
+  const list = listOf(box);
+  expect(within(list).getAllByRole("option")).toHaveLength(2);
+  await user.type(box, "co");
+  await waitFor(() =>
+    expect(
+      within(list).queryAllByRole("option", { name: /^ACME\b/ }),
+      `"co" leaves ACME in the Legion project list`
+    ).toHaveLength(0)
+  );
+  expect(
+    within(list)
+      .getAllByRole("option")
+      .map((option) => option.textContent)
+  ).toEqual(["CORE · CORE"]);
 });
 
 // A daemon's save the reader stopped may have been made: the section says so, and that its Retry
