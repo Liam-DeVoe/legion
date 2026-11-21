@@ -29,9 +29,6 @@ import { ROW_SELECTOR } from "./row-marker";
  *  row holds one as a control either way (`ROW_CONTROL`). */
 const FORM_FIELDS = ["button", "textarea", "input", "select"];
 
-/** An element given a Tab stop of its own: any `tabindex` but -1. */
-const TAB_STOP = '[tabindex]:not([tabindex="-1"])';
-
 /** A link or a form control the page has not taken out of the Tab order: `tabindex="-1"` is a
  *  page's word that the keyboard does not stop there - a strip's scroll buttons the pointer alone
  *  uses, a tab of a tab list other than the selected one, and a control of a row of the issue
@@ -41,6 +38,9 @@ const TAB_STOP = '[tabindex]:not([tabindex="-1"])';
  *  the rescue landed on the first one's "more · 106 words", and that row, holding the focus,
  *  opened its body and drew its words whole. */
 const IN_TAB_ORDER = ':not([tabindex="-1"])';
+
+/** An element given a Tab stop of its own: any `tabindex` but -1. */
+const TAB_STOP = `[tabindex]${IN_TAB_ORDER}`;
 
 /** What the keyboard focus can reach: a link, a form control that is not `disabled`, each left
  *  in the Tab order (`IN_TAB_ORDER`), or anything given a Tab stop of its own. A control refused
@@ -330,16 +330,22 @@ const CLIPPING_OVERFLOW: Record<string, true> = {
 
 /** The boxes around `element` that clip what overflows them, nearest first: every ancestor whose
  *  overflow clips (`CLIPPING_OVERFLOW`), short of the body and the root, whose overflow is the
- *  viewport's. */
-function clippingBoxes(element: Element): Element[] {
+ *  viewport's. `clips` keeps whether each ancestor read clips, so a walk that measures many
+ *  controls of one list reads each box's style once. */
+function clippingBoxes(element: Element, clips?: Map<Element, boolean>): Element[] {
   const boxes: Element[] = [];
   for (
     let box = element.parentElement;
     box !== null && box !== document.body && box !== document.documentElement;
     box = box.parentElement
   ) {
-    const { overflowX, overflowY } = getComputedStyle(box);
-    if (CLIPPING_OVERFLOW[overflowX] || CLIPPING_OVERFLOW[overflowY]) boxes.push(box);
+    let clipping = clips?.get(box);
+    if (clipping === undefined) {
+      const { overflowX, overflowY } = getComputedStyle(box);
+      clipping = CLIPPING_OVERFLOW[overflowX] === true || CLIPPING_OVERFLOW[overflowY] === true;
+      clips?.set(box, clipping);
+    }
+    if (clipping) boxes.push(box);
   }
   return boxes;
 }
@@ -453,10 +459,7 @@ function pressedBy(event: Event): number | string | null {
  *  reader's pick, which Playwright and assistive tech make without a key or a pointer. Firefox
  *  fires `input` alone as the digit that completes a date is typed, and a value set without keys
  *  fires `input` and then a `change` the page may already have taken the control away from at that
- *  `input`. A date or time box is thus a pick control for a press - its `change` and `input` are
- *  one - and a control that takes typed text for a landing: a walk-back passes over it
- *  (`walkBack`), since it takes the reader's keys and a page shortcut would not reach the page
- *  from it (`takesText`). */
+ *  `input`. Why a walk-back passes over a date or time box all the same is `takesText`'s. */
 function isPress(event: Event): event is Event & { readonly target: Element } {
   const { target } = event;
   if (!(target instanceof Element)) return false;
@@ -1098,10 +1101,10 @@ function walkBack(controls: readonly HTMLElement[], index: number): HTMLElement[
 }
 
 /** Whether the reader can see any part of `element` now: its box meets the viewport and every box
- *  around it that clips it (`clippingBoxes`). The page's rescue reads it of each control its walk
- *  back reaches, as it reaches it, so a long walk measures only the controls it tries. */
-function inSightNow(element: Element): boolean {
-  return inSight(element, clippingBoxes(element));
+ *  around it that clips it (`clippingBoxes`, which reads each box's style once in `clips`). The
+ *  page's rescue reads it of each control its walk back reaches, as it reaches it. */
+function inSightNow(element: Element, clips: Map<Element, boolean>): boolean {
+  return inSight(element, clippingBoxes(element, clips));
 }
 
 /** Hands on the focus `loss`'s element took with it when it went. A loss the reader did not
@@ -1157,8 +1160,9 @@ function handOn(loss: Loss, main: HTMLElement | null): void {
     if (opener.element.isConnected && rendered(opener.element) && land(opener.element)) return;
     back = walkBack(drawnIn(opener.region, main), opener.index);
   }
+  const clips = new Map<Element, boolean>();
   for (const candidate of back) {
-    if (!candidate.isConnected || !rendered(candidate) || !inSightNow(candidate)) continue;
+    if (!inSightNow(candidate, clips)) continue;
     if (land(candidate)) return;
   }
   if (!present(region) || region === document.body || !(region instanceof HTMLElement)) return;

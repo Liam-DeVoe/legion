@@ -4447,7 +4447,7 @@ test("no press in the shared controls drops the keyboard focus onto the page, at
 
     // The search bar's Filter panel: a pick from its Project menu and from its Status menu, and
     // an author taken, each take their own control away; the focus goes to the next control in
-    // the panel.
+    // the panel that takes no typed text, else to the panel's own stop.
     where = `search bar at ${at}`;
     await page.locator("body").focus();
     await page.keyboard.press("Control+k");
@@ -4465,8 +4465,8 @@ test("no press in the shared controls drops the keyboard focus onto the page, at
         next: filters.getByRole("button", { exact: true, name: "Status" }),
         nextName: "the Status menu",
       },
-      // The Author box now at the Status menu's place takes typed text, and no control before it
-      // takes none, so the hand-off passes over the box to the panel's own stop.
+      // The Author box now at the Status menu's place takes typed text, and no control stands
+      // before it, so the hand-off passes over the box to the panel's own stop.
       { menu: "Status", option: "Todo", next: filters, nextName: "the Filter panel" },
     ] as const;
     for (const { menu, option, next, nextName } of panelSteps) {
@@ -5636,23 +5636,17 @@ test("a pinned card unpinned on another device while its Unpin holds the focus h
 });
 
 // SLOW(>=2s): the search bar and its Filter panel opened twice, for a typed date and a set one.
-// INFRA-3135, round 19 (the tester's, measured in builds Jobs infra-3135-r19h and -r19dt at
-// 89072a56): the search bar's Filter panel draws its Updated since box only while no date is set
-// (`SearchPalette.tsx`), so the reader's own date takes the focused box away. The architect's
-// ruling of 2026-11-19: a change on a date box is the reader's press, and the focus walks back to
-// the control before the box, Author, as it did at 90fa8211. At 89072a56 it does only where the
-// engine fires `change` before the page drops the box: Chromium, for a typed date. Firefox fires
-// `input` alone as the last digit completes the date, and Playwright's fill(), the value set
-// without keys as assistive technology sets it, fires `input` and then `change` on a box the page
-// has already dropped on that `input`. So the rescue sees no press, reads the loss as one the
-// reader did not cause, passes over Author, which takes typed text, and lands on Status: for a
-// set date in Chromium, Firefox and WebKit, and for a typed one in Firefox. WebKit's date box
+// The Filter panel draws its Updated since box only while no date is set (`SearchPalette.tsx`),
+// and the box takes a typed date once its year has four digits, so the reader's own date takes
+// the focused box away. A date set or typed in the box is the reader's press, whether the engine
+// fires `change` before the page drops the box (Chromium, for a typed date) or `input` alone
+// (Firefox, as the last digit completes the date, and Playwright's fill(), the value set without
+// keys as assistive technology sets it). A caused walk-back passes over Author, which takes typed
+// text, so the reader's date keeps the focus inside the Filter panel on no text field; a loss
+// misread as uncaused goes to the Search dialog's own stop, outside that panel. WebKit's date box
 // takes no typed date from Playwright's keys, so the typed case is not read there. A focused
 // control taken away, for which Firefox and WebKit fire no `focusout`: the clause of the `webkit`
-// and `firefox` projects that names the page-own focus row (e2e/playwright.config.ts). Since the
-// architect's ruling of 2026-11-20 20:5xZ a caused walk-back passes over Author, which takes typed
-// text, so the reader's date keeps the focus inside the Filter panel on no text field; a loss
-// misread as uncaused goes to the Search dialog's own stop, outside that panel.
+// and `firefox` projects that names the page-own focus row (e2e/playwright.config.ts).
 test("a date the reader gives the search bar's Updated since is their press, so the focus stays in the Filter panel @firefox @webkit", async ({
   browserName,
   page,
@@ -5693,9 +5687,9 @@ test("a date the reader gives the search bar's Updated since is their press, so 
     // The page's rescue runs a frame and a task after the loss, so it is done by now.
     await nextFrames(page);
     await nextFrames(page);
-    // One read is the answer: every hand-off of the loss has run, and nothing else moves the focus.
+    // The answer is read now: every hand-off of the loss has run, and nothing else moves the focus.
     const holder = await focusHolder(page);
-    // The same one read: the loss's hand-offs have all run, so where the focus is is settled.
+    // Read after the same hand-offs as the holder above, so where the focus is is settled.
     const inFilter = await filters.evaluate((panel) => panel.contains(document.activeElement));
     if (!inFilter)
       wrong.push(`a ${how} date: the focus is on ${holder.name}, outside the Filter panel`);
@@ -6026,8 +6020,7 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
       left: ["In progress"],
       picked: /^Remove Status In progress filter$/,
       // The control now at its place is the Author box, which takes typed text, and no control
-      // that takes none stands before it, so the hand-off passes over the box to the panel's own
-      // stop.
+      // stands before it, so the hand-off passes over the box to the panel's own stop.
       focusAfterPick: filters,
     },
     {

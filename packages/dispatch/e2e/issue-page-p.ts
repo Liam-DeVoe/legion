@@ -477,7 +477,7 @@ export function headerParts(page: Page): Promise<string[]> {
     // their own - a number in a sentence - are one run and not two.
     const words = texts
       .filter((element) => !texts.some((other) => other !== element && other.contains(element)))
-      .map((element) => `text ${(element.textContent ?? "").replace(/\s+/g, " ").trim()}`);
+      .map((element) => `text ${wordsOf(element)}`);
     return [...parts, ...words];
   });
 }

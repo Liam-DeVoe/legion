@@ -499,7 +499,7 @@ function SearchNarrowing({
                   // here, so Chromium's date would be emptied at each digit before its year is
                   // whole.
                   const { value } = event.target;
-                  if (value !== "" && Number(value.slice(0, 4)) >= 1000) {
+                  if (Number(value.slice(0, 4)) >= 1000) {
                     set({ updatedSince: value });
                   }
                 }}
