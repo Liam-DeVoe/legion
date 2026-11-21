@@ -4041,9 +4041,16 @@ The relay receipts, and the subscription to the relay subjects, are the relay so
 (`cmd/listener/relay_socket.go`): the replica serving a session's socket subscribes the session's
 relay subject and publishes each receipt the client sends on the receipt subject of the machine
 that relayed the frame, under which that machine's session relay names it. Since every edge machine
-publishes every
-machine's receipts, one edge machine can forge a receipt for another machine's frame. That adds
-nothing past the reach below: an edge machine can already update or delete any consumer.
+publishes every machine's receipts and subscribes every session's relay subject, which carries
+each frame's receipt subject, one edge machine can forge a receipt for another machine's frame. It
+is not the only user that can: every grant built on the listener grant (`Listener`,
+`ListenerHost`, `Dispatch` and `Host`) publishes all of `notifications.>`, the receipt family
+included, and `ListenerHost` and `Host` also subscribe `notifications.>`, so they read each frame's
+receipt subject as it is relayed and can answer it too. A forged `done` acknowledges a frame its
+session then never receives. For an edge machine and a `ListenerHost` user that adds nothing past
+the reach below, since each can already update or delete any session consumer; a `Host` user holds
+no session-consumer call, so for it the receipt is reach it would not have otherwise, which a deny
+of `notifications.envoy.relayreply.>` on every grant but the edge's would take away.
 
 An edge listener holds itself to that list. It keeps no role message for a role's next holder and
 hands no kept lane over, so a publish to a role no session holds is answered 404 with its refusal's

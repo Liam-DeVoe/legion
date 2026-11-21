@@ -233,19 +233,23 @@ Every other listener answers the path `404`, an upgrade included, so no shared l
 
 - **What it carries**: a frame's receipt subject is the owning machine's, under `notifications.envoy.relayreply.<machine id>.` (`natsgrant.EdgeRelayReplyPrefix`), since the edge's grant publishes no reply inbox and the socket may be on another machine (`startSessionRelays`): the edge's grant publishes every machine's receipts and subscribes only its own, so the socket's replica publishes the client's receipt on the owner's subject, which the owner alone reads.
   The owning replica holds at most 16 of a session's frames in flight, awaiting `done` or `nak` (its session consumers' MaxAckPending, `relayEdgeInFlight`), so a client that reads promptly takes any backlog with its socket open.
-  The connection probe is never forwarded or answered, and a message on the relay subject whose reply is no relay receipt is not forwarded either.
+  The connection probe is never forwarded or answered, and a message on the relay subject whose reply is no receipt of the session's own frame (the receipt family, a machine id, a relay's nuid, the session and a token: `relayReceiptOf`) is not forwarded either, so a client is handed no other session's receipt to publish.
 
 - **While it is open**: every 20 seconds, and once at its token's expiry, the socket asks the broker about its token again, from a copy of the upgrade request, spending nothing of the source address's introspection budget (`Verifier.LiveUntil`); every 20 seconds it also pings its client.
   It closes `4401 credential_expired` at the token's expiry, also while the broker still answers it live with that `exp` for up to a second after it, `4403 credential_refused` when the broker no longer holds the token live (a revoke of the token or of the device login it was traded from) or its answer names another caller, and `1013 broker_unavailable` when the broker cannot be asked.
-  It closes `1013 nats_unavailable` when its subscription is lost, and `1013 slow_consumer` when its client reads its frames slower than they come: past 32 frames or 16 MiB that the socket holds for it, or past 256 MiB that all of the replica's sockets hold together, whoever opened them (`relaySocketReplicaPendingBytes`, a quarter of the listener container's default 1Gi).
+  It closes `1013 nats_unavailable` when its subscription is lost, and `1013 slow_consumer` when its client reads its frames slower than they come: past 32 frames or 16 MiB that the socket holds for it, past 64 MiB that one person's sockets on the replica hold together (`relaySocketCallerPendingBytes`, a quarter of the replica's budget), or past 256 MiB that all of the replica's sockets hold together, whoever opened them (`relaySocketReplicaPendingBytes`, a quarter of the listener container's default 1Gi).
   Each socket holds its frames in a queue of its own, which one writer drains in order, so the replica's count of what its sockets' queues hold is exact, a frame blocked on a client that reads nothing included; a frame still in the NATS client's own buffer ahead of a queue is not in the count.
   The listener's stop closes every socket `1012 listener_stopping`.
   A close takes at most one second (`relaySocketCloseGrace`), also for a client that reads nothing: no close or check waits for a data frame blocked on such a client, and a write that fails drops the connection at once.
   A frame unanswered at a close, or held by a socket that closed `slow_consumer`, is sent again by the owning relay, so a reopen loses nothing.
   So is a frame the NATS client drops past its own pending limits ahead of the queue (the socket's 32 frames and 16 MiB): the socket stays open, and the frame comes again after the owning relay's ack wait.
 
-- **Tests**: `cmd/listener/relay_socket_test.go` runs the socket in one process with a stand-in broker, on the rig of `relay_socket_fixture_test.go`.
+- **Tests**: `cmd/listener/relay_socket_test.go` and `cmd/listener/relay_socket_caller_test.go` run the socket in one process with a stand-in broker, on the rig of `relay_socket_fixture_test.go`.
   `cmd/listener/relay_socket_live_test.go` (build tag `natslive`) runs two edge listeners under `natsgrant.Edge` on the hub's NATS image, with the real broker of `internal/cipher/ciphertest` and 30-second tokens; its binary checks every second (`-ldflags "-X main.relaySocketCheckBuild=1s"`).
+
+- **Rollout**: the socket forwards every relay frame of its session, and holds no frame to the projects of the token that opened it.
+  A session's relay subject can carry a frame of a project the token does not list: a role message of another project's role, another project's subject in the session's consumer filter, a GitHub event judged against the session's stored projects, a message any user that publishes `notifications.>` puts on the subject, or a frame of a project the person has since lost, from an earlier registration.
+  So no edge pod serves relay sockets until the hold of each frame to its token's projects is in its build: `edgeFrameVerdict`, which the change that holds the edge relay's frames to a session's projects adds, called from the socket's `forward` before a frame is held.
 
 ## Local end-to-end
 
