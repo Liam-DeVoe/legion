@@ -229,25 +229,27 @@ nats-server versions the daemon refuses, for the same reason.
 
 ## daemon_go_tests: The daemon-go job: what its two Go steps read together
 
-The daemon-go job: what its two Go steps read together — the plain step, which
-tests every package of packages/daemon but the five concurrent ones, and the race
-step, which tests those five — so the filter covers the whole module's closure,
-and what the Stage 1 proof, ci-job-daemon-go.yaml's "Stage 1 live proof" step, builds and sources. The
-packages they compile, the Dispatch server internal/testbuild/testbuild.go:112 builds
-for internal/daemon/outbox_scratch_dispatch_test.go:354, and what their tests read
-outside the daemon: contracts' fixtures
-(internal/api/state_golden_test.go:1418, internal/intake/intake_test.go:873,977), the
-agents internal/prompts/roles_test.go:261 stats, the tools skill its :689 holds
-roles/mechanics/headless.md to, the merge gate internal/workflow/engine_test.go:432
-holds the reviewer's prompt to, the GitHub App helper
-internal/api/real_github_test.go:115 sources, and the examples and
+The daemon-go job: what its two Go steps read together — the plain step, which tests
+every package of packages/daemon but the five concurrent ones, and the race step,
+which tests those five — so the filter covers the whole module's closure, and what the
+Stage 1 proof, ci-job-daemon-go.yaml's "Stage 1 live proof" step, builds and sources.
+The packages they compile, the Dispatch server internal/testbuild/testbuild.go:112
+builds for internal/daemon/outbox_scratch_dispatch_test.go:354, and what their tests
+read outside the daemon: contracts' fixtures (internal/api/state_golden_test.go:1418,
+internal/intake/intake_test.go:873,977), the agents internal/prompts/roles_test.go's
+TestEveryTaskAgentARolePromptDispatchesIsShipped stats, the tools skill its
+TestThePodMemoryRuleAndTheToolsSkillSendTheSameRunsToCI holds
+roles/mechanics/headless.md to, the rule file its
+TestNoReusablePartNamesARepositoryOrLibrary runs over each reusable role part, the
+merge gate internal/workflow/engine_test.go:432 holds the reviewer's prompt to, the
+GitHub App helper internal/api/real_github_test.go:115 sources, and the examples and
 docs its tests hold to the code (cmd/legion/config_example_test.go:164,
-internal/config/controller_test.go:214, internal/config/kubernetes_test.go:1474).
-No bun_install and no skills/** - the two pages of skills/ this filter names are all
-this job reads of it: the tests of this suite that packed the two plugins - and so
-resolved the root manifest, the lockfile and the patches - or staged each plugin's
-partition of skills/ with the prepack script are the plugin-pack job's now, and
-this job installs nothing (dispatch://INFRA-1413, A4).
+internal/config/controller_test.go:214, internal/config/kubernetes_test.go:1474). No
+bun_install and no skills/** - the two pages of skills/ this filter names are all this
+job reads of it: the tests of this suite that packed the two plugins - and so resolved
+the root manifest, the lockfile and the patches - or staged each plugin's partition of
+skills/ with the prepack script are the plugin-pack job's now, and this job installs
+nothing (dispatch://INFRA-1413, A4).
 
 The list is the one the test job's filter used to name through this anchor while
 it gated nothing of its own; it is now the daemon-go job's own filter, so a change
@@ -260,6 +262,13 @@ stats `agents/<name>.md`.
 With its manifest, which the Stage 1 proof (ci-job-daemon-go.yaml's "Stage 1 live proof" step) reads, they are the files of
 pi-legion this suite reads. The pack and prompt probes, which read the rest of
 it, are the plugin-pack job's.
+
+## daemon_go_tests: The rule file internal/prompts/roles_test.go holds the role parts to
+
+The repository's own rule file, .github/private-names.toml, which
+internal/prompts/roles_test.go's TestNoReusablePartNamesARepositoryOrLibrary reads and
+runs over every reusable role part, since the `legion` binary embeds no rule. A change
+to that file alone changes what the test refuses, so it starts this job.
 
 ## plugin_pack: The plugin-pack job: internal/daemon's three tests of
 

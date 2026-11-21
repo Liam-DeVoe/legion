@@ -44,9 +44,10 @@
 #      (`-metadata.google.internal:80` and `x_metadata.google.internal` pass; no DNS name holds a
 #      `_`). A run over a tree reads no such ending: the tree holds those two names and its tests'
 #      own hosts of that shape, which name no private network. The bare reading is the CI check's
-#      alone, on purpose: the daemon's leak guard, which runs this script's port over the
-#      `legion gh` calls it checks and every text handed to `legion leak-check text`, does not
-#      read it, since it would refuse agents' own writes;
+#      alone, on purpose: this script's port, .github/private-names.toml, which runs where
+#      something names it (the port harness, release-push.sh's leak guard, and a deployment that
+#      names it as its leak guard's rule file), does not read it, since it would refuse agents'
+#      own writes;
 #   4. a Tailscale MagicDNS host — a DNS label then `.ts.net`, in any case, with no letter or
 #      digit after it. A reserved tailnet name (`example-tailnet`, under any machine name of its
 #      own in front) passes;

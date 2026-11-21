@@ -602,8 +602,10 @@ RULES = {
         (f"{DAEMON}/cmd/legion/testdata/gh-help/workflow_run.txt", "internal/leakguard/gh_test.go:655 reads ../../cmd/legion/testdata/gh-help/<help>, workflow_run.txt for gh workflow run (:652)")),
     f"{DAEMON}/internal/projection/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/projection/state_golden_test.go:209")),
     f"{DAEMON}/internal/prompts/roles_test.go": reads(
-        ("packages/pi-legion/agents/*.md", "internal/prompts/roles_test.go:261 stats agents/<name>.md for each task agent"),
-        ("skills/legion-worker/references/tools.md", "internal/prompts/roles_test.go:762-763")),
+        ("packages/pi-legion/agents/*.md", "internal/prompts/roles_test.go's TestEveryTaskAgentARolePromptDispatchesIsShipped stats agents/<name>.md for each task agent"),
+        ("skills/legion-worker/references/tools.md", "internal/prompts/roles_test.go's TestThePodMemoryRuleAndTheToolsSkillSendTheSameRunsToCI reads it under ../../../.."),
+        (".github/private-names.toml", "internal/prompts/roles_test.go's TestNoReusablePartNamesARepositoryOrLibrary reads it under ../../../.. "
+                                       "and runs its rules over every reusable role part")),
     f"{DAEMON}/internal/runtime/sandbox/operatorpod_test.go": reads(
         ("deploy/kubernetes/operator-route/pod.yml", "internal/runtime/sandbox/operatorpod_test.go:28"),
         (f"{FIX}/dispatch-public-url.json", "internal/runtime/sandbox/operatorpod_test.go:236"),

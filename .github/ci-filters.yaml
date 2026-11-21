@@ -353,6 +353,8 @@ daemon_go_tests:
   - 'packages/pi-legion/agents/*.md'
   - 'skills/legion-worker/references/tools.md'
   - 'skills/legion-worker/references/merge-gate.md'
+  # why: .github/ci-notes/ci.md#daemon_go_tests-the-rule-file-internalpromptsroles_testgo-holds-the-role-parts-to
+  - '.github/private-names.toml'
   - 'scripts/e2e/lib/github-apps.sh'
   - 'scripts/e2e/stage1-skeleton.sh'
   - 'scripts/e2e/lib/rig.sh'
