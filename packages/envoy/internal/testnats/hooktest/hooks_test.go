@@ -672,9 +672,11 @@ func TestForcedOrderHoldsACommittedEntryBeforeItsLeaderStoresIt(t *testing.T) {
 
 // A point no row above holds at is held to the same contract: msgget.timeSelected, the sequence a
 // message get by start_time chose (v2.15.1 alone: 2.10.29's message get takes no start_time).
-// Its event names its server and store, so OnServer takes it and the server's Stop releases the
-// goroutine it parks. Before it carried them, the hold was never reached on the server, and
-// without OnServer it parked an API worker that the Stop then waited for.
+// Its event names its server, its store and its stream, so OnServer and Stream take it and the
+// server's Stop releases the goroutine it parks. Before it carried its server and store, the
+// hold was never reached on the server, and without OnServer it parked an API worker that the
+// Stop then waited for; before it named its stream as Stream rather than as a consumer, a hold
+// by Stream was never reached.
 func TestForcedOrderAStopReleasesAHoldAtATimeSelectedMessageGet(t *testing.T) {
 	point := testnats.Point("msgget.timeSelected")
 	if ok, why := point.Exists(); !ok {
@@ -694,9 +696,13 @@ func TestForcedOrderAStopReleasesAHoldAtATimeSelectedMessageGet(t *testing.T) {
 	}
 	answered(t, get(), "the unheld message get by start time")
 
-	hold := hooks.Hold(point, testnats.OnServer(srv))
+	hold := hooks.Hold(point, testnats.OnServer(srv), testnats.Stream("HOLD"))
 	done := get()
-	t.Logf("held %s", hold.Reached(t))
+	reached := hold.Reached(t)
+	t.Logf("held %s", reached)
+	if reached.Stream != "HOLD" || reached.Consumer != "" {
+		t.Fatalf("held %s, want the stream HOLD and no consumer", reached)
+	}
 	unanswered(t, done, "the message get by start time")
 	stopped := make(chan struct{})
 	go func() {

@@ -124,8 +124,9 @@ type Event struct {
 	// Server, Account, Subject, Stream, Client and Kind describe a server point's request or
 	// message: Account is the account that sent the request at APIWorker, the publishing
 	// connection's at ClientPublish, and the stream's at StreamApply and at MetaApply; Stream is
-	// the stream's name at StreamApply and at MetaApply; Client is the publishing connection's
-	// name, Kind its kind. ServerID is the ID of the server's run at ServerShutdown and ServerDown.
+	// the stream's name at StreamApply, at MetaApply and at msgget.timeSelected; Client is the
+	// publishing connection's name, Kind its kind. ServerID is the ID of the server's run at
+	// ServerShutdown and ServerDown.
 	Server, ServerID, Account, Subject, Stream, Client, Kind string
 	// Recovering is set at StreamApply and at MetaApply while the server replays its log at start.
 	Recovering bool
@@ -204,7 +205,8 @@ func Consumer(name string) Match {
 }
 
 // Stream takes the events of the stream named name: a StreamApply of it, a MetaApply of one of its
-// consumers, or a file store point of one of its consumers.
+// consumers, a message get from it (msgget.timeSelected), or a file store point of one of its
+// consumers.
 func Stream(name string) Match {
 	return Match{"stream " + name, func(e Event) bool {
 		if e.Stream != "" {
