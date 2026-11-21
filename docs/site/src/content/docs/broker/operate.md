@@ -606,8 +606,8 @@ broker refuses to start, naming the entry or the account, on:
 - a mapped account that a `BROKER_API_ACCOUNTS` entry names, since that caller's routes relay
   approvals in the name the caller gives;
 - a mapped account that a `BROKER_NATS_SERVICES` entry names, since the person's pod would then be
-  answered as that service: by the NATS auth service with that service's NATS grant, or, for an
-  edge-listener entry, by `GET /v1/project-repositories`;
+  answered as that service: by the NATS auth service with that service's NATS grant, and, for an
+  edge-listener entry, also by `GET /v1/project-repositories`;
 - a mapped account that either side of a `BROKER_SESSION_ACCOUNT_PAIRS` pair names, since a pair
   lets each account take the session names the other holds.
 

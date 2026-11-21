@@ -19,7 +19,7 @@ import (
 // itself, through the account's own JetStream client, on whatever reply subject the request names,
 // with the stored value as the body. A reply subject under $JS.API. is therefore taken by the
 // JetStream API as a request of the account's (nats-server 2.15.1, measured by natsgrant's
-// TestTheEdgesDirectGetAnswersReachTheJetStreamAPI): a value written as a stream update changes
+// TestTheEdgeHoldsNoDirectGetWhoseAnswerReachesTheJetStreamAPI): a value written as a stream update changes
 // that stream, an empty one aimed at a delete deletes it. A user whose grant holds a direct get
 // and a write of some bucket can thus make any JetStream API call of its account. A stream message
 // get is answered by the JetStream API, and its answer, aimed the same way, reaches no API call in
