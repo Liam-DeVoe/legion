@@ -349,9 +349,8 @@ func main() {
 	// the two settings to both or neither. Built before the loader, which serves a tagged secret
 	// only when this broker can ask whether its project is private (policy.Loader.ProjectChecks).
 	// The same client reads the list of every private project for the airlock's public Slack
-	// fence (requests.Machine.PrivateList) and for GET /v1/private-projects
-	// (api.Deps.PrivateProjects). Both stay nil interfaces when the setting is unset, never a nil
-	// *Client inside one, so every reader's nil check holds.
+	// fence (requests.Machine.PrivateList). Both stay nil interfaces when the setting is unset,
+	// never a nil *Client inside one, so every reader's nil check holds.
 	var projectAccess projectaccess.Access
 	var privateList projectaccess.PrivateLister
 	if cfg.ProjectAccessURL != "" {
@@ -698,10 +697,11 @@ func main() {
 		TrustedProxyHeader:     cfg.TrustedProxyHeader,
 		Approval:               page,
 		Draining:               draining.Load,
-		// GET /v1/private-projects reads Dispatch's part of its list through the client built
-		// above. PrivateDeclared is left nil, as Machine.PrivateDeclared is: the setting that
-		// declares the broker's own private projects is not in this broker yet.
-		PrivateProjects: privateList,
+		// PrivateProjects is left nil: GET /v1/private-projects answers 503 PRIVATE_LIST_UNKNOWN
+		// until this broker holds the union of the projects its own settings declare private and
+		// the ones Dispatch answers private, with the one hold it keeps through an outage of
+		// Dispatch. Dispatch's list alone would lack every declared key Dispatch does not also call
+		// private, a short list the session watch cannot tell from the truth.
 		NotifyReread: func(ctx context.Context, name string) {
 			// This pod reread the name itself and merged what it read (the reread route's
 			// notifyPeers), so the value behind the name may be a new version: dropped from

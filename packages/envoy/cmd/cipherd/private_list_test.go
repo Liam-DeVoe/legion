@@ -1,22 +1,23 @@
 // private_list_test.go drives GET /v1/private-projects through the REAL compiled broker, pointed
-// at a Dispatch stand-in with BROKER_PROJECT_ACCESS_URL: the list the shared session watch reads
-// is the one Dispatch answers through the broker's own client, read with the broker's own token,
-// which is how cmd/cipherd wires the route.
+// at a Dispatch stand-in with BROKER_PROJECT_ACCESS_URL. cmd/cipherd wires no list to the route
+// yet: the broker's list is the union of the projects its own settings declare private and the
+// ones Dispatch answers private, held through an outage in one place, and that union is not in
+// this broker. So the watch reads 503, never Dispatch's list alone, which would lack every declared
+// key Dispatch does not also call private.
 package main
 
 import (
 	"net/http"
-	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
 
-// TestTheBinaryAnswersTheWatchDispatchsPrivateProjects: with Dispatch holding PRIV private and
-// PUB public, the session-watch caller reads ["PRIV"] from the broker's binary, and the stand-in
-// saw the broker ask with the one bearer it takes.
-func TestTheBinaryAnswersTheWatchDispatchsPrivateProjects(t *testing.T) {
+// TestTheBinaryWiresNoPrivateListYet: with Dispatch holding PRIV private and the broker able to ask
+// it, the session-watch caller still reads 503 PRIVATE_LIST_UNKNOWN saying the list is not wired.
+func TestTheBinaryWiresNoPrivateListYet(t *testing.T) {
 	databaseURL := storetest.URL(t)
 	cluster := oidctest.New(t)
 	clusterKey := cluster.PublishKey(t, "signing-key")
@@ -35,15 +36,10 @@ func TestTheBinaryAnswersTheWatchDispatchsPrivateProjects(t *testing.T) {
 		"BROKER_PROJECT_ACCESS_TOKEN_FILE=" + tokenFile,
 	}})
 	live := newPlainBroker(broker.Addr)
-	before := dispatch.PrivateProjectsCalls()
 	status, body := live.callAs(t, http.MethodGet, privateListRoute, accountToken(t, cluster, clusterKey, watchAccount), "", "")
-	if status != http.StatusOK {
-		t.Fatalf("GET %s as session-watch = %d %v, want 200 and Dispatch's private projects", privateListRoute, status, body)
-	}
-	if want := []any{privateProject}; !reflect.DeepEqual(body["private_projects"], want) {
-		t.Fatalf("GET %s as session-watch answers %v, want %v: the private projects Dispatch holds, and no public one", privateListRoute, body, want)
-	}
-	if dispatch.PrivateProjectsCalls() <= before {
-		t.Fatalf("the Dispatch stand-in answered %d private-list calls before the read and %d after, want the read to have asked it", before, dispatch.PrivateProjectsCalls())
+	refusal, _ := body["error"].(string)
+	if status != http.StatusServiceUnavailable || body["code"] != "PRIVATE_LIST_UNKNOWN" || !strings.Contains(refusal, "not wired") {
+		t.Fatalf("GET %s as session-watch = %d %v, want 503 PRIVATE_LIST_UNKNOWN saying the list is not wired: this broker holds no union of its declared and Dispatch's private projects, so Dispatch's list alone would be short",
+			privateListRoute, status, body)
 	}
 }

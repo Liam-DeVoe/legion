@@ -110,14 +110,14 @@ naming the caller and the route, and an entry naming a caller the broker does no
 the start, naming that name and the names it knows, so a typo cannot quietly produce a caller
 that reaches nothing.
 
-`GET /v1/private-projects` answers every project Dispatch answers private, read with the broker's
-own token from `BROKER_PROJECT_ACCESS_URL` and kept 30 seconds, so a project made private reaches
-the list within 30 seconds while Dispatch answers. While Dispatch cannot answer, the route answers
-the last list Dispatch gave until it can be 5 minutes old; at that age, and on a broker with no
-`BROKER_PROJECT_ACCESS_URL`, it answers `503 PRIVATE_LIST_UNKNOWN`, naming the failure class,
-and never a shorter list. Dependency error text is not repeated, since it can contain the
-broker's token. A Dispatch answer that is any status but 200, a 404 included, or a 200 with no
-`projects` list is a Dispatch that cannot answer, never one with no private project.
+`GET /v1/private-projects` answers the broker's list of every private project, sorted and each key
+once, `[]` when none is. A list the broker cannot read is `503 PRIVATE_LIST_UNKNOWN`, naming the
+kind of failure and never a shorter list; the watch reads it as no list and fails closed. The
+route keeps nothing between calls. This release wires no list to it, so it answers every call
+that 503, whatever `BROKER_PROJECT_ACCESS_URL` is. The list it will answer is the union of the
+projects the broker's own settings declare private, a setting this release does not have yet, and
+the ones Dispatch answers private; Dispatch's alone would lack every declared one Dispatch does
+not also call private.
 
 Five settings turn the model judge on, which decides one narrow class of the requests that would
 otherwise wait for a person ([Concepts](/legion/broker/concepts/#the-model-judge)): the endpoint

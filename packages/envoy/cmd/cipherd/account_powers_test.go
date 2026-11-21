@@ -69,8 +69,8 @@ const (
 // revoke-by-approver, the RFC 7009 token revocation and both person sign-in routes among them —
 // the grant log and the private list too, 403 ACCOUNT_LACKS_POWER naming itself and the route, and
 // still reads a token back. The access-review caller reads the grant log and is refused the other
-// fourteen the same way, and the session-watch caller reaches the private list, on a broker with
-// no BROKER_PROJECT_ACCESS_URL its 503 PRIVATE_LIST_UNKNOWN, and is refused the other fourteen.
+// fourteen the same way, and the session-watch caller reaches the private list, on a broker that
+// wires no list to it its 503 PRIVATE_LIST_UNKNOWN, and is refused the other fourteen.
 // The dispatch caller reaches all thirteen of its own, the introspection route included, and is
 // refused the grant log and the private list: neither the broker's audit trail nor the list of
 // private projects is another of the powers the name that decides already holds.
@@ -90,9 +90,9 @@ func TestAListedAccountReachesOnlyItsOwnRoutes(t *testing.T) {
 		"BROKER_K8S_OIDC_ISSUER=" + cluster.URL(),
 		"BROKER_K8S_OIDC_AUDIENCE=" + enrolmentAudience,
 		"BROKER_API_ACCOUNTS=dispatch=" + apiAccount + " listener=" + listenerAccount + " access-review=" + reviewAccount + " session-watch=" + watchAccount,
-		// No Dispatch, whatever the environment the test runs in sets: the private list's answer
-		// below is the one a broker that asks no Dispatch gives. Each is the last of its key, which
-		// is the value exec gives the child.
+		// No Dispatch, whatever the environment the test runs in sets, so each answer below is the
+		// one a broker that asks no Dispatch gives. Each is the last of its key, which is the value
+		// exec gives the child.
 		"BROKER_PROJECT_ACCESS_URL=",
 		"BROKER_PROJECT_ACCESS_TOKEN_FILE=",
 	}})
@@ -175,8 +175,8 @@ func TestAListedAccountReachesOnlyItsOwnRoutes(t *testing.T) {
 		// yet, rather than a refusal of its period.
 		{method: http.MethodGet, pattern: grantLogRoute, path: grantLogQuery, caller: reviewCaller,
 			status: http.StatusOK, key: "events", value: emptyList},
-		// The watch's own route, on a broker that asks no Dispatch: a list it cannot read in full
-		// is no list, which is the route's own answer and not a refusal of the caller.
+		// The watch's own route, on a broker that wires no list to it: a list it cannot read is no
+		// list, which is the route's own answer and not a refusal of the caller.
 		{method: http.MethodGet, pattern: privateListRoute, path: privateListRoute, caller: watchCaller,
 			status: http.StatusServiceUnavailable, key: "code", value: "PRIVATE_LIST_UNKNOWN"},
 	} {

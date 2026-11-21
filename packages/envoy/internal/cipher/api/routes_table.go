@@ -70,8 +70,7 @@ const (
 	// caller holding it alone can read the broker's history and change none of it.
 	readsGrantLog
 	// readsPrivateList is reading the broker's own list of every private project (GET
-	// /v1/private-projects), the keys the deployment declares private with the ones Dispatch
-	// answers private. The shared session watch needs it so that it never judges a private
+	// /v1/private-projects). The shared session watch needs it so that it never judges a private
 	// project's session, and it is a power of its own because the list says which projects are
 	// private and nothing more: it grants nothing, decides nothing and writes nothing.
 	readsPrivateList
@@ -441,15 +440,14 @@ func routes() []apiRoute {
 		// revoking person is the one the request names, which the broker takes on the caller's
 		// word: a revoke only takes power away.
 		{http.MethodPost, "/v1/person-signins/{id}/revoke", accountAuth(relaysDecisions, (*server).revokePersonSignIn)},
-		// Answer the shared session watch every project the broker counts private: each project
-		// Dispatch answers private, read with the broker's own token and kept 30 seconds, with any
-		// key the deployment itself declares private, sorted and each key once, and an empty list
-		// when none is. Only the caller name session-watch reaches it. While Dispatch cannot
-		// answer (no answer in time, a refusal of the broker's token, any status but 200, a 404
-		// included, or an answer with no projects list), the route answers with the last list
-		// Dispatch gave, for at most 5 minutes after Dispatch can have given it. Past that, and on
-		// a broker with no BROKER_PROJECT_ACCESS_URL, it is 503 PRIVATE_LIST_UNKNOWN naming the
-		// kind of failure, never Dispatch's own words, and never a shorter list.
+		// Answer the shared session watch every project the broker counts private, sorted and
+		// each key once, and an empty list when none is. Only the caller name session-watch
+		// reaches it. The route keeps nothing between calls: it answers the list the broker wires
+		// to it, and how old that list can be is the wired list's own rule. A list that cannot be
+		// read is 503 PRIVATE_LIST_UNKNOWN naming the kind of failure, never what failed and never
+		// a shorter list. The list is to be the union of the projects the broker's own settings
+		// declare private, a setting this release does not have yet, and the ones Dispatch
+		// answers private. This release wires no list, so every call the watch makes is that 503.
 		{http.MethodGet, "/v1/private-projects", accountAuth(readsPrivateList, (*server).privateProjects)},
 		// Read the broker's grant log for one closed period, for a quarterly access review:
 		// every audit row between ?since and ?until (RFC 3339, half-open), oldest first, each
