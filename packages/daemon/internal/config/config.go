@@ -489,22 +489,6 @@ func load(path string, env func(string) string, resolveAppKeys bool) (Config, er
 	return cfg, nil
 }
 
-// yamlErrorLine is the line yaml.v3 names at the start of a parse error ("yaml: line 3: …").
-var yamlErrorLine = regexp.MustCompile(`^yaml: line ([0-9]+): `)
-
-// yamlParseRefusal is what a refusal of a file whose YAML does not parse says of err, yaml.v3's
-// parse error: that it does not parse, at the line the error names, and none of the error's own
-// text. yaml.v3 quotes the file's text in some of its errors (`unknown anchor '<name>'
-// referenced`, whose name, in an unquoted flow item, can be the part of a credential after a comma
-// and a `*`), so a refusal that printed the error could print a part of a secret. An error that
-// names no line, as the unknown anchor's does not, gives none.
-func yamlParseRefusal(err error) string {
-	if line := yamlErrorLine.FindStringSubmatch(err.Error()); line != nil {
-		return "the YAML does not parse at line " + line[1]
-	}
-	return "the YAML does not parse"
-}
-
 // rootMapping returns the document's root mapping, or nil for an empty file.
 func rootMapping(document *yaml.Node) (*yaml.Node, error) {
 	if document.Kind == 0 || len(document.Content) == 0 {
