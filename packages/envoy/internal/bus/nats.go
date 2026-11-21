@@ -180,8 +180,8 @@ func WithName(name string) ConnectOption {
 // of nats.go's _INBOX: every request it sends, a JetStream API call included, asks for its answer on
 // prefix.<token>. A NATS user whose grant subscribes prefix.> alone can then run the client, where
 // one granted _INBOX.> would receive every other client's replies under _INBOX - a session's push
-// deliveries among them. `envoy-infra buckets` connects with _INBOX_envoy_buckets, and the NATS auth
-// service's own connection (Dial) with _INBOX_envoy_auth.
+// deliveries among them. The NATS auth service's own connection (natscallout, through Dial) connects
+// with _INBOX_envoy_auth.
 func WithInboxPrefix(prefix string) DialOption {
 	return func(o *connectOpts) { o.inboxPrefix = prefix }
 }

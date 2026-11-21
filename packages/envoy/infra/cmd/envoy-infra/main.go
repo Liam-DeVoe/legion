@@ -60,7 +60,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, stores se
 	if len(args) > 0 && args[0] == "hold" {
 		return writerhold.Command(ctx, args[1:], stdout, stderr, writerhold.CensusReaders{})
 	}
-	// streams.Command takes only check and ensure; update and census run inside a hold.
+	// streams.Command takes check alone; update and census are the writer hold's held words.
 	if len(args) > 1 && args[0] == "streams" && (args[1] == "update" || args[1] == "census") {
 		return writerhold.StreamsCommand(ctx, args[1:], stdout, stderr, writerhold.CensusReaders{})
 	}
