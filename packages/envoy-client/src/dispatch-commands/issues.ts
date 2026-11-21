@@ -562,10 +562,15 @@ export async function relatedCommand(context: CommandContext): Promise<DispatchT
   };
 }
 
+/** A Unicode format character (Cf), which `breaksRow` quotes. */
+const FORMAT_CHARACTER = /\p{Cf}/u;
+
 /** Whether a title, a label or a holder's name holds what can split an issue's one-line row or
  *  forge a part of it: the ` · ` that parts the row, the `, ` that parts the labels, a `"` that
- *  opens or closes a quoted part, and any control or line-separating character (C0, DEL, C1 with
- *  U+0085, U+2028, U+2029). Dispatch trims only a title's ends (`issue_create.go`,
+ *  opens or closes a quoted part, any control or line-separating character (C0, DEL, C1 with
+ *  U+0085, U+2028, U+2029), and any Unicode format character (Cf: a zero-width or bidirectional
+ *  mark, which can hide or reorder what a row shows). Lookalikes of `·` are left out: the row
+ *  prints the parent as a part of its own. Dispatch trims only a title's ends (`issue_create.go`,
  *  `issue_patch.go`) and a label's (`normalizeIssueLabels`), and an agent writes a session's
  *  title, which names a claim's holder, so a part holding any of them is printed quoted
  *  (`rowPart`), as a route's holder is: a title or a holder holding ` · child of ACME-9` then
@@ -578,6 +583,7 @@ function breaksRow(value: string): boolean {
       return true;
     }
     if (character === "·" || character === "," || character === '"') return true;
+    if (FORMAT_CHARACTER.test(character)) return true;
   }
   return false;
 }

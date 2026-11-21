@@ -3242,6 +3242,17 @@ describe("executeDispatchTool", () => {
         [...(rows[0] ?? "")].filter((character) => "\u0085\u2028\u2029\f\u001b".includes(character))
       ).toEqual([]);
     });
+
+    // A format character (Cf) can hide or reorder what a row shows: a zero-width space, or a
+    // right-to-left override that makes a title's end read as another part. Such a title is
+    // quoted, so a reader that skips what is in quotes skips it whole.
+    test("a title that holds a Unicode format character prints quoted", async () => {
+      const rows = await rowsOf([
+        { key: "ACME-6", title: "a\u200bb", parent: null, labels: [] },
+        { key: "ACME-7", title: "x\u202e9-EMCA fo dlihc", parent: null, labels: [] },
+      ]);
+      expect(rows).toEqual(['ACME-6 [todo] "a\u200bb"', 'ACME-7 [todo] "x\u202e9-EMCA fo dlihc"']);
+    });
   });
 
   // A list row has no liveness of its own, so it used to judge a claim by membership of the
