@@ -99,13 +99,13 @@ func TestALaterTestStartsTheSharedServerAnEarlierStartFailedToStart(t *testing.T
 // it, and the profiler then starts with no fatal error. Both refuse a second bind of the same address
 // and port.
 func TestAServerThatLoggedAFatalErrorFailsItsStartEvenOnceReady(t *testing.T) {
-	host := testport.LoopbackIP().String()
-	held, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
+	held, err := testport.ListenLoopback()
 	if err != nil {
 		t.Fatalf("hold a port for the server's profiler: %v", err)
 	}
 	defer held.Close()
-	srv, err := natsserver.NewServer(&natsserver.Options{Host: host, Port: -1, ProfPort: held.Addr().(*net.TCPAddr).Port, NoSigs: true})
+	address := held.Addr().(*net.TCPAddr)
+	srv, err := natsserver.NewServer(&natsserver.Options{Host: address.IP.String(), Port: -1, ProfPort: address.Port, NoSigs: true})
 	if err != nil {
 		t.Fatalf("create the NATS server: %v", err)
 	}

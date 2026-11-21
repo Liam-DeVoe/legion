@@ -1196,16 +1196,16 @@ const intakeFlushWait = time.Second
 // otherwise at its next flush retry, or releases it, a statement bounded by intakeHoldRenew (5 s).
 // So a finalizer whose client closes at this bound ends by 26 s after the signal: 15 s + 1 s + 5 s
 // + 5 s, 1 s after the latest end of the document service's budget (25 s, stopGrace less its 5 s
-// reserve) and 4 s before the kill at stopGrace (30 s, in cmd/dispatch). That close takes nats.go's
-// connection lock at once unless a frozen write holds it, up to IntakeWriteDeadline (5 s), or a
-// reconnect attempt through a frozen link does, up to the bus's connect timeout (5 s); then the
-// finalizer leaves the hold to lapse at once, or releases it when nothing it published is left
-// unconfirmed, and the standby takes the durable over at most 22 s after the close began
-// (IntakeWriteDeadline). A longer bound would move that end further into the reserve that the
-// shutdown keeps for what follows the intakes: the deregistration and the close of the database
-// pool. A shorter one gives a link that heals after the deadline less time to confirm, and so lets
-// the hold lapse, which costs the standby up to intakeHoldTTL plus durableBindInterval before it
-// takes the durable over, rather than a release's moment.
+// reserve) and 4 s before the kill at stopGrace (30 s, in cmd/dispatch). A longer bound would move
+// that end further into the reserve that the shutdown keeps for what follows the intakes: the
+// deregistration and the close of the database pool. A shorter one gives a link that heals after
+// the deadline less time to confirm, and so lets the hold lapse, which costs the standby up to
+// intakeHoldTTL plus durableBindInterval before it takes the durable over, rather than a release's
+// moment. The client's close takes nats.go's connection lock at once unless a frozen write holds
+// it, up to IntakeWriteDeadline (5 s), or a reconnect attempt through a frozen link does, up to the
+// bus's connect timeout (5 s); then the finalizer leaves the hold to lapse at once, or releases it
+// when nothing it published is left unconfirmed, and the standby takes the durable over at most
+// 22 s after the close began (IntakeWriteDeadline).
 var intakeFinalizerConfirmWait atomic.Int64
 
 func init() { intakeFinalizerConfirmWait.Store(int64(5 * time.Second)) }

@@ -136,7 +136,7 @@ const (
 // intakeStopBudget, set to budget. The holder's handler has no deadline of its own short of the
 // test binary's (intakeMessageTimeout), so it holds the first message until the row releases it or
 // the stop gives it up. The holder's client connects with holderOptions: the frozen-link
-// shutdown subtest passes productionIntakeClient, and every other subtest passes none, so its
+// shutdown subtest passes withIntakeWriteDeadline, and every other subtest passes none, so its
 // holder keeps nats.go's default write deadline of a minute. Those subtests hold the write on
 // purpose past the stop's deadline, or across steps of their own that can take more than 5 s under
 // the race detector: they test the stop's logic while a write holds nats.go's lock, which
@@ -696,13 +696,16 @@ const inFlightHold = 10 * time.Second
 // (holdTakeOver.seenAt, at most 250 ms late) a little after its moment.
 const frozenLinkSchedulingSlack = time.Second
 
-// productionIntakeClient is the client option production's intakes connect with
+// withIntakeWriteDeadline is the client option production's intakes connect with
 // (bus.WithWriteDeadline at IntakeWriteDeadline), for a row whose holder must write as they do
 // (startIntakeProcess).
-var productionIntakeClient = bus.WithWriteDeadline(IntakeWriteDeadline)
+var withIntakeWriteDeadline = bus.WithWriteDeadline(IntakeWriteDeadline)
 
-// clientReconnects is how many times the current connection of client has reconnected in place
-// (natsgo.Statistics.Reconnects).
+// clientReconnects is the reconnect count of client's current connection
+// (natsgo.Statistics.Reconnects): its reconnect attempts whose dial connected. nats.go v1.55.0
+// counts a reconnect as soon as its dial connects, before the handshake (doReconnect,
+// nats.go:3577-3581), and a frozen proxy accepts the dial, so an attempt whose handshake a frozen
+// link never answers counts too.
 func clientReconnects(client *bus.Client) uint64 {
 	if conn := client.Connection(); conn != nil {
 		return conn.Stats().Reconnects
@@ -711,12 +714,13 @@ func clientReconnects(client *bus.Client) uint64 {
 }
 
 // logReconnects logs one line as the test ends, whether it passed or failed: the reconnect count
-// of holder's client and of standby's, as "RECONNECTS holder=<n> standby=<n>" (clientReconnects).
-// A row with no standby passes nil, and its line says standby=0. A count of these lines over many
-// runs gives how often a run's clients reconnected. A row calls it before it freezes its link, so
-// it reads the counts once the row's later cleanups have restored the link and no frozen write
-// holds nats.go's lock, which the read takes. A row whose link is still frozen at its end can so
-// count the reconnect the restore lets through: the frozen-link shutdown subtest logs holder=1.
+// of holder's client and of standby's, as "RECONNECTS holder=<n> standby=<n>" (clientReconnects),
+// which counts reconnect attempts whose dial connected. A row with no standby passes nil, and its
+// line says standby=0. A count of these lines over many runs gives how often a run's clients tried
+// a reconnect whose dial connected. A row calls it before it freezes its link, so it reads the
+// counts once the row's later cleanups have restored the link and no frozen write holds nats.go's
+// lock, which the read takes. The frozen-link shutdown subtest logs holder=1: its holder's one
+// dial through the frozen link before the close, not a reconnect that the restore lets through.
 func logReconnects(t *testing.T, holder, standby *bus.Client) {
 	t.Helper()
 	t.Cleanup(func() {
@@ -980,7 +984,7 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 	})
 
 	// The same stop with the production confirm window (5 s) and the production write deadline
-	// (productionIntakeClient), with the link frozen to the end. The write deadline ends the frozen
+	// (withIntakeWriteDeadline), with the link frozen to the end. The write deadline ends the frozen
 	// write (IntakeWriteDeadline); nats.go closes that socket and tries to reconnect through the
 	// frozen link, which never answers. StartIntakes' stop then closes the holder's client, and its
 	// close waits at most 5 s for nats.go's lock: up to the write deadline behind the frozen write,
@@ -1006,10 +1010,10 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 	//
 	// Control: with a closed connection taken to settle the hand-back (the product before
 	// 7ce70c15), the finalizer releases the hold at the close in the first case too, and the subtest
-	// fails at the outcome check. With nats.go's default write deadline (no productionIntakeClient),
+	// fails at the outcome check. With nats.go's default write deadline (no withIntakeWriteDeadline),
 	// the close waits up to a minute for the frozen write, and the subtest fails at the bound.
 	t.Run("a pending hand-back at shutdown whose link stays frozen past the close", func(t *testing.T) {
-		row := stopWithAHeldHandBack(t, stopBudget, stopsHandBack, productionIntakeClient)
+		row := stopWithAHeldHandBack(t, stopBudget, stopsHandBack, withIntakeWriteDeadline)
 		logFinalizerOutcome(t, row)
 		logs := captureLogs(t)
 		select {
@@ -1554,18 +1558,18 @@ func TestARoutineHandBackConfirmedAsItIsMadeLetsACleanStopAfterAReconnectRelease
 // write, nats.go closes that socket and reconnects the same connection once the link takes it,
 // and each message published around the freeze is handled once.
 //
-// The row runs a holder whose client connects as production's intakes do (productionIntakeClient)
-// through a link (testnats.HandshakeHold). Two messages are handled before the freeze. The link
-// then freezes with a write parked in the holder's socket (HoldWriteLock), and a third message is
-// published while it is frozen: the server pushes it to the frozen socket, which never hands it to
-// the holder. The row requires that the write ends, so the connection is no longer connected,
-// within IntakeWriteDeadline and 5 s of the freeze; then it thaws the link, requires the same
-// connection to reconnect (its reconnect count grown by one), and publishes a fourth message. It
-// requires that each of the four messages is handled once and acknowledged: the third comes back
-// to the reconnected holder after the durable's ack wait (intakeAckWait, 80 s with
-// shrinkIntakeFlowControl), since the server counted it delivered to the socket that went. No
-// message is handed back outside a stop here: the GitHub intake hands one back only when a head
-// write or an acknowledgement fails.
+// The row runs a holder whose client writes with production's intake write deadline
+// (withIntakeWriteDeadline) through a link (testnats.HandshakeHold). Two messages are handled
+// before the freeze. The link then freezes with a write parked in the holder's socket
+// (HoldWriteLock), and a third message is published while it is frozen: the server pushes it to
+// the frozen socket, which never hands it to the holder. The row requires that the write ends, so
+// the connection is no longer connected, within IntakeWriteDeadline and 5 s of the freeze; then it
+// thaws the link, requires the same connection to reconnect (its reconnect count grown by one),
+// and publishes a fourth message. It requires that each of the four messages is handled once and
+// acknowledged: the third comes back to the reconnected holder after the durable's ack wait
+// (intakeAckWait, 25 s here, with shrinkIntakeFlowControl and intakeAckLanding at 5 s), since the
+// server counted it delivered to the socket that went. No message is handed back outside a stop
+// here: the GitHub intake hands one back only when a head write or an acknowledgement fails.
 //
 // Control: with nats.go's default write deadline (startIntakeProcess with no option), the write
 // holds the lock for a minute, the connection is still connected 10 s after the freeze, and the
@@ -1573,6 +1577,12 @@ func TestARoutineHandBackConfirmedAsItIsMadeLetsACleanStopAfterAReconnectRelease
 func TestAWriteFrozenPastTheIntakesWriteDeadlineReconnectsAndLosesNoMessage(t *testing.T) {
 	trace := traceStops(t)
 	shrinkIntakeFlowControl(t)
+	// Set before the intake starts, whose take-over reads it (intakeAckWait). The ack wait stays
+	// above what the in-flight window can take to handle, intakeMaxAckPending times
+	// intakeMessageTimeout (20 s).
+	ackLanding := intakeAckLanding
+	intakeAckLanding = 5 * time.Second
+	t.Cleanup(func() { intakeAckLanding = ackLanding })
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	natsURL := testnats.URL(t)
@@ -1581,7 +1591,7 @@ func TestAWriteFrozenPastTheIntakesWriteDeadlineReconnectsAndLosesNoMessage(t *t
 	trace.watchLink(link, "holder")
 	publisher := intakeTestClient(t)
 	trace.name(publisher, "publisher")
-	holder := startIntakeProcess(t, pool, link.URL(), nil, productionIntakeClient)
+	holder := startIntakeProcess(t, pool, link.URL(), nil, withIntakeWriteDeadline)
 	logReconnects(t, holder.client, nil)
 	trace.name(holder.client, "holder")
 	trace.printAtFailure(t)
@@ -1598,6 +1608,7 @@ func TestAWriteFrozenPastTheIntakesWriteDeadlineReconnectsAndLosesNoMessage(t *t
 
 	thaw := link.HoldWriteLock(t, conn)
 	frozen := time.Now()
+	writeBound := time.After(IntakeWriteDeadline + 5*time.Second)
 	publishMergedPullRequest(t, publisher, numbers[2])
 	// The read waits for nats.go's lock, which the frozen write holds, so it runs on a goroutine of
 	// its own and the row's wait stays bounded.
@@ -1610,7 +1621,7 @@ func TestAWriteFrozenPastTheIntakesWriteDeadlineReconnectsAndLosesNoMessage(t *t
 	}()
 	select {
 	case <-writeEnded:
-	case <-time.After(IntakeWriteDeadline + 5*time.Second):
+	case <-writeBound:
 		t.Fatalf("the holder's connection was still connected %s after its write froze: the write held nats.go's connection lock past the write deadline (%s)",
 			time.Since(frozen).Round(time.Millisecond), IntakeWriteDeadline)
 	}
@@ -1630,25 +1641,16 @@ func TestAWriteFrozenPastTheIntakesWriteDeadlineReconnectsAndLosesNoMessage(t *t
 		}
 		return true
 	}, func() string {
-		return fmt.Sprintf("the holder did not handle every message within the ack wait and 30 s: fetches %v; %s", fetchCounts(holder, numbers), consumerState(publisher))
+		return fmt.Sprintf("the holder did not handle every message within the ack wait and 30 s: fetches %v; %s", fetchesOf(holder, numbers), consumerState(publisher))
 	})
 	awaitEverythingAcknowledged(t, publisher)
 	for _, number := range numbers {
 		if got := holder.fetches(number); got != 1 {
-			t.Errorf("the holder handled pull request %d %d times, want once: fetches %v", number, got, fetchCounts(holder, numbers))
+			t.Errorf("the holder handled pull request %d %d times, want once: fetches %v", number, got, fetchesOf(holder, numbers))
 		}
 	}
 	if got := conn.Stats().Reconnects; got != before+1 {
 		t.Errorf("the holder's connection reconnected %d times, want once", got-before)
 	}
 	t.Logf("the write deadline ended the frozen write %s after the freeze", ended.Round(time.Millisecond))
-}
-
-// fetchCounts is how many times process fetched each of numbers, in order.
-func fetchCounts(process *intakeProcess, numbers []int) []int {
-	counts := make([]int, len(numbers))
-	for i, number := range numbers {
-		counts[i] = process.fetches(number)
-	}
-	return counts
 }

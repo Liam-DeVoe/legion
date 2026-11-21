@@ -286,13 +286,18 @@ var intakeMessageTimeout = time.Minute
 // client's pending buffer until that buffer drops them. A var so a test can shrink it.
 var intakeMaxAckPending = 4
 
+// intakeAckLanding is the part of intakeAckWait that lets the last outstanding message's
+// acknowledgement itself reach the server once its handling has ended. A var so a test can shrink
+// it.
+var intakeAckLanding = time.Minute
+
 // intakeAckWait is how long NATS waits for an acknowledgement before redelivering. Derived from
-// the two values above rather than chosen: when every outstanding message is one key's, the last
-// of intakeMaxAckPending waits for the ones before it, so the bound is their total handling time,
-// plus a minute for the acknowledgement itself to land. A function rather than a value so a test
-// that shrinks either input gets an ack wait derived from it.
+// the values above rather than chosen: when every outstanding message is one key's, the last of
+// intakeMaxAckPending waits for the ones before it, so the bound is their total handling time,
+// plus intakeAckLanding for the acknowledgement itself to land. A function rather than a value so a
+// test that shrinks any input gets an ack wait derived from it.
 func intakeAckWait() time.Duration {
-	return time.Duration(intakeMaxAckPending)*intakeMessageTimeout + time.Minute
+	return time.Duration(intakeMaxAckPending)*intakeMessageTimeout + intakeAckLanding
 }
 
 // deliveryConsumerConfig is the policy a take-over creates the durable with

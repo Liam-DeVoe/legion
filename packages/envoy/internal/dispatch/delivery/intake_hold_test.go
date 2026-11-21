@@ -284,7 +284,7 @@ func (p *intakeProcess) holdDeadline() time.Time {
 // called. Its GitHub answers every pull request 404 after counting it, which the intake logs and
 // acknowledges, and holds the fetch of each number block reports true until the fetch's own
 // deadline or the test's end. Its client connects with options as well: a row whose client must
-// write as production's intakes do passes productionIntakeClient, and every other row passes none,
+// write as production's intakes do passes withIntakeWriteDeadline, and every other row passes none,
 // so its client keeps nats.go's default write deadline of a minute.
 func startIntakeProcess(t *testing.T, pool *store.Pool, natsURL string, block func(number int) bool, options ...bus.ConnectOption) *intakeProcess {
 	t.Helper()

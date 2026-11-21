@@ -189,7 +189,10 @@ func (h *HandshakeHold) Release() {
 
 // HoldWriteLock holds conn's nats.go connection lock with a write, on a connection that stays
 // connected: it makes one write that the frozen proxy's network stack cannot take whole, so the
-// write, and with it the lock, lasts until Restore.
+// write, and with it the lock, lasts until Restore or until the connection's write deadline ends
+// the write (FlusherTimeout: nats.go's default of a minute, shorter with bus.WithWriteDeadline),
+// after which nats.go closes the socket and reconnects. A row that needs the lock held longer than
+// its client's write deadline uses a client with the default.
 //
 // nats.go v1.55.0 holds its connection lock from the Lock in (*Conn).publish to its Unlock. A
 // publish whose message passes its buffer's limit writes it to the socket inside that, in
@@ -211,11 +214,10 @@ func (h *HandshakeHold) Release() {
 // MaxPayload less 4 KiB, is more than twice what the stack can take. It then freezes the proxy and
 // makes the one publish, on a goroutine of its own, and returns once the runtime's record of that
 // goroutine (runtime.Stack) shows it inside (*natsWriter).flush under (*Conn).publish, in any state:
-// from then on the lock is held until Restore, and no read of the connection's status decides it.
-// It reads that record about every 10 ms, and fails the test, with the goroutine's stack, when the
-// publish has not reached its flush within 30 s. nats.go's write deadline (FlusherTimeout, a
-// minute) is longer than the 30 s guard of any row. It returns the func that ends the hold, which
-// thaws the proxy (Restore); the test's end calls it too.
+// from then on the lock is held until Restore or the write deadline, and no read of the
+// connection's status decides it. It reads that record about every 10 ms, and fails the test, with
+// the goroutine's stack, when the publish has not reached its flush within 30 s. It returns the
+// func that ends the hold, which thaws the proxy (Restore); the test's end calls it too.
 func (h *HandshakeHold) HoldWriteLock(t testing.TB, conn *natsgo.Conn) (release func()) {
 	t.Helper()
 	local := conn.LocalAddr()

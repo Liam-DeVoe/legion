@@ -1726,7 +1726,8 @@ A take-over under way when the context ends — a standby's poll
 — spends the same deadline rather than starting one of its own:
 its own bounds (`takeOverFinishWithin`, 10 s, and the hold's deadline) end it inside that budget, and no attempt starts once the context has ended.
 The server's shutdown waits for `Run`'s stop, which begins at the signal and gives handlers 15 s from it, then for each pending hand-back finalizer to confirm its hand-back with the intake client open, up to 5 s from the finalizer's start, then closes the intake client and waits for each finalizer to release its hold or leave it to lapse, before it deregisters the process and closes the database pool.
-That wait can outlive the usual shutdown reserve only while `Client.Close` waits up to the 5 s write deadline for nats.go's lock; a kubelet kill then ends the client and renewal, and the hold lapses.
+That wait can outlive the usual shutdown reserve only while `Client.Close` waits up to 5 s for nats.go's lock, behind a frozen write or a reconnect attempt, and the release then takes most of its own 5 s.
+In that case a kubelet kill ends the client and renewal, and the hold lapses.
 
 **The Legion state intake** (`legion.Intake`, `internal/dispatch/legion/intake.go`) takes every Legion daemon's state events from the durable `legion-state-events` on `notifications.legion.*.state`, under a hold as the GitHub intake's is (`delivery.NewHeldDurable`), and runs whenever the process has NATS, with or without the GitHub App.
 A daemon publishes one message for each transaction it committed that moved what Dispatch observes: an issue's phase, tree, slot or wait, a role's claim, the admission block, or its boot.

@@ -14,28 +14,17 @@ import (
 // option the write would hold the lock, and Close with it, for nats.go's default minute.
 func TestAClientWithAWriteDeadlineClosesWithinItWhileAWriteIsFrozen(t *testing.T) {
 	const deadline = 2 * time.Second
-	hold := testnats.StartHandshakeHold(t, testnats.URL(t))
-	client, err := ConnectOwningStream([]string{hold.URL()}, WithName(t.Name()), WithWriteDeadline(deadline))
-	if err != nil {
-		t.Fatalf("connect through the hold: %v", err)
-	}
-	t.Cleanup(client.Close)
+	client, hold := heldHandshakeClient(t, WithName(t.Name()), WithWriteDeadline(deadline))
 	conn := client.Connection()
 	writeHeld := time.Now()
 	hold.HoldWriteLock(t, conn)
 	testnats.RequireLockHeld(t, conn)
 
 	closing := time.Now()
-	closed := make(chan struct{})
-	go func() {
+	testnats.AnswersWithin(t, deadline+time.Second, "Close", func() error {
 		client.Close()
-		close(closed)
-	}()
-	select {
-	case <-closed:
-	case <-time.After(deadline + time.Second):
-		t.Fatalf("Close did not return within the write deadline (%s) and a second, while a write was frozen: the deadline did not end the write", deadline)
-	}
+		return nil
+	})
 	if !conn.IsClosed() {
 		t.Fatal("Close returned, but the connection has not closed")
 	}

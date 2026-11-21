@@ -47,10 +47,11 @@ type stopRow struct {
 // startStopRow subscribes a delivery keyed by key and handled by handle at the durable's deliver
 // subject, creating the durable first when createDurable says so, and waits until the server counts
 // its subscriber. Its client keeps nats.go's default write deadline of a minute, not production's
-// IntakeWriteDeadline: the rows hold a handshake or a write on purpose (HoldReconnect,
-// HoldWriteLock), for longer than 5 s under the race detector, to test the stop's calls while
-// nats.go's lock is held, which production's write deadline ends after 5 s. Each row logs its
-// client's reconnect count as it ends, passing or failing (logReconnects); it has no standby.
+// IntakeWriteDeadline: the rows that hold a write (HoldWriteLock) hold it on purpose for longer than
+// 5 s under the race detector, to test the stop's calls while nats.go's lock is held, and
+// production's write deadline ends a held write after 5 s. A held handshake (HoldReconnect) ends at
+// the bus's connect timeout with either write deadline. Each row logs its client's reconnect count
+// as it ends, passing or failing (logReconnects); it has no standby.
 func startStopRow(t *testing.T, key func(*natsgo.Msg) (string, *contracts.Envelope, bool), handle func(*intakeDelivery, intakeMessage), createDurable bool) *stopRow {
 	t.Helper()
 	server, uri := testnats.Start(t)

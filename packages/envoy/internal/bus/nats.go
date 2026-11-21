@@ -235,9 +235,10 @@ func WithPromptReconnect() DialOption {
 // holds nats.go's connection lock until it ends, and so does every call that waits for that lock
 // meanwhile: Close, and the ping timer that would notice a silent cut. Without this option a write
 // to a socket that takes no byte holds the lock for nats.go's default of a minute
-// (DefaultFlusherTimeout). The cost: a socket that takes no byte for d fails its write, nats.go
-// closes it when the write sent part of a message, and reconnects, so d must stay above the
-// longest a healthy link can take to accept a write. envoy-dispatch gives it to its intakes'
+// (DefaultFlusherTimeout). The cost: a write the socket has not taken whole within d fails, since
+// each Write has one fixed deadline and the bytes the socket takes do not move it; nats.go closes
+// the socket when the write sent part of a message, and reconnects. So d must stay above the
+// longest a healthy link can take to accept a whole write. envoy-dispatch gives it to its intakes'
 // clients alone (delivery.IntakeWriteDeadline), which publish only small answers.
 func WithWriteDeadline(d time.Duration) DialOption {
 	return func(o *connectOpts) { o.writeDeadline = d }

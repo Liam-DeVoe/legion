@@ -24,7 +24,7 @@ const (
 // (bus.WithWriteDeadline): the GitHub intakes' and the Legion state intake's, which cmd/dispatch
 // connects with it. A write to a socket that takes no byte holds nats.go's connection lock until
 // its deadline (timeoutWriter, nats.go v1.55.0), and the client's Close and nats.go's ping timer
-// wait for that lock, so at nats.go's default of a minute a frozen link held the stop of the
+// wait for that lock, so at nats.go's default of a minute a frozen link would hold the stop of the
 // process, and the standby with it, for that minute. With 5 s, the standby takes a durable over
 // at most 22 s after the stop begins to close the holder's client: the close waits at most 5 s for
 // the lock, which a frozen write holds up to this deadline and a reconnect attempt through a
