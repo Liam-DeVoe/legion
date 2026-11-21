@@ -28,9 +28,6 @@ const (
 	pubSessionPerson   = "session-operator@example.com"
 	// reusedSession is the session name both accounts' pods are registered for.
 	reusedSession = "019a7c3e-reused-session"
-	// reuseAccessLifetime is the lifetime of each token these tests mint, which the hold on a
-	// session name runs SessionRetention past.
-	reuseAccessLifetime = 15 * time.Minute
 )
 
 // newSessionAccountsFixture is an exchange whose policy lists the two session accounts above, the
@@ -49,7 +46,6 @@ func newSessionAccountsFixture(t *testing.T, pubEntryProject string) *exchangeFi
 		}
 	})
 	return newExchangeFixture(t, func(c *oauth.Config) {
-		c.AccessLifetime = reuseAccessLifetime
 		c.Exchange.Policy = newPolicy(t, []exchange.AccountEntry{
 			{Account: privSessionAccount, Project: privProject, Person: privSessionPerson},
 			{Account: pubSessionAccount, Project: pubEntryProject, Person: pubSessionPerson},
@@ -67,11 +63,11 @@ func newSessionAccountsFixture(t *testing.T, pubEntryProject string) *exchangeFi
 // name's earlier holder. It holds for a public account whose entry names PUB, and for one whose
 // entry names no project, which is how a deployment lists its shared public-session account.
 //
-// Control (run by hand, then reverted): make the exchange give a session name the projects of the
-// first token minted under it, for example by keeping them in a map keyed by
-// session.Extra[oauth.ClaimSession] in oauth.Provider.decide and writing them over claims.Projects
-// on every later trade of that name. The last trade then lists PRIV, and this test fails naming
-// reusedSession and PRIV.
+// Control (run by hand, then reverted): make the exchange give a token the projects of its session
+// name's previous holder, for example by reading in oauth.Provider.decide the stored projects
+// claim of the first access token minted under that name (oauth_access_tokens' request, at
+// session.extra.projects) and writing it over claims.Projects. The last trade then lists PRIV,
+// and this test fails naming reusedSession and PRIV.
 func TestAReusedSessionNameCarriesOnlyItsPodsProjects(t *testing.T) {
 	for _, tc := range []struct {
 		name, entryProject string
@@ -94,9 +90,9 @@ func reusedNameCarriesOnlyItsPodsProjects(t *testing.T, entryProject string, wan
 
 	// 1. The private project's pod writes under the name first, and its token lists PRIV.
 	f.registers(t, privSessionAccount, "pod-uid-priv", reusedSession)
-	first := f.exchanged(t, exchangeForm(f.podTokenOf(t, privSessionAccount, "pod-uid-priv"), oauthwire.SubjectTokenTypeKubernetes, reusedSession), key)
-	if answer := f.introspected(t, first); answer.Session != reusedSession || answer.ProjectScope != oauthwire.ProjectScopeNamed || !slices.Equal(answer.Projects, []string{privProject}) {
-		t.Fatalf("the %s pod's token under %s introspects %+v, want a named token of %s listing [%s]", privSessionAccount, reusedSession, answer, reusedSession, privProject)
+	first := f.introspected(t, f.exchanged(t, exchangeForm(f.podTokenOf(t, privSessionAccount, "pod-uid-priv"), oauthwire.SubjectTokenTypeKubernetes, reusedSession), key))
+	if first.Session != reusedSession || first.ProjectScope != oauthwire.ProjectScopeNamed || !slices.Equal(first.Projects, []string{privProject}) {
+		t.Fatalf("the %s pod's token under %s introspects %+v, want a named token of %s listing [%s]", privSessionAccount, reusedSession, first, reusedSession, privProject)
 	}
 
 	// 2. A public session's pod registered for the same name is refused it while the hold stands,
@@ -108,18 +104,24 @@ func reusedNameCarriesOnlyItsPodsProjects(t *testing.T, entryProject string, wan
 	if after := f.count(t, "oauth_access_tokens"); after != tokens {
 		t.Fatalf("the refused trade of %s under %s stored %d access tokens, want none", pubSessionAccount, reusedSession, after-tokens)
 	}
-
-	// 3. The hold runs out: the store's clock moves SessionRetention past the last token's expiry,
-	// and a minute more.
+	// The hold that refused it is the first account's, running SessionRetention past its token's
+	// expiry. The answer's exp is whole seconds, so the deadline lies within a second of it.
 	var holder string
-	var lapsed bool
-	if err := f.pool.QueryRow(ctx, `update oauth_session_bindings set expires_at = expires_at - make_interval(secs => $2)
-		where session = $1 returning principal, expires_at <= now()`,
-		reusedSession, (oauthstore.SessionRetention+reuseAccessLifetime+time.Minute).Seconds()).Scan(&holder, &lapsed); err != nil {
-		t.Fatalf("move the hold on %s past SessionRetention: %v", reusedSession, err)
+	var deadline time.Time
+	if err := f.pool.QueryRow(ctx, `select principal, expires_at from oauth_session_bindings where session = $1`, reusedSession).Scan(&holder, &deadline); err != nil {
+		t.Fatalf("read the hold on %s: %v", reusedSession, err)
 	}
-	if want := exchange.AccountPrincipal(privSessionAccount); holder != want || !lapsed {
-		t.Fatalf("the hold on %s moved was %q's, lapsed %t; want %q's, lapsed", reusedSession, holder, lapsed, want)
+	retained := time.Unix(first.ExpiresAt, 0).Add(oauthstore.SessionRetention)
+	if want := exchange.AccountPrincipal(privSessionAccount); holder != want || deadline.Before(retained.Add(-time.Second)) || deadline.After(retained.Add(time.Second)) {
+		t.Fatalf("the hold on %s is %q's until %s; want %q's until SessionRetention past its token's expiry, %s", reusedSession, holder, deadline, want, retained)
+	}
+
+	// 3. The hold runs out. Its deadline is moved a minute into the past, which is the binding
+	// once SessionRetention has passed since the token's expiry: a claim compares expires_at with
+	// now() (oauthstore.Store.BindSession), and the trade below reads nothing else that would have
+	// aged in that time.
+	if _, err := f.pool.Exec(ctx, `update oauth_session_bindings set expires_at = now() - interval '1 minute' where session = $1`, reusedSession); err != nil {
+		t.Fatalf("expire the hold on %s: %v", reusedSession, err)
 	}
 	second := f.exchanged(t, exchangeForm(f.podTokenOf(t, pubSessionAccount, "pod-uid-pub"), oauthwire.SubjectTokenTypeKubernetes, reusedSession), key)
 	answer := f.introspected(t, second)
