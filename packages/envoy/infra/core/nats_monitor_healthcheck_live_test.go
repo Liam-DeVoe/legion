@@ -52,13 +52,11 @@ func taskHealthCheck(t *testing.T, a core.Authorization) (command, config string
 
 // runTaskHealthCheck runs the hub's image on config with healthCheckArgs, as the task's start
 // script execs nats-server, waits until monitoring answers on 127.0.0.1, and then runs the task's
-// health check command in the container, as ECS does. The container starts on config itself
-// (testnats.StartImageReady), not on another configuration it is then stopped and started again
-// on: a start after a stop publishes the client port again, and in envoy-infra-go another process
-// once took that port while the container was stopped, so the start failed, "address already in
-// use". It fails as UNKNOWN when the container's loopback has no IPv6 address: there `localhost`
-// names 127.0.0.1 alone, and no run can tell a health check that reads only 127.0.0.1 from one
-// that reads either loopback.
+// health check command in the container, as ECS does. The container starts on config itself,
+// with no restart (testnats.StartImageReady says why): in envoy-infra-go a restart of it once
+// failed, "address already in use". It fails as UNKNOWN when the container's loopback has no IPv6
+// address: there `localhost` names 127.0.0.1 alone, and no run can tell a health check that reads
+// only 127.0.0.1 from one that reads either loopback.
 func runTaskHealthCheck(t *testing.T, config, command string) (int, string) {
 	t.Helper()
 	ctx := context.Background()

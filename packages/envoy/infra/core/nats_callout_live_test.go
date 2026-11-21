@@ -103,11 +103,8 @@ var hubArgs = []string{"-js"}
 
 // startOn runs the hub's image on config, with the rig's auth service, which holds each answer
 // for answerDelay before it gives it, and returns the client URL once the service's user is
-// connected. The container starts on config itself (testnats.StartImageReady), callout and all,
-// rather than on a configuration a probe could read and then again on config: Docker publishes
-// the client port again at each start of a container, at the same address and port, and another
-// process can take that port while the container is stopped, so the second start is refused,
-// "address already in use", as the task health-check rows were in envoy-infra-go.
+// connected. The container starts on config itself, callout and all, with no restart
+// (testnats.StartImageReady says why).
 func (r *calloutRig) startOn(t *testing.T, config string, answerDelay time.Duration) string {
 	t.Helper()
 	_, uri := testnats.StartImageReady(t, testnats.HubImage, config, hubArgs)
@@ -116,8 +113,9 @@ func (r *calloutRig) startOn(t *testing.T, config string, answerDelay time.Durat
 }
 
 // connectWhenUp connects to server as the nkey user whose seed is seed, with options, retrying for
-// 30 s while the server behind a proxy comes up, and closes the connection when the test ends.
-// testnats.ConnectSeed sets NoReconnect, so a connection the server closes stays closed.
+// 30 s while the server comes up behind its published port or a proxy, and closes the connection
+// when the test ends. testnats.ConnectSeed sets NoReconnect, so a connection the server closes
+// stays closed.
 func connectWhenUp(t *testing.T, server, seed string, options ...natsgo.Option) *natsgo.Conn {
 	t.Helper()
 	var conn *natsgo.Conn
@@ -126,7 +124,7 @@ func connectWhenUp(t *testing.T, server, seed string, options ...natsgo.Option) 
 		if conn, err = testnats.ConnectSeed(t, server, seed, options...); err == nil {
 			break
 		}
-		require.True(t, time.Now().Before(deadline), "could not connect to %s, restarted: %v", server, err)
+		require.True(t, time.Now().Before(deadline), "could not connect to %s within 30 s: %v", server, err)
 	}
 	t.Cleanup(conn.Close)
 	return conn
@@ -202,16 +200,13 @@ func (r *calloutRig) requireRequests(t *testing.T, want int64, why string) {
 func TestAuthCalloutOnTheHubServer(t *testing.T) {
 	// The callout is turned on over the same JetStream store: the first container is stopped and a
 	// fresh one starts on the store with the callout configured, on a fresh address, as an
-	// operator's rollout replaces the hub's task. Starting the stopped container again would
-	// publish its client port again at the address and port another process could have taken
-	// meanwhile (startOn).
+	// operator's rollout replaces the hub's task (testnats.ImageStore).
 	t.Run("a stream written before the callout reads whole after it", func(t *testing.T) {
 		rig := newCalloutRig(t, false)
 		store := testnats.ImageStore(t)
 		ctr, uri := testnats.StartImageReady(t, testnats.HubImage, rig.render(t, false), hubArgs, store...)
-		// The ready line can come before the container serves a client through its published
-		// port, so the first connect retries (connectWhenUp). The second container's connects
-		// below follow the auth service's own, which retries the same way (serve).
+		// Every first connect of this rig goes through connectWhenUp, which retries; the second
+		// container's connects below follow the auth service's own, which does the same (serve).
 		conn := connectWhenUp(t, uri, rig.staticSeed)
 		js, err := conn.JetStream()
 		require.NoError(t, err)

@@ -531,8 +531,9 @@ func hostConfig(host string, client, monitoring int) testcontainers.CustomizeReq
 	})
 }
 
-// startTries bounds the starts start makes, each on a fresh address and ports, while Docker
-// refuses to publish a port because something took the probed one first (loopbackPorts).
+// startTries bounds the starts start makes while Docker refuses to publish a port as in use:
+// something took the probed one first (loopbackPorts), or, on a Docker daemon on another machine,
+// every port Docker tried was held (defaultBinding).
 const startTries = 5
 
 // start runs a NATS container, with its monitoring endpoint on 8222, on config when it is not ""
@@ -548,8 +549,9 @@ const startTries = 5
 // under load, or a refused publish) comes back beside the error, and is removed before start
 // returns: no test's end would remove a container the package shares. A Docker daemon on another
 // machine (localDaemon) publishes on that machine, whose loopback this one does not reach, so
-// there the ports take Docker's default binding and its choice of port, in one start, and endpoint
-// names the daemon's host.
+// there the ports take Docker's default binding and its choice of port (defaultBinding), and
+// endpoint names the daemon's host; Docker can refuse that publish as in use too, having tried
+// ports another process holds, and the start is tried again the same way.
 //
 // Every start is given options again, so none of them may hold state a start uses up; the
 // configuration comes as text for that reason, and each start reads it anew (run).
@@ -558,17 +560,14 @@ func start(image, config string, options ...testcontainers.ContainerCustomizer) 
 	if err != nil {
 		return nil, fmt.Errorf("find where the Docker daemon publishes a container's ports: %w", err)
 	}
+	publishOn := choosePorts
 	if !local {
-		started, err := run(image, config, hostConfig("", 0, 0), options)
-		if err != nil {
-			return started, errors.Join(err, testcontainers.TerminateContainer(started))
-		}
-		return started, nil
+		publishOn = defaultBinding
 	}
 	var refused []error
 	var started *tcnats.NATSContainer
 	for range startTries {
-		host, ports, err := choosePorts(2)
+		host, ports, err := publishOn(2)
 		if err != nil {
 			return started, errors.Join(append(refused, fmt.Errorf("choose loopback ports to publish NATS on: %w", err))...)
 		}
@@ -576,7 +575,11 @@ func start(image, config string, options ...testcontainers.ContainerCustomizer) 
 		if err == nil {
 			return started, nil
 		}
-		err = fmt.Errorf("%s ports %d and %d: %w", host, ports[0], ports[1], errors.Join(err, testcontainers.TerminateContainer(started)))
+		where := "Docker's default binding"
+		if host != "" {
+			where = fmt.Sprintf("%s ports %d and %d", host, ports[0], ports[1])
+		}
+		err = fmt.Errorf("%s: %w", where, errors.Join(err, testcontainers.TerminateContainer(started)))
 		if !addressInUse(err) {
 			return started, errors.Join(append(refused, err)...)
 		}
@@ -585,9 +588,14 @@ func start(image, config string, options ...testcontainers.ContainerCustomizer) 
 	return started, fmt.Errorf("every one of %d published addresses was refused as in use: %w", startTries, errors.Join(refused...))
 }
 
-// choosePorts is the address and ports each start publishes on: loopbackPorts, which a row of
-// this package's tests replaces to have Docker refuse a start's publish.
+// choosePorts is the address and ports each start publishes on where the Docker daemon is this
+// machine: loopbackPorts, which a row of this package's tests replaces to have Docker refuse a
+// start's publish.
 var choosePorts = loopbackPorts
+
+// defaultBinding is where each start publishes on a Docker daemon on another machine: no address,
+// so hostConfig leaves Docker's default binding of every address and Docker chooses each port.
+func defaultBinding(n int) (string, []int, error) { return "", make([]int, n), nil }
 
 // run is one start of start's container, published as publish says. Its configuration file is a
 // reader of config made for this start alone: the copy into the container drains the reader it is

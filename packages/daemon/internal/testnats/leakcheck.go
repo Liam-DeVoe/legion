@@ -12,12 +12,14 @@
 // (StartNkeyAuthorized, StartNkeyAuthorizedUsers) as well (armServerLeakCheck): such a server is
 // removed when that test ends, but a client left on it outlives the test all the same. One that
 // connects with ReconnectForever, as the daemon's workflow does, keeps dialing the server's address
-// once it is gone, and a later server given its port would answer it; every server here listens on
-// an address of its own (LoopbackIP), so that stray reaches none of them, and the check makes the
-// client's own test fail for leaving it. The shared server's check depends as well on this
-// fixture's rule of one test binary at a time, which the package comment and
-// skills/legion-worker/references/tools.md both state: every connection the server holds is this
-// binary's, so one that appeared while a test held the server is that test's own.
+// once it is gone, and a later server given its port would answer it. Where the Docker daemon is
+// this machine, every server here listens on an address of its own (LoopbackIP), so that stray
+// reaches none of them; where it is another machine (localDaemon), the servers share its default
+// binding, and the check is what makes the client's own test fail for leaving it, either way. The
+// shared server's check depends as well on this fixture's rule of one test binary at a time, which
+// the package comment and skills/legion-worker/references/tools.md both state: every connection the
+// server holds is this binary's, so one that appeared while a test held the server is that test's
+// own.
 
 package testnats
 
@@ -39,7 +41,9 @@ import (
 // (internal/daemon/outbox_scratch_dispatch_test.go) and the Envoy listener
 // (internal/daemon/idle_rig_listener_test.go) — so the server sees those sockets close after the
 // cleanup that killed the process has run. The settle lengthens no bound of any test under it: a
-// test that left nothing reads once and returns.
+// test that left nothing reads once and returns. A test's own server (armServerLeakCheck) shares
+// this bound with the shared one: its clients are the same daemon clients, and it reads the same
+// /connz.
 const (
 	leakSettle = 2 * time.Second
 	leakPoll   = 50 * time.Millisecond
@@ -109,7 +113,7 @@ func armLeakCheck(t testing.TB) {
 // every cleanup the test registered afterwards — the closes of its own clients among them — has
 // run by the time it is called, cleanups running in reverse order of their registration.
 func leakCheck(t testing.TB, armed map[uint64]bool) {
-	left, err := settled(armed)
+	left, err := settled(readConnections, armed)
 	if err != nil {
 		t.Errorf("read the NATS server's connections at the end of %s: %v", t.Name(), err)
 	}
@@ -140,7 +144,7 @@ func leakCheck(t testing.TB, armed map[uint64]bool) {
 	// held: the daemon's own, a child process's, or a raw nats.Connect of the test's. NATS has
 	// no call that closes another client's connection without a system account, which this
 	// fixture's server does not configure, so the record is all the next test's drain can have.
-	left, err = settled(armed)
+	left, err = settled(readConnections, armed)
 	if err != nil {
 		// The record made above stands. This read failing is exactly when the next test's drain
 		// needs it, and narrowing it to nil here would leave that drain with nothing to name.
@@ -197,21 +201,21 @@ func leftByTheLastTest(found []Connection) (string, bool) {
 	return leftOpenBy, true
 }
 
-// settled waits up to leakSettle for the server to hold no connection that was absent when the
-// check was armed, and answers what is left with the last read's error.
-func settled(armed map[uint64]bool) ([]Connection, error) {
+// settled waits up to leakSettle for the server read reads to hold no connection that was absent
+// when the check was armed, and answers what is left with the last read's error.
+func settled(read func() ([]Connection, error), armed map[uint64]bool) ([]Connection, error) {
 	var left []Connection
 	var err error
 	testwait.Holds(leakSettle, leakPoll, func() bool {
-		left, err = opened(armed)
+		left, err = opened(read, armed)
 		return err == nil && len(left) == 0
 	})
 	return left, err
 }
 
-// opened is what the server holds that it did not hold when the check was armed.
-func opened(armed map[uint64]bool) ([]Connection, error) {
-	open, err := readConnections()
+// opened is what the server read reads holds that it did not hold when the check was armed.
+func opened(read func() ([]Connection, error), armed map[uint64]bool) ([]Connection, error) {
+	open, err := read()
 	if err != nil {
 		return nil, err
 	}
@@ -235,18 +239,14 @@ func opened(armed map[uint64]bool) ([]Connection, error) {
 // check's positive control.
 func armServerLeakCheck(t testing.TB, monitor string) {
 	t.Helper()
-	open, err := connectionsAt(monitor)
+	read := func() ([]Connection, error) { return connectionsAt(monitor) }
+	open, err := read()
 	if err != nil {
 		t.Fatalf("read the connections of %s's own NATS server to arm the leak check: %v", t.Name(), err)
 	}
 	armed := cids(open)
 	t.Cleanup(func() {
-		var left []Connection
-		var err error
-		testwait.Holds(leakSettle, leakPoll, func() bool {
-			left, err = openedAt(monitor, armed)
-			return err == nil && len(left) == 0
-		})
+		left, err := settled(read, armed)
 		if err != nil {
 			t.Errorf("read the connections of %s's own NATS server at its end: %v", t.Name(), err)
 		}
@@ -255,20 +255,4 @@ func armServerLeakCheck(t testing.TB, monitor string) {
 				t.Name(), len(left), left)
 		}
 	})
-}
-
-// openedAt is what the server whose monitoring endpoint is monitor holds that it did not hold when
-// its check was armed.
-func openedAt(monitor string, armed map[uint64]bool) ([]Connection, error) {
-	open, err := connectionsAt(monitor)
-	if err != nil {
-		return nil, err
-	}
-	var left []Connection
-	for _, c := range open {
-		if !armed[c.CID] {
-			left = append(left, c)
-		}
-	}
-	return left, nil
 }
