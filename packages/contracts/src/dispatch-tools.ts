@@ -128,6 +128,22 @@ function brokenParts(parts: ReadonlyArray<readonly [boolean, string]>): string |
   return broken.length === 0 ? undefined : broken.join(" ");
 }
 
+/**
+ * `refusal` without the owner rule that opens it: `refusal` unchanged when no owner rule opens it,
+ * undefined when it is that rule alone, and otherwise the parts after the rule. `brokenParts` joins
+ * the parts a call broke with one space, and every refusal names its owner part first, so cutting
+ * the rule and the space after it keeps every other part: a host that has already said the call
+ * names no owner, in words of its own, still names the rest of what the call broke
+ * (`checkDispatchCall` in packages/envoy-client/src/dispatch-commands/check.ts).
+ */
+export function withoutOwnerRule(refusal: string): string | undefined {
+  const rule = DISPATCH_OWNER_RULES.find(
+    (owner) => refusal === owner || refusal.startsWith(`${owner} `)
+  );
+  if (rule === undefined) return refusal;
+  return refusal === rule ? undefined : refusal.slice(rule.length + 1);
+}
+
 const CONTENT_IS_MARKDOWN =
   "content is stored as a Markdown document, which rewrites other text (a JSONL file's lines come back joined into one paragraph)";
 
@@ -525,12 +541,9 @@ const READ_MESSAGE_RULE =
 
 /**
  * Every owner rule a tool's validation refuses a call with: a document tool's two, dispatch_read's
- * and dispatch_message's. A refusal that joins the parts of a rule a call broke names the owner
- * part first (`brokenParts`), so a host that has already said the call names no owner, in words
- * of its own, cuts the rule off the front of the refusal and keeps the other parts
- * (`checkDispatchCall` in packages/envoy-client/src/dispatch-commands/check.ts).
+ * and dispatch_message's, which `withoutOwnerRule` cuts off the front of a refusal.
  */
-export const DISPATCH_OWNER_RULES: readonly string[] = [
+const DISPATCH_OWNER_RULES: readonly string[] = [
   DOCUMENT_OWNER_RULE,
   NAMED_DOCUMENT_OWNER_RULE,
   READ_OWNER_RULE,

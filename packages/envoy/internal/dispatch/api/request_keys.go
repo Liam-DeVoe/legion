@@ -147,8 +147,10 @@ var errRequestKeyTakenOver = errorf(http.StatusConflict, contracts.IdempotencyKe
 // keyedReplay answers a repeat of a keyed write whose first run committed recovery
 // (bindRequestKeyRecovery): it puts on its way whatever the write still owes, then answers what the
 // write made as it stands now, with the status the route's write answers - a stale success, in
-// Google AIP-155's words, never a second write. stored is the first answer's body when the key kept
-// one and it was a success, and nil when the first request never answered or answered a refusal.
+// Google AIP-155's words, never a second write. The status change's replay answers what its steps
+// stored instead, each issue as its step's write answered it (replayStatusChange). stored is the
+// first answer's body when the key kept one and it was a success, and nil when the first request
+// never answered or answered a refusal.
 type keyedReplay func(w http.ResponseWriter, r *http.Request, recovery json.RawMessage, stored []byte)
 
 // keyedRoute is what the keyed layer knows of a route that commits a recovery point: the route's
@@ -318,7 +320,7 @@ func (s *server) keyedWrites(method, pattern string, handler http.HandlerFunc, r
 		// A repeat whose first request still runs is not spooled: a slow upload's repeats would
 		// each be written to disk again only to be told to wait. Its body is read off the
 		// connection and discarded, and the repeat is judged once it has arrived.
-		inFlight, recovery, err := s.requestKeyInFlight(r.Context(), login, key, route.refuse != nil)
+		inFlight, err := s.requestKeyInFlight(r.Context(), login, key)
 		if err != nil {
 			w.Header().Set(contracts.IdempotencyKeyHeader, key)
 			s.refuseKeyed(w, route, err, nil)
@@ -328,7 +330,7 @@ func (s *server) keyedWrites(method, pattern string, handler http.HandlerFunc, r
 			if s.repeatFoundInFlight != nil {
 				s.repeatFoundInFlight()
 			}
-			s.answerDrainedRepeat(w, r, method, pattern, wildcards, login, key, route, recovery)
+			s.answerDrainedRepeat(w, r, method, pattern, wildcards, login, key, route)
 			return
 		}
 		digest := sha256.New()
@@ -828,29 +830,22 @@ func (held heldRequestKey) storedSuccess() []byte {
 
 // requestKeyInFlight reports whether login's key is held by a first request still running: a row
 // inside the key's window, unanswered, its lease live - the KEY_IN_FLIGHT claimRequestKey would
-// answer, looked up before the request's body is spooled. recovery is the recovery point that
-// row holds, as every reader reads it (recoveryPointRead), read only when wantsPoint (a route
-// that shapes its refusals, keyedRoute.refuse) and the row is in flight, and nil otherwise: what a
-// KEY_IN_FLIGHT answered before the key is read again names. It names no digest: the repeat it
-// finds is judged by its digest once its body has arrived (answerDrainedRepeat).
-func (s *server) requestKeyInFlight(
-	ctx context.Context, login, key string, wantsPoint bool,
-) (inFlight bool, recovery json.RawMessage, err error) {
-	// now() is fixed for the statement, so the two in-flight expressions agree.
-	err = s.deps.Store.Pool.QueryRow(ctx, `
-		select status is null and coalesce(leased_at >= now() - make_interval(secs => $3), false),
-		       case when $5 and status is null and coalesce(leased_at >= now() - make_interval(secs => $3), false)
-		            then `+recoveryPointRead+` end
+// answer, looked up before the request's body is spooled. It names no digest: the repeat it finds
+// is judged by its digest once its body has arrived (answerDrainedRepeat).
+func (s *server) requestKeyInFlight(ctx context.Context, login, key string) (bool, error) {
+	var inFlight bool
+	err := s.deps.Store.Pool.QueryRow(ctx, `
+		select status is null and coalesce(leased_at >= now() - make_interval(secs => $3), false)
 		from request_keys
 		where login = $1 and idempotency_key = $2 and created_at >= now() - make_interval(secs => $4)
-	`, login, key, s.keyLease().Seconds(), contracts.IdempotencyKeyTTL.Seconds(), wantsPoint).Scan(&inFlight, &recovery)
+	`, login, key, s.keyLease().Seconds(), contracts.IdempotencyKeyTTL.Seconds()).Scan(&inFlight)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return false, nil, nil
+		return false, nil
 	}
 	if err != nil {
-		return false, nil, fmt.Errorf("look up an idempotency key: %w", err)
+		return false, fmt.Errorf("look up an idempotency key: %w", err)
 	}
-	return inFlight, recovery, nil
+	return inFlight, nil
 }
 
 // requestKeyAnswersItself reports whether login's key holds a row this layer answers without
@@ -1034,22 +1029,20 @@ func (s *server) answerHeldKey(w http.ResponseWriter, r *http.Request, key strin
 //
 // A client that asked to be told to continue before it sends its body (Expect: 100-continue) is
 // answered 409 KEY_IN_FLIGHT at once, with nothing read: it has sent nothing, so the answer is as
-// fresh as the key, and a read would ask it for its whole body only to judge it. recovery is the
-// point the key held when requestKeyInFlight read it, which a KEY_IN_FLIGHT answered without
-// reading the key again names.
+// fresh as the key, and a read would ask it for its whole body only to judge it.
 //
 // The body is read for at most drainTime (readFor): one that stops arriving is answered 409
-// KEY_IN_FLIGHT, which is what the key said, and the connection closes after it. A body past the
-// route's limit is answered the route's 413 (routeBody), as a first request's body past it is.
-// Either keeps the read's deadline for net/http's own reads after the answer; only a body read to
-// its end lifts it.
+// KEY_IN_FLIGHT, which is what the key said, and the connection closes after it. Neither of those
+// two answers reads the key again to judge the repeat; each names the recovery point the key holds
+// when it is answered (writeUnjudgedKeyInFlight). A body past the route's limit is answered the
+// route's 413 (routeBody), as a first request's body past it is. Either keeps the read's deadline
+// for net/http's own reads after the answer; only a body read to its end lifts it.
 func (s *server) answerDrainedRepeat(
 	w http.ResponseWriter, r *http.Request, method, pattern string, wildcards []string, login, key string, route keyedRoute,
-	recovery json.RawMessage,
 ) {
 	if expectsContinue(r) {
 		w.Header().Set(contracts.IdempotencyKeyHeader, key)
-		s.writeKeyInFlight(w, route, key, recovery)
+		s.writeUnjudgedKeyInFlight(w, r, route, login, key)
 		return
 	}
 	limit, tooLarge := routeBody(method, pattern)
@@ -1061,7 +1054,7 @@ func (s *server) answerDrainedRepeat(
 	case err != nil:
 		w.Header().Set("Connection", "close")
 		w.Header().Set(contracts.IdempotencyKeyHeader, key)
-		s.writeKeyInFlight(w, route, key, recovery)
+		s.writeUnjudgedKeyInFlight(w, r, route, login, key)
 		return
 	case size > limit:
 		s.refuseKeyed(w, route, tooLarge, nil)
@@ -1111,6 +1104,30 @@ func (s *server) writeKeyInFlight(w http.ResponseWriter, route keyedRoute, key s
 		contracts.IdempotencyKeyHeader, key)
 	refusal.retryAfter = 1
 	s.refuseKeyed(w, route, refusal, recovery)
+}
+
+// writeUnjudgedKeyInFlight answers a repeat 409 KEY_IN_FLIGHT before its digest is judged
+// (answerDrainedRepeat's Expect: 100-continue and drain-error answers), naming the recovery point
+// login's key holds as it answers, as every reader reads it (recoveryPointRead), whatever the
+// repeat's body; nil when the key holds no row. Only a route that shapes its refusals
+// (keyedRoute.refuse) reads the point, and a read that fails is answered as the layer's other
+// failed reads are. The read runs whatever the client does, bounded by keyedBookkeeping, as the
+// drained repeat's read of the key does: net/http cancels the request's context once a read of its
+// connection fails, which the drain-error answer follows.
+func (s *server) writeUnjudgedKeyInFlight(w http.ResponseWriter, r *http.Request, route keyedRoute, login, key string) {
+	var recovery json.RawMessage
+	if route.refuse != nil {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), keyedBookkeeping)
+		defer cancel()
+		err := s.deps.Store.Pool.QueryRow(ctx, `
+			select `+recoveryPointRead+` from request_keys where login = $1 and idempotency_key = $2
+		`, login, key).Scan(&recovery)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			s.refuseKeyed(w, route, fmt.Errorf("read the recovery point of an idempotency key: %w", err), nil)
+			return
+		}
+	}
+	s.writeKeyInFlight(w, route, key, recovery)
 }
 
 // writeKeyCommitted answers a repeat whose first request committed its write and lost its answer:

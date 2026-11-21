@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"slices"
 	"strconv"
@@ -843,15 +842,14 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 			if closing && key == step.named {
 				closedAsks = askIDs(withdrawn)
 			}
-			if err := ledger.AfterWrites(func(ctx context.Context, tx pgx.Tx) error {
-				after.LastSeq = appendedIssueLastSeq(key, appended)
-				entry, err := json.Marshal(statusChangeEntry{
-					Key: key, Status: after.Status, Parent: after.Parent, PreviousLastSeq: before.LastSeq, Issue: &after,
-				})
+			if err := ledger.AfterWrites(func(b *store.WriteBatch) error {
+				answered := after
+				answered.LastSeq = appendedIssueLastSeq(key, appended)
+				entry, err := json.Marshal(answeredStatusChangeEntry(answered, before.LastSeq))
 				if err != nil {
 					return err
 				}
-				err = tx.QueryRow(ctx, `
+				b.Queue("write the recovery point of a status change", `
 					with named as (
 						select coalesce(array_agg(id order by id), '{}') as ids from events
 						where $4 and issue_key = $5 and seq > $6
@@ -867,13 +865,13 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 					)
 					select ids from head
 				`, claim.login, claim.key, claim.attempt, holdsNamed, step.named, namedLastSeq, entry, closedAsks,
-				).Scan(&namedEvents)
-				if errors.Is(err, pgx.ErrNoRows) {
-					return errRequestKeyTakenOver
-				}
-				if err != nil {
-					return fmt.Errorf("write the recovery point of a status change: %w", err)
-				}
+				).QueryRow(func(row pgx.Row) error {
+					err := row.Scan(&namedEvents)
+					if errors.Is(err, pgx.ErrNoRows) {
+						return errRequestKeyTakenOver
+					}
+					return err
+				})
 				return nil
 			}); err != nil {
 				return issueWriteResult{}, err
@@ -916,7 +914,6 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	if err := ledger.Commit(ctx); err != nil {
 		return issueWriteResult{}, err
 	}
-	// A keyed step's point (above) stored the same value once the batch had run.
 	after.LastSeq = appendedIssueLastSeq(key, appended)
 	// A change of closed_at reaches the document rooms of every process, this one's included, from
 	// the commit itself: migration 20261101181500's trigger notifies, and each process closes its

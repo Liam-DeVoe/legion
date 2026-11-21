@@ -410,6 +410,7 @@ describe("dispatch issue-update with an option of the status change", () => {
     expect(code).toBe(2);
     expect(stdout).toContain("issue is required; supply issue or set LEGION_ISSUE");
     expect(stdout).toContain('"rows.jsonl" is not a Markdown name');
+    expect(stdout).not.toContain("Exactly one of issue and project is required");
     expect(requests).toEqual([]);
   });
 

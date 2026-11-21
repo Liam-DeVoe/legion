@@ -108,7 +108,7 @@ type Ledger struct {
 	queue       []WriteStep
 	sealed      bool
 	batch       *store.WriteBatch
-	afterWrites []AfterWritesStep
+	afterWrites []WriteStep
 	// artifacts is the address of each artifacts row this transaction creates and has not
 	// written yet, by artifact id (RegisterPendingArtifact), and issues the key of each issues
 	// row it creates and has not written yet (RegisterPendingIssue): the two rows a write
@@ -185,17 +185,20 @@ type Ledger struct {
 // document, and it reads no result: the batch is sent once every step has queued its statements.
 // A value a later statement needs from an earlier one is derived in the later statement's SQL (an
 // event's sequence from its owner row, its id as store.LatestEventID); a statement that needs one
-// it cannot derive there runs after the batch instead (AfterWrites). A value the caller needs once
-// Commit has returned - an appended event's id, a row's generated timestamp - is written by the
-// statement's callback through a variable the step captured, and only that caller reads it, or a
-// step it registered to follow the batch. A step's own error - an argument it cannot encode - ends
-// the write phase as a failed statement would, after the statements queued before it.
+// it cannot derive there goes on a step registered to follow the batch instead (AfterWrites). A
+// value the caller needs once Commit has returned - an appended event's id, a row's generated
+// timestamp - is written by the statement's callback through a variable the step captured, and
+// only that caller reads it, or a step it registered to follow the batch. A step's own error - an
+// argument it cannot encode - ends the write phase as a failed statement would, after the
+// statements queued before it.
 type WriteStep func(b *store.WriteBatch) error
 
-// ErrQueueSealed refuses a write queued once the ledger's write phase has begun (Commit) or the
-// ledger was discarded: it would run after statements it was meant to precede, or in no
-// transaction at all. It is a programming error in the caller, which Queue reports rather than
-// panics on, so a handler answers it as any other failure of its transaction.
+// ErrQueueSealed refuses a write queued (Queue) or a step registered to follow the write phase
+// (AfterWrites) once the ledger's write phase has begun (Commit) or the ledger was discarded: a
+// queued write would run after statements it was meant to precede, or in no transaction at all,
+// and a step registered once the write phase has begun would never run. It is a programming error
+// in the caller, which Queue and AfterWrites report rather than panic on, so a handler answers it
+// as any other failure of its transaction.
 var ErrQueueSealed = errors.New("docs: the transaction's write queue is sealed: Commit has begun or the ledger was discarded")
 
 // Queue appends step to the transaction's write phase, after every write queued so far: a route
@@ -213,21 +216,20 @@ func (l *Ledger) Queue(step WriteStep) error {
 	return nil
 }
 
-// AfterWritesStep is a statement of the transaction that needs a value only the write phase's
-// results give in Go - a callback's value, an appended event's sequence - which it cannot derive in
-// its own SQL as a WriteStep's later statement derives what an earlier one wrote. It runs in tx,
-// the ledger's transaction, once the write phase's batch has run and every callback has read its
-// result, and before the commit (AfterWrites). Each such step costs the transaction one round trip
-// of its own, between its batch and its commit, so a write that can be a WriteStep is one.
-type AfterWritesStep func(ctx context.Context, tx pgx.Tx) error
-
 // AfterWrites registers step to run in Commit right after the write phase's batch has run, in the
-// same transaction and before it commits, after every step registered before it. A step's error
-// ends the transaction as a failed statement of the write phase does: it rolls back, what the
-// ledger holds is dropped (Discard), and Commit returns the error unchanged, so a caller still
-// tells a typed refusal apart with errors.Is. It refuses a ledger no caller joined and a sealed
-// one (ErrQueueSealed), as Queue does.
-func (l *Ledger) AfterWrites(step AfterWritesStep) error {
+// same transaction and before it commits, after every step registered before it: a write whose
+// statement needs a value only the write phase's results give in Go - a callback's value, an
+// appended event's sequence - which it cannot derive in its own SQL as a later statement of the
+// batch derives what an earlier one wrote. The step puts its statements on a batch of its own
+// (store.RunWrite), built once every callback of the write phase has read its result, so it reads
+// what those callbacks captured. Each such step costs the transaction one round trip of its own,
+// between its batch and its commit, so a write that can be queued on the batch (Queue) is. A step
+// that fails ends the transaction as a failed statement of the write phase does: it rolls back,
+// what the ledger holds is dropped (Discard), and Commit returns the failure as the step's batch
+// returned it (store.WriteBatch.Send), a callback's error unchanged, so a caller still tells a
+// typed refusal apart with errors.Is. It refuses a ledger no caller joined and a sealed one
+// (ErrQueueSealed), as Queue does.
+func (l *Ledger) AfterWrites(step WriteStep) error {
 	if l.tx == nil {
 		return errUnjoined
 	}
@@ -1122,13 +1124,14 @@ func (l *Ledger) commit(ctx context.Context) error {
 }
 
 // runAfterWrites runs, in the ledger's transaction, each step registered to follow the write
-// phase's batch (AfterWrites), in the order they were registered, and returns the first error a
-// step returns as it came. runQueue has sealed the ledger, so no step is registered meanwhile.
+// phase's batch (AfterWrites), each as a batch of its own (store.RunWrite), in the order they were
+// registered, and returns the first failure as that batch returned it. runQueue has sealed the
+// ledger, so no step is registered meanwhile.
 func (l *Ledger) runAfterWrites(ctx context.Context) error {
 	steps := l.afterWrites
 	l.afterWrites = nil
 	for _, step := range steps {
-		if err := step(ctx, l.tx); err != nil {
+		if err := store.RunWrite(ctx, l.writer, step); err != nil {
 			return err
 		}
 	}

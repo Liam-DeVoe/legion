@@ -90,6 +90,13 @@ type statusChangeEntry struct {
 	Issue           *model.Issue `json:"issue,omitempty"`
 }
 
+// answeredStatusChangeEntry is the entry of a step whose write answered issue: the status and the
+// parent the write left it with, previousLastSeq its last_seq as the write read it under its owner
+// lock, and the issue itself.
+func answeredStatusChangeEntry(issue model.Issue, previousLastSeq int) statusChangeEntry {
+	return statusChangeEntry{Key: issue.Key, Status: issue.Status, Parent: issue.Parent, PreviousLastSeq: previousLastSeq, Issue: &issue}
+}
+
 // statusChangeRefusal is every refusal of the route but 409 PARENT_STATUS_CONFLICT, the handler's
 // and its request key's (refuseStatusChangeKey): its code and its message, and the entries of the
 // writes that committed before it, [] when none did. Every other layer's refusal reads as this
@@ -478,10 +485,7 @@ func (run *statusChangeRun) steps(ctx context.Context, steps []statusChangeStep)
 				fence.own[id] = true
 			}
 		}
-		issue := written.issue
-		ran = append(ran, statusChangeEntry{
-			Key: issue.Key, Status: issue.Status, Parent: issue.Parent, PreviousLastSeq: written.previousLastSeq, Issue: &issue,
-		})
+		ran = append(ran, answeredStatusChangeEntry(written.issue, written.previousLastSeq))
 		run.pointed = run.pointed || keyed
 		if s.statusChangeAfterStep != nil {
 			s.statusChangeAfterStep(ctx, index)

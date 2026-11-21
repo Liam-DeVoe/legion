@@ -2592,7 +2592,7 @@ Migration `20261116163813_issue_role_holders` creates `issue_role_holders`, the 
 The key is `(issue_key, role)`, and a unique index on `(issue_key, session)` keeps a session to one role of an issue.
 The `role` check names the six Legion roles, and a row goes with its issue.
 A later release reads the table in the write transaction of a result, so that the stored role of a result is the role that its session holds.
-A new table: nothing existing is read, locked or rewritten, the previous release neither reads nor writes it, and its census answers `0`.
+A new table: the foreign key holds `issues` in `SHARE ROW EXCLUSIVE` for the migration's transaction, so an issue write waits behind it while a read does not; otherwise nothing existing is read or rewritten, the previous release neither reads nor writes it, and its census answers `0`.
 
 Migration `20261120131444_parent_status_fix` creates `parent_status_fix`, the record that the one-time parent status fix ran on this database (Running more than one process, above).
 It holds one row at most: `id` is always true, which its primary key and its check hold it to.
@@ -2603,10 +2603,10 @@ A boot that finds the row runs no fix, also after the setting was off for a time
 A new table: nothing existing is read, locked or rewritten, the previous release neither reads nor writes it, and its census answers `0`.
 
 Migration `20261121043859_request_key_steps` creates `request_key_steps`, one row for each committed step of a keyed status change (`POST /api/v1/issues/{key}/status-change`), in the order the steps committed.
-A row holds the step's entry as the route answers it, with the issue as the step's write answered it, so a repeat of the call answers what its steps read rather than the issues as they stand then.
+A row holds the step's entry as the route answers it, its issue included, so a repeat of the call answers each issue as its step's write answered it, rather than as it stands then.
 The head of the call's recovery point stays in `request_keys.recovery`, and a row goes with its key through the foreign key's cascade.
 Each step adds one row, where the step would otherwise rewrite a growing value in the key's row.
-A new table: nothing existing is read, locked or rewritten, the previous release neither reads nor writes it, and its census answers `0`.
+A new table: the foreign key holds `request_keys` in `SHARE ROW EXCLUSIVE` for the migration's transaction, so a keyed request's claim waits behind it while a read does not; otherwise nothing existing is read or rewritten, the previous release neither reads nor writes it, and its census answers `0`.
 
 Migration `20261117190118_events_owed_keys` adds `events.owed_keys`, nullable `text[]` with no default: what an event still owes once the outbox's last record of it was written (`recordBatch`, `owedKeys`).
 It holds the key of each destination of the event's list that no batch has reached, the owner's topic family spelled `topic-family`, a session's own subject and a role's topic by their subjects, and `any-session` beside them when the event's recipient read failed;
@@ -3694,7 +3694,7 @@ a broadcast's repeat answers at once and sends what it owes behind the answer.
 A comment's or an issue message's replay reads every member fresh and keeps from the first answer only its `advice` and `ask_waiting_on`, and only when that answer was a 2xx.
 Neither send route takes a body `idempotency_key` any more.
 A status change (`POST /api/v1/issues/{key}/status-change`) keeps a recovery point beside its key as well (Routes, below).
-A repeat of one that finished answers its `200` from the point, with each issue as it stands now.
+A repeat of one that finished answers its `200` from the point, with each entry's `issue`, and the answer's `issue`, as its step's write answered it.
 A repeat that claims the key of one that stopped before it marked the point finished runs only the writes that the point does not hold, and its `changed` lists the point's entries first.
 
 A delivery a dead process left owed is made whether anyone asks again or not.

@@ -1,9 +1,9 @@
 import {
-  DISPATCH_OWNER_RULES,
   dispatchToolSchema,
   dispatchToolSpecs,
   PROJECT_KEY_PATTERN,
   PROJECT_KEY_RULE,
+  withoutOwnerRule,
   zodSchemaApi,
 } from "@legion/contracts";
 import { canonicalRepo } from "@legion/contracts/repo";
@@ -564,9 +564,8 @@ export async function resolveOwnerArguments(
 /**
  * `issue` without what restates a missing owner, or undefined when nothing else is left. The
  * schema's own "issue is required", a required `issue` field left out, is dropped whole. A refusal
- * of the tool's rule (a `custom` issue at the root) opens with the owner rule when the call broke
- * it (`DISPATCH_OWNER_RULES`): that rule and the space that joins it to the next part are cut,
- * and every other part of the rule the call broke stays.
+ * of the tool's rule (a `custom` issue at the root) loses the owner rule it opens with when the
+ * call broke it (`withoutOwnerRule`), and keeps every other part of the rule the call broke.
  */
 function withoutMissingOwner(issue: z.core.$ZodIssue): z.core.$ZodIssue | undefined {
   if (
@@ -578,15 +577,12 @@ function withoutMissingOwner(issue: z.core.$ZodIssue): z.core.$ZodIssue | undefi
     return undefined;
   }
   if (issue.code !== "custom" || issue.path.length !== 0) return issue;
-  const { message } = issue;
-  const rule = DISPATCH_OWNER_RULES.find(
-    (owner) =>
-      message.startsWith(owner) &&
-      (message.length === owner.length || message[owner.length] === " ")
-  );
-  if (rule === undefined) return issue;
-  const rest = message.slice(rule.length + 1);
-  return rest === "" ? undefined : { ...issue, message: rest };
+  const message = withoutOwnerRule(issue.message);
+  return message === undefined
+    ? undefined
+    : message === issue.message
+      ? issue
+      : { ...issue, message };
 }
 /** The addresses `config` reaches Dispatch at, the API's and the dashboard's: what the call and
  *  its dry run both read a dashboard-URL `ref` against. */
