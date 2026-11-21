@@ -235,10 +235,14 @@ func TestAPIAuthAnswersAnIssuerOutage503(t *testing.T) {
 	})
 	issuer := oidctest.New(t)
 	signing := issuer.PublishKey(t, "listener-test-key")
-	verifier, err := oidc.New(context.Background(), issuer.URL(), listenerTestAudience)
+	keys, err := oidc.NewKeys(context.Background(), issuer.URL())
 	if err != nil {
-		t.Fatalf("oidc.New(%q, %q): %v", issuer.URL(), listenerTestAudience, err)
+		t.Fatalf("oidc.NewKeys(%q): %v", issuer.URL(), err)
 	}
+	// A failed read holds the next one back for RetrySpacing (oidc's own tests move a clock past
+	// it); here the read after the outage follows at once, so the recovery is one call.
+	keys.RetrySpacing = 0
+	verifier := oidc.NewWithKeys(issuer.URL(), listenerTestAudience, keys)
 	token := issuer.Mint(t, signing, issuer.Claims(listenerTestSubject, listenerTestAudience))
 	otherAudience := issuer.Claims(listenerTestSubject, listenerTestAudience)
 	otherAudience["aud"] = []string{"dispatch"}
@@ -286,6 +290,53 @@ func TestAPIAuthAnswersAnIssuerOutage503(t *testing.T) {
 func TestListenerKeySetWaitIsInsideDispatchsCallWindow(t *testing.T) {
 	if listenerKeySetWait >= dispatchenvoy.DefaultTimeout {
 		t.Fatalf("listenerKeySetWait = %s, want below Dispatch's listener call window, envoy.DefaultTimeout = %s", listenerKeySetWait, dispatchenvoy.DefaultTimeout)
+	}
+}
+
+// The issuer rotates its signing key while its key set cannot be read. The listener holds the old
+// key, so a token signed with the new one sends it to read the key set again, and that read
+// fails: no verdict on the token is reached, on the first call or on any call after it. Each call
+// is therefore answered 503 with a Retry-After, as an outage at the first read is
+// (TestAPIAuthAnswersAnIssuerOutage503), so Dispatch tries again rather than settling the delivery
+// as failed on a live token. A 401 here tells Dispatch the token was refused when it was never
+// judged: a listener that answered the first such call 503 and the second and third 401 had
+// Dispatch settle the delivery as failed (internal/dispatch/api, retryableDeliveryFailure).
+func TestAPIAuthAnswersARotationDuringAnIssuerOutage503(t *testing.T) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	issuer := oidctest.New(t)
+	first := issuer.PublishKey(t, "listener-key-1")
+	verifier, err := oidc.New(context.Background(), issuer.URL(), listenerTestAudience)
+	if err != nil {
+		t.Fatalf("oidc.New(%q, %q): %v", issuer.URL(), listenerTestAudience, err)
+	}
+	serve := func(authorize string) *httptest.ResponseRecorder {
+		t.Helper()
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, "/v1/sessions", nil)
+		request.Host = "127.0.0.1:9020"
+		request.Header.Set("Authorization", authorize)
+		apiAuth(listenerAPIAuth{verifier: verifier, logger: logging.NewWithWriter("test-machine", io.Discard)}, next).ServeHTTP(recorder, request)
+		return recorder
+	}
+
+	// The listener reads the key set once and holds the first key.
+	if recorder := serve("Bearer " + issuer.Mint(t, first, issuer.Claims(listenerTestSubject, listenerTestAudience))); recorder.Code != http.StatusNoContent {
+		t.Fatalf("the first key with the key set up: status = %d, want 204", recorder.Code)
+	}
+
+	// The issuer rotates to a second key, and its key set cannot be read.
+	issuer.FailKeys(http.StatusInternalServerError)
+	rotated := oidctest.NewKey(t, "listener-key-2")
+	issuer.Publish(rotated)
+	token := issuer.Mint(t, rotated, issuer.Claims(listenerTestSubject, listenerTestAudience))
+	for call := 1; call <= 3; call++ {
+		recorder := serve("Bearer " + token)
+		if recorder.Code != http.StatusServiceUnavailable || recorder.Header().Get("Retry-After") == "" {
+			t.Errorf("call %d with a rotated key while the key set answers 500: status = %d, Retry-After %q; want 503 with a Retry-After, since the key set could not be read and no verdict was reached",
+				call, recorder.Code, recorder.Header().Get("Retry-After"))
+		}
 	}
 }
 

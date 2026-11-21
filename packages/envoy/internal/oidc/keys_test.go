@@ -140,6 +140,34 @@ func TestKeyFindsAKeyPublishedAfterTheWindowHasPassed(t *testing.T) {
 	}
 }
 
+// With no set held yet, an issuer whose key set fails fast is read once per RetrySpacing, not once
+// per Key: every Key in that time is answered the failed read's ErrKeySet, and the next read
+// starts once RetrySpacing has passed. A cold verifier during an outage then multiplies no reads.
+func TestAColdKeysReadsAFailingIssuerOncePerRetrySpacing(t *testing.T) {
+	issuer := oidctest.New(t)
+	keys, _ := keysFor(t, issuer, "exchange-key")
+	clock := onTestClock(keys)
+	issuer.FailKeys(http.StatusInternalServerError)
+	ask := func(calls int) {
+		t.Helper()
+		for call := 1; call <= calls; call++ {
+			if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); !errors.Is(err, ErrKeySet) || errors.Is(err, ErrNoKey) {
+				t.Fatalf("call %d, with no set held and the key set answering 500 = %v, want ErrKeySet alone", call, err)
+			}
+			awaitLastRead(t, keys)
+		}
+	}
+	ask(20)
+	if fetches := issuer.JWKSFetches(); fetches != 1 {
+		t.Errorf("key set read %d times for 20 calls with no set held, want 1: the next read is held back for RetrySpacing (%s)", fetches, keys.RetrySpacing)
+	}
+	clock.advance(keys.RetrySpacing)
+	ask(20)
+	if fetches := issuer.JWKSFetches(); fetches != 2 {
+		t.Errorf("key set read %d times once RetrySpacing has passed, want 2", fetches)
+	}
+}
+
 // A read outlives the caller that started it: the caller's context ends during its wait, the
 // issuer answers after that, and the next caller is served from the set that read filled, with
 // one key-set request in all. On a real server the request's context ends when its handler

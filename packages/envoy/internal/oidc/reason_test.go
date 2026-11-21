@@ -132,6 +132,7 @@ func TestAKeySetOutageIsNotAForgery(t *testing.T) {
 	issuer := oidctest.New(t)
 	keys, signing := keysFor(t, issuer, "signing-key")
 	verifier := NewWithKeys(issuer.URL(), testAudience, keys)
+	clock := onTestClock(keys)
 	sound := issuer.Mint(t, signing, issuer.Claims(testSubject, testAudience))
 
 	// No set has been read yet, so the outage is what answers rather than a cached key: an
@@ -151,7 +152,9 @@ func TestAKeySetOutageIsNotAForgery(t *testing.T) {
 		t.Errorf("Verify error %q repeats the token", err)
 	}
 
+	// A read that failed holds the next one back for RetrySpacing, with no set held as with one.
 	issuer.FailKeys(0)
+	clock.advance(keys.RetrySpacing)
 	if _, err := verifier.Verify(context.Background(), sound); err != nil {
 		t.Fatalf("Verify once the key set reads again: %v", err)
 	}

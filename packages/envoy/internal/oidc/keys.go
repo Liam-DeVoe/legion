@@ -193,14 +193,19 @@ func (k *Keys) Key(ctx context.Context, kid, alg string) (crypto.PublicKey, erro
 // plan decides, under one lock, what a Key for kid and alg does: answer from the set (a key, or
 // an error no read would change), or wait on read, which it joins or starts. A stale set that
 // holds the key is read again behind its answer, unless a read is in flight or RetrySpacing has
-// not passed since one failed.
+// not passed since one failed; and with no set held yet, a read that failed less than
+// RetrySpacing ago answers every Key in that time, so an issuer that fails fast is not read once
+// per call.
 func (k *Keys) plan(ctx context.Context, kid, alg string) (*keysFetch, crypto.PublicKey, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	now := k.now()
 	if k.fetched.IsZero() {
-		if k.inFlight() {
+		switch {
+		case k.inFlight():
 			return k.last, nil, nil
+		case k.failedWithin(now):
+			return nil, nil, k.last.err
 		}
 		return k.start(ctx), nil, nil
 	}
