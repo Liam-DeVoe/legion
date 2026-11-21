@@ -12,18 +12,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// b5Roster is privateRoster with the listener listing the projects of session-pub's and
-// session-priv's credentials, as a listener that knows them does: each is carol's, its token
-// scoped to one project. A conversation is its session's content (access.SessionContentClause),
-// and carol sees PRIV, so with no list a caller that does not see PRIV reads no conversation of
-// either; the list bounds what session-pub's credential reads to PUB.
-const b5Roster = `[
-	{"session_id":"session-both","title":"Both","capabilities":["btw","steer"],"last_seen":400},
-	{"session_id":"session-priv","title":"Private","capabilities":["btw","steer"],"projects":["PRIV"],"last_seen":300},
-	{"session_id":"session-pub","title":"Public","capabilities":["btw","steer"],"projects":["PUB"],"last_seen":200},
-	{"session_id":"session-idle","title":"Idle","capabilities":["btw","steer"],"projects":[],"last_seen":100}
-]`
-
 // TestTheMeReadsHoldNoConversationOfAHiddenSession: carol broadcasts to session-priv, an agent of
 // PRIV, and to session-pub, an agent of PUB; each answers its copy, and carol pins both. Her
 // browser sees both projects, so GET /api/v1/me/replies?kind=agent holds both replies, GET
@@ -35,7 +23,7 @@ const b5Roster = `[
 // lists no project see every object and read both, as every caller did before a project could be
 // private (R9).
 func TestTheMeReadsHoldNoConversationOfAHiddenSession(t *testing.T) {
-	listener, _ := newBroadcastListener(t, b5Roster)
+	listener, _ := newBroadcastListener(t, privateRosterListed)
 	seed := seedPrivateProjectWith(t, testServerOptions{envoyURL: listener.URL})
 	seedSessionWork(t, seed)
 	// A list of the agents stores the listener's list, whose projects the content rule reads.

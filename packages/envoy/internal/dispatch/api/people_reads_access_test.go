@@ -45,6 +45,20 @@ const privateRoster = `[
 	{"session_id":"session-idle","title":"Idle","capabilities":["btw","steer"],"projects":[],"last_seen":100}
 ]`
 
+// privateRosterListed is privateRoster with the listener listing the projects of session-pub's
+// and session-priv's credentials, as a listener that knows them does: each is carol's, its broker
+// token scoped to one project (asSession). A session's conversations and files are its content
+// (access.SessionContentClause), and carol sees PRIV, so with no list a caller that does not see
+// PRIV reads no conversation of either; the list bounds what session-pub's credential reads to PUB.
+// A read stores the list where the content rule reads it only once Dispatch has read the
+// listener's sessions, as a list of the agents does.
+const privateRosterListed = `[
+	{"session_id":"session-both","title":"Both","capabilities":["btw","steer"],"last_seen":400},
+	{"session_id":"session-priv","title":"Private","capabilities":["btw","steer"],"projects":["PRIV"],"last_seen":300},
+	{"session_id":"session-pub","title":"Public","capabilities":["btw","steer"],"projects":["PUB"],"last_seen":200},
+	{"session_id":"session-idle","title":"Idle","capabilities":["btw","steer"],"projects":[],"last_seen":100}
+]`
+
 // seedSessionWork has the roster's sessions act in the seed's projects, each under a credential
 // that proves the session (asSession): what a proven session writes in a project is what makes it
 // one of the project's agents (session_projects).
