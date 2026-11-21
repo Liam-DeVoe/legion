@@ -230,7 +230,9 @@ func TestAnUnspentCopyIsTakenAndSentOncePerLauncherProcess(t *testing.T) {
 // once and apply it once, although each take pauses long enough for starts outside the turn to
 // meet inside their hops: each start after the first begins only once the one before it was
 // answered, so it finds the process holding the copy the first start sent (heldCopy), and takes
-// and sends nothing.
+// and sends nothing. The pause is two seconds, so that with no turn the other five starts reach
+// their takes inside the first's however widely the pod's launches are spread: at 100 ms the
+// control below failed one run in three at e1fd7dc6, and at two seconds it failed three in three.
 //
 // The negative control is the turn given back right before relaunch calls launchers.start, where
 // the six starts meet inside their hops and each takes the copies and sends the copy.
@@ -238,7 +240,7 @@ func TestAnUnspentCopyIsTakenAndSentOnceWhenSixRolesOfOnePodSpawnTogether(t *tes
 	st := bundleStore(t)
 	saveRunningCopy(t, st, runningWorkspaceCopy("pod-one"))
 	takes := new(atomic.Int32)
-	g := newRig(t, nil, withCountedTakes(st, takes, 100*time.Millisecond))
+	g := newRig(t, nil, withCountedTakes(st, takes, 2*time.Second))
 	roles := issueRoleTokens(t)
 	type spawned struct {
 		loc runtime.Locator
