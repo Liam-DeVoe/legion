@@ -71,6 +71,9 @@ type Inputs struct {
 	// name each issue by the rule that placed it. The zero value is the daemon's own rule
 	// (record.SlotRule.OrMain).
 	SlotRule record.SlotRule
+	// Cap is the project's admission cap, which the slots reading names beside the slots in use
+	// (record.SlotsReadingOf, api.Admission.Slots).
+	Cap int
 }
 
 // Project joins durable issue facts to current supervision claims for GET /legion/v1/state. The
