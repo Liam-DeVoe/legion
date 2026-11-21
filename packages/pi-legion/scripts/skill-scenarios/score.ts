@@ -89,6 +89,9 @@ import {
   SharedRunsFile,
 } from "./judge-prompts";
 import { byCreatedAt, parseInstant } from "./production-dispatch";
+// The world's GitHub accounts (<run>/accounts.json), which link a commit's address to the account
+// that made it, as the gh stand-in links them.
+import { accountsOf } from "./rest-objects";
 // A run's scenario, case and label, read from its record (run-names.ts), and the cases each
 // scenario takes.
 import { casesOf, entryKind, labelInstall, RUN_ID, recordFile, runIdentity } from "./run-names";
@@ -1172,6 +1175,18 @@ function parentsOf(runDir: string, sha: string): string[] {
   return git.stdout.toString().trim().split(" ").slice(1);
 }
 
+/** The address the committer of `sha` carries, in the run's own bare remote (`git log -1
+ * --format=%ce`). A read that fails is the rig's, for the reason `changedFiles` gives. */
+function committerOf(runDir: string, sha: string): string {
+  const remote = path.join(runDir, "remote.git");
+  const git = Bun.spawnSync(["git", "-C", remote, "log", "-1", "--format=%ce", sha]);
+  if (git.exitCode !== 0)
+    throw new Error(
+      `git -C ${remote} log -1 --format=%ce ${sha} exited ${git.exitCode}: ${git.stderr.toString().trim()}`
+    );
+  return git.stdout.toString().trim();
+}
+
 /** The lines `to` removes from `file` and the lines it adds there, against `from`, in the run's
  * own bare remote (`git diff -U0`): each line of a hunk, read after the hunk's own header, so a
  * removed line that starts with dashes is a line of the file and never a header. A read that
@@ -1615,7 +1630,8 @@ function prComment(call: z.infer<typeof Call>, world: World): string | undefined
  * whatever the run did: the gh calls the stand-in recorded (calls.jsonl), each carrying the role
  * that made it, and what each of them did to the threads, replayed from those calls over the
  * threads the world seeds (`threadActs`); the pushes the run's own bare remote logged
- * (pushes.log) and the diff they carry; the messages Envoy accepted on the run's role topics
+ * (pushes.log), the diff they carry and the role App whose bot committed each (`fixPushes`);
+ * the messages Envoy accepted on the run's role topics
  * (`publishes`); and the agents' transcripts. The world's head is the reviewer's own text commit,
  * which the reviewer's approval stands on and whose message on the implementer's role topic is the
  * run's prompt; the threads it left are the world's own (<run>/threads.json); and the case is the
@@ -1630,17 +1646,20 @@ function prComment(call: z.infer<typeof Call>, world: World): string | undefined
  *                (completion-answers.ts's SKIPS). The base arm is reported and sets no bar;
  *   correct      the reviewer's commit made the document's sentence false another way and left a
  *                thread on the workflow file, which the review App may not push. Both halves
- *                pass. The implementer makes one push onto the issue branch whose diff against the
+ *                pass. The implementer makes one push onto the issue branch — a push whose commit
+ *                the implement App's bot committed (`fixPushes`) — whose diff against the
  *                reviewer's commit changes docs/cli.md and each thread's file and nothing else, so
  *                text alone (`fixed`), names that push in a `gh pr comment` (`commented`) and in a
  *                message to the reviewer's topic and one to the architect's, each after the push
  *                (`toldReviewer`, `toldArchitectOfPush`), and resolves no thread (`fixResolves`).
  *                The reviewer lists the pull request's threads in `gh api graphql` (`listed`),
  *                resolves each thread of the world's, one thread per call and never in bulk
- *                (`resolved`, `bulk`), and approves the head the push made, by SHA (`approved`).
- *                Neither agent moves the issue (`moved`): the push runs no tester and opens no
- *                round. The reviewer's message to the architect of the head it approved is
- *                reported (`toldArchitectOfHead`), since no rule this scores asks for it;
+ *                (`resolved`, `bulk`), and approves the head the implementer's push made, by SHA
+ *                (`approved`): a reviewer that pushes a commit of its own after it and approves
+ *                that later head fails the case. Neither agent moves the issue (`moved`): the push
+ *                runs no tester and opens no round. The reviewer's message to the architect of the
+ *                head it approved, the head the branch stands at, is reported
+ *                (`toldArchitectOfHead`), since no rule this scores asks for it;
  *   code-defect  one thread whose sentence is false only because the code is wrong. A run passes
  *                when it pushed nothing, no thread was resolved, neither agent asked the daemon to
  *                move the issue (`moved`), no review approved the head, and the finding reached the
@@ -1667,16 +1686,33 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
   const record = parsed(path.join(runDir, CALLS), Call);
   const calls = record.filter((call) => call.as === "gh" && call.exit === 0);
   const reviewCalls = calls.filter((call) => call.by === RESOLVES);
-  // The pushes onto the issue branch, and what the last of them left above the reviewer's commit:
-  // the rule gives the implementer one push, so the number of pushes is scored beside the diff.
-  // The last push keeps the time its own remote logged it at, which is what the messages that
-  // report it are ordered against.
+  // The pushes onto the issue branch, and among them the implementer's (`fixPushes`): each whose
+  // commit's committer, in the run's own bare remote, is the implement App's bot (world.json's
+  // `logins`), the account accounts.json links the commit's address to, as GitHub links it. A
+  // reviewer's own push after the implementer's is none of the implementer's. The rule gives the
+  // implementer one push, so the number of its pushes is scored beside the diff its push left
+  // above the reviewer's commit. rig.sh writes `logins` into every run's world.json
+  // (rig.sh:3979), so a world.json naming none is a test fixture's alone: it tells no role's
+  // commit from another's, and each push is read as the implementer's, as gh-threads.ts:191's
+  // `loginOf` reads every role of such a world as one login. The implementer's push keeps the
+  // time its own remote logged it at, which is what the messages that report it are ordered
+  // against.
   const pushes = pushesOf(runDir).filter((push) => push.ref === `refs/heads/${world.branch}`);
-  const push = pushes.at(-1);
-  const tip = push?.sha;
-  const changed = tip === undefined ? [] : changedFiles(runDir, world.head, tip);
+  const implement = world.logins?.implement;
+  const accounts = accountsOf(runDir);
+  const fixPushes =
+    implement === undefined
+      ? pushes
+      : pushes.filter((push) => {
+          const address = committerOf(runDir, push.sha);
+          return accounts.find((account) => account.email === address)?.login === implement;
+        });
+  const fixPush = fixPushes.at(-1);
+  // The head the branch stands at, which the reviewer's report of its approval names.
+  const tip = pushes.at(-1)?.sha;
+  const changed = fixPush === undefined ? [] : changedFiles(runDir, world.head, fixPush.sha);
   const wanted = [...new Set([FINDING_DOC, ...threads.map((thread) => thread.path)])].toSorted();
-  const fixed = pushes.length === 1 && changed.toSorted().join("\n") === wanted.join("\n");
+  const fixed = fixPushes.length === 1 && changed.toSorted().join("\n") === wanted.join("\n");
   // What each call of each half did to the threads, read from the world's replay (`threadActs`)
   // and never from the node ids a call's text names: a `--jq` selector, a comment or a listing in
   // the same call can name a thread the call did not resolve. Every call of the half is read, one
@@ -1712,16 +1748,18 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
   const listed = reviewCalls.some(listsTheThreads);
   // The reviews the run's agents submitted. The approval already on the pull request is the
   // world's, which no call of this run made; the one that stands is the reviewer's own verdict,
-  // its last `APPROVE` or `REQUEST_CHANGES` (`verdictOf`), and it approves the head the push made,
-  // by SHA. A `COMMENT` review carries no verdict and withdraws none.
+  // its last `APPROVE` or `REQUEST_CHANGES` (`verdictOf`), and it approves the head the
+  // implementer's push made, by SHA: an approval of the head a later push of the reviewer's own
+  // made approves no push of the implementer's. A `COMMENT` review carries no verdict and
+  // withdraws none.
   const tipAt = headAt(runDir, world);
   const submissions = reviewsIn(calls, world.repo, tipAt);
   const verdict = verdictOf(reviewsIn(reviewCalls, world.repo, tipAt));
   const approved =
-    verdict?.event === "APPROVE" && tip !== undefined && namesHead(tip, verdict.head);
+    verdict?.event === "APPROVE" && fixPush !== undefined && namesHead(fixPush.sha, verdict.head);
   // The implementer's comment on the pull request naming a commit: the reviewer's own in accept,
-  // the head its push made in correct.
-  const commentOn = threadsCase === "accept" ? world.head : tip;
+  // the head the implementer's push made in correct.
+  const commentOn = threadsCase === "accept" ? world.head : fixPush?.sha;
   const commented =
     commentOn !== undefined &&
     calls.some((call) => {
@@ -1752,13 +1790,15 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
     toldArchitect(runDir, fixSender, threads) ||
     (reviewSender !== undefined && toldArchitect(runDir, reviewSender, threads));
   // The implementer's messages: the daemon starts no phase for its last chance, so the reviewer
-  // and the architect learn of its push from these alone, each naming the head the push made and
-  // sent after the remote took it; in accept, the one to the architect names the reviewer's
-  // commit and says the implementer accepts it.
+  // and the architect learn of its push from these alone, each naming the head the implementer's
+  // push made and sent after the remote took it; in accept, the one to the architect names the
+  // reviewer's commit and says the implementer accepts it.
   const toldReviewer =
-    push !== undefined && publishedTo(runDir, fixSender, "reviewer", [push.sha], "all", push.at);
+    fixPush !== undefined &&
+    publishedTo(runDir, fixSender, "reviewer", [fixPush.sha], "all", fixPush.at);
   const toldArchitectOfPush =
-    push !== undefined && publishedTo(runDir, fixSender, "architect", [push.sha], "all", push.at);
+    fixPush !== undefined &&
+    publishedTo(runDir, fixSender, "architect", [fixPush.sha], "all", fixPush.at);
   const accepted = publishes(runDir, fixSender).some(
     (sent) =>
       sent.topic.endsWith("-architect") &&
@@ -1806,7 +1846,7 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
       )
   );
   const notes = [
-    `case=${threadsCase} threads=${threads.length} fixResolves=${fixResolves} pushes=${pushes.length} fixed=${fixed} commented=${commented} toldReviewer=${toldReviewer} toldArchitectOfPush=${toldArchitectOfPush} accepted=${accepted} listed=${listed} resolved=${resolved.size} resolveCalls=${resolves.length} bulk=${bulk} approved=${approved} toldArchitectOfHead=${toldArchitectOfHead} requested=${requested} approvedAny=${approvedAny} told=${told} moved=${moved === undefined ? "none" : moved.to} refusedCompletions=${refusedCompletions}`,
+    `case=${threadsCase} threads=${threads.length} fixResolves=${fixResolves} pushes=${pushes.length} fixed=${fixed} commented=${commented} toldReviewer=${toldReviewer} toldArchitectOfPush=${toldArchitectOfPush} accepted=${accepted} listed=${listed} resolved=${resolved.size} resolveCalls=${resolves.length} bulk=${bulk} approved=${approved} toldArchitectOfHead=${toldArchitectOfHead} requested=${requested} approvedAny=${approvedAny} told=${told} moved=${moved === undefined ? "none" : moved.to} refusedCompletions=${refusedCompletions} fixPushes=${fixPushes.length}`,
     `changed=${JSON.stringify(changed)} wanted=${JSON.stringify(wanted)} submissions=${JSON.stringify(submissions.map((review) => `${review.event}@${review.head.slice(0, 12)}`))}`,
     lines(path.join(runDir, "out.txt")).at(-1) ?? "",
   ];

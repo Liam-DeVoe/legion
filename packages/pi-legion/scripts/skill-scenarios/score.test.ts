@@ -5247,9 +5247,10 @@ const toldArchitectOfPush = (commit: string, at = "2026-09-30T17:42:30.000Z") =>
  * learns the loop closed. */
 const toldArchitectOfHead = (commit: string, at = "2026-09-30T17:42:00.000Z") =>
   sentTo("architect", `I approved the head the fix landed on, ${commit}.`, at, SECOND_SESSION);
-/** The run's own remote, built once as this module is read, and its four commits: the head the
- * reviewer approved, a commit that changes the two documents, one that changes the code too, and
- * one above the approved head that changes one document alone.
+/** The run's own remote, built once as this module is read, and its commits: the head the
+ * reviewer approved, a commit that changes the two documents, one that changes the code too, one
+ * above the approved head that changes one document alone, and the four each role App's bot makes
+ * above the approved head, the implementer's push and the reviewer's own commit above it.
  *
  * Two things make the ids what they are, and the second is why literals were refused.
  *
@@ -5326,6 +5327,31 @@ const seedGit = (dir: string, env: Record<string, string | undefined>, args: str
   if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr}`);
   return result.stdout.toString().trim();
 };
+/** The bot of each role App of rig.sh's world (its world_implement_app and world_review_app, and
+ * their ids), as role_identity gives it to each commit its role makes: its login, which
+ * world.json's `logins` names, and the address its commits carry, which accounts.json links to
+ * that login. */
+const appBot = (slug: string, id: number) => ({
+  login: `${slug}[bot]`,
+  id,
+  email: `${id}+${slug}[bot]@users.noreply.github.com`,
+});
+const IMPLEMENT_BOT = appBot("widgets-implementer", 318406215);
+const REVIEW_BOT = appBot("widgets-reviewer", 318406277);
+/** A seed step that commits every tracked change as `bot`, its author and committer. */
+const commitAs = (
+  bot: { login: string; email: string },
+  message: string
+): [kind: "write" | "git", ...parts: string[]] => [
+  "git",
+  "-c",
+  `user.name=${bot.login}`,
+  "-c",
+  `user.email=${bot.email}`,
+  "commit",
+  "-qam",
+  message,
+];
 /** The steps of the seed, as the recipe its path is named for: one line per write and per git
  * command, so a change to any of them is a different path and never a reused repository. */
 const SEED_STEPS: [kind: "write" | "git", ...parts: string[]][] = [
@@ -5352,6 +5378,26 @@ const SEED_STEPS: [kind: "write" | "git", ...parts: string[]][] = [
   ["write", "docs/cli.md", "It trims the spaces around the name.\n"],
   ["git", "commit", "-qam", "docs: one of the two text fixes"],
   ["git", "checkout", "-q", "legion/LWEVAL-1"],
+  // The commits a run of rig.sh's world makes above the approved head, each by its role App's
+  // bot: the implementer's push that fixes both documents and the reviewer's own commit above
+  // it, and the implementer's push that fixes the workflow's comment alone and the reviewer's fix
+  // of the document's sentence above that, which is run 3787e2d71dfa's shape. The App that
+  // committed a push is what tells the implementer's push from the reviewer's later one
+  // (score.ts's `fixPushes`).
+  ["git", "checkout", "-q", "-b", "implementer-both", "legion/LWEVAL-1~2"],
+  ["write", "docs/cli.md", "It trims the spaces around the name.\n"],
+  ["write", ".github/workflows/greet.yml", "# Runs on every pull request.\n"],
+  commitAs(IMPLEMENT_BOT, "docs: the two text fixes"),
+  ["git", "checkout", "-q", "-b", "reviewer-above-both", "implementer-both"],
+  ["write", "docs/cli.md", "It trims the spaces around the name before it prints it.\n"],
+  commitAs(REVIEW_BOT, "docs: the reviewer's own wording"),
+  ["git", "checkout", "-q", "-b", "implementer-workflow", "legion/LWEVAL-1~2"],
+  ["write", ".github/workflows/greet.yml", "# Runs on every pull request.\n"],
+  commitAs(IMPLEMENT_BOT, "ci: the workflow's comment alone"),
+  ["git", "checkout", "-q", "-b", "reviewer-above-workflow", "implementer-workflow"],
+  ["write", "docs/cli.md", "It trims the spaces around the name.\n"],
+  commitAs(REVIEW_BOT, "docs: the sentence the implementer's push left"),
+  ["git", "checkout", "-q", "legion/LWEVAL-1"],
 ];
 /** Every input of the build the seed's path is named for: its steps, the date every commit
  * carries and the settings its git runs under. The recipe hashed the steps alone, so a change
@@ -5359,17 +5405,22 @@ const SEED_STEPS: [kind: "write" | "git", ...parts: string[]][] = [
  * first process to build it would win, and every later one would read commits its own recipe
  * would never have made. */
 const SEED_INPUTS = [...SEED_STEPS.flat(), FIX_DATE, ...SEED_SETTINGS];
-/** The four commits a seed holds, read through `read`: the head the reviewer approved, the two
- * text fixes above it, the commit that changes the code too, and the one-file branch. Every
- * reader of a seed answers with these four — a build of its own and the shared one below — so
- * the two cannot drift into naming different revisions. */
+/** The commits a seed holds, read through `read`: the head the reviewer approved, the two text
+ * fixes above it, the commit that changes the code too, the one-file branch, and the implementer's
+ * and the reviewer's commits of each role App's bot (the four branches named for them). Every
+ * reader of a seed answers with these — a build of its own and the shared one below — so the two
+ * cannot drift into naming different revisions. */
 const commitsOf = (read: (revision: string) => string) => ({
   approved: read("legion/LWEVAL-1~2"),
   fixed: read("legion/LWEVAL-1~1"),
   withCode: read("legion/LWEVAL-1"),
   docOnly: read("one-file"),
+  implementerBoth: read("implementer-both"),
+  reviewerAboveBoth: read("reviewer-above-both"),
+  implementerWorkflow: read("implementer-workflow"),
+  reviewerAboveWorkflow: read("reviewer-above-workflow"),
 });
-/** Builds the seed in `dir`, under `env`, and answers its four commits. The `one-file` branch
+/** Builds the seed in `dir`, under `env`, and answers its commits. The `one-file` branch
  * starts at `HEAD~2`, the approved head two commits below the tip, so the recipe names no id of
  * its own and a change to it is a change of the recipe's own text. */
 const buildSeed = (dir: string, env: Record<string, string | undefined>) => {
@@ -5386,7 +5437,7 @@ const buildSeed = (dir: string, env: Record<string, string | undefined>) => {
  * temporary directory. */
 const fixDir = path.join(tmpdir(), `skill-scenarios-seed-${seedRecipe(SEED_INPUTS)}`);
 const fixGit = (...args: string[]) => seedGit(fixDir, process.env, args);
-/** That seed's four commits. A process that finds it there reads them and builds nothing; one
+/** That seed's commits. A process that finds it there reads them and builds nothing; one
  * that does not builds into a fresh directory and renames it into place, so a reader never
  * meets a half-built repository and two processes racing leave one of the two builds behind
  * under `rename`'s own rules. Asking again is what the second run of a recipe does, and the row
@@ -5710,6 +5761,35 @@ fixRun("threads-closed-correct-head-15", {
   "calls.jsonl": calls([...closedBoth.slice(0, 6), secondApproval(fix.approved)]),
   "pushes.log": pushed(fix.fixed),
 });
+// Run 3787e2d71dfa's shape, in a world that names each role App's bot as rig.sh writes every
+// run's (world.json's `logins`, and accounts.json linking each bot's commit address to it): the
+// implementer's one push, its commit the implement App's bot's, named after it in a message to
+// the reviewer's topic and one to the architect's; then the reviewer's own push above it, its
+// commit the review App's bot's, and the reviewer's approval of that later head. head-109's push
+// fixes both documents; head-110's, as 3787e2d71dfa's did, fixes the workflow's comment alone and
+// leaves docs/cli.md's sentence false, which the reviewer's own push then fixes.
+const reviewerPushedAbove = (implementer: string, reviewer: string) => ({
+  "world.json": JSON.stringify({
+    ...JSON.parse(worldOf(fix.approved)),
+    logins: { implement: IMPLEMENT_BOT.login, review: REVIEW_BOT.login },
+  }),
+  "accounts.json": JSON.stringify([IMPLEMENT_BOT, REVIEW_BOT]),
+  "calls.jsonl": calls([...closedAbove(implementer).slice(0, 6), secondApproval(reviewer)]),
+  "pushes.log": `${pushed(implementer)}2026-09-30T17:37:30.000Z refs/heads/legion/LWEVAL-1 ${implementer} ${reviewer}\n`,
+  "published.jsonl": bus(
+    toldReviewerOfPush(implementer, "2026-09-30T17:35:40.000Z"),
+    toldArchitectOfPush(implementer, "2026-09-30T17:35:45.000Z"),
+    toldArchitectOfHead(reviewer)
+  ),
+});
+fixRun(
+  "threads-closed-correct-head-109",
+  reviewerPushedAbove(fix.implementerBoth, fix.reviewerAboveBoth)
+);
+fixRun(
+  "threads-closed-correct-head-110",
+  reviewerPushedAbove(fix.implementerWorkflow, fix.reviewerAboveWorkflow)
+);
 // The reviewer half never started: the run holds the implementer's work and nothing of the
 // reviewer's, either because no transcript was written (head-17) or because the one written
 // carries no assistant message (head-18). Each would otherwise be a failure of the text under
@@ -7037,7 +7117,7 @@ const FIXTURE_ARMS: readonly (readonly [arm: string, runs: number])[] = [
   ["threads-closed:code-defect:head", 17],
   ["threads-closed:head", 1],
   ["threads-closed:correct:base", 2],
-  ["threads-closed:correct:head", 79],
+  ["threads-closed:correct:head", 81],
 ];
 // Bun's default hook bound is 5s, and this one runs the whole scorer over every run of the file:
 // three audit runs and two pods saw it killed at that bound, which reads as "0 pass, a
@@ -7370,6 +7450,26 @@ test("threads-closed, correct: a reviewer that never listed the threads fails", 
 test("threads-closed, correct: the implementer resolving a thread, and a second approval at the wrong head, each fail", () => {
   expect(out).toMatch(/threads-closed-correct-head-14\tpass=false\t.*fixResolves=1 /);
   expect(out).toMatch(/threads-closed-correct-head-15\tpass=false\t.*approved=false /);
+});
+
+// Catches: a scorer that takes the last push onto the branch, whoever made it, for the
+// implementer's. Measured on run 3787e2d71dfa (2026-11-21): the implementer pushed `dca53446` at
+// 22:40:45Z and named it to the reviewer's and the architect's topics at 22:41:49Z, then the
+// reviewer pushed `0c89d84f` at 22:47:25Z and approved that head, and the score read
+// toldReviewer=false and toldArchitectOfPush=false off the reviewer's push and failed `fixed` on
+// its count. The implementer's push is the one the implement App's bot committed (`fixPushes`):
+// its messages and its comment name it, its diff is the one scored, and the reviewer's own push is
+// none of its pushes. The reviewer's approval must name the head the implementer's push made, so
+// head-109, whose push fixed both documents, fails on `approved` alone; an approval read off the
+// last push passes it. head-110's push, like 3787e2d71dfa's, fixed the workflow's comment alone,
+// and a diff read off the last push, the reviewer's, would carry both documents.
+test("threads-closed, correct: the implementer's push is the one its App committed, and the reviewer's approval of its own later push fails", () => {
+  expect(out).toMatch(
+    /threads-closed-correct-head-109\tpass=false\tref=false\tcase=correct threads=2 fixResolves=0 pushes=2 fixed=true commented=true toldReviewer=true toldArchitectOfPush=true accepted=false listed=true resolved=2 resolveCalls=2 bulk=false approved=false toldArchitectOfHead=true requested=false approvedAny=true told=false moved=none refusedCompletions=1 fixPushes=1 changed=\[".github\/workflows\/greet.yml","docs\/cli.md"\] /
+  );
+  expect(out).toMatch(
+    /threads-closed-correct-head-110\tpass=false\t.*pushes=2 fixed=false commented=true toldReviewer=true toldArchitectOfPush=true .*approved=false .*fixPushes=1 changed=\[".github\/workflows\/greet.yml"\] /
+  );
 });
 
 // Catches: a scorer that takes the reviewer's last submission of any kind for its verdict, so a
