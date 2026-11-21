@@ -225,7 +225,8 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		pause bool
 		// release is whether the caller is served the project's newest project release
 		// (projectReleaseContract), the contract that added it, so a caller served this daemon's
-		// own body is served the release and every pod below that contract is not.
+		// own body is served the release, and a pod the reading places below that contract (its
+		// claims record a contract below shapedAnswersContract) is not.
 		release bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(memoryContract - 1), rounds: true, contract: memoryContract - 1},

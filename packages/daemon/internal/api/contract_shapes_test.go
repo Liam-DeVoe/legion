@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/pause"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -492,7 +493,7 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 		// Built as the state's read builds it (PauseStateTx), holding no row: populatedState's
 		// pause carries the held rows.
 		Paused:         pausedViewOf(goldenPause(false), stops, nil),
-		ProjectRelease: releaseCarryingEveryDeclaredValue(at),
+		ProjectRelease: releaseCarryingEveryDeclaredValue(at, roleWords),
 	}
 }
 
@@ -501,24 +502,30 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 // declares under `projectRelease`, and the three keys the populated state's finished release
 // (goldenProjectRelease) carries none of: `endedAt`, `endedBy` and the result's `failure`. One
 // Sandbox line stands for each outcome, together naming every kind of Sandbox, the waiting pod's
-// line asks every role a pod's line can ask, and one claim line stands for each word of `ended`,
-// its role taken from the claim roles and the controller in turn, so the lines name every one.
-// The words are written here rather than read from the table, as the rest of this body's are.
-func releaseCarryingEveryDeclaredValue(at time.Time) *ProjectReleaseResponse {
-	roles := []claim.Role{claim.RoleArchitect, claim.RolePlanner, claim.RoleImplementer, claim.RoleTester,
-		claim.RoleReviewer, claim.RoleMerger, claim.RoleController}
-	ends := []ReleasedClaimEnd{"queued", "launch_uncertain", "launching", "shim_connected", "registered", "ready",
-		"working", "idle", "failed", "retired", "unknown", "operator", "daemon", "exit", "released", "project_release",
+// line asks every role a pod's line can ask, the six workflow roles the caller passes as roles,
+// and one claim line stands for each word of `ended`, its role taken from those roles and the
+// controller in turn, so the lines name every one.
+func releaseCarryingEveryDeclaredValue(at time.Time, roles []claim.Role) *ProjectReleaseResponse {
+	claimRoles := append(slices.Clone(roles), claim.RoleController)
+	ends := []ReleasedClaimEnd{
+		ReleasedClaimEnd(supervise.StateQueued), ReleasedClaimEnd(supervise.StateLaunchUncertain),
+		ReleasedClaimEnd(supervise.StateLaunching), ReleasedClaimEnd(supervise.StateShimConnected),
+		ReleasedClaimEnd(supervise.StateRegistered), ReleasedClaimEnd(supervise.StateReady),
+		ReleasedClaimEnd(supervise.StateWorking), ReleasedClaimEnd(supervise.StateIdle),
+		ReleasedClaimEnd(supervise.StateFailed), ReleasedClaimEnd(supervise.StateRetired),
+		ReleasedClaimEnd(supervise.SuspendedByUnknown), ReleasedClaimEnd(supervise.SuspendedByOperator),
+		ReleasedClaimEnd(supervise.SuspendedByDaemon), ReleasedClaimEnd(supervise.SuspendedByExit),
+		ReleasedClaimEnd(supervise.SuspendedByReleased), ReleasedClaimEnd(supervise.SuspendedByProjectRelease),
 		ReleasedClaimUnrecorded}
-	asked := make([]ReleasedAsk, 0, len(roles)-1)
-	for _, role := range roles[:len(roles)-1] {
+	asked := make([]ReleasedAsk, 0, len(roles))
+	for _, role := range roles {
 		asked = append(asked, ReleasedAsk{Role: role})
 	}
 	claims := make([]ReleasedClaim, 0, len(ends))
 	for i, ended := range ends {
-		role := roles[i%len(roles)]
+		role := claimRoles[i%len(claimRoles)]
 		claims = append(claims, ReleasedClaim{Token: claim.Token(fmt.Sprintf("legion-values-values-%d-%s", i+1, role)),
-			Role: role, Ended: ended, BootStarts: ended == "project_release"})
+			Role: role, Ended: ended, BootStarts: ended == ReleasedClaimEnd(supervise.SuspendedByProjectRelease)})
 	}
 	finished, ended := at.Add(31*time.Minute), at.Add(2*time.Hour)
 	return &ProjectReleaseResponse{
@@ -526,15 +533,15 @@ func releaseCarryingEveryDeclaredValue(at time.Time) *ProjectReleaseResponse {
 		FinishedAt: &finished, EndedAt: &ended, EndedBy: store.ProjectReleaseEndedByBoot,
 		Result: ProjectReleaseResult{
 			Sandboxes: []ReleasedSandbox{
-				{Name: "legion-values-values-1", Kind: "issue", Issue: "VALUES-1", Outcome: ReleaseWaiting, Asked: asked},
-				{Name: "legion-values-values-2", Kind: "issue", Issue: "VALUES-2", Outcome: ReleaseDeletedClean},
-				{Name: "legion-values-values-3", Kind: "issue", Issue: "VALUES-3", Outcome: ReleaseDeletedUnread},
-				{Name: "legion-values-values-4", Kind: "issue", Issue: "VALUES-4", Outcome: ReleaseDeletedLost},
-				{Name: "legion-values-values-5", Kind: "issue", Issue: "VALUES-5", Outcome: ReleaseDeletedReadRefused},
-				{Name: "legion-values-controller", Kind: "controller", Outcome: ReleaseDeleted},
-				{Name: "legion-values-cache-acme-widgets", Kind: "cache", Outcome: ReleaseLeft, Reason: "its delete was refused"},
-				{Name: "legion-values-probe", Kind: "probe", Outcome: ReleaseDeleted},
-				{Name: "legion-values-unlabelled", Kind: "unknown", Outcome: ReleaseLeft, Reason: "no label names its kind"},
+				{Name: "legion-values-values-1", Kind: runtime.ProjectSandboxIssue, Issue: "VALUES-1", Outcome: ReleaseWaiting, Asked: asked},
+				{Name: "legion-values-values-2", Kind: runtime.ProjectSandboxIssue, Issue: "VALUES-2", Outcome: ReleaseDeletedClean},
+				{Name: "legion-values-values-3", Kind: runtime.ProjectSandboxIssue, Issue: "VALUES-3", Outcome: ReleaseDeletedUnread},
+				{Name: "legion-values-values-4", Kind: runtime.ProjectSandboxIssue, Issue: "VALUES-4", Outcome: ReleaseDeletedLost},
+				{Name: "legion-values-values-5", Kind: runtime.ProjectSandboxIssue, Issue: "VALUES-5", Outcome: ReleaseDeletedReadRefused},
+				{Name: "legion-values-controller", Kind: runtime.ProjectSandboxController, Outcome: ReleaseDeleted},
+				{Name: "legion-values-cache-acme-widgets", Kind: runtime.ProjectSandboxCache, Outcome: ReleaseLeft, Reason: "its delete was refused"},
+				{Name: "legion-values-probe", Kind: runtime.ProjectSandboxProbe, Outcome: ReleaseDeleted},
+				{Name: "legion-values-unlabelled", Kind: runtime.ProjectSandboxUnknown, Outcome: ReleaseLeft, Reason: "no label names its kind"},
 			},
 			Claims:  claims,
 			Failure: "list the project's Sandboxes again: the API server answered 503",

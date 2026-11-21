@@ -2950,10 +2950,12 @@ package api
 // `z.enum` in `packages/contracts/src/legion-api.ts`, which refuses a word it does not name, so a
 // word added later bumps this number. `GET /legion/v1/state` gains `projectRelease`, that same
 // body for the project's newest release, absent while none was recorded; a caller that states a
-// contract below 200, or that states none from a pod whose claims record one, is served the state
-// without it (the band of shaping.go's stateNarrowings at projectReleaseContract,
-// withoutProjectRelease), as a caller below 178 is served it without `paused` and `lastPause`, and
-// the bands compose. The release's six enumerated fields on the state, `projectRelease.endedBy`,
+// contract below 200, or that states none from a pod whose claims record one below 193
+// (podContracts reads no claim at or above shapedAnswersContract, since every build from 193 states
+// its contract), is served the state without it (the band of shaping.go's stateNarrowings at
+// projectReleaseContract, withoutProjectRelease), as a caller below 178 is served it without
+// `paused` and `lastPause`, and the bands compose.
+// The release's six enumerated fields on the state, `projectRelease.endedBy`,
 // `projectRelease.result.sandboxes.*.kind`, `….outcome` and `….asked.*.role`, and
 // `projectRelease.result.claims.*.role` and `….ended`, are rows of answers.go's EnumeratedFields,
 // each value arriving with its key at 200 and riding the band, so no value strip is owed. A

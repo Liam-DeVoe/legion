@@ -967,7 +967,7 @@ const pauseContract = 178
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract these keys arrived at stays where it is. It moves only with
-// this change's own number.
+// the number version.go's dispatch://INFRA-3583 entry declares.
 const projectReleaseContract = 200
 
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the
@@ -1767,7 +1767,8 @@ func (s *server) writeAnswer(w http.ResponseWriter, r *http.Request, id AnswerID
 // placedByPod is whether the answer id, written as body, places a caller that states no contract
 // by the claims of its pod: true for the release records and for a refusal whose body is a
 // PauseFailure, and false for every other answer. Those two answers' shapes moved at
-// pauseContract, and their writers answer from no snapshot of their own, so writeAnswer reads the
+// pauseContract, and the refusal's moved again at projectReleaseContract (`heldPods`,
+// withoutHeldPods); their writers answer from no snapshot of their own, so writeAnswer reads the
 // claims for them (placingClaims). Every other answer writeAnswer writes is the identity at every
 // contract, and so is a plain refusal (a claim.Refusal or a Failure), so a read of the claims for
 // one of them would decide nothing. A serving-down added to one of them reaches the caller of a
