@@ -1088,8 +1088,14 @@ backfill_section() {
   local ask_text="Asked before this child, $citation?"
   # Each row as a build before this child writes it: a comment with no node, which
   # dispatch://INFRA-1149's backfill gives it, and a message and an ask with no node either, which
-  # dispatch://INFRA-3862's gives them; none holds a marker of this child's, and their triggers
-  # project them into user_threads as that build's do.
+  # dispatch://INFRA-3862's gives them; none holds a marker of this child's. That build's triggers
+  # also projected each such write into user_threads, moving the row of every other person in its
+  # thread and beginning its writer's, and a boot of this head may have dropped those triggers
+  # (startup.ProjectionTriggersRetirement). Every write here is the session's, which holds no row,
+  # into a thread no person holds a row of, so those triggers wrote nothing for these rows and the
+  # seed writes nothing in their place: the read below holds it to that.
+  want_value backfill "no person holds a user_threads row of the threads these rows write into, so the triggers of a build before this child wrote none for them" 0 "
+    select count(*) from user_threads where thread_id in ('$root', '$ask', '$message')"
   query backfill "write two comments, a message and an ask as a build before this child writes them" "
     begin;
     insert into comments (id, issue_key, author, body, reply_to, answers, replies_to_block, created_at)

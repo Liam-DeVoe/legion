@@ -28,11 +28,14 @@ import { sessionIds } from "./session-ids";
  *
  * Every spec that lists thread rows seeds them through here, so what a Reply row and an Agent
  * row are is written once. A handful of rows is seeded through the API (`e2e/api.ts`), as a
- * person and a session would write them; a bulk seed goes through `e2e/psql.ts` in one statement
- * (`seedBulkReplyThreads`, `seedBulkAgentThreads`), because the suite runs one worker under a CI
- * budget, and inserts into `comments` and `messages` so that the `user_threads` triggers of
- * migrations 0096 and 0097 run and the generated `unread` column is right - never into
- * `user_threads` itself.
+ * person and a session would write them, and the server's one writer of a thread
+ * (`inboxwrite.Record`) keeps their `user_threads` rows. A bulk seed goes through `e2e/psql.ts`
+ * in one statement (`seedBulkReplyThreads`, `seedBulkAgentThreads`), because the suite runs one
+ * worker under a CI budget. No stored function writes `user_threads` for such a statement: the
+ * boot's retirement drops the triggers of migrations 0095 to 0097
+ * (`startup.ProjectionTriggersRetirement`), at the first boot over the database a stack creates
+ * from empty. So a bulk seed that needs a `user_threads` row writes it beside its comments, with
+ * the columns the Go writer gives it, and the generated `unread` column follows from them.
  */
 
 /** The session every seeded thread is answered by: live, and taking all three delivery modes, so
@@ -191,8 +194,8 @@ export async function seedAcceptedSend({
   return sent.id;
 }
 
-/** How many of the reader's thread rows are unread, read from the table the triggers keep: what
- *  a bulk seed asserts of itself before the test proceeds. */
+/** How many of the reader's thread rows are unread, read from `user_threads`: what a bulk seed
+ *  asserts of itself before the test proceeds. */
 export async function unreadThreadRows(login = "alice"): Promise<number> {
   const counted = await sql(
     `select count(*) from user_threads where login = '${login}' and unread`
@@ -212,9 +215,14 @@ export function authorLiteral(author: Actor): string {
  * minutes old, so thread 1 is the newest of them and thread `count` the oldest, and a second
  * seed given a large enough `olderThan` lies wholly before the first.
  *
- * One statement, so the suite's one worker pays one psql for the whole seed, and `comments`
- * rather than `user_threads`, so the triggers of migrations 0095 to 0097 write the rows and
- * their generated `unread` column.
+ * One statement, so the suite's one worker pays one psql for the whole seed. It writes the
+ * reader's `user_threads` row of each thread itself, as no trigger does any more, with what the
+ * Go writer (`inboxwrite.Record`) writes into it for these two writes: the reader's own root
+ * begins the row, read through the root's moment, under the issue's project; the session's reply
+ * moves it to that reply, one version on. The session holds no row, as no session does. The row
+ * stays unmarked (`marked_version` and `marked_seq` null), as both comments do (no
+ * `tuples_stored`, no node): a marked row stands for the delivered_to and read_through tuples the
+ * store holds of it, and this seed writes none.
  */
 export async function seedBulkReplyThreads({
   count,
@@ -241,19 +249,30 @@ export async function seedBulkReplyThreads({
              now() - ((${olderThan} + 2 * g + 1) || ' minutes')::interval
       from generate_series(1, ${count}) g
       returning id, body, created_at
+    ), replies as (
+      insert into comments (issue_key, author, body, reply_to, created_at)
+      select '${issueKey}', ${authorLiteral(sessionActor(session))},
+             replace(roots.body, ' root ', ' reply '), roots.id,
+             roots.created_at + interval '1 minute'
+      from roots
+      returning id, reply_to, created_at
     )
-    insert into comments (issue_key, author, body, reply_to, created_at)
-    select '${issueKey}', ${authorLiteral(sessionActor(session))},
-           replace(roots.body, ' root ', ' reply '), roots.id,
-           roots.created_at + interval '1 minute'
+    insert into user_threads (login, thread_id, kind, project_key, issue_key, read_through,
+                              replied_at, last_reply_id, version)
+    select user_threads_login(${sqlLiteral(login)}), roots.id, 'comment', issues.project_key,
+           issues.key, roots.created_at, replies.created_at, replies.id, 1
     from roots
+    join replies on replies.reply_to = roots.id
+    join issues on issues.key = '${issueKey}'
   `);
 }
 
 /**
  * `count` unread Agent rows for `login` in one statement: a one-off message to the session and
  * a reply from it, the pair `count` times. An Agent row needs no delivery row - the Inbox reads
- * the message and its reply, and leaves out only a root an attempt was accepted on.
+ * the message and its reply, and leaves out only a root an attempt was accepted on - and no
+ * `user_threads` row: a message of no issue is in no thread of that table, so no trigger ever
+ * wrote for these rows and this seed writes nothing beside them.
  */
 export async function seedBulkAgentThreads({
   count,

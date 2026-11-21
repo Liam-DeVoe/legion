@@ -1966,6 +1966,9 @@ A participant the seed is still inserting has no row the trigger's update can se
 it moves nothing backwards, and a write the seed saw stays read.
 On a copy of the 2026-10-12 production dump (11,497 comments, 3,882 asks, 14,289 messages) the seed wrote 3,819 rows for three logins, all of them read, in 0.93 s, and `0099` ran in 0.11 s under the server's own runner and moved no row, taking `ACCESS SHARE` on the three tables it reads and `ROW EXCLUSIVE` on `user_threads` alone.
 All five censuses answer `0`: `0095`-`0097` create functions and triggers and refuse or rewrite no row, and `0098` and `0099` write only the table `0095` creates.
+What these migrations create does not all stay: the boot's retirement `startup.ProjectionTriggersRetirement`, whose log lines carry `retirement="the inbox's projection triggers and their functions"`, drops the triggers on `comments`, `asks` and `messages`, the functions `user_threads_comment`, `user_threads_ask` and `user_threads_message` they run, and `user_threads_record`, with `20261105093507`'s trigger and function (below), in one transaction.
+Until a boot drops them they stand, and project only a write that carries no store marker (`20261116160001`); from then on `inboxwrite.Record`, the one Go writer of a thread, writes every `user_threads` row, and `user_threads_login` stays, since this build's reads and the census call it.
+A boot drops them where it created the database from empty, or where the newest `server_build_announcements` row naming another commit lists `replies_to`, `answers` and `part_of`, the relation kinds of the release that made `inboxwrite.Record` the one writer, and where no row of `comments`, `messages` or `asks` stands without that release's marker once the boot's backfill has run; a boot that keeps them logs the announcement it read or each row that holds them, and the next boot reads again.
 
 Migration `0113_repo_projects_default_and_issue_repo` adds `repo_projects.is_default` and `issues.repo`.
 From its release on, an issue sits at most 32 links below its root, and the API refuses a write past that (`409 PARENT_INPUT`);
@@ -2725,6 +2728,8 @@ With it, "dismissed" is what it is on the other half
 — a mark exists — so no read compares two times, and the Inbox's own reads leave a dismissed root out without reading its thread, which was 66 ms of the Inbox read's 69 at 10,000 dismissed Agent threads.
 `create function` takes no table lock and `create trigger ... after insert on messages` takes `SHARE ROW EXCLUSIVE` on `messages` for the one catalogue write, blocking that table's writers and no reader; neither reads or rewrites a row.
 Every census in the run answers `0`, and each up-file names the lock it takes and the row count its window was judged against.
+`user_threads_record` and `user_agent_thread_dismissed_clear` stand, with this trigger and the three that reach `user_threads_record`, until the boot's retirement `startup.ProjectionTriggersRetirement` drops them (`0095_user_threads` through `0099_user_threads_catch_up`, above, says when);
+from then on `inboxwrite.Record` clears an Agent root's mark and moves a Reply thread's rows, in the write's own transaction.
 
 Migration `20261105014808_comments_answers` gives `comments` a nullable `answers`, the comment a reply answers, and re-states `graph_edges` with one more arm, `answers` from the reply to that comment ("Reference graph" below).
 A comment write climbs the reply chain to the head of the thread before it stores, which is what every thread read selects on, so `reply_to` holds the head and the comment the writer answered was lost;

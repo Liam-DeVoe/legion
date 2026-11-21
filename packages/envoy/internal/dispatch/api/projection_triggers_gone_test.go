@@ -83,6 +83,13 @@ var projectionTriggerObjects = []string{
 //   - one this boot created from empty: the objects go at once, and no stored function writes a
 //     projected table or a thread's projection.
 //
+// A fifth holds the step to the rows the triggers still write for, beside its guard: one whose
+// newest such announcement lists the inbox release's kinds, and where a comment on a document
+// whose ref_key is past the store's address bound stands unmarked, as a build that leaves such a
+// row to the triggers writes it. No writer states that row in the store and the backfill does not
+// take it, so it holds the objects: every one stays through a first boot and a restart, and each
+// boot's log names that row as what holds them.
+//
 // user_threads_login stays wherever the others go.
 func TestTheProjectionTriggersGoWithTheirArms(t *testing.T) {
 	t.Run("a step of every boot", requireTheTriggersGoInABootStep)
@@ -93,6 +100,7 @@ func TestTheProjectionTriggersGoWithTheirArms(t *testing.T) {
 	})
 	t.Run("released", requireTheReleasedDatabaseLosesTheTriggers)
 	t.Run("a roll", requireARollsUnmarkedCommentComesInFirst)
+	t.Run("past the bound", requireAnUnmarkedRowPastTheBoundKeepsTheTriggers)
 	t.Run("release before", requireTheReleaseBeforeKeepsTheTriggers)
 	t.Run("from empty", requireAnEmptyDatabaseLosesTheTriggersAtOnce)
 }
@@ -412,6 +420,60 @@ func requireARollsUnmarkedCommentComesInFirst(t *testing.T) {
 	}
 	for _, login := range []string{"alice", "bob"} {
 		requireVersionCountsReplies(t, database, login, graphstore.KindComment, root.ID)
+	}
+}
+
+// requireAnUnmarkedRowPastTheBoundKeepsTheTriggers seeds its unmarked row itself, on an older
+// build's connection, rather than through this build's comment route: the row is what a build that
+// leaves a comment past the bound to the triggers writes, whether or not this build's own writers
+// mark such a comment.
+func requireAnUnmarkedRowPastTheBoundKeepsTheTriggers(t *testing.T) {
+	ctx := context.Background()
+	const project = "TRGP"
+	fixture := seedProjectionTriggers(t, project)
+	database, pool := fixture.database, fixture.database.Pool
+	fixture.announce(t, "a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4", refs.TupleKinds())
+
+	// A document whose ref_key fills the artifact key bound, past the store's address bound, and
+	// alice's comment on it, naming no node and holding no tuples_stored.
+	var document, refKey string
+	if err := pool.QueryRow(ctx, `
+		insert into artifacts (project_key, slug, name, kind, created_by)
+		values ($1, $2, $2, 'doc', '{"kind":"user","id":"alice"}')
+		returning id::text, ref_key
+	`, project, randText(maxNewArtifactKeyBytes-len(project+"/"))).Scan(&document, &refKey); err != nil {
+		t.Fatalf("create the long-keyed document: %v", err)
+	}
+	if graphstore.AddressFits(refKey) {
+		t.Fatal("the document's ref_key fits the store's address bound, so this proves nothing")
+	}
+	var over string
+	if err := olderBuild(t, database).QueryRow(ctx, `
+		insert into comments (artifact_id, author, body)
+		values ($1::uuid, '{"kind":"user","id":"alice"}', 'A remark on a long-keyed document.')
+		returning id::text
+	`, document).Scan(&over); err != nil {
+		t.Fatalf("write the comment past the bound as an older build leaves it: %v", err)
+	}
+	want := []string{"comments " + over}
+	if unmarked := unmarkedRowsOf(t, pool); !slices.Equal(unmarked, want) {
+		t.Fatalf("the rows standing unmarked are %v, want the comment past the bound %s alone", unmarked, over)
+	}
+	requireTheObjectsStanding(t, pool, "before the step")
+
+	for _, boot := range []string{"the first boot", "a restart"} {
+		lines := projectionTriggerLines(retireAsTheBootDoes(t, pool, false))
+		requireLogged(t, lines, "at "+boot, "something still holds them", "unmarked_table=comments", "unmarked_row="+over)
+		for _, line := range lines {
+			if strings.Contains(line, "does not list every relation kind") || strings.Contains(line, "deleted its objects") {
+				t.Errorf("at %s the step logged %s, want the objects kept by the unmarked row alone", boot, line)
+			}
+		}
+		requireTheObjectsStanding(t, pool, "after "+boot)
+		if unmarked := unmarkedRowsOf(t, pool); !slices.Equal(unmarked, want) {
+			t.Errorf("after %s the rows standing unmarked are %v, want the comment past the bound %s still: the backfill takes no row past the bound",
+				boot, unmarked, over)
+		}
 	}
 }
 
