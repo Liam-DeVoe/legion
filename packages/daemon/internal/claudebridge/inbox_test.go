@@ -244,3 +244,37 @@ func TestInboxTakePendingIsFalseForTheRunningTasksOwnNumberWrittenAgain(t *testi
 		t.Fatalf("the bridge asked to take %q, want task 7 once", takes)
 	}
 }
+
+// The running task's own number written again during a turn whose text Claude Code never
+// re-emitted (the bridge started task 7's turn and Claude Code dropped its text): that turn's end
+// marks nothing finished (its result names task 0), so the bridge takes the newer revision the
+// moment the turn ends. That take is the next turn, so the take is pending in the turn (R6), and a
+// Stop hook told otherwise blocks the stop with a reminder ahead of the take.
+func TestInboxTakePendingCountsTheRunningTasksNumberWrittenAgainWhenItsTextWasDropped(t *testing.T) {
+	d := newTaskDaemon(t)
+	d.answerTake = func(take claim.TakeRequest) (int, any) {
+		if take.Revision == 1 {
+			return accepted("drop t1")
+		}
+		return accepted("say the task taken again")
+	}
+	r := newTakingRig(t, d, "", daemonCalls{})
+	r.handReady()
+
+	r.handTask(testTask, 1)
+	r.expect("agent_start", nil)
+	r.handTask(testTask, 2)
+	got := r.takePending()
+	r.release("t1")
+	r.untilTurnEnds()
+	r.expect("agent_start", nil)
+	r.untilTurnEnds()
+	r.quiet()
+	takes := pairsOf(t, d.takesMade())
+	if !slices.Equal(takes, []string{"7 at 1", "7 at 2"}) {
+		t.Fatalf("the bridge asked to take %q, want 7 at 1 and, at the dropped turn's end, 7 at 2", takes)
+	}
+	if !got.Pending {
+		t.Fatalf("in task 7's turn whose text Claude Code dropped, with 7 written again at revision 2, the bridge answered the take-pending query %+v; want it pending, since that turn's end takes 7 at 2 at once (%q)", got, takes)
+	}
+}
