@@ -325,68 +325,75 @@ func gateAppend(ctx context.Context, q Queryer, room string, through int64, kind
 //
 // Its decodes share one grant of the pod's load concurrency (withLoadSlot): the grant ctx carries,
 // or one of its own given back as it returns, so the document is counted for its whole life here.
-// The grant is taken on the history's rows as the fold reads them: each row's bytes and the
-// structs its header declares are added before the fold decodes it (copyWeight, declaredStructs),
-// so the fold's own document is counted from its first row, and once every row is read the grant
-// holds what foldRead takes for the same rows read into memory. The rows are summed as they are
-// read, not by the gate's statement, which every append runs and which would then fetch every
-// row of the history rather than read its index (appendGateStatement). The fold's read-back, or
-// the decode of the history's runs where it does not fold (fold, runsDocument), raises the grant
-// where its document weighs more. The run is then decoded onto that document, a whole decode of
-// each of its updates, and the grant is raised by what the run's copy costs - its bytes and the
-// structs their headers declare, as storedCopyWeight weighs one update, read before anything of
-// the run is decoded - so it covers the document and the run together until the run is judged.
-// Each take waits for its bytes, as foldRead's does, on the room's persistence worker as in a
-// transaction's flush of the room, and a wait ctx ends is the error. A fold that reads the history
-// again - its parked branch's diff, or a misread's runs (fold, documentThrough) - reads rows the
-// grant already covers, since the document's lock keeps them the rows the first pass read, so once
-// one pass has read every row without error no later pass weighs them again.
+// The grant is taken on the history's rows before the fold decodes any of them: one pass over
+// them first adds up their bytes and the structs their headers declare and decodes nothing, and
+// the grant takes what they weigh (copyWeight, declaredStructs), what foldRead takes for the same
+// rows read into memory, so the fold's own document is counted from its first row and the fold
+// takes nothing more as it reads them. The rows are summed by that pass, not by the gate's
+// statement, which every append runs and which would then fetch every row of the history rather
+// than read its index (appendGateStatement); the document's lock keeps them the rows every later
+// pass reads. The fold's read-back, or the decode of the history's runs where it does not fold
+// (fold, runsDocument), takes more where its document weighs more, holding nothing it built as it
+// does, so on a grant this check holds alone it gives the grant back and takes that weight whole
+// where the pool does not give the difference at once (ownedBy, holdUnbuiltLoad). The run is then
+// decoded onto that document, a whole decode of each of its updates, and the grant takes what the
+// run's copy costs on top of what the document holds - its bytes and the structs their headers
+// declare, as storedCopyWeight weighs one update, read before anything of the run is decoded - so
+// it covers the document and the run together until the run is judged. The document is held as it
+// takes that, so it does not wait for it (loadSlot.take): where the pool does not give it at once,
+// the check drops the document, gives the grant back, takes the total whole and decodes the
+// history again under it (redoWhole). The first take waits for its bytes, as foldRead's does, on
+// the room's persistence worker as in a transaction's flush of the room, and a wait ctx ends is
+// the error.
 func storedHistoryHolds(ctx context.Context, q Queryer, room string, head int64, updates []BrowserUpdate, maxPending int) (bool, error) {
 	ctx, slot, done := withLoadSlot(ctx)
 	defer done()
+	ctx = slot.ownedBy(ctx)
 	version := persistence.Version(head)
 	stored := storedUpdates(ctx, q, room, version)
-	var weighedAll bool
-	weighed := func(use func([]byte) error) error {
-		if weighedAll {
-			return stored(use)
+	var rowBytes, rowStructs int64
+	if err := stored(func(update []byte) error {
+		rowBytes += int64(len(update))
+		rowStructs += int64(declaredStructs(update))
+		return nil
+	}); err != nil {
+		return false, err
+	}
+	var runBytes, runStructs int64
+	for _, update := range updates {
+		runBytes += int64(len(update.Update))
+		runStructs += int64(declaredStructs(update.Update))
+	}
+	run := copyWeight(runBytes, runStructs)
+	var holds bool
+	documentWeight := int64(-1)
+	err := slot.redoWhole(ctx, func(take func(total int64) error) error {
+		holds = false
+		if err := take(copyWeight(rowBytes, rowStructs)); err != nil {
+			return err
 		}
-		var bytes, structs int64
-		err := stored(func(update []byte) error {
-			bytes += int64(len(update))
-			structs += int64(declaredStructs(update))
-			if err := slot.take(ctx, copyWeight(bytes, structs)); err != nil {
-				return err
+		doc, err := documentThrough(ctx, room, version, stored, maxPending)
+		if err != nil || doc == nil || parks(doc) {
+			return err
+		}
+		if documentWeight < 0 {
+			documentWeight = slot.bytes
+		}
+		if err := take(min(documentWeight+run, loadSlotBytes)); err != nil {
+			return err
+		}
+		for _, update := range updates {
+			if err := crdt.ApplyUpdateV1(doc, update.Update, nil); err != nil {
+				return nil
 			}
-			return use(update)
-		})
-		weighedAll = err == nil
-		return err
-	}
-	doc, err := documentThrough(ctx, room, version, weighed, maxPending)
-	if err != nil || doc == nil {
-		return false, err
-	}
-	if parks(doc) {
-		return false, nil
-	}
-	var bytes, structs int64
-	for _, update := range updates {
-		bytes += int64(len(update.Update))
-		structs += int64(declaredStructs(update.Update))
-	}
-	if err := slot.raise(ctx, copyWeight(bytes, structs)); err != nil {
-		return false, err
-	}
-	for _, update := range updates {
-		if err := crdt.ApplyUpdateV1(doc, update.Update, nil); err != nil {
-			return false, nil
+			if parks(doc) {
+				return nil
+			}
 		}
-		if parks(doc) {
-			return false, nil
-		}
-	}
-	return true, nil
+		holds = true
+		return nil
+	})
+	return holds, err
 }
 
 // historyReplaced is whether the stored history under a room instance holding every version

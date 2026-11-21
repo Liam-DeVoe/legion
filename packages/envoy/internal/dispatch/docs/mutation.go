@@ -2397,58 +2397,76 @@ func (s *Service) storedTree(ctx context.Context, artifactID string) (*pmdoc.Nod
 // own, given back once the tree is built. The load takes it on the rows it folds and the state it
 // decodes and leaves it held (LoadDocument), so the document it hands back is counted while
 // unstored is merged and applied to it and its tree is built (treeOf). The merge decodes every
-// struct of every update it merges (crdt.MergeUpdatesV1), so where any of them is heavy it first
-// raises the grant by what their decodes cost, summed (mergeWeight), added to what the load left
-// the grant holding; the apply then decodes what the merge made, and where that is heavy
-// (heavyUpdateWeight) - many light updates can merge into one that is not - it raises the grant by
-// what that decode costs past the merge's raise, as the room's persistence worker's read-back of a
-// heavy update takes. Lighter updates take nothing at either, as a keystroke's apply takes nothing.
-// Each raise waits within ctx, and a wait ctx ends is ctx's error. It waits holding nothing the
-// load's take did not: by then the load has ended its read transaction and given back its buffered
-// fold's slot (foldRead), and what the caller holds - the connection and the owner's lock of the
-// transaction it is joined to (joinRead), docTree's opening of the room budget, and a socket
-// admission's count on its room's state (holdForAdmission), which nothing waits for - it held
-// across that take as well. docTree takes unstored inside the room's Apply and calls this only
-// once that Apply has returned, so no wait here holds the room. A version's caller, which holds
-// the document's advisory lock, merges nothing and so never raises it.
+// struct of every update it merges (crdt.MergeUpdatesV1), so where any of them is heavy the grant
+// first takes what their decodes cost, summed (mergeWeight), on top of what the load left it
+// holding; the apply then decodes what the merge made, and where that is heavy
+// (heavyUpdateWeight) - many light updates can merge into one that is not - the grant takes what
+// that decode costs on top of the load's instead, where it is the more, as the room's persistence
+// worker's read-back of a heavy update takes. Lighter updates take nothing at either, as a
+// keystroke's apply takes nothing.
+//
+// The load's document is held while the grant takes more, so neither take waits for it
+// (loadSlot.take): where the pool does not give it at once, the read drops the document, gives
+// the grant back, takes the total whole and reads again under it (redoWhole), where every take up
+// to that total takes nothing. The totals are counted from what the first load left the grant
+// holding, so a history that grew past it before a later pass is refused rather than counted
+// short: its load's own take on the held grant answers errGrantShort, the 503 the caller retries.
+// A grant ctx carries that already held bytes as this began is never given back here, and a take
+// past it is refused the same way. A wait ctx ends is ctx's error. The wait holds nothing of the
+// pool and nothing the load took: by then the load has ended its read transaction and given back
+// its buffered fold's slot (foldRead), and what the caller holds - the connection and the owner's
+// lock of the transaction it is joined to (joinRead), docTree's opening of the room budget, and a
+// socket admission's count on its room's state (holdForAdmission), which nothing waits for - it
+// held across the load's first take as well. docTree takes unstored inside the room's Apply and
+// calls this only once that Apply has returned, so no wait here holds the room. A version's
+// caller, which holds the document's advisory lock, merges nothing and so never takes more.
 func (s *Service) storedWithUpdates(ctx context.Context, artifactID string, unstored [][]byte) (*pmdoc.Node, error) {
 	ctx, slot, done := withLoadSlot(ctx)
 	defer done()
-	loaded, err := s.persistence.LoadDocument(ctx, artifactID)
-	if err != nil {
-		if errors.Is(err, ErrDocumentUnloadable) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, err
-		}
-		return nil, fmt.Errorf("%w: %w", ErrServiceUnavailable, err)
-	}
-	if parked := s.parkedPastRoomCaps(loaded.Doc); parked != nil {
-		return nil, refuseParkedRead(artifactID, parked)
-	}
-	doc := loaded.Doc
-	if doc == nil {
-		doc = newDocumentCopy()
-	}
-	if len(unstored) > 0 {
-		merge := mergeWeight(unstored)
-		if merge > 0 {
-			if err := slot.raise(ctx, merge); err != nil {
-				return nil, err
-			}
-		}
-		merged, err := mergeUpdates(unstored)
+	var tree *pmdoc.Node
+	loadWeight := int64(-1)
+	err := slot.redoWhole(ctx, func(take func(total int64) error) error {
+		loaded, err := s.persistence.LoadDocument(ctx, artifactID)
 		if err != nil {
-			return nil, err
+			if errors.Is(err, ErrDocumentUnloadable) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return err
+			}
+			return fmt.Errorf("%w: %w", ErrServiceUnavailable, err)
 		}
-		if apply, heavy := heavyUpdateWeight(merged); heavy && apply > merge {
-			if err := slot.raise(ctx, apply-merge); err != nil {
-				return nil, err
+		if parked := s.parkedPastRoomCaps(loaded.Doc); parked != nil {
+			return refuseParkedRead(artifactID, parked)
+		}
+		doc := loaded.Doc
+		if doc == nil {
+			doc = newDocumentCopy()
+		}
+		if loadWeight < 0 {
+			loadWeight = slot.bytes
+		}
+		if len(unstored) > 0 {
+			merge := mergeWeight(unstored)
+			if merge > 0 {
+				if err := take(min(loadWeight+merge, loadSlotBytes)); err != nil {
+					return err
+				}
+			}
+			merged, err := mergeUpdates(unstored)
+			if err != nil {
+				return err
+			}
+			if apply, heavy := heavyUpdateWeight(merged); heavy && apply > merge {
+				if err := take(min(loadWeight+apply, loadSlotBytes)); err != nil {
+					return err
+				}
+			}
+			if err := crdt.ApplyUpdateV1(doc, merged, nil); err != nil {
+				return fmt.Errorf("%w: merge a room's not-yet-stored updates into the stored document: %w", ErrServiceUnavailable, err)
 			}
 		}
-		if err := crdt.ApplyUpdateV1(doc, merged, nil); err != nil {
-			return nil, fmt.Errorf("%w: merge a room's not-yet-stored updates into the stored document: %w", ErrServiceUnavailable, err)
-		}
-	}
-	return treeOf(doc)
+		tree, err = treeOf(doc)
+		return err
+	})
+	return tree, err
 }
 
 // latestVersion is artifactID's latest version as tx sees it: the last one this transaction has

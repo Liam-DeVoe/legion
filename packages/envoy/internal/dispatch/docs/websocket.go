@@ -1093,12 +1093,13 @@ func leaveParkedOut(doc *crdt.Doc) {
 // service holds (roomWeighing.roomStateBytes), and the structs the answer may have to encode
 // (websocket.StateAnswerInfo.Structs). Both are read again once the grant is in hand and the
 // grant topped up where the room grew while this answer waited for it, which costs nothing where
-// it did not (StateAnswerInfo.StructsNow, and loadSlot.take, which takes the difference alone):
-// the answer is built after this returns, so a grant sized before a wait is otherwise a grant
-// sized on a room that has since changed. Beside the room, the grant weighs the browser's own
-// SyncStep1, whose state vector the answer decodes into a map it holds while it cuts
-// (stepOneWeight): a browser names the clients it holds there, as many as its message's bytes
-// carry, whatever the room holds.
+// it did not (StateAnswerInfo.StructsNow): the top-up takes the difference where the pool gives it
+// at once and otherwise gives the grant back and takes the new weight whole, since nothing of the
+// answer is built yet for the grant to cover while it waits (loadSlot.retake). The answer is built
+// after this returns, so a grant sized before a wait is otherwise a grant sized on a room that has
+// since changed. Beside the room, the grant weighs the browser's own SyncStep1, whose state vector
+// the answer decodes into a map it holds while it cuts (stepOneWeight): a browser names the
+// clients it holds there, as many as its message's bytes carry, whatever the room holds.
 //
 // A wait is bounded by WriteWaitBound, the server's own bound on what a caller spends at a
 // memory bound, and the browser a refusal closes is closed DOC_BUSY, the transient close the
@@ -1122,7 +1123,7 @@ func (s *Service) weighStateAnswer(info websocket.StateAnswerInfo) (func(), erro
 		return nil, s.refusedStateAnswer(info, state, weight, err)
 	}
 	state, weight = grant(info.StructsNow())
-	if err := slot.take(ctx, weight); err != nil {
+	if err := slot.retake(ctx, weight); err != nil {
 		slot.release()
 		return nil, s.refusedStateAnswer(info, state, weight, err)
 	}

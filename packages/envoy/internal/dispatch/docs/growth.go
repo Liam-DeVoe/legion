@@ -377,15 +377,16 @@ func elements(size pmdoc.DocumentSize) string {
 // keystroke by keystroke, holds a struct a keystroke (leavesPastDecodeCap, which names ygo's
 // merge and what the difference measures), so a fork can count far below the room it was forked
 // from, and a write the fork's count clears could carry the room past the cap once published.
-// The room is asked instead, by leavesPastDecodeCap itself, as the three server writes outside
-// applyLive ask it: its own struct total with what the transaction's updates added to the fork
-// (updatesAdd), then the transaction's updates applied to a copy of the room, the second step
-// answering only where the first cannot.
+// The room is asked instead, by leavesPastDecodeCap's two steps, as the three server writes
+// outside applyLive ask it: its own struct total with what the transaction's updates added to the
+// fork (updatesAdd), then the transaction's updates applied to a copy of the room, the second step
+// answering only where the first cannot (decodeCapWithoutCopy, structsAfter).
 //
-// What the copy costs, and when it is taken, is leavesPastDecodeCap's. Nothing the operation
-// holds here is a transaction on the room: it wrote the fork, and the fork's read of the room
-// ended before the operation began (warmFork), so the copy can take the room document's lock. A
-// browser's edit landing between the count and the publish is the peer update hook's to bound.
+// What the copy costs is leavesPastDecodeCap's, and the write takes it on its own grant before it
+// copies, refusing busy where it cannot have it at once (leavesRoomPastDecodeCap). Nothing the
+// operation holds here is a transaction on the room: it wrote the fork, and the fork's read of the
+// room ended before the operation began (warmFork), so the copy can take the room document's lock.
+// A browser's edit landing between the count and the publish is the peer update hook's to bound.
 //
 // A write with no room behind it - a cold fork, built from the store while no room held the
 // document (coldFork), or a room evicted since the fork read it - reaches a room that loads from
@@ -406,8 +407,9 @@ func elements(size pmdoc.DocumentSize) string {
 // scope. Every other refusal says to shorten the change, as before, so no one is sent to a rebuild
 // the route refuses.
 func (s *Service) refuseUndecodable(ctx context.Context, write *liveWrite, fork *crdt.Doc, updates [][]byte) error {
-	if !s.leavesRoomPastDecodeCap(ctx, write, fork, updates) {
-		return nil
+	past, err := s.leavesRoomPastDecodeCap(ctx, write, fork, updates)
+	if err != nil || !past {
+		return err
 	}
 	if _, near := writeNearTheDecodeCap(write); near {
 		return fmt.Errorf("%w: this change would leave the document's live state past the %d items ygo decodes in one update, and its history rather than its text holds it there: %s (POST /api/v1/artifacts/%s/rebuild, which the document's page offers), which keeps its text and leaves its history small, and the change can then be made again",
@@ -450,24 +452,46 @@ func coldForkNear(structs uint64, fork *crdt.Doc) string {
 
 // leavesRoomPastDecodeCap is refuseUndecodable's question: whether updates, with write's earlier
 // updates, leave the room write's fork was read from past the decode cap. ctx carries the
-// write's load grant, which the copy the count may take covers rather than weighing itself
-// again inside it (liveWrite.carriedBy, structsAfter).
-func (s *Service) leavesRoomPastDecodeCap(ctx context.Context, write *liveWrite, fork *crdt.Doc, updates [][]byte) bool {
+// write's load grant (liveWrite.carriedBy), which covers the copy the count may take rather than a
+// grant of the copy's own (structsAfter).
+//
+// The copy weighs what a whole copy of the room weighs now (copyOfRoom), which the room's growth
+// since the fork can put past what the write's grant holds. The grant takes the difference before
+// the count copies anything, and since the write holds its fork under that grant it takes it only
+// where the pool gives it at once (loadSlot.take): a write that cannot have it is refused busy,
+// errWriteBusy, the 503 its caller retries. None of the ways round a wait while holding fits it:
+// the copy's weight is the room's as the count runs, so no take before the fork could cover it,
+// and the fork the grant covers is the operation's work, which the operation cannot drop and
+// build again within this check. Before, the difference was waited for without a deadline while
+// the write held its fork, in the pool's queue behind whoever was waiting there.
+func (s *Service) leavesRoomPastDecodeCap(ctx context.Context, write *liveWrite, fork *crdt.Doc, updates [][]byte) (bool, error) {
 	live := write.forkedFrom.Value()
 	if live == nil {
-		return structCeiling(fork) > maxUpdateItems
+		return structCeiling(fork) > maxUpdateItems, nil
 	}
 	transaction := append(append(make([][]byte, 0, len(write.updates)+len(updates)), write.updates...), updates...)
 	unapplied := false
-	past := s.leavesPastDecodeCap(ctx, live, serverWrite{adds: write.updatesAdd(fork), bounded: true, apply: func(copied *crdt.Doc) {
+	counted := serverWrite{adds: write.updatesAdd(fork), bounded: true, apply: func(copied *crdt.Doc) {
 		if err := applyTransactionWrites(copied, transaction); err != nil {
 			// Each update applied to the fork, a decode of the same room; one that does not
 			// apply to the copy leaves a count that cannot be trusted to hold all of it.
 			slog.Error("dispatch: apply a transaction's writes to a copy of its room to count them", "room", write.artifactID, "error", err)
 			unapplied = true
 		}
-	}})
-	return unapplied || past
+	}}
+	if past, decided := decodeCapWithoutCopy(live, counted); decided {
+		return past, nil
+	}
+	bytes := s.copyOfRoom(live)
+	if write.slot != nil {
+		held := write.slot.slot.bytes
+		if err := write.slot.slot.take(ctx, bytes); err != nil {
+			return false, fmt.Errorf("%w: the decode cap's count of this write copies its room, which weighs %d bytes of the pod's load concurrency, past the %d the write holds for its fork, and a write holding its fork waits for no more of the pool: %w",
+				errWriteBusy, bytes, held, err)
+		}
+	}
+	past := structsAfter(ctx, live, counted, bytes) > maxUpdateItems
+	return unapplied || past, nil
 }
 
 // updatesAdd is how many structs the transaction's own writes have added to fork, its copy of
@@ -614,10 +638,11 @@ type serverWrite struct {
 // leavesPastDecodeCap reports whether write would leave doc, a room's live document, with a
 // struct total (structCeiling) past the decode cap: the question each server write outside
 // applyLive asks before it writes (errPastDecodeCap), and the one an API write's transaction
-// asks of its updates and the room its fork was read from (leavesRoomPastDecodeCap). The server
-// writes write into the live document itself, where the sweep's single transaction
-// (unmarkExpired) cannot be rolled back once it has begun, so the question is answered before
-// the write rather than of what it left. Each step answers only where the one before cannot:
+// asks of its updates and the room its fork was read from, by the same two steps
+// (leavesRoomPastDecodeCap). The server writes write into the live document itself, where the
+// sweep's single transaction (unmarkExpired) cannot be rolled back once it has begun, so the
+// question is answered before the write rather than of what it left. Each step answers only where
+// the one before cannot:
 //
 //   - doc's own struct total (structCeiling) and what the write adds at most: within the cap,
 //     the write fits. It costs a walk of the document's client slices and nothing else, and
@@ -652,18 +677,27 @@ type serverWrite struct {
 // bound they were answered on whatever such an edit leaves (stampBlockIDs, unmarkExpired), and
 // each of settlement's repairs lands on the one block its id names (repairLive).
 //
-// ctx carries the load grant a live write's transaction already holds (liveWrite.carriedBy),
-// which the copy covers rather than weigh itself again inside it; a write of the server's own
-// carries none and takes bytes of its own, waiting without a deadline (holdServerLoad).
+// A write of the server's own carries no grant in ctx, and takes the copy's bytes of its own,
+// waiting without a deadline (holdServerLoad).
 func (s *Service) leavesPastDecodeCap(ctx context.Context, doc *crdt.Doc, write serverWrite) bool {
-	held := structCeiling(doc)
-	if held > maxUpdateItems {
-		return true
-	}
-	if write.bounded && plusCapped(held, write.adds) <= maxUpdateItems {
-		return false
+	if past, decided := decodeCapWithoutCopy(doc, write); decided {
+		return past
 	}
 	return structsAfter(ctx, doc, write, s.copyOfRoom(doc)) > maxUpdateItems
+}
+
+// decodeCapWithoutCopy is leavesPastDecodeCap's first step: whether doc's own struct total
+// (structCeiling) and what write adds at most answer the question without a copy of doc, and the
+// answer where they do.
+func decodeCapWithoutCopy(doc *crdt.Doc, write serverWrite) (past, decided bool) {
+	held := structCeiling(doc)
+	if held > maxUpdateItems {
+		return true, true
+	}
+	if write.bounded && plusCapped(held, write.adds) <= maxUpdateItems {
+		return false, true
+	}
+	return false, false
 }
 
 // structsAfter is the struct total doc, a room's live document, would hold after write: doc's
@@ -674,9 +708,9 @@ func (s *Service) leavesPastDecodeCap(ctx context.Context, doc *crdt.Doc, write 
 // counted, and is dropped when this returns.
 //
 // It takes bytes of the pod's load concurrency for that copy - what a whole copy of the room
-// costs (copyOfRoom) - or the grant ctx carries where it carries one: a live write's, which the
-// write holds for its fork's whole life and which this decode therefore waits for nothing to
-// get (liveWrite.carriedBy, holdServerLoad).
+// costs (copyOfRoom) - or the grant ctx carries where it carries one: a live write's, which
+// already holds the copy's bytes by then (leavesRoomPastDecodeCap), so this decode waits for
+// nothing (liveWrite.carriedBy, holdServerLoad).
 func structsAfter(ctx context.Context, doc *crdt.Doc, write serverWrite, bytes int64) uint64 {
 	defer holdServerLoad(ctx, bytes)()
 	live := structCeiling(doc)

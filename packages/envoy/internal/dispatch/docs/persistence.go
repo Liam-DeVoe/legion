@@ -482,7 +482,9 @@ func (p *PgVersioned) GetUpdate(ctx context.Context, room string, version persis
 // MaterializeAt rebuilds the V1 state at version (stateThrough), or the latest state before it
 // when a requested version is newer than the room head. Its fold streams the rows inside the
 // transaction it opens, under one slot of the pod's load concurrency its decode takes and gives
-// back as the state goes to its caller (loadSlots, fold).
+// back as the state goes to its caller (loadSlots, fold). A grant that held nothing as the read
+// began is the read's alone (ownedBy), so the decode of a log's runs that follows a read-back
+// takes more of it as foldRead's own read does (holdUnbuiltLoad).
 func (p *PgVersioned) MaterializeAt(ctx context.Context, room string, version persistence.Version) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -509,7 +511,8 @@ func (p *PgVersioned) MaterializeAt(ctx context.Context, room string, version pe
 	if version > head {
 		version = head
 	}
-	ctx, _, done := withLoadSlot(ctx)
+	ctx, slot, done := withLoadSlot(ctx)
+	ctx = slot.ownedBy(ctx)
 	defer done()
 	update, err := stateThrough(ctx, room, version, storedUpdates(ctx, tx, room, version), p.maxPendingItems)
 	if err != nil {
