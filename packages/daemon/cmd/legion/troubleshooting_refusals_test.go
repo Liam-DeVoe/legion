@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -64,6 +65,29 @@ var refusalFixtures = map[string]func(t *testing.T) string{
 	"postgres_dsn is required (or set LEGION_POSTGRES_DSN)": func(t *testing.T) string {
 		return refusalFile{drop: []string{"postgres_dsn:"}}.refuse(t)
 	},
+	"<LEGION_LEAK_CHECK_REPOSITORY or leak_check.repository> is set and the manifest sha256 is not: …": func(t *testing.T) string {
+		// A daemon whose environment names the leak check's repository and not its manifest
+		// digest, as a deployment that set one of its two variables starts it.
+		t.Setenv("LEGION_LEAK_CHECK_REPOSITORY", "example-org/deployment")
+		t.Setenv("LEGION_LEAK_CHECK_MANIFEST_SHA256", "")
+		return refusalFile{}.refuse(t)
+	},
+	"connect to Postgres at …: default_query_exec_mode=<mode> is refused: the store's text rule needs the type of each parameter, which pgx learns from the server only in cache_statement, cache_describe and describe_exec": func(t *testing.T) string {
+		// The store's refusal, made from the DSN alone (store.PoolConfig, which daemon.CheckStart
+		// runs as store.Open does): it names the DSN's address and never its password. The same
+		// DSN in a mode in which pgx learns each parameter's type passes the check.
+		dsn := "postgres_dsn: postgres://legion:dsn-not-a-secret@127.0.0.1:1/legion?default_query_exec_mode="
+		accepted := refusalFile{drop: []string{"postgres_dsn:"}, top: dsn + "describe_exec\n"}.write(t)
+		var out, errb bytes.Buffer
+		if code := run(context.Background(), []string{"legion", "config", "check", "--config", accepted}, &out, &errb); code != 0 {
+			t.Fatalf("legion config check of a DSN in describe_exec = %d, stderr %q; want 0: only exec and simple_protocol are refused", code, errb.String())
+		}
+		says := refusalFile{drop: []string{"postgres_dsn:"}, top: dsn + "exec\n"}.refuse(t)
+		if strings.Contains(says, "dsn-not-a-secret") {
+			t.Fatalf("the refusal %q names the DSN's password", says)
+		}
+		return says
+	},
 	"unknown key <key>": func(t *testing.T) string {
 		return refusalFile{top: "worker_backend: {}\n"}.refuse(t)
 	},
@@ -86,9 +110,12 @@ var refusalFixtures = map[string]func(t *testing.T) string{
 	"role_config_files.<role> entry <file> is under no runtime.kubernetes.pod.volume_mounts mount_path: …": func(t *testing.T) string {
 		return refusalFile{kubernetes: true, top: "role_config_files: {tester: [/etc/legion-fallback/fallback.yml]}\n"}.refuse(t)
 	},
+	// A fixture names a path under the test's temporary directory as a YAML double-quoted string:
+	// in a flow collection, a plain scalar ends or turns into an indicator at a '?', ',' or ']' the
+	// directory may hold.
 	"role_config_files.<role> names <file>, which the <role>'s Oh My Pi could not read: …": func(t *testing.T) string {
 		missing := filepath.Join(t.TempDir(), "missing.yml")
-		return refusalFile{top: "role_config_files: {implementer: [" + missing + "]}\n"}.refuse(t)
+		return refusalFile{top: "role_config_files: {implementer: [" + strconv.Quote(missing) + "]}\n"}.refuse(t)
 	},
 	"role_config_files.<role> …": func(t *testing.T) string {
 		return refusalFile{top: "role_config_files: {implementer: []}\n"}.refuse(t)
@@ -112,7 +139,7 @@ var refusalFixtures = map[string]func(t *testing.T) string{
 	},
 	"projects.<KEY>.memory.config_files names <file>, which a memory-group role's Oh My Pi could not read: …": func(t *testing.T) string {
 		missing := filepath.Join(t.TempDir(), "missing.yml")
-		return refusalFile{project: "    memory: {mode: on, config_files: [" + missing + "]}\n"}.refuse(t)
+		return refusalFile{project: "    memory: {mode: on, config_files: [" + strconv.Quote(missing) + "]}\n"}.refuse(t)
 	},
 	"projects.<KEY>.memory.config_files …": func(t *testing.T) string {
 		return refusalFile{project: "    memory: {mode: on, config_files: [/etc/legion-operator/memory.yml, /etc/legion-operator/memory.yml]}\n"}.refuse(t)
@@ -123,7 +150,7 @@ var refusalFixtures = map[string]func(t *testing.T) string{
 		if err := os.WriteFile(overlay, []byte("retry:\n  modelFallback: true\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		return refusalFile{project: "    memory: {mode: on, config_files: [" + overlay + "], instructions: " + missing + "}\n"}.refuse(t)
+		return refusalFile{project: "    memory: {mode: on, config_files: [" + strconv.Quote(overlay) + "], instructions: " + strconv.Quote(missing) + "}\n"}.refuse(t)
 	},
 	// The declared experiments. `experiments` is read on the project as the `memory` block is, so
 	// each of these is one project key and the kubernetes base only where a pod mount is in view.
@@ -178,7 +205,7 @@ var refusalFixtures = map[string]func(t *testing.T) string{
 			t.Fatal(err)
 		}
 		return refusalFile{project: "    experiments: {plan-length: {mode: random, variants: [{name: long, config_files: [" +
-			overlay + "], instructions: " + missing + "}, {name: control}]}}\n"}.refuse(t)
+			strconv.Quote(overlay) + "], instructions: " + strconv.Quote(missing) + "}, {name: control}]}}\n"}.refuse(t)
 	},
 	`projects.<KEY>.commit_issue_trailer_repos[<n>] must be "owner/name" (got "…")`: func(t *testing.T) string {
 		return refusalFile{project: "    commit_issue_trailer_repos: [acme]\n"}.refuse(t)

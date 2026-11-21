@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
 
 // controllerSpec is the launch of the project's controller the daemon launches itself
@@ -46,6 +47,7 @@ func TestAControllerPaneIsToldTheControllerMarkerInPlaceOfATree(t *testing.T) {
 		EnvoyURL: "http://127.0.0.1:9020", NATSURLs: []string{"nats://a:4222"},
 		DispatchURL: "http://127.0.0.1:18766", DispatchTokenFile: "/state/secrets/" + runtime.DispatchTokenFileName,
 		GHOwnersDir: runtime.GHConfigDir("/state", spec.Claim), GHDefault: "acme", GH: "/usr/bin/gh",
+		LeakCheckManifestSHA256: strings.Repeat("5e", 32),
 	}
 	pairs := panePairs(spec, in, secretFiles("/state", spec))
 	told := map[string]string{}
@@ -98,7 +100,7 @@ func TestTheControllerWorksInADirectoryAndAWindowOfItsOwn(t *testing.T) {
 		t.Errorf("the controller's new-window = %q, want a window named %q", opened, controllerWindow)
 	}
 	if !slices.ContainsFunc(opened, func(word string) bool {
-		return strings.Contains(word, "cd "+dir) || strings.Contains(word, "cd '"+dir+"'")
+		return strings.Contains(word, "cd "+dir) || strings.Contains(word, "cd "+shellprefix.Literal(dir))
 	}) {
 		t.Errorf("the controller's pane command = %q, want it to start in %s", opened, dir)
 	}

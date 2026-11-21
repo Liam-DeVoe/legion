@@ -32,6 +32,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { shellQuote } from "@legion/envoy-client/shell-quote";
 import { hostTool } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 
@@ -143,7 +144,7 @@ async function drive(
   writeFileSync(logFile, log);
   writeFileSync(
     join(bin, "bun"),
-    `#!/usr/bin/env bash\n: >'${marker}'\ncat '${logFile}'\nexit 1\n`,
+    `#!/usr/bin/env bash\n: >${shellQuote(marker)}\ncat ${shellQuote(logFile)}\nexit 1\n`,
     {
       mode: 0o755,
     }

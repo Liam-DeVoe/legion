@@ -10,12 +10,12 @@
 #     token issuer with a pod's, a registrar's and two listed callers' tokens, the broker's own
 #     sign-in client, and the Postgres server - so this script builds and starts none of it a
 #     second time. What that costs is two processes of dev-broker.sh's that this script never
-#     points at: its broker, on a database of its own, and the cmd/dev-airlock-stands it starts
+#     points at: its broker, on a database of its own, and the cmd/dev-proxy-stands it starts
 #     for its own github-app secrets. What it buys is that the identities, the token files and
 #     the issuer are the ones dev-broker.sh documents, and that a change there reaches both
 #     scripts. The airlock's own brokers get a database of their own (below), so they never
 #     share a policy or a secret store with that broker.
-#   - cmd/dev-airlock-stands: the two HTTPS services S and T, which record every request they
+#   - cmd/dev-proxy-stands: the two HTTPS services S and T, which record every request they
 #     get; the stand-in GitHub and Google endpoints a github-app and a google-login secret mint
 #     at; the stand-in Microsoft token endpoint the azure kind exchanges at, which also plays
 #     the resource host an access token is spent at; a stand-in AWS service that verifies
@@ -39,7 +39,7 @@
 #   - TWO broker processes, each with the whole BROKER_AIRLOCK_* block, both on one database and
 #     each on three ports of its own, its API, proxy and metrics ports (--one-broker starts one).
 #   - One TCP front over both brokers' API ports and one over both proxy ports
-#     (cmd/dev-airlock-stands front), so a client reaches either process. Each new connection
+#     (cmd/dev-proxy-stands front), so a client reaches either process. Each new connection
 #     goes to the next broker in turn; round-robin per connection is all the checks ask for,
 #     since the two brokers share one database and either answers any call. The front is Go
 #     because a Legion issue pod has neither socat nor nginx, and nginx passes no CONNECT.
@@ -368,7 +368,13 @@ first_match() { grep -oEm1 "$1" "$2" 2>/dev/null | head -n1 || true; }
 # nothing, so half an address is never read as the whole one.
 logged_addr() { jq -Rnr --arg message "$1" '[inputs | fromjson? | select(.message == $message) | .addr][0] // empty' "$2" 2>/dev/null || true; }
 
-BASE_DIR="$(first_match 'export DEV_BROKER_DIR=[^[:space:]]+' "$DEV_BROKER_LOG" | cut -d= -f2-)"
+# dev-broker.sh prints each path it exports with printf %q, so the value is read as the shell that
+# sources the line reads it: a work directory under a TMPDIR with a space in its name is one word.
+BASE_DIR_WORD="$(first_match 'export DEV_BROKER_DIR=.+' "$DEV_BROKER_LOG" | cut -d= -f2-)"
+BASE_DIR=""
+if [ -n "$BASE_DIR_WORD" ]; then
+  eval "BASE_DIR=$BASE_DIR_WORD" || BASE_DIR=""
+fi
 if [ -z "$BASE_DIR" ] || [ ! -d "$BASE_DIR" ]; then
   echo "dev-airlock: dev-broker.sh printed no DEV_BROKER_DIR" >&2
   exit 1
@@ -746,19 +752,21 @@ for n in $(seq 1 "$BROKER_COUNT"); do
 done
 BROKER_BANNER+=$'\n'"  session renewer:     pid $RENEW_PID, agent-secrets renew --pod-token-file $POD_TOKEN_FILE, log $RENEW_LOG"
 
+# Each path an export below names is printed with printf %q, so it is one shell word for the shell
+# that sources the line, whatever TMPDIR's own name holds.
 cat <<EOF
 
 dev-airlock: ready.
 
   export AGENT_SECRETS_URL=$API_FRONT_URL
-  export AGENT_SECRETS_KEY_DIR=$KEY_DIR
-  export AGENT_SECRETS_ACCOUNT_TOKEN_FILE=$ACCOUNT_TOKEN_FILE
+  export AGENT_SECRETS_KEY_DIR=$(printf %q "$KEY_DIR")
+  export AGENT_SECRETS_ACCOUNT_TOKEN_FILE=$(printf %q "$ACCOUNT_TOKEN_FILE")
   export AIRLOCK_PROXY_URL=$PROXY_FRONT_URL
-  export AIRLOCK_DIR=$WORK_DIR
-  export AIRLOCK_CA_CERT_FILE=$CA_CERT_FILE
-  export AIRLOCK_CA_KEY_FILE=$CA_KEY_FILE
-  export AIRLOCK_RULES_FILE=$RULES_FILE
-  export AIRLOCK_FAKE_SECRETS_FILE=$FAKE_SECRETS_FILE
+  export AIRLOCK_DIR=$(printf %q "$WORK_DIR")
+  export AIRLOCK_CA_CERT_FILE=$(printf %q "$CA_CERT_FILE")
+  export AIRLOCK_CA_KEY_FILE=$(printf %q "$CA_KEY_FILE")
+  export AIRLOCK_RULES_FILE=$(printf %q "$RULES_FILE")
+  export AIRLOCK_FAKE_SECRETS_FILE=$(printf %q "$FAKE_SECRETS_FILE")
   export AIRLOCK_RECORDS_URL=$RECORDS_URL
   export AIRLOCK_S_URL=$S_URL
   export AIRLOCK_S_RECORDS=$RECORDS_URL/records/s
@@ -774,13 +782,13 @@ dev-airlock: ready.
   export AIRLOCK_AWS_URL=$AWS_URL
   export AIRLOCK_AWS_RECORDS=$RECORDS_URL/records/aws
   export AIRLOCK_AWS_KEY_ID=$AWS_KEY_ID
-  export AIRLOCK_GITHUB_APP_KEY_FILE=$GITHUB_APP_KEY_FILE
+  export AIRLOCK_GITHUB_APP_KEY_FILE=$(printf %q "$GITHUB_APP_KEY_FILE")
   export AIRLOCK_MODEL_URL=$MODEL_URL
   export AIRLOCK_MODEL_RECORDS=$RECORDS_URL/records/model
   export AIRLOCK_MODEL_ANSWER_URL=$MODEL_ANSWER_URL
   export AIRLOCK_DISPATCH_URL=$DISPATCH_URL
   export AIRLOCK_DISPATCH_RECORDS=$RECORDS_URL/records/dispatch
-  export AIRLOCK_DISPATCH_TOKEN_FILE=$JUDGE_DISPATCH_TOKEN_FILE
+  export AIRLOCK_DISPATCH_TOKEN_FILE=$(printf %q "$JUDGE_DISPATCH_TOKEN_FILE")
   export AIRLOCK_DISPATCH_OPEN_ISSUE=$DISPATCH_OPEN_ISSUE
   export AIRLOCK_DISPATCH_DONE_ISSUE=$DISPATCH_DONE_ISSUE
   export AIRLOCK_DISPATCH_ANSWERED_ASK=$DISPATCH_ANSWERED_ASK
@@ -801,8 +809,8 @@ dev-airlock: ready.
   export AIRLOCK_APPROVER=$APPROVER_LOGIN
   export AIRLOCK_SIGNIN_URL=$ISSUER_URL
   export AIRLOCK_ENROLLMENT=$ENROLLMENT_ID
-  export DEV_BROKER_DIR=$BASE_DIR
-  export PATH=$BASE_BIN_DIR:\$PATH
+  export DEV_BROKER_DIR=$(printf %q "$BASE_DIR")
+  export PATH=$(printf %q "$BASE_BIN_DIR"):\$PATH
 
 $BROKER_BANNER
   secrets:             $DEMO_SECRET and $SCOPED_SECRET (stored, bound to $S_HOST; $SCOPED_SECRET in

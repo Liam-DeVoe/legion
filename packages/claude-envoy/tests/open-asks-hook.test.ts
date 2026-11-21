@@ -4,19 +4,23 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { shellQuote } from "@legion/envoy-client/shell-quote"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
+import { unresolvedNames } from "./unresolved-names"
 
 const hookEntry = resolve(import.meta.dir, "..", "hooks", "session-hook.ts")
 /** The Dispatch token the hook is handed, in its environment or in envoy.json. */
 const DISPATCH_TOKEN = fixtureSecret("dsp")
 
-/** Runs the hook as Claude Code does, with `env` as its whole environment. The session's cwd is
- * the test's scratch HOME unless the input names one: the hook reads `<cwd>/.envoy/envoy.json`, so a
- * shared directory's file would become every test's checkout. */
+/** Runs the hook as Claude Code does, with `env` as its whole environment and `preload` given to
+ * Bun first where set. The session's cwd is the test's scratch HOME unless the input names one:
+ * the hook reads `<cwd>/.envoy/envoy.json`, so a shared directory's file would become every test's
+ * checkout. */
 async function runHook(
   input: Record<string, unknown>,
   env: Record<string, string> & { readonly HOME: string },
+  preload?: string,
 ): Promise<{ readonly exitCode: number; readonly stdout: string; readonly stderr: string }> {
-  const run = Bun.spawn(["bun", hookEntry, "open-asks"], {
+  const preloading = preload === undefined ? [] : ["--preload", preload]
+  const run = Bun.spawn(["bun", ...preloading, hookEntry, "open-asks"], {
     env: { PATH: process.env["PATH"] ?? "", ...env },
     stdin: new TextEncoder().encode(JSON.stringify({ cwd: env.HOME, ...input })),
     stdout: "pipe",
@@ -125,18 +129,27 @@ test("reports an unreachable Dispatch as unavailable, still exits 0, and still r
 
 // A password holding an unencoded '@' names no host, and the URL parser reads the password's tail
 // as one, which the runtime's resolver error repeats. The line reaches the model's context, so the
-// Dispatch client names the failure by its class and the URL by its fixed phrase (#4140, B1).
+// Dispatch client names the failure by its class and the URL by its fixed phrase (#4140, B1). The
+// hook's fetch of that `.invalid` host is answered by a stand-in that fails as Bun's resolver does
+// (`unresolved-names.ts`), so the row asks no DNS server and does not wait on its answer.
 test("names an unreachable Dispatch whose password holds an '@' by no part of the password", async () => {
   const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-at-"))
   const tail = `Tail${crypto.randomUUID().slice(0, 8)}`
   try {
-    const result = await runHook(hookInput, {
-      HOME: scratch,
-      CLAUDE_PLUGIN_DATA: join(scratch, "plugin-data"),
-      DISPATCH_URL: `https://user-7f2a:p@ssword${tail}.invalid`,
-      DISPATCH_TOKEN,
-    })
+    const names = await unresolvedNames(scratch)
+    const result = await runHook(
+      hookInput,
+      {
+        HOME: scratch,
+        CLAUDE_PLUGIN_DATA: join(scratch, "plugin-data"),
+        DISPATCH_URL: `https://user-7f2a:p@ssword${tail}.invalid`,
+        DISPATCH_TOKEN,
+      },
+      names.preload,
+    )
 
+    // The hook's error named the password's tail, so the checks below can fail.
+    expect(await names.asked()).toEqual([`ssword${tail}.invalid`.toLowerCase()])
     expect(result.exitCode).toBe(0)
     expect(result.stdout).toStartWith(
       "Dispatch authored-ask summary unavailable: Dispatch at the configured Dispatch URL (not printed: it carries a credential or is not a plain http(s) URL) is unreachable: ",
@@ -380,7 +393,7 @@ test("names Claude Code as the dispatch host and hands on the session's envoy.js
       [
         "export FROM_ANOTHER_HOOK=1",
         "export DISPATCH_HOST=claude",
-        `export ENVOY_CONFIG_FILE='${scratch}/.config/legion/envoy.json'`,
+        `export ENVOY_CONFIG_FILE=${shellQuote(`${scratch}/.config/legion/envoy.json`)}`,
         "",
       ].join("\n"),
     )
@@ -471,7 +484,7 @@ test("reads and hands on Claude Code's own envoy.json, never the ENVOY_CONFIG_FI
     expect(result.exitCode).toBe(0)
     expect(requests).toEqual([`Bearer ${DISPATCH_TOKEN} /api/v1/asks/open?author_session=s-1`])
     expect(await readFile(envFile, "utf8")).toContain(
-      `export ENVOY_CONFIG_FILE='${join(configDirectory, "envoy.json")}'`,
+      `export ENVOY_CONFIG_FILE=${shellQuote(join(configDirectory, "envoy.json"))}`,
     )
   } finally {
     server.stop(true)
@@ -517,7 +530,7 @@ test("writes the host and envoy.json lines once however many SessionStarts write
       [
         "export FROM_ANOTHER_HOOK=1",
         "export DISPATCH_HOST=claude",
-        `export ENVOY_CONFIG_FILE='${scratch}/.config/legion/envoy.json'`,
+        `export ENVOY_CONFIG_FILE=${shellQuote(`${scratch}/.config/legion/envoy.json`)}`,
         "",
       ].join("\n"),
     )
@@ -644,8 +657,8 @@ test("writes the pane's attribution overlay and exports the chain layering it ov
     expect(await readFile(envFile, "utf8")).toBe(
       [
         "export DISPATCH_HOST=claude",
-        `export ENVOY_CONFIG_FILE='${scratch}/.config/legion/envoy.json'`,
-        `export JJ_CONFIG='${userConfig}:${overlay}'`,
+        `export ENVOY_CONFIG_FILE=${shellQuote(`${scratch}/.config/legion/envoy.json`)}`,
+        `export JJ_CONFIG=${shellQuote(`${userConfig}:${overlay}`)}`,
         "",
       ].join("\n"),
     )
@@ -685,7 +698,7 @@ test("writes the pane's role after the session line, in the unscoped table and t
     expect(result.exitCode).toBe(0)
     const overlay = join(stateDir, "omp-attribution-s-1.toml")
     expect(await readFile(envFile, "utf8")).toContain(
-      `export JJ_CONFIG='${userConfig}:${overlay}'\n`,
+      `export JJ_CONFIG=${shellQuote(`${userConfig}:${overlay}`)}\n`,
     )
     expect(await readFile(overlay, "utf8")).toBe(
       unscopedTable("implementer") +
@@ -742,7 +755,7 @@ test("writes the session line alone when the daemon named no issue key", async (
     expect(result.exitCode).toBe(0)
     const overlay = join(stateDir, "omp-attribution-s-1.toml")
     expect(await readFile(envFile, "utf8")).toContain(
-      `export JJ_CONFIG='${userConfig}:${overlay}'\n`,
+      `export JJ_CONFIG=${shellQuote(`${userConfig}:${overlay}`)}\n`,
     )
     expect(await readFile(overlay, "utf8")).toBe(unscopedTable())
   } finally {
@@ -775,7 +788,7 @@ test("writes no overlay and no JJ_CONFIG for a session that is no Legion pane", 
     expect(await readFile(envFile, "utf8")).toBe(
       [
         "export DISPATCH_HOST=claude",
-        `export ENVOY_CONFIG_FILE='${scratch}/.config/legion/envoy.json'`,
+        `export ENVOY_CONFIG_FILE=${shellQuote(`${scratch}/.config/legion/envoy.json`)}`,
         "",
       ].join("\n"),
     )
@@ -824,8 +837,8 @@ test("keeps one JJ_CONFIG export, naming the chain this run resolved, when the s
       [
         "export FROM_ANOTHER_HOOK=1",
         "export DISPATCH_HOST=claude",
-        `export ENVOY_CONFIG_FILE='${scratch}/.config/legion/envoy.json'`,
-        `export JJ_CONFIG='${laterConfig}:${join(stateDir, `omp-attribution-${hookInput.session_id}.toml`)}'`,
+        `export ENVOY_CONFIG_FILE=${shellQuote(`${scratch}/.config/legion/envoy.json`)}`,
+        `export JJ_CONFIG=${shellQuote(`${laterConfig}:${join(stateDir, `omp-attribution-${hookInput.session_id}.toml`)}`)}`,
         "",
       ].join("\n"),
     )
@@ -889,7 +902,7 @@ test("gives up on a jj that never answers, keeping the other exports and the sum
     expect(await readFile(envFile, "utf8")).toBe(
       [
         "export DISPATCH_HOST=claude",
-        `export ENVOY_CONFIG_FILE='${scratch}/.config/legion/envoy.json'`,
+        `export ENVOY_CONFIG_FILE=${shellQuote(`${scratch}/.config/legion/envoy.json`)}`,
         "",
       ].join("\n"),
     )
@@ -930,7 +943,7 @@ test("keeps the session's own export when a later run of the same id has no jj t
     )
     expect((await runHook(hookInput, env(working))).exitCode).toBe(0)
     expect(await readFile(envFile, "utf8")).toContain(
-      `export JJ_CONFIG='${userConfig}:${overlay}'\n`,
+      `export JJ_CONFIG=${shellQuote(`${userConfig}:${overlay}`)}\n`,
     )
 
     // The resume: same session id, same file, and a jj that never answers.
@@ -940,8 +953,8 @@ test("keeps the session's own export when a later run of the same id has no jj t
     expect(await readFile(envFile, "utf8")).toBe(
       [
         "export DISPATCH_HOST=claude",
-        `export ENVOY_CONFIG_FILE='${scratch}/.config/legion/envoy.json'`,
-        `export JJ_CONFIG='${userConfig}:${overlay}'`,
+        `export ENVOY_CONFIG_FILE=${shellQuote(`${scratch}/.config/legion/envoy.json`)}`,
+        `export JJ_CONFIG=${shellQuote(`${userConfig}:${overlay}`)}`,
         "",
       ].join("\n"),
     )

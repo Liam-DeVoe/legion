@@ -426,7 +426,7 @@ describe("sessionDispatchSettings", () => {
     const runs = path.join(home, "runs");
     const keptToken = fixtureSecret("kept");
     const file = writeFile(path.join(home, "envoy.json"), {
-      dispatch: { ...dispatchOn, token: `!echo run >> ${runs}; echo ${keptToken}` },
+      dispatch: { ...dispatchOn, token: `!echo run >> ${shellQuote(runs)}; echo ${keptToken}` },
     });
     const chosen = { path: file, error: null } as const;
     const env = { HOME: home, PATH: process.env.PATH };
@@ -490,7 +490,7 @@ describe("the OpenCode-era file", () => {
       dispatch: {
         enabled: true,
         serverUrl: "https://dispatch.example",
-        token: `!touch ${marker}; echo old-token`,
+        token: `!touch ${shellQuote(marker)}; echo old-token`,
       },
     });
     const neutral = path.join(home, ".config", "legion", "envoy.json");
@@ -575,7 +575,7 @@ describe("old user file notices", () => {
       dispatch: {
         enabled: true,
         serverUrl: "https://old.dispatch.example",
-        token: `!touch ${marker}; echo old-token`,
+        token: `!touch ${shellQuote(marker)}; echo old-token`,
       },
     });
     const profiles = [
@@ -612,7 +612,7 @@ describe("old user file notices", () => {
       dispatch: {
         enabled: true,
         serverUrl: "https://old.dispatch.example",
-        token: `!touch ${marker}; echo old-token`,
+        token: `!touch ${shellQuote(marker)}; echo old-token`,
       },
     });
     const configHome = path.join(home, "relocated-config");

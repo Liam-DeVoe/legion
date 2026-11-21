@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
 
 // The install's parent is under the scratch every role writes, so a role can swap it for a fifo
@@ -30,13 +31,16 @@ func TestInstallServedAnswersAParentSwappedForAFifo(t *testing.T) {
 	t.Run("during the verification", func(t *testing.T) {
 		// The check's own --help makes the swap, before the staged copy is moved into place.
 		scratch := filepath.Join(t.TempDir(), "scratch")
-		swapping := "#!/bin/sh\nmv '" + scratch + "' '" + scratch + ".moved' && mkfifo '" + scratch + "'\n" +
+		swapping := "#!/bin/sh\nmv " + shellprefix.Literal(scratch) + " " + shellprefix.Literal(scratch+".moved") + " && mkfifo " + shellprefix.Literal(scratch) + "\n" +
 			"echo '# Usage: check-public-text FILE..., --commits REV..., --tree DIR, gh-guard ARGS, or REMOTE URL.'\nexit 1\n"
 		body := served(t, wholeCheck(t, swapping))
 		if err := os.MkdirAll(scratch, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		err := installReturns(t, scratch, func() error { _, err := install(t, filepath.Join(scratch, "leak-check"), theTag, body); return err })
+		err := returnsWithoutAWriter(t, scratch, "the install", func() error {
+			_, err := install(t, filepath.Join(scratch, "leak-check"), theTag, body)
+			return err
+		})
 		if !errors.Is(err, syscall.ENOTDIR) {
 			t.Errorf("the install answered %v, want its staged copy refused once the scratch is no directory (ENOTDIR)", err)
 		}
@@ -55,7 +59,7 @@ func TestInstallServedAnswersAParentSwappedForAFifo(t *testing.T) {
 			t.Fatal(err)
 		}
 		var swapped error
-		err := installReturns(t, scratch, func() error {
+		err := returnsWithoutAWriter(t, scratch, "the install", func() error {
 			return InstallServed(bound(t), ServedInstall{Dir: dir, Tag: theTag, Body: body, Start: procgroup.NoReaper, Log: func(format string, _ ...any) {
 				if strings.Contains(format, "replaced") {
 					swapped = swap(scratch, out)
@@ -122,14 +126,15 @@ func TestInstallServedRemovesNothingALinkInTheOldInstallNames(t *testing.T) {
 	}
 }
 
-// installReturns runs install and fails t unless it returns within 10 s of the moment scratch
-// became a fifo, the moment the bound guards: before it the install unpacks and runs the check,
-// which a loaded host makes slow without anything blocking. When the bound passes it opens the
-// fifo for writing, so the blocked open and the test's goroutine end.
-func installReturns(t *testing.T, scratch string, install func() error) error {
+// returnsWithoutAWriter runs run, what it is, and fails t unless it returns within 10 s of the
+// moment path became a fifo, the moment the bound guards: before it an install unpacks and runs the
+// check, which a loaded host makes slow without anything blocking. A run that opened the fifo
+// plainly would wait there for a writer, so when the bound passes it opens the fifo for writing,
+// and the blocked open and the test's goroutine end.
+func returnsWithoutAWriter(t *testing.T, path, what string, run func() error) error {
 	t.Helper()
 	done := make(chan error, 1)
-	go func() { done <- install() }()
+	go func() { done <- run() }()
 	poll := time.NewTicker(10 * time.Millisecond)
 	defer poll.Stop()
 	var bound <-chan time.Time
@@ -138,15 +143,15 @@ func installReturns(t *testing.T, scratch string, install func() error) error {
 		case err := <-done:
 			return err
 		case <-poll.C:
-			if info, err := os.Lstat(scratch); bound == nil && err == nil && info.Mode()&os.ModeNamedPipe != 0 {
+			if info, err := os.Lstat(path); bound == nil && err == nil && info.Mode()&os.ModeNamedPipe != 0 {
 				bound = time.After(10 * time.Second)
 			}
 		case <-bound:
-			if writer, err := os.OpenFile(scratch, os.O_WRONLY, 0); err == nil {
+			if writer, err := os.OpenFile(path, os.O_WRONLY, 0); err == nil {
 				_ = writer.Close()
 			}
 			<-done
-			t.Fatalf("the install was still running 10s after %s became a fifo", scratch)
+			t.Fatalf("%s was still running 10s after %s became a fifo", what, path)
 		}
 	}
 }

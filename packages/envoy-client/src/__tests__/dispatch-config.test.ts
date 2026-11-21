@@ -15,6 +15,7 @@ import {
   sessionDispatchSettings,
   sessionDispatchUrl,
 } from "../session-settings";
+import { shellQuote } from "../shell-quote";
 
 const tempDir = temporaryDirectories("dispatch-config");
 
@@ -697,7 +698,10 @@ describe("sessionDispatchUrl", () => {
     const home = tempDir();
     const marker = path.join(home, "ran");
     writeUserConfig(home, {
-      dispatch: { serverUrl: "http://dispatch.test/", token: `!touch '${marker}'; printf t` },
+      dispatch: {
+        serverUrl: "http://dispatch.test/",
+        token: `!touch ${shellQuote(marker)}; printf t`,
+      },
     });
     const env = { HOME: home };
     const file = sessionConfigFile("command", env);

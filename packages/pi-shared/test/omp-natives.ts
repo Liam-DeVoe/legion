@@ -1,13 +1,16 @@
 // Oh My Pi's native modules for the tests that run the real binary under a fresh HOME
 // (omp-harness.ts's ompRoot). Oh My Pi extracts the one its CPU needs from its own binary into
-// .omp/natives/<version> under any HOME that lacks it, over 100 MiB (122.8 MiB for Linux
-// x64-modern at 18.18.6-sami.20261117-013345), and has no setting for that directory short of
-// XDG_DATA_HOME, which moves its whole profile. Each HOME's
-// natives are instead hardlinks to one copy per binary under the user's cache directory.
+// .omp/natives/<version> under any HOME that lacks it, about 123 MiB at the pin. It reads that
+// directory from elsewhere only under a variable a test would have to set (getNativesDir,
+// @oh-my-pi/pi-natives native/loader-state.js, in this order): PI_NATIVES_DIR or
+// OMP_DOWNLOAD_ROOT, which no pod or pane sets, then an existing $XDG_DATA_HOME/omp, which moves
+// its whole profile, then OMP_CONFIG_ROOT, which moves its whole config root. Each HOME's natives
+// are instead hardlinks to one copy per binary under the user's cache directory.
 //
 // The copy is the one the Go tests keep (packages/daemon/internal/testbin/natives.go,
 // testbin.OMPHome): the same directory, name, layout, lock and fill, so a machine holds one copy per
 // pin for both languages and either fills it for the other. A change to one is a change to both.
+import { linkSync, readdirSync, statSync, unlinkSync } from "node:fs";
 import {
   chmod,
   link,
@@ -31,12 +34,38 @@ const caches = new Map<string, Promise<string>>();
  * Oh My Pi keeps its natives under $XDG_DATA_HOME/omp when that directory exists.
  */
 export async function linkOmpNatives(binary: string, home: string): Promise<void> {
+  await linkTree(await ompNativesCache(binary), path.join(home, ".omp", "natives"));
+}
+
+/** The shared copy of `binary`'s natives, filled first if no process has. */
+export function ompNativesCache(binary: string): Promise<string> {
   let cache = caches.get(binary);
   if (cache === undefined) {
     cache = fillNativesCache(nativesCacheRoot(), binary);
     caches.set(binary, cache);
   }
-  await linkTree(await cache, path.join(home, ".omp", "natives"));
+  return cache;
+}
+
+/**
+ * Why `linkOmpNatives` could not link the natives in `cache` into a HOME under `directory`, or
+ * undefined when it can: a hardlink cannot cross filesystems, so one file of the cache is linked
+ * into `directory` and the link removed. A root chooser passes over a base this refuses
+ * (test-paths.ts's `scratchWithout`).
+ */
+export function nativesLinkProblem(cache: string, directory: string): string | undefined {
+  const file = readdirSync(cache, { recursive: true })
+    .map((relative) => path.join(cache, String(relative)))
+    .find((candidate) => statSync(candidate).isFile());
+  if (file === undefined) return `the natives cache ${cache} holds no file`;
+  const probe = path.join(directory, ".natives-link-probe");
+  try {
+    linkSync(file, probe);
+  } catch (error) {
+    return `no link from the natives cache ${cache} lands here: ${(error as Error).message}`;
+  }
+  unlinkSync(probe);
+  return undefined;
 }
 
 /** Where the Go tests' os.UserCacheDir puts the cache on Linux, with its refusals. */

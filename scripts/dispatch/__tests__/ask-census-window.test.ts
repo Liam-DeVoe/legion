@@ -92,7 +92,7 @@ describe("ask census since #1671", () => {
         dispatch: {
           enabled: true,
           serverUrl: `http://127.0.0.1:${server.port}`,
-          token: `!touch ${marker}; echo token`,
+          token: `!touch ${shellQuote(marker)}; echo token`,
         },
       })
     );

@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { shellQuote } from "./script-functions";
 
 // Shared fixtures for the multi-repository acceptance observer's tests:
 // scripts/e2e/multi-repo-acceptance.sh reads only structured sources — the daemon's state JSON (a
@@ -177,7 +178,7 @@ export const imageBin = (root: string) => join(root, "opt", "legion", "bin");
 
 // Appends the environment and arguments of each call to `<base>.env` and `<base>.args`.
 export const recordCall = (base: string) =>
-  `{ env; echo --; } >>'${base}.env'\nprintf '%s\\n' "$*" >>'${base}.args'`;
+  `{ env; echo --; } >>${shellQuote(`${base}.env`)}\nprintf '%s\\n' "$*" >>${shellQuote(`${base}.args`)}`;
 
 // The `gh api repos/<T> --jq .full_name` read the prober makes as the role.
 export function fakeRoleGh(bin: string, repo: string, answer: string, record: string): void {
@@ -306,13 +307,18 @@ export function makeStateBody(overrides: Record<string, unknown> = {}): string {
 }
 export const stateBody = makeStateBody();
 
+// healthBody is what the daemon's `GET /healthz` answers from contract 193 on (`api.Health`):
+// its status and the project it serves. The stub answers the whole typed body, so the script's
+// own health check is exercised against a body that carries more than `status`.
+const healthBody = { project: "legion", status: "ok" };
+
 export function daemonStub(body: string = stateBody): Server {
   return servers.track(
     Bun.serve({
       port: 0,
       fetch(req) {
         const url = new URL(req.url);
-        if (url.pathname === "/healthz") return Response.json({ status: "ok" });
+        if (url.pathname === "/healthz") return Response.json(healthBody);
         if (url.pathname === "/legion/v1/state") {
           return new Response(body, { headers: { "content-type": "application/json" } });
         }
@@ -336,7 +342,7 @@ export function mutableDaemonStub(initial: string): {
       port: 0,
       fetch(req) {
         const url = new URL(req.url);
-        if (url.pathname === "/healthz") return Response.json({ status: "ok" });
+        if (url.pathname === "/healthz") return Response.json(healthBody);
         if (url.pathname === "/legion/v1/state") {
           return new Response(body, { headers: { "content-type": "application/json" } });
         }

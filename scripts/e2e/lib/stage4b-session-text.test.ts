@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { scriptFunctions } from "./script-functions";
+import { scriptFunctions, shellQuote } from "./script-functions";
 
 // session_psql, session_text and session_byte_len, taken from lib/session-db.sh by name, and
 // session_copy, record_pair, claim_session_text and collect_transcripts, taken from
@@ -268,7 +268,7 @@ function copyInto(
   writeFileSync(join(base, "sentinel"), sentinel);
   before?.(dest, root);
   const r = run(
-    `evidence='${evidence}'\nsession_copy '${prefix}' review-pair '${stem}'`,
+    `evidence=${shellQuote(evidence)}\nsession_copy '${prefix}' review-pair '${stem}'`,
     rows(root)
   );
   return { r, root, evidence, base, dest };
@@ -924,7 +924,7 @@ pair_session= negative_config_pod= block_tree= pg_container=none
 shape_pid= daemon_pid= watch_pid= events_pid= leaks_pid= sampler_pid= interests_pid=
 mkdir -p "$work" "$evidence"
 exec 7>&1
-stop_tree() { :; }; stop_pid() { :; }; record_pair() { :; }; run_processes() { :; }; docker() { :; }
+stop_tree() { :; }; stop_pid() { :; }; record_pair() { :; }; stop_marked_processes() { :; }; docker() { :; }
 note() { echo "   $*"; }
 run_container_label=legion.dev/e2e-run run_container_id=session-text-run signalled=
 ${fn("remove_run_container")}

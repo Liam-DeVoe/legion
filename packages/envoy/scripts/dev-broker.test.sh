@@ -7,9 +7,9 @@
 # — plus a fake `go build -o <path> ...` that installs
 # a tiny stub script at <path> instead of compiling (dev-broker.sh's own isolation logic lives
 # entirely in the shell driver, never in the Go binaries it starts, so a stub proves the driver's
-# behavior without depending on cmd/agent-secrets-devrelay or cmd/broker compiling or running for
+# behavior without depending on cmd/cipher-devrelay or cmd/cipherd compiling or running for
 # real). The broker stub logs the JSON "broker listening" line, addr 127.0.0.1:<its own PID>,
-# exactly like the real cmd/broker does once it binds — using its own PID as a stand-in for the
+# exactly like the real cmd/cipherd does once it binds — using its own PID as a stand-in for the
 # kernel-assigned port a real Listen would report, since two concurrently running stub processes
 # always have distinct PIDs — and then its "broker metrics listening" line, addr
 # 127.0.0.1:2<its own PID>, for the metrics port bound beside it.
@@ -36,9 +36,12 @@
 # account its pods run as - and its banner says how to take the secret that service owns, with
 # the pod uid its own issuer bound, exports that uid and that service name for a check script
 # to enrol the same session by, and runs its --github-token example's curl in a shell of its
-# own, so the child expands the name the grant gave it; and (i) each instance's broker binds its
+# own, so the child expands the name the grant gave it; (i) each instance's broker binds its
 # metrics on a port the kernel picks (BROKER_METRICS_LISTEN_ADDR=127.0.0.1:0), and its banner
-# prints the metrics address that broker logged.
+# prints the metrics address that broker logged; and (j) each instance's broker lists that
+# service login's account as the registrar of its pod's account and of no other
+# (BROKER_POD_REGISTRARS), without which the broker refuses the one registration the script
+# makes, and exits on, 403 POD_REGISTRAR_NOT_LISTED.
 set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -120,9 +123,9 @@ chmod +x "${fake_bin_dir}/psql"
 # --- Fake go: "go build -o <path> ./cmd/<pkg>" installs a stub executable at <path> instead of
 # compiling. The client stubs are never run by dev-broker.sh (it only prints their directory); the
 # broker stub logs the issuer, the callers, the exchange's account and read entries, the service
-# logins and services, the sign-in client and the metrics address it was configured with, then
-# the JSON "broker listening" line with its addr field, exactly like the
-# real cmd/broker does once it binds — using its own PID as a stand-in for the kernel-assigned
+# logins, the services, the pod registrars, the sign-in client and the metrics address it was
+# configured with, then the JSON "broker listening" line with its addr field, exactly like the
+# real cmd/cipherd does once it binds — using its own PID as a stand-in for the kernel-assigned
 # port a real Listen would report, since two concurrently running stub processes always have
 # distinct PIDs — and the "broker metrics listening" line after it, 2<PID> standing in for that
 # port, and then stays alive as the backgrounded "server" process dev-broker.sh waits on and kills
@@ -143,7 +146,7 @@ for arg in "$@"; do
   prev="$arg"
 done
 case "$pkg" in
-  */agent-secrets|*/agent-secrets-helper|*/agent-secrets-devrelay)
+  */cipher|*/cipher-helper|*/cipher-devrelay)
     cat >"$out" <<'DEVRELAY'
 #!/usr/bin/env bash
 exit 0
@@ -189,7 +192,7 @@ echo "dev-oidc-issuer: issuer listening url=http://127.0.0.1:$$" >&2
 exec sleep 999999
 ISSUER
     ;;
-  */dev-airlock-stands)
+  */dev-proxy-stands)
     cat >"$out" <<'STANDS'
 #!/usr/bin/env bash
 dir=""
@@ -228,14 +231,14 @@ echo "dev-airlock-stands: stands listening records=http://127.0.0.1:$$" >&2
 exec sleep 999999
 STANDS
     ;;
-  */broker)
+  */cipherd)
     cat >"$out" <<'BROKER'
 #!/usr/bin/env bash
 if [[ $# -ne 0 ]]; then
   echo "fake broker: unexpected arguments: $*" >&2
   exit 2
 fi
-echo "fake broker: issuer=${BROKER_K8S_OIDC_ISSUER:-} callers=${BROKER_API_ACCOUNTS:-} exchange=${BROKER_EXCHANGE_ACCOUNTS:-} read-exchange=${BROKER_EXCHANGE_READ_ACCOUNTS:-} service-logins=${BROKER_SERVICE_LOGINS:-} services=${BROKER_SERVICES:-} github=${BROKER_AIRLOCK_TEST_GITHUB_API_BASE:-}" >&2
+echo "fake broker: issuer=${BROKER_K8S_OIDC_ISSUER:-} callers=${BROKER_API_ACCOUNTS:-} exchange=${BROKER_EXCHANGE_ACCOUNTS:-} read-exchange=${BROKER_EXCHANGE_READ_ACCOUNTS:-} service-logins=${BROKER_SERVICE_LOGINS:-} services=${BROKER_SERVICES:-} pod-registrars=${BROKER_POD_REGISTRARS:-} github=${BROKER_AIRLOCK_TEST_GITHUB_API_BASE:-}" >&2
 echo "fake broker: sign-in issuer=${BROKER_SIGNIN_ISSUER:-} client=${BROKER_SIGNIN_CLIENT_ID:-} secret-file=${BROKER_SIGNIN_CLIENT_SECRET_FILE:-} domain=${BROKER_SIGNIN_DOMAIN:-}" >&2
 echo "fake broker: metrics-listen=${BROKER_METRICS_LISTEN_ADDR:-}" >&2
 echo "fake broker: store=${BROKER_SECRETS_STORE:-} prefix=${BROKER_SECRETS_PREFIX:-} key-arn=${BROKER_SECRETS_KMS_KEY_ARN:-} key-name=${BROKER_SECRETS_KMS_KEY_NAME:-} fake-secrets=${BROKER_FAKE_SECRETS_FILE:-}" >&2
@@ -344,6 +347,16 @@ exported_port() {
   grep -o 'AGENT_SECRETS_URL=http://127\.0\.0\.1:[0-9]\+' "$log_file" | head -n1 | sed -E 's/.*:([0-9]+)$/\1/' || true
 }
 
+exported() {
+  # The value of one "export NAME=..." line of dev-broker.sh's banner, as the shell that sources
+  # the line reads it: the banner prints each path with printf %q, so the line is evaluated, in a
+  # subshell, rather than cut at its "=".
+  local log_file="$1" name="$2" line
+  line="$(grep -o "export ${name}=.*" "$log_file" | head -n1 || true)"
+  [[ -n "$line" ]] || return 0
+  (eval "${line#export }" && printf '%s' "${!name}") || true
+}
+
 # Sets the global "db"/"port" variables to the database and port this instance used; exits the
 # whole test on any assertion failure.
 db=""
@@ -436,7 +449,7 @@ assert_instance_isolated() {
     echo "FAIL: $label's broker does not trust its own issuer (${issuer:-none logged}) with both dev callers, the exchange account and the read entry listed" >&2
     exit 1
   fi
-  token_file="$(grep -o 'AGENT_SECRETS_ACCOUNT_TOKEN_FILE=[^ ]*' "$log_file" | head -n1 | cut -d= -f2- || true)"
+  token_file="$(exported "$log_file" AGENT_SECRETS_ACCOUNT_TOKEN_FILE)"
   if [[ -z "$token_file" ]] || [[ "$(cat "$token_file" 2>/dev/null)" != "fake-token-for-system:serviceaccount:example-ns:example-dispatch" ]]; then
     echo "FAIL: $label's AGENT_SECRETS_ACCOUNT_TOKEN_FILE (${token_file:-none printed}) does not hold the token its issuer wrote for the listed caller" >&2
     exit 1
@@ -449,7 +462,8 @@ assert_instance_isolated() {
   # itself is never printed; and the banner tells a person to approve a secret on this broker's
   # own page.
   local workdir signin_file
-  workdir="$(grep -o 'dev-broker: workdir [^ ]*' "$log_file" | head -n1 | cut -d' ' -f3 || true)"
+  # Every field after the second, so a TMPDIR with a space in its name is read whole.
+  workdir="$(grep -o 'dev-broker: workdir .*' "$log_file" | head -n1 | cut -d' ' -f3- || true)"
   signin_file="${workdir}/signin-client-secret"
   if [[ -z "$workdir" ]] \
     || ! grep -qF "fake issuer: code-flow client=dev-broker secret-file=${signin_file} secret-mode=600 sign-in-as=ada@example.com" "$log_file" \
@@ -512,6 +526,18 @@ assert_instance_isolated() {
     exit 1
   fi
   printf 'PASS: %s registers %s under both halves, tells a reader how to take the secret it owns, and exports that pod uid and service name\n' "$label" "$service"
+  # The registration's authority. A login alone registers no pod: the broker admits a
+  # registration only from a registrar an entry of BROKER_POD_REGISTRARS pairs with the pod's
+  # account, and with the list unset it admits none, so a stack that logged the daemon account
+  # in and listed it nowhere would be refused the one registration it makes (403
+  # POD_REGISTRAR_NOT_LISTED) and exit there. The value is matched whole, up to the field after
+  # it, so a list holding any other entry beside this pair fails too.
+  if ! grep -qF " pod-registrars=${registrar}=${pod_account} github=" "$log_file"; then
+    cat "$log_file" >&2
+    echo "FAIL: $label's broker does not list ${registrar} as the one registrar of ${pod_account}'s pods (want BROKER_POD_REGISTRARS=${registrar}=${pod_account})" >&2
+    exit 1
+  fi
+  printf 'PASS: %s lists %s as the one registrar of %s'"'"'s pods (BROKER_POD_REGISTRARS)\n' "$label" "$registrar" "$pod_account"
   # The stand-in GitHub and the three github-app secrets it mints: the stands are started for the
   # three installations the case pair needs, the broker is pointed at that stand's own address,
   # and the fake store holds all three with the type, the tier, the owner and the github-owners
@@ -521,7 +547,7 @@ assert_instance_isolated() {
   # would leave the store holding something else.
   local stands_url stands_owners
   stands_url="$(grep -o 'github stand: *http://127\.0\.0\.1:[0-9]\+' "$log_file" | head -n1 | grep -o 'http://.*' || true)"
-  stands_owners="$(grep -o 'fake stands: dir=[^ ]* owners=.*' "$log_file" | head -n1 | sed -E 's/.*owners=//' || true)"
+  stands_owners="$(grep -o 'fake stands: dir=.* owners=.*' "$log_file" | head -n1 | sed -E 's/.*owners=//' || true)"
   if [[ "$stands_owners" != "acme-org=7 ada=8 Ada=9" ]] || [[ -z "$stands_url" ]] \
     || ! grep -qF "github=${stands_url}" "$log_file"; then
     cat "$log_file" >&2
@@ -705,7 +731,7 @@ if ! wait_for_ready "$log1"; then
   echo "FAIL: a DEV_BROKER_GCP_* run never reached ready" >&2
   exit 1
 fi
-gcp_workdir="$(grep -o 'dev-broker: workdir [^ ]*' "$log1" | head -n1 | cut -d' ' -f3 || true)"
+gcp_workdir="$(grep -o 'dev-broker: workdir .*' "$log1" | head -n1 | cut -d' ' -f3- || true)"
 if ! grep -qF "fake broker: store=gcp-secret-manager prefix=${gcp_prefix} key-arn= key-name=${gcp_key} fake-secrets=${gcp_workdir}/fake-secrets.json" "$log1" \
   || [[ "$(jq -c . "${gcp_workdir}/fake-secrets.json" 2>/dev/null || true)" != '{"secrets":[]}' ]] \
   || ! grep -qF "  secret store:        gcp-secret-manager under ${gcp_prefix}, key ${gcp_key}" "$log1"; then

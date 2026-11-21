@@ -1,8 +1,8 @@
 // Package testtmp is a temporary directory for a test that binds a unix socket under it, short
 // enough that the socket's path fits what Linux holds. It is an ordinary package rather than a
 // _test.go file because a command is package main and can import no other package's test helpers,
-// the reason packages/envoy/internal/cmdtest gives for itself; the tests of cmd/agent-secrets and
-// cmd/agent-secrets-helper bind sockets too.
+// the reason packages/envoy/internal/cmdtest gives for itself; the tests of cmd/cipher and
+// cmd/cipher-helper bind sockets too.
 //
 // The daemon module keeps the same file at packages/daemon/internal/testtmp/testtmp.go. The two
 // are copies, not one package imported twice, because Go's internal rule reads a path prefix:
@@ -11,19 +11,23 @@
 // module can reach the other's copy. Change one and change the other, except the paragraph of
 // Dir's comment naming the sites that keep a directory of their own, which each module writes
 // for itself.
+//
+// Without is the other directory it gives: one whose path holds none of the characters a test's
+// tool cannot take in a path, for a machine whose TMPDIR holds one.
 package testtmp
 
 import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
-// maxSocketPath is the longest unix socket path Linux takes. Its sun_path holds 108 bytes with the
+// MaxSocketPath is the longest unix socket path Linux takes. Its sun_path holds 108 bytes with the
 // terminating zero, so Go answers anything longer with `invalid argument` at bind, listen or dial,
 // and a tmux server socket with `Filename too long` (docs/testing.md).
-const maxSocketPath = 107
+const MaxSocketPath = 107
 
 // prefix names every directory this package makes. It is two bytes because each byte it spends is
 // one the caller's own path under the directory cannot have, and nothing has to recognise the
@@ -54,7 +58,7 @@ const fallbackBase = "/tmp"
 //
 // One kind of site keeps a directory of its own on purpose and does not come here: the
 // once-per-binary directories a package's TestMain owns, the sign-in secret directory of
-// packages/envoy/internal/broker/config/config_test.go and the certificate directory of
+// packages/envoy/internal/cipher/config/config_test.go and the certificate directory of
 // packages/envoy/infra/seed/main_test.go. They bind no socket, so they need no byte budget, and
 // no *testing.T outlives them, so they keep os.MkdirTemp("", …) and a removal of their own. The
 // daemon copy of this file names that module's sites.
@@ -62,7 +66,7 @@ func Dir(t testing.TB, longest string) string {
 	t.Helper()
 	base := os.TempDir()
 	dir, size, err := attempt(t, base, longest)
-	if err == nil && size <= maxSocketPath {
+	if err == nil && size <= MaxSocketPath {
 		return dir
 	}
 	if err != nil {
@@ -70,12 +74,12 @@ func Dir(t testing.TB, longest string) string {
 	} else {
 		_ = os.RemoveAll(dir)
 		t.Logf("testtmp: %q under %s is %d bytes, past the %d a unix socket path holds; falling back to %s",
-			longest, base, size, maxSocketPath, fallbackBase)
+			longest, base, size, MaxSocketPath, fallbackBase)
 	}
 	fallbackDir, fallbackSize, fallbackErr := attempt(t, fallbackBase, longest)
-	if fallbackErr != nil || fallbackSize > maxSocketPath {
+	if fallbackErr != nil || fallbackSize > MaxSocketPath {
 		t.Fatalf("testtmp: no base leaves room for %q within the %d bytes a unix socket path holds: %s; %s",
-			longest, maxSocketPath, outcome(base, size, err), outcome(fallbackBase, fallbackSize, fallbackErr))
+			longest, MaxSocketPath, outcome(base, size, err), outcome(fallbackBase, fallbackSize, fallbackErr))
 	}
 	return fallbackDir
 }
@@ -86,6 +90,106 @@ func Dir(t testing.TB, longest string) string {
 func Socket(t testing.TB, name string) string {
 	t.Helper()
 	return filepath.Join(Dir(t, name), name)
+}
+
+// Without is Dir for a test whose tool also cannot take some characters in a path: a fresh
+// directory of the test's own, removed when the test ends, whose path holds none of chars and has
+// room for longest as Dir measures it ("" for a test that binds no socket there). Bun, which Oh My
+// Pi runs on, loads no module from a path holding a '?'; agent-secrets-helper install refuses to
+// write a unit whose ExecStart or Environment= line would need escaping, a space or a quote among
+// them; vm-sample splits its -ssh command on spaces. The directory is made under the first base
+// that holds none of chars, takes a directory and fits longest: os.TempDir(); then its closest
+// ancestor below the root that holds none of chars, which is most often on its filesystem; then
+// the module's own .cache/testtmp, which .gitignore leaves out; then /tmp. With none, the test
+// fails here, naming what each base answered; it never skips.
+func Without(t testing.TB, longest, chars string) string {
+	t.Helper()
+	return WithoutAccepting(t, longest, chars, nil)
+}
+
+// WithoutAccepting is Without whose directory must also pass accept, which gets the directory it
+// made and answers why that directory will not do, or nil: a test whose tool must also reach the
+// directory some other way, such as a hardlink from a cache on one filesystem, says so there, and
+// a base whose directory fails it is passed over for the next like any other.
+func WithoutAccepting(t testing.TB, longest, chars string, accept func(dir string) error) string {
+	t.Helper()
+	bases, noted := []string{os.TempDir()}, []string(nil)
+	if ancestor := cleanAncestor(os.TempDir(), chars); ancestor != "" {
+		bases = append(bases, ancestor)
+	}
+	if scratch, err := moduleScratch(); err == nil {
+		bases = append(bases, scratch)
+	} else {
+		noted = append(noted, "the module's .cache/testtmp is unknown ("+err.Error()+")")
+	}
+	return without(t, longest, chars, accept, noted, append(bases, fallbackBase)...)
+}
+
+// cleanAncestor is the closest directory above dir, below the root, whose path holds none of
+// chars; "" when dir holds none itself, or when only the root would.
+func cleanAncestor(dir, chars string) string {
+	if !strings.ContainsAny(dir, chars) {
+		return ""
+	}
+	for parent := filepath.Dir(dir); parent != filepath.Dir(parent); parent = filepath.Dir(parent) {
+		if !strings.ContainsAny(parent, chars) {
+			return parent
+		}
+	}
+	return ""
+}
+
+// without is WithoutAccepting over the bases it is given, in order, after the answers already
+// noted.
+func without(t testing.TB, longest, chars string, accept func(string) error, noted []string, bases ...string) string {
+	t.Helper()
+	answers := noted
+	for _, base := range bases {
+		if strings.ContainsAny(base, chars) {
+			answers = append(answers, fmt.Sprintf("%s holds one of %q", base, chars))
+			continue
+		}
+		if err := os.MkdirAll(base, 0o700); err != nil {
+			answers = append(answers, outcome(base, 0, err))
+			continue
+		}
+		dir, size, err := attempt(t, base, longest)
+		if err != nil || (longest != "" && size > MaxSocketPath) {
+			if err == nil {
+				_ = os.RemoveAll(dir)
+			}
+			answers = append(answers, outcome(base, size, err))
+			continue
+		}
+		if accept != nil {
+			if err := accept(dir); err != nil {
+				_ = os.RemoveAll(dir)
+				answers = append(answers, fmt.Sprintf("%s made a directory that will not do (%v)", base, err))
+				continue
+			}
+		}
+		return dir
+	}
+	t.Fatalf("testtmp: no base gives a directory whose path holds none of %q with room for %q within the %d bytes a unix socket path holds: %s",
+		chars, longest, MaxSocketPath, strings.Join(answers, "; "))
+	return ""
+}
+
+// moduleScratch is .cache/testtmp under the module the test runs in: the closest directory above
+// the test's working directory, its package directory, that holds a go.mod.
+func moduleScratch() (string, error) {
+	start, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	for dir := start; ; dir = filepath.Dir(dir) {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return filepath.Join(dir, ".cache", "testtmp"), nil
+		}
+		if filepath.Dir(dir) == dir {
+			return "", fmt.Errorf("no go.mod above %s", start)
+		}
+	}
 }
 
 // attempt makes a fresh directory under base, removed when the test ends, and answers it with the

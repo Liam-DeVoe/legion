@@ -6,8 +6,7 @@
 // together as one Legion pane against a stand-in daemon and listener. The profile format, the
 // flags and the RPC stream are the Oh My Pi pin's (the repository's .omp-pin), so a pin bump that
 // changes one is fixed here once.
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import * as os from "node:os";
+import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import {
   deliverSubject,
@@ -18,7 +17,8 @@ import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import type { DeliveryAnswer } from "@legion/envoy-client/transport";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { Terminal } from "@xterm/headless";
-import { linkOmpNatives } from "./omp-natives";
+import { linkOmpNatives, nativesLinkProblem, ompNativesCache } from "./omp-natives";
+import { ompScratch } from "./test-paths";
 
 export interface Request {
   readonly path: string;
@@ -42,18 +42,32 @@ export type Cleanup = (() => Promise<void>)[];
  * A scratch root with the profile's home, the session's workspace and its transcript directory.
  * The home's Oh My Pi natives are hardlinks to `binary`'s one cached copy (omp-natives.ts), so
  * a case writes none of them.
+ *
+ * The root's path holds no '?': Bun, which Oh My Pi runs on, loads no module from a path that
+ * holds one, in any form, so under such a root Oh My Pi loads neither its natives nor an extension
+ * a case writes there. It is under os.tmpdir() when that holds no '?', else under this package's
+ * .cache/test-omp, else /tmp, and only under a base a hardlink from the natives cache reaches,
+ * since a link cannot cross filesystems; the case fails naming what each base answered when none
+ * takes one (`ompScratch`, test-paths.ts). A case that binds a unix socket under the root names its
+ * path relative to the root in `socket`: the root is then under the first of os.tmpdir(), /tmp and
+ * the package's .cache that also leaves that path within the 107 bytes Linux takes.
  */
 export async function ompRoot(
   binary: string,
   prefix: string,
-  cleanup: Cleanup
+  cleanup: Cleanup,
+  options: { readonly socket?: string } = {}
 ): Promise<{
   readonly home: string;
   readonly workspace: string;
   readonly sessions: string;
   readonly root: string;
 }> {
-  const root = await mkdtemp(path.join(os.tmpdir(), prefix));
+  const natives = await ompNativesCache(binary);
+  const root = ompScratch(prefix, {
+    ...options,
+    accept: (directory) => nativesLinkProblem(natives, directory),
+  });
   cleanup.push(() => rm(root, { recursive: true, force: true }));
   const home = path.join(root, "home");
   const workspace = path.join(root, "workspace");
@@ -118,12 +132,15 @@ export function deliveryFor(
   };
 }
 
-/** What a relay frame needs of a NATS connection; `nats`'s `NatsConnection` is one. */
+/** What a relay frame needs of a NATS connection; `nats`'s `NatsConnection` is one. Its options,
+ * and their `headers`, are optional as `nats`'s own `request` declares them, which is what lets
+ * that connection, whose options take a fuller header set, be one; `sendRelayFrame` always
+ * sends both. */
 export interface RelayConnection {
   request(
     subject: string,
     payload: Uint8Array,
-    options: { readonly timeout: number; readonly headers: RelayFrameHeaders }
+    options?: { readonly timeout: number; readonly headers?: RelayFrameHeaders }
   ): Promise<{ readonly data: Uint8Array }>;
 }
 
@@ -656,7 +673,7 @@ export interface Refusal {
   readonly explanation?: string;
   /** Text the model streamed before the refusal, committed by the time it came. The host walks
    * its own fallback chain for a refusal that follows no output and ends the turn where it is for
-   * one that follows text (`coding-agent/src/session/turn-recovery.ts:1625-1653` and `:2693-2703`
+   * one that follows text (`coding-agent/src/session/turn-recovery.ts:1782-1816` and `:3153-3163`
    * at the pinned tag: committed text is replay-unsafe), so this is the one thing that decides
    * which of the two walks a case proves. */
   readonly text?: string;
@@ -665,7 +682,7 @@ export interface Refusal {
 /**
  * The Anthropic Messages stream of one refused turn: a `message_delta` whose `stop_reason` is
  * `refusal` and whose `stop_details` names the category
- * (`packages/ai/src/providers/anthropic.ts:3117-3126` at the pinned tag). The host reads it as an
+ * (`packages/ai/src/providers/anthropic.ts:3185-3193` at the pinned tag). The host reads it as an
  * assistant message with `stopReason: "error"`, `stopDetails.type: "refusal"` and an
  * `errorMessage` of `Refusal (<category>): <explanation>`, which is what
  * `classifyProviderTurn` (`@legion/pi-shared/provider-refusal`) calls a content filter. It
@@ -902,6 +919,15 @@ export interface LegionPaneOptions {
   readonly quietMs?: number;
   /** The one word the gateway answers the run-end self-check with; `PROCEEDING` by default. */
   readonly selfCheck?: string;
+  /** Gets each RPC frame omp prints, in order, in every life of the pane, for a case that waits on
+   * a frame of its own (a model change, a run's end that the host marks as not terminal). */
+  readonly onFrame?: (frame: object) => void;
+  /**
+   * Runs in the first life once every prompt's run has settled, before that life ends, with its
+   * RPC: a case that starts a run some other way than a prompt (an Envoy card, a background job's
+   * result) or that sends a prompt whose run the host does not settle as terminal does it here.
+   */
+  readonly whileUp?: (rpc: Rpc) => Promise<void>;
 }
 
 /** What a settled Legion pane left behind. */
@@ -1033,10 +1059,15 @@ export async function runLegionPane(
     if (url.pathname.startsWith("/legion/")) {
       return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 });
     }
-    // The Envoy listener: registration, the role claim, and any read answer with an interest.
-    // A session takes its messages from its own consumer, relayed on its own deliver subject: a
-    // registration answered without one leaves the session deaf, which the plugin refuses rather
-    // than accept, and with it every claim the pane makes (INFRA-771).
+    // The Envoy listener, which serves `/v1/` and nothing else: registration, the role claim, and
+    // any other `/v1/` read answer with an interest. A path outside it is a route this stand-in
+    // does not serve, and it is refused. A case that needs another route, Dispatch's among them,
+    // serves it from `answer`. A session takes its messages from its own consumer, relayed on its
+    // own deliver subject: a registration answered without one leaves the session deaf, which the
+    // plugin refuses rather than accept, and with it every claim the pane makes (INFRA-771).
+    if (!url.pathname.startsWith("/v1/")) {
+      return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 });
+    }
     const sessionID = typeof body.session_id === "string" ? body.session_id : "";
     return Response.json({
       session_id: sessionID,
@@ -1056,7 +1087,11 @@ export async function runLegionPane(
    * the extension sends from `agent_end` instead starts its continuation after that frame, so
    * `quietMs` waits for the gateway to fall silent rather than for the frame.
    */
-  const live = async (prompts: readonly string[], args: readonly string[]): Promise<void> => {
+  const live = async (
+    prompts: readonly string[],
+    args: readonly string[],
+    whileUp?: (rpc: Rpc) => Promise<void>
+  ): Promise<void> => {
     let settled = Promise.withResolvers<void>();
     const rpc = spawnRpc(
       binary,
@@ -1091,6 +1126,7 @@ export async function runLegionPane(
           ...options.env,
         },
         onFrame: (frame) => {
+          options.onFrame?.(frame);
           if (
             "type" in frame &&
             frame.type === "agent_end" &&
@@ -1127,10 +1163,11 @@ export async function runLegionPane(
         ]);
       }
     }
+    if (whileUp !== undefined) await Promise.race([whileUp(rpc), rpc.closed]);
     await rpc.end();
   };
   const prompts = typeof options.prompt === "string" ? [options.prompt] : options.prompt;
-  await live(prompts, []);
+  await live(prompts, [], options.whileUp);
 
   const turns = (): Request[] =>
     requests.filter(
