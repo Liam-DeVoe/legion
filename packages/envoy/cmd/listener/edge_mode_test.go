@@ -163,13 +163,71 @@ func TestAnEdgeRefusesEverySubjectOfNoProjectButGitHub(t *testing.T) {
 	}
 }
 
+// The topic rule against what an outside agent would name in its own registration: a topic of
+// another project named whole (an INFRA issue's event, in either form), a wildcard where the
+// project would be (an issue event, a role lane and a Legion lane of every project), and a role
+// lane naming under PRIV a Legion role that works for INFRA, read as the claim it names
+// (contracts.RoleClaimOf), as the claim, the publish and the role lane read it. Each is refused
+// 403 topic_not_in_project, named alone. The topics of PRIV beside them, a role lane of PRIV's in
+// either form and a free-form role under PRIV among them, are taken. Control: with edge mode off
+// each refused topic is taken.
+func TestAnEdgeRefusesAnotherProjectsTopicAndEveryWildcardAcrossProjects(t *testing.T) {
+	rig := newEdgeRig(t)
+	const sessionID = "ses_edge_reach"
+	token := rig.personToken(sessionID, "PRIV")
+	for _, topic := range []string{
+		"notifications.dispatch.issue.INFRA.INFRA-1.comment.created",
+		"notifications.dispatch.issue.INFRA-1.>",
+		"notifications.dispatch.issue.*.>",
+		"notifications.role.*.>",
+		"notifications.legion.*.>",
+		"notifications.role.PRIV.legion-infra-infra-1-tester",
+	} {
+		requireTopicRefusal(t, rig.subscribe(t, token, sessionID, topic), "topic_not_in_project", topic)
+	}
+	requireStatus(t, rig.subscribe(t, token, sessionID,
+		"notifications.dispatch.issue.PRIV.PRIV-1.comment.created",
+		"notifications.role.legion-priv-priv-1-tester",
+		"notifications.role.PRIV.legion-priv-priv-2-tester",
+		"notifications.role.PRIV.lead-reviewer",
+	), http.StatusOK, "a registration following PRIV's topics")
+}
+
+// A token that lists two projects the edge serves is admitted and held to both, as a token of
+// one project is held to it: its session follows the topics of each and claims a role of each,
+// and is refused another project's topic and role. Control: with edge mode off (the listener then
+// serves no project) the INFRA topic and the INFRA role are taken.
+func TestAnEdgeHoldsATokenOfTwoServedProjectsToBoth(t *testing.T) {
+	projects := edgeTestProjects(t)
+	if len(projects) > 0 {
+		projects = []string{"PRIV", "SECOND"}
+	}
+	rig := newEdgeRigServing(t, projects)
+	const sessionID = "ses_edge_two_projects"
+	token := rig.personToken(sessionID, "PRIV", "SECOND")
+	requireStatus(t, rig.subscribe(t, token, sessionID, "notifications.dispatch.issue.PRIV.>", "notifications.dispatch.issue.SECOND.>"),
+		http.StatusOK, "a registration following PRIV's and SECOND's issues")
+	requireTopicRefusal(t, rig.subscribe(t, token, sessionID, "notifications.dispatch.issue.SECOND.>", "notifications.dispatch.issue.INFRA.>"),
+		"topic_not_in_project", "notifications.dispatch.issue.INFRA.>")
+	claim := func(role string) *httptest.ResponseRecorder {
+		return rig.call(t, http.MethodPost, token, "/v1/roles/set", fmt.Sprintf(`{"session_id":%q,"role":%q,"soft":true}`, sessionID, role))
+	}
+	for _, role := range []string{"legion-priv-priv-1-tester", "legion-second-second-1-tester"} {
+		requireStatus(t, claim(role), http.StatusOK, "a claim of "+role)
+	}
+	requireEdgeRefusal(t, claim("legion-infra-infra-1-tester"), http.StatusForbidden, "role_not_in_project", "a claim of legion-infra-infra-1-tester")
+}
+
 // The publish rule: an edge session publishes only a role subject of its project in the form
 // that names the project, for a role that works for that project (contracts.ClaimProject): a
 // Legion role of the project, or a free-form role under it. Anything else is 403
-// topic_not_published, a Legion role of another project named under this one among it.
+// topic_not_published, a Legion role of another project named under this one among it. A publish
+// the rule takes reaches the role's holder, and one to a role of the project that no session holds
+// is the 404 unclaimed, since the edge's grant keeps no role message for a next holder
+// (keepForNextHolder).
 func TestEdgePublishesOnlyRoleSubjectsOfItsProjects(t *testing.T) {
 	rig := newEdgeRig(t)
-	const sessionID = "ses_edge_publisher"
+	const sessionID, holder = "ses_edge_publisher", "ses_edge_publisher_holder"
 	token := rig.personToken(sessionID, "PRIV")
 	for _, topic := range []string{
 		"notifications.dispatch.issue.PRIV.PRIV-1.comment.created",
@@ -184,13 +242,22 @@ func TestEdgePublishesOnlyRoleSubjectsOfItsProjects(t *testing.T) {
 		body := fmt.Sprintf(`{"topic":%q,"message":"from the edge","source":"agent","source_session":%q}`, topic, sessionID)
 		requireEdgeRefusal(t, rig.call(t, http.MethodPost, token, "/v1/messages/publish", body), http.StatusForbidden, "topic_not_published", "a publish to "+topic)
 	}
-	for _, role := range []string{contracts.RoleSubject("PRIV", "legion-priv-priv-1-tester"), contracts.RoleSubject("PRIV", "lead-reviewer")} {
-		body := fmt.Sprintf(`{"topic":%q,"message":"for the role's holder","source":"agent","source_session":%q}`, role, sessionID)
-		recorder := rig.call(t, http.MethodPost, token, "/v1/messages/publish", body)
-		if recorder.Code != http.StatusOK && recorder.Code != http.StatusAccepted {
-			t.Fatalf("a publish to %s: status %d (%s), want it taken", role, recorder.Code, recorder.Body.String())
-		}
+	holderToken := rig.personToken(holder, "PRIV")
+	standIn := startSessionStandIn(t, rig.url, holder, answerDone)
+	requireStatus(t, rig.subscribe(t, holderToken, holder), http.StatusOK, "the holder's registration")
+	var published []contracts.Envelope
+	for _, held := range []struct{ claim, topic string }{
+		{"legion-priv-priv-1-tester", contracts.RoleSubject("PRIV", "legion-priv-priv-1-tester")},
+		{"PRIV.lead-reviewer", contracts.RoleSubject("PRIV", "lead-reviewer")},
+	} {
+		claim := fmt.Sprintf(`{"session_id":%q,"role":%q,"soft":true}`, holder, held.claim)
+		requireStatus(t, rig.call(t, http.MethodPost, holderToken, "/v1/roles/set", claim), http.StatusOK, "the holder's claim of "+held.claim)
+		published = append(published, publishToHeldRole(t, rig, token, sessionID, held.topic))
 	}
+	requireFrames(t, standIn.collect(t, len(published), 10*time.Second), published...)
+	unheld := contracts.RoleSubject("PRIV", "legion-priv-priv-2-tester")
+	body := fmt.Sprintf(`{"topic":%q,"message":"for no holder","source":"agent","source_session":%q}`, unheld, sessionID)
+	requireEdgeRefusal(t, rig.call(t, http.MethodPost, token, "/v1/messages/publish", body), http.StatusNotFound, "unclaimed", "a publish to "+unheld+", a role of PRIV no session holds")
 }
 
 // The send rule: an edge session sends only to a session whose token lists one of its token's
@@ -444,7 +511,7 @@ func TestAnEdgeRefusalNamesOnlyTheRefusedTopics(t *testing.T) {
 }
 
 // The listener links no package of Dispatch's store and no PostgreSQL driver: the edge reads a
-// broker token's projects as the list the token carries (projectHeld) and asks nothing of
+// broker token's projects as the list the token carries and asks nothing of
 // internal/dispatch/access. A listing that names no package, the listener among them, has read
 // nothing and fails as UNKNOWN.
 func TestEdgeListenerLinksNoDispatchStore(t *testing.T) {
@@ -638,15 +705,20 @@ func TestAnEdgeSendNamesItsOwnSession(t *testing.T) {
 }
 
 // A publish at the edge is the session's own, as a send is: a publish to a role subject of PRIV
-// under another source, or naming no source session, is refused 403 sender_not_session, and one as
-// agent naming the token's session is taken. Control: with edge mode off, the first refused
-// publish is taken.
+// under another source, or naming no source session, is refused 403 sender_not_session, and the
+// role's holder receives none of them; one as agent naming the token's session reaches the holder
+// with that session as its sender. Control: with edge mode off, the first refused publish is taken.
 func TestAnEdgePublishNamesItsOwnSession(t *testing.T) {
 	rig := newEdgeRig(t)
-	const sender = "ses_edge_publish_sender"
+	const sender, holder, role = "ses_edge_publish_sender", "ses_edge_publish_holder", "legion-priv-priv-1-tester"
 	token := rig.personToken(sender, "PRIV")
 	requireStatus(t, rig.subscribe(t, token, sender), http.StatusOK, "the sender's registration")
-	topic := contracts.RoleSubject("PRIV", "legion-priv-priv-1-tester")
+	holderToken := rig.personToken(holder, "PRIV")
+	standIn := startSessionStandIn(t, rig.url, holder, answerDone)
+	requireStatus(t, rig.subscribe(t, holderToken, holder), http.StatusOK, "the holder's registration")
+	requireStatus(t, rig.call(t, http.MethodPost, holderToken, "/v1/roles/set", fmt.Sprintf(`{"session_id":%q,"role":%q,"soft":true}`, holder, role)),
+		http.StatusOK, "the holder's claim of "+role)
+	topic := contracts.RoleSubject("PRIV", role)
 	for _, refused := range []struct{ source, sourceSession string }{
 		{"dispatch", ""}, {"human", sender}, {"agent", ""},
 	} {
@@ -654,9 +726,11 @@ func TestAnEdgePublishNamesItsOwnSession(t *testing.T) {
 		requireEdgeRefusal(t, rig.call(t, http.MethodPost, token, "/v1/messages/publish", body), http.StatusForbidden, "sender_not_session",
 			fmt.Sprintf("a publish as source %q with source_session %q", refused.source, refused.sourceSession))
 	}
-	body := fmt.Sprintf(`{"topic":%q,"message":"for the role's holder","source":"agent","source_session":%q}`, topic, sender)
-	if recorder := rig.call(t, http.MethodPost, token, "/v1/messages/publish", body); recorder.Code != http.StatusOK && recorder.Code != http.StatusAccepted {
-		t.Fatalf("a publish as agent from %s: status %d (%s), want it taken", sender, recorder.Code, strings.TrimSpace(recorder.Body.String()))
+	published := publishToHeldRole(t, rig, token, sender, topic)
+	got := standIn.collect(t, 1, 10*time.Second)[0].item
+	if got.EventID != published.EventID || got.Source != "agent" || got.SourceSession != sender {
+		t.Fatalf("the holder's first frame is %s from source %q, source_session %q, want %s from agent and %s: a refused publish reached it",
+			got.EventID, got.Source, got.SourceSession, published.EventID, sender)
 	}
 }
 
@@ -692,6 +766,11 @@ func TestAnEdgeRegistryReadNamesNothingOfAGoneOrStoppedSessionOfAnotherProject(t
 		t.Fatalf("open the known-session store: %v", err)
 	}
 	t.Cleanup(known.StopWatch)
+	// The store answers nothing until its watcher's first read of the bucket completes
+	// (session.KnownSessions.Opened), so the row waits for that read, not for a time.
+	if err := known.WaitForCacheReady(t.Context()); err != nil || !known.Opened() {
+		t.Fatalf("UNKNOWN: the known-session store's first read did not complete (WaitForCacheReady %v, Opened %t)", err, known.Opened())
+	}
 	rig.deps.known = known
 
 	rig.placeElsewhere(t, gone, "INFRA")

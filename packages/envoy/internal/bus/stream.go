@@ -153,7 +153,8 @@ func DeliverSubject(sessionID string) string {
 }
 
 // RelayReplyPrefix begins the receipt family of the edge listeners: an edge machine's relay frame
-// receipts are this prefix, its machine id, a dot and a token (natsgrant.EdgeRelayReplyPrefix).
+// receipts are this prefix and its machine id, then a nuid, the session id and a token
+// (relayreply.<machine>.<nuid>.<session id>.<token>; natsgrant.EdgeRelayReplyPrefix).
 // Its grant subscribes only its own machine's and publishes every machine's, since the listener
 // serving a session's relay socket answers on the family of the machine holding the session's
 // consumer (natsgrant.Edge). The edge's session relay names its frames' receipts here, and the

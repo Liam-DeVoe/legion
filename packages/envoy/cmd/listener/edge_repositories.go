@@ -124,7 +124,7 @@ func newEdgeWithheldCounter(met *metrics.Registry) *metrics.Counter {
 
 // read asks the broker for project's repositories now, and keeps the answer when it is a whole
 // one. Every other outcome is errRepositoriesUnknown, naming what went wrong, for the log alone:
-// what a client is told is the listener's own sentence (edgeTopicHold.repositoriesUnknown).
+// what a client is told is the listener's own sentence (edgeTopicHold.answerRepositoryOutage).
 func (e *edgeRepositories) read(ctx context.Context, project string) ([]string, error) {
 	bearer, err := e.account.Read()
 	if err != nil {

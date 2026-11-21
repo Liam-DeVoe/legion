@@ -20,6 +20,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/natsgrant"
 )
 
@@ -55,6 +56,15 @@ func refusedNaming(t *testing.T, errs <-chan error, what string) {
 			t.Fatalf("the server sent no permissions violation for %s within 10s", what)
 		}
 	}
+}
+
+// present reports whether the stream name exists on admin, failing the test on any read error but a
+// not-found, so a stream nothing could read never reads as gone.
+func present(t *testing.T, admin natsgo.JetStreamContext, name string) bool {
+	t.Helper()
+	_, err := admin.StreamInfo(name)
+	require.True(t, err == nil || errors.Is(err, natsgo.ErrStreamNotFound), "read %s: %v", name, err)
+	return err == nil
 }
 
 // The edge's consumer calls reach past its publish list, and this row pins how far, on the hub's
@@ -249,11 +259,6 @@ func TestTheEdgeCannotSetABucketToRepublishIntoTheJetStreamAPI(t *testing.T) {
 		_, err := admin.CreateKeyValue(&natsgo.KeyValueConfig{Bucket: bucket, Storage: natsgo.MemoryStorage})
 		require.NoError(t, err)
 	}
-	present := func(name string) bool {
-		_, err := admin.StreamInfo(name)
-		require.True(t, err == nil || errors.Is(err, natsgo.ErrStreamNotFound), "read %s: %v", name, err)
-		return err == nil
-	}
 	republishInto := func(js natsgo.JetStreamContext, bucket, victim string, headersOnly bool) error {
 		info, err := js.StreamInfo("KV_" + bucket)
 		if err != nil {
@@ -298,13 +303,9 @@ func TestTheEdgeCannotSetABucketToRepublishIntoTheJetStreamAPI(t *testing.T) {
 		copied, err := republished.NextMsg(10 * time.Second)
 		require.NoError(t, err, "the administrator's republish to %s reached no subscriber within 10s, so the row cannot see it fire", target)
 		require.Empty(t, copied.Data, "the republished copy on %s carries a body", target)
-		gone := !present(control.victim)
-		for deadline := time.Now().Add(10 * time.Second); !gone && time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
-			gone = !present(control.victim)
-		}
-		require.True(t, gone, "%s is still there 10s after the administrator's republish of an empty body to its delete", control.victim)
+		require.True(t, testwait.Holds(10*time.Second, 50*time.Millisecond, func() bool { return !present(t, admin, control.victim) }), "%s is still there 10s after the administrator's republish of an empty body to its delete", control.victim)
 	}
-	require.True(t, present("SCRATCH_VICTIM"), "SCRATCH_VICTIM, whose delete the edge could set no republish to")
+	require.True(t, present(t, admin, "SCRATCH_VICTIM"), "SCRATCH_VICTIM, whose delete the edge could set no republish to")
 }
 
 // A request's reply subject is checked against no permission of the requester, and the stream
@@ -673,11 +674,6 @@ func TestAPushConsumersHeartbeatOnTheAPIDeletesAStreamWhileAClientSubscribesIt(t
 		_, err := admin.AddStream(&natsgo.StreamConfig{Name: name, Subjects: []string{"scratch." + strings.ToLower(name) + ".>"}, Storage: natsgo.MemoryStorage})
 		require.NoError(t, err)
 	}
-	present := func(name string) bool {
-		_, err := admin.StreamInfo(name)
-		require.True(t, err == nil || errors.Is(err, natsgo.ErrStreamNotFound), "read %s: %v", name, err)
-		return err == nil
-	}
 	const target = "$JS.API.STREAM.DELETE.SCRATCH_HB"
 	heartbeats, err := adminConn.SubscribeSync(target)
 	require.NoError(t, err)
@@ -696,16 +692,12 @@ func TestAPushConsumersHeartbeatOnTheAPIDeletesAStreamWhileAClientSubscribesIt(t
 	require.Equal(t, target, beat.Subject, "the heartbeat came under %s", beat.Subject)
 	require.Empty(t, beat.Data, "the heartbeat's body")
 	require.Equal(t, "100", beat.Header.Get("Status"), "the heartbeat's status")
-	gone := !present("SCRATCH_HB")
-	for deadline := time.Now().Add(10 * time.Second); !gone && time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
-		gone = !present("SCRATCH_HB")
-	}
-	require.True(t, gone, "SCRATCH_HB is still there 10s after a heartbeat reached its delete subject")
+	require.True(t, testwait.Holds(10*time.Second, 50*time.Millisecond, func() bool { return !present(t, admin, "SCRATCH_HB") }), "SCRATCH_HB is still there 10s after a heartbeat reached its delete subject")
 
 	info, err := admin.ConsumerInfo(bus.Stream, "edge-hb-unsubscribed")
 	require.NoError(t, err)
 	require.False(t, info.PushBound, "the consumer on SCRATCH_HB_UNSUBSCRIBED's delete has interest no client gave it")
-	require.True(t, present("SCRATCH_HB_UNSUBSCRIBED"), "SCRATCH_HB_UNSUBSCRIBED, whose delete no client subscribes")
+	require.True(t, present(t, admin, "SCRATCH_HB_UNSUBSCRIBED"), "SCRATCH_HB_UNSUBSCRIBED, whose delete no client subscribes")
 }
 
 // The consumer calls the edge keeps answer two requests with no body on whatever reply subject the
@@ -742,18 +734,6 @@ func TestAPullStatusAndAnAckAnswerOnTheAPIDeleteAStream(t *testing.T) {
 		_, err := admin.AddStream(&natsgo.StreamConfig{Name: name, Subjects: []string{"scratch." + strings.ToLower(name) + ".>"}, Storage: natsgo.MemoryStorage})
 		require.NoError(t, err)
 	}
-	present := func(name string) bool {
-		_, err := admin.StreamInfo(name)
-		require.True(t, err == nil || errors.Is(err, natsgo.ErrStreamNotFound), "read %s: %v", name, err)
-		return err == nil
-	}
-	goneWithin := func(name string) bool {
-		gone := !present(name)
-		for deadline := time.Now().Add(10 * time.Second); !gone && time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
-			gone = !present(name)
-		}
-		return gone
-	}
 
 	edgeConn, edgeErrs := grantedConnection(t, uri, edgeSeed, natsgo.CustomInboxPrefix(natsgrant.EdgeInboxPrefix("m")))
 	edgeJS, err := edgeConn.JetStream()
@@ -767,7 +747,7 @@ func TestAPullStatusAndAnAckAnswerOnTheAPIDeleteAStream(t *testing.T) {
 	_, err = edgeConn.Request("$JS.API.STREAM.DELETE.SCRATCH_CONTROL", nil, 2*time.Second)
 	require.Error(t, err, "the edge's direct request of a stream delete was answered")
 	refusedNaming(t, edgeErrs, `Publish to "$JS.API.STREAM.DELETE.SCRATCH_CONTROL"`)
-	require.True(t, present("SCRATCH_CONTROL"), "the edge's direct delete removed SCRATCH_CONTROL")
+	require.True(t, present(t, admin, "SCRATCH_CONTROL"), "the edge's direct delete removed SCRATCH_CONTROL")
 
 	// The pull route: a consumer on a subject that holds no message.
 	_, err = edgeJS.AddConsumer(bus.Stream, &natsgo.ConsumerConfig{Name: "ses_probe_pull", FilterSubject: "notifications.agent.ses_edge_pull_empty", AckPolicy: natsgo.AckExplicitPolicy})
@@ -783,11 +763,11 @@ func TestAPullStatusAndAnAckAnswerOnTheAPIDeleteAStream(t *testing.T) {
 	require.NoError(t, err, "the no_wait pull's status reached no subscriber of the edge's inbox within 10s")
 	require.Equal(t, "404", status.Header.Get("Status"), "the no_wait pull's status")
 	require.Empty(t, status.Data, "the no_wait pull's status body")
-	require.True(t, present("SCRATCH_PULL"), "the pull answered on the inbox removed SCRATCH_PULL")
+	require.True(t, present(t, admin, "SCRATCH_PULL"), "the pull answered on the inbox removed SCRATCH_PULL")
 	// Probe: the same no_wait pull answered on a stream delete deletes that stream, with no subscriber.
 	require.NoError(t, edgeConn.PublishRequest(pullNext, "$JS.API.STREAM.DELETE.SCRATCH_PULL", pull))
 	require.NoError(t, edgeConn.Flush())
-	require.True(t, goneWithin("SCRATCH_PULL"), "SCRATCH_PULL is still there 10s after a no_wait pull's status reached its delete subject")
+	require.True(t, testwait.Holds(10*time.Second, 50*time.Millisecond, func() bool { return !present(t, admin, "SCRATCH_PULL") }), "SCRATCH_PULL is still there 10s after a no_wait pull's status reached its delete subject")
 
 	// The ack route: two stored messages, pulled to the edge's inbox for their ack subjects.
 	for range 2 {
@@ -815,11 +795,11 @@ func TestAPullStatusAndAnAckAnswerOnTheAPIDeleteAStream(t *testing.T) {
 	confirm, err := replies.NextMsg(10 * time.Second)
 	require.NoError(t, err, "the synchronous ack's reply reached no subscriber of the edge's inbox within 10s")
 	require.Empty(t, confirm.Data, "the synchronous ack's reply body")
-	require.True(t, present("SCRATCH_ACK"), "the ack answered on the inbox removed SCRATCH_ACK")
+	require.True(t, present(t, admin, "SCRATCH_ACK"), "the ack answered on the inbox removed SCRATCH_ACK")
 	// Probe: the same synchronous ack answered on a stream delete deletes that stream, with no subscriber.
 	require.NoError(t, edgeConn.PublishRequest(ackSubjects[1], "$JS.API.STREAM.DELETE.SCRATCH_ACK", []byte("+ACK")))
 	require.NoError(t, edgeConn.Flush())
-	require.True(t, goneWithin("SCRATCH_ACK"), "SCRATCH_ACK is still there 10s after a synchronous ack's reply reached its delete subject")
+	require.True(t, testwait.Holds(10*time.Second, 50*time.Millisecond, func() bool { return !present(t, admin, "SCRATCH_ACK") }), "SCRATCH_ACK is still there 10s after a synchronous ack's reply reached its delete subject")
 }
 
 // A publish of a Dispatch event on the edge listener's connection is refused by the server: the

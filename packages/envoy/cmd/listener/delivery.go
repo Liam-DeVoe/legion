@@ -652,11 +652,19 @@ func roleTopicDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessag
 // free-form role under a project. A Legion role named under a project it does not work for
 // reaches no holder (roleLaneProjectError): its claim is keyed on the bare name, so the lane of
 // another project naming it would hand that project's message to the role's own project's holder.
+// Such a message is reported as every role message that reaches no holder is, skipped with the
+// delivery exception no_holder, so a publisher watching the lane's exceptions is told.
 func resolveRoleForward(cfg listenerDeliveryHandlerConfig, item contracts.Envelope) (roleForward, bool) {
 	lane := strings.TrimPrefix(item.Topic, contracts.RoleTopicPrefix)
 	if err := roleLaneProjectError(lane); err != nil {
-		cfg.logger.Warn("listener role lane refused a role named under a project it does not work for; no holder is sent it",
-			slog.String("topic", item.Topic), slog.String("event_id", item.EventID), slog.String("error", err.Error()))
+		applyDeliveryOutcome(cfg, item, deliveryOutcome{
+			metricStatus: "skipped",
+			log: func(logger *logging.Logger) {
+				logger.Warn("listener role lane refused a role named under a project it does not work for; no holder is sent it",
+					slog.String("topic", item.Topic), slog.String("event_id", item.EventID), slog.String("error", err.Error()))
+			},
+			exceptionReason: "no_holder",
+		})
 		return roleForward{}, false
 	}
 	role, _ := roleOfLaneTopic(item.Topic)
