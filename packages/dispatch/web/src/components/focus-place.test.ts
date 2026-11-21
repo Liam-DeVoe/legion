@@ -1219,6 +1219,8 @@ test("a resize that puts the focused row out of its box, then the row's removal,
     const [, second, third] = buttons;
     second?.focus();
     placeAt(second as HTMLElement, 300);
+    // The row after it stands under it, inside the box, where the walk back finds it in sight.
+    placeAt(third as HTMLElement, 340);
     window.dispatchEvent(new Event("resize"));
     enterPress(second as HTMLElement);
     second?.remove();
@@ -2056,6 +2058,99 @@ test("a caused walk-back with only text boxes before the lost place lands on the
       });
       belongs[named] = "the region's own stop";
     }
+  }
+  expect(landed).toEqual(belongs);
+});
+
+// (cb) A caused walk-back (ak) passes over every control out of the reader's sight, as it passes
+// over a text box (bz): a landing scrolls its control into view, and the nearest control before
+// the lost place can lie far from where the press put the reader. Jump to latest went once it had
+// scrolled an agent's transcript to its end, and the walk landed on the transcript's last control,
+// which scrolled the transcript back from its end, 2515 px down, to 1146 px, measured in Chromium.
+// The nearest control in sight before the lost place takes the focus, past one its
+// scroll box holds above that box's top edge and one the page holds above the window; where none
+// is in sight, the region's own stop takes it and nothing scrolls. By Enter, with Chromium's
+// `focusout` and without.
+test("a caused walk-back passes over the controls out of sight to the nearest in sight, else the region's own stop", async () => {
+  // Where each press landed and what it scrolled, and where it belongs.
+  const landed: Record<string, string | null> = {};
+  const belongs: Record<string, string> = {};
+  const scrolled: Element[] = [];
+  const scrolls = spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (
+    this: Element
+  ) {
+    scrolled.push(this);
+  });
+  try {
+    for (const headerShown of [true, false]) {
+      for (const withFocusout of [true, false]) {
+        const named = `${headerShown ? "the header in sight" : "nothing in sight"}, ${withFocusout ? "with" : "without"} a focusout`;
+        await withRescue(async () => {
+          scrolled.length = 0;
+          const { buttons, main } = mainOf("Header", "Above");
+          const [header, above] = buttons as [HTMLButtonElement, HTMLButtonElement];
+          placeAt(header, headerShown ? 20 : -200);
+          placeAt(above, -1_000);
+          // The transcript scrolls in a box of its own, 100 px to 400 px down, and holds its last
+          // control above that box's top edge.
+          const { box, buttons: inBox } = scrollBoxIn(main, "Last turn's fold");
+          box.style.overflowY = "auto";
+          placeAt(inBox[0] as HTMLElement, 40);
+          const pressed = buttonIn(main, "Jump to latest");
+          placeAt(pressed, 380);
+          pressed.focus();
+          enterPress(pressed);
+          if (withFocusout) lose(pressed);
+          else pressed.remove();
+          await settled();
+          const at =
+            document.activeElement === main
+              ? "the region's own stop"
+              : document.activeElement === document.body
+                ? "the page"
+                : focusedName();
+          landed[named] =
+            `${at}, scrolling ${scrolled.length === 0 ? "nothing" : scrolled.map((element) => element.textContent).join(", ")}`;
+        });
+        belongs[named] = headerShown
+          ? "Header, scrolling Header"
+          : "the region's own stop, scrolling nothing";
+      }
+    }
+  } finally {
+    scrolls.mockRestore();
+  }
+  expect(landed).toEqual(belongs);
+});
+
+// (cc) A hand-off lands only on a control the Tab order reaches (`IN_TAB_ORDER`): one the page
+// took out of it with `tabindex="-1"` is a place no key could have taken the reader to. "66 more
+// rows below" on the issue page's outline drew its rows in its place, each of their controls out
+// of the Tab order, and the rescue landed on the first row's "more · 106 words", which opened
+// that row's body and drew its words whole (Chromium, 390 px). What the press drew here holds no
+// control the Tab order reaches, so the focus walks back, past a strip's scroll button the
+// pointer alone uses, to the control before it. By Enter, with Chromium's `focusout` and without.
+test("a hand-off lands on no control out of the Tab order, in what a press drew or on its walk back", async () => {
+  // Where each press landed, and where it belongs.
+  const landed: Record<string, string | null> = {};
+  const belongs: Record<string, string> = {};
+  for (const withFocusout of [true, false]) {
+    const named = withFocusout ? "with a focusout" : "without a focusout";
+    await withRescue(async () => {
+      const { main } = mainOf("Before");
+      buttonIn(main, "Scroll left").tabIndex = -1;
+      const pressed = buttonIn(main, "66 more rows below");
+      pressed.focus();
+      enterPress(pressed);
+      const rows = document.createElement("div");
+      buttonIn(rows, "more · 106 words").tabIndex = -1;
+      const leave = () => pressed.replaceWith(rows);
+      if (withFocusout) lose(pressed, leave);
+      else leave();
+      await settled();
+      landed[named] = document.activeElement === document.body ? "the page" : focusedName();
+    });
+    belongs[named] = "Before";
   }
   expect(landed).toEqual(belongs);
 });

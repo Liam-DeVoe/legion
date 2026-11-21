@@ -32,12 +32,24 @@ const FORM_FIELDS = ["button", "textarea", "input", "select"];
 /** An element given a Tab stop of its own: any `tabindex` but -1. */
 const TAB_STOP = '[tabindex]:not([tabindex="-1"])';
 
-/** What the keyboard focus can reach: a link, a form control that is not `disabled`, or anything
- *  given a Tab stop of its own. A control refused with `aria-disabled` is one, since it keeps its
- *  Tab stop. */
-const FOCUSABLE = ["a[href]", ...FORM_FIELDS.map((tag) => `${tag}:not(:disabled)`), TAB_STOP].join(
-  ", "
-);
+/** A link or a form control the page has not taken out of the Tab order: `tabindex="-1"` is a
+ *  page's word that the keyboard does not stop there - a strip's scroll buttons the pointer alone
+ *  uses, a tab of a tab list other than the selected one, and a control of a row of the issue
+ *  page's outline while that row holds no Tab stops (`tabStops`), since the keys move the focus
+ *  between those rows. A hand-off that counted them would land where no key could have taken the
+ *  reader: at 390 px in Chromium, "66 more rows below" on the outline drew its rows in its place,
+ *  the rescue landed on the first one's "more · 106 words", and that row, holding the focus,
+ *  opened its body and drew its words whole. */
+const IN_TAB_ORDER = ':not([tabindex="-1"])';
+
+/** What the keyboard focus can reach: a link, a form control that is not `disabled`, each left
+ *  in the Tab order (`IN_TAB_ORDER`), or anything given a Tab stop of its own. A control refused
+ *  with `aria-disabled` is one, since it keeps its Tab stop. */
+const FOCUSABLE = [
+  `a[href]${IN_TAB_ORDER}`,
+  ...FORM_FIELDS.map((tag) => `${tag}:not(:disabled)${IN_TAB_ORDER}`),
+  TAB_STOP,
+].join(", ");
 
 /** The controls the focus can reach inside `container`, in order. One under a `hidden` ancestor -
  *  a composer kept mounted, out of sight, for a send it has out - takes no focus, so it is never
@@ -736,7 +748,10 @@ function goneFrom(spot: Spot, region: Element): boolean {
  *  a button or form field disabled now as well, since a press can disable its own control before
  *  its row goes - the loss is noted at the disable's `focusout` then - and that control keeps its
  *  place in the row. */
-const ROW_CONTROL = ["a[href]", ...FORM_FIELDS, TAB_STOP].join(", ");
+const ROW_CONTROL = [
+  ...["a[href]", ...FORM_FIELDS].map((tag) => `${tag}${IN_TAB_ORDER}`),
+  TAB_STOP,
+].join(", ");
 
 /** The controls `row` holds, in order, by markup alone (`ROW_CONTROL`): the row itself first
  *  where it is one, then each inside it. Counted by markup and not by what the page draws, so a
@@ -1075,9 +1090,18 @@ function focusNoScroll(target: HTMLElement): boolean {
  *  group name" box. The walk passes over it to the nearest control before it that takes no text.
  *  Where only such fields stand there, it offers nothing; a region still present, other than the
  *  document, takes the focus at its own stop (`handOn`), and a component's hand-off goes to its
- *  `fallback` (`useFocusPlace`). */
+ *  `fallback` (`useFocusPlace`). The page's rescue also passes over every control the reader
+ *  cannot see (`inSightNow`), which a component's hand-off, whose walk stays inside its own
+ *  container, need not. */
 function walkBack(controls: readonly HTMLElement[], index: number): HTMLElement[] {
   return placesFrom(controls, index).filter((control) => !takesText(control));
+}
+
+/** Whether the reader can see any part of `element` now: its box meets the viewport and every box
+ *  around it that clips it (`clippingBoxes`). The page's rescue reads it of each control its walk
+ *  back reaches, as it reaches it, so a long walk measures only the controls it tries. */
+function inSightNow(element: Element): boolean {
+  return inSight(element, clippingBoxes(element));
 }
 
 /** Hands on the focus `loss`'s element took with it when it went. A loss the reader did not
@@ -1098,20 +1122,26 @@ function walkBack(controls: readonly HTMLElement[], index: number): HTMLElement[
  *  control is scrolled into view (`land`). Only where no row stands there, or that row draws no
  *  control to take it, does the focus walk back (`walkBack`): to the control the region now draws
  *  at its place, else the nearest one before it however many went together, passing over every
- *  control that takes typed text, else the region itself, which is every region but the document,
- *  and that control is scrolled into view (`land`). From a region that has gone - a dialog or a
- *  panel that closed, or one hidden while it stays mounted - the focus goes only back to the place
- *  it was opened from (its `opener`, or that region's own opener where it has gone too): that
- *  element, the control that opened it - a list's trigger - if it can still take the focus, else
- *  the control now at its place, else the nearest one before it, by the same walk back. A dialog
- *  opened from the body hands the focus nowhere: the body is where the reader was. */
+ *  control that takes typed text and every control the reader cannot see now (`inSightNow`),
+ *  else the region itself, which is every region but the document, focused with no scroll. The
+ *  walk takes only a control in sight, because a landing scrolls its control into view (`land`),
+ *  and the nearest control before the lost place can lie far from it. Jump to latest on an
+ *  agent's transcript goes once it has scrolled the transcript to its end, and the control before
+ *  it is the transcript's last: in Chromium, landing there scrolled the transcript from its end,
+ *  2515 px down, back to 1146 px. From a region that has gone - a dialog or a panel that closed,
+ *  or one hidden while it stays mounted - the focus goes only back to the place it was opened
+ *  from (its `opener`, or that region's own opener where it has gone too): that element, the
+ *  control that opened it - a list's trigger - if it can still take the focus, scrolled into
+ *  view, else the control now at its place, else the nearest one before it, by the same walk
+ *  back. A dialog opened from the body hands the focus nowhere: the body is where the reader
+ *  was. */
 function handOn(loss: Loss, main: HTMLElement | null): void {
   const { caused, region } = loss;
   if (!caused) {
     leaveUncaused(region);
     return;
   }
-  let candidates: HTMLElement[] = [];
+  let back: HTMLElement[] = [];
   if (present(region)) {
     const drawn = drawnIn(region, main);
     for (const control of controlsInPlace(loss, drawn)) {
@@ -1120,20 +1150,20 @@ function handOn(loss: Loss, main: HTMLElement | null): void {
     for (const control of controlsOfRowMovedUp(loss, drawn)) {
       if (land(control)) return;
     }
-    candidates = walkBack(drawn, loss.index);
+    back = walkBack(drawn, loss.index);
   } else {
     const opener = drawnOpener(loss.opener);
-    if (opener !== null && opener.path === loss.path) {
-      candidates = [opener.element, ...walkBack(drawnIn(opener.region, main), opener.index)];
-    }
+    if (opener === null || opener.path !== loss.path) return;
+    if (opener.element.isConnected && rendered(opener.element) && land(opener.element)) return;
+    back = walkBack(drawnIn(opener.region, main), opener.index);
   }
-  for (const candidate of candidates) {
-    if (!candidate.isConnected || !rendered(candidate)) continue;
+  for (const candidate of back) {
+    if (!candidate.isConnected || !rendered(candidate) || !inSightNow(candidate)) continue;
     if (land(candidate)) return;
   }
   if (!present(region) || region === document.body || !(region instanceof HTMLElement)) return;
   if (!region.hasAttribute("tabindex")) region.tabIndex = -1;
-  land(region);
+  focusNoScroll(region);
 }
 
 /**
@@ -1225,8 +1255,9 @@ function handOn(loss: Loss, main: HTMLElement | null): void {
  * reader can go on, unpinning as Dismiss goes on to the next item. Only where no row stands
  * there - a block taken away with nothing in its place, or the last row - or that row draws no
  * control does the focus walk back, as `handOn` states, passing over every control that takes
- * typed text (`walkBack`), else to the region's own stop; that walk stays inside the region, so
- * the page behind a modal dialog is never reached. A loss the reader did not cause - an update of
+ * typed text (`walkBack`) and every control out of the reader's sight (`inSightNow`), else to the
+ * region's own stop with no scroll; that walk stays inside the region, so the page behind a modal
+ * dialog is never reached. A loss the reader did not cause - an update of
  * the server's, which can draw a form of its own where the control stood, as a withdrawn
  * question's answer form gives way to a Reply form, or a live update taking a row away - is handed
  * nowhere (`leaveUncaused`): the focus stays on the body, as it did before the page had a rescue,
