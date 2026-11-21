@@ -2,6 +2,7 @@ package horizontest
 
 import (
 	"context"
+	"errors"
 	"log"
 	"log/slog"
 	"strings"
@@ -367,7 +368,41 @@ func TestAWatchOfATestThatWaitsUntilTheDeadlineIsEndedBySilenceNowhere(t *testin
 		if failure := probed.Failure(what); !strings.Contains(failure, "a client of the test's own database") {
 			t.Errorf("an own holder the probe found past OwnHoldBound: Failure = %q, want the own-hold failure", failure)
 		}
+		// A wait whose reads of the holder fail goes on, and its failure at the drain names the
+		// latest of those failures: a later failure replaces an earlier one, and a read that finds
+		// no holder clears it.
+		reads := &probeReads{errors.New("the first planted failure"), errors.New("the second planted failure"), pgx.ErrNoRows}
+		failing := NewWatch(t, none, ownDatabase, reads)
+		failing.began = time.Now().Add(-2 * max(Base, Extension))
+		failing.drain = time.Time{}
+		for _, want := range []string{"the first planted failure", "the second planted failure"} {
+			if failure := failing.Failure(what); failure != "" {
+				t.Errorf("a silent horizon whose holder read fails: Failure = %q, want the wait to go on", failure)
+			}
+			drained := *failing
+			drained.drain = time.Now().Add(-time.Millisecond)
+			if failure := drained.Failure(what); !strings.Contains(failure, "the wait's latest read of the instance's holder failed: "+want) {
+				t.Errorf("past the drain after a holder read failed with %q: Failure = %q, want it to name that failure", want, failure)
+			}
+		}
+		if failure := failing.Failure(what); failure != "" {
+			t.Errorf("a silent horizon whose holder read finds none: Failure = %q, want the wait to go on", failure)
+		}
+		failing.drain = time.Now().Add(-time.Millisecond)
+		if failure := failing.Failure(what); strings.Contains(failure, "holder failed") {
+			t.Errorf("past the drain after a holder read succeeded: Failure = %q, want no failed read named", failure)
+		}
 	})
+}
+
+// probeReads is a Querier whose holder reads (readHolder) fail with its errors in turn, one per
+// read; pgx.ErrNoRows reads as no holder at all.
+type probeReads []error
+
+func (r *probeReads) QueryRow(context.Context, string, ...any) pgx.Row {
+	err := (*r)[0]
+	*r = (*r)[1:]
+	return failedRow{err}
 }
 
 // heldBy is a Querier whose holder read (readHolder) finds a transaction of database that began

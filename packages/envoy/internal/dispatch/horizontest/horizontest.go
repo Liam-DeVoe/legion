@@ -512,6 +512,10 @@ type Watch struct {
 	// untilTheDeadline is whether the watch's test asked for its waits to go on until the drain
 	// whatever the horizon says (UntilTheDeadline): silence ends nothing then.
 	untilTheDeadline bool
+	// probeErr is the error of the watch's latest read of the holder, nil once a read succeeds:
+	// a wait that silence no longer ends reads the holder on every poll, and its failure at the
+	// drain says whether those reads were failing.
+	probeErr error
 }
 
 // untilTheDeadline names every test that called UntilTheDeadline and has not yet ended.
@@ -600,13 +604,19 @@ func (w *Watch) Failure(what string) string {
 	w.observe(now)
 	elapsed := w.current.elapsed.Round(time.Millisecond)
 	if !w.drain.IsZero() && !now.Before(w.drain) {
-		return fmt.Sprintf("%s did not arrive in the %v the run had left; the event horizon's newest stall warning was %s",
+		failure := fmt.Sprintf("%s did not arrive in the %v the run had left; the event horizon's newest stall warning was %s",
 			what, elapsed, w.current.lastText())
+		if w.probeErr != nil {
+			failure += fmt.Sprintf("; the wait's latest read of the instance's holder failed: %v", w.probeErr)
+		}
+		return failure
 	}
 	verdict := verdictOf(w.current)
 	var probed string
 	if (verdict == noSignal || verdict == signalStopped) && w.probe != nil {
-		switch held, found, err := readHolder(w.probe); {
+		held, found, err := readHolder(w.probe)
+		w.probeErr = err
+		switch {
 		case err != nil:
 			probed = fmt.Sprintf("; reading the instance's holder failed too: %v", err)
 		case !found:

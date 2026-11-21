@@ -34,9 +34,9 @@ func secondProcessHandler(t *testing.T, database *store.Store) http.Handler {
 	return handler
 }
 
-// secondProcess is secondProcessHandler and the second process's event stream relay, for a test
-// that orders its writes against that relay's start (awaitRelayStart).
-func secondProcess(t *testing.T, database *store.Store) (http.Handler, *eventStreamRelay) {
+// secondProcess is secondProcessHandler and the server it mounts, for a test that orders its writes
+// against that server's relay (awaitRelayStart) or sets one of its test fields before serving it.
+func secondProcess(t *testing.T, database *store.Store) (http.Handler, *server) {
 	t.Helper()
 	second := storetest.SecondProcess(t, database)
 	broker := events.NewBroker()
@@ -63,7 +63,7 @@ func secondProcess(t *testing.T, database *store.Store) (http.Handler, *eventStr
 	mux := http.NewServeMux()
 	served := register(mux, t.Context(), deps)
 	t.Cleanup(served.waitBackground)
-	return mux, served.eventRelay
+	return mux, served
 }
 
 // TestEventCommittedOnAnotherProcessReachesAnOpenEventFeed is what the live feed is for with two
