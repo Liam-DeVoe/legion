@@ -10,8 +10,14 @@ body: |-
   call it makes of the listener carries `Authorization: DPoP <token>` and a proof of the call's URL:
   the outbox's publishes, the role lookups, the clean stops and the controller probe. `envoy_url`
   must therefore be the listener's `ENVOY_PUBLIC_URL`. The trade, its refusals and its renewal are
-  those of `dispatch_token_broker`; a daemon that sets both makes one trade. The boot logs
-  `legion daemon's Envoy listener credential` with `credential=broker` and the session. A daemon
-  that names `envoy_token_file` sends its bearer byte for byte as before. The renewal's Error line is
-  now `legion daemon's broker credential renewal stopped`.
+  those of `dispatch_token_broker`; a daemon that sets both makes one trade.
+
+  After the trade, the boot reads the project's controller role at the listener with that token. It
+  waits out a listener that does not answer or answers 429 or 5xx, and refuses to boot on a 401 or
+  403, naming `envoy_url` and `ENVOY_PUBLIC_URL`. The boot then logs
+  `legion daemon's Envoy listener credential` with `credential=broker` and the session. A launch
+  into a pod built before `exchange_audience` was set, which carries no exchange identity, waits for
+  that pod's update round rather than start with no credential for the listener. A daemon that names
+  `envoy_token_file` sends its bearer byte for byte as before. The renewal's Error line is now
+  `legion daemon's broker credential renewal stopped`.
 time: 2026-11-21T02:44:40Z

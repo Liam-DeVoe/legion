@@ -3,10 +3,20 @@ body: |-
   The listener recognises a Legion daemon's own broker token: a token whose session is
   `legion-daemon:<P>`, under the named project scope, with the one project `P`. Such a token may
   make the daemon's clean stop of another session's registration (`DELETE /v1/sessions/<session>`
-  naming `if_not_registered_after`), as the shared bearer may. The sender limit does not count its
-  messages. The same token's unconditional delete of another session, and a delete that names
-  only `client_instance_id`, are still refused 403. Every other broker token is held to its own
-  session as before.
+  naming `if_not_registered_after`), as the shared bearer may, if the stop's moment is no more
+  than five minutes past the listener's clock. The sender limit does not count its messages. The
+  same token's unconditional delete of another session, a delete that names only
+  `client_instance_id`, and a stop dated further ahead are still refused 403. Every other broker
+  token is held to its own session as before.
+
+  The listener answers a broker token that the broker no longer holds as live 401 with
+  `code: BROKER_TOKEN_NOT_ACTIVE`, as Dispatch does, so the Go token transport drops it and trades
+  again. Every other refused credential gets the same plain 401 as before.
+
+  The secrets broker refuses a session that opens `legion-daemon:` where the request names its own
+  session, and in a pod-session registration (`invalid_request`, the refusal of an unusable
+  session name). Only the fixed session of an exchange entry may be such a name, so only a daemon's
+  own entry mints a token the listener takes for a daemon's.
 time: 2026-11-21T02:44:40Z
 custom:
     Issue: pr4723

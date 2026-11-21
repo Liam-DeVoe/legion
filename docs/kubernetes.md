@@ -8590,6 +8590,11 @@ Each role's Envoy client trades the pod's exchange identity for a broker token o
 Without `exchange_audience` the file is required, because no pod would have any credential for the listener.
 A daemon that names the file runs as before: it presents the bearer on its own calls and hands each pod a copy.
 
+A pod's volumes are fixed when the pod is created, so a pod built before `exchange_audience` was set carries no exchange identity.
+A role relaunched into such a pod by a daemon that holds no bearer would have no credential for the listener at all, so that launch is refused before anything of the pod is touched: `pod <name> carries no exchange identity and envoy_token_file is not set, so its role would hold no credential for the Envoy listener; its update round replaces it` (`runtime.ErrAwaitingPodRound`; `listenerCredential`, `packages/daemon/internal/runtime/sandbox/relaunch.go`).
+The supervisor waits for the round, charging the claim nothing, as it waits for a Dispatch launch under `dispatch_token_broker` with no transition file.
+There is no transition token for the listener: a project at work that cannot wait for its rounds keeps `envoy_token_file` until every pod carries the identity, and removes it then.
+
 The daemon's own calls to the listener present its own broker token: the outbox's publishes, the role lookups and clean stops of its supervisor, and the controller sweep's probe (`Config.ListenerPresentsBrokerToken`; `listenerCredentialOf`, `packages/daemon/internal/daemon/daemon.go`).
 The token is traded with the same pod identity, the same broker client and the same renewal as the Dispatch credential above, for the session `legion-daemon:<PROJECT>` (`settleCredentials`).
 The daemon's pod therefore needs the identity variables and the `BROKER_EXCHANGE_ACCOUNTS` entry that `dispatch_token_broker` needs, with or without that setting.
@@ -8598,13 +8603,26 @@ The first trade, its refusals and its renewal are those of the Dispatch credenti
 
 Each listener call carries `Authorization: DPoP <token>` and a proof of the call's URL (`cipherclient.NewTokenTransport`, `packages/envoy/cipherclient`), and follows no redirect (`notify.NewWithTransport`, `controller.ProberOptions.Transport`).
 The listener checks that URL against its own `ENVOY_PUBLIC_URL`, so `envoy_url` must be that origin, and the listener must take broker tokens (`ENVOY_AGENT_SECRETS_URL` and the settings beside it, `packages/envoy/cmd/listener/brokerauth.go`); a listener without them answers the token `401`.
-The boot logs `legion daemon's Envoy listener credential` with `credential=broker` and the `session`, and never a token.
+So the boot, after its first trade, reads the project's controller role at the listener with the token.
+It waits out a listener that does not answer, or answers `429` or `5xx`, and no boot budget bounds that wait.
+A `401` or `403` refuses the boot, naming `envoy_url` and `ENVOY_PUBLIC_URL` (`listenerCredentialOf`).
+Without that check, every listener call the daemon makes would fail and no line would say why.
+The boot then logs `legion daemon's Envoy listener credential` with `credential=broker` and the `session`, and never a token.
 A daemon that presents the bearer logs no such line.
+
+A listener answers a broker token that the broker no longer holds as live, one a revoke ended, `401` with `code` `BROKER_TOKEN_NOT_ACTIVE`, as Dispatch does (`refuseBrokerToken`, `packages/envoy/cmd/listener/apiauth.go`).
+The daemon's token transport drops that token, and its next call trades again, so a revoked token costs one failed call rather than every call until the renewal comes due.
+Every other refused credential gets the same plain `401` as before.
 
 The listener holds a broker token to the session it names, and takes a Legion daemon's own token for what the shared bearer allowed it (`daemonCaller`):
 a token whose session is `legion-daemon:<P>`, under the named project scope an exchange account row mints, with the one project `P`.
+The secrets broker gives a session that opens `legion-daemon:` only as the fixed session of an entry, which the broker reserves for that entry's own account from its start.
+It refuses such a name in every request that names its own session, and in every pod-session registration (`daemonNamed`, `packages/envoy/internal/cipher/exchange/exchange.go`).
+So only the daemon's own `BROKER_EXCHANGE_ACCOUNTS` entry mints that token.
 Such a token may make the daemon's clean stop of another session's registration, a `DELETE /v1/sessions/<session>` that names `if_not_registered_after`, so a role whose process ended is still `gone` at once.
-Its unconditional delete of another session, and a delete that names only `client_instance_id`, are refused `403`.
+The stop's moment is the daemon's own clock when the process ended, so the listener takes it only up to five minutes past its own clock (`daemonCleanStopSkew`).
+A later moment would remove whatever registration stands, as an unconditional delete does.
+Its unconditional delete of another session, a delete that names only `client_instance_id`, and a stop dated more than five minutes ahead are refused `403`.
 The listener's sender limit does not count its notices, which carry no sender, as it never counted the daemon's notices under the bearer.
 The listener recognises the daemon by that token's session and project alone, not by the projects of the session it stops.
 
