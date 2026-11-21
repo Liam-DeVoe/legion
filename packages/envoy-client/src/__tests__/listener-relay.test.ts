@@ -27,13 +27,17 @@ import {
 } from "../../test/relay-socket-stand-in";
 import { consumerDelivery } from "../../test/subscribe-answer";
 import { brokerCredential, forgetBrokerClients } from "../broker-credential";
-import { createConsumerDelivery, inboundUnavailable } from "../consumer-delivery";
+import {
+  createConsumerDelivery,
+  type InboundUnavailable,
+  inboundUnavailable,
+} from "../consumer-delivery";
 import { readEnvoyConfig } from "../envoy-config";
 import { type EnvoyEnvironment, envoySettings } from "../envoy-settings";
 import { connectListenerRelay, ListenerRelay } from "../listener-relay";
 import { registerWithRelay } from "../relay-registration";
 import { sessionSettings } from "../session-settings";
-import { createEnvoyClient, expandSubscriptionTopics } from "../transport";
+import { createEnvoyClient, EnvoyApiError, expandSubscriptionTopics } from "../transport";
 
 const tempDir = temporaryDirectories("listener-relay");
 /** What each row started, stopped after it in the reverse order. */
@@ -67,7 +71,9 @@ function podEnvironment(server: RelaySocketStandIn): EnvoyEnvironment {
 
 /** A relay socket for `session` at `server`, open once the first socket opens or `boundMs` pass;
  *  closed after the row. `heard.asks` counts each time the relay asks the credential for the
- *  upgrade's headers, and `heard.restored` each time the outage was told it ended. */
+ *  upgrade's headers, and `heard.restored` each time the outage was told it ended; `heard.outage`
+ *  is the outage report the socket shares with a row's registrations, in place of one built from
+ *  `heard.told` and `heard.restored`. */
 async function opened(
   server: RelaySocketStandIn,
   session: string | (() => string),
@@ -76,6 +82,7 @@ async function opened(
     readonly told?: string[];
     readonly asks?: { count: number };
     readonly restored?: { count: number };
+    readonly outage?: InboundUnavailable;
     readonly boundMs?: number;
   } = {}
 ): Promise<ListenerRelay> {
@@ -91,18 +98,52 @@ async function opened(
           return credential.headers(...args);
         },
       },
-      outage: inboundUnavailable(
-        (why) => heard.told?.push(why),
-        () => {
-          if (heard.restored !== undefined) heard.restored.count += 1;
-        }
-      ),
+      outage:
+        heard.outage ??
+        inboundUnavailable(
+          (why) => heard.told?.push(why),
+          () => {
+            if (heard.restored !== undefined) heard.restored.count += 1;
+          }
+        ),
       log: (line) => heard.logs?.push(line),
     },
     AbortSignal.timeout(heard.boundMs ?? 20_000)
   );
   started.push(() => relay.close());
   return relay;
+}
+
+/** One registration of `ses_a` through `outage`, as a host makes one: refused 503
+ *  `repositories_unknown` (the edge could not read its projects' repositories) while `refuse()`
+ *  holds, accepted otherwise. Answers once it settled, either way. */
+async function registerOnce(outage: InboundUnavailable, refuse: () => boolean): Promise<void> {
+  await registerWithRelay({
+    relay: {
+      setFollowed: () => undefined,
+      registration: () => ({ consumer: true, epoch: "epoch-1" }) as const,
+    },
+    ownAgentSubject: "notifications.agent.ses_a",
+    followed: [],
+    outage,
+    send: () =>
+      refuse()
+        ? Promise.reject(
+            new EnvoyApiError({
+              method: "POST",
+              url: "http://listener.example/v1/interests/subscribe",
+              status: 503,
+              responseBody: JSON.stringify({
+                error: "the project's repositories could not be read",
+                reason: "repositories_unknown",
+              }),
+            })
+          )
+        : Promise.resolve("registered"),
+    answered: () => undefined,
+    drop: () => undefined,
+    log: () => undefined,
+  }).catch(() => undefined);
 }
 
 /** Waits until `check` holds, failing with `what()` once `ms` pass. */
@@ -613,10 +654,16 @@ describe("a relay socket", () => {
     const told: string[] = [];
     const asks = { count: 0 };
     const restored = { count: 0 };
+    const outage = inboundUnavailable(
+      (why) => told.push(why),
+      () => {
+        restored.count += 1;
+      }
+    );
     // The token client answers a refusal again with no trade until its own retry, 15 s or so
     // later (`RETRY_FIRST_WAIT_MS`, @legion/cipher-client/token-client), and the relay asks it at
     // 1 s, 3 s, 7 s, 15 s and 31 s: the open comes on one of the last two.
-    const opening = opened(server, "ses_a", { told, asks, restored, boundMs: 50_000 });
+    const opening = opened(server, "ses_a", { asks, outage, boundMs: 50_000 });
     await until(
       () => told.length > 0,
       5_000,
@@ -635,9 +682,45 @@ describe("a relay socket", () => {
     server.trades = "mint";
     await opening;
     expect(opens(server)).toHaveLength(1);
-    // The socket that opened ends the outage, and says so once.
+    // The registration the open lets the host make is accepted, and the outage the socket told is
+    // said to have ended once, whichever of the two ended it.
+    await registerOnce(outage, () => false);
     expect(restored.count).toBe(1);
   }, 60_000);
+
+  test("a refused registration and then a 4401 tell the session no restored until a registration is accepted", async () => {
+    // The socket shares the host's outage report with its registrations. Its reopen says nothing
+    // of a registration it did not make: an outage the listener's refusal told ends only once a
+    // registration is accepted.
+    const server = standIn();
+    const told: string[] = [];
+    const outage = inboundUnavailable(
+      (why) => told.push(why),
+      () => told.push("restored")
+    );
+    const relay = await opened(server, "ses_a", { outage });
+    let refuse = true;
+    await registerOnce(outage, () => refuse);
+    expect(told).toEqual([expect.stringContaining("repositories_unknown")]);
+
+    server.close(4401, "credential_expired");
+    await until(
+      () => opens(server).length === 2,
+      5_000,
+      () => `no reopen after the 4401 close; upgrades ${JSON.stringify(server.upgrades)}`
+    );
+    await relay.flush();
+    await registerOnce(outage, () => refuse);
+    if (told.includes("restored")) {
+      throw new Error(
+        `the session was told its inbound was restored while every registration was refused: ${JSON.stringify(told)}`
+      );
+    }
+
+    refuse = false;
+    await registerOnce(outage, () => refuse);
+    expect(told.slice(1)).toEqual(["restored"]);
+  });
 
   test("follows the session its name reads now, with that session's own token", async () => {
     const server = standIn();

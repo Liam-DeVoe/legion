@@ -41,7 +41,9 @@
 // (`relayRun`), and a socket that stayed open a minute starts every one afresh. Only 4401, 4403
 // and an upgrade refused 401 or 403 make the next open trade for a fresh token, since only there
 // was the token the cause; every open presents its token with a fresh proof. A trade that failed is
-// told to the session once per outage (`InboundUnavailable`), and a socket that opens ends it.
+// told to the session once per outage (`InboundUnavailable`), and a socket that opens ends that
+// outage, and no other: the report is the host's, shared with its registrations, and an outage a
+// refused registration told ends only once a registration is accepted.
 //
 // The connection has the shape of the NATS connection a session plugin holds (`InboundConnection`),
 // so a plugin's delivery runs on either: its subscriptions, a publish, a round trip (`flush`, a
@@ -324,7 +326,8 @@ export interface ListenerRelayOptions {
    *  refused upgrade, so the next open trades. */
   readonly credential: RequestCredential;
   /** Told a failed trade once per outage, and that it is over once a socket opens: the host's
-   *  own report (`inboundUnavailable`), which its registrations share. */
+   *  own report (`inboundUnavailable`), which its registrations share. A socket ends only an
+   *  outage it told itself. */
   readonly outage: InboundUnavailable;
   /** Where a line about the socket goes: a close, a refusal, a socket that stopped answering. */
   readonly log: (line: string) => void;
@@ -355,6 +358,9 @@ interface SocketEnd {
 export class ListenerRelay implements InboundConnection {
   readonly #options: ListenerRelayOptions;
   #outage: InboundUnavailable;
+  /** The report a failed trade told an outage since the last open, which that open ends; none
+   *  where the socket told none, so it never ends an outage a refused registration told. */
+  #toldTo: InboundUnavailable | undefined;
   /** The socket opening or open, and the session and the presentation it was opened with. */
   #socket: Bun.WebSocket | undefined;
   #socketSession = "";
@@ -663,6 +669,7 @@ export class ListenerRelay implements InboundConnection {
       return { headers };
     } catch (error) {
       this.#outage.refused(error);
+      this.#toldTo = this.#outage;
       return { failed: `its token could not be had (${messageFor(error)})` };
     }
   }
@@ -735,7 +742,8 @@ export class ListenerRelay implements InboundConnection {
     this.#everOpened = true;
     this.#lastFailure = "";
     this.#loggedFailure = "";
-    this.#outage.accepted();
+    this.#toldTo?.accepted();
+    this.#toldTo = undefined;
     this.#stableTimer = setTimeout(() => {
       if (generation === this.#generation) this.#streaks.clear();
     }, RELAY_STABLE_MS);
