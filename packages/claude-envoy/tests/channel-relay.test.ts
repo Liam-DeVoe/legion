@@ -329,8 +329,10 @@ test("a task frame on the relay socket reaches the session's task values unanswe
     // new epoch can be told from the registration's answer before the stand-in has read the
     // socket's second sub, so the test waits for both.
     server.close(1012, "listener_stopping")
-    await waitFor(async () => epochs === 2, "the reopen's epoch")
-    await waitFor(async () => server.subs.length === 2, "the reopen's subscription")
+    await waitFor(
+      async () => epochs === 2 && server.subs.length === 2,
+      "the reopen's epoch and subscription",
+    )
     expect(server.upgrades.filter((upgrade) => upgrade.status === 101)).toHaveLength(2)
     expect(server.subs).toEqual([
       { session: SESSION, subject: relaySubject },

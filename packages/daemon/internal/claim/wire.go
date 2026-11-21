@@ -182,10 +182,10 @@ func callerOf(agent AgentCaller, boot BootCaller) (Caller, bool) {
 // is written again, rather than finishing it (supervise's reportedTask).
 //
 // Held is the number of the accepted take whose text had not run when this turn ended, 0, left
-// out, for none, so this turn was not that take's: the producer was answered that take during
-// this turn, or while it set this turn's prompt up, and holds the text for a turn of its own; or
-// it began this turn with that text and the agent never took it, which the Claude bridge reads
-// off a text Claude Code never re-emitted. A report the producer sent before the take's answer
+// out, for none: this turn was not that take's. The producer was answered that take during this
+// turn, or while it set this turn's prompt up, and holds the text for a turn of its own; or it
+// began this turn with that text and the agent never took it, which the Claude bridge reads off a
+// text Claude Code never re-emitted. A report the producer sent before the take's answer
 // reached it names nothing held. The field is optional: a report without it is read as one
 // before it was, and the daemon refuses none for lacking it (supervise's notTheTakesTurn).
 //

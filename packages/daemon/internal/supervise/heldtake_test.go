@@ -65,9 +65,9 @@ func (h *harness) ownTurnFinishes(number, sequence uint64) {
 // bound. Without the word the count, not known, puts nothing back (d7383c99's re-learn rule, which
 // only the report of a take's own turn moves), and the take keeps the run given it until its own
 // turn's report finishes it, inside the bound of the wait for that report, which with nothing held
-// takes it back a whole bound after the run's end (plan v90's decision 8; reportwait.go, whose
-// take-back the tests named TakeBoundedWithNothingHeld hold). The word is read wherever the report
-// lands among the frames of the turns that held the text:
+// takes it back a whole bound after the run's end (decision 8 of dispatch://INFRA-2811;
+// reportwait.go, whose take-back the tests named TakeBoundedWithNothingHeld hold). The word is
+// read wherever the report lands among the frames of the turns that held the text:
 //
 //   - behind the given turn's end frame, and ahead of it, the claim still working that turn;
 //   - ahead of the given turn's start frame: that start is given no take, and the next one is;

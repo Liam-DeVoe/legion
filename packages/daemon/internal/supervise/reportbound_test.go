@@ -20,9 +20,7 @@ func (h *harness) wantTakeBackAtTheBound(number uint64) {
 	h.t.Helper()
 	writes := len(h.records.of(writtenLine))
 	h.advance(turnStartBound - time.Second)
-	if p := h.pending(); p.Number != number || !p.turnStarted() || p.Interrupted {
-		h.t.Fatalf("a second bound less a second after the counted turn's end the claim holds %+v, want task %d's take standing with its turn started", p, number)
-	}
+	h.wantTakesTurnStanding(number, "a second bound less a second after the counted turn's end")
 	h.wantCharges()
 
 	h.advance(time.Second)
@@ -67,11 +65,12 @@ func (h *harness) wantRetakenAndRunOnce(number uint64) {
 }
 
 // A take whose counted turn has ended, and whose report naming its number never comes, is taken
-// back at R5's second bound from that turn's end with nothing held (plan v90's decision 8;
-// reportwait.go): its text was dropped — Claude Code never took it, or Oh My Pi's sendUserMessage
-// refused it — and the producer, holding no take, reports the turn as no task's and names nothing
-// held. Without the bound such a take keeps a turn that ran nothing of it, the worker sees no newer
-// revision, and the task never runs. The orders the bridge's worker found:
+// back at R5's second bound from that turn's end with nothing held (decision 8 of
+// dispatch://INFRA-2811; reportwait.go): its text was dropped — Claude Code never took it, or Oh
+// My Pi's sendUserMessage refused it — and the producer reports the turn as no task's: Oh My Pi,
+// holding no take, names nothing held, and the Claude bridge names the number held. Without the
+// bound such a take keeps a turn that ran nothing of it, the worker sees no newer revision, and
+// the task never runs. The orders the bridge's worker found:
 //
 //   - A, the count not known after a restart: a run of the host's own (an Envoy card's) starts
 //     right after the dropped turn, and its start frame beats the dropped turn's report that the
@@ -163,9 +162,7 @@ func TestTakeBoundedWithNothingHeldFromTheWorkersFirstActAfterABoot(t *testing.T
 	h.outage(3 * turnStartBound)
 
 	h.advance(deadline - time.Second)
-	if p := h.pending(); p.Number != number || !p.turnStarted() || p.Interrupted {
-		t.Fatalf("before the worker's first act after the boot the claim holds %+v, want task %d's take standing", p, number)
-	}
+	h.wantTakesTurnStanding(number, "before the worker's first act after the boot")
 	h.connectInTurn()
 	h.mustQuiet(StreamTurnEnd{Claim: h.token})
 	h.reportOf(2, 0)
@@ -237,8 +234,7 @@ func TestTakeBoundedWithNothingHeldLeavesARestoredTakeItCannotSeeWhole(t *testin
 		{"the store records the given run's end after the accept", func(h *harness) { h.hostsRun() }, func(h *harness) { h.connect() }},
 		{"the hello does not say the backlog is whole", givenRunRunning, func(h *harness) {
 			h.conn.SetStreaming(true)
-			h.conns.Register(h.token, h.conn)
-			h.must(StreamHello{Claim: h.token, Generation: h.generation()})
+			h.cutHello()
 		}},
 		{"the agent does not answer on the hello's connection", givenRunRunning, func(h *harness) {
 			h.conn.FailGetState(errors.New("the shim closed the connection behind its ack"))

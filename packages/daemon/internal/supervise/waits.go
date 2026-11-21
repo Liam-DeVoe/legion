@@ -315,7 +315,7 @@ func turnStartBoundOver(m *Machine, ctx context.Context, _ Event) error {
 // unstarted, as at the agent's answer of no turn (markRestoredTurnUnseen, turnAnswered).
 func reconnectDeadline(m *Machine, ctx context.Context, _ Event) error {
 	asked := m.askTurn && !m.askedAt.IsZero()
-	if m.held != nil && (!asked || (!m.busy() && !m.heldWaits())) {
+	if (m.held != nil && !asked) || m.heldRunsNow() {
 		return m.suspendHeld(ctx)
 	}
 	if asked {

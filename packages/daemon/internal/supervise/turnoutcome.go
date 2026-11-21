@@ -42,9 +42,6 @@ import (
 // made, and the worker's report sent again is a repeat that makes none. An entry stored before
 // they were kept reads back with none of them, a report naming no task, which did nothing to
 // any task.
-//
-// The window's watermark is no field of a report: it is the claim's own (Claim.TurnOutcomeMark),
-// which the store writes on the window's oldest entry and reads back from there.
 type TurnOutcome struct {
 	Generation           uint64 `json:"generation"`
 	Sequence             uint64 `json:"sequence"`

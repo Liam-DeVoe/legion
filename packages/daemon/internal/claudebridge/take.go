@@ -84,9 +84,10 @@ import (
 //     (packages/pi-shared/src/task-take.ts, hostDropped). A turn of the task the provider failed
 //     is reported naming the number with its provider error whether or not the echo came, so
 //     the daemon's provider-error ladder takes the task back and gives it again after its wait. A
-//     Claude Code that dropped every text written to it would go round that loop uncharged — the
-//     put-back, the text written again, and a turn of no cause each time, every turn's start and
-//     end resetting R5's count — which the plan states and leaves open: nothing measured says
+//     Claude Code that dropped every text written to it would go round that loop never retired —
+//     the put-back, R5's second bound, which charges the worker once and takes the task back, the
+//     text written again, and a turn of no cause, each time round, the turn that follows each
+//     charge resetting R5's count — which the plan states and leaves open: nothing measured says
 //     Claude Code drops a stdin message at all;
 //   - an `accepted` answer for a number the claim is owed no more — one a finished line or the
 //     run-end mark raised while the take was being sent — runs nothing;

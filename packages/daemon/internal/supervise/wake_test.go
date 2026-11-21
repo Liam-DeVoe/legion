@@ -2137,6 +2137,56 @@ func TestAnOperatorsDeliveryOverAParkedLaunchTheLifecycleRefusesChangesNothing(t
 	}
 }
 
+// The same recheck, met by an operator's task over a parked plugin-refresh wake whose fact is gone:
+// the claim started a turn of its own inside the wait, so the wake relaunches nothing
+// (refreshOverturned, runWake) and there is no launch for the recheck to refuse. The task spends
+// the wake as its turn would, with no recheck made, and is queued over the claim as it stands,
+// though the recheck would refuse a launch: decision 9's refusal that changes nothing is for a
+// launch that runs (runParkedLaunchNow). The claim keeps its process and its turn.
+//
+// The negative control is the head before this change (a7d7d94e), whose recheck comes before the
+// re-read of the wake: the operator's task is refused with the recheck's reason over a launch that
+// would not have run, and the wake still waits, which this test reads at the answer and the wake.
+func TestAnOperatorsDeliveryOverAnOverturnedRefreshWakeIsQueuedWhereTheLifecycleRefuses(t *testing.T) {
+	const task = "look at the production check"
+	h := pacedHarness(t, wakeRate)
+	h.manualTakes()
+	h.reach(StateReady)
+	h.m.deps.PluginContract = 25
+	h.m.deps.PluginRelaunchable = true
+	kept := h.locator()
+
+	h.must(StalePlugin{Claim: h.token, Trigger: "sweep"})
+	h.wantWaitingWake(WakePluginRefresh)
+	// The claim starts a turn of its own inside the wait, so the refresh would cut that turn off:
+	// the fact it was raised for, an idle claim on a stale plugin, is gone.
+	h.must(StreamTurnStart{Claim: h.token})
+	h.wantState(StateWorking)
+	h.m.deps.Store = &refusableCheckLaunchStore{memStore: h.store, refuse: true}
+
+	// The task arrives part of the way into the wait, as a person's does.
+	h.advance(wakePart)
+	if err := h.handle(RequestDeliver{Claim: h.token, Task: task}); err != nil {
+		t.Fatalf("the operator's task = %v, want it queued: the wake it met launches nothing, so no recheck refuses it", err)
+	}
+
+	if held := h.m.View().WakeWaiting; held != nil {
+		t.Fatalf("the claim names wake %+v, want none: the operator's task spent the wake whose fact is gone", held)
+	}
+	if lines := h.logs.lines("supervise: the fact this claim's plugin refresh was raised for is gone"); len(lines) != 1 {
+		t.Fatalf("logged %v, want one line saying why the wake relaunched nothing", lines)
+	}
+	h.wantState(StateWorking)
+	h.wantStarts(h.token, 1)
+	h.wantCalls("Resume", 0)
+	if got := h.claim(); got.Locator == nil || *got.Locator != kept {
+		t.Fatalf("the claim records %+v, want the process whose turn runs, %+v", got.Locator, kept)
+	}
+	if p := h.pending(); p.Task != task || p.taken() {
+		t.Fatalf("the claim holds %+v, want the operator's %q queued untaken", p, task)
+	}
+}
+
 // wantParkedLaunchRan holds that an operator's task ran the launch parked over the claim's process
 // where it arrived (runParkedLaunchNow): the claim is launching, its second start replaced the
 // process the gate left running, replaced, no wake waits any more, and the wake line says the

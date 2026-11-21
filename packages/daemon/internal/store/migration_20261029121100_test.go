@@ -121,10 +121,9 @@ func TestTaskNumberAndProviderErrorOfAClaimsTurnOutcomesAreKept(t *testing.T) {
 // own field (supervise.Claim.TurnOutcomeMark), and it is kept with the window and survives a
 // restart, so a restarted daemon still answers a report sent again after newer reports pushed it
 // out of the window as the repeat it is (supervise's recordTurnOutcome). It needs no column of its
-// own: the store writes it on the oldest entry of the window's own array and on no other, the
-// shape the column had when the mark was a field of every entry, and reads it back from there;
-// a mark the column holds on any later entry is none, and a window an older daemon stored reads
-// back without one (above).
+// own: the store writes it on the oldest entry of the window's own array and on no other, and
+// reads it back from there; a mark the column holds on any later entry is none, and a window an
+// older daemon stored reads back without one (above).
 func TestTheTurnOutcomeWindowsWatermarkIsKept(t *testing.T) {
 	ctx := context.Background()
 	store := migratedStore(t)

@@ -377,7 +377,7 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 	}
 	// The window is written as the array it is, never jsonb null: a claim with no report yet reads
 	// back as the empty array the column defaults to. The claim's watermark rides on the oldest
-	// entry (storedTurnOutcome), the shape the column has always had.
+	// entry (storedTurnOutcome).
 	outcomes := []byte("[]")
 	if len(c.TurnOutcomes) > 0 {
 		encoded, err := json.Marshal(storedTurnOutcomes(c.TurnOutcomes, c.TurnOutcomeMark))

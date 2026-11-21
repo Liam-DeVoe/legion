@@ -63,7 +63,7 @@ func (m *Machine) holdForReport(ctx context.Context, ev Event) error {
 	joined := m.held != nil
 	err := holdSuspension(m, ctx, ev)
 	if !joined && m.held != nil && errors.Is(err, ErrSuspendHeld) {
-		m.log.Info(reportWaitsLine, "task", m.claim.Pending.Number, "held", "suspension", "by", m.held.By, "deadline", m.held.Deadline)
+		m.logSuspensionWaits()
 	}
 	return err
 }

@@ -438,7 +438,9 @@ func wakeNow(m *Machine, ctx context.Context, _ Event) error {
 // a caller that has to make it before it changes anything a refusal must leave as it was: an
 // operator's task, which drops, retires or replaces the claim's pending task only once that
 // recheck has passed, and answers a refusal with the pending task and the wake as they were
-// (runParkedLaunchNow). Every other caller leaves the recheck to this step.
+// (runParkedLaunchNow). Every other caller leaves the recheck to this step, and so does an
+// operator's task over a plugin-refresh wake whose fact is gone: that wake launches nothing, so
+// there is no launch to recheck, and the re-read below spends it before either step.
 //
 // Both steps can end the wake's work with the process the claim records kept and the wake
 // spent, and each gives back exactly what it left standing. The watch is the first step's
@@ -479,7 +481,8 @@ func wakeNow(m *Machine, ctx context.Context, _ Event) error {
 // and is left watched exactly as the lifecycle refusal below leaves one (watchAgain), its probe
 // left to the sweep's next observation. The wake is spent and the relaunch is owed again, which
 // the sweep's own stale-plugin pass raises for a claim that is still stale when it next reads
-// it.
+// it. An operator's task that meets such a wake spends it here as well, with no lifecycle
+// recheck made, and is queued over the claim as it stands (runParkedLaunchNow).
 //
 // The difference between the two steps is what the store is reached for: only a task a take
 // holds is taken back (interrupted, Delivery.taken), and a take is accepted in a ready or idle
@@ -754,6 +757,15 @@ func (m *Machine) dropWakeFor(ev Event) *wake {
 // still owes and no newer one replaces, a refusal names the lifecycle rather than the pending
 // delivery; both leave the claim as it was.
 //
+// A plugin-refresh wake whose fact is gone — the process registered on this daemon's contract
+// inside the wait, or the claim started a turn of its own — relaunches nothing
+// (refreshOverturned), so it has no launch to recheck, and a refusal would answer the operator 409
+// over a launch that would not have run. So the task spends such a wake before the recheck, as
+// its turn would (runWake's re-read), makes none of the three here, and goes to the row that
+// follows, which queues it over the claim as it stands, the pending task giving way there as
+// queue decides. Every launch that will run keeps the recheck above, and a refusal of it still
+// changes nothing.
+//
 // The launch takes no second token — the reservation was taken once, at the gate — so the wakes
 // behind it keep the turns they already hold, and the line it writes says the pacing did not
 // decide when it ran (wakeRan, runWake).
@@ -771,6 +783,14 @@ func (m *Machine) runParkedLaunchNow(ctx context.Context, ev Event) error {
 	pending := m.claim.Pending
 	if pending != nil && (pending.awaitsTurn() || (pending.taken() && m.busy())) {
 		return nil
+	}
+	// A plugin-refresh wake whose fact is gone launches nothing, so no recheck is made for it: the
+	// task spends it (runWake's re-read), and the row queues the task.
+	if m.wake.kind == WakePluginRefresh && m.refreshOverturned() {
+		waiting := m.wake
+		m.wake = nil
+		m.disarm(TimerWake)
+		return m.runWake(ctx, waiting, false, false)
 	}
 	if err := m.checkLaunch(ctx); err != nil {
 		m.log.Warn("supervise: an operator's task reached a claim whose paced launch waits over the process it replaces, and that launch's lifecycle recheck refused it; the task is refused, and the pending task and the launch are left as they were",

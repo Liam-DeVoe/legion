@@ -109,6 +109,14 @@ func (m *Machine) armEndFrameBound(id string) {
 	}
 }
 
+// armEndFrameBoundUnlessArmed arms the end-frame bound (armEndFrameBound) only where none stands,
+// so a bound armed already keeps its time (compactEnded, armFinishAtAct).
+func (m *Machine) armEndFrameBoundUnlessArmed(id string) {
+	if _, armed := m.timers[TimerFinish]; !armed {
+		m.armEndFrameBound(id)
+	}
+}
+
 // armFinishAtAct arms the end-frame bound a daemon start left to the worker's first act
 // (finishAtAct, NewMachine), at the end of the decision that act made (unlock): the claim, one
 // whose end frame finishes its task (endFrameFinishes), was restored ready or idle over a take
@@ -128,7 +136,5 @@ func (m *Machine) armFinishAtAct() {
 	if p == nil || !p.turnStarted() || (m.claim.State != StateReady && m.claim.State != StateIdle) {
 		return
 	}
-	if _, armed := m.timers[TimerFinish]; !armed {
-		m.armEndFrameBound(p.ID)
-	}
+	m.armEndFrameBoundUnlessArmed(p.ID)
 }

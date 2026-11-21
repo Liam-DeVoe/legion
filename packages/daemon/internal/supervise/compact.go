@@ -431,7 +431,7 @@ func compactEnded(m *Machine, ctx context.Context, ev Event) error {
 	if m.held != nil {
 		if m.reportOwed() {
 			m.claim.State = run.back
-			m.log.Info(reportWaitsLine, "task", m.claim.Pending.Number, "held", "suspension", "by", m.held.By, "deadline", m.held.Deadline)
+			m.logSuspensionWaits()
 			if err := m.persist(ctx); err != nil {
 				return err
 			}
@@ -457,9 +457,7 @@ func compactEnded(m *Machine, ctx context.Context, ev Event) error {
 	// the end of a turn arms it (turnEnded), and only where none stands, so a plugin's bound armed
 	// at its turn's end keeps its time.
 	if p := m.claim.Pending; p != nil && p.turnStarted() {
-		if _, armed := m.timers[TimerFinish]; !armed {
-			m.armEndFrameBound(p.ID)
-		}
+		m.armEndFrameBoundUnlessArmed(p.ID)
 	}
 	return m.afterTurn(ctx, false)
 }

@@ -82,10 +82,7 @@ func TestTurnOutcomeFinishTheStoreRefusedIsMadeAgainAcrossAnOutage(t *testing.T)
 		outage(t, h, number)
 	})
 	t.Run("a report during a compaction with no turn under it", func(t *testing.T) {
-		h := newHarnessOf(t, queuedClaim(), currentPlugin)
-		h.reach(StateReady)
-		h.takesTurnEndsWithItsReportToCome()
-		number := h.pending().Number
+		h, number, _ := reportToComeOfACurrentPlugin(t)
 		release, compacted := h.compactHeld()
 		h.store.fail("RetireDelivery", errBoom)
 		if err := h.reportTurn(number, nil); err == nil {
@@ -93,7 +90,7 @@ func TestTurnOutcomeFinishTheStoreRefusedIsMadeAgainAcrossAnOutage(t *testing.T)
 		}
 		// The claim is working for the compaction, so no bound is armed at the refusal: the
 		// compaction's end arms it, as a turn's end does.
-		if _, armed := h.m.timers[TimerFinish]; armed {
+		if h.armed(TimerFinish) {
 			t.Fatal("the end-frame bound is armed while the compaction runs, want it armed at the compaction's end")
 		}
 		release()
