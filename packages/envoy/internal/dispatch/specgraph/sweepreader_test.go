@@ -7,8 +7,12 @@ import (
 	"errors"
 	"io"
 	"maps"
+	"os"
 	"os/exec"
+	"runtime"
 	"slices"
+	"strconv"
+	"strings"
 	"testing"
 	"testing/fstest"
 
@@ -42,13 +46,13 @@ type readerProcess struct {
 	stderr *cmdtest.LockedBuffer
 }
 
-// start starts one process of the reader for the test t, with an empty environment, so that no
-// variable of the test's environment reaches it; it ends when t ends, and an exit other than 0
-// fails t with what the process wrote to its standard error.
+// start starts one process of the reader for the test t, with the Go runtime's own settings alone
+// (readerEnv), so that no other variable of the test's environment reaches it; it ends when t ends,
+// and an exit other than 0 fails t with what the process wrote to its standard error.
 func (r sweepReader) start(t *testing.T) *readerProcess {
 	t.Helper()
 	cmd := exec.Command(r.binary)
-	cmd.Env = []string{}
+	cmd.Env = readerEnv()
 	p := &readerProcess{cmd: cmd, stderr: &cmdtest.LockedBuffer{}}
 	cmd.Stderr = p.stderr
 	in, err := cmd.StdinPipe()
@@ -70,6 +74,49 @@ func (r sweepReader) start(t *testing.T) *readerProcess {
 		}
 	})
 	return p
+}
+
+// readerEnv is the environment of the reader's process: the Go runtime's own settings and no
+// variable of a test or of the application. GOMAXPROCS is the test process's own
+// (runtime.GOMAXPROCS), and GOMEMLIMIT, GOGC and GODEBUG are the test environment's where it sets
+// them, so each process runs under the runtime settings of the test that starts it. With no
+// GOMAXPROCS, each process would size itself to the machine's processors, and a sweep's processes
+// would start more threads together than a limit of the test's tasks allows.
+func readerEnv() []string {
+	env := []string{"GOMAXPROCS=" + strconv.Itoa(runtime.GOMAXPROCS(0))}
+	for _, name := range []string{"GOMEMLIMIT", "GOGC", "GODEBUG"} {
+		if value, set := os.LookupEnv(name); set {
+			env = append(env, name+"="+value)
+		}
+	}
+	return env
+}
+
+// TestTheReadersProcessGetsTheGoRuntimesSettingsAlone starts a process as start starts the reader's,
+// of the command env, which writes its environment, while the test's environment holds a variable of
+// the application, the variable that names the overlay of the reader's build, and each of the
+// runtime's settings: the process gets GOMAXPROCS as the test process runs with it, and GOMEMLIMIT,
+// GOGC and GODEBUG as the test's environment sets them, and no other variable.
+func TestTheReadersProcessGetsTheGoRuntimesSettingsAlone(t *testing.T) {
+	binary, err := exec.LookPath("env")
+	if err != nil {
+		t.Fatalf("no command env to write the process's environment: %v", err)
+	}
+	t.Setenv("SWEEPREADER_PLANTED_APPLICATION_VARIABLE", "a variable of the application")
+	t.Setenv("ENVOY_TEST_GO_OVERLAY", "/a/planted/overlay.json")
+	t.Setenv("GOMEMLIMIT", "3GiB")
+	t.Setenv("GOGC", "150")
+	t.Setenv("GODEBUG", "gctrace=0")
+	p := sweepReader{binary}.start(t)
+	out, err := io.ReadAll(p.out)
+	if err != nil {
+		t.Fatalf("the process's environment: %v: %s", err, p.stderr.String())
+	}
+	got := strings.Split(strings.TrimSuffix(string(out), "\n"), "\n")
+	want := []string{"GOMAXPROCS=" + strconv.Itoa(runtime.GOMAXPROCS(0)), "GOMEMLIMIT=3GiB", "GOGC=150", "GODEBUG=gctrace=0"}
+	if !slices.Equal(slices.Sorted(slices.Values(got)), slices.Sorted(slices.Values(want))) {
+		t.Errorf("the process started with the environment %q, and it should start with %q alone", got, want)
+	}
 }
 
 // readerFile is one file of a scenario as a line of the reader's input names it: its name and its
