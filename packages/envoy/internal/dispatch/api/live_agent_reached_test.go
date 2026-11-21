@@ -86,13 +86,14 @@ func (rig contentAgentRig) mustAs(t *testing.T, login, method, target string, bo
 	}
 }
 
-// readAndWrite has each reached session of person read PRIV's issue, under a token naming PRIV,
-// which records nothing, and comment on PUB's, under a token naming PUB, which records the pair
-// PUB and ties the session to person.
+// readAndWrite has each reached session of person comment on PUB's issue, under a token naming
+// PUB, which ties the session to person and records the pair PUB. What the session read of PRIV
+// is in its transcript (reachedReplay) and Dispatch holds no record of it: a read of PRIV through
+// Dispatch would be under a token listing PRIV, which records PRIV as reached at once
+// (access.RecordListedReach), and the row would prove nothing of the change.
 func (rig contentAgentRig) readAndWrite(t *testing.T, person string) {
 	t.Helper()
 	for _, session := range []string{reachedListedSession, reachedUnlistedSession} {
-		rig.seed.asSessionOf(t, person, session, seedPrivate, http.MethodGet, "/api/v1/issues/"+rig.seed.issue[seedPrivate], nil, http.StatusOK)
 		rig.seed.asSessionOf(t, person, session, seedPublic, http.MethodPost, "/api/v1/issues/"+rig.seed.issue[seedPublic]+"/comments",
 			map[string]any{"body": "Done on PUB."}, http.StatusCreated)
 	}

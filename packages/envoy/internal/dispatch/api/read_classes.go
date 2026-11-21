@@ -316,7 +316,7 @@ func deploymentReadRefusal(method, pattern string, classes []readclass.Class, vi
 		return nil
 	}
 	return &readRefusal{code: codeDeploymentReadRefused, message: fmt.Sprintf(
-		"%s %s reads the whole deployment, which only a caller that sees every public project reads: this caller is a restricted member, or its credential lists the projects it may use",
+		"%s %s reads the whole deployment, which a restricted member, and a credential acting for one, does not read",
 		method, pattern)}
 }
 

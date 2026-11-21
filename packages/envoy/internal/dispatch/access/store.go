@@ -617,6 +617,34 @@ func recordReachedProjects(ctx context.Context, tx pgx.Tx, keys, people []string
 	return nil
 }
 
+// RecordListedReach records, in a statement of its own, each private project of projects, the list
+// of a broker-issued token that proved session, as one the session reached
+// (session_reached_projects): the session reads under that list from the request that presented
+// it on, so what its transcript holds stays bounded by it, as route_roster's trigger keeps a
+// private project a listener record lists, and nothing removes it. A public project, and a key no
+// project holds, record nothing; a pair a row holds already is not written again.
+func RecordListedReach(ctx context.Context, q Querier, session string, projects []string) error {
+	if session == "" || len(projects) == 0 {
+		return nil
+	}
+	var written int
+	if err := q.QueryRow(ctx, `
+		with written as (
+			insert into session_reached_projects (session_id, project_key)
+			select distinct $1::text, listed.key from projects listed
+			where listed.key = any($2::text[]) and listed.visibility = 'private'
+				and not exists (
+					select 1 from session_reached_projects recorded
+					where recorded.session_id = $1::text and recorded.project_key = listed.key)
+			returning 1
+		)
+		select count(*) from written
+	`, session, projects).Scan(&written); err != nil {
+		return fmt.Errorf("record the private projects a session's token lists: %w", err)
+	}
+	return nil
+}
+
 // projectMadePrivateFunctionBody is the body of record_project_made_private(), the function of
 // the projects table's trigger projects_made_private_reached (migration
 // 20261121173500_project_private_reached), which runs at the commit of a transaction that switched
