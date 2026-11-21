@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -644,6 +645,26 @@ func TestHealthzReportsTheConsumerNamingMode(t *testing.T) {
 		}
 		if got := health["consumer_names"]; got != string(mode) {
 			t.Errorf("healthz consumer_names = %#v, want %q", got, mode)
+		}
+	}
+}
+
+// The line a start writes before its first NATS connect names the consumer naming mode and the
+// value of ENVOY_STREAMS_OPERATOR_MADE as the process was given it, which a mode check reads from
+// the process's log; unset is the empty value.
+func TestTheConsumerNamesLineCarriesTheStreamsOperatorMadeValue(t *testing.T) {
+	for _, given := range []string{"1", ""} {
+		var line bytes.Buffer
+		logConsumerNames(slog.New(slog.NewJSONHandler(&line, nil)), bootConfig{ConsumerNames: consumernames.ModeFresh, StreamsOperatorMade: given})
+		var record map[string]any
+		if err := json.Unmarshal(line.Bytes(), &record); err != nil {
+			t.Fatalf("decode the line %q: %v", line.String(), err)
+		}
+		if record["msg"] != "dispatch: consumer names" || record["mode"] != string(consumernames.ModeFresh) {
+			t.Errorf("the line is %v, want the consumer names line with mode fresh", record)
+		}
+		if got, ok := record["streams_operator_made"]; !ok || got != given {
+			t.Errorf("the line's streams_operator_made is %#v (present %t), want %q", got, ok, given)
 		}
 	}
 }

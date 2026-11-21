@@ -875,6 +875,17 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				refusedWith(t, map[string]string{"ENVOY_CONSUMER_NAMES": value}, fmt.Sprintf("ENVOY_CONSUMER_NAMES=%q", value))
 			}
 		},
+		"ENVOY_STREAMS_OPERATOR_MADE": func(t *testing.T) {
+			for value, want := range map[string]string{"": "", "1": "1", " 0 ": " 0 "} {
+				env := map[string]string{}
+				if value != "" {
+					env["ENVOY_STREAMS_OPERATOR_MADE"] = value
+				}
+				if boot := resolveWith(t, env); boot.StreamsOperatorMade != want {
+					t.Errorf("%q: StreamsOperatorMade = %q, want the value as given, %q", value, boot.StreamsOperatorMade, want)
+				}
+			}
+		},
 		"ENVOY_NATS_REPLICAS": func(t *testing.T) {
 			if boot := resolveWith(t, nil); boot.NATSReplicas != 1 {
 				t.Errorf("unset: NATSReplicas = %d, want 1", boot.NATSReplicas)

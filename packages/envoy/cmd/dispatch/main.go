@@ -124,6 +124,9 @@ type bootConfig struct {
 	// their durables' consumers: the fixed names by default, or a fresh name at each creation behind
 	// a selection record (delivery.IntakeNaming). Read once here; only a restart changes it.
 	ConsumerNames consumernames.Mode
+	// StreamsOperatorMade is ENVOY_STREAMS_OPERATOR_MADE exactly as the process was given it, ""
+	// when unset: the consumer names line carries it (logConsumerNames).
+	StreamsOperatorMade string
 	// SettleDelay is how long a document waits after a live change before it settles, zero for the
 	// document service's own default; only DISPATCH_TEST_SETTLE_DELAY, under the test hooks, sets it.
 	SettleDelay time.Duration
@@ -341,6 +344,10 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The consumer names line goes out before anything connects to NATS, so a deploy's mode check
+	// reads the mode and ENVOY_STREAMS_OPERATOR_MADE even from a process whose bus never answers.
+	logConsumerNames(slog.Default(), boot)
+
 	// INFRA-555: every NATS client of the server connects in the background (serverBus), so a bus
 	// that is down or refuses the credential at boot leaves the process serving everything that
 	// does not need the bus, and connected once the bus answers; only a configuration error (an
@@ -411,7 +418,6 @@ func main() {
 		slog.Error("dispatch: consumer names", "error", err)
 		os.Exit(1)
 	}
-	slog.Info("dispatch: consumer names", "mode", boot.ConsumerNames)
 
 	// document_search (migration 20261101182447) holds each document's latest search vector,
 	// 20261101182454's trigger keeps it in step from the deploy on, and this fills it for the
@@ -1413,6 +1419,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	if boot.ConsumerNames, err = consumernames.ParseMode(strings.TrimSpace(env.get(consumernames.ModeEnvVar))); err != nil {
 		return bootConfig{}, err
 	}
+	boot.StreamsOperatorMade = env.get(streamsOperatorMadeEnvVar)
 	if boot.RoleHolderWindows, err = roleHolderWindows(env); err != nil {
 		return bootConfig{}, err
 	}
@@ -1961,6 +1968,17 @@ func openFileStore(ctx context.Context, boot bootConfig) (files.Store, error) {
 // reports a cut bus within seconds of the cut.
 func serverBus() []bus.DialOption {
 	return []bus.DialOption{bus.WithConnectInBackground(), bus.WithSilentCutDetection()}
+}
+
+// streamsOperatorMadeEnvVar names the setting the consumer names line carries the value of.
+const streamsOperatorMadeEnvVar = "ENVOY_STREAMS_OPERATOR_MADE"
+
+// logConsumerNames writes the process's consumer names line on logger: the consumer naming mode
+// (ENVOY_CONSUMER_NAMES) and ENVOY_STREAMS_OPERATOR_MADE exactly as given, "" when unset. The
+// server writes it once, before its first NATS connect, and a deploy's mode check reads the two
+// keys, `mode` and `streams_operator_made`, from it.
+func logConsumerNames(logger *slog.Logger, boot bootConfig) {
+	logger.Info("dispatch: consumer names", "mode", boot.ConsumerNames, "streams_operator_made", boot.StreamsOperatorMade)
 }
 
 // serverClient is the options a NATS client of the server connects with: extra, then serverBus's.
