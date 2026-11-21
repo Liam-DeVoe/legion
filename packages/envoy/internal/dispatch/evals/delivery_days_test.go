@@ -1,6 +1,7 @@
 package evals
 
 import (
+	"context"
 	"fmt"
 	"maps"
 	"slices"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
@@ -645,7 +647,7 @@ func TestEachFilterOfWhatADayNoLongerHoldsReadsItsListOnce(t *testing.T) {
 		},
 		{
 			name: "zeroStaleSettingsDaysStatement", statement: zeroStaleSettingsDaysStatement,
-			settings: []string{"set local plan_cache_mode = force_custom_plan"},
+			settings: []string{"set local plan_cache_mode = force_custom_plan", "set local enable_mergejoin = off"},
 			arguments: []any{[]string{"EVAL"}, []time.Time{day}, projects, evals, series, repos, days, evalIDs, testBuild, writerComputation,
 				rowDeployRepos, deployRepos},
 			parameters: []string{"text[]", "date[]", "text[]", "text[]", "text[]", "text[]", "date[]", "text[]", "text", "text", "text[]", "text[]"},
@@ -693,4 +695,142 @@ func TestEachFilterOfWhatADayNoLongerHoldsReadsItsListOnce(t *testing.T) {
 	if zero := r.count(t, `select count(*) from eval_days where project_key = 'EVAL' and writer = 'computation' and n = 0`); zero != 1 {
 		t.Errorf("eval_days holds %d zero rows of EVAL, want 1: the row the day no longer holds", zero)
 	}
+}
+
+// TestTheZeroRowsOfASettingsRewriteMatchTheWrittenDaysByProjectAndDay: zeroStaleSettingsDays runs
+// its statement under a plan whose read of what the days written no longer hold (gone) matches
+// the stored rows to those days by their project and their day at one node, a hash or merge join
+// or an index scan (explaintest.RequireJoinedOnAll), and gives enable_mergejoin back the value it
+// held. A merge join on the project alone, which the primary key's order gives the planner for
+// nothing, tests each row's day against every day written of its project: a settings change that
+// rewrote 200 days of one project tested 434,218 pairs to keep its 2,182 rows. The rows are EVAL's
+// of the six evals a production rule's change moves, in two repositories under one deploy
+// repository, on each of 200 days, beside 10 evals of six series each of EVAL and of another
+// project on the same days: 26,400 rows, fewer than the 30,000 ANALYZE samples, so it reads every
+// row and the statistics are the same on every run. They are written in one transaction that
+// commits synchronously, then vacuumed and analyzed, every page all-visible, so the primary key's
+// index-only scan reads eval_days in the project's order: with asynchronous commits, which the
+// pod's test server runs, a vacuum just after a commit can mark no page all-visible (as
+// embedqueue's TestCoverageFetchesNoWindowRowByRowWhileTheStatisticsLagTheVisibilityMap found).
+// The write rewrites those 200 days, holds every row but one, and names the six evals of ten
+// projects (a rewrite names every project's), in a transaction planned as rewriteSettings plans
+// its own. With merge joins on, the planner estimates the scan of eval_days at a few hundred rows
+// of its 2,400 and merges it with the days on the project alone, testing the day of each row
+// against all 200 days.
+//
+// The test reads the plan the statement runs under (explainingTx), not the clock.
+func TestTheZeroRowsOfASettingsRewriteMatchTheWrittenDaysByProjectAndDay(t *testing.T) {
+	r := newRig(t)
+	ctx := t.Context()
+	const days, deployRepo = 200, "acme/deploy"
+	slugs := []string{SlugDeployFrequency, SlugDeployRunSuccess, SlugFirstCommitToProduction, SlugMergeToProduction,
+		SlugOpenToProduction, SlugProductionDeploy}
+	first := attributionDay.AddDate(0, 0, 1-days)
+	var stored []DayRow
+	for _, slug := range slugs {
+		for _, repo := range []string{"", "acme/web"} {
+			for day := range days {
+				stored = append(stored, DayRow{
+					ProjectKey: "EVAL", EvalID: EvalID("EVAL", slug), DeployRepo: deployRepo, Repo: repo, Listed: true,
+					DayPart: measures.DayPart{Series: "deploys", Day: first.AddDate(0, 0, day), N: 1, Sum: new(1.0)},
+				})
+			}
+		}
+	}
+	write, err := r.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the write of the day rows: %v", err)
+	}
+	defer write.Rollback(ctx)
+	if _, err := write.Exec(ctx, `set local synchronous_commit = on`); err != nil {
+		t.Fatalf("commit the write of the day rows synchronously: %v", err)
+	}
+	if err := upsertDays(ctx, write, stored, testBuild); err != nil {
+		t.Fatalf("write EVAL's rows of the moved evals: %v", err)
+	}
+	if _, err := write.Exec(ctx, `insert into projects (key, name, default_assignee) values ('OTHER', 'Other', 'alice')`); err != nil {
+		t.Fatalf("make project OTHER: %v", err)
+	}
+	if _, err := write.Exec(ctx, `
+		insert into eval_days (project_key, eval_id, series, repo, day, listed, n, sum, built_by)
+		select project, project || '/legion-' || eval, 'series-' || series, '', $1::date + after, true, 1, 1, $2
+		from unnest(array['EVAL', 'OTHER']) as project, generate_series(1, 10) as eval, generate_series(1, 6) as series,
+			generate_series(0, $3::int - 1) as after`, first, testBuild, days); err != nil {
+		t.Fatalf("store the other evals' rows: %v", err)
+	}
+	if err := write.Commit(ctx); err != nil {
+		t.Fatalf("commit the day rows: %v", err)
+	}
+	if _, err := r.database.Pool.Exec(ctx, `vacuum analyze eval_days`); err != nil {
+		t.Fatalf("vacuum and analyze eval_days: %v", err)
+	}
+	var pages, visible int
+	if err := r.database.Pool.QueryRow(ctx, `select relpages, relallvisible from pg_class where oid = 'eval_days'::regclass`).Scan(&pages, &visible); err != nil {
+		t.Fatalf("read how many pages of eval_days are all-visible: %v", err)
+	}
+	if pages == 0 || visible != pages {
+		t.Fatalf("the vacuum marked %d of eval_days' %d pages all-visible; the test needs every page", visible, pages)
+	}
+
+	projects, written := make([]string, days), make([]time.Time, days)
+	for day := range days {
+		projects[day], written[day] = "EVAL", first.AddDate(0, 0, day)
+	}
+	var evalIDs []string
+	for _, project := range []string{"EVAL", "A", "B", "C", "D", "E", "F", "G", "H", "I"} {
+		for _, slug := range slugs {
+			evalIDs = append(evalIDs, EvalID(project, slug))
+		}
+	}
+	tx, err := r.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the rewrite's transaction: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `set local plan_cache_mode = force_custom_plan`); err != nil {
+		t.Fatalf("plan the rewrite's transaction as rewriteSettings does: %v", err)
+	}
+	explaining := &explainingTx{Tx: tx, explained: zeroStaleSettingsDaysStatement}
+	if err := zeroStaleSettingsDays(ctx, explaining, projects, written, evalIDs, []string{deployRepo}, stored[1:], testBuild); err != nil {
+		t.Fatalf("zeroStaleSettingsDays: %v", err)
+	}
+	if explaining.plan == nil {
+		t.Fatal("zeroStaleSettingsDays ran no zeroStaleSettingsDaysStatement")
+	}
+	plan := explaintest.OnePlan(t, explaining.plan)
+	t.Logf("zeroStaleSettingsDaysStatement as zeroStaleSettingsDays runs it over %d days written:\n%s", days, explaintest.Outline(t, plan))
+	explaintest.RequireJoinedOnAll(t, plan, "zeroStaleSettingsDaysStatement as zeroStaleSettingsDays runs it", "CTE gone", "project_key", "day")
+	var mergeJoins string
+	if err := tx.QueryRow(ctx, `select current_setting('enable_mergejoin')`).Scan(&mergeJoins); err != nil {
+		t.Fatalf("read enable_mergejoin: %v", err)
+	}
+	if mergeJoins != "on" {
+		t.Errorf("enable_mergejoin is %s after zeroStaleSettingsDays, want on, the value it held before", mergeJoins)
+	}
+	var zero int
+	if err := tx.QueryRow(ctx, `select count(*) from eval_days where project_key = 'EVAL' and deploy_repo = $1 and n = 0`, deployRepo).Scan(&zero); err != nil {
+		t.Fatalf("count EVAL's zero rows: %v", err)
+	}
+	if zero != 1 {
+		t.Errorf("eval_days holds %d zero rows of EVAL's moved evals, want 1: the row the write no longer holds", zero)
+	}
+}
+
+// explainingTx is a transaction that explains its statement explained, with the arguments it is
+// run with and under whatever its caller set in the transaction, before it runs it, and keeps the
+// plan: the plan a function that runs the statement in its caller's transaction gives it.
+type explainingTx struct {
+	pgx.Tx
+	explained string
+	plan      []byte
+}
+
+// Exec explains sql before it runs it where it is the statement explained.
+func (tx *explainingTx) Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error) {
+	if sql == tx.explained {
+		if err := tx.Tx.QueryRow(ctx, "explain (format json) "+sql, arguments...).Scan(&tx.plan); err != nil {
+			return pgconn.CommandTag{}, fmt.Errorf("explain the statement: %w", err)
+		}
+	}
+	return tx.Tx.Exec(ctx, sql, arguments...)
 }

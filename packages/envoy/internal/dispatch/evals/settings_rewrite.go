@@ -804,7 +804,8 @@ func historyOf(repo keptRepo, deploys delivery.RunsWithJobs, prs []delivery.Deli
 // zeroStaleSettingsDays is zeroStaleDays over many days at once: each of the computation's stored
 // rows of the evals evalIDs names and of the deploy repositories deployRepos names, on each day of
 // a project the rewrite writes (projects and days, pairwise), that held is not among, written as a
-// zero row recording builtBy, and one already zero left as it is, as zeroStaleDays writes them.
+// zero row recording builtBy, and one already zero left as it is, as zeroStaleDays writes them. Its
+// statement is planned with merge joins off, and the setting then given back the value it held.
 func zeroStaleSettingsDays(ctx context.Context, tx pgx.Tx, projects []string, days []time.Time, evalIDs, deployRepos []string, held []DayRow, builtBy string) error {
 	if len(projects) == 0 || len(deployRepos) == 0 {
 		return nil
@@ -816,9 +817,30 @@ func zeroStaleSettingsDays(ctx context.Context, tx pgx.Tx, projects []string, da
 		heldProjects[i], heldEvals[i], heldDeployRepos[i] = row.ProjectKey, row.EvalID, row.DeployRepo
 		heldSeries[i], heldRepos[i], heldDays[i] = row.Series, row.Repo, measures.Midnight(row.Day)
 	}
+	// gone matches the stored rows to the days written by their project and day. A merge join
+	// matches them by the project alone, which the primary key's order gives it for nothing, and
+	// tests each row's day against every day written of its project; the planner takes it by a
+	// thin margin of its cost, estimating that the join keeps a few rows where it keeps thousands.
+	// A rewrite of 200 days of one project tested 434,218 pairs to keep its 2,182 rows (106 ms on
+	// the pod), and the join written as a semi-join, `(project_key, day) in (select … from
+	// written)`, is merged on the project as well where the planner estimates the scan of
+	// eval_days low. With merge joins off it hashes the days written and matches both (12 to 25
+	// ms). The setting is given back its value after the statement, so no other statement of the
+	// rewrite's transaction plans without merge joins.
+	// TestTheZeroRowsOfASettingsRewriteMatchTheWrittenDaysByProjectAndDay holds it to that plan.
+	var mergeJoins string
+	if err := tx.QueryRow(ctx, `select current_setting('enable_mergejoin')`).Scan(&mergeJoins); err != nil {
+		return fmt.Errorf("read enable_mergejoin before the zero rows of a settings change: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `select set_config('enable_mergejoin', 'off', true)`); err != nil {
+		return fmt.Errorf("turn merge joins off for the zero rows of a settings change: %w", err)
+	}
 	if _, err := tx.Exec(ctx, zeroStaleSettingsDaysStatement, projects, days, heldProjects, heldEvals, heldSeries, heldRepos, heldDays, evalIDs, builtBy,
 		writerComputation, heldDeployRepos, deployRepos); err != nil {
 		return fmt.Errorf("write the day rows a settings change leaves no longer held as zero rows: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `select set_config('enable_mergejoin', $1, true)`, mergeJoins); err != nil {
+		return fmt.Errorf("give enable_mergejoin back its value after the zero rows of a settings change: %w", err)
 	}
 	return nil
 }

@@ -11,7 +11,8 @@
 // statement settles on (GenericPlan), which is the plan an index is lost in.
 // RequireListReadOnce holds a plan to reading once the list a statement is given,
 // RequireStatementReadsListOnce holds a statement's two plans to it, RequireJoinedOn holds a plan
-// to matching rows by a key, and Outline writes a plan's shape for a test's log.
+// to matching rows by a key, RequireJoinedOnAll holds one subplan of a plan to matching rows by
+// several columns at once, and Outline writes a plan's shape for a test's log.
 // dispatch/api, dispatch/refs and cipher/requests each pin an index's reach with these checks,
 // so they live here once rather than as a second (or third) hand copy of the same recursive
 // walk; it is an ordinary package rather than a _test.go file because Go cannot share test-only
@@ -391,6 +392,51 @@ func RequireJoinedOn(t testing.TB, plan json.RawMessage, subject, key string) {
 	}
 	t.Errorf("%s: no hash or merge join, nor any index scan, matches rows by %s:\n%s", subject, key, Outline(t, plan))
 }
+
+// RequireJoinedOnAll holds the part of plan, one "Plan" node of `EXPLAIN (FORMAT JSON)`'s top-level
+// array, that runs as the subplan named subplan (a CTE's is `CTE <name>`) to matching rows by every
+// column of columns at one node: one hash join's Hash Cond or merge join's Merge Cond names each of
+// them, or one index scan's Index Cond does. A column is a bare name (`day`), found in a condition
+// outside its string literals however the plan qualifies it (`e_1.day`, `day`), since the
+// deparser picks a join's aliases. A join that matches by some of the columns and tests the rest
+// in its Join Filter tests those on every pair of rows the others match: a merge join on a project
+// alone tests each of its rows' day against every day of that project. It fails t naming subject,
+// and printing the plan's Outline, where no node of the subplan matches rows by all of columns, or
+// where plan runs no subplan of that name.
+func RequireJoinedOnAll(t testing.TB, plan json.RawMessage, subject, subplan string, columns ...string) {
+	t.Helper()
+	nodes := planNodes(t, plan)
+	top := slices.IndexFunc(nodes, func(node planNode) bool { return node.SubplanName == subplan })
+	if top < 0 {
+		t.Errorf("%s: the plan runs no subplan %s:\n%s", subject, subplan, Outline(t, plan))
+		return
+	}
+	names := make([]*regexp.Regexp, len(columns))
+	for i, column := range columns {
+		names[i] = regexp.MustCompile(`(^|\W)` + regexp.QuoteMeta(column) + `(\W|$)`)
+	}
+	for i, node := range nodes {
+		if i != top && childOn(nodes, i, top) < 0 {
+			continue
+		}
+		conditions := []string{node.HashCond, node.MergeCond}
+		if node.IndexCond != nil {
+			conditions = append(conditions, *node.IndexCond)
+		}
+		for _, condition := range conditions {
+			condition = stringLiteral.ReplaceAllString(condition, "''")
+			if !slices.ContainsFunc(names, func(name *regexp.Regexp) bool { return !name.MatchString(condition) }) {
+				return
+			}
+		}
+	}
+	t.Errorf("%s: no hash or merge join, nor any index scan, of %s matches rows by %s at once:\n%s",
+		subject, subplan, strings.Join(columns, " and "), Outline(t, plan))
+}
+
+// stringLiteral matches one string literal of a condition as the plan writes it, a doubled quote
+// inside it included.
+var stringLiteral = regexp.MustCompile(`'(?:[^']|'')*'`)
 
 // Outline is plan's nodes, one a line, each indented under the node it is directly under: its
 // side of that node, its type, its kind of join or set operation, what it reads under which name,

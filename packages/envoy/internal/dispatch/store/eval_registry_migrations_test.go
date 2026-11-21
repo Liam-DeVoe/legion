@@ -3,7 +3,9 @@ package store
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -525,4 +527,110 @@ func TestAnUpsertOfDayRowsLogsOneChangeSpanningItsDays(t *testing.T) {
 	}
 	oneChangeOver("a write moving one day's last_value and last_at alone", changesAfter(t, store, head),
 		[]string{"2026-11-06"})
+}
+
+// TestAnUpdateThatMovesADayRowsDayLogsBothDays: eval_days_updated matches the old and the new rows
+// of an update by the primary key, so an update that moves a row's day matches it on neither side,
+// and the one change it logs spans the row's old day and its new one.
+func TestAnUpdateThatMovesADayRowsDayLogsBothDays(t *testing.T) {
+	ctx := context.Background()
+	store := migratedEvalStore(t)
+	if _, err := store.Pool.Exec(ctx, `
+		insert into eval_days (project_key, eval_id, series, repo, day, listed, n, sum, built_by)
+		values ($1, $2, 'minutes', '', '2026-11-03', true, 1, 10, 'build-a')
+	`, evalProject, evalID); err != nil {
+		t.Fatalf("store the day row of 2026-11-03: %v", err)
+	}
+	head := changeLogHead(t, store)
+	moved, err := store.Pool.Exec(ctx, `update eval_days set day = '2026-11-06' where project_key = $1 and eval_id = $2 and day = '2026-11-03'`,
+		evalProject, evalID)
+	if err != nil {
+		t.Fatalf("move the day row to 2026-11-06: %v", err)
+	}
+	if moved.RowsAffected() != 1 {
+		t.Fatalf("the move rewrote %d rows; want the one stored row", moved.RowsAffected())
+	}
+	changes := changesAfter(t, store, head)
+	t.Logf("a move of the row's day logged %d change rows: %v", len(changes), changes)
+	if len(changes) != 1 || changes[0].kind != "eval_days" || changes[0].repo != evalProject || changes[0].ref != evalID {
+		t.Fatalf("a move of the row's day logged %v; want one eval_days change of %s", changes, evalID)
+	}
+	if days := changeDays(changes[0]); len(days) == 0 || days[0] != "2026-11-03" || days[len(days)-1] != "2026-11-06" {
+		t.Fatalf("the change's span covers days %v; want 2026-11-03, the old day, through 2026-11-06, the new one", days)
+	}
+}
+
+// TestEveryColumnOfADayRowButItsBookkeepingIsComparedByItsUpdateTrigger: eval_days_updated logs a
+// change of every row whose content an update moved by comparing the old row with the new one
+// column by column (migration 20261117100014), so a column eval_days gains and the comparison
+// leaves out would move with no change logged, and an evals view would never wake to it. Every
+// column the catalog lists for eval_days but updated_at and built_by, which a pass rewrites
+// whatever it finds, is compared, the old row's against the new row's at the same place, and
+// neither of those two is.
+func TestEveryColumnOfADayRowButItsBookkeepingIsComparedByItsUpdateTrigger(t *testing.T) {
+	ctx := context.Background()
+	store := migratedEmptyStore(t)
+	rows, err := store.Pool.Query(ctx, `
+		select column_name::text from information_schema.columns
+		where table_schema = current_schema() and table_name = 'eval_days'
+		order by ordinal_position
+	`)
+	if err != nil {
+		t.Fatalf("read the columns of eval_days: %v", err)
+	}
+	columns, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the columns of eval_days: %v", err)
+	}
+	ignored := []string{"updated_at", "built_by"}
+	want := slices.DeleteFunc(slices.Clone(columns), func(column string) bool { return slices.Contains(ignored, column) })
+	if len(want) != len(columns)-len(ignored) {
+		t.Fatalf("eval_days has columns %v; want updated_at and built_by among them", columns)
+	}
+	var definition string
+	if err := store.Pool.QueryRow(ctx, `select pg_get_functiondef('eval_days_updated'::regproc)`).Scan(&definition); err != nil {
+		t.Fatalf("read eval_days_updated: %v", err)
+	}
+	comparisons := rowComparison.FindAllStringSubmatch(definition, -1)
+	if len(comparisons) != 1 {
+		t.Fatalf("eval_days_updated holds %d comparisons of a list of the old row's columns with one of the new row's, "+
+			"`(old_row.c, …) is distinct from (new_row.c, …)`; want one:\n%s", len(comparisons), definition)
+	}
+	oldColumns, oldOthers := comparedColumns(comparisons[0][1], "old_row")
+	newColumns, newOthers := comparedColumns(comparisons[0][2], "new_row")
+	t.Logf("eval_days has %d columns; eval_days_updated compares the old row's %v with the new row's %v", len(columns), oldColumns, newColumns)
+	if len(oldOthers) > 0 || len(newOthers) > 0 {
+		t.Errorf("eval_days_updated compares %v beside the old row's columns and %v beside the new row's; want each side the row's columns alone",
+			oldOthers, newOthers)
+	}
+	if !slices.Equal(oldColumns, newColumns) {
+		t.Errorf("eval_days_updated compares the old row's %v with the new row's %v; want the same column at each place", oldColumns, newColumns)
+	}
+	missing := slices.DeleteFunc(slices.Clone(want), func(column string) bool { return slices.Contains(oldColumns, column) })
+	extra := slices.DeleteFunc(slices.Clone(oldColumns), func(column string) bool { return slices.Contains(want, column) })
+	if len(missing) > 0 || len(extra) > 0 || len(oldColumns) != len(want) {
+		t.Errorf("eval_days_updated compares the old row's %v; want every column of eval_days but %v once, %v, which leaves out %v and holds %v besides",
+			oldColumns, ignored, want, missing, extra)
+	}
+}
+
+// rowComparison matches one comparison of two lists of columns, `(…) is distinct from (…)`, each
+// list held with no parentheses inside it, its two lists the submatches.
+var rowComparison = regexp.MustCompile(`(?i)\(([^()]*)\)\s*is\s+distinct\s+from\s*\(([^()]*)\)`)
+
+// columnName matches a column's name alone.
+var columnName = regexp.MustCompile(`^\w+$`)
+
+// comparedColumns is the columns of row, a transition table's name, that list (one side of
+// rowComparison) names, in its order, and every item of it that names none of them.
+func comparedColumns(list, row string) (columns, others []string) {
+	for item := range strings.SplitSeq(list, ",") {
+		item = strings.TrimSpace(item)
+		if column, found := strings.CutPrefix(item, row+"."); found && columnName.MatchString(column) {
+			columns = append(columns, column)
+		} else {
+			others = append(others, item)
+		}
+	}
+	return columns, others
 }

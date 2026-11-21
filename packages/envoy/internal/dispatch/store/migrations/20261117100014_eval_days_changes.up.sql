@@ -43,11 +43,19 @@
 --
 -- An update logs only the rows whose content moved: as 0100's and 20261117100002's triggers ignore
 -- the columns a pass rewrites whatever it finds, the update half ignores updated_at and built_by,
--- so a new build that rebuilds a row to the same values logs nothing. The old and the new rows are
--- matched by the primary key, deploy_repo among its columns, and a row whose key an update moved
--- matches nothing on either side, so both its old day and its new one are logged. A delete logs
--- nothing: a day the refresher finds no input for keeps an explicit zero row rather than losing
--- its row, and the rows a project's deletion takes go with every view of that project.
+-- so a new build that rebuilds a row to the same values logs nothing. It compares every other
+-- column of the old row with the same column of the new one, as two rows, where those row
+-- triggers compare each row's JSON less the ignored keys: the update half reads a whole
+-- statement's rows at once, and building two JSON objects a row to compare them was most of its
+-- time. Over transition tables of the 2,182 rows a settings change rewrote, the JSON form took
+-- 140 ms of the trigger's 156 and the columns 7 ms, and the trigger took 29 ms with them. A column
+-- eval_days gains joins both lists of the comparison (store's
+-- TestEveryColumnOfADayRowButItsBookkeepingIsComparedByItsUpdateTrigger fails until it does). The
+-- old and the new rows are matched by the primary key, deploy_repo among its columns, and a row
+-- whose key an update moved matches nothing on either side, so both its old day and its new one
+-- are logged. A delete logs nothing: a day the refresher finds no input for keeps an explicit zero
+-- row rather than losing its row, and the rows a project's deletion takes go with every view of
+-- that project.
 --
 -- The census answers 0: three functions and two triggers, reading and rewriting no row.
 create function eval_days_change_log(p_project text, p_eval text, p_first date, p_last date)
@@ -89,14 +97,20 @@ end $$;
 
 create function eval_days_updated() returns trigger language plpgsql as $$
 declare
-  ignored constant text[] := array['updated_at', 'built_by'];
   span record;
 begin
   for span in
     select project_key, eval_id, min(day) as first_day, max(day) as last_day
     from written new_row
     full join replaced old_row using (project_key, eval_id, writer, deploy_repo, series, repo, day)
-    where (to_jsonb(old_row) - ignored) is distinct from (to_jsonb(new_row) - ignored)
+    where (old_row.project_key, old_row.eval_id, old_row.writer, old_row.deploy_repo, old_row.series, old_row.repo,
+           old_row.day, old_row.listed, old_row.n, old_row.sum, old_row.num, old_row.den, old_row.max, old_row.samples,
+           old_row.last_value, old_row.last_at, old_row.last_recorded_at, old_row.last_reading, old_row.counts,
+           old_row.via_repository)
+      is distinct from (new_row.project_key, new_row.eval_id, new_row.writer, new_row.deploy_repo, new_row.series,
+           new_row.repo, new_row.day, new_row.listed, new_row.n, new_row.sum, new_row.num, new_row.den, new_row.max,
+           new_row.samples, new_row.last_value, new_row.last_at, new_row.last_recorded_at, new_row.last_reading,
+           new_row.counts, new_row.via_repository)
     group by project_key, eval_id
     order by project_key, eval_id
   loop
