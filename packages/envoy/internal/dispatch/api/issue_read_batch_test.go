@@ -174,10 +174,15 @@ func sequentialIssueRead(t *testing.T, deps Deps, key string) []byte {
 	if err != nil {
 		t.Fatalf("count the issue's backlinks: %v", err)
 	}
+	var comments int
+	if err := pool.QueryRow(ctx, issueCommentCountStatement, issue.Key).Scan(&comments); err != nil {
+		t.Fatalf("count the issue's comments: %v", err)
+	}
 	recorder := httptest.NewRecorder()
 	WriteJSON(recorder, http.StatusOK, issueDetail{
 		Issue:             issue,
 		Progress:          progress,
+		CommentCount:      comments,
 		Artifacts:         artifactReads(artifacts, nil),
 		OpenAsks:          issueOpenAsksOf(asks, replies, nil),
 		Children:          children,
@@ -254,6 +259,48 @@ func TestBatchedIssueReadAnswersTheSequentialLoadersBytes(t *testing.T) {
 	}
 	if len(read.OpenAsks) != 3 {
 		t.Fatalf("open asks = %d, want the two questions and the approval request, never the answered ask", len(read.OpenAsks))
+	}
+}
+
+// An issue's read says how many comments the issue holds - a reply to an ask among them, each
+// comment its comment list answers - so a reader of the issue alone knows it has comments to
+// read: answer-02 and answer-11 of the command bar's eval read the issue, which said nothing of
+// its comments, and never read the comments that held the answer. An issue with none leaves the
+// count out.
+func TestAnIssueReadSaysHowManyCommentsItHolds(t *testing.T) {
+	handler := newTestHandler(t)
+	createReferenceAPIProject(t, handler, "TALK")
+	commented := createReferenceAPIIssue(t, handler, "TALK")
+	quiet := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "TALK", "title": "An issue nobody commented on",
+	}, "alice")
+	if quiet.Code != http.StatusCreated {
+		t.Fatalf("create the quiet issue: status=%d body=%s", quiet.Code, quiet.Body.String())
+	}
+	quietKey := decodeBody[model.Issue](t, quiet).Key
+	asked := createIssueAsk(t, handler, commented.Key, "Should the epic split in two?")
+	for _, comment := range []map[string]any{
+		{"body": "I want to split this epic in two: CSV export and PDF export."},
+		{"body": "Agreed."},
+		{"body": "Yes, split it.", "ask_id": asked},
+	} {
+		if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+commented.Key+"/comments", comment, "chen"); response.Code != http.StatusCreated {
+			t.Fatalf("comment on %s: status=%d body=%s", commented.Key, response.Code, response.Body.String())
+		}
+	}
+	read := func(key string) map[string]any {
+		t.Helper()
+		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+key, nil, "alice")
+		if response.Code != http.StatusOK {
+			t.Fatalf("read %s: status=%d body=%s", key, response.Code, response.Body.String())
+		}
+		return decodeBody[map[string]any](t, response)
+	}
+	if count, held := read(commented.Key)["comment_count"]; count != float64(3) {
+		t.Errorf("the read of %s, which holds 3 comments, carries comment_count %v (held %t), want 3", commented.Key, count, held)
+	}
+	if count, held := read(quietKey)["comment_count"]; held {
+		t.Errorf("the read of %s, which holds no comment, carries comment_count %v, want none", quietKey, count)
 	}
 }
 

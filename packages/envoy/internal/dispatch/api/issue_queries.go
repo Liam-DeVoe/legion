@@ -862,10 +862,16 @@ type issueDetail struct {
 	// is the payload of issue.claimed and issue.released, and a state read at this moment
 	// must never be stored in one (model.IssueClaimLiveness carries the rest of the reason).
 	model.IssueClaimLiveness
-	Progress  model.IssueProgress `json:"progress"`
-	Artifacts []artifactRead      `json:"artifacts"`
-	OpenAsks  []issueOpenAsk      `json:"open_asks"`
-	Children  []model.IssueChild  `json:"children"`
+	Progress model.IssueProgress `json:"progress"`
+	// CommentCount is how many comments the issue holds, each one its comment list (GET
+	// /api/v1/issues/{key}/comments) answers, so a reader of the issue alone - the command bar's
+	// agent among them - knows it has comments to read. An issue with none leaves it out. It
+	// comes before the lists below, so a reader that keeps only the start of a long read still
+	// has it.
+	CommentCount int                `json:"comment_count,omitempty"`
+	Artifacts    []artifactRead     `json:"artifacts"`
+	OpenAsks     []issueOpenAsk     `json:"open_asks"`
+	Children     []model.IssueChild `json:"children"`
 	// DesignGates is the document each of this issue's Legion design-gate steps records
 	// (design_gates, PUT /api/v1/issues/{key}/design-gates), in the order a gate runs the
 	// steps. An issue whose gates record nothing carries [], as the route's own answer does:
@@ -880,9 +886,10 @@ type issueDetail struct {
 
 // readIssue runs getIssue's two batches, whose statements and scans are the ones the sequential
 // loaders run - loadIssueWithProgress, loadArtifacts, queryOwnerAsks with issueOpenAsksOf,
-// issueChildrenStatement with scanIssueChildren and refs.BacklinkCounts - so the two paths answer
-// the same bytes. trees is what the request asked for (wantsDisplayTrees): the display trees of
-// the documents' approval reasons and of the open asks' texts, which only the dashboard reads.
+// issueChildrenStatement with scanIssueChildren, issueCommentCountStatement and
+// refs.BacklinkCounts - so the two paths answer the same bytes. trees is what the request asked
+// for (wantsDisplayTrees): the display trees of the documents' approval reasons and of the open
+// asks' texts, which only the dashboard reads.
 func (s *server) readIssue(ctx context.Context, key string, trees bool) (issueDetail, error) {
 	var read issueDetail
 	var links []model.ExternalLink
@@ -926,6 +933,9 @@ func (s *server) readIssue(ctx context.Context, key string, trees bool) (issueDe
 		scanned, err := scanIssueDesignGates(rows)
 		read.DesignGates = scanned
 		return err
+	})
+	first.Queue(issueCommentCountStatement, key).QueryRow(func(row pgx.Row) error {
+		return row.Scan(&read.CommentCount)
 	})
 	if err := refs.QueueBacklinkCounts(first, "issue", []string{key}, nil, issueCounts); err != nil {
 		return issueDetail{}, err
@@ -1033,6 +1043,11 @@ var issueRowStatement = `
 // issueExternalLinksStatement reads an issue's external links, $1 its key, in the order the
 // response lists them; scanExternalLinks decodes them.
 const issueExternalLinksStatement = `select url, kind from issue_external_links where issue_key = $1 order by url`
+
+// issueCommentCountStatement counts an issue's comments, $1 its key: every comment its comment
+// list answers (loadOwnerComments with no ?artifact=), a reply to an ask and a comment on one of
+// its documents among them. It answers one row for any key, 0 for a key no issue carries.
+const issueCommentCountStatement = `select count(*) from comments where issue_key = $1`
 
 // scanIssueRow decodes one issueRowStatement row into the issue and the progress the read
 // carries beside it. ExternalLinks is left nil: issueExternalLinksStatement carries them, run
