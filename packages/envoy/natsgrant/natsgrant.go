@@ -169,12 +169,14 @@ func EdgeInboxPrefix(machineID string) string {
 
 // EdgeRelayReplyPrefix is the receipt family of the edge listener of machine machineID:
 // bus.RelayReplyPrefix followed by the machine id, under which its session relay names a relay
-// frame's receipt subject (the prefix, a dot and a token of its own) and the replica serving the
-// session's relay socket publishes the receipt. Edge publishes and subscribes only its own
-// machine's family, so one edge machine can neither read nor publish another machine's receipts;
-// the replicas of one machine share its id and so its family, as a frame's relay socket may be
-// served by the other replica. Edge refuses a machine id that is not one subject token, so no
-// machine's family covers another's.
+// frame's receipt subject (the prefix, a dot and a token of its own). Edge subscribes only its own
+// machine's family, so no edge machine reads another machine's receipts, and publishes every edge
+// machine's (bus.RelayReplyPrefix): the listener serving a session's relay socket may be another
+// edge machine than the one holding the session's consumer, and it publishes the receipt on the
+// owner's family. So one edge machine can forge a receipt for another machine's frame, which adds
+// nothing past the reach Edge already leaves it: it can update or delete any consumer of the
+// stream. Edge refuses a machine id that is not one subject token, so no machine's family covers
+// another's.
 func EdgeRelayReplyPrefix(machineID string) string {
 	return bus.RelayReplyPrefix + machineID
 }
@@ -194,8 +196,9 @@ func EdgeRelayReplyPrefix(machineID string) string {
 //   - the role subjects of each project, in the form that names the project
 //     (contracts.RoleTopicPrefix + project): a role message;
 //   - the relay subjects (bus.DeliverSubjectPrefix): a frame to a session whose consumer it holds;
-//   - its own machine's relay receipts (EdgeRelayReplyPrefix), which the replica serving a
-//     session's relay socket publishes a frame's receipt on: the relay socket of #4658
+//   - every edge machine's relay receipts (bus.RelayReplyPrefix), which the listener serving a
+//     session's relay socket publishes a frame's receipt on, on the family of the machine that
+//     holds the session's consumer (EdgeRelayReplyPrefix): the relay socket of #4658
 //     (cmd/listener's relay_socket.go). No program at this head publishes one;
 //   - the resume lane (bus.SessionResumeSubjectPrefix): where a deleted session consumer stopped;
 //   - the exception lanes (bus.ExceptionTopicPrefix) of the agent subjects and of each project's
@@ -214,8 +217,8 @@ func EdgeRelayReplyPrefix(machineID string) string {
 //
 // Subscribe: its own machine's inbox prefix (EdgeInboxPrefix) in place of every reply inbox, so
 // the server delivers it no other client's replies; every session's relay subject
-// (bus.DeliverSubject), which the replica serving a session's relay socket subscribes for that
-// session; and its own machine's relay receipts (EdgeRelayReplyPrefix), which the session relay
+// (bus.DeliverSubject), which the listener serving a session's relay socket subscribes for that
+// session; and its own machine's relay receipts (EdgeRelayReplyPrefix), which its session relay
 // takes its receipts under once #4658 names them there. Both subscriptions are #4658's: at this
 // head no program makes either, and the edge's session relay names its receipts under its inbox
 // prefix, which no session's grant publishes (Session publishes _INBOX.>), so at this head alone
@@ -236,14 +239,19 @@ func EdgeRelayReplyPrefix(machineID string) string {
 //     pull any consumer of the stream, every other listener's durable, Dispatch's and every
 //     session's consumer among them, and so take another listener's push deliveries.
 //   - nats-server checks a push consumer's deliver subject against no permission, only that the
-//     stream does not carry it, and delivers only where a client subscribes. So through a
-//     consumer it creates, the edge can put any message it stored, or any message of the stream,
-//     on any subject a client subscribes and the stream does not carry: every project's role
+//     stream does not carry it, and delivers only where a client subscribes. A delivery is sent
+//     under the message's own stream subject, not the deliver subject: each subscription that
+//     matches the deliver subject receives it, and it reads as a message of the stream's subject.
+//     So through a consumer it creates, the edge can hand any message it stored, or any message of
+//     the stream, to any subscriber of any subject the stream does not carry: every project's role
 //     lanes and their exception lanes, any reply inbox, and the agent stream subjects. A deliver
-//     subject the stream carries is refused as a cycle. A delivery to a subject under $JS.API.
-//     (a stream delete, purge or update, a bucket's stream delete) is not acted on, and one to a
-//     $KV. subject writes no entry. The one write it has is a subject another stream of the
-//     account captures while a client subscribes it: that stream stores the edge's message.
+//     subject the stream carries is refused as a cycle. The JetStream API's import sees the stream
+//     subject, not $JS.API., so a delivery to a stream delete, purge or update, or to a bucket's
+//     stream delete, takes no action. A stream whose subjects take the deliver subject - another
+//     stream of the account, a key-value bucket's stream among them - stores the delivery under
+//     its stream subject, as a message of that stream and never as a key, and counts it toward
+//     that stream's limits. That is the one write this route has, and it needs some other client
+//     to subscribe the deliver subject, since the edge subscribes none a stream takes.
 //   - Today's agent, relay and resume subjects name no project, so it can publish on any
 //     session's, and a consumer on any filter reads any stored message.
 //   - Its KV calls write every record of the seven buckets of bus.ListenerBuckets: interests,
@@ -269,7 +277,7 @@ func Edge(machineID string, projects []string) (Permissions, error) {
 	}
 	publish = append(publish,
 		bus.DeliverSubjectPrefix+"*",
-		EdgeRelayReplyPrefix(machineID)+".>",
+		bus.RelayReplyPrefix+">",
 		bus.SessionResumeSubjectPrefix+">",
 		bus.ExceptionTopicPrefix+contracts.AgentTopicPrefix+">",
 	)

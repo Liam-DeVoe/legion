@@ -121,8 +121,8 @@ func TestTheEdgeGrantIsTheGolden(t *testing.T) {
 
 // Edge is Listener with the edge's changes and nothing else. In publish: in place of every
 // notification topic, the finite list of the edge's own subjects - the agent subjects, each
-// project's role subjects, the relay subjects, its own machine's relay receipts, the resume lane,
-// and the exception lanes of the agent subjects and of each project's role subjects - and no
+// project's role subjects, the relay subjects, every edge machine's relay receipts, the resume
+// lane, and the exception lanes of the agent subjects and of each project's role subjects - and no
 // create or update of the stream. In subscribe: its own machine's inbox prefix in place of every
 // reply inbox, every session's relay subject and its own machine's relay receipts, and neither
 // role-lane queue group. So a change to Listener reaches Edge, and the golden above says that it
@@ -138,26 +138,27 @@ func TestTheEdgeGrantIsTheListenersWithTheEdgesChanges(t *testing.T) {
 				return entry == "$JS.API.STREAM.CREATE.ENVOY_NOTIFICATIONS" || entry == "$JS.API.STREAM.UPDATE.ENVOY_NOTIFICATIONS"
 			})
 			require.Len(t, kept, len(listener.Publish)-3, "Listener(%q) holds every notification topic, the stream's create and its update", id)
-			receipts := "notifications.envoy.relayreply." + id + ".>"
 			own := []string{"notifications.agent.>"}
 			for _, project := range projects {
 				own = append(own, "notifications.role."+project+".>")
 			}
-			own = append(own, "notifications.envoy.deliver.*", receipts, "notifications.envoy.resume.>", "notifications.envoy.exceptions.notifications.agent.>")
+			own = append(own, "notifications.envoy.deliver.*", "notifications.envoy.relayreply.>", "notifications.envoy.resume.>", "notifications.envoy.exceptions.notifications.agent.>")
 			for _, project := range projects {
 				own = append(own, "notifications.envoy.exceptions.notifications.role."+project+".>")
 			}
 			require.Equal(t, append(own, kept...), edge.Publish, "Edge(%q, %v) publish", id, projects)
-			require.Equal(t, []string{"_INBOX_envoy_edge_" + id + ".>", "notifications.envoy.deliver.*", receipts}, edge.Subscribe, "Edge(%q, %v) subscribe", id, projects)
+			require.Equal(t, []string{"_INBOX_envoy_edge_" + id + ".>", "notifications.envoy.deliver.*", "notifications.envoy.relayreply." + id + ".>"}, edge.Subscribe, "Edge(%q, %v) subscribe", id, projects)
 		}
 	}
 }
 
-// Two edge machines hold inbox prefixes and receipt families of their own, so neither is
-// delivered the other's replies nor reads or publishes the other's receipts: neither's entries
-// match a subject the other names. A machine whose id begins another's (edge-a, edge-ab) is no
-// exception, since a NATS wildcard matches whole tokens. The other machine's own entries match the
-// same subjects, which shows the matcher finds one.
+// Two edge machines subscribe inbox prefixes and receipt families of their own, so neither is
+// delivered the other's replies nor reads the other's receipts: neither's subscribe entries match
+// a subject the other names. Each publishes the other's receipt, as the listener serving a
+// session's relay socket answers on the family of the machine holding the session's consumer. A
+// machine whose id begins another's (edge-a, edge-ab) is no exception, since a NATS wildcard
+// matches whole tokens. The other machine's own entries match the same subjects, which shows the
+// matcher finds one.
 func TestEachEdgeMachineHoldsItsOwnInboxesAndReceipts(t *testing.T) {
 	for _, pair := range [][2]string{{"edge-a", "edge-b"}, {"edge-a", "edge-ab"}} {
 		a, b := edge(t, pair[0], "PRIV"), edge(t, pair[1], "PRIV")
@@ -168,12 +169,9 @@ func TestEachEdgeMachineHoldsItsOwnInboxesAndReceipts(t *testing.T) {
 		}
 		require.True(t, admits(b.Subscribe, inboxOfB), "%s does not subscribe its own inbox %s", pair[1], inboxOfB)
 		require.False(t, admits(a.Subscribe, inboxOfB), "%s subscribes %s's inbox %s", pair[0], pair[1], inboxOfB)
-		for name, entries := range map[string][]string{"subscribe": b.Subscribe, "publish": b.Publish} {
-			require.True(t, admits(entries, receiptOfB), "%s does not %s its own receipt %s", pair[1], name, receiptOfB)
-		}
-		for name, entries := range map[string][]string{"subscribe": a.Subscribe, "publish": a.Publish} {
-			require.False(t, admits(entries, receiptOfB), "%s may %s %s's receipt %s", pair[0], name, pair[1], receiptOfB)
-		}
+		require.True(t, admits(b.Subscribe, receiptOfB), "%s does not subscribe its own receipt %s", pair[1], receiptOfB)
+		require.False(t, admits(a.Subscribe, receiptOfB), "%s subscribes %s's receipt %s", pair[0], pair[1], receiptOfB)
+		require.True(t, admits(a.Publish, receiptOfB), "%s does not publish %s's receipt %s, which the relay socket's answer needs", pair[0], pair[1], receiptOfB)
 	}
 }
 
@@ -223,7 +221,7 @@ func TestTheEdgeGrantPublishesNothingOutsideItsLanes(t *testing.T) {
 		"notifications.envoy.exceptions.notifications.github.acme.pub.pr.1.opened",
 		"notifications.envoy.exceptions.notifications.role.INFRA.x",
 		"notifications.envoy.exceptions.notifications.team.deploy-squad",
-		"notifications.envoy.relayreply.other.t1",
+		"notifications.envoy.relayreply",
 	} {
 		require.False(t, admits(edge.Publish, subject), "Edge publishes %s", subject)
 		require.True(t, admits(listener.Publish, subject), "Listener does not publish %s, so the matcher finds nothing", subject)
@@ -233,6 +231,7 @@ func TestTheEdgeGrantPublishesNothingOutsideItsLanes(t *testing.T) {
 		"notifications.role.PRIV.reviewer",
 		"notifications.envoy.deliver.ses_a",
 		"notifications.envoy.relayreply.m.t1",
+		"notifications.envoy.relayreply.other.t1",
 		"notifications.envoy.resume.ses_a",
 		"notifications.envoy.exceptions.notifications.agent.ses_a",
 		"notifications.envoy.exceptions.notifications.role.PRIV.reviewer",
