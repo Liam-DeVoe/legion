@@ -30,20 +30,28 @@ const AllowRemoteEnvVar = "ENVOY_ALLOW_REMOTE_NATS"
 var ErrRemoteNATS = errors.New("bus: refusing a NATS server that is not this machine's")
 
 // ErrNoNATSServer is a connect's refusal of a server list that names no server, or holds an entry
-// that is blank, names no host, or names the unspecified address (refuseNoServer).
+// that is blank, names no host, names the unspecified address, or names a numeric host that is no
+// address in canonical form (refuseNoServer).
 var ErrNoNATSServer = errors.New("bus: refusing a NATS server list that names no server")
 
-// refuseNoServer reports urls naming no server, or an entry that is blank, names no host, or names
-// the unspecified address, read as LocalNATSURL reads it (nats://, nats://:4222,
-// nats://0.0.0.0:4222, nats://[::]:4222). nats.go fills an empty list with its DefaultURL,
-// nats://127.0.0.1:4222, and reads a blank entry or one with no host as port 4222 (or the port the
-// entry names) on this machine; a connect to the unspecified address, 0.0.0.0 or ::, reaches this
-// machine too, since the network stack takes it for its own. So such a client would reach
-// whatever listens there, presenting its credential: on a shared machine, another process's
-// server, the hazard a test server on a loopback address of its own (testport) closes for the
-// tests. ENVOY_ALLOW_REMOTE_NATS does not admit such an entry: it names no server to allow. Every
-// connect refuses it first, before its environment is read. An entry that does not parse is left
-// to nats.go, which refuses it at its connect rather than dialing a default.
+// refuseNoServer reports urls naming no server, or an entry that is blank, names no host, names
+// the unspecified address, or names a numeric host that is no address in canonical form, read as
+// LocalNATSURL reads it (nats://, nats://:4222, nats://0.0.0.0:4222, nats://[::]:4222,
+// nats://0:4222, nats://0x0:4222, nats://127.1:4222). nats.go fills an empty list with its
+// DefaultURL, nats://127.0.0.1:4222, and reads a blank entry or one with no host as port 4222 (or
+// the port the entry names) on this machine; a connect to the unspecified address, 0.0.0.0 or ::,
+// reaches this machine too, since the network stack takes it for its own; and a system resolver
+// (getaddrinfo, which Go's cgo resolver calls) reads a numeric shorthand by inet_aton's rules, 0 and
+// 0x0 as 0.0.0.0 and 127.1 as 127.0.0.1, where Go's own resolver would look the name up. So such a
+// client would reach whatever listens there, presenting its credential: on a shared machine,
+// another process's server, the hazard a test server on a loopback address of its own (testport)
+// closes for the tests. ENVOY_ALLOW_REMOTE_NATS does not admit such an entry: it names no server to
+// allow. Every connect refuses it first, before its environment is read, and without a lookup.
+// An entry that does not parse is left to nats.go, which refuses it at its connect rather than
+// dialing a default.
+//
+// A blank entry is refused with words of its own, though the host check would refuse it too: its
+// URL prints as nothing, so only those words tell an operator which entry of a list was blank.
 func refuseNoServer(urls []string) error {
 	if len(urls) == 0 {
 		return fmt.Errorf("%w: nats.go would dial its default, nats://127.0.0.1:4222, in its place", ErrNoNATSServer)
@@ -60,11 +68,47 @@ func refuseNoServer(urls []string) error {
 			return fmt.Errorf("%w: entry %d of %d, %s, names no host, which nats.go dials on this machine", ErrNoNATSServer, i+1, len(urls), natsURLWithoutUserinfo(raw))
 		}
 		// netip reads an address with a zone (::%lo), which the unspecified address may carry too.
-		if address, err := netip.ParseAddr(host); err == nil && address.WithZone("").Unmap().IsUnspecified() {
-			return fmt.Errorf("%w: entry %d of %d, %s, names the unspecified address, which a connect reaches on this machine", ErrNoNATSServer, i+1, len(urls), natsURLWithoutUserinfo(raw))
+		if address, err := netip.ParseAddr(host); err == nil {
+			if address.WithZone("").Unmap().IsUnspecified() {
+				return fmt.Errorf("%w: entry %d of %d, %s, names the unspecified address, which a connect reaches on this machine", ErrNoNATSServer, i+1, len(urls), natsURLWithoutUserinfo(raw))
+			}
+			continue
+		}
+		if numericShorthand(host) {
+			return fmt.Errorf("%w: entry %d of %d, %s, names a numeric host that is no address in canonical form, which a system resolver reads as an IPv4 address (0 and 0x0 as the unspecified address, on this machine); write the address in full", ErrNoNATSServer, i+1, len(urls), natsURLWithoutUserinfo(raw))
 		}
 	}
 	return nil
+}
+
+// numericShorthand reports whether host has the shape inet_aton reads as an IPv4 address: one to
+// four dot-separated parts, each decimal digits (octal with a leading 0) or 0x followed by hex
+// digits. netip reads only the canonical dotted quad, so a host it does not read but this matches
+// is a shorthand a system resolver takes for an address (0, 0x0, 127.1, 0177.0.0.1, 0.0), never a
+// host name: no top-level domain is numeric.
+func numericShorthand(host string) bool {
+	parts := strings.Split(host, ".")
+	if len(parts) > 4 {
+		return false
+	}
+	for _, part := range parts {
+		digits, hexadecimal := part, false
+		if len(part) >= 2 && part[0] == '0' && (part[1] == 'x' || part[1] == 'X') {
+			digits, hexadecimal = part[2:], true
+		}
+		if digits == "" && !hexadecimal {
+			return false
+		}
+		for _, c := range digits {
+			switch {
+			case '0' <= c && c <= '9':
+			case hexadecimal && ('a' <= c && c <= 'f' || 'A' <= c && c <= 'F'):
+			default:
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // refuseRemoteNATS reports the first url naming another machine, unless the run opted in through
