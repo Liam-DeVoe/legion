@@ -4005,8 +4005,8 @@ report, and an unheld role's refusal). So a direct publish of the edge's reaches
 GitHub, Slack, team or Legion event, no other project's role lane and no role lane in the form
 that names no project, nothing on the kept role lane `notifications.envoy.kept.>` and no other
 exception lane. A message on a role lane of its own project that names a role of another project
-is the shared listeners' role lane to refuse, which it does (`roleLaneProjectError`). It holds no
-`$JS.API.STREAM.CREATE` or `UPDATE` of
+is the shared listeners' role lane to refuse, which it does with the edge mode of #4810
+(`roleLaneProjectError`). It holds no `$JS.API.STREAM.CREATE` or `UPDATE` of
 `ENVOY_NOTIFICATIONS` or of any bucket's stream (`KV_<bucket>`), and no `$JS.API.DIRECT.GET` of any
 bucket, so it can change no stream's subjects, limits or republish:
 
@@ -4043,7 +4043,7 @@ connection of an edge listener names its inboxes under that prefix, and a shared
 a role message held at the edge to the holder's agent subject. Its lists name no `agentstream.`
 subject.
 
-The relay receipts, and the subscription to the relay subjects, are for the relay socket of #4658:
+The relay receipts, and the subscription to the relay subjects, are for the relay socket of #4819:
 no program at this head uses them. At this head the edge's session relay names a frame's receipt
 under its inbox prefix, which no session's grant publishes, so at this head alone no session
 answers an edge listener's relay frame over NATS. Since every edge machine publishes every
