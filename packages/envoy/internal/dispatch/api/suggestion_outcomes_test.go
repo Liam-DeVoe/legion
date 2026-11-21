@@ -330,14 +330,15 @@ func TestAnEventByTheActorOnTheSuggestedIssueWakesTheSweepAndMarksActedOn(t *tes
 // the suggestion overridden at that first pass.
 //
 // Settle is judged on the sweep's own clock here (suggestionSchedule.settledOn), a fake the row
-// moves, against the stamps the database wrote, so no stall of the machine ages a write: after the
-// comment the row moves the fake no further than the suggestion's own stamp, so the suggestion's
-// age on it is what the row's own moves gave it, however long the comment took, and the first
-// pass is inside settle. The pass held for settle arms its next pass no later than the
-// suggestion's stamp plus settle, the earliest write it held back. The row then judges a page at
-// that stamp plus settle less a microsecond, the database's precision, and at that stamp plus
-// settle, with no real wait. The first moment judges nothing, and the second judges the
-// suggestion acted_on, with both writes in.
+// moves, against the stamps the database wrote, so no stall of the machine ages a write: before
+// the comment the row moves the fake up to the suggestion's own stamp, and after it only to the
+// timers the loop holds between passes, so the suggestion's age on it is what the row's own moves
+// gave it, however long the comment took, the first pass is inside settle, and each pass judges
+// that age and arms its next pass at one moment of the fake. The pass held for settle arms its
+// next pass no later than the suggestion's stamp plus settle, the earliest write it held back. The
+// row then judges a page at that stamp plus settle less a microsecond, the database's precision,
+// and at that stamp plus settle, with no real wait. The first moment judges nothing, and the
+// second judges the suggestion acted_on, with both writes in.
 //
 // A pass that finds the horizon behind the comment's commit judges nothing either, and asks again
 // a gap later (suggestionOutcomePass), so "nothing judged" alone does not say settle held it. The
@@ -357,21 +358,6 @@ func TestWritesMomentsApartAreJudgedTogetherAsActedOn(t *testing.T) {
 	const settle = 10 * time.Second
 	fake := clocktest.New(time.Now().Truncate(time.Microsecond))
 	sweep := startIdleSweepOnClock(t, "OTOGETHER", suggestionSchedule{minGap: time.Second, settle: settle, page: suggestionOutcomePage, settledOn: fake}, fake)
-	// The fake stands still while the database stamps the row's writes: the row moves it up to the
-	// database's clock after the setup, and after the comment up to the suggestion's own stamp, so
-	// the suggestion is stamped at or before the moment the fake reads and no real time ages it. A
-	// move this short stays inside the loop's gap, so it runs no pass of its own.
-	toDatabaseClock := func() {
-		t.Helper()
-		var databaseNow time.Time
-		if err := sweep.server.deps.Store.Pool.QueryRow(context.Background(), `select clock_timestamp()`).Scan(&databaseNow); err != nil {
-			t.Fatalf("read the database's clock: %v", err)
-		}
-		if databaseNow.After(fake.Now()) {
-			fake.Set(databaseNow)
-		}
-	}
-	toDatabaseClock()
 	seedWriteSuggestion(t, sweep.server, "issue", sweep.source, "", "alice", "issue", sweep.target, sweep.target)
 	pool := sweep.server.deps.Store.Pool
 	// The seeded suggestion is the newest of its source and target (seedWriteSuggestion waits for
@@ -385,6 +371,17 @@ func TestWritesMomentsApartAreJudgedTogetherAsActedOn(t *testing.T) {
 	`, sweep.source, sweep.target).Scan(&seeded, &suggested); err != nil {
 		t.Fatalf("read the seeded suggestion: %v", err)
 	}
+	// The fake stands still while the database stamps the row's writes. The row moves it up to the
+	// suggestion's stamp before the comment, the first write to wake the loop since its setup passes
+	// left it at rest, so no pass runs while it moves. A pass reads the fake twice, for the age it
+	// judges and for the timer it arms (suggestionOutcomePass), and a move between the two would arm
+	// its next pass past the suggestion's settle by as far as the move went.
+	if sweep.settled.armed {
+		t.Fatalf("the sweep armed its timer for %s once its setup passes had returned, with nothing written since; want a rest, so that moving the fake runs no pass", sweep.settled.at)
+	}
+	if suggested.After(fake.Now()) {
+		fake.Set(suggested)
+	}
 	outcome := func() suggestionOutcomeRow {
 		t.Helper()
 		var row suggestionOutcomeRow
@@ -397,9 +394,6 @@ func TestWritesMomentsApartAreJudgedTogetherAsActedOn(t *testing.T) {
 	}
 
 	postOutcomeMessage(t, sweep.handler, sweep.source, "alice", "Looking into this here first.")
-	if suggested.After(fake.Now()) {
-		fake.Set(suggested)
-	}
 	held := testwait.Until(t, "a pass held for the comment's settle", func() (time.Time, bool) {
 		if row := outcome(); row.Outcome != "ignored" {
 			t.Fatalf("outcome = %+v after a pass while the comment was younger than settle; want ignored, nothing judged yet", row)
