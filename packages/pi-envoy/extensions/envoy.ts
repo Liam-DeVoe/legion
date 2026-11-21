@@ -3269,6 +3269,18 @@ export default function envoyExtension(hostApi: PiApi): void {
         : `the session moved from ${from} to ${hostSessionID()} while its claim of role ${role} ran; nothing was claimed`
     );
 
+  // A role claim the model or a plugin asks for once this session's stop has begun is refused
+  // (R24 of dispatch://INFRA-3589). The stop hands back every role this process holds and deletes
+  // the session's record next, and a move whose claim was in flight when the stop began keeps
+  // nothing of it. Both the plugin bridge's claim and the tool say the same sentence.
+  const refuseClaimWhileStopping = (role: string): void => {
+    if (shuttingDown) {
+      throw new Error(
+        `this session is stopping, so it claims no role: role ${role} is not held here`
+      );
+    }
+  };
+
   // The Envoy role a session pod's launch named (`ENVOY_SESSION_ROLE`) and the one session it named
   // it for (`ENVOY_SESSION_ROLE_SESSION`, the id the pod starts the agent with; the deployment
   // repository's sessions workload sets both once t-e-32 lands). That session claims the role
@@ -3324,13 +3336,15 @@ export default function envoyExtension(hostApi: PiApi): void {
   // `../src/registration-state`. A queued task writes none of it by hand: `run` hands it a handle
   // whose every step — a state write, a listener request, a NATS connection, a subscribe —
   // refuses once that task was abandoned at its deadline or the session it acts for stopped being
-  // the open one, and the first refusal latches. Nothing here re-checks a fence before a step.
+  // the open one, and a role move's once this session's stop has begun (`shuttingDown`). The
+  // first refusal latches. Nothing here re-checks a fence before a step.
   // `handle.check()` is left at the two places that are not steps: where a catch-all would
   // otherwise swallow the refusal, and before an action outside the handle (a replay trigger, a
   // throw this pass reports) that a refused task must not take.
   const registrationState = createRegistrationState({
     client: () => requireEnvoy().client,
     sessionOpen,
+    stopping: () => shuttingDown,
     deadlineMs: passDeadlineMs,
     notify: (message, level) => activeSessionContext?.ui.notify(message, level),
     log: logger,
@@ -4232,7 +4246,9 @@ export default function envoyExtension(hostApi: PiApi): void {
     ensureHeartbeat(context);
 
     // The nested move has its own queue and its own deadline: it is fenced by `roleMoves`, not
-    // by this pass, and one that decided nothing leaves the role to the next pass.
+    // by this pass, and one that decided nothing leaves the role to the next pass. A stop that
+    // begins while the move waits its turn or runs refuses its next step: the move claims
+    // nothing, fires no regain hook, says nothing and decides nothing.
     const decided =
       (await registrationState.roleMoves.run((move) =>
         settleRole(context, host, cause, registration === undefined, move)
@@ -4326,6 +4342,9 @@ export default function envoyExtension(hostApi: PiApi): void {
       // holder, and fires Legion's regain hook for a role it had to take back.
       const checked = await handle.reassertRole(desired, cause.afterOutage === true);
       const { regain } = checked;
+      // A stop that began since the re-assertion's last step fires no regain hook, and the move
+      // decides nothing.
+      if (shuttingDown) return false;
       const regained = regain === undefined ? undefined : legionRoleClaimBridge().regained;
       if (regain !== undefined && regained !== undefined) {
         // Detached from the heartbeat chain: the hook is a daemon round-trip this side cannot
@@ -4402,6 +4421,8 @@ export default function envoyExtension(hostApi: PiApi): void {
   // The bridge's state is read through `legionRoleClaimBridge()` at each use; only the instance
   // list is this instance's own entry on the object it published into.
   const claim: LegionRoleClaim = async (targetSessionID, role, callerContext) => {
+    // A stopping session claims no role, and is not marked as Legion's either.
+    refuseClaimWhileStopping(role);
     const context = callerContext ?? activeSessionContext;
     if (context === undefined || context.sessionManager.getSessionId() !== targetSessionID) {
       throw new Error(`Envoy has no active session for Legion role claim: ${targetSessionID}`);
@@ -4419,8 +4440,11 @@ export default function envoyExtension(hostApi: PiApi): void {
       await establishForBridge(context);
     }
     // The listener rejects a claim from a session it does not currently know
-    // (its registration may have expired), so register before claiming.
+    // (its registration may have expired), so register before claiming. Each wait is read for
+    // the stop: a registration the listener accepted after the stop began claims nothing.
+    refuseClaimWhileStopping(role);
     await registerSession();
+    refuseClaimWhileStopping(role);
     let claimAdopted = false;
     const claimed = await registrationState.roleMoves.run(
       async (handle) => {
@@ -4432,10 +4456,13 @@ export default function envoyExtension(hostApi: PiApi): void {
         claimAdopted = refusal.claimAdopted;
       }
     );
-    // The move decided nothing, because the session it was decided for stopped being the open
-    // one: the plugin that asked hears that, as it hears a claim that failed, and hears whether
-    // the listener granted the claim all the same.
-    if (claimed === undefined) throw sessionLeftDuringClaim(targetSessionID, role, claimAdopted);
+    // The move decided nothing, because the session's stop began, or because the session it was
+    // decided for stopped being the open one: the plugin that asked hears that, as it hears a
+    // claim that failed, and hears whether the listener granted the claim all the same.
+    if (claimed === undefined) {
+      refuseClaimWhileStopping(role);
+      throw sessionLeftDuringClaim(targetSessionID, role, claimAdopted);
+    }
   };
 
   const subscribeNotice: LegionNoticeSubscription = async (
@@ -5612,6 +5639,9 @@ export default function envoyExtension(hostApi: PiApi): void {
         }
         case EnvoyToolOperation.setRole: {
           const role = stringFor(parameters, "role");
+          // A stopping session claims no role: refused here at once, and again when the move's
+          // turn comes, before anything is said, for a call queued before the stop began.
+          refuseClaimWhileStopping(role);
           // Read and checked inside the move, so a move landing first is the role this one leaves.
           // The session the move is decided for, read when its turn comes and kept for the
           // refusal below, which the session the host is on by then would misname.
@@ -5619,6 +5649,7 @@ export default function envoyExtension(hostApi: PiApi): void {
           let claimAdopted = false;
           const moved = await registrationState.roleMoves.run(
             async (handle) => {
+              refuseClaimWhileStopping(role);
               target = sessionID;
               handle.actFor(target);
               requireSessionRoleFor(target, role);
@@ -5640,10 +5671,13 @@ export default function envoyExtension(hostApi: PiApi): void {
               claimAdopted = refusal.claimAdopted;
             }
           );
-          // The move decided nothing, because the session it was decided for stopped being the
-          // open one: the tool says so rather than report a role it never took, and says which
-          // of the two the listener left behind.
-          if (moved === undefined) throw sessionLeftDuringClaim(target, role, claimAdopted);
+          // The move decided nothing, because the session's stop began, or because the session
+          // it was decided for stopped being the open one: the tool says so rather than report a
+          // role it never took, and says which of the two the listener left behind.
+          if (moved === undefined) {
+            refuseClaimWhileStopping(role);
+            throw sessionLeftDuringClaim(target, role, claimAdopted);
+          }
           const { released } = moved;
           return toolSuccess(
             released === undefined

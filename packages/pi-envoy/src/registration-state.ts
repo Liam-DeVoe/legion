@@ -24,13 +24,14 @@ import type { SessionInbound } from "./session-inbound";
  * action outside the handle that a refused task must not take. `run` hands it a
  * {@link TaskHandle}, and every state write, listener request, subscribe and inbound
  * connection it makes after a wait is a method of that handle. The handle refuses the step once
- * the task's deadline has fired, and, for a task bound to a session (`actFor`), once that
- * session stopped being the open session. The first refusal latches: a session that closes and
- * opens again does not revive a task a step already refused, so a task that caught the refusal
- * cannot go on writing. A refused step writes nothing and ends the task: past the deadline the
- * caller's promise has already rejected with the deadline rejection ({@link taskWasAbandoned})
- * and the late settlement is swallowed; after the session moved `run` resolves `undefined`, so a
- * pass the host left mid-pass decides nothing and the user sees no new warning.
+ * the task's deadline has fired, for a task bound to a session (`actFor`) once that session
+ * stopped being the open session, and for a role move once the session's stop has begun
+ * (`stopping`). The first refusal latches: a session that closes and opens again does not revive
+ * a task a step already refused, so a task that caught the refusal cannot go on writing. A
+ * refused step writes nothing and ends the task: past the deadline the caller's promise has
+ * already rejected with the deadline rejection ({@link taskWasAbandoned}) and the late settlement
+ * is swallowed; after the session moved, or once the stop began, `run` resolves `undefined`, so
+ * a pass the host left mid-pass decides nothing and the user sees no new warning.
  *
  * The state is private to this module: callers read it through the accessors below and write it
  * only through a named operation, so there is no shared variable a later edit can write
@@ -53,12 +54,13 @@ export function taskWasAbandoned(error: unknown): boolean {
 /**
  * A step the task's handle refused. Module-private: it never leaves `run`, which turns it into the
  * task's outcome — swallowed on an abandoned task's late settlement, `undefined` once the task's
- * session moved.
+ * session moved or, for a role move, once the session's stop began.
  */
 class StepRefused extends Error {}
 
-/** Whether `error` is a step the task's handle refused (a task abandoned at its deadline, or one
- *  whose session moved): no failure of the work, so no reason a notice may name. */
+/** Whether `error` is a step the task's handle refused (a task abandoned at its deadline, one
+ *  whose session moved, or a role move of a session whose stop began): no failure of the work, so
+ *  no reason a notice may name. */
 export function stepWasRefused(error: unknown): boolean {
   return error instanceof StepRefused;
 }
@@ -112,6 +114,12 @@ export interface RegistrationStateDeps {
   readonly client: () => EnvoyClient;
   /** Whether `id` is the session open here, for this instance and the host alike. */
   readonly sessionOpen: (id: string) => boolean;
+  /**
+   * Whether this session's stop has begun, read at each step of a role move. The stop hands back
+   * every role this process holds and deletes the session's record next, so from then on a role
+   * move claims nothing, transfers nothing and tells nothing (R24 of dispatch://INFRA-3589).
+   */
+  readonly stopping: () => boolean;
   /** The deadline each queued task gets, read afresh when that task starts. */
   readonly deadlineMs: () => number;
   /** Tells the pane what a state write decided. */
@@ -163,7 +171,8 @@ export interface RegistrationStateDeps {
 /**
  * The steps a queued task may take. Each refuses before it acts, so no call site re-checks a
  * fence before a step. Refusal throws, which ends the task, and latches: once a step refused, so
- * does every step after it, whatever the session does next.
+ * does every step after it, whatever the session does next. A role move's steps refuse once the
+ * session's stop has begun as well (`RegistrationStateDeps.stopping`).
  */
 export interface TaskHandle {
   /**
@@ -285,8 +294,9 @@ export interface TaskQueue {
    * ones after it. Each task gets `deadlineMs()` milliseconds, read when that task starts, after
    * which the caller's promise rejects with the deadline rejection ({@link taskWasAbandoned}),
    * the queue starts the next task at once, and the abandoned task's own settlement is swallowed.
-   * A task a refused step ended because its session moved resolves `undefined`, and `onRefused`
-   * is handed what that task left behind.
+   * A task a refused step ended because its session moved, or a role move a step ended because
+   * the session's stop began, resolves `undefined`, and `onRefused` is handed what that task left
+   * behind.
    */
   readonly run: <T>(
     task: (handle: TaskHandle) => Promise<T>,
@@ -306,7 +316,11 @@ export interface RegistrationState {
   readonly clientInstanceID: string;
   /** Reconcile passes: one at a time, each converging this process to the host's session. */
   readonly passes: TaskQueue;
-  /** Role moves: the model's `envoy_role_set`, a plugin's claim, and each pass's own settle. */
+  /**
+   * Role moves: the model's `envoy_role_set`, a plugin's claim, and each pass's own settle. Each
+   * step of one refuses once the session's stop has begun (`RegistrationStateDeps.stopping`); a
+   * pass reads the stop itself.
+   */
   readonly roleMoves: TaskQueue;
 
   // — named operations, made on purpose without a live task —
@@ -329,7 +343,9 @@ export interface RegistrationState {
    * is stopping: the role it holds, under the session id the listener names for it, and each hold
    * it gave up and has not handed back yet (`HandBackLedger.handBackAll`). Each release carries
    * this instance's client instance id, so the listener frees only the claims this process made.
-   * It runs outside the queues and changes no state: nothing runs after a stop.
+   * It runs outside the queues and changes no state: nothing runs after a stop. A role move still
+   * running refuses its next step (`RegistrationStateDeps.stopping`), so this does not wait for
+   * one.
    */
   readonly handBackAllHolds: () => Promise<void>;
   /** Forgets the role the listener refused to this session, so a pass may claim it again. */
@@ -508,11 +524,16 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
     readonly refusal: TaskRefusal;
   }
 
-  const createHandle = (live: () => boolean, deadlineAt: number): RunningTask => {
+  const createHandle = (
+    live: () => boolean,
+    deadlineAt: number,
+    stopped: () => boolean
+  ): RunningTask => {
     let bound: string | undefined;
     // Whether this task may still write: no step of it has been refused yet, its deadline has not
-    // fired and, once bound, its session is still the open one. The one question every step below
-    // asks, asked here alone.
+    // fired, the session's stop has not begun where the task is a role move (`stopped`) and, once
+    // bound, its session is still the open one. The one question every step below asks, asked
+    // here alone.
     //
     // The first refusal latches. A session can close and open again — a switch away and back —
     // while a task waits on I/O, and a task that caught its refusal would otherwise pass the next
@@ -521,7 +542,7 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
     const refusal = { claimAdopted: false };
     const acting = (): boolean => {
       if (refused) return false;
-      if (live() && (bound === undefined || deps.sessionOpen(bound))) return true;
+      if (!stopped() && live() && (bound === undefined || deps.sessionOpen(bound))) return true;
       refused = true;
       return false;
     };
@@ -532,10 +553,18 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
     const guard = (): void => {
       if (acting()) return;
       refuse(
-        live()
-          ? `the task acting for session ${bound} refused a step: that session is no longer the open one`
-          : "the task refused a step: it was abandoned at its deadline"
+        stopped()
+          ? "the role move refused a step: this session's stop has begun"
+          : live()
+            ? `the task acting for session ${bound} refused a step: that session is no longer the open one`
+            : "the task refused a step: it was abandoned at its deadline"
       );
+    };
+    // The stop read after a wait whose outcome a role move acts on whatever else became of it: a
+    // hand-back that landed, a claim the listener answered. Once the session's stop has begun,
+    // the move ends here, and nothing it would do next is done.
+    const refuseOnceStopping = (message: string): void => {
+      if (stopped()) refuse(message);
     };
     const actingFor = (): string => {
       if (bound === undefined) {
@@ -555,7 +584,9 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
       if (holdID !== undefined && holdID !== "") {
         await holds.handBackOrAbandon(topic, holdID, { role, sessionID: holdID });
       }
-      // The end has landed, so the pane hears about it whatever became of this task.
+      // The end has landed, so the pane hears about it whatever became of this task, unless the
+      // session's stop began meanwhile: a stopping session is told nothing.
+      refuseOnceStopping(`the role move ended role ${role} as the session's stop began`);
       if (tellUser) {
         const host = bound ?? "";
         deps.log.warn("envoy: role ended after a move with no session event", {
@@ -615,6 +646,13 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
         // names this same process, refused where another process still renews it.
         clientInstanceID,
       });
+      // The session's stop began while the claim was in flight. The stop has handed back what
+      // this process held and deletes the session's record next, so nothing of the claim is kept:
+      // no hold, no transcript record, no word. A claim the listener granted all the same waits
+      // out the live window, as one the stop's release did not reach does.
+      refuseOnceStopping(
+        `the role move that claimed ${role} for session ${id} ended: the session's stop began while the claim was in flight`
+      );
       if (!live()) {
         // The listener may have granted the claim while this task was abandoned. Nothing of it goes
         // in the transcript — the task that replaced this one owns the role from here — but the
@@ -655,6 +693,10 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
         // Only a soft claim is refused. A holder that is this process's own abandoned hold is
         // waited out, since the listener reaps it; any other is the newer holder.
         const waitingOnReap = await holds.observeAbandonedHold(topic, role, result.holder, live);
+        // Read across a wait too: once the session's stop has begun, nothing is recorded or said.
+        refuseOnceStopping(
+          `the role move that claimed ${role} for session ${id} ended: the session's stop began before the refusal was recorded`
+        );
         // The hold was read across a wait: this task may have been refused since, and the claim
         // that replaced it may already have cleared the refusal this one is about to record.
         // Nothing is written then, and the line says so.
@@ -680,6 +722,11 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
       // process, so a reader tells it from a record another process wrote on the same transcript.
       await moveHold(topic, id, previousTopic, previousHoldID, () =>
         deps.appendRoleClaimEntry({ role, sessionID: id, clientInstanceID })
+      );
+      // The stop began while the role this claim moved off was handed back. The stop handed back
+      // the new hold with every other, so the move reports no role the session no longer holds.
+      refuseOnceStopping(
+        `the role move that claimed ${role} for session ${id} ended: the session's stop began as the claim landed`
       );
       return true;
     };
@@ -881,7 +928,8 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
     return { handle, refusal };
   };
 
-  const createQueue = (): TaskQueue => {
+  // `stopped`: whether each task of this queue refuses its steps once the session's stop began.
+  const createQueue = (stopped: () => boolean): TaskQueue => {
     let tail: Promise<unknown> = Promise.resolve();
     return {
       run<T>(
@@ -904,7 +952,7 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
                   )
                 );
               }, taskDeadlineMs);
-              const running = createHandle(() => !abandoned, deadlineAt);
+              const running = createHandle(() => !abandoned, deadlineAt, stopped);
               // The task runs inside this promise so a synchronous throw is its rejection too.
               void (async () => task(running.handle))().then(
                 (value) => {
@@ -918,9 +966,10 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
                   // An abandoned task's settlement is swallowed: the caller's promise rejected at
                   // the deadline, and an unhandled rejection is fatal to the host.
                   if (abandoned) return;
-                  // The task's session moved: it decided nothing, and the pass or move the move
-                  // queued decides. That is not a failure to report, but the caller is told what
-                  // the task left behind, which is not the same as nothing in every case.
+                  // The task's session moved, or the stop began under a role move: it decided
+                  // nothing, and the pass or move the move queued decides, or nothing does after
+                  // the stop. That is not a failure to report, but the caller is told what the task
+                  // left behind, which is not the same as nothing in every case.
                   if (error instanceof StepRefused) {
                     onRefused?.(running.refusal);
                     resolve(undefined);
@@ -938,8 +987,10 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
 
   return {
     clientInstanceID,
-    passes: createQueue(),
-    roleMoves: createQueue(),
+    // A pass reads the stop itself, once its registration settled (the extension's
+    // `reconcileNow`); a role move refuses each step once the stop began.
+    passes: createQueue(() => false),
+    roleMoves: createQueue(deps.stopping),
 
     refreshRegistration,
     registrationFresherThan: (sessionID, ms) =>

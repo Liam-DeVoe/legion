@@ -23,6 +23,7 @@ A Legion pane also loads `@sjawhar/pi-legion`, which reaches this plugin only th
   Oh My Pi's converter reads internals only its own Zod produces, and one field from another Zod fails the whole extension load.
 
 - Registration and role state change only through the two serial queues of `src/registration-state.ts`, the reconcile pass (`passes`) and role moves (`roleMoves`), and after each await a pass, and any branch that spends a person's delivery attempt, reads `sessionOpen` again: the session can change at any await.
+  A role move also refuses each step once the session's stop has begun (`stopping`), so after that point it claims nothing and tells nothing.
 
 - Read role lookups and role records through `roleHeldBy` and `mayActOnRoleRecord` (`@legion/envoy-client/transport`), shared with claude-envoy.
 

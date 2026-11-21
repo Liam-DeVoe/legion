@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+  A session whose shutdown has begun makes no role write. A heartbeat that is past its own check
+  when the shutdown begins reads the shutdown again after each wait of its role steps. After that
+  point it sends no claim, takes back no role, changes no role record and runs no regain hook.
+  `envoy_role_set` is refused once the shutdown has begun, with
+  `this session is stopping, so it claims no role: role <role> is not held here`. A claim that
+  was on the wire when the shutdown began is not kept as a hold of the session's, though the
+  listener can still grant it: the listener's role reaper frees it once it finds the holder gone.
+time: 2026-11-21T22:33:15Z
+custom:
+    Issue: pr4194

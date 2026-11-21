@@ -210,6 +210,9 @@ function createHarness(): Harness {
   const state = createRegistrationState({
     client: () => client,
     sessionOpen: (id) => id === control.open,
+    // No row here stops the session: the extension's rows drive a stop
+    // (`extensions/stopping-registration.test.ts`).
+    stopping: () => false,
     deadlineMs: () => control.deadlineMs,
     notify: (message, level) => notices.push({ message, level }),
     log: { warn: (message, context) => warnings.push({ message, context }) },

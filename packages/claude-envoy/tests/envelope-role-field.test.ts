@@ -130,6 +130,7 @@ const toolSession: ChannelSession = {
   follow: async () => [],
   unfollow: async () => [],
   rememberRole: async () => undefined,
+  stopping: () => false,
   onRoleRegained: () => undefined,
   capabilitiesChanged: () => undefined,
   observe: () => undefined,

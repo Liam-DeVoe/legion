@@ -310,6 +310,11 @@ export interface ChannelSession {
   /** Persist the role held by an explicit envoy_role_set call, or by the Legion claim. */
   rememberRole(role: string): Promise<void>
   /**
+   * Whether this session's shutdown has begun. A role claim made from then on would land after
+   * the session's DELETE, with no heartbeat to renew it, so the role tool refuses it.
+   */
+  stopping(): boolean
+  /**
    * Sets the one hook the heartbeat runs after it re-establishes this session as its held role's
    * live holder: `"reclaimed"` when the listener had stopped naming this session and a soft claim
    * took the role back, `"reregistered"` on the first healthy tick after a failed registration,
@@ -1555,7 +1560,9 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
    *
    * Answers `"pending"` when the role is still to be taken back from that id and only time
    * decides it, `"settled"` when nothing more is to be asked of that record. The caller keeps
-   * the retry: a restore writes none of its own.
+   * the retry: a restore writes none of its own. Once the shutdown has begun, it sends no claim
+   * and changes no record, and answers `"pending"`, so the transfer stays as it was (R24 of
+   * dispatch://INFRA-3589).
    *
    * A record another process wrote is pressed only while this process holds no role
    * (`mayActOnRoleRecord`, the one rule both clients read). One state directory is read by two
@@ -1584,6 +1591,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
   const restoreRole = async (previousSessionID: string): Promise<"settled" | "pending"> => {
     const previousFile = roleStateFile(options.stateDirectory, previousSessionID)
     const persisted = await readPersistedRole(previousFile)
+    if (shuttingDown) return "pending"
     if (persisted === undefined) return "settled"
     if (
       !mayActOnRoleRecord(
@@ -1601,6 +1609,8 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       previousSessionID: persisted.session_id,
       clientInstanceID: options.clientInstanceID,
     })
+    // A claim answered after the shutdown began changes nothing here, granted or not.
+    if (shuttingDown) return "pending"
     if (!claim.claimed) {
       if (claim.holder === identity.id) return "pending"
       if (claim.holder !== persisted.session_id) await rm(previousFile, { force: true })
@@ -1674,14 +1684,19 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
    * the moment that process stops renewing it; the role and its record stay, and the next
    * heartbeat asks again. The record's mtime is refreshed as it is on a confirmed holder, so the
    * age sweep never expires a record this process is still pressing a claim for.
+   *
+   * A shutdown that begins during the read or the claim ends the re-assertion there (R24 of
+   * dispatch://INFRA-3589): no claim goes out after it, no record changes, and no regain hook
+   * runs, since the DELETE follows and no heartbeat renews what this would do.
    */
   const reassertRole = async (afterOutage: boolean): Promise<void> => {
     if (heldRole === undefined) return
     const role = heldRole
     const holding = await options.client.getRole(role).catch(undefinedOnNotFound)
+    if (shuttingDown) return
     if (roleHeldBy(holding, identity.id, options.clientInstanceID)) {
       await refreshRoleRecord()
-      if (afterOutage) fireRegained(role, "reregistered")
+      if (afterOutage && !shuttingDown) fireRegained(role, "reregistered")
       return
     }
     const result = await options.client.setRole({
@@ -1690,6 +1705,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       soft: true,
       clientInstanceID: options.clientInstanceID,
     })
+    if (shuttingDown) return
     if (!result.claimed) {
       if (result.holder !== identity.id) {
         heldRole = undefined
@@ -1721,6 +1737,8 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       roleTransferFrom = (await restoreRole(from)) === "pending" ? from : undefined
       roleTransferFailureReported = false
     } catch (error) {
+      // A failure once the shutdown has begun is said nowhere: no heartbeat retries it.
+      if (shuttingDown) return
       // `roleTransferFrom` is untouched, so the next heartbeat asks again.
       // Said once per failure run.
       if (!roleTransferFailureReported) {
@@ -1924,9 +1942,12 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
         }
         // A body the chain held while shutdown began writes no role: `register` returned without
         // registering, and a role write the chain still holds past the shutdown's bounded wait
-        // would land after the DELETE.
+        // would land after the DELETE. A shutdown that begins later, while a role step waits on
+        // the listener, is read after each wait (`reassertRole`, `restoreRole`) and between the
+        // steps, so no role write follows it.
         if (shuttingDown) return
         await reassertRole(registrationFailed)
+        if (shuttingDown) return
         await transferRole()
         await syncRegisteredInterests()
       })
@@ -2311,6 +2332,9 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
         await writeRoleRecord(roleStateFile(options.stateDirectory, identity.id), role)
       })
     },
+    stopping() {
+      return shuttingDown
+    },
     async shutdown() {
       if (shuttingDown) return
       shuttingDown = true
@@ -2444,6 +2468,10 @@ export async function executeEnvoyTool(
     }
     case EnvoyToolOperation.setRole: {
       const args = parseArguments(spec, input)
+      // A stopping session claims no role (R24 of dispatch://INFRA-3589), and keeps nothing of a
+      // claim that was in flight when its shutdown began: no record, so no later process takes
+      // it back from one.
+      refuseClaimWhileStopping(runtime.session, args.role)
       // The claim names this process, as every claim this server makes does: the listener
       // records it as the role's holder, so a second process on this session id cannot be
       // mistaken for the one holding the role.
@@ -2452,6 +2480,7 @@ export async function executeEnvoyTool(
         role: args.role,
         clientInstanceID: runtime.clientInstanceID,
       })
+      refuseClaimWhileStopping(runtime.session, args.role)
       if (!result.claimed) throw new Error(`role ${args.role} is held by ${result.holder}`)
       await runtime.session.rememberRole(args.role)
       return result.interest
@@ -2475,6 +2504,14 @@ export async function executeEnvoyTool(
       })
       return { channel: posted.channel, thread_ts: posted.threadTs, ts: posted.ts }
     }
+  }
+}
+
+/** Refuses a role claim once `session`'s shutdown has begun, in the words the Oh My Pi plugin's
+ *  `envoy_role_set` uses for the same refusal. */
+function refuseClaimWhileStopping(session: ChannelSession, role: string): void {
+  if (session.stopping()) {
+    throw new Error(`this session is stopping, so it claims no role: role ${role} is not held here`)
   }
 }
 

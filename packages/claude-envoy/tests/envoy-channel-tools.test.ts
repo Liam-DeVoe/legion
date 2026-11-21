@@ -24,7 +24,8 @@ isolatePaneEnvironment()
 
 const makeDirectory = temporaryDirectories("claude-envoy-slack")
 
-function sessionWith(followed: string[]): ChannelSession {
+/** The session the tools act for, following `followed`; `stopping` once its shutdown began. */
+function sessionWith(followed: string[], stopping = false): ChannelSession {
   return {
     delivery: {
       enqueue: async () => true,
@@ -38,6 +39,7 @@ function sessionWith(followed: string[]): ChannelSession {
     },
     unfollow: async () => [],
     rememberRole: async () => undefined,
+    stopping: () => stopping,
     onRoleRegained: () => undefined,
     capabilitiesChanged: () => undefined,
     observe: () => undefined,
@@ -362,6 +364,35 @@ test("the role a tool claims names the process claiming it on the wire", async (
     role: "reviewer",
     client_instance_id: INSTANCE,
   })
+})
+
+// A session whose shutdown has begun claims no role (R24 of dispatch://INFRA-3589): the DELETE
+// follows, and no heartbeat would renew the claim. The tool says so, and sends nothing.
+test("envoy_role_set once the session is stopping is refused naming the stop, and sends nothing", async () => {
+  const sent: string[] = []
+  const client = createEnvoyClient({
+    baseUrl: "http://envoy.test",
+    fetch: async (request) => {
+      sent.push(String(request))
+      return Response.json({
+        session_id: "ses_claude",
+        machine_id: "devbox",
+        dir: "/work",
+        topics: [],
+      })
+    },
+  })
+  const runtime: ChannelToolRuntime = {
+    identity,
+    client,
+    session: sessionWith([], true),
+    clientInstanceID: INSTANCE,
+  }
+
+  await expect(executeEnvoyTool(runtime, "envoy_role_set", { role: "reviewer" })).rejects.toThrow(
+    "this session is stopping, so it claims no role: role reviewer is not held here",
+  )
+  expect(sent).toEqual([])
 })
 
 test("a send that is not confirmed names its key, and a resend under that key sends it again", async () => {

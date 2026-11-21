@@ -16,9 +16,11 @@ import type { SessionContext } from "../test/stand-in-host";
 
 // A stopping session registers nothing and is told nothing (R24 of dispatch://INFRA-3589), also
 // where a registration it sent before its stop is answered only after the stop began
-// (`registerWithRelay`'s `stopping`), and it makes no role move once its stop began. The rows
-// drive the extension through the harness that `envoy.test.ts` uses. They live in a file of their
-// own, since `envoy.test.ts` is close to the file size above which Biome checks nothing in it.
+// (`registerWithRelay`'s `stopping`), and it makes no role move once its stop began: a move that
+// runs or waits its turn when the stop begins claims nothing after that and tells nothing, and
+// `envoy_role_set` is refused. The rows drive the extension through the harness that
+// `envoy.test.ts` uses. They live in a file of their own, since `envoy.test.ts` is close to the
+// file size above which Biome checks nothing in it.
 
 useExtensionHarness();
 
@@ -46,6 +48,18 @@ function handsBackRole(path: string, init: RequestInit | undefined): boolean {
   if (path !== "/v1/interests/unsubscribe") return false;
   const body = JSON.parse(init?.body?.toString() ?? "{}") as { readonly topics?: unknown };
   return Array.isArray(body.topics) && body.topics.includes(`notifications.role.${ROLE}`);
+}
+
+/** Whether a request to `path` with `init` is the stop's deregistration of `session`. */
+function deregisters(session: string, path: string, init: RequestInit | undefined): boolean {
+  return init?.method === "DELETE" && path === `/v1/sessions/${session}`;
+}
+
+/** Holds a request's answer on the wire until the row calls what this adds to `held`. */
+async function heldOn(held: (() => void)[]): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  held.push(resolve);
+  await promise;
 }
 
 /** A host for `sessionID` whose heartbeat ticks only when the row runs a tick of `intervals`,
@@ -311,4 +325,207 @@ test("a heartbeat's pass abandoned at its deadline after the stop began tells th
       await fixture.handlers.get("session_shutdown")?.({}, context);
     }
   });
+});
+
+// A session that holds a role: a heartbeat's pass finds that the listener lost the claim, and its
+// claim of the role again is on the wire when the session's stop begins. The listener grants that
+// claim while the stop is still running. The move ends there: Legion's regain hook does not fire,
+// and the pane hears nothing.
+test("a heartbeat's role claim granted after the stop began fires no regain hook and tells nothing", async () => {
+  const session = "ses_reclaimed_while_stopping";
+  let listenerHoldsClaim = true;
+  let holdClaim = false;
+  const heldClaims: (() => void)[] = [];
+  const heldDeletes: (() => void)[] = [];
+  globalThis.fetch = async (input, init) => {
+    const path = new URL(input.toString()).pathname;
+    if (path === `/v1/roles/${ROLE}`) {
+      return listenerHoldsClaim
+        ? response({ role: ROLE, holder: session, last_seen: 1 })
+        : noHolder();
+    }
+    if (path === "/v1/roles/set") {
+      if (holdClaim) {
+        // Answered only once the test lets it go, after the stop began.
+        holdClaim = false;
+        await heldOn(heldClaims);
+      }
+      return claimGranted(session);
+    }
+    // The stop's last call, held so that the stop still runs when the claim is answered.
+    if (deregisters(session, path, init)) await heldOn(heldDeletes);
+    return responseWithRegistration(input, init, {});
+  };
+  // A fresh instance of the entry, as the first row loads: no static import gives one.
+  const { default: envoyExtension } = await import("./envoy.ts?reclaimed-while-stopping");
+  const regained: string[] = [];
+  onEnvoyRoleRegained(async (role, reason) => {
+    regained.push(`${role}:${reason}`);
+  });
+  const { fixture, intervals, notifications, context } = stoppingHost(session);
+  envoyExtension(fixture.pi);
+  await fixture.handlers.get("session_start")?.({}, context);
+  const roleTool = fixture.tools.find((tool) => tool.name === "envoy_role_set");
+  if (roleTool === undefined) throw new Error("envoy_role_set was not registered");
+
+  try {
+    expect((await roleTool.execute("", { role: ROLE })).isError).toBeFalsy();
+    // The listener drops the claim, so the heartbeat's pass claims the role again.
+    listenerHoldsClaim = false;
+    holdClaim = true;
+    intervals[0]?.();
+    await until(() => heldClaims.length === 1, "the heartbeat's role claim on the wire", 10_000);
+    const notified = notifications.length;
+
+    const stopping = fixture.handlers.get("session_shutdown")?.({}, context);
+    await until(() => heldDeletes.length === 1, "the stop's deregistration on the wire");
+    for (const answer of heldClaims.splice(0)) answer();
+    await settle();
+
+    expect(regained).toEqual([]);
+    expect(notifications.slice(notified)).toEqual([]);
+    for (const answer of heldDeletes.splice(0)) answer();
+    await stopping;
+  } finally {
+    for (const answer of [...heldClaims.splice(0), ...heldDeletes.splice(0)]) answer();
+    await fixture.handlers.get("session_shutdown")?.({}, context);
+  }
+});
+
+// A session that holds a role: the model claims it again, and that claim is on the wire. A
+// heartbeat's pass registers, and its role move waits its turn behind the claim. The session's
+// stop begins and hands the role back, and only then is the claim answered. The waiting move
+// claims nothing after the stop began, so it takes back nothing the stop gave up, Legion's regain
+// hook does not fire, and the pane hears nothing. The tool says the session is stopping.
+test("a role move that waits its turn when the stop begins claims nothing and tells nothing", async () => {
+  const session = "ses_queued_while_stopping";
+  let stopBegan = false;
+  let handedBack = false;
+  let holdClaim = false;
+  let registrations = 0;
+  const heldClaims: (() => void)[] = [];
+  const heldDeletes: (() => void)[] = [];
+  const claimsAfterStop: string[] = [];
+  globalThis.fetch = async (input, init) => {
+    const path = new URL(input.toString()).pathname;
+    // The listener names this session the role's holder until the stop hands the role back.
+    if (path === `/v1/roles/${ROLE}`) {
+      return handedBack ? noHolder() : response({ role: ROLE, holder: session, last_seen: 1 });
+    }
+    if (path === "/v1/roles/set") {
+      if (stopBegan) claimsAfterStop.push(String(init?.body));
+      if (holdClaim) {
+        // Answered only once the test lets it go, after the stop handed the role back.
+        holdClaim = false;
+        await heldOn(heldClaims);
+      }
+      return claimGranted(session);
+    }
+    if (handsBackRole(path, init)) handedBack = true;
+    // The stop's last call, held so that the stop still runs when the claim is answered.
+    if (deregisters(session, path, init)) await heldOn(heldDeletes);
+    if (path === "/v1/interests/subscribe") registrations += 1;
+    return responseWithRegistration(input, init, {});
+  };
+  // A fresh instance of the entry, as the first row loads: no static import gives one.
+  const { default: envoyExtension } = await import("./envoy.ts?queued-while-stopping");
+  const regained: string[] = [];
+  onEnvoyRoleRegained(async (role, reason) => {
+    regained.push(`${role}:${reason}`);
+  });
+  const { fixture, intervals, notifications, context } = stoppingHost(session);
+  envoyExtension(fixture.pi);
+  await fixture.handlers.get("session_start")?.({}, context);
+  const roleTool = fixture.tools.find((tool) => tool.name === "envoy_role_set");
+  if (roleTool === undefined) throw new Error("envoy_role_set was not registered");
+
+  try {
+    expect((await roleTool.execute("", { role: ROLE })).isError).toBeFalsy();
+    holdClaim = true;
+    const claiming = roleTool.execute("", { role: ROLE });
+    await until(() => heldClaims.length === 1, "the tool's claim on the wire");
+    const registered = registrations;
+    intervals[0]?.();
+    await until(() => registrations > registered, "the heartbeat's registration", 10_000);
+    // The pass's role move is queued a few turns after its registration is answered.
+    await settle();
+    const notified = notifications.length;
+
+    stopBegan = true;
+    const stopping = fixture.handlers.get("session_shutdown")?.({}, context);
+    await until(() => handedBack, "the stop's hand-back of the role");
+    await until(() => heldDeletes.length === 1, "the stop's deregistration on the wire");
+    for (const answer of heldClaims.splice(0)) answer();
+    const claimed = await claiming;
+    await settle();
+
+    expect(claimsAfterStop).toEqual([]);
+    expect(regained).toEqual([]);
+    expect(notifications.slice(notified)).toEqual([]);
+    expect(claimed).toMatchObject({
+      isError: true,
+      content: [
+        {
+          type: "text",
+          text: `this session is stopping, so it claims no role: role ${ROLE} is not held here`,
+        },
+      ],
+    });
+    for (const answer of heldDeletes.splice(0)) answer();
+    await stopping;
+  } finally {
+    for (const answer of [...heldClaims.splice(0), ...heldDeletes.splice(0)]) answer();
+    await fixture.handlers.get("session_shutdown")?.({}, context);
+  }
+});
+
+// The model calls `envoy_role_set` while the session's stop runs. The tool refuses, naming the
+// stop, and sends the listener no role call at all.
+test("envoy_role_set called once the stop has begun is refused naming the stop and sends nothing", async () => {
+  const session = "ses_role_set_while_stopping";
+  let stopBegan = false;
+  const heldDeletes: (() => void)[] = [];
+  const roleCallsAfterStop: string[] = [];
+  globalThis.fetch = async (input, init) => {
+    const path = new URL(input.toString()).pathname;
+    if (stopBegan && path.startsWith("/v1/roles/")) roleCallsAfterStop.push(path);
+    if (path === "/v1/roles/set") return claimGranted(session);
+    // The stop's last call, held so that the stop still runs when the tool is called.
+    if (deregisters(session, path, init)) await heldOn(heldDeletes);
+    return responseWithRegistration(input, init, {});
+  };
+  // A fresh instance of the entry, as the first row loads: no static import gives one.
+  const { default: envoyExtension } = await import("./envoy.ts?role-set-while-stopping");
+  const { fixture, notifications, context } = stoppingHost(session);
+  envoyExtension(fixture.pi);
+  await fixture.handlers.get("session_start")?.({}, context);
+  const roleTool = fixture.tools.find((tool) => tool.name === "envoy_role_set");
+  if (roleTool === undefined) throw new Error("envoy_role_set was not registered");
+
+  try {
+    const notified = notifications.length;
+    stopBegan = true;
+    const stopping = fixture.handlers.get("session_shutdown")?.({}, context);
+    await until(() => heldDeletes.length === 1, "the stop's deregistration on the wire");
+
+    const refused = await roleTool.execute("", { role: ROLE });
+    await settle();
+
+    expect(roleCallsAfterStop).toEqual([]);
+    expect(refused).toMatchObject({
+      isError: true,
+      content: [
+        {
+          type: "text",
+          text: `this session is stopping, so it claims no role: role ${ROLE} is not held here`,
+        },
+      ],
+    });
+    expect(notifications.slice(notified)).toEqual([]);
+    for (const answer of heldDeletes.splice(0)) answer();
+    await stopping;
+  } finally {
+    for (const answer of heldDeletes.splice(0)) answer();
+    await fixture.handlers.get("session_shutdown")?.({}, context);
+  }
 });

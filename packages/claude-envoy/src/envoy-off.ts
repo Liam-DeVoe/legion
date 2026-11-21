@@ -36,6 +36,9 @@ export function inboundOffChannelSession(options: {
         role,
       })
     },
+    // It registers nothing and deletes no record, so no claim lands behind a DELETE of its own:
+    // the role tool claims as at any other time.
+    stopping: () => false,
     shutdown: async () => undefined,
   }
 }
