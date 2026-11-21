@@ -77,6 +77,42 @@ func advisoryLockWaiters(t *testing.T, database *store.Store) int {
 	return n
 }
 
+// answeredOrWaiting returns once answer yields, with what it yielded and answered true, or once a
+// session of the test's database waits on an advisory lock (advisoryLockWaiters), with answered
+// false, and fails the test after 30 s with neither; what names the request answer is for. Its
+// caller decides what an answer before any wait means.
+func answeredOrWaiting[T any](t *testing.T, database *store.Store, answer <-chan T, what string) (early T, answered bool) {
+	t.Helper()
+	for giveUp := time.Now().Add(30 * time.Second); advisoryLockWaiters(t, database) == 0; time.Sleep(20 * time.Millisecond) {
+		select {
+		case early = <-answer:
+			return early, true
+		default:
+			if time.Now().After(giveUp) {
+				t.Fatalf("%s neither answered nor waited on a lock within 30 s", what)
+			}
+		}
+	}
+	return early, false
+}
+
+// holdOwnerLock begins a transaction of the test's database that holds project key's owner lock,
+// as another write of the project's access holds it, until the row commits or rolls it back; the
+// test's cleanup rolls it back.
+func holdOwnerLock(t *testing.T, database *store.Store, key string) pgx.Tx {
+	t.Helper()
+	ctx := t.Context()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	if err := store.LockOwner(ctx, tx, store.ProjectOwner(key)); err != nil {
+		t.Fatalf("hold %s's owner lock: %v", key, err)
+	}
+	return tx
+}
+
 // TestAMachineLoginPassRevokesWhatTheRemovalOwesWhileItsClaimMaySend: one owed revocation costs
 // the person's list and a revoke for each login they approved for their own machines, and the pass
 // asks before each of those calls whether its claim may still send one. Of erin's four logins and a
@@ -175,9 +211,8 @@ func TestARemovalRevokesALoginTheBrokersClockStampsAfterIt(t *testing.T) {
 // comes machineLoginSettleAfter after the removal.
 //
 // Control: access.LockForAccessWrite taking no approval lock for the person a removal takes off,
-// the one lock the removal's path takes, and the removal commits while the approval is in flight;
-// the first pass that follows lists no login, so the login the approval then mints is not among its
-// revokes, named.
+// the one lock the removal's path takes, and the removal answers while the approval is in flight,
+// named.
 func TestALoginApprovedInFlightAsTheRemovalCommitsIsRevoked(t *testing.T) {
 	rig := newFakeBrokerRig(t)
 	served, database, registered := newRegisteredAccessServer(t, testServerOptions{
@@ -195,40 +230,22 @@ func TestALoginApprovedInFlightAsTheRemovalCommitsIsRevoked(t *testing.T) {
 	go func() {
 		removed <- dispatchRequest(t, served, http.MethodDelete, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice").Code
 	}()
-	removedEarly := 0
-	var firstPass []string
-	passed := false
-	for giveUp := time.Now().Add(30 * time.Second); removedEarly == 0 && advisoryLockWaiters(t, database) == 0; time.Sleep(20 * time.Millisecond) {
-		select {
-		case removedEarly = <-removed:
-			// The removal did not wait: its first pass runs now, before the approval's login exists.
-			registered.revokeBrokerDebts(ctx)
-			firstPass, passed = rig.revokes(), true
-		default:
-			if time.Now().After(giveUp) {
-				t.Fatalf("alice's removal of erin neither finished nor waited on a lock within 30 s")
-			}
-		}
+	if early, answered := answeredOrWaiting(t, database, removed, "alice's removal of erin"); answered {
+		t.Fatalf("alice's removal of erin answered %d while erin's approve was in flight, want it waiting on erin's approval lock", early)
 	}
 	rig.bodyByRoute[list] = `{"credentials":[{"credential_id":"cred-in-flight","host":"erin-desktop","service":null,"subject":null,"approved_by":"erin@other.example","issued_at":"` + time.Now().UTC().Format(time.RFC3339) + `","expires_at":"2026-12-20T00:00:00Z","expired":false}]}`
 	release()
 	if code := <-approved; code != http.StatusOK {
 		t.Fatalf("erin's approve in flight answered %d, want 200: it was admitted before the removal", code)
 	}
-	if removedEarly == 0 {
-		removedEarly = <-removed
-	}
-	if removedEarly != http.StatusOK {
-		t.Fatalf("alice's removal of erin answered %d, want 200", removedEarly)
+	if code := <-removed; code != http.StatusOK {
+		t.Fatalf("alice's removal of erin answered %d, want 200", code)
 	}
 
-	if !passed {
-		// The removal's first pass, after its commit, which waited for the approval.
-		registered.revokeBrokerDebts(ctx)
-		firstPass = rig.revokes()
-	}
-	if !slices.Contains(firstPass, "POST /v1/launcher-credentials/cred-in-flight/revoke-by-approver") {
-		t.Errorf("the first pass after the removal sent %v; want the login erin's approval in flight minted revoked", firstPass)
+	// The removal's first pass, after its commit, which waited for the approval.
+	registered.revokeBrokerDebts(ctx)
+	if first := rig.revokes(); !slices.Contains(first, "POST /v1/launcher-credentials/cred-in-flight/revoke-by-approver") {
+		t.Errorf("the first pass after the removal sent %v; want the login erin's approval in flight minted revoked", first)
 	}
 	removalAged(t, database, machineLoginSettleAfter)
 	registered.revokeBrokerDebts(ctx)
@@ -463,15 +480,8 @@ func TestAnApproveInFlightDuringTheBrokerRestoredBlockIsRevoked(t *testing.T) {
 			return tx.Commit(background)
 		}()
 	}()
-	for giveUp := time.Now().Add(30 * time.Second); advisoryLockWaiters(t, database) == 0; time.Sleep(20 * time.Millisecond) {
-		select {
-		case early := <-restored:
-			t.Fatalf("the runbook's block ended (error %v) while erin's approve was in flight, want it to wait on erin's approval lock", early)
-		default:
-			if time.Now().After(giveUp) {
-				t.Fatalf("the runbook's block neither finished nor waited on a lock within 30 s")
-			}
-		}
+	if early, answered := answeredOrWaiting(t, database, restored, "the runbook's block"); answered {
+		t.Fatalf("the runbook's block ended (error %v) while erin's approve was in flight, want it to wait on erin's approval lock", early)
 	}
 	rig.bodyByRoute[list] = erinsLoginListed("cred-in-flight")
 	commit()
@@ -555,10 +565,8 @@ func TestARemovalWaitingOnAnApprovalHoldsUpNoOtherWriteOfTheProject(t *testing.T
 	go func() {
 		removed <- dispatchRequest(t, served, http.MethodDelete, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice").Code
 	}()
-	for giveUp := time.Now().Add(30 * time.Second); advisoryLockWaiters(t, database) == 0; time.Sleep(20 * time.Millisecond) {
-		if time.Now().After(giveUp) {
-			t.Fatalf("alice's removal of erin did not wait on erin's approval within 30 s")
-		}
+	if early, answered := answeredOrWaiting(t, database, removed, "alice's removal of erin"); answered {
+		t.Fatalf("alice's removal of erin answered %d while erin's approve was in flight, want it waiting on erin's approval lock", early)
 	}
 
 	added := make(chan int, 1)
@@ -616,29 +624,15 @@ func TestARefusedRemovalHoldsUpNoApproveOfThePerson(t *testing.T) {
 	}
 	rig.bodyByRoute["POST /v1/machine-logins/lookup"] = erinsOwnLogin
 	// Another write of ACC's access, holding ACC's owner lock until the row releases it.
-	other, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = other.Rollback(context.Background()) })
-	if err := store.LockOwner(ctx, other, store.ProjectOwner("ACC")); err != nil {
-		t.Fatalf("hold ACC's owner lock: %v", err)
-	}
+	other := holdOwnerLock(t, database, "ACC")
 
 	removal := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
 		removal <- dispatchRequest(t, served, http.MethodDelete, "/api/v1/projects/ACC/access/people/"+accessErin, nil, accessCarol)
 	}()
-	var refused *httptest.ResponseRecorder
-	for giveUp := time.Now().Add(30 * time.Second); refused == nil && advisoryLockWaiters(t, database) == 0; time.Sleep(20 * time.Millisecond) {
-		select {
-		case refused = <-removal:
-		default:
-			if time.Now().After(giveUp) {
-				t.Fatalf("carol's removal of erin from ACC neither answered nor waited on a lock within 30 s")
-			}
-		}
-	}
+	// The removal is refused before it takes any lock, so its answer before any wait is this row's
+	// own case.
+	refused, answered := answeredOrWaiting(t, database, removal, "carol's removal of erin from ACC")
 	approved := dispatchRequest(t, served, http.MethodPost, "/api/v1/credential-requests/rec-erin/approve", map[string]any{"code": "ABCD-1234"}, accessErin)
 	if approved.Code != http.StatusOK {
 		t.Errorf("erin's approve while carol's removal of her, which carol may not make, is in flight = %d %s, want 200", approved.Code, approved.Body.String())
@@ -646,7 +640,7 @@ func TestARefusedRemovalHoldsUpNoApproveOfThePerson(t *testing.T) {
 	if err := other.Rollback(ctx); err != nil {
 		t.Fatalf("release ACC's owner lock: %v", err)
 	}
-	if refused == nil {
+	if !answered {
 		refused = <-removal
 	}
 	wantRefusal(t, refused, http.StatusForbidden, "PROJECT_OWNER_REQUIRED", accessCarol, "DELETE erin from ACC's list")
@@ -674,14 +668,7 @@ func TestAnOwnerWhoLosesTheProjectBeforeTheLocksIsRefused(t *testing.T) {
 	}
 	// Another write of ACC's access, which gives ACC to carol under ACC's owner lock and commits
 	// when the row says.
-	transfer, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = transfer.Rollback(context.Background()) })
-	if err := store.LockOwner(ctx, transfer, store.ProjectOwner("ACC")); err != nil {
-		t.Fatalf("hold ACC's owner lock: %v", err)
-	}
+	transfer := holdOwnerLock(t, database, "ACC")
 	if _, err := transfer.Exec(ctx, `update projects set owner = $1 where key = 'ACC'`, accessCarol); err != nil {
 		t.Fatalf("give ACC to carol: %v", err)
 	}
@@ -690,15 +677,8 @@ func TestAnOwnerWhoLosesTheProjectBeforeTheLocksIsRefused(t *testing.T) {
 	go func() {
 		removal <- dispatchRequest(t, served, http.MethodDelete, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice")
 	}()
-	for giveUp := time.Now().Add(30 * time.Second); advisoryLockWaiters(t, database) == 0; time.Sleep(20 * time.Millisecond) {
-		select {
-		case early := <-removal:
-			t.Fatalf("alice's removal of erin answered %d %s before the transfer committed, want it waiting on ACC's owner lock", early.Code, early.Body.String())
-		default:
-			if time.Now().After(giveUp) {
-				t.Fatalf("alice's removal of erin neither answered nor waited on a lock within 30 s")
-			}
-		}
+	if early, answered := answeredOrWaiting(t, database, removal, "alice's removal of erin"); answered {
+		t.Fatalf("alice's removal of erin answered %d %s before the transfer committed, want it waiting on ACC's owner lock", early.Code, early.Body.String())
 	}
 	if err := transfer.Commit(ctx); err != nil {
 		t.Fatalf("commit the transfer of ACC to carol: %v", err)
