@@ -119,16 +119,19 @@ The header of `cmd/listener/project_scope.go` lists the rules and the function t
   Each refusal names the variable (`validateEdgeMode`).
 
 - **Admission**: `/v1` admits a broker token alone, of project scope `named` or `person`, that lists at least one project and only projects the edge serves (`EdgeAdmits`).
-  Any other broker token gets `403` with the reason `token_not_admitted`, logged as `listener: edge listener refused a broker token`;
-  a request with no broker token gets `401` before any handler runs.
+  Any other session's broker token gets `403` with the reason `token_not_admitted`, logged as `listener: edge listener refused a broker token`.
+  A read-only token, and a request with no broker token, get `401` before any handler runs: the listener's verifier refuses a read-only token as no session's.
 
 - **Topics**: a registration follows only the session's own agent subject, the topics of the token's projects, and the GitHub topics of one repository each that the repository answer of those projects names.
-  The `403` of a refused registration lists each refused topic, with the reason `repository_not_in_project` when each is a GitHub topic and `topic_not_in_project` otherwise, and nothing of the registration is stored (`edgeFollowRefusal`).
+  The `403` of a refused registration lists each refused topic, with the reason `repository_not_in_project` when each is a GitHub topic and `topic_not_in_project` otherwise, and nothing of the registration is stored (`edgeTopicHold`).
+  The topics the session's interest record already holds, which another listener may have stored under a token of other projects, are held to the same rule at each registration, a registration planned again after a conflict included.
+  Each one the rule refuses is removed from the record and from the session's consumer, and the answer's `warnings` name it.
 
 - **GitHub repositories**: the edge asks the secrets broker which repositories each project's issues resolve to, `GET <ENVOY_AGENT_SECRETS_URL>/v1/project-repositories?project=<KEY>`, with its own broker account.
-  It asks at each registration that names a GitHub topic, and every 30 seconds for each project it serves (`cmd/listener/edge_repositories.go`), and it compares owner and name ignoring case.
-  A registration for which it gets no whole answer gets `503` with the reason `repositories_unknown`.
-  The relay delivers a GitHub event only while an answer no older than 60 seconds names its repository.
+  It asks at each registration that follows a GitHub topic, and every 30 seconds for each project it serves, each project's read on its own (`cmd/listener/edge_repositories.go`), and it compares owner and name ignoring case.
+  A registration for which it gets no whole answer gets `503` with the reason `repositories_unknown`, whose text is the listener's own: what the broker answered goes to the log alone.
+  The relay delivers a GitHub event only while an answer no older than 60 seconds names the repository the event's own payload names.
+  A subject writes a dot in a name as `_`, so `acme/a.b` and `acme/a_b` publish on one subject, and an answer that names one admits only that one's events.
   It acknowledges any other GitHub event undelivered and counts it in `envoy_edge_github_withheld_total`:
   under `reason="not_in_project"`, or under `reason="answer_unknown"` while a project of the session has no fresh answer.
   In that second case the session's next frame carries `Envoy-Gap: true`, and every frame that is not GitHub's is delivered as before.
@@ -138,12 +141,14 @@ The header of `cmd/listener/project_scope.go` lists the rules and the function t
   anything else gets `403 topic_not_published` (`edgePublishRefusal`).
 
 - **Roles**: `POST /v1/roles/set` and `GET /v1/roles/{role}` take only a role that works for one of the token's projects, else `403 role_not_in_project` (`edgeRoleRefusal`).
+  `GET /v1/roles/{role}` names a holder whose registering token listed none of the token's projects without its directory, machine, host, title and capabilities (`edgeRoleHolder`).
 
 - **Sends**: `POST /v1/messages/send` reaches only a session whose registering token listed one of the sender's projects.
   Any other target gets the `404` of a session no listener has heard of, and no wake is reported (`sessionOfProjects`).
 
-- **Reads**: `GET /v1/sessions`, `GET /v1/registry/{session_id}` and the three `/v1/legion/agents` reads answer only the sessions and Legion agents of the token's projects, each session with only those projects' roles;
+- **Reads**: `GET /v1/sessions`, `GET /v1/registry/{session_id}` and the three `/v1/legion/agents` reads answer only the sessions and Legion agents of the token's projects, each session with only those projects' roles and topics (`edgeShownTopics`);
   any other session gets the `404` of an unknown one.
+  A session's own `GET /v1/interests/{session_id}` shows the topics of its token's projects alone.
   `GET /v1/interests/` and another session's `GET /v1/interests/{session_id}` get `403 session_not_in_project`, and a write of the Legion agent registry gets `403 legion_registry_not_written`.
 
 Every edge refusal's body is `listenerwire.EdgeRefusal`, whose comment in `listenerwire/listenerwire.go` names each reason and says how a client reads a refused registration's `refused` list.

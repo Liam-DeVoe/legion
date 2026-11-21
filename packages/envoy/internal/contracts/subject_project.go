@@ -369,8 +369,6 @@ func RoleClaimKey(project, role string) string {
 // refuses a claim it refuses; a claim it allows is keyed by RoleClaimKey of that project (in
 // cmd/listener, through store.RoleClaimKeyOf), so a free-form role under a project
 // (PRIV.lead-reviewer) is that project's own claim beside the claim of the same name under none.
-// Plan C's t-c-6 reads Dispatch's claims through it, so the two then decide a claim's project one
-// way.
 //
 // A Legion role token (legion-<token>-…) works for the project its own name gives
 // (RoleProject), whatever the claim asks for: the role is that project's by construction, and a
