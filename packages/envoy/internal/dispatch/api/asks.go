@@ -3,8 +3,10 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -18,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/texttrees"
 )
@@ -712,24 +715,25 @@ func timestampValue(value time.Time) string {
 	return value.UTC().Format(time.RFC3339Nano)
 }
 
+// openAskOwner is what an open ask stands on, as GET /api/v1/asks/open has answered it from its
+// first release: the issue or the project document of the row's own issue and document.
 type openAskOwner struct {
-	Issue    *inboxIssue    `json:"issue,omitempty"`
-	Document *inboxDocument `json:"document,omitempty"`
+	Issue    *askOwnerIssue    `json:"issue,omitempty"`
+	Document *askOwnerDocument `json:"document,omitempty"`
 }
 
+// openAsk is one row of GET /api/v1/asks/open: the open-ask row every read of open asks answers
+// (openAskRow, built once in ask_rows.go), and beside it what this read has carried from its
+// first release - the ask's SPA item route, its age, its owner, and whether a person has replied
+// in its thread. WaitingOn and WaitingOnPerson stand in front of the ask's own two, which a read
+// of an ask may leave out (model.Ask), because every row of this read has always carried both.
 type openAsk struct {
-	ID           string              `json:"id"`
-	Ref          string              `json:"ref"`
-	Question     string              `json:"question"`
-	Kind         string              `json:"kind"`
-	Urgency      string              `json:"urgency"`
-	CreatedAt    time.Time           `json:"created_at"`
-	AgeSeconds   int64               `json:"age_seconds"`
-	Priority     *int                `json:"priority"`
-	Owner        openAskOwner        `json:"owner"`
-	HumanReplied bool                `json:"human_replied"`
-	LastReply    *model.AskLastReply `json:"last_reply"`
-	WaitingOn    string              `json:"waiting_on"`
+	openAskRow
+	Ref          string       `json:"ref"`
+	AgeSeconds   int64        `json:"age_seconds"`
+	Owner        openAskOwner `json:"owner"`
+	HumanReplied bool         `json:"human_replied"`
+	WaitingOn    string       `json:"waiting_on"`
 	// WaitingOnPerson is the person the ask waits on (askedOfPersonExpression): the person it
 	// was handed to, else its issue's assignee, else its project's default assignee.
 	WaitingOnPerson string `json:"waiting_on_person"`
@@ -745,28 +749,81 @@ type openAsksResponse struct {
 	Asks           []openAsk `json:"asks"`
 }
 
-// listOpenAsks returns every active open ask in one scope, oldest first: authored by one host
-// session (?author_session=) across issues and unlinked project documents, or every open ask on
-// one project's issues and documents (?project=) regardless of author -- issue-owned via
-// issues.project_key, document-owned via artifacts.project_key. Exactly one of the two query
-// parameters selects the scope. A human clarification leaves an ask open but makes the author
-// responsible for the next reply.
+// openAsksWaitingOn turns ?waiting_on= into the SQL mode and login listOpenAsks binds: absent, ""
+// (no narrowing); `unassigned`, the asks that wait on nobody; and any other value "login" with
+// the canonical login of a person who has signed in, canonicalised as allowedLogin canonicalises
+// a person named anywhere else. A repeated key, a blank value and a login nobody has signed in as
+// are 400 INVALID_QUERY naming the key: each names nobody the read could narrow to.
+func (s *server) openAsksWaitingOn(ctx context.Context, query url.Values) (mode, login string, err error) {
+	values, present := query["waiting_on"]
+	if !present {
+		return "", "", nil
+	}
+	value := ""
+	if len(values) == 1 {
+		value = strings.TrimSpace(values[0])
+	}
+	switch value {
+	case "":
+		return "", "", errorf(http.StatusBadRequest, "INVALID_QUERY",
+			"waiting_on is one login of a person who has signed in to Dispatch, or unassigned")
+	case "unassigned":
+		return "unassigned", "", nil
+	}
+	login, err = s.allowedLogin(ctx, value)
+	var refused *apiError
+	if errors.As(err, &refused) {
+		return "", "", errorf(http.StatusBadRequest, "INVALID_QUERY",
+			"waiting_on names %q, who has not signed in to Dispatch; it is a login of a person who has, or unassigned", value)
+	}
+	if err != nil {
+		return "", "", err
+	}
+	return "login", login, nil
+}
+
+// listOpenAsks returns the active open asks of one scope, in priority order and oldest first
+// within it: those one host session authored (?author_session=), across issues and unlinked
+// project documents; every open ask on one project's issues and documents (?project=), whoever
+// authored it - issue-owned via issues.project_key, document-owned via artifacts.project_key; or,
+// with neither, every open ask of every project. At most one of the two scopes is named, and a
+// scope key sent blank is refused rather than read as left out, which would widen the read to
+// every project. ?waiting_on= narrows any of them to the asks that wait on one person, or on
+// nobody. Every row passes the visibility predicate of the ask's node for the acting credential
+// (refs.VisibleKind), so the read answers no ask the caller may not see. A human clarification
+// leaves an ask open but makes the author responsible for the next reply.
+//
+// The read is two statements on the pool: what the scope holds as of now - the moment it answers
+// in as_of, and whether an ask of it, in any state, opened at or after ?since= - and then the
+// rows, each an open-ask row (scanOpenAskRow) with this read's own fields beside it, finished as
+// every read of open asks on the pool finishes them (finishOpenAskRows). The moment is taken
+// first, so a caller that sends it back as its next ?since= is told of every ask opened after it.
 func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.actingReader(w, r)
+	if !ok {
 		return
 	}
-	sessionID := strings.TrimSpace(r.URL.Query().Get("author_session"))
-	project := strings.TrimSpace(r.URL.Query().Get("project"))
-	if sessionID == "" && project == "" {
-		writeError(w, "AUTHOR_SESSION_OR_PROJECT_REQUIRED", http.StatusBadRequest, "exactly one of author_session or project is required")
+	query := r.URL.Query()
+	sessionID := strings.TrimSpace(query.Get("author_session"))
+	project := strings.TrimSpace(query.Get("project"))
+	switch {
+	case query.Has("author_session") && sessionID == "":
+		writeError(w, "INVALID_QUERY", http.StatusBadRequest, "author_session is blank: name one session, or leave it out")
+		return
+	case query.Has("project") && project == "":
+		writeError(w, "INVALID_QUERY", http.StatusBadRequest, "project is blank: name one project, or leave it out")
+		return
+	case sessionID != "" && project != "":
+		writeError(w, "AUTHOR_SESSION_OR_PROJECT_CONFLICT", http.StatusBadRequest, "author_session and project are mutually exclusive; supply at most one")
 		return
 	}
-	if sessionID != "" && project != "" {
-		writeError(w, "AUTHOR_SESSION_OR_PROJECT_CONFLICT", http.StatusBadRequest, "author_session and project are mutually exclusive; supply exactly one")
+	waitingMode, waitingLogin, err := s.openAsksWaitingOn(r.Context(), query)
+	if err != nil {
+		s.writeHandlerError(w, err)
 		return
 	}
 	var since *time.Time
-	if values, ok := r.URL.Query()["since"]; ok {
+	if values, ok := query["since"]; ok {
 		if len(values) != 1 {
 			writeError(w, "INVALID_SINCE", http.StatusBadRequest, "since must be one RFC3339 timestamp")
 			return
@@ -778,71 +835,71 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 		}
 		since = &value
 	}
-
+	// The scope over the ask aliased a and the joins askedOfPersonExpression reads, bound the same
+	// in both statements: $1 the session, $2 the project, $3 and $4 ?waiting_on='s mode and login,
+	// which narrow on the person the ask waits on exactly as the Inbox's ?assignee= does (listInbox),
+	// and $5 the acting credential the ask node's visibility predicate binds. `unassigned` is left
+	// standing for the caller that sends it: every question reaches a person now, so it answers
+	// nothing.
+	scope := `($1 = '' or (a.author->>'kind' = 'session' and a.author->>'id' = $1))
+		  and ($2 = '' or coalesce(i.project_key, ar.project_key) = $2)
+		  and ($3 = ''
+		       or ($3 = 'unassigned' and ` + askedOfPersonExpression + ` is null)
+		       or ($3 = 'login' and ` + askedOfPersonExpression + ` = $4))
+		  and ` + refs.VisibleKind(graphstore.KindAsk, "a.id::text", "$5")
+	visibility := refs.VisibilityArg(who)
 	var asOf time.Time
 	var openedSince bool
-	var rawAsks []byte
-	err := s.deps.Store.Pool.QueryRow(r.Context(), `
-		with mine as (
-			select a.* from asks a
-			left join issues i on i.key = a.issue_key
-			left join artifacts ar on ar.id = a.artifact_id
-			where
-				($1 <> '' and a.author->>'kind' = 'session' and a.author->>'id' = $1)
-				or ($3 <> '' and coalesce(i.project_key, ar.project_key) = $3)
-		), active as (
-			select
-				a.id::text,
-				`+askItemRefExpression+` as ref,
-				a.question,
-				a.kind,
-				a.urgency,
-				a.created_at,
-				greatest(0, floor(extract(epoch from (statement_timestamp() - a.created_at))))::bigint as age_seconds,
-				i.priority,
-				-- The issue's own assignee beside its key and title, which is not the person the
-				-- question reaches: a question on an issue nobody holds carries a null assignee
-				-- here and the project's default in waiting_on_person below. The Inbox's rows
-				-- carry the pair the same way (inboxIssue, api/inbox.go).
-				case
-					when i.key is not null then jsonb_build_object('issue', jsonb_build_object('key', i.key, 'title', i.title, 'assignee', i.assignee))
-					else jsonb_build_object('document', jsonb_build_object('project', ar.project_key, 'slug', ar.slug, 'name', ar.name))
-				end as owner,
-				exists (
-					select 1 from comments c
-					where c.ask_id = a.id and c.author->>'kind' = 'user'
-				) as human_replied,
-				case when lr.created_at is null then null else jsonb_build_object(
-					'author', lr.author,
-					'created_at', lr.created_at
-				) end as last_reply,
-				`+waitingOnExpression+` as waiting_on,
-				`+askedOfPersonExpression+` as waiting_on_person
-			from mine a`+askedOfPersonJoins+lastReplyJoin+`
-			where a.state = 'open' and (i.key is null or i.closed_at is null)
+	if err := s.deps.Store.Pool.QueryRow(r.Context(), `
+		select statement_timestamp(), $6::timestamptz is not null and exists (
+			select 1 from asks a`+askedOfPersonJoins+`
+			where `+scope+` and a.created_at >= $6
 		)
-		select
-			statement_timestamp(),
-			exists (select 1 from mine where $2::timestamptz is not null and created_at >= $2),
-			coalesce((select jsonb_agg(to_jsonb(active) order by priority asc nulls last, created_at asc, id) from active), '[]'::jsonb)
-	`, sessionID, since, project).Scan(&asOf, &openedSince, &rawAsks)
+	`, sessionID, project, waitingMode, waitingLogin, visibility, since).Scan(&asOf, &openedSince); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// The snooze a row carries is the caller's own: the person the credential acts for, and none
+	// for a credential that acts for nobody.
+	snoozer, _ := actorPerson(who)
+	rows, err := s.deps.Store.Pool.Query(r.Context(), `
+		select `+openAskRowColumns+`,
+		       `+askItemRefExpression+`,
+		       greatest(0, floor(extract(epoch from (statement_timestamp() - a.created_at))))::bigint,
+		       exists (select 1 from comments c where c.ask_id = a.id and c.author->>'kind' = 'user')
+		`+openAskRowFrom("$6")+`
+		where a.state = 'open' and (i.key is null or i.closed_at is null)
+		  and `+scope+`
+		order by i.priority asc nulls last, a.created_at asc, a.id
+	`, sessionID, project, waitingMode, waitingLogin, visibility, snoozer)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-
-	asks := []openAsk{}
-	if err := json.Unmarshal(rawAsks, &asks); err != nil {
-		s.writeHandlerError(w, fmt.Errorf("decode open asks: %w", err))
-		return
-	}
+	defer rows.Close()
 	response := openAsksResponse{
 		SessionID:   sessionID,
 		AsOf:        timestampValue(asOf),
 		OpenedSince: openedSince,
-		Asks:        asks,
+		Asks:        []openAsk{},
 	}
-	for _, ask := range asks {
+	for rows.Next() {
+		var ask openAsk
+		row, err := scanOpenAskRow(rows, &ask.Ref, &ask.AgeSeconds, &ask.HumanReplied)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		ask.openAskRow = row
+		ask.Owner = openAskOwner{Issue: row.Issue, Document: row.Document}
+		ask.WaitingOn, ask.WaitingOnPerson = row.WaitingOn, row.WaitingOnPerson
+		response.Asks = append(response.Asks, ask)
+	}
+	if err := rows.Err(); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	for _, ask := range response.Asks {
 		switch ask.WaitingOn {
 		case "human":
 			response.WaitingOnHuman++
@@ -854,6 +911,16 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	response.Count = len(response.Asks)
+	listed := make([]*openAskRow, len(response.Asks))
+	for index := range response.Asks {
+		listed[index] = &response.Asks[index].openAskRow
+	}
+	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+	if err := s.finishOpenAskRows(r.Context(), who, listed, reader); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	reader.resolve()
 	WriteJSON(w, http.StatusOK, response)
 }
 

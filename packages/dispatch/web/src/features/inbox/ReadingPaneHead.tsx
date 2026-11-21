@@ -1,7 +1,7 @@
 import { type ReactNode, useCallback, useState } from "react";
 import { Link } from "react-router-dom";
 
-import type { Artifact, InboxRow, MyReplyRow } from "../../api/types";
+import type { Artifact, MyReplyRow, OpenAskRow } from "../../api/types";
 import {
   linkHoverText,
   linkText,
@@ -29,7 +29,7 @@ import { useControlName } from "./useControlName";
  *  issue page — the document itself at the section the column is scrolled to. The section is the
  *  heading the pane found; before the document has drawn, the question's own block, and for an
  *  anchored question the block its quote sits in. */
-function openPagePath(ask: InboxRow, sectionBlockId: string | undefined): string | undefined {
+function openPagePath(ask: OpenAskRow, sectionBlockId: string | undefined): string | undefined {
   const issueKey = askIssueKey(ask);
   if (issueKey !== null) {
     return buildIssuePath({ key: issueKey, kind: "issue" });
@@ -52,7 +52,7 @@ export interface ReadingPaneHeadProps {
   /** The document the column shows, once it is read; undefined for a question in no document and
    *  while the read is out. The approval actions are this document's. */
   artifact: Artifact | undefined;
-  ask: InboxRow;
+  ask: OpenAskRow;
   /** The reader's own answer or review landed. */
   onAnswered: (askId: string) => void;
   /** Moves the column to the next block marked as changed; undefined when nothing is marked. */

@@ -1,6 +1,6 @@
 import type {
-  InboxRow,
   MyReplyRow,
+  OpenAskRow,
   SessionAnswersResponse,
   WhoamiResponse,
 } from "@legion/contracts";
@@ -134,7 +134,7 @@ const INBOX_QUESTION_HEAD = 80;
  * ask shortens it; a row Dispatch lists with no snooze at all is not deferred, and neither is one
  * whose moment has passed.
  */
-function inboxSnoozed(row: InboxRow, now: number): boolean {
+function inboxSnoozed(row: OpenAskRow, now: number): boolean {
   if (row.snoozed_until === null) return false;
   const at = Date.parse(row.snoozed_until);
   return !Number.isNaN(at) && at > now;
@@ -146,7 +146,7 @@ function inboxSnoozed(row: InboxRow, now: number): boolean {
  * them now; every other row sits under whose turn it is. A row the Inbox lists without a turn
  * belongs to no band, as on the page, and so is listed under no heading.
  */
-function inboxSection(row: InboxRow, now: number): "agent" | "human" | "later" | undefined {
+function inboxSection(row: OpenAskRow, now: number): "agent" | "human" | "later" | undefined {
   if (inboxSnoozed(row, now)) return "later";
   const waiting = row.waiting_on;
   return waiting === "agent" || waiting === "human" ? waiting : undefined;
@@ -155,7 +155,7 @@ function inboxSection(row: InboxRow, now: number): "agent" | "human" | "later" |
 /** Where an inbox row's ask lives: the issue key or the document slug its line is named by, and
  *  the ask's own `dispatch://` address under that owner. Every row the Inbox lists has one owner
  *  or the other; a row with neither, which no read makes, is named by the ask's id alone. */
-function inboxAskOwner(row: InboxRow): { readonly label: string; readonly ref: string } {
+function inboxAskOwner(row: OpenAskRow): { readonly label: string; readonly ref: string } {
   const key = row.issue?.key ?? row.issue_key;
   if (key !== null) {
     return { label: key, ref: dispatchChildRef(dispatchIssueRef(key), "ask", row.id) };
@@ -170,7 +170,7 @@ function inboxAskOwner(row: InboxRow): { readonly label: string; readonly ref: s
   return { label: row.id, ref: row.id };
 }
 
-function inboxAskLine(row: InboxRow): string {
+function inboxAskLine(row: OpenAskRow): string {
   const { label, ref } = inboxAskOwner(row);
   const priority = row.priority === null ? "P-" : `P${row.priority}`;
   return `- ${label} · ${priority} · ${row.kind} · ${textHead(row.question, INBOX_QUESTION_HEAD)} · ${ref}`;
@@ -295,12 +295,16 @@ function sideRead<T>(settled: SettledSideRead<T>, what: string, warnings: string
  * requests first, then the expired ones nobody has dismissed.
  */
 function formatInboxSummary(
-  rows: readonly InboxRow[],
+  rows: readonly OpenAskRow[],
   threads: readonly MyReplyRow[],
   requests: readonly CredentialPendingRow[],
   now: number
 ): string {
-  const sections = { agent: [] as InboxRow[], human: [] as InboxRow[], later: [] as InboxRow[] };
+  const sections = {
+    agent: [] as OpenAskRow[],
+    human: [] as OpenAskRow[],
+    later: [] as OpenAskRow[],
+  };
   for (const row of rows) {
     const section = inboxSection(row, now);
     if (section !== undefined) sections[section].push(row);
@@ -334,7 +338,7 @@ export async function inboxCommand(context: SessionContext): Promise<DispatchToo
   const pending = settleSideRead(client.credentialPending());
   const unread = settleSideRead(client.myReplies());
   let identity: WhoamiResponse;
-  let rows: InboxRow[];
+  let rows: OpenAskRow[];
   try {
     [identity, rows] = await Promise.all([client.whoami(), client.inbox("me")]);
   } catch (error) {

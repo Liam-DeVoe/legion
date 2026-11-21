@@ -14,7 +14,7 @@ import type {
   AskRead,
   Comment,
   CreateCommentInput,
-  InboxRow,
+  OpenAskRow,
 } from "../api/types";
 import { AskCard } from "../features/inbox/AskCard";
 import { AskReplyComposer } from "../features/inbox/AskThread";
@@ -1391,7 +1391,7 @@ test("AskCard restores its inbox entry if an optimistic answer fails", async () 
   const { queryClient, view } = renderCard(
     <AskCard ask={input} answerAsk={() => pendingAnswer} getAskThread={emptyThread(input)} />
   );
-  const inboxInput: InboxRow = {
+  const inboxInput: OpenAskRow = {
     ...input,
     last_reply: null,
     priority: null,
@@ -1408,16 +1408,16 @@ test("AskCard restores its inbox entry if an optimistic answer fails", async () 
       route_status_reason: null,
     },
   };
-  queryClient.setQueryData<InboxRow[]>(["inbox"], [inboxInput]);
+  queryClient.setQueryData<OpenAskRow[]>(["inbox"], [inboxInput]);
 
   try {
     await user.click(await view.findByRole("radio", { name: "Ship" }));
     await user.click(view.getByRole("button", { name: "Answer" }));
 
-    await waitFor(() => expect(queryClient.getQueryData<InboxRow[]>(["inbox"])).toEqual([]));
+    await waitFor(() => expect(queryClient.getQueryData<OpenAskRow[]>(["inbox"])).toEqual([]));
     rejectAnswer(new Error("offline"));
     await waitFor(() =>
-      expect(queryClient.getQueryData<InboxRow[]>(["inbox"])).toEqual([inboxInput])
+      expect(queryClient.getQueryData<OpenAskRow[]>(["inbox"])).toEqual([inboxInput])
     );
   } finally {
     view.unmount();

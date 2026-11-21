@@ -2,7 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 
 import type { WriteBounds, WriteMethod } from "../../api/client";
 import { inboxQuery, meInboxQuery } from "../../api/queries";
-import type { Ask, InboxRow } from "../../api/types";
+import type { Ask, OpenAskRow } from "../../api/types";
 import { askWritten } from "../../api/write-events";
 import {
   type KeyedWriteResult,
@@ -65,7 +65,7 @@ export function resetOutstandingAnswers(): void {
  *  back. Undefined where the write left the Inbox alone - a change to an answer the server has
  *  already recorded, whose ask has no open row there - and so kept nothing. */
 type InboxRowsBefore =
-  | { readonly rows: InboxRow[] | undefined; readonly oneRead: MeInboxSnapshot }
+  | { readonly rows: OpenAskRow[] | undefined; readonly oneRead: MeInboxSnapshot }
   | undefined;
 
 /** What every press of an answer or a decline carries: the ask it is of. `retry()` runs the
@@ -148,9 +148,9 @@ export function useOutstandingAnswerWrite<TData, TVariables extends AskPress>({
         queryClient.cancelQueries({ queryKey: inboxQuery().queryKey }),
         cancelMeInbox(queryClient),
       ]);
-      const rows = queryClient.getQueryData<InboxRow[]>(inboxQuery().queryKey);
+      const rows = queryClient.getQueryData<OpenAskRow[]>(inboxQuery().queryKey);
       const oneRead = meInboxSnapshot(queryClient);
-      queryClient.setQueryData<InboxRow[]>(inboxQuery().queryKey, (current) =>
+      queryClient.setQueryData<OpenAskRow[]>(inboxQuery().queryKey, (current) =>
         current?.filter((row) => row.id !== press.ask.id)
       );
       patchMeInboxAsks(queryClient, (row) => (row.id === press.ask.id ? undefined : row));

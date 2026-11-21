@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import { inboxQuery, meInboxQuery, whoAmIQuery } from "../../api/queries";
-import type { CredentialPendingRow, InboxRow } from "../../api/types";
+import type { CredentialPendingRow, OpenAskRow } from "../../api/types";
 import { useIsHuman } from "../../hooks/useIsHuman";
 import { compareTimestamps, isTimestamp } from "../../lib/timestamps";
 import {
@@ -30,7 +30,7 @@ import { isSnoozed } from "./snooze";
  *  saying it does not need them now. A row that carries no snooze at all (an issue header's
  *  `open_asks`) is never deferred. */
 export function waitingOnHuman<
-  T extends Pick<InboxRow, "waiting_on"> & Partial<Pick<InboxRow, "snoozed_until">>,
+  T extends Pick<OpenAskRow, "waiting_on"> & Partial<Pick<OpenAskRow, "snoozed_until">>,
 >(asks: readonly T[]): T[] {
   return asks.filter((ask) => ask.waiting_on === "human" && !isSnoozed(ask));
 }
@@ -47,7 +47,10 @@ export function waitingOnHuman<
  *  nothing: a list taken over the whole inbox while the shell loads would not be theirs.
  *  Every count of such work - the badges, the banner, the Agents page's first card number -
  *  reads this, so they all mean the same thing. */
-export function waitingOnYou(asks: readonly InboxRow[], viewer: string | undefined): InboxRow[] {
+export function waitingOnYou(
+  asks: readonly OpenAskRow[],
+  viewer: string | undefined
+): OpenAskRow[] {
   if (viewer === undefined) return [];
   return waitingOnHuman(asks).filter((ask) => isMine({ ask, kind: "ask" }, viewer));
 }
@@ -72,7 +75,7 @@ export function waitingOnYou(asks: readonly InboxRow[], viewer: string | undefin
  *  verbatim, and the badges render in the app shell, outside every page's error boundary, so a
  *  throw here would take down every page. */
 function needsYou(
-  asks: readonly InboxRow[],
+  asks: readonly OpenAskRow[],
   credentialRequests: readonly CredentialPendingRow[],
   viewer: string | undefined
 ): { count: number; oldest: string | undefined } {
@@ -111,7 +114,7 @@ export function BlockedOnYou({
   variant = "banner",
   viewer,
 }: {
-  asks: readonly InboxRow[];
+  asks: readonly OpenAskRow[];
   className?: string;
   /** The credential requests the Inbox lists above its asks; the project pill has none. */
   credentialRequests?: readonly CredentialPendingRow[];

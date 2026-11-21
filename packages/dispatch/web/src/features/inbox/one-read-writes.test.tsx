@@ -29,7 +29,7 @@ import {
   whoAmIQuery,
 } from "../../api/queries";
 import { DispatchQueryClient } from "../../api/query-client";
-import type { InboxReadResponse, InboxRow, MeInboxResponse, MyReplyRow } from "../../api/types";
+import type { InboxReadResponse, MeInboxResponse, MyReplyRow, OpenAskRow } from "../../api/types";
 import { issuePriority } from "../issue/issue-priority";
 import { useIssueAssignee } from "../issue/useIssueAssignee";
 import { useIssuePriority } from "../issue/useIssuePriority";
@@ -55,7 +55,10 @@ afterEach(() => {
 });
 
 /** One answer of the one read, its entries carrying `asks` and `threads`. */
-function oneRead(asks: readonly InboxRow[], threads: readonly MyReplyRow[] = []): MeInboxResponse {
+function oneRead(
+  asks: readonly OpenAskRow[],
+  threads: readonly MyReplyRow[] = []
+): MeInboxResponse {
   return oneReadAnswer([...asks, ...threads], { asOf: AS_OF });
 }
 
@@ -71,7 +74,7 @@ const CLIENT_OPTIONS = {
 /** `client`, signed in as alice and holding the Inbox read `inbox`, and the one read's Inbox
  *  answer and unread count. */
 function seeded(
-  inbox: readonly InboxRow[],
+  inbox: readonly OpenAskRow[],
   answer: MeInboxResponse,
   unread = 0,
   client: QueryClient = new QueryClient(CLIENT_OPTIONS)
@@ -96,7 +99,7 @@ function cached(client: QueryClient): MeInboxResponse | undefined {
   return client.getQueryData<MeInboxResponse>(meInboxQuery().queryKey);
 }
 
-function cachedAsk(client: QueryClient, id: string): InboxRow | undefined {
+function cachedAsk(client: QueryClient, id: string): OpenAskRow | undefined {
   return cached(client)?.entries?.find((entry) => entry.ask?.id === id)?.ask;
 }
 
@@ -129,7 +132,7 @@ function HandOnList({
   ask,
   onHandOn,
 }: {
-  ask: InboxRow;
+  ask: OpenAskRow;
   onHandOn: (submit: (to: string) => void) => void;
 }): ReactNode {
   const inbox = useQuery({ queryFn: async () => [ask], queryKey: inboxQuery().queryKey });
@@ -460,7 +463,7 @@ test("a read of the one read asked before Mark all read does not put back the ro
 
 /** The reader's own asks behind the opt-in as the page lists them (`useInboxAsks`), beside a
  *  snooze of `ask`. */
-function OneReadAsks({ ask, until }: { ask: InboxRow; until: string }): ReactNode {
+function OneReadAsks({ ask, until }: { ask: OpenAskRow; until: string }): ReactNode {
   const inbox = useQuery({ queryFn: async () => [ask], queryKey: inboxQuery().queryKey });
   const listed = useInboxAsks(inbox.data);
   const snooze = useAskSnooze(ask.id);

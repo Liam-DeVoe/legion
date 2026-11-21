@@ -35,8 +35,8 @@ import type {
   AskRead,
   DispatchEvent,
   EventType,
-  InboxRow,
   MeInboxResponse,
+  OpenAskRow,
 } from "../api/types";
 import { hasPendingAskThreadInvalidation } from "../features/inbox/ask-thread-freshness";
 import { issueAsk, oneReadAnswer } from "../features/inbox/inbox-fixture";
@@ -285,7 +285,7 @@ interface PageOptions {
   /** Whether the Inbox's thread rows hold a thread on CORE-1. */
   readonly threadsHold: boolean;
   /** The rows both Inbox reads hold, in place of the two `inboxHolds` names. */
-  readonly inboxRows?: readonly Partial<InboxRow>[];
+  readonly inboxRows?: readonly Partial<OpenAskRow>[];
   /** The rows every issue's ask list and the project document's hold, in place of their own. */
   readonly askRows?: readonly Partial<Ask>[];
   /** The priorities the one issue each named read holds advances, in place of its own data: an
@@ -1933,7 +1933,7 @@ test("a thread on its first load is judged on the response that lands: refreshed
   expect(client.getQueryState(["ask-thread", "ask-4"])?.isInvalidated).toBe(false);
 });
 
-function threadOf(row: InboxRow, claimant: string | null = row.thread.claimant): AskRead {
+function threadOf(row: OpenAskRow, claimant: string | null = row.thread.claimant): AskRead {
   return { ask: row, ...row.thread, claimant };
 }
 
@@ -1946,7 +1946,7 @@ test("a claim that moves while the Inbox is in flight sends that issue's later c
     issue_key: "CORE-2",
   });
   const rows = [onIssue, sibling, elsewhere];
-  const inFlight = Promise.withResolvers<InboxRow[]>();
+  const inFlight = Promise.withResolvers<OpenAskRow[]>();
   const getInbox = spyOn(api, "getInbox").mockImplementationOnce(() => inFlight.promise);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(["whoami"], { kind: "user", login: "alice" });
@@ -1955,12 +1955,12 @@ test("a claim that moves while the Inbox is in flight sends that issue's later c
   // The endpoint answers after the claim: every thread on CORE-1 names the new claimant.
   const getAskThread = async (id: string): Promise<AskRead> => {
     reads.push(id);
-    const row = rows.find((candidate) => candidate.id === id) as InboxRow;
+    const row = rows.find((candidate) => candidate.id === id) as OpenAskRow;
     return threadOf(row, row.issue_key === "CORE-1" ? "session-now" : null);
   };
   const wrapper = ({ children }: { children: ReactNode }) =>
     createElement(QueryClientProvider, { client }, children);
-  const mountCard = (row: InboxRow) =>
+  const mountCard = (row: OpenAskRow) =>
     renderHook(
       () =>
         useAskAnswerForm({

@@ -12,7 +12,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useCallback, useMemo } from "react";
 
 import { meInboxQuery, whoAmIQuery } from "../../api/queries";
-import type { InboxRow } from "../../api/types";
+import type { OpenAskRow } from "../../api/types";
 import { useIsHuman } from "../../hooks/useIsHuman";
 import { meInboxAsks } from "./one-read-rows";
 import { isMine } from "./sections";
@@ -26,7 +26,7 @@ export function useOneRead(): boolean {
 /** The open asks the Inbox lists (`useInboxAsks`), and the state of the one read they are drawn
  *  from behind the opt-in. */
 export interface InboxAsks {
-  readonly asks: InboxRow[] | undefined;
+  readonly asks: OpenAskRow[] | undefined;
   /** Whether the one read the reader's own asks come from has not answered yet: false without
    *  the opt-in, where no such read is made. */
   readonly pending: boolean;
@@ -48,7 +48,7 @@ export interface InboxAsks {
  * it failed, the list holds none of the reader's own asks, so it says so (`pending`, `failed`)
  * for the page to draw its loading state or its error rather than a list without them.
  */
-export function useInboxAsks(asks: InboxRow[] | undefined): InboxAsks {
+export function useInboxAsks(asks: OpenAskRow[] | undefined): InboxAsks {
   const oneRead = useOneRead();
   const human = useIsHuman();
   const viewer = useQuery(whoAmIQuery()).data?.login;

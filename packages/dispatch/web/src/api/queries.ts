@@ -20,10 +20,10 @@ import type {
   DeliveryMeasuresResponse,
   DeliveryPipelineResponse,
   DeliveryTimelineWithMeasures,
-  InboxRow,
   IssueDetails,
   MeInboxResponse,
   MyRepliesResponse,
+  OpenAskRow,
 } from "./types";
 
 /** The signed-in principal (`/auth/whoami`). One key shared by every surface that reads it; it
@@ -43,7 +43,7 @@ export const inboxQuery = () =>
     queryKey: ["inbox"],
     queryFn: async ({ client }) => {
       const fetch = beginInboxFetch(client, "inbox");
-      let asks: InboxRow[] | undefined;
+      let asks: OpenAskRow[] | undefined;
       try {
         asks = await api.getInbox();
         return asks;

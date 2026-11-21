@@ -6,7 +6,7 @@ import { useState } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { api } from "../../api/client";
-import type { InboxRow } from "../../api/types";
+import type { OpenAskRow } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { InboxDrawer } from "./InboxDrawer";
@@ -126,7 +126,7 @@ test("picking an assignee inside the drawer lists that person there, writes noth
 
 test("Snooze inside the drawer folds the row into Later, same as the Inbox page", async () => {
   const user = userEvent.setup();
-  let served: InboxRow[] = [issueAsk()];
+  let served: OpenAskRow[] = [issueAsk()];
   const getInbox = mockInboxReads(() => served);
   const snoozeAsk = spyOn(api, "snoozeAsk").mockImplementation(async (id, until) => {
     served = served.map((row) => (row.id === id ? { ...row, snoozed_until: until } : row));

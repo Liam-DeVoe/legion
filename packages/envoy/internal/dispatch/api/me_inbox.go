@@ -115,7 +115,7 @@ type meInboxEntry struct {
 	// row by (the newest reply somebody else wrote, or the dismissal), and otherwise the newest of
 	// its relations.
 	Moment time.Time         `json:"moment"`
-	Ask    *inboxAsk         `json:"ask,omitempty"`
+	Ask    *openAskRow       `json:"ask,omitempty"`
 	Thread *model.MyReplyRow `json:"thread,omitempty"`
 	Agent  *meInboxAgent     `json:"agent,omitempty"`
 }
@@ -468,7 +468,7 @@ type meInboxRead struct {
 // and its session's name. The ask details every list of asks carries beside its rows are kept where
 // meInboxAsks reads them (openedEvents, backlinkCounts and askParts).
 type meInboxPage struct {
-	asks      map[string]inboxAsk
+	asks      map[string]openAskRow
 	reaches   map[string]askReach
 	replies   map[string][]model.Comment
 	edits     map[string][]model.AskEdit
@@ -695,7 +695,7 @@ func (read *meInboxRead) assemble(row *meInboxRow) error {
 // every stored tree their texts read.
 func (read *meInboxRead) readPage(types *pgtype.Map, columns *meInboxOnceColumns) error {
 	page := meInboxPage{
-		asks: map[string]inboxAsk{}, reaches: map[string]askReach{}, replies: map[string][]model.Comment{},
+		asks: map[string]openAskRow{}, reaches: map[string]askReach{}, replies: map[string][]model.Comment{},
 		edits: map[string][]model.AskEdit{}, followers: map[string][]model.AskFollower{},
 		threads: map[string]model.MyReplyRow{}, roots: map[string]model.Message{},
 		chains: map[string][]model.Message{}, titles: map[string]string{},
@@ -726,25 +726,9 @@ func (read *meInboxRead) readPage(types *pgtype.Map, columns *meInboxOnceColumns
 // list of asks carries beside its rows into read.
 func (read *meInboxRead) readAsks(types *pgtype.Map, columns *meInboxOnceColumns, page *meInboxPage) error {
 	for _, record := range records(types, columns.asks) {
-		var ask inboxAsk
-		var issueKey, issueTitle, issueAssignee, documentProject, documentSlug, documentName *string
-		var snoozedUntil *time.Time
-		scanned, reply, err := scanAskRead(record,
-			&issueKey, &issueTitle, &issueAssignee, &ask.Priority, &documentProject, &documentSlug, &documentName, &snoozedUntil)
+		ask, err := scanOpenAskRow(record)
 		if err != nil {
 			return err
-		}
-		ask.Ask = scanned
-		ask.LastReply = reply
-		if snoozedUntil != nil {
-			stamp := timestampValue(*snoozedUntil)
-			ask.SnoozedUntil = &stamp
-		}
-		if issueKey != nil {
-			ask.Issue = &inboxIssue{Key: *issueKey, Title: *issueTitle, Assignee: issueAssignee}
-		}
-		if documentProject != nil {
-			ask.Document = &inboxDocument{Project: *documentProject, Slug: *documentSlug, Name: *documentName}
 		}
 		page.asks[ask.ID] = ask
 	}
@@ -1313,8 +1297,8 @@ type meInboxReads struct {
 // by the statements the read it replaces runs today, each over every row of that kind on the page
 // as those reads run them over theirs:
 //
-//   - the Ask rows as listInbox selects them (askReadColumns over askReadFrom, with their issue,
-//     document and the caller's snooze), the details loadAskDetails reads
+//   - the Ask rows as listInbox selects them (openAskRowColumns over openAskRowFrom: the ask, its
+//     issue, document and the caller's snooze), the details loadAskDetails reads
 //     (events.OpenedEventIDsStatement, refs.BacklinkCountRead, refs.AskPartRowsStatement) and their
 //     threads as loadAskThreads reads them (inboxAskReplyChainsQuery, then the targets each reply
 //     names, its attempts and its block, the rewordings, the followers and askReachesQuery);
@@ -1433,11 +1417,8 @@ func meInboxPageReads(args *meInboxArgs, slots meInboxSlots) (meInboxReads, erro
 	}
 	return meInboxReads{ctes: ctes, columns: []string{
 		`array(select row(listed.*) from (
-			select ` + askReadColumns + `,
-			       i.key, i.title, i.assignee, i.priority, ar.project_key, ar.slug, ar.name,
-			       sn.snoozed_until
-			` + askReadFrom + `
-			left join user_ask_snooze sn on sn.ask_id = a.id and sn.login = $1
+			select ` + openAskRowColumns + `
+			` + openAskRowFrom("$1") + `
 			where a.id = any(` + askIDs + `::uuid[])
 		) listed)`,
 		`array(select row(opened.*) from (` + bindFragment(events.OpenedEventIDsStatement, askIDs) + `) opened)`,

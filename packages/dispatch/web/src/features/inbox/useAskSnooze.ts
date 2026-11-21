@@ -4,7 +4,7 @@ import { useState } from "react";
 import { api, askSnoozeRequest } from "../../api/client";
 import { inboxQuery, meInboxQuery } from "../../api/queries";
 import { holdBackReads } from "../../api/query-client";
-import type { InboxRow } from "../../api/types";
+import type { OpenAskRow } from "../../api/types";
 import { snoozeWritten } from "../../api/write-events";
 import { refusedByDispatch, SendStoppedError } from "../writes/keyed-write";
 import { livePress, stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
@@ -79,11 +79,11 @@ export function useAskSnooze(askId: string): AskSnoozeWrite {
         queryClient.cancelQueries({ queryKey: inboxKey }),
         cancelMeInbox(queryClient),
       ]);
-      const previous = queryClient.getQueriesData<InboxRow[]>({ queryKey: inboxKey });
+      const previous = queryClient.getQueriesData<OpenAskRow[]>({ queryKey: inboxKey });
       const oneRead = meInboxSnapshot(queryClient);
-      const snoozed = (row: InboxRow): InboxRow =>
+      const snoozed = (row: OpenAskRow): OpenAskRow =>
         row.id === press.askId ? { ...row, snoozed_until: press.until } : row;
-      queryClient.setQueriesData<InboxRow[]>({ queryKey: inboxKey }, (current) =>
+      queryClient.setQueriesData<OpenAskRow[]>({ queryKey: inboxKey }, (current) =>
         current?.map(snoozed)
       );
       patchMeInboxAsks(queryClient, snoozed);
@@ -177,11 +177,11 @@ export function useAskSnoozeMany(): AskSnoozeManyWrite {
           queryClient.cancelQueries({ queryKey: inboxKey }),
           cancelMeInbox(queryClient),
         ]);
-        const previous = queryClient.getQueriesData<InboxRow[]>({ queryKey: inboxKey });
+        const previous = queryClient.getQueriesData<OpenAskRow[]>({ queryKey: inboxKey });
         // What each marked row of the one read held before, as each Inbox read's rows are kept.
         const oneReadBefore = new Map<string, string | null | undefined>();
         const marked = new Set(ids);
-        queryClient.setQueriesData<InboxRow[]>({ queryKey: inboxKey }, (current) =>
+        queryClient.setQueriesData<OpenAskRow[]>({ queryKey: inboxKey }, (current) =>
           current?.map((row) => (marked.has(row.id) ? { ...row, snoozed_until: until } : row))
         );
         patchMeInboxAsks(queryClient, (row) => {
@@ -221,7 +221,7 @@ export function useAskSnoozeMany(): AskSnoozeManyWrite {
         const refused = new Set(failed.map(({ askId }) => askId));
         for (const [key, data] of refused.size === 0 ? [] : previous) {
           const before = new Map((data ?? []).map((row) => [row.id, row.snoozed_until]));
-          queryClient.setQueryData<InboxRow[]>(key, (current) =>
+          queryClient.setQueryData<OpenAskRow[]>(key, (current) =>
             current?.map((row) =>
               refused.has(row.id) ? { ...row, snoozed_until: before.get(row.id) ?? null } : row
             )

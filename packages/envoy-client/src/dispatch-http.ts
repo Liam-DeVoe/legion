@@ -44,7 +44,6 @@ import type {
   GraphReferences,
   Handoff,
   HandoffSummary,
-  InboxRow,
   Issue,
   IssueCheckResults,
   IssueCoverage,
@@ -63,6 +62,7 @@ import type {
   MessageReplyInput,
   MessageReplyResult,
   MyRepliesResponse,
+  OpenAskRow,
   OpenAsksResponse,
   Priorities,
   Project,
@@ -1401,7 +1401,7 @@ export class DispatchClient {
    *  handed to them, and the asks on the issues assigned to them that nobody has handed on —
    *  which is what the Inbox page shows by default. The route reads the caller's own `person`
    *  scope and refuses a credential without it with 403 OAUTH_SCOPE_REQUIRED. */
-  async inbox(assignee: string): Promise<InboxRow[]> {
+  async inbox(assignee: string): Promise<OpenAskRow[]> {
     return this.#json("GET", ["api", "v1", "inbox"], undefined, { assignee });
   }
 

@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import { ApiError, api } from "../api/client";
-import type { Agent, InboxRow, IssueDetails, UserAgentState } from "../api/types";
+import type { Agent, IssueDetails, OpenAskRow, UserAgentState } from "../api/types";
 import { AuthGate } from "../app";
 import { liveViewsOf } from "../features/agent-view/live-views";
 import { oneReadReply } from "../features/inbox/inbox-fixture";
@@ -125,7 +125,7 @@ function setViewport(width: number): void {
  *  through the one read, which the Inbox draws them from. */
 function renderShellAt(
   width: number,
-  inbox: InboxRow[] = [],
+  inbox: OpenAskRow[] = [],
   unreadThreads = 0,
   listedAgents: Agent[] = []
 ): QueryClient {

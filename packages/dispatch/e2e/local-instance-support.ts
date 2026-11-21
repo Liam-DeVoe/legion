@@ -10,7 +10,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import type { Readable } from "node:stream";
 import { setTimeout as sleep } from "node:timers/promises";
-import type { Ask, InboxRow } from "../web/src/api/types";
+import type { Ask, OpenAskRow } from "../web/src/api/types";
 
 export class Interrupted extends Error {}
 
@@ -496,7 +496,7 @@ export type SeededInboxRow =
     };
 
 /** What the helper reads of an Inbox row; `getInbox`'s own rows satisfy it. */
-export type InboxRowRead = Pick<InboxRow, "id" | "issue_key" | "block_id" | "document">;
+export type InboxRowRead = Pick<OpenAskRow, "id" | "issue_key" | "block_id" | "document">;
 
 export interface SeededInboxOptions {
   /** How long the wait may take, in milliseconds: its caller's bound, with no default. */

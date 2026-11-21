@@ -881,7 +881,9 @@ func requireTheBareReadRefused(t *testing.T, name, parameter, target string, bar
 
 // routeProbeQueries are the queries the reads that require one are sent, each naming the
 // objects seedTwoProjects wrote, so the read answers a row rather than refusing the request
-// that names nothing or answering it no row.
+// that names nothing or answering it no row. The open-asks read needs no query to answer a row,
+// and is sent the key dispatch://INFRA-1152 adds to it, the person the project's asks wait on,
+// so the read that key narrows is the one walked.
 func routeProbeQueries(owned crossProject) map[string]string {
 	spec := "dispatch://" + owned.issue + "/spec"
 	return map[string]string{
@@ -891,7 +893,7 @@ func routeProbeQueries(owned crossProject) map[string]string {
 		"GET /api/v1/references/questions":   url.Values{"kind": {"comment"}, "id": {owned.comment}}.Encode(),
 		"GET /api/v1/block-links":            url.Values{"from": {spec}, "to": {spec}}.Encode(),
 		"GET /api/v1/issues/resolve":         url.Values{"ref": {owned.issue}}.Encode(),
-		"GET /api/v1/asks/open":              url.Values{"project": {"TEST"}}.Encode(),
+		"GET /api/v1/asks/open":              url.Values{"waiting_on": {"alice"}}.Encode(),
 		"GET /api/v1/credential-requests":    url.Values{"approver": {"me"}}.Encode(),
 		"GET /api/v1/near-copy-checks":       url.Values{"project": {"TEST"}}.Encode(),
 		"GET /api/v1/reference-targets":      url.Values{"ref": {"dispatch://" + owned.issue}}.Encode(),
@@ -1113,11 +1115,12 @@ func seedTwoProjects(t *testing.T, handler http.Handler, database *store.Store) 
 // seedTheInboxReads writes, through the routes a person and a session write them by, what the
 // reads of a person's Inbox and of a session's conversation answer a row of: alice's direct
 // message to s1, which the probe's listener delivers, and s1's reply to it (the session's
-// messages and what it was sent); alice's pin of that conversation and of the project's issue
-// (her state of each); an ask s1 opens on the issue and alice's reply in its thread (her
-// answers); s1's reply to alice's comment, a thread she wrote in that somebody else wrote in
-// since, so unread, the state the read of her threads answers by default; and a run of the inbox
-// comparison, which no route writes, stored by the comparison's own writer (inboxcompare.Store).
+// conversation, which GET /api/v1/agents/{session_id}/conversation and .../messages both answer,
+// and what it was sent); alice's pin of that conversation and of the project's issue (her state
+// of each); an ask s1 opens on the issue and alice's reply in its thread (her answers); s1's reply
+// to alice's comment, a thread she wrote in that somebody else wrote in since, so unread, the
+// state the read of her threads answers by default; and a run of the inbox comparison, which no
+// route writes, stored by the comparison's own writer (inboxcompare.Store).
 func seedTheInboxReads(t *testing.T, handler http.Handler, database *store.Store, owned crossProject) {
 	t.Helper()
 	sent := postAgentMessage(t, handler, "s1", map[string]any{

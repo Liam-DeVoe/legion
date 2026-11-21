@@ -121,6 +121,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/agents/{session_id}/conversation": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description One session's conversation, newest activity first: each root message that reaches the session - targeted at it, or named by a delivery attempt to it whatever that attempt's state - with every reply under it and each message's delivery attempts, read for the person the credential acts for. It lists the 50 conversations that moved last and, past them, every conversation holding a reply of the session's that the caller has not read, each such root marked unread. It needs the person scope; session is the session the request acts for, as on every route. GET /api/v1/agents/{session_id}/messages answers the same rows. */
+    get: operations["getApiV1AgentsBySessionIdConversation"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/agents/{session_id}/messages": {
     parameters: {
       query?: never;
@@ -128,7 +145,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description A session's targeted messages, newest first. */
+    /** @description A session's targeted messages, newest first: the rows GET /api/v1/agents/{session_id}/conversation answers, kept for the clients of the release before it. */
     get: operations["getApiV1AgentsBySessionIdMessages"];
     put?: never;
     /** @description Send an issue-less targeted message to a session: {body, delivery, in_reply_to?, connected_only?}, answered once its own delivery attempt has settled, on past a client that gives up. A session the Envoy listener knows and that is not running is a recipient: the listener stores the message and hands it over when that session runs again, and the attempt is recorded queued rather than sent. A session the listener knows nothing about ("no live session <id>") is queued too: Dispatch publishes the message on that session's own subject itself, and the attempt fails with "no live session <id>" only where Dispatch has no NATS to publish on or the publish fails. connected_only asks for a session that is running now and fails the attempt with "the session is stopped", nothing stored; every later attempt of the message asks what its first asked. A model or thinking switch the session would run as its own turn - a person's own Send or Aside, not one an agent wrote for them, whose whole body is one /model or /effort line, which would otherwise apply at an unknown later time - is held to a running session at every send whether or not the request set connected_only. Under an Idempotency-Key header (as every POST and PATCH takes one), a repeat with the same request answers 201 with the message the key made and its deliveries as they stand, Idempotency-Replayed: ?1, first sending the one attempt it still owes (none yet, or one stranded past its claim) and nothing else; a listener it cannot reach is recorded on the attempt, so a repeat is answered while the listener is down. An attempt a stopped process left owed is resumed by the server's delivery sweep whether anyone asks again or not. */
@@ -629,7 +646,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Open asks in one scope, with counts: ?author_session= for one session's own, or ?project= for every open ask on a project's issues and documents; exactly one is required. */
+    /** @description Open asks on open issues and project documents, with counts, by priority and then oldest first: ?author_session= for one session's own, ?project= for every open ask on a project's issues and documents, or neither for every project; at most one of the two (both is 400 AUTHOR_SESSION_OR_PROJECT_CONFLICT, and a blank one is 400 INVALID_QUERY naming it). ?waiting_on= narrows to the asks that wait on one person - a login of somebody who has signed in, compared with the waiting_on_person each row names: the person the ask was handed to, else its issue's assignee, else its project's default assignee - or to the asks that wait on nobody (unassigned); a blank value, a repeated key or a login nobody has signed in as is 400 INVALID_QUERY. ?since= (RFC3339) sets opened_since to whether an ask of the scope, in any state, opened at or after it. No row is an ask the caller may not see. Each row is the open-ask row an ask card draws - the ask, its issue (with that issue's own assignee) or project document, the issue's priority, its newest reply, the caller's own snooze and the thread: replies, rewordings, followers, claimant, route and route_holder - with ref (the ask's page), age_seconds, owner (its issue or document again) and human_replied beside it; {session_id, as_of, opened_since, count, waiting_on_human, waiting_on_agent, asks}. */
     get: operations["getApiV1AsksOpen"];
     put?: never;
     post?: never;
@@ -3848,6 +3865,16 @@ export interface components {
         [key: string]: unknown;
       };
     };
+    AskOwnerDocument: {
+      name: string;
+      project: string;
+      slug: string;
+    };
+    AskOwnerIssue: {
+      assignee: null | string;
+      key: string;
+      title: string;
+    };
     AskRead: {
       answers: components["schemas"]["AskAnswerWithTrees"][] | null;
       ask: components["schemas"]["AskWithTrees"];
@@ -5331,16 +5358,6 @@ export interface components {
     InboxDismissResponse: {
       dismissed: number;
     };
-    InboxDocument: {
-      name: string;
-      project: string;
-      slug: string;
-    };
-    InboxIssue: {
-      assignee: null | string;
-      key: string;
-      title: string;
-    };
     InboxReadRequest: {
       artifact?: string;
       issue?: string;
@@ -5352,52 +5369,6 @@ export interface components {
     };
     InboxReadResponse: {
       marked: number;
-    };
-    InboxRow: {
-      anchor: components["schemas"]["Anchor"] | null;
-      anchor_artifact?: components["schemas"]["AskAnchorArtifact"];
-      anchor_block?: components["schemas"]["BlockPath"];
-      anchor_block_error?: string;
-      answer: components["schemas"]["AskAnswerWithTrees"] | null;
-      approval?: components["schemas"]["AskApproval"];
-      approval_artifact?: components["schemas"]["AskAnchorArtifact"];
-      artifact_id: null | string;
-      asked_of: null | string;
-      /** Format: date-time */
-      asked_of_at: null | string;
-      asked_of_by: null | string;
-      author: components["schemas"]["Actor"];
-      block_artifact?: components["schemas"]["AskBlockArtifact"];
-      block_id: null | string;
-      /** Format: date-time */
-      created_at: string;
-      document?: components["schemas"]["InboxDocument"];
-      edited_at: null | string;
-      id: string;
-      issue?: components["schemas"]["InboxIssue"];
-      issue_key: null | string;
-      kind: string;
-      last_reply: components["schemas"]["AskLastReply"] | null;
-      multiple: boolean;
-      opened_event_id?: number;
-      options: components["schemas"]["AskOptionWithTrees"][] | null;
-      priority: null | number;
-      question: string;
-      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
-      question_tree?: {
-        type: string;
-      } & {
-        [key: string]: unknown;
-      };
-      referenced_by_count?: number;
-      resolution?: components["schemas"]["AskResolutionWithTrees"];
-      revision?: number;
-      snoozed_until: null | string;
-      state: string;
-      thread: components["schemas"]["AskThread"];
-      urgency: string;
-      waiting_on?: string;
-      waiting_on_person?: string;
     };
     Issue: {
       advances: components["schemas"]["IssueAdvance"][] | null;
@@ -5946,7 +5917,7 @@ export interface components {
     };
     MeInboxEntry: {
       agent?: components["schemas"]["MeInboxAgent"];
-      ask?: components["schemas"]["InboxRow"];
+      ask?: components["schemas"]["OpenAskRow"];
       /** Format: date-time */
       moment: string;
       node: components["schemas"]["MeInboxNode"];
@@ -6193,16 +6164,50 @@ export interface components {
     OpenAsk: {
       /** Format: int64 */
       age_seconds: number;
+      anchor: components["schemas"]["Anchor"] | null;
+      anchor_artifact?: components["schemas"]["AskAnchorArtifact"];
+      anchor_block?: components["schemas"]["BlockPath"];
+      anchor_block_error?: string;
+      answer: components["schemas"]["AskAnswerWithTrees"] | null;
+      approval?: components["schemas"]["AskApproval"];
+      approval_artifact?: components["schemas"]["AskAnchorArtifact"];
+      artifact_id: null | string;
+      asked_of: null | string;
+      /** Format: date-time */
+      asked_of_at: null | string;
+      asked_of_by: null | string;
+      author: components["schemas"]["Actor"];
+      block_artifact?: components["schemas"]["AskBlockArtifact"];
+      block_id: null | string;
       /** Format: date-time */
       created_at: string;
+      document?: components["schemas"]["AskOwnerDocument"];
+      edited_at: null | string;
       human_replied: boolean;
       id: string;
+      issue?: components["schemas"]["AskOwnerIssue"];
+      issue_key: null | string;
       kind: string;
       last_reply: components["schemas"]["AskLastReply"] | null;
+      multiple: boolean;
+      opened_event_id?: number;
+      options: components["schemas"]["AskOptionWithTrees"][] | null;
       owner: components["schemas"]["OpenAskItemOwner"];
       priority: null | number;
       question: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      question_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       ref: string;
+      referenced_by_count?: number;
+      resolution?: components["schemas"]["AskResolutionWithTrees"];
+      revision?: number;
+      snoozed_until: null | string;
+      state: string;
+      thread: components["schemas"]["AskThread"];
       urgency: string;
       waiting_on: string;
       waiting_on_person: string;
@@ -6217,12 +6222,58 @@ export interface components {
       title: string;
     };
     OpenAskItemOwner: {
-      document?: components["schemas"]["InboxDocument"];
-      issue?: components["schemas"]["InboxIssue"];
+      document?: components["schemas"]["AskOwnerDocument"];
+      issue?: components["schemas"]["AskOwnerIssue"];
     };
     OpenAskOwner: {
       document?: components["schemas"]["OpenAskDocument"];
       issue?: components["schemas"]["OpenAskIssue"];
+    };
+    OpenAskRow: {
+      anchor: components["schemas"]["Anchor"] | null;
+      anchor_artifact?: components["schemas"]["AskAnchorArtifact"];
+      anchor_block?: components["schemas"]["BlockPath"];
+      anchor_block_error?: string;
+      answer: components["schemas"]["AskAnswerWithTrees"] | null;
+      approval?: components["schemas"]["AskApproval"];
+      approval_artifact?: components["schemas"]["AskAnchorArtifact"];
+      artifact_id: null | string;
+      asked_of: null | string;
+      /** Format: date-time */
+      asked_of_at: null | string;
+      asked_of_by: null | string;
+      author: components["schemas"]["Actor"];
+      block_artifact?: components["schemas"]["AskBlockArtifact"];
+      block_id: null | string;
+      /** Format: date-time */
+      created_at: string;
+      document?: components["schemas"]["AskOwnerDocument"];
+      edited_at: null | string;
+      id: string;
+      issue?: components["schemas"]["AskOwnerIssue"];
+      issue_key: null | string;
+      kind: string;
+      last_reply: components["schemas"]["AskLastReply"] | null;
+      multiple: boolean;
+      opened_event_id?: number;
+      options: components["schemas"]["AskOptionWithTrees"][] | null;
+      priority: null | number;
+      question: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      question_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
+      referenced_by_count?: number;
+      resolution?: components["schemas"]["AskResolutionWithTrees"];
+      revision?: number;
+      snoozed_until: null | string;
+      state: string;
+      thread: components["schemas"]["AskThread"];
+      urgency: string;
+      waiting_on?: string;
+      waiting_on_person?: string;
     };
     OpenAsksResponse: {
       as_of: string;
@@ -7420,6 +7471,40 @@ export interface operations {
         };
         content: {
           "application/octet-stream": unknown;
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1AgentsBySessionIdConversation: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        session_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["MessageRead"][];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -8786,6 +8871,7 @@ export interface operations {
       query?: {
         author_session?: string;
         project?: string;
+        waiting_on?: string;
         since?: string;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
@@ -10487,7 +10573,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["InboxRow"][];
+          "application/json": components["schemas"]["OpenAskRow"][];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -15478,6 +15564,7 @@ export type AskFollower = components["schemas"]["AskFollower"];
 export type AskFollowersRead = components["schemas"]["AskFollowersRead"];
 export type AskLastReply = components["schemas"]["AskLastReply"];
 export type AskOptionWithTrees = components["schemas"]["AskOptionWithTrees"];
+export type AskOwnerIssue = components["schemas"]["AskOwnerIssue"];
 export type AskRead = components["schemas"]["AskRead"];
 export type AskResolution = components["schemas"]["AskResolution"];
 export type AskResolutionWithTrees = components["schemas"]["AskResolutionWithTrees"];
@@ -15637,10 +15724,8 @@ export type InboxComparisonRun = components["schemas"]["InboxComparisonRun"];
 export type InboxComparisonShape = components["schemas"]["InboxComparisonShape"];
 export type InboxDismissRequest = components["schemas"]["InboxDismissRequest"];
 export type InboxDismissResponse = components["schemas"]["InboxDismissResponse"];
-export type InboxIssue = components["schemas"]["InboxIssue"];
 export type InboxReadRequest = components["schemas"]["InboxReadRequest"];
 export type InboxReadResponse = components["schemas"]["InboxReadResponse"];
-export type InboxRow = components["schemas"]["InboxRow"];
 export type Issue = components["schemas"]["Issue"];
 export type IssueAdvance = components["schemas"]["IssueAdvance"];
 export type IssueAskRow = components["schemas"]["IssueAskRow"];
@@ -15725,6 +15810,7 @@ export type OpenAskDocument = components["schemas"]["OpenAskDocument"];
 export type OpenAskIssue = components["schemas"]["OpenAskIssue"];
 export type OpenAskItemOwner = components["schemas"]["OpenAskItemOwner"];
 export type OpenAskOwner = components["schemas"]["OpenAskOwner"];
+export type OpenAskRow = components["schemas"]["OpenAskRow"];
 export type OpenAsksResponse = components["schemas"]["OpenAsksResponse"];
 export type OutgoingReference = components["schemas"]["OutgoingReference"];
 export type PassCounts = components["schemas"]["PassCounts"];
@@ -15847,8 +15933,8 @@ export type SplitOwnedSchemaName =
   | "AskApprovalDocument"
   | "AskBlockArtifact"
   | "AskOption"
+  | "AskOwnerDocument"
   | "BlockPathEntry"
   | "ExternalLink"
-  | "InboxDocument"
   | "ReplyBlock"
   | "Suggestion";

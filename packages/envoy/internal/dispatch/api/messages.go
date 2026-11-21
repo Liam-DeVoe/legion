@@ -1200,7 +1200,27 @@ func (s *server) listIssueMessages(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, result)
 }
 
+// listAgentConversation answers GET /api/v1/agents/{session_id}/conversation, the read of one
+// session's conversation: the rows answerAgentConversation answers.
+func (s *server) listAgentConversation(w http.ResponseWriter, r *http.Request) {
+	s.answerAgentConversation(w, r)
+}
+
+// listAgentMessages answers GET /api/v1/agents/{session_id}/messages, which a page of the release
+// before the conversation read calls: the same rows, so that page keeps working through a roll
+// and after a rollback.
 func (s *server) listAgentMessages(w http.ResponseWriter, r *http.Request) {
+	s.answerAgentConversation(w, r)
+}
+
+// answerAgentConversation is the one body of the two reads of one session's conversation
+// (listAgentConversation and listAgentMessages): every root message that reaches the session,
+// through its own target or through a delivery attempt that names the session, whatever that
+// attempt's state, each with its thread and its attempts, read for the person the credential acts
+// for. No relation of the store decides which messages reach the session: the two branches below
+// read the messages and their attempts, and the store's tuples are read only for the person's own
+// read marks (unreadDirectRepliesCTE).
+func (s *server) answerAgentConversation(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
 		return

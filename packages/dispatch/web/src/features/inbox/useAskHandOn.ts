@@ -2,7 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 
 import { api } from "../../api/client";
 import { inboxQuery, meInboxQuery, whoAmIQuery } from "../../api/queries";
-import type { Ask, InboxRow } from "../../api/types";
+import type { Ask, OpenAskRow } from "../../api/types";
 import { askWritten } from "../../api/write-events";
 import { livePress, stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import { cancelMeInbox, meInboxSnapshot, patchMeInboxAsks, restoreMeInbox } from "./one-read-cache";
@@ -71,11 +71,11 @@ export function useAskHandOn(ask: Ask): AskHandOnWrite {
         queryClient.cancelQueries({ queryKey: inboxKey }),
         cancelMeInbox(queryClient),
       ]);
-      const previous = queryClient.getQueriesData<InboxRow[]>({ queryKey: inboxKey });
+      const previous = queryClient.getQueriesData<OpenAskRow[]>({ queryKey: inboxKey });
       const oneRead = meInboxSnapshot(queryClient);
       const by = queryClient.getQueryData(whoAmIQuery().queryKey)?.login ?? null;
       const at = new Date().toISOString();
-      const handedOn = (row: InboxRow): InboxRow =>
+      const handedOn = (row: OpenAskRow): OpenAskRow =>
         row.id === press.ask.id
           ? {
               ...row,
@@ -88,12 +88,12 @@ export function useAskHandOn(ask: Ask): AskHandOnWrite {
               waiting_on_person: press.askedOf,
             }
           : row;
-      queryClient.setQueriesData<InboxRow[]>({ queryKey: inboxKey }, (current) =>
+      queryClient.setQueriesData<OpenAskRow[]>({ queryKey: inboxKey }, (current) =>
         current?.map(handedOn)
       );
       const joined =
         press.askedOf === by
-          ? (queryClient.getQueryData<InboxRow[]>(inboxKey) ?? []).filter(
+          ? (queryClient.getQueryData<OpenAskRow[]>(inboxKey) ?? []).filter(
               (row) => row.id === press.ask.id
             )
           : [];

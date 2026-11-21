@@ -18,7 +18,7 @@ import {
   decisionsAndReadMarkHandlers,
 } from "../../__tests__/proof-document";
 import { ApiError, api } from "../../api/client";
-import type { Artifact, Ask, AskRead, Comment, InboxRow, IssueAskRow } from "../../api/types";
+import type { Artifact, Ask, AskRead, Comment, IssueAskRow, OpenAskRow } from "../../api/types";
 import { DocumentRuntime } from "../doc/runtime";
 import { Margin } from "../margin/Margin";
 import { MarginProvider } from "../margin/margin-context";
@@ -46,7 +46,7 @@ beforeEach(() => {
   answerRequests(
     http.get("/api/v1/issues/:key/asks", () => Response.json([] satisfies IssueAskRow[])),
     http.get("/api/v1/artifacts/:id/asks", () => Response.json([] satisfies Ask[])),
-    http.get("/api/v1/inbox", () => Response.json([] satisfies InboxRow[])),
+    http.get("/api/v1/inbox", () => Response.json([] satisfies OpenAskRow[])),
     ...decisionsAndReadMarkHandlers()
   );
 });

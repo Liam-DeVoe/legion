@@ -13,12 +13,12 @@ import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { api } from "../../api/client";
 import { inboxQuery, whoAmIQuery } from "../../api/queries";
 import { DispatchQueryClient, hearLiveEvent } from "../../api/query-client";
-import type { DispatchEvent, InboxRow } from "../../api/types";
+import type { DispatchEvent, OpenAskRow } from "../../api/types";
 import { issueAsk } from "./inbox-fixture";
 import { useAskHandOn } from "./useAskHandOn";
 
 /** Whom each ask of an Inbox read waits on. */
-function waitingOn(rows: readonly InboxRow[] | undefined): (string | undefined)[] | undefined {
+function waitingOn(rows: readonly OpenAskRow[] | undefined): (string | undefined)[] | undefined {
   return rows?.map((row) => row.waiting_on_person);
 }
 
@@ -30,9 +30,9 @@ test("a read of the Inbox asked while a hand-on is out waits for its answer, and
   client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
   const ask = issueAsk({ id: "ask-1" });
   // What Dispatch holds: the ask waits on alice, who holds its issue, until it takes the hand-on.
-  let served: InboxRow[] = [ask];
+  let served: OpenAskRow[] = [ask];
   const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
-  const handOn = Promise.withResolvers<InboxRow>();
+  const handOn = Promise.withResolvers<OpenAskRow>();
   const handAskTo = spyOn(api, "handAskTo").mockReturnValue(handOn.promise);
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
@@ -56,7 +56,7 @@ test("a read of the Inbox asked while a hand-on is out waits for its answer, and
     expect(waitingOn(result.current.inbox)).toEqual(["bob"]);
 
     // Dispatch takes it, stamped with its own moment: the read goes now, and draws what it holds.
-    const handed: InboxRow = {
+    const handed: OpenAskRow = {
       ...ask,
       asked_of: "bob",
       asked_of_at: "2026-11-19T09:00:00Z",
@@ -104,9 +104,9 @@ test("a read of the Inbox held behind a hand-on goes on the hand-on's own event,
   const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
   const ask = issueAsk({ id: "ask-1" });
-  let served: InboxRow[] = [ask];
+  let served: OpenAskRow[] = [ask];
   const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
-  const handOn = Promise.withResolvers<InboxRow>();
+  const handOn = Promise.withResolvers<OpenAskRow>();
   const handAskTo = spyOn(api, "handAskTo").mockReturnValue(handOn.promise);
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
@@ -145,7 +145,7 @@ test("a read of the Inbox held behind a hand-on goes on the hand-on's own event,
 
     // Dispatch takes the hand-on, and somebody asks alice a new question meanwhile: the hand-on's
     // event comes, and the read it held goes, with the refresh the event asks for behind it.
-    const handed: InboxRow = {
+    const handed: OpenAskRow = {
       ...ask,
       asked_of: "bob",
       asked_of_at: "2026-11-19T09:00:00Z",

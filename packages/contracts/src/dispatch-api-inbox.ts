@@ -1,12 +1,12 @@
 import type {
   AskThread,
   CredentialPendingRow,
-  InboxRow,
   IssueAskRow,
   MeInboxAgent,
   MeInboxEntry,
   MyReplyRow,
   MyReplySession,
+  OpenAskRow,
 } from "./dispatch-api.generated";
 
 /**
@@ -72,7 +72,7 @@ export type MeInboxAgentRow = MeInboxAgent & MyReplyAgentRow;
  *  one the page draws no row for - a mention of the person, their own write nobody answered -
  *  carries none. */
 export type InboxEntryRow =
-  | { readonly kind: "ask"; readonly ask: InboxRow }
+  | { readonly kind: "ask"; readonly ask: OpenAskRow }
   | { readonly kind: "thread"; readonly thread: MyReplyThreadRow }
   | { readonly kind: "agent"; readonly agent: MeInboxAgentRow }
   | { readonly kind: "none" };

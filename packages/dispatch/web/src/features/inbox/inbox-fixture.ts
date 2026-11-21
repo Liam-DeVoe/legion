@@ -4,7 +4,7 @@ import type { QueryClient } from "@tanstack/react-query";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { api } from "../../api/client";
 import { inboxQuery, meInboxQuery } from "../../api/queries";
-import type { InboxRow, MeInboxEntry, MeInboxResponse, MyReplyRow } from "../../api/types";
+import type { MeInboxEntry, MeInboxResponse, MyReplyRow, OpenAskRow } from "../../api/types";
 import { askWaitingOnPerson } from "./list-row";
 
 /** The mocks every Inbox render needs: the signed-in login, the credential requests waiting on
@@ -74,9 +74,9 @@ export const FIXTURE_PROJECT_DEFAULT = "carol";
  *  are written against: the field is then absent, as the server sends it.
  */
 export function withWaitingOnPerson(
-  row: InboxRow,
+  row: OpenAskRow,
   projectDefault: string | null = FIXTURE_PROJECT_DEFAULT
-): InboxRow {
+): OpenAskRow {
   if (row.waiting_on_person !== undefined) return row;
   const person = row.asked_of ?? row.issue?.assignee ?? projectDefault;
   return person === null ? row : { ...row, waiting_on_person: person };
@@ -88,10 +88,10 @@ export function withWaitingOnPerson(
  *  with it, and an issue nobody holds falls to `projectDefault` as the server's third step does;
  *  an override naming `waiting_on_person` itself wins. */
 export function issueAsk(
-  overrides: Partial<InboxRow> = {},
+  overrides: Partial<OpenAskRow> = {},
   projectDefault: string | null = FIXTURE_PROJECT_DEFAULT
-): InboxRow {
-  const row: InboxRow = {
+): OpenAskRow {
+  const row: OpenAskRow = {
     anchor: null,
     answer: null,
     artifact_id: null,
@@ -133,7 +133,7 @@ export function issueAsk(
 }
 
 /** Resolves `getAsk` for each row's full thread from the same fixtures `getInbox` already seeded. */
-export function mockAskReads(rows: readonly InboxRow[]) {
+export function mockAskReads(rows: readonly OpenAskRow[]) {
   return spyOn(api, "getAsk").mockImplementation(async (id: string) => {
     const ask = rows.find((row) => row.id === id);
     if (ask === undefined) throw new Error(`no fixture for ${id}`);
@@ -159,7 +159,7 @@ export const ONE_READ_AS_OF = "2026-10-12T02:00:00Z";
 /** The entry the one read (`GET /api/v1/me/inbox`) lists a row of the Inbox by: an open ask that
  *  waits on the reader by the ask itself, a Reply row by its thread, and an Agent row by its
  *  conversation with the session, each at the moment it last moved. */
-export function oneReadEntry(row: InboxRow | MyReplyRow): MeInboxEntry {
+export function oneReadEntry(row: OpenAskRow | MyReplyRow): MeInboxEntry {
   if (!("thread_id" in row)) {
     return { ask: row, moment: row.created_at, node: { id: row.id, kind: "ask" }, relations: [] };
   }
@@ -178,14 +178,14 @@ export function oneReadEntry(row: InboxRow | MyReplyRow): MeInboxEntry {
 /** What the one read holds for its reader: the open asks that wait on them, their Reply and
  *  Agent rows in the Inbox, read or not, and the rows they dismissed out of it. */
 export interface OneReadHeld {
-  readonly asks?: readonly InboxRow[];
+  readonly asks?: readonly OpenAskRow[];
   readonly dismissed?: readonly MyReplyRow[];
   readonly threads?: readonly MyReplyRow[];
 }
 
 /** One answer of the one read listing `rows`, in that order, for `person`. */
 export function oneReadAnswer(
-  rows: readonly (InboxRow | MyReplyRow)[],
+  rows: readonly (OpenAskRow | MyReplyRow)[],
   { asOf = ONE_READ_AS_OF, person = "alice" }: { asOf?: string; person?: string } = {}
 ): MeInboxResponse {
   const entries = rows.map(oneReadEntry);
@@ -237,7 +237,7 @@ export function answerOneRead(
  * restore of it - `installInboxApiMocks`' or the test's - puts back.
  */
 export function mockInboxReads(
-  rows: readonly InboxRow[] | (() => readonly InboxRow[] | Promise<readonly InboxRow[]>),
+  rows: readonly OpenAskRow[] | (() => readonly OpenAskRow[] | Promise<readonly OpenAskRow[]>),
   { threads = [], viewer = "alice" }: { threads?: readonly MyReplyRow[]; viewer?: string } = {}
 ): Mock<typeof api.getInbox> {
   const held = async () => (typeof rows === "function" ? await rows() : rows);
@@ -256,10 +256,10 @@ export function mockInboxReads(
  *  them that wait on `viewer`, beside the Reply and Agent rows it already holds. */
 export function landInboxReads(
   queryClient: QueryClient,
-  rows: readonly InboxRow[],
+  rows: readonly OpenAskRow[],
   viewer = "alice"
 ): void {
-  queryClient.setQueryData<InboxRow[]>(inboxQuery().queryKey, [...rows]);
+  queryClient.setQueryData<OpenAskRow[]>(inboxQuery().queryKey, [...rows]);
   queryClient.setQueryData<MeInboxResponse>(meInboxQuery().queryKey, (held) => {
     const mine = rows.filter((row) => askWaitingOnPerson(row) === viewer);
     const threads = (held?.entries ?? []).filter((entry) => entry.ask === undefined);

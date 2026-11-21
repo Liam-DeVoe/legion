@@ -14,7 +14,7 @@ import { answerAskSnoozes } from "../../__tests__/send-answers";
 import { ApiError, api, NetworkError } from "../../api/client";
 import { inboxQuery, whoAmIQuery } from "../../api/queries";
 import { DispatchQueryClient, hearLiveEvent } from "../../api/query-client";
-import type { AskSnooze, DispatchEvent, InboxRow } from "../../api/types";
+import type { AskSnooze, DispatchEvent, OpenAskRow } from "../../api/types";
 import { FIRST_BACKOFF_MS, SEND_DEADLINE_MS } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
 import { issueAsk } from "./inbox-fixture";
@@ -27,7 +27,7 @@ const UNTIL = "2026-11-20T09:00:00Z";
  * `GET /api/v1/inbox` answering what `served.rows` holds when it is asked: what Dispatch holds,
  * which the test moves as Dispatch takes each write.
  */
-function renderBesideInbox<T>(served: { rows: InboxRow[] }, use: () => T) {
+function renderBesideInbox<T>(served: { rows: OpenAskRow[] }, use: () => T) {
   const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
   const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served.rows);
@@ -41,7 +41,7 @@ function renderBesideInbox<T>(served: { rows: InboxRow[] }, use: () => T) {
 }
 
 /** When each row of an Inbox read is snoozed until. */
-function snoozedUntil(rows: readonly InboxRow[] | undefined): (string | null)[] | undefined {
+function snoozedUntil(rows: readonly OpenAskRow[] | undefined): (string | null)[] | undefined {
   return rows?.map((row) => row.snoozed_until);
 }
 

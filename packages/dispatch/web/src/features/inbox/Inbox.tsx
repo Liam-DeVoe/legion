@@ -14,7 +14,7 @@ import {
 import { Link, useLocation, useNavigate } from "react-router-dom";
 
 import { inboxQuery, whoAmIQuery } from "../../api/queries";
-import type { InboxRow, MyReplyRow } from "../../api/types";
+import type { MyReplyRow, OpenAskRow } from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { LabelPill } from "../../components/Pill";
@@ -106,7 +106,7 @@ import { useInboxThreadRows } from "./useInboxThreadRows";
 /** When an agent replied last on a row that still needs the viewer, that reply is surfaced so
  *  the viewer knows to look before answering. Whose turn it is ("Waiting on you" / "Waiting on
  *  <agent>") is the card's own status line. */
-function InboxRowChip({ ask }: { ask: InboxRow }): ReactNode {
+function InboxRowChip({ ask }: { ask: OpenAskRow }): ReactNode {
   if (ask.waiting_on === "human" && ask.last_reply?.author.kind === "session") {
     // One span, so the pill's flex box keeps the space between the name and "replied".
     return (
@@ -369,7 +369,7 @@ function AskShortRow({
   row,
   section,
   selected,
-}: InboxRowProps & ShortRowProps & { ask: InboxRow }): ReactNode {
+}: InboxRowProps & ShortRowProps & { ask: OpenAskRow }): ReactNode {
   const control = useControlName(ask, ordinal);
   return (
     <ShortRowFrame
@@ -465,7 +465,7 @@ function InboxCardRow({
   threadUpdatedAt,
   viewer,
 }: InboxRowProps & {
-  ask: InboxRow;
+  ask: OpenAskRow;
   /** True while this row's "Assign to me" write is in flight or failed, whatever band the
    *  optimistic update put the row in. */
   assignLive: boolean;

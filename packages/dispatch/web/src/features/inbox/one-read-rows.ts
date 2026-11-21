@@ -11,12 +11,12 @@
 import { inboxEntryRow } from "@legion/contracts";
 
 import type {
-  InboxRow,
   MeInboxAgentRow,
   MeInboxEntry,
   MeInboxResponse,
   MessageRead,
   MyReplyRow,
+  OpenAskRow,
 } from "../../api/types";
 import type { InboxListRow } from "./list-row";
 
@@ -36,7 +36,7 @@ export function meInboxListRows(
 }
 
 /** The open asks of one answer that wait on the reader: its ask rows. */
-export function meInboxAsks(answer: MeInboxResponse | undefined): InboxRow[] {
+export function meInboxAsks(answer: MeInboxResponse | undefined): OpenAskRow[] {
   return meInboxListRows(answer?.entries).flatMap((row) => (row.kind === "ask" ? [row.ask] : []));
 }
 

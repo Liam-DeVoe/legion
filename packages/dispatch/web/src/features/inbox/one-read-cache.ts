@@ -21,7 +21,7 @@ import {
   meInboxQuery,
 } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
-import type { InboxRow, MeInboxEntry, MeInboxResponse, MyReplyRow } from "../../api/types";
+import type { MeInboxEntry, MeInboxResponse, MyReplyRow, OpenAskRow } from "../../api/types";
 
 /** Every cached read of the one read as it stood before a write moved it, for the rollback. */
 export type MeInboxSnapshot = readonly (readonly [QueryKey, unknown])[];
@@ -106,7 +106,7 @@ export function patchMeInbox(
 
 /** The entry of the one read's Inbox answer that lists `ask`, as Dispatch lists an open ask: what
  *  a write that makes an ask wait on the reader adds to that answer before it reads again. */
-export function meInboxAskEntry(ask: InboxRow): MeInboxEntry {
+export function meInboxAskEntry(ask: OpenAskRow): MeInboxEntry {
   return { ask, moment: ask.created_at, node: { id: ask.id, kind: "ask" }, relations: [] };
 }
 
@@ -120,8 +120,8 @@ export function meInboxAskEntry(ask: InboxRow): MeInboxEntry {
  */
 export function patchMeInboxAsks(
   queryClient: QueryClient,
-  edit: (ask: InboxRow) => InboxRow | undefined,
-  joined: readonly InboxRow[] = []
+  edit: (ask: OpenAskRow) => OpenAskRow | undefined,
+  joined: readonly OpenAskRow[] = []
 ): void {
   patchMeInbox(queryClient, (entry) => {
     if (entry.ask === undefined || entry.ask === null) return entry;

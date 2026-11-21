@@ -16,7 +16,7 @@ import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { answerRequests } from "../../__tests__/network";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
-import type { ArchitectureSource, InboxRow, IssueSummary } from "../../api/types";
+import type { ArchitectureSource, IssueSummary, OpenAskRow } from "../../api/types";
 import { withWaitingOnPerson } from "../inbox/inbox-fixture";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
@@ -52,8 +52,8 @@ function GoBack(): ReactNode {
  *  (`coalesce(a.asked_of, i.assignee, p.default_assignee)`, through `withWaitingOnPerson`), so
  *  an override that moves the issue's assignee, or hands the ask to somebody, moves that person
  *  with it. */
-function inboxRow(overrides: Partial<InboxRow> = {}): InboxRow {
-  const row: InboxRow = {
+function inboxRow(overrides: Partial<OpenAskRow> = {}): OpenAskRow {
+  const row: OpenAskRow = {
     anchor: null,
     answer: null,
     artifact_id: null,
@@ -113,7 +113,7 @@ function renderPage(
     },
   ],
   login: string | null = "alice",
-  inboxRows: InboxRow[] = [],
+  inboxRows: OpenAskRow[] = [],
   sources: ArchitectureSource[] | ApiError | "pending" = []
 ) {
   // The project's issue list is read through `api.listIssues`, which the spy below answers -

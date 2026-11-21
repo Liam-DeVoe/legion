@@ -29,12 +29,12 @@ import type {
   Agent,
   BroadcastCreated,
   CreateBroadcastInput,
-  InboxRow,
   IssueSummary,
   Message,
   MessageDelivery,
   MessageDeliveryMode,
   MessageRead,
+  OpenAskRow,
   UserAgentState,
   UserAgentStates,
 } from "../../api/types";
@@ -147,7 +147,7 @@ function currentList(listed: readonly Agent[]): BroadcastRoster {
 // The signed-in reader is `alice`, and a card's first number is their own work: these rows wait
 // on them, which is what the server answers in `waiting_on_person` for an ask nobody has handed
 // on whose issue is theirs.
-const inbox: InboxRow[] = [1, 2].map((number) => ({
+const inbox: OpenAskRow[] = [1, 2].map((number) => ({
   anchor: null,
   answer: null,
   artifact_id: null,
@@ -226,7 +226,7 @@ function renderAgents({
   messages = [],
 }: {
   agentState?: UserAgentStates;
-  inboxRows?: InboxRow[];
+  inboxRows?: OpenAskRow[];
   initialEntry?: string;
   listedAgents?: Agent[];
   issues?: IssueSummary[];
@@ -656,7 +656,7 @@ test("Agents counts a card's two numbers in their own right: the reader's own, a
     session_id: "builder-session",
     title: "Builder",
   };
-  const builderAsk = (overrides: Partial<InboxRow>): InboxRow => ({
+  const builderAsk = (overrides: Partial<OpenAskRow>): OpenAskRow => ({
     ...inbox[0],
     author: { id: "builder-session", kind: "session" },
     ...overrides,

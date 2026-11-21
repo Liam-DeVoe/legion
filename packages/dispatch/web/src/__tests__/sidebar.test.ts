@@ -9,9 +9,9 @@ import { api } from "../api/client";
 import { whoAmIQuery } from "../api/queries";
 import type {
   CredentialPendingRow,
-  InboxRow,
   IssueSummary,
   MyReplyRow,
+  OpenAskRow,
   Priorities,
   Project,
 } from "../api/types";
@@ -100,7 +100,7 @@ function renderSidebar(
 ) {
   const listPriorities = spyOn(api, "listPriorities").mockResolvedValue(priorities);
   railSpies.push(listPriorities);
-  const asks: InboxRow[] = [
+  const asks: OpenAskRow[] = [
     {
       anchor: null,
       answer: null,

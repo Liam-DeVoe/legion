@@ -7,7 +7,7 @@
  *  host or project.
  */
 import { expect, type Page } from "@playwright/test";
-import type { InboxRow } from "../web/src/api/types";
+import type { OpenAskRow } from "../web/src/api/types";
 
 import {
   answerAsk,
@@ -146,8 +146,8 @@ export interface Seed {
 const INDEX_PROBE = { intervals: [50, 50, 100, 200, 500] };
 
 /** The Inbox row `match` names, once the server has indexed the block or opened the question. */
-async function indexedRow(match: (row: InboxRow) => boolean): Promise<InboxRow> {
-  let found: InboxRow | undefined;
+async function indexedRow(match: (row: OpenAskRow) => boolean): Promise<OpenAskRow> {
+  let found: OpenAskRow | undefined;
   await expect
     .poll(async () => {
       found = (await getInbox()).find(match);

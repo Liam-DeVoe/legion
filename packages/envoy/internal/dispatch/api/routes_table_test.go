@@ -204,8 +204,8 @@ func TestRoutesTablePinsEveryRegisteredRoute(t *testing.T) {
 			t.Fatalf("route %q has auth %q", key, route.Auth)
 		}
 	}
-	if got := len((&server{deps: Deps{TestHooksEnabled: true}}).routes()); got != len(routes)+16 {
-		t.Fatalf("test hooks add sixteen routes: got %d, want %d", got, len(routes)+16)
+	if got := len((&server{deps: Deps{TestHooksEnabled: true}}).routes()); got != len(routes)+17 {
+		t.Fatalf("test hooks add seventeen routes: got %d, want %d", got, len(routes)+17)
 	}
 }
 
@@ -577,6 +577,9 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 		// The Dismiss beside it writes the person's own dismissal marks, so it is theirs too.
 		"POST /api/v1/me/inbox/dismiss",
 		"GET /api/v1/agents/{session_id}/messages",
+		// The conversation read is this change's own row: it answers the rows the read above
+		// answers, one session's conversation, so it needs that read's scope.
+		"GET /api/v1/agents/{session_id}/conversation",
 		// Which sessions Dispatch holds a record of is this change's own row: it answers only
 		// what the conversation read above already tells a caller, so it admits the callers
 		// that read admits and needs its scope.

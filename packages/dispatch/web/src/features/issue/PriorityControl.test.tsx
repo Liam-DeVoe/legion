@@ -18,7 +18,7 @@ import { answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { NetworkError } from "../../api/client";
-import type { InboxRow, Issue, IssueDetails, IssuePriority, IssueSummary } from "../../api/types";
+import type { Issue, IssueDetails, IssuePriority, IssueSummary, OpenAskRow } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { issuePriority } from "./issue-priority";
@@ -106,7 +106,7 @@ const summary: IssueSummary = {
   created_at: issue.created_at,
 };
 const otherSummary: IssueSummary = { ...summary, key: "CORE-2", priority: 3 };
-const inboxRow: InboxRow = {
+const inboxRow: OpenAskRow = {
   anchor: null,
   answer: null,
   artifact_id: null,
@@ -235,7 +235,9 @@ test("PriorityControl saves the picked priority, shows it before the server answ
       { ...summary, priority: 2 },
       otherSummary,
     ]);
-    expect(queryClient.getQueryData<InboxRow[]>(inboxKey)).toEqual([{ ...inboxRow, priority: 2 }]);
+    expect(queryClient.getQueryData<OpenAskRow[]>(inboxKey)).toEqual([
+      { ...inboxRow, priority: 2 },
+    ]);
 
     await act(async () => {
       save.resolve({ ...issue, priority: 2 });
@@ -364,7 +366,7 @@ test("PriorityControl rolls every surface back and offers Retry when the save fa
     expect(select().value).toBe("1");
     expect(select().disabled).toBe(false);
     expect(queryClient.getQueryData<IssueSummary[]>(listKey)).toEqual([summary, otherSummary]);
-    expect(queryClient.getQueryData<InboxRow[]>(inboxKey)).toEqual([inboxRow]);
+    expect(queryClient.getQueryData<OpenAskRow[]>(inboxKey)).toEqual([inboxRow]);
 
     patchIssue.mockResolvedValue({ ...issue, priority: 0 });
     await user.click(screen.getByRole("button", { name: "Retry" }));
@@ -451,7 +453,9 @@ test("a queued pick that fails rolls back to the priority the server last confir
       { ...summary, priority: 0 },
       otherSummary,
     ]);
-    expect(queryClient.getQueryData<InboxRow[]>(inboxKey)).toEqual([{ ...inboxRow, priority: 0 }]);
+    expect(queryClient.getQueryData<OpenAskRow[]>(inboxKey)).toEqual([
+      { ...inboxRow, priority: 0 },
+    ]);
   } finally {
     unmount();
     patchIssue.mockRestore();

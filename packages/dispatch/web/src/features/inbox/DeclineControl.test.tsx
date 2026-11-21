@@ -14,7 +14,7 @@ import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, type DeclineAskInput, NetworkError } from "../../api/client";
 import { inboxQuery } from "../../api/queries";
 import { DispatchQueryClient, hearLiveEvent } from "../../api/query-client";
-import type { Ask, AskRead, DispatchEvent, InboxRow } from "../../api/types";
+import type { Ask, AskRead, DispatchEvent, OpenAskRow } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { stoppedWriteNote } from "../writes/keyed-write";
@@ -486,7 +486,7 @@ test("an Inbox read asked while a decline is out waits for its answer, and bring
   const other = issueAsk({ id: "ask-2" });
   // What Dispatch lists before the decline is in, and after it: the declined question gone, and
   // a question asked since.
-  let served: InboxRow[] = [issueAsk({ id: open.id }), other];
+  let served: OpenAskRow[] = [issueAsk({ id: open.id }), other];
   const after = [other, issueAsk({ id: "ask-3" })];
   const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
   // Dispatch's own client (`main.tsx`), whose reads a write's holds keep back.
@@ -562,7 +562,7 @@ test("an Inbox read held behind a decline goes on the decline's own event, and s
   const declined = declinedAsk("");
   const out = Promise.withResolvers<Ask>();
   const other = issueAsk({ id: "ask-2" });
-  let served: InboxRow[] = [issueAsk({ id: open.id }), other];
+  let served: OpenAskRow[] = [issueAsk({ id: open.id }), other];
   const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
   const queryClient = new DispatchQueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },

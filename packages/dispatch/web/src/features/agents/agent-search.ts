@@ -1,6 +1,6 @@
 import { useCallback, useMemo } from "react";
 
-import type { Agent, InboxRow } from "../../api/types";
+import type { Agent, OpenAskRow } from "../../api/types";
 import { useCappedSearchParam } from "../../lib/query-param";
 import { AGENTS_MACHINE_PARAM, AGENTS_ROLE_PARAM } from "../refs/routes";
 import type { AgentGroup } from "./agent-groups";
@@ -157,7 +157,7 @@ export function filterOptions(
  *  costs no network call of its own, and a session's answered or resolved asks name no issue
  *  here. */
 export function sessionIssueKeys(
-  rows: readonly InboxRow[]
+  rows: readonly OpenAskRow[]
 ): ReadonlyMap<string, readonly string[]> {
   const keys = new Map<string, Set<string>>();
   for (const ask of rows) {

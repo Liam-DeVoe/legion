@@ -8,7 +8,7 @@
  *  or project.
  */
 import { expect, type Locator, type Page } from "@playwright/test";
-import type { InboxRow, IssuePriority } from "../web/src/api/types";
+import type { IssuePriority, OpenAskRow } from "../web/src/api/types";
 
 import { setLiveSessions } from "./agents";
 import {
@@ -66,7 +66,7 @@ const decisionSpec = [
 ].join("\n");
 
 /** The Inbox row `match` names, once the server has indexed the block that carries it. */
-async function indexedRow(match: (row: InboxRow) => boolean): Promise<InboxRow> {
+async function indexedRow(match: (row: OpenAskRow) => boolean): Promise<OpenAskRow> {
   await expect.poll(async () => (await getInbox()).some(match)).toBe(true);
   const row = (await getInbox()).find(match);
   if (row === undefined) throw new Error("the seeded question left the Inbox before it was read");

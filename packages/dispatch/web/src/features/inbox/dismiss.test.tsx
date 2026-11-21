@@ -32,10 +32,10 @@ import {
 import { DispatchQueryClient, hearLiveEvent } from "../../api/query-client";
 import type {
   DispatchEvent,
-  InboxRow,
   IssueDetails,
   MyRepliesResponse,
   MyReplyRow,
+  OpenAskRow,
 } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
@@ -81,7 +81,7 @@ function threadsRead(rows: readonly MyReplyRow[]): MyRepliesResponse {
 /** A client holding everything the Inbox reads, with `asks` open and `rows` the reader's Reply
  *  and Agent rows, each drawn from the one read, as the reader's own asks among `asks` are. The
  *  refetch a landed press triggers is answered from the same rows. */
-function seeded(rows: readonly MyReplyRow[], asks: readonly InboxRow[] = []): QueryClient {
+function seeded(rows: readonly MyReplyRow[], asks: readonly OpenAskRow[] = []): QueryClient {
   const mine = asks.filter((ask) => askWaitingOnPerson(ask) === "alice");
   restores.push(spyOn(api, "getCredentialPending").mockResolvedValue({ pending: [] }));
   restores.push(answerOneRead({ asks: mine, threads: rows }, { asOf: AS_OF }));

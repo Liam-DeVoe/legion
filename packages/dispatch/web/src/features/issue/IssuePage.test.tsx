@@ -26,10 +26,10 @@ import type {
   ArtifactVersionText,
   Ask,
   GraphReferences,
-  InboxRow,
   IssueCoverage,
   IssueDetails,
   IssueReferences,
+  OpenAskRow,
   Project,
   Subscriber,
   UserIssueState,
@@ -194,7 +194,7 @@ let stubbedIssue: IssueDetails = issue;
 
 function stubIssuePage(
   nextIssue: IssueDetails,
-  inbox: InboxRow[] = [],
+  inbox: OpenAskRow[] = [],
   subscribers: Subscriber[] = [],
   state: UserIssueState = { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 },
   agents: Agent[] = []

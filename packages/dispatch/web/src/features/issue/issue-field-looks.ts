@@ -15,12 +15,12 @@ import {
   whoAmIQuery,
 } from "../../api/queries";
 import type {
-  InboxRow,
   Issue,
   IssueDetails,
   IssueSummary,
   MeInboxEntry,
   MeInboxResponse,
+  OpenAskRow,
 } from "../../api/types";
 import { issueProject } from "../../lib/issue-key";
 import { meInboxAskEntry } from "../inbox/one-read-cache";
@@ -92,9 +92,9 @@ export function issueLook(field: IssueField, issue: Partial<IssueFields>): Look 
 }
 
 /** Every Inbox row the client holds. */
-function inboxRows(client: QueryClient): InboxRow[] {
+function inboxRows(client: QueryClient): OpenAskRow[] {
   return client
-    .getQueriesData<InboxRow[]>({ queryKey: inboxKey })
+    .getQueriesData<OpenAskRow[]>({ queryKey: inboxKey })
     .flatMap(([, rows]) => (Array.isArray(rows) ? rows : []));
 }
 
@@ -119,14 +119,14 @@ export function issueAnswer(answer: unknown): (IssueFields & Pick<Issue, "key">)
 }
 
 /** The person each of `rows`, the Inbox rows of one issue, waits on, by the row's id. */
-function waitingOf(rows: readonly InboxRow[]): ReadonlyMap<string, string | undefined> {
+function waitingOf(rows: readonly OpenAskRow[]): ReadonlyMap<string, string | undefined> {
   return new Map(rows.map((each) => [each.id, each.waiting_on_person]));
 }
 
 /** How `rows`, the Inbox rows of one issue, show the fields of the issue a pick changes: as the
  *  first of them carries them - its priority, and its issue's assignee where it names its issue -
  *  with the person each of them waits on. Undefined where there is no row. */
-function inboxLook(rows: readonly InboxRow[]): Look | undefined {
+function inboxLook(rows: readonly OpenAskRow[]): Look | undefined {
   const [row] = rows;
   if (row === undefined) return undefined;
   const { issue, priority } = row;
@@ -151,7 +151,7 @@ export function fieldLook(look: Look, field: IssueField): Look | undefined {
 function lookOf(
   field: IssueField,
   issue: IssueFields | undefined,
-  rows: readonly InboxRow[]
+  rows: readonly OpenAskRow[]
 ): Look | undefined {
   if (issue === undefined) {
     const look = inboxLook(rows);
@@ -210,8 +210,8 @@ export function answeredLooks(queryKey: QueryKey, data: unknown): Map<string, Lo
     return looks;
   }
   if (cache !== "inbox") return looks;
-  const rows = new Map<string, InboxRow[]>();
-  for (const row of data as InboxRow[]) {
+  const rows = new Map<string, OpenAskRow[]>();
+  for (const row of data as OpenAskRow[]) {
     if (row.issue_key === null) continue;
     const ofIssue = rows.get(row.issue_key);
     if (ofIssue === undefined) rows.set(row.issue_key, [row]);
@@ -241,7 +241,11 @@ function withFields<T extends IssueFields>(issue: T, fields: Partial<IssueFields
  *  Dispatch answers does, and one written so would read as an ask no person waits on. A look that
  *  names the person a row waited on as Dispatch last answered it (`Look.waiting`) puts that person
  *  back. The Inbox draws no repository. */
-function showOnInboxRow(row: InboxRow, showing: Showing, fallback: string | undefined): InboxRow {
+function showOnInboxRow(
+  row: OpenAskRow,
+  showing: Showing,
+  fallback: string | undefined
+): OpenAskRow {
   if (row.issue_key !== showing.issueKey) return row;
   const { fields, waiting } = showing.look;
   if (showing.field === "priority") {
@@ -298,7 +302,7 @@ export function cacheOf(queryKey: QueryKey): "detail" | "inbox" | "list" | "oneR
 function onInboxRow(
   client: QueryClient,
   showings: readonly Showing[]
-): (row: InboxRow) => InboxRow {
+): (row: OpenAskRow) => OpenAskRow {
   const fallbacks = showings.map((showing) =>
     showing.field === "assignee" ? defaultAssignee(client, showing.issueKey) : undefined
   );
@@ -403,6 +407,6 @@ export function shownOn(
       )
     );
   }
-  if (cache === "inbox") return mapRows(data as InboxRow[], onInboxRow(client, showings));
+  if (cache === "inbox") return mapRows(data as OpenAskRow[], onInboxRow(client, showings));
   return data;
 }

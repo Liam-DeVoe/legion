@@ -18,12 +18,12 @@ import type {
   AskSnooze,
   Comment,
   DisplayTree,
-  InboxRow,
   IssueDetails,
   Message,
   MessageRead,
   MyReplyRow,
   MyReplyThreadRow,
+  OpenAskRow,
   Version,
 } from "../../api/types";
 import { CHANGED_BLOCK_CLASS, type ChangeBaseline, changeMarksAgainst } from "../doc/change-marks";
@@ -239,7 +239,7 @@ function renderPane({
   createEditor,
   seed = () => {},
 }: {
-  ask: InboxRow;
+  ask: OpenAskRow;
   createEditor?: (inner: CreateEditor) => CreateEditor;
   seed?: (client: QueryClient) => void;
 }) {
@@ -268,7 +268,7 @@ function renderPane({
   const snoozeLiveness: (readonly [string, boolean])[] = [];
   /** Every registration a card's hand-on made, in order: `[askId, live]`. */
   const handOnLiveness: (readonly [string, boolean])[] = [];
-  const tree = (row: InboxRow) => (
+  const tree = (row: OpenAskRow) => (
     <MemoryRouter>
       <QueryClientProvider client={client}>
         <DocumentRuntime.Provider value={runtime}>
@@ -292,14 +292,14 @@ function renderPane({
     client,
     handOnLiveness,
     opened,
-    rerender: (row: InboxRow) => view.rerender(tree(row)),
+    rerender: (row: OpenAskRow) => view.rerender(tree(row)),
     runtime: fake,
     snoozeLiveness,
     view,
   };
 }
 
-function decisionAsk(overrides: Partial<InboxRow> = {}): InboxRow {
+function decisionAsk(overrides: Partial<OpenAskRow> = {}): OpenAskRow {
   return issueAsk({
     block_artifact: { id: "artifact-1", primary: true, slug: "spec" },
     block_id: "ship_it",
@@ -312,8 +312,8 @@ function decisionAsk(overrides: Partial<InboxRow> = {}): InboxRow {
  *  a first request has none of, and `overrides` tells two requests on one document apart. */
 function approvalAsk(
   approved?: { at: string; by: { id: string; kind: "user" }; version: number },
-  overrides: Partial<InboxRow> = {}
-): InboxRow {
+  overrides: Partial<OpenAskRow> = {}
+): OpenAskRow {
   return issueAsk({
     approval: {
       approved,
@@ -638,7 +638,7 @@ test("an approval that falls back to the card draws the question once, as the ca
 // The one scroller is the column's, not the row's: it outlives every question the reader steps
 // through. These four rows pin where an approval request leaves it.
 
-const SECOND_REQUEST: Partial<InboxRow> = {
+const SECOND_REQUEST: Partial<OpenAskRow> = {
   id: "ask-b",
   question: "Approve spec.md at version 4, after the rewrite?",
 };
@@ -680,7 +680,7 @@ test("a second approval request opens the column at its own start, wherever the 
 
 /** A request on a document this harness cannot read, so the column falls back to its card and
  *  writes nothing: what the reader steps through on the way back to the first request. */
-const UNREADABLE_REQUEST: Partial<InboxRow> = {
+const UNREADABLE_REQUEST: Partial<OpenAskRow> = {
   approval: {
     approved: undefined,
     artifact_id: "artifact-2",
@@ -1039,7 +1039,7 @@ test("the column's card registers its hand-on, so the list keeps the row the col
     asked_of: "alice",
     issue: { assignee: "bob", key: "CORE-1", title: "Bob's issue" },
   });
-  const held = Promise.withResolvers<InboxRow>();
+  const held = Promise.withResolvers<OpenAskRow>();
   const handAskTo = spyOn(api, "handAskTo").mockImplementation(() => held.promise);
   // The control reads the people as the reader reaches for it, bob among them.
   const listUsers = spyOn(api, "listUsers").mockResolvedValue([

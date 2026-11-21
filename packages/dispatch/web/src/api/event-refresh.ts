@@ -32,10 +32,10 @@ import type {
   DocumentReferenceSummary,
   EventType,
   GraphReferences,
-  InboxRow,
   IssueSummary,
   MyRepliesResponse,
   MyReplyRow,
+  OpenAskRow,
 } from "./types";
 
 /**
@@ -120,7 +120,7 @@ function issueSummaryOf(key: string, event: DispatchEvent): RefreshTarget {
 function inboxRowsOf(key: string): RefreshTarget {
   return {
     queryKey: inboxKey,
-    when: (data) => rowsOf<InboxRow>(data).some((row) => row.issue_key === key),
+    when: (data) => rowsOf<OpenAskRow>(data).some((row) => row.issue_key === key),
   };
 }
 
@@ -128,7 +128,7 @@ function inboxRowsOf(key: string): RefreshTarget {
 function inboxRowOfAsk(id: string): RefreshTarget {
   return {
     queryKey: inboxKey,
-    when: (data) => rowsOf<InboxRow>(data).some((row) => row.id === id),
+    when: (data) => rowsOf<OpenAskRow>(data).some((row) => row.id === id),
   };
 }
 
@@ -155,7 +155,7 @@ function inboxRowsDecidedByDefault(project: string): RefreshTarget {
   return {
     queryKey: inboxKey,
     when: (data) =>
-      rowsOf<InboxRow>(data).some(
+      rowsOf<OpenAskRow>(data).some(
         (row) =>
           openAndNotHandedOn(row) &&
           askProject(row) === project &&
