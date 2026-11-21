@@ -19,18 +19,20 @@ import (
 // /v1/admin/machine-tokens), which records the project in the broker's store of private projects
 // first when slack_channels is present and answers the record's number from one sequence, and the
 // forget of such a record (POST /v1/admin/private-projects/forget). It counts live[project]
-// tokens, fails every call while down, and answers each forget forgetStatus: 0 is 200 forgotten,
-// http.StatusConflict is RECORD_IN_FLIGHT with retryAfter seconds, any other its own status. It
-// keeps every call it answered.
+// tokens, fails every call while down, and answers each forget the next status of forgetSequence,
+// then forgetStatus once the sequence is spent: 0 is 200 forgotten, http.StatusConflict is
+// RECORD_IN_FLIGHT with retryAfter seconds, any other its own status. It keeps every call it
+// answered.
 type brokerStandIn struct {
-	mu           sync.Mutex
-	live         map[string]int
-	down         bool
-	record       int64
-	forgetStatus int
-	retryAfter   int
-	counts       []standInCount
-	forgets      []standInForget
+	mu             sync.Mutex
+	live           map[string]int
+	down           bool
+	record         int64
+	forgetStatus   int
+	forgetSequence []int
+	retryAfter     int
+	counts         []standInCount
+	forgets        []standInForget
 }
 
 // standInCount is one count the stand-in answered: its project, the channels it recorded (nil when
@@ -100,14 +102,18 @@ func (b *brokerStandIn) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		b.forgets = append(b.forgets, forget)
-		switch b.forgetStatus {
+		status := b.forgetStatus
+		if len(b.forgetSequence) > 0 {
+			status, b.forgetSequence = b.forgetSequence[0], b.forgetSequence[1:]
+		}
+		switch status {
 		case 0:
 			_, _ = w.Write([]byte(`{"outcome":"forgotten"}`))
 		case http.StatusConflict:
 			w.WriteHeader(http.StatusConflict)
 			_ = json.NewEncoder(w).Encode(map[string]any{"code": "RECORD_IN_FLIGHT", "error": "in flight", "retry_after_seconds": b.retryAfter})
 		default:
-			w.WriteHeader(b.forgetStatus)
+			w.WriteHeader(status)
 		}
 	default:
 		w.WriteHeader(http.StatusNotFound)

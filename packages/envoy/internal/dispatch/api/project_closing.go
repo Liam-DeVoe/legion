@@ -34,6 +34,11 @@ import (
 // at it too (transaction_timeout). A variable only so a test lowers it.
 var privateSwitchDeadline = 90 * time.Second
 
+// privateSwitchContextDeadline is whether the switch's own context ends at privateSwitchDeadline,
+// beside transaction_timeout: always, but for a test that turns it off to show the database's
+// deadline holds on its own.
+var privateSwitchContextDeadline = true
+
 // developerBoxSettle is how long after its closing state began a switch to private first trusts
 // the broker's count of 0: the broker holds Dispatch's answer about a project for at most 30
 // seconds (projectaccess.CacheTTL), and stores a developer box's token only while the answer it

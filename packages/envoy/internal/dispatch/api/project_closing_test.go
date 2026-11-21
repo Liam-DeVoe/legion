@@ -210,17 +210,21 @@ func TestAProjectBecomesPrivateOnlyWithNoDeveloperBoxTokenLive(t *testing.T) {
 			t.Fatalf("the owner's next switch = %d %s, closing %v; want 200, the closing state ended and the full switch recorded", made.Code, made.Body.String(), rig.closingSince(t, "PRIV"))
 		}
 	})
+}
 
-	t.Run("with no broker", func(t *testing.T) {
-		rig := newClosingRig(t, []string{"PRIV"}, false)
-		token := decodeBody[agentTokenResponse](t, rig.mint(t, "of PRIV", []string{"PRIV"}))
-		before := allEvents(t, rig.database)
-		refusedWith(t, "the switch with no broker", rig.switchPrivate(t, "PRIV"), http.StatusConflict, "PRIVATE_PROJECTS_NEED_BROKER", "DISPATCH_AGENT_SECRETS_URL")
-		if visibilityOf(t, rig.database, "PRIV") != model.ProjectPublic || rig.closingSince(t, "PRIV") != nil || allEvents(t, rig.database) != before || rig.whoami(t, token.Token) != http.StatusOK {
-			t.Fatalf("the refused switch with no broker changed something: PRIV %s, closing %v, events %d → %d, PRIV's token reads whoami %d",
-				visibilityOf(t, rig.database, "PRIV"), rig.closingSince(t, "PRIV"), before, allEvents(t, rig.database), rig.whoami(t, token.Token))
-		}
-	})
+// TestASwitchToPrivateNeedsTheSecretsBroker: a deployment with no secrets broker
+// (DISPATCH_AGENT_SECRETS_URL unset) refuses the owner's full switch of PRIV 409
+// PRIVATE_PROJECTS_NEED_BROKER, naming the setting, with nothing changed: PRIV public, no closing
+// state, no event, and PRIV's personal token still reads.
+func TestASwitchToPrivateNeedsTheSecretsBroker(t *testing.T) {
+	rig := newClosingRig(t, []string{"PRIV"}, false)
+	token := decodeBody[agentTokenResponse](t, rig.mint(t, "of PRIV", []string{"PRIV"}))
+	before := allEvents(t, rig.database)
+	refusedWith(t, "the switch with no broker", rig.switchPrivate(t, "PRIV"), http.StatusConflict, "PRIVATE_PROJECTS_NEED_BROKER", "DISPATCH_AGENT_SECRETS_URL")
+	if visibilityOf(t, rig.database, "PRIV") != model.ProjectPublic || rig.closingSince(t, "PRIV") != nil || allEvents(t, rig.database) != before || rig.whoami(t, token.Token) != http.StatusOK {
+		t.Fatalf("the refused switch of PRIV with no broker changed something: PRIV %s, closing %v, events %d → %d, PRIV's token reads whoami %d",
+			visibilityOf(t, rig.database, "PRIV"), rig.closingSince(t, "PRIV"), before, allEvents(t, rig.database), rig.whoami(t, token.Token))
+	}
 }
 
 // brokerForgetsOf is the forgets owed the broker for key, as (record or 0) in the order written.
@@ -304,70 +308,175 @@ func (a *switchableAdmission) setBlock(block bool) {
 	a.block = block
 }
 
-// TestASwitchThatDoesNotCommitOwesTheBrokerItsForget: a switch the closing step refuses after the
-// broker's count answered record N owes the forget of N, written with the closing state it keeps;
-// one that fails later in its transaction, here at the hubs' admission proof, owes the forget of N
-// too, written once the transaction rolled back; one past its deadline answers 503
-// PRIVATE_SWITCH_TIMED_OUT, changes nothing and owes the forget of N. A switch that commits owes
-// nothing for its own record, and the owner's switch of the private project back to public owes
-// the forget of the project's record whatever its number. A switch whose count the broker did
-// not answer owes nothing: no record is known.
-func TestASwitchThatDoesNotCommitOwesTheBrokerItsForget(t *testing.T) {
-	admission := &switchableAdmission{}
-	broker := newBrokerStandIn()
+// forgetRig is a test server whose deployment provisions PRIV, alice's, proves the hubs' admission
+// through admission and counts through broker, with the store's backfills done and the closing
+// state's settle time lowered to 0; switchPRIV is alice's switch of PRIV to private.
+type forgetRig struct {
+	handler    http.Handler
+	database   *store.Store
+	admission  *switchableAdmission
+	broker     *brokerStandIn
+	switchPRIV func() *httptest.ResponseRecorder
+}
+
+func newForgetRig(t *testing.T) forgetRig {
+	t.Helper()
+	rig := forgetRig{admission: &switchableAdmission{}, broker: newBrokerStandIn()}
 	issuer := newServiceTokenIssuer(t)
-	handler, database, _ := newTestServer(t, testServerOptions{
-		store: storetest.Open(t), privateProjects: []string{"PRIV"}, hubAdmission: admission, agentSecrets: broker,
+	rig.handler, rig.database, _ = newTestServer(t, testServerOptions{
+		store: storetest.Open(t), privateProjects: []string{"PRIV"}, hubAdmission: rig.admission, agentSecrets: rig.broker,
 		oidc: issuer.verifier(t), accessAccounts: []string{listedServiceAccount},
 	})
-	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "PRIV", "name": "PRIV"}, "alice"); response.Code != http.StatusCreated {
+	if response := dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "PRIV", "name": "PRIV"}, "alice"); response.Code != http.StatusCreated {
 		t.Fatalf("create PRIV: %d %s", response.Code, response.Body.String())
 	}
-	if _, err := database.Pool.Exec(context.Background(), `insert into session_projects_filled default values; insert into access_events_scrubbed default values`); err != nil {
+	if _, err := rig.database.Pool.Exec(context.Background(), `insert into session_projects_filled default values; insert into access_events_scrubbed default values`); err != nil {
 		t.Fatal(err)
 	}
 	lowerSettle(t, 0)
-	private := map[string]string{"visibility": "private"}
-	switchPRIV := func() *httptest.ResponseRecorder {
-		return dispatchRequest(t, handler, http.MethodPatch, "/api/v1/projects/PRIV/access", private, "alice")
+	rig.switchPRIV = func() *httptest.ResponseRecorder {
+		return dispatchRequest(t, rig.handler, http.MethodPatch, "/api/v1/projects/PRIV/access", map[string]string{"visibility": "private"}, "alice")
 	}
-	refusedWith(t, "the first switch, which starts the closing state", switchPRIV(), http.StatusConflict, "DEVELOPER_BOX_TOKENS_LIVE")
-	if got := brokerForgetsOf(t, database, "PRIV"); len(got) != 1 || got[0] != 1 {
+	return rig
+}
+
+// TestASwitchThatDoesNotMakeAProjectPrivateForgetsItAtTheBroker: a switch the closing step refuses
+// after the broker's count answered record N owes the forget of N, written with the closing state
+// it keeps; one that fails later in its transaction, here at the hubs' admission proof, owes the
+// forget of N too, written once the transaction rolled back. A switch whose count the broker did
+// not answer owes nothing, as no record is known, and a switch that commits owes nothing for its
+// own record. The owner's switch of the private project back to public owes the forget of the
+// project's record whatever its number. The sender then delivers each forget owed to the broker
+// stand-in, in order, and keeps none. A forget the broker answers 503, then 409 RECORD_IN_FLIGHT,
+// then 200 is sent three times and kept until the third.
+func TestASwitchThatDoesNotMakeAProjectPrivateForgetsItAtTheBroker(t *testing.T) {
+	rig := newForgetRig(t)
+	ctx := context.Background()
+	refusedWith(t, "the first switch, which starts the closing state", rig.switchPRIV(), http.StatusConflict, "DEVELOPER_BOX_TOKENS_LIVE")
+	if got := brokerForgetsOf(t, rig.database, "PRIV"); len(got) != 1 || got[0] != 1 {
 		t.Fatalf("forgets owed after the refused first switch = %v, want [1]", got)
 	}
-	broker.set("PRIV", 0, true)
-	refusedWith(t, "a switch the broker does not count", switchPRIV(), http.StatusServiceUnavailable, "DEVELOPER_BOX_TOKENS_UNAVAILABLE")
-	if got := brokerForgetsOf(t, database, "PRIV"); len(got) != 1 {
+	rig.broker.set("PRIV", 0, true)
+	refusedWith(t, "a switch the broker does not count", rig.switchPRIV(), http.StatusServiceUnavailable, "DEVELOPER_BOX_TOKENS_UNAVAILABLE")
+	if got := brokerForgetsOf(t, rig.database, "PRIV"); len(got) != 1 {
 		t.Fatalf("forgets owed after a count the broker did not answer = %v, want [1] still: no record is known", got)
 	}
-	broker.set("PRIV", 0, false)
-	admission.setProveErr(errors.New("hub nats://hub-b.example:4222 refused the admission proof"))
-	refusedWith(t, "a switch whose hubs refuse the proof", switchPRIV(), http.StatusConflict, "PRIVATE_PROJECTS_UNAVAILABLE")
-	if got := brokerForgetsOf(t, database, "PRIV"); len(got) != 2 || got[1] != 2 {
+	rig.broker.set("PRIV", 0, false)
+	rig.admission.setProveErr(errors.New("hub nats://hub-b.example:4222 refused the admission proof"))
+	refusedWith(t, "a switch whose hubs refuse the proof", rig.switchPRIV(), http.StatusConflict, "PRIVATE_PROJECTS_UNAVAILABLE")
+	if got := brokerForgetsOf(t, rig.database, "PRIV"); len(got) != 2 || got[1] != 2 {
 		t.Fatalf("forgets owed after the switch the hubs refused = %v, want [1 2]", got)
 	}
-	admission.setProveErr(nil)
-	previous := privateSwitchDeadline
-	privateSwitchDeadline = 2 * time.Second
-	t.Cleanup(func() { privateSwitchDeadline = previous })
-	admission.setBlock(true)
-	refusedWith(t, "a switch past its deadline", switchPRIV(), http.StatusServiceUnavailable, "PRIVATE_SWITCH_TIMED_OUT", "2s deadline", "nothing was changed")
-	admission.setBlock(false)
-	privateSwitchDeadline = previous
-	if got := brokerForgetsOf(t, database, "PRIV"); len(got) != 3 || got[2] != 3 || visibilityOf(t, database, "PRIV") != model.ProjectPublic {
-		t.Fatalf("after the switch past its deadline: forgets %v, PRIV %s; want [1 2 3] and PRIV public", got, visibilityOf(t, database, "PRIV"))
-	}
-	if made := switchPRIV(); made.Code != http.StatusOK || visibilityOf(t, database, "PRIV") != model.ProjectPrivate {
+	rig.admission.setProveErr(nil)
+	if made := rig.switchPRIV(); made.Code != http.StatusOK || visibilityOf(t, rig.database, "PRIV") != model.ProjectPrivate {
 		t.Fatalf("the switch that commits = %d %s", made.Code, made.Body.String())
 	}
-	if got := brokerForgetsOf(t, database, "PRIV"); len(got) != 3 {
-		t.Fatalf("forgets owed after the switch that committed = %v, want [1 2 3]: it owes none for its own record 4", got)
+	if got := brokerForgetsOf(t, rig.database, "PRIV"); len(got) != 2 {
+		t.Fatalf("forgets owed after the switch that committed = %v, want [1 2]: it owes none for its own record 3", got)
 	}
-	if back := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/projects/PRIV/access", map[string]string{"visibility": "public"}, "alice"); back.Code != http.StatusOK {
+	if back := dispatchRequest(t, rig.handler, http.MethodPatch, "/api/v1/projects/PRIV/access", map[string]string{"visibility": "public"}, "alice"); back.Code != http.StatusOK {
 		t.Fatalf("the switch back to public = %d %s", back.Code, back.Body.String())
 	}
-	if got := brokerForgetsOf(t, database, "PRIV"); len(got) != 4 || got[3] != 0 {
-		t.Fatalf("forgets owed after the switch back to public = %v, want [1 2 3 0], the last for the record whatever its number", got)
+	if got := brokerForgetsOf(t, rig.database, "PRIV"); len(got) != 3 || got[2] != 0 {
+		t.Fatalf("forgets owed after the switch back to public = %v, want [1 2 0], the last for the record whatever its number", got)
+	}
+
+	client := rig.broker.serve(t)
+	if err := sendBrokerForgets(ctx, rig.database.Pool, client); err != nil {
+		t.Fatalf("send the forgets: %v", err)
+	}
+	_, forgets := rig.broker.answered()
+	if len(forgets) != 3 || forgets[0].Record == nil || *forgets[0].Record != 1 || forgets[1].Record == nil || *forgets[1].Record != 2 || forgets[2].Record != nil {
+		t.Fatalf("the broker stand-in answered the forgets %+v, want PRIV's 1, 2 and then its record whatever its number", forgets)
+	}
+	if got := brokerForgetsOf(t, rig.database, "PRIV"); len(got) != 0 {
+		t.Fatalf("forgets owed once the broker took them = %v, want none", got)
+	}
+
+	rig.broker.mu.Lock()
+	rig.broker.forgetSequence = []int{http.StatusServiceUnavailable, http.StatusConflict, 0}
+	rig.broker.mu.Unlock()
+	if _, err := rig.database.Pool.Exec(ctx, `insert into broker_forgets (project, record) values ('PRIV', 9)`); err != nil {
+		t.Fatal(err)
+	}
+	for attempt := 1; attempt <= 3; attempt++ {
+		if _, err := rig.database.Pool.Exec(ctx, `update broker_forgets set next_attempt_at = now()`); err != nil {
+			t.Fatal(err)
+		}
+		if err := sendBrokerForgets(ctx, rig.database.Pool, client); err != nil {
+			t.Fatalf("send the forget, attempt %d: %v", attempt, err)
+		}
+		_, forgets := rig.broker.answered()
+		owed := brokerForgetsOf(t, rig.database, "PRIV")
+		if wantKept := attempt < 3; len(forgets) != 3+attempt || (len(owed) == 1) != wantKept {
+			t.Fatalf("after attempt %d of the forget the broker answers 503, 409, 200: %d forgets sent in all, owed %v; want %d sent and the forget kept %t",
+				attempt, len(forgets), owed, 3+attempt, wantKept)
+		}
+	}
+}
+
+// TestAPrivateSwitchPastItsDeadlineCommitsNothing: a switch whose commit a test hook holds past the
+// switch's deadline, lowered here to 2 s, answers 503 PRIVATE_SWITCH_TIMED_OUT and leaves PRIV
+// public once the hook lets go: with both deadlines, the Go context's and the database's
+// transaction_timeout, and with the database's alone. With the broker's hold of twice the
+// deadline, a commit later than the deadline could come after a read had dropped PRIV's record,
+// leaving PRIV private and unrecorded.
+func TestAPrivateSwitchPastItsDeadlineCommitsNothing(t *testing.T) {
+	for _, row := range []struct {
+		name            string
+		contextDeadline bool
+	}{
+		{"both deadlines", true},
+		{"the database's deadline alone", false},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			rig := newForgetRig(t)
+			ctx := context.Background()
+			refusedWith(t, "the first switch, which starts the closing state", rig.switchPRIV(), http.StatusConflict, "DEVELOPER_BOX_TOKENS_LIVE")
+			if _, err := rig.database.Pool.Exec(ctx, `
+				create function hold_priv_private_commit() returns trigger language plpgsql as $$
+				begin
+					perform pg_advisory_xact_lock(hashtext('the deadline row holds PRIV''s commit'));
+					return null;
+				end $$;
+				create constraint trigger hold_priv_private_commit after update on projects
+					deferrable initially deferred for each row when (new.key = 'PRIV' and new.visibility = 'private')
+					execute function hold_priv_private_commit();
+			`); err != nil {
+				t.Fatalf("hold the commit that makes PRIV private: %v", err)
+			}
+			holder, err := rig.database.Pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer holder.Rollback(ctx)
+			if _, err := holder.Exec(ctx, `select pg_advisory_xact_lock(hashtext('the deadline row holds PRIV''s commit'))`); err != nil {
+				t.Fatalf("hold PRIV's commit: %v", err)
+			}
+			previousDeadline, previousContext := privateSwitchDeadline, privateSwitchContextDeadline
+			privateSwitchDeadline, privateSwitchContextDeadline = 2*time.Second, row.contextDeadline
+			t.Cleanup(func() { privateSwitchDeadline, privateSwitchContextDeadline = previousDeadline, previousContext })
+			// The hook lets go after 15 s whatever happened, so a switch with no deadline commits
+			// late and the test names it, rather than waiting forever.
+			answered := make(chan *httptest.ResponseRecorder, 1)
+			go func() { answered <- rig.switchPRIV() }()
+			var late *httptest.ResponseRecorder
+			select {
+			case late = <-answered:
+			case <-time.After(15 * time.Second):
+			}
+			if err := holder.Rollback(ctx); err != nil {
+				t.Fatalf("let PRIV's commit go: %v", err)
+			}
+			if late == nil {
+				late = <-answered
+			}
+			privateSwitchDeadline, privateSwitchContextDeadline = previousDeadline, previousContext
+			if late.Code != http.StatusServiceUnavailable || !strings.Contains(late.Body.String(), `"code":"PRIVATE_SWITCH_TIMED_OUT"`) || visibilityOf(t, rig.database, "PRIV") != model.ProjectPublic {
+				t.Fatalf("%s: the switch whose commit is held past its 2 s deadline = %d %s, PRIV %s; want 503 PRIVATE_SWITCH_TIMED_OUT and PRIV public: a late commit",
+					row.name, late.Code, late.Body.String(), visibilityOf(t, rig.database, "PRIV"))
+			}
+		})
 	}
 }
 

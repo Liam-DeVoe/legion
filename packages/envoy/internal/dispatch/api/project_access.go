@@ -436,7 +436,7 @@ func (s *server) ownerWrite(w http.ResponseWriter, r *http.Request, group string
 		return
 	}
 	ctx := r.Context()
-	if sw != nil {
+	if sw != nil && privateSwitchContextDeadline {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, privateSwitchDeadline)
 		defer cancel()
