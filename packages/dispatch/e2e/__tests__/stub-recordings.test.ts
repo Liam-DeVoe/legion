@@ -431,6 +431,7 @@ describe("every committed recording answers the display tree of every stored tex
       "MyAnswerReply.body",
       "MyAnswerRow.question",
       "MyReplyRow.subject",
+      "Priority.description",
       "PriorityRow.description",
       "ReplyBlockWithTrees.text",
       "RequirementCoverage.text",
