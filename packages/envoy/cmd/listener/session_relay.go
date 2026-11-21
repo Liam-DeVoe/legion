@@ -931,7 +931,12 @@ func (m *sessionRelays) storedFilter(ctx context.Context, sessionID string) ([]s
 	if m.delivery.afterStoredRowRead != nil {
 		m.delivery.afterStoredRowRead()
 	}
-	return m.delivery.storedRowFilter(m.registry, sessionID, topics), revision, true
+	filter, err := m.delivery.storedRowFilter(ctx, m.registry, sessionID, topics)
+	if err != nil {
+		m.logger.Warn("session relay could not judge the session's interests; retrying", slog.String("session_id", sessionID), slog.String("error", err.Error()))
+		return nil, 0, false
+	}
+	return filter, revision, true
 }
 
 // settleFilter holds a restart's filter write to the interest row it was built from: wrote is the
