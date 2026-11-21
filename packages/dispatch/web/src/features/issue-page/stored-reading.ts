@@ -262,11 +262,15 @@ function blockOf(node: Parsed): DisplayTree | undefined {
       return withContent(node.type, runsOf(node.children));
     case "blockquote":
       return withContent("blockquote", blocksOf(node.children));
-    case "list":
-      return withContent(
-        node.ordered === true ? "ordered_list" : "bullet_list",
-        blocksOf(node.children)
-      );
+    case "list": {
+      if (node.ordered !== true) return withContent("bullet_list", blocksOf(node.children));
+      const list = withContent("ordered_list", blocksOf(node.children));
+      // The server's reading writes the number an ordered list starts at as the list's `order`,
+      // and leaves it out where that is 1, its schema's default, so a list from 3 reads apart
+      // from a list from 1 here as it does there.
+      if (node.start != null && node.start !== 1) return { attrs: { order: node.start }, ...list };
+      return list;
+    }
     case "listItem":
       return withContent("list_item", blocksOf(node.children));
     case "code": {
