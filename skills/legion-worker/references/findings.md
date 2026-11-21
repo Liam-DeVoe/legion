@@ -29,7 +29,7 @@ Write to the owner on Dispatch: a comment on the issue that owns the subject, wh
    EOF
    ```
 
-When no tree owns the code, post the same comment on that project's report issue (*Where it goes*; a closed one takes a comment too, and with none, your own issue), with `--mention 'role:legion-<project>-controller'`. The controller replies under it and mentions your role. `Filed dispatch://<KEY>` names the issue it filed. On `Not filed: dispatch://<ROOT> owns it; write to role:<token>` or `Not filed: tracked by dispatch://<KEY>; write to role:<token>`, write the same comment on the issue it names, mentioning that role. On `Not filed: dispatch://<ROOT> owns it; role:<token> is mentioned here`, the owner has it: write nothing. On any other `Not filed:` reply, open the ask yourself (step 3).
+When no tree owns the code, post the same comment on that project's report issue (*Where it goes*; a closed one takes a comment too, and with none, your own issue), with `--mention 'role:legion-<project>-controller'`. The controller replies under it and mentions your role. `Filed dispatch://<KEY>` names the issue it filed. On `Not filed: dispatch://<ROOT> owns it; write to role:<token>` or `Not filed: tracked by dispatch://<KEY>; write to role:<token>`, write the same comment on the issue it names, mentioning that role. On `Not filed: dispatch://<KEY> owns it; role:<token> is mentioned here`, the owner has it: write nothing. On any other `Not filed:` reply, open the ask yourself (step 3).
 
 Apart from that reply, file nothing and wait for nothing. A production check's result names your comment, `dispatch://<KEY>/comment/<id>`.
 

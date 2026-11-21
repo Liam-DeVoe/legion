@@ -1,6 +1,6 @@
 # Finding asks
 
-Read this when a clear defect no tree owns or a finding ask's reference reaches you, when an ask you follow is answered, when you file an issue a person asked for, and at every start. What a finding ask is: `skill://legion-worker/references/findings.md`.
+Read this for a clear defect no tree owns, a finding ask's reference, an answer on an ask you follow, an issue a person asks you to file, and at every start.
 
 ## The `Filed for` line
 
@@ -29,7 +29,7 @@ dispatch comment --issue '<the evidence's issue>' --reply-to '<comment id>' --me
 
 ## Follow it
 
-A finding ask another role opened reaches you as `dispatch://<KEY>/ask/<id>`. Follow it so its answer reaches you: `dispatch follow --ask 'dispatch://<KEY>/ask/<id>' --action follow`. When `dispatch read --ref` shows it answered already, act on its answer now.
+A finding ask another role opened reaches you as `dispatch://<KEY>/ask/<id>`. Follow it, so its answer reaches you (`dispatch follow --ask '<that reference>' --action follow`); when `dispatch read --ref` shows it answered already, act on its answer now.
 
 ## Act on its answer
 
@@ -45,7 +45,7 @@ Then reply under the ask, first line exactly `Filed dispatch://<NEW KEY>` or `No
 
 ## Catch up at every start
 
-While no controller runs, an answer wakes nobody, a reference published then reaches nobody, and a new session follows none of the asks an earlier one followed. So at every start:
+Nothing wakes on or follows an ask while no controller runs, so at every start:
 
 1. `dispatch read` the report issue (none yet: nothing to catch up). Reopen and assign it as `skill://legion-controller/references/daily-report.md` "Keep it answerable" says.
 2. `dispatch open-asks --project <PROJECT>` lists every open ask; it lists no ask on a closed issue. Follow those on the report issue. On another issue, a question opening `Finding from ` is a role's own-issue ask: move it to the report issue with the same question, options and `--ref`, reply `Moved dispatch://<REPORT KEY>/ask/<new id>` under the old one, and resolve it.
@@ -65,4 +65,4 @@ While no controller runs, an answer wakes nobody, a reference published then rea
    ```
 
    Take each as [File a clear defect no tree owns](#file-a-clear-defect-no-tree-owns) says.
-5. Take each ask earlier rules opened whose question opens `Clear defect from ` the same way, with `--reply-to-ask '<ask id>'` for `--reply-to`: an open one (step 2 lists it), resolved once it has your reply, and one answered `Hand it to the owning tree`, a person's request: where step 3 of *File a clear defect no tree owns* finds the tree, reply `Not filed: dispatch://<ROOT> owns it; role:<token> is mentioned here`, adding `--mention 'role:<its architect's token>'`: it reads the answer and evidence here; copy neither.
+5. Take each ask earlier rules opened whose question opens `Clear defect from ` the same way, with `--reply-to-ask '<ask id>'` for `--reply-to`: an open one (step 2 lists it), resolved once it has your reply, and one answered `Hand it to the owning tree`, a person's request: where step 2 or 3 of *File a clear defect no tree owns* finds a live tree, reply `Not filed: dispatch://<KEY> owns it; role:<token> is mentioned here` (`<KEY>` the issue or root), adding `--mention 'role:<its architect's token>'`: it reads the answer and evidence here; copy neither. If step 2's issue is in no tree, reply `Not filed: dispatch://<KEY> tracks it; no tree owns it` to its person, mentioning no finder.
