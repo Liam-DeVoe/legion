@@ -23,36 +23,58 @@ import (
 // transaction pins search_path before anything else runs in it.
 const helperName = "inTransaction"
 
-// statementMethods are, by the type that declares them, the methods that run a statement on the
-// server or hand out something that does: pgx's connections, pools and transactions, the PgConn
-// under a pgx connection, and database/sql's handles. A receiver's type decides, never the
-// method's name.
-var statementMethods = map[string][]string{
-	"github.com/jackc/pgx/v5.Conn":          {"Exec", "Query", "QueryRow", "SendBatch", "CopyFrom", "Begin", "BeginTx"},
-	"github.com/jackc/pgx/v5.Tx":            {"Exec", "Query", "QueryRow", "SendBatch", "CopyFrom", "Begin"},
-	"github.com/jackc/pgx/v5/pgxpool.Pool":  {"Exec", "Query", "QueryRow", "SendBatch", "CopyFrom", "Begin", "BeginTx", "Acquire", "AcquireFunc"},
-	"github.com/jackc/pgx/v5/pgxpool.Conn":  {"Exec", "Query", "QueryRow", "SendBatch", "CopyFrom", "Begin", "BeginTx"},
-	"github.com/jackc/pgx/v5/pgxpool.Tx":    {"Exec", "Query", "QueryRow", "SendBatch", "CopyFrom", "Begin"},
-	"github.com/jackc/pgx/v5/pgconn.PgConn": {"Exec", "ExecParams", "ExecPrepared", "ExecBatch", "CopyFrom", "CopyTo"},
-	"database/sql.DB":                       {"QueryContext", "ExecContext", "QueryRowContext", "BeginTx", "PrepareContext", "Query", "Exec", "QueryRow", "Begin", "Prepare"},
-	"database/sql.Conn":                     {"QueryContext", "ExecContext", "QueryRowContext", "BeginTx", "PrepareContext"},
-	"database/sql.Tx":                       {"QueryContext", "ExecContext", "QueryRowContext", "PrepareContext", "Query", "Exec", "QueryRow", "Prepare"},
+// driverPackage reports whether path is a package whose methods and functions the check watches:
+// pgx and every package under it (pgconn, pgxpool, pgtype, pgproto3), and database/sql with its
+// driver package. Every method or function of these packages runs a statement, or may, unless
+// nonStatementMethods or nonStatementFunctions lists it: the check denies by default, so a
+// method pgx adds, or one it already has and nobody listed (LoadType, Prepare, ExecStatement,
+// StartPipeline, Hijack), counts as a statement.
+func driverPackage(path string) bool {
+	return path == "github.com/jackc/pgx/v5" || strings.HasPrefix(path, "github.com/jackc/pgx/v5/") ||
+		path == "database/sql" || path == "database/sql/driver"
 }
 
-// statementFunctions are the package functions that open a transaction of their own.
-var statementFunctions = map[string][]string{"github.com/jackc/pgx/v5": {"BeginFunc", "BeginTxFunc"}}
+// nonStatementMethods are the methods of those packages that send no statement the server
+// resolves names in, and so may be called outside the helper: ending a handle (Close, Release,
+// Commit and Rollback, whose COMMIT and ROLLBACK name nothing), reading what a handle is (Config,
+// TypeMap, PID, TxStatus, ParameterStatus, IsClosed), handing out the handle under another (Conn,
+// PgConn: a statement on what they hand out is a method of its own, which the check reads), and
+// reading a result a statement already returned (Next, Scan, Values, RawValues, Err,
+// FieldDescriptions, CommandTag, RowsAffected and the command tag's Insert, Update, Delete and
+// Select, and an error's Error, SQLState and Unwrap). Ping is not one: it sends a statement.
+var nonStatementMethods = []string{
+	"Close", "Release", "Commit", "Rollback", "Config", "TypeMap", "PID", "TxStatus", "ParameterStatus", "IsClosed",
+	"Conn", "PgConn", "Next", "Scan", "Values", "RawValues", "Err", "FieldDescriptions", "CommandTag", "RowsAffected",
+	"Insert", "Update", "Delete", "Select", "String", "Error", "SQLState", "Unwrap",
+}
+
+// nonStatementFunctions are the package functions of those packages that run no statement: pgx's
+// Connect, ConnectConfig and ParseConfig, which read a URL and open a connection with its startup
+// packet alone, and database/sql's Open, which opens nothing until a statement runs.
+var nonStatementFunctions = []string{"Connect", "ConnectConfig", "ParseConfig", "Open"}
+
+// connectionTypes are the handles that run a statement on their own connection rather than in a
+// transaction. A statement on one runs outside the helper's transaction even inside a function
+// literal handed to the helper, so only the transaction is the literal's to use.
+var connectionTypes = []string{
+	"github.com/jackc/pgx/v5.Conn", "github.com/jackc/pgx/v5/pgxpool.Pool", "github.com/jackc/pgx/v5/pgxpool.Conn",
+	"github.com/jackc/pgx/v5/pgconn.PgConn", "database/sql.DB", "database/sql.Conn",
+}
 
 // statementsOutside is every place in files, which info type-checked, where a statement can run
-// outside helper, in source order, and how many places it found where one runs inside it. Inside
-// is the helper's own body, and a method of a parameter of a function literal handed to a call of
-// the helper: the transaction the helper opened and gave it. A helper of nil is none, so every
-// place is outside.
+// outside helper, in source order, and how many places it found where one runs inside it. A place
+// is a call of, or a method value taken from, a method or a function of a driver package
+// (driverPackage) that no allowlist above names; a field and a type are no place. Inside is the
+// helper's own body, and the body of a function literal handed to a call of the helper, which
+// runs in the transaction the helper opened, except for a method of a connection type, which
+// runs beside that transaction, and a function, which runs on whatever handle it is given. A
+// helper of nil is none, so every place is outside.
 //
-// What it cannot see is a pgx or database/sql value passed as an interface of the package's own
-// and run through that, whose methods no type above declares; nothing in the package does that.
+// What it cannot see is a driver value converted to an interface of the package's own and run
+// through that, whose method no driver package declares; nothing in the package does that.
 func statementsOutside(fset *token.FileSet, files []*ast.File, info *types.Info, helper *types.Func) (outside []string, inside int) {
 	var body *ast.BlockStmt
-	opened := map[types.Object]bool{}
+	var literals []*ast.FuncLit
 	for _, file := range files {
 		ast.Inspect(file, func(node ast.Node) bool {
 			switch node := node.(type) {
@@ -65,21 +87,19 @@ func statementsOutside(fset *token.FileSet, files []*ast.File, info *types.Info,
 					return true
 				}
 				for _, argument := range node.Args {
-					literal, ok := ast.Unparen(argument).(*ast.FuncLit)
-					if !ok {
-						continue
-					}
-					for _, field := range literal.Type.Params.List {
-						for _, name := range field.Names {
-							opened[info.Defs[name]] = true
-						}
+					if literal, ok := ast.Unparen(argument).(*ast.FuncLit); ok {
+						literals = append(literals, literal)
 					}
 				}
 			}
 			return true
 		})
 	}
-	inHelper := func(pos token.Pos) bool { return body != nil && body.Pos() <= pos && pos < body.End() }
+	within := func(node ast.Node, pos token.Pos) bool { return node.Pos() <= pos && pos < node.End() }
+	inHelper := func(pos token.Pos) bool { return body != nil && within(body, pos) }
+	inLiteral := func(pos token.Pos) bool {
+		return slices.ContainsFunc(literals, func(literal *ast.FuncLit) bool { return within(literal.Body, pos) })
+	}
 	type place struct {
 		pos  token.Pos
 		what string
@@ -87,15 +107,11 @@ func statementsOutside(fset *token.FileSet, files []*ast.File, info *types.Info,
 	var places []place
 	for selector, selection := range info.Selections {
 		method, ok := selection.Obj().(*types.Func)
-		if !ok {
+		if !ok || method.Pkg() == nil || !driverPackage(method.Pkg().Path()) || slices.Contains(nonStatementMethods, method.Name()) {
 			continue
 		}
 		key, name := declaringType(method, selection)
-		if !slices.Contains(statementMethods[key], method.Name()) {
-			continue
-		}
-		receiver, isIdent := ast.Unparen(selector.X).(*ast.Ident)
-		if inHelper(selector.Pos()) || isIdent && opened[info.Uses[receiver]] {
+		if inHelper(selector.Pos()) || inLiteral(selector.Pos()) && !slices.Contains(connectionTypes, key) {
 			inside++
 			continue
 		}
@@ -103,12 +119,14 @@ func statementsOutside(fset *token.FileSet, files []*ast.File, info *types.Info,
 	}
 	for ident, object := range info.Uses {
 		function, ok := object.(*types.Func)
-		if !ok || function.Pkg() == nil || !slices.Contains(statementFunctions[function.Pkg().Path()], function.Name()) {
+		if !ok || function.Pkg() == nil || !driverPackage(function.Pkg().Path()) || slices.Contains(nonStatementFunctions, function.Name()) {
 			continue
 		}
 		if function.Type().(*types.Signature).Recv() != nil {
 			continue
 		}
+		// A function takes the handle it runs on as an argument, which may be the connection
+		// beside the helper's transaction, so only the helper's own body may call one.
 		if inHelper(ident.Pos()) {
 			inside++
 			continue
@@ -147,7 +165,7 @@ func calledFunc(info *types.Info, call *ast.CallExpr) *types.Func {
 	return function
 }
 
-// declaringType is the named type that declares method, as a key of statementMethods and as a
+// declaringType is the named type that declares method, as a key of connectionTypes and as a
 // reader writes it (*pgx.Conn, pgx.Tx). A method an interface declares without naming it is read
 // from the selection's receiver.
 func declaringType(method *types.Func, selection *types.Selection) (key, name string) {
