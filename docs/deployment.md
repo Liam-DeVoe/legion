@@ -360,14 +360,20 @@ Where a commit's author is not the identity that the table gives the trailer's r
 runs one `jj metaedit` for each such role, under that role's identity, which sets the author.
 It prints one line for each commit it rewrote,
 `legion jj: <role>: <old commit id> -> <new commit id>`, and then runs the push with the role's
-own arguments, but for a commit id of a hidden commit, hidden by the step's rewrite or before the
-push: the push gets the one visible commit that replaced it, where there is one.
-That holds for a commit id anywhere inside a revision argument's revset, such as `C1 | C2`, `::C`,
-`C-` or `present(C)`, whole or as a prefix of one commit, and every other word of the argument
-(`@`, a bookmark, a change id, a function, a quoted string) reaches the push as written.
-A number or an unquoted pattern that starts the id of one commit the step rewrote is read as that
-commit's id too; where jj refuses the argument with such a word replaced, as it refuses a full id
-in a number's place, the argument reaches the push as written.
+own arguments, but for a revision argument that names a commit the step moved.
+Before it rewrites anything, the step has jj resolve each argument of `--change`, `--named` and
+`--revisions`, and reads which of its mutable commits are hidden and which is the working-copy
+commit; a hidden commit whose change has one visible commit stands for that commit.
+Where the commits an argument names include one that the step rewrote or rebased, or a hidden one
+that stands for another, the push gets `(<the argument as written>) ~ (<their old ids>) | <their
+new ids>`, with `@` for the working-copy commit, so that the push's own snapshot still resolves it.
+So any revset sends the commits it named, as rewritten: `C1 | C2`, `::C`, `latest(C, 2)`, a quoted
+id, a prefix of an id.
+An argument none of whose commits moved reaches the push as written, and so does one that jj, read
+again before the push, already resolves to the new commits, such as `@`, a bookmark or a change id;
+the text the step adds grows only with the commits it moved.
+A revset whose result depends on a commit's author, such as `author(...)` or `mine()`, is
+evaluated by the push, after the rewrite.
 It changes no commit that a remote bookmark holds and no immutable commit.
 It sets the author of no commit that has no `Legion-Role` trailer or whose role has no identity in
 the table.
