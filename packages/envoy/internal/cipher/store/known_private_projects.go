@@ -26,9 +26,13 @@ import (
 // newest number, listed or recorded, is above its forgotten number; only a held row fences.
 //
 // A held row's channels are the newest read's list, with each record made while the row stayed
-// held added to it, so several switches in flight are all fenced. A read or a record that finds
-// the row not held starts the set from its own list, and its time from the database's: the set it
-// finds belongs to a switch or a listing a forget already ended, and fenced nothing while unheld.
+// held added to it, so several switches in flight are all fenced. A read stamped before the held
+// row's current record, and kept after it, adds its list to the set rather than replacing it, so a
+// late keep never drops the channels a switch recorded after the read asked; the add fails closed,
+// so a set of unknown channels stays unknown and an entry with no slack_channels key makes the set
+// unknown. A read or a record that finds the row not held starts the set from its own list, and
+// its time from the database's: the set it finds belongs to a switch or a listing a forget already
+// ended, and fenced nothing while unheld.
 
 // MaxPrivateSwitchDeadline is the longest deadline a switch to private may run under, from before
 // its transaction begins to its commit: Dispatch's switch sends its deadline with its record, and
@@ -44,8 +48,9 @@ const MaxPrivateSwitchDeadline = 90 * time.Second
 const KnownPrivateHold = 2 * MaxPrivateSwitchDeadline
 
 // maxKnownPrivateChannels bounds one list of channels a read or a record stores: Dispatch's own
-// bound on a project's list. The table allows a row 1024, the union of a read's list and those of
-// the records made while the row stayed held, a number no real sequence of switches reaches.
+// bound on a project's list. The table allows a row 1024, the union of a read's list, the records
+// made while the row stayed held and the reads stamped before such a record and kept after it, a
+// number no real sequence of switches reaches.
 const maxKnownPrivateChannels = 16
 
 // ErrPrivateProjectInput is a record or a read naming a key that is no Dispatch project key, more
@@ -79,6 +84,10 @@ const dbNow = `(statement_timestamp() + $1::bigint * interval '1 microsecond')`
 
 // rowHeld is whether the row an upsert found (the alias k) was held before the statement.
 const rowHeld = `(greatest(coalesce(k.listed, 0), coalesce(k.record, 0)) > coalesce(k.forgotten, 0))`
+
+// keptUnderRecord is whether a read's keep landed on a held row whose current record is above the
+// read's stamp (excluded.listed): the read asked before that switch recorded its channels.
+const keptUnderRecord = `(` + rowHeld + ` and coalesce(k.record, 0) > excluded.listed)`
 
 // KnownPrivateProject is one held row: the project's key, its Slack channels, sorted (nil while
 // unknown), when the stored set last gained a channel or was started afresh on a row that was not
@@ -135,10 +144,13 @@ func (s *Store) StampPrivateList(ctx context.Context) (PrivateListStamp, error) 
 // Each listed project is upserted: listed takes the greater of the row's and the stamp's number,
 // with its time; the channels take the read's list (nil for an entry with no slack_channels key,
 // which stores them unknown), unless the row's listing is already above the stamp, so a slower read
-// stamped earlier changes nothing a later one wrote. channels_stored_at moves to the database's time
-// when the row was not held, when the new set holds a channel the stored one did not, or when the
-// set becomes known, [] included; else it stays. A row the read does not name is deleted only when
-// its newest listing, record or forget is more than KnownPrivateHold older than the stamp's time.
+// stamped earlier changes nothing a later one wrote. On a held row whose current record is above
+// the stamp, the read asked before that switch recorded its channels, so its list joins the set
+// rather than replacing it, and a set either side holds unknown stays unknown. channels_stored_at
+// moves to the database's time when the row was not held, when the new set holds a channel the
+// stored one did not, or when the set becomes known, [] included; else it stays. A row the read
+// does not name is deleted only when its newest listing, record or forget is more than
+// KnownPrivateHold older than the stamp's time.
 func (s *Store) KeepPrivateProjects(ctx context.Context, stamp PrivateListStamp, listed []KnownPrivateProject) ([]string, error) {
 	keys := make([]string, 0, len(listed))
 	for _, project := range listed {
@@ -170,10 +182,16 @@ func (s *Store) KeepPrivateProjects(ctx context.Context, stamp PrivateListStamp,
 				(project, slack_channels, channels_stored_at, listed, listed_at)
 			values ($2, $3::text[], case when $3::text[] is null then null else `+dbNow+` end, $4, $5)
 			on conflict (project) do update set
-				slack_channels = case when k.listed > excluded.listed then k.slack_channels else excluded.slack_channels end,
+				slack_channels = case
+					when k.listed > excluded.listed then k.slack_channels
+					when `+keptUnderRecord+` then case
+						when k.slack_channels is null or excluded.slack_channels is null then null
+						else array(select distinct c from unnest(k.slack_channels || excluded.slack_channels) c order by c) end
+					else excluded.slack_channels end,
 				channels_stored_at = case
 					when k.listed > excluded.listed then k.channels_stored_at
 					when excluded.slack_channels is null then null
+					when `+keptUnderRecord+` and k.slack_channels is null then null
 					when not `+rowHeld+` then `+dbNow+`
 					when k.slack_channels is null then `+dbNow+`
 					when exists (select 1 from unnest(excluded.slack_channels) c where c <> all (k.slack_channels)) then `+dbNow+`

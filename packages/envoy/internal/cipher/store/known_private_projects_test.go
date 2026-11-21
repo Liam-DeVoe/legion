@@ -132,10 +132,11 @@ func attemptChannels(n int) []string {
 // channels a read did not answer is kept with unknown channels; a row no read names leaves only
 // past KnownPrivateHold; a switch's record is held, numbered from the sequence, and survives every
 // read stamped before it or within the hold after it; a record on a row a forget released starts
-// from its own channels, and one on a held row adds to them; a forget changes only the record it
-// names, or none younger than the hold; a record made again after its row was deleted is numbered
-// above the old one, so a delayed forget naming the old record changes nothing; and the table holds
-// each channel to one conversation id and a row to 1024 of them.
+// from its own channels, and one on a held row adds to them; a read stamped before a held row's
+// record and kept after it adds its list to the record's rather than replacing it; a forget changes
+// only the record it names, or none younger than the hold; a record made again after its row was
+// deleted is numbered above the old one, so a delayed forget naming the old record changes nothing;
+// and the table holds each channel to one conversation id and a row to 1024 of them.
 func TestTheStoredPrivateListKeepsWhatAReadNamed(t *testing.T) {
 	c1, c2, c9 := "C0PRIV00001", "C0PRIV00002", "C0STALE0009"
 
@@ -355,6 +356,54 @@ func TestTheStoredPrivateListKeepsWhatAReadNamed(t *testing.T) {
 		keep(t, st, stamp(t, st), listedAs("SWITCH", []string{c2}))
 		if row := heldRow(t, st, "SWITCH"); !row.ChannelsStoredAt.After(first) {
 			t.Errorf("SWITCH held again by a read naming the %s its released row held = stored at %v; want after %v: no pod fenced it while the row was released, so its settle starts again", c2, row.ChannelsStoredAt, first)
+		}
+	})
+
+	t.Run("a read stamped before a switch's record and kept after it adds to the record's channels", func(t *testing.T) {
+		oldChannel, newChannel := "C0OLDCHAN01", "C0NEWCHAN02"
+		st := storetest.Open(t)
+		keep(t, st, stamp(t, st), listedAs("PRIV", []string{oldChannel}))
+		readA := stamp(t, st)
+		if got := forget(t, st, "PRIV", nil); got.Outcome != store.ForgetForgotten {
+			t.Fatalf("PRIV's switch to public, a numberless forget of a row no switch recorded = %+v; want forgotten", got)
+		}
+		record := recordSwitch(t, st, "PRIV", newChannel)
+		if record <= readA.Number {
+			t.Fatalf("PRIV's switch back to private recorded %d, not above read A's stamp %d", record, readA.Number)
+		}
+		recorded := heldRow(t, st, "PRIV")
+		advance(st, time.Minute)
+		keep(t, st, readA, listedAs("PRIV", []string{oldChannel}))
+		if row := heldRow(t, st, "PRIV"); !slices.Equal(row.SlackChannels, []string{newChannel, oldChannel}) || !row.ChannelsStoredAt.After(recorded.ChannelsStoredAt) {
+			t.Errorf("PRIV after read A, stamped %d before record %d, was kept late = %v stored at %v; want [%s %s] stored after %v: the record's %s stays fenced through an outage, and the read adds its own", readA.Number, record, row.SlackChannels, row.ChannelsStoredAt, newChannel, oldChannel, recorded.ChannelsStoredAt, newChannel)
+		}
+		keep(t, st, stamp(t, st), listedAs("PRIV", []string{newChannel}))
+		if row := heldRow(t, st, "PRIV"); !slices.Equal(row.SlackChannels, []string{newChannel}) {
+			t.Errorf("PRIV after a read stamped above record %d = %v; want its own [%s]: a read that asked after the switch replaces the set", record, row.SlackChannels, newChannel)
+		}
+
+		listedChannel, recordChannel := "C0LISTED001", "C0RECORD002"
+		other := storetest.Open(t)
+		keep(t, other, stamp(t, other), listedAs("PRIV", []string{listedChannel}))
+		older := stamp(t, other)
+		recordSwitch(t, other, "PRIV", recordChannel)
+		keep(t, other, older, listedAs("PRIV", []string{listedChannel}))
+		if row := heldRow(t, other, "PRIV"); !slices.Equal(row.SlackChannels, []string{listedChannel, recordChannel}) {
+			t.Errorf("PRIV, held by its listing, after a record of %s and then a keep stamped before that record = %v; want [%s %s]", recordChannel, row.SlackChannels, listedChannel, recordChannel)
+		}
+
+		unknown := storetest.Open(t)
+		keep(t, unknown, stamp(t, unknown), listedAs("SYNTH", nil))
+		late := stamp(t, unknown)
+		recordSwitch(t, unknown, "SYNTH", recordChannel)
+		keep(t, unknown, late, listedAs("SYNTH", []string{listedChannel}))
+		if row := heldRow(t, unknown, "SYNTH"); row.SlackChannels != nil || !row.ChannelsStoredAt.IsZero() {
+			t.Errorf("SYNTH, held with unknown channels, after a keep stamped before its record = %+v; want unknown still: a late read's list does not make a held set known", row)
+		}
+
+		keep(t, other, older, listedAs("PRIV", nil))
+		if row := heldRow(t, other, "PRIV"); row.SlackChannels != nil || !row.ChannelsStoredAt.IsZero() {
+			t.Errorf("PRIV, held with [%s %s], after a keep stamped before its record whose entry has no slack_channels = %+v; want unknown: the add fails closed", listedChannel, recordChannel, row)
 		}
 	})
 
