@@ -28,6 +28,7 @@ const REASONS = {
   16: "16. In Details the margin's box draws only what the page put in the margin's slot (`SheetBody`, `useMarginSlotFill`), and nothing while the page has put nothing there; and a reader who turns the new page on or off, or leaves the issue page, moves the margin between Details and its column (`Margin`'s `drawer`). Either unmounts the compose and every card as leaving the document does, and each keeps what it holds as (5) and (14) say: its stores and the compose live above the margin, so it comes back as it was when the margin draws it again, as the document-left rows' returns show.",
   17: "17. A compose that ends - its Close, Escape or Discard, or its send landing (`closeComposer`) - hands the reader back to the words they commented on only while they are still at it, the focus in its composer or on nothing and no phone thread open (`sheetThreadKey`, `focusAtComposer`): the document takes the caret as the compose ends, at every width, and below 1280 px the panel over the document closes too. The compose has ended by then (`cancelCompose`), and the closed panel keeps every card, reply and editor mounted under it, as (9) says, so neither moves a draft.",
   18: "18. The keymap reads the keys of each binding a component registers (`useKeymap`): a catalogue action's are the reader's own keys for it, and a binding written out whole keeps the keys it is written with. Details on a phone registers its own `Shift+M` that way (`DetailsDrawer`), which closes Details as (15) says; reading a binding's keys draws, ends and moves no composer.",
+  19: "19. In Details the page's fill draws the margin's own content - its tabs, the compose and every card - only while the editor of a document the page shows is bound (`DetailsFill`'s `documentUp`: the margin's `documentBridge`, which `ProofDocument`'s page editor registers as it binds and takes back as it unbinds), and hands `IssueMarginCards` no `conversation` otherwise: before that editor binds, once the reader leaves the document, and after the server refuses an editor's connection (`onOutsideSchema`), while it waits to be admitted again or, once it stops trying, until the page is loaded again. Each unmounts the compose and every card, reply and editor as leaving the document does, and each keeps what it holds and comes back on it when an editor binds again, as (16) says.",
 } as const;
 
 /** The rows that end a newer compose offering the earlier compose's draft beside its field. */
@@ -409,4 +410,12 @@ export const coverage: readonly CoverageEntry[] = [
     { reason: REASONS[15] }
   ),
   ...answers("DetailsDrawer | - | form | (isPhoneViewport) ? …", { reason: REASONS[15] }),
+  // The page's fill of the margin's slot (`DetailsFill`), which draws the margin's content inside
+  // Details.
+  ...answers("DetailsFill | MarginComposerSlot | conditional | (documentUp) ? …", {
+    reason: REASONS[19],
+  }),
+  ...answers("DetailsFill | CommentsTab | conditional | (documentUp) ? …", {
+    reason: REASONS[19],
+  }),
 ];

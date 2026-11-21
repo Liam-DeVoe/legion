@@ -1,16 +1,15 @@
 import type { IssuePriority } from "../../api/types";
 import { outsideAskCard } from "../inbox/ask-card";
-import { usableControl } from "../issue/header-control";
 import type { IssuePriorityWrite } from "../issue/useIssuePriority";
 import { useKeymap } from "../shell/keymap";
 import { ACTION_WORDS, CHIP_ACTIONS, chipBox } from "./approval-chip-box";
+import { usableControl } from "./usable-control";
 
 /**
  * What the header's keys act on. Every target is a control the header already renders - the
  * pin inside its overflow menu, which is drawn hidden while shut - so a key does exactly what a
- * click on it does. Each is looked for inside `[data-issue-header]` (`usableControl`,
- * `issue/header-control.ts`), which keeps a child issue's row - it carries the same accessible
- * names - out of reach.
+ * click on it does. Scoping the lookup to `[data-issue-header]` keeps a child issue's row - it
+ * carries the same accessible names - out of reach.
  */
 const HEADER = "[data-issue-header]";
 const PIN_TOGGLE = 'button[data-issue-action="pin"]';
@@ -18,13 +17,47 @@ const PRIORITY_MENU = "[data-priority-menu]";
 const STATUS_MENU = "[data-status-menu]";
 const TITLE_HEADING = 'h1[tabindex="0"]';
 
+/** The group around `node` that a control of the header opens and shuts (`aria-expanded`) and
+ *  names by `aria-controls`: the actions menu's, hidden while the menu is shut
+ *  (`IssueActionsMenu.tsx`). The nearest such group is taken, and none where no control names
+ *  one, so no other element around `node`, hidden or not, stands in for it. */
+function menuGroup(node: Element): Element | null {
+  const header = node.closest(HEADER);
+  for (
+    let group = node.parentElement;
+    group !== null && group !== header;
+    group = group.parentElement
+  ) {
+    if (group.id !== "") {
+      const opener = `[aria-expanded][aria-controls~="${CSS.escape(group.id)}"]`;
+      if (header?.querySelector(opener) != null) return group;
+    }
+  }
+  return null;
+}
+
+/** The header control `selector` names while it takes a press by the page's one rule
+ *  (`usable-control.ts`), else `null`: the one fact both the key's `run` and the `when` that
+ *  offers it read. The pin is read up to the actions menu's group that holds it (`menuGroup`),
+ *  which is shut, hidden, while the menu is, since its key presses it there as a click on it in
+ *  the open menu does; no other target stands in a group that shuts. */
+function headerControl(selector: string): HTMLElement | null {
+  const node = document.querySelector(HEADER)?.querySelector<HTMLElement>(selector);
+  if (node == null) {
+    return null;
+  }
+  const bound = selector === PIN_TOGGLE ? menuGroup(node) : null;
+  return usableControl(node, bound) ? node : null;
+}
+
 /**
  * The `action` of the approval chip that holds the focus, or `null` when the focus is on no chip
  * of the header and on neither of a chip's two actions, when the chip draws no such action - no
  * request of its document waits on the reader, or the document is approved, which draws no
  * Approve - or when the action refuses a press while its review is written: inside `NoTooltips`,
  * which holds the header, both are `aria-disabled` then and never `disabled`.
- * Like `usableControl`, the one fact a key's `run` and its `when` both read.
+ * Whether the action takes a press is the page's one rule (`usableControl`).
+ * Like `headerControl`, the one fact a key's `run` and its `when` both read.
  */
 function focusedApprovalAction(action: keyof typeof ACTION_WORDS): HTMLButtonElement | null {
   const header = document.querySelector(HEADER);
@@ -47,7 +80,7 @@ function focusedApprovalAction(action: keyof typeof ACTION_WORDS): HTMLButtonEle
   if (button === undefined) {
     return null;
   }
-  return button.getAttribute("aria-disabled") === "true" ? null : button;
+  return usableControl(button) ? button : null;
 }
 
 /**
@@ -93,25 +126,33 @@ function outsideInputsAndAskCards(): boolean {
  * They register into the `issue` scope the view row pushes (`useIssueKeymap.ts`); this hook
  * pushes none. The digits go through the header's one priority write, the one its menu and the
  * palette's Set priority rows use, so a refusal of any of them is said once, by the header.
+ *
+ * `s`, `p` and `e` are offered exactly while their control takes a press by the page's one rule
+ * (`usable-control.ts`, read through `headerControl` here), and the digits and `Shift+P` exactly
+ * while theirs does and the focus is where those two may write (`outsideInputsAndAskCards`). The
+ * rule refuses a control that is disabled (a closed issue, a save in flight), and also one that
+ * is busy (`aria-disabled`), `aria-hidden` or not drawn. The pin is read only up to the shut
+ * actions menu (`headerControl`), so the menu's `hidden` does not refuse it, nor does its not
+ * being drawn there: `Shift+P` is offered while the shut menu hides the pin.
  */
 export function useHeaderKeys(priorityWrite: IssuePriorityWrite): void {
   useKeymap("issue", [
     {
       action: "issue.status",
-      run: () => usableControl(STATUS_MENU)?.click(),
-      when: () => usableControl(STATUS_MENU) !== null,
+      run: () => headerControl(STATUS_MENU)?.click(),
+      when: () => headerControl(STATUS_MENU) !== null,
     },
     {
       action: "issue.priority",
-      run: () => usableControl(PRIORITY_MENU)?.click(),
-      when: () => usableControl(PRIORITY_MENU) !== null,
+      run: () => headerControl(PRIORITY_MENU)?.click(),
+      when: () => headerControl(PRIORITY_MENU) !== null,
     },
     {
       // While the menu is open the focus is in it, whose keys are its own, so a digit there is
       // the menu's pick and never this second write.
       action: "issue.set-priority",
       run: (event) => priorityWrite.submit(Number(event.key) as IssuePriority),
-      when: () => usableControl(PRIORITY_MENU) !== null && outsideInputsAndAskCards(),
+      when: () => headerControl(PRIORITY_MENU) !== null && outsideInputsAndAskCards(),
     },
     {
       // The heading's click opens the editor, and a focus does not, so the key clicks it: a
@@ -119,14 +160,14 @@ export function useHeaderKeys(priorityWrite: IssuePriorityWrite): void {
       // focus. The selector finds the heading only while the issue is open and not edited
       // (otherwise its `tabIndex` is -1), so the key is offered exactly while a click opens it.
       action: "issue.title",
-      run: () => usableControl(TITLE_HEADING)?.click(),
-      when: () => usableControl(TITLE_HEADING) !== null,
+      run: () => headerControl(TITLE_HEADING)?.click(),
+      when: () => headerControl(TITLE_HEADING) !== null,
     },
     {
       // Held while its write is out (`heldPress`), when it takes no press, and so no key.
       action: "issue.pin",
-      run: () => usableControl(PIN_TOGGLE)?.click(),
-      when: () => usableControl(PIN_TOGGLE) !== null && outsideInputsAndAskCards(),
+      run: () => headerControl(PIN_TOGGLE)?.click(),
+      when: () => headerControl(PIN_TOGGLE) !== null && outsideInputsAndAskCards(),
     },
     // `a` and `Shift+R` are the approval's only while the focus is on the chip or entry of a
     // document whose request waits on the reader, or on one of its two actions; anywhere else

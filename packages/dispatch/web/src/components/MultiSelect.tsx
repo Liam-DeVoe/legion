@@ -8,7 +8,7 @@ import {
   useState,
 } from "react";
 
-import { stepIndex } from "../features/shell/roving";
+import { focusOnDocument, stepIndex } from "../features/shell/roving";
 import {
   borderDefault,
   borderStrong,
@@ -313,6 +313,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   const [query, setQuery] = useState("");
   const [activeValue, setActiveValue] = useState<string | undefined>(undefined);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
   const wasOpen = useRef(false);
   // The panel's sticky text box at its top, and a multi-select's sticky Clear foot at its bottom,
   // which a row scrolled into sight is kept clear of.
@@ -456,6 +457,43 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
     if (typed) onQueryChange?.(event.key);
     onOpenChange(true);
   };
+
+  // Every row, the Create row and Clear are buttons, so the focus can reach one, as a screen
+  // reader's cursor puts it there, and a press of each can take that focus to the body, where
+  // Escape no longer reaches the popover. Clear and the Create row always leave with their own
+  // press, Clear as the pick empties and the Create row as its value is made and the search
+  // empties, so a press of one that holds the focus gives it to the search box at the press
+  // itself, and the move does not depend on when the host applies the pick. A row's press need not
+  // take the row away. It can move the row, since a host can order the rows by the pick
+  // (`IssueLabels`, `ComponentPicker`), but a row the press only moves keeps its focus: as React
+  // ends a commit that took the focus away, it focuses again the element that held it before,
+  // where that element is still on the page (react-dom's `flushMutationEffects`). A row the press
+  // takes off the page loses the focus to the body, as in Details a label only the open draft
+  // holds does as the reader unpicks it: `IssueLabels` lists the draft's labels with the issue's
+  // and the project's, so that label is listed only while the draft holds it. So a press of a row
+  // that holds the focus only notes it, and the commit that answers the press gives the search box
+  // the focus only where that commit took the row off the page. A pointer press focuses none of
+  // them (`onMouseDown` below), and leaves the focus where it is. A row or a Create row the
+  // options take away holds no press, and its focus stays on the page's body, as for every change
+  // the reader did not make. A popover that closes takes the search box along, and the close above
+  // gives the focus back to the trigger instead.
+  const focusSearchFirst = (event: { readonly currentTarget: EventTarget }) => {
+    if (event.currentTarget === document.activeElement) inputRef.current?.focus();
+  };
+  // Whether a row was pressed while it held the focus, until the commit that answers the press:
+  // the press asks for a render, so that commit comes even where the press changes nothing else.
+  const focusedRowPressed = useRef(false);
+  const [, renderAfterPress] = useState(0);
+  const noteFocusedRow = (event: { readonly currentTarget: EventTarget }) => {
+    if (event.currentTarget !== document.activeElement) return;
+    focusedRowPressed.current = true;
+    renderAfterPress((renders) => renders + 1);
+  };
+  useEffect(() => {
+    const pressed = focusedRowPressed.current;
+    focusedRowPressed.current = false;
+    if (pressed && focusOnDocument()) inputRef.current?.focus();
+  });
 
   const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     // A key that ends or moves an IME composition is the input method's: Enter commits the
@@ -602,6 +640,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
               }}
               onKeyDown={handleKeyDown}
               placeholder={searchLabel}
+              ref={inputRef}
               role="combobox"
               type="search"
               value={query}
@@ -627,6 +666,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
                   id={optionId(option)}
                   key={option}
                   onClick={() => choose(option)}
+                  onClickCapture={noteFocusedRow}
                   onMouseDown={(event) => event.preventDefault()}
                   role="option"
                   type="button"
@@ -672,6 +712,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
                 disabled={disabled}
                 id={optionId(createValue)}
                 onClick={() => create(createValue)}
+                onClickCapture={focusSearchFirst}
                 onMouseDown={(event) => event.preventDefault()}
                 role="option"
                 type="button"
@@ -699,6 +740,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
                 className={`min-h-11 w-full rounded-lg px-3 py-2 text-sm font-medium ${tooltips ? `${surfaceMutedBg} ${textSecondaryOnSurface}` : ON_PAGE.clear}`}
                 disabled={disabled}
                 onClick={() => props.onChange([])}
+                onClickCapture={focusSearchFirst}
                 onMouseDown={(event) => event.preventDefault()}
                 type="button"
               >
