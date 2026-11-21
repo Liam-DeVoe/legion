@@ -10,6 +10,8 @@ import (
 	"time"
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
+
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // Cluster is n nats-servers in this test process, routed to each other with JetStream clustered
@@ -49,15 +51,13 @@ func StartClusterConfig(t testing.TB, n int, config string) *Cluster {
 	}
 	members := make([]atomic.Pointer[Server], n)
 	routes := make([]string, n)
-	hosts := make([]string, n)
+	listeners := make([]net.Listener, n)
 	for i := range n {
-		// The member's own address, which its route relay takes first and its server after, so
-		// every listener of the member is on it (NewHost).
-		hosts[i] = NewHost()
-		listener, err := net.Listen("tcp", net.JoinHostPort(hosts[i], "0"))
+		listener, err := testport.ListenLoopback()
 		if err != nil {
 			t.Fatalf("hold member %d's route port: %v", i, err)
 		}
+		listeners[i] = listener
 		routes[i] = listener.Addr().String()
 		member := &members[i]
 		routeRelay := newRelay(listener, func() (string, error) {
@@ -71,7 +71,7 @@ func StartClusterConfig(t testing.TB, n int, config string) *Cluster {
 	}
 	cluster := &Cluster{Servers: make([]*Server, n)}
 	for i := range n {
-		server := startOn(t, hosts[i], clusterConfig(i, hosts[i], routes)+config, []string{"-js"})
+		server := start(t, clusterConfig(i, routes, listeners[i].Addr().(*net.TCPAddr).IP.String())+config, []string{"-js"})
 		server.name = memberName(i)
 		members[i].Store(server)
 		cluster.Servers[i] = server
@@ -80,9 +80,9 @@ func StartClusterConfig(t testing.TB, n int, config string) *Cluster {
 	return cluster
 }
 
-// clusterConfig is the configuration of member i, on host, of a cluster whose route relays listen
-// at routes.
-func clusterConfig(i int, host string, routes []string) string {
+// clusterConfig is the configuration of member i of a cluster whose route relays listen at routes.
+// The member's own route listener takes host, the address of its route relay (testport.LoopbackIP).
+func clusterConfig(i int, routes []string, host string) string {
 	urls := make([]string, len(routes))
 	for j, route := range routes {
 		urls[j] = fmt.Sprintf("%q", "nats-route://"+route)

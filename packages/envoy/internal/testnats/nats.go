@@ -3,13 +3,14 @@
 //
 // Every server these helpers start is the nats-server this binary links in
 // (github.com/nats-io/nats-server/v2), not a container: a test that needed a container runtime
-// could not run where Envoy's agents do, which have none. Each server listens on a loopback address
-// of its own (NewHost), at ports of its own choosing, and is reached through a relay this
-// process owns on that address. The relay's port is the one the test's URL names and it holds that
-// port for the test's life, which buys four things: a URL that survives a stop and a start
-// (Server.Stop, Server.Start), a way to stop the bytes moving in either direction without dropping
-// a connection (Server.Freeze), a reload with no client message in flight (Server.Reload), and a
-// port no other test binary can take while the test runs.
+// could not run where Envoy's agents do, which have none. Each server listens on a loopback port
+// of its own choosing and is reached through a relay this process owns. The relay's port is the
+// one the test's URL names and it holds that port for the test's life, which buys four things: a
+// URL that survives a stop and a start (Server.Stop, Server.Start), a way to stop the bytes
+// moving in either direction without dropping a connection (Server.Freeze), a reload with no
+// client message in flight (Server.Reload), and a port no other test binary can take while the
+// test runs. The relay listens on a loopback address of its own (testport.LoopbackIP), so a client
+// another test left dialing its own server's old address cannot reach it after that test.
 //
 // A package's tests share one server rather than start one each, and each test gets it as the user
 // of a JetStream account no earlier test used (URL), so no test ever deletes and recreates a
@@ -36,6 +37,8 @@ import (
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
+
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // Image is ghcr.io/cybermonklabs/legion/ci, the copy of nats:2.10 (.github/ci-images.yaml), whose
@@ -246,7 +249,9 @@ type Server struct {
 	log        *logCapture
 	relay      *relay
 	url        string
-	// host is the loopback address the relay and the server itself both listen on (startOn).
+	// host is the server's own loopback address (testport.LoopbackIP): the relay listens there,
+	// and so do the server's own client and monitoring listeners, which a client that knows their
+	// port could reach as well as the relay's.
 	host string
 	// name is the server_name StartCluster gives a member, "" for a lone server.
 	name string
@@ -534,37 +539,29 @@ func (s *Server) natsServer() *natsserver.Server {
 // running reports whether the server is running: started and not stopped since.
 func (s *Server) running() bool { return s.natsServer() != nil }
 
-// hostOnlyConfig is the configuration of a server on host that a test starts with none of its
-// own: nats-server warns on an empty configuration file ("config has no values or is empty"), and
-// the host it names is the one the rig imposes anyway (serverOptions). The file is never empty, so
-// a server started without a configuration can still be reloaded with one.
-func hostOnlyConfig(host string) string { return fmt.Sprintf("host: %q\n", host) }
+// hostOnlyConfig is the configuration of a server a test starts with none of its own:
+// nats-server warns on an empty configuration file ("config has no values or is empty"), and
+// serverOptions replaces the host it names with the server's own, as it does every
+// configuration's. The file is never empty, so a server started without a configuration can still
+// be reloaded with one.
+const hostOnlyConfig = "host: 127.0.0.1\n"
 
 // start runs a nats-server in this process whose whole configuration is config, with serverArgs as
 // its command line after it (so -js for JetStream, -DV for the protocol trace), behind a relay
-// holding the port of the URL it returns, and returns it once it accepts connections. The relay and
-// the server listen on a loopback address of the server's own (NewHost). When the test ends
-// the server is shut down, the relay closed and the server's directory removed; until then
-// AwaitConsumerStored finds the server by the relay address its URL names.
+// holding the port of the URL it returns, and returns it once it accepts connections. When the
+// test ends the server is shut down, the relay closed and the server's directory removed; until
+// then AwaitConsumerStored finds the server by the relay address its URL names. It is the one
+// place a server of this package is made: every helper here is a call on it.
 func start(t testing.TB, config string, serverArgs []string) *Server {
 	t.Helper()
-	return startOn(t, NewHost(), config, serverArgs)
-}
-
-// startOn is start with the relay and the server itself listening on host, an address
-// NewHost gave: the relay at the port the URL names, the server at one it picks at each
-// start. It is the one place a server of this package is made: every helper here is a call on it,
-// and a cluster member's on the address its route relay was put on first (StartClusterConfig).
-func startOn(t testing.TB, host, config string, serverArgs []string) *Server {
-	t.Helper()
 	if config == "" {
-		config = hostOnlyConfig(host)
+		config = hostOnlyConfig
 	}
 	dir, err := os.MkdirTemp("", "testnats")
 	if err != nil {
 		t.Fatalf("make the server's directory: %v", err)
 	}
-	listener, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
+	listener, err := testport.ListenLoopback()
 	if err != nil {
 		_ = os.RemoveAll(dir)
 		t.Fatalf("hold the server's port: %v", err)
@@ -576,7 +573,7 @@ func startOn(t testing.TB, host, config string, serverArgs []string) *Server {
 		args:       serverArgs,
 		log:        &logCapture{},
 		url:        "nats://" + address,
-		host:       host,
+		host:       listener.Addr().(*net.TCPAddr).IP.String(),
 	}
 	server.relay = newRelay(listener, server.address, true)
 	registerServer(address, server)
@@ -645,12 +642,11 @@ const (
 )
 
 // serverOptions parses the configuration at path and serverArgs as nats-server parses its own
-// command line, then imposes what this rig owns: host as the address of every listener the server
-// has, its client and monitoring ports, which it picks, and whichever cluster, gateway, leafnode,
-// websocket and MQTT ports its configuration opens; the test's own store, no signal handlers, path
-// as the configuration file, and the lame duck's timing when the configuration sets none
-// (rigLameDuck). serverArgs replace nats-server's defaults rather than add to them, as the
-// arguments after the image's own command do.
+// command line, then imposes what this rig owns: host, the server's loopback address, for its
+// client and monitoring listeners, a port for each the server picks, the test's own store, no
+// signal handlers, path as the configuration file, and the lame duck's timing when the
+// configuration sets none (rigLameDuck). serverArgs replace nats-server's defaults rather than add
+// to them, as the arguments after the image's own command do.
 func serverOptions(path string, serverArgs []string, store, host string) (*natsserver.Options, error) {
 	flags := flag.NewFlagSet("nats-server", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
@@ -669,23 +665,6 @@ func serverOptions(path string, serverArgs []string, store, host string) (*natss
 	opts.Port = -1
 	opts.HTTPHost = host
 	opts.HTTPPort = -1
-	// A listener the configuration opens takes the server's address too, whatever the
-	// configuration names, so nothing of a server answers on an address another server of the
-	// process had (NewHost).
-	for _, listener := range []struct {
-		port int
-		host *string
-	}{
-		{opts.Cluster.Port, &opts.Cluster.Host},
-		{opts.Gateway.Port, &opts.Gateway.Host},
-		{opts.LeafNode.Port, &opts.LeafNode.Host},
-		{opts.Websocket.Port, &opts.Websocket.Host},
-		{opts.MQTT.Port, &opts.MQTT.Host},
-	} {
-		if listener.port != 0 {
-			*listener.host = host
-		}
-	}
 	opts.StoreDir = store
 	opts.NoSigs = true
 	opts.ConfigFile = path

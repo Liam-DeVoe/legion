@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // The other half of the flap TestAFlapRunsTheSecondDisconnectHookAtOnce makes: the second outage
@@ -79,7 +80,10 @@ type flapProxy struct {
 
 func newFlapProxy(t *testing.T, upstream string) *flapProxy {
 	t.Helper()
-	ln := testnats.Listen(t, upstream)
+	ln, err := testport.ListenLoopback()
+	if err != nil {
+		t.Fatalf("proxy listen: %v", err)
+	}
 	p := &flapProxy{t: t, ln: ln, upstream: upstream, dropped: make(chan time.Time, 1), open: map[net.Conn]net.Conn{}}
 	t.Cleanup(func() {
 		_ = ln.Close()

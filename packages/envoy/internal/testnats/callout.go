@@ -132,10 +132,17 @@ func StartWithCallout(t testing.TB, keys CalloutKeys, static ...StaticUser) (url
 }
 
 // StartWithCalloutServer runs the server StartWithCallout runs and returns it with its client URL,
-// for a test that stops, starts or restarts it under connected clients. Like every server here, it
-// listens on a loopback address of its own (NewHost), which a test of the auth service needs
-// most: it counts what its hub sends the service, which is a request for every client that reaches
-// the hub.
+// for a test that stops, starts or restarts it under connected clients. Its relay and its own
+// client port listen on a loopback address of their own, as every server start makes does.
+//
+// A test of the auth service counts what its hub sends the service, and the hub sends it a
+// request for every client that reaches it. In the envoy-go-race step a client another test left
+// behind, with no credential, reached a callout test's hub through a port the kernel had given out
+// again, and its replica counted three dropped requests where the test had sent one; while the
+// server's own client port listened on 127.0.0.1, such a client still reached the hub there, and
+// TestAClosingReplicaLogsWhatItCountedSinceItsLastLine/drops counted five drops after its first
+// line where its two connects made two (job 135649687816). The address of its own (start) puts the
+// hub out of such a client's reach, whichever port it gets.
 func StartWithCalloutServer(t testing.TB, keys CalloutKeys, static ...StaticUser) (*Server, string) {
 	t.Helper()
 	server := start(t, CalloutConfig(keys, static...), []string{"-js"})

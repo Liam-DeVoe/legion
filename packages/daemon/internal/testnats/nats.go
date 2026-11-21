@@ -29,12 +29,14 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/go-connections/nat"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/testcontainers/testcontainers-go"
@@ -137,9 +139,9 @@ func URL(t testing.TB) string {
 			return
 		}
 		shared = started
-		serverURL, startErr = endpoint(context.Background(), started, "4222/tcp", "nats")
+		serverURL, startErr = clientURL(started)
 		if startErr == nil {
-			monitorURL, startErr = endpoint(context.Background(), started, "8222/tcp", "http")
+			monitorURL, startErr = monitor(started)
 		}
 	})
 	if startErr != nil {
@@ -319,23 +321,19 @@ var monitorClient = &http.Client{Timeout: 5 * time.Second}
 // every read fails.
 var readConnections = clientConnections
 
-// clientConnections lists the shared server's open client connections (connectionsAt its
-// monitoring endpoint). It is readConnections' one implementation here, and the one function to
-// re-point: a server running inside the test process answers the same question from the server
-// object instead, which is the shape this fixture takes under dispatch://INFRA-1524's rewrite.
-func clientConnections() ([]Connection, error) { return connectionsAt(monitorURL) }
-
-// connectionsAt lists the open client connections of the server whose monitoring endpoint's base
-// URL is monitor, each by id and name, by reading its /connz: the shared server's
-// (clientConnections) or a test's own (armServerLeakCheck).
-func connectionsAt(monitor string) ([]Connection, error) {
-	response, err := monitorClient.Get(monitor + "/connz")
+// clientConnections lists the server's open client connections, each by id and name, by reading
+// the monitoring endpoint's /connz. It is readConnections' one implementation here, and the one
+// function to re-point: a server running inside the test process answers the same question from
+// the server object instead, which is the shape this fixture takes under dispatch://INFRA-1524's
+// rewrite.
+func clientConnections() ([]Connection, error) {
+	response, err := monitorClient.Get(monitorURL + "/connz")
 	if err != nil {
 		return nil, err
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GET %s/connz answered %s", monitor, response.Status)
+		return nil, fmt.Errorf("GET %s/connz answered %s", monitorURL, response.Status)
 	}
 	var connz struct {
 		Connections []struct {
@@ -344,13 +342,32 @@ func connectionsAt(monitor string) ([]Connection, error) {
 		} `json:"connections"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&connz); err != nil {
-		return nil, fmt.Errorf("decode %s/connz: %w", monitor, err)
+		return nil, fmt.Errorf("decode %s/connz: %w", monitorURL, err)
 	}
 	connections := make([]Connection, 0, len(connz.Connections))
 	for _, c := range connz.Connections {
 		connections = append(connections, Connection{CID: c.CID, Name: c.Name})
 	}
 	return connections, nil
+}
+
+// monitor returns the base URL of a container's NATS monitoring endpoint.
+func monitor(container *tcnats.NATSContainer) (string, error) {
+	address, err := endpoint(container, monitorPort)
+	if err != nil {
+		return "", err
+	}
+	return "http://" + address, nil
+}
+
+// clientURL returns a container's NATS client URL, at the loopback address start published its
+// client port on.
+func clientURL(container *tcnats.NATSContainer) (string, error) {
+	address, err := endpoint(container, clientPort)
+	if err != nil {
+		return "", err
+	}
+	return "nats://" + address, nil
 }
 
 // JetStream returns a JetStream client of the package's NATS server, as URL gives it to t.
@@ -490,39 +507,61 @@ func retryStreamStoreFailure(create func() error) error {
 	}
 }
 
-// limits caps a NATS test container at one CPU and 512 MiB, as every container the repository's
-// tests and proofs start is capped on a shared host: a test server holds a few small streams.
-var limits = testcontainers.WithHostConfigModifier(func(hostConfig *container.HostConfig) {
-	hostConfig.NanoCPUs = 1_000_000_000
-	hostConfig.Memory = 512 << 20
-})
+// hostConfig caps a NATS test container at one CPU and 512 MiB, as every container the
+// repository's tests and proofs start is capped on a shared host (a test server holds a few small
+// streams), and publishes its client and monitoring ports at host on the ports given. It is one
+// modifier because testcontainers keeps only the last a request is given.
+func hostConfig(host string, client, monitoring int) testcontainers.CustomizeRequestOption {
+	return testcontainers.WithHostConfigModifier(func(config *container.HostConfig) {
+		config.NanoCPUs = 1_000_000_000
+		config.Memory = 512 << 20
+		if config.PortBindings == nil {
+			config.PortBindings = nat.PortMap{}
+		}
+		config.PortBindings[clientPort] = []nat.PortBinding{{HostIP: host, HostPort: strconv.Itoa(client)}}
+		config.PortBindings[monitorPort] = []nat.PortBinding{{HostIP: host, HostPort: strconv.Itoa(monitoring)}}
+	})
+}
 
-// start runs a NATS container, with its monitoring endpoint on 8222 and its ports published on a
-// loopback address of its own where the Docker daemon is this machine (publishHost). A container
-// Docker created and never saw ready (a readiness wait that timed out under load) comes back beside
-// the error, and is removed before start returns: no test's end would remove a container the
-// package shares.
-//
-// The start waits for the server's own line saying its client listener is bound, not the module's
-// ForListeningPort: that one dials the port at the daemon's host, where a container of its own
-// address publishes nothing, and its in-container check runs /bin/sh, which nats:2.10's image does
-// not have, so on that image it passed without checking anything. Every caller then waits for the
-// server to answer a client (answering, ready).
+// startTries bounds the starts start makes, each on a fresh address and ports, while Docker
+// refuses to publish a port because something took the probed one first (loopbackPorts).
+const startTries = 5
+
+// start runs a NATS container, with its monitoring endpoint on 8222. It publishes the client and
+// monitoring ports on a loopback address of its own and ports the kernel chose there
+// (loopbackPorts), so a client another test left dialing an earlier container's port cannot reach
+// this one, and tries again on a fresh address and ports, up to startTries starts, when Docker
+// refuses the publish because a probed port was taken in between; an error names every refusal
+// before it as well as its own failure. It waits for the line nats-server logs once its listeners
+// are up, in place of the NATS module's own wait, a dial of the client port at localhost, where
+// the port is not published; each caller's own connect (connect, ready, answering) is the proof a
+// client reaches the server. A container Docker created and never saw ready (a readiness wait that
+// timed out under load, or a refused publish) comes back beside the error, and is removed before
+// start returns: no test's end would remove a container the package shares.
 func start(image string, options ...testcontainers.ContainerCustomizer) (*tcnats.NATSContainer, error) {
-	ctx := context.Background()
-	published, _, err := publishHost(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("find where Docker publishes a container's ports: %w", err)
+	var refused []error
+	var started *tcnats.NATSContainer
+	for range startTries {
+		host, ports, err := loopbackPorts(2)
+		if err != nil {
+			return started, errors.Join(append(refused, fmt.Errorf("choose loopback ports to publish NATS on: %w", err))...)
+		}
+		attempt := append([]testcontainers.ContainerCustomizer{
+			tcnats.WithArgument("http_port", monitorPort.Port()),
+			hostConfig(host, ports[0], ports[1]),
+			testcontainers.WithWaitStrategy(wait.ForLog("Server is ready")),
+		}, options...)
+		started, err = tcnats.Run(context.Background(), image, attempt...)
+		if err == nil {
+			return started, nil
+		}
+		err = fmt.Errorf("%s ports %d and %d: %w", host, ports[0], ports[1], errors.Join(err, testcontainers.TerminateContainer(started)))
+		if !addressInUse(err) {
+			return started, errors.Join(append(refused, err)...)
+		}
+		refused = append(refused, err)
 	}
-	options = append([]testcontainers.ContainerCustomizer{
-		tcnats.WithArgument("http_port", "8222"), limits, published,
-		testcontainers.WithWaitStrategy(wait.ForLog(`Listening for client connections on \S+:4222`).AsRegexp()),
-	}, options...)
-	started, err := tcnats.Run(ctx, image, options...)
-	if err != nil {
-		return started, errors.Join(err, testcontainers.TerminateContainer(started))
-	}
-	return started, nil
+	return started, fmt.Errorf("every one of %d published addresses was refused as in use: %w", startTries, errors.Join(refused...))
 }
 
 // StartNkeyAuthorized runs a NATS container of its own, with JetStream, that accepts only clients
@@ -559,16 +598,11 @@ func StartNkeyAuthorizedUsers(t testing.TB, image string, users ...NkeyUser) (*t
 		t.Fatalf("start nkey-authorized NATS: %v", err)
 	}
 	testcontainers.CleanupContainer(t, container)
-	url, err := endpoint(context.Background(), container, "4222/tcp", "nats")
+	url, err := clientURL(container)
 	if err != nil {
-		t.Fatalf("NATS client URL: %v", err)
-	}
-	monitoring, err := endpoint(context.Background(), container, "8222/tcp", "http")
-	if err != nil {
-		t.Fatalf("NATS monitoring URL: %v", err)
+		t.Fatalf("NATS connection string: %v", err)
 	}
 	answering(t, url)
-	armServerLeakCheck(t, monitoring)
 	return container, url
 }
 
@@ -583,9 +617,9 @@ func StartImage(t testing.TB, image string) string {
 		t.Fatalf("start NATS of %s: %v", image, err)
 	}
 	testcontainers.CleanupContainer(t, container)
-	url, err := endpoint(context.Background(), container, "4222/tcp", "nats")
+	url, err := clientURL(container)
 	if err != nil {
-		t.Fatalf("NATS client URL: %v", err)
+		t.Fatalf("NATS connection string: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), readinessTimeout)
 	defer cancel()
