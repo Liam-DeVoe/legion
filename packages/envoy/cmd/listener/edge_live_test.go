@@ -261,7 +261,7 @@ func TestTheEdgeStartsAndServesUnderItsRenderedGrant(t *testing.T) {
 			t.Fatalf("the observer reads the relay subject: %v", err)
 		}
 		rig.register(t, edge)
-		rig.mustCall(t, edge, http.MethodPost, "/v1/messages/send", `{"target_session":"`+edgeLiveSession+`","message":"example message to the edge"}`)
+		rig.mustCall(t, edge, http.MethodPost, "/v1/messages/send", `{"target_session":"`+edgeLiveSession+`","source_session":"`+edgeLiveSession+`","message":"example message to the edge"}`)
 		envelope, ok := nextRelayFrame(t, frames, 15*time.Second)
 		if !ok {
 			t.Fatalf("no relay frame reached the edge session within 15s:\n%s", edge.Output.String())
