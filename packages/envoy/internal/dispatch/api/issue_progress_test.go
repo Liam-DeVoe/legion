@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // progressOf reads an issue's progress object off GET /api/v1/issues/{key}.
@@ -245,13 +246,27 @@ func TestIssueProgressReconciliationCountsDriftedIssues(t *testing.T) {
 	// The old task, which records no count, wrote this issue's version 2 during the deploy: the
 	// row keeps version 1's count and names version 1. The row carries the document's update
 	// cursor, as every version write does, so the room's settlement finds nothing past it to
-	// version; without it the settlement would write version 3 from the live tree first.
-	if _, err := database.Pool.Exec(ctx, `
+	// version; without it the settlement would write version 3 from the live tree first. It is
+	// written under the issue's owner lock, which every writer of the issue's documents takes
+	// first (docs' lockArtifactOwner): the server's own passes over the new issues run beside the
+	// test, and an insert that took the version's row locks without it could deadlock with one.
+	versionTx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the version the old task wrote: %v", err)
+	}
+	defer versionTx.Rollback(ctx)
+	if err := store.LockOwners(ctx, versionTx, store.IssueOwner(stale.Key)); err != nil {
+		t.Fatalf("take the owner lock of %s as a version write does: %v", stale.Key, err)
+	}
+	if _, err := versionTx.Exec(ctx, `
 		insert into artifact_versions (artifact_id, number, markdown, authors, doc_update_version)
 		values ($1::uuid, 2, '- [x] one' || chr(10) || '- [x] two' || chr(10) || '- [ ] three' || chr(10), '[]',
 		        coalesce((select max(version) from doc_updates where artifact_id = $1::uuid), 0))
 	`, stale.PrimaryArtifactID); err != nil {
 		t.Fatalf("write a version the old task left uncounted: %v", err)
+	}
+	if err := versionTx.Commit(ctx); err != nil {
+		t.Fatalf("commit the version the old task wrote: %v", err)
 	}
 	wantNull(t, "uncounted tasks before the pass", progressOf(t, handler, uncounted.Key).Tasks)
 	wantCount(t, "stale tasks before the pass", progressOf(t, handler, stale.Key).Tasks, 0, 1)
