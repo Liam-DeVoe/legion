@@ -354,11 +354,17 @@ func checkStatesAtOpenHeads(issue string, heads []delivery.AttributedHead, answe
 }
 
 // subjectAtHead is check's subject at head: a pull request basis at head's commit whose pull request
-// is one of head's. A subject's basis names its repository only where it is another than the
+// is one of head's, of head's repository. A subject says its repository in one of two places. The
+// read of a check CI proves at a head carries the repository of that head's row, where its check
+// runs were read (CheckCI.Repo), and that read is the one part of a state that differs between two
+// repositories at one commit. A basis names its repository only where it is another than the
 // issue's (headBasis): the canonical name of the link that made the pull request the issue's, or
-// the row's own repository. A subject naming head's repository, or a link's, is taken before one
-// naming none, so a pull request of another repository of the same number at the same commit is
-// never taken for the issue's own.
+// the row's own repository, and none at all where the issue resolves to no repository. So two
+// repositories with an open #70 at one commit can hold two subjects whose bases are alike, and the
+// read's repository, then the basis's, is what tells them apart. A subject that names no
+// repository either way carries no read of a check CI proves: its state is the state of its commit,
+// from the results that count there whatever repository recorded them, the same at every head at
+// that commit, so it serves head where no subject names head's repository.
 func subjectAtHead(check model.CheckBlock, head headStates, linked []string) (model.PassStandsSubject, bool) {
 	var unnamed *model.PassStandsSubject
 	for index := range check.PassStands.Subjects {
@@ -368,13 +374,16 @@ func subjectAtHead(check model.CheckBlock, head headStates, linked []string) (mo
 			basis.PullRequest == nil || !slices.Contains(head.pullRequests, *basis.PullRequest) {
 			continue
 		}
-		if basis.Repo == "" {
+		repo := basis.Repo
+		if subject.CI != nil && subject.CI.Repo != "" {
+			repo = subject.CI.Repo
+		}
+		switch {
+		case repo == "":
 			if unnamed == nil {
 				unnamed = subject
 			}
-			continue
-		}
-		if strings.EqualFold(basis.Repo, head.repo) || slices.ContainsFunc(linked, func(repo string) bool { return strings.EqualFold(basis.Repo, repo) }) {
+		case strings.EqualFold(repo, head.repo) || slices.ContainsFunc(linked, func(link string) bool { return strings.EqualFold(repo, link) }):
 			return *subject, true
 		}
 	}

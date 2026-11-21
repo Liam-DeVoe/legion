@@ -18,6 +18,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -34,6 +35,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -213,7 +215,9 @@ func marksOf(t *testing.T, database *store.Store, issue string) int {
 }
 
 // settleOwed runs the rig's settler's pass until no mark is due, at most 20 passes, and answers
-// the check.state_changed events those passes appended, oldest first.
+// the check.state_changed events those passes appended, oldest first. Marks still due after the
+// 20th pass fail the test without ending it, so the test's own assertion on the events says what
+// the settles did not publish.
 func settleOwed(t *testing.T, rig *checkStatesRig) []checkStatesEvent {
 	t.Helper()
 	return settleOwedBy(t, rig, rig.settler)
@@ -226,7 +230,8 @@ func settleOwedBy(t *testing.T, rig *checkStatesRig, settler *checkStatesSettler
 	after := lastEventID(t, rig.database)
 	for pass := 0; dueCheckStateMarks(t, rig.database) > 0; pass++ {
 		if pass == 20 {
-			t.Fatalf("20 passes of the settler left %d marks due", dueCheckStateMarks(t, rig.database))
+			t.Errorf("20 passes of the settler left %d marks due", dueCheckStateMarks(t, rig.database))
+			break
 		}
 		settler.pass(ctx)
 	}
@@ -401,17 +406,21 @@ func writerFail(t *testing.T, rig *checkStatesRig, exec func(context.Context, st
 }
 
 // holdOnce is a settler hook that holds the first settle that reaches it until release is
-// called, and closes reached when it does. A test's cleanup releases it too, so a test that
-// fails never leaves a settle holding its lease.
+// called, and closes reached when it does and returned once the hook has returned. It also
+// returns once its test's context ends, which comes before every cleanup of the test: a cleanup
+// that stops a loop waits for the loop's settle, and a settle still held there would never end,
+// whatever order the test registered its cleanups in.
 type holdOnce struct {
-	reached chan struct{}
-	unblock chan struct{}
-	first   sync.Once
-	once    sync.Once
+	reached  chan struct{}
+	unblock  chan struct{}
+	returned chan struct{}
+	ended    <-chan struct{}
+	first    sync.Once
+	once     sync.Once
 }
 
 func newHoldOnce(t *testing.T) *holdOnce {
-	hold := &holdOnce{reached: make(chan struct{}), unblock: make(chan struct{})}
+	hold := &holdOnce{reached: make(chan struct{}), unblock: make(chan struct{}), returned: make(chan struct{}), ended: t.Context().Done()}
 	t.Cleanup(hold.release)
 	return hold
 }
@@ -422,8 +431,12 @@ func (h *holdOnce) hook(string) {
 	if !first {
 		return
 	}
+	defer close(h.returned)
 	close(h.reached)
-	<-h.unblock
+	select {
+	case <-h.unblock:
+	case <-h.ended:
+	}
 }
 
 func (h *holdOnce) release() { h.once.Do(func() { close(h.unblock) }) }
@@ -1240,5 +1253,76 @@ func TestTheLeasePoolCountsTheCheckStatesLoop(t *testing.T) {
 	}
 	if err := reserveAll("check states"); err == nil {
 		t.Fatal("the reservations without the check states settler's complete the lease pool: its connection is counted for nothing")
+	}
+}
+
+// TestAHeadOfEachRepositoryTakesItsOwnComputedState: two repositories each hold an open #70 at
+// one commit, and the issue resolves to no repository, so neither head's basis names a
+// repository (headBasis). k3 is a check CI proves: its read at acme/one finds the run going on,
+// and its read at acme/two failed. Each head's state is the subject of its own repository, so
+// acme/two reads unknown for read_failed and keeps a mark for a later read, in either order of
+// the heads; k1, an ordinary check, reads the commit's one state at both.
+func TestAHeadOfEachRepositoryTakesItsOwnComputedState(t *testing.T) {
+	for _, order := range [][]string{{"acme/one", "acme/two"}, {"acme/two", "acme/one"}} {
+		t.Run(strings.Join(order, " before "), func(t *testing.T) {
+			var heads []delivery.AttributedHead
+			for _, repo := range order {
+				heads = append(heads, delivery.AttributedHead{Repo: repo, Number: 70, HeadSHA: eachHeadH1, Open: true})
+			}
+			_, subjects := pullRequestBases(heads, nil, true)
+			reads := map[ciHeadKey]*model.CheckCI{
+				{repo: "acme/one", commit: eachHeadH1}: {Repo: "acme/one", Commit: eachHeadH1, State: model.CIStateNoResult, Case: ciCaseNotCompleted},
+				{repo: "acme/two", commit: eachHeadH1}: {Repo: "acme/two", Commit: eachHeadH1, State: model.CIStateUnread, Case: ciCaseUnreadable},
+			}
+			ordinary := model.CheckBlock{BlockID: "k1", When: docs.CheckWhenBeforeMerge}
+			ordinary.PassStands = eachSubjectStands(ordinary, comparison{subjects: subjects}, nil)
+			proved := model.CheckBlock{BlockID: "k3", When: docs.CheckWhenBeforeMerge}
+			proved.PassStands = eachSubjectStands(proved, comparison{subjects: subjects, ci: reads}, nil)
+			computed, readFailed, err := checkStatesAtOpenHeads("ACME-1", heads, issueCheckResults{Checks: []model.CheckBlock{ordinary, proved}})
+			if err != nil {
+				t.Fatalf("compute the states at the two heads: %v", err)
+			}
+			got := map[string]string{}
+			for _, head := range computed {
+				for _, state := range head.states {
+					got[head.repo+" "+state.check] = state.state + "/" + state.reason + "/" + state.ciCase
+				}
+			}
+			want := map[string]string{
+				"acme/one k1": "no/no_result/", "acme/two k1": "no/no_result/",
+				"acme/one k3": "no/no_result/" + ciCaseNotCompleted, "acme/two k3": "unknown/read_failed/" + ciCaseUnreadable,
+			}
+			if !maps.Equal(got, want) || !readFailed {
+				t.Fatalf("the states are %v with readFailed %v, want %v and true", got, readFailed, want)
+			}
+		})
+	}
+}
+
+// TestAHeldHookIsReleasedWhenItsTestEnds: a subtest that ends while its settle is held at a hook,
+// as one whose assertion fails does, still ends: the hook returns once the subtest's context is
+// cancelled, which comes before every cleanup, so the cleanup that stops the loop waits for no
+// held settle. A watchdog releases the hook where it did not return, and the test then fails.
+func TestAHeldHookIsReleasedWhenItsTestEnds(t *testing.T) {
+	watchdog := make(chan bool, 1)
+	t.Run("a subtest that ends with its settle held", func(t *testing.T) {
+		rig := newCheckStatesRig(t, checkStatesTwoChecks)
+		writeHead(t, rig.database, ciJobRepository, 70, eachHeadH1, "open", rig.issue)
+		hold := newHoldOnce(t)
+		rig.settler.hooks.afterMarks = hold.hook
+		runCheckStatesLoop(t, rig.settler, make(chan struct{}))
+		hold.await(t, "the loop's first settle")
+		go func() {
+			select {
+			case <-hold.returned:
+				watchdog <- false
+			case <-time.After(10 * time.Second):
+				watchdog <- true
+				hold.release()
+			}
+		}()
+	})
+	if <-watchdog {
+		t.Fatal("the subtest's cleanup waited for its held settle until a watchdog released the hook")
 	}
 }
