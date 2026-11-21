@@ -722,6 +722,20 @@ test("a first sentence runs past an abbreviation that a number follows", () => {
   ).toBe("Keep the memo, e.g. in the pane, and draw it whole (see p. 4).");
 });
 
+// R5: a "1." after a full stop opens a numbered label only where the same text holds a "2." after
+// a full stop too, since a list has two items: a page or a figure 1 is an abbreviation that a
+// number follows, and ends no sentence. At ba0574f3 the rule cut "Draw it whole, as on p. 1.
+// Then more words follow." to "Draw it whole, as on p.", which a running build quoted so in a
+// person's because line, and "See fig. 1. It shows the cut." to "See fig.".
+test("a first sentence runs past an abbreviation that 1 follows, and a list of two items starts at its 1", () => {
+  expect(firstSentenceOf("Draw it whole, as on p. 1. Then more words follow.")).toBe(
+    "Draw it whole, as on p. 1."
+  );
+  expect(firstSentenceOf("See fig. 1. It shows the cut.")).toBe("See fig. 1.");
+  expect(firstSentenceOf("Two steps follow. 1. Open it. 2. Close it.")).toBe("Two steps follow.");
+  expect(firstSentenceOf("1. Keep the old page. 2. Then drop it.")).toBe("1. Keep the old page.");
+});
+
 /** The page's name for the statement r2, which opens with its label ("R2."). */
 const LABELLED = (reference: string) =>
   reference === statementRef("r2") ? "R2. Every address…" : undefined;
