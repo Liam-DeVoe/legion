@@ -1310,6 +1310,44 @@ grep -q -- "pass --run $other_run" "$tmp/out" || fail "down's refusal of another
 [ -f "$fake/lock.json" ] || fail "down deleted another run's lock without --run"
 pass "down refuses another run's lock unless --run names it"
 
+# ---- prebuilt binaries: LOADTEST_CLUSTER_LOADGEN and LOADTEST_CLUSTER_CHECKER -----------------------
+
+prebuilt=$tmp/prebuilt
+mkdir -p "$prebuilt"
+printf '#!/usr/bin/env bash\necho "prebuilt loadgen: $*"\n' >"$prebuilt/loadgen"
+printf '#!/usr/bin/env bash\necho "prebuilt checker: $*"\n' >"$prebuilt/envoy-dispatch"
+reset_fake
+export LOADTEST_CLUSTER_LOADGEN=$prebuilt/loadgen LOADTEST_CLUSTER_CHECKER=$prebuilt/envoy-dispatch
+run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
+((RC != 0)) || fail "up accepted a LOADTEST_CLUSTER_LOADGEN that is not executable"
+grep -qF "up: LOADTEST_CLUSTER_LOADGEN='$prebuilt/loadgen' names no executable file" "$tmp/out" ||
+  fail "up's refusal of a prebuilt loadgen that is not executable does not name the variable: $(cat "$tmp/out")"
+checker_refused "a prebuilt loadgen that is not executable"
+pass "up refuses, before it creates anything, a prebuilt binary that is not executable"
+
+chmod +x "$prebuilt/loadgen" "$prebuilt/envoy-dispatch"
+reset_fake
+rm -f -- "$fake/go.log"
+run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
+((RC == 0)) || fail "up with both binaries prebuilt exited $RC: $(tail -5 "$tmp/out")"
+! grep -q '^build' "$fake/go.log" 2>/dev/null || fail "up ran go build with both binaries prebuilt: $(cat "$fake/go.log")"
+run_dir=$LOADTEST_CLUSTER_ROOT/$(jq -r .data.run "$fake/lock.json")
+cmp -s "$prebuilt/loadgen" "$run_dir/loadgen" || fail "the run's loadgen is not the prebuilt one"
+cmp -s "$prebuilt/envoy-dispatch" "$run_dir/envoy-dispatch" || fail "the run's stored-order checker is not the prebuilt one"
+jq -e --arg c "$commit_ok" --arg s "$(sha256sum <"$prebuilt/envoy-dispatch" | cut -d' ' -f1)" \
+  '.stored_order == {dispatch_commit: $c, built_from: $c, overlay_source: null, overlay_files: [], registration: null, renderer_matches: true, sha256: $s, prebuilt: true}' \
+  "$run_dir/state.json" >/dev/null || fail "state.json does not record the prebuilt checker: $(jq -c .stored_order "$run_dir/state.json")"
+printf '#!/usr/bin/env bash\necho "prebuilt checker of another commit: $*"\n' >"$prebuilt/envoy-dispatch-2"
+chmod +x "$prebuilt/envoy-dispatch-2"
+LOADTEST_CLUSTER_CHECKER=$prebuilt/envoy-dispatch-2
+run_cluster redeploy --namespace "$ns" --dispatch-commit "$commit_ok"
+((RC == 0)) || fail "redeploy with a prebuilt checker exited $RC: $(tail -5 "$tmp/out")"
+cmp -s "$prebuilt/envoy-dispatch-2" "$run_dir/envoy-dispatch" || fail "redeploy did not install the prebuilt checker"
+jq -e --arg s "$(sha256sum <"$prebuilt/envoy-dispatch-2" | cut -d' ' -f1)" '.stored_order.sha256 == $s and .stored_order.prebuilt == true and .stored_order.renderer_matches' \
+  "$run_dir/state.json" >/dev/null || fail "state.json does not record redeploy's prebuilt checker: $(jq -c .stored_order "$run_dir/state.json")"
+unset LOADTEST_CLUSTER_LOADGEN LOADTEST_CLUSTER_CHECKER
+pass "up copies prebuilt loadgen and checker binaries in place of their go builds, and state.json records the checker as prebuilt; redeploy installs a prebuilt checker for the commit it deploys"
+
 # ---- (c) the whole path, and -n on every kubectl call ------------------------------------------------
 
 reset_fake

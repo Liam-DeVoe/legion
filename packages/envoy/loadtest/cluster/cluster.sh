@@ -47,6 +47,8 @@
 #   cluster.sh db-size --namespace NS CPU MEMORY        Postgres resized to the Cloud SQL tier of
 #                                                       CPU and MEMORY (Gi), on the same PVC.
 #   cluster.sh redeploy --namespace NS --dispatch-commit SHA   Dispatch's image only, then a reset.
+#       With LOADTEST_CLUSTER_CHECKER set, that file becomes the run's stored-order checker for SHA
+#       (Prebuilt binaries, below), so the steps after the redeploy check with SHA's renderer.
 #   cluster.sh replay-prepare --namespace NS [--manifest FILE] [--from-dir DIR]
 #       INFRA-639's LINUX replay inputs (default manifest ../replay-2026-10-26.json) into the
 #       template database dispatch_replay. Refuses, before it touches the copy, a manifest whose
@@ -115,6 +117,15 @@
 # records dispatch_commit, built_from (the commit whose tree was built), overlay_source (or null),
 # overlay_files, registration (the file the overlay edited, or null), renderer_matches and the
 # binary's sha256; up builds the checker before it takes the lock.
+#
+# Prebuilt binaries: a build is heavy work for the pod that drives the copy, so two variables let
+# the caller build elsewhere (a cluster Job) and name the results. LOADTEST_CLUSTER_LOADGEN names a
+# static loadgen, which up copies to the run's loadgen in place of its go build of ./loadtest.
+# LOADTEST_CLUSTER_CHECKER names a static envoy-dispatch built from the tree the checker would be
+# built from (above), which up copies in place of build_at_commit and redeploy installs as the
+# checker of the commit it deploys. up refuses, before it creates anything, a variable that names
+# no executable file. The caller vouches for the tree a prebuilt checker came from, so state.json
+# stored_order records prebuilt true beside the commits up was given.
 #
 # The stored-order check (INFRA-707's oracle): after each step's and each replay's loadgen run,
 # while Dispatch still runs, the runner runs the checker's `stored-order --since <meta.json
@@ -1870,6 +1881,14 @@ commit_source() {
 # tree_has COMMIT PATH: COMMIT's tree in this checkout's git store holds PATH.
 tree_has() { git -C "$REPO_DIR" cat-file -e "$1:$2" 2>/dev/null; }
 
+# prebuilt_valid VAR CMD: die, naming VAR and CMD, when VAR is set and names no executable regular
+# file (Prebuilt binaries, above); nothing when it is unset.
+prebuilt_valid() {
+  local path=${!1:-}
+  [ -z "$path" ] || { [ -f "$path" ] && [ -x "$path" ]; } ||
+    die "$2: $1='$path' names no executable file; build the binary first, or unset $1 to build it here"
+}
+
 # build_at_commit COMMIT PACKAGE OUT [SOURCE]: a static binary of COMMIT's Go package PACKAGE (a
 # path under packages/envoy, as ./cmd/dispatch) at OUT (an absolute path): `git archive` of this
 # checkout's git store unpacked in a scratch directory beside OUT, with SOURCE's stored-order
@@ -1995,17 +2014,24 @@ stored_order_build() {
   else
     from=$commit what="dispatch commit $commit"
   fi
-  note "building the stored-order checker, envoy-dispatch (static) of $what"
-  if ! build_at_commit "$from" ./cmd/dispatch "$CHECKER_TMP/envoy-dispatch" "$source" 2>"$err"; then
+  if [ -n "${LOADTEST_CLUSTER_CHECKER:-}" ]; then
+    note "the stored-order checker: the prebuilt $LOADTEST_CLUSTER_CHECKER (LOADTEST_CLUSTER_CHECKER), named as envoy-dispatch (static) of $what; nothing is built here"
+    install -m 755 -- "$LOADTEST_CLUSTER_CHECKER" "$CHECKER_TMP/envoy-dispatch" ||
+      die "up: copying the prebuilt checker $LOADTEST_CLUSTER_CHECKER (LOADTEST_CLUSTER_CHECKER) failed"
+  else
+    note "building the stored-order checker, envoy-dispatch (static) of $what"
+  fi
+  if [ -z "${LOADTEST_CLUSTER_CHECKER:-}" ] && ! build_at_commit "$from" ./cmd/dispatch "$CHECKER_TMP/envoy-dispatch" "$source" 2>"$err"; then
     cat -- "$err" >&2
     first=$(grep -v -m1 -e '^#' -e '^[[:space:]]*$' "$err") || first="go build failed with no error line"
     die "up: the stored-order checker does not build (dispatch commit $commit, source commit ${source:-none}${checker:+, checker commit $checker}): $first"
   fi
   # shellcheck disable=SC2016 # $d, $b, $s, $f, $r, $m and $sha are jq's variables
   STORED_ORDER_STATE=$(jq -nc --arg d "$commit" --arg b "$from" --arg s "$source" --argjson f "$files" --arg r "$registry" \
-    --argjson m "$matches" --arg sha "$(sha256_of "$CHECKER_TMP/envoy-dispatch")" \
+    --argjson m "$matches" --arg sha "$(sha256_of "$CHECKER_TMP/envoy-dispatch")" --arg p "${LOADTEST_CLUSTER_CHECKER:-}" \
     '{dispatch_commit: $d, built_from: $b, overlay_source: (if $s == "" then null else $s end), overlay_files: $f,
-      registration: (if $r == "" then null else $r end), renderer_matches: $m, sha256: $sha}')
+      registration: (if $r == "" then null else $r end), renderer_matches: $m, sha256: $sha}
+      + (if $p == "" then {} else {prebuilt: true} end)')
   note "the stored-order checker's sha256 is $(jq -r .sha256 <<<"$STORED_ORDER_STATE"), renderer_matches $matches"
 }
 
@@ -3506,6 +3532,8 @@ up_run() {
   valid uid "${POD_UID:-}" || die "up: POD_UID ('${POD_UID:-}') is not a pod uid; the lock names its holder's uid (a Legion pod sets POD_UID)"
   valid issue "${LEGION_ISSUE:-}" || die "up: LEGION_ISSUE ('${LEGION_ISSUE:-}') is not an issue key; the lock names it (a Legion pod sets LEGION_ISSUE)"
   stored_order_args "$commit" "$so_source" "$so_checker"
+  prebuilt_valid LOADTEST_CLUSTER_LOADGEN up
+  prebuilt_valid LOADTEST_CLUSTER_CHECKER up
   if [ -n "$bt_commit" ]; then
     valid commit "$bt_commit" || die "up: --browsertype-commit '$bt_commit' is not a full 40-hex commit sha"
     commit_source browsertype-commit "$bt_commit" packages/envoy/loadtest/browsertype \
@@ -3584,8 +3612,13 @@ up_run() {
   chmod 600 "$STATE"
   start_daemon heartbeat
 
-  note "building loadgen (static) into $LOADGEN"
-  (cd -- "$ENVOY_DIR" && CGO_ENABLED=0 go build -o "$LOADGEN" ./loadtest) || die "go build of loadgen failed"
+  if [ -n "${LOADTEST_CLUSTER_LOADGEN:-}" ]; then
+    note "loadgen: the prebuilt $LOADTEST_CLUSTER_LOADGEN (LOADTEST_CLUSTER_LOADGEN), copied into $LOADGEN; nothing is built here"
+    install -m 755 -- "$LOADTEST_CLUSTER_LOADGEN" "$LOADGEN" || die "copying the prebuilt loadgen $LOADTEST_CLUSTER_LOADGEN failed"
+  else
+    note "building loadgen (static) into $LOADGEN"
+    (cd -- "$ENVOY_DIR" && CGO_ENABLED=0 go build -o "$LOADGEN" ./loadtest) || die "go build of loadgen failed"
+  fi
   if [ -n "$bt_commit" ]; then
     # shellcheck disable=SC2016 # $c and $s are jq's variables
     state_set '.browsertype = {commit: $c, sha256: $s}' --arg c "$bt_commit" --arg s "$(sha256_of "$BROWSERTYPE_BIN")"
@@ -3729,6 +3762,7 @@ cmd_redeploy() {
   [ -n "$commit" ] || die "redeploy: --dispatch-commit is required"
   valid commit "$commit" || die "redeploy: --dispatch-commit '$commit' is not a full 40-hex commit sha"
   use_run
+  prebuilt_valid LOADTEST_CLUSTER_CHECKER redeploy
   image=$(image_for_commit "$commit")
   ensure_daemons
   # shellcheck disable=SC2016 # $c and $i are jq's variables
@@ -3736,7 +3770,14 @@ cmd_redeploy() {
   scale_to dispatch 0
   apply_manifest dispatch.yaml
   note "Dispatch now runs $image (commit $commit)"
-  if [ "$(state '.stored_order.dispatch_commit // empty')" != "$commit" ]; then
+  if [ -n "${LOADTEST_CLUSTER_CHECKER:-}" ]; then
+    install -m 755 -- "$LOADTEST_CLUSTER_CHECKER" "$STORED_ORDER_BIN" ||
+      die "redeploy: copying the prebuilt checker $LOADTEST_CLUSTER_CHECKER (LOADTEST_CLUSTER_CHECKER) failed"
+    # shellcheck disable=SC2016 # $c and $s are jq's variables
+    state_set '.stored_order = {dispatch_commit: $c, built_from: $c, overlay_source: null, overlay_files: [], registration: null,
+      renderer_matches: true, sha256: $s, prebuilt: true}' --arg c "$commit" --arg s "$(sha256_of "$STORED_ORDER_BIN")"
+    note "the stored-order checker is now the prebuilt $LOADTEST_CLUSTER_CHECKER, named as dispatch commit $commit's (sha256 $(state .stored_order.sha256))"
+  elif [ "$(state '.stored_order.dispatch_commit // empty')" != "$commit" ]; then
     note "WARNING: the stored-order checker was built for dispatch commit $(state '.stored_order.dispatch_commit // "none"'), not $commit: its renderer may differ from this Dispatch's, so each step's stored-order.json records renderer_matches false"
   fi
   if db_exists dispatch_seed; then

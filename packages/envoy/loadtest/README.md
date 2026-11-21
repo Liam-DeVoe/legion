@@ -3298,6 +3298,16 @@ credential: every token and password is random and made for the run.
   `--stored-order-source` there too (The stored-order check, below).
 - **For browser typing:** the `--browsertype-commit` in this checkout's git store, with
   `packages/envoy/loadtest/browsertype` in its tree (Browser typing, below).
+- **Prebuilt binaries, to keep builds off the worker pod:** `up` builds loadgen (`./loadtest`) and
+  the stored-order checker (a static `envoy-dispatch`) with `go` on the worker unless
+  `LOADTEST_CLUSTER_LOADGEN` and `LOADTEST_CLUSTER_CHECKER` name static binaries built elsewhere,
+  such as a cluster Job. Each names one file, which `up` copies in place of that build, and `up`
+  refuses, before it creates anything, a variable that names no executable file.
+  `LOADTEST_CLUSTER_CHECKER` must be built from the tree the checker would be built from (The
+  stored-order check, below); `state.json`'s `stored_order` records `prebuilt: true`, since the
+  caller vouches for that tree. `redeploy` with `LOADTEST_CLUSTER_CHECKER` set installs that file
+  as the checker of the commit it deploys, so the steps after it check with that commit's
+  renderer (`renderer_matches` true).
 
 ### The one command
 
