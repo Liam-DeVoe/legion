@@ -163,6 +163,102 @@ func TestAMarkerReadNoServerAnswersKeepsTheGateShut(t *testing.T) {
 	}
 }
 
+// A consumer create published while the session consumers' connection is cut never reaches the
+// server after the reconnect: the bus's connections hold no reconnect buffer (connect.go,
+// options), so the publish fails at once, and nothing made under the old connection's marker read
+// is sent on the new one, which no read has admitted. The gate is open before the cut. The control
+// is a connection with nats.go's default reconnect buffer, which holds the same publish and sends
+// it once the server is back, creating the consumer.
+func TestACreatePublishedWhileCutOffNeverReachesTheServerAfterTheReconnect(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		buffered bool
+		// durable takes the durable's connection, the listener's owning client, in place of the
+		// session consumers'.
+		durable bool
+	}{
+		{name: "control: nats.go's default reconnect buffer", buffered: true},
+		{name: "the session consumers' connection"},
+		{name: "the durable's connection", durable: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, uri := testnats.Start(t)
+			ctx := context.Background()
+			admin := testnats.Connect(t, uri)
+			t.Cleanup(admin.Close)
+			if _, err := consumernames.CreateSessionBucket(ctx, admin, 1, consumernames.StoreState{Boundary: 1}); err != nil {
+				t.Fatal(err)
+			}
+			owner, err := ConnectOwningStream([]string{uri})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(owner.Close)
+			consumers, err := ConnectSessionConsumers([]string{uri}, 0, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(consumers.Close)
+			gated := consumers.client
+			if tc.durable {
+				gated = owner
+			}
+			gated.GateOnMarker(nil)
+			if err := gated.ReadMarker(ctx); err != nil || gated.MarkerUnread() != nil {
+				t.Fatalf("the start's read = %v, gate %v; want the gate open", err, gated.MarkerUnread())
+			}
+			conn := gated.Connection()
+			if tc.buffered {
+				conn, err = natsgo.Connect(uri, natsgo.MaxReconnects(-1), natsgo.ReconnectWait(100*time.Millisecond))
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(conn.Close)
+			}
+
+			srv.Stop(t)
+			for deadline := time.Now().Add(10 * time.Second); conn.Status() == natsgo.CONNECTED; time.Sleep(10 * time.Millisecond) {
+				if time.Now().After(deadline) {
+					t.Fatal("the connection never saw the server stop")
+				}
+			}
+			const name = sessionConsumerPrefix + "ses_sent_while_cut_off"
+			body := []byte(`{"stream_name":"` + Stream + `","config":{"durable_name":"` + name + `","ack_policy":"explicit","deliver_policy":"all","filter_subject":"notifications.agent.ses_sent_while_cut_off"},"action":"create"}`)
+			publishErr := conn.Publish(consumerAPI("CREATE", name), body)
+			srv.Start(t)
+			for deadline := time.Now().Add(30 * time.Second); conn.Status() != natsgo.CONNECTED; time.Sleep(20 * time.Millisecond) {
+				if time.Now().After(deadline) {
+					t.Fatal("the connection did not connect again within 30 s of the restart")
+				}
+			}
+			if err := conn.Flush(); err != nil {
+				t.Fatal(err)
+			}
+
+			check := testnats.Connect(t, uri)
+			t.Cleanup(check.Close)
+			js, err := jetstream.New(check)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var held bool
+			for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline) && !held; time.Sleep(50 * time.Millisecond) {
+				_, infoErr := js.Consumer(ctx, Stream, name)
+				held = infoErr == nil
+			}
+			if tc.buffered {
+				if publishErr != nil || !held {
+					t.Fatalf("control: the buffered publish answered %v and the server holds %s: %t; want it sent after the reconnect", publishErr, name, held)
+				}
+				return
+			}
+			if !errors.Is(publishErr, natsgo.ErrReconnectBufExceeded) || held {
+				t.Fatalf("the publish while cut off answered %v and the server holds %s: %t; want it refused at once and never sent", publishErr, name, held)
+			}
+		})
+	}
+}
+
 // todaysReconnectCheck is the fixed mode's reconnect check as it stood before the marker gate
 // (WatchConversion at 300bee77fd): each connection reads the marker and calls converted on done,
 // and a failed read fails the hook's run, but no consumer call waits for any of it.
