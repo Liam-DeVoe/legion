@@ -230,7 +230,7 @@ def cache_steps(document: dict, action: str) -> list:
 def restores_of(documents: dict) -> dict:
     """Every restore of the given workflows, as family -> [(where it is, its with:)]. Given the
     document set the engine loads - ci.yaml, and each local workflow one of its jobs calls:
-    dispatch-browser.yaml's binaries job restores go-envoy-test for ci.yaml's dispatch-browser
+    dispatch-browser.yaml's binaries job restores go-dispatch-browser for ci.yaml's dispatch-browser
     job - it is every restore of ci.yaml's run; paired against ci.yaml alone, a save that only a
     called workflow restores would read as a fill nobody wants. Given the rest of the directory,
     it is the restores of the release builds and the other workflows. The set holds each file once

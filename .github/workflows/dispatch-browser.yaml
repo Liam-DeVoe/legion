@@ -45,15 +45,15 @@ jobs:
         with:
           go-version-file: packages/envoy/go.mod
           cache: false
-      # why: .github/ci-notes/dispatch-browser.md#why-the-binaries-job-restores-go-envoy-test
+      # why: .github/ci-notes/dispatch-browser.md#why-the-binaries-job-restores-go-dispatch-browser
       - id: go-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
+          key: go-dispatch-browser-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-dispatch-browser-{0}-{1}-', runner.os, runner.arch) }}
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       # why: .github/ci-notes/dispatch-browser.md#what-the-binaries-build-writes-and-why-it-is-static

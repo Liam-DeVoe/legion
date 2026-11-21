@@ -183,18 +183,43 @@ three minutes could cancel it. So the budget carries the cold build rather than 
 the multiprocess job's Playwright install step, "Install Playwright Chromium", carries its own
 retry arithmetic rather than its measured maximum.
 
-## Why the binaries job restores go-envoy-test
+## Why the binaries job restores go-dispatch-browser
 
-go-envoy-test, restored only: this job builds the Dispatch server and the real broker's
-three commands, and that family's entry is the one that holds them. go-envoy is filled
-by a build of ./cmd/listener and ./internal/testnats/cmd/natsd alone
-(.github/workflows/ci-caches.yaml), so a job that restores it and builds these four
+go-dispatch-browser, restored only: a family of this job's own, which
+.github/workflows/ci-caches.yaml's dispatch-browser job fills on a push to main, on this job's
+runner, by running this job's go commands as this job runs them: the build step's two `go
+build`s with CGO_ENABLED=0 over the same packages, and the connections step's `go run` on the
+runner's default cgo. No job here saves it.
+
+It restored go-envoy-test until dispatch://INFRA-1109 measured what that bought. ci-caches.yaml's
+envoy job fills go-envoy-test with `go test -c -o /dev/null ./...` over the whole envoy module on
+the runner's default CGO_ENABLED=1, since the runner has gcc, and the build step pins
+CGO_ENABLED=0 (the next section says why). Go's build cache keys every object on the build's
+configuration, cgo included, and net, os/user and runtime/cgo differ with it, as does every
+package above them, so that entry held the step's modules and almost none of its objects, and
+the step compiled the server nearly from nothing on every run. Measured in cluster Jobs on 4
+CPUs with golang:1.27.3, building the step's commands as it builds them at b1634bff of #3513,
+after a build cache filled by building the same commands at main's 278138ea, the commit main's
+go-envoy-test entry was saved at on 2026-11-18: 95 s when that fill ran with cgo on (Job
+infra-1109-gocgo-dv7gl, where the head's cgo-on build after the same fill took 26 s), and 16 s,
+12 s for the first `go build` and 4 s for the broker's, when it ran with CGO_ENABLED=0 (Job
+infra-1109-gobuild-894l9). The same Job built them in 5 s on a build cache of the head's own,
+and in 69 s on an empty build cache with the modules already downloaded. On the runner the step
+took 108 to 150 s across the full lanes of #3513 on 2026-11-19 and 20, and in run 44823289704
+(job 136589534717) both Vite builds beside it took 2 min 5 s, where the same build alone takes
+37 s on the same runner type ("built in 36.97s", dispatch-ui job 136589534807): the cold go
+build held the runner's four CPUs for most of the step, and the bundles waited on it. That
+job's restore of go-envoy-test read 723,666,370 bytes, in 19 s.
+
+The connections step's `go run` carries no CGO_ENABLED, so it builds with cgo on, and
+go-envoy-test held its closure, the store package's among it: the step took 1.4 s in job
+136589534717. So the fill runs it too, and the entry holds both builds' objects.
+
+go-envoy would serve this job no better: it is filled by a build of ./cmd/listener and
+./internal/testnats/cmd/natsd alone, so a job that restores it and builds these four
 downloads and compiles their closure on a key that hit: 115 `go: downloading` lines in
 job 129055096326 of run 42585736615, where this build still sat inside the alone job's
-3-minute browser step. go-envoy-test is filled by `go test -c -o /dev/null ./...` over
-the whole envoy module, so it carries every package built here: 4 downloads and a 17 s
-restore of 646 MB in job 129071749416 of run 42590831386, against 9 s of 153 MB. No job
-here saves either one.
+3-minute browser step, against 4 with go-envoy-test in job 129071749416 of run 42590831386.
 
 ## What the binaries build writes, and why it is static
 
@@ -1057,9 +1082,9 @@ sign-in step's dev OIDC issuer was the last one, built by
 packages/dispatch/e2e/run-signin-issuer.sh inside that step until the script took a
 prebuilt binary on DISPATCH_E2E_SIGNIN_ISSUER_BIN. The binaries job builds the issuer
 now, in the one `go build` that builds the server, and this job downloads it with the
-server (dispatch://INFRA-1109). The restore it had, go-envoy-test, was there for the
-reason the binaries job's step of that name gives, the Dispatch server and the dev OIDC
-issuer being in that family's entry alone, and it went with the builds.
+server (dispatch://INFRA-1109). The restore it had, go-envoy-test, was there because this job
+built the Dispatch server and the dev OIDC issuer itself, on the runner's default cgo, and that
+family's entry was the one that held them; it went with the builds.
 
 ## Why the two-process job builds contracts
 

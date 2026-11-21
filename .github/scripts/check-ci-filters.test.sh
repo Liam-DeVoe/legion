@@ -2450,7 +2450,7 @@ check "names the job and the family" \
   "$(contains "$out" "job fill's actions/cache/restore of family go-app has restore-keys")"
 
 # A job of ci.yaml that calls a local workflow gives it its steps, cache steps among them: the
-# real dispatch-browser job restores go-envoy-test in the binaries job of dispatch-browser.yaml.
+# real dispatch-browser job restores go-dispatch-browser in the binaries job of dispatch-browser.yaml.
 # So the rule reads that workflow's restores as it reads ci.yaml's own, and names the file that
 # holds them. Read over ci.yaml alone, the fill below would be a family nothing restores.
 #

@@ -1062,20 +1062,22 @@ the build of the previous commit that job compares against; three actions its jo
 save one too, and only in a dispatched run (setup-bun, and architecture-check and spec-check at
 this paragraph's end).
 setup-go caches nothing here (`cache: false` on every step, the two check actions'
-included). The jobs that cache Go restore, in steps of their own, one of six families with
+included). The jobs that cache Go restore, in steps of their own, one of seven families with
 actions/cache/restore: go-daemon (typecheck, daemon-go, plugin-pack — which compiles the same
 internal/daemon test binary daemon-go's race step does — and pi-legion; the test job restored
 it while it ran the daemon's Go suite and does not now), go-docs (docs, and the build job
 of docs-pages.yaml, which saves it), go-envoy (envoy-e2e-local and envoy-session-stall, which
 build the same listener and natsd, listener-server-change and envoy-go-checks, which build the
 listener, and envoy-go-race-docs and envoy-go-docs-finalizers), go-envoy-test (envoy-go, which
-builds the test binary of every package of the envoy module, envoy-go-claim-model, which builds
-the test binary of internal/dispatch/api out of that set, and the binaries job of
-dispatch-browser.yaml, which builds the Dispatch server, the real broker's commands and the dev
-OIDC issuer for the whole run, out of that same set), go-envoy-infra (envoy-infra-go) and
-go-notices (lint's notices step). Every family but go-docs is filled by
-.github/workflows/ci-caches.yaml, which builds those sets on a push to main and saves them;
-go-docs stays with docs-pages.yaml, which saves it on that same push. Each family keeps one
+builds the test binary of every package of the envoy module, and envoy-go-claim-model, which
+builds the test binary of internal/dispatch/api out of that set), go-dispatch-browser (the
+binaries job of dispatch-browser.yaml, which builds the Dispatch server, the real broker's
+commands and the dev OIDC issuer for the whole run with CGO_ENABLED=0, almost none of whose
+objects an entry filled with cgo on holds:
+.github/ci-notes/dispatch-browser.md#why-the-binaries-job-restores-go-dispatch-browser),
+go-envoy-infra (envoy-infra-go) and go-notices (lint's notices step). Every family but go-docs
+is filled by .github/workflows/ci-caches.yaml, which builds those sets on a push to main and
+saves them; go-docs stays with docs-pages.yaml, which saves it on that same push. Each family keeps one
 entry per runner architecture, keyed on the runner's architecture and on the Go version its
 job's setup-go installed: a build cache holds the objects of the architecture that compiled
 them, so an entry an x86_64 runner filled would give a job on ubuntu-24.04-arm its modules and
@@ -1104,9 +1106,9 @@ ci-caches.yaml's browsers job, the only writer of that entry, is gone with the r
 (.github/actions/setup-bun), which of this workflow's events is the dispatched run alone, and
 not in the tool-fallback and tool-fallback-arm jobs at all: that action reads the id of the
 job that called it and passes no-cache for those two on every ref, so a restored Bun cannot
-stand in for the install each of their cases is a reading of. A seventh family,
+stand in for the install each of their cases is a reading of. An eighth family,
 `architecture-check-<os>-<arch>-go<version>-<hash>`, is the composite action
-.github/actions/architecture-check's own, and an eighth,
+.github/actions/architecture-check's own, and a ninth,
 `spec-check-<os>-<arch>-go<version>-<hash>`, is .github/actions/spec-check's; envoy-go-checks runs
 both. Each action restores its family and saves it itself, from $RUNNER_TEMP/architecture-check
 or $RUNNER_TEMP/spec-check and not from the Go caches above, keyed on the Go version its own
@@ -1710,8 +1712,7 @@ container-backed NATS matrix and the integration suite), is one of the ten slow 
 which run in the merge queue and on a pull request labelled `full-ci`, while these checks
 must come back on every push. No Postgres service: nothing here opens a database. It
 restores go-envoy rather than go-envoy-test, the family of the slow half (the test binary of
-every package of the envoy module), of envoy-go-claim-model and of dispatch-browser.yaml's
-binaries job, the one job of that workflow that runs a go command. It also runs the guard that
+every package of the envoy module) and of envoy-go-claim-model. It also runs the guard that
 no CI file of this repository compares the spec files with the approved spec.
 
 ## What the envoy-go job runs
