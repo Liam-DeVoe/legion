@@ -17,6 +17,9 @@ body: |-
   since a stopping session closes its own relay and its record is deleted next.
   `inboundUnavailable` takes `{ now, firstOpenBoundMs, restored, held, stopping }` as its second
   argument.
+  On the listener's relay socket, a refusal of the session's own relay subject is told at once
+  through the socket's outage hook; only a first socket open that has not succeeded within its
+  bound reaches the hold.
 time: 2026-11-17T03:00:15Z
 custom:
     Issue: pr4194
