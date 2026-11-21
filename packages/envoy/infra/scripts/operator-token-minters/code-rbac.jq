@@ -44,8 +44,10 @@ include "rec";
         def may_write($held; $subject; $r; $verb; $n): any($held[]; .subject == $subject and (.cluster or ($r.ns != "" and .bns == $r.ns))
           and any(.rules[]; matches_but_name($r + {verb: $verb})
                             and (((.resourceNames // []) | length) == 0 or has_(.resourceNames; $n))));
+        # A right's `why` (a become right's chain, become-rights.jq) follows its label.
         def named_label($r; $names): "\($r.verb) \($r.resource)\(if $r.sub != "" then "/" + $r.sub else "" end)\(if $r.group != "" then "." + $r.group else "" end)"
-          + " \($names | join(", "))" + (if $r.ns != "" then " in " + $r.ns else " cluster-wide" end);
+          + " \($names | join(", "))" + (if $r.ns != "" then " in " + $r.ns else " cluster-wide" end)
+          + (if ($r.why // "") != "" then ", " + $r.why else "" end);
         ($rights | map(.key)) as $plain
         | ([$rights[], $named_rights[]] | reduce .[] as $r ([]; if any(.[]; .key == $r.key) then . else . + [$r] end)) as $all
         | [inputs | objs] as $objects
