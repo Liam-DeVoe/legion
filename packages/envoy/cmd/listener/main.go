@@ -1029,6 +1029,8 @@ func main() {
 	// meets them.
 	warnIgnoredEnv(logger, "ENVOY_HOST_BRIDGE", "the listener no longer pushes a message to a session's serve port, so it opens no connection this would address")
 	warnIgnoredEnv(logger, "ENVOY_SUBSCRIBE_ALL_TOPICS", "the listener no longer holds a live topics subscription, so there is no such subscription to turn on")
+	// Before any NATS connect, so a listener the writer hold refuses still names its mode.
+	logger.Info("session consumer naming mode", slog.String("consumer_names", string(cfg.ConsumerNames)))
 	apiToken := os.Getenv("ENVOY_API_TOKEN")
 	oidcIssuer, oidcAudience, err := resolveListenerOIDCConfig(os.Getenv)
 	if err != nil {
@@ -1593,7 +1595,6 @@ func main() {
 		client.Conn.Close()
 		os.Exit(1)
 	}
-	logger.Info("session consumer naming mode", slog.String("consumer_names", string(client.ConsumerNames())))
 	if !delivery.consumers.Fresh() {
 		if err := awaitFixedNaming(context.Background(), delivery.consumers, logger, fixedNamingRetry); err != nil {
 			logger.Error("session consumer naming refuses the start: "+err.Error(), slog.String("error", err.Error()))
