@@ -413,11 +413,31 @@ function issueStatusOptionsProblem(input: Readonly<Record<string, unknown>>): st
   ]);
 }
 
-/** The refusal of the part of dispatch_issue_update's rule `value` breaks, or undefined when it
+/** The refusal of the reason's part of dispatch_issue_update's rule `input` breaks, or undefined
+ *  when it keeps it: reason is the close's note, so status done requires it and every other call
+ *  goes without it. */
+function issueReasonProblem(input: {
+  readonly status?: unknown;
+  readonly reason?: unknown;
+}): string | undefined {
+  if (input.status === "done") {
+    return typeof input.reason !== "string" || input.reason.trim() === ""
+      ? `${ISSUE_UPDATE_DONE_RULE}.`
+      : undefined;
+  }
+  if (input.reason === undefined) return undefined;
+  const status =
+    typeof input.status === "string" ? `status ${input.status}` : "an update without status done";
+  return `${ISSUE_UPDATE_REASON_RULE}: it is the note posted on the issue as it closes, and ${status} closes nothing. Drop reason, or set status done to close the issue.`;
+}
+
+/** The refusal of the parts of dispatch_issue_update's rule `value` breaks, or undefined when it
  *  keeps the rule: reason is the close's note, so it goes with status done and with nothing else,
  *  an option of the status change goes with status alone, and the update names at least one field
- *  to change. `check` and `refusal` both read this one function, so the refusal never names a
- *  part the call kept. */
+ *  to change. It names every part of the reason's and the options' rules the call broke, joined in
+ *  one refusal, so its caller fixes them all and calls once. The field part is read only when the
+ *  call keeps those two: a call refused for its reason is never told it names no field. `check`
+ *  and `refusal` both read this one function, so the refusal never names a part the call kept. */
 function issueUpdateProblem(value: unknown): string | undefined {
   const input = value as {
     readonly status?: unknown;
@@ -436,17 +456,11 @@ function issueUpdateProblem(value: unknown): string | undefined {
     readonly before?: unknown;
     readonly after?: unknown;
   };
-  if (input.status === "done") {
-    if (typeof input.reason !== "string" || input.reason.trim() === "") {
-      return `${ISSUE_UPDATE_DONE_RULE}.`;
-    }
-  } else if (input.reason !== undefined) {
-    const status =
-      typeof input.status === "string" ? `status ${input.status}` : "an update without status done";
-    return `${ISSUE_UPDATE_REASON_RULE}: it is the note posted on the issue as it closes, and ${status} closes nothing. Drop reason, or set status done to close the issue.`;
-  }
-  const optionsProblem = issueStatusOptionsProblem(value as Readonly<Record<string, unknown>>);
-  if (optionsProblem !== undefined) return optionsProblem;
+  const broken = [
+    issueReasonProblem(input),
+    issueStatusOptionsProblem(value as Readonly<Record<string, unknown>>),
+  ].filter((problem) => problem !== undefined);
+  if (broken.length > 0) return broken.join(" ");
   const changesAField =
     typeof input.status === "string" ||
     typeof input.title === "string" ||
