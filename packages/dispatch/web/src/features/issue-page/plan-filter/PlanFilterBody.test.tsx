@@ -522,6 +522,29 @@ test("the plan opens on the chart: one bar per step, each after every step it ne
   }
 });
 
+// A task is named by the line the names store projects from its words (`taskLine`), not by its
+// stored text: the cycle line names a task whose words hold markdown by those words as they read,
+// with no syntax of the source. Every other row's tasks have plain words, which read the same
+// either way.
+test("a cycle names a task by the line the store projects, not its stored marks", async () => {
+  setViewport(1440);
+  const view = renderBody(
+    issue([
+      { ...task("t2", { needs: ["t3"] }), text: "**Draw** the `rows` first" },
+      task("t3", { needs: ["t2"] }),
+    ])
+  );
+  try {
+    await waitFor(() =>
+      expect(
+        [...view.container.querySelectorAll("[data-plan-cycle] a")].map((one) => one.textContent)
+      ).toEqual(["Draw the rows first", "Task t3"])
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
 // A task's serves chips can repeat: two chips of one task can carry the same words, or the same
 // reference, since the server refuses a pointer named twice only by its raw value. The row draws
 // each of them, and React is never handed two chips under one key, which would drop or reorder
