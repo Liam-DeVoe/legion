@@ -325,9 +325,9 @@ type DispatchArgs struct {
 	// at its headless instances Service. With privateHubs the component renders
 	// DISPATCH_PRIVATE_LISTENERS from them and appends Dispatch's own listener for the first hub,
 	// Dispatch's own: name <hostname>-listener, its instances the headless Service
-	// <hostname>-listener-instances it renders over that Deployment's pods, which its listener's
-	// ENVOY_ALLOWED_HOSTS names, and its source listenerPrivacySource's brokerUrl, so no stack can
-	// leave it out. Refused at preview, naming the entry: a blank name, hub, source or host,
+	// <hostname>-listener-instances it renders over that Deployment's pods, and its source
+	// listenerPrivacySource's brokerUrl, so no stack can leave it out. Refused at preview, naming
+	// the entry: a blank name, hub, source or host, a source that is not the broker's base URL,
 	// instances that are missing or not host:port, a name another entry or Dispatch's own listener
 	// has, and a hub privateHubs does not name; and naming privateHubs, a hub after the first that
 	// no entry serves.
@@ -598,7 +598,7 @@ type DispatchPrivateListenerArgs struct {
 	Hub string `pulumi:"hub"`
 	// Source is the privacy source each replica must read: the secrets broker's base URL.
 	Source string `pulumi:"source"`
-	// Host is the Host a read of a replica carries, a name the workload's ENVOY_ALLOWED_HOSTS holds.
+	// Host is the Host a read of a replica carries: the name the workload is read by.
 	Host string `pulumi:"host"`
 	// Instances is host:port of a headless Service over the workload's pods that publishes
 	// not-ready addresses, so its name resolves to every replica, ready or not.

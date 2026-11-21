@@ -1498,10 +1498,12 @@ headless instances Service. With `privateHubs` the component renders them as
 `DISPATCH_PRIVATE_LISTENERS`, JSON, and appends Dispatch's own listener for the first hub, so no
 stack can leave it out: `name` `<hostname>-listener`, `host` and `instances` the headless Service
 `<hostname>-listener-instances` it renders over that Deployment's pods (`clusterIP: None`,
-`publishNotReadyAddresses: true`, selector `app: <hostname>-listener`, port 9020), which the
-listener's `ENVOY_ALLOWED_HOSTS` names, and `source` the `brokerUrl` of `listenerPrivacySource`
-(`{brokerUrl}`, the secrets broker's base URL that listener reads each project's privacy from). The
-listener's NetworkPolicy already admits the app's pods at 9020, where each proof reads from.
+`publishNotReadyAddresses: true`, selector `app: <hostname>-listener`, port 9020), and `source` the
+`brokerUrl` of `listenerPrivacySource` (`{brokerUrl}`, the secrets broker's base URL that listener
+reads each project's privacy from). The listener's own pod is unchanged: it requires a bearer, so it
+serves each replica read for the credential the read presents, whatever its Host, and reads no
+`ENVOY_ALLOWED_HOSTS`. Its NetworkPolicy already admits the app's pods at 9020, where each proof
+reads from.
 Refused at preview, naming the entry: a blank `name`, `hub`, `source` or `host`, a `source` that is
 not the broker's base URL (an absolute http(s) URL with no path, query or fragment, which a replica
 reports unchanged and the proof compares byte for byte), `instances` that are missing or not

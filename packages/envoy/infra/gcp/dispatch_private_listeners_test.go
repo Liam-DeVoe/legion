@@ -96,11 +96,12 @@ func registered(m *pulumitest.Mocks, typ, name string) bool {
 // DISPATCH_SERVICE_ACCOUNT, Dispatch's own account; it renders DISPATCH_PRIVATE_LISTENERS from each
 // entry of privateListeners and Dispatch's own listener for the first hub, whose source is
 // listenerPrivacySource's broker; it renders the listener's replicas as a headless Service whose
-// selector is the listener Deployment's own pod labels, publishing not-ready addresses, which the
-// listener's ENVOY_ALLOWED_HOSTS names; and the listener's NetworkPolicy admits Dispatch's app pods
-// at the listener's port. With no privateHubs none of it is rendered. Each input it cannot render
-// is refused naming the input. Control: the Service selecting Dispatch's app pods (app:
-// example-dispatch); the selector row fails naming the labels.
+// selector is the listener Deployment's own pod labels, publishing not-ready addresses; the
+// listener's own pod is unchanged, since it requires a bearer and serves a replica's read for the
+// credential it presents, whatever its Host; and the listener's NetworkPolicy admits Dispatch's
+// app pods at the listener's port. With no privateHubs none of it is rendered. Each input it
+// cannot render is refused naming the input. Control: the Service selecting Dispatch's app pods
+// (app: example-dispatch); the selector row fails naming the labels.
 func TestDispatchRendersItsListenerInventory(t *testing.T) {
 	m, err := runDispatch(t, privateHubsArgs(), true)
 	require.NoError(t, err)
@@ -135,7 +136,7 @@ func TestDispatchRendersItsListenerInventory(t *testing.T) {
 	ports := spec["ports"].([]any)
 	require.Len(t, ports, 1)
 	require.EqualValues(t, core.DefaultListenerPort, ports[0].(map[string]any)["port"])
-	require.Equal(t, dispatchListenerInstancesHost, containerEnv(t, podContainer(t, listenerTemplate, "envoy-listener"))["ENVOY_ALLOWED_HOSTS"])
+	requirePodGolden(t, m, "example-dispatch-listener", "dispatch-listener-pod.golden")
 	require.Equal(t, []string{"example-dispatch"}, policyIngressPods(t, m, "example-dispatch-listener", core.DefaultListenerPort),
 		"the listener's policy admits Dispatch's app pods at the listener's port")
 

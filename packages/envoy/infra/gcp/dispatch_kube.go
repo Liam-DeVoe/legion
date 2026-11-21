@@ -321,21 +321,17 @@ func refuseDispatchSeedInSecret(value pulumi.StringInput, dispatch, input string
 // anything registers, which is why every refusal that is not socks5Proxy's is natsUrl's.
 // The listener serves on every address of its pod, and its API refuses to start on a non-loopback
 // listen host without a bearer (packages/envoy/cmd/listener/apiauth.go), so the environment names
-// the bearer in Secret listenerSecret. With privateHubs its ENVOY_ALLOWED_HOSTS names the headless
-// Service over its pods, the Host each proof's read of a replica carries; without, it renders none.
+// the bearer in Secret listenerSecret. A listener that requires a bearer serves /v1 to any Host and
+// reads no ENVOY_ALLOWED_HOSTS, so none is rendered, privateHubs or not: each proof's read of a
+// replica at the headless instances Service is served for the credential it presents.
 func dispatchListenerEnv(s dispatchSettings, listenerSecret, url string) (corev1.EnvVarArray, error) {
 	if s.natsInCluster && bus.LocalNATSURL(url) {
 		return nil, core.InputErrorf("natsUrl", "natsUrl names a local NATS server; with natsInCluster the pods dial it directly, so the URL must name the hub's in-cluster Service")
-	}
-	var allowedHosts []string
-	if len(s.privateHubs) > 0 {
-		allowedHosts = []string{clusterLocal(s.dispatchListenerInstances(), s.namespace)}
 	}
 	env, err := (core.ListenerConfig{
 		MachineID:               s.hostname,
 		Port:                    core.DefaultListenerPort,
 		ListenHost:              "0.0.0.0",
-		AllowedHosts:            allowedHosts,
 		SOCKS5Proxy:             s.socks5Proxy(),
 		NATSReplicas:            s.natsReplicas,
 		StreamMaxBytes:          s.streamMaxBytes,
