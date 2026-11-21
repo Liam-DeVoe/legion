@@ -239,10 +239,12 @@ func (r transientReads) Get(ctx context.Context, tag string) (leakguard.Served, 
 
 // recordFacts reads an agent's issue from the daemon's record for the change note: the status
 // Dispatch showed, the phase, its pull request as the daemon's GitHub reads last observed it, and
-// the repository it works (the record's, or the project's default for an issue it does not
-// record); and, for the gh tool, the commit each role's phases row records it completed its round
-// against, which a review the agent submits names as the head it read (ghtool.Agent.Head). The
-// issue, its pull request and its phases rows are read in one transaction.
+// the repository it works; and, for the gh tool, the commit each role's phases row records it
+// completed its round against, which a review the agent submits names as the head it read
+// (ghtool.Agent.Head). The issue, its pull request and its phases rows are read in one
+// transaction. The repository is the record's, else the one kept for the issue at its launch,
+// else the one Dispatch resolves the issue to (questionRepository), and its read prepares and
+// launches nothing: a question starts no repository cache and adds nothing to what intake hears.
 type recordFacts struct{ w *workflowRuntime }
 
 func (r recordFacts) Facts(ctx context.Context, key string) (answerloop.IssueFacts, error) {
@@ -262,7 +264,7 @@ func (r recordFacts) Facts(ctx context.Context, key string) (answerloop.IssueFac
 	}); err != nil {
 		return answerloop.IssueFacts{}, err
 	}
-	repo, _, err := r.w.issueRepository(ctx, key)
+	repo, err := r.w.questionRepository(ctx, key, issue)
 	if err != nil {
 		return answerloop.IssueFacts{}, err
 	}

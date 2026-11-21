@@ -114,8 +114,9 @@ func finalSchema(mayAskNothing bool) json.RawMessage {
 
 // replySchema is the shape of the reply form (finalSchema): kind, one of the request's kinds, and
 // text and needs, two strings, all three required and no other property. Its fields are structs
-// rather than maps so the keys keep the order the model has always been offered, and the schema
-// is one Go value marshalled once, so no text is joined into JSON by hand.
+// rather than maps so the form is declared in one fixed order, kind, text, needs, which agentloop
+// sends as declared and the model writes its reply in (agentloop's doc.go, "The structured
+// reply"); and the schema is one Go value marshalled once, so no text is joined into JSON by hand.
 type replySchema struct {
 	Type       string `json:"type"`
 	Properties struct {
