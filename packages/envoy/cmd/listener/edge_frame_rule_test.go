@@ -60,9 +60,13 @@ func newScopeRig(t *testing.T) *scopeRig {
 func newScopeRigSocketReader(t *testing.T, cold bool) (*scopeRig, *edgeRepositories) {
 	t.Helper()
 	projects := []string{scopeProject}
-	rig := newRelayRigUnownedAs(t, relayPauseFirst, relayPauseMax, true)
-	withPublishRoute(t, rig.deps)
 	met := metrics.New()
+	grant, err := newEdgeGrant("edge-a", projects, met)
+	if err != nil {
+		t.Fatalf("the edge's grant: %v", err)
+	}
+	rig := newRelayRigUnownedAs(t, relayPauseFirst, relayPauseMax, grant)
+	withPublishRoute(t, rig.deps)
 	stand := newRepositoryStandIn(t, []string{scopeProject}, edgeRepositoryFixture())
 	clock := &edgeClock{}
 	logger := rig.harness.config.logger
@@ -92,7 +96,7 @@ func newScopeRigSocketReader(t *testing.T, cold bool) (*scopeRig, *edgeRepositor
 		socketReader.now = clock.now
 	}
 	tokens := listenerBrokerTokens(t, edge.broker)
-	sockets := newRelaySockets(rig.harness.client, tokens, projects, logger)
+	sockets := newRelaySockets(rig.harness.client, tokens, logger)
 	routes := http.NewServeMux()
 	registerV1Routes(routes, &listenerDeps{client: rig.harness.client, relaySockets: sockets, repositories: socketReader}, "test-machine", logger)
 	server := httptest.NewServer(apiAuth(listenerAPIAuth{brokers: tokens, edgeProjects: projects, logger: logger}, routes))

@@ -1607,18 +1607,27 @@ func main() {
 	// The relay hears registrations from the moment /v1 opens, and relays once this task holds its
 	// machine's durable binding (below). An edge listener's relay takes its receipts under
 	// bus.RelayReplyPrefix, which the replica serving the session's relay socket publishes them on.
-	relays, err := startSessionRelays(delivery, deliveryConfig, edgeMode(cfg))
+	relays, err := startSessionRelays(delivery, deliveryConfig)
 	if err != nil {
 		logger.Error("session relay reply subscription failed: no relayed frame could be answered", slog.String("error", err.Error()))
 		delivery.close()
 		client.Conn.Close()
 		os.Exit(1)
 	}
-	// An edge listener serves its sessions' relay sockets on its own connection; every other
-	// listener serves none.
+	// An edge listener serves its sessions' relay sockets on a NATS connection of the sockets'
+	// own, as the main client's but for its name, whose slow consumers stay off the main
+	// connection's last error (confirmPublished reads it); every other listener serves none.
 	var sockets *relaySockets
 	if edgeMode(cfg) {
-		sockets = newRelaySockets(client, brokerTokenAuth, cfg.EdgeProjects, logger)
+		socketsClient, err := bus.Connect(cfg.NATSURLs, append(listenerConnectOptions(cfg), bus.WithName("envoy-relay-sockets"), bus.WithSilentCutDetection())...)
+		if err != nil {
+			logger.Error("relay socket connection failed: an edge listener serves its sessions' sockets on it", slog.String("error", err.Error()))
+			relays.stop(context.Background())
+			delivery.close()
+			client.Conn.Close()
+			os.Exit(1)
+		}
+		sockets = newRelaySockets(socketsClient, brokerTokenAuth, logger)
 	}
 	// An edge listener reads the repositories its projects' issues resolve to from the broker's
 	// GET /v1/project-repositories, with its own broker account, and its relay holds every GitHub

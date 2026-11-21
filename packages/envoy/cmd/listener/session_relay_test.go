@@ -60,12 +60,13 @@ func newRelayRigReceipt(t *testing.T, first, max, receipt time.Duration) *relayR
 // this way rather than by timing.
 func newRelayRigUnowned(t *testing.T, first, max time.Duration) *relayRig {
 	t.Helper()
-	return newRelayRigUnownedAs(t, first, max, false)
+	return newRelayRigUnownedAs(t, first, max, nil)
 }
 
 // newRelayRigUnownedAs is newRelayRigUnowned whose relay is an edge listener's when edge is set,
-// as main starts it in edge mode: its receipts arrive under bus.RelayReplyPrefix.
-func newRelayRigUnownedAs(t *testing.T, first, max time.Duration, edge bool) *relayRig {
+// as main starts it in edge mode (listenerDeliveryHandlerConfig.edge): its receipts arrive under
+// bus.RelayReplyPrefix.
+func newRelayRigUnownedAs(t *testing.T, first, max time.Duration, edge *edgeGrant) *relayRig {
 	t.Helper()
 	url := testnats.URL(t)
 	client, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1))
@@ -74,7 +75,9 @@ func newRelayRigUnownedAs(t *testing.T, first, max time.Duration, edge bool) *re
 	}
 	t.Cleanup(client.Close)
 	rig := newSessionConsumerRigOn(t, client, url)
-	relays, err := startSessionRelays(rig.deps.consumers, rig.harness.config, edge)
+	config := rig.harness.config
+	config.edge = edge
+	relays, err := startSessionRelays(rig.deps.consumers, config)
 	if err != nil {
 		t.Fatalf("start the session relays: %v", err)
 	}

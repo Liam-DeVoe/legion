@@ -949,3 +949,31 @@ func TestLiveUntilAnswersWhenTheTokenStopsBeingLive(t *testing.T) {
 		t.Fatalf("LiveUntil of a token the broker does not hold = %+v, %v, %v; want no caller, the zero time and ErrNotActive", decided, until, err)
 	}
 }
+
+// TestLiveUntilSpendsNoAddressBucket: LiveUntil is the recheck of a connection whose opening
+// request Verify already admitted with its proof (the listener's relay socket), so it introspects
+// with the source address's bucket spent, where Live and Verify are refused ErrRateLimited: a
+// stranger who empties the bucket of an address, which every client behind one load balancer
+// shares, cannot close the sockets opened from it. Control: Live, with the same bucket spent, is
+// refused ErrRateLimited and reaches no broker.
+func TestLiveUntilSpendsNoAddressBucket(t *testing.T) {
+	rig := newRig(t, func(o *brokertoken.Options) {
+		o.AddressLimit = ratelimit.Limit{Every: time.Minute, Burst: 1}
+	})
+	caller := newSigner(t)
+	rig.broker.Says("the-token-that-spends-the-bucket", liveToken(caller.jkt, time.Hour))
+	if _, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, "the-token-that-spends-the-bucket")); err != nil {
+		t.Fatalf("the request that spends the bucket: %v", err)
+	}
+	rig.broker.Says("a-socket-token", liveToken(caller.jkt, time.Hour))
+	if _, _, err := rig.verifier.LiveUntil(t.Context(), caller.at(resourcePath, "a-socket-token")); err != nil {
+		t.Fatalf("LiveUntil with the address's bucket spent = %v, want the broker's answer", err)
+	}
+	if rig.broker.Count() != 2 {
+		t.Fatalf("LiveUntil cost %d introspections in all, want 2", rig.broker.Count())
+	}
+	rig.broker.Says("a-websocket-token", liveToken(caller.jkt, time.Hour))
+	if _, err := rig.verifier.Live(t.Context(), caller.at(resourcePath, "a-websocket-token")); !errors.Is(err, brokertoken.ErrRateLimited) {
+		t.Fatalf("Live with the address's bucket spent = %v, want ErrRateLimited", err)
+	}
+}

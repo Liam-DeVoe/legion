@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/broker/exchange"
-	"github.com/sjawhar/envoy/natsgrant"
 )
 
 const (
@@ -702,29 +701,16 @@ func TestSessionAtTheCapIsUsable(t *testing.T) {
 	}
 }
 
-// TestASessionNameHoldsNoWildcard: ValidSession refuses a name holding a NATS wildcard, '*' or
-// '>', since its relay subject (bus.DeliverSubject) would match every session's and a relay socket
-// of it would subscribe that. It takes every shape of session name a deployment trades under: an
-// Envoy session id, the Legion daemon's fixed session, a run pod's fixed session holding a slash,
-// the read entry's, and a person's sign-in (brokerclient.SessionFor), which holds the person's
-// address and so a '.'. Each refused name natsgrant.SessionToken, the rule the relay socket holds
-// its session to, refuses too; the sign-in's it refuses as well, for its '.'.
+// TestASessionNameHoldsNoWildcard: ValidSession takes every shape of session name a deployment
+// trades under, now that it refuses a name holding a NATS wildcard ('*' or '>', whose rows are
+// TestMachineRefusesWhatItCannotDecide's): an Envoy session id, the Legion daemon's fixed session,
+// a run pod's fixed session holding a slash, the read entry's, and a person's sign-in
+// (brokerclient.SessionFor), which holds the person's address and so a '.'.
 func TestASessionNameHoldsNoWildcard(t *testing.T) {
 	for _, name := range []string{"01930000-0000-7000-8000-000000000001", "ses_agent", fixedSession, "run-holds/example-run", readerSession, "signin-ada@example.com-abcdefghijkl"} {
 		if !exchange.ValidSession(name) {
 			t.Errorf("ValidSession(%q) = false, want true", name)
 		}
-	}
-	for _, name := range []string{"*", ">", "ada-*", "ada>", "ada.*", "ada devbox", "ada\tdevbox", "ada\x00devbox", ""} {
-		if exchange.ValidSession(name) {
-			t.Errorf("ValidSession(%q) = true, want false", name)
-		}
-		if natsgrant.SessionToken(name) {
-			t.Errorf("SessionToken(%q) = true, want false: the relay socket would take a name the broker refuses", name)
-		}
-	}
-	if natsgrant.SessionToken("signin-ada@example.com-abcdefghijkl") {
-		t.Error("SessionToken(a sign-in's name) = true, want false: it holds a '.'")
 	}
 }
 

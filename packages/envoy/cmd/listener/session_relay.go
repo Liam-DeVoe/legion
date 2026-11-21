@@ -495,13 +495,13 @@ type relayFrame struct {
 // startSessionRelays starts the relay of delivery's session consumers and makes it delivery's
 // relay (sessionDelivery.relay). It relays nothing until setOwned(true).
 //
-// An edge listener's relay (edge) takes its receipts under bus.RelayReplyPrefix and a nuid of its
-// own rather than under a reply inbox: the session of an edge listener answers its frames over its
-// relay socket, whose replica may be the other one, and the edge's grant publishes no reply inbox
-// (natsgrant.Edge) but does publish and subscribe that family.
-func startSessionRelays(delivery *sessionDelivery, cfg listenerDeliveryHandlerConfig, edge bool) (*sessionRelays, error) {
+// An edge listener's relay (cfg.edge set) takes its receipts under bus.RelayReplyPrefix and a nuid
+// of its own rather than under a reply inbox: the session of an edge listener answers its frames
+// over its relay socket, whose replica may be the other one, and the edge's grant publishes no
+// reply inbox (natsgrant.Edge) but does publish and subscribe that family.
+func startSessionRelays(delivery *sessionDelivery, cfg listenerDeliveryHandlerConfig) (*sessionRelays, error) {
 	inbox := delivery.consumers.NewInbox()
-	if edge {
+	if cfg.edge != nil {
 		inbox = bus.RelayReplyPrefix + nuid.Next()
 	}
 	m := &sessionRelays{

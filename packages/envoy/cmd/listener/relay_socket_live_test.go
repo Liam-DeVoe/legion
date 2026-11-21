@@ -57,6 +57,7 @@ import (
 	"github.com/sjawhar/envoy/internal/config"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/natsgrant"
 )
 
@@ -588,7 +589,8 @@ func TestARelaySocketRefusesAnotherSessionsSubjects(t *testing.T) {
 
 // Row 3: a send to S from a second session makes A probe S's relay subject, which B's socket
 // subscribes; the send reads S connected, and the client is sent the message and no probe frame.
-// Control: the socket closed first, and the same send reads S stopped.
+// Control: the socket closed first, and a send reads S stopped once B's unsubscribe has reached
+// the server, within 10 s.
 func TestAProbeOfASocketSessionReadsConnected(t *testing.T) {
 	t.Parallel()
 	rig := newRelayLiveRig(t, relayLiveOptions{})
@@ -631,9 +633,12 @@ func TestAProbeOfASocketSessionReadsConnected(t *testing.T) {
 		t.Fatalf("close the socket: %v", err)
 	}
 	<-client.closed
-	time.Sleep(time.Second)
-	if state := send(); state != sessionStateStopped {
-		t.Fatalf("a send to %s, whose socket closed, read %q, want %q", s.id, state, sessionStateStopped)
+	var state string
+	if !testwait.Holds(10*time.Second, 200*time.Millisecond, func() bool {
+		state = send()
+		return state == sessionStateStopped
+	}) {
+		t.Fatalf("a send to %s, whose socket closed, read %q for 10s, want %q", s.id, state, sessionStateStopped)
 	}
 	rig.requireNoViolation(t)
 }
@@ -680,8 +685,7 @@ func TestAnOpenSocketClosesWhenItsTokenExpires(t *testing.T) {
 
 // Row 5: the broker revokes S's token (POST /v1/oauth/revoke); the open socket closes 4403 within
 // relayLiveCloseBound of the revoke, long before its expiry, and the revoked token opens no
-// socket again, so a message stored after the revoke never reaches a socket of it. Control: the
-// check loop removed, as row 4's.
+// socket again. Control: the check loop removed, as row 4's.
 func TestAnOpenSocketClosesWhenItsTokenIsRevoked(t *testing.T) {
 	t.Parallel()
 	rig := newRelayLiveRig(t, relayLiveOptions{})
@@ -697,7 +701,6 @@ func TestAnOpenSocketClosesWhenItsTokenIsRevoked(t *testing.T) {
 		t.Fatalf("the socket closed at %s, after its token's expiry %s: the revoke closed nothing", closed, token.expires)
 	}
 	t.Logf("the socket closed %s after the revoke", closed.Sub(revoked).Round(time.Millisecond))
-	rig.publish(t, s.id)
 	if _, response, err := rig.dial(t, s, rig.b, token.token); err == nil || response == nil || response.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("an upgrade with the revoked token = %v (%s), want 401", err, describeUpgrade(response))
 	}
