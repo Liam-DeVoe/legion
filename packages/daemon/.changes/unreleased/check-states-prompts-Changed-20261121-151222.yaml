@@ -15,7 +15,10 @@ body: |-
   `dispatch results`; the prompt no longer names `VERDICT_ROLE_FORBIDDEN` or `Tester's verdict:`.
   The architect is told a tester's `phase-finished` notice says, in its `reason`, each check that
   does not pass at the tested head when the move sent the issue back, and what the move waits for
-  when it waits, naming the checks only where the daemon knows which, in place of a verdict.
+  when it waits, naming the checks only where the daemon knows which, in place of a verdict. Its
+  role prompt no longer says a tester completion that rejects the implementer's results goes back
+  by the daemon's table: the tester's completion carries no verdict, and the move follows the state
+  of each check at the head the tester's record names.
 time: 2026-11-21T15:12:22Z
 custom:
     Issue: check-states-prompts

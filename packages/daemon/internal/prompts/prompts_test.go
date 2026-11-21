@@ -327,8 +327,8 @@ func TestTheComposedPromptsSayTheStatesDecideAndNoCompletionCarriesAVerdict(t *t
 		{claim.RoleReviewer, false,
 			[]string{"No phase completion carries a `verdict` (`VERDICT_NOT_TAKEN`): your decision is the review you submit on GitHub, and the evidence of each check is the line of your head in `dispatch results`."},
 			[]string{"VERDICT_ROLE_FORBIDDEN", "Tester's verdict:", "A `verdict` is the tester's alone"}},
-		{claim.RoleArchitect, true, []string{architectNoticeReason}, retiredArchitectNotice},
-		{claim.RoleArchitect, false, []string{architectNoticeReason}, retiredArchitectNotice},
+		{claim.RoleArchitect, true, []string{architectNoticeReason, architectTestingMove}, retiredArchitectNotice},
+		{claim.RoleArchitect, false, []string{architectNoticeReason, architectTestingMove}, retiredArchitectNotice},
 	} {
 		text := foldWhitespace(composedText(t, composer, tc.role, tc.isRoot))
 		for _, phrase := range tc.says {
@@ -348,9 +348,15 @@ func TestTheComposedPromptsSayTheStatesDecideAndNoCompletionCarriesAVerdict(t *t
 // failing checks of a move back, and of a wait, the checks only where the daemon knows which.
 const architectNoticeReason = "From the tester's phase, its `reason` says what the testing move did: when it sent the issue back, each check that does not pass at the tested head; when it waits, what it waits for, naming each check when the daemon knows which, and no check while it waits for Dispatch's states at that head as a whole."
 
-// retiredArchitectNotice are the words that promised the architect a check name in every wait, and
-// a verdict in the tester's notice.
-var retiredArchitectNotice = []string{"from the tester, its `verdict`", "Tester's verdict:", "or the checks whose states the move waits for."}
+// architectTestingMove is what the architect is told moves an issue out of testing: the state of
+// each check at the tested head (workflow's decideTesting), never a verdict of the tester's
+// completion.
+const architectTestingMove = "The tester's completion carries no verdict: the daemon decides the move by the state of each check at the head the tester's record names, once each has a state there that it ends at, sending the issue to the reviewer when each reads yes and otherwise back to the implementer with a task naming each check that does not pass;"
+
+// retiredArchitectNotice are the words that promised the architect a check name in every wait, a
+// verdict in the tester's notice, and a tester completion that rejects the implementer's results.
+var retiredArchitectNotice = []string{"from the tester, its `verdict`", "Tester's verdict:", "or the checks whose states the move waits for.",
+	"A tester completion that rejects the implementer's results", "goes back to the implementer by the daemon's table"}
 
 // An issue with no Verification document, or with one holding no `before_merge` check, is a
 // coverage gap every role names and none refuses (dispatch://INFRA-174, R1 and R2): every gate

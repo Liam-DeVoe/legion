@@ -212,8 +212,11 @@ An issue with no Verification document, or with one that holds no `before_merge`
 the tester and the reviewer name and neither refuses, so your acceptance is the only gate on it:
 name that gap in your acceptance comment and decide there how each delivered item is proven at
 this head; none may stay unmet. Checks you write close the `criteria` step where it is gated.
-A tester completion that rejects the implementer's results goes back to the implementer by the
-daemon's table; a worker that reports no surface reaches the changed path gets the surface built
+The tester's completion carries no verdict: the daemon decides the move by the state of each
+check at the head the tester's record names, once each has a state there that it ends at, sending
+the issue to the reviewer when each reads yes and otherwise back to the implementer with a task
+naming each check that does not pass; a worker that reports no surface reaches the changed path
+gets the surface built
 in this tree (`skill://legion-architect`, wake routing, `phase-finished`), and waits, with its
 phase and its task kept, until you tell it to continue (`envoy_publish` to its role topic, which
 wakes it when its idle pod was released): once that child
