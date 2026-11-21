@@ -138,13 +138,21 @@ func TestADirectGetAndTheLeaderReadCanReturnDifferentProjects(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode the writer's record: %v", err)
 	}
-	useKV(t, r, &interleavingSessionGetKeyValue{KeyValue: r.watcher.KV().Legacy(), key: victim, value: writer, interleaves: 1})
-	refreshed, err := r.Refresh(context.Background(), victim)
-	if err != nil {
+	seam := &interleavingSessionGetKeyValue{KeyValue: r.watcher.KV().Legacy(), key: victim, value: writer, interleaves: 1}
+	useKV(t, r, seam)
+	if _, err := r.Refresh(context.Background(), victim); err != nil {
 		t.Fatalf("Refresh(%s): %v", victim, err)
 	}
-	if !slices.Equal(refreshed.Projects, []string{"PRIV", "PUB"}) {
-		t.Fatalf("the direct get read projects %v, want the seeded [PRIV PUB] before the interleaved write", refreshed.Projects)
+	// Assert on the record the direct get itself returned, not on Refresh's answer: Refresh returns
+	// through applyRead, which re-reads the cache after applying the read, and the watcher can apply
+	// the seam's interleaved [PRIV] write between the two, so Refresh's answer is timing-dependent.
+	// The direct get's own value is what the role-claim refresh's keepProjects decision reads.
+	directGet, err := DecodeEntry(victim, seam.firstGetValue())
+	if err != nil {
+		t.Fatalf("decode the direct get's value: %v", err)
+	}
+	if !slices.Equal(directGet.Projects, []string{"PRIV", "PUB"}) {
+		t.Fatalf("the direct get read projects %v, want the seeded [PRIV PUB] before the interleaved write", directGet.Projects)
 	}
 	confirmed, ok, err := r.StoredByWriter(context.Background(), victim)
 	if err != nil || !ok {

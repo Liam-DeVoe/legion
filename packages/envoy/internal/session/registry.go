@@ -374,6 +374,12 @@ type SessionRegistry struct {
 	// changed is every session the work under r.mu changed, which unlockAndNotify reports once
 	// that lock is released. Guarded by r.mu.
 	changed []string
+
+	// leaderSeam is a test-only, per-session override of the leader read StoredByWriter makes
+	// (bus.KeyValue.NewestFromLeader). Its zero value, the production value, overrides nothing, so
+	// every StoredByWriter reads the bucket's stream leader; a cmd/listener handler test installs
+	// overrides through SetStoredByWriterSeamForTest (testhooks.go).
+	leaderSeam storedByWriterSeam
 }
 
 // OnChange registers changed to be called with a session's id after each change to the session's
@@ -1221,6 +1227,9 @@ func (r *SessionRegistry) RefreshFromLeader(ctx context.Context, sessionID strin
 // send to or name as a role's holder across what a cached entry says; every other reader has no use
 // for its cost, a read the leader alone answers.
 func (r *SessionRegistry) StoredByWriter(ctx context.Context, sessionID string) (SessionEntry, bool, error) {
+	if res, ok := r.leaderSeam.lookup(sessionID); ok {
+		return res.entry, res.written, res.err
+	}
 	kv, _ := r.watcher.Handle()
 	newest, err := kv.NewestFromLeader(ctx, sessionID)
 	switch {

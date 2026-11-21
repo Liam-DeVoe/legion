@@ -98,11 +98,17 @@ func TestARoleClaimOnAnotherEdgeReplicaKeepsDelivery(t *testing.T) {
 
 	after := newEnvelope("agent", agentSubject, "after the claim")
 	publish(t, publisher, after)
-	requireFrames(t, standIn.collect(t, 1, 20*time.Second), after)
+	// The claim moved the relay from A to B. When A drops the session (session_not_ours) it gives
+	// the server back the frames it still held unacked, so B may deliver the pre-claim "before"
+	// frame once more: an at-least-once redelivery across the relay handoff, which the client
+	// dedupes, not a lost or cross-project frame. The meaning here is that the "after" frame reaches
+	// the session; a redelivered "before" is allowed, nothing else is.
+	requireEventuallyDelivered(t, standIn, after, 20*time.Second, before)
 
 	const summary = "to the role claimed through B"
-	publish(t, publisher, newEnvelope("agent", contracts.RoleTopicPrefix+role, summary))
-	forwarded := standIn.collect(t, 1, 20*time.Second)[0].item
+	roleMessage := newEnvelope("agent", contracts.RoleTopicPrefix+role, summary)
+	publish(t, publisher, roleMessage)
+	forwarded := requireEventuallyDelivered(t, standIn, roleMessage, 20*time.Second, before, after).item
 	if forwarded.PayloadSummary != summary || forwarded.Topic != contracts.RoleTopicPrefix+role {
 		t.Fatalf("the session was relayed %q on %s, want %q on %s", forwarded.PayloadSummary, forwarded.Topic, summary, contracts.RoleTopicPrefix+role)
 	}

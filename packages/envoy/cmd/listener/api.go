@@ -2117,6 +2117,9 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 		// session's own, and a claim with no broker token leaves the entry unbound, which the edge
 		// shows no project on. A confirmation read that did not answer is the bus-unavailable 503, as
 		// every other read that did not answer is, so a hiccup never wipes a session's projects.
+		// The direct get above is a cheap pre-check: a record that does not name this key takes
+		// registeringProjects with no leader read. Where it does, the kept decision rests on the
+		// record the stream's leader returns, never on that direct get.
 		keepProjects := entry.SessionID == body.SessionID
 		if keepProjects {
 			readCtx, readCancel := context.WithTimeout(ctx, roleHolderReadTimeout)
@@ -2126,13 +2129,14 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 				writeStoreError(ctx, w, fmt.Errorf("confirm role claimant registration: %w", storedErr), http.StatusServiceUnavailable)
 				return
 			}
-			keepProjects = ok
-			if ok {
-				// Both "names its key" and "is a writer's" are judged on the one record the leader
-				// returns, and its projects are the ones kept: the earlier bucket read (a direct get
-				// through bucketSessionEntry) is a separate message, so a writer's write landing
-				// between the two reads would otherwise let that read's RePublished projects stand
-				// while the leader confirms a different record.
+			// Both "names its key" and "is a writer's" are judged on the one record the leader
+			// returns, and its projects are the ones kept: the earlier bucket read (a direct get
+			// through bucketSessionEntry) is a separate message, so a writer's write landing
+			// between the two reads would otherwise let that read's RePublished projects stand
+			// while the leader confirms a different record - one that names no key, which
+			// session.DecodeEntry reads with an empty SessionID, among them.
+			keepProjects = ok && confirmed.SessionID == body.SessionID
+			if keepProjects {
 				entry.Projects = confirmed.Projects
 			}
 		}

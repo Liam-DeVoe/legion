@@ -282,6 +282,35 @@ func requireFrames(t *testing.T, frames []relayedFrame, want ...contracts.Envelo
 	}
 }
 
+// requireEventuallyDelivered returns the frame carrying want once it reaches the stand-in within
+// the bound. A frame carrying one of allowRedelivered's events is a legitimate at-least-once
+// redelivery - a relay handoff gives the server back the frames the old relay held unacked, which
+// the new relay then delivers again, and the client dedupes - so it is passed over; any other event
+// fails the test, since it is a frame the session must never see.
+func requireEventuallyDelivered(t *testing.T, s *sessionStandIn, want contracts.Envelope, within time.Duration, allowRedelivered ...contracts.Envelope) relayedFrame {
+	t.Helper()
+	allowed := map[string]bool{}
+	for _, item := range allowRedelivered {
+		allowed[item.EventID] = true
+	}
+	deadline := time.After(within)
+	for {
+		select {
+		case frame := <-s.frames:
+			switch {
+			case frame.item.EventID == want.EventID:
+				return frame
+			case allowed[frame.item.EventID]:
+				continue
+			default:
+				t.Fatalf("the session received %s on %s, want the %s frame; only a redelivery of an earlier frame is allowed", frame.item.EventID, frame.item.Topic, want.EventID)
+			}
+		case <-deadline:
+			t.Fatalf("the %s frame did not reach the session within %s", want.EventID, within)
+		}
+	}
+}
+
 // A session away during publishes (its connection gone) receives each on its return, when it
 // registers with a new epoch, once and in stream order, from its consumer: nothing it receives
 // comes from a subscription of its own.

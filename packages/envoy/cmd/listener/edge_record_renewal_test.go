@@ -136,3 +136,46 @@ func TestARenewalBindsNoCopiedRecord(t *testing.T) {
 	}
 	rig.requireShown(t, token, priv, "after S_heir's renewal under its own PRIV token", heir)
 }
+
+// D1-T: the role-claim refresh keeps the projects of the one record the stream's leader returns
+// (session.SessionRegistry.StoredByWriter), never the direct get's. A direct get and the leader
+// read are two reads of one key, and a writer's write landing between them makes them diverge. The
+// registry's leader-read seam forces that divergence from a handler row: the direct get
+// (bucketSessionEntry) reads the claimant's record naming its key and listing [PRIV PUB], while the
+// leader read answers a writer's record of that key listing [PRIV]. After the claim the stored
+// record lists [PRIV], the leader's. Control: with `entry.Projects = confirmed.Projects` removed
+// (api.go), the refresh keeps the direct get's [PRIV PUB].
+func TestARoleClaimRefreshKeepsTheLeaderRecordsProjects(t *testing.T) {
+	rig := newEdgeRigServing(t, []string{"PRIV"})
+	const claimant = "ses_d1t_claimant"
+	rig.placeElsewhere(t, claimant, "PRIV", "PUB")
+	bare, _ := rig.sharedRoleClaims(t)
+	restore := rig.deps.sessions.SetStoredByWriterSeamForTest(claimant,
+		session.SessionEntry{SessionID: claimant, MachineID: "shared-listener", Projects: []string{"PRIV"}}, true, nil)
+	defer restore()
+	renewed := rig.claimThrough(t, bare, "", claimant, "renewal-d1t-reviewer")
+	if !slices.Equal(renewed.Projects, []string{"PRIV"}) {
+		t.Errorf("the claim refresh stored projects %v, want the leader's [PRIV], not the direct get's [PRIV PUB]", renewed.Projects)
+	}
+}
+
+// D1-r: "names its key" is judged on the record the leader returns, not on the direct get. The
+// direct get reads the claimant's record naming its key and listing [PRIV PUB]; the leader read
+// answers a writer's record that names NO key (session.DecodeEntry reads an empty SessionID)
+// listing [PUB]. A record naming no key is no registration of this key, so its projects are not
+// kept: the refresh writes the claim token's projects (registeringProjects, [PRIV] here). Control:
+// `keepProjects = ok` without the `confirmed.SessionID == body.SessionID` test (api.go) keeps the
+// no-key record's [PUB].
+func TestARoleClaimRefreshDropsALeaderRecordNamingNoKey(t *testing.T) {
+	rig := newEdgeRigServing(t, []string{"PRIV"})
+	const claimant = "ses_d1r_claimant"
+	rig.placeElsewhere(t, claimant, "PRIV", "PUB")
+	_, byToken := rig.sharedRoleClaims(t)
+	restore := rig.deps.sessions.SetStoredByWriterSeamForTest(claimant,
+		session.SessionEntry{SessionID: "", MachineID: "shared-listener", Projects: []string{"PUB"}}, true, nil)
+	defer restore()
+	renewed := rig.claimThrough(t, byToken, rig.personToken(claimant, "PRIV"), claimant, "renewal-d1r-reviewer")
+	if !slices.Equal(renewed.Projects, []string{"PRIV"}) {
+		t.Errorf("the claim refresh stored projects %v, want the claim token's [PRIV]: a leader record naming no key must not have its projects kept", renewed.Projects)
+	}
+}
