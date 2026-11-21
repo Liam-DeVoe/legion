@@ -831,7 +831,13 @@ written by whichever daemon wrote last — so the order matters:
    runtime kept in its session database (`runtime.kubernetes.session_store`) is not carried: no
    command writes its row out as a file, so its claim starts a fresh agent from the issue's pushed
    branch and committed handoffs.
-3. Set `runtime.tmux.take_over: kubernetes` and boot the tmux daemon with the same Postgres. Each
+3. Run an Envoy listener on the tmux host, bound to loopback and started with `ENVOY_API_TOKEN`
+   unset, and point `envoy_url` at it (its default, `http://127.0.0.1:9020`, names one). The
+   listener takes no shared bearer, so a tmux daemon and its panes present it no credential, and
+   the loader refuses an `envoy_url` whose host is not `localhost` or a loopback address
+   (`checkLoopbackListener`, `packages/daemon/internal/config/config.go`): the `envoy_url` the
+   Kubernetes daemon named does not carry over.
+4. Set `runtime.tmux.take_over: kubernetes` and boot the tmux daemon with the same Postgres. Each
    claim whose recorded process is a pod is reported gone, displaced, and relaunched in a pane,
    charged nothing, on its session when step 2 put its file in one of those places, searched by
    file name or session id. A session found nowhere starts a fresh agent, uncharged, which
@@ -840,10 +846,10 @@ written by whichever daemon wrote last — so the order matters:
    set — a session no store holds is gone whichever runtime last wrote it — so what this key buys
    is the takeover of the other runtime's locators: a claim whose pod this daemon cannot see is
    resumed without waiting that process out. Each workspace is provisioned before its first launch.
-4. Retry what failed to launch meanwhile, once the cause is gone: `legion claims retry --failed`
+5. Retry what failed to launch meanwhile, once the cause is gone: `legion claims retry --failed`
    (an architect relaunches on its session, or on a new one once supervise's `forgetSession` has
    dropped it; a phase worker whose issue is held for its own role retries that phase).
-5. Remove `take_over` once no claim can still wake on a session a pod recorded: every claim that
+6. Remove `take_over` once no claim can still wake on a session a pod recorded: every claim that
    was running has relaunched in a pane, and no claim the Kubernetes daemon suspended (a
    production check's checking role — the one the project's `production_check` names — waiting
    for the look its own `wake_at` asked for among them) is left to wake. From then on a resume
