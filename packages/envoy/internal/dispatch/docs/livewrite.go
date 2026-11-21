@@ -562,11 +562,14 @@ func (w *liveWrite) coverFork(ctx context.Context, bytes int64) error {
 // alone: once the write holds what it waited for, its work runs under the caller's own context
 // as before, so no apply and no commit is cut short by this.
 //
-// A write the server makes of its own is not bounded: a settlement's publish, a repair, a
+// A write the server makes of its own is not bounded here: a settlement's publish, a repair, a
 // backfill, and the continuation a handler detaches from its request
 // (context.WithoutCancel, whose Done is nil) have no caller to answer 503 to and nothing to
-// resend them, so they wait as they always did. BoundWriteWait tells the two apart by the mark
-// the API puts on a live caller's request, not by the write's kind.
+// resend them, so they wait until their own context ends. BoundWriteWait tells the two apart by
+// the mark the API puts on a live caller's request and the Done beside it, not by the write's
+// kind: a continuation that keeps the mark and takes a deadline of its own again is held to the
+// caller's bound once more, from its request's start - the close's sweep, whose transaction ends
+// no later than WriteRequestBound after it begins (api's sweepClosedIssueAsksTx).
 const WriteWaitBound = 15 * time.Second
 
 // callerRequestKey carries, on a caller's request context, when that request began.
@@ -583,7 +586,8 @@ func WithCallerRequest(ctx context.Context) context.Context {
 // BoundWriteWait is ctx with the server's bound on what a caller's write may spend waiting at a
 // memory bound, and a context left as it is for every other caller: a write of the server's own,
 // and a continuation detached from its request, which keeps the mark but loses its cancellation
-// (ctx.Done() is nil) and is the server's work from then on.
+// (ctx.Done() is nil) and is the server's work from then on, until a deadline of its own gives it
+// a Done again (above).
 func BoundWriteWait(ctx context.Context) (context.Context, context.CancelFunc) {
 	return boundCallerWrite(ctx, WriteWaitBound)
 }
@@ -616,9 +620,10 @@ func boundWriteRequest(ctx context.Context) (context.Context, context.CancelFunc
 	return boundCallerWrite(ctx, WriteRequestBound)
 }
 
-// boundCallerWrite is ctx with a deadline bound from when the caller's request began, for a live
-// caller's request alone: a write of the server's own, and a continuation detached from its
-// request, keep the context they have.
+// boundCallerWrite is ctx with a deadline bound from when the caller's request began, for a
+// context that carries a caller's mark and a Done: a write of the server's own, and a
+// continuation detached from its request, keep the context they have, and a continuation that
+// takes a deadline of its own again is held to the bound from its request's start (above).
 func boundCallerWrite(ctx context.Context, bound time.Duration) (context.Context, context.CancelFunc) {
 	began, marked := ctx.Value(callerRequestKey{}).(time.Time)
 	if !marked || ctx.Done() == nil {

@@ -268,7 +268,8 @@ func updateAge(observed time.Time) time.Duration {
 // took and waits for its second document's advisory lock (joinLiveWrite, readFork), so the worker
 // can wait for bytes that transaction holds while the transaction waits for the worker's lock.
 // Nothing in that pair gives way; Join's WriteRequestBound ends the transaction's wait for a
-// caller's request, which is answered 503 and gives its grant back, and the worker then takes its
+// caller's request, which is answered 503 and gives its grant back, the transaction's own deadline
+// ends it for the close's sweep and the ask repair, which roll back, and the worker then takes its
 // bytes (loadSlots, TestAJoinedTransactionsWaitForItsSecondDocumentsLockEndsAtTheWriteBound). No
 // other holder waits for the lock or the connection: a heavy apply gives its grant back before its
 // commit reaches the room's queue of updates to store, which this worker alone reads

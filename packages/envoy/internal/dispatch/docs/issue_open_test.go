@@ -15,7 +15,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/crdt"
-	"github.com/reearth/ygo/persistence"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -356,42 +355,11 @@ func TestAKeystrokeTakenBeforeTheIssueClosedIsStoredWhenACompactionFoldedTheHist
 	}
 }
 
-// foldHistoryPastRoom writes artifactID as another process would, in holder, which holds the
-// document's lock, past head, the cursor of the room a test holds, and then folds the history as
-// Compact does with a keep of one: one row, the head, holding the state of every row through it. No
-// row at or below head remains, and the fold keeps every item of the history, so the room's
-// browser updates still build on it (storedHistoryHolds).
+// foldHistoryPastRoom is FoldHistoryPastRoomForTest, failing t where it fails.
 func foldHistoryPastRoom(t *testing.T, holder pgx.Tx, artifactID string, head int64) {
 	t.Helper()
-	ctx := context.Background()
-	through := persistence.Version(head)
-	stored, err := documentThrough(ctx, artifactID, through, storedUpdates(ctx, holder, artifactID, through), maxUpdateItems)
-	if err != nil {
-		t.Fatalf("read the stored document: %v", err)
-	}
-	before := stored.StateVector()
-	written := stored.GetMap("written-by-task-b")
-	stored.Transact(func(txn *crdt.Transaction) {
-		written.Set(txn, "key", "value")
-	})
-	writtenAt := head + 1
-	if _, err := holder.Exec(ctx, `insert into doc_updates (artifact_id, version, update, content_changed) values ($1, $2, $3, false)`,
-		artifactID, writtenAt, crdt.EncodeStateAsUpdateV1(stored, before)); err != nil {
-		t.Fatalf("write the document as task B: %v", err)
-	}
-	folding := persistence.Version(writtenAt)
-	state, _, _, misread, err := fold(ctx, storedUpdates(ctx, holder, artifactID, folding), maxUpdateItems)
-	if err != nil {
-		t.Fatalf("fold the document's history: %v", err)
-	}
-	if misread != nil {
-		t.Fatalf("the folded history does not read back as the rows it folds, so a compaction would leave them: %v", misread)
-	}
-	if _, err := holder.Exec(ctx, `update doc_updates set update = $3 where artifact_id = $1 and version = $2`, artifactID, writtenAt, state); err != nil {
-		t.Fatalf("fold the document's history into task B's write: %v", err)
-	}
-	if _, err := holder.Exec(ctx, `delete from doc_updates where artifact_id = $1 and version < $2`, artifactID, writtenAt); err != nil {
-		t.Fatalf("delete the folded rows: %v", err)
+	if err := FoldHistoryPastRoomForTest(context.Background(), holder, artifactID, head); err != nil {
+		t.Fatal(err)
 	}
 }
 

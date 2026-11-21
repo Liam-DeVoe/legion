@@ -981,7 +981,8 @@ func (s *server) liveSocketHandler(serve http.HandlerFunc) http.Handler {
 // 503 (docs.WriteWaitBound). It is the one place every route of this API passes through, which
 // is why the mark is put here rather than in each write's handler; a request whose work a handler
 // detaches to outlive it keeps the mark and loses its cancellation, and is the server's own work
-// from then on (docs.BoundWriteWait).
+// from then on (docs.BoundWriteWait), until it takes a deadline of its own again, as the close's
+// sweep does (sweepClosedIssueAsksTx).
 func trackTransactions(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		handler(w, r.WithContext(docs.WithCallerRequest(store.WithTransactionTracking(r.Context()))))

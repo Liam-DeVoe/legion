@@ -9,8 +9,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/encoding"
+	"github.com/reearth/ygo/persistence"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs/crafted"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -827,4 +829,80 @@ func PeerWriteTimeoutForTest() time.Duration {
 // test is the arithmetic, and a request that began the bound ago has none of it left.
 func CallerRequestSinceForTest(ctx context.Context, ago time.Duration) context.Context {
 	return context.WithValue(ctx, callerRequestKey{}, time.Now().Add(-ago))
+}
+
+// LoadPoolForTest is a load concurrency of one slot that UseOneLoadSlotForTest made the process's,
+// which a test in package api fills around a joined transaction's grant so that a room's
+// persistence worker waits for the pool in its gate's fold while it holds the document's lock,
+// the wait loadSlots names as the one a joined transaction's second document can meet.
+type LoadPoolForTest struct {
+	slots *loadSlots
+}
+
+// UseOneLoadSlotForTest makes a load concurrency of one slot the process's until restore runs, as
+// this package's own tests make one (poolOfOneSlot), and calls waiting, set before any taker can
+// reach the pool, as each taker finds too little of it free and starts to wait. A grant taken
+// before the call is given back to the pool it was taken from.
+func UseOneLoadSlotForTest(waiting func()) (pool *LoadPoolForTest, restore func()) {
+	slots := newLoadSlots(1)
+	slots.waiting = waiting
+	previous := podLoadSlots.Swap(slots)
+	return &LoadPoolForTest{slots: slots}, func() { podLoadSlots.Store(previous) }
+}
+
+// HeldForTest is how many bytes of the pool its holders hold now.
+func (p *LoadPoolForTest) HeldForTest() int64 {
+	return p.slots.held.Load()
+}
+
+// FillForTest takes every byte of the pool its holders do not hold now, as this package's tests
+// fill one (fillPoolBut), and answers what gives them back. It answers false, holding nothing,
+// where a holder took some of them between the read and the take.
+func (p *LoadPoolForTest) FillForTest() (release func(), filled bool) {
+	filler := &loadSlot{slots: p.slots}
+	if !filler.tryTake(p.slots.poolBytes() - p.slots.held.Load()) {
+		return nil, false
+	}
+	return filler.release, true
+}
+
+// FoldHistoryPastRoomForTest writes artifactID as another process would, in holder, which holds
+// the document's lock (LockDocumentRoom), past head, the cursor of the room a test holds, and then
+// folds the history as Compact does with a keep of one: one row, the head, holding the state of
+// every row through it. No row at or below head remains, and the fold keeps every item of the
+// history, so the room's browser updates still build on it, and the gate of the room's
+// persistence worker, which takes the lock once holder lets go, decodes that history to judge
+// them (storedHistoryHolds). Tests here and in package api make that worker wait in its gate's
+// fold with it.
+func FoldHistoryPastRoomForTest(ctx context.Context, holder pgx.Tx, artifactID string, head int64) error {
+	through := persistence.Version(head)
+	stored, err := documentThrough(ctx, artifactID, through, storedUpdates(ctx, holder, artifactID, through), maxUpdateItems)
+	if err != nil {
+		return fmt.Errorf("read the stored document: %w", err)
+	}
+	before := stored.StateVector()
+	written := stored.GetMap("written-by-task-b")
+	stored.Transact(func(txn *crdt.Transaction) {
+		written.Set(txn, "key", "value")
+	})
+	writtenAt := head + 1
+	if _, err := holder.Exec(ctx, `insert into doc_updates (artifact_id, version, update, content_changed) values ($1, $2, $3, false)`,
+		artifactID, writtenAt, crdt.EncodeStateAsUpdateV1(stored, before)); err != nil {
+		return fmt.Errorf("write the document as another process: %w", err)
+	}
+	folding := persistence.Version(writtenAt)
+	state, _, _, misread, err := fold(ctx, storedUpdates(ctx, holder, artifactID, folding), maxUpdateItems)
+	if err != nil {
+		return fmt.Errorf("fold the document's history: %w", err)
+	}
+	if misread != nil {
+		return fmt.Errorf("the folded history does not read back as the rows it folds, so a compaction would leave them: %w", misread)
+	}
+	if _, err := holder.Exec(ctx, `update doc_updates set update = $3 where artifact_id = $1 and version = $2`, artifactID, writtenAt, state); err != nil {
+		return fmt.Errorf("fold the document's history into the other process's write: %w", err)
+	}
+	if _, err := holder.Exec(ctx, `delete from doc_updates where artifact_id = $1 and version < $2`, artifactID, writtenAt); err != nil {
+		return fmt.Errorf("delete the folded rows: %w", err)
+	}
+	return nil
 }

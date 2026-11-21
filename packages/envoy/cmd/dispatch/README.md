@@ -1935,7 +1935,7 @@ A close by a release before the withdrawal left its issue's asks open, and a reo
 No migration writes the withdrawals, since the census refuses one that rewrites rows (Pre-deploy census, below);
 code repairs them instead (`api.RepairIssueAsks`).
 Every boot runs a pass, bounded at 30 s, and then every 10 minutes (`api.IssueAskRepairInterval`) one process runs another under the lease `issue-ask-repair`, bounded at 5 minutes, for the life of the process.
-Each issue is repaired in its own transaction holding the issue's row:
+Each issue is repaired in its own transaction holding the issue's row (one still running 45 seconds after it began, `docs.WriteRequestBound`, rolls back, and the next pass repairs that issue):
 a closed issue holding open asks gets them withdrawn exactly as a close withdraws them, attributed to the actor of its latest `issue.closed` (an issue with no such event is logged and skipped), so the asks left open on issues closed before the release are withdrawn naming each issue's earlier closer;
 an open issue holding `withdrawn` asks gets them restored, attributed to the actor of the event that reopened it;
 and a closed issue that holds open asks, or whose documents owe a settlement marked since the last pass (at boot, the last 10 minutes;

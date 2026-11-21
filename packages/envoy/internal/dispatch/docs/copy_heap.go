@@ -160,7 +160,11 @@ const loadSlotsName = "load"
 //     worker in its gate's fold (AppendRoomFlush, storedHistoryHolds) - so the transaction can
 //     wait for a lock whose holder waits for the bytes it holds. Join's WriteRequestBound ends
 //     that wait for a caller's request: the transaction is answered 503 and gives its grant back
-//     (TestAJoinedTransactionsWaitForItsSecondDocumentsLockEndsAtTheWriteBound).
+//     (TestAJoinedTransactionsWaitForItsSecondDocumentsLockEndsAtTheWriteBound). The server's own
+//     two such transactions, the close's sweep and each issue's of the ask repair, run under a
+//     deadline of their own, WriteRequestBound from their begin, which ends it for them at the
+//     latest: each rolls back and gives its grant back, and the ask repair's next pass takes up
+//     what it left (api's sweepClosedIssueAsks, repairIssueAsksOf).
 //   - the room replica's lock, waited for to clone the replica (warmFork). Nothing under that
 //     lock waits for the pool: the one decode there takes what it needs where the pool has room
 //     at once and otherwise runs beside its holders (renderedReplica.start, holdFreeLoad).
@@ -187,12 +191,13 @@ const loadSlotsName = "load"
 // lock (joinLiveWrite, readFork), so the worker can wait for bytes that transaction holds while
 // the transaction waits for the worker's lock. Nothing in that pair gives way; Join's
 // WriteRequestBound ends the transaction's wait for a caller's request, which is answered 503 and
-// gives its grant back, and the worker then takes its bytes (above). No other holder waits on the
-// worker: an apply holds no grant by the time its commit reaches that queue, a live write
-// publishes once its transaction has given its grant back (Ledger.publish), and a server write's
-// decode-cap copy gives its grant back before the write commits (structsAfter). Before it gives
-// its grant back, the room's observer waits for the replica's lock, and no holder of that lock
-// waits for the pool (renderedReplica.start, holdFreeLoad, above), so that wait ends.
+// gives its grant back, the transaction's own deadline ends it for the server's two such
+// transactions, and the worker then takes its bytes (above). No other holder waits on the worker:
+// an apply holds no grant by the time its commit reaches that queue, a live write publishes once
+// its transaction has given its grant back (Ledger.publish), and a server write's decode-cap copy
+// gives its grant back before the write commits (structsAfter). Before it gives its grant back,
+// the room's observer waits for the replica's lock, and no holder of that lock waits for the pool
+// (renderedReplica.start, holdFreeLoad, above), so that wait ends.
 //
 // No holder takes a second grant: a decode under a context carrying one covers itself on that one
 // (withLoadSlot), so a room load's fold, its copy's decode and the load hook's decode into the
@@ -207,8 +212,9 @@ const loadSlotsName = "load"
 // pool and its place as its room's one reader of updates to store - since no holder waits for any
 // of them, and so every holder finishes and gives its bytes back. The one exception is a joined
 // transaction's second document, whose owner row, writer slot and advisory lock it waits for
-// holding its first document's grant, and which Join's WriteRequestBound bounds (above). A waiter
-// whose request ends returns its context's error holding nothing.
+// holding its first document's grant, and which Join's WriteRequestBound bounds, or the
+// transaction's own deadline for the server's two such transactions (above). A waiter whose
+// request ends returns its context's error holding nothing.
 type loadSlots struct {
 	// size is how many slots the pool is sized from, always set by whoever built it
 	// (newLoadSlots): the process's MemoryBounds.LoadSlots, or a test's.
