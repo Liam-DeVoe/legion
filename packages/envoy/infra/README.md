@@ -4105,14 +4105,14 @@ The residual: on this path clients reach the restored and proven hub before its 
 `streams-census` hold runs clean.
 
 **The hold row and records a broker replica has seen.** Each broker replica keeps a floor of the
-hold row (`rowFloor` in `internal/cipher/api`): the highest verified gen it has served or written,
-with the digest of that row's signed lines. A row put back below that gen, or another row at it,
-reads as unknown, and a move from a gen below it is refused, so the operator never signs a move
-from a row a hold has moved past (a prepare row put back mid-hold, say). It keeps a floor of each
-hold record it has written or served too (`recordFloors`): an older signed record put back, or a
-record gone that no route deleted, reads as unknown, and the command that reads it stops. The one
-record the routes delete, the cohort that `hold abort` from `prepare` deletes, goes with the
-operator's signed delete kept beside the records in the same statement
+hold row (`holdRowFloor`, a `signedrecord.Floor`, in `internal/cipher/api`): the highest verified
+gen it has served or written, with the digest of that row's signed lines. A row put back below that
+gen, or another row at it, reads as unknown, and no move is made from such a row, so the operator
+never signs a move from a row a hold has moved past (a prepare row put back mid-hold, say). It
+keeps a floor of each hold record it has written or served too (`recordFloors`): an older signed
+record put back, or a record gone that no route deleted, reads as unknown, and the command that
+reads it stops. The one record the routes delete, the cohort that `hold abort` from `prepare`
+deletes, goes with the operator's signed delete kept beside the records in the same statement
 (`nats_hold_record_deletes`), so every replica reads it as deleted and the abort's rerun passes on
 whichever replica serves it. A cohort gone with no delete that verifies, or with one signed over an
 earlier gen than a replica saw, reads as unknown on each replica that saw it. The residual: every

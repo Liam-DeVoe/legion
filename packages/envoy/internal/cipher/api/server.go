@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/internal/bus/signedrecord"
 	"github.com/sjawhar/envoy/internal/cipher/answer"
 	"github.com/sjawhar/envoy/internal/cipher/approval"
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
@@ -197,11 +198,20 @@ type server struct {
 	// route of the approval page share.
 	tokenLimiter   *ratelimit.Keyed
 	accountLimiter *ratelimit.Keyed
-	// holdFloors is this process's floor of each NATS writer hold record (recordFloors), and
-	// holdRowFloor its floor of the hold row (rowFloor), each kept for as long as the routes
-	// Register mounted serve.
+	// holdFloors is this process's floor of each NATS writer hold record (recordFloors), kept
+	// for as long as the routes Register mounted serve. holdRowFloor is its floor of the hold row:
+	// the highest verified row it has served or written, with that row's digest. A database writer
+	// other than the operator cannot write a row that verifies, but can put back an older one the
+	// operator signed (a prepare row put back mid-hold would lead the operator to sign a release
+	// from it), or one of two rows signed at one gen. So GET serves no verified row the floor reads
+	// as a replay or a fork (409 below_floor, which the operator's client reads as unknown), and a
+	// move from such a row is 409 gen_mismatch. The residual, the records floor's and the auth
+	// service's: each replica keeps its own, for as long as its process lives, so a replica that
+	// starts again, or one that has not served or written the row since its newer gen, serves an
+	// older row put back as it would the genuine one; and a row restored below a replica's floor,
+	// after a database writer deleted log rows, reads as unknown there until it restarts.
 	holdFloors   *recordFloors
-	holdRowFloor *rowFloor
+	holdRowFloor *signedrecord.Floor
 	// repositoryCalls counts each edge listener's calls of GET /v1/project-repositories still
 	// waiting on Dispatch, at most maxRepositoryCallsInFlight each.
 	repositoryCalls *callsInFlight
@@ -256,7 +266,7 @@ func Register(mux *http.ServeMux, deps Deps) {
 		tokenLimiter:    ratelimit.NewKeyed(token),
 		accountLimiter:  ratelimit.NewKeyed(account),
 		holdFloors:      newRecordFloors(),
-		holdRowFloor:    &rowFloor{},
+		holdRowFloor:    &signedrecord.Floor{},
 		repositoryCalls: newCallsInFlight(maxRepositoryCallsInFlight),
 	}
 	for _, route := range routes() {

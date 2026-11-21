@@ -209,9 +209,10 @@ func moveRefusal(current Row, phase, holdID string, used bool) error {
 // Move moves the hold row from expectedGen to next's phase, hold id, reason, writer, signing time
 // and signature, at gen expectedGen+1, and answers the row it stored. The row is locked while the
 // move is checked, and the write is one statement: the update, which still names expectedGen, and
-// its nats_hold_log row. It refuses with a Conflict: ErrNoRow, ErrGenMismatch when the row's gen
-// is not expectedGen, and moveRefusal's refusal.
-func (s Store) Move(ctx context.Context, expectedGen uint64, next Row) (Row, error) {
+// its nats_hold_log row. accept sees the locked row first, and its error, the routes' floor of the
+// row refusing an older row put back, is answered as it is. It refuses with a Conflict: ErrNoRow,
+// ErrGenMismatch when the row's gen is not expectedGen, and moveRefusal's refusal.
+func (s Store) Move(ctx context.Context, expectedGen uint64, next Row, accept func(current Row) error) (Row, error) {
 	var moved Row
 	err := s.in(ctx, pgx.ReadWrite, func(tx pgx.Tx) error {
 		current, found, err := s.currentRow(ctx, tx, "for update")
@@ -220,7 +221,11 @@ func (s Store) Move(ctx context.Context, expectedGen uint64, next Row) (Row, err
 			return err
 		case !found:
 			return &Conflict{Err: ErrNoRow}
-		case current.Gen != expectedGen:
+		}
+		if err := accept(current); err != nil {
+			return err
+		}
+		if current.Gen != expectedGen {
 			return &Conflict{Err: ErrGenMismatch, Current: &current}
 		}
 		used := false
