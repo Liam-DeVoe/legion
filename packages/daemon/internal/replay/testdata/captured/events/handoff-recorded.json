@@ -1,19 +1,19 @@
 [
   {
     "id": 890146,
-    "issue_key": "ACME-25",
+    "issue_key": "ACME-29",
     "artifact_id": null,
     "project": "ACME",
     "seq": 70,
     "type": "handoff.recorded",
     "actor": {
       "kind": "session",
-      "id": "c8a5d8a2-261d-4d0e-9511-74e57527faa9",
+      "id": "00000000-0000-4000-8000-00000000000f",
       "origin": {
         "host": "omp",
         "machine": "legion-acme-daemon",
-        "cwd": "/legion/workspaces/cybermonklabs/legion/acme-25",
-        "session_title": "Legion planner · ACME-25"
+        "cwd": "/legion/workspaces/cybermonklabs/legion/acme-29",
+        "session_title": "Legion planner · ACME-29"
       }
     },
     "notify": false,
@@ -21,7 +21,7 @@
     "payload": {
       "phase": "plan",
       "version": 1,
-      "handoff_id": "e4c8e189-fb0c-4627-8f7c-792217db3dcc"
+      "handoff_id": "00000000-0000-4000-8000-000000000010"
     }
   }
 ]

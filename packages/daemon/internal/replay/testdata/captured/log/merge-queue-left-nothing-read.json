@@ -3,7 +3,7 @@
     "timestamp": "2026-11-21T04:45:24.375690722Z",
     "jsonPayload": {
       "head": "aa593efa160f8338f94e0b8dfc358aeabefd2e3c",
-      "issue": "ACME-13",
+      "issue": "ACME-49",
       "level": "INFO",
       "msg": "workflow: a pull request left the merge queue where its issue does not merge at that head; nothing is read",
       "pullRequest": 5367,

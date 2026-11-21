@@ -3,13 +3,13 @@
     "timestamp": "2026-11-21T03:16:06.296974173Z",
     "jsonPayload": {
       "from": "merging",
-      "issue": "ACME-26",
+      "issue": "ACME-47",
       "level": "INFO",
       "msg": "workflow: phase changed",
       "status": "done",
       "time": "2026-11-21T03:16:06.296663903Z",
       "to": "done",
-      "tree": "ACME-27",
+      "tree": "ACME-43",
       "trigger": "pull_request_merged"
     }
   }

@@ -2,7 +2,7 @@
   {
     "timestamp": "2026-11-21T05:09:40.804098485Z",
     "jsonPayload": {
-      "claim": "legion-acme-acme-2-architect",
+      "claim": "legion-acme-acme-14-architect",
       "generation": 59,
       "level": "INFO",
       "msg": "supervise: a turn ended",

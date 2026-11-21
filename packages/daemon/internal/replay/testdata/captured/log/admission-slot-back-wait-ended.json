@@ -2,7 +2,7 @@
   {
     "timestamp": "2026-11-21T03:20:50.606630471Z",
     "jsonPayload": {
-      "issue": "ACME-1",
+      "issue": "ACME-40",
       "level": "INFO",
       "msg": "admission gives a slot back to an issue whose wait ended",
       "phase": "planning",

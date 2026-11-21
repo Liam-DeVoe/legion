@@ -3,7 +3,7 @@
     "timestamp": "2026-11-21T05:08:35.479508579Z",
     "jsonPayload": {
       "by": "released",
-      "claim": "legion-acme-acme-38-architect",
+      "claim": "legion-acme-acme-7-architect",
       "level": "INFO",
       "msg": "supervise: suspended",
       "reason": "the issue's pod has been idle for the release period",

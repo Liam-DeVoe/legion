@@ -2,7 +2,7 @@
   {
     "timestamp": "2026-11-21T05:09:23.249232332Z",
     "jsonPayload": {
-      "claim": "legion-acme-acme-39-architect",
+      "claim": "legion-acme-acme-6-architect",
       "delivery": "outbox:424751",
       "generation": 192,
       "level": "INFO",

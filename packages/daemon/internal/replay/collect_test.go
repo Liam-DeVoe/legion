@@ -243,8 +243,8 @@ func compactJSON(t *testing.T, data []byte) json.RawMessage {
 // names an issue no captured line names. The first is written with --prefix as well as
 // --timestamps.
 const (
-	collectSlotTaken = `{"time":"2026-11-19T00:00:00.5Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-51","slots":150,"cap":150}`
-	collectWaitsOn   = `{"time":"2026-11-19T01:00:00Z","level":"INFO","msg":"admission waits for what this issue waits on","issue":"ACME-43","blockers":["ACME-54"]}`
+	collectSlotTaken = `{"time":"2026-11-19T00:00:00.5Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-58","slots":150,"cap":150}`
+	collectWaitsOn   = `{"time":"2026-11-19T01:00:00Z","level":"INFO","msg":"admission waits for what this issue waits on","issue":"ACME-27","blockers":["ACME-42"]}`
 )
 
 // collectRun is one collect and collect-merges of the captured samples against the stubs, and
@@ -271,8 +271,8 @@ type collectRun struct {
 // read; the array a line before the span and one at its end; the kubectl output every captured
 // line again (its attributes in the daemon's own order), the two lines of its own, a line of other
 // output and a line of a kind the trace does not read. Dispatch also answers a child.added event
-// of ACME-22 naming the child ACME-60, and an event of ACME-25 after the span; it refuses the first
-// read of ACME-25 with 503 and of ACME-51 with 429.
+// of ACME-32 naming the child ACME-60, and an event of ACME-29 after the span; it refuses the first
+// read of ACME-29 with 503 and of ACME-58 with 429.
 func collectCaptured(t *testing.T) collectRun {
 	t.Helper()
 	run := collectRun{captured: capturedEntries(t), events: capturedEvents(t)}
@@ -314,11 +314,11 @@ func collectCaptured(t *testing.T) collectRun {
 	}
 
 	served := maps.Clone(run.events)
-	served["ACME-22"] = []json.RawMessage{json.RawMessage(`{"id":900001,"issue_key":"ACME-22","artifact_id":null,"project":"ACME","seq":5,` +
+	served["ACME-32"] = []json.RawMessage{json.RawMessage(`{"id":900001,"issue_key":"ACME-32","artifact_id":null,"project":"ACME","seq":5,` +
 		`"type":"child.added","actor":{"kind":"session","id":"legion-daemon:ACME"},"notify":false,"created_at":"2026-11-20T10:00:00Z","payload":{"child_key":"ACME-60"}}`)}
-	served["ACME-25"] = append(slices.Clone(served["ACME-25"]), json.RawMessage(`{"id":900002,"issue_key":"ACME-25","artifact_id":null,"project":"ACME","seq":71,`+
+	served["ACME-29"] = append(slices.Clone(served["ACME-29"]), json.RawMessage(`{"id":900002,"issue_key":"ACME-29","artifact_id":null,"project":"ACME","seq":71,`+
 		`"type":"message.created","actor":{"kind":"session","id":"legion-daemon:ACME"},"notify":false,"created_at":"2026-11-21T10:00:00Z","payload":{"body":"after the span"}}`))
-	dispatchServer, dispatchSeen := dispatchStub(t, served, map[string]int{"ACME-25": http.StatusServiceUnavailable, "ACME-51": http.StatusTooManyRequests})
+	dispatchServer, dispatchSeen := dispatchStub(t, served, map[string]int{"ACME-29": http.StatusServiceUnavailable, "ACME-58": http.StatusTooManyRequests})
 
 	var page []json.RawMessage
 	if err := json.Unmarshal(capturedFile(t, "github/commits.json"), &page); err != nil {
@@ -443,16 +443,16 @@ func TestCollectWritesAWindowThatReadsBack(t *testing.T) {
 	}
 
 	wantEvents := map[string][]json.RawMessage{
-		"ACME-22": {compactJSON(t, []byte(`{"id":900001,"issue_key":"ACME-22","artifact_id":null,"project":"ACME","seq":5,"type":"child.added",`+
+		"ACME-32": {compactJSON(t, []byte(`{"id":900001,"issue_key":"ACME-32","artifact_id":null,"project":"ACME","seq":5,"type":"child.added",`+
 			`"actor":{"kind":"session","id":"legion-daemon:ACME"},"notify":false,"created_at":"2026-11-20T10:00:00Z","payload":{"child_key":"ACME-60"}}`))},
 	}
-	for _, key := range []string{"ACME-25", "ACME-43", "ACME-51"} {
+	for _, key := range []string{"ACME-29", "ACME-27", "ACME-58"} {
 		for _, event := range run.events[key] {
 			wantEvents[key] = append(wantEvents[key], compactJSON(t, event))
 		}
 	}
 	if !reflect.DeepEqual(read.Events, wantEvents) {
-		t.Errorf("the window's events are of %v, want of %v (each issue's captured events, ACME-25's without the one after the span)",
+		t.Errorf("the window's events are of %v, want of %v (each issue's captured events, ACME-29's without the one after the span)",
 			slices.Sorted(maps.Keys(read.Events)), slices.Sorted(maps.Keys(wantEvents)))
 		for key, events := range wantEvents {
 			if !reflect.DeepEqual(read.Events[key], events) {
@@ -460,9 +460,9 @@ func TestCollectWritesAWindowThatReadsBack(t *testing.T) {
 			}
 		}
 	}
-	missing := map[string]bool{"ACME-44": true, "ACME-52": true, "ACME-53": true, "ACME-55": true, "ACME-60": true, "ACME-54": true, "ACME-58": true}
-	for n := 1; n <= 40; n++ {
-		if key := fmt.Sprintf("ACME-%d", n); key != "ACME-22" && key != "ACME-25" {
+	missing := map[string]bool{"ACME-24": true, "ACME-15": true, "ACME-52": true, "ACME-53": true, "ACME-60": true, "ACME-42": true, "ACME-41": true}
+	for _, n := range []int{2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 16, 18, 22, 26, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 43, 44, 45, 46, 47, 48, 49, 50, 51, 56, 57} {
+		if key := fmt.Sprintf("ACME-%d", n); key != "ACME-32" && key != "ACME-29" {
 			missing[key] = true
 		}
 	}
@@ -471,7 +471,7 @@ func TestCollectWritesAWindowThatReadsBack(t *testing.T) {
 		t.Errorf("the collect lists as missing %v, want %v", run.collected.Missing, wantMissing)
 	}
 	for _, request := range run.dispatch {
-		for _, unread := range []string{"ACME-56", "ACME-70", "ACME-71"} {
+		for _, unread := range []string{"ACME-55", "ACME-70", "ACME-71"} {
 			if strings.Contains(request.Target, "/"+unread+"/") {
 				t.Errorf("the collect read %s, which no kept line and no event of a named issue names", request.Target)
 			}

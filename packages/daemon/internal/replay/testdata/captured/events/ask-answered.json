@@ -1,14 +1,14 @@
 [
   {
     "id": 880495,
-    "issue_key": "ACME-25",
+    "issue_key": "ACME-29",
     "artifact_id": null,
     "project": "ACME",
     "seq": 40,
     "type": "ask.answered",
     "actor": {
       "kind": "user",
-      "id": "person@example.invalid"
+      "id": "person-1@example.invalid"
     },
     "notify": true,
     "created_at": "2026-11-20T22:07:57.233851Z",
@@ -18,22 +18,22 @@
         "at": "2026-11-20T22:07:57.233851Z",
         "id": "b4",
         "selected": [
-          "Request changes"
+          "text 4"
         ],
-        "text": "Captured change request reason",
-        "user": "person@example.invalid"
+        "text": "text 3",
+        "user": "person-1@example.invalid"
       },
       "approval": {
-        "artifact_id": "1dcfb072-140d-4494-bd05-732b86c0a8ed",
+        "artifact_id": "00000000-0000-4000-8000-000000000009",
         "documents": [
           {
-            "artifact_id": "1dcfb072-140d-4494-bd05-732b86c0a8ed",
+            "artifact_id": "00000000-0000-4000-8000-000000000009",
             "name": "spec.md",
             "requested_version": 4,
             "version": 4
           },
           {
-            "artifact_id": "c806a38e-ce8a-4c59-93dd-972d9c9f525e",
+            "artifact_id": "00000000-0000-4000-8000-00000000000b",
             "name": "verification.md",
             "requested_version": 2,
             "version": 2
@@ -54,41 +54,41 @@
       "asked_of_at": null,
       "asked_of_by": null,
       "author": {
-        "id": "f612746a-5eb6-4863-905a-1fe5650c0de1",
+        "id": "00000000-0000-4000-8000-00000000000c",
         "kind": "session",
         "origin": {
-          "cwd": "/legion/workspaces/cybermonklabs/legion/acme-25",
+          "cwd": "/legion/workspaces/cybermonklabs/legion/acme-29",
           "host": "omp",
           "machine": "legion-acme-daemon",
-          "session_title": "Legion architect · ACME-25"
+          "session_title": "Legion architect · ACME-29"
         }
       },
       "block_id": null,
       "created_at": "2026-11-20T21:46:39.163352Z",
       "edited_at": null,
-      "id": "03aa53cb-6f22-4d35-832f-58fd4ee4b472",
-      "issue_key": "ACME-25",
+      "id": "00000000-0000-4000-8000-00000000000a",
+      "issue_key": "ACME-29",
       "kind": "approval",
       "multiple": false,
       "opened_event_id": 879532,
       "options": [
         {
-          "description": "Approve this version of the document.",
+          "description": "text 5",
           "id": "b2",
-          "label": "Approve"
+          "label": "text 6"
         },
         {
-          "description": "Say what must change before it can be approved.",
+          "description": "text 7",
           "id": "b3",
-          "label": "Request changes"
+          "label": "text 4"
         }
       ],
-      "question": "Captured approval question",
+      "question": "text 8",
       "referenced_by_count": 4,
       "revision": 2,
       "state": "answered",
       "thread_logins": [
-        "person@example.invalid"
+        "person-1@example.invalid"
       ],
       "urgency": "high"
     }

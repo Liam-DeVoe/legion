@@ -1,14 +1,14 @@
 [
   {
     "id": 701064,
-    "issue_key": "ACME-25",
+    "issue_key": "ACME-29",
     "artifact_id": null,
     "project": "ACME",
     "seq": 11,
     "type": "issue.updated",
     "actor": {
       "kind": "session",
-      "id": "e19a8cca-b02c-4c79-acee-17834b59b140",
+      "id": "00000000-0000-4000-8000-000000000012",
       "origin": {
         "host": "omp",
         "machine": "legion-acme-daemon",
@@ -19,16 +19,16 @@
     "notify": false,
     "created_at": "2026-11-18T00:12:10.182106Z",
     "payload": {
-      "key": "ACME-25",
+      "key": "ACME-29",
       "rank": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzfzzU",
       "repo": "cybermonklabs/legion",
       "claim": null,
       "route": null,
-      "title": "Captured workflow issue",
+      "title": "text 13",
       "labels": [
         "legion"
       ],
-      "number": 25,
+      "number": 29,
       "parent": null,
       "status": "todo",
       "changed": [
@@ -36,7 +36,7 @@
       ],
       "project": "ACME",
       "advances": [],
-      "assignee": "person@example.invalid",
+      "assignee": "person-1@example.invalid",
       "last_seq": 11,
       "priority": 2,
       "ancestors": [],
@@ -51,7 +51,7 @@
       },
       "created_at": "2026-11-12T02:33:45.794899Z",
       "created_by": {
-        "id": "3e65c2b4-30dd-495f-be87-749a6829a93a",
+        "id": "00000000-0000-4000-8000-000000000011",
         "kind": "session",
         "origin": {
           "cwd": "/legion",
@@ -65,7 +65,7 @@
       "external_links": [],
       "plan_artifact_id": "",
       "advances_revision": 0,
-      "primary_artifact_id": "1dcfb072-140d-4494-bd05-732b86c0a8ed",
+      "primary_artifact_id": "00000000-0000-4000-8000-000000000009",
       "decisions_artifact_id": "",
       "verification_artifact_id": ""
     }
