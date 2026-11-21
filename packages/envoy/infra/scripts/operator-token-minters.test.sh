@@ -187,6 +187,8 @@ readonly container_admin=(
   container.namespaces.create container.nodes.proxy container.pods.attach container.pods.create container.pods.exec container.pods.get
   container.pods.portForward container.pods.update container.replicaSets.create container.replicaSets.update
   container.replicationControllers.create container.replicationControllers.update
+  container.mutatingWebhookConfigurations.create container.mutatingWebhookConfigurations.update
+  container.validatingWebhookConfigurations.create container.validatingWebhookConfigurations.update
   container.roleBindings.create container.roleBindings.update container.roles.bind container.roles.escalate
   container.secrets.get container.secrets.list container.serviceAccounts.create container.serviceAccounts.createToken
   container.statefulSets.create container.statefulSets.update container.subjectAccessReviews.create

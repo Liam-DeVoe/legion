@@ -34,9 +34,11 @@
 #                     stream of objects) is read as the RBAC authorizer reads it, and each binding
 #                     that gives a right below to a subject that is not a person, a system
 #                     namespace's, a system component or the operator's own Google service account
-#                     is a finding. A rule limited by resourceNames on impersonate or escalate is a
-#                     finding naming the names (impersonating the group system:masters by name is
-#                     cluster-admin). A binding to a role the render does not hold (other than the
+#                     is a finding. A rule limited by resourceNames on impersonate, escalate or bind,
+#                     or on a patch or update of a binding, is a finding naming the names
+#                     (impersonating the group system:masters by name is cluster-admin, and RBAC
+#                     lets one who may bind a role by name write a binding to it). A binding to a
+#                     role the render does not hold (other than the
 #                     built-in cluster-admin, which gives every right, and view, which gives none)
 #                     or to an aggregated ClusterRole is UNKNOWN: its rights are not in the render.
 #   code: IAM         Each --iam-preview file (`pulumi preview --json --show-sames` of a program that
@@ -64,16 +66,23 @@
 #                     iam.gke.io/gcp-service-account annotation) with system:authenticated, the
 #                     cluster's binding subjects (below), and anyone unauthenticated
 #                     (system:anonymous with system:unauthenticated), always. The
-#                     rights are the list below for each guarded pair, and create on each custom
+#                     rights are the list below for each guarded pair; create on each custom
 #                     resource the API server's discovery (`kubectl api-resources --namespaced
 #                     --verbs=create`) lists, in each guarded pair's namespace: a custom resource's
-#                     controller may make a pod from it, as an agent sandbox does; a discovery that
-#                     cannot be read whole is UNKNOWN. RBAC allows a request against a rule with
-#                     resourceNames only when the request names one, so the rights also name each
-#                     name: impersonate groups for system:masters and every Group subject the
-#                     bindings name, impersonate users for every User subject, and escalate, bind,
-#                     update and patch on each role bound to a reviewed principal
-#                     (named-rights.jq); every other cluster of the pool is asked them too. A
+#                     controller may make a pod from it, as an agent sandbox does; and create,
+#                     update and patch, cluster-wide, of each admissionregistration.k8s.io resource
+#                     its discovery lists (`kubectl api-resources --api-group=...`): a mutating
+#                     webhook or admission policy can add a container to the operator's next pod,
+#                     and a validating one can block or reshape what it applies. A discovery that
+#                     cannot be read whole, or whose admission list lacks a webhook configuration,
+#                     which every API server serves, is UNKNOWN. RBAC allows a request against a
+#                     rule with resourceNames only when the request names one, so the rights also
+#                     name each name: impersonate groups for system:masters and every Group subject
+#                     the bindings name, impersonate users for every User subject, bind and escalate
+#                     on every binding's role and patch and update on every binding (RBAC lets one
+#                     who may bind a role by name write a binding to it), and update and patch on
+#                     each role bound to a reviewed principal (named-rights.jq); every other cluster
+#                     of the pool is asked them too. A
 #                     review without the groups would miss every grant made to a group. Its witness
 #                     is a review for the group the built-in
 #                     cluster-admin binding names, system:masters, which must be allowed: an API
@@ -120,10 +129,11 @@
 #                     no principal the step reviews may create a namespace cluster-wide, or a
 #                     ServiceAccount or a pod in a guarded pair's namespace, nor hold an escalation
 #                     right by which it grants itself one: impersonate users, groups and
-#                     serviceaccounts, escalate and bind clusterroles, and create and patch
-#                     clusterrolebindings, cluster-wide; bind and escalate roles and create and
-#                     patch rolebindings in a guarded pair's namespace. Each finding's right names
-#                     the pairs it guards. On
+#                     serviceaccounts, escalate and bind clusterroles, and create, patch and update
+#                     clusterrolebindings, cluster-wide; bind and escalate roles and create, patch
+#                     and update rolebindings in a guarded pair's namespace; nor write a webhook or
+#                     admission policy (the RBAC step's admission rights, from each cluster's own
+#                     discovery). Each finding's right names the pairs it guards. On
 #                     every cluster but the operator's, a guarded pair's namespace must not exist
 #                     either, and the principals are that cluster's ServiceAccounts outside its
 #                     system namespaces (kube-system, gke-*, gmp-*), with their groups, and its
@@ -143,7 +153,8 @@
 #                     each guard right's container.* permission (container.namespaces.create,
 #                     serviceAccounts.create and pods.create; clusters.impersonate, clusterRoles.bind
 #                     and escalate, clusterRoleBindings.create and update, roles.bind and escalate,
-#                     roleBindings.create and update, nodes.proxy) and of the IAM writers
+#                     roleBindings.create and update, nodes.proxy, mutatingWebhookConfigurations and
+#                     validatingWebhookConfigurations create and update) and of the IAM writers
 #                     (setIamPolicy, iam.roles.update) are judged as the GKE IAM step judges its own
 #                     (--project's are in that step).
 #   live: fleet       Policy Analyzer's holders of gkehub.memberships.create and update on the pool
@@ -195,8 +206,10 @@
 # `gcloud container clusters describe`) the API server gives no request such a group, so it is no
 # finding; with it on, the cluster is UNKNOWN, a Group subject bound or not, since a Google group's
 # members are neither listed nor judged here; on a fleet member that is no GKE cluster, read through
-# the Connect gateway, its groups come from its own authenticator, and a Group subject bound there is
-# UNKNOWN; where whether it is on cannot be read, a Group subject bound there is UNKNOWN. The code
+# the Connect gateway, its users and groups come from its own authenticator, so a Group subject bound
+# there is UNKNOWN, and so is a User whose name looks like an email, which that authenticator, not
+# Google, gives to whom it likes; where whether it is on cannot be read, a Group subject bound there
+# is UNKNOWN. The code
 # step reads no cluster's setting and judges another Group as off; the live step of the cluster says
 # UNKNOWN when it is on. A system: User or Group other than these is a Kubernetes component and
 # allowed.
@@ -212,13 +225,17 @@
 #
 # The rights, in each guarded pair's namespace unless cluster-wide: create serviceaccounts/token of
 # the pair's ServiceAccount; impersonate that ServiceAccount, and users and groups cluster-wide;
-# escalate and bind roles and clusterroles, create and patch rolebindings and clusterrolebindings;
+# escalate and bind roles and clusterroles, create, patch and update rolebindings and
+# clusterrolebindings;
 # create, and get (which authorizes an exec, attach or port forward over WebSocket on API servers
 # before 1.35), pods/exec, pods/attach and pods/portforward; create, patch and update pods, and patch
 # and update pods/ephemeralcontainers; create, patch and update replicationcontrollers, deployments,
 # replicasets, statefulsets, daemonsets, jobs and cronjobs, each of which runs a pod as the
 # ServiceAccount; create and get nodes/proxy cluster-wide, whose kubelet API enters any pod on the
-# node; get, list and watch secrets.
+# node; get, list and watch secrets; and, cluster-wide on every cluster of the pool, create, update
+# and patch of each admissionregistration.k8s.io resource its discovery lists. roles/container.admin
+# names no permission for the admission policies (read with `gcloud iam roles describe` on
+# 2026-11-21), so IAM is asked the webhook configurations' alone.
 #
 # Exit 0: no finding and no UNKNOWN. Exit 1: at least one finding, each line naming the principal
 # and the right (UNKNOWN lines may stand beside them). Exit 2: no finding, and at least one UNKNOWN,

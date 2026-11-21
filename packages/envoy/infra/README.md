@@ -4108,18 +4108,19 @@ The residual: on this path clients reach the restored and proven hub before its 
 precondition for the `operator` entry, run again before go-live. It runs with the sign-ins of the
 shell it runs in, requests no credential, and lists each principal that is not a person and can
 mint the token of a guarded ServiceAccount (the operator's, the secrets broker's, and each
-`--guarded` pair), run or enter a pod as one, create a custom resource in a guarded namespace, mint
-the operator's Google service account's token, make a guarded namespace on another cluster of the
-project or of the workload pool's fleet, register a cluster to that fleet, set IAM policy over any
-of these, or write the writer hold's tables beside the broker's routes, and each principal that can
-become one of those: through IAM impersonation, reported as the chain, or in Kubernetes by running,
-entering or minting the token of a ServiceAccount that holds such a right. On each cluster of the
-project, of the pool project and of the pool's fleet it reviews every ServiceAccount outside the
-system namespaces, Kubernetes' own groups, each binding subject that is not a person (a person is
-an email outside `gserviceaccount.com`), and anyone
-unauthenticated, and reports every binding of `system:masters` but the bootstrap one. Any other
-Group is no finding while GKE's Google Groups for RBAC is off, and reads UNKNOWN where it is on or
-on a fleet member that is no GKE cluster. It reads code first (`--rbac-render`,
+`--guarded` pair), run or enter a pod as one, create a custom resource in a guarded namespace, write
+a binding or a webhook or admission policy, mint the operator's Google service account's token, make
+a guarded namespace on another cluster of the project or of the workload pool's fleet, register a
+cluster to that fleet, set IAM policy over any of these, or write the writer hold's tables beside
+the broker's routes, and each principal that can become one of those: through IAM impersonation,
+reported as the chain, or in Kubernetes by running, entering or minting the token of a
+ServiceAccount that holds such a right. On each cluster of the project, of the pool project and of
+the pool's fleet it reviews every ServiceAccount outside the system namespaces, Kubernetes' own
+groups, each binding subject that is not a person (a person is an email outside
+`gserviceaccount.com`), and anyone unauthenticated, and reports every binding of `system:masters`
+but the bootstrap one. Any other Group is no finding while GKE's Google Groups for RBAC is off, and
+reads UNKNOWN where it is on or on a fleet member that is no GKE cluster, as an email-shaped User
+bound there does. It reads code first (`--rbac-render`,
 `--iam-preview`), then the live grants, and exits 0 with nothing found, 1 naming each principal and
 right, or 2 naming each step it could not read, a run that stopped mid-way included.
 `--report <file>` writes the same as JSON, and is deleted when a run starts, so a report is that

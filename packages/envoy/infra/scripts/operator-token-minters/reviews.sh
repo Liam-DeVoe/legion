@@ -155,6 +155,31 @@ custom_rights() {
   CUSTOM_RIGHTS="$(printf '%s\n' "${GUARDED[@]}" | jq -R -s -c -L "$LIB" --rawfile names "$WORK/api-resources" --arg style "$2" -f "$LIB/custom-rights.jq")"
   [ -z "$CUSTOM_ERROR" ]
 }
+# admission_rights KUBECONFIG: sets ADMISSION_RIGHTS, the JSON array, as rights_json writes rights,
+# of create, update and patch, cluster-wide, of each resource of admissionregistration.k8s.io the
+# API server's discovery lists, and of ADMISSION_ALWAYS whatever it lists (rights.sh says why).
+# Returns 1 with ADMISSION_ERROR when the discovery could not be read, or lists either of
+# ADMISSION_ALWAYS short.
+admission_rights() {
+  local missing="" resource
+  ADMISSION_ERROR=""
+  if ! kubectl --kubeconfig "$1" api-resources --api-group=admissionregistration.k8s.io -o name >"$WORK/admission-resources" 2>"$WORK/admission-resources.err"; then
+    ADMISSION_ERROR="the API server's discovery of admissionregistration.k8s.io could not be read, so a webhook or admission policy it serves beside the two webhook configurations is not reviewed: $(first_line "$WORK/admission-resources.err")"
+  else
+    for resource in "${ADMISSION_ALWAYS[@]}"; do
+      grep -qxF -- "$resource.admissionregistration.k8s.io" "$WORK/admission-resources" || missing="${missing:+$missing, }$resource.admissionregistration.k8s.io"
+    done
+    [ -z "$missing" ] ||
+      ADMISSION_ERROR="the API server's discovery of admissionregistration.k8s.io lists no $missing, which every API server serves, so its list is not whole"
+  fi
+  ADMISSION_RIGHTS="$({ cat "$WORK/admission-resources"; printf '%s.admissionregistration.k8s.io\n' "${ADMISSION_ALWAYS[@]}"; } | jq -R -s -c '
+    [split("\n")[] | select(endswith(".admissionregistration.k8s.io")) | rtrimstr(".admissionregistration.k8s.io")] | unique
+    | [.[] as $res | ("create", "update", "patch")
+       | {verb: ., group: "admissionregistration.k8s.io", resource: $res, sub: "", ns: "", name: "",
+          label: "\(.) \($res).admissionregistration.k8s.io cluster-wide"}
+       | . + {key: ([.verb, .group, .resource, .sub, .ns, .name] | join("|"))}]')"
+  [ -z "$ADMISSION_ERROR" ]
+}
 # bound_subjects KUBECONFIG: the cluster's binding subjects (the header's "Binding subjects"), added
 # to $WORK/principals.rec when the file does not hold them already: each User subject k8s_subject
 # does not allow, with system:authenticated (system:anonymous with system:unauthenticated), each
@@ -255,12 +280,16 @@ masters_bindings() {
 # `on:<security group>`: Google Groups for RBAC is on, so each gives its Google group's members its
 # rights, which this check neither lists nor judges: UNKNOWN for the cluster, whether one is bound
 # now or not. MODE `own`: a cluster that is no GKE cluster takes its users and groups from its own
-# authenticator: UNKNOWN when one is bound. MODE `unknown:<why>`: UNKNOWN when one is bound.
+# authenticator: UNKNOWN when a Group is bound, and when a User whose name looks like an email is,
+# since that authenticator, not Google, says who holds the name. MODE `unknown:<why>`: UNKNOWN when
+# a Group is bound.
 groups_verdict() {
-  local step="$1" mode="$2" groups=""
+  local step="$1" mode="$2" groups="" users=""
   if [ "$BINDINGS_OK" = true ]; then
     groups="$(jq -r '[.items[]?.subjects[]? | select(.kind == "Group" and ((.name | startswith("system:")) | not)) | .name] | unique | join(", ")' \
       "$WORK/bindings.json")"
+    users="$(jq -r '[.items[]?.subjects[]? | select(.kind == "User" and (.name | test("^[^@/:\\s]+@[^@/:\\s]+\\.[^@/:\\s]+$"))
+      and ((.name | endswith(".gserviceaccount.com")) | not)) | .name] | unique | join(", ")' "$WORK/bindings.json")"
   fi
   case "$mode" in
     off) ;;
@@ -270,6 +299,8 @@ groups_verdict() {
     own)
       [ -z "$groups" ] ||
         unknown "$step" "it takes its users and groups from its own authenticator, not Google, so the Group subjects bound here ($groups) name members this check cannot list"
+      [ -z "$users" ] ||
+        unknown "$step" "it takes its users from its own authenticator, not Google, so the User subjects bound here that look like emails ($users) are not known to be people"
       ;;
     unknown:*)
       [ -z "$groups" ] ||
@@ -279,8 +310,9 @@ groups_verdict() {
 }
 # named_rights: sets NAMED_RIGHTS, the name-limited rights (named-rights.jq) of the cluster whose
 # bindings bound_subjects read last, for the principals of $WORK/principals.rec: impersonate groups
-# and users by name, and escalate, bind, update and patch by name on each role bound to a reviewed
-# principal. When the bindings could not be read, it holds impersonate groups system:masters alone.
+# and users by name; bind and escalate on every binding's role, and patch and update on every
+# binding, by name; and update and patch by name on each role bound to a reviewed principal. When
+# the bindings could not be read, it holds impersonate groups system:masters alone.
 named_rights() {
   local reviewed bindings='{"items": []}'
   reviewed="$(cut -d"$US" -f1 "$WORK/principals.rec" | jq -R -s -c 'split("\n") | map(select(length > 0))')"

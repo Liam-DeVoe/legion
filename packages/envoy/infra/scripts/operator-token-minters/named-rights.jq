@@ -4,11 +4,14 @@
 # name-limited grant: one that may impersonate the group system:masters by name becomes
 # cluster-admin while the unnamed review says no. These rights name each name, as rights_json
 # writes rights: impersonate groups for system:masters and every Group subject the bindings name;
-# impersonate users for every User subject; and escalate, bind, update and patch on each role bound
-# to a reviewed principal. $reviewed holds the reviewed principals' labels (the first field of
-# principals.rec); a Group subject is reviewed when it is one the API server gives a reviewed
-# ServiceAccount or anyone (system:authenticated, system:serviceaccounts and
-# system:serviceaccounts:<its namespace>, system:unauthenticated), or one reviewed alone.
+# impersonate users for every User subject; for every binding, whoever its subjects are, bind and
+# escalate on its role and patch and update on the binding itself, since RBAC lets one who may bind
+# a role, by name, write a binding to it (bind is asked in a RoleBinding's namespace, where RBAC
+# asks it); and update and patch on each role bound to a reviewed principal. $reviewed holds the
+# reviewed principals' labels (the first field of principals.rec); a Group subject is reviewed when
+# it is one the API server gives a reviewed ServiceAccount or anyone (system:authenticated,
+# system:serviceaccounts and system:serviceaccounts:<its namespace>, system:unauthenticated), or
+# one reviewed alone.
 def right($verb; $group; $resource; $ns; $name):
   {verb: $verb, group: $group, resource: $resource, sub: "", ns: $ns, name: $name,
    key: ([$verb, $group, $resource, "", $ns, $name] | join("|")),
@@ -31,8 +34,15 @@ def right($verb; $group; $resource; $ns; $name):
   | [ ($groups[] | right("impersonate"; ""; "groups"; ""; .)),
       ($users[] | right("impersonate"; ""; "users"; ""; .)),
       ($bindings[] | . as $b | (.metadata.namespace // "") as $bns
+       | (if $b.roleRef.kind == "ClusterRole" then ["clusterroles", ""] else ["roles", $bns] end) as [$res, $ns]
+       | right("bind"; "rbac.authorization.k8s.io"; $res; $bns; $b.roleRef.name),
+         right("escalate"; "rbac.authorization.k8s.io"; $res; $ns; $b.roleRef.name),
+         (("patch", "update") as $verb
+          | right($verb; "rbac.authorization.k8s.io"; (if $b.kind == "RoleBinding" then "rolebindings" else "clusterrolebindings" end);
+                  $bns; $b.metadata.name))),
+      ($bindings[] | . as $b | (.metadata.namespace // "") as $bns
        | select(any(($b.subjects // [])[]; reviewed(.; $bns)))
        | (if $b.roleRef.kind == "ClusterRole" then ["clusterroles", ""] else ["roles", $bns] end) as [$res, $ns]
-       | ("escalate", "bind", "update", "patch") as $verb
+       | ("update", "patch") as $verb
        | right($verb; "rbac.authorization.k8s.io"; $res; $ns; $b.roleRef.name)) ]
   | reduce .[] as $r ([]; if any(.[]; .key == $r.key) then . else . + [$r] end)

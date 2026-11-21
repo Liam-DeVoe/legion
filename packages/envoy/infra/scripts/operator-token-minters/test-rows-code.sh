@@ -13,7 +13,9 @@
 #        operator's cluster has Google Groups for RBAC off: a Group other than Kubernetes' own is
 #        judged by where the cluster takes its groups from, as in the live steps;
 #   (ap) a render's rule limited by resourceNames on impersonate or escalate is a finding naming the
-#        names, with every live step refused.
+#        names, with every live step refused;
+#   (be) a render's rule limited by resourceNames on bind of clusterroles, or on update or patch of
+#        rolebindings, is a finding naming the names, with every live step refused.
 
 # --- (p) The code read. Every live step is refused, so each finding is the code's. ---
 if row p; then
@@ -114,4 +116,25 @@ if row ap; then
   want_line "FINDING system:serviceaccount:legion:worker: escalate clusterroles.rbac.authorization.k8s.io view cluster-wide, declared by ClusterRoleBinding worker-masters" \
     "a render's name-limited escalate rule"
   passed "(ap) a render's rule limited by resourceNames on impersonate or escalate is a finding naming the names"
+fi
+
+# --- (be) The code read of bind and binding writes limited by resource name. ---
+if row be; then
+  base_world
+  refuse_live
+  edit "$world/render.json" '.items += [
+    {apiVersion: "rbac.authorization.k8s.io/v1", kind: "ClusterRole", metadata: {name: "binding-writer"},
+     rules: [{apiGroups: ["rbac.authorization.k8s.io"], resources: ["clusterroles"], verbs: ["bind"], resourceNames: ["cluster-admin"]},
+             {apiGroups: ["rbac.authorization.k8s.io"], resources: ["rolebindings"], verbs: ["update", "patch"], resourceNames: ["envoy-operator-runtime"]}]},
+    {apiVersion: "rbac.authorization.k8s.io/v1", kind: "RoleBinding", metadata: {name: "worker-binding-writer", namespace: "envoy-operator"},
+     roleRef: {apiGroup: "rbac.authorization.k8s.io", kind: "ClusterRole", name: "binding-writer"},
+     subjects: [{kind: "ServiceAccount", name: "worker", namespace: "legion"}]}]'
+  run
+  want_status 1 "a render's name-limited bind and binding writes"
+  for right in "bind clusterroles.rbac.authorization.k8s.io cluster-admin" "update rolebindings.rbac.authorization.k8s.io envoy-operator-runtime" \
+    "patch rolebindings.rbac.authorization.k8s.io envoy-operator-runtime"; do
+    want_line "FINDING system:serviceaccount:legion:worker: $right in envoy-operator, declared by RoleBinding envoy-operator/worker-binding-writer" \
+      "a render's name-limited $right"
+  done
+  passed "(be) a render's rule limited by resourceNames on bind, or on update or patch of a binding, is a finding naming the names"
 fi

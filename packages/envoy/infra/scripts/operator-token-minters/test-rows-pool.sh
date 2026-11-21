@@ -28,9 +28,9 @@
 #   (aa) a second cluster of the project named operator-cluster, in us-east1, holding the namespace
 #        envoy-operator, is a finding with --location us-central1, and UNKNOWN without it;
 #   (an) each escalation right alone, given to ci/runner on another cluster of the pool (impersonate
-#        users, groups and serviceaccounts, escalate and bind clusterroles, create and patch
-#        clusterrolebindings cluster-wide; bind and escalate roles and create and patch rolebindings
-#        in envoy-operator), exits 1 naming it;
+#        users, groups and serviceaccounts, escalate and bind clusterroles, create, patch and update
+#        clusterrolebindings cluster-wide; bind and escalate roles and create, patch and update
+#        rolebindings in envoy-operator), exits 1 naming it;
 #   (as) on a GKE fleet member in another project, apps/deployer given alone impersonate groups,
 #        create clusterrolebindings, bind clusterroles, create or get nodes/proxy, or create pods in
 #        kube-system (where namespace-controller may create namespaces) exits 1 naming it;
@@ -296,10 +296,12 @@ escalation_rights=(
   "bind|rbac.authorization.k8s.io|clusterroles|=bind clusterroles.rbac.authorization.k8s.io cluster-wide"
   "create|rbac.authorization.k8s.io|clusterrolebindings|=create clusterrolebindings.rbac.authorization.k8s.io cluster-wide"
   "patch|rbac.authorization.k8s.io|clusterrolebindings|=patch clusterrolebindings.rbac.authorization.k8s.io cluster-wide"
+  "update|rbac.authorization.k8s.io|clusterrolebindings|=update clusterrolebindings.rbac.authorization.k8s.io cluster-wide"
   "bind|rbac.authorization.k8s.io|roles|envoy-operator=bind roles.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator"
   "escalate|rbac.authorization.k8s.io|roles|envoy-operator=escalate roles.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator"
   "create|rbac.authorization.k8s.io|rolebindings|envoy-operator=create rolebindings.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator"
   "patch|rbac.authorization.k8s.io|rolebindings|envoy-operator=patch rolebindings.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator"
+  "update|rbac.authorization.k8s.io|rolebindings|envoy-operator=update rolebindings.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator"
   "create||nodes/proxy|=create nodes/proxy cluster-wide"
   "get||nodes/proxy|=get nodes/proxy cluster-wide"
 )

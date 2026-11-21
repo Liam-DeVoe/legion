@@ -47,7 +47,22 @@
 #        or a GKE fleet member with Google Groups for RBAC on, a GKE fleet member whose describe is
 #        refused, and the operator's cluster with Google Groups for RBAC on and no Group bound;
 #   (bb) a ServiceAccount a binding names that does not exist (ci/ghost, allowed to create pods in
-#        envoy-operator) is reviewed and exits 1.
+#        envoy-operator) is reviewed and exits 1;
+#   (bd) writes to a binding: legion/worker with update rolebindings in envoy-operator, or with patch
+#        of the operator's RoleBinding by name, beside bind of its ClusterRole by name; update of
+#        that RoleBinding by name; escalate of that ClusterRole by name; and on another cluster
+#        ci/runner with patch of the ClusterRoleBinding cluster-admin and bind of the ClusterRole
+#        cluster-admin, each by name: each exits 1 naming the rights;
+#   (bf) each admission right (create, update and patch of mutatingwebhookconfigurations,
+#        validatingwebhookconfigurations, validatingadmissionpolicies and their bindings, and of
+#        mutatingadmissionpolicies and their bindings where the discovery lists them) given alone
+#        to legion/worker on the operator's cluster, and create of each to ci/runner on another
+#        cluster, exits 1 naming it;
+#   (bg) a discovery of admissionregistration.k8s.io that lists no validatingwebhookconfigurations,
+#        or cannot be read on the operator's cluster or another, reads UNKNOWN;
+#   (bi) on a fleet member that is no GKE cluster, a User that looks like an email
+#        (ci-bot@corp.example) bound to cluster-admin reads UNKNOWN: that cluster's own
+#        authenticator names its users, so the name proves no person.
 
 # --- (b) Each right of the RBAC list, allowed to one agent ServiceAccount. Each entry is the grant
 # (verb, API group, resource, subresource, the binding's namespace or none for cluster-wide, the
@@ -63,8 +78,10 @@ rbac_rights=(
   "bind|rbac.authorization.k8s.io|clusterroles||envoy-operator|=bind clusterroles.rbac.authorization.k8s.io in envoy-operator"
   "create|rbac.authorization.k8s.io|rolebindings||envoy-operator|=create rolebindings.rbac.authorization.k8s.io in envoy-operator"
   "patch|rbac.authorization.k8s.io|rolebindings||envoy-operator|=patch rolebindings.rbac.authorization.k8s.io in envoy-operator"
+  "update|rbac.authorization.k8s.io|rolebindings||envoy-operator|=update rolebindings.rbac.authorization.k8s.io in envoy-operator"
   "create|rbac.authorization.k8s.io|clusterrolebindings||||=create clusterrolebindings.rbac.authorization.k8s.io cluster-wide"
   "patch|rbac.authorization.k8s.io|clusterrolebindings||||=patch clusterrolebindings.rbac.authorization.k8s.io cluster-wide"
+  "update|rbac.authorization.k8s.io|clusterrolebindings||||=update clusterrolebindings.rbac.authorization.k8s.io cluster-wide"
   "create||pods|exec|envoy-operator|=create pods/exec in envoy-operator"
   "create||pods|attach|envoy-operator|=create pods/attach in envoy-operator"
   "create||pods|portforward|envoy-operator|=create pods/portforward in envoy-operator"
@@ -474,4 +491,140 @@ if row bb; then
   want_status 1 "a bound ServiceAccount that does not exist"
   want_line "FINDING system:serviceaccount:ci:ghost: create pods in envoy-operator" "a bound ServiceAccount that does not exist"
   passed "(bb) a ServiceAccount a binding names, which does not exist yet, is reviewed and exits 1"
+fi
+
+# --- (bd) Writes to a binding. RBAC lets one who may bind a binding's role, by name, update the
+# binding, and a name-limited write is refused to a review that names nothing. Each item reaches the
+# operator's token through its own RoleBinding envoy-operator/planted-0 and ClusterRole planted-0
+# (the fake names each grant's binding and role planted-<its index>, and the operator's token grant
+# is the world's first), or cluster-admin through the bootstrap binding on another cluster. ---
+binding_write_row() {
+  local who=system:serviceaccount:legion:worker suffix="" line want=()
+  base_world
+  case "$1" in
+    update)
+      subject_grant operator-cluster "$(sa_subject legion worker)" update rbac.authorization.k8s.io rolebindings "" envoy-operator ""
+      subject_grant operator-cluster "$(sa_subject legion worker)" bind rbac.authorization.k8s.io clusterroles "" envoy-operator planted-0
+      want=("update rolebindings.rbac.authorization.k8s.io in envoy-operator" "bind clusterroles.rbac.authorization.k8s.io planted-0 in envoy-operator")
+      ;;
+    patch-named)
+      subject_grant operator-cluster "$(sa_subject legion worker)" patch rbac.authorization.k8s.io rolebindings "" envoy-operator planted-0
+      subject_grant operator-cluster "$(sa_subject legion worker)" bind rbac.authorization.k8s.io clusterroles "" envoy-operator planted-0
+      want=("patch rolebindings.rbac.authorization.k8s.io planted-0 in envoy-operator" "bind clusterroles.rbac.authorization.k8s.io planted-0 in envoy-operator")
+      ;;
+    update-named)
+      subject_grant operator-cluster "$(sa_subject legion worker)" update rbac.authorization.k8s.io rolebindings "" envoy-operator planted-0
+      want=("update rolebindings.rbac.authorization.k8s.io planted-0 in envoy-operator")
+      ;;
+    escalate-named)
+      subject_grant operator-cluster "$(sa_subject legion worker)" escalate rbac.authorization.k8s.io clusterroles "" "" planted-0
+      want=("escalate clusterroles.rbac.authorization.k8s.io planted-0 cluster-wide")
+      ;;
+    cluster-admin)
+      add_cluster other-cluster us-east1
+      add_sa other-cluster ci runner
+      subject_grant other-cluster "$(sa_subject ci runner)" patch rbac.authorization.k8s.io clusterrolebindings "" "" cluster-admin
+      subject_grant other-cluster "$(sa_subject ci runner)" bind rbac.authorization.k8s.io clusterroles "" "" cluster-admin
+      who=system:serviceaccount:ci:runner suffix=" on cluster $project/us-east1/other-cluster"
+      want=("patch clusterrolebindings.rbac.authorization.k8s.io cluster-admin cluster-wide" "bind clusterroles.rbac.authorization.k8s.io cluster-admin cluster-wide")
+      ;;
+  esac
+  run
+  want_status 1 "a write to a binding ($1)"
+  for line in "${want[@]}"; do
+    want_line "FINDING $who: $line$suffix" "a write to a binding ($1)"
+  done
+}
+if row bd; then
+  each binding_write_row update patch-named update-named escalate-named cluster-admin
+  passed "(bd) update of rolebindings, patch or update of the operator's RoleBinding by name, bind or escalate of its ClusterRole by name, and patch of cluster-admin's binding with bind of its role by name on another cluster each exit 1 naming the rights"
+fi
+
+# --- (bf) The admission rights. A mutating webhook or policy can add a container to the operator's
+# next pod, and a validating one can block or reshape what the operator applies. Each entry is the
+# verb, the resource of admissionregistration.k8s.io, and the cluster: the operator's, given to
+# legion/worker, or another of the pool, given to ci/runner. The fake's discovery lists the four a
+# GKE cluster serves; the mutating admission policies, beta and off by default, are listed for
+# their items alone, since the check asks what the cluster's discovery lists. ---
+admission_items=()
+for admission_resource in mutatingwebhookconfigurations validatingwebhookconfigurations validatingadmissionpolicies \
+  validatingadmissionpolicybindings mutatingadmissionpolicies mutatingadmissionpolicybindings; do
+  admission_items+=("create|$admission_resource|operator" "update|$admission_resource|operator" "patch|$admission_resource|operator" "create|$admission_resource|other")
+done
+admission_row() {
+  local verb resource where cluster=operator-cluster
+  IFS='|' read -r verb resource where <<<"$1"
+  base_world
+  [ "$where" = operator ] || { cluster=other-cluster; add_cluster other-cluster us-east1; add_sa other-cluster ci runner; }
+  case "$resource" in
+    mutatingadmission*)
+      printf '%s.admissionregistration.k8s.io\n' mutatingadmissionpolicies mutatingadmissionpolicybindings mutatingwebhookconfigurations \
+        validatingadmissionpolicies validatingadmissionpolicybindings validatingwebhookconfigurations >"$world/clusters/$cluster/admission-resources"
+      ;;
+  esac
+  if [ "$where" = operator ]; then
+    subject_grant operator-cluster "$(sa_subject legion worker)" "$verb" admissionregistration.k8s.io "$resource" "" "" ""
+    run
+    want_status 1 "legion/worker with $verb $resource"
+    want_line "FINDING system:serviceaccount:legion:worker: $verb $resource.admissionregistration.k8s.io cluster-wide" "legion/worker with $verb $resource"
+  else
+    subject_grant other-cluster "$(sa_subject ci runner)" "$verb" admissionregistration.k8s.io "$resource" "" "" ""
+    run
+    want_status 1 "ci/runner with $verb $resource on other-cluster"
+    want_line "FINDING system:serviceaccount:ci:runner: $verb $resource.admissionregistration.k8s.io cluster-wide on cluster $project/us-east1/other-cluster" \
+      "ci/runner with $verb $resource on other-cluster"
+  fi
+}
+if row bf; then
+  each admission_row "${admission_items[@]}"
+  passed "(bf) each of the ${#admission_items[@]} admission rights, given alone on the operator's cluster or another of the pool where its discovery lists the resource, exits 1 naming it"
+fi
+
+# --- (bg) The admission resources' discovery. Every API server serves the two webhook
+# configurations, so a list without one is not whole, and a discovery that cannot be read leaves
+# the admission policies unasked. ---
+admission_names_row() {
+  base_world
+  case "$1" in
+    missing)
+      printf '%s.admissionregistration.k8s.io\n' mutatingwebhookconfigurations validatingadmissionpolicies validatingadmissionpolicybindings \
+        >"$world/clusters/operator-cluster/admission-resources"
+      run
+      want_status 2 "a discovery without validatingwebhookconfigurations"
+      want_text "UNKNOWN live: RBAC on operator-cluster: the API server's discovery of admissionregistration.k8s.io lists no validatingwebhookconfigurations.admissionregistration.k8s.io, which every API server serves, so its list is not whole" \
+        "a discovery without validatingwebhookconfigurations"
+      ;;
+    refused)
+      : >"$world/clusters/operator-cluster/refuse-admission-resources"
+      run
+      want_status 2 "a discovery of admissionregistration.k8s.io that cannot be read"
+      want_text "UNKNOWN live: RBAC on operator-cluster: the API server's discovery of admissionregistration.k8s.io could not be read" \
+        "a discovery of admissionregistration.k8s.io that cannot be read"
+      ;;
+    refused-other)
+      add_cluster other-cluster us-east1
+      : >"$world/clusters/other-cluster/refuse-admission-resources"
+      run
+      want_status 2 "another cluster's discovery of admissionregistration.k8s.io that cannot be read"
+      want_text "UNKNOWN live: Workload Identity on $project/us-east1/other-cluster: the API server's discovery of admissionregistration.k8s.io could not be read" \
+        "another cluster's discovery of admissionregistration.k8s.io that cannot be read"
+      ;;
+  esac
+}
+if row bg; then
+  each admission_names_row missing refused refused-other
+  passed "(bg) a discovery of admissionregistration.k8s.io that lists no validatingwebhookconfigurations, or cannot be read on the operator's or another cluster, reads UNKNOWN"
+fi
+
+# --- (bi) An email-shaped User on a fleet member that is no GKE cluster. Its own authenticator names
+# its users, as it names its groups, so ci-bot@corp.example there is no proof of a person. ---
+if row bi; then
+  base_world
+  edge_member
+  cluster_admin edge-cluster "$(user_subject ci-bot@corp.example)"
+  run
+  want_status 2 "ci-bot@corp.example bound to cluster-admin on a non-GKE member"
+  want_text "UNKNOWN live: Workload Identity on fleet member edge: it takes its users from its own authenticator, not Google, so the User subjects bound here that look like emails (ci-bot@corp.example) are not known to be people" \
+    "ci-bot@corp.example bound to cluster-admin on a non-GKE member"
+  passed "(bi) an email-shaped User bound on a fleet member that is no GKE cluster reads UNKNOWN"
 fi

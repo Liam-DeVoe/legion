@@ -3,8 +3,10 @@
 # holds (the binding, the right's label, and the subject's kind, namespace and name), or a `role`
 # record when the render does not hold its role (or aggregates it); renders with no binding give
 # one `empty` record with the number of objects they hold. A rule limited by resourceNames on
-# impersonate or escalate is a grant too, its label naming the names: a review that names nothing
-# never matches it, yet impersonating the group system:masters by name is cluster-admin.
+# impersonate, escalate or bind, or on a patch or update of a binding, is a grant too, its label
+# naming the names: a review that names nothing never matches it, yet impersonating the group
+# system:masters by name is cluster-admin, and RBAC lets one who may bind a role by name write a
+# binding to it.
 include "rec";
         def objs: if type == "array" then .[] | objs
                   elif type == "object" and (.kind // "") == "List" then (.items // [])[] | objs
@@ -16,7 +18,9 @@ include "rec";
                or ($r.sub != "" and has_(.resources; "*/" + $r.sub)));
         def matches($r): matches_but_name($r)
           and (((.resourceNames // []) | length) == 0 or ($r.name != "" and has_(.resourceNames; $r.name)));
-        def named($r): $r.name == "" and ($r.verb == "impersonate" or $r.verb == "escalate")
+        def named($r): $r.name == ""
+          and ($r.verb == "impersonate" or $r.verb == "escalate" or $r.verb == "bind"
+               or (($r.verb == "patch" or $r.verb == "update") and ($r.resource == "rolebindings" or $r.resource == "clusterrolebindings")))
           and ((.resourceNames // []) | length) > 0 and matches_but_name($r);
         def named_label($r; $names): "\($r.verb) \($r.resource)\(if $r.sub != "" then "/" + $r.sub else "" end)\(if $r.group != "" then "." + $r.group else "" end)"
           + " \($names | join(", "))" + (if $r.ns != "" then " in " + $r.ns else " cluster-wide" end);

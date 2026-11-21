@@ -19,10 +19,13 @@ elif ! kubectl --kubeconfig "$KUBE" get serviceaccounts --all-namespaces -o json
 else
   mark
   # Every guarded pair's rights and the other clusters' guard rights, each right once: where both
-  # list one, the full list's label stays.
+  # list one, the full list's label stays; and the custom resources' and the admission resources'
+  # rights, from this cluster's discovery.
   rights="$(with_rights "$(rights_json db)" "$GUARD_RIGHTS")"
   custom_rights "$KUBE" plain || unknown "$step" "$CUSTOM_ERROR"
   rights="$(with_rights "$rights" "$CUSTOM_RIGHTS")"
+  admission_rights "$KUBE" || unknown "$step" "$ADMISSION_ERROR"
+  rights="$(with_rights "$rights" "$ADMISSION_RIGHTS")"
   jq -r "$JQ_REC"'.items[]? | [.metadata.namespace, .metadata.name, (.metadata.annotations["iam.gke.io/gcp-service-account"] // "")] | rec' \
     "$WORK/serviceaccounts.json" >"$WORK/serviceaccounts.rec"
   printf '%s\n%s\n' "$WITNESS_RECORD" "$ANONYMOUS_RECORD" >"$WORK/principals.rec"
@@ -68,7 +71,8 @@ else
   groups_verdict "$step" "${GROUPS_CONFIG["$PROJECT/$OPERATOR_LOCATION/$CLUSTER"]:-unknown:the cluster list gave no authenticatorGroupsConfig}"
   masters_bindings "$step" "" "cluster:$CLUSTER"
   # Name-limited rights, which a review that names nothing never finds: impersonate each bound group
-  # and user by name, and escalate, bind, update or patch each role bound to a reviewed principal.
+  # and user by name, bind and escalate every binding's role and patch and update every binding by
+  # name, and update or patch each role bound to a reviewed principal.
   named_rights
   rights="$(with_rights "$rights" "$NAMED_RIGHTS")"
   # Every cluster has default/default, so a list that holds no ServiceAccount outside the system

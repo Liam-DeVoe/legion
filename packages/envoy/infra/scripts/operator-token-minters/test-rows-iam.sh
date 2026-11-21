@@ -30,10 +30,13 @@
 #        of iam.serviceAccounts.setIamPolicy, secretmanager.secrets.setIamPolicy,
 #        resourcemanager.organizations.setIamPolicy and iam.roles.update over a checked resource;
 #   (at) grade-ci holding alone on a GKE fleet member's project each member permission (the
-#        container.* escalation permissions, nodes.proxy and the IAM writers) exits 1;
+#        container.* escalation and admission permissions, nodes.proxy and the IAM writers) exits 1;
 #   (au) a holder of setIamPolicy on the folder above that member's project exits 1;
 #   (av) grade-ci holding roles/resourcemanager.projectIamAdmin, or a role with
-#        container.clusterRoleBindings.create and container.clusterRoles.bind, there exits 1.
+#        container.clusterRoleBindings.create and container.clusterRoles.bind, there exits 1;
+#   (bh) container.mutatingWebhookConfigurations.create and update and
+#        container.validatingWebhookConfigurations.create and update, each held on the project by an
+#        agent's Google service account, exit 1 (their RBAC rights are row bf's).
 
 # --- (d) A project-level container.admin held by a CI account, and by an agent's Google service
 # account (the GKE IAM step's control). ---
@@ -233,7 +236,9 @@ fi
 # --- (at) A fleet member's own project's IAM: each member permission held alone by grade-ci. ---
 member_iam_permissions=(container.clusters.impersonate container.clusterRoles.bind container.clusterRoles.escalate
   container.clusterRoleBindings.create container.clusterRoleBindings.update container.roles.bind container.roles.escalate
-  container.roleBindings.create container.roleBindings.update container.nodes.proxy resourcemanager.projects.setIamPolicy
+  container.roleBindings.create container.roleBindings.update container.nodes.proxy container.mutatingWebhookConfigurations.create
+  container.mutatingWebhookConfigurations.update container.validatingWebhookConfigurations.create
+  container.validatingWebhookConfigurations.update resourcemanager.projects.setIamPolicy
   resourcemanager.folders.setIamPolicy resourcemanager.organizations.setIamPolicy iam.serviceAccounts.setIamPolicy
   secretmanager.secrets.setIamPolicy iam.roles.update)
 member_iam_row() {
@@ -286,4 +291,12 @@ if row au; then
   want_line "FINDING serviceAccount:$grade_ci: resourcemanager.folders.setIamPolicy on //cloudresourcemanager.googleapis.com/folders/200 through roles/resourcemanager.folderIamAdmin, granted at //cloudresourcemanager.googleapis.com/folders/200" \
     "grade-ci holding roles/resourcemanager.folderIamAdmin on the folder above a fleet member's project"
   passed "(au) a holder of setIamPolicy on the folder above a fleet member's project exits 1"
+fi
+
+# --- (bh) The admission permissions, through IAM. GKE's IAM authorizer checks these for the webhook
+# configurations' writes; roles/container.admin names none for the admission policies. ---
+if row bh; then
+  each new_container_row container.mutatingWebhookConfigurations.create container.mutatingWebhookConfigurations.update \
+    container.validatingWebhookConfigurations.create container.validatingWebhookConfigurations.update
+  passed "(bh) container.mutatingWebhookConfigurations.create and update and container.validatingWebhookConfigurations.create and update, each held by an agent's Google service account, exit 1"
 fi

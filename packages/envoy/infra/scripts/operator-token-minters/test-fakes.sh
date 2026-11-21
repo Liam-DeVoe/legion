@@ -266,6 +266,19 @@ case "${args[*]}" in
       exit 1
     fi
     ;;
+  "api-resources --api-group=admissionregistration.k8s.io -o name")
+    # The admission resources a GKE cluster of 1.30 or later serves, or the world's admission-resources.
+    if [ -e "$dir/refuse-admission-resources" ]; then
+      echo "error: unable to retrieve the complete list of server APIs: admissionregistration.k8s.io/v1: the server is currently unable to handle the request" >&2
+      exit 1
+    fi
+    if [ -e "$dir/admission-resources" ]; then
+      cat "$dir/admission-resources"
+    else
+      printf '%s.admissionregistration.k8s.io\n' mutatingwebhookconfigurations validatingadmissionpolicies \
+        validatingadmissionpolicybindings validatingwebhookconfigurations
+    fi
+    ;;
   *)
     echo "fake kubectl: unexpected call: kubectl ${args[*]}" >&2
     exit 2

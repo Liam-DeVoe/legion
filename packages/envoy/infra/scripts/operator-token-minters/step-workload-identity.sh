@@ -11,10 +11,11 @@ pool_name="the workload pool's project"
 # read_other_cluster STEP PRINCIPAL WHERE GROUPS: on the cluster KUBE names, no guarded pair's
 # namespace may exist (else a finding for PRINCIPAL, the cluster), and no ServiceAccount outside the
 # cluster's system namespaces, none of Kubernetes' own groups, and no binding subject may hold a
-# right of GUARD_RIGHTS (each a finding, its right followed by WHERE); every binding of
-# system:masters but the bootstrap one is a finding, and its other Group subjects are judged by
-# GROUPS, where the cluster takes its groups from (groups_verdict). The reviews carry the witness.
-# PASS when it recorded neither a finding nor an UNKNOWN.
+# right of GUARD_RIGHTS, a custom or admission resource's right from the cluster's discovery, or a
+# name-limited right (each a finding, its right followed by WHERE); every binding of system:masters
+# but the bootstrap one is a finding, and its other Group subjects are judged by GROUPS, where the
+# cluster takes its groups from (groups_verdict). The reviews carry the witness. PASS when it
+# recorded neither a finding nor an UNKNOWN.
 read_other_cluster() {
   local cstep="$1" principal="$2" where="$3" groups_mode="$4" ns name pair acts accounts=0
   local -A exists=()
@@ -56,8 +57,9 @@ read_other_cluster() {
   groups_verdict "$cstep" "$groups_mode"
   masters_bindings "$cstep" "$where" "$principal"
   custom_rights "$KUBE" guard || unknown "$cstep" "$CUSTOM_ERROR"
+  admission_rights "$KUBE" || unknown "$cstep" "$ADMISSION_ERROR"
   named_rights
-  guard_rights="$(with_rights "$(with_rights "$GUARD_RIGHTS" "$CUSTOM_RIGHTS")" "$NAMED_RIGHTS")"
+  guard_rights="$(with_rights "$(with_rights "$(with_rights "$GUARD_RIGHTS" "$CUSTOM_RIGHTS")" "$ADMISSION_RIGHTS")" "$NAMED_RIGHTS")"
   # Every cluster has default/default, so a list that holds no ServiceAccount outside the system
   # namespaces is not the cluster's whole list; its binding subjects are still reviewed.
   [ "$accounts" -gt 0 ] ||
@@ -69,7 +71,7 @@ read_other_cluster() {
   elif judge_reviews "$cstep" "$where" "$principal"; then
     follow_becomes "$KUBE" "$cstep" "$where" "$principal"
     ! unchanged ||
-      pass "$cstep" "no guarded namespace ($GUARDED_TEXT), and none of its $accounts ServiceAccounts outside the system namespaces, $GROUPS_ADDED of Kubernetes' own groups, $BOUND binding subjects and anyone unauthenticated may make a namespace, a ServiceAccount, a pod or a custom resource in a guarded namespace, or hold an escalation right"
+      pass "$cstep" "no guarded namespace ($GUARDED_TEXT), and none of its $accounts ServiceAccounts outside the system namespaces, $GROUPS_ADDED of Kubernetes' own groups, $BOUND binding subjects and anyone unauthenticated may make a namespace, a ServiceAccount, a pod or a custom resource in a guarded namespace, write a webhook or admission policy, or hold an escalation right"
   fi
 }
 
