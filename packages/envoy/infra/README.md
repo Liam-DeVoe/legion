@@ -1089,9 +1089,11 @@ Workspace super administrator makes two person steps: give the delegated user an
 role whose only privilege is Users > Read, and, in the Admin console under Security, Access and
 data control, API controls, Manage Domain Wide Delegation, authorize the signer's numeric client
 ID for exactly `https://www.googleapis.com/auth/admin.directory.user.readonly`. Google states that
-the grant can take up to 24 hours to take effect. `envoy-dispatch directory-check`
-(`packages/envoy/cmd/dispatch/README.md`) then checks the reads and that the grant gives nothing
-more, before IAP admits anyone.
+the grant can take up to 24 hours to take effect. The component enables no Google API: enable
+`iamcredentials.googleapis.com`, which serves `signJwt`, and `admin.googleapis.com`, which serves
+the Directory's `users.get`, in the project that holds the `directoryAccount` service account.
+`envoy-dispatch directory-check` (`packages/envoy/cmd/dispatch/README.md`) then checks the reads
+and that the grant gives nothing more, before IAP admits anyone.
 
 IAP guards only the requests that come through the load balancer. The pods of `allowedNamespaces`,
 and the addresses of `loadBalancerSourceRanges`, reach the app's Service on 8766 directly, without

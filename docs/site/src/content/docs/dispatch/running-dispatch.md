@@ -595,9 +595,12 @@ Two settings configure the reads, both required with `DISPATCH_IDENTITY=iap` and
 it: `DISPATCH_DIRECTORY_ACCOUNT`, the email of a service account with no key and no project role,
 on which Dispatch's own workload identity holds `roles/iam.serviceAccountTokenCreator`, so
 Dispatch signs through it and no key leaves Google; and `DISPATCH_DIRECTORY_ADMIN`, the email of
-the Workspace user the reads act as. A server that cannot build its reader, with no Application
-Default Credentials say, logs `dispatch: build the request identity` and exits at boot. The
-secrets broker of such a deployment sets `BROKER_HOLD_REQUIRES_DEADLINE=true`
+the Workspace user the reads act as. Enable two Google APIs in the Google Cloud project that holds
+that service account: `iamcredentials.googleapis.com`, whose `signJwt` Dispatch calls on the
+service account, and `admin.googleapis.com`, which serves the Directory's `users.get`. A server
+that cannot build its reader, with no Application Default Credentials say, logs
+`dispatch: build the request identity` and exits at boot. The secrets broker of such a deployment
+sets `BROKER_HOLD_REQUIRES_DEADLINE=true`
 ([A person Dispatch holds](/legion/broker/operate/#a-person-dispatch-holds)). On `envoy-infra`'s
 `gcp:Dispatch`, set `directoryAccount` and `directoryAdmin` beside `iapAudience`
 (`packages/envoy/infra/README.md`).
