@@ -37,12 +37,15 @@ const withheldNotAdmitted = "not_admitted"
 //
 //   - a GitHub event is the repository rule's (relayVerdict), with no reader withheld
 //     answer_unknown, and one whose envelope names a topic that is no GitHub event's is withheld;
-//   - a message on an agent subject passes only on the session's own (ownFrameAgentSubject), and
-//     there by the topic its envelope names: the session's own agent subject is a message to the
-//     session, a send or a dead letter, which passes; any other topic is a forward, a role's
-//     message forwarded to the claim's holder among them, judged as a frame of that topic. A
-//     forward of a GitHub event or of another agent subject, and an envelope that does not
-//     decode, are withheld;
+//   - a message on an agent subject passes only on the session's own (ownFrameAgentSubject): a
+//     role message - a role-lane forward or a role-marked send - passes only for the project its
+//     role's claim works for (contracts.ParseRoleClaimKey), judged by the role and not by the
+//     subject it is stored on, since a forged role claim or a kept or taken copy can store
+//     another project's role's message on the session's own subject; any other frame passes by
+//     the topic its envelope names: the session's own agent subject is a message to the session,
+//     a send or a dead letter, which passes, and any other topic is judged as a frame of that
+//     topic. A forward of a GitHub event or of another agent subject, and an envelope that does
+//     not decode, are withheld;
 //   - every other frame passes when contracts.SubjectProject gives it a project the token lists
 //     and, where its envelope names a topic, that topic is of the same project: the subject a
 //     relay header names and the envelope it carries are both what a publisher on the relay
@@ -61,6 +64,21 @@ func edgeFrameVerdict(repositories *edgeRepositories, sessionID string, projects
 	}
 	if strings.HasPrefix(subject, contracts.AgentTopicPrefix) {
 		if !ownFrameAgentSubject(sessionID, projects, subject) || !named {
+			return true, withheldProjectNotHeld
+		}
+		// A role message - a role-lane forward, whose topic names the lane, or a role-marked
+		// send, whose role mark names the role (roleOfMessage.role) - is judged by the project
+		// its role's claim works for (contracts.ParseRoleClaimKey of the claim key), not by the
+		// subject the frame is stored on. A forged role claim can name the session for another
+		// project's role and have Dispatch send that role's message on the session's own subject,
+		// and a kept or a taken copy of the session's own project's role keeps the previous
+		// holder's subject as its topic; both reach the session on its own agent subject. Reading
+		// the role is how the role lane, the relay and a takeover read one, and it holds a role
+		// lane to the project edgeTopicRule does (contracts.RoleClaimOf).
+		if role, _, isRole := decodeRoleMark(data); isRole {
+			if project, _ := contracts.ParseRoleClaimKey(role); slices.Contains(projects, project) {
+				return false, ""
+			}
 			return true, withheldProjectNotHeld
 		}
 		if ownFrameAgentSubject(sessionID, projects, topic) {
@@ -96,18 +114,10 @@ func envelopeTopic(data []byte) (string, bool) {
 }
 
 // ownFrameAgentSubject reports whether subject is sessionID's own agent subject in a form a
-// message is stored on: the old form, which names no project, or the new form under one of
-// projects. A wildcard in the project's place is no stored subject, so it is no one's here.
+// message is stored on: ownAgentSubject's forms without the wildcard project, which no publisher
+// stores a message under, so it is no one's here.
 func ownFrameAgentSubject(sessionID string, projects []string, subject string) bool {
-	if subject == contracts.LegacyAgentSubject(sessionID) {
-		return true
-	}
-	rest, found := strings.CutPrefix(subject, contracts.AgentTopicPrefix)
-	if !found {
-		return false
-	}
-	project, target, found := strings.Cut(rest, ".")
-	return found && target == sessionID && project != "*" && slices.Contains(projects, project)
+	return ownAgentSubject(sessionID, projects, subject) && subject != contracts.AgentTopicPrefix+"*."+sessionID
 }
 
 // edgeAdmissions is the projects of the token each session's latest registration on this replica

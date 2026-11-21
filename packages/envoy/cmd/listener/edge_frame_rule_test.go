@@ -97,6 +97,7 @@ func newScopeRigSocketReader(t *testing.T, cold bool) (*scopeRig, *edgeRepositor
 	}
 	tokens := listenerBrokerTokens(t, edge.broker)
 	sockets := newRelaySockets(rig.harness.client, tokens, logger)
+	sockets.repositories = socketReader
 	routes := http.NewServeMux()
 	registerV1Routes(routes, &listenerDeps{client: rig.harness.client, relaySockets: sockets, repositories: socketReader}, "test-machine", logger)
 	server := httptest.NewServer(apiAuth(listenerAPIAuth{brokers: tokens, edgeProjects: projects, logger: logger}, routes))
@@ -578,6 +579,69 @@ func TestAnEdgeRelaysOnlyItsTokensProjects(t *testing.T) {
 		if published := relayTopics(t, relay); !slices.Equal(published, []string{ownIssue}) {
 			t.Fatalf("the relay published frames of %v on the relay subject, want only %s's event", published, scopeProject)
 		}
+	})
+
+	t.Run("a role-marked send forwarded to it, of another project and of its own", func(t *testing.T) {
+		// A role-marked send (item.Role set) is a role's message forwarded to the claim's holder
+		// on the holder's own agent subject, which Dispatch's API sends and the kept lane and a
+		// takeover hand over. Its topic is an agent subject, not the role lane, so the rule reads
+		// its role mark: a forged claim can name an outside session for another project's role and
+		// have the send reach it on its own subject (F1), and a copy kept or taken for the
+		// session's own project's role keeps the previous holder's subject (F2). Both are judged
+		// by the role, not by the subject they are stored on.
+		rig := newScopeRig(t)
+		const session = "ses_scope_role_marked"
+		client, _ := registerScopeSession(t, rig, session)
+		own := contracts.LegacyAgentSubject(session)
+		const otherRole, ownRole = "legion-pub-pub-3-tester", "legion-priv-priv-3-tester"
+		// Both claims are written to the role bucket as a forged record would be: the edge
+		// refuses the claim of the other project's role itself (edgeRoleRefusal).
+		for _, role := range []string{otherRole, ownRole} {
+			if _, err := rig.deps.registry.SetRole(session, "test-machine", role, false); err != nil {
+				t.Fatalf("write the claim of %s naming %s: %v", role, session, err)
+			}
+		}
+		store := func(item contracts.Envelope) contracts.Envelope {
+			t.Helper()
+			if _, err := rig.harness.client.JS().Publish(own, marshalListenerEnvelope(t, item)); err != nil {
+				t.Fatalf("store a frame on %s: %v", own, err)
+			}
+			return item
+		}
+		// 1 CONTROL other project's role as a role-lane forward (topic = the role lane): withheld.
+		otherForward := store(listenerTestEnvelope(contracts.RoleTopicPrefix+otherRole, "scope-other-forward-"+id.New()))
+		// 2 F1 other project's role as a role-marked send (topic = the session's own subject): withheld.
+		f1 := listenerTestEnvelope(own, "scope-f1-"+id.New())
+		f1.Role = otherRole
+		f1 = store(f1)
+		// 3 F2 its own project's role as a kept role-marked send (topic = the previous holder's subject): delivered.
+		f2 := listenerTestEnvelope(contracts.LegacyAgentSubject("ses_scope_previous_holder"), "scope-f2-"+id.New())
+		f2.Role = ownRole
+		f2 = store(f2)
+		// 4 CONTROL its own project's role as a role-lane forward (topic = the role lane): delivered.
+		ownForward := store(listenerTestEnvelope(contracts.RoleTopicPrefix+ownRole, "scope-own-forward-"+id.New()))
+
+		got := map[string]bool{}
+		deadline := time.Now().Add(15 * time.Second)
+		for !got[ownForward.EventID] && time.Now().Before(deadline) {
+			for _, frame := range takeScopeFrames(t, client, 1, time.Until(deadline)) {
+				got[frame.item.EventID] = true
+			}
+		}
+		noScopeFrame(t, client, time.Second, "after its own project's role messages")
+		if got[otherForward.EventID] {
+			t.Errorf("the other project's role-lane forward (%s) reached the socket", otherForward.EventID)
+		}
+		if got[f1.EventID] {
+			t.Errorf("F1: the other project's role-marked send (%s) reached the socket", f1.EventID)
+		}
+		if !got[f2.EventID] {
+			t.Errorf("F2: its own project's kept role-marked send (%s) never reached the socket", f2.EventID)
+		}
+		if !got[ownForward.EventID] {
+			t.Errorf("its own project's role-lane forward (%s) never reached the socket", ownForward.EventID)
+		}
+		requireWithheld(t, rig, 2)
 	})
 }
 
