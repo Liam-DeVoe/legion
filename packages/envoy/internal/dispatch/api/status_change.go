@@ -31,10 +31,12 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"unicode"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // statusChangeRoute is the route's own name, which the advice of each write names.
@@ -459,8 +461,9 @@ type statusChangeRun struct {
 // expected_sequence is fenced at each step (issueWriteFence), with every event an earlier step
 // appended on the issue the call names counted as the call's own, those of the point it resumes
 // included. Each step of a keyed call that writes adds its entry to the call's recovery point in
-// its own transaction (writeIssue). The close of the issue the call names leaves its ask sweep
-// to the call's answer (statusChangeRun.answer).
+// its own transaction (writeIssue, queueStatusChangeStep), under the request key's claim that
+// each step carries (issueWriteCallStep.claim). The close of the issue the call names leaves its
+// ask sweep to the call's answer (statusChangeRun.answer).
 func (run *statusChangeRun) steps(ctx context.Context, steps []statusChangeStep) ([]statusChangeEntry, error) {
 	s := run.server
 	ran := []statusChangeEntry{}
@@ -468,9 +471,12 @@ func (run *statusChangeRun) steps(ctx context.Context, steps []statusChangeStep)
 	if run.change.expectedSeq != nil {
 		fence = run.resumed.fence(*run.change.expectedSeq)
 	}
-	_, keyed := ctx.Value(requestKeyClaimKey{}).(requestKeyClaim)
+	var claim *requestKeyClaim
+	if held, keyed := ctx.Value(requestKeyClaimKey{}).(requestKeyClaim); keyed {
+		claim = &held
+	}
 	for index, step := range steps {
-		written, err := s.writeIssue(ctx, run.call(step, fence))
+		written, err := s.writeIssue(ctx, run.call(step, fence, claim))
 		if err != nil {
 			return ran, err
 		}
@@ -486,7 +492,7 @@ func (run *statusChangeRun) steps(ctx context.Context, steps []statusChangeStep)
 			}
 		}
 		ran = append(ran, answeredStatusChangeEntry(written.issue, written.previousLastSeq))
-		run.pointed = run.pointed || keyed
+		run.pointed = run.pointed || claim != nil
 		if s.statusChangeAfterStep != nil {
 			s.statusChangeAfterStep(ctx, index)
 		}
@@ -564,14 +570,15 @@ func (run *statusChangeRun) sweep() {
 
 // call is the write of one step: the status or the unlink the step writes, as the caller writes
 // it, and, for a step an option makes, the comment of Dispatch's system actor that names the call.
-func (run *statusChangeRun) call(step statusChangeStep, fence *issueWriteFence) issueWriteCall {
+// claim is the request key's claim of a keyed call, nil for a call with no key.
+func (run *statusChangeRun) call(step statusChangeStep, fence *issueWriteFence, claim *requestKeyClaim) issueWriteCall {
 	call := issueWriteCall{
 		writer:        run.writer,
 		key:           step.key,
 		callerProject: run.callerProject,
 		outliving:     run.outliving,
 		adviceRoute:   statusChangeRoute,
-		step:          &issueWriteCallStep{named: run.key, fence: fence, sweepsLater: step.key == run.key},
+		step:          &issueWriteCallStep{named: run.key, fence: fence, claim: claim, sweepsLater: step.key == run.key},
 	}
 	if step.reparent {
 		call.unlinkFrom(run.key)
@@ -606,13 +613,55 @@ func (run *statusChangeRun) call(step statusChangeStep, fence *issueWriteFence) 
 	return call
 }
 
-// statusChangeCallerName is the caller a status change's comments name: a person's login, the
-// person a token acts for, or else the session the write records.
+// statusChangeCallerName is the caller a status change's comments name, from what the request's
+// credential proved alone, as plain text: a person's login, the person a token acts for (Owner),
+// the service a token proves (Service), or a session a broker-issued token proved (Proven). Any
+// other caller is a session that only the request's body named, under a credential that proves
+// none (the deployment's shared token): its id is the caller's own text, in a comment that
+// Dispatch's system actor signs, so the comment quotes it as code (claimedSessionName).
 func statusChangeCallerName(actor model.Actor) string {
-	if actor.Kind != "user" && actor.Owner != nil {
+	switch {
+	case actor.Kind == "user":
+		return actor.ID
+	case actor.Owner != nil:
 		return *actor.Owner
+	case actor.Service != nil:
+		return *actor.Service
+	case actor.Proven:
+		return actor.ID
 	}
-	return actor.ID
+	return claimedSessionName(actor.ID)
+}
+
+// claimedSessionNameMax is the most runes of a session's id that claimedSessionName quotes: room
+// for an id as long as a uuid (36 characters) and then some, and a bound on what a caller's own
+// text adds to a comment that Dispatch signs.
+const claimedSessionNameMax = 64
+
+// claimedSessionName is the id of a session that only a request's body named, as a comment quotes
+// it: an inline code span of the id with every backtick, every line ending and every other control
+// character removed, its spaces at both ends trimmed, and cut to claimedSessionNameMax runes, so
+// no text of the caller's leaves the span as a link, a new line or a block. An id with nothing
+// left is "a session".
+func claimedSessionName(id string) string {
+	quoted := strings.TrimSpace(strings.Map(func(r rune) rune {
+		if r == '`' || unicode.IsControl(r) || r == '\u2028' || r == '\u2029' {
+			return -1
+		}
+		return r
+	}, id))
+	runes := 0
+	for index := range quoted {
+		if runes == claimedSessionNameMax {
+			quoted = strings.TrimSpace(quoted[:index])
+			break
+		}
+		runes++
+	}
+	if quoted == "" {
+		return "a session"
+	}
+	return "`" + quoted + "`"
 }
 
 // writeStatusChangeRefusal answers err as every other route answers it (writeAuthenticationError,
@@ -660,28 +709,66 @@ func (s *server) refuseStatusChangeKey(w http.ResponseWriter, err error, recover
 	s.writeStatusChangeRefusal(w, err, point.Changed)
 }
 
+// The members of a status change's recovery point (statusChangeRecovery), each named here once:
+// every statement that writes the point or reads it names them by these constants, and so does
+// the point's decoding (statusChangeRecovery.UnmarshalJSON).
+const (
+	// pointChanged is the entry of each step that wrote, which recoveryPointRead gathers from
+	// request_key_steps.
+	pointChanged = "changed"
+	// pointEvents is the ids of the events the steps appended on the issue the call names.
+	pointEvents = "events"
+	// pointWithdrawn is the ids of the asks the named issue's own close withdrew.
+	pointWithdrawn = "withdrawn"
+	// pointFinished is the mark that every step of the call ran.
+	pointFinished = "finished"
+	// pointIssue is the answer's issue, written with the mark.
+	pointIssue = "issue"
+)
+
 // statusChangeRecovery is the recovery point of a keyed status change (request_keys.go): what
 // the steps that committed made, from which a repeat finishes the call. Each step that writes adds
 // to it in its own transaction, right after its write phase, with a statement that builds the
-// head's members in its SQL and adds its entry as a row of request_key_steps (writeIssue), and the
-// call marks it finished, with the answer's issue, once its last step has run
-// (markStatusChangeFinished). Every reader reads it with the steps' entries under changed
-// (recoveryPointRead). Go only reads it.
+// head's members in its SQL and adds its entry as a row of request_key_steps
+// (queueStatusChangeStep), and the call marks it finished, with the answer's issue, once its last
+// step has run (markStatusChangeFinished). Every reader reads it with the steps' entries under
+// changed (recoveryPointRead). Go only reads it, by the members' names above (UnmarshalJSON).
 type statusChangeRecovery struct {
 	// Changed is the entry of each step that wrote, in the order the steps committed, each with
 	// its issue as its step's write answered it, which every answer from the point carries.
-	Changed []statusChangeEntry `json:"changed"`
+	Changed []statusChangeEntry
 	// Events is the ids of every event the steps appended on the issue the call names, which the
 	// fence of a resumed attempt counts as the call's own.
-	Events []int64 `json:"events"`
+	Events []int64
 	// Withdrawn is the ids of the asks that the close of the issue the call names withdrew, which
 	// that close's ask sweep takes.
-	Withdrawn []string `json:"withdrawn"`
+	Withdrawn []string
 	// Finished is the mark that every step of the call ran.
-	Finished bool `json:"finished"`
+	Finished bool
 	// Issue is the answer's issue (statusChangeRun.namedIssue), written with the mark, which a
 	// replay answers.
-	Issue *model.Issue `json:"issue,omitempty"`
+	Issue *model.Issue
+}
+
+// UnmarshalJSON reads the point by its members' names, the constants above that every statement
+// writing or reading the point names too, so a reader and a writer cannot name a member apart and
+// read it as empty. A member the point does not hold stays empty.
+func (point *statusChangeRecovery) UnmarshalJSON(data []byte) error {
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(data, &members); err != nil {
+		return err
+	}
+	for name, into := range map[string]any{
+		pointChanged: &point.Changed, pointEvents: &point.Events, pointWithdrawn: &point.Withdrawn,
+		pointFinished: &point.Finished, pointIssue: &point.Issue,
+	} {
+		if member, held := members[name]; held {
+			if err := json.Unmarshal(member, into); err != nil {
+				return fmt.Errorf("read %s of a status change's recovery point: %w", name, err)
+			}
+		}
+	}
+	return nil
 }
 
 // holds reports whether the point holds the entry of key's step, which counts that step as made.
@@ -768,7 +855,7 @@ func (s *server) markStatusChangeFinished(ctx context.Context, issue model.Issue
 	}
 	defer tx.Rollback(ctx)
 	tag, err := tx.Exec(ctx, `
-		update request_keys set recovery = recovery || jsonb_build_object('finished', true, 'issue', $4::jsonb)
+		update request_keys set recovery = recovery || jsonb_build_object('`+pointFinished+`', true, '`+pointIssue+`', $4::jsonb)
 		where login = $1 and idempotency_key = $2 and attempt = $3 and status is null
 	`, claim.login, claim.key, claim.attempt, encoded)
 	if err != nil {
@@ -778,6 +865,54 @@ func (s *server) markStatusChangeFinished(ctx context.Context, issue model.Issue
 		return errRequestKeyTakenOver
 	}
 	return tx.Commit(ctx)
+}
+
+// queueStatusChangeStep queues on b, the batch that runs right after the write phase of one step
+// of a keyed status change (docs.Ledger.AfterWrites), the statement that writes the step into the
+// call's recovery point, under the request key's claim the step carries (step.claim). It adds to
+// the head the key holds, which is the call's point so far, since only the attempt that holds the
+// key writes it: the ids of the events on the issue the call names (step.named) after
+// namedLastSeq, its last_seq as the step read it under that issue's owner lock, when the step holds
+// that lock (holdsNamed), and withdrawn, the ids of the asks that the named issue's own close
+// withdrew. It adds entry, the step's entry with its issue as the step's write answered it, as a
+// row of request_key_steps. The event ids exist, and the issue's last_seq and a close's closed_at
+// are known, only once the batch has run, so the statement derives the ids in its own SQL, after
+// the step's last event insert, and its callback reads them into events, the step's own events on
+// the named issue (issueWriteResult.namedEvents). The statement is scoped to the request's own
+// claim, so a step whose key another attempt took over rolls back (errRequestKeyTakenOver).
+func queueStatusChangeStep(
+	b *store.WriteBatch, step *issueWriteCallStep, entry statusChangeEntry, namedLastSeq int, holdsNamed bool,
+	withdrawn []string, events *[]int64,
+) error {
+	encoded, err := json.Marshal(entry)
+	if err != nil {
+		return err
+	}
+	claim := step.claim
+	b.Queue("write the recovery point of a status change", `
+		with named as (
+			select coalesce(array_agg(id order by id), '{}') as ids from events
+			where $4 and issue_key = $5 and seq > $6
+		), head as (
+			update request_keys set recovery = jsonb_build_object(
+				'`+pointEvents+`', coalesce(recovery -> '`+pointEvents+`', '[]') || to_jsonb(named.ids),
+				'`+pointWithdrawn+`', coalesce(recovery -> '`+pointWithdrawn+`', '[]') || coalesce(to_jsonb($8::text[]), '[]'))
+			from named
+			where login = $1 and idempotency_key = $2 and attempt = $3 and status is null
+			returning named.ids
+		), step as (
+			insert into request_key_steps (login, idempotency_key, entry) select $1, $2, $7::jsonb from head
+		)
+		select ids from head
+	`, claim.login, claim.key, claim.attempt, holdsNamed, step.named, namedLastSeq, encoded, withdrawn,
+	).QueryRow(func(row pgx.Row) error {
+		err := row.Scan(events)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return errRequestKeyTakenOver
+		}
+		return err
+	})
+	return nil
 }
 
 // replayStatusChange answers a repeat of a keyed status change from its recovery point: a call

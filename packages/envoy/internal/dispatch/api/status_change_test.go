@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -541,6 +542,88 @@ func TestATokenBesideABrowserIdentityIsTheTokens(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestAStatusChangesCommentNamesItsCallerAsItsCredentialProvedIt: the comment of an option names
+// its caller from what the request's credential proved. A session that the body names under the
+// deployment's shared token, which proves none, is quoted as code: the id with every backtick,
+// line ending and other control character removed, cut to claimedSessionNameMax runes, in one
+// code span, so a Markdown link, a new line and a block line in the id stay inside that span and
+// the comment reads as one paragraph that links nowhere. An id the cleaning empties is "a
+// session". A personal token names the person it belongs to, whatever session its body names.
+func TestAStatusChangesCommentNamesItsCallerAsItsCredentialProvedIt(t *testing.T) {
+	rig := newStatusChangeRig(t, true)
+	// started starts a new issue on the backlog, under a new parent on the backlog, with
+	// include_parent and actor as the body's actor, sent by send, and answers the parent, which
+	// the call moves into work and comments on, and the issue.
+	started := func(
+		t *testing.T, label string, actor map[string]any, send func(t *testing.T, path string, body map[string]any) *httptest.ResponseRecorder,
+	) (string, string) {
+		t.Helper()
+		parent := rig.file(t, label+" parent", "backlog", "")
+		named := rig.file(t, label+" issue", "backlog", parent)
+		path := "/api/v1/issues/" + named + "/status-change"
+		if response := send(t, path, map[string]any{"status": "todo", "include_parent": true, "actor": actor}); response.Code != http.StatusOK {
+			t.Fatalf("POST %s, %s: status=%d body=%s, want 200", path, label, response.Code, response.Body.String())
+		}
+		return parent, named
+	}
+	shared := func(t *testing.T, path string, body map[string]any) *httptest.ResponseRecorder {
+		return sessionRequest(t, rig.handler, http.MethodPost, path, body)
+	}
+	// moved is the comment that the call on named by caller leaves on parent.
+	moved := func(parent, named, caller string) string {
+		return optionComment(parent, fmt.Sprintf(
+			"Dispatch moved this issue from `backlog` to `in_progress`, because %s's status change of %s passed `include_parent`.", caller, named))
+	}
+
+	t.Run("a session the shared token's body names is code that holds no link, line or block", func(t *testing.T) {
+		const id = "ses_`evil`\r\n[a link](https://evil.example/x)\n\n:::decision\nWhich one?\n:::\npast the cut"
+		// The id with no backtick and no line ending, cut at 64 runes: where its block's closing
+		// ::: ends.
+		const quoted = "ses_evil[a link](https://evil.example/x):::decisionWhich one?:::"
+		parent, named := started(t, "Named by the body", map[string]any{"kind": "session", "id": id}, shared)
+		requireComments(t, rig.database, []string{parent, named}, moved(parent, named, "`"+quoted+"`"))
+		var body string
+		if err := rig.database.Pool.QueryRow(context.Background(), `select body from comments where issue_key = $1`, parent).Scan(&body); err != nil {
+			t.Fatalf("read the comment on %s: %v", parent, err)
+		}
+		if strings.ContainsAny(body, "\r\n") {
+			t.Errorf("the comment on %s holds a line ending: %q", parent, body)
+		}
+		tree := pmdoc.ReadForDisplay(body, pmdoc.DisplayLatest)
+		if len(tree.Children) != 1 || tree.Children[0].Type != "paragraph" {
+			t.Fatalf("the comment on %s reads as %d blocks, want one paragraph: %q", parent, len(tree.Children), body)
+		}
+		var code []string
+		for _, text := range tree.Children[0].Children {
+			for _, mark := range text.Marks {
+				switch mark.Type {
+				case "link":
+					t.Errorf("the comment on %s links %q to %v, want no link", parent, text.Text, mark.Attrs)
+				case "inlineCode":
+					code = append(code, text.Text)
+				}
+			}
+		}
+		if !slices.Contains(code, quoted) {
+			t.Errorf("the code spans of the comment on %s are %q, want the session's id %q among them", parent, code, quoted)
+		}
+	})
+
+	t.Run("a session id the cleaning empties is a session", func(t *testing.T) {
+		parent, named := started(t, "Named by backticks alone", map[string]any{"kind": "session", "id": "``\n`\t`"}, shared)
+		requireComments(t, rig.database, []string{parent, named}, moved(parent, named, "a session"))
+	})
+
+	t.Run("a personal token names its owner, not the session its body names", func(t *testing.T) {
+		token := personalTokenOwnedBy(t, rig.database, "bob")
+		parent, named := started(t, "Named by a personal token", map[string]any{"kind": "session", "id": "ses_personal_token"},
+			func(t *testing.T, path string, body map[string]any) *httptest.ResponseRecorder {
+				return agentRequest(t, rig.handler, http.MethodPost, path, body, token)
+			})
+		requireComments(t, rig.database, []string{parent, named}, moved(parent, named, "bob"))
+	})
 }
 
 // TestUnlinkChildrenMakesEachARoot: unlink_children removes each open child of the issue from it,
