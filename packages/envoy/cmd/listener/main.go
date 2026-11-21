@@ -1596,23 +1596,21 @@ func main() {
 		os.Exit(1)
 	}
 	// The mode is the process's, read once from ENVOY_CONSUMER_NAMES (config.Load), and every
-	// start names it. A fixed-mode start over a selection bucket the cutover converted refuses:
-	// today's names must not run over a store whose sessions hold fresh ones.
+	// start names it. A fixed-mode start over a selection bucket the cutover converted refuses, and
+	// so does a fixed-mode process whose connection, made again, finds one: today's names must not
+	// run over a store whose sessions hold fresh ones (awaitFixedNaming, WatchConversion).
 	logger.Info("session consumer naming mode", slog.String("consumer_names", string(client.ConsumerNames())))
 	if !delivery.consumers.Fresh() {
-		checkCtx, cancel := context.WithTimeout(context.Background(), sessionConsumerCallTimeout)
-		err := delivery.consumers.RefuseConvertedStore(checkCtx)
-		cancel()
-		switch {
-		case consumerGrantRefused(err):
-			logger.Warn("the NATS user may not read the session consumers' selection bucket; the fixed mode runs, as on a hub that holds no converted bucket",
-				slog.String("bucket", consumernames.SessionBucket), slog.String("error", err.Error()))
-		case err != nil:
+		if err := awaitFixedNaming(context.Background(), delivery.consumers, logger, fixedNamingRetry); err != nil {
 			logger.Error("session consumer naming refuses the start: "+err.Error(), slog.String("error", err.Error()))
 			delivery.close()
 			client.Conn.Close()
 			os.Exit(1)
 		}
+		delivery.consumers.WatchConversion(func(err error) {
+			logger.Error("session consumer naming stops the listener: "+err.Error(), slog.String("error", err.Error()))
+			os.Exit(1)
+		})
 	}
 	if delivery.consumers.Fresh() {
 		// The fresh mode's selection steps, counted by step and outcome (consumernames.Operation,

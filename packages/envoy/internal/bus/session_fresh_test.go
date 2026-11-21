@@ -567,3 +567,58 @@ func TestAFixedModeStartRefusedTheBucketsReadIsNoConversion(t *testing.T) {
 		t.Fatalf("a read the grant refuses = %v, want ErrConsumerNotGranted, on which the listener warns and starts", err)
 	}
 }
+
+// A fixed-mode process reads the selection bucket's marker again at every connection it makes, and
+// stops once the marker says the cutover converted the store. The control is the same reconnect
+// over a server that holds no bucket, which stops nothing.
+func TestAFixedModeReconnectReadsTheMarkerAgainAndStopsOnAConversion(t *testing.T) {
+	srv, uri := testnats.Start(t)
+	consumers, err := ConnectSessionConsumers([]string{uri}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(consumers.Close)
+	converted := make(chan error, 4)
+	consumers.WatchConversion(func(err error) { converted <- err })
+	// runs counts the reconnect hook runs, each after the conversion watch's hook of the same run.
+	runs := make(chan struct{}, 16)
+	consumers.client.AddReconnectHook(func(context.Context, *natsgo.Conn) error {
+		runs <- struct{}{}
+		return nil
+	})
+	awaitRun := func() {
+		t.Helper()
+		select {
+		case <-runs:
+		case <-time.After(30 * time.Second):
+			t.Fatal("no reconnect hook ran within 30 s of the restart")
+		}
+	}
+
+	// Control: a reconnect with no bucket on the server stops nothing.
+	srv.Stop(t)
+	srv.Start(t)
+	awaitRun()
+	select {
+	case err := <-converted:
+		t.Fatalf("a reconnect with no bucket stopped the process: %v", err)
+	default:
+	}
+
+	conn := testnats.Connect(t, uri)
+	if _, err := consumernames.CreateSessionBucket(context.Background(), conn, 1, consumernames.StoreState{Cutover: consumernames.CutoverDone, Boundary: 1}); err != nil {
+		t.Fatal(err)
+	}
+	conn.Close()
+	srv.Stop(t)
+	srv.Start(t)
+	awaitRun()
+	select {
+	case err := <-converted:
+		if !errors.Is(err, ErrConvertedStore) || !strings.Contains(err.Error(), consumernames.ModeEnvVar) {
+			t.Fatalf("the reconnect's refusal = %v, want ErrConvertedStore naming %s", err, consumernames.ModeEnvVar)
+		}
+	default:
+		t.Fatal("a reconnect over a converted bucket did not stop the process")
+	}
+}

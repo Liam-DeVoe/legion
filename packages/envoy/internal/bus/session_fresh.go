@@ -116,15 +116,19 @@ func (c *Client) ConsumerNames() consumernames.Mode {
 	return consumernames.ModeFixed
 }
 
-// RefuseConvertedStore is, in the fixed mode, the start's refusal of a selection bucket the
-// cutover converted: a bucket whose sentinel says the cutover is done holds the sessions' fresh
-// names, and today's fixed names must not run over it, so the listener refuses to start, naming
-// ENVOY_CONSUMER_NAMES. A bucket that does not exist, a sentinel that is missing, and a marker
-// that is not done (none, or rolled back) are no conversion, and the fixed mode runs. A read the
-// connection's user may not make is no conversion either: it is logged by the caller, and a hub
-// whose grant predates the bucket holds no bucket the cutover made for it. Any other failed read
-// refuses, so a start that cannot tell runs no fixed name over a converted store. In the fresh mode
-// it answers nil: that mode refuses every call until the marker says done.
+// ErrConvertedStore is RefuseConvertedStore's answer for a selection bucket the cutover converted.
+var ErrConvertedStore = errors.New("bus: the selection bucket says the cutover converted every session consumer to a fresh name")
+
+// RefuseConvertedStore is, in the fixed mode, the refusal of a selection bucket the cutover
+// converted (ErrConvertedStore, naming ENVOY_CONSUMER_NAMES): a bucket whose sentinel says the
+// cutover is done holds the sessions' fresh names, and today's fixed names must not run over it. A
+// bucket that does not exist, a sentinel that is missing, and a marker that is not done (none, or
+// rolled back) are no marker, and so is a read the connection's user may not make, which answers
+// ErrConsumerNotGranted for its caller to log: a hub whose listener grant has no read of the bucket
+// was never given the window's grants, which come before the bucket's creation, and the listener
+// beside Dispatch holds no such read at all. Any other failed read (no connection, a timeout) is its
+// error, which tells nothing, and the caller reads again rather than run today's names unread. In
+// the fresh mode it answers nil: that mode refuses every call until the marker says done.
 func (s *SessionConsumers) RefuseConvertedStore(ctx context.Context) error {
 	if s.fresh != nil {
 		return nil
@@ -138,9 +142,32 @@ func (s *SessionConsumers) RefuseConvertedStore(ctx context.Context) error {
 	case err != nil:
 		return fmt.Errorf("bus: read the session consumers' selection bucket %s before running fixed names: %w", consumernames.SessionBucket, err)
 	case state.Cutover == consumernames.CutoverDone:
-		return fmt.Errorf("bus: %s=%s, but the selection bucket %s says the cutover converted every session consumer to a fresh name: set %s=%s", consumernames.ModeEnvVar, consumernames.ModeFixed, consumernames.SessionBucket, consumernames.ModeEnvVar, consumernames.ModeFresh)
+		return fmt.Errorf("%w: %s=%s runs today's fixed names, and the bucket %s holds fresh ones: set %s=%s", ErrConvertedStore, consumernames.ModeEnvVar, consumernames.ModeFixed, consumernames.SessionBucket, consumernames.ModeEnvVar, consumernames.ModeFresh)
 	}
 	return nil
+}
+
+// WatchConversion has, in the fixed mode, every NATS connection of s read the selection bucket's
+// marker again (RefuseConvertedStore) once it is made, a reconnect in place or a connection dialled
+// to replace a closed one, and calls converted with the refusal when the marker says done: a
+// conversion run while this process was cut off must not have today's names run over it once it is
+// back. No marker and a read the grant refuses change nothing; any other failed read fails the
+// connection's hook run, which the client's recovery runs again. It does nothing in the fresh mode.
+func (s *SessionConsumers) WatchConversion(converted func(error)) {
+	if s.fresh != nil || converted == nil {
+		return
+	}
+	s.client.AddReconnectHook(func(ctx context.Context, _ *nats.Conn) error {
+		err := s.RefuseConvertedStore(ctx)
+		switch {
+		case err == nil, errors.Is(err, ErrPublishDenied):
+			return nil
+		case errors.Is(err, ErrConvertedStore):
+			converted(err)
+			return nil
+		}
+		return err
+	})
 }
 
 // Fresh reports whether s runs in the fresh mode.
