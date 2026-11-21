@@ -1367,6 +1367,55 @@ func (d *heldListing) ListIssues(ctx context.Context, project string, statuses [
 	return issues, nil
 }
 
+// A labelled todo root on a configured pair's `from`, which the boot's listing left unread without
+// a read of GitHub (leaveForRecovery) before the refresher recorded the pair's `to`, is recorded on
+// the `to` by the recovery after the boot. The entry the `to` is recorded on answers for the
+// `from` (lookup), so the root's preparation reads GitHub no further (prepareUnrecorded) and no read
+// of GitHub is pending that would drop the `from`'s marker: the recovery's deferral drops it as an
+// answer does (deferUnreadIssues, readAnswered), and the pass that wakes, the `from` no longer
+// unread, records the root through that entry. Before, every pass deferred the root again and left
+// the `from` unread, so the root was never recorded and the refresher listed the project on its
+// backoff for the life of the daemon.
+func TestARecoveryRecordsAnIssueOnAPairsFromThatItsRecordedToAnswersFor(t *testing.T) {
+	ctx := context.Background()
+	quickInstallReads(t)
+	const key, from, to = "LEGION-1530", "legacy/widgets", "acme/widgets"
+	// The transfer has happened: neither role App is installed on the name the repository moved
+	// away from.
+	installs := &installations{missing: map[string]bool{"implement " + from: true, "review " + from: true}}
+	w, client, _, _, _ := bootingRepositoryRig(t, installs, func(w *workflowRuntime) {
+		w.repositories = newRepositories("LEGION", ghrepo.MustRenames(ghrepo.MustRename(from, to)))
+	})
+	w.bootID = "pair-from-boot"
+	client.show(issue(key, from, "todo", true, "", 1))
+	if err := w.reconcile(ctx); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if got := recordedIssue(t, w, key); got != nil {
+		t.Fatalf("%s recorded as %+v by the boot's listing, want it left for the recovery: the boot reads GitHub for no repository", key, got)
+	}
+	if !w.repositoryUnread(from) {
+		t.Fatalf("%s is not left unread by the boot's listing (unread %q), want it left for the recovery", from, w.unreadReasons())
+	}
+	// The boot is over: the refresher starts, and its first job records the `to`, which a record
+	// names, before its recovery runs.
+	startRefresher(t, w)
+	if !recordsOn(w, from) {
+		t.Fatalf("no entry answers for %s once %s is recorded on, want the pair's `to` to answer for its `from`", from, to)
+	}
+	var got *record.Issue
+	if !within(10*time.Second, func() bool {
+		got = recordedIssue(t, w, key)
+		return got != nil && len(w.unreadReasons()) == 0 && len(w.recoveringReasons()) == 0
+	}) {
+		t.Fatalf("%s = %+v, unread %q, to recover %q; want it recorded on %s, and nothing left unread or to recover",
+			key, got, w.unreadReasons(), w.recoveringReasons(), to)
+	}
+	if got.Repo != to {
+		t.Fatalf("%s recorded on %s, want it on %s, the pair's `to`, whose entry answers for %s", key, got.Repo, to, from)
+	}
+}
+
 // A repository's recovery tells the architect that owns each child's parent, else the tree root's
 // architect, once, which children a release_children left for the repository the recovery still
 // did not record, with what to release: here C, todo under a backlog parent P, which the recovery

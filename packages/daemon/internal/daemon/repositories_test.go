@@ -865,11 +865,11 @@ func TestEveryReaderOfARepositoryTakesItsAnswerFromOneLookup(t *testing.T) {
 // A recovery's pass counts a repository as recovered, and tells its release waits, only where
 // GitHub answered for it, has not failed for it again, and no issue fell silent for it while the
 // pass ran. It lets a repository GitHub does not answer for go only where no preparation will
-// read GitHub for it again: no unrecorded todo issue is left on it, or an entry records issues on
-// it by now, and no issue fell silent for it since the pass began, with why it did. What a release
-// left to that repository's recovery leaves with its marker, for the architects to be told once
-// (tellLetGoWaits), and stays exactly while the marker does. Every listed repository counted as
-// recovered before, and nothing but an answered read ever let one go.
+// read GitHub for it again: no unrecorded todo issue is left on it, whatever an entry records,
+// and no issue fell silent for it since the pass began. What a release left to that repository's
+// recovery leaves with its marker, for the architects to be told once (tellLetGoWaits), and stays
+// exactly while the marker does. Every listed repository counted as recovered before, and nothing
+// but an answered read ever let one go.
 //
 // Nothing is settled for a repository a preparation marked while the pass ran, a marker held
 // already or not. An issue a person moves to todo after the pass read the listing is prepared,
@@ -890,18 +890,16 @@ func TestARecoverySettlesOnlyTheRepositoriesGitHubAnsweredFor(t *testing.T) {
 		unread, recovering, silent, todo, recorded, failed, answeredNow bool
 		// answered is whether the pass recovered it, which is when its release waits are told,
 		// kept whether it is still left unread after the pass, and gone whether the pass took
-		// the release wait on it out with its marker, to tell, for why.
+		// the release wait on it out with its marker, to tell.
 		answered, kept, gone bool
-		why                  letGoWhy
 	}{
 		{name: "GitHub answered and the pass left nothing silent", recovering: true, answered: true},
 		{name: "GitHub answered after an issue of the pass fell silent", recovering: true, silent: true},
 		{name: "GitHub answered once and fails again", recovering: true, unread: true, todo: true, kept: true},
 		{name: "GitHub does not answer for its todo issue", unread: true, todo: true, kept: true},
-		{name: "GitHub does not answer and no todo issue is left on it", unread: true, gone: true, why: letGoNoTodo},
+		{name: "GitHub does not answer and no todo issue is left on it", unread: true, gone: true},
 		{name: "GitHub does not answer and an issue fell silent after the listing", unread: true, silent: true, kept: true},
-		{name: "GitHub does not answer and an entry records issues on it by now", unread: true, todo: true, recorded: true, gone: true, why: letGoAnsweredElsewhere},
-		{name: "GitHub does not answer and an entry records issues on it with no todo issue left", unread: true, recorded: true, gone: true, why: letGoNoTodo},
+		{name: "GitHub does not answer and an entry records issues on it with no todo issue left", unread: true, recorded: true, gone: true},
 		{name: "an issue moved to todo after the listing finds GitHub failing", unread: true, failed: true, kept: true},
 		{name: "GitHub answers an issue of its own while the pass runs", unread: true, answeredNow: true},
 	} {
@@ -939,9 +937,6 @@ func TestARecoverySettlesOnlyTheRepositoriesGitHubAnsweredFor(t *testing.T) {
 			if taken != tc.gone {
 				t.Fatalf("the pass took %v out to tell, leaving %d waits on %s; want its release wait taken out with its marker: %v",
 					dropped, len(w.releaseWaits[repo]), repo, tc.gone)
-			}
-			if tc.gone && dropped[0].why != tc.why {
-				t.Fatalf("%s was let go for %d, want %d: its architects are told why", repo, dropped[0].why, tc.why)
 			}
 		})
 	}
