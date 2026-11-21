@@ -4581,7 +4581,8 @@ Each item below names a path with its method and identity, then its purpose.
     So another tree's architect cannot move an issue with no label under its own tree to get the right to write a labelled issue under it.
     An architect that took the label off its own tree, or moved its own issue out to the root, cannot then move another tree's issue under it either.
     The session of the project's Legion daemon passes neither check of a move.
-    A move out of every tree Legion runs is also a `parent` write that takes the issue out of Legion, above.
+    Only these checks judge a move out of every tree Legion runs.
+    The `parent` write that takes the issue out of Legion, above, is a write of `parent: null`.
 
   A close (`status: done`) withdraws every open ask of the issue, whoever's turn it is:
   decision blocks in its documents, plain asks and requests to approve one of its documents.
