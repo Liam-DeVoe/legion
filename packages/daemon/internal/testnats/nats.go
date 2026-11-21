@@ -321,19 +321,23 @@ var monitorClient = &http.Client{Timeout: 5 * time.Second}
 // every read fails.
 var readConnections = clientConnections
 
-// clientConnections lists the server's open client connections, each by id and name, by reading
-// the monitoring endpoint's /connz. It is readConnections' one implementation here, and the one
-// function to re-point: a server running inside the test process answers the same question from
-// the server object instead, which is the shape this fixture takes under dispatch://INFRA-1524's
-// rewrite.
-func clientConnections() ([]Connection, error) {
-	response, err := monitorClient.Get(monitorURL + "/connz")
+// clientConnections lists the shared server's open client connections (connectionsAt its
+// monitoring endpoint). It is readConnections' one implementation here, and the one function to
+// re-point: a server running inside the test process answers the same question from the server
+// object instead.
+func clientConnections() ([]Connection, error) { return connectionsAt(monitorURL) }
+
+// connectionsAt lists the open client connections of the server whose monitoring endpoint's base
+// URL is monitor, each by id and name, by reading its /connz: the shared server's
+// (clientConnections) or a test's own (armServerLeakCheck).
+func connectionsAt(monitor string) ([]Connection, error) {
+	response, err := monitorClient.Get(monitor + "/connz")
 	if err != nil {
 		return nil, err
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GET %s/connz answered %s", monitorURL, response.Status)
+		return nil, fmt.Errorf("GET %s/connz answered %s", monitor, response.Status)
 	}
 	var connz struct {
 		Connections []struct {
@@ -342,7 +346,7 @@ func clientConnections() ([]Connection, error) {
 		} `json:"connections"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&connz); err != nil {
-		return nil, fmt.Errorf("decode %s/connz: %w", monitorURL, err)
+		return nil, fmt.Errorf("decode %s/connz: %w", monitor, err)
 	}
 	connections := make([]Connection, 0, len(connz.Connections))
 	for _, c := range connz.Connections {
@@ -640,7 +644,12 @@ func StartNkeyAuthorizedUsers(t testing.TB, image string, users ...NkeyUser) (*t
 	if err != nil {
 		t.Fatalf("NATS connection string: %v", err)
 	}
+	monitoring, err := monitor(container)
+	if err != nil {
+		t.Fatalf("NATS monitoring URL: %v", err)
+	}
 	answering(t, url)
+	armServerLeakCheck(t, monitoring)
 	return container, url
 }
 
