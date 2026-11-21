@@ -651,6 +651,15 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 					return workflow.connect(attempt, cfg, plan.nats)
 				}, bootTimeout, natsauth.Unreachable))
 		}
+		// Every boot fills the copy of Dispatch's issues from a listing of the project before its
+		// first decision (R16 of dispatch://INFRA-3320): the reconcile writes the listing's rows
+		// first (blockers.Reconcile) and runs the first admission pass on them, in one
+		// transaction, so a child the event stream has not applied yet is in the copy before any
+		// parent's start or sign_off is decided. No ancestry is read: every decision reads the
+		// chain from the copy (record.Chains). The first boot's conversion of what the release
+		// before stored (decision 21 of dispatch://INFRA-4730) belongs here for its steps that read
+		// the listing and the copy, under this probe's retry, and before openUncountedRuns above for
+		// its steps that read the store alone, so all of it is done before attach.
 		if err == nil {
 			err = bootprobe.Run(probing, "list Dispatch issues for admission", readinessRetry, log,
 				readinessAttempt(workflow.reconcile, bootTimeout, dispatch.Unreachable))
@@ -1310,21 +1319,23 @@ func checkPaneRoleOverlays(ctx context.Context, cfg config.Config, image capabil
 }
 
 // launchVariants is the one reader a launch's arms come from: the experiments the project
-// declares, resolved against the answers the daemon's own store recorded for the launch's unit
-// and against the launch's role (experiment.Launch, which decides which keys to read and which
-// arms the rows put the launch in). Everything here is the transaction that reads those rows.
+// declares, resolved against the answers the daemon's own store recorded for the launch's issue
+// itself, its tree experiments' included (experiment.Launch, which decides which keys to read and
+// which arms the rows put the launch in), and against the launch's role. No tree the issue's
+// record stores is read: a change of parent changes no arm (R17 of dispatch://INFRA-3320).
+// Everything here is the transaction that reads those rows.
 //
 // It reads the daemon's own store rather than the workflow's, in a transaction of its own as the
 // supervisor's predicates read a record: the operator's spawn draws a tree's experiments through
 // the same store with no workflow configured (api's drawExperiments), and a launch that could not
-// read that draw back would run the unit against an arm the daemon had already recorded for it.
+// read that draw back would run the issue against an arm the daemon had already recorded for it.
 // A declaration no launch could use names no key to read, so such a deployment opens no
 // transaction per worker spawn at all (experiment.Launch.Keys).
-func launchVariants(st *store.Store, declared []config.Experiment, stateDir string) func(ctx context.Context, tree, issue string, role claim.Role) (experiment.Arms, error) {
+func launchVariants(st *store.Store, declared []config.Experiment, stateDir string) func(ctx context.Context, issue string, role claim.Role) (experiment.Arms, error) {
 	launch := experiment.ForLaunch(declared, stateDir)
 	records := record.NewStore()
-	return func(ctx context.Context, tree, issue string, role claim.Role) (experiment.Arms, error) {
-		keys := launch.Keys(tree, issue)
+	return func(ctx context.Context, issue string, role claim.Role) (experiment.Arms, error) {
+		keys := launch.Keys(issue)
 		if len(keys) == 0 {
 			return experiment.Arms{}, nil
 		}
@@ -1336,7 +1347,7 @@ func launchVariants(st *store.Store, declared []config.Experiment, stateDir stri
 		}); err != nil {
 			return experiment.Arms{}, err
 		}
-		return launch.Arms(recorded, tree, issue, role), nil
+		return launch.Arms(recorded, issue, role), nil
 	}
 }
 

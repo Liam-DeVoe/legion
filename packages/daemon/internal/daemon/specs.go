@@ -37,12 +37,13 @@ type specs struct {
 	instructions string
 	secrets      map[string]string
 	prompts      *prompts.Composer
-	// variants is every arm of a declared experiment the claim's unit was drawn into and that
+	// variants is every arm of a declared experiment the claim's issue was drawn into and that
 	// reaches the claim's role, in the order the project's file declares the experiments, and
 	// the daemon's own copies of the instructions those arms name (launchVariants, over the
-	// daemon's own store). Boot always sets it; it is nil only in a test whose specs literal
-	// leaves it out, and such a specs launches every role in no experiment.
-	variants func(ctx context.Context, tree, issue string, role claim.Role) (experiment.Arms, error)
+	// daemon's own store, which reads the issue's own rows alone). Boot always sets it; it is nil
+	// only in a test whose specs literal leaves it out, and such a specs launches every role in no
+	// experiment.
+	variants func(ctx context.Context, issue string, role claim.Role) (experiment.Arms, error)
 	// designSteps is the design-gate steps the project gates (gates.design), in the order it
 	// gates them, which a tree's root architect is told after its addressing
 	// (DesignGateFragment); empty for a deployment that gates no step.
@@ -222,7 +223,7 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 		return runtime.SpawnSpec{}, fmt.Errorf("the addressing of %s: %w", c.Token, err)
 	}
 	addressing := addressingFragment(s.project, c, architect, spec.Repository, spec.DefaultBranch, s.ownersOf(c.Role))
-	if claim.IsTreeArchitect(c.Role, c.Issue, c.Tree) {
+	if c.Role == claim.RoleArchitect && c.HoldsGate {
 		addressing += " " + DesignGateFragment(s.designSteps)
 	}
 	spec.Prompt = runtime.PromptParts{
@@ -239,7 +240,7 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 	// nothing, so each of its launches runs in no experiment, and an arm that names no
 	// instructions file appends nothing, its roles getting the overlays alone.
 	if s.variants != nil {
-		arms, err := s.variants(ctx, c.Tree, c.Issue, c.Role)
+		arms, err := s.variants(ctx, c.Issue, c.Role)
 		if err != nil {
 			return runtime.SpawnSpec{}, fmt.Errorf("the experiment variants of %s: %w", c.Token, err)
 		}

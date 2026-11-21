@@ -84,8 +84,11 @@ type Admission struct {
 	// pass does not lift it.
 	catchingUp map[string]struct{}
 	// unknownChains is every key a pass found on a Dispatch chain the copy cannot read to its top
-	// since the daemon last took them (noteUnknownChain, UnknownChains), guarded by mu.
+	// since the daemon last took them (noteUnknownChain, UnknownChains), guarded by mu, and
+	// unknownWake what the daemon wakes its re-read with when a key is noted (OnUnknownChain), nil
+	// for none.
 	unknownChains map[string]struct{}
+	unknownWake   func()
 	// keeper keeps the tree lifecycles the stored trees name open for the release before, once a
 	// pass (record.TreeKeeper, promoteHolds).
 	keeper *record.TreeKeeper
@@ -387,13 +390,26 @@ func (a *Admission) applyFact(ctx context.Context, tx pgx.Tx, fact intake.Fact) 
 }
 
 // noteUnknownChain adds key to the issues whose Dispatch chain the copy cannot read to its top
-// (UnknownChains), once the fact that found it commits: a fact rolled back found nothing.
+// (UnknownChains), once the fact that found it commits: a fact rolled back found nothing. The
+// daemon's re-read is woken then (OnUnknownChain).
 func (a *Admission) noteUnknownChain(ctx context.Context, key string) {
 	intake.OnCommit(ctx, func() {
 		a.mu.Lock()
-		defer a.mu.Unlock()
 		a.unknownChains[key] = struct{}{}
+		wake := a.unknownWake
+		a.mu.Unlock()
+		if wake != nil {
+			wake()
+		}
 	})
+}
+
+// OnUnknownChain sets what a noted key wakes (noteUnknownChain): the daemon's re-read of the
+// chains the copy cannot read to their top, which takes them (UnknownChains). wake must not block.
+func (a *Admission) OnUnknownChain(wake func()) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.unknownWake = wake
 }
 
 // UnknownChains takes every key an admission pass found on a Dispatch chain the copy cannot read to

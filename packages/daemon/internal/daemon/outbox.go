@@ -968,6 +968,8 @@ func (r *outbox) run(ctx context.Context, row record.OutboxRow) error {
 		return r.bundleIssueWorkspace(ctx, row, value)
 	case record.IssueRelease:
 		return r.releaseIssue(ctx, row, value)
+	case record.RetentionEnd:
+		return r.retentionEnd(ctx, row, value)
 	case record.RoleMessage:
 		return r.roleMessage(ctx, row, value)
 	case record.GatedStepsPublish:

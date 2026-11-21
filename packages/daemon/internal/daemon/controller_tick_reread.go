@@ -126,6 +126,21 @@ func (w *workflowRuntime) waitedOn(ctx context.Context) ([]string, []string, err
 			add(child.Key)
 		}
 	}
+	// Every chain the copy cannot read to its top is read again as well (R16 of
+	// dispatch://INFRA-3320): the issue and each link of its chain as the copy holds it, up to
+	// record.MaxChainLinks, present rows included, so a row a stale reading left is replaced by
+	// Dispatch's own answer. The daemon's own re-read (rereadChains) reads such a chain within
+	// seconds of a pass finding it; the turn reads every one the copy holds once more.
+	for _, key := range facts.Chains.Unknown() {
+		add(key)
+		chain := facts.Chains.Chain(key)
+		for _, link := range chain.Links {
+			add(link)
+		}
+		if chain.At != "" {
+			add(chain.At)
+		}
+	}
 	return keys, parents, nil
 }
 
@@ -253,17 +268,24 @@ func (w *workflowRuntime) readBlocker(ctx context.Context, key string) (intake.I
 		w.log.Warn("the controller tick's re-read of a blocker failed", "issue", key, "error", err)
 		return intake.IssueStatus{}, false
 	}
-	parent := ""
-	if issue.Parent != nil {
-		parent = *issue.Parent
-	}
 	if issue.Project == "" {
 		w.log.Warn("the controller tick re-read a blocker whose answer names no project", "issue", key)
 		return intake.IssueStatus{}, false
 	}
+	return observedStatus(key, issue), true
+}
+
+// observedStatus is issue, Dispatch's answer for key, as one reading of all five values the copy
+// holds of an issue, under the project the answer names: what the turn's re-read and the chains'
+// re-read write through the Mirror (blockers.Mirror, intake.ControllerTick.Observed).
+func observedStatus(key string, issue dispatch.Issue) intake.IssueStatus {
+	parent := ""
+	if issue.Parent != nil {
+		parent = *issue.Parent
+	}
 	return intake.IssueStatus{Key: key, Project: issue.Project, Status: issue.Status, Blockers: issue.BlockedBy,
 		Seq: issue.LastSeq, ClaimedBy: issue.Claim.Holder(), ClaimKnown: !issue.ClaimUnread, Parent: parent,
-		Labels: issue.Labels, Rank: issue.Rank}, true
+		Labels: issue.Labels, Rank: issue.Rank}
 }
 
 // ownDispatchKey says whether key is an issue of this daemon's own Dispatch project, by its key's

@@ -220,6 +220,10 @@ type workflowRuntime struct {
 	heldMu                                                 sync.Mutex
 	heldReads                                              map[string]limitedRead
 	backfillPending                                        atomic.Bool
+	// chainWake is the re-read of the Dispatch chains the copy cannot read to their top
+	// (rereadChains), one wake held at most: the admission pass that notes such a chain sends it
+	// (admit.Admission.OnUnknownChain).
+	chainWake chan struct{}
 	// heard is what GitHub intake hears (heardRepositories): the boot's set (heardAtBoot), each
 	// repository a record first names, a launch works or the refresher's backfill writes on a
 	// record added to it with no read of the records (hearOrPend, hearRepository), and the whole set
@@ -659,7 +663,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 		tokens: tokens, apps: tokens, forget: forget, installs: installs, dispatch: dispatch.New(cfg.DispatchURL, dispatchToken), repositories: repos,
 		grants: credential.New(nil), projectID: projectID, dispatchProject: cfg.Project, stateDir: cfg.StateDir, log: log,
 		failed:     make(chan error, 1),
-		rereadWake: make(chan struct{}, 1), recoverWake: make(chan struct{}, 1), heardWake: make(chan struct{}, 1),
+		rereadWake: make(chan struct{}, 1), recoverWake: make(chan struct{}, 1), heardWake: make(chan struct{}, 1), chainWake: make(chan struct{}, 1),
 		heldWake: make(chan struct{}, 1), liveWake: make(chan struct{}, 1),
 		readied: newWakeSet[claim.Token](), handedOff: newWakeSet[string](), mergeStates: newWakeSet[string](),
 		mergeStateRunning: map[string]*mergeStateRun{},
@@ -706,6 +710,10 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	engineCfg.Clock = clock
 	w.engine = workflow.New(w.records, engineCfg, log)
 	w.admission = admit.New(w.records, w.engine, cfg.AdmissionCap, cfg.Project, log)
+	// A chain the copy cannot read to its top is read again from Dispatch by a wake of its own
+	// (rereadChains, decision 20 of dispatch://INFRA-4730), as soon as the pass that found it
+	// commits.
+	w.admission.OnUnknownChain(func() { wake(w.chainWake) })
 	// The project's declared experiments decide what each unit admission records is drawn for.
 	// A project whose file writes neither the `memory` block nor an `experiments` key declares
 	// the memory experiment all the same, at mode off, whose draw records each new tree at no
@@ -2128,6 +2136,12 @@ func (w *workflowRuntime) run(ctx context.Context) error {
 	})
 	group.Go(func() error {
 		w.releaseReadied(store.ForConcurrentWorker(running))
+		return nil
+	})
+	group.Go(func() error {
+		// The chains the copy cannot read to their top are read again from Dispatch by a wake of
+		// their own (rereadChains), the issues the boot's first admission pass noted among them.
+		w.rereadChains(store.ForConcurrentWorker(running))
 		return nil
 	})
 	group.Go(func() error {

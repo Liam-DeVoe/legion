@@ -109,12 +109,12 @@ func TestDeclaredArmOverlaysNoPaneCouldReadRefuseTheBoot(t *testing.T) {
 // recovers the panic that read makes — without it the first half would pass over a reader that
 // never queries at all.
 func TestLaunchVariantsReadsNoRecordWhereNoDeclaredArmNamesAFile(t *testing.T) {
-	const tree, issue = "LEGION-1", "LEGION-2"
+	const issue = "LEGION-2"
 	declared := config.Project{}.ExperimentsDeclared("projects.test")
 	if len(declared) != 1 || declared[0].Name != config.MemoryExperimentName {
 		t.Fatalf("a project that writes no experiment declares %+v, want the memory experiment alone", declared)
 	}
-	arms, err := launchVariants(nil, declared, "/state")(context.Background(), tree, issue, claim.RoleImplementer)
+	arms, err := launchVariants(nil, declared, "/state")(context.Background(), issue, claim.RoleImplementer)
 	if err != nil || arms.Variants != nil || arms.Instructions != nil {
 		t.Fatalf("launchVariants over a fileless declaration = %+v, %v, want no arm and no error", arms, err)
 	}
@@ -123,7 +123,7 @@ func TestLaunchVariantsReadsNoRecordWhereNoDeclaredArmNamesAFile(t *testing.T) {
 		Variants: []config.Variant{{Name: "on", Weight: 1, ConfigFiles: []string{"/etc/legion-alpha/alpha.yml"}}, {Name: "off", Weight: 1}}}}
 	read := func() (queried bool) {
 		defer func() { queried = recover() != nil }()
-		_, _ = launchVariants(nil, naming, "/state")(context.Background(), tree, issue, claim.RoleImplementer)
+		_, _ = launchVariants(nil, naming, "/state")(context.Background(), issue, claim.RoleImplementer)
 		return false
 	}
 	if !read() {
@@ -131,15 +131,15 @@ func TestLaunchVariantsReadsNoRecordWhereNoDeclaredArmNamesAFile(t *testing.T) {
 	}
 }
 
-// An experiment that names its roles reaches the launches of those roles alone: in a tree drawn
+// An experiment that names its roles reaches the launches of those roles alone: in an issue drawn
 // into its arm, the planner and the implementer launch with the arm's overlays and instructions,
 // and the reviewer, the tester, the architect and the merger launch on the deployment's own
-// settings, so the roles that judge a treated tree's work are the control's. The tree keeps its
-// arm throughout: the same record answers every role. An experiment that names no roles reaches
+// settings, so the roles that judge a treated issue's work are the control's. The issue keeps its
+// arm throughout: its own record answers every role. An experiment that names no roles reaches
 // every role, as it did before the key existed.
 func TestAnExperimentReachesOnlyTheRolesItNames(t *testing.T) {
 	const tree, issue = "LEGION-1", "LEGION-2"
-	recorded := map[string][]record.Assignment{tree: {{Experiment: "cheaper-model", Variant: "open"}}}
+	recorded := map[string][]record.Assignment{issue: {{Experiment: "cheaper-model", Variant: "open"}}}
 	declare := func(roles []claim.Role) []config.Experiment {
 		return []config.Experiment{{Name: "cheaper-model", Mode: config.ExperimentRandom, Unit: config.ExperimentTree, Roles: roles,
 			Variants: []config.Variant{
@@ -150,8 +150,8 @@ func TestAnExperimentReachesOnlyTheRolesItNames(t *testing.T) {
 	spawn := func(declared []config.Experiment, role claim.Role) runtime.SpawnSpec {
 		s := memorySpecs(t, "")
 		launch := experiment.ForLaunch(declared, "/state")
-		s.variants = func(_ context.Context, tree, issue string, role claim.Role) (experiment.Arms, error) {
-			return launch.Arms(recorded, tree, issue, role), nil
+		s.variants = func(_ context.Context, issue string, role claim.Role) (experiment.Arms, error) {
+			return launch.Arms(recorded, issue, role), nil
 		}
 		return memorySpawn(t, s, tree, issue, role)
 	}

@@ -409,3 +409,17 @@ func (c *Chains) unrecordedTodo() []string {
 	slices.Sort(keys)
 	return keys
 }
+
+// Unknown is every key the read started from whose chain is unknown (Chain), in key order: the
+// issues whose chains the daemon reads Dispatch again for (R16 of dispatch://INFRA-3320), with the
+// links of each, which Chain answers.
+func (c *Chains) Unknown() []string {
+	var keys []string
+	for key, row := range c.rows {
+		if row.Depth == 0 && !c.Chain(key).Known() {
+			keys = append(keys, key)
+		}
+	}
+	slices.Sort(keys)
+	return keys
+}
