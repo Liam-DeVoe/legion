@@ -195,6 +195,8 @@ func (s *sharedTB) run() {
 type accountServer struct {
 	accounts int
 
+	// mu serialises the asks that hand an account out, the start of a next server among them, which
+	// can take until the asking test's deadline.
 	mu sync.Mutex
 	// srv is the server handing accounts out, host its client address, and handedOut how many of
 	// its accounts it has handed to a test. handedOut only grows while srv is the same server: an
@@ -205,9 +207,17 @@ type accountServer struct {
 	// started stands in for each test whose ask started a server after the first. The server
 	// outlives that test, so what start registered on it runs when the account server ends.
 	started []*sharedTB
-	// holders maps each test holding an account to that account's URL.
-	holders map[string]string
+
+	// holdersMu guards holders, which maps each test holding an account to that account's URL. It
+	// is not mu, so a test that asks again for the account it holds, and the cleanup that ends its
+	// hold, never wait for another test's start.
+	holdersMu sync.Mutex
+	holders   map[string]string
 }
+
+// startNext starts the next server of an account server: start, which a row of this package's
+// tests replaces to hold a start or have it fail.
+var startNext = start
 
 // startAccountServer starts an account server whose servers declare accounts accounts each, every
 // one of them shut down and removed when t ends.
@@ -234,35 +244,68 @@ func (s *accountServer) serve(srv *Server) {
 	s.srv, s.host, s.handedOut = srv, strings.TrimPrefix(srv.URL(), "nats://"), 0
 }
 
-// url is URL on s.
+// url is URL on s. A test that holds an account is answered from holders alone; a test's first
+// ask takes mu, and waits for the start of a next server when the newest has handed out all its
+// accounts.
 func (s *accountServer) url(t testing.TB) string {
 	t.Helper()
+	name := t.Name()
+	if uri, ok := s.holder(name); ok {
+		return uri
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if uri, ok := s.holders[t.Name()]; ok {
+	// The same test may have asked on another goroutine while this one waited for mu.
+	if uri, ok := s.holder(name); ok {
 		return uri
 	}
 	if s.handedOut == s.accounts {
-		// A start that fails fails t, the test that asked; the account server's cleanup still
-		// removes what the start set up.
-		starter := &sharedTB{TB: t}
-		s.started = append(s.started, starter)
-		s.serve(start(starter, accountsConfig(s.accounts), []string{"-js"}))
+		s.next(t)
 	}
 	s.handedOut++
 	account := s.handedOut
 	uri := fmt.Sprintf("nats://t%d:t%d@%s", account, account, s.host)
 	// Wait for the account to answer, after the start that declared it.
 	Connect(t, uri).Close()
-	name := t.Name()
+	s.holdersMu.Lock()
 	s.holders[name] = uri
+	s.holdersMu.Unlock()
 	t.Cleanup(func() {
-		s.mu.Lock()
+		s.holdersMu.Lock()
 		delete(s.holders, name)
-		s.mu.Unlock()
+		s.holdersMu.Unlock()
 		deleteStreams(t, uri)
 	})
 	return uri
+}
+
+// holder is the URL of the account the test named name holds, if it holds one.
+func (s *accountServer) holder(name string) (string, bool) {
+	s.holdersMu.Lock()
+	defer s.holdersMu.Unlock()
+	uri, ok := s.holders[name]
+	return uri, ok
+}
+
+// next starts the account server's next server for t, which asked when the newest had handed out
+// all its accounts, and makes it the server that hands accounts out. The server outlives t, so a
+// sharedTB stands in for t and the account server's cleanup runs what start registered on it. A
+// start that fails fails t, with its own reason, and tears down at once what it set up (its relay's
+// port, its registration and its directory), as sharedServer does for the shared server.
+func (s *accountServer) next(t testing.TB) {
+	t.Helper()
+	starter := &sharedTB{TB: t}
+	started := false
+	// A failed start ends this goroutine (t.Fatalf), so what it set up is torn down here.
+	defer func() {
+		if !started {
+			starter.run()
+		}
+	}()
+	srv := startNext(starter, accountsConfig(s.accounts), []string{"-js"})
+	started = true
+	s.started = append(s.started, starter)
+	s.serve(srv)
 }
 
 // accountsConfig declares accounts T1 to Tn, each with JetStream and one user, tn, whose password

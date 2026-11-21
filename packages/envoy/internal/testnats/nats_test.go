@@ -217,6 +217,15 @@ type namedTB struct {
 
 func (n namedTB) Name() string { return n.name }
 
+// Deadline is the deadline of the test namedTB renames, so a wait given namedTB (a start, Connect,
+// deleteStreams) ends by the test's deadline as the test's own would.
+func (n namedTB) Deadline() (time.Time, bool) {
+	if timed, ok := n.TB.(interface{ Deadline() (time.Time, bool) }); ok {
+		return timed.Deadline()
+	}
+	return time.Time{}, false
+}
+
 // ownAccountServer starts an account server of the test's own, declaring accounts accounts, which
 // is shut down and removed when the test ends.
 func ownAccountServer(t *testing.T, accounts int) *accountServer {
@@ -269,6 +278,120 @@ func TestAServerOutOfAccountsHandsTheNextOutFromAServerOfItsOwn(t *testing.T) {
 	}
 	if status := live.Status(); status != natsgo.CONNECTED {
 		t.Fatalf("the connection of an account in use is %v after the next server started, want CONNECTED", status)
+	}
+}
+
+// A test that holds an account and asks again is answered at once, and the end of its hold runs,
+// while another test's first ask waits for the start of the account server's next server: only a
+// first ask waits for a start (accountServer.url). The row holds that start until the holder has
+// asked again and ended, so a holder that waited for it would wait to the test's deadline and fail
+// naming what it waited for.
+func TestAnAccountAskedAgainDoesNotWaitForAnotherTestsStart(t *testing.T) {
+	server := ownAccountServer(t, 1)
+	held := make(chan string, 1)
+	end := make(chan struct{})
+	ended := make(chan struct{})
+	letGo := sync.OnceFunc(func() { close(end) })
+	// The holder's subtest must return before this test does, whatever failed first.
+	defer func() { <-ended }()
+	defer letGo()
+	var holder string
+	go func() {
+		defer close(ended)
+		t.Run("holder", func(t *testing.T) {
+			holder = t.Name()
+			held <- server.url(t)
+			<-end
+		})
+	}()
+	uri := testwait.Receive(t, "the holder's account", held)
+
+	startServer := startNext
+	t.Cleanup(func() { startNext = startServer })
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	releaseStart := sync.OnceFunc(func() { close(release) })
+	defer releaseStart()
+	startNext = func(t testing.TB, config string, args []string) *Server {
+		close(entered)
+		<-release
+		return startServer(t, config, args)
+	}
+	next := make(chan string, 1)
+	go func() { next <- server.url(namedTB{t, "next"}) }()
+	testwait.Receive(t, "the next test's ask to reach the start of the account server's next server", entered)
+
+	again := make(chan string, 1)
+	go func() { again <- server.url(namedTB{t, holder}) }()
+	if got := testwait.Receive(t, "the holder's second ask while another test's start is held", again); got != uri {
+		t.Errorf("the holder's second ask answered %q, want its account %q", got, uri)
+	}
+	letGo()
+	testwait.Receive(t, "the end of the holder's hold while another test's start is held", ended)
+	releaseStart()
+	if got := testwait.Receive(t, "the next test's account once its start is let go", next); got == uri {
+		t.Errorf("the next test got the holder's account %q", uri)
+	}
+}
+
+// A start of an account server's next server that fails fails the test that asked, with its own
+// reason, and tears down at once what it set up: the server's registration, its relay's port and
+// its directory are gone before the ask returns, not when the account server ends. The next ask
+// starts a server afresh. The row plants the failure after a real start.
+func TestAFailedStartOfAnAccountServersNextServerLeavesNothingBehind(t *testing.T) {
+	server := ownAccountServer(t, 1)
+	server.url(namedTB{t, "first"})
+	startServer := startNext
+	t.Cleanup(func() { startNext = startServer })
+	var planted *Server
+	startNext = func(t testing.TB, config string, args []string) *Server {
+		planted = startServer(t, config, args)
+		t.Fatalf("a planted failure after the start of the next server")
+		return nil
+	}
+	failed := &fatalRecorder{TB: namedTB{t, "failed"}}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		server.url(failed)
+	}()
+	<-done
+	if !strings.Contains(failed.message, "planted failure") {
+		t.Fatalf("the ask whose start failed ended with %q, want the planted failure", failed.message)
+	}
+	if planted == nil {
+		t.Fatal("the planted start never ran")
+	}
+	address := strings.TrimPrefix(planted.URL(), "nats://")
+	serversMu.Lock()
+	_, registered := servers[address]
+	serversMu.Unlock()
+	if registered {
+		t.Errorf("the failed start's server is still registered at %s", address)
+	}
+	if conn, err := net.DialTimeout("tcp", address, time.Second); err == nil {
+		conn.Close()
+		t.Errorf("the failed start's relay still accepts connections at %s", address)
+	}
+	if _, err := os.Stat(filepath.Dir(planted.store)); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the failed start's directory %s is still there: %v", filepath.Dir(planted.store), err)
+	}
+	startNext = startServer
+	Connect(t, server.url(namedTB{t, "after"})).Close()
+}
+
+// A wait given namedTB ends by the test's deadline and fails naming it: namedTB passes the
+// deadline of the test it renames on, as fatalRecorder does. Without it, a wait given namedTB (a
+// next server's start, Connect, deleteStreams) would run to go test's -timeout and panic instead.
+// The row dials a server whose handshake never comes (dialNATS) through namedTB.
+func TestAWaitGivenANamedTestEndsByItsDeadline(t *testing.T) {
+	server := &dials{}
+	dial := dialNATS
+	dialNATS = server.dial
+	t.Cleanup(func() { dialNATS = dial })
+	tb := heldWait(t, 450*time.Millisecond, func(tb testing.TB) { Connect(namedTB{tb, "named"}, "nats://127.0.0.1:1") })
+	if !strings.Contains(tb.message, "short of the test's deadline") {
+		t.Fatalf("Connect through namedTB against a server that never completes a handshake failed with %q, want it to name the test's deadline", tb.message)
 	}
 }
 
