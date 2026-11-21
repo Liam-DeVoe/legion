@@ -353,7 +353,7 @@ func TestOnlyOperatorServicesCreateOrPullConsumers(t *testing.T) {
 	}
 	for name, grant := range map[string]natsgrant.Permissions{
 		"Daemon()": natsgrant.Daemon(), "Listener()": natsgrant.Listener("h"), "ListenerHost()": natsgrant.ListenerHost("h"),
-		"Dispatch()": natsgrant.Dispatch("h"), "Host()": natsgrant.Host("h"),
+		"Dispatch()": natsgrant.Dispatch("h", natsgrant.DispatchIntake{}), "Host()": natsgrant.Host("h"),
 	} {
 		_, found := consumerCall(grant)
 		require.True(t, found, "%s is listed as an operator service that creates consumers; it holds no such call now, so drop it from this list", name)
