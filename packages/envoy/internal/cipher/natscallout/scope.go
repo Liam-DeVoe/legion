@@ -26,8 +26,8 @@ import (
 // event is a message of no project, so a held daemon hears every repository's events.
 // Each project's answer is the one Dispatch last gave about it (heldAccess), held on its own. It
 // is refused, naming why: an account no exchange entry lists, or whose entry names no project;
-// Dispatch refusing the broker's own account token, until a refresh that Dispatch answers with no
-// such refusal (a refresh that cannot reach Dispatch keeps it); a project Dispatch has
+// Dispatch refusing the broker's own account token, until Dispatch answers a question asked after
+// the refusal was seen (heldAccess); a project Dispatch has
 // not yet answered about; a project Dispatch does not hold, or whose answer says the entry's
 // person cannot see it; and a grant entry natsgrant.WithinProjects cannot hold. ParseServices
 // refuses a dispatch or listener entry with "-" at start, since their grants carry KV calls.
@@ -115,8 +115,10 @@ const accessFetchTimeout = 10 * time.Second
 // refusal (projectaccess.CacheTTL; cmd/cipherd shares that client with the token exchange, so a
 // person's trade can fill its cache) does not clear it, nor does a not-found, whose age the client
 // does not report, nor a refresh that reached Dispatch for no question. An answer a person's trade
-// left in that cache after the refusal does clear it, so trades that keep the cache full delay no
-// clear. While Dispatch answers, an answer held is at most about a minute old: the 30 s
+// left in that cache after the refusal does clear it. When Dispatch takes the token back inside the
+// refusing refresh's own window, a trade's answer from that window, kept up to
+// projectaccess.CacheTTL, does not count, so the clear can wait up to that long for an answer asked
+// later. While Dispatch answers, an answer held is at most about a minute old: the 30 s
 // (projectaccess.CacheTTL) the Dispatch client may have kept it, the accessRefresh to the next
 // refresh, and the accessFetchTimeout its question may take.
 type heldAccess struct {
@@ -255,10 +257,10 @@ func (h *heldAccess) refresh(ctx context.Context) {
 }
 
 // refusal is entry's refusal by the answers held for person about projects, decided under one
-// read lock, and nil when they admit it: Dispatch refusing the broker's own account token in the
-// last refresh that decided it, before any project; then the first project no refresh has answered
-// yet, one Dispatch does not hold, or one the person cannot see. projects is not empty. On a nil
-// heldAccess no project has an answer.
+// read lock, and nil when they admit it: a refusal of the broker's own account token no later
+// refresh has cleared (brokerRefused), before any project; then the first project no refresh has
+// answered yet, one Dispatch does not hold, or one the person cannot see. projects is not empty.
+// On a nil heldAccess no project has an answer.
 func (h *heldAccess) refusal(entry ServiceEntry, person string, projects []string) error {
 	if h == nil {
 		return refuse(labelProjectAccessUnknown, "project access not yet known: "+projects[0])
