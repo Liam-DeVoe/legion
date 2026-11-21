@@ -2057,14 +2057,15 @@ test("on a phone the priorities tab keeps each place and title together as wide 
   }
 });
 
-// INFRA-2947 R7 (spec v86 to v98) and check 138e9e4d (Verification v64 to v72), read on data
+// INFRA-2947 R7 (spec v86 to v98) and check 138e9e4d (Verification v64 to v73), read on data
 // shaped as production's: a holder's claim chip on each fault tab drawn whole at 1280, its words
 // no wider than its box, for a holder named by a long session title, by a session title of 55
 // characters led by an emoji, and by a bare session id; at 1280 Title at least 260 px wide on
 // the Active tab and 200 px on the backlog-or-icebox tab with the seed's own keys, and at least
 // 240 px and 155 px with an issue key of 12 characters among the rows, unsorted and sorted by
-// Claimed by; on both no other column wider than its widest header or cell needs, with its
-// padding; each column header's sort arrow clear of its filter; and the status bar over the work
+// each column that sorts; on both no other column wider than its widest header or cell
+// needs, with its padding; each column header's sort arrow clear of its filter; and the status
+// bar over the work
 // under a priority, at 1280 and at 390, and over each fault tab at 390, cutting no status's
 // name - each name is whole in its segment, in view, or whole in a legend under the bar - and at
 // 390 drawing every count inside the bar.
@@ -2265,10 +2266,35 @@ test("the fault tabs draw a holder's claim whole, and no status bar of these pag
         return { title, wide };
       });
 
-    // A header's sort button, by the words of the column it sorts.
-    const sortButton = (table: Locator, words: string) =>
-      table.locator("thead th").filter({ hasText: words }).locator('button[title^="Sort"]');
-    // Title's floor on each fault tab at 1280, unsorted and then sorted by Claimed by.
+    // The ids of `table`'s columns that sort, and of those that also filter, in their order.
+    const sortingColumns = (table: Locator) =>
+      table.locator("thead th").evaluateAll((headers) =>
+        headers
+          .filter((header) => header.querySelector('button[title^="Sort"]') !== null)
+          .map((header) => ({
+            filters: header.querySelectorAll("button").length > 1,
+            id: header.getAttribute("data-column") ?? "",
+            words: (header.querySelector('button[title^="Sort"]')?.textContent ?? "").trim(),
+          }))
+      );
+    // Sorts `table` by one column, and waits for its header to say so.
+    const sortBy = async (table: Locator, column: string) => {
+      const header = table.locator(`thead th[data-column="${column}"]`);
+      const sort = header.locator('button[title^="Sort"]');
+      const isSorted = async () =>
+        /ascending|descending/.test((await header.getAttribute("aria-sort")) ?? "");
+      await sort.click();
+      // A column the table opens sorted by (the Priorities tab's #) loses its sort on the
+      // first click and takes it again on the second.
+      await expect
+        .poll(isSorted, { timeout: 2000 })
+        .toBe(true)
+        .catch(() => sort.click());
+      await expect(header).toHaveAttribute("aria-sort", /ascending|descending/);
+      return header;
+    };
+    // Title's floor on each fault tab at 1280: unsorted, and then sorted by each column that
+    // sorts, in turn (Verification v73).
     const readFloors = async (least: { backlog: number; none: number }, keys: string) => {
       await page.goto(PRIORITIES_PATH);
       for (const [tab, name] of [
@@ -2278,49 +2304,34 @@ test("the fault tabs draw a holder's claim whole, and no status bar of these pag
         await chooseTab(page, tab);
         const table = page.getByRole("table", { exact: true, name });
         await expect(table.locator("tr[data-issue-row]").first()).toBeVisible();
-        for (const sorted of [false, true]) {
-          if (sorted) {
-            await sortButton(table, "Claimed by").click();
-            await expect(table.locator('th[aria-sort="ascending"]')).toContainText("Claimed by");
-          } else {
-            await expect(table.locator("th[aria-sort]")).toHaveCount(0);
-          }
-          const fit = await settledValue(`the ${tab} tab's columns`, () => columnFit(table));
-          soft(
-            fit.title,
-            `at 1280 with ${keys}, ${sorted ? "sorted by Claimed by" : "unsorted"}, Title is at least ${least[tab]} px wide on the ${tab} tab`
-          ).toBeGreaterThanOrEqual(least[tab]);
+        await expect(table.locator("th[aria-sort]")).toHaveCount(0);
+        const narrow: string[] = [];
+        const unsorted = await settledValue(`the ${tab} tab's columns`, () => columnFit(table));
+        if (unsorted.title < least[tab]) narrow.push(`unsorted ${unsorted.title}`);
+        const columns = await sortingColumns(table);
+        // The sorted reads are read on a table whose columns sort, Claimed by among them.
+        expect(columns.map((column) => column.words)).toContain("Claimed by");
+        for (const column of columns) {
+          await sortBy(table, column.id);
+          const fit = await settledValue(`the ${tab} tab sorted by ${column.words}`, () =>
+            columnFit(table)
+          );
+          if (fit.title < least[tab]) narrow.push(`sorted by ${column.words} ${fit.title}`);
         }
+        soft(
+          narrow,
+          `at 1280 with ${keys}, unsorted and sorted by each of ${columns.length} columns, Title is at least ${least[tab]} px wide on the ${tab} tab`
+        ).toEqual([]);
       }
     };
     // Each header of `table` whose sort arrow, once that column is sorted, is cut by its own
-    // button or overlaps its filter: each column is sorted in turn, and its arrow read.
+    // button or overlaps its filter: each column that sorts and filters is sorted in turn, and
+    // its arrow read.
     const arrowsOverFilters = async (table: Locator) => {
-      const columns = await table
-        .locator("thead th")
-        .evaluateAll((headers) =>
-          headers
-            .filter(
-              (header) =>
-                header.querySelector('button[title^="Sort"]') !== null &&
-                header.querySelectorAll("button").length > 1
-            )
-            .map((header) => header.getAttribute("data-column") ?? "")
-        );
+      const columns = (await sortingColumns(table)).filter((column) => column.filters);
       const overlaps: string[] = [];
-      for (const column of columns) {
-        const header = table.locator(`thead th[data-column="${column}"]`);
-        const sort = header.locator('button[title^="Sort"]');
-        const isSorted = async () =>
-          /ascending|descending/.test((await header.getAttribute("aria-sort")) ?? "");
-        await sort.click();
-        // A column the table opens sorted by (the Priorities tab's #) loses its sort on the
-        // first click and takes it again on the second.
-        await expect
-          .poll(isSorted, { timeout: 2000 })
-          .toBe(true)
-          .catch(() => sort.click());
-        await expect(header).toHaveAttribute("aria-sort", /ascending|descending/);
+      for (const { id: column } of columns) {
+        const header = await sortBy(table, column);
         const read = await settledValue(`the ${column} header's sort arrow`, () =>
           header.evaluate((element) => {
             const button = element.querySelector('button[title^="Sort"]');
