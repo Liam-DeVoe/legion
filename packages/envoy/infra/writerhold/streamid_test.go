@@ -155,7 +155,7 @@ func (h *heldStack) notificationsID() string {
 func doneOutputs(d holdrecord.Done, command string) map[string]string {
 	var outputs map[string]string
 	for _, op := range d.Ops {
-		if op.Command == command && op.State == stateDone {
+		if op.Command == command && op.State == holdrecord.StateDone {
 			outputs = op.Outputs
 		}
 	}
@@ -316,8 +316,8 @@ func TestHoldTheCensusReportsGoneAndUnreconciledStores(t *testing.T) {
 	require.Contains(t, stderr, `daemon/A: Deployment legion/legion-daemon-a reads database "other"`)
 	require.NotContains(t, h.journalCommands(unknown), CommandStreamsCensus+" done")
 	last := h.journal(unknown).Ops[len(h.journal(unknown).Ops)-1]
-	require.Equal(t, CommandStreamsCensus+" "+stateStop, last.Command+" "+last.State)
-	require.Equal(t, holdrecord.LeftUnchanged, last.Outputs[stopLeftOutput])
+	require.Equal(t, CommandStreamsCensus+" "+holdrecord.StateStop, last.Command+" "+last.State)
+	require.Equal(t, holdrecord.LeftUnchanged, last.Outputs["left"])
 	require.Equal(t, "stream-0", stores.snapshot()["A"], "a store was written while one was unreconciled")
 
 	// A write that failed after another: the store changed before it is what the stop records.
@@ -331,8 +331,8 @@ func TestHoldTheCensusReportsGoneAndUnreconciledStores(t *testing.T) {
 	require.Contains(t, stdout, fmt.Sprintf("CHANGED daemon/A: stream_id %q -> %q", "stream-0", current))
 	require.Contains(t, stderr, "daemon/B: its envoy.sentinel row's write failed: refused")
 	last = h.journal(unknown).Ops[len(h.journal(unknown).Ops)-1]
-	require.Equal(t, CommandStreamsCensus+" "+stateStop, last.Command+" "+last.State)
-	require.Contains(t, last.Outputs[stopLeftOutput], fmt.Sprintf("stream_id of daemon/A: stream_id %q -> %q", "stream-0", current),
+	require.Equal(t, CommandStreamsCensus+" "+holdrecord.StateStop, last.Command+" "+last.State)
+	require.Contains(t, last.Outputs["left"], fmt.Sprintf("stream_id of daemon/A: stream_id %q -> %q", "stream-0", current),
 		"the stop recorded a run that rewrote a store as unchanged")
 	code, _, _ = h.run(actionRelease, "--hold", unknown, "--reason", "over a census that rewrote a store and stopped")
 	require.NotZero(t, code, "release over a stop that changed a store")

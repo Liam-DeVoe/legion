@@ -71,5 +71,5 @@ func TestHoldReleaseReadsTheDisksAgainAfterItsMove(t *testing.T) {
 	require.Equal(t, 1, code, "release over a disk that changed after its check")
 	require.Contains(t, stderr, holdtest.Claim(1))
 	require.Equal(t, natsgrant.OperatorPhaseReleased, h.row().Phase)
-	require.Equal(t, stateDone, latestState(h.journal(id), holdrecord.CommandRelease))
+	require.Equal(t, holdrecord.StateDone, latestState(h.journal(id), holdrecord.CommandRelease))
 }

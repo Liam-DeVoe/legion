@@ -337,8 +337,8 @@ func TestHoldReleaseAfterAStreamsCensus(t *testing.T) {
 	require.Equal(t, 2, code, "a census with no reader")
 	require.Contains(t, stderr, ErrNoRecordReader.Error())
 	last := h.journal(id).Ops[len(h.journal(id).Ops)-1]
-	require.Equal(t, CommandStreamsCensus+" "+stateStop, last.Command+" "+last.State)
-	require.Equal(t, holdrecord.LeftUnchanged, last.Outputs[stopLeftOutput])
+	require.Equal(t, CommandStreamsCensus+" "+holdrecord.StateStop, last.Command+" "+last.State)
+	require.Equal(t, holdrecord.LeftUnchanged, last.Outputs["left"])
 
 	// The control: the census run again and killed after its intent, with no stop.
 	_, err = h.s.Records.Admit(ctx, id, holdrecord.Request{Command: CommandStreamsCensus}, nil)

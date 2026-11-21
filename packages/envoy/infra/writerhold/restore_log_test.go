@@ -19,7 +19,7 @@ func (h *heldStack) requireAbortEndsTheReleasedHold(id string) {
 	ctx := context.Background()
 	code, _, stderr := h.run(actionAbort, "--hold", id, "--reason", "end the hold whose row came back released")
 	require.Zero(h.t, code, "hold abort of the hold restored released: %s", stderr)
-	require.Equal(h.t, stateDone, latestState(h.journal(id), holdrecord.CommandAbort), "the abort wrote no done entry")
+	require.Equal(h.t, holdrecord.StateDone, latestState(h.journal(id), holdrecord.CommandAbort), "the abort wrote no done entry")
 	cohort, err := h.s.Records.Records(ctx, id, "cohort")
 	require.NoError(h.t, err)
 	require.Empty(h.t, cohort, "the abort left the hold's cohort record")

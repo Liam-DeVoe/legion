@@ -132,7 +132,7 @@ func backupCovers(d holdrecord.Done, buckets []string) error {
 		return &writerhold.Refusal{Step: writerhold.StepPreflight, What: "recreate deletes only what its hold's backup covered: " + fmt.Sprintf(format, args...)}
 	}
 	all := strings.Join(buckets, ", ")
-	backup, ok := writerhold.LatestDone(d, CommandBackup)
+	backup, ok := d.Latest(CommandBackup, holdrecord.StateDone)
 	if !ok {
 		return refuse("the hold has no done buckets backup entry, so none of %s is covered", all)
 	}

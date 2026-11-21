@@ -59,7 +59,7 @@ func TestHoldARowLostAfterSetsMoveIsRestoredHeld(t *testing.T) {
 		h.op.RestartLimit = 3 * time.Minute
 		require.NotZero(t, code)
 		id := h.row().HoldID
-		require.Equal(t, stateStop, latestState(h.journal(id), holdrecord.CommandSet))
+		require.Equal(t, holdrecord.StateStop, latestState(h.journal(id), holdrecord.CommandSet))
 		restoredHeld(t, h, id)
 		h.awaitStreamLeaders()
 		code, _, stderr := h.run(actionRelease, "--hold", id, "--reason", "nothing changed")

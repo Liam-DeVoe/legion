@@ -85,12 +85,12 @@ func TestHoldSetsRerunAfterARestartPastItsLimit(t *testing.T) {
 				require.NotZero(t, code)
 				id = h.row().HoldID
 				require.Equal(t, natsgrant.OperatorPhaseHeld, h.row().Phase)
-				require.Equal(t, stateStop, latestState(h.journal(id), holdrecord.CommandSet))
+				require.Equal(t, holdrecord.StateStop, latestState(h.journal(id), holdrecord.CommandSet))
 			}
 			h.awaitStreamLeaders()
 			code, _, stderr := h.run(actionSet, "--hold", id, "--reason", "the rerun")
 			require.Zero(t, code, "hold set's rerun (%s): %s", row.name, stderr)
-			require.Equal(t, stateDone, latestState(h.journal(id), holdrecord.CommandSet))
+			require.Equal(t, holdrecord.StateDone, latestState(h.journal(id), holdrecord.CommandSet))
 			code, _, stderr = h.run(actionRelease, "--hold", id, "--reason", "nothing changed")
 			require.Zero(t, code, "release after the rerun: %s", stderr)
 		})

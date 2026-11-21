@@ -173,12 +173,12 @@ func abort(ctx context.Context, records *holdrecord.Client, op *Operator, stores
 		// admits abort on that row alone (holdrecord's Request.RowReleased, which Admit sets from the
 		// row); it deletes the cohort record, which the route deletes on that row too, and its done
 		// entry ends the journal. Its rerun after a crash is admitted on its own pending intent.
-		if endedBy(d) == "" && latestState(d, holdrecord.CommandSet) != stateDone {
+		if !ended(d) && !latestIs(d, holdrecord.CommandSet, holdrecord.StateDone) {
 			return abortReleasedPrepare(ctx, records, row, o, stdout)
 		}
 		// An abort killed between its move and its done entry left its intent pending: the rerun
 		// sends no move and writes the done entry, which completes the record and ends the hold.
-		if latestState(d, holdrecord.CommandAbort) == stateIntent {
+		if latestIs(d, holdrecord.CommandAbort, holdrecord.StateIntent) {
 			if err := records.AppendDone(ctx, o.holdID, holdrecord.CommandAbort, nil); err != nil {
 				return err
 			}
@@ -191,7 +191,7 @@ func abort(ctx context.Context, records *holdrecord.Client, op *Operator, stores
 	if row.Phase == natsgrant.OperatorPhasePrepare {
 		// A row that reads prepare after hold set's done entry was rolled back by a database
 		// writer, not prepared: the journal, not the row, says how far the hold got.
-		if latestState(d, holdrecord.CommandSet) == stateDone {
+		if latestIs(d, holdrecord.CommandSet, holdrecord.StateDone) {
 			return refusef(StepPreflight, "the hold row reads prepare at gen %d, and %s is done in hold %s's journal: the row was put back under the set hold, so abort takes no prepare path", row.Gen, holdrecord.CommandSet, o.holdID)
 		}
 		return abortPrepared(ctx, records, row, o, stdout)
@@ -299,11 +299,48 @@ func abortReconcile(ctx context.Context, records *holdrecord.Client, op *Operato
 	return reconcileStreamIDs(ctx, nc, stores, KubeDaemonDeployments(op.Hub.Client), families, o.daemonDatabases, stdout)
 }
 
-// printStopRecords prints what each stopped command left, as abort's latest intent carries it.
+// printStopRecords prints what each stopped command left, as abort's latest intent carries it, in
+// the journal's order of the stops (holdrecord's Entry.Left).
 func printStopRecords(stdout io.Writer, d holdrecord.Done) {
-	for _, record := range stopRecords(d) {
-		fmt.Fprintf(stdout, "left by a stopped command: %s\n", record)
+	intent, ok := d.Latest(holdrecord.CommandAbort, holdrecord.StateIntent)
+	if !ok {
+		return
 	}
+	items, _ := intent.Left()
+	for _, item := range items {
+		left := item.Left
+		if left == "" {
+			left = "nothing recorded, so counted as changed"
+		}
+		fmt.Fprintf(stdout, "left by a stopped command: %s: %s\n", item.Command, left)
+	}
+}
+
+// latestIs reports whether command's latest entry in d is in state (holdrecord's Done.Latest).
+func latestIs(d holdrecord.Done, command, state string) bool {
+	e, ok := d.Latest(command)
+	return ok && e.State == state
+}
+
+// ended reports whether the hold has ended: a done `hold release` or `hold abort` (holdrecord's
+// EndIsFinal), after which the table admits no command in it.
+func ended(d holdrecord.Done) bool {
+	_, released := d.Latest(holdrecord.CommandRelease, holdrecord.StateDone)
+	_, aborted := d.Latest(holdrecord.CommandAbort, holdrecord.StateDone)
+	return released || aborted
+}
+
+// hasJournal reports whether hold holdID has a journal: false when the broker lists no record of
+// the journal's kind, "done", for it, which startHold leaves when its journal insert after the
+// row's move did not land. A journal the broker has seen and that is gone outside its routes reads
+// below its floor, holdrecord.ErrUnknown, never as none. The kind's literal goes when holdrecord's
+// Journal answers a hold with no journal with an error of its own.
+func hasJournal(ctx context.Context, records *holdrecord.Client, holdID string) (bool, error) {
+	found, err := records.Records(ctx, holdID, "done")
+	if err != nil {
+		return false, err
+	}
+	return len(found) > 0, nil
 }
 
 // readDisks is every claim's disk id now, by target (claim name), with the claims' bindings.
@@ -414,7 +451,7 @@ func release(ctx context.Context, records *holdrecord.Client, op *Operator, o op
 		if err != nil {
 			return err
 		}
-		if latestState(d, holdrecord.CommandRelease) == stateIntent {
+		if latestIs(d, holdrecord.CommandRelease, holdrecord.StateIntent) {
 			if err := records.AppendDone(ctx, o.holdID, holdrecord.CommandRelease, nil); err != nil {
 				return err
 			}
@@ -539,7 +576,7 @@ func Set(ctx context.Context, records *holdrecord.Client, op *Operator, holdID, 
 	if err != nil {
 		return nil, err
 	}
-	pending := latestState(d, holdrecord.CommandSet) == stateIntent
+	pending := latestIs(d, holdrecord.CommandSet, holdrecord.StateIntent)
 	stop := func(cause error) error {
 		if !pending {
 			return cause
