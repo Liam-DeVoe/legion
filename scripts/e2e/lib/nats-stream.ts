@@ -4,8 +4,10 @@
 //
 //   bun scripts/e2e/lib/nats-stream.ts last <nats-url> <stream> <subject-filter> <seconds>
 //     prints {"subject","time","seq"} of the newest message on the filter (wildcards allowed), read
-//     through one ordered consumer delivery that starts at the stream's last matching message; exits
-//     1 when the stream holds none within <seconds>
+//     through one ordered consumer delivery that starts at the stream's last matching message. A
+//     read that got no message by <seconds> exits 3: a stream that holds none and a server that
+//     did not answer both end the read at its deadline, so it cannot say which, and says so. A
+//     connect that fails exits 1, and a refused command 2
 //   bun scripts/e2e/lib/nats-stream.ts consumers <nats-url> <stream> <name-prefix>
 //     prints one {"name","filters","pending"} line per durable consumer whose name starts with the
 //     prefix
@@ -70,6 +72,9 @@ export async function readLast(
       return undefined;
     });
   try {
+    // nextMessage resolves to undefined both when the fetch ended with no message and when it did
+    // not end at all before the deadline, which resolves to undefined too: the read cannot tell a
+    // stream with no such message from a server that did not answer.
     const result = await Promise.race([nextMessage, deadline]);
     if (result === undefined) {
       if (messages) {
@@ -81,16 +86,14 @@ export async function readLast(
       }
       return { message: undefined, timedOut: true };
     }
-    return result
-      ? {
-          message: {
-            subject: result.subject,
-            time: new Date(result.info.timestampNanos / 1e6).toISOString(),
-            seq: result.seq,
-          },
-          timedOut: false,
-        }
-      : { message: undefined, timedOut: false };
+    return {
+      message: {
+        subject: result.subject,
+        time: new Date(result.info.timestampNanos / 1e6).toISOString(),
+        seq: result.seq,
+      },
+      timedOut: false,
+    };
   } finally {
     stopTimer();
   }
@@ -138,18 +141,11 @@ async function main(): Promise<void> {
     if (command === "last") {
       const result = await readLast(nc, stream, argument, seconds);
       if (!result.message) {
-        // A read that ran out of time cannot tell a stream with no such message from a server that
-        // never answered, so it says no more than what it saw.
         process.stderr.write(
-          result.timedOut
-            ? `nats-stream: no message on ${argument} from stream ${stream} within ${seconds} s\n`
-            : `nats-stream: stream ${stream} holds no message on ${argument}\n`
+          `nats-stream: no message on ${argument} from stream ${stream} within ${seconds} s: unknown whether it holds one, since a stream with none and a server that did not answer read the same\n`
         );
-        process.exitCode = 1;
-        if (result.timedOut) {
-          void nc.close();
-          process.exit(1);
-        }
+        void nc.close();
+        process.exit(3);
       } else {
         process.stdout.write(`${JSON.stringify(result.message)}\n`);
       }

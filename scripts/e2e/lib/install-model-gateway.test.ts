@@ -310,12 +310,12 @@ describe("the model gateway key command", () => {
         .filter((fields) => fields[2] === realpathSync(join(run, pane)))
         .map((fields) => `${fields[4]}: ${fields[5]}`);
     const ranPast = /^timeout: the mint ran past the call's 9500 ms and was stopped \(exit \d+\)$/;
-    // The second gives up behind the first in one of three ways, each on its own clock: it waited
-    // for the lock past its deadline; it took the lock with less than a mint needs, which can be
-    // less than nothing when the lock came at the deadline itself (`-27 ms … left`, seen once in
-    // 20 runs); or its deadline had passed before it asked for the lock at all.
+    // The second gives up behind the first in one of four ways, each on its own clock: it waited
+    // for the lock past its deadline; it took the lock with less than a mint needs; it took the
+    // lock at its deadline itself or after it (seen once in 20 runs, the next row); or its deadline
+    // had passed before it asked for the lock at all.
     const gaveUpBehind =
-      /^timeout: (waited \d+ ms for another call's mint(, past the call's 9500 ms| and took the lock with -?\d+ ms of the call's 9500 ms left, under the 2000 ms a mint needs)|reached the lock after \d+ ms, past the call's 9500 ms)$/;
+      /^timeout: (waited \d+ ms for another call's mint(, past the call's 9500 ms| and took the lock with \d+ ms of the call's 9500 ms left, under the 2000 ms a mint needs| and took the lock at the call's 9500 ms deadline or after it)|reached the lock after \d+ ms, past the call's 9500 ms)$/;
     const [firstEnd, ...moreFirst] = endOf("pane-1");
     const [secondEnd, ...moreSecond] = endOf("pane-2");
     expect({ moreFirst, moreSecond }).toEqual({ moreFirst: [], moreSecond: [] });
@@ -326,6 +326,32 @@ describe("the model gateway key command", () => {
     expect(mintCount(mints)).toBe(behind ? 1 : 2);
     const notes = unserved("--notes", dest, since, "outlast").stdout;
     expect(notes).toContain(": timeout: the mint ran past the call's 9500 ms");
+  });
+
+  test("names a lock taken at the call's deadline or after it as that, not as a negative time left", async () => {
+    // A flock that hands the lock over only after the wait it was given (the call's time left)
+    // and a little more, the case a busy host's flock made once in 20 runs of the row above: the
+    // call then holds the lock with no time left, and says so in place of a figure below zero.
+    const { run, dest, mints, keyCommand } = install();
+    const late = join(run, "late-flock");
+    writeFileSync(late, '#!/usr/bin/env bash\nsleep "$2"\nsleep 0.3\n', { mode: 0o755 });
+    writeFileSync(
+      keyCommand,
+      readFileSync(keyCommand, "utf8").replace(/^flock=.*$/m, `flock=${late}`)
+    );
+    const c = await call(keyCommand, join(run, "pane"), mints);
+    const recorded = readFileSync(join(dest, "hawk-token.calls"), "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => line.split("\t"))
+      .map((fields) => `${fields[4]}: ${fields[5]}`);
+    expect(recorded).toEqual([
+      expect.stringMatching(
+        /^timeout: waited \d+ ms for another call's mint and took the lock at the call's 9500 ms deadline or after it$/
+      ),
+    ]);
+    expect([c.code, c.stdout]).toEqual([1, ""]);
+    expect(mintCount(mints)).toBe(0);
   });
 
   test("exempts the installer's preflight mint from the deadline, for hawk-token's first-run build", () => {

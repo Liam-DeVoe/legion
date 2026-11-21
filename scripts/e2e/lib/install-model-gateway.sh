@@ -274,7 +274,11 @@ if [ -n "$preflight" ]; then
   key=$(/usr/bin/env "${command[@]}" 2>"$err" {lock}>&-) || status=$?
 else
   left_ms
-  [ "$left" -ge "$min_mint_ms" ] || no_key timeout "waited $((deadline_ms - left)) ms for another call's mint and took the lock with $left ms of the call's $deadline_ms ms left, under the $min_mint_ms ms a mint needs"
+  if [ "$left" -lt "$min_mint_ms" ]; then
+    # A lock that came at the deadline itself leaves no time at all, not a negative figure of it.
+    [ "$left" -gt 0 ] || no_key timeout "waited $((deadline_ms - left)) ms for another call's mint and took the lock at the call's $deadline_ms ms deadline or after it"
+    no_key timeout "waited $((deadline_ms - left)) ms for another call's mint and took the lock with $left ms of the call's $deadline_ms ms left, under the $min_mint_ms ms a mint needs"
+  fi
   printf -v mint_s '%d.%03d' $((left / 1000)) $((left % 1000))
   key=$("$timeout" --kill-after=0.2 "$mint_s" /usr/bin/env "${command[@]}" 2>"$err" {lock}>&-) || status=$?
 fi

@@ -207,13 +207,13 @@ describe.skipIf(skip)("nats-stream last", () => {
   );
 
   test(
-    "reports an unmatched filter as no message within its budget",
+    "reports a read with no message by its budget as unknown, exit 3, never as a stream that holds none",
     () => {
       const result = runLast("events.missing.>", subsecondBudgetSeconds);
       expect(result.stderr).toBe(
-        `nats-stream: no message on events.missing.> from stream ${stream} within ${subsecondBudgetSeconds} s\n`
+        `nats-stream: no message on events.missing.> from stream ${stream} within ${subsecondBudgetSeconds} s: unknown whether it holds one, since a stream with none and a server that did not answer read the same\n`
       );
-      expect(result.exitCode).toBe(1);
+      expect(result.exitCode).toBe(3);
       expect(result.stdout).toBe("");
     },
     rowBoundMs
