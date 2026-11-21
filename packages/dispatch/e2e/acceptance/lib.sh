@@ -218,6 +218,45 @@ own_horizon_hold() {
   answer="${answer#*|}"
 }
 
+# start_horizon_watch SECTION: starts the watch of the event horizon that watch_horizon carries
+# on, and returns once the watch's first observation has waited 5 s. Until then it polls as
+# watch_horizon polls, about once a second, so the watch holds an observation of each second from
+# its start on. own_horizon_hold names a transaction only against an observer that drew its id
+# after the transaction drew its own, and only once that observation has waited 5 s. So a watch
+# begun at the moment from which a hold must be named would name a transaction that drew its id
+# before that moment only once it had held the id 5 s more, and never one that ended sooner,
+# though it may have held the horizon back far longer. A driver starts the watch 5 s before that
+# moment instead: a transaction that drew its id before the watch began and still holds it when
+# this returns fails the section here, and one that drew its id later is judged against the
+# observations of the seconds after it.
+start_horizon_watch() {
+  horizon_observations=()
+  watch_horizon "$1"
+  until [[ -n "$observation_age" ]]; do
+    sleep 1
+    watch_horizon "$1"
+  done
+}
+
+# watch_horizon SECTION: one poll of the watch start_horizon_watch began. It observes the horizon
+# (observe_horizon), keeps the observation in $horizon_observations with every one the watch took
+# before it, judges a hold against them all (own_horizon_hold), and fails the section naming the
+# transaction that holds the horizon back. It sets $observation_age as own_horizon_hold does. It
+# refuses to poll a watch that was never started: its judgement would then have no observation
+# older than its own polls, the defect start_horizon_watch's comment names.
+watch_horizon() {
+  declare -p horizon_observations >/dev/null 2>&1 || {
+    printf 'watch_horizon polls only a watch that start_horizon_watch began\n' >&2
+    exit 2
+  }
+  observe_horizon "$1"
+  horizon_observations+=("$answer")
+  own_horizon_hold "$1" "${horizon_observations[@]}"
+  [[ -z "$answer" ]] ||
+    fail "$1" "no transaction of this run's database holds the event horizon back" \
+      "$answer has held back an observation of the horizon that has waited $observation_age s on it, 5 s or more, holding a transaction id drawn before that observer's in this run's database, which holds the server's event readers back"
+}
+
 # The real `dispatch` CLI as an agent session runs it, in an environment holding only what this
 # driver names: nothing a calling shell exported (its Dispatch URL, token file or Envoy config)
 # reaches it. It reads the caller's $base, $token, $session, $work, $cli_entry and what cli_env

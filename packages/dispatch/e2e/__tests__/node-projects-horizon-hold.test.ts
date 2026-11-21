@@ -1,9 +1,11 @@
 /** What `e2e/acceptance/node-projects.sh` takes for a transaction of its own database holding the
- *  event horizon back, on which its wait for the server's object pass fails at once. On each poll
- *  of that wait the driver observes the horizon (`observe_horizon`), and `own_horizon_hold` names
- *  a transaction that has held one of those observations back for 5 s
- *  (`horizontest.OwnHoldBound`). Both are functions of `e2e/acceptance/lib.sh`, and each row runs
- *  them in a bash that sourced it, against a database of this file alone.
+ *  event horizon back, on which its wait for the server's object pass fails at once. The driver
+ *  watches the horizon from 5 s before it sends its event to the end of that wait
+ *  (`start_horizon_watch`, then `watch_horizon` on each poll): it observes the horizon about once
+ *  a second (`observe_horizon`), and `own_horizon_hold` names a transaction that has held one of
+ *  those observations back for 5 s (`horizontest.OwnHoldBound`). All four are functions of
+ *  `e2e/acceptance/lib.sh`, and each row runs them in a bash that sourced it, against a database
+ *  of this file alone.
  *
  *  The rule is horizontest's own (`Warning.heldFor`, docs/testing.md, "A test that waits for the
  *  event feed's first frame"): a hold lasts the shorter of the pending observation's age and the
@@ -20,7 +22,8 @@
  *  which no fake timer of this process can move, so a row waits on that clock, with
  *  `pg_sleep_until`, until the moment the bound has passed for what it holds, and no longer. The
  *  rows need psql and a server they may make a database on, and skip where LEGION_TEST_PG_DSN
- *  names none, as in CI's `dispatch-ui` job (psql-session.test.ts says the same). */
+ *  names none, as in CI's `dispatch-ui` job (psql-session.test.ts says the same). The row of
+ *  `watch_horizon`'s refusal reaches no database and runs everywhere. */
 
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
@@ -30,7 +33,7 @@ import { hostTool } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 
 import { dropDatabase, resetSession, sql, sqlAt } from "../psql";
-import { rowLimit, runBounded } from "./bounded-subprocess";
+import { type BoundedRun, rowLimit, runBounded } from "./bounded-subprocess";
 
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -112,11 +115,10 @@ const libpqVariables = Object.fromEntries(
 );
 
 /** Runs `script` in a bash that sourced lib.sh, with the file's database as `database_url`, a
- *  directory of the row's own as `work` and `args` as its positional parameters, and answers what
- *  it printed. A function of lib.sh that fails exits that bash 1 with its FAIL line on stderr,
- *  which fails the row. */
-async function lib(script: string, ...args: string[]): Promise<string> {
-  const { code, stdout, stderr, named } = await runBounded({
+ *  directory of the row's own as `work` and `args` as its positional parameters, and answers how
+ *  it ended. A function of lib.sh that fails exits that bash 1 with its FAIL line on stderr. */
+function runLib(script: string, ...args: string[]): Promise<BoundedRun> {
+  return runBounded({
     argv: [
       "bash",
       "-c",
@@ -131,6 +133,12 @@ async function lib(script: string, ...args: string[]): Promise<string> {
     env: { ...libpqVariables, PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" },
     from: import.meta.url,
   });
+}
+
+/** `runLib`'s run of `script`, which must exit 0, answering what it printed: a function of lib.sh
+ *  that fails fails the row. */
+async function lib(script: string, ...args: string[]): Promise<string> {
+  const { code, stdout, stderr, named } = await runLib(script, ...args);
   expect(code, `${named} exited ${code}: ${stderr}`).toBe(0);
   return stdout;
 }
@@ -241,15 +249,21 @@ test.skipIf(!live)(
 
 /** How many observations the row below takes, at most, before it gives up on a machine so loaded
  *  that each check started the bound or more after its observation. */
-const youngTries = 5;
+const underTries = 5;
 
-// The row needs a check that read the observation young, and only the check's own statement can
-// say how old it read it: a query after the check reads it older by however long the machine took
-// in between, and on a loaded machine that passed the bound three times in a row. So the check
-// answers the age it judged, and the observation and the check run back to back in one bash, as
-// the driver runs them, with one psql start between them. A check that read the observation at the
-// bound or past it must name the holder, and the row holds it to that and observes again; the
-// first check that read it young decides the row.
+/** How long the row below waits after its observation before the check, on the database's clock:
+ *  a second under the bound, and past any shorter bound by a second or more. */
+const underBound = `${boundSeconds - 1} seconds`;
+
+// The check reads the observation at least `underBound` old, since it starts after a wait on the
+// database's clock until then, so a bound of 4 s or less would name the holder here. Only the
+// check's own statement can say the observation was still under the bound: a query after the check
+// reads it older by however long the machine took in between, and on a loaded machine that passed
+// the bound three times in a row. So the check answers the age it judged, and the observation, the
+// wait and the check run back to back in one bash, as the driver runs its observation and its
+// check, with one psql start between the wait and the check. A check that read the observation at
+// the bound or past it must name the holder, and the row holds it to that and observes again; the
+// first check that read it under the bound decides the row.
 test.skipIf(!live)(
   "a transaction that drew its id before the observation is no holder until the observation has waited the bound",
   async () => {
@@ -258,24 +272,30 @@ test.skipIf(!live)(
     try {
       await untilPastTheBound(`(select xact_start from pg_stat_activity where pid = ${pid})`);
       expect(await heldPastTheBound(pid)).toBe("t");
+      const judged: number[] = [];
       for (let tried = 1; ; tried++) {
         const { age, holder } = holdOf(
-          await lib(`observe_horizon hold && own_horizon_hold hold "$answer" && ${printHold}`)
+          await lib(
+            'observe_horizon hold && observation=$answer && query hold "wait on the database\'s clock" ' +
+              `"select pg_sleep_until(to_timestamp(\${observation#* }) + interval '${underBound}')" && ` +
+              `own_horizon_hold hold "$observation" && ${printHold}`
+          )
         );
         if (age === null) {
           expect(
             holder,
-            `backend ${pid} has held the observation back for less than the bound, however long it has been open`
+            `backend ${pid} has held the observation back ${underBound} or more but less than the bound, however long it has been open`
           ).toBe("");
           break;
         }
+        judged.push(age);
         expect(
           holder,
           `the check read the observation ${age} s old, past the bound, so it names backend ${pid}`
         ).toStartWith(`backend ${pid} (application `);
-        if (tried === youngTries) {
+        if (tried === underTries) {
           throw new Error(
-            `each of ${youngTries} checks read its observation ${bound} old or more, so none read a young one`
+            `each of ${underTries} checks judged its observation past the bound, at ${judged.join(", ")} s, so none read one under it`
           );
         }
       }
@@ -283,7 +303,7 @@ test.skipIf(!live)(
       await sql("ROLLBACK");
     }
   },
-  rowLimit(...Array.from({ length: youngTries }, () => "short" as const))
+  rowLimit(...Array.from({ length: underTries }, () => "short" as const))
 );
 
 test.skipIf(!live)(
@@ -300,4 +320,71 @@ test.skipIf(!live)(
     }
   },
   rowLimit("short", "short")
+);
+
+// The driver starts the watch 5 s before it sends its event. A transaction that drew its id before
+// the watch began is named when the watch's first observation has waited the bound, before the
+// event is sent, however soon after the event it then ends. A watch begun at the event named it
+// only if it held its id 5 s into the wait.
+test.skipIf(!live)(
+  "a transaction that drew its id before the watch began is named once the watch's first observation has waited the bound",
+  async () => {
+    const pid = await sql("SELECT pg_backend_pid()");
+    await sql("BEGIN", "SELECT pg_current_xact_id()");
+    try {
+      const { code, stdout, stderr, named } = await runLib(
+        'start_horizon_watch hold && printf "started, naming none"'
+      );
+      expect(code, `${named} exited ${code}, printing ${JSON.stringify(stdout)}: ${stderr}`).toBe(
+        1
+      );
+      const failure = stderr.match(
+        /^FAIL: hold no transaction of this run's database holds the event horizon back: (backend \d+ \(application [\s\S]*?) has held back an observation of the horizon that has waited (\d+(?:\.\d+)?) s on it/m
+      );
+      expect(failure, `start_horizon_watch's FAIL line names a holder: ${stderr}`).not.toBeNull();
+      expect(failure?.[1]).toStartWith(`backend ${pid} (application `);
+      expect(Number(failure?.[2])).toBeGreaterThanOrEqual(boundSeconds);
+    } finally {
+      await sql("ROLLBACK");
+    }
+  },
+  rowLimit("short")
+);
+
+// With no holder the watch's start returns, once its first observation has waited the bound, and
+// has observed more than once on the way: the driver sends its event only then.
+test.skipIf(!live)(
+  "start_horizon_watch returns once its first observation has waited the bound, where nothing holds the horizon back",
+  async () => {
+    const printed = await lib(
+      `start_horizon_watch hold && printf "%s|%s" "$observation_age" "\${#horizon_observations[@]}"`
+    );
+    const [age, observations] = printed.split("|").map(Number);
+    expect(
+      age,
+      `the age of the watch's first observation as it returned: ${printed}`
+    ).toBeGreaterThanOrEqual(boundSeconds);
+    expect(observations, `the observations the watch kept: ${printed}`).toBeGreaterThan(1);
+  },
+  rowLimit("short")
+);
+
+// A poll with no watch begun would judge against its own observations alone, the defect the row
+// of a transaction that drew its id before the watch began pins, so lib.sh refuses it before it
+// reaches a database.
+test(
+  "watch_horizon refuses to poll a watch that start_horizon_watch never began",
+  async () => {
+    const { code, stdout, stderr, named } = await runBounded({
+      argv: ["bash", "-c", ". e2e/acceptance/lib.sh && watch_horizon hold"],
+      bound: "short",
+      cwd: dispatchPackage,
+      env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" },
+      from: import.meta.url,
+    });
+    expect(code, `${named} exited ${code}: ${stderr}`).toBe(2);
+    expect(stderr).toBe("watch_horizon polls only a watch that start_horizon_watch began\n");
+    expect(stdout).toBe("");
+  },
+  rowLimit("short")
 );

@@ -773,7 +773,7 @@ export function named({ argv, env, from }: Child): string {
 /** What one bounded child did. `code` is its exit status and `named` what the cost line called
  *  it, which a caller that refuses a non-zero exit builds its message from. How long the child
  *  took is in the cost line and no caller reads it, so it is no field here. */
-interface BoundedRun {
+export interface BoundedRun {
   readonly code: number;
   readonly named: string;
   readonly stderr: string;

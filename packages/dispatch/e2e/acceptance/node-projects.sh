@@ -333,9 +333,10 @@ census_complete "$section" "after the backfill"
 # pass has finished.
 #
 # The tick reads an event only once the event horizon has passed it (events.Horizon), and it
-# observes the horizon on its own schedule, which the driver cannot see. So the driver observes
-# the horizon as the server does (observe_horizon) on each poll of the wait, about once a second.
-# A transaction of this run's own database that has held one of those observations back for 5 s
+# observes the horizon on its own schedule, which the driver cannot see. So the driver watches the
+# horizon as the server observes it (start_horizon_watch and watch_horizon, in lib.sh): it
+# observes about once a second, from 5 s before it sends the event to the end of the wait. A
+# transaction of this run's own database that has held one of those observations back for 5 s
 # (horizontest.OwnHoldBound, and events' horizonStallAfter) holds back any observation the tick
 # took in that time, and with it the server's event readers, which is the defect the horizon's own
 # test waits fail on (docs/testing.md, "A test that waits for the event feed's first frame"), so it
@@ -344,11 +345,13 @@ census_complete "$section" "after the backfill"
 # it holds a transaction id drawn before the observer's, and for the shorter of the observation's
 # age and its own. A transaction that read for longer than that and drew its first id a moment ago
 # fails nothing yet, however long ago it began; it is named once it has held its id while a later
-# poll's observation waited 5 s on it. The polls keep every observation, which the wait's own
-# bounds below bound. A hold that this role cannot date is named at the tick bound below:
-# pg_stat_activity shows a session's xact_start only to a superuser, a member of
-# pg_read_all_stats, or a member of the session's own role. In harness mode the server and this
-# driver share one role, so the server's own holds are dated.
+# observation waited 5 s on it. The watch begins 5 s before the event so that one that drew its id
+# before the watch began is named before the event is sent, and not only if it holds its id 5 s
+# into the wait. The watch keeps every observation, which the wait's own bounds below bound. A
+# hold that this role cannot date is named at the tick bound below: pg_stat_activity shows a
+# session's xact_start only to a superuser, a member of pg_read_all_stats, or a member of the
+# session's own role. In harness mode the server and this driver share one role, so the server's
+# own holds are dated.
 #
 # The wait is counted in the server's own work, not in time: the block-index tick's passes at its
 # 30 s period. duty records each pass in duty_passes, in the row keyed by the lease and the
@@ -371,6 +374,7 @@ declared "$section" "read the block-index tick's interval" "$docs_source/block_i
   's/^[[:space:]]*BlockIndexReconcileInterval[[:space:]]*=[[:space:]]*\([0-9][0-9]*\) \* time\.Second$/\1/p'
 readonly tick_seconds="$answer"
 readonly pass_key="$tick_lease/$((tick_seconds * 1000000000))" quiet_ticks=6 stalled_seconds=$((10 * tick_seconds))
+start_horizon_watch "$section"
 query "$section" "an earlier build sends a direct message with its event and no node" "
   with message as (
     insert into messages (issue_key, author, body, target)
@@ -384,7 +388,6 @@ query "$section" "an earlier build sends a direct message with its event and no 
   )
   select message.id::text || ' ' || event.id from message, event"
 read -r before written <<<"$answer"
-observations=()
 boundary="" ticks=0 last_pass=$SECONDS
 while :; do
   query "$section" "read the period the block-index tick last served" \
@@ -397,12 +400,7 @@ while :; do
     select exists (select 1 from block_index_event_cursors where event_id >= $written and object_nodes_owed_at is null)
        and exists (select 1 from graph_nodes where kind = 'message' and id = '$before')"
   [[ "$answer" == t ]] && break
-  observe_horizon "$section"
-  observations+=("$answer")
-  own_horizon_hold "$section" "${observations[@]}"
-  [[ -z "$answer" ]] ||
-    fail "$section" "no transaction of this run's database holds the event horizon back" \
-      "$answer has held back an observation of the horizon that has waited $observation_age s on it, 5 s or more, holding a transaction id drawn before that observer's in this run's database, which holds the server's event readers back"
+  watch_horizon "$section"
   ((ticks < quiet_ticks)) || {
     query "$section" "read the oldest transaction on the instance that holds the event horizon back" "
       select coalesce((select name from (
