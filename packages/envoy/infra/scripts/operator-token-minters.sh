@@ -260,11 +260,14 @@
 # can match a guarded namespace (read against kubernetes.io/metadata.name alone, which no one can
 # change), in the namespace of the Service it calls every way to run or enter a pod that a guarded
 # namespace is asked (RIGHTS_TABLE's namespaced rows, jobs, cronjobs and replicationcontrollers,
-# exec, attach and ephemeral containers included, and each custom resource), since a pod there that
-# carries the Service's labels joins it and can mount its TLS Secret, and the writes to the Service,
-# its Endpoints, EndpointSlices and Secrets; a webhook that calls a URL outside the cluster is
-# UNKNOWN. Create, update and patch of each cluster-scoped resource of a policy engine (a CRD of
-# kyverno.io, gatekeeper.sh, kubewarden.io or a subgroup of one, or a group whose name holds
+# exec, attach and ephemeral containers included, and create, update and patch of each custom
+# resource), since a pod there that carries the Service's labels joins it and can mount its TLS
+# Secret, and the writes to the Service, its Endpoints, EndpointSlices and Secrets, and to its
+# ConfigMaps, from which an injector reads the template it adds; a webhook that calls a URL outside
+# the cluster is UNKNOWN, and so is one whose Service is of type ExternalName or has no selector
+# (its endpoints can point anywhere), or cannot be read. Create, update and patch of each
+# cluster-scoped resource of a policy engine (a CRD of kyverno.io, gatekeeper.sh, kubewarden.io or a
+# subgroup of one, or a group whose name holds
 # "policy" or "policies"), as Kyverno's ClusterPolicy and MutatingPolicy or Gatekeeper's Assign
 # mutate pods. The writes to each parameter object an admission policy's binding names (paramRef,
 # of the policy's paramKind, resolved through the API server's discovery): create, and update and
@@ -272,8 +275,10 @@
 # kind whose paramRef names no namespace (the admitted object's is read then). And on the operator's
 # cluster, GKE Autopilot's workload allowlists: an installed WorkloadAllowlist admits the privileged
 # workloads it names, so it is UNKNOWN, and create, update and patch of AllowlistSynchronizers,
-# which install them, are asked. A refused list of webhook configurations, CRDs, admission policies
-# or allowlists, and a parameter kind the discovery does not resolve, is UNKNOWN.
+# which install them, are asked. Backup for GKE installed on a cluster (a CRD of gkebackup.gke.io) is
+# UNKNOWN: a restore, chosen in Google Cloud by a holder of its restore rights, recreates a backup's
+# workloads and RBAC there. A refused list of webhook configurations, CRDs, admission policies or
+# allowlists, and a parameter kind the discovery does not resolve, is UNKNOWN.
 #
 # Cluster settings outside RBAC. Legacy ABAC authorizes requests by its own policies beside RBAC, and
 # the identity service for GKE takes users and groups from an outside identity provider, so no
@@ -387,10 +392,11 @@ usage: operator-token-minters.sh [flags]
   --rbac-only-member ID      a member of the pool project's fleet that is no GKE cluster and whose
                              cloud grants nothing beside its RBAC; repeatable (without it, such a
                              member is UNKNOWN)
-  --service-agent EMAIL      a Google service agent the deployment needs beside GKE's, GKE Hub's
-                             and Compute Engine's (service-<number>@gcp-sa-<product>.iam.
-                             gserviceaccount.com and nothing else), allowed in the IAM steps and
-                             written into --report; repeatable
+  --service-agent EMAIL      another Google service agent the deployment needs, allowed in the IAM
+                             steps and written into --report; EMAIL is
+                             service-<number>@gcp-sa-<product>.iam.gserviceaccount.com and nothing
+                             else (GKE's, GKE Hub's and Compute Engine's agents of the projects
+                             read are allowed without it); repeatable
   --namespace NS             the operator's namespace (default envoy-operator)
   --service-account NAME     the operator's Kubernetes ServiceAccount (default envoy-operator)
   --guarded NS/NAME          one more namespace and ServiceAccount the pool's Workload Identity binds
@@ -484,20 +490,22 @@ while [ "$#" -gt 0 ]; do
 done
 [ -n "$POOL_PROJECT" ] || POOL_PROJECT="$PROJECT"
 case "$FLEET" in "" | none) ;; *) usage_error "--fleet takes none, not $FLEET" ;; esac
-# --service-agent allows a Google-managed service agent alone: an account any principal can act as
-# would turn a minter into a pass.
+# --service-agent allows a Google-managed service agent alone, of the gcp-sa-<product> form: any other
+# account, which a principal of the project can act as, would turn a minter into a pass.
 for agent in ${SERVICE_AGENTS[@]+"${SERVICE_AGENTS[@]}"}; do
   [[ "$agent" =~ ^service-[0-9]+@gcp-sa-[a-z0-9-]+\.iam\.gserviceaccount\.com$ ]] ||
     usage_error "--service-agent takes a Google service agent, service-<number>@gcp-sa-<product>.iam.gserviceaccount.com, not $agent"
 done
 # allowances_json: the JSON array of each allowance the run was given, {flag, value}: each
 # --service-agent, each --rbac-only-member and --fleet none, which let a principal or a reading pass,
-# so a reader of --report can hold each one to what was accepted.
+# and each --credentials-arg, which chooses how each cluster is reached, so a reader of --report can
+# hold each one to what was accepted.
 allowances_json() {
   {
     for value in ${SERVICE_AGENTS[@]+"${SERVICE_AGENTS[@]}"}; do printf -- '--service-agent\t%s\n' "$value"; done
     for value in ${RBAC_ONLY_MEMBERS[@]+"${RBAC_ONLY_MEMBERS[@]}"}; do printf -- '--rbac-only-member\t%s\n' "$value"; done
     [ -z "${FLEET:-}" ] || printf -- '--fleet\t%s\n' "$FLEET"
+    for value in ${CREDENTIALS_ARGS[@]+"${CREDENTIALS_ARGS[@]}"}; do printf -- '--credentials-arg\t%s\n' "$value"; done
   } | jq -R -s -c '[split("\n")[] | select(length > 0) | split("\t") | {flag: .[0], value: .[1]}]'
 }
 # The guarded pairs: the operator's first, then the broker's (--broker-workload), then each

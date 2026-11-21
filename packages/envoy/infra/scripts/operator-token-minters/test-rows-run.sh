@@ -320,8 +320,9 @@ if row bc; then
 fi
 
 # --- (cj) The allowances: --service-agent names a Google service agent alone, and every allowance a
-# run is given (--service-agent, --rbac-only-member, --fleet none) is written into --report, so a
-# reader can hold each to what was accepted. ---
+# run is given (--service-agent, --rbac-only-member, --fleet none, --credentials-arg, which chooses
+# how each cluster is reached) is written into --report, so a reader can hold each to what was
+# accepted. ---
 allowance_row() {
   local report="$temporary_dir/allowances.json"
   base_world
@@ -335,14 +336,16 @@ allowance_row() {
     written)
       edge_member
       edit "$world/fleet.json" '.memberships = [.memberships[] | select(.id == "edge")]'
-      run --report "$report" --service-agent "service-$number@gcp-sa-cloudbuild.iam.gserviceaccount.com" --rbac-only-member edge --fleet none
+      run --report "$report" --service-agent "service-$number@gcp-sa-cloudbuild.iam.gserviceaccount.com" --rbac-only-member edge --fleet none \
+        --credentials-arg=--internal-ip
       jq -e --arg agent "service-$number@gcp-sa-cloudbuild.iam.gserviceaccount.com" '.allowances == [
-          {flag: "--service-agent", value: $agent}, {flag: "--rbac-only-member", value: "edge"}, {flag: "--fleet", value: "none"}]' "$report" >/dev/null ||
-        fail "the report does not hold the three allowances the run was given: $(jq -c '.allowances // "absent"' "$report")"
+          {flag: "--service-agent", value: $agent}, {flag: "--rbac-only-member", value: "edge"}, {flag: "--fleet", value: "none"},
+          {flag: "--credentials-arg", value: "--internal-ip"}]' "$report" >/dev/null ||
+        fail "the report does not hold the four allowances the run was given: $(jq -c '.allowances // "absent"' "$report")"
       ;;
   esac
 }
 if row cj; then
   each allowance_row not-an-agent written
-  passed "(cj) --service-agent refuses an address that is no Google service agent, and every allowance a run is given is written into --report"
+  passed "(cj) --service-agent refuses an address that is no Google service agent, and every allowance a run is given, --credentials-arg included, is written into --report"
 fi

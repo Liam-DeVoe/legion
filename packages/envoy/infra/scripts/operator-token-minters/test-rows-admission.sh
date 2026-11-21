@@ -11,7 +11,9 @@
 #        pods/ephemeralcontainers there (N2), exits 1 naming the webhook, on the operator's cluster or
 #        another; the same webhook whose namespaceSelector excludes the guarded namespaces by name
 #        exits 0; a webhook that calls a URL, and a refused list of webhook configurations, read
-#        UNKNOWN;
+#        UNKNOWN; apps/deployer that may update configmaps in hooks (rv17), the injector's template,
+#        exits 1; and a backend Service of type ExternalName, or with no selector, reads UNKNOWN
+#        (P2-4);
 #   (cf) Kyverno's ClusterPolicy and its MutatingPolicy of policies.kyverno.io (rv15), and
 #        Kubewarden's ClusterAdmissionPolicy of policies.kubewarden.io (N1), cluster-scoped:
 #        legion/worker that may create any exits 1 naming it; the CRD with no holder exits 0; a
@@ -23,7 +25,9 @@
 #        resolve reads UNKNOWN;
 #   (ci) GKE Autopilot's workload allowlists on the operator's cluster: an installed one reads
 #        UNKNOWN, a refused list of them reads UNKNOWN, and legion/worker that may create
-#        allowlistsynchronizers exits 1.
+#        allowlistsynchronizers exits 1;
+#   (cm) Backup for GKE installed on a cluster of the pool (a CRD of gkebackup.gke.io) reads UNKNOWN,
+#        on the operator's cluster and another: a restore recreates a backup's workloads and RBAC.
 
 # --- (ce) A webhook's backend: whoever may write its Service, the workload behind it, its endpoints
 # or its TLS Secret decides what the webhook does to the operator's next pod. ---
@@ -34,7 +38,7 @@ hook_config() {
           values: ["envoy-operator", "secrets-broker"]}]}} else {} end)]}]'
 }
 backend_row() {
-  local service='{"service": {"namespace": "hooks", "name": "hook"}}'
+  local service='{"service": {"namespace": "hooks", "name": "hook"}}' want
   base_world
   case "$1" in
     backend)
@@ -87,6 +91,28 @@ backend_row() {
       want_line "UNKNOWN live: RBAC on operator-cluster: the webhook MutatingWebhookConfiguration hook-config/pods.example.com can match a guarded namespace and calls https://hooks.example.com/mutate, outside the cluster, whose holders this check cannot read" \
         "a webhook that calls a URL"
       ;;
+    configmaps)
+      hook_config "" "$service" >"$world/clusters/operator-cluster/webhooks.json"
+      subject_grant operator-cluster "$(sa_subject apps deployer)" update "" configmaps "" hooks ""
+      run
+      want_status 1 "apps/deployer may update configmaps in the webhook backend's namespace (rv17)"
+      want_line "FINDING system:serviceaccount:apps:deployer: update configmaps in hooks, backing the webhook MutatingWebhookConfiguration hook-config/pods.example.com" \
+        "apps/deployer may update configmaps in the webhook backend's namespace (rv17)"
+      ;;
+    external-name | no-selector)
+      hook_config "" "$service" >"$world/clusters/operator-cluster/webhooks.json"
+      if [ "$1" = external-name ]; then
+        jq -n '{"hooks/hook": {spec: {type: "ExternalName", externalName: "hooks.example.com"}}}' >"$world/clusters/operator-cluster/services.json"
+        want="is of type ExternalName (hooks.example.com), so admission calls leave the cluster"
+      else
+        jq -n '{"hooks/hook": {spec: {type: "ClusterIP"}}}' >"$world/clusters/operator-cluster/services.json"
+        want="has no selector, so its endpoints can point anywhere, inside the cluster or out"
+      fi
+      run
+      want_status 2 "a webhook backend Service that $want"
+      want_line "UNKNOWN live: RBAC on operator-cluster: the webhook MutatingWebhookConfiguration hook-config/pods.example.com calls the Service hooks/hook, which $want, whose holders this check cannot read" \
+        "a webhook backend Service that $want"
+      ;;
     refused)
       : >"$world/clusters/operator-cluster/refuse-webhooks"
       run
@@ -96,8 +122,9 @@ backend_row() {
   esac
 }
 if row ce; then
-  each backend_row backend jobs cronjobs replicationcontrollers exec attach ephemeralcontainers other-cluster excluded url refused
-  passed "(ce) a write to a matching webhook's backend (a Deployment's patch, and N2's jobs, cronjobs, replicationcontrollers, pods/exec, pods/attach and pods/ephemeralcontainers) exits 1 naming the webhook, on the operator's cluster or another; an excluding selector exits 0; a URL webhook and a refused list read UNKNOWN"
+  each backend_row backend jobs cronjobs replicationcontrollers exec attach ephemeralcontainers configmaps other-cluster excluded url \
+    external-name no-selector refused
+  passed "(ce) a write to a matching webhook's backend (a Deployment's patch, N2's jobs, cronjobs, replicationcontrollers, pods/exec, pods/attach and pods/ephemeralcontainers, and rv17's configmaps) exits 1 naming the webhook, on the operator's cluster or another; an excluding selector exits 0; a URL webhook, an ExternalName or selector-less Service, and a refused list read UNKNOWN"
 fi
 
 # --- (cf) A policy engine's cluster-scoped resources: Kyverno's ClusterPolicy mutates pods. ---
@@ -228,4 +255,25 @@ allowlist_row() {
 if row ci; then
   each allowlist_row installed refused synchronizer
   passed "(ci) an installed workload allowlist and a refused list of them read UNKNOWN, and a holder of create on allowlistsynchronizers exits 1"
+fi
+
+# --- (cm) Backup for GKE: a restore, chosen in Google Cloud by a holder of its restore rights,
+# recreates a backup's workloads and RBAC in the cluster, which no review here sees. ---
+backup_row() {
+  local cluster=operator-cluster step="live: RBAC on operator-cluster"
+  base_world
+  if [ "$1" = other-cluster ]; then
+    add_cluster other-cluster us-east1
+    cluster=other-cluster step="live: Workload Identity on $project/us-east1/other-cluster"
+  fi
+  jq -n '[{spec: {group: "gkebackup.gke.io", scope: "Namespaced", names: {plural: "protectedapplications", kind: "ProtectedApplication"}}}]' \
+    >"$world/clusters/$cluster/crds.json"
+  run
+  want_status 2 "Backup for GKE installed on $cluster"
+  want_line "UNKNOWN $step: Backup for GKE is installed (the gkebackup.gke.io API), so a restore can recreate a backup's workloads and RBAC here, chosen in Google Cloud by a holder of its restore rights, which this check does not read" \
+    "Backup for GKE installed on $cluster"
+}
+if row cm; then
+  each backup_row operator other-cluster
+  passed "(cm) Backup for GKE installed on the operator's cluster or another reads UNKNOWN"
 fi

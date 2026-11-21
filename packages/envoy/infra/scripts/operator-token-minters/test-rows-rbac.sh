@@ -20,8 +20,10 @@
 #        secrets in ci, is a finding naming the chain;
 #   (aj) the Group system:unauthenticated bound to create namespaces on another cluster is a
 #        finding for anyone unauthenticated;
-#   (ak) create on a custom resource (sandboxes.agents.x-k8s.io) in envoy-operator is a finding,
-#        create on Kubernetes' own leases is not, and a discovery that cannot be read is UNKNOWN;
+#   (ak) create on a custom resource (sandboxes.agents.x-k8s.io) in envoy-operator is a finding, and
+#        so are update on it and create on workloads.example.k8s.io, a CRD group ending in k8s.io
+#        that is not Kubernetes' own; create on Kubernetes' own leases is not, and a discovery that
+#        cannot be read is UNKNOWN;
 #   (am) an --agent-namespace pattern that matches nothing is UNKNOWN, naming it, beside two that
 #        match;
 #   (ao) rights limited by name: legion/worker may impersonate the group system:masters by name,
@@ -277,6 +279,24 @@ if row ak; then
   want_line "FINDING system:serviceaccount:legion:worker: create sandboxes.agents.x-k8s.io in envoy-operator" \
     "legion/worker with create on sandboxes in envoy-operator"
   passed "(ak) create on a custom resource in a guarded namespace is a finding"
+
+  # P3-6: update of one, and a custom resource whose CRD group ends in k8s.io without being one of
+  # Kubernetes' own groups.
+  base_world
+  echo sandboxes.agents.x-k8s.io >"$world/clusters/operator-cluster/api-resources"
+  subject_grant operator-cluster "$(sa_subject legion worker)" update agents.x-k8s.io sandboxes "" envoy-operator ""
+  run
+  want_status 1 "legion/worker with update on sandboxes in envoy-operator"
+  want_line "FINDING system:serviceaccount:legion:worker: update sandboxes.agents.x-k8s.io in envoy-operator" \
+    "legion/worker with update on sandboxes in envoy-operator"
+  base_world
+  echo workloads.example.k8s.io >"$world/clusters/operator-cluster/api-resources"
+  subject_grant operator-cluster "$(sa_subject legion worker)" create example.k8s.io workloads "" envoy-operator ""
+  run
+  want_status 1 "legion/worker with create on workloads.example.k8s.io in envoy-operator"
+  want_line "FINDING system:serviceaccount:legion:worker: create workloads.example.k8s.io in envoy-operator" \
+    "legion/worker with create on workloads.example.k8s.io in envoy-operator"
+  passed "(ak) update on a custom resource, and create on one whose group ends in k8s.io but is not Kubernetes' own, are findings (P3-6)"
 
   base_world
   subject_grant operator-cluster "$(sa_subject legion worker)" create coordination.k8s.io leases "" envoy-operator ""
