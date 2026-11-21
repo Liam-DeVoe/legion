@@ -2468,7 +2468,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			// hand-over or a re-admission, a wake — finishes here, the one place every start row of
 			// a role runs, above StartedBy, so it records no start and the claim stays where the
 			// stop left it.
-			if role := workflow.StoppedStepRole(issue); role != "" && role == payload.Role {
+			if workflow.StoppedStepRole(issue) == payload.Role {
 				r.log.Info("outbox start of the role of a stopped task's step; finished without acting", "row", row.ID,
 					"issue", issue.Key, "role", payload.Role, "from", issue.Hold.From)
 				return nil
