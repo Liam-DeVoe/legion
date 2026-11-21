@@ -133,7 +133,7 @@ func URL(t testing.TB) string {
 		if startErr != nil || serverURL != "" {
 			return
 		}
-		started, err := start(Image, "")
+		started, err := start(Image, nil)
 		if err != nil {
 			startErr = err
 			return
@@ -536,31 +536,33 @@ func hostConfig(host string, client, monitoring int) testcontainers.CustomizeReq
 // every port Docker tried was held (defaultBinding).
 const startTries = 5
 
-// start runs a NATS container, with its monitoring endpoint on 8222, on config when it is not ""
-// (the module's own command line otherwise), with options. It publishes the client and monitoring
-// ports on a loopback address of its own and ports the kernel chose there (choosePorts), so a
-// client another test left dialing an earlier container's port cannot reach this one, and tries
-// again on a fresh address and ports, up to startTries starts, when Docker refuses the publish
-// because a probed port was taken in between; an error names every refusal before it as well as
-// its own failure. It waits for the line nats-server logs once its listeners are up, in place of
-// the NATS module's own wait, a dial of the client port at localhost, where the port is not
-// published; each caller's own connect (connect, ready, answering) is the proof a client reaches
-// the server. A container Docker created and never saw ready (a readiness wait that timed out
-// under load, or a refused publish) comes back beside the error, and is removed before start
-// returns: no test's end would remove a container the package shares. A Docker daemon on another
-// machine (localDaemon) publishes on that machine, whose loopback this one does not reach, so
-// there the ports take Docker's default binding and its choice of port (defaultBinding), and
+// start runs a NATS container, with its monitoring endpoint on 8222. It publishes the client and
+// monitoring ports on a loopback address of its own and ports the kernel chose there
+// (loopbackPorts), so a client another test left dialing an earlier container's port cannot reach
+// this one, and tries again on a fresh address and ports, up to startTries starts, when Docker
+// refuses the publish because a probed port was taken in between; an error names every refusal
+// before it as well as its own failure. It waits for the line nats-server logs once its listeners
+// are up, in place of the NATS module's own wait, a dial of the client port at localhost, where
+// the port is not published; each caller's own connect (connect, ready, answering) is the proof a
+// client reaches the server. A container Docker created and never saw ready (a readiness wait that
+// timed out under load, or a refused publish) comes back beside the error, and is removed before
+// start returns: no test's end would remove a container the package shares. A Docker daemon on
+// another machine (localDaemon) publishes on that machine, whose loopback this one does not reach,
+// so there the ports take Docker's default binding and its choice of port (defaultBinding), and
 // endpoint names the daemon's host; Docker can refuse that publish as in use too, having tried
 // ports another process holds, and the start is tried again the same way.
 //
-// Every start is given options again, so none of them may hold state a start uses up; the
-// configuration comes as text for that reason, and each start reads it anew (run).
-func start(image, config string, options ...testcontainers.ContainerCustomizer) (*tcnats.NATSContainer, error) {
+// options, when not nil, builds the caller's options, and each attempt calls it for options of its
+// own: an option can carry a reader that an attempt uses up, as a configuration file's does
+// (testcontainers v0.41.0 lifecycle.go:159 reads it to its end as it creates the container, before
+// Docker refuses a publish at the start), and a retry handed the first attempt's would start a
+// server with an empty configuration.
+func start(image string, options func() []testcontainers.ContainerCustomizer) (*tcnats.NATSContainer, error) {
 	local, err := localDaemon(context.Background())
 	if err != nil {
 		return nil, fmt.Errorf("find where the Docker daemon publishes a container's ports: %w", err)
 	}
-	publishOn := choosePorts
+	publishOn := loopbackPorts
 	if !local {
 		publishOn = defaultBinding
 	}
@@ -571,7 +573,15 @@ func start(image, config string, options ...testcontainers.ContainerCustomizer) 
 		if err != nil {
 			return started, errors.Join(append(refused, fmt.Errorf("choose loopback ports to publish NATS on: %w", err))...)
 		}
-		started, err = run(image, config, hostConfig(host, ports[0], ports[1]), options)
+		attempt := []testcontainers.ContainerCustomizer{
+			tcnats.WithArgument("http_port", monitorPort.Port()),
+			hostConfig(host, ports[0], ports[1]),
+			testcontainers.WithWaitStrategy(wait.ForLog("Server is ready")),
+		}
+		if options != nil {
+			attempt = append(attempt, options()...)
+		}
+		started, err = tcnats.Run(context.Background(), image, attempt...)
 		if err == nil {
 			return started, nil
 		}
@@ -588,31 +598,9 @@ func start(image, config string, options ...testcontainers.ContainerCustomizer) 
 	return started, fmt.Errorf("every one of %d published addresses was refused as in use: %w", startTries, errors.Join(refused...))
 }
 
-// choosePorts is the address and ports each start publishes on where the Docker daemon is this
-// machine: loopbackPorts, which a row of this package's tests replaces to have Docker refuse a
-// start's publish.
-var choosePorts = loopbackPorts
-
 // defaultBinding is where each start publishes on a Docker daemon on another machine: no address,
 // so hostConfig leaves Docker's default binding of every address and Docker chooses each port.
 func defaultBinding(n int) (string, []int, error) { return "", make([]int, n), nil }
-
-// run is one start of start's container, published as publish says. Its configuration file is a
-// reader of config made for this start alone: the copy into the container drains the reader it is
-// given, so a start handed the reader of an earlier one, which Docker had refused, wrote an empty
-// configuration, and nats-server ran on it with no users, admitting a client with no credential
-// (TestARefusedStartIsStartedAgainOnItsOwnConfiguration).
-func run(image, config string, publish testcontainers.CustomizeRequestOption, options []testcontainers.ContainerCustomizer) (*tcnats.NATSContainer, error) {
-	attempt := []testcontainers.ContainerCustomizer{
-		tcnats.WithArgument("http_port", monitorPort.Port()),
-		publish,
-		testcontainers.WithWaitStrategy(wait.ForLog("Server is ready")),
-	}
-	if config != "" {
-		attempt = append(attempt, tcnats.WithConfigFile(strings.NewReader(config)))
-	}
-	return tcnats.Run(context.Background(), image, append(attempt, options...)...)
-}
 
 // StartNkeyAuthorized runs a NATS container of its own, with JetStream, that accepts only clients
 // authenticating as the nkey user whose public key is user, removed when t ends, and returns its
@@ -643,7 +631,9 @@ func StartNkeyAuthorizedUsers(t testing.TB, image string, users ...NkeyUser) (*t
 		entries = append(entries, entry+" }")
 	}
 	config := fmt.Sprintf("jetstream {}\nauthorization {\n  users = [ %s ]\n}\n", strings.Join(entries, ", "))
-	container, err := start(image, config)
+	container, err := start(image, func() []testcontainers.ContainerCustomizer {
+		return []testcontainers.ContainerCustomizer{tcnats.WithConfigFile(strings.NewReader(config))}
+	})
 	if err != nil {
 		t.Fatalf("start nkey-authorized NATS: %v", err)
 	}
@@ -667,7 +657,7 @@ func StartNkeyAuthorizedUsers(t testing.TB, image string, users ...NkeyUser) (*t
 // every other test shares the package's server through URL.
 func StartImage(t testing.TB, image string) string {
 	t.Helper()
-	container, err := start(image, "")
+	container, err := start(image, nil)
 	if err != nil {
 		t.Fatalf("start NATS of %s: %v", image, err)
 	}
