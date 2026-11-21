@@ -341,9 +341,13 @@ func (p *SessionPull) Stop() { _ = p.sub.Unsubscribe() }
 //
 // It is idempotent: the drain runs once and every call answers its result. It returns once
 // nats.go has ended the drain, which sets the span: the flush the drain opens with carries
-// nats.go's own bound (10 s in nats.go v1.55.0), and a link that drops releases it at once.
+// nats.go's own bound (10 s in nats.go v1.55.0), and a link that drops releases it at once. It
+// reports a drain the server did not confirm, on a link that stopped answering or across a
+// reconnect: the server may then still deliver into the inbox, and what it delivers there is not
+// returned.
 func (p *SessionPull) Detach() error {
 	p.detachOnce.Do(func() {
+		reconnects := p.conn.Stats().Reconnects
 		// The inbox is drained, not unsubscribed: an unsubscribe drops what nats.go holds
 		// unread, which is what Release returns. A drain hands those messages to receive, which
 		// queues them.
@@ -360,6 +364,11 @@ func (p *SessionPull) Detach() error {
 			p.detachErr = fmt.Errorf("bus: the inbox subscription of the pull of consumer %q could not be drained, so the messages nats.go held unread are lost: %w", p.name, err)
 			return
 		}
+		// The server reads a connection in order, so its answer to a PING sent after the
+		// drain's UNSUB confirms it took the UNSUB. nats.go's drain flushes too but ends the
+		// drain whether or not the server answered, so Detach asks for itself, within nats.go's
+		// own bound on a flush.
+		confirmed := p.conn.Flush()
 		// The wait sets no span of its own. nats.go ends every drain (checkDrained): after the
 		// flush it opens with, at the first pass in which receive has taken what nats.go held,
 		// or once the subscription or the connection is closed. A span of Detach's own (1 s,
@@ -369,6 +378,14 @@ func (p *SessionPull) Detach() error {
 		// SessionConsumerAckWait had passed.
 		for p.sub.IsValid() {
 			time.Sleep(sessionPullDrainPoll)
+		}
+		switch {
+		case confirmed != nil:
+			p.detachErr = fmt.Errorf("bus: the server did not confirm the end of the inbox subscription of the pull of consumer %q, so it may still deliver into it what is then not returned: %w", p.name, confirmed)
+		case p.conn.Stats().Reconnects != reconnects:
+			// nats.go writes no UNSUB while it reconnects, and sends the draining subscription
+			// again once it has, so the server keeps the inbox's interest.
+			p.detachErr = fmt.Errorf("bus: the connection of the pull of consumer %q reconnected while its inbox subscription drained, so the server may still deliver into it what is then not returned", p.name)
 		}
 	})
 	return p.detachErr

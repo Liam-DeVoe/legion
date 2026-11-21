@@ -638,11 +638,12 @@ func TestAMessageWhoseAckWaitPassedStillAwaitsAnAck(t *testing.T) {
 }
 
 // waitUntil asks ready every 20 ms until it reports true, and fails the test naming want, which is
-// what the caller waited for, and the reading ready last took. Each caller waits on a state that
-// follows a publish the server answers nothing to -- an ack, a nak, a delivery -- so the state
-// arrives a moment after the call that caused it rather than with it, and how long that moment is
-// depends on the machine, not on the code under test. So the wait sets no span of its own: its one
-// bound is the test binary's deadline less testwait's margin (testwait.UntilPolling).
+// what the caller waited for, and the reading ready last took. Its callers wait on a state that
+// follows a publish the server answers nothing to -- an ack, a nak, a delivery -- or, in the idle
+// consumer's row, on the server's own inactive-threshold timer, so the state arrives a moment after
+// what caused it, and how long that moment is depends on the machine, not on the code under test.
+// So the wait sets no span of its own: its one bound is the test binary's deadline less testwait's
+// margin (testwait.UntilPolling).
 func waitUntil(t *testing.T, want string, ready func() (bool, string)) {
 	t.Helper()
 	testwait.UntilPolling(t, 20*time.Millisecond, want, func() (string, bool) {
@@ -918,6 +919,9 @@ func TestInProgressExtendsTheAckWait(t *testing.T) {
 // A NAK with a delay has the message delivered again once the delay has passed.
 func TestNakWithDelayRedelivers(t *testing.T) {
 	owner, consumers := sessionConsumersOnStream(t)
+	// An ack wait of an hour, so only the nak brings the message back within the run: next sets no
+	// span of its own, and a redelivery after the ack wait is a second delivery too.
+	consumers.ackWait = time.Hour
 	ctx := context.Background()
 	const session = "ses_nak"
 	agent := contracts.LegacyAgentSubject(session)
@@ -1019,6 +1023,9 @@ func waitForAckPending(t *testing.T, consumers *SessionConsumers, sessionID stri
 // comes from.
 func TestReleaseReturnsTheMessagesThePullHoldsUnread(t *testing.T) {
 	owner, consumers := sessionConsumersOnStream(t)
+	// An ack wait of an hour, so only Release's naks bring the two messages back within the run:
+	// next sets no span of its own, and a redelivery after the ack wait is a second delivery too.
+	consumers.ackWait = time.Hour
 	ctx := context.Background()
 	const session = "ses_released"
 	agent := contracts.LegacyAgentSubject(session)
@@ -1138,13 +1145,14 @@ func TestAHandOverOnAClosedConnectionReportsTheDrainAndTheNaksThatFailed(t *test
 	t.Logf("Release reported: %v", err)
 }
 
-// A Release on a link that has stopped answering still ends, and returns what the pull held: the
-// drain Detach waits for ends at nats.go's own bound on the flush it opens with (10 s in nats.go
-// v1.55.0), and Detach sets no span of its own beside it. The naks go into the connection's
-// buffer, which the server reads once the link answers again. The row runs on a server of its
-// own, whose relay it freezes, so the drain's flush gets no answer while the connection stays
-// CONNECTED; it waits for Release with testwait.Receive, so a Release that never ended would fail
-// the row by name before the test binary's deadline.
+// A Release on a link that has stopped answering still ends, and says the server never confirmed
+// the drain: the drain Detach waits for ends at nats.go's own bound on the flush it opens with (10 s
+// in nats.go v1.55.0), and Detach sets no span of its own beside it; Detach's own flush gets no
+// answer within that bound either, so the caller's hand-over line cannot claim a whole hand-over.
+// The naks of the two messages the pull held go into the connection's buffer, so Release counts
+// them. The row runs on a server of its own, whose relay it freezes, so neither flush is answered
+// while the connection stays CONNECTED; it waits for Release with testwait.Receive, so a Release
+// that never ended would fail the row by name before the test binary's deadline.
 func TestAReleaseOnALinkThatStopsAnsweringEndsAtTheDrainsOwnBound(t *testing.T) {
 	srv, uri := testnats.Start(t)
 	owner, err := ConnectOwningStream([]string{uri})
@@ -1181,8 +1189,8 @@ func TestAReleaseOnALinkThatStopsAnsweringEndsAtTheDrainsOwnBound(t *testing.T) 
 	}()
 	got := testwait.Receive(t, "Release on a link that stopped answering to end", answered)
 	t.Logf("Release on the frozen link ended after %s", time.Since(started).Round(time.Millisecond))
-	if got.returned != 2 || got.err != nil {
-		t.Fatalf("Release on a link that stopped answering returned %d messages, %v; want the two the pull held and no error", got.returned, got.err)
+	if got.returned != 2 || got.err == nil || !strings.Contains(got.err.Error(), "did not confirm the end of the inbox subscription") {
+		t.Fatalf("Release on a link that stopped answering returned %d messages, %v; want the two the pull held, and an error saying the server did not confirm the drain", got.returned, got.err)
 	}
 }
 
