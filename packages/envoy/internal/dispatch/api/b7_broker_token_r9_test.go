@@ -86,7 +86,7 @@ func TestABrokerTokenActingAsItsPersonAnswersAsBeforeWhileNoProjectIsPrivate(t *
 	requireB7Answer(t, "GET /api/v1/priorities", as(http.MethodGet, "/api/v1/priorities", nil), b7Answer{status: http.StatusOK})
 	requireB7Answer(t, "GET another project's issue", as(http.MethodGet, "/api/v1/issues/"+other.issue, nil), b7Answer{status: http.StatusOK})
 	requireB7Answer(t, "GET /api/v1/whoami", as(http.MethodGet, "/api/v1/whoami", nil), b7Answer{http.StatusOK,
-		`{"kind":"agent","owner":"` + brokerTestPerson + `","project":null,"scopes":["person","approve"],"service":null,"session":"` + brokerTestSession + `"}`})
+		`{"kind":"agent","owner":"` + brokerTestPerson + `","project":null,"scopes":["person"],"service":null,"session":"` + brokerTestSession + `"}`})
 	requireB7Answer(t, "a comment on another project's issue", as(http.MethodPost, "/api/v1/issues/"+other.issue+"/comments", map[string]any{"body": "A remark."}), b7Answer{status: http.StatusCreated})
 	requireB7Answer(t, "an issue filed in another project", as(http.MethodPost, "/api/v1/issues", map[string]any{"project": "OTHER", "title": "Elsewhere", "spec": "# Spec"}), b7Answer{status: http.StatusCreated})
 	requireB7Answer(t, "a blocked_by target of another project", as(http.MethodPatch, "/api/v1/issues/"+own.issue, map[string]any{"blocked_by": []string{other.issue}}), b7Answer{status: http.StatusOK})

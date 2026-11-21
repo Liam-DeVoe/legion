@@ -1090,14 +1090,6 @@ func scanCommentDelivery(row pgx.Row, extra ...any) (model.CommentDelivery, erro
 	return attempt, nil
 }
 
-func loadCommentDelivery(ctx context.Context, q queryer, commentID, target string, attemptNumber int) (model.CommentDelivery, error) {
-	return scanCommentDelivery(q.QueryRow(ctx, `
-		select `+commentDeliveryColumns+`
-		from comment_deliveries
-		where comment_id = $1 and target = $2 and attempt = $3
-	`, commentID, target, attemptNumber))
-}
-
 // createCommentDeliveryInput is the body of POST /api/v1/comments/{id}/deliveries.
 type createCommentDeliveryInput struct {
 	Actor    *model.Actor `json:"actor"`
