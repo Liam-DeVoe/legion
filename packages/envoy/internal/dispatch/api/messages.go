@@ -169,8 +169,8 @@ func (s *server) recoveredMessage(ctx context.Context, who model.Actor, point me
 }
 
 // replayAgentMessage answers a repeat of a keyed single-session send whose message committed: the
-// message as GET /api/v1/agents/{session_id}/messages reads it (recoveredMessage), under the send's
-// own 201.
+// message as GET /api/v1/agents/{session_id}/conversation reads it (recoveredMessage), under the
+// send's own 201.
 func (s *server) replayAgentMessage(w http.ResponseWriter, r *http.Request, point messageRecovery, _ []byte) {
 	who, ok := s.actingReader(w, r)
 	if !ok {
@@ -1201,26 +1201,13 @@ func (s *server) listIssueMessages(w http.ResponseWriter, r *http.Request) {
 }
 
 // listAgentConversation answers GET /api/v1/agents/{session_id}/conversation, the read of one
-// session's conversation: the rows answerAgentConversation answers.
+// session's conversation: every root message that reaches the session, through its own target or
+// through a delivery attempt that names the session, whatever that attempt's state, each with its
+// thread and its attempts, read for the person the credential acts for. No relation of the store
+// decides which messages reach the session: the two branches below read the messages and their
+// attempts, and the store's tuples are read only for the person's own read marks
+// (unreadDirectRepliesCTE).
 func (s *server) listAgentConversation(w http.ResponseWriter, r *http.Request) {
-	s.answerAgentConversation(w, r)
-}
-
-// listAgentMessages answers GET /api/v1/agents/{session_id}/messages, which a page of the release
-// before the conversation read calls: the same rows, so that page keeps working through a roll
-// and after a rollback.
-func (s *server) listAgentMessages(w http.ResponseWriter, r *http.Request) {
-	s.answerAgentConversation(w, r)
-}
-
-// answerAgentConversation is the one body of the two reads of one session's conversation
-// (listAgentConversation and listAgentMessages): every root message that reaches the session,
-// through its own target or through a delivery attempt that names the session, whatever that
-// attempt's state, each with its thread and its attempts, read for the person the credential acts
-// for. No relation of the store decides which messages reach the session: the two branches below
-// read the messages and their attempts, and the store's tuples are read only for the person's own
-// read marks (unreadDirectRepliesCTE).
-func (s *server) answerAgentConversation(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
 		return

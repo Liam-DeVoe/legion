@@ -140,7 +140,7 @@ func TestAnAgentsConversationListsOnlyItsNewestFiles(t *testing.T) {
 }
 
 // A conversation's files are part of the conversation, so the list answers exactly the callers
-// GET /api/v1/agents/{session_id}/messages answers, each the same way
+// GET /api/v1/agents/{session_id}/conversation answers, each the same way
 // (expectSameCallersAsConversationRead).
 func TestAgentFileListAdmitsExactlyTheCallersTheConversationReadAdmits(t *testing.T) {
 	rig := newBrokerTokenRig(t)
@@ -161,7 +161,7 @@ func TestAgentFileListRefusesACallerTheConversationReadRefuses(t *testing.T) {
 		"a person's token holding no scope": personalTokenHolding(t, database),
 	} {
 		t.Run(name, func(t *testing.T) {
-			for _, path := range []string{"/api/v1/agents/" + listedSession + "/messages", listedFilesPath(listedSession)} {
+			for _, path := range []string{"/api/v1/agents/" + listedSession + "/conversation", listedFilesPath(listedSession)} {
 				request := httptest.NewRequest(http.MethodGet, path, nil)
 				request.Header.Set("Authorization", "Bearer "+token)
 				response := httptest.NewRecorder()

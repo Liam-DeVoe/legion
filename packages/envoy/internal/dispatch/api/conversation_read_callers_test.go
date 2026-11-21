@@ -11,7 +11,7 @@ import (
 )
 
 // expectSameCallersAsConversationRead holds route, a read that answers what one agent session's
-// conversation holds, to the callers GET /api/v1/agents/{session_id}/messages admits: every kind
+// conversation holds, to the callers GET /api/v1/agents/{session_id}/conversation admits: every kind
 // of caller that read tells apart - no credential, a person's browser, a person's own token with
 // and without the person scope, the deployment's shared token, and the broker's tokens for a
 // person, for one project, for a service with no person and for a machine login - is answered by
@@ -48,7 +48,7 @@ func expectSameCallersAsConversationRead(t *testing.T, rig *brokerTokenRig, what
 		"a person's token holding no scope":         personalTokenHolding(t, rig.database),
 	}
 
-	conversation := "/api/v1/agents/" + session + "/messages"
+	conversation := "/api/v1/agents/" + session + "/conversation"
 	type answer struct {
 		status int
 		code   string

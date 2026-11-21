@@ -279,7 +279,7 @@ func TestAskBlockWrittenBySessionFollowsThatSession(t *testing.T) {
 	}
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		inbox := dispatchRequest(t, handler, http.MethodGet, "/api/v1/inbox", nil, "alice")
+		inbox := openAsksAnswer(t, handler, "alice", "")
 		if inbox.Code != http.StatusOK {
 			t.Fatalf("read inbox: status=%d body=%s", inbox.Code, inbox.Body.String())
 		}

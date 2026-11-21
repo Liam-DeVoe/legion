@@ -2325,32 +2325,16 @@ type MyReplyRow struct {
 	// Session is the agent session an Agent row's thread was sent to.
 	Session *MyReplySession `json:"session,omitempty"`
 	// DismissedAt is when the caller dismissed the thread out of their Inbox, absent on a thread
-	// that is in it. It is the order state=dismissed answers in and the cursor it resumes from.
+	// that is in it. It is the moment state=dismissed orders the row by.
 	DismissedAt *time.Time `json:"dismissed_at,omitempty"`
 	// Version is a Reply row's user_threads.version, which counts the writes somebody else has
 	// made in the thread: a dismissal of the row carries it back and the route writes the mark
 	// only while the row still holds it, so a press can bury no write the page never drew. Only
-	// the Reply scan sets it (readMyReplyRows, api/replies.go), so an Agent row - which has no
+	// the Thread row scan sets it (scanMyReplyRow, api/replies.go), so an Agent row - which has no
 	// user_threads row and no version at all - sends no version key, and a Reply row's own 0
 	// still goes out. What a dismissal of an Agent row carries instead is the reply it drew and
 	// the ids it drew as unread (api/inbox_dismiss.go).
 	Version *int64 `json:"version,omitempty"`
-}
-
-// MyRepliesResponse is the caller's Inbox threads in one state's own order, and how many there are
-// in all - except under state=dismissed, where Total is the page it answers: that view reads 200
-// rows at a time from a cursor and nothing reads a total of it, and counting every thread a person
-// has ever dismissed is the most expensive read the Inbox has (INFRA-450's a14). AsOf is the
-// database time of the one snapshot every row was read in, which is what a mark-all passes back as
-// its read mark. NextCursor is where the next state=dismissed page resumes, empty when the page
-// that answered it was the last.
-type MyRepliesResponse struct {
-	Rows       []MyReplyRow `json:"rows"`
-	Total      int          `json:"total"`
-	Limit      int          `json:"limit"`
-	Offset     int          `json:"offset"`
-	AsOf       time.Time    `json:"as_of"`
-	NextCursor string       `json:"next_cursor,omitzero"`
 }
 
 // SessionAnswer kinds: an ask's current answer (its ID is the ask's), a comment, a message, or a

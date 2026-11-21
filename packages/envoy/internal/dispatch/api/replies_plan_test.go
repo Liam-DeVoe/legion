@@ -46,12 +46,12 @@ func TestMyRepliesQueriesReadTheirStatesIndex(t *testing.T) {
 			t.Fatalf("%s: %v", setting, err)
 		}
 	}
-	// An unpaged read: the limit is null, which is what an Inbox read sends. A Dismissed page is
-	// 200 rows from a cursor.
-	var everyRow *int
-	oneIssuesPage := 200
-	dismissedPage := myRepliesDismissedPage
-	cursorAt := "2026-11-05T09:00:00Z"
+	// The page's Thread rows in each state, as the page and the two writes over them read them
+	// (meInboxPageThreads): the thread id and the moment the state is ordered by.
+	threadRows := func(state string) string {
+		rows, moment := meInboxPageThreads(state)
+		return "select u.thread_id, " + moment + " " + rows
+	}
 	cursorThread := "7c9e6679-7425-40de-944b-e07fc1f90ae7"
 	replyArgs := func(extra ...any) []any {
 		return append([]any{"alice", "", nil}, extra...)
@@ -69,37 +69,21 @@ func TestMyRepliesQueriesReadTheirStatesIndex(t *testing.T) {
 		relation string
 		noSortOn string
 	}{
-		{"the unread count", myRepliesCountQuery, replyArgs(), "user_threads_unread", "user_threads", ""},
-		{"every unread row", myRepliesPageQuery, replyArgs(everyRow), "user_threads_unread", "user_threads", ""},
-		{"one issue's unread set", myRepliesPageQuery, append([]any{"alice", "TEST-1", nil}, &oneIssuesPage), "user_threads_unread", "user_threads", ""},
-		{"the inbox count", myRepliesInboxCountQuery, replyArgs(), "user_threads_inbox", "user_threads", ""},
-		{"every row under state=inbox", myRepliesInboxPageQuery, replyArgs(everyRow), "user_threads_inbox", "user_threads", ""},
-		// The Dismissed view has no count: its total is the page it answers (listMyReplies).
-		{"the first page under state=dismissed", myRepliesDismissedPageQuery, replyArgs(&dismissedPage), "user_threads_dismissed", "user_threads", ""},
-		{
-			"a page under state=dismissed from its cursor", myRepliesDismissedFromQuery,
-			replyArgs(&dismissedPage, cursorAt, cursorThread), "user_threads_dismissed", "user_threads", "",
-		},
+		{"the unread Thread rows", threadRows(myRepliesStateUnread), replyArgs(), "user_threads_unread", "user_threads", ""},
+		{"one issue's unread Thread rows", threadRows(myRepliesStateUnread), []any{"alice", "TEST-1", nil}, "user_threads_unread", "user_threads", ""},
+		{"the Thread rows under state=inbox", threadRows(myRepliesStateInbox), replyArgs(), "user_threads_inbox", "user_threads", ""},
+		{"the Thread rows under state=dismissed", threadRows(myRepliesStateDismissed), replyArgs(), "user_threads_dismissed", "user_threads", ""},
 		// The Inbox's own states read the person's dismissal marks as one set rather than asking
 		// the table about one root at a time, so what answers them is the login index, not the
 		// primary key. The key is what a dismiss and a restore write by, and what the trigger of
 		// 20261105093507 deletes through: its message_id leads for that delete's sake, which is
 		// the case below.
 		{
-			"the agent rows under state=inbox", myAgentInboxRowsQuery, agentArgs(everyRow),
+			"the agent rows under state=inbox", myAgentInboxRoots + myAgentRowsSelect, agentArgs(),
 			"user_agent_thread_dismissed_login_dismissed_at", "user_agent_thread_dismissed", "dismissed_at",
 		},
 		{
-			"the agent rows and total under state=inbox", myAgentCountedInboxRowsQuery, agentArgs(everyRow),
-			"user_agent_thread_dismissed_login_dismissed_at", "user_agent_thread_dismissed", "dismissed_at",
-		},
-		{
-			"the agent rows under state=dismissed", myAgentDismissedRowsQuery, agentArgs(&dismissedPage),
-			"user_agent_thread_dismissed_login_dismissed_at", "user_agent_thread_dismissed", "dismissed_at",
-		},
-		{
-			"an agent page under state=dismissed from its cursor", myAgentDismissedFromQuery,
-			agentArgs(&dismissedPage, cursorAt, cursorThread),
+			"the agent rows under state=dismissed", myAgentDismissedRoots + myAgentRowsSelect, agentArgs(),
 			"user_agent_thread_dismissed_login_dismissed_at", "user_agent_thread_dismissed", "dismissed_at",
 		},
 		// The trigger of 20261105093507 runs in the transaction of every session reply and

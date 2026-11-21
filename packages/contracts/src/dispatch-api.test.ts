@@ -59,7 +59,7 @@ import {
   MessageEventPayloadSchema,
   type MessageReplyInput,
   type MyAnswersResponse,
-  type MyRepliesResponse,
+  type MyReplyRow,
   NO_ROUTE_RETRY_DELAYS_MS,
   type ReferenceChangesPayload,
   type ReplyBlock,
@@ -677,12 +677,8 @@ test("models the Inbox's Reply and Agent rows and the read mark's event", () => 
         unread_reply_ids: ["message-2"],
         session: { id: "session-1", name: "planner" },
       },
-    ],
-    total: 4,
-    limit: 0,
-    offset: 0,
-    as_of: "2026-10-12T00:02:00Z",
-  } satisfies MyRepliesResponse;
+    ] satisfies MyReplyRow[],
+  };
   const read = {
     login: "alice",
     thread_id: "comment-1",

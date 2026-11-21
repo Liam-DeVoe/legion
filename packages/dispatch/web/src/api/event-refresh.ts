@@ -276,10 +276,10 @@ function threadRowsOf(data: unknown): readonly MyReplyRow[] {
 
 /** The one read's reads of the reader's threads, when one of their rows is a thread on issue
  *  `key`: a Reply row shows its issue's title and priority, and whether it is listed at all turns
- *  on who waits on the ask (`myRepliesOwner` in the server's replies.go leaves out an open ask on
- *  an open issue that waits on the reader, which the Inbox lists under Waiting on you instead),
- *  which an assignee move changes for every ask nobody has handed on. Built like `inboxRowsOf`:
- *  it needs no field of the event's, so an older server's event reaches it too. */
+ *  on who waits on the ask (`meInboxPageThreads` in the server's me_inbox.go leaves out an open
+ *  ask on an open issue that waits on the reader, which the Inbox lists under Waiting on you
+ *  instead), which an assignee move changes for every ask nobody has handed on. Built like
+ *  `inboxRowsOf`: it needs no field of the event's, so an older server's event reaches it too. */
 function inboxThreadRowsOf(key: string): RefreshTarget {
   return {
     queryKey: meInboxKey,
@@ -541,8 +541,8 @@ function isMessageEvent(event: DispatchEvent): boolean {
 // instead. An edit, a resolution of a comment, a delivery or a claim moves no row.
 //
 // A hand-on (`ask.asked_of`) is here for the same reason an assignee move is: the Inbox leaves
-// out the Reply row of an open ask it already lists (`myRepliesOwner` in the server's
-// replies.go, over `coalesce(a.asked_of, i.assignee, p.default_assignee)`), so handing the ask
+// out the Reply row of an open ask it already lists (`meInboxPageThreads` in the server's
+// me_inbox.go, over `coalesce(a.asked_of, i.assignee, p.default_assignee)`), so handing the ask
 // from one person to another makes that row appear for the person who gave it up and disappear
 // for the person who took it. The event names both of them in its `thread_logins`, which is
 // what decides whose list refreshes below.
@@ -575,8 +575,8 @@ const INBOX_THREAD_WRITES: Partial<Record<EventType, true>> = {
  * (`ask.asked_of`, among the writes above) and a project's default moving all move the same rows
  * for the same reason: whom an open ask waits on is one expression,
  * `coalesce(a.asked_of, i.assignee, p.default_assignee)`, and the Reply rows leave out an ask the
- * Inbox already lists for the viewer (`myRepliesOwner` in the server's replies.go), so moving
- * that person moves the ask's thread into one person's Reply rows and out of the other's.
+ * Inbox already lists for the viewer (`meInboxPageThreads` in the server's me_inbox.go), so
+ * moving that person moves the ask's thread into one person's Reply rows and out of the other's.
  *
  * A project-default write moves the person without touching the thread or naming an issue, so
  * it reads it for the two named people's whole Inbox as well, and every other reader's Inbox

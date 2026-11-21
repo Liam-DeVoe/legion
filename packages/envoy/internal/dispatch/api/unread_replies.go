@@ -21,9 +21,8 @@ import (
 //
 // Both endpoints that read it build on this fragment rather than on a predicate of their own:
 // `GET /api/v1/me/agents/state` counts its rows per session (`unread_replies`), and the read of
-// one session's conversation (answerAgentConversation, which `GET
-// /api/v1/agents/{session_id}/conversation` and `GET /api/v1/agents/{session_id}/messages` both
-// answer) unions its roots into the conversation window. The
+// one session's conversation (listAgentConversation, `GET
+// /api/v1/agents/{session_id}/conversation`) unions its roots into the conversation window. The
 // two disagreeing is exactly LEGION-301's overflow defect - a reply counted, never shown, then
 // marked read by a watermark that only moves forward - so one edit has to move both. The Inbox's
 // Agent rows ask the same question of one root at a time (api/replies_agent.go), through the same

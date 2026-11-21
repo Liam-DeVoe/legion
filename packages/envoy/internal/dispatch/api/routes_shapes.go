@@ -319,15 +319,6 @@ type messageReplyQuery struct {
 	FollowUp bool `query:"follow_up"`
 }
 
-// inboxQuery is GET /api/v1/inbox's query.
-type inboxQuery struct {
-	// Project keeps the open asks of one project.
-	Project string `query:"project"`
-	// Assignee is me, unassigned (document asks included) or an email; an email nobody has
-	// signed in with is 400 ASSIGNEE_NOT_ALLOWED.
-	Assignee string `query:"assignee"`
-}
-
 // myAnswersQuery is the offset page GET /api/v1/me/answers and
 // GET /api/v1/people/{login}/nodes each answer: the page, and nothing else. Neither route
 // takes a kind, a filter or a traversal from its caller, so this struct is the whole of what
@@ -337,29 +328,6 @@ type myAnswersQuery struct {
 	Limit int `query:"limit"`
 	// Offset is where the page starts.
 	Offset int `query:"offset"`
-}
-
-// myRepliesQuery is GET /api/v1/me/replies's query: the kinds of row and the state it reads
-// them in, the page that state takes, and the one thread owner it may be narrowed to.
-type myRepliesQuery struct {
-	// Kind is the kinds of row answered, as one comma list of reply and agent (`reply`,
-	// `agent`, `reply,agent`); an absent one reads reply alone, and any other value is
-	// 400 INVALID_QUERY. It carries no enum, because a list of two words is not one of them.
-	Kind string `query:"kind"`
-	// State is unread (the default), inbox or dismissed; anything else is 400 INVALID_QUERY.
-	State string `query:"state" enum:"unread,inbox,dismissed"`
-	// Limit is the page size of state=unread and state=inbox, 1 to 200; an absent one is every
-	// row, which is what the Inbox reads. It is refused under state=dismissed.
-	Limit int `query:"limit"`
-	// Offset is where that page starts; it is refused under state=dismissed.
-	Offset int `query:"offset"`
-	// Cursor is where a state=dismissed page resumes: the next_cursor of the page before it.
-	// It is a query parameter of that state alone.
-	Cursor string `query:"cursor"`
-	// Issue narrows the rows to one issue's threads; with Artifact it is 400 INVALID_QUERY.
-	Issue string `query:"issue"`
-	// Artifact narrows the rows to one document's threads, by document id.
-	Artifact string `query:"artifact"`
 }
 
 // meInboxQuery is GET /api/v1/me/inbox's query, the whole of it: the route refuses any other key
@@ -585,8 +553,7 @@ type liveWritePauseQuery struct {
 // GET beside them names []artifactReviewRead - the handlers write what docs.QueueReview
 // returned, and the dashboard draws the read rather than the write's answer (ApprovalChip.tsx
 // invalidates and refetches); and a model that carries its own tree field needs no shaped read
-// at all, which is why model.MyAnswersResponse, model.MyRepliesResponse and
-// model.SearchResponse stand as they are.
+// at all, which is why model.MyAnswersResponse and model.SearchResponse stand as they are.
 var routeShapes = map[string]routeShape{
 	"GET /api/v1": {Status: http.StatusOK, Response: routeIndex{}},
 	"GET /api/v1/schema/blocks": {
@@ -842,10 +809,8 @@ var routeShapes = map[string]routeShape{
 			{Status: http.StatusOK, Body: model.MessageDelivery{}},
 		},
 	},
-	"GET /api/v1/inbox":                {Status: http.StatusOK, Response: []openAskRow{}, Params: inboxQuery{}},
 	"GET /api/v1/me/answers":           {Status: http.StatusOK, Response: model.MyAnswersResponse{}, Params: myAnswersQuery{}},
 	"GET /api/v1/people/{login}/nodes": {Status: http.StatusOK, Response: personNodes{}, Params: myAnswersQuery{}},
-	"GET /api/v1/me/replies":           {Status: http.StatusOK, Response: model.MyRepliesResponse{}, Params: myRepliesQuery{}},
 	"GET /api/v1/me/inbox": {
 		Status: http.StatusOK, Response: meInboxResponse{}, Params: meInboxQuery{}, RefusesUndeclared: true,
 	},
@@ -886,7 +851,6 @@ var routeShapes = map[string]routeShape{
 		Status: http.StatusOK, Response: model.SessionAnswersResponse{}, Params: sessionAnswersQuery{},
 	},
 	"GET /api/v1/agents/{session_id}/conversation": {Status: http.StatusOK, Response: []messageRead{}},
-	"GET /api/v1/agents/{session_id}/messages":     {Status: http.StatusOK, Response: []messageRead{}},
 	"POST /api/v1/agents/{session_id}/messages": {
 		Status: http.StatusCreated, Response: shapedMessage{}, Request: createAgentMessageInput{},
 	},

@@ -1,29 +1,25 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
-// The Agent rows of GET /api/v1/me/replies: the statements each state reads them through, the
-// statement picker, the row read and the session names the page shows. The route itself, the Reply
-// rows and everything both halves share - the kinds, the states, the paging, the cursor and
-// listMyReplies, which merges the two - are api/replies.go's.
+// The Agent rows of the Inbox page (GET /api/v1/me/inbox): the roots each state reads, each
+// root's own facts and the row read, which the page's Agent arm (meInboxPageRows) and the two
+// writes over those rows (api/inbox_read.go, api/inbox_dismiss.go) read alike. The Thread rows and
+// what both halves share - the kinds and the states - are api/replies.go's.
 //
-// It is a file of its own because the two halves share nothing but that route. A Reply row is a
+// It is a file of its own because the two halves share nothing but the page. A Thread row is a
 // user_threads row read through one of three partial indexes; an Agent row is built from the
-// messages themselves, one walk per root, under unread_replies.go's definition of an unread reply,
-// and the pair of them in one file ran to twelve hundred lines of which no reader needed both.
-// What the split costs is that a change to the answer's shape (model.MyReplyRow) touches two
-// files, which is what the route's own comment on the two blocks already says of its two reads.
+// messages themselves, one walk per root, under unread_replies.go's definition of an unread reply.
+// What the split costs is that a change to the row's shape (model.MyReplyRow) touches two files.
 
 // The Agent half of every Inbox state, read one root at a time.
 //
@@ -35,8 +31,8 @@ import (
 //
 //   - state=unread reads the roots holding a reply the person has not read;
 //   - state=inbox reads the roots they have not dismissed;
-//   - state=dismissed reads the dismissal marks themselves, in the order the view answers in, cut
-//     to the page before any thread is walked, so a page costs the page.
+//   - state=dismissed reads the dismissal marks themselves, through the index that holds them by
+//     login and dismissal (user_agent_thread_dismissed_login_dismissed_at).
 //
 // Each read is one pass over its own roots with index probes per root: the walk of one root's
 // thread (messages_in_reply_to), the dismissal mark (user_agent_thread_dismissed's primary key, or
@@ -56,8 +52,7 @@ import (
 // mean.
 //
 // Parameters are unreadDirectRepliesCTE's own (unreadDirectRepliesArgs), so the first free one is
-// $4, the number of rows a page read takes (null for every row), and a Dismissed page resumes from
-// $5 and $6; a count read binds neither.
+// $4, which a write over these roots binds for its own narrowing (inboxAgentRootsQuery).
 
 // agentThreadCTE walks one root's thread: every message under it, at any depth, through
 // messages_in_reply_to. root is the expression naming that root, so the walk is per root and a
@@ -241,141 +236,40 @@ var (
 		where ` + myAgentRootFilter("m") + `
 		  and not ` + myAgentDismissedRoot("m.id") + `
 	)`
-	// The Dismissed view's roots are the marks themselves, in the order the view answers in, so
-	// one index scan answers the narrowing, the order and the cursor
-	// (user_agent_thread_dismissed_login_dismissed_at). Every test a mark has to pass to be a row
-	// is above the cut, so the page the index cuts is the page the read answers.
-	myAgentDismissedRootsHead = myAgentMarks + `
+	// The Dismissed view's roots are the marks themselves, read through the index that holds them
+	// by login and dismissal (user_agent_thread_dismissed_login_dismissed_at).
+	myAgentDismissedRoots = myAgentMarks + `
 	roots as (
 		select d.message_id as root_id, d.dismissed_at
 		from user_agent_thread_dismissed d
 		where d.login = $1
-		  and ` + myAgentRootIsOneOff
-	myAgentDismissedCursor = `
-		  and (d.dismissed_at, d.message_id) < ($5::text::timestamptz, $6::uuid)`
-	// The list's own cut. A write route over the same marks appends a narrowing of its own
-	// instead, its $4 being a mark or a list of ids rather than a page size.
-	myAgentDismissedPageCut = `
-		order by d.dismissed_at desc, d.message_id desc
-		limit $4
+		  and ` + myAgentRootIsOneOff + `
 	)`
-	myAgentDismissedRootsEnd = `
-	)`
-	myAgentDismissedRoots = myAgentDismissedRootsHead + myAgentDismissedRootsEnd
-	myAgentDismissedPage  = myAgentDismissedRootsHead + myAgentDismissedPageCut
-	myAgentDismissedFrom  = myAgentDismissedRootsHead + myAgentDismissedCursor + myAgentDismissedPageCut
 )
 
-// myAgentRowColumns is what a list read answers for one row, and myAgentRowsOrder the order the
-// Inbox's own two states answer in. The Dismissed view needs no order of its own: its roots are cut
-// in the order it answers in, and the route sorts the two kinds of row together (listMyReplies)
-// whatever order each half read them in.
+// myAgentRowColumns is what a read of the rows answers for one row, and myAgentRowsSelect that
+// read over a state's roots, which the page's Agent arm wraps (meInboxPageRows).
 const myAgentRowColumns = `
 	select r.root_id::text, agent.session_id, agent.replied_at, r.dismissed_at, agent.subject,
 	       agent.reply_id::text, agent.reply_author, agent.reply_body, agent.reply_at,
 	       agent.unread_count, agent.unread_reply_ids`
 
-const myAgentRowsOrder = `
-	order by agent.replied_at desc, r.root_id desc
-	limit $4`
+var myAgentRowsSelect = myAgentRowColumns + myAgentRootsWithFacts
 
-// myAgentCountedColumns adds the state's own total to each row, for a paged read of the Inbox's
-// own two states: both already read every root the state holds in order to order them, so the
-// count over that set is the window's and costs no second pass over the person's agent threads -
-// one of the two reads a badge refresh used to make, and the more expensive of them at a14's seed.
-// The Dismissed view takes no total at all (listMyReplies), which is what leaves its page free to
-// stop at the rows it answers.
-const myAgentCountedColumns = myAgentRowColumns + `,
-	       count(*) over ()::int as total`
-
-var (
-	myAgentRowsSelect        = myAgentRowColumns + myAgentRootsWithFacts
-	myAgentCountedRowsSelect = myAgentCountedColumns + myAgentRootsWithFacts
-)
-
-var (
-	// myAgentRowsQuery reads the one-off roots holding a reply the caller has not read, and
-	// myAgentCountedRowsQuery the same rows with the state's own total beside each.
-	myAgentRowsQuery        = myAgentUnreadRoots + myAgentRowsSelect + myAgentRowsOrder
-	myAgentCountedRowsQuery = myAgentUnreadRoots + myAgentCountedRowsSelect + myAgentRowsOrder
-	// myAgentInboxRowsQuery reads every undismissed one-off root holding a session reply, read or
-	// not, and myAgentDismissedRowsQuery the dismissed ones, newest dismissal first, from the
-	// cursor in myAgentDismissedFromQuery's case.
-	myAgentInboxRowsQuery        = myAgentInboxRoots + myAgentRowsSelect + myAgentRowsOrder
-	myAgentCountedInboxRowsQuery = myAgentInboxRoots + myAgentCountedRowsSelect + myAgentRowsOrder
-	myAgentDismissedRowsQuery    = myAgentDismissedPage + myAgentRowsSelect
-	myAgentDismissedFromQuery    = myAgentDismissedFrom + myAgentRowsSelect
-)
-
-// myAgentPageQuery is the statement one state reads its Agent rows through: the cursor's own query
-// when a Dismissed page resumes from one, and the form that answers the state's total beside each
-// row when the read is counted. The Dismissed view is never counted, so it has no counted form.
-func myAgentPageQuery(state string, from *myRepliesCursor, counted bool) string {
-	switch state {
-	case myRepliesStateInbox:
-		if counted {
-			return myAgentCountedInboxRowsQuery
-		}
-		return myAgentInboxRowsQuery
-	case myRepliesStateDismissed:
-		if from != nil {
-			return myAgentDismissedFromQuery
-		}
-		return myAgentDismissedRowsQuery
-	default:
-		if counted {
-			return myAgentCountedRowsQuery
-		}
-		return myAgentRowsQuery
-	}
-}
-
-// readMyAgentRows reads one state's Agent rows under the parameters myRepliesPageArgs built, and
-// the state's own total when the query carries it (counted), which is the same number for every
-// row of the page and 0 when the page holds none - the read having matched no root at all, since
-// the route cuts the offset itself and the statement takes none. Their sessions are named once the
-// merged page is cut, by nameAgentSessions.
-func (s *server) readMyAgentRows(
-	ctx context.Context, tx pgx.Tx, query string, args []any, counted bool,
-) ([]model.MyReplyRow, int, error) {
-	rows, err := tx.Query(ctx, query, args...)
-	if err != nil {
-		return nil, 0, fmt.Errorf("list my agent threads: %w", err)
-	}
-	defer rows.Close()
-	read := []model.MyReplyRow{}
-	total := 0
-	var extra []any
-	if counted {
-		extra = append(extra, &total)
-	}
-	for rows.Next() {
-		row, err := scanMyAgentRow(rows, s.deps.ServerURL, extra...)
-		if err != nil {
-			return nil, 0, err
-		}
-		read = append(read, row)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, 0, fmt.Errorf("list my agent threads: %w", err)
-	}
-	return read, total, nil
-}
-
-// scanMyAgentRow decodes one Agent row myAgentRowColumns selects, extra receiving the columns
-// after them: the row listMyReplies answers, and the agent row of an entry GET /api/v1/me/inbox
-// answers. Its session is named by its id until nameAgentSessions names it, and its subject and
-// its reply's first line are cut against serverURL, this server's deployment (refs.FirstLine).
-func scanMyAgentRow(scanned pgx.Row, serverURL string, extra ...any) (model.MyReplyRow, error) {
+// scanMyAgentRow decodes one Agent row myAgentRowColumns selects: the agent row of an entry GET
+// /api/v1/me/inbox answers. Its session is named by its id until the page names it
+// (delivery.SessionTitle), and its subject and its reply's first line are cut against serverURL,
+// this server's deployment (refs.FirstLine).
+func scanMyAgentRow(scanned pgx.Row, serverURL string) (model.MyReplyRow, error) {
 	row := model.MyReplyRow{Kind: myReplyKindAgent, Reply: model.MyReplyReply{Kind: "reply"}}
 	var session, subject, body string
 	var author []byte
 	var repliedAt time.Time
-	if err := scanned.Scan(append([]any{
+	if err := scanned.Scan(
 		&row.ThreadID, &session, &repliedAt, &row.DismissedAt, &subject,
 		&row.Reply.ID, &author, &body, &row.Reply.CreatedAt,
 		&row.UnreadCount, &row.UnreadReplyIDs,
-	}, extra...)...); err != nil {
+	); err != nil {
 		return model.MyReplyRow{}, fmt.Errorf("scan my agent thread: %w", err)
 	}
 	if err := json.Unmarshal(author, &row.Reply.Author); err != nil {
@@ -387,29 +281,4 @@ func scanMyAgentRow(scanned pgx.Row, serverURL string, extra ...any) (model.MyRe
 	row.Unread = row.UnreadCount > 0
 	row.Session = &model.MyReplySession{ID: session}
 	return row, nil
-}
-
-// nameAgentSessions names the session of every Agent row on the page. A session's name is the
-// newest title it stamped on anything it wrote (delivery.ResolveSessionTitles, the Delivery page's
-// own read), which outlives the session; one it never stamped is named by its id.
-func nameAgentSessions(ctx context.Context, tx pgx.Tx, rows []model.MyReplyRow) error {
-	sessions := []string{}
-	for _, row := range rows {
-		if row.Session != nil {
-			sessions = append(sessions, row.Session.ID)
-		}
-	}
-	if len(sessions) == 0 {
-		return nil
-	}
-	titles, err := delivery.ResolveSessionTitles(ctx, tx, sessions)
-	if err != nil {
-		return fmt.Errorf("name my agent threads' sessions: %w", err)
-	}
-	for index := range rows {
-		if rows[index].Session != nil {
-			rows[index].Session.Name = delivery.SessionTitle(titles, rows[index].Session.ID)
-		}
-	}
-	return nil
 }

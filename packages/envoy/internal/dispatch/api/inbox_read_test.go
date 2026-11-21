@@ -147,7 +147,7 @@ func seedUnreadThread(t *testing.T, handler http.Handler, path, body string) str
 // unreadThreads is the thread ids the Inbox still shows the caller, of both kinds.
 func unreadThreads(t *testing.T, handler http.Handler, login string) []string {
 	t.Helper()
-	page := getMyReplies(t, handler, login, "?kind=reply,agent")
+	page := readInboxPage(t, handler, login, "?kind=reply,agent")
 	threads := []string{}
 	for _, row := range page.Rows {
 		threads = append(threads, row.ThreadID)

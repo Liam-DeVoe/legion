@@ -931,7 +931,7 @@ func containsAll(have, want []string) bool {
 
 func inboxAskIDs(t *testing.T, handler http.Handler) []string {
 	t.Helper()
-	inbox := dispatchRequest(t, handler, http.MethodGet, "/api/v1/inbox", nil, "alice")
+	inbox := openAsksAnswer(t, handler, "alice", "")
 	if inbox.Code != http.StatusOK {
 		t.Fatalf("read inbox: status=%d body=%s", inbox.Code, inbox.Body.String())
 	}

@@ -606,8 +606,8 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	// A close or a reopen names the logins with a row on the issue's open asks once the asks'
 	// rows are written, and those are still queued here, so the event's own insert reads them and
 	// unions in the people the assignee move moved (events.IssueLoginsOf). Any other move names
-	// only those people, which this transaction already knows. The Replies list leaves out an
-	// open ask on an open issue that waits on the reader (api/replies.go, myRepliesOwner), so
+	// only those people, which this transaction already knows. The Inbox's Thread rows leave out
+	// an open ask on an open issue that waits on the reader (api/me_inbox.go, meInboxThreadRows), so
 	// moving the assignee takes the asks nobody has handed on out of one person's list and puts
 	// them into the other's; an ask somebody handed on waits on that person wherever its issue
 	// goes, so the move leaves its row where it is.

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -15,17 +16,67 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-func getMyReplies(t *testing.T, handler http.Handler, login, query string) model.MyRepliesResponse {
+// inboxPage is the Thread and Agent rows the Inbox page draws for one person in one state, read
+// through the one read (GET /api/v1/me/inbox), in the order that read answers them, and how many
+// they are.
+type inboxPage struct {
+	Rows  []model.MyReplyRow
+	Total int
+}
+
+// readInboxPage reads that page for login. query names the page as the Inbox narrows it: kind, the
+// kinds of row it keeps (reply, agent, or both as reply,agent; reply alone when it names none),
+// state (unread when it names none), and issue or artifact, the one owner it narrows to. kind is
+// no key of the one read's, whose kind narrows by relation kind, so the page keeps the kinds of
+// row itself, as the Inbox does.
+func readInboxPage(t *testing.T, handler http.Handler, login, query string) inboxPage {
 	t.Helper()
-	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/me/replies"+query, nil, login)
-	if response.Code != http.StatusOK {
-		t.Fatalf("list my replies%s: status=%d body=%s", query, response.Code, response.Body.String())
+	values, err := url.ParseQuery(strings.TrimPrefix(query, "?"))
+	if err != nil {
+		t.Fatalf("parse the page's query %q: %v", query, err)
 	}
-	return decodeBody[model.MyRepliesResponse](t, response)
+	reply, agent := false, false
+	for _, kind := range strings.Split(values.Get("kind"), ",") {
+		switch kind {
+		case myReplyKindReply:
+			reply = true
+		case myReplyKindAgent:
+			agent = true
+		case "":
+		default:
+			t.Fatalf("the page keeps kind %s and %s, not %q", myReplyKindReply, myReplyKindAgent, kind)
+		}
+	}
+	if !reply && !agent {
+		reply = true
+	}
+	read := url.Values{"state": {myRepliesStateUnread}}
+	for key, value := range values {
+		switch key {
+		case "kind":
+		case "state", "issue", "artifact":
+			if value[0] != "" {
+				read[key] = value
+			}
+		default:
+			t.Fatalf("the page is narrowed by kind, state, issue and artifact, not %s", key)
+		}
+	}
+	page := inboxPage{Rows: []model.MyReplyRow{}}
+	for _, entry := range readMeInboxAs(t, handler, login, read).Entries {
+		switch {
+		case entry.Thread != nil && reply:
+			page.Rows = append(page.Rows, *entry.Thread)
+		case entry.Agent != nil && agent:
+			page.Rows = append(page.Rows, entry.Agent.MyReplyRow)
+		}
+	}
+	page.Total = len(page.Rows)
+	return page
 }
 
 // replyRow is the row for threadID, failing the test when the page does not list it.
-func replyRow(t *testing.T, page model.MyRepliesResponse, threadID string) model.MyReplyRow {
+func replyRow(t *testing.T, page inboxPage, threadID string) model.MyReplyRow {
 	t.Helper()
 	for _, row := range page.Rows {
 		if row.ThreadID == threadID {
@@ -36,7 +87,7 @@ func replyRow(t *testing.T, page model.MyRepliesResponse, threadID string) model
 	return model.MyReplyRow{}
 }
 
-func listsThread(page model.MyRepliesResponse, threadID string) bool {
+func listsThread(page inboxPage, threadID string) bool {
 	for _, row := range page.Rows {
 		if row.ThreadID == threadID {
 			return true
@@ -72,23 +123,23 @@ func countEvents(t *testing.T, database *store.Store, eventType string) int {
 	return count
 }
 
-// A comment thread Alice wrote in reaches her Replies page once a session replies there: one row
-// naming the thread's root, its subject and the reply, and a total of one. Bob, who wrote nothing
-// there, sees none of it.
-func TestMyRepliesListsACommentThreadASessionRepliedIn(t *testing.T) {
+// A comment thread Alice wrote in reaches her Inbox page once a session replies there: one row
+// naming the thread's root, its subject and the reply. Bob, who wrote nothing there, sees none of
+// it.
+func TestTheInboxPageListsACommentThreadASessionRepliedIn(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Replies", "A spec")
 	root := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Ship it on Friday?\nOr wait."}, "alice")
-	if page := getMyReplies(t, handler, "alice", ""); page.Total != 0 || len(page.Rows) != 0 {
+	if page := readInboxPage(t, handler, "alice", ""); page.Total != 0 {
 		t.Fatalf("before any reply: %#v, want an empty page", page)
 	}
 	reply := sessionComment(t, handler, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
 		"body": "Friday works.\nDetails below.", "reply_to": root.ID,
 	})
 
-	page := getMyReplies(t, handler, "alice", "")
-	if page.Total != 1 || len(page.Rows) != 1 || page.Limit != 0 || page.Offset != 0 {
-		t.Fatalf("page = %#v, want one row of an unpaged read", page)
+	page := readInboxPage(t, handler, "alice", "")
+	if page.Total != 1 {
+		t.Fatalf("page = %#v, want one row", page)
 	}
 	row := page.Rows[0]
 	if row.ThreadID != root.ID || row.Kind != "comment" || row.Ref != "/issues/"+issue.Key+"/comments/"+root.ID {
@@ -103,15 +154,15 @@ func TestMyRepliesListsACommentThreadASessionRepliedIn(t *testing.T) {
 	if row.Reply.ID != reply.ID || row.Reply.Author.Kind != "session" || row.Reply.FirstLine != "Friday works." || !row.Reply.CreatedAt.Equal(reply.CreatedAt) {
 		t.Fatalf("reply = %#v, want the session's reply %s", row.Reply, reply.ID)
 	}
-	if bob := getMyReplies(t, handler, "bob", ""); bob.Total != 0 || len(bob.Rows) != 0 {
+	if bob := readInboxPage(t, handler, "bob", ""); bob.Total != 0 {
 		t.Fatalf("bob's page = %#v, want none of alice's rows", bob)
 	}
 }
 
-// A Reply row's subject and its reply's first line are cut at 160 runes where no reference crosses
+// A Thread row's subject and its reply's first line are cut at 160 runes where no reference crosses
 // the cut (refs.FirstLine): a key or a link the bound falls inside is left out whole, rather than
 // shown as `CORE-12`, a working link to another issue, or as a link's opening drawn raw.
-func TestMyRepliesCutsNoReferenceInHalf(t *testing.T) {
+func TestTheInboxPageCutsNoReferenceInHalf(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Long lines", "A spec")
 	// 152 runes, so a reference after it starts before the cut at 159 and ends after it.
@@ -123,7 +174,7 @@ func TestMyRepliesCutsNoReferenceInHalf(t *testing.T) {
 		"body": lead + "[the spec](dispatch://" + issue.Key + "/spec) agrees.", "reply_to": root.ID,
 	})
 
-	row := replyRow(t, getMyReplies(t, handler, "alice", ""), root.ID)
+	row := replyRow(t, readInboxPage(t, handler, "alice", ""), root.ID)
 	want := strings.Repeat("x", 151) + "…"
 	if row.Subject != want {
 		t.Fatalf("subject = %q, want %q: the key the cut falls inside left out whole", row.Subject, want)
@@ -133,12 +184,12 @@ func TestMyRepliesCutsNoReferenceInHalf(t *testing.T) {
 	}
 }
 
-// What the page leaves out and what it keeps: an open ask the Inbox lists in Waiting on you is
-// left out, since its row there already shows the reply, and that is an open ask on an open issue
-// assigned to the caller; an open ask on a closed issue, which the Inbox hides, stays; so do an
-// answered ask's later reply and a resolved comment thread, until read. The four sides of the
-// assignee rule are TestInboxRowsKeepAnOpenAskNobodyElsesInboxRowCovers.
-func TestMyRepliesKeepsWhatTheInboxDoesNotShow(t *testing.T) {
+// What the page's Thread rows leave out and what they keep: an open ask the Inbox lists in Waiting
+// on you is left out, since its row there already shows the reply, and that is an open ask on an
+// open issue assigned to the caller; an open ask on a closed issue, which the Inbox hides, stays;
+// so do an answered ask's later reply and a resolved comment thread, until read. The four sides of
+// the assignee rule are TestInboxRowsKeepAnOpenAskNobodyElsesInboxRowCovers.
+func TestTheInboxPageKeepsWhatTheInboxDoesNotShow(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Open ask", "A spec")
 	closing := createAnswerListIssue(t, handler, "Closing")
@@ -168,7 +219,7 @@ func TestMyRepliesKeepsWhatTheInboxDoesNotShow(t *testing.T) {
 		t.Fatalf("resolve: status=%d body=%s", response.Code, response.Body.String())
 	}
 
-	page := getMyReplies(t, handler, "alice", "")
+	page := readInboxPage(t, handler, "alice", "")
 	if listsThread(page, open.ID) || listsThread(page, onClosed.ID) {
 		t.Fatalf("page = %#v, want neither open ask while both issues are open", page.Rows)
 	}
@@ -183,7 +234,7 @@ func TestMyRepliesKeepsWhatTheInboxDoesNotShow(t *testing.T) {
 	if closed := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+closing.Key, map[string]string{"status": "done"}, "alice"); closed.Code != http.StatusOK {
 		t.Fatalf("close issue: status=%d body=%s", closed.Code, closed.Body.String())
 	}
-	page = getMyReplies(t, handler, "alice", "")
+	page = readInboxPage(t, handler, "alice", "")
 	if listsThread(page, open.ID) {
 		t.Fatalf("the open ask on an open issue is listed: %#v", page.Rows)
 	}
@@ -198,7 +249,7 @@ func TestMyRepliesKeepsWhatTheInboxDoesNotShow(t *testing.T) {
 // An answer is a write like a reply: when Bob answers the ask Alice asked, her row reads as his
 // answer (who answered, the chosen option and the answer's text), naming the ask. A mark through
 // the answer's own time, which carries nanoseconds, clears it, as the ask's card sends it.
-func TestMyRepliesListsAnAnswerSomeoneElseGave(t *testing.T) {
+func TestTheInboxPageListsAnAnswerSomeoneElseGave(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Regions", "A spec")
 	asked := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks", map[string]any{
@@ -209,7 +260,7 @@ func TestMyRepliesListsAnAnswerSomeoneElseGave(t *testing.T) {
 		t.Fatalf("alice's ask: status=%d body=%s", asked.Code, asked.Body.String())
 	}
 	ask := decodeBody[model.Ask](t, asked)
-	if page := getMyReplies(t, handler, "alice", ""); page.Total != 0 {
+	if page := readInboxPage(t, handler, "alice", ""); page.Total != 0 {
 		t.Fatalf("before the answer: %#v, want nothing (an open ask the Inbox lists)", page)
 	}
 	answered := dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+ask.ID+"/answer", map[string]any{
@@ -220,21 +271,21 @@ func TestMyRepliesListsAnAnswerSomeoneElseGave(t *testing.T) {
 	}
 	answer := decodeBody[model.Ask](t, answered).Answer
 
-	row := replyRow(t, getMyReplies(t, handler, "alice", ""), ask.ID)
+	row := replyRow(t, readInboxPage(t, handler, "alice", ""), ask.ID)
 	if row.Kind != "ask" || row.Subject != "Which region?" || row.Reply.Kind != "answer" || row.Reply.ID != ask.ID {
 		t.Fatalf("row = %#v, want the ask with its answer as the reply", row)
 	}
 	if row.Reply.Author != (model.Actor{Kind: "user", ID: "bob"}) || row.Reply.FirstLine != "eu-west-1 - Closest to the users." {
 		t.Fatalf("reply = %#v, want bob's answer with its option and text", row.Reply)
 	}
-	if bob := getMyReplies(t, handler, "bob", ""); bob.Total != 0 {
+	if bob := readInboxPage(t, handler, "bob", ""); bob.Total != 0 {
 		t.Fatalf("bob's page = %#v, want his own answer read", bob)
 	}
 
 	if marked := markThreadRead(t, handler, "alice", ask.ID, answer.At); marked.Code != http.StatusNoContent {
 		t.Fatalf("mark: status=%d body=%s", marked.Code, marked.Body.String())
 	}
-	if page := getMyReplies(t, handler, "alice", ""); page.Total != 0 {
+	if page := readInboxPage(t, handler, "alice", ""); page.Total != 0 {
 		t.Fatalf("after a mark through the answer's own time: %#v, want it read", page)
 	}
 }
@@ -242,7 +293,7 @@ func TestMyRepliesListsAnAnswerSomeoneElseGave(t *testing.T) {
 // A comment on a passage of an issue's document, a comment on a project document and an issue
 // message thread each reach the page, each linking to its root; ?issue= and ?artifact= narrow the
 // rows to one owner.
-func TestMyRepliesListsDocumentAndMessageThreads(t *testing.T) {
+func TestTheInboxPageListsDocumentAndMessageThreads(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Documents", "The quick brown fox.")
 	other := createAnswerListIssue(t, handler, "Other")
@@ -269,7 +320,7 @@ func TestMyRepliesListsDocumentAndMessageThreads(t *testing.T) {
 	}
 	messageReply := decodeBody[model.Message](t, answer)
 
-	page := getMyReplies(t, handler, "alice", "")
+	page := readInboxPage(t, handler, "alice", "")
 	if page.Total != 3 {
 		t.Fatalf("total = %d, want 3: %#v", page.Total, page.Rows)
 	}
@@ -286,39 +337,45 @@ func TestMyRepliesListsDocumentAndMessageThreads(t *testing.T) {
 		t.Fatalf("message row = %#v", row)
 	}
 
-	byIssue := getMyReplies(t, handler, "alice", "?issue="+issue.Key)
+	byIssue := readInboxPage(t, handler, "alice", "?issue="+issue.Key)
 	if byIssue.Total != 1 || len(byIssue.Rows) != 1 || byIssue.Rows[0].ThreadID != anchored.ID {
 		t.Fatalf("?issue= page = %#v", byIssue)
 	}
-	byDocument := getMyReplies(t, handler, "alice", "?artifact="+document.ID)
+	byDocument := readInboxPage(t, handler, "alice", "?artifact="+document.ID)
 	if byDocument.Total != 1 || len(byDocument.Rows) != 1 || byDocument.Rows[0].ThreadID != documentRoot.ID {
 		t.Fatalf("?artifact= page = %#v", byDocument)
 	}
-	for _, query := range []string{"?issue=" + issue.Key + "&artifact=" + document.ID, "?limit=0", "?artifact=not-a-uuid"} {
-		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/me/replies"+query, nil, "alice")
+	for _, query := range []string{"&issue=" + issue.Key + "&artifact=" + document.ID, "&limit=0", "&artifact=not-a-uuid"} {
+		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/me/inbox?state=unread"+query, nil, "alice")
 		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"INVALID_QUERY"`) {
 			t.Fatalf("%s: status=%d body=%s", query, response.Code, response.Body.String())
 		}
 	}
 	// The page is the calling person's own, so the deployment's shared token, which holds no
 	// scope, is turned away, and Alice's own token reads the three threads her browser reads.
-	if bearer := sessionRequest(t, handler, http.MethodGet, "/api/v1/me/replies", nil); bearer.Code != http.StatusForbidden ||
+	if bearer := sessionRequest(t, handler, http.MethodGet, "/api/v1/me/inbox?state=unread", nil); bearer.Code != http.StatusForbidden ||
 		!strings.Contains(bearer.Body.String(), `"code":"`+codeScopeRequired+`"`) {
-		t.Fatalf("the shared token's reply page: status=%d body=%s, want 403 %s", bearer.Code, bearer.Body.String(), codeScopeRequired)
+		t.Fatalf("the shared token's Inbox page: status=%d body=%s, want 403 %s", bearer.Code, bearer.Body.String(), codeScopeRequired)
 	}
-	own := agentRequest(t, handler, http.MethodGet, "/api/v1/me/replies", nil,
+	own := agentRequest(t, handler, http.MethodGet, "/api/v1/me/inbox?state=unread", nil,
 		personalTokenHolding(t, database, model.ScopePerson))
 	if own.Code != http.StatusOK {
-		t.Fatalf("Alice's own token reading her reply page: status=%d body=%s", own.Code, own.Body.String())
+		t.Fatalf("Alice's own token reading her Inbox page: status=%d body=%s", own.Code, own.Body.String())
 	}
-	if read := decodeBody[model.MyRepliesResponse](t, own); read.Total != 3 {
-		t.Fatalf("Alice's own token read %d threads, want her three", read.Total)
+	threads := 0
+	for _, entry := range decodeBody[meInboxResponse](t, own).Entries {
+		if entry.Thread != nil {
+			threads++
+		}
+	}
+	if threads != 3 {
+		t.Fatalf("Alice's own token read %d threads, want her three", threads)
 	}
 }
 
 // Authorship is the author's kind: a session running under Alice's own personal token is still a
 // session, so its reply reaches her page. And one person is one login however it is cased.
-func TestMyRepliesCountsASessionUnderThePersonsOwnToken(t *testing.T) {
+func TestTheInboxPageCountsASessionUnderThePersonsOwnToken(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Own token", "A spec")
 	minted := dispatchRequest(t, handler, http.MethodPost, "/api/v1/me/agent-tokens", map[string]string{"name": "mine"}, "alice")
@@ -334,7 +391,7 @@ func TestMyRepliesCountsASessionUnderThePersonsOwnToken(t *testing.T) {
 	if reply.Code != http.StatusCreated {
 		t.Fatalf("reply under alice's token: status=%d body=%s", reply.Code, reply.Body.String())
 	}
-	if row := replyRow(t, getMyReplies(t, handler, "alice", ""), root.ID); row.Reply.Author.ID != "alices-session" {
+	if row := replyRow(t, readInboxPage(t, handler, "alice", ""), root.ID); row.Reply.Author.ID != "alices-session" {
 		t.Fatalf("row = %#v, want the session's reply", row)
 	}
 
@@ -346,7 +403,7 @@ func TestMyRepliesCountsASessionUnderThePersonsOwnToken(t *testing.T) {
 		t.Fatalf("insert a cased comment: %v", err)
 	}
 	sessionComment(t, handler, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{"body": "Seen.", "reply_to": cased})
-	replyRow(t, getMyReplies(t, handler, "ALICE", ""), cased)
+	replyRow(t, readInboxPage(t, handler, "ALICE", ""), cased)
 }
 
 // Marking a thread read clears its row and announces itself once, on a never-notifying event the
@@ -361,7 +418,7 @@ func TestMarkThreadReadClearsTheRowUntilTheNextReply(t *testing.T) {
 	if response := markThreadRead(t, handler, "alice", root.ID, first.CreatedAt); response.Code != http.StatusNoContent {
 		t.Fatalf("mark: status=%d body=%s", response.Code, response.Body.String())
 	}
-	if listsThread(getMyReplies(t, handler, "alice", ""), root.ID) {
+	if listsThread(readInboxPage(t, handler, "alice", ""), root.ID) {
 		t.Fatalf("a read thread is still listed")
 	}
 	if got := countEvents(t, database, "user_thread_state.updated"); got != 1 {
@@ -385,7 +442,7 @@ func TestMarkThreadReadClearsTheRowUntilTheNextReply(t *testing.T) {
 	}
 
 	sessionComment(t, handler, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{"body": "One more thing.", "reply_to": root.ID})
-	replyRow(t, getMyReplies(t, handler, "alice", ""), root.ID)
+	replyRow(t, readInboxPage(t, handler, "alice", ""), root.ID)
 
 	if closed := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "done"}, "alice"); closed.Code != http.StatusOK {
 		t.Fatalf("close: status=%d body=%s", closed.Code, closed.Body.String())
@@ -393,7 +450,7 @@ func TestMarkThreadReadClearsTheRowUntilTheNextReply(t *testing.T) {
 	if response := markThreadRead(t, handler, "alice", root.ID, time.Now()); response.Code != http.StatusNoContent {
 		t.Fatalf("mark on a closed issue: status=%d body=%s", response.Code, response.Body.String())
 	}
-	if listsThread(getMyReplies(t, handler, "alice", ""), root.ID) {
+	if listsThread(readInboxPage(t, handler, "alice", ""), root.ID) {
 		t.Fatalf("a thread marked on a closed issue is still listed")
 	}
 

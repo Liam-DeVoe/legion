@@ -87,7 +87,7 @@ func TestApprovalRequestFollowsDocumentVersions(t *testing.T) {
 	if moved.ID != askID || moved.State != "open" || moved.Approval.Version != 2 || moved.Approval.RequestedVersion != 1 || moved.Question != "Approve spec.md (version 2)? Caps retries at three attempts." {
 		t.Fatalf("moved approval = %#v, want the original ask open at version 2 and requested at version 1", moved)
 	}
-	inbox := dispatchRequest(t, handler, http.MethodGet, "/api/v1/inbox?project=TEST", nil, "alice")
+	inbox := openAsksAnswer(t, handler, "alice", "project=TEST")
 	if inbox.Code != http.StatusOK || !strings.Contains(inbox.Body.String(), `"id":"`+askID+`"`) || !strings.Contains(inbox.Body.String(), `"waiting_on":"agent"`) {
 		t.Fatalf("inbox after version move: status=%d body=%s", inbox.Code, inbox.Body.String())
 	}
@@ -104,7 +104,7 @@ func TestApprovalRequestFollowsDocumentVersions(t *testing.T) {
 	if handedBack.ID != askID || handedBack.Approval.Version != 2 || handedBack.Approval.RequestedVersion != 2 || handedBack.Question != "Approve spec.md (version 2)? "+returnedSummary {
 		t.Fatalf("handed-back approval = %#v, want the same ask at the requested version with its new summary", handedBack)
 	}
-	inbox = dispatchRequest(t, handler, http.MethodGet, "/api/v1/inbox?project=TEST", nil, "alice")
+	inbox = openAsksAnswer(t, handler, "alice", "project=TEST")
 	if inbox.Code != http.StatusOK || !strings.Contains(inbox.Body.String(), `"id":"`+askID+`"`) || !strings.Contains(inbox.Body.String(), `"waiting_on":"human"`) {
 		t.Fatalf("inbox after hand-back: status=%d body=%s", inbox.Code, inbox.Body.String())
 	}
@@ -275,7 +275,7 @@ func TestApprovalHandBackWaitsOnTheHuman(t *testing.T) {
 				map[string]any{"ask_id": question, "body": "Which windows are open?"}, "alice"); replied.Code != http.StatusCreated {
 				t.Fatalf("human reply on the question: status=%d body=%s", replied.Code, replied.Body.String())
 			}
-			inbox := dispatchRequest(t, handler, http.MethodGet, "/api/v1/inbox", nil, "alice")
+			inbox := openAsksAnswer(t, handler, "alice", "")
 			if inbox.Code != http.StatusOK {
 				t.Fatalf("read inbox: status=%d body=%s", inbox.Code, inbox.Body.String())
 			}

@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -287,7 +286,7 @@ func dismissedScaleBounds() []dismissedScaleHeld {
 func runDismissedScaleInbox(t *testing.T, shape *dismissedScaleShape) time.Duration {
 	t.Helper()
 	taken, response := timeDismissedScaleRequest(t, shape, http.MethodGet,
-		"/api/v1/me/replies?kind=reply,agent&state=inbox", nil)
+		"/api/v1/me/inbox?state=inbox", nil)
 	page := decodeDismissedScaleReplies(t, response)
 	if len(page.Rows) != dismissedScaleInboxRows() {
 		t.Fatalf("state=inbox answered %d rows, want the %d the seed holds", len(page.Rows), dismissedScaleInboxRows())
@@ -298,7 +297,7 @@ func runDismissedScaleInbox(t *testing.T, shape *dismissedScaleShape) time.Durat
 func runDismissedScaleUnreadCount(t *testing.T, shape *dismissedScaleShape) time.Duration {
 	t.Helper()
 	taken, response := timeDismissedScaleRequest(t, shape, http.MethodGet,
-		"/api/v1/me/replies?kind=reply,agent&state=unread&limit=1", nil)
+		"/api/v1/me/inbox?state=unread&limit=1", nil)
 	page := decodeDismissedScaleReplies(t, response)
 	if page.Total != dismissedScaleUnreadRows() {
 		t.Fatalf("the Inbox count read answered total=%d, want %d", page.Total, dismissedScaleUnreadRows())
@@ -309,9 +308,9 @@ func runDismissedScaleUnreadCount(t *testing.T, shape *dismissedScaleShape) time
 func runDismissedScaleFirstPage(t *testing.T, shape *dismissedScaleShape) time.Duration {
 	t.Helper()
 	taken, response := timeDismissedScaleRequest(t, shape, http.MethodGet,
-		"/api/v1/me/replies?kind=reply,agent&state=dismissed", nil)
+		"/api/v1/me/inbox?state=dismissed&limit="+fmt.Sprint(dismissedScalePage), nil)
 	page := decodeDismissedScaleReplies(t, response)
-	want := min(shape.dismissedReplies+shape.dismissedAgents, myRepliesDismissedPage)
+	want := min(shape.dismissedReplies+shape.dismissedAgents, dismissedScalePage)
 	if len(page.Rows) != want {
 		t.Fatalf("the first Dismissed page answered %d rows, want %d", len(page.Rows), want)
 	}
@@ -321,9 +320,9 @@ func runDismissedScaleFirstPage(t *testing.T, shape *dismissedScaleShape) time.D
 func runDismissedScaleDeepPage(t *testing.T, shape *dismissedScaleShape) time.Duration {
 	t.Helper()
 	taken, response := timeDismissedScaleRequest(t, shape, http.MethodGet,
-		"/api/v1/me/replies?kind=reply,agent&state=dismissed&cursor="+shape.deepCursor, nil)
+		"/api/v1/me/inbox?state=dismissed&limit="+fmt.Sprint(dismissedScalePage)+"&cursor="+shape.deepCursor, nil)
 	page := decodeDismissedScaleReplies(t, response)
-	if len(page.Rows) != myRepliesDismissedPage {
+	if len(page.Rows) != dismissedScalePage {
 		t.Fatalf("the page %d deep answered %d rows, want a full page",
 			dismissedScaleCursorDepth, len(page.Rows))
 	}
@@ -414,11 +413,29 @@ func timeDismissedScaleRequest(
 	return taken, response
 }
 
-func decodeDismissedScaleReplies(t *testing.T, response *httptest.ResponseRecorder) model.MyRepliesResponse {
+// dismissedScalePage is how many rows one Dismissed page draws: the page the Dismissed view reads
+// again from the cursor.
+const dismissedScalePage = 200
+
+// dismissedScalePageRows is one answer of the one read cut to what a14 reads of it: the Thread and
+// Agent rows it draws, its total and its as_of.
+type dismissedScalePageRows struct {
+	Rows  []string
+	Total int
+	AsOf  time.Time
+}
+
+func decodeDismissedScaleReplies(t *testing.T, response *httptest.ResponseRecorder) dismissedScalePageRows {
 	t.Helper()
-	var page model.MyRepliesResponse
-	if err := json.Unmarshal(response.Body.Bytes(), &page); err != nil {
+	var read meInboxResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &read); err != nil {
 		t.Fatalf("decode the Inbox read: %v", err)
+	}
+	page := dismissedScalePageRows{Total: read.Total, AsOf: read.AsOf}
+	for _, entry := range read.Entries {
+		if entry.Thread != nil || entry.Agent != nil {
+			page.Rows = append(page.Rows, entry.Node.ID)
+		}
 	}
 	return page
 }
@@ -437,7 +454,7 @@ func decodeDismissedScaleCount(t *testing.T, response *httptest.ResponseRecorder
 func dismissedScaleAsOf(t *testing.T, shape *dismissedScaleShape) string {
 	t.Helper()
 	response := dispatchRequest(t, shape.handler, http.MethodGet,
-		"/api/v1/me/replies?kind=reply,agent&state=unread&limit=1", nil, dismissedScaleLogin)
+		"/api/v1/me/inbox?state=unread&limit=1", nil, dismissedScaleLogin)
 	if response.Code != http.StatusOK {
 		t.Fatalf("read as_of on %s: status=%d body=%s", shape.name, response.Code, response.Body.String())
 	}

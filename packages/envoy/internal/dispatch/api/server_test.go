@@ -1515,7 +1515,7 @@ func TestBearerReadRoutesDoNotRequireActor(t *testing.T) {
 	}
 
 	// The inbox is one of the rows the person scope opens, and the shared token holds no scope.
-	inbox := agentRequest(t, handler, http.MethodGet, "/api/v1/inbox", nil, "agent-token")
+	inbox := agentRequest(t, handler, http.MethodGet, "/api/v1/me/inbox", nil, "agent-token")
 	if inbox.Code != http.StatusForbidden || !strings.Contains(inbox.Body.String(), `"code":"`+codeScopeRequired+`"`) {
 		t.Fatalf("the shared token's inbox: status=%d body=%s, want 403 %s", inbox.Code, inbox.Body.String(), codeScopeRequired)
 	}

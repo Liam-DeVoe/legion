@@ -435,7 +435,9 @@ func measureOneInboxRead(t *testing.T, reader oneInboxReader, base, this *oneInb
 				}
 				asks = len(listed)
 			case 1:
-				var listed model.MyRepliesResponse
+				var listed struct {
+					Rows []json.RawMessage `json:"rows"`
+				}
 				if err := json.Unmarshal(answer.body, &listed); err != nil {
 					t.Fatalf("decode the base build's Replies of %s: %v", reader.shape, err)
 				}

@@ -117,7 +117,7 @@ func TestApprovalRequestOpensAnAskWhoseAnswerPinsAReviewToTheDocumentVersion(t *
 	if got := readApproval(t, handler, issue.PrimaryArtifactID); got.Approval.State != "awaiting" || got.Approval.AskID == nil || *got.Approval.AskID != request.Ask.ID {
 		t.Fatalf("approval after request = %#v, want awaiting with the ask id", got.Approval)
 	}
-	inbox := dispatchRequest(t, handler, http.MethodGet, "/api/v1/inbox?project=TEST", nil, "alice")
+	inbox := openAsksAnswer(t, handler, "alice", "project=TEST")
 	if !strings.Contains(inbox.Body.String(), `"kind":"approval"`) {
 		t.Fatalf("inbox = %s, want the approval ask", inbox.Body.String())
 	}

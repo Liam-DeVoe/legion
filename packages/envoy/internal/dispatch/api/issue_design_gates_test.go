@@ -263,7 +263,7 @@ func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 	t.Run("the credential the deployment configured publishes", func(t *testing.T) {
 		issue := createAdviceIssue(t, handler, "DGATE", "Machine publish", &spec)
 		// Such a credential holds no scope at all, so a row the person scope opens refuses it.
-		if inbox := agentRequest(t, handler, http.MethodGet, "/api/v1/inbox", nil, "agent-token"); inbox.Code != http.StatusForbidden {
+		if inbox := agentRequest(t, handler, http.MethodGet, "/api/v1/me/inbox", nil, "agent-token"); inbox.Code != http.StatusForbidden {
 			t.Fatalf("the deployment's credential on the inbox: status=%d body=%s, want 403", inbox.Code, inbox.Body.String())
 		}
 		// This row declares no personal scope, as the project's gated-steps row does, because what

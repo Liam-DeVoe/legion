@@ -42,7 +42,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Which of the sessions the repeated id parameter names (1 to 100 session ids) Dispatch holds any record of, so a page links a dispatch://agent/<session id> reference only where that conversation exists, an ended session's included: {sessions: [{session_id, title}]} in the order asked, each once, and no row for an id with no record. A record is the registry copy GET /api/v1/agents lists (whatever its age), an event the session wrote, a message targeted at it, a message or comment delivery to it, a file or image of its conversation, or an ask it follows; title is the registry copy's, null where that copy lists the session with none or does not list it. One statement answers the whole batch. A parameter other than id and session, no id, more than 100, a value that is no session id, or one longer than 2048 bytes, the longest session id a reference in text names, is 400 INVALID_QUERY naming the parameter. It needs the person scope and admits exactly the callers GET /api/v1/agents/{session_id}/messages admits; session is the session the request acts for, as on every route. */
+    /** @description Which of the sessions the repeated id parameter names (1 to 100 session ids) Dispatch holds any record of, so a page links a dispatch://agent/<session id> reference only where that conversation exists, an ended session's included: {sessions: [{session_id, title}]} in the order asked, each once, and no row for an id with no record. A record is the registry copy GET /api/v1/agents lists (whatever its age), an event the session wrote, a message targeted at it, a message or comment delivery to it, a file or image of its conversation, or an ask it follows; title is the registry copy's, null where that copy lists the session with none or does not list it. One statement answers the whole batch. A parameter other than id and session, no id, more than 100, a value that is no session id, or one longer than 2048 bytes, the longest session id a reference in text names, is 400 INVALID_QUERY naming the parameter. It needs the person scope and admits exactly the callers GET /api/v1/agents/{session_id}/conversation admits; session is the session the request acts for, as on every route. */
     get: operations["getApiV1AgentsKnown"];
     put?: never;
     post?: never;
@@ -76,7 +76,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The newest 100 files and images of an agent's conversation, newest first (created_at, then id), each as GET /api/v1/agents/{session_id}/artifacts/{slug} reads it, with its versions; [] for a conversation that holds none. An older file is not listed and is still read by its slug. A reference picker lists them under the session, each addressed dispatch://agent/<session_id>/artifact/<slug>. A conversation's files are part of the conversation, so the route needs the person scope and admits exactly the callers GET /api/v1/agents/{session_id}/messages admits, reading session as that route does. */
+    /** @description The newest 100 files and images of an agent's conversation, newest first (created_at, then id), each as GET /api/v1/agents/{session_id}/artifacts/{slug} reads it, with its versions; [] for a conversation that holds none. An older file is not listed and is still read by its slug. A reference picker lists them under the session, each addressed dispatch://agent/<session_id>/artifact/<slug>. A conversation's files are part of the conversation, so the route needs the person scope and admits exactly the callers GET /api/v1/agents/{session_id}/conversation admits, reading session as that route does. */
     get: operations["getApiV1AgentsBySessionIdArtifacts"];
     put?: never;
     /** @description Upload a file or image to an agent's conversation (multipart, as an issue upload, its kind read from its bytes): ref_key agent/<session_id>/<slug>, addressed dispatch://agent/<session_id>/artifact/<slug>. It holds files and images only: a markdown document (JSON content or a text/markdown file) is 400 ARTIFACT_INPUT, since a document belongs to an issue or a project. No event is appended. A caller whose credential proves a session of its own uploads only into that session: any other session_id is 403 SESSION_SCOPE. A session_id that is empty or holds /, ?, #, whitespace, a control character or a character that ends a reference in text (<>"'`[]|) is 400 INVALID_SESSION_ID on every agent artifact route. */
@@ -128,7 +128,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One session's conversation, newest activity first: each root message that reaches the session - targeted at it, or named by a delivery attempt to it whatever that attempt's state - with every reply under it and each message's delivery attempts, read for the person the credential acts for. It lists the 50 conversations that moved last and, past them, every conversation holding a reply of the session's that the caller has not read, each such root marked unread. It needs the person scope; session is the session the request acts for, as on every route. GET /api/v1/agents/{session_id}/messages answers the same rows. */
+    /** @description One session's conversation, newest activity first: each root message that reaches the session - targeted at it, or named by a delivery attempt to it whatever that attempt's state - with every reply under it and each message's delivery attempts, read for the person the credential acts for. It lists the 50 conversations that moved last and, past them, every conversation holding a reply of the session's that the caller has not read, each such root marked unread. It needs the person scope; session is the session the request acts for, as on every route. */
     get: operations["getApiV1AgentsBySessionIdConversation"];
     put?: never;
     post?: never;
@@ -145,8 +145,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description A session's targeted messages, newest first: the rows GET /api/v1/agents/{session_id}/conversation answers, kept for the clients of the release before it. */
-    get: operations["getApiV1AgentsBySessionIdMessages"];
+    get?: never;
     put?: never;
     /** @description Send an issue-less targeted message to a session: {body, delivery, in_reply_to?, connected_only?}, answered once its own delivery attempt has settled, on past a client that gives up. A session the Envoy listener knows and that is not running is a recipient: the listener stores the message and hands it over when that session runs again, and the attempt is recorded queued rather than sent. A session the listener knows nothing about ("no live session <id>") is queued too: Dispatch publishes the message on that session's own subject itself, and the attempt fails with "no live session <id>" only where Dispatch has no NATS to publish on or the publish fails. connected_only asks for a session that is running now and fails the attempt with "the session is stopped", nothing stored; every later attempt of the message asks what its first asked. A model or thinking switch the session would run as its own turn - a person's own Send or Aside, not one an agent wrote for them, whose whole body is one /model or /effort line, which would otherwise apply at an unknown later time - is held to a running session at every send whether or not the request set connected_only. Under an Idempotency-Key header (as every POST and PATCH takes one), a repeat with the same request answers 201 with the message the key made and its deliveries as they stand, Idempotency-Replayed: ?1, first sending the one attempt it still owes (none yet, or one stranded past its claim) and nothing else; a listener it cannot reach is recorded on the attempt, so a repeat is answered while the listener is down. An attempt a stopped process left owed is resumed by the server's delivery sweep whether anyone asks again or not. */
     post: operations["postApiV1AgentsBySessionIdMessages"];
@@ -1358,23 +1357,6 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  "/api/v1/inbox": {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /** @description Open asks waiting on the caller, grouped by whose turn it is; ?project= and ?assignee=me|unassigned|<email> filter on the person each ask waits on, which is three steps resolved as the ask is read: the person the question was handed to, then the issue's assignee, then the project's default assignee (unassigned is every ask nobody waits on; an email nobody has signed in with is 400 ASSIGNEE_NOT_ALLOWED). */
-    get: operations["getApiV1Inbox"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
   "/api/v1/issues": {
     parameters: {
       query?: never;
@@ -2194,7 +2176,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Everything tied to the caller's own person, in one statement: each node that holds a current relation to their person node (or to a session the server proved theirs) at either end, once, with every relation kind that ties it to them - {kind, direction (inbound, a tuple into the person; outbound, one from them), at} - and its moment, newest first. The kinds are the store's, so a kind a later write appends is an entry the day it is appended; the identity tuple gives none, and a node the caller may not see is in no entry and no count. ?kind= (a comma list of relation kinds, repeatable) narrows to the entries of those kinds and widens nothing. ?state= is the page's own narrowing - unread, inbox or dismissed - read from the lists the Inbox reads (GET /api/v1/me/replies' states, and under inbox GET /api/v1/inbox's open asks waiting on the caller); with none the entries are the walk of the tuples. Where an entry's node is a row the page draws (under no state, the inbox state's), it carries exactly one of ask (the Inbox's ask row with its thread), thread (a Reply row) or agent (an Agent row, with the conversation it draws). A narrowing never leaves in the answer an entry it cannot judge: ?project= narrows every entry by its node's own project, and a node the store holds no project of is then in none; ?issue= or ?artifact= (not both) keeps the rows the page draws of that owner and drops every other entry, an Agent row among them, since no attribute every node carries says which issue or document it belongs to. An absent limit answers every entry; a named one is 1-200 from ?offset=, and ?cursor= (the next_cursor of the page before it) resumes after the last entry it answered. Any other query key, an identity selector (login, person, assignee, session) among them, is 400 INVALID_QUERY naming it. The read is at the event horizon notifications read at. {person, as_of (the database time of the statement), horizon, total (every entry, taken after the visibility predicate), limit (0 when none was named), offset, next_cursor (while entries follow the page), entries}. */
+    /** @description Everything tied to the caller's own person, in one statement: each node that holds a current relation to their person node (or to a session the server proved theirs) at either end, once, with every relation kind that ties it to them - {kind, direction (inbound, a tuple into the person; outbound, one from them), at} - and its moment, newest first. The kinds are the store's, so a kind a later write appends is an entry the day it is appended; the identity tuple gives none, and a node the caller may not see is in no entry and no count. ?kind= (a comma list of relation kinds, repeatable) narrows to the entries of those kinds and widens nothing. ?state= is the page's own narrowing - unread, inbox or dismissed - read from the rows the Inbox keeps for the caller (their thread rows and their one-off messages to a session in that state, less an open ask on an open issue that waits on them, and under inbox the open asks that wait on them); with none the entries are the walk of the tuples. Where an entry's node is a row the page draws (under no state, the inbox state's), it carries exactly one of ask (the Inbox's ask row with its thread), thread (a Reply row) or agent (an Agent row, with the conversation it draws). A narrowing never leaves in the answer an entry it cannot judge: ?project= narrows every entry by its node's own project, and a node the store holds no project of is then in none; ?issue= or ?artifact= (not both) keeps the rows the page draws of that owner and drops every other entry, an Agent row among them, since no attribute every node carries says which issue or document it belongs to. An absent limit answers every entry; a named one is 1-200 from ?offset=, and ?cursor= (the next_cursor of the page before it) resumes after the last entry it answered. Any other query key, an identity selector (login, person, assignee, session) among them, is 400 INVALID_QUERY naming it. The read is at the event horizon notifications read at. {person, as_of (the database time of the statement), horizon, total (every entry, taken after the visibility predicate), limit (0 when none was named), offset, next_cursor (while entries follow the page), entries}. */
     get: operations["getApiV1MeInbox"];
     put?: never;
     post?: never;
@@ -2213,7 +2195,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Take threads out of the caller's Inbox, or put them back: {threads} (the row ids reply:<thread id> and agent:<root message id>) with {seen_replies}, or the Inbox's own narrowing - kind, priority, urgency, project, and issue or artifact, as POST /api/v1/me/inbox/read reads them - with {dismiss_through} (RFC3339, required with the narrowing; stored as no later than now; missing, unparsable or more than a minute ahead of the server is 400 INVALID_STATE), never both (400 INVALID_QUERY). seen_replies is what the page drew in each row threads names, keyed by that same row id, and a dismissal naming threads without it is 400 INVALID_QUERY: a reply: row's entry is {version}, that row's version as GET /api/v1/me/replies answered it, and an agent: row's is {newest_reply, unread_replies}, that row's reply.id and the ids it drew as unread. The mark is written only while the row still holds what the page drew, so a dismissal buries no write nobody has read. A restore takes no seen_replies, and neither does the narrowing, where the server draws the rows itself (each 400 INVALID_QUERY). With the narrowing it changes exactly the threads GET /api/v1/me/replies answers under it whose newest reply, or whose dismissal, is at or before dismiss_through. {restore: true} clears the marks instead of writing them, so the threads are in the Inbox again. Dismissing marks a thread read as well, so a dismissed thread never counts as unread, and a later write by somebody else clears the mark and brings the thread back unread, while the caller's own reply leaves it dismissed. An Ask row's id, a row id of neither shape and an id that is not a uuid are 400 INVALID_QUERY. Answers {dismissed}, the number of threads it changed; a request that changes nothing answers 0 and appends no event. It takes the lock order and appends the events POST /api/v1/me/inbox/read does: one user_thread_state.updated per project and one user_agent_state.updated per session it touched. */
+    /** @description Take threads out of the caller's Inbox, or put them back: {threads} (the row ids reply:<thread id> and agent:<root message id>) with {seen_replies}, or the Inbox's own narrowing - kind, priority, urgency, project, and issue or artifact, as POST /api/v1/me/inbox/read reads them - with {dismiss_through} (RFC3339, required with the narrowing; stored as no later than now; missing, unparsable or more than a minute ahead of the server is 400 INVALID_STATE), never both (400 INVALID_QUERY). seen_replies is what the page drew in each row threads names, keyed by that same row id, and a dismissal naming threads without it is 400 INVALID_QUERY: a reply: row's entry is {version}, that row's version as GET /api/v1/me/inbox answered it, and an agent: row's is {newest_reply, unread_replies}, that row's reply.id and the ids it drew as unread. The mark is written only while the row still holds what the page drew, so a dismissal buries no write nobody has read. A restore takes no seen_replies, and neither does the narrowing, where the server draws the rows itself (each 400 INVALID_QUERY). It changes only the rows GET /api/v1/me/inbox draws as thread and agent rows in the state it writes over (state=inbox for a dismissal, state=dismissed for a restore): a named row the page does not draw there, such as an open ask's thread on an open issue that waits on the caller, changes nothing, and with the narrowing it changes exactly the rows the page draws under it whose newest reply, or whose dismissal, is at or before dismiss_through. {restore: true} clears the marks instead of writing them, so the threads are in the Inbox again. Dismissing marks a thread read as well, so a dismissed thread never counts as unread, and a later write by somebody else clears the mark and brings the thread back unread, while the caller's own reply leaves it dismissed. An Ask row's id, a row id of neither shape and an id that is not a uuid are 400 INVALID_QUERY. Answers {dismissed}, the number of threads it changed; a request that changes nothing answers 0 and appends no event. It takes the lock order and appends the events POST /api/v1/me/inbox/read does: one user_thread_state.updated per project and one user_agent_state.updated per session it touched. */
     post: operations["postApiV1MeInboxDismiss"];
     delete?: never;
     options?: never;
@@ -2230,7 +2212,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Mark every unread Inbox thread read in one write: {read_through} (RFC3339, required; stored as no later than now; missing, unparsable or more than a minute ahead of the server is 400 INVALID_STATE), with the Inbox's own narrowing - kind (reply, agent; both by default), priority (P0, P1, P2, P3 and none), urgency (low, med, high, blocking and none), project (a project key and none), and issue or artifact - each absent list meaning every value. It marks exactly the threads GET /api/v1/me/replies?state=unread answers under that narrowing whose newest reply is at or before read_through: a thread written in since stays unread, and one already read past the mark keeps its later mark. Marking read takes no thread out of the Inbox; POST /api/v1/me/inbox/dismiss does. An Agent row has no issue, document, project, priority or urgency, so any of those narrowings leaves it out; a Reply row has no urgency either, so an urgency list without none marks nothing. An agent reply is marked read by its id, so no session's own read mark moves and the live conversation keeps what it had. issue with artifact, an unknown kind, priority or urgency value, and an artifact that is not a document id are 400 INVALID_QUERY. Answers {marked}, the number of threads marked; a request that moves nothing answers 0 and appends no event. */
+    /** @description Mark every unread Inbox thread read in one write: {read_through} (RFC3339, required; stored as no later than now; missing, unparsable or more than a minute ahead of the server is 400 INVALID_STATE), with the Inbox's own narrowing - kind (reply, agent; both by default), priority (P0, P1, P2, P3 and none), urgency (low, med, high, blocking and none), project (a project key and none), and issue or artifact - each absent list meaning every value. It marks exactly the threads GET /api/v1/me/inbox?state=unread draws as thread and agent rows under that narrowing whose newest reply is at or before read_through: a thread written in since stays unread, one already read past the mark keeps its later mark, and a thread the page does not draw, such as an open ask's thread on an open issue that waits on the caller, keeps its mark. Marking read takes no thread out of the Inbox; POST /api/v1/me/inbox/dismiss does. An Agent row has no issue, document, project, priority or urgency, so any of those narrowings leaves it out; a Reply row has no urgency either, so an urgency list without none marks nothing. An agent reply is marked read by its id, so no session's own read mark moves and the live conversation keeps what it had. issue with artifact, an unknown kind, priority or urgency value, and an artifact that is not a document id are 400 INVALID_QUERY. Answers {marked}, the number of threads marked; a request that moves nothing answers 0 and appends no event. */
     post: operations["postApiV1MeInboxRead"];
     delete?: never;
     options?: never;
@@ -2248,23 +2230,6 @@ export interface paths {
     get?: never;
     /** @description Update the caller's read state for an issue. */
     put: operations["putApiV1MeIssuesByKeyState"];
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  "/api/v1/me/replies": {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /** @description The caller's Inbox threads, of the kinds ?kind= names: reply (the default) lists the threads they wrote in - an ask, a comment thread, an issue message thread - that somebody else has written in, less an open ask on an open issue that waits on them, which the Inbox already lists; agent lists their one-off messages to an agent session (a BTW, a broadcast's copy, or a Send or Aside the session did not take as a turn of its live conversation) holding a reply from that session; reply,agent lists both in one order. ?state= is unread (the default), which lists the rows somebody else has written in since they read them, newest reply first; inbox, every row in their Inbox, read or not, dismissed ones aside, newest reply first; or dismissed, what they have dismissed out of it, newest dismissal first, 200 rows at a time from ?cursor= (the next_cursor of the page before it; limit and offset are 400 INVALID_QUERY there, and cursor is 400 INVALID_QUERY under any other state). Each row names the thread, its owner, its issue's priority, its project, the thread's subject, its root's deep link (an agent row's is the session's live view), the newest reply's author, first line and time, the caller's read mark, whether it is unread and how many writes in it they have not read, the root's document anchor when it has one, its dismissal mark when it has been dismissed, and, on an agent row, the session and the ids of its unread replies. ?issue= or ?artifact= narrows to one owner (both is 400 INVALID_QUERY), and an agent row, which has neither, is then in no answer. An absent limit answers every row, as the Inbox reads them; a named limit is 1-200 (limit=0 is 400 INVALID_QUERY) from ?offset=. {rows, total (both kinds, and under state=dismissed the page the read answers rather than the whole pile, which nothing counts), limit (0 when none was named), offset, as_of, next_cursor (a dismissed page that filled)}: as_of is the database time of the one read-only repeatable-read snapshot every row was read in, which is what a mark-all passes back as its read mark. */
-    get: operations["getApiV1MeReplies"];
-    put?: never;
     post?: never;
     delete?: never;
     options?: never;
@@ -6030,15 +5995,6 @@ export interface components {
       rows: components["schemas"]["MyAnswerRow"][] | null;
       total: number;
     };
-    MyRepliesResponse: {
-      /** Format: date-time */
-      as_of: string;
-      limit: number;
-      next_cursor?: string;
-      offset: number;
-      rows: components["schemas"]["MyReplyRow"][] | null;
-      total: number;
-    };
     MyReplyReply: {
       author: components["schemas"]["Actor"];
       /** Format: date-time */
@@ -7449,40 +7405,6 @@ export interface operations {
     };
   };
   getApiV1AgentsBySessionIdConversation: {
-    parameters: {
-      query?: {
-        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
-        session?: string;
-      };
-      header?: never;
-      path: {
-        session_id: string;
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      /** @description OK */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["MessageRead"][];
-        };
-      };
-      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
-      default: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorBody"];
-        };
-      };
-    };
-  };
-  getApiV1AgentsBySessionIdMessages: {
     parameters: {
       query?: {
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
@@ -10517,40 +10439,6 @@ export interface operations {
       };
     };
   };
-  getApiV1Inbox: {
-    parameters: {
-      query?: {
-        project?: string;
-        assignee?: string;
-        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
-        session?: string;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      /** @description OK */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["OpenAskRow"][];
-        };
-      };
-      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
-      default: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorBody"];
-        };
-      };
-    };
-  };
   getApiV1Issues: {
     parameters: {
       query?: {
@@ -12933,45 +12821,6 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["UserStateStaleError"];
-        };
-      };
-      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
-      default: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorBody"];
-        };
-      };
-    };
-  };
-  getApiV1MeReplies: {
-    parameters: {
-      query?: {
-        kind?: string;
-        state?: "unread" | "inbox" | "dismissed";
-        limit?: number;
-        offset?: number;
-        cursor?: string;
-        issue?: string;
-        artifact?: string;
-        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
-        session?: string;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      /** @description OK */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["MyRepliesResponse"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -15725,7 +15574,6 @@ export type MovedApprovalRequest = components["schemas"]["MovedApprovalRequest"]
 export type MyAnswerReply = components["schemas"]["MyAnswerReply"];
 export type MyAnswerRow = components["schemas"]["MyAnswerRow"];
 export type MyAnswersResponse = components["schemas"]["MyAnswersResponse"];
-export type MyRepliesResponse = components["schemas"]["MyRepliesResponse"];
 export type MyReplyReply = components["schemas"]["MyReplyReply"];
 export type MyReplyRow = components["schemas"]["MyReplyRow"];
 export type MyReplySession = components["schemas"]["MyReplySession"];

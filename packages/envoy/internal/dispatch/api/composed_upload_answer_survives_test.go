@@ -231,11 +231,11 @@ func (f answerSurvivesFixture) measure(t *testing.T) answerSurvivesState {
 	if asks.Code != http.StatusOK {
 		t.Fatalf("list the issue's asks: status=%d body=%s", asks.Code, asks.Body.String())
 	}
-	// The Inbox is the person's own read of the asks waiting on her, GET /api/v1/inbox, which is
-	// every open ask row of an open issue; an ask reaches it by being an open row, and leaves it
+	// The Inbox's Ask rows are the open asks waiting on the person, which GET /api/v1/asks/open
+	// answers under ?waiting_on=; an ask reaches them by being an open row, and leaves them
 	// by being answered or resolved. So an item appearing there is a row opening, and the issue
 	// holds no asks but this document's.
-	inbox := dispatchRequest(t, f.handler, http.MethodGet, "/api/v1/inbox", nil, "alice")
+	inbox := openAsksAnswer(t, f.handler, "alice", "waiting_on=alice")
 	if inbox.Code != http.StatusOK {
 		t.Fatalf("read alice's Inbox: status=%d body=%s", inbox.Code, inbox.Body.String())
 	}

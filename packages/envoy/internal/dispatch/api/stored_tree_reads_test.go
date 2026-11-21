@@ -363,7 +363,7 @@ func TestAVersionsDisplayTreeIsStoredOnItsFirstRead(t *testing.T) {
 
 // A cut a read answers carries its tree and stores none: a backlink's excerpt - here the head of
 // the ask an outgoing edge reaches, cut at 240 runes - and an Inbox row's subject - the thread
-// root's first line, cut at 160 - are read where they stand (graphEdgeReads, listMyReplies), so
+// root's first line, cut at 160 - are read where they stand (graphEdgeReads, listMeInbox), so
 // the reads answer both trees under the header and write no text_trees row, where the request's
 // reader would have asked the table for each and stored one row for every distinct cut.
 func TestACutAReadAnswersCarriesItsTreeAndStoresNone(t *testing.T) {
@@ -404,7 +404,7 @@ func TestACutAReadAnswersCarriesItsTreeAndStoresNone(t *testing.T) {
 	before := rowsOf()
 
 	references := treesRequest(t, handler, "/api/v1/references?from="+url.QueryEscape(messageRef), true)
-	replies := treesRequest(t, handler, "/api/v1/me/replies", true)
+	replies := treesRequest(t, handler, "/api/v1/me/inbox?state=unread", true)
 	awaitBackgroundWrites(t, served)
 	if after := rowsOf(); after != before {
 		t.Errorf("the two reads left %d text_trees rows, want the %d before them", after, before)
@@ -414,7 +414,7 @@ func TestACutAReadAnswersCarriesItsTreeAndStoresNone(t *testing.T) {
 		response                        *httptest.ResponseRecorder
 	}{
 		{"a backlink's excerpt", "edges.0.excerpt.text", "edges.0.excerpt.text_tree", question, references},
-		{"an Inbox row's subject", "rows.0.subject", "rows.0.subject_tree", strings.TrimSpace(root), replies},
+		{"an Inbox row's subject", "entries.0.thread.subject", "entries.0.thread.subject_tree", strings.TrimSpace(root), replies},
 	} {
 		raw, held := valueAt(t, read.response, read.textPath)
 		var text string

@@ -273,7 +273,7 @@ func TestKnownSessionsLongestIDIsTheLongestAReferenceNames(t *testing.T) {
 }
 
 // The route answers only what its caller could already learn, so it answers exactly the callers
-// GET /api/v1/agents/{session_id}/messages answers, each the same way
+// GET /api/v1/agents/{session_id}/conversation answers, each the same way
 // (expectSameCallersAsConversationRead).
 func TestKnownSessionsAdmitsExactlyTheCallersTheConversationReadAdmits(t *testing.T) {
 	rig := newBrokerTokenRig(t)

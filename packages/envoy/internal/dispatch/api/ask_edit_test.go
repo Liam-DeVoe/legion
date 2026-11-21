@@ -66,7 +66,7 @@ func TestEditOpenAskByAuthorPersistsUpdatedAskAndEditEvent(t *testing.T) {
 	if listed.Code != http.StatusOK || !strings.Contains(listed.Body.String(), `"question":"Which transport should we implement?"`) {
 		t.Fatalf("list updated ask: status=%d body=%s", listed.Code, listed.Body.String())
 	}
-	inbox := dispatchRequest(t, handler, http.MethodGet, "/api/v1/inbox?project=TEST", nil, "alice")
+	inbox := openAsksAnswer(t, handler, "alice", "project=TEST")
 	if inbox.Code != http.StatusOK || !strings.Contains(inbox.Body.String(), `"question":"Which transport should we implement?"`) || !strings.Contains(inbox.Body.String(), `"edited_at":"`) {
 		t.Fatalf("inbox updated ask: status=%d body=%s", inbox.Code, inbox.Body.String())
 	}

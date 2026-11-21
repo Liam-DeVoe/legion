@@ -38,7 +38,7 @@ func openTurnAsk(t *testing.T, handler http.Handler, issueKey, question string) 
 
 func readInboxRow(t *testing.T, handler http.Handler, askID string) turnAskRow {
 	t.Helper()
-	inbox := dispatchRequest(t, handler, http.MethodGet, "/api/v1/inbox", nil, "alice")
+	inbox := openAsksAnswer(t, handler, "alice", "")
 	if inbox.Code != http.StatusOK {
 		t.Fatalf("read inbox: status=%d body=%s", inbox.Code, inbox.Body.String())
 	}
@@ -166,98 +166,6 @@ func TestAskReplyTurnDecidesWhoTheAskWaitsOn(t *testing.T) {
 		OpenAsks []turnAskRow `json:"open_asks"`
 	}](t, detail).OpenAsks; len(open) != 1 || open[0].WaitingOn != "human" || open[0].LastReply == nil || open[0].LastReply.Author.Kind != "session" {
 		t.Fatalf("issue open_asks = %#v, want waiting_on human beside the session's last_reply", open)
-	}
-}
-
-// The inbox groups asks by whose turn it is, not by who replied last: a progress
-// note keeps its ask with the human-replied ones under "waiting on agents".
-func TestInboxGroupsProgressNotedAskWithThoseWaitingOnAgents(t *testing.T) {
-	handler := newTestHandler(t)
-	issue := createInteractionIssue(t, handler, "TEST", "Inbox turns", "spec")
-	noted := openTurnAsk(t, handler, issue.Key, "Noted")
-	fresh := openTurnAsk(t, handler, issue.Key, "Fresh")
-	if response := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
-		"body": "Working on it.", "ask_id": noted, "turn": "agent", "actor": sessionActor(),
-	}); response.Code != http.StatusCreated {
-		t.Fatalf("progress note: status=%d body=%s", response.Code, response.Body.String())
-	}
-	inbox := dispatchRequest(t, handler, http.MethodGet, "/api/v1/inbox", nil, "alice")
-	if inbox.Code != http.StatusOK {
-		t.Fatalf("read inbox: status=%d body=%s", inbox.Code, inbox.Body.String())
-	}
-	rows := decodeBody[[]turnAskRow](t, inbox)
-	if len(rows) != 2 || rows[0].ID != fresh || rows[0].WaitingOn != "human" || rows[1].ID != noted || rows[1].WaitingOn != "agent" {
-		t.Fatalf("inbox rows = %#v, want the fresh ask (waiting on human) before the noted one (waiting on agent)", rows)
-	}
-}
-
-// Priority outranks whose turn it is: the inbox orders every row by the owning
-// issue's priority (unset last) and only then puts the human-turn asks before the
-// agent-turn ones, so a P0 ask an agent is still working on sits above a P2 ask
-// nobody has answered.
-func TestInboxOrdersByPriorityBeforeWhoseTurn(t *testing.T) {
-	handler := newTestHandler(t)
-	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
-		"key": "TEST", "name": "Test project",
-	}, "alice"); response.Code != http.StatusCreated {
-		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
-	}
-	createIssue := func(title string, priority any) string {
-		t.Helper()
-		response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
-			"project": "TEST", "title": title,
-		}, "alice")
-		if response.Code != http.StatusCreated {
-			t.Fatalf("create %q: status=%d body=%s", title, response.Code, response.Body.String())
-		}
-		key := decodeBody[struct {
-			Key string `json:"key"`
-		}](t, response).Key
-		if response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+key, map[string]any{
-			"priority": priority,
-		}, "alice"); response.Code != http.StatusOK {
-			t.Fatalf("set %s priority %v: status=%d body=%s", key, priority, response.Code, response.Body.String())
-		}
-		return key
-	}
-	progressNote := func(issueKey, askID string) {
-		t.Helper()
-		if response := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issueKey+"/comments", map[string]any{
-			"body": "Working on it.", "ask_id": askID, "turn": "agent", "actor": sessionActor(),
-		}); response.Code != http.StatusCreated {
-			t.Fatalf("progress note on %s: status=%d body=%s", askID, response.Code, response.Body.String())
-		}
-	}
-
-	// Opened newest-last so recency alone would list them in reverse.
-	unsetIssue := createIssue("Unset issue", nil)
-	openTurnAsk(t, handler, unsetIssue, "Unset, waiting on human")
-	p2AgentIssue := createIssue("P2 agent issue", 2)
-	p2Agent := openTurnAsk(t, handler, p2AgentIssue, "P2, waiting on agent")
-	progressNote(p2AgentIssue, p2Agent)
-	p2HumanIssue := createIssue("P2 human issue", 2)
-	openTurnAsk(t, handler, p2HumanIssue, "P2, waiting on human")
-	p0Issue := createIssue("P0 issue", 0)
-	p0Agent := openTurnAsk(t, handler, p0Issue, "P0, waiting on agent")
-	progressNote(p0Issue, p0Agent)
-
-	inbox := dispatchRequest(t, handler, http.MethodGet, "/api/v1/inbox", nil, "alice")
-	if inbox.Code != http.StatusOK {
-		t.Fatalf("read inbox: status=%d body=%s", inbox.Code, inbox.Body.String())
-	}
-	rows := decodeBody[[]turnAskRow](t, inbox)
-	got := make([]string, 0, len(rows))
-	for _, row := range rows {
-		got = append(got, row.Question+" ("+row.WaitingOn+")")
-	}
-	want := []string{
-		"P0, waiting on agent (agent)",
-		"P2, waiting on human (human)",
-		"P2, waiting on agent (agent)",
-		"Unset, waiting on human (human)",
-	}
-	if strings.Join(got, "; ") != strings.Join(want, "; ") {
-		t.Fatalf("inbox order = %q, want %q", got, want)
 	}
 }
 
@@ -443,14 +351,17 @@ func TestAReplyThatWaitedForTheOwnerRowIsTheNewest(t *testing.T) {
 				t.Fatalf("ask replies = %#v, want the human's reply %s then the agent's %s", thread.Replies, humanReplyID, reply.ID)
 			}
 
-			inbox := dispatchRequest(t, handler, http.MethodGet, "/api/v1/inbox", nil, "alice")
+			inbox := openAsksAnswer(t, handler, "alice", "")
 			if inbox.Code != http.StatusOK {
 				t.Fatalf("read inbox: status=%d body=%s", inbox.Code, inbox.Body.String())
 			}
-			rows := decodeBody[[]turnAskRow](t, inbox)
-			if len(rows) != 2 || rows[0].ID != askID || rows[0].WaitingOn != "human" || rows[0].LastReply == nil ||
-				rows[0].LastReply.Author.ID != path.author || rows[1].ID != otherAskID || rows[1].WaitingOn != "human" {
-				t.Fatalf("inbox rows = %#v, want %s (waiting on human after %s's reply) above %s", rows, askID, path.author, otherAskID)
+			rows := map[string]turnAskRow{}
+			for _, row := range decodeBody[[]turnAskRow](t, inbox) {
+				rows[row.ID] = row
+			}
+			if row := rows[askID]; len(rows) != 2 || row.WaitingOn != "human" || row.LastReply == nil ||
+				row.LastReply.Author.ID != path.author || rows[otherAskID].WaitingOn != "human" {
+				t.Fatalf("open ask rows = %#v, want %s waiting on human after %s's reply, and %s waiting on human", rows, askID, path.author, otherAskID)
 			}
 		})
 	}

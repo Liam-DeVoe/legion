@@ -203,7 +203,7 @@ func (f *decisionFixture) stored(t *testing.T) storedByTheWritePaths {
 		IssueComments:    count("/api/v1/issues/" + f.issue + "/comments"),
 		DocumentComments: count("/api/v1/artifacts/" + f.document + "/comments"),
 		IssueMessages:    count("/api/v1/issues/" + f.issue + "/messages"),
-		SessionMessages:  count("/api/v1/agents/" + decisionSession + "/messages"),
+		SessionMessages:  count("/api/v1/agents/" + decisionSession + "/conversation"),
 		Broadcasts:       count("/api/v1/broadcasts"),
 		SpecReviews:      count("/api/v1/artifacts/" + f.spec + "/reviews"),
 	}

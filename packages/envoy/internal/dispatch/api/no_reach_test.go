@@ -603,7 +603,7 @@ func threeBadRequests(t *testing.T) {
 	// (routesRefusingTheBareRead) is sent the bare read too, which must be refused naming the
 	// parameter it lacks, so the query the probe adds is what lets it answer a row.
 	//
-	// A word a route does declare - `kind` on GET /api/v1/me/replies - is that route's
+	// A word a route does declare - `kind` on GET /api/v1/me/inbox - is that route's
 	// own parameter, which it answers by its own rule, and is no traversal the caller handed
 	// it. A read whose rows can grow between the two reads (growingReads) is walked under a
 	// parameter it declares that holds it to the rows its plain read answered, so the two
@@ -791,7 +791,6 @@ var rowFields = map[string][]string{
 	"GET /api/v1/messages/{id}/blocks":        {"blocks"},
 	"GET /api/v1/comments/{id}/blocks":        {"blocks"},
 	"GET /api/v1/me/answers":                  {"rows"},
-	"GET /api/v1/me/replies":                  {"rows"},
 	"GET /api/v1/me/inbox":                    {"entries"},
 	"GET /api/v1/me/documents/{id}/read":      {"read_at"},
 	"GET /api/v1/search":                      {"results"},

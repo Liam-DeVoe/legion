@@ -135,7 +135,7 @@ func dismissThrough(t *testing.T, handler http.Handler, login string, at time.Ti
 // threadsInState is the thread ids one state answers, sorted.
 func threadsInState(t *testing.T, handler http.Handler, login, state string) []string {
 	t.Helper()
-	page := getMyReplies(t, handler, login, "?kind=reply,agent&state="+state)
+	page := readInboxPage(t, handler, login, "?kind=reply,agent&state="+state)
 	threads := []string{}
 	for _, row := range page.Rows {
 		threads = append(threads, row.ThreadID)
@@ -667,10 +667,8 @@ func TestDismissIgnoresAMemberANewerPageAdds(t *testing.T) {
 	}
 }
 
-// The Dismissed view reads newest dismissal first, a page at a time from the cursor the page before
-// it answered, and its own paging alone: limit and offset are refused there, as a cursor is refused
-// under every other state.
-func TestDismissedPagesFromItsCursor(t *testing.T) {
+// The Dismissed view draws the newest dismissal first, each row carrying its dismissal mark.
+func TestTheDismissedViewDrawsTheNewestDismissalFirst(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Dismissed order", "A spec")
 	comments := "/api/v1/issues/" + issue.Key + "/comments"
@@ -684,9 +682,9 @@ func TestDismissedPagesFromItsCursor(t *testing.T) {
 		threads = append(threads, thread)
 	}
 
-	page := getMyReplies(t, handler, "alice", "?state=dismissed")
-	if page.Total != 3 || len(page.Rows) != 3 || page.Limit != myRepliesDismissedPage {
-		t.Fatalf("dismissed page = %#v, want the three threads at a page of %d", page, myRepliesDismissedPage)
+	page := readInboxPage(t, handler, "alice", "?state=dismissed")
+	if page.Total != 3 {
+		t.Fatalf("dismissed page = %#v, want the three threads", page)
 	}
 	for index, row := range page.Rows {
 		if row.ThreadID != threads[len(threads)-1-index] {
@@ -694,29 +692,6 @@ func TestDismissedPagesFromItsCursor(t *testing.T) {
 		}
 		if row.DismissedAt == nil {
 			t.Fatalf("row %d carries no dismissal mark: %#v", index, row)
-		}
-	}
-	// A page that did not fill names no cursor; following the cursor of the newest row reads the
-	// rows under it.
-	if page.NextCursor != "" {
-		t.Fatalf("next_cursor = %q on a page that did not fill", page.NextCursor)
-	}
-	from := myRepliesCursorOf(page.Rows[0])
-	next := getMyReplies(t, handler, "alice", "?state=dismissed&cursor="+from)
-	if len(next.Rows) != 2 || next.Rows[0].ThreadID != threads[1] {
-		t.Fatalf("page from the cursor = %#v, want the two older dismissals", next.Rows)
-	}
-
-	for query, code := range map[string]string{
-		"?state=dismissed&limit=1":    "INVALID_QUERY",
-		"?state=dismissed&offset=1":   "INVALID_QUERY",
-		"?state=dismissed&cursor=x":   "INVALID_QUERY",
-		"?state=inbox&cursor=" + from: "INVALID_QUERY",
-		"?cursor=" + from:             "INVALID_QUERY",
-	} {
-		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/me/replies"+query, nil, "alice")
-		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"`+code+`"`) {
-			t.Fatalf("%s: status=%d body=%s, want 400 %s", query, response.Code, response.Body.String(), code)
 		}
 	}
 }
@@ -853,7 +828,7 @@ func TestDismissLeavesAThreadThatIsNotTheCallersAlone(t *testing.T) {
 	seed := seedInboxRead(t)
 	handler, database := seed.handler, seed.database
 	// Bob signs in, so he is a person with an Inbox of his own.
-	getMyReplies(t, handler, "bob", "")
+	readInboxPage(t, handler, "bob", "")
 	if dismissed := dismissRows(t, handler, database, "bob", inboxDismissReplyPrefix+seed.first); dismissed != 0 {
 		t.Fatalf("bob dismissed %d of alice's threads, want 0", dismissed)
 	}

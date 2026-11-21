@@ -30,9 +30,9 @@ function inboxSearchHaystack(ask: OpenAskRow): string {
   const parts: (string | null | undefined)[] = [issueKey, ask.issue?.title];
   // The requirement is the name of the document a row stands on *where it has no issue*, which
   // is how `askOwner` (`ask-name.ts`) draws the row's owner too. The server sets `document` on
-  // issue-owned rows as well (`packages/envoy/internal/dispatch/api/inbox.go` fills it whenever
-  // the ask has a document at all), so without this guard typing `spec` would match every
-  // approval request in the list.
+  // issue-owned rows as well (`scanOpenAskRow` in
+  // `packages/envoy/internal/dispatch/api/ask_rows.go` fills it whenever the ask has a document at
+  // all), so without this guard typing `spec` would match every approval request in the list.
   if (issueKey === null) {
     parts.push(ask.document?.name);
   }

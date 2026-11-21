@@ -437,7 +437,7 @@ async function indexedRow(match: (row: OpenAskRow) => boolean): Promise<OpenAskR
  *
  * The ask thread's issue is bob's and its ask is answered, so the Inbox lists it as a Reply row
  * and as no Ask row: an open ask on an issue assigned to the reader is their Waiting-on-you row
- * instead (`myRepliesOwner`, the server's replies.go).
+ * instead (`meInboxPageThreads`, the server's me_inbox.go).
  *
  * Shared by `inbox-threads.stub.e2e.ts` and `inbox-threads.e2e.ts`, whose rows read the same
  * list from two layers.

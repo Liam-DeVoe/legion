@@ -816,7 +816,7 @@ func TestAgentTargetedMessagesNeedThePersonScopeAndKeepTheirOwnConversation(t *t
 	); err != nil {
 		t.Fatalf("order issue-less messages: %v", err)
 	}
-	listed := dispatchRequest(t, handler, http.MethodGet, "/api/v1/agents/s1/messages", nil, "alice")
+	listed := dispatchRequest(t, handler, http.MethodGet, "/api/v1/agents/s1/conversation", nil, "alice")
 	if listed.Code != http.StatusOK {
 		t.Fatalf("list agent messages: status=%d body=%s", listed.Code, listed.Body.String())
 	}
@@ -893,14 +893,13 @@ func TestAgentConversationReplyStaysInThatAgentsConversation(t *testing.T) {
 	}
 }
 
-// The conversation read answers exactly the rows the messages read answers for one session, byte
-// for byte: a person's direct message, and issue messages that reach the session through their
-// own target or through a delivery attempt that names it (a role's message its holder took), each
-// sent once while the listener took it and once while it took nothing. An issue message is in the
-// conversation through its target or its attempt whatever that attempt's state, and never through
-// a delivered_to tuple: an attempt the listener has not taken states none (R7 of
-// dispatch://INFRA-1152's spec).
-func TestTheConversationReadAnswersTheRowsTheMessagesReadAnswers(t *testing.T) {
+// The conversation read answers every root that reaches one session: a person's direct message,
+// and issue messages that reach the session through their own target or through a delivery
+// attempt that names it (a role's message its holder took), each sent once while the listener
+// took it and once while it took nothing. An issue message is in the conversation through its
+// target or its attempt whatever that attempt's state, and never through a delivered_to tuple: an
+// attempt the listener has not taken states none (R7 of dispatch://INFRA-1152's spec).
+func TestTheConversationReadAnswersEveryRootThatReachesTheSession(t *testing.T) {
 	taking := true
 	const session = `{"session_id":"s1","title":"planner","dir":"/w/legion","machine_id":"m1","roles":[],"capabilities":["aside","btw","steer"],"last_seen":42}`
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -979,13 +978,8 @@ func TestTheConversationReadAnswersTheRowsTheMessagesReadAnswers(t *testing.T) {
 	}
 
 	conversation := dispatchRequest(t, handler, http.MethodGet, "/api/v1/agents/s1/conversation", nil, "alice")
-	messages := dispatchRequest(t, handler, http.MethodGet, "/api/v1/agents/s1/messages", nil, "alice")
-	if conversation.Code != http.StatusOK || messages.Code != http.StatusOK {
-		t.Fatalf("the conversation read answers %d %s and the messages read %d %s, want 200 both",
-			conversation.Code, conversation.Body.String(), messages.Code, messages.Body.String())
-	}
-	if !bytes.Equal(conversation.Body.Bytes(), messages.Body.Bytes()) {
-		t.Fatalf("the conversation read answers\n%s\nand the messages read\n%s", conversation.Body.String(), messages.Body.String())
+	if conversation.Code != http.StatusOK {
+		t.Fatalf("the conversation read answers %d %s, want 200", conversation.Code, conversation.Body.String())
 	}
 	var roots []string
 	for _, row := range decodeBody[[]messageRead](t, conversation) {
@@ -997,13 +991,6 @@ func TestTheConversationReadAnswersTheRowsTheMessagesReadAnswers(t *testing.T) {
 	if !slices.Equal(roots, want) {
 		t.Fatalf("the conversation read answers the roots %v, want %v", roots, want)
 	}
-}
-
-// The conversation read admits exactly the callers the messages read admits, each the same way
-// (expectSameCallersAsConversationRead), since it answers the same rows.
-func TestTheConversationReadAdmitsExactlyTheCallersTheMessagesReadAdmits(t *testing.T) {
-	rig := newBrokerTokenRig(t)
-	expectSameCallersAsConversationRead(t, rig, "the conversation read", "s1", "/api/v1/agents/s1/conversation")
 }
 
 // deliveryFrame is the {event, delivery} frame a targeted send carries as its `payload`
@@ -1244,7 +1231,7 @@ func TestUntargetedSessionReplyNamesItsThreadTarget(t *testing.T) {
 		t.Fatalf("session reply target = %#v, want none", stored.Target)
 	}
 
-	conversation := dispatchRequest(t, handler, http.MethodGet, "/api/v1/agents/s1/messages", nil, "alice")
+	conversation := dispatchRequest(t, handler, http.MethodGet, "/api/v1/agents/s1/conversation", nil, "alice")
 	if conversation.Code != http.StatusOK || !strings.Contains(conversation.Body.String(), "Once the build is green.") {
 		t.Fatalf("agent conversation: status=%d body=%s", conversation.Code, conversation.Body.String())
 	}

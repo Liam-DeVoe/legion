@@ -74,7 +74,7 @@ func TestSearchAskBlockOptionDescription(t *testing.T) {
 	}
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		inbox := dispatchRequest(t, handler, http.MethodGet, "/api/v1/inbox", nil, "alice")
+		inbox := openAsksAnswer(t, handler, "alice", "")
 		if inbox.Code != http.StatusOK {
 			t.Fatalf("read inbox: status=%d body=%s", inbox.Code, inbox.Body.String())
 		}
@@ -132,7 +132,7 @@ func TestAskBlockWithoutOptionsSettles(t *testing.T) {
 	}
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		inbox := dispatchRequest(t, handler, http.MethodGet, "/api/v1/inbox", nil, "alice")
+		inbox := openAsksAnswer(t, handler, "alice", "")
 		for _, ask := range decodeBody[[]model.Ask](t, inbox) {
 			if ask.BlockID != nil && *ask.BlockID == "no-options" {
 				return
@@ -344,7 +344,7 @@ func awaitIndexedAskBlock(t *testing.T, handler http.Handler, artifactID, blockI
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		inbox := dispatchRequest(t, handler, http.MethodGet, "/api/v1/inbox", nil, "alice")
+		inbox := openAsksAnswer(t, handler, "alice", "")
 		if inbox.Code != http.StatusOK {
 			t.Fatalf("read inbox: status=%d body=%s", inbox.Code, inbox.Body.String())
 		}

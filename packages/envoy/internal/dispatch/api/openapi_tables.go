@@ -34,8 +34,8 @@ var schemaNames = map[reflect.Type]string{
 	// through it; this is the reference card, which its TypeScript consumers already import as
 	// IssueReferenceSummary (packages/contracts/src/dispatch-api.ts).
 	reflect.TypeOf(issueSummary{}): "IssueReferenceSummary",
-	// The owner of a GET /api/v1/asks/open row, against model.OpenAskOwner, which three routes
-	// answer (GET /api/v1/me/answers, /me/replies and /agents/{session_id}/answers) and whose
+	// The owner of a GET /api/v1/asks/open row, against model.OpenAskOwner, which two routes
+	// answer (GET /api/v1/me/answers and /agents/{session_id}/answers) and whose
 	// shape is what the TypeScript OpenAskOwner says. This one carries the issue's assignee
 	// besides, so the two are not one schema.
 	reflect.TypeOf(openAskOwner{}): "OpenAskItemOwner",

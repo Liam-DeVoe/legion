@@ -1,0 +1,5 @@
+kind: Removed
+body: MyRepliesResponse, the answer of the deleted GET /api/v1/me/replies.
+time: 2026-11-21T21:40:26.621849518Z
+custom:
+    Issue: pr3142

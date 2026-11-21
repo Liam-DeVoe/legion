@@ -209,22 +209,22 @@ func TestRoutesTablePinsEveryRegisteredRoute(t *testing.T) {
 	}
 }
 
-// The Inbox route's description states the rule the person a question reaches is resolved by —
-// the person it was handed to, then the issue's assignee, then the project's default assignee —
+// The open-asks read's description states the rule the person a question reaches is resolved by -
+// the person it was handed to, then the issue's assignee, then the project's default assignee -
 // and the four descriptions that rule narrowed no longer carry what it replaced. This is a test
 // of its own because the two route tests above read every description and assert no word of
 // one: the index leaves descriptions out (routeIndexLines) and the pin only holds each row to
 // having one, so nothing else fails when a description outlives the code it describes.
-func TestTheInboxRouteDescriptionStatesTheRule(t *testing.T) {
+func TestTheOpenAsksRouteDescriptionStatesTheRule(t *testing.T) {
 	descriptions := map[string]string{}
 	for _, route := range (&server{}).routes() {
 		descriptions[route.Method+" "+route.Pattern] = route.Description
 	}
 	for _, want := range []struct{ route, says string }{
 		// The three steps, in the order the read resolves them.
-		{"GET /api/v1/inbox", "handed to"},
-		{"GET /api/v1/inbox", "the issue's assignee"},
-		{"GET /api/v1/inbox", "the project's default assignee"},
+		{"GET /api/v1/asks/open", "handed to"},
+		{"GET /api/v1/asks/open", "issue's assignee"},
+		{"GET /api/v1/asks/open", "project's default assignee"},
 		// A create names the person, and says what happens when it names nobody.
 		{"POST /api/v1/projects", "default_assignee"},
 		{"POST /api/v1/projects", "ASSIGNEE_NOT_ALLOWED"},
@@ -248,8 +248,8 @@ func TestTheInboxRouteDescriptionStatesTheRule(t *testing.T) {
 		{"GET /api/v1/settings/project-default-assignees", "that names a default assignee"},
 		// The create chain's last step always lands, so it carries no qualification.
 		{"POST /api/v1/issues", "still names a person who has signed in"},
-		// The inbox resolves three steps and stops at none of them.
-		{"GET /api/v1/inbox", "until somebody hands it on"},
+		// The open-asks read resolves three steps and stops at none of them.
+		{"GET /api/v1/asks/open", "until somebody hands it on"},
 	} {
 		description, mounted := descriptions[stale.route]
 		if !mounted {
@@ -561,9 +561,7 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 		"GET /api/v1/people/{login}/nodes",
 		"GET /api/v1/issues/{key}/subscribers",
 		"DELETE /api/v1/issues/{key}/subscribers/{session_id}",
-		"GET /api/v1/inbox",
 		"GET /api/v1/me/answers",
-		"GET /api/v1/me/replies",
 		// The one read of what is tied to a person is no older row either: it answers for the
 		// credential's own person alone, so a credential that proves none has nothing to read.
 		"GET /api/v1/me/inbox",
@@ -573,9 +571,8 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 		"POST /api/v1/me/inbox/read",
 		// The Dismiss beside it writes the person's own dismissal marks, so it is theirs too.
 		"POST /api/v1/me/inbox/dismiss",
-		"GET /api/v1/agents/{session_id}/messages",
-		// The conversation read is this change's own row: it answers the rows the read above
-		// answers, one session's conversation, so it needs that read's scope.
+		// The conversation read answers one session's conversation, read for the person the
+		// credential acts for, so a credential that proves no person has nothing to read.
 		"GET /api/v1/agents/{session_id}/conversation",
 		// Which sessions Dispatch holds a record of is this change's own row: it answers only
 		// what the conversation read above already tells a caller, so it admits the callers

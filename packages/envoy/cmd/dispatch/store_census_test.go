@@ -1577,7 +1577,6 @@ func compareTheOldReadWithTheNew(t *testing.T, older, databaseURL string, now *d
 		{path: "/api/v1/artifacts/" + seeded.artifact + "/references", lists: []string{"outgoing", "referenced_by"}},
 		{path: "/api/v1/projects/" + seeded.project + "/artifacts"},
 		{path: "/api/v1/asks/open?project=" + seeded.project, lists: []string{"asks"}},
-		{path: "/api/v1/inbox"},
 	}
 	compared, differing := 0, 0
 	for _, read := range reads {

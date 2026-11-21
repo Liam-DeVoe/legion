@@ -258,7 +258,7 @@ func TestInboxOrdersOpenAsksByIssuePriority(t *testing.T) {
 		}
 	}
 
-	inboxResponse := dispatchRequest(t, handler, http.MethodGet, "/api/v1/inbox", nil, "alice")
+	inboxResponse := openAsksAnswer(t, handler, "alice", "")
 	if inboxResponse.Code != http.StatusOK {
 		t.Fatalf("list inbox: status=%d body=%s", inboxResponse.Code, inboxResponse.Body.String())
 	}

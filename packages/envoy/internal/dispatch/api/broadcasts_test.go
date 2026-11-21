@@ -375,9 +375,9 @@ func TestMessageReadsNameTheBroadcastThatSentThem(t *testing.T) {
 		t.Fatalf("a direct message reads broadcast_id %q (present %v), want null", got, present)
 	}
 
-	listed := dispatchRequest(t, handler, http.MethodGet, "/api/v1/agents/planner/messages", nil, "alice")
+	listed := dispatchRequest(t, handler, http.MethodGet, "/api/v1/agents/planner/conversation", nil, "alice")
 	if listed.Code != http.StatusOK {
-		t.Fatalf("GET /api/v1/agents/planner/messages: status=%d body=%s", listed.Code, listed.Body.String())
+		t.Fatalf("GET /api/v1/agents/planner/conversation: status=%d body=%s", listed.Code, listed.Body.String())
 	}
 	byID := map[string]string{}
 	for _, read := range decodeBody[[]rawRead](t, listed) {

@@ -19,14 +19,15 @@ import (
 // folds it away until snoozed_until. The routes need the person scope (routeScopes) because
 // the Inbox does; a session has no inbox to snooze a row out of.
 //
-// No job ever wakes a snoozed row. GET /api/v1/inbox carries snoozed_until on the row and
+// No job ever wakes a snoozed row. GET /api/v1/me/inbox carries snoozed_until on the row and
 // the reader decides from it, so the moment a snooze passes the row is an ordinary row again
 // on the next read.
 //
 // The row is keyed on the canonical login, not on the actor id: rows written before every
 // identity lowercased the person it names can carry another casing of the same email, so keying
 // on the actor id raw could give one person two snooze sets. model.CanonicalLogin is the form
-// issues store assignees in and the form inboxAssigneeFilter compares against.
+// issues store assignees in and the form the Inbox's Ask rows compare the person against
+// (meInboxPageRows).
 //
 // A snooze or an un-snooze moves only its writer's Inbox, so it announces itself only to that
 // person's other tabs and devices: it appends `user_state.updated` (askSnoozeEvent), the event a

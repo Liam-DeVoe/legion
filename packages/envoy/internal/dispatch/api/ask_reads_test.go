@@ -128,7 +128,7 @@ func TestAskReadsAttachCanonicalOpenedEventID(t *testing.T) {
 		t.Fatal("open ask missing from issue detail")
 	}
 
-	inbox := dispatchRequest(t, handler, http.MethodGet, "/api/v1/inbox", nil, "alice")
+	inbox := openAsksAnswer(t, handler, "alice", "")
 	if inbox.Code != http.StatusOK {
 		t.Fatalf("list inbox: status=%d body=%s", inbox.Code, inbox.Body.String())
 	}
@@ -500,8 +500,7 @@ func seedWaitingOn(t *testing.T, handler http.Handler) waitingOnFixture {
 }
 
 // ?waiting_on=<login> answers the asks that wait on that person - the waiting_on_person each row
-// names, whom a hand-on moves - and the same asks the Inbox's ?assignee=<login> answers for them,
-// whatever the casing the login is written in.
+// names, whom a hand-on moves - whatever the casing the login is written in.
 func TestOpenAsksWaitingOnALoginAnswersTheAsksThatWaitOnThatPerson(t *testing.T) {
 	handler := newTestHandler(t)
 	seeded := seedWaitingOn(t, handler)
@@ -522,9 +521,6 @@ func TestOpenAsksWaitingOnALoginAnswersTheAsksThatWaitOnThatPerson(t *testing.T)
 		want := slices.Sorted(slices.Values(test.want))
 		if got := openAskIDsOf(rows); !slices.Equal(got, want) {
 			t.Errorf("waiting_on=%q answers %v, want %v", test.written, got, want)
-		}
-		if inbox := askIDsOf(inboxFor(t, handler, "alice", test.login)); !slices.Equal(inbox, want) {
-			t.Errorf("the Inbox's assignee=%s answers %v, and waiting_on=%q answers %v", test.login, inbox, test.written, want)
 		}
 	}
 }
@@ -588,12 +584,11 @@ func TestOpenAsksWithNeitherScopeAnswerEveryVisibleProjectAndNoInvisibleAsk(t *t
 	}
 }
 
-// One ask, read through the three reads that answer its row - GET /api/v1/inbox, the Ask entry of
-// GET /api/v1/me/inbox and GET /api/v1/asks/open - answers the same row in each, field for field:
-// the row is built once (openAskRow), and the open-asks read only adds its own four fields beside
-// it. The ask carries a reply in its thread and the reader's snooze, so the row is not mostly
-// nulls.
-func TestTheOpenAskRowOfTheThreeReadsIsBuiltOnce(t *testing.T) {
+// One ask, read through the two reads that answer its row - the Ask entry of GET /api/v1/me/inbox
+// and GET /api/v1/asks/open - answers the same row in each, field for field: the row is built once
+// (openAskRow), and the open-asks read only adds its own four fields beside it. The ask carries a
+// reply in its thread and the reader's snooze, so the row is not mostly nulls.
+func TestTheOpenAskRowOfTheTwoReadsIsBuiltOnce(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "One row", "A spec")
 	askID := createIssueAsk(t, handler, issue.Key, "Which row?")
@@ -624,7 +619,6 @@ func TestTheOpenAskRowOfTheThreeReadsIsBuiltOnce(t *testing.T) {
 		}
 		return response.Body.Bytes()
 	}
-	inbox := rowOf("GET /api/v1/inbox", decodeJSONBytes[[]map[string]json.RawMessage](t, read("/api/v1/inbox?assignee=me")))
 	var entries []map[string]json.RawMessage
 	for _, entry := range decodeJSONBytes[struct {
 		Entries []struct {
@@ -635,7 +629,7 @@ func TestTheOpenAskRowOfTheThreeReadsIsBuiltOnce(t *testing.T) {
 			entries = append(entries, entry.Ask)
 		}
 	}
-	one := rowOf("GET /api/v1/me/inbox", entries)
+	inbox := rowOf("GET /api/v1/me/inbox", entries)
 	open := rowOf("GET /api/v1/asks/open", decodeJSONBytes[struct {
 		Asks []map[string]json.RawMessage `json:"asks"`
 	}](t, read("/api/v1/asks/open?waiting_on=alice")).Asks)
@@ -648,7 +642,6 @@ func TestTheOpenAskRowOfTheThreeReadsIsBuiltOnce(t *testing.T) {
 		row   map[string]json.RawMessage
 		extra []string
 	}{
-		{"GET /api/v1/me/inbox", one, nil},
 		{"GET /api/v1/asks/open", open, []string{"age_seconds", "human_replied", "owner", "ref"}},
 	} {
 		if got, want := slices.Sorted(maps.Keys(other.row)), slices.Sorted(slices.Values(append(slices.Collect(maps.Keys(inbox)), other.extra...))); !slices.Equal(got, want) {

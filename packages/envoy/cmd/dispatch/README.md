@@ -4544,33 +4544,12 @@ Each item below names a path with its method and identity, then its purpose.
   A socket rotates with 4001 at a random age from 30 to 60 minutes, and under `DISPATCH_IDENTITY=iap` also once the IAP assertion its upgrade carried expires (reason `credential expired`, Identity, above);
   it closes with 1012 on restart, 1008 when its caller stops resolving, and 1013 when the hub queue fills.
 
-- `/api/v1/inbox?project=&assignee=` (GET; cookie, trusted header, or bearer; needs the `person` scope)
-
-  List open asks newest-first, including their issue key, title, and assignee.
-  `assignee=me|unassigned|<email>` filters on the person each ask waits on — whoever it was handed to, the assignee of its issue until somebody hands it on, and the default assignee of its project while the issue holds nobody — so it keeps the asks waiting on the caller or on that person, and `unassigned` keeps the asks that chain names nobody for, which every project naming a default assignee leaves none of;
-  an email nobody has signed in with is `400 ASSIGNEE_NOT_ALLOWED`.
-
 - `/api/v1/me/answers?limit=&offset=` (GET; cookie, trusted header, or bearer; needs the `person` scope)
 
   List the caller's answers and replies on asks, newest first.
   A row is either an answer with `current`, or a reply, and carries the ask's question, kind, state, owner and deep link.
   Answers come from user-authored `ask.answered` events whose actor is the answer's user; a restored answered block adds no row.
   `limit` is 1–200 (default 50), `offset` is 0 or more, and an invalid value is `400 INVALID_QUERY`.
-
-- `/api/v1/me/replies?kind=&state=&limit=&offset=&cursor=&issue=|artifact=` (GET; cookie, trusted header, or bearer; needs the `person` scope)
-
-  List the caller's Inbox threads, in the state's own order, of the kinds `kind` names:
-  `reply`, the default, the threads they wrote in (an ask, a comment thread, an issue message thread) where somebody else has written since they last read it, less an open ask on an open issue that waits on them, which the Inbox already lists;
-  `agent`, their one-off messages to an agent session (a BTW, a broadcast's copy, or a Send or an Aside the session did not take as a turn of its live conversation) holding a reply from that session;
-  `reply,agent`, both in one order.
-  `state` is `unread`, the default and the Inbox count's own read, which lists the rows somebody else has written in since they read them, newest reply first;
-  `inbox`, every row in their Inbox, read or not, less what they have dismissed, newest reply first;
-  or `dismissed`, what they dismissed out of it, newest dismissal first, 200 rows at a time from `cursor`, which is the `next_cursor` the page before it answered.
-  `limit` or `offset` under `dismissed`, and `cursor` under any other state, are each `400 INVALID_QUERY`.
-  A row names the thread, its owner, its issue's priority, its project, its subject, its root's deep link, the newest reply's author, first line and time, the caller's read mark, whether it is unread, how many writes they have not read, and its dismissal mark when it has been dismissed.
-  `issue` or `artifact` narrows to one owner (both is `400 INVALID_QUERY`, and either leaves out every agent row, which has neither).
-  An absent `limit` is every row, which is what the Inbox reads; a `limit` the caller names is 1–200.
-  The answer carries `as_of`, the database time of the one snapshot every row was read in, which is what Mark all read passes back as its read mark.
 
 - `/api/v1/me/threads/{id}/read` (PUT; cookie, trusted header, or bearer; needs the `person` scope)
 
@@ -4583,7 +4562,7 @@ Each item below names a path with its method and identity, then its purpose.
   Mark every unread Inbox thread read in one write:
   `{read_through}` (RFC3339, required; missing, unparsable or more than a minute ahead of the server is `400 INVALID_STATE`), with the Inbox's own narrowing
   — `kind` (`reply`, `agent`; both by default), `priority` (`P0`, `P1`, `P2`, `P3` and `none`), `urgency` (`low`, `med`, `high`, `blocking` and `none`), `project` (a project key and `none`), and `issue` or `artifact` — each absent list meaning every value.
-  It marks exactly the threads `GET /api/v1/me/replies?state=unread` answers under that narrowing whose newest reply is at or before `read_through`, so a thread written in since stays unread and one already read past the mark keeps its later mark.
+  It marks exactly the threads `GET /api/v1/me/inbox?state=unread` draws as thread and agent rows under that narrowing whose newest reply is at or before `read_through`, so a thread written in since stays unread, one already read past the mark keeps its later mark, and a thread the page does not draw - an open ask's thread on an open issue that waits on the caller - keeps its mark.
   Answers `{marked}`, how many threads it moved.
 
 - `/api/v1/me/inbox/dismiss` (POST; cookie, trusted header, or bearer; needs the `person` scope)
@@ -4592,9 +4571,9 @@ Each item below names a path with its method and identity, then its purpose.
   A thread stays in the Inbox, read or not, until it is dismissed, as an email stays until it is archived: reading it and Mark all read leave it there.
   The body names either `threads`, the Inbox's own row ids (`reply:<thread id>` for a Reply row, `agent:<root message id>` for an Agent row), or the narrowing Mark all read takes with `{dismiss_through}` (RFC3339, required there;
   missing, unparsable or more than a minute ahead of the server is `400 INVALID_STATE`), never both (`400 INVALID_QUERY`), and `restore`, which clears the marks instead of writing them.
-  Under the narrowing it changes exactly the threads `GET /api/v1/me/replies` answers under it whose newest reply, or whose dismissal, is at or before that mark.
+  It changes only the rows `GET /api/v1/me/inbox` draws as thread and agent rows in the state it writes over (`state=inbox` for a dismissal, `state=dismissed` for a restore): a named row the page does not draw there, such as an open ask's thread on an open issue that waits on the caller, changes nothing, and under the narrowing it changes exactly the rows the page draws whose newest reply, or whose dismissal, is at or before that mark.
   A dismissal that names `threads` carries `seen_replies` beside them, one object per row it names and keyed by that same row id:
-  what the page drew in that row, as `GET /api/v1/me/replies` answered it.
+  what the page drew in that row, as `GET /api/v1/me/inbox` answered it.
   A `reply:` row's object is `{version}`, the row's own `user_threads.version`;
   an `agent:` row has no `user_threads` row and so no version, and its object is `{newest_reply, unread_replies}`, the row's `reply.id` and its `unread_reply_ids` (which may be empty).
   The route writes a row's mark only while the row still holds what the page drew, so a dismissal buries no write nobody has read:
@@ -4618,7 +4597,7 @@ Each item below names a path with its method and identity, then its purpose.
   A record is the listener copy `GET /api/v1/agents` lists (whatever its age), an event the session wrote, a message targeted at it, a message or comment delivery to it, a file or image of its conversation, or an ask it follows, all read in one statement; `title` is that copy's, `null` where it holds none.
   A parameter other than `id` and `session`, no `id`, more than 100, a value that is no session id, or one longer than 2048 bytes is `400 INVALID_QUERY` naming the parameter.
   2048 bytes is `text.MaxTargetBytes`, the bound on every reference's target id, and a session reference's target id is the session id itself, so no reference in text names a longer one.
-  It admits exactly the callers `GET /api/v1/agents/{session_id}/messages` admits, and reads `session` as that route and every person route do: the session the request acts for, which a credential that proved another session is refused (`403 ACTOR_SESSION_MISMATCH`).
+  It admits exactly the callers `GET /api/v1/agents/{session_id}/conversation` admits, and reads `session` as that route and every person route do: the session the request acts for, which a credential that proved another session is refused (`403 ACTOR_SESSION_MISMATCH`).
 
 - `/api/v1/agents/{session_id}/answers?since=&max_chars=` (GET; cookie, trusted header, or bearer)
 
@@ -5607,7 +5586,7 @@ Each item below names a path with its method and identity, then its purpose.
 
   The files and images of an agent's conversation, newest first (`created_at`, then `id`), each as `GET /api/v1/agents/{session_id}/artifacts/{slug}` reads it, with its versions; `[]` for a conversation that holds none.
   The dashboard's reference picker lists them under the session's row, so a person names one by its `dispatch://agent/<session_id>/artifact/<slug>` address without having pasted it.
-  A conversation's files are part of the conversation, so it admits exactly the callers `GET /api/v1/agents/{session_id}/messages` admits, and reads `session` as that route and every person route do: the session the request acts for, which a credential that proved another session is refused (`403 ACTOR_SESSION_MISMATCH`).
+  A conversation's files are part of the conversation, so it admits exactly the callers `GET /api/v1/agents/{session_id}/conversation` admits, and reads `session` as that route and every person route do: the session the request acts for, which a credential that proved another session is refused (`403 ACTOR_SESSION_MISMATCH`).
 
 - `/api/v1/agents/{session_id}/artifacts` (POST; cookie, trusted header, or bearer)
 

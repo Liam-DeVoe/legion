@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -62,7 +63,7 @@ func TestInboxRowsCarryThePriorityProjectReadMarkCountAndAnchor(t *testing.T) {
 	sessionComment(t, handler, comments, map[string]any{"body": "The quick one.", "reply_to": root.ID})
 	second := sessionComment(t, handler, comments, map[string]any{"body": "And the lazy dog.", "reply_to": root.ID})
 
-	row := replyRow(t, getMyReplies(t, handler, "alice", ""), root.ID)
+	row := replyRow(t, readInboxPage(t, handler, "alice", ""), root.ID)
 	if row.Priority == nil || *row.Priority != 1 {
 		t.Fatalf("priority = %v, want 1", row.Priority)
 	}
@@ -86,7 +87,7 @@ func TestInboxRowsCarryThePriorityProjectReadMarkCountAndAnchor(t *testing.T) {
 	if marked := markThreadRead(t, handler, "alice", root.ID, second.CreatedAt.Add(-time.Microsecond)); marked.Code != http.StatusNoContent {
 		t.Fatalf("mark: status=%d body=%s", marked.Code, marked.Body.String())
 	}
-	if row := replyRow(t, getMyReplies(t, handler, "alice", ""), root.ID); row.UnreadCount != 1 || !row.Unread {
+	if row := replyRow(t, readInboxPage(t, handler, "alice", ""), root.ID); row.UnreadCount != 1 || !row.Unread {
 		t.Fatalf("after reading the first reply: unread_count = %d, unread = %v, want 1 and true", row.UnreadCount, row.Unread)
 	}
 }
@@ -109,7 +110,7 @@ func TestInboxRowsCountEveryUnreadMessageInAThread(t *testing.T) {
 	if deeper.Code != http.StatusCreated {
 		t.Fatalf("deeper session reply: status=%d body=%s", deeper.Code, deeper.Body.String())
 	}
-	if row := replyRow(t, getMyReplies(t, handler, "alice", ""), root.ID); row.UnreadCount != 2 {
+	if row := replyRow(t, readInboxPage(t, handler, "alice", ""), root.ID); row.UnreadCount != 2 {
 		t.Fatalf("unread_count = %d, want the reply and the reply under it", row.UnreadCount)
 	}
 }
@@ -145,7 +146,7 @@ func TestInboxRowsListOneOffAgentThreadsAndNotAnAcceptedSend(t *testing.T) {
 		t.Fatalf("reply to the broadcast's copy: status=%d body=%s", replied.Code, replied.Body.String())
 	}
 
-	page := getMyReplies(t, handler, "alice", "?kind=agent")
+	page := readInboxPage(t, handler, "alice", "?kind=agent")
 	if page.Total != 3 || len(page.Rows) != 3 {
 		t.Fatalf("page = %#v, want the BTW, the broadcast's copy and the unaccepted send", page)
 	}
@@ -176,7 +177,7 @@ func TestInboxRowsListOneOffAgentThreadsAndNotAnAcceptedSend(t *testing.T) {
 
 	// An Agent row has no issue and no document, so an owner-narrowed read holds none.
 	issue := createInteractionIssue(t, handler, "TEST", "Narrowed", "A spec")
-	if narrowed := getMyReplies(t, handler, "alice", "?kind=agent&issue="+issue.Key); narrowed.Total != 0 || len(narrowed.Rows) != 0 {
+	if narrowed := readInboxPage(t, handler, "alice", "?kind=agent&issue="+issue.Key); narrowed.Total != 0 || len(narrowed.Rows) != 0 {
 		t.Fatalf("?issue= page = %#v, want no Agent row", narrowed)
 	}
 }
@@ -190,7 +191,7 @@ func TestInboxAgentRowCutsNoReferenceInHalf(t *testing.T) {
 	lead := strings.Repeat("x", 151) + " "
 	root, _ := agentThread(t, handler, "btw", lead+"CORE-1234 ships tonight.\nMore.", lead+"dispatch://CORE-1/spec holds it.")
 
-	row := replyRow(t, getMyReplies(t, handler, "alice", "?kind=agent"), root.ID)
+	row := replyRow(t, readInboxPage(t, handler, "alice", "?kind=agent"), root.ID)
 	want := strings.Repeat("x", 151) + "…"
 	if row.Subject != want {
 		t.Fatalf("agent row's subject = %q, want %q: the key the cut falls inside left out whole", row.Subject, want)
@@ -214,12 +215,12 @@ func TestAgentStateStillCountsAnAcceptedSendsUnreadReply(t *testing.T) {
 	if got := unreadReplies(t, handler, "alice", "s1"); got.UnreadReplies != 1 {
 		t.Fatalf("unread_replies = %d, want 1: the badge still counts an accepted Send's reply", got.UnreadReplies)
 	}
-	if page := getMyReplies(t, handler, "alice", "?kind=agent"); page.Total != 0 || len(page.Rows) != 0 {
+	if page := readInboxPage(t, handler, "alice", "?kind=agent"); page.Total != 0 || len(page.Rows) != 0 {
 		t.Fatalf("agent page = %#v, want no row for a Send the session took as a turn", page)
 	}
 }
 
-// kind=reply,agent is one list in one order, newest reply first, and total counts both kinds.
+// kind=reply,agent is one list in one order, newest reply first.
 func TestInboxRowsMergeReplyAndAgentRowsNewestFirst(t *testing.T) {
 	handler, _, _, _, _ := directConversationFrom(t, "alice")
 	issue := createInteractionIssue(t, handler, "TEST", "Merged", "A spec")
@@ -227,23 +228,16 @@ func TestInboxRowsMergeReplyAndAgentRowsNewestFirst(t *testing.T) {
 	sessionComment(t, handler, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{"body": "Yes.", "reply_to": older.ID})
 	newer, _ := agentThread(t, handler, "btw", "One more thing.", "On it.")
 
-	page := getMyReplies(t, handler, "alice", "?kind=reply,agent")
+	page := readInboxPage(t, handler, "alice", "?kind=reply,agent")
 	if page.Total != 2 || len(page.Rows) != 2 {
 		t.Fatalf("page = %#v, want the Reply row and the Agent row", page)
 	}
 	if page.Rows[0].ThreadID != newer.ID || page.Rows[0].Kind != "agent" || page.Rows[1].ThreadID != older.ID {
 		t.Fatalf("rows = %#v, want the newest reply first", page.Rows)
 	}
-	// Each kind on its own answers its own half, and a page of one still counts both.
-	if only := getMyReplies(t, handler, "alice", ""); only.Total != 1 || len(only.Rows) != 1 || only.Rows[0].ThreadID != older.ID {
+	// Each kind on its own answers its own half.
+	if only := readInboxPage(t, handler, "alice", ""); only.Total != 1 || len(only.Rows) != 1 || only.Rows[0].ThreadID != older.ID {
 		t.Fatalf("default page = %#v, want the Reply row alone", only)
-	}
-	one := getMyReplies(t, handler, "alice", "?kind=reply,agent&limit=1")
-	if one.Total != 2 || len(one.Rows) != 1 || one.Rows[0].ThreadID != newer.ID || one.Limit != 1 {
-		t.Fatalf("limit=1 page = %#v, want the newest row and both kinds in total", one)
-	}
-	if second := getMyReplies(t, handler, "alice", "?kind=reply,agent&limit=1&offset=1"); len(second.Rows) != 1 || second.Rows[0].ThreadID != older.ID {
-		t.Fatalf("offset=1 page = %#v, want the Reply row", second)
 	}
 }
 
@@ -265,10 +259,10 @@ func TestInboxRowsUnderStateInboxListReadThreads(t *testing.T) {
 		t.Fatalf("mark the agent reply read: status=%d body=%s", readReplies.Code, readReplies.Body.String())
 	}
 
-	if unread := getMyReplies(t, handler, "alice", "?kind=reply,agent"); unread.Total != 0 || len(unread.Rows) != 0 {
+	if unread := readInboxPage(t, handler, "alice", "?kind=reply,agent"); unread.Total != 0 || len(unread.Rows) != 0 {
 		t.Fatalf("unread page = %#v, want nothing once both are read", unread)
 	}
-	inbox := getMyReplies(t, handler, "alice", "?kind=reply,agent&state=inbox")
+	inbox := readInboxPage(t, handler, "alice", "?kind=reply,agent&state=inbox")
 	if inbox.Total != 2 || len(inbox.Rows) != 2 {
 		t.Fatalf("state=inbox page = %#v, want both read threads", inbox)
 	}
@@ -278,11 +272,6 @@ func TestInboxRowsUnderStateInboxListReadThreads(t *testing.T) {
 	if row := replyRow(t, inbox, agentRoot.ID); row.Unread || row.UnreadCount != 0 ||
 		len(row.UnreadReplyIDs) != 0 || row.Reply.ID != agentReply.ID || row.DismissedAt != nil {
 		t.Fatalf("read Agent row = %#v, want it drawn as read and undismissed with its newest reply", row)
-	}
-	// state=all was this branch's own spelling of the Inbox read; it is no state now.
-	refused := dispatchRequest(t, handler, http.MethodGet, "/api/v1/me/replies?state=all", nil, "alice")
-	if refused.Code != http.StatusBadRequest || !strings.Contains(refused.Body.String(), `"code":"INVALID_QUERY"`) {
-		t.Fatalf("state=all: status=%d body=%s, want 400 INVALID_QUERY", refused.Code, refused.Body.String())
 	}
 }
 
@@ -298,7 +287,7 @@ func TestInboxRowsKeepAnOpenAskNobodyElsesInboxRowCovers(t *testing.T) {
 	document := createProjectDocument(t, handler, "TEST", "Runbook", "# Runbook\n\nStep one.\n")
 	// Bob signs in, so he is a person an issue can be assigned to, and TEST's unowned work
 	// lands on him: the last step of the chain names him rather than alice, who created it.
-	getMyReplies(t, handler, "bob", "")
+	readInboxPage(t, handler, "bob", "")
 	if moved := dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/TEST/default-assignee",
 		map[string]any{"assignee": "bob"}, "alice"); moved.Code != http.StatusOK {
 		t.Fatalf("move TEST's default to bob: status=%d body=%s", moved.Code, moved.Body.String())
@@ -335,7 +324,7 @@ func TestInboxRowsKeepAnOpenAskNobodyElsesInboxRowCovers(t *testing.T) {
 		"body": "Because.", "ask_id": documentAsk.ID,
 	})
 
-	page := getMyReplies(t, handler, "alice", "")
+	page := readInboxPage(t, handler, "alice", "")
 	if listsThread(page, asks["mine"]) {
 		t.Fatalf("an open ask on alice's own open issue is listed: %#v", page.Rows)
 	}
@@ -353,9 +342,9 @@ func TestInboxRowsKeepAnOpenAskNobodyElsesInboxRowCovers(t *testing.T) {
 	}
 }
 
-// as_of is the database time of the snapshot the rows were read in, so it is at or after every
-// row's newest reply and no row the answer holds was written after it.
-func TestInboxRowsAnswerWithTheSnapshotsOwnTime(t *testing.T) {
+// as_of is the database time of the statement the page's rows were read in, so it is at or after
+// every row's newest reply and no row the answer holds was written after it.
+func TestInboxRowsAnswerWithTheStatementsOwnTime(t *testing.T) {
 	handler, _, _, _, _ := directConversationFrom(t, "alice")
 	issue := createInteractionIssue(t, handler, "TEST", "As of", "A spec")
 	root := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Ready?"}, "alice")
@@ -363,22 +352,31 @@ func TestInboxRowsAnswerWithTheSnapshotsOwnTime(t *testing.T) {
 	agentThread(t, handler, "btw", "Deploy is tonight.", "Noted.")
 
 	before := time.Now()
-	page := getMyReplies(t, handler, "alice", "?kind=reply,agent")
-	if page.AsOf.IsZero() || len(page.Rows) != 2 {
-		t.Fatalf("page = %#v, want both rows and an as_of", page)
-	}
-	for _, row := range page.Rows {
-		if page.AsOf.Before(row.Reply.CreatedAt) {
-			t.Fatalf("as_of %s is before %s's reply at %s", page.AsOf, row.ThreadID, row.Reply.CreatedAt)
+	answer := readMeInboxAs(t, handler, "alice", url.Values{"state": {myRepliesStateUnread}})
+	rows := []model.MyReplyRow{}
+	for _, entry := range answer.Entries {
+		switch {
+		case entry.Thread != nil:
+			rows = append(rows, *entry.Thread)
+		case entry.Agent != nil:
+			rows = append(rows, entry.Agent.MyReplyRow)
 		}
 	}
-	if page.AsOf.Before(before.Add(-time.Minute)) || page.AsOf.After(time.Now().Add(time.Minute)) {
-		t.Fatalf("as_of = %s, want the database's own clock around %s", page.AsOf, before)
+	if answer.AsOf.IsZero() || len(rows) != 2 {
+		t.Fatalf("answer = %#v, want both rows and an as_of", answer)
+	}
+	for _, row := range rows {
+		if answer.AsOf.Before(row.Reply.CreatedAt) {
+			t.Fatalf("as_of %s is before %s's reply at %s", answer.AsOf, row.ThreadID, row.Reply.CreatedAt)
+		}
+	}
+	if answer.AsOf.Before(before.Add(-time.Minute)) || answer.AsOf.After(time.Now().Add(time.Minute)) {
+		t.Fatalf("as_of = %s, want the database's own clock around %s", answer.AsOf, before)
 	}
 }
 
-// An absent limit answers every row, where the page read 50 before, and names that in total; a
-// limit the caller gives still pages.
+// An absent limit answers every row, and names that in total; a limit the caller gives still
+// pages.
 func TestInboxRowsWithNoLimitAnswerEveryThread(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Every row", "A spec")
@@ -399,43 +397,16 @@ func TestInboxRowsWithNoLimitAnswerEveryThread(t *testing.T) {
 		}
 	}
 
-	page := getMyReplies(t, handler, "alice", "")
-	if page.Total != threads || len(page.Rows) != page.Total || page.Limit != 0 {
-		t.Fatalf("unpaged page = %d rows of %d (limit %d), want every one of %d", len(page.Rows), page.Total, page.Limit, threads)
+	page := readInboxPage(t, handler, "alice", "")
+	if page.Total != threads {
+		t.Fatalf("unpaged page = %d rows, want every one of %d", page.Total, threads)
 	}
-	paged := getMyReplies(t, handler, "alice", "?limit=50")
-	if paged.Total != threads || len(paged.Rows) != 50 || paged.Limit != 50 {
-		t.Fatalf("limit=50 page = %d rows of %d, want 50", len(paged.Rows), paged.Total)
+	paged := readMeInboxAs(t, handler, "alice", url.Values{"state": {myRepliesStateUnread}, "limit": {"50"}})
+	if paged.Total != threads || len(paged.Entries) != 50 || paged.Limit != 50 {
+		t.Fatalf("limit=50 page = %d entries of %d, want 50", len(paged.Entries), paged.Total)
 	}
-	last := getMyReplies(t, handler, "alice", "?limit=50&offset=50")
-	if len(last.Rows) != 1 || last.Rows[0].ThreadID != page.Rows[50].ThreadID {
-		t.Fatalf("offset=50 page = %#v, want the row the first page left", last.Rows)
-	}
-}
-
-// What the read refuses, each before it opens its transaction.
-func TestInboxRowsRefuseAKindStateOrPageTheyCannotRead(t *testing.T) {
-	handler := newTestHandler(t)
-	issue := createInteractionIssue(t, handler, "TEST", "Refusals", "A spec")
-	document := createProjectDocument(t, handler, "TEST", "Runbook", "# Runbook\n")
-	for _, query := range []string{
-		"?kind=asks",
-		"?kind=reply,agents",
-		"?state=read",
-		"?limit=0",
-		"?limit=201",
-		"?issue=" + issue.Key + "&artifact=" + document.ID,
-		"?artifact=not-a-uuid",
-	} {
-		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/me/replies"+query, nil, "alice")
-		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"INVALID_QUERY"`) {
-			t.Fatalf("%s: status=%d body=%s, want 400 INVALID_QUERY", query, response.Code, response.Body.String())
-		}
-	}
-	// An empty kind or state is the default, not a refusal.
-	for _, query := range []string{"?kind=", "?state=", "?kind=reply&state=unread"} {
-		if page := getMyReplies(t, handler, "alice", query); page.Total != 0 {
-			t.Fatalf("%s: page = %#v, want the default read", query, page)
-		}
+	last := readMeInboxAs(t, handler, "alice", url.Values{"state": {myRepliesStateUnread}, "limit": {"50"}, "offset": {"50"}})
+	if len(last.Entries) != 1 || last.Entries[0].Thread == nil || last.Entries[0].Thread.ThreadID != page.Rows[50].ThreadID {
+		t.Fatalf("offset=50 page = %#v, want the row the first page left", last.Entries)
 	}
 }

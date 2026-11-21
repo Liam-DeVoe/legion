@@ -413,7 +413,7 @@ func TestAMessageReplyNamesTheBlockItAnswers(t *testing.T) {
 		t.Fatalf("retry the person's reply: status=%d body=%s", retry.Code, retry.Body.String())
 	}
 	requireFrame("the retried frame", sendsBefore)
-	conversations := decodeBody[[]messageRead](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/agents/s1/messages", nil, "alice"))
+	conversations := decodeBody[[]messageRead](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/agents/s1/conversation", nil, "alice"))
 	var conversation *messageRead
 	for index := range conversations {
 		if conversations[index].Message.ID == direct.ID {

@@ -17,50 +17,50 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// POST /api/v1/me/inbox/read is the Inbox's Mark all read: one request marks every thread the
-// list route would show the caller as unread, loaded on the page or not, narrowed as the list is
-// narrowed and no further than one read mark. A thread whose newest reply landed after
-// read_through stays unread, so a write the person has not seen is never swallowed by the button.
+// POST /api/v1/me/inbox/read is the Inbox's Mark all read: one request marks every thread the page
+// shows the caller as unread, loaded on the page or not, narrowed as the page is narrowed and no
+// further than one read mark. A thread whose newest reply landed after read_through stays unread,
+// so a write the person has not seen is never swallowed by the button.
 //
-// The set it marks is exactly what GET /api/v1/me/replies?state=unread answers under the same
-// narrowing, so it is read through that route's own filters - myRepliesUnread for the Reply rows
-// (api/replies.go) and the Agent read beside it (api/replies_agent.go) - rather than predicates of
-// its own: two spellings of "unread" would let the button mark a row the list never showed, or
-// leave one it did.
+// The set it marks is exactly the rows the page draws under state=unread with the same narrowing,
+// so it is read through the page's own fragment (meInboxPageRows, api/me_inbox.go) - its Thread
+// rows (meInboxPageThreads) and its Agent roots (myAgentUnreadRoots, api/replies_agent.go) -
+// rather than predicates of its own: two spellings of "unread" would let the button mark a row the
+// page never showed, or leave one it did.
 
-// inboxReplyMatchQuery builds the Reply read both write routes over these rows make: the caller's
-// rows in one state (source, one of the list route's own myRepliesUnread, myRepliesInbox and
-// myRepliesDismissed, with that route's parameters $1 login, $2 issue, $3 document) whose mark -
-// the column that state is ordered by, named by mark - is at or before $4, of the priorities ($5,
-// null for every one, with $6 for a thread whose issue carries none) and the projects ($7, null
-// for every one) the request names. It answers each thread's id, the owner this transaction locks
-// before it writes - its issue or its document - and the row's own version (user_threads.version,
-// migration 20261105093500), which is what a filtered dismissal holds the row to, the server
-// standing in for the page there (inboxDismissMarkThreads, api/inbox_dismiss.go); the mark-all
-// answers it and ignores it, since one read serves both routes. The project whose event announces
-// the write is not read here: the update answers the project of every row it moved, and those are
-// the projects this transaction locks, after the rows (lockInboxReadOwners).
+// inboxReplyMatchQuery builds the Reply read both write routes over these rows make: the Thread rows
+// the page draws in one state (meInboxPageThreads, over its parameters $1 login, $2 issue, $3
+// document) whose mark - the column that state is ordered by - is at or before $4, of the
+// priorities ($5, null for every one, with $6 for a thread whose issue carries none) and the
+// projects ($7, null for every one) the request names. It answers each thread's id, the owner this
+// transaction locks before it writes - its issue or its document - and the row's own version
+// (user_threads.version, migration 20261105093500), which is what a filtered dismissal holds the
+// row to, the server standing in for the page there (inboxDismissMarkThreads,
+// api/inbox_dismiss.go); the mark-all answers it and ignores it, since one read serves both
+// routes. The project whose event announces the write is not read here: the update answers the
+// project of every row it moved, and those are the projects this transaction locks, after the rows
+// (lockInboxReadOwners).
 //
 // One builder rather than a statement per state and route: the mark-all reads the caller's unread
 // rows and the dismiss route the Inbox's own or the dismissed ones (api/inbox_dismiss.go), and the
-// three differ in the state they match and the mark they narrow by and in nothing else, so three
-// spellings of it would be three places to carry a fix to the one plan below.
+// three differ in the state they match and in nothing else, so three spellings of it would be
+// three places to carry a fix to the one plan below.
 //
-// The rows are matched first, as myRepliesCount matches them, so the planner reads them through
-// the state's own partial index rather than misjudging the stored flag; the narrowing these routes
-// add is applied over that set, where the issue join costs one lookup per matched row.
+// The rows are matched first, into a materialized set, so the planner reads them through the
+// state's own partial index rather than misjudging the stored flag; the narrowing these routes add
+// is applied over that set, where the issue join costs one lookup per matched row.
 //
 // The match reads the index and nothing else - the thread id it answers and the mark it narrows by
 // are both columns the state's partial index holds - and each matched row's owner is then read by
-// that id, fenced from the planner as the list route's page read is (myRepliesPageRows,
-// api/replies.go): a one-step match reads the owner columns too, and the cheapest way to read a
-// few columns of a thousand rows out of a table one login owns is a scan of the whole table, which
-// at INFRA-450's a14 seed is 101,540 rows read to mark 1,300.
-func inboxReplyMatchQuery(source, mark string) string {
+// that id, fenced from the planner by `offset 0`: a one-step match reads the owner columns too,
+// and the cheapest way to read a few columns of a thousand rows out of a table one login owns is a
+// scan of the whole table, which at INFRA-450's a14 seed is 101,540 rows read to mark 1,300.
+func inboxReplyMatchQuery(state string) string {
+	rows, mark := meInboxPageThreads(state)
 	return `
 	with matched as materialized (
-		select u.thread_id, u.` + mark + `
-		` + source + `
+		select u.thread_id, ` + mark + ` as mark
+		` + rows + `
 	)
 	select m.thread_id::text, owner.issue_key, owner.artifact_id::text, owner.version
 	from matched m
@@ -71,16 +71,16 @@ func inboxReplyMatchQuery(source, mark string) string {
 		offset 0
 	) owner on true
 	left join issues i on i.key = owner.issue_key
-	where m.` + mark + ` <= least($4::text::timestamptz, now())
+	where m.mark <= least($4::text::timestamptz, now())
 	  and ($5::int[] is null or i.priority = any($5::int[]) or ($6::boolean and i.priority is null))
 	  and ($7::text[] is null or owner.project_key = any($7::text[]))
 	order by m.thread_id`
 }
 
-// inboxReadReplyThreads reads the Reply threads one request marks: the caller's unread rows
-// (myRepliesUnread, read through user_threads_unread) whose newest reply is at or before the read
+// inboxReadReplyThreads reads the Reply threads one request marks: the Thread rows the page draws
+// under state=unread (read through user_threads_unread) whose newest reply is at or before the read
 // mark.
-var inboxReadReplyThreads = inboxReplyMatchQuery(myRepliesUnread, "replied_at")
+var inboxReadReplyThreads = inboxReplyMatchQuery(myRepliesStateUnread)
 
 // inboxAgentRootsQuery builds the Agent read both write routes make over one state's roots: each
 // root the request changes, its session - which one event names - the replies a write that
@@ -91,8 +91,8 @@ var inboxReadReplyThreads = inboxReplyMatchQuery(myRepliesUnread, "replied_at")
 // three routes, and a named dismissal writes what the page drew over it afterwards
 // (readInboxDismissThreads, api/inbox_dismiss.go). match is what narrows those roots: the mark
 // the request carries ($4), or the ids it named ($4 again, as the array). Each root's own facts
-// are read as the list route reads them (myAgentRootsWithFacts, api/replies_agent.go), so a
-// change to either moves the list and these routes together.
+// are read as the page reads them (myAgentRootsWithFacts, api/replies_agent.go), so a change to
+// either moves the page and these routes together.
 func inboxAgentRootsQuery(roots, replies, match string) string {
 	return roots + `
 	select r.root_id::text, agent.session_id, ` + replies + `, ` + inboxAgentNewestReply +
@@ -105,7 +105,7 @@ func inboxAgentRootsQuery(roots, replies, match string) string {
 // inboxAgentRepliedThrough the narrowing the Inbox's own states take - the roots whose newest
 // session reply is at or before the mark ($4) - and inboxAgentNewestReply the column every one
 // of these reads answers last: the newest reply the session wrote in that thread, which is what
-// the list route shows as the row's reply (agent.reply_id, myAgentRowFacts' `newest`,
+// the page shows as the row's reply (agent.reply_id, myAgentRowFacts' `newest`,
 // api/replies_agent.go). Only the dismissal's check reads it
 // (inboxDismissCheckAgentRoots, api/inbox_dismiss.go); the mark-all answers it and ignores it,
 // since one read serves both routes.
@@ -115,10 +115,10 @@ const (
 	inboxAgentNewestReply    = `agent.reply_id::text`
 )
 
-// inboxReadAgentThreads is the list route's own unread roots with that read over them: the roots
-// holding a reply this login has not read, and each root's own facts, are myAgentUnreadRoots and
-// myAgentRootsWithFacts, the constants myAgentRowsQuery is built from (api/replies_agent.go), so a
-// change to either moves the list and this button together.
+// inboxReadAgentThreads is the page's own unread roots with that read over them: the roots holding
+// a reply this login has not read, and each root's own facts, are myAgentUnreadRoots and
+// myAgentRootsWithFacts, the constants the page's Agent rows are read from (meInboxPageRows), so a
+// change to either moves the page and this button together.
 var inboxReadAgentThreads = inboxAgentRootsQuery(
 	myAgentUnreadRoots, inboxAgentUnreadReplies, inboxAgentRepliedThrough)
 
@@ -196,8 +196,8 @@ var inboxReadPriorityLevels = map[string]int32{"P0": 0, "P1": 1, "P2": 2, "P3": 
 
 const inboxReadNone = "none"
 
-// inboxThreadFilters is the narrowing the Inbox's filter writes into the list route's query, as
-// the two write routes over these rows read it off their body: the mark-all (inboxReadRequest) and
+// inboxThreadFilters is the narrowing the Inbox's filter draws the page's rows by, as the two
+// write routes over these rows read it off their body: the mark-all (inboxReadRequest) and
 // the dismiss route (inboxDismissRequest, api/inbox_dismiss.go), which read it with one parser
 // (parseInboxReadScope). Every list is optional and an absent one means every value. It is one
 // embedded struct rather than six fields spelled in each body, so the two cannot drift into
@@ -248,17 +248,15 @@ type inboxReadScope struct {
 	artifact    *string
 }
 
-// parseInboxReadScope reads the narrowing. kind defaults to both, unlike the list route's default
-// of reply alone: the button sits over one list of both kinds, and a person who has filtered
-// nothing means all of it.
+// parseInboxReadScope reads the narrowing. kind defaults to both: the button sits over one list of
+// both kinds, and a person who has filtered nothing means all of it.
 func parseInboxReadScope(input inboxThreadFilters) (inboxReadScope, error) {
 	scope := inboxReadScope{priorityNone: true, projectNone: true, urgencyNone: true}
 	reply, agent, err := parseThreadKinds(input.Kind)
 	if err != nil {
 		return scope, err
 	}
-	// A request that named no kind means both of them, which is this route's default alone: the
-	// list route's is reply.
+	// A request that named no kind means both of them.
 	if !reply && !agent {
 		reply, agent = true, true
 	}
@@ -304,8 +302,8 @@ func parseInboxReadScope(input inboxThreadFilters) (inboxReadScope, error) {
 			scope.projects = append(scope.projects, key)
 		}
 	}
-	// The owner narrowing is the list route's (parseThreadOwner), read from the body rather than
-	// the query.
+	// The owner narrowing is the one read's (parseThreadOwner, which GET /api/v1/me/inbox reads off
+	// its query), read from the body rather than the query.
 	issue, artifact, err := parseThreadOwner(input.Issue, input.Artifact)
 	if err != nil {
 		return scope, err
@@ -316,8 +314,8 @@ func parseInboxReadScope(input inboxThreadFilters) (inboxReadScope, error) {
 
 // wantsReplyThreads and wantsAgentThreads say which of the two reads this scope can match a row
 // in. An Agent row carries no issue, no document, no project, no priority and no urgency, so any
-// narrowing to one of those leaves it out, exactly as the list route leaves it out of an
-// owner-narrowed page.
+// narrowing to one of those leaves it out, exactly as the page leaves it out of an owner-narrowed
+// page (meInboxPageRows).
 func (scope inboxReadScope) wantsReplyThreads() bool {
 	return scope.reply && scope.urgencyNone
 }

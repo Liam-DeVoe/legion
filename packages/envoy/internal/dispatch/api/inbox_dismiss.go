@@ -49,35 +49,50 @@ const (
 	inboxDismissAskPrefix   = "ask:"
 )
 
-// inboxDismissReplyThreads reads the Reply threads one filtered request dismisses: the caller's
-// undismissed rows (myRepliesInbox) whose newest reply is at or before the mark the request
-// carries. inboxRestoreReplyThreads is the same read over the dismissed rows (myRepliesDismissed),
+// inboxDismissReplyThreads reads the Reply threads one filtered request dismisses: the Thread rows
+// the page draws in the Inbox's own state whose newest reply is at or before the mark the request
+// carries. inboxRestoreReplyThreads is the same read over the Thread rows of the Dismissed view,
 // whose dismissal is at or before that mark.
 //
 // Both are the mark-all's own read of the state they write over (inboxReplyMatchQuery,
-// api/inbox_read.go), which is what keeps this route and the list route from disagreeing about
-// which rows a state holds, and leaves one plan to tune for the three.
+// api/inbox_read.go), over the page's own Thread rows (meInboxPageThreads, api/me_inbox.go), which
+// is what keeps this route and the page from disagreeing about which rows a state holds, and leaves
+// one plan to tune for the three.
 var (
-	inboxDismissReplyThreads = inboxReplyMatchQuery(myRepliesInbox, "replied_at")
-	inboxRestoreReplyThreads = inboxReplyMatchQuery(myRepliesDismissed, "dismissed_at")
+	inboxDismissReplyThreads = inboxReplyMatchQuery(myRepliesStateInbox)
+	inboxRestoreReplyThreads = inboxReplyMatchQuery(myRepliesStateDismissed)
 )
 
-// inboxDismissNamedThreads reads the Reply threads a request named by id ($2), the owners this
-// transaction locks for them and each row's own version, which every read of these rows answers
-// (readInboxReplyRows, api/inbox_read.go). What the write holds a named row to is the version
-// the page drew, which the request carries and readInboxDismissThreads writes over this one. It
-// narrows to no state: a thread the write leaves alone is locked with the rest, as the mark-all
-// locks every thread it named, and a thread the caller has no row for answers nothing and
-// changes nothing, as PUT /api/v1/me/threads/{id}/read does. That is also what makes it one
-// statement for both directions, where the state-matched read above is two.
+// inboxReplyByIDQuery builds the Reply read of a request that named its rows by id ($4): of the
+// rows the ids name, the Thread rows the page draws in the state the write changes - the Inbox's
+// own for a dismissal (inboxDismissNamedThreads), the Dismissed view's for a restore
+// (inboxRestoreNamedThreads) - read through the page's own fragment (meInboxPageThreads, narrowed
+// to no owner: $2 empty and $3 null), with the owners this transaction locks for them and each
+// row's own version, which every read of these rows answers (readInboxReplyRows,
+// api/inbox_read.go). What the write holds a named row to is the version the page drew, which the
+// request carries and readInboxDismissThreads writes over this one.
 //
-// The ids are matched against the row's own columns, so the read stays on the caller's own key
-// (user_threads_pkey, which the plan test pins).
-const inboxDismissNamedThreads = `
-	select t.thread_id::text, t.issue_key, t.artifact_id::text, t.version
-	from user_threads t
-	where t.login = $1 and t.thread_id = any($2::uuid[])
-	order by t.thread_id`
+// A row the page does not draw in that state answers nothing and so changes nothing, as a thread
+// the caller has no row for does: an open ask's thread that waits on the caller, which the page
+// draws as an Ask row and never as a Thread row; a thread nobody else has written in; and a thread
+// already in the state the write would put it in. So a request changes only rows the page drew,
+// whatever ids it names.
+//
+// The ids are matched against the row's own key, so the read stays on the caller's own key
+// (user_threads_pkey, which the plan test pins) and tests the state on the rows it names.
+func inboxReplyByIDQuery(state string) string {
+	rows, _ := meInboxPageThreads(state)
+	return `
+	select u.thread_id::text, u.issue_key, u.artifact_id::text, u.version
+	` + rows + `
+	  and u.thread_id = any($4::uuid[])
+	order by u.thread_id`
+}
+
+var (
+	inboxDismissNamedThreads = inboxReplyByIDQuery(myRepliesStateInbox)
+	inboxRestoreNamedThreads = inboxReplyByIDQuery(myRepliesStateDismissed)
+)
 
 // What this route's four Agent reads add to the mark-all's own (inboxAgentRootsQuery,
 // api/inbox_read.go): a restore marks no thread read, so it selects no reply ids; and a request
@@ -91,9 +106,9 @@ const (
 	inboxRestoreDismissedThrough = `r.dismissed_at <= least($4::text::timestamptz, now())`
 )
 
-// The four Agent reads themselves, each over the list route's own roots for the state this request
+// The four Agent reads themselves, each over the page's own roots for the state this request
 // writes over (api/replies_agent.go): the Inbox's undismissed roots for a dismissal, the dismissed
-// ones for a restore. Reading them through the list's own constants is what keeps this route and
+// ones for a restore. Reading them through the page's own constants is what keeps this route and
 // the Dismissed view from disagreeing about whether a thread is dismissed.
 var (
 	inboxDismissAgentThreads = inboxAgentRootsQuery(
@@ -140,7 +155,7 @@ const inboxDismissLockAgentRoots = `
 // it, it is not counted, and its replies are not marked read (dismissInboxAgentThreads), so the
 // thread stays in the Inbox with that reply unread.
 //
-// It reads each root's thread through the list route's own lateral (myAgentRootsWithFacts,
+// It reads each root's thread through the page's own lateral (myAgentRootsWithFacts,
 // api/replies_agent.go), so the thread is walked once for both tests below and the reply the
 // page drew and the reply this check reads are one reply by construction, not by two spellings
 // of `order by created_at desc, id desc limit 1` kept in step.
@@ -149,7 +164,7 @@ const inboxDismissLockAgentRoots = `
 // about to be buried:
 //
 //  1. the thread's newest session reply is the one the request drew ($4, beside the roots in
-//     $3), which is agent.reply_id, what the list answered as that row's reply. This catches
+//     $3), which is agent.reply_id, what the page drew as that row's reply. This catches
 //     every reply that lands as the newest in its thread, which is every ordinary one.
 //  2. every session reply that is unread for this caller is one the request drew as unread ($5,
 //     the ids of every root's drawn unread replies in one array, reply ids being unique). This
@@ -189,8 +204,8 @@ var inboxDismissCheckAgentRoots = myAgentMarks + `
 // rule the mark-all takes too (INFRA-450's spec, v32). What decides a named dismissal's rows is
 // the version.
 //
-// That version is user_threads.version ($4, one per thread beside the ids in $3), which the list
-// answered for the row and which user_threads_record increments on every write by somebody else,
+// That version is user_threads.version ($4, one per thread beside the ids in $3), which the page
+// drew for the row and which user_threads_record increments on every write by somebody else,
 // in the same update that clears the mark (migration 20261105093501). A row whose version has
 // moved since is left alone, so a write nobody has read is never dismissed under it, and one
 // statement checks every row.
@@ -287,12 +302,12 @@ type inboxDismissRequest struct {
 // inboxDismissSeenReply is one of those objects for a Reply row and inboxDismissSeenAgent one
 // for an Agent row, the two shapes the contract spells (InboxDismissSeenReply and
 // InboxDismissSeenAgent, packages/contracts/src/dispatch-api.ts). A Reply row carries version
-// alone: user_threads.version as GET /api/v1/me/replies answered it, which is what the mark is
-// written under (inboxDismissMarkThreads). An Agent row has no user_threads row, so it carries
-// the two things the page drew of its thread instead: newest_reply, the newest session reply it
-// showed (the row's reply.id, which every Agent row has), and unread_replies, the ids it drew as
-// unread (unread_reply_ids), which may be empty - the two inboxDismissCheckAgentRoots holds the
-// thread to.
+// alone: user_threads.version as the page drew it (an entry's thread row in GET
+// /api/v1/me/inbox), which is what the mark is written under (inboxDismissMarkThreads). An Agent
+// row has no user_threads row, so it carries the two things the page drew of its thread instead:
+// newest_reply, the newest session reply it showed (the row's reply.id, which every Agent row
+// has), and unread_replies, the ids it drew as unread (unread_reply_ids), which may be empty - the
+// two inboxDismissCheckAgentRoots holds the thread to.
 //
 // A row's entry is read in its own kind's shape and no other, and a member that shape does not
 // declare is ignored there (readInboxDismissSeenEntry), so an entry of the other kind is refused
@@ -341,13 +356,14 @@ func (rows inboxDismissRows) named() bool {
 // (inboxDismissPlanOf) rather than at each statement: a dismissal writes the marks and marks the
 // threads read, a restore clears them and moves no read mark, and everything between those two
 // ends is one transaction. The direction is one decision, so it is read once: spelled at each of
-// the six statements it picks, it was six spellings to keep in step with each other.
+// the seven statements it picks, it was seven spellings to keep in step with each other.
 type inboxDismissPlan struct {
-	// The reads: the Reply and Agent rows a filtered request changes, and the Agent roots a
-	// request that named its rows changes. The Reply rows it named are read by
-	// inboxDismissNamedThreads, which narrows to no state and so is one statement for both.
+	// The reads: the Reply and Agent rows a filtered request changes, and the Reply and Agent rows
+	// a request that named its rows changes, each over the page's own rows in the state the
+	// direction writes over.
 	replyThreads string
 	agentThreads string
+	replyByID    string
 	agentByID    string
 	// The writes themselves, over the rows those reads answered.
 	markThreads      string
@@ -364,6 +380,7 @@ func inboxDismissPlanOf(input inboxDismissRequest) inboxDismissPlan {
 	plan := inboxDismissPlan{
 		replyThreads:     inboxDismissReplyThreads,
 		agentThreads:     inboxDismissAgentThreads,
+		replyByID:        inboxDismissNamedThreads,
 		agentByID:        inboxDismissAgentByID,
 		markThreads:      inboxDismissMarkThreads,
 		markAgentThreads: inboxDismissMarkAgentThreads,
@@ -372,6 +389,7 @@ func inboxDismissPlanOf(input inboxDismissRequest) inboxDismissPlan {
 	if input.Restore {
 		plan.replyThreads = inboxRestoreReplyThreads
 		plan.agentThreads = inboxRestoreAgentThreads
+		plan.replyByID = inboxRestoreNamedThreads
 		plan.agentByID = inboxRestoreAgentThreadsByID
 		plan.markThreads = inboxRestoreThreads
 		plan.markAgentThreads = inboxRestoreAgentThreadRows
@@ -801,8 +819,9 @@ func (s *server) dismissInboxThreads(
 
 // readInboxDismissThreads reads both kinds of row this request changes, each list sorted so the
 // locks and writes that follow are taken in one order. A request that named its rows is read by
-// those ids, through the reads both write routes over these rows share (readInboxReplyRows and
-// readInboxAgentRows, api/inbox_read.go); a filtered request is the mark-all's own read of the
+// those ids over the page's own rows of the state it writes over (plan.replyByID and
+// plan.agentByID), through the reads both write routes over these rows share (readInboxReplyRows
+// and readInboxAgentRows, api/inbox_read.go); a filtered request is the mark-all's own read of the
 // state it writes over (readInboxReadThreads), given this plan's two statements and its mark, so
 // that read lives once.
 //
@@ -826,8 +845,10 @@ func readInboxDismissThreads(
 	}
 	read := newInboxReadThreads()
 	if len(rows.threads) > 0 {
-		if err := readInboxReplyRows(ctx, tx, &read, inboxDismissNamedThreads,
-			login, rows.threads); err != nil {
+		// The by-id read narrows to no owner: the ids name the rows ($4), the issue ($2) is empty
+		// and the document ($3) null, as the page binds them when it names none.
+		if err := readInboxReplyRows(ctx, tx, &read, plan.replyByID,
+			login, "", nil, rows.threads); err != nil {
 			return read, err
 		}
 	}

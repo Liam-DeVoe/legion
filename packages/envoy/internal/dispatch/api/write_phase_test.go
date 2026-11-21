@@ -155,7 +155,7 @@ func TestAThreadReadWaitsForAWritersReadPhase(t *testing.T) {
 	if repliedAt == nil || repliedAt.Before(written.CreatedAt) {
 		t.Fatalf("replied_at %v lost the reply at %s", repliedAt, written.CreatedAt)
 	}
-	if listsThread(getMyReplies(t, handler, "alice", ""), root.ID) {
+	if listsThread(readInboxPage(t, handler, "alice", ""), root.ID) {
 		t.Fatalf("the thread is still unread after a mark made after the reply (read through %s, replied at %s)", through, written.CreatedAt)
 	}
 }

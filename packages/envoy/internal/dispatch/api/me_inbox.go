@@ -316,9 +316,11 @@ func (s *server) listMeInbox(w http.ResponseWriter, r *http.Request) {
 		response.Entries = append(response.Entries, entry.meInboxEntry)
 	}
 	reader.resolve()
-	// Each Reply and Agent row's subject carries the reading of its own line, as listMyReplies's
-	// rows do: the thread root's first line cut by refs.FirstLine, which no writer stores a tree of,
-	// so each is read where it stands (shapeBuilt), neither asked of the table nor stored in it.
+	// Each Thread and Agent row's subject carries the reading of its own line: the Inbox draws that
+	// line through the one renderer every body is drawn with (web/src/features/inbox/ThreadTitle.tsx),
+	// so the reading goes out beside it and no browser parses it. A subject is the thread root's
+	// first line cut by refs.FirstLine, which no writer stores a tree of, so each is read where it
+	// stands (shapeBuilt), neither asked of the table nor stored in it.
 	shapeBuilt(trees, func(built *displayTreeReader) {
 		for _, entry := range response.Entries {
 			if entry.Thread != nil {
@@ -378,7 +380,7 @@ func writeMeInboxAnswer(w http.ResponseWriter, response meInboxResponse) {
 // row (queueAskDetails: the identity event, the inbound edge count and the part ids), each thread's
 // replies with the targets each names, its attempts and its block, its rewordings, followers and
 // reach (loadAskThreads, the route's reach read off the roster), then each row's shape, in the
-// order listInbox takes them.
+// order every read of open asks takes them (finishOpenAskRows).
 func (s *server) meInboxAsks(ctx context.Context, read *meInboxRead, built routeRoster, reader *displayTreeReader) error {
 	var asks []*model.Ask
 	for index := range read.entries {
@@ -642,12 +644,12 @@ func (read *meInboxRead) entry(types *pgtype.Map, columns *meInboxColumns) (meIn
 	return row, nil
 }
 
-// assemble puts an entry's page row together from the page (meInboxPage): an Ask row as listInbox
-// reads one, with its thread as loadAskThreads reads it - the reply chain, the rewordings, the
-// followers and the claim and route, answers left empty as an Inbox row is an open ask; a Reply row
-// as listMyReplies reads one; and an Agent row's session named as nameAgentSessions names it, with
-// the conversation it draws as hydrateMessageThreads reads one, the root and every reply under it
-// oldest first.
+// assemble puts an entry's page row together from the page (meInboxPage): an Ask row as every read
+// of open asks reads one (scanOpenAskRow), with its thread as loadAskThreads reads it - the reply
+// chain, the rewordings, the followers and the claim and route, answers left empty as an Inbox row
+// is an open ask; a Thread row as scanMyReplyRow reads one; and an Agent row's session named by the
+// newest title it stamped (delivery.SessionTitle), with the conversation it draws as
+// hydrateMessageThreads reads one, the root and every reply under it oldest first.
 func (read *meInboxRead) assemble(row *meInboxRow) error {
 	page := &read.page
 	missing := func(what string) error {
@@ -688,11 +690,11 @@ func (read *meInboxRead) assemble(row *meInboxRow) error {
 }
 
 // readPage reads what the statement read once for the page (meInboxPageReads) into read: the Ask
-// rows as listInbox reads them (scanAskRead) with the details loadAskDetails reads, each thread's
-// replies with the targets each names, its attempts and its named block (hydrateCommentSideTables),
-// the rewordings and followers; the Reply rows (scanMyReplyRow); each Agent row's root and the
-// replies under it, each message's attempts and the block it names, and the sessions' names; and
-// every stored tree their texts read.
+// rows as every read of open asks reads them (scanAskRead) with the details loadAskDetails reads,
+// each thread's replies with the targets each names, its attempts and its named block
+// (hydrateCommentSideTables), the rewordings and followers; the Thread rows (scanMyReplyRow); each
+// Agent row's root and the replies under it, each message's attempts and the block it names, and
+// the sessions' names; and every stored tree their texts read.
 func (read *meInboxRead) readPage(types *pgtype.Map, columns *meInboxOnceColumns) error {
 	page := meInboxPage{
 		asks: map[string]openAskRow{}, reaches: map[string]askReach{}, replies: map[string][]model.Comment{},
@@ -1217,15 +1219,21 @@ func meInboxKindSkip(name, end string) string {
 	)`
 }
 
-// meInboxPageRows is the one fragment that selects the rows the page draws, by today's rules (the
-// rows of GET /api/v1/inbox?assignee=me and GET /api/v1/me/replies, P3): an Ask row is an open ask on
-// an open issue that waits on the person (askedOfPersonExpression), which only the Inbox's own state
-// lists; a Reply row is a user_threads row of theirs in the state the request names, less an open
-// ask the Inbox lists already (myRepliesOwner); an Agent row is one of their one-off messages to a
-// session holding a reply from it (myAgentUnreadRoots and its siblings), on no issue or document,
-// so a request narrowed to an owner lists none. A mention or an addressing reaches the person's
-// node and writes no user_threads row, so it is no row of the page. A project narrows the entries
-// these rows are, by their nodes' project, where every other entry is narrowed (meInboxBuild).
+// meInboxPageRows is the one fragment that selects the rows the page draws, by today's rules (P3):
+// an Ask row is an open ask on an open issue that waits on the person (askedOfPersonExpression),
+// which only the Inbox's own state lists; a Thread row is a user_threads row of theirs in the state
+// the request names, less an open ask the page draws as an Ask row already (meInboxPageThreads); an
+// Agent row is one of their one-off messages to a session holding a reply from it
+// (myAgentUnreadRoots and its siblings), on no issue or document, so a request narrowed to an owner
+// lists none. A mention or an addressing reaches the person's node and writes no user_threads row,
+// so it is no row of the page. A project narrows the entries these rows are, by their nodes'
+// project, where every other entry is narrowed (meInboxBuild).
+//
+// Mark all read (api/inbox_read.go) and the dismissal (api/inbox_dismiss.go) read the rows they
+// write over through this fragment's own pieces: the Thread rows of the state each writes over
+// (meInboxPageThreads) and the Agent roots of that state (myAgentUnreadRoots, myAgentInboxRoots and
+// myAgentDismissedRoots, with myAgentRootsWithFacts), so each marks exactly the rows the page draws
+// and none it does not.
 //
 // Each row is the node it draws, the kind of row, the moment that state's list orders it by, and an
 // Agent row's session and the row itself (myAgentRowColumns), read once here for its order and kept.
@@ -1244,13 +1252,12 @@ func meInboxPageRows(shape meInboxShape, issue, artifact string) string {
 	if state == "" {
 		state = myRepliesStateInbox
 	}
-	threads, threadMoment := myRepliesInbox, `u.replied_at`
+	threads, threadMoment := meInboxPageThreads(state)
 	agents, agentMoment := myAgentInboxRoots, `listed.replied_at`
 	switch state {
 	case myRepliesStateUnread:
-		threads, agents = myRepliesUnread, myAgentUnreadRoots
+		agents = myAgentUnreadRoots
 	case myRepliesStateDismissed:
-		threads, threadMoment = myRepliesDismissed, `u.dismissed_at`
 		agents, agentMoment = myAgentDismissedRoots, `listed.dismissed_at`
 	}
 	arms := []string{`
@@ -1285,6 +1292,71 @@ func meInboxPageRows(shape meInboxShape, issue, artifact string) string {
 		union all`)
 }
 
+// meInboxPageThreads is the Thread rows the page draws in one state, the one spelling of them: the
+// page's own Thread arm (meInboxPageRows) and the two writes over those rows, Mark all read
+// (inboxReadReplyThreads, api/inbox_read.go) and the dismissal (inboxDismissReplyThreads and its
+// siblings, api/inbox_dismiss.go), read them through it, so a write marks exactly the rows the page
+// draws and no row the page does not draw. rows is the FROM and WHERE of those rows, written over
+// $1 (the person's canonical login), $2 (one issue, empty for any) and $3 (one project document,
+// null for any). moment is the column the state's list orders a row by, which is also the mark a
+// filtered write narrows its rows by: the newest write somebody else made, or under dismissed the
+// dismissal.
+//
+// A Thread row is a user_threads row of the person's in the state, less an open ask the page draws
+// as an Ask row already, whose row there shows its reply: an open ask on an open issue that waits on
+// the person, which askedOfPersonExpression decides - the person the ask was handed to, the
+// assignee of its issue until somebody hands it on, and its project's default assignee while the
+// issue holds nobody. The issue is reached by a left join, deliberately, and so are the ask's own
+// document and their project, so an ask on a project document is tested too: it waits on the person
+// it was handed to, else on that project's default, and either way it is that person's Ask row and
+// not their Thread row. An ask on another person's issue is a Thread row the same way. A close
+// withdraws its issue's open asks, so an open ask on a closed issue is one a close by an older
+// release left during a roll; it stays too.
+//
+// The ask is excluded by a test keyed on the thread's own id rather than by two left joins over the
+// row's kind and issue, so every column the rows read of user_threads is one the state's own partial
+// index holds, and a read that takes the thread id and the moment alone, as the writes' match does
+// (inboxReplyMatchQuery), is answered from that index alone. An ask's thread id is the ask's own id,
+// which is what makes the id enough to key the test on.
+//
+// The three states are three constants over the one base rather than one bound parameter. A
+// parameter defeats every partial index: `case when $n then u.dismissed_at is null else u.unread
+// end` leaves the planner nothing to imply any index's predicate from, and on PostgreSQL 18
+// `explain (generic_plan)` of that form reads user_threads_pkey with the state as a filter, while
+// each constant reads its own index: user_threads_unread (migration 0095), user_threads_inbox
+// (20261105093502) and user_threads_dismissed (20261105093503). A prepared statement reaches a
+// generic plan after five executions, so the parameter would cost every read a scan of every row
+// of the person's. "Dismissed" is exactly `dismissed_at is not null`: user_threads_record clears
+// the mark when somebody else writes again (migration 20261105093501), so no read compares the two
+// marks.
+func meInboxPageThreads(state string) (rows, moment string) {
+	switch state {
+	case myRepliesStateUnread:
+		return meInboxUnreadThreads, `u.replied_at`
+	case myRepliesStateDismissed:
+		return meInboxDismissedThreads, `u.dismissed_at`
+	default:
+		return meInboxInboxThreads, `u.replied_at`
+	}
+}
+
+const meInboxThreadRows = `
+	from user_threads u
+	where u.login = $1
+	  and ($2::text = '' or u.issue_key = $2::text)
+	  and ($3::uuid is null or u.artifact_id = $3::uuid)
+	  and not exists (
+		select 1 from asks a` + askedOfPersonJoins + `
+		where a.id = u.thread_id and a.state = 'open' and i.closed_at is null
+		  and ` + askedOfPersonExpression + ` = $1
+	  )`
+
+const (
+	meInboxUnreadThreads    = meInboxThreadRows + ` and u.unread`
+	meInboxInboxThreads     = meInboxThreadRows + ` and u.replied_at is not null and u.dismissed_at is null`
+	meInboxDismissedThreads = meInboxThreadRows + ` and u.dismissed_at is not null`
+)
+
 // meInboxReads is what the page's rows draw, as meInboxPageReads writes it: the statement's
 // common table expressions that read it, and the columns of the row that carries it, in the order
 // meInboxOnceColumns reads them.
@@ -1293,17 +1365,15 @@ type meInboxReads struct {
 	columns []string
 }
 
-// meInboxPageReads reads what the page's rows draw, once for the whole page and each kind of row
-// by the statements the read it replaces runs today, each over every row of that kind on the page
-// as those reads run them over theirs:
+// meInboxPageReads reads what the page's rows draw, once for the whole page, each kind of row by
+// the statements that read that kind of row, each over every row of that kind on the page:
 //
-//   - the Ask rows as listInbox selects them (openAskRowColumns over openAskRowFrom: the ask, its
-//     issue, document and the caller's snooze), the details loadAskDetails reads
+//   - the Ask rows as every read of open asks selects them (openAskRowColumns over openAskRowFrom:
+//     the ask, its issue, document and the caller's snooze), the details loadAskDetails reads
 //     (events.OpenedEventIDsStatement, refs.BacklinkCountRead, refs.AskPartRowsStatement) and their
 //     threads as loadAskThreads reads them (inboxAskReplyChainsQuery, then the targets each reply
 //     names, its attempts and its block, the rewordings, the followers and askReachesQuery);
-//   - the Reply rows as listMyReplies selects them over the rows its cut kept (myRepliesPageRest),
-//     each read by its user_threads key;
+//   - the Thread rows as myRepliesPageRest selects them, each read by its user_threads key;
 //   - the Agent rows' conversations as hydrateMessageThreads reads them - each root message, every
 //     reply under it (messageReplyChainsQuery), each message's attempts (messageDeliveriesQuery) and
 //     the block it names (refs.ReplyBlocksStatement) - and the names of their sessions

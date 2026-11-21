@@ -75,19 +75,19 @@ end`
 // of the question's project while the issue holds nobody - or where there is no issue at all,
 // which is a question on a project document.
 //
-// Six reads of this package share it. One is askReadColumns below, the column list every ask
-// read selects: the open-ask rows (openAskRowColumns, which GET /api/v1/inbox, GET
-// /api/v1/me/inbox and GET /api/v1/asks/open select), one ask, an issue's ask list, a document's
-// ask list (api/asks.go) and the decisions read (api/decisions.go). The other five write it into a
-// statement of their own: the Inbox read's person filter (?assignee=, listInbox in api/inbox.go),
-// the open-asks read's person filter (?waiting_on=, listOpenAsks in api/asks.go), the open ask
-// the Replies list leaves out, since the Inbox already lists it (myRepliesOwner in
-// api/replies.go), the read the hand-on route takes before it writes, which is whom the question
-// waited on until then (putAskAskedOf in api/ask_asked_of.go), and the person a write that opens
-// a question answers with (askWaitingOnPerson below). Three more, outside this package, are the
-// answer's catch-up of an ask an older build created (inboxwrite.ReadAsk), the create's
-// delivery to the person the ask waits on (inboxwrite.Record), and the move of that person by the
-// writes that change who an ask waits on (inboxwrite.MoveWaiting).
+// Five reads of this package share it. One is askReadColumns below, the column list every ask
+// read selects: the open-ask rows (openAskRowColumns, which GET /api/v1/me/inbox and GET
+// /api/v1/asks/open select), one ask, an issue's ask list, a document's ask list (api/asks.go)
+// and the decisions read (api/decisions.go). The other four write it into a statement of their
+// own: the open-asks read's person filter (?waiting_on=, listOpenAsks in api/asks.go), the Inbox
+// page's rows - the open asks that wait on the person, which it draws as Ask rows, and the threads
+// of those asks, which its Thread rows leave out (meInboxPageRows and meInboxThreadRows in
+// api/me_inbox.go) -, the read the hand-on route takes before it writes, which is whom the
+// question waited on until then (putAskAskedOf in api/ask_asked_of.go), and the person a write
+// that opens a question answers with (askWaitingOnPerson below). Three more, outside this
+// package, are the answer's catch-up of an ask an older build created (inboxwrite.ReadAsk), the
+// create's delivery to the person the ask waits on (inboxwrite.Record), and the move of that
+// person by the writes that change who an ask waits on (inboxwrite.MoveWaiting).
 //
 // It names the ask a, its issue i and its project p, so every query reading it joins all three
 // the way askReadFrom does, the ask's own document among them: a question owned by an issue has
@@ -97,7 +97,7 @@ end`
 // TestOneExpressionDecidesWhoWaits drives the routes behind the reads and
 // TestTheWriteNamesThePerson the writes behind askWaitingOnPerson; the joins themselves are
 // askedOfPersonJoins below, which every statement reading the expression builds its FROM clause
-// from - the Inbox's person filter through askReadFrom, as it sits in the statement that
+// from - the open-asks read's person filter through askReadFrom, as it sits in the statement that
 // selects askReadColumns.
 //
 // The expression spans three tables, so no index on issues.assignee
@@ -106,17 +106,17 @@ const askedOfPersonExpression = asks.AskedOfPersonExpression
 
 // askedOfPersonJoins are the three tables askedOfPersonExpression reads beside the ask aliased
 // a (asks.AskedOfPersonJoins): its issue as i, its own document as ar, and the project of
-// whichever of the two owns it as p. Five FROM clauses of this package carry them - askReadFrom
-// and askWaitingOnPerson below, the opened-since read of listOpenAsks (api/asks.go), the
-// not-exists subquery of myRepliesOwner (api/replies.go) and the read putAskAskedOf takes before
-// it writes (api/ask_asked_of.go) - and each builds them from this one text, so the rule and the
-// tables it names move together. askReadFrom serves three of the six reads, askReadColumns and
-// the two person filters, the Inbox's and the open-asks read's, each in the statement that selects
-// askReadColumns. TestOneExpressionDecidesWhoWaits holds them to this one spelling as it holds the
-// expression to its own.
+// whichever of the two owns it as p. Six FROM clauses of this package carry them - askReadFrom
+// and askWaitingOnPerson below, the opened-since read of listOpenAsks (api/asks.go), the page's
+// Ask rows and the not-exists subquery of its Thread rows (meInboxPageRows and meInboxThreadRows,
+// api/me_inbox.go) and the read putAskAskedOf takes before it writes (api/ask_asked_of.go) - and
+// each builds them from this one text, so the rule and the tables it names move together.
+// askReadFrom serves two of the five reads, askReadColumns and the open-asks read's person
+// filter, in the statement that selects askReadColumns. TestOneExpressionDecidesWhoWaits holds
+// them to this one spelling as it holds the expression to its own.
 //
 // The project is reached through either owner the way this repository already reads a
-// question's project (api/inbox.go, api/asks.go, projectListQuery in api/projects.go).
+// question's project (api/me_inbox.go, api/asks.go, projectListQuery in api/projects.go).
 const askedOfPersonJoins = asks.AskedOfPersonJoins
 
 // askItemRefExpression is the SPA item route of the ask aliased a, whose issue is aliased i and
@@ -452,11 +452,11 @@ type askReach struct {
 }
 
 // openAskRow is the row of an open ask that every read of open asks answers, built here and
-// nowhere else: the ask rows of GET /api/v1/inbox (listInbox) and of GET /api/v1/me/inbox (an
-// Ask entry's row, readAsks and meInboxAsks), and the rows of GET /api/v1/asks/open
-// (listOpenAsks), which carry what that read has always carried beside it (openAsk). It is the
-// ask shaped for display, the issue or project document it stands on, the issue's priority, the
-// newest reply in its thread, the reader's own snooze and the thread a card renders.
+// nowhere else: the ask rows of GET /api/v1/me/inbox (an Ask entry's row, readAsks and
+// meInboxAsks), and the rows of GET /api/v1/asks/open (listOpenAsks), which carry what that read
+// has always carried beside it (openAsk). It is the ask shaped for display, the issue or project
+// document it stands on, the issue's priority, the newest reply in its thread, the reader's own
+// snooze and the thread a card renders.
 // scanOpenAskRow reads one out of openAskRowColumns, and finishOpenAskRows adds its details and
 // its thread for a read that reads them on the pool.
 type openAskRow struct {

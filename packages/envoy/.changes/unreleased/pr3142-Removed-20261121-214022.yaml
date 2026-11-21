@@ -1,0 +1,5 @@
+kind: Removed
+body: GET /api/v1/inbox, GET /api/v1/me/replies and GET /api/v1/agents/{session_id}/messages go; Mark all read and the dismissal mark only the rows the Inbox page draws from the one read.
+time: 2026-11-21T21:40:22.143295091Z
+custom:
+    Issue: pr3142

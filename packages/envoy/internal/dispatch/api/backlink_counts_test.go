@@ -63,7 +63,7 @@ func TestAskListsCarryBatchedBacklinkCounts(t *testing.T) {
 		t.Fatalf("create cross-project message: status=%d body=%s", response.Code, response.Body.String())
 	}
 
-	inbox := dispatchRequest(t, handler, http.MethodGet, "/api/v1/inbox", nil, "alice")
+	inbox := openAsksAnswer(t, handler, "alice", "")
 	if inbox.Code != http.StatusOK {
 		t.Fatalf("read inbox: status=%d body=%s", inbox.Code, inbox.Body.String())
 	}
@@ -260,7 +260,7 @@ func TestAskBacklinksExcludeItsOwnReplies(t *testing.T) {
 		}
 	}
 
-	inbox := dispatchRequest(t, handler, http.MethodGet, "/api/v1/inbox", nil, "alice")
+	inbox := openAsksAnswer(t, handler, "alice", "")
 	if inbox.Code != http.StatusOK {
 		t.Fatalf("read inbox: status=%d body=%s", inbox.Code, inbox.Body.String())
 	}

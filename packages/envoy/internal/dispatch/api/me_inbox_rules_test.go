@@ -924,7 +924,7 @@ func TestTheOneReadCarriesTheDisplayTreesThePageAsksFor(t *testing.T) {
 			t.Errorf("the %s read's agent row carries %+v, want the root's and the reply's trees", pass, conversation)
 		}
 		if len(agentEntry.Agent.SubjectTree) == 0 {
-			t.Errorf("the %s read's agent row carries subject %q with no tree, want its line read as GET /api/v1/me/replies reads it",
+			t.Errorf("the %s read's agent row carries subject %q with no tree, want its line read where it stands",
 				pass, agentEntry.Agent.Subject)
 		}
 	}

@@ -23,7 +23,7 @@ export interface IssueAskThreadRow extends IssueAskRow {
   readonly thread: AskThread;
 }
 
-/** A Reply row of the Inbox, narrowed from the row `GET /api/v1/me/replies` answers: an ask's
+/** A Reply row of the Inbox, narrowed from an entry's `thread` of `GET /api/v1/me/inbox`: an ask's
  *  thread, a comment thread by its root, or an issue message thread by its root, which somebody
  *  else has written in. The route answers one row shape for both kinds and says which it is in
  *  `kind` (`MyReplyRow`, generated), so what this adds is what a row of this kind always carries:
@@ -63,8 +63,8 @@ export function inboxThreadRow(row: MyReplyRow): MyReplyThreadRow | MyReplyAgent
 export const INBOX_RELATION_DIRECTIONS = ["inbound", "outbound"] as const;
 export type InboxRelationDirection = (typeof INBOX_RELATION_DIRECTIONS)[number];
 
-/** An Agent row of the one read, narrowed as `inboxThreadRow` narrows one of
- *  `GET /api/v1/me/replies`, with the conversation it draws beside it. */
+/** An Agent row of the one read, narrowed as `inboxThreadRow` narrows a Reply row, with the
+ *  conversation it draws beside it. */
 export type MeInboxAgentRow = MeInboxAgent & MyReplyAgentRow;
 
 /** The row the page draws for one entry of `GET /api/v1/me/inbox`, by which of its three it
@@ -97,8 +97,8 @@ export function awaitsDecision(row: Pick<CredentialPendingRow, "state">): boolea
   return row.state !== "expired";
 }
 
-/** The states `GET /api/v1/me/replies`'s `?state=` reads the caller's threads in: `unread`, the
- *  default and the Inbox count's own read, which answers the rows somebody else has written in
+/** The states `GET /api/v1/me/inbox`'s `?state=` reads the caller's threads in: `unread`, the
+ *  Inbox count's own read, which answers the rows somebody else has written in
  *  since they read them; `inbox`, every row in their Inbox, read or not, less what they have
  *  dismissed; and `dismissed`, what they dismissed out of it, newest dismissal first. A thread
  *  stays in the Inbox, read or not, until it is dismissed (`InboxDismissRequest`). */
@@ -108,8 +108,8 @@ export type InboxListState = (typeof INBOX_LIST_STATES)[number];
 /** How many rows one `state=dismissed` page answers, and how many `?cursor=` reads again. */
 export const INBOX_DISMISSED_PAGE = 200;
 
-/** The two kinds of thread row the Inbox holds, as `GET /api/v1/me/replies`'s `?kind=` and the
- *  Mark all read body both name them: a Reply row, a thread the reader wrote in where
+/** The two kinds of thread row the Inbox holds, as the bodies of Mark all read and of a filtered
+ *  dismissal name them in `kind`: a Reply row, a thread the reader wrote in where
  *  somebody else has written since, and an Agent row, a one-off message they sent a session
  *  that it answered. */
 export const INBOX_THREAD_KINDS = ["reply", "agent"] as const;
@@ -128,7 +128,7 @@ export type MarkInboxReadPriority = "P0" | "P1" | "P2" | "P3" | "none";
 export const INBOX_DISMISS_ROW_PREFIXES = { reply: "reply:", agent: "agent:" } as const;
 
 /** What a dismissal carries for one Reply row: the row's own version as
- *  `GET /api/v1/me/replies` answered it (`MyReplyThreadRow.version`), and nothing else - a
+ *  `GET /api/v1/me/inbox` answered it (`MyReplyThreadRow.version`), and nothing else - a
  *  `reply:` row is one `user_threads` row, and that row's version is the whole of what the page
  *  drew of it. */
 export interface InboxDismissSeenReply {
@@ -136,7 +136,7 @@ export interface InboxDismissSeenReply {
 }
 
 /** What a dismissal carries for one Agent row, which has no `user_threads` row and so no version:
- *  the two things the page drew of its thread, as `GET /api/v1/me/replies` answered them. */
+ *  the two things the page drew of its thread, as `GET /api/v1/me/inbox` answered them. */
 export interface InboxDismissSeenAgent {
   /** The newest session reply the row showed, which is that row's `reply.id`. */
   readonly newest_reply: string;

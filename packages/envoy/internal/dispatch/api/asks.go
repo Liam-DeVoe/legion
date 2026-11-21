@@ -831,8 +831,8 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 	}
 	// The scope over the ask aliased a and the joins askedOfPersonExpression reads, bound the same
 	// in both statements: $1 the session, $2 the project, $3 ?waiting_on='s login, which narrows on
-	// the person the ask waits on exactly as the Inbox's ?assignee= does (listInbox), and $4 the
-	// acting credential the ask node's visibility predicate binds.
+	// the person the ask waits on exactly as the Inbox page's Ask rows do (meInboxPageRows), and $4
+	// the acting credential the ask node's visibility predicate binds.
 	scope := `($1 = '' or (a.author->>'kind' = 'session' and a.author->>'id' = $1))
 		  and ($2 = '' or coalesce(i.project_key, ar.project_key) = $2)
 		  and ($3 = '' or ` + askedOfPersonExpression + ` = $3)

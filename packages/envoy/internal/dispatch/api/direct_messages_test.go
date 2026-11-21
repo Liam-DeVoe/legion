@@ -92,7 +92,7 @@ func TestSessionFollowUpToADirectMessageThreadsUnderItsFirstReply(t *testing.T) 
 		t.Fatalf("a session's own replies were delivered: %#v", (*sent)[sendsAfterRoot:])
 	}
 
-	conversation := decodeBody[[]messageRead](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/agents/s1/messages", nil, "alice"))
+	conversation := decodeBody[[]messageRead](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/agents/s1/conversation", nil, "alice"))
 	if len(conversation) != 1 || conversation[0].Message.ID != root.ID {
 		t.Fatalf("conversation = %#v, want the one direct message", conversation)
 	}
@@ -148,7 +148,7 @@ func TestAnsweredDeliveryPostsAFollowUpOnlyWhenAskedAndSaysWhenItPostedNothing(t
 		}
 	}
 
-	conversation := decodeBody[[]messageRead](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/agents/s1/messages", nil, "alice"))
+	conversation := decodeBody[[]messageRead](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/agents/s1/conversation", nil, "alice"))
 	if replies := conversation[0].Replies; len(replies) != 2 || replies[0].ID != first.ID || replies[1].ID != followUp.ID {
 		t.Fatalf("replies = %#v, want only the first answer and the one follow-up", replies)
 	}
@@ -475,7 +475,7 @@ func TestAgentConversationsListByLatestActivity(t *testing.T) {
 	newer := decodeBody[model.Message](t, later)
 	reply("An answer to the older question.")
 
-	conversation := decodeBody[[]messageRead](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/agents/s1/messages", nil, "alice"))
+	conversation := decodeBody[[]messageRead](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/agents/s1/conversation", nil, "alice"))
 	if len(conversation) != 2 || conversation[0].Message.ID != root.ID || conversation[1].Message.ID != newer.ID {
 		ids := []string{}
 		for _, read := range conversation {
@@ -526,7 +526,7 @@ func seedAnsweredConversations(t *testing.T, database *store.Store, count int, i
 // windowHolds reports whether the conversation list a viewer reads holds rootID.
 func windowHolds(t *testing.T, handler http.Handler, rootID string) (bool, int) {
 	t.Helper()
-	window := decodeBody[[]messageRead](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/agents/s1/messages", nil, "alice"))
+	window := decodeBody[[]messageRead](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/agents/s1/conversation", nil, "alice"))
 	for _, read := range window {
 		if read.Message.ID == rootID {
 			return true, len(window)
@@ -616,7 +616,7 @@ func TestTheWindowReturnsEveryUnreadConversationBesideTheFiftyMostActive(t *test
 	if got := unreadReplies(t, handler, "alice", "s1"); got.UnreadReplies != 60 {
 		t.Fatalf("before opening the view: %#v, want 60 unread replies", got)
 	}
-	window := decodeBody[[]messageRead](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/agents/s1/messages", nil, "alice"))
+	window := decodeBody[[]messageRead](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/agents/s1/conversation", nil, "alice"))
 	seen := map[string]bool{}
 	unread, busier := 0, 0
 	var newestReply string
@@ -732,7 +732,7 @@ func unreadRepliesShownInWindow(t *testing.T, handler http.Handler, sessionID st
 	}
 	// Read as the identity source spells the login, as the state above is: a call site that
 	// passed the raw form to the shared fragment would read a window over no roots at all.
-	window := decodeBody[[]messageRead](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/agents/"+sessionID+"/messages", nil, "ALICE"))
+	window := decodeBody[[]messageRead](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/agents/"+sessionID+"/conversation", nil, "ALICE"))
 	shown := 0
 	for _, read := range window {
 		// The conversation's own verdict, as the server sends it - no client-side re-derivation.
@@ -772,7 +772,7 @@ func TestAnOldConversationAnsweredNowIsInsideTheWindow(t *testing.T) {
 		t.Fatalf("%#v, want the reply read, so only the activity order can keep its conversation in the window", got)
 	}
 
-	window := decodeBody[[]messageRead](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/agents/s1/messages", nil, "alice"))
+	window := decodeBody[[]messageRead](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/agents/s1/conversation", nil, "alice"))
 	if len(window) != 50 {
 		t.Fatalf("window = %d conversations, want the 50 that moved last", len(window))
 	}
@@ -812,7 +812,7 @@ func TestAConversationMovesOnActivityDeepInItsChain(t *testing.T) {
 	if got := unreadReplies(t, handler, "alice", "s1"); got.UnreadReplies != 0 {
 		t.Fatalf("%#v, want everything read, so only the activity order can rank these", got)
 	}
-	window := decodeBody[[]messageRead](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/agents/s1/messages", nil, "alice"))
+	window := decodeBody[[]messageRead](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/agents/s1/conversation", nil, "alice"))
 	if len(window) != 2 || window[0].Message.ID != root.ID || window[1].Message.ID != newer.ID {
 		ids := []string{}
 		for _, read := range window {
@@ -854,7 +854,7 @@ func TestADeliveredOnlyConversationIsListedAndCountsNothingUnread(t *testing.T) 
 	if got := states["s1"].UnreadReplies; got != 0 {
 		t.Fatalf("unread_replies = %d, want 0: a delivered-only root is not a direct message this viewer sent", got)
 	}
-	window := decodeBody[[]messageRead](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/agents/s1/messages", nil, "ALICE"))
+	window := decodeBody[[]messageRead](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/agents/s1/conversation", nil, "ALICE"))
 	listed := false
 	for _, read := range window {
 		if read.Message.ID == rootID {
@@ -956,7 +956,7 @@ func TestTheWindowsUnreadFlagIsReadAgainstTheMarkNotThePresenceOfAReply(t *testi
 	if state.UnreadReplies != 1 {
 		t.Fatalf("unread_replies = %d, want 1: the follow-up alone", state.UnreadReplies)
 	}
-	window := decodeBody[[]messageRead](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/agents/s1/messages", nil, "alice"))
+	window := decodeBody[[]messageRead](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/agents/s1/conversation", nil, "alice"))
 	flags := map[string]bool{}
 	for _, read := range window {
 		flags[read.Message.ID] = read.Unread
@@ -975,7 +975,7 @@ func TestTheWindowsUnreadFlagIsReadAgainstTheMarkNotThePresenceOfAReply(t *testi
 // windowEntry is one conversation as the viewer's own conversation list answers it.
 func windowEntry(t *testing.T, handler http.Handler, login, sessionID, rootID string) messageRead {
 	t.Helper()
-	window := decodeBody[[]messageRead](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/agents/"+sessionID+"/messages", nil, login))
+	window := decodeBody[[]messageRead](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/agents/"+sessionID+"/conversation", nil, login))
 	for _, read := range window {
 		if read.Message.ID == rootID {
 			return read
@@ -1392,7 +1392,7 @@ func TestARootInBothCandidateBranchesIsListedOnce(t *testing.T) {
 			root.ID, targeted, delivered)
 	}
 
-	window := decodeBody[[]messageRead](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/agents/s1/messages", nil, "alice"))
+	window := decodeBody[[]messageRead](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/agents/s1/conversation", nil, "alice"))
 	seen := 0
 	for _, read := range window {
 		if read.Message.ID == root.ID {

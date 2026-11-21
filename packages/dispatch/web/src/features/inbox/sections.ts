@@ -10,8 +10,8 @@ export type InboxSection = AskTurn | "later";
  * The **Waiting on** grouping's bands, top to bottom, and `sectionOf` below is its whole rule.
  * It is one grouping among seven now (`grouping.ts`), not the list's only banding, and the
  * order WITHIN a band is the list's own sort (`sortRows`), not the server's: the SPA re-sorts
- * every read it draws, so `listInbox`'s `order by`
- * (`packages/envoy/internal/dispatch/api/inbox.go`) decides only what a tie falls back to.
+ * every read it draws, so the one read's order (`listMeInbox`,
+ * `packages/envoy/internal/dispatch/api/me_inbox.go`) decides only what a tie falls back to.
  */
 export const INBOX_SECTIONS = ["human", "agent", "later"] as const;
 

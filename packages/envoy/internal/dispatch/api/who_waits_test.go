@@ -1,8 +1,10 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -19,15 +21,57 @@ import (
 // and the file here carry that name rather than the package's sentence-style one, and why the
 // other test is spelled as a longer form of it.
 
-// inboxFor reads one person's Inbox rows through the person filter `dispatch inbox` sends
-// (?assignee=me), or through filter where the test names another.
+// openAsksAnswer is GET /api/v1/asks/open read as login under query, its body cut to the rows it
+// lists: each row in the shape every read of open asks answers (openAskRow, which every row of the
+// open-asks read carries beside its own fields). That list is what the Inbox's ask read answered
+// before the open-asks read took its callers, so a test that reads the rows reads them as before.
+// A refusal is answered as it stands.
+func openAsksAnswer(t *testing.T, handler http.Handler, login, query string) *httptest.ResponseRecorder {
+	t.Helper()
+	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/asks/open?"+query, nil, login)
+	if response.Code != http.StatusOK {
+		return response
+	}
+	var answer struct {
+		Asks json.RawMessage `json:"asks"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &answer); err != nil {
+		t.Fatalf("decode the open asks %s: %v", response.Body.String(), err)
+	}
+	rows := httptest.NewRecorder()
+	rows.WriteHeader(http.StatusOK)
+	rows.Body.Write(answer.Asks)
+	return rows
+}
+
+// inboxFor reads the open asks that wait on one person, the Inbox's Ask rows, as login: filter is
+// me (the caller), another person's login, empty for every open ask, or unassigned for the open
+// asks that wait on nobody, which the read answers as the rows that name no person.
 func inboxFor(t *testing.T, handler http.Handler, login, filter string) []openAskRow {
 	t.Helper()
-	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/inbox?assignee="+filter, nil, login)
-	if response.Code != http.StatusOK {
-		t.Fatalf("read %s's inbox (?assignee=%s): status=%d body=%s", login, filter, response.Code, response.Body.String())
+	query := ""
+	switch filter {
+	case "", "unassigned":
+	case "me":
+		query = "waiting_on=" + url.QueryEscape(login)
+	default:
+		query = "waiting_on=" + url.QueryEscape(filter)
 	}
-	return decodeBody[[]openAskRow](t, response)
+	response := openAsksAnswer(t, handler, login, query)
+	if response.Code != http.StatusOK {
+		t.Fatalf("read the open asks waiting on %q as %s: status=%d body=%s", filter, login, response.Code, response.Body.String())
+	}
+	rows := decodeBody[[]openAskRow](t, response)
+	if filter != "unassigned" {
+		return rows
+	}
+	nobodys := []openAskRow{}
+	for _, row := range rows {
+		if row.WaitingOnPerson == "" {
+			nobodys = append(nobodys, row)
+		}
+	}
+	return nobodys
 }
 
 // inboxRowsOf counts how many of the read's rows are the ask, so a row listed twice is told from
@@ -266,8 +310,8 @@ func TestOneExpressionDecidesWhoWaits(t *testing.T) {
 		if inboxRowsOf(inboxFor(t, handler, "bob", "me"), handedAway) != 1 {
 			t.Fatalf("the ask alice handed to bob is not in bob's inbox")
 		}
-		if !listsThread(getMyReplies(t, handler, "alice", ""), handedAway) {
-			t.Fatalf("alice's replies do not hold the ask she handed away: %#v", getMyReplies(t, handler, "alice", "").Rows)
+		if !listsThread(readInboxPage(t, handler, "alice", ""), handedAway) {
+			t.Fatalf("alice's replies do not hold the ask she handed away: %#v", readInboxPage(t, handler, "alice", "").Rows)
 		}
 	})
 
@@ -277,7 +321,7 @@ func TestOneExpressionDecidesWhoWaits(t *testing.T) {
 		if listed := inboxRowsOf(inboxFor(t, handler, "alice", "me"), documentAsk); listed != 1 {
 			t.Fatalf("the document ask handed to alice is in her inbox %d times, want once", listed)
 		}
-		if page := getMyReplies(t, handler, "alice", ""); listsThread(page, documentAsk) {
+		if page := readInboxPage(t, handler, "alice", ""); listsThread(page, documentAsk) {
 			t.Fatalf("the document ask handed to alice is in her replies too: %#v", page.Rows)
 		}
 	})
@@ -288,7 +332,7 @@ func TestOneExpressionDecidesWhoWaits(t *testing.T) {
 		if listed := inboxRowsOf(inboxFor(t, handler, "alice", "me"), mixedCase); listed != 1 {
 			t.Fatalf("the ask on the loudly assigned issue is in alice's inbox %d times, want once", listed)
 		}
-		if page := getMyReplies(t, handler, "alice", ""); listsThread(page, mixedCase) {
+		if page := readInboxPage(t, handler, "alice", ""); listsThread(page, mixedCase) {
 			t.Fatalf("the ask on the loudly assigned issue is in alice's replies too: %#v", page.Rows)
 		}
 	})
@@ -383,13 +427,13 @@ func TestOneExpressionDecidesWhoWaits(t *testing.T) {
 		// The Replies exclusion is the same expression read the other way round: alice wrote in
 		// the thread, and the Inbox lists the question under her, so her Replies list leaves it
 		// out until somebody hands it away from her.
-		if page := getMyReplies(t, handler, "alice", ""); listsThread(page, blockQuestion) {
+		if page := readInboxPage(t, handler, "alice", ""); listsThread(page, blockQuestion) {
 			t.Fatalf("the question WAITS defaults to alice is in her replies too: %#v", page.Rows)
 		}
 		if moved := handAskOn(t, handler, blockQuestion, "bob", "alice"); moved.WaitingOnPerson != "bob" {
 			t.Fatalf("the hand-on route says the question waits on %q, want bob", moved.WaitingOnPerson)
 		}
-		if page := getMyReplies(t, handler, "alice", ""); !listsThread(page, blockQuestion) {
+		if page := readInboxPage(t, handler, "alice", ""); !listsThread(page, blockQuestion) {
 			t.Fatalf("the question alice handed to bob is not back in her replies: %#v", page.Rows)
 		}
 	})

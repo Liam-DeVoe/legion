@@ -18,7 +18,7 @@ import (
 // A listed row with no snooze carries a JSON null, which decodes to the zero-value pointer.
 func inboxSnoozes(t *testing.T, handler http.Handler, login string) map[string]*string {
 	t.Helper()
-	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/inbox", nil, login)
+	response := openAsksAnswer(t, handler, login, "")
 	if response.Code != http.StatusOK {
 		t.Fatalf("read %s inbox: status=%d body=%s", login, response.Code, response.Body.String())
 	}
@@ -271,7 +271,7 @@ func TestAgentReplyLeavesASnoozeIntact(t *testing.T) {
 		t.Fatalf("agent reply: status=%d body=%s", reply.Code, reply.Body.String())
 	}
 
-	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/inbox", nil, "alice")
+	response := openAsksAnswer(t, handler, "alice", "")
 	if response.Code != http.StatusOK {
 		t.Fatalf("read inbox: status=%d body=%s", response.Code, response.Body.String())
 	}

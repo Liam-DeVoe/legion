@@ -158,31 +158,11 @@ func explainDismissedScale(
 // (api/inbox_read.go). The indexes are the ones replies_plan_test.go pins, which is where the
 // states' own reads are held to them.
 func dismissedScaleStatements(shape *dismissedScaleShape) []dismissedScaleExplained {
-	var everyRow *int
-	page := myRepliesDismissedPage
-	one := 1
-	replyArgs := func(extra ...any) []any {
-		return append([]any{dismissedScaleLogin, "", nil}, extra...)
-	}
 	agentArgs := func(extra ...any) []any {
 		return append([]any{dismissedScaleLogin, dismissedScaleLogin, nil}, extra...)
 	}
-	cursorAt, cursorThread, _ := strings.Cut(shape.deepCursor, ",")
 	mark := time.Now().UTC().Format(time.RFC3339Nano)
 	statements := []dismissedScaleExplained{
-		{"state=inbox", "reply", myRepliesInboxPageQuery, replyArgs(everyRow), "user_threads_inbox", "user_threads", "", ""},
-		// The Inbox's own three reads take the person's dismissal marks as one set, so each is
-		// held to reading that table once rather than to an access path of its own.
-		{"state=inbox", "agent", myAgentInboxRowsQuery, agentArgs(everyRow),
-			"messages_direct_roots", "", "dismissed_at", "user_agent_thread_dismissed"},
-		{"unread count", "reply count", myRepliesCountQuery, replyArgs(), "user_threads_unread", "user_threads", "", ""},
-		{"unread count", "reply page", myRepliesPageQuery, replyArgs(&one), "user_threads_unread", "user_threads", "", ""},
-		{"unread count", "agent page and total", myAgentCountedRowsQuery, agentArgs(&one),
-			"messages_direct_roots", "", "dismissed_at", "user_agent_thread_dismissed"},
-		{"dismissed page 1", "reply page", myRepliesDismissedPageQuery, replyArgs(&page),
-			"user_threads_dismissed", "user_threads", "", ""},
-		{"dismissed page 1", "agent page", myAgentDismissedRowsQuery, agentArgs(&page),
-			"user_agent_thread_dismissed_login_dismissed_at", "user_agent_thread_dismissed", "dismissed_at", ""},
 		// The two write routes sort the rows they matched by thread id, which is the lock order
 		// markInboxReadThreads writes down and not an order any index owes them, so what each is
 		// held to is that nothing sorts by the state's own order. The dismissal's read of the
@@ -190,21 +170,12 @@ func dismissedScaleStatements(shape *dismissedScaleShape) []dismissedScaleExplai
 		// page drew in them is the request's, written over that answer in the server rather
 		// than sent to this read (readInboxDismissThreads).
 		{"120-thread dismiss", "reply rows", inboxDismissNamedThreads,
-			[]any{dismissedScaleLogin, shape.dismissRows},
+			[]any{dismissedScaleLogin, "", nil, shape.dismissRows},
 			"user_threads_pkey", "user_threads", "replied_at", ""},
 		{"mark all read", "reply rows", inboxReadReplyThreads,
 			[]any{dismissedScaleLogin, "", nil, mark, nil, true, nil}, "user_threads_unread", "user_threads", "replied_at", ""},
 		{"mark all read", "agent rows", inboxReadAgentThreads,
 			append(agentArgs(), mark), "messages_direct_roots", "", "dismissed_at", "user_agent_thread_dismissed"},
-	}
-	if shape.deepCursor != "" {
-		statements = append(statements,
-			dismissedScaleExplained{"dismissed page 50,000 deep", "reply page", myRepliesDismissedFromQuery,
-				replyArgs(&page, cursorAt, cursorThread), "user_threads_dismissed", "user_threads", "", ""},
-			dismissedScaleExplained{"dismissed page 50,000 deep", "agent page", myAgentDismissedFromQuery,
-				agentArgs(&page, cursorAt, cursorThread),
-				"user_agent_thread_dismissed_login_dismissed_at", "user_agent_thread_dismissed", "dismissed_at", ""},
-		)
 	}
 	return statements
 }

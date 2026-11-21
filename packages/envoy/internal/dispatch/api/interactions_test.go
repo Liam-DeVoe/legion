@@ -213,7 +213,7 @@ func TestAskWithoutOptionsEmitsEmptyOptionsArray(t *testing.T) {
 		t.Fatalf("read ask without options: status=%d body=%s", read.Code, read.Body.String())
 	}
 
-	inbox := dispatchRequest(t, handler, http.MethodGet, "/api/v1/inbox", nil, "alice")
+	inbox := openAsksAnswer(t, handler, "alice", "")
 	if inbox.Code != http.StatusOK || !strings.Contains(inbox.Body.String(), `"options":[]`) {
 		t.Fatalf("inbox ask without options: status=%d body=%s", inbox.Code, inbox.Body.String())
 	}
@@ -252,7 +252,7 @@ func TestAnchoredAskAnswerAndInbox(t *testing.T) {
 	if second.Code != http.StatusCreated {
 		t.Fatalf("create second ask: status=%d body=%s", second.Code, second.Body.String())
 	}
-	inbox := dispatchRequest(t, handler, http.MethodGet, "/api/v1/inbox", nil, "alice")
+	inbox := openAsksAnswer(t, handler, "alice", "")
 	if inbox.Code != http.StatusOK || strings.Count(inbox.Body.String(), `"state":"open"`) != 2 {
 		t.Fatalf("open asks were superseded or missing from inbox: status=%d body=%s", inbox.Code, inbox.Body.String())
 	}
@@ -455,7 +455,7 @@ func TestClosedIssueAsksCannotBeAnsweredOrShown(t *testing.T) {
 		t.Fatalf("answer ask on closed issue: status=%d body=%s", answer.Code, answer.Body.String())
 	}
 	requireWithdrawn(t, handler, issue.Key, ask.ID, model.Actor{Kind: "user", ID: "alice", Proven: true})
-	inbox := dispatchRequest(t, handler, http.MethodGet, "/api/v1/inbox?project=TEST", nil, "alice")
+	inbox := openAsksAnswer(t, handler, "alice", "project=TEST")
 	if inbox.Code != http.StatusOK || strings.Contains(inbox.Body.String(), ask.ID) {
 		t.Fatalf("closed issue ask appeared in inbox: status=%d body=%s", inbox.Code, inbox.Body.String())
 	}
@@ -1650,46 +1650,6 @@ func TestSuggestionAcceptChecksClosureBeforeApplyingReplacement(t *testing.T) {
 	}
 }
 
-func TestInboxOrdersOpenAsksAcrossIssues(t *testing.T) {
-	handler, database := newTestHandlerWithStore(t)
-	first := createInteractionIssue(t, handler, "TEST", "First", "first")
-	firstAsk := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+first.Key+"/asks", map[string]any{"question": "First question", "actor": sessionActor()})
-	if firstAsk.Code != http.StatusCreated {
-		t.Fatalf("create first ask: status=%d body=%s", firstAsk.Code, firstAsk.Body.String())
-	}
-	firstAskBody := decodeBody[struct {
-		ID string `json:"id"`
-	}](t, firstAsk)
-	if _, err := database.Pool.Exec(context.Background(), `update asks set created_at = created_at - interval '1 minute' where id = $1`, firstAskBody.ID); err != nil {
-		t.Fatalf("move first ask earlier: %v", err)
-	}
-	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{"project": "TEST", "title": "Second", "spec": "second"}, "alice")
-	second := decodeBody[struct {
-		Key string `json:"key"`
-	}](t, response)
-	secondAsk := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+second.Key+"/asks", map[string]any{"question": "Second question", "actor": sessionActor()})
-	if secondAsk.Code != http.StatusCreated {
-		t.Fatalf("create second ask: status=%d body=%s", secondAsk.Code, secondAsk.Body.String())
-	}
-	inbox := dispatchRequest(t, handler, http.MethodGet, "/api/v1/inbox?project=TEST", nil, "alice")
-	if inbox.Code != http.StatusOK {
-		t.Fatalf("read inbox: status=%d body=%s", inbox.Code, inbox.Body.String())
-	}
-	var asks []struct {
-		Question string `json:"question"`
-		Issue    struct {
-			Key   string `json:"key"`
-			Title string `json:"title"`
-		} `json:"issue"`
-	}
-	if err := json.NewDecoder(inbox.Body).Decode(&asks); err != nil {
-		t.Fatalf("decode inbox: %v", err)
-	}
-	if len(asks) != 2 || asks[0].Question != "Second question" || asks[0].Issue.Key != second.Key || asks[0].Issue.Title != "Second" {
-		t.Fatalf("inbox ordering and embedded issue = %#v", asks)
-	}
-}
-
 func TestReferencesAndSessionMessageNotify(t *testing.T) {
 	handler, database := newInteractionHandler(t, nil)
 	issue := createInteractionIssue(t, handler, "TEST", "References", "The quick brown fox")
@@ -2514,7 +2474,7 @@ func TestResolveAskRemovesItFromInboxAndKeepsTheThread(t *testing.T) {
 		t.Fatalf("resolved ask = %#v", resolution)
 	}
 
-	inbox := dispatchRequest(t, handler, http.MethodGet, "/api/v1/inbox", nil, "alice")
+	inbox := openAsksAnswer(t, handler, "alice", "")
 	if inbox.Code != http.StatusOK || strings.Contains(inbox.Body.String(), ask.ID) {
 		t.Fatalf("resolved ask remained in inbox: status=%d body=%s", inbox.Code, inbox.Body.String())
 	}
@@ -2623,78 +2583,4 @@ func TestResolveAskRejectsInvalidInputAndClosedIssues(t *testing.T) {
 		t.Fatalf("resolve ask on closed issue: status=%d body=%s", response.Code, response.Body.String())
 	}
 	requireWithdrawn(t, handler, issue.Key, ask.ID, model.Actor{Kind: "user", ID: "alice", Proven: true})
-}
-
-func TestInboxGroupsAsksWaitingOnTheirAskerAfterThoseNeedingAHuman(t *testing.T) {
-	handler, database := newTestHandlerWithStore(t)
-	issue := createInteractionIssue(t, handler, "TEST", "Inbox turns", "spec")
-	open := func(question string) string {
-		response := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks", map[string]any{
-			"question": question, "actor": sessionActor(),
-		})
-		if response.Code != http.StatusCreated {
-			t.Fatalf("create ask %q: status=%d body=%s", question, response.Code, response.Body.String())
-		}
-		return decodeBody[struct {
-			ID string `json:"id"`
-		}](t, response).ID
-	}
-	// Oldest first: clarifying (human replied last), fresh (no replies), answeredBack (agent replied last).
-	clarifying := open("Clarifying")
-	fresh := open("Fresh")
-	answeredBack := open("Answered back")
-	for index, id := range []string{clarifying, fresh, answeredBack} {
-		if _, err := database.Pool.Exec(context.Background(), `update asks set created_at = created_at - ($2::int * interval '1 minute') where id = $1`, id, 3-index); err != nil {
-			t.Fatalf("stagger ask %q: %v", id, err)
-		}
-	}
-	human := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
-		"body": "What do you mean?", "ask_id": clarifying,
-	}, "alice")
-	if human.Code != http.StatusCreated {
-		t.Fatalf("human reply: status=%d body=%s", human.Code, human.Body.String())
-	}
-	humanOnAnswered := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
-		"body": "Which one?", "ask_id": answeredBack,
-	}, "alice")
-	if humanOnAnswered.Code != http.StatusCreated {
-		t.Fatalf("human reply on answered back: status=%d body=%s", humanOnAnswered.Code, humanOnAnswered.Body.String())
-	}
-	agent := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
-		"body": "The second one.", "ask_id": answeredBack, "actor": sessionActor(),
-	})
-	if agent.Code != http.StatusCreated {
-		t.Fatalf("agent reply: status=%d body=%s", agent.Code, agent.Body.String())
-	}
-
-	inbox := dispatchRequest(t, handler, http.MethodGet, "/api/v1/inbox?project=TEST", nil, "alice")
-	if inbox.Code != http.StatusOK {
-		t.Fatalf("read inbox: status=%d body=%s", inbox.Code, inbox.Body.String())
-	}
-	var rows []struct {
-		Question  string `json:"question"`
-		LastReply *struct {
-			Author struct {
-				Kind string `json:"kind"`
-			} `json:"author"`
-			CreatedAt string `json:"created_at"`
-		} `json:"last_reply"`
-	}
-	if err := json.NewDecoder(inbox.Body).Decode(&rows); err != nil {
-		t.Fatalf("decode inbox: %v", err)
-	}
-	if len(rows) != 3 {
-		t.Fatalf("inbox rows = %#v, want three", rows)
-	}
-	// The agent's reply is the newest activity, so that ask leads Needs you; the
-	// untouched ask follows; the ask the human replied to last waits on its asker.
-	if rows[0].Question != "Answered back" || rows[0].LastReply == nil || rows[0].LastReply.Author.Kind != "session" {
-		t.Fatalf("first row = %#v, want the agent-replied ask with a session last_reply", rows[0])
-	}
-	if rows[1].Question != "Fresh" || rows[1].LastReply != nil {
-		t.Fatalf("second row = %#v, want the unreplied ask with a null last_reply", rows[1])
-	}
-	if rows[2].Question != "Clarifying" || rows[2].LastReply == nil || rows[2].LastReply.Author.Kind != "user" {
-		t.Fatalf("third row = %#v, want the human-replied ask with a user last_reply", rows[2])
-	}
 }
