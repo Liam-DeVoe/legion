@@ -149,27 +149,29 @@ func baseStates(t *testing.T, base fs.FS) map[string]string {
 // comparing each one's states with what the sweep wants of them, how many the reader or the
 // derivation refused, how many read as the base, how many read another state with no state moved
 // toward true or with a state moved by the input's right, how many of those moved a state toward
-// true by a right, with what each of them changed, and the kind of each input judged, in the order
-// of the inputs: 'r' read, 'x' refused (kinds). An input that fails the comparison fails the test
-// and is counted nowhere. So the floors (atFloor), which count the inputs judged and the digest of
-// their kinds, fail by name where the sweep skips an input that it built or drops one that it
-// judged. known is how many times the sweep reported its known positive (knownPositive), which no
-// floor counts: a sweep whose judgment no longer reports an input that moves a state toward true
-// with no right, whether it skips that judgment, counts such an input as read or computes it blind,
-// fails by name there (sweepAgainst).
+// true by a right, with what each of them changed; and judged, the key of the base's own files
+// (inputKey of the base against no file), then each judged input's key (inputKey) and kind, in the
+// order of the inputs: 'r' read, 'x' refused. An input that fails the comparison fails the test
+// and is counted nowhere. So the floors (atFloor), which count the inputs judged and hold the
+// digest of judged, fail by name where the sweep skips an input that it built, drops one that it
+// judged, writes an input's bytes otherwise, or reads a base of other bytes. known is how many
+// times the sweep reported its known positive (knownPositive), which no floor counts: a sweep whose
+// judgment no longer reports an input that moves a state toward true with no right, whether it
+// skips that judgment, counts such an input as read or computes it blind, fails by name there
+// (sweepAgainst).
 type sweepCount struct {
 	inputs, refused, same, moved, byRight, known int
 	rights                                       []string
-	kinds                                        []byte
+	judged                                       []byte
 }
 
-// counted counts the judged input in as of the kind kind, and is whether it counted it: it counts
-// no known positive, which the floors do not hold.
-func (n *sweepCount) counted(in sweepInput, kind byte) bool {
+// counted counts the judged input in, whose key is key, as of the kind kind, and is whether it
+// counted it: it counts no known positive, which the floors do not hold.
+func (n *sweepCount) counted(in sweepInput, key [sha256.Size]byte, kind byte) bool {
 	if in.known {
 		return false
 	}
-	n.kinds = append(n.kinds, kind)
+	n.judged = append(append(n.judged, key[:]...), kind)
 	return true
 }
 
@@ -230,6 +232,8 @@ func sweepAgainst(t *testing.T, name string, base fstest.MapFS, inputs []sweepIn
 	baseAsBuilt(t, name, base, built)
 	whole := baseStates(t, built)
 	n := sweepCount{inputs: len(inputs)}
+	baseKey := inputKey(fstest.MapFS{}, built)
+	n.judged = append(n.judged, baseKey[:]...)
 	if name == knownPositiveBase {
 		inputs = append(slices.Clone(inputs), knownPositive(t, built))
 	}
@@ -248,11 +252,11 @@ func sweepAgainst(t *testing.T, name string, base fstest.MapFS, inputs []sweepIn
 		got, err := sweepStates(in.fsys)
 		switch {
 		case err != nil:
-			if n.counted(in, 'x') {
+			if n.counted(in, key, 'x') {
 				n.refused++
 			}
 		case maps.Equal(got, whole):
-			if n.counted(in, 'r') {
+			if n.counted(in, key, 'r') {
 				n.same++
 			}
 		default:
@@ -267,11 +271,11 @@ func sweepAgainst(t *testing.T, name string, base fstest.MapFS, inputs []sweepIn
 			}
 			switch {
 			case len(toward) == 0:
-				if n.counted(in, 'r') {
+				if n.counted(in, key, 'r') {
 					n.moved++
 				}
 			case in.right != "":
-				if n.counted(in, 'r') {
+				if n.counted(in, key, 'r') {
 					n.moved++
 					n.byRight++
 					n.rights = append(n.rights, in.what)
@@ -310,7 +314,8 @@ func baseAsBuilt(t *testing.T, name string, base, built fstest.MapFS) {
 // same key. Inputs that differ in bytes and that the reader reads the same are, by design, the
 // sweep's forms of one meaning (a member left out, "" and " ", each read as nothing), so the key
 // does not compare readings; a change of those forms is a change of the sweep's own text, which no
-// writer can make, and the digest of the kinds of the inputs fails it (sweepFloors).
+// writer can make, and the floor's digest of each input's key and kind in their order fails it
+// (sweepCount.judged, sweepFloors). The key of a base against no file holds each of its files.
 func inputKey(base, fsys fstest.MapFS) [sha256.Size]byte {
 	h := sha256.New()
 	for _, name := range slices.Sorted(maps.Keys(fsys)) {
