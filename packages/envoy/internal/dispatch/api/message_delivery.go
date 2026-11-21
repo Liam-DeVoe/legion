@@ -775,7 +775,8 @@ var errAttemptNotPending = errors.New("delivery attempt is no longer pending")
 // holds that session - is queued by Dispatch itself on that session's own subject
 // (queueForUnknownSession) while this sender still holds the attempt, so every sender of a
 // targeted message queues it alike: the request, a keyed repeat, a broadcast's copy, a Retry and
-// the delivery sweep.
+// the delivery sweep. Each queues only for a session the attempt's writer may see, and never for
+// one its resolve answered hidden (mayQueueForUnknownSession).
 func (s *server) deliverMessageResuming(
 	ctx context.Context,
 	message model.Message,
@@ -839,8 +840,14 @@ func (s *server) deliverMessageResuming(
 	if err != nil {
 		return model.MessageDelivery{}, err
 	}
-	if held && s.mayQueueForUnknownSession(message, pending, connectedOnly, outcome.failure) {
-		outcome = s.queueForUnknownSession(ctx, message, pending, key, wanted, outcome.failure)
+	if held {
+		queue, err := s.mayQueueForUnknownSession(ctx, message, actor, pending, connectedOnly, outcome.failure)
+		if err != nil {
+			return model.MessageDelivery{}, err
+		}
+		if queue {
+			outcome = s.queueForUnknownSession(ctx, message, pending, key, wanted, outcome.failure)
+		}
 	}
 	return s.completeMessageDelivery(ctx, message, actor, pending, outcome)
 }
