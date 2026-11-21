@@ -199,9 +199,10 @@ test("no read version, or nothing changed since it, shows no line and marks noth
   expect(changedSinceRead(blocks, specBlockParts(references), 5)).toBeUndefined();
 });
 
-// N2 of test round 46 (at 8259e87d) on dispatch://INFRA-1523: the line names its sections from the
-// spec's `part_of` read, whose block texts are the ones the document's latest indexed version gave
-// them (`document_blocks`). A pending insert put the spec's first paragraph in, and its comment's
+// Census row V.32 of dispatch://INFRA-1523: the line of what changed since a read names no word a
+// deleted pending insert put in the spec. It names its sections from the spec's `part_of` read,
+// whose block texts are the ones the document's latest indexed version gave them
+// (`document_blocks`). A pending insert put the spec's first paragraph in, and its comment's
 // delete took it out of the document; the read the page holds from before the delete still gives
 // its words, with no mark to tell them by. The delete's correction drops that read whole
 // (`markCorrectedPost`), and the page, which draws the line from it, reads it again: Dispatch

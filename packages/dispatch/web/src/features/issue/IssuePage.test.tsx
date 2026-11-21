@@ -8,6 +8,7 @@ import type { ReactNode } from "react";
 import { Link, MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
+import { correction } from "../../__tests__/correction-feed";
 import { fakeDocumentRuntime, markedText } from "../../__tests__/document-runtime";
 import { onFakeClock, tick } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
@@ -20,6 +21,7 @@ import {
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
 import { AGENT_LIST_REFILLING, ApiError, api } from "../../api/client";
+import { markCorrectedPost } from "../../api/corrected-post";
 import type {
   Agent,
   ArtifactText,
@@ -2672,6 +2674,74 @@ test("IssuePage lists a deleted match as deleted and marks an edited one", async
     const standing = match(`/issues/CORE-1/comments/${thirdId}`);
     expect(standing.row.textContent).not.toContain("edited");
     expect(standing.row.querySelector("[data-post-deleted]")).toBeNull();
+  } finally {
+    view.unmount();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
+// Census row 7.13 of dispatch://INFRA-1523, and the architect's ruling of 2026-11-21 03:47Z: the
+// list of an id's matches is drawn from Dispatch's refusal, which the page holds as the read's
+// error, not its answer. A match deleted after the list was drawn, and another edited, are
+// corrected there as every other copy of a post is (`markCorrectedPost`): the deleted one draws
+// the deleted line and none of its first line, the edited one its mark, with no read of the
+// prefix since, and the list stays drawn.
+test("IssuePage marks a match deleted, and another edited, once their corrections reach the list it drew before them", async () => {
+  const restore = stubIssuePage(issue);
+  const getReferences = spyOn(api, "getReferences").mockRejectedValue(
+    new ApiError(409, {
+      candidates: [
+        {
+          first_line: "The first note",
+          id: WHOLE_ID,
+          issue_key: "CORE-1",
+          kind: "comment",
+          ref: `dispatch://CORE-1/comment/${WHOLE_ID}`,
+        },
+        {
+          first_line: "The other note",
+          id: OTHER_ID,
+          issue_key: "CORE-1",
+          kind: "comment",
+          ref: `dispatch://CORE-1/comment/${OTHER_ID}`,
+        },
+      ],
+      code: ID_AMBIGUOUS,
+      error: `the id prefix "${SHORT_ID}" names 2 items; write more of the id`,
+    })
+  );
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  const view = renderIssuePage(
+    `/issues/CORE-1/comments/${SHORT_ID}`,
+    undefined,
+    undefined,
+    queryClient
+  );
+  const row = (id: string) =>
+    view.container.querySelector(`a[href="/issues/CORE-1/comments/${id}"]`)?.closest("li");
+
+  try {
+    await screen.findByRole("link", { name: "The first note" });
+    const reads = getReferences.mock.calls.length;
+    act(() => {
+      markCorrectedPost(queryClient, correction("comment", WHOLE_ID, false));
+      markCorrectedPost(queryClient, correction("comment", OTHER_ID, true));
+    });
+    await waitFor(() => expect(row(WHOLE_ID)?.textContent).toContain("Deleted by alice"));
+    expect({
+      deletedWords: view.container.textContent?.includes("The first note"),
+      edited: row(OTHER_ID)?.textContent,
+      list: screen.queryByText("Several items match that link") !== null,
+      reads: getReferences.mock.calls.length,
+    }).toEqual({
+      deletedWords: false,
+      edited: "CommentCORE-1 · editedThe other note",
+      list: true,
+      reads,
+    });
   } finally {
     view.unmount();
     getReferences.mockRestore();

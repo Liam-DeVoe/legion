@@ -38,6 +38,10 @@ import type {
 export interface MarginComposer {
   anchor: ComposerAnchor;
   kind: ComposerKind;
+  /** When the compose the reader has open opened (`DocumentCompose.open`), which its composer
+   *  takes as the time it took its words however often it mounts; none for a held send's
+   *  composer, which takes its send's (`MountDraft.anchoredAt`). */
+  openedAt?: number;
   /** Where its sends go: the owner it was opened under. */
   owner: ComposerOwner;
   /** The compose it is, by the number it opened under (`DocumentCompose.seq`): the open compose,
@@ -159,6 +163,7 @@ export function MarginComposerSlot({
         mutationKey={sendKey}
         onClose={() => onClose(composer)}
         onSent={() => {}}
+        openedAt={composer.openedAt}
         owner={composer.owner}
         replyTo={null}
         stoppedAside={stoppedAside}

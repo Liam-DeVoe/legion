@@ -1,3 +1,4 @@
+import { ID_AMBIGUOUS } from "@legion/contracts";
 import {
   type InfiniteData,
   type Mutation,
@@ -11,6 +12,7 @@ import { type PostDeletion, postDeletion } from "../features/refs/post-marks";
 import { parseNodeReference } from "../features/refs/routes";
 import { compareTimestamps, isTimestamp } from "../lib/timestamps";
 
+import { ApiError } from "./client";
 import { correctedPostAddresses, rowsOf } from "./event-refresh";
 import type { ReferenceTargetsAnswer } from "./queries";
 import { replaceQueryData } from "./query-client";
@@ -28,6 +30,7 @@ import type {
   DisplayTree,
   GraphEdge,
   GraphReferences,
+  IDCandidate,
   IssueCheckResults,
   IssueCoverage,
   IssueDecisions,
@@ -76,8 +79,9 @@ interface CorrectedPost {
   readonly blockNodes: string;
   /** For the delete of a comment that emptied its anchor quote (`quoteCleared`) - a pending
    *  insert suggestion's, whose words its delete took out of the document - the document they
-   *  lay in; undefined for every other correction. */
-  readonly insertDocument: InsertDocument | undefined;
+   *  lay in, with whether an address names it or a block of it as the page's cache tells that as
+   *  the delete arrives (`documentAddresses`); undefined for every other correction. */
+  readonly insertDocument: DroppedDocument | undefined;
   readonly mark: PostMark;
   /** Whether an address a names read holds names the post or a block of it
    *  (`correctedPostAddresses`); undefined for an event whose id is no post's. */
@@ -92,6 +96,24 @@ interface CorrectedPost {
  *  where it holds none. */
 type FamilyWrite = (answer: unknown, post: CorrectedPost, queryKey: QueryKey) => unknown;
 
+/** What a correction makes of a refusal a family's read holds as its error, which lists items to
+ *  choose between, a post among them: the refusal with each item the correction changes - the
+ *  post, or a quote of words its delete took out of a document - corrected; undefined where it
+ *  lists none, or each such item already reads as the correction leaves it. */
+type RefusalWrite = (refusal: ApiError, post: CorrectedPost) => ApiError | undefined;
+
+/** A family whose read Dispatch can refuse with a list of items to choose between, posts among
+ *  them: what a correction writes into its answer (`answer`), and what it writes into such a
+ *  refusal, which the query holds as its error rather than as an answer (`refusal`). */
+interface RefusedFamilyWrite {
+  readonly answer: FamilyWrite;
+  readonly refusal: RefusalWrite;
+}
+
+/** A family `CORRECTED_POST_FAMILIES` writes: by its answer's writer alone, or by that and the
+ *  writer of a refusal its read can hold (`RefusedFamilyWrite`). */
+type CorrectedFamily = FamilyWrite | RefusedFamilyWrite;
+
 /** The writer of an ask's thread, by its own read (`["ask", id]`) or the Inbox's
  *  (`askThreadQuery`): its thread's replies. */
 const askThreadWrite = ofKind("comment", (answer, post) =>
@@ -100,14 +122,14 @@ const askThreadWrite = ofKind("comment", (answer, post) =>
 
 /**
  * Every query family whose answer holds a comment or an issue message, or a copy of one's body or
- * marks, with what a correction writes into it (`markCorrectedPost`). A family is named as census
- * query C-Q1 names it (class C of dispatch://INFRA-1523's surface census): the key's first
- * element, and its second where the key writes one as a string, joined by a space
- * (`["references", "to", …]` is `references to`). Every family the web app's source keys a query
- * under is here or in `NO_POST_FAMILIES`, and nothing else is in either
- * (`corrected-post-families.test.ts`).
+ * marks, with what a correction writes into it (`markCorrectedPost`), and into a refusal of its
+ * read that lists a post (`RefusedFamilyWrite`). A family is named as census query C-Q1 names it
+ * (class C of dispatch://INFRA-1523's surface census): the key's first element, and its second
+ * where the key writes one as a string, joined by a space (`["references", "to", …]` is
+ * `references to`). Every family the web app's source keys a query under is here or in
+ * `NO_POST_FAMILIES`, and nothing else is in either (`corrected-post-families.test.ts`).
  */
-export const CORRECTED_POST_FAMILIES: Readonly<Record<string, FamilyWrite>> = {
+export const CORRECTED_POST_FAMILIES: Readonly<Record<string, CorrectedFamily>> = {
   /** An ask's read (`["ask", id]`): its thread's replies. */
   ask: askThreadWrite,
   /** An Inbox thread's ask (`askThreadQuery`): its thread's replies. */
@@ -192,8 +214,16 @@ export const CORRECTED_POST_FAMILIES: Readonly<Record<string, FamilyWrite>> = {
   /** A graph read (`referencesQuery`, `["references", "to", …]`): its node where that is the post
    *  or a block of it, and each edge whose other end is, as the Referenced by panel lists them. A
    *  pending insert's delete drops a read that gives its document's text
-   *  (`UNMARKED_TEXT_FAMILIES`). */
-  "references to": (answer, post) => markedGraphRead(answer as GraphReferences, post),
+   *  (`UNMARKED_TEXT_FAMILIES`). It is the read every surface resolves an id written short
+   *  through (`useWholeRouteRead`), which Dispatch refuses where the id names several items
+   *  (`ID_AMBIGUOUS`), listing each with its first line for the match list (`ItemMatchList`):
+   *  each item of that list that is the post, as a read of the prefix lists it after the
+   *  correction, and, for a pending insert's delete, each block of its document with no first
+   *  line (`markedRefusal`). */
+  "references to": {
+    answer: (answer, post) => markedGraphRead(answer as GraphReferences, post),
+    refusal: markedRefusal,
+  },
   /** The search palette's answers (`["search", …]`): each hit of the post. A pending insert's
    *  delete drops an answer with a hit of its document (`UNMARKED_TEXT_FAMILIES`). */
   search: (answer, post) => markedSearch(answer as SearchResponse, post),
@@ -262,8 +292,9 @@ export const NO_POST_FAMILIES: Readonly<Record<string, string>> = {
   whoami: "the signed-in principal",
 };
 
-/** `InsertDocument` as a family's drop reads it: the document's id, and whether an address names
- *  the document or a block of it (`documentAddresses`). */
+/** The document a pending insert's delete took words out of, as a correction reads it
+ *  (`InsertDocument`): its id, and whether an address names the document or a block of it
+ *  (`documentAddresses`). */
 interface DroppedDocument {
   readonly id: string;
   readonly names: (address: string) => boolean;
@@ -402,6 +433,12 @@ export const UNMARKED_TEXT_FAMILIES: Readonly<Record<string, FamilyDrop>> = {
  *   its edges whose other end is: the node with no text, no tree and no pinned text, and an edge
  *   with no excerpt. The server answers a read of a deleted post's block 404, which no cached
  *   answer holds, and the node's mark is what a reference to the block reads the deletion from;
+ * - each item a refusal of a graph read lists that is the post: Dispatch refuses the read of an id
+ *   written short where the id names several items (`ID_AMBIGUOUS`), listing each with its first
+ *   line for the reader to choose from, and the query holds that refusal as its error
+ *   (`RefusedFamilyWrite`). The item loses its `first_line` beside the delete's mark, as the
+ *   prefix layer lists a deleted post (`refs.Candidate` in `refs/prefix.go`), and the refusal
+ *   stays a refusal, so the list stays drawn (`correctRefusal`);
  * - each member of a names read naming the post or a block of it (`["reference-targets", …]`,
  *   by `correctedPostAddresses`): the post's named `""`, a block's gone, with no tree;
  * - the name of the document version a comment's accepted suggestion had named after the
@@ -418,7 +455,11 @@ export const UNMARKED_TEXT_FAMILIES: Readonly<Record<string, FamilyDrop>> = {
  * words from the document's own, so none of the delete's facts can be written into them. The
  * delete of a comment that emptied its anchor quote (`quoteCleared`) drops every such read of the
  * document its anchor names, with every read still out that could answer such text, and has each
- * surface that draws one read it again (`dropUnmarkedText`).
+ * surface that draws one read it again (`dropUnmarkedText`). A refusal of a graph read quotes a
+ * block's text where it lists a block of the document (its `first_line`): the delete takes that
+ * line off each such block, which stays listed, and the refusal is read again, for Dispatch to
+ * give the block's text as the delete left it (`correctRefusal`); the refusal is not dropped, so
+ * the list stays drawn.
  *
  * An edit writes its time (`edited_at`) on each of those copies that carries one, unless the copy
  * carries a later edit's already (`editedAfter`), and nothing else: an edit event's body can be
@@ -438,6 +479,14 @@ export const UNMARKED_TEXT_FAMILIES: Readonly<Record<string, FamilyDrop>> = {
  * any of them is out (`keepCorrection`), and the answer each of them lands is written with the
  * correction's facts.
  *
+ * A refusal is no answer, so it is written in place of the one the query holds rather than by
+ * `replaceQueryData`. A read out of a query that holds no answer has emptied the query's error
+ * (TanStack's `fetchState`), so where such a read follows a failure, which may have been a
+ * refusal, the read is given up to put that refusal back, the refusal is written, and the query is
+ * read again with the written refusal held beside that read (`correctRefusal`), as one a pending
+ * insert's delete wrote is. The refusal a read out of any other query of the family lands is
+ * written with the correction's facts, as an answer such a read lands is (`keepCorrection`).
+ *
  * An optimistic write out when the event arrives read what its rollback puts back before the
  * correction too: a margin action on a comment (`useMarginItems`) puts back the comments it read
  * as it began where Dispatch refuses it, and Dispatch refuses one on a comment deleted meanwhile
@@ -456,13 +505,15 @@ export const UNMARKED_TEXT_FAMILIES: Readonly<Record<string, FamilyDrop>> = {
  * nothing.
  */
 export function markCorrectedPost(queryClient: QueryClient, event: DispatchEvent): void {
-  const post = correctedPost(event);
+  const post = correctedPost(queryClient, event);
   if (post === undefined) {
     return;
   }
   // The reads of a written family out at the event whose answer this writes nothing. A query it
   // writes is read again by the write, after the correction, and is not one of them.
   const unwritten = new Set<string>();
+  // The queries a refusal's correction read again, with no read from before it left out.
+  const askedAgain = new Set<Query>();
   for (const query of queryClient.getQueryCache().getAll()) {
     const write = familyWrite(query.queryKey);
     if (write === undefined) {
@@ -471,6 +522,11 @@ export function markCorrectedPost(queryClient: QueryClient, event: DispatchEvent
     const marked = corrected(query, write, [post]);
     if (marked !== undefined) {
       replaceQueryData(queryClient, query.queryKey, marked);
+      continue;
+    }
+    const refusal = refusalWrite(query.queryKey);
+    if (refusal !== undefined && correctRefusal(queryClient, query, refusal, post)) {
+      askedAgain.add(query);
     } else if (query.state.fetchStatus === "fetching") {
       unwritten.add(query.queryHash);
     }
@@ -486,7 +542,7 @@ export function markCorrectedPost(queryClient: QueryClient, event: DispatchEvent
   );
   keepCorrection(queryClient, { out: unwritten, post, rollbacks });
   if (post.insertDocument !== undefined) {
-    dropUnmarkedText(queryClient, post.insertDocument);
+    dropUnmarkedText(queryClient, post.insertDocument, askedAgain);
   }
 }
 
@@ -504,16 +560,31 @@ function queryFamily(queryKey: QueryKey): string | undefined {
     : first;
 }
 
-/** The writer of the family `queryKey` is of, or undefined for a family that holds no post. */
-function familyWrite(queryKey: QueryKey): FamilyWrite | undefined {
+/** What `CORRECTED_POST_FAMILIES` names for the family `queryKey` is of, or undefined for a family
+ *  that holds no post. */
+function correctedFamily(queryKey: QueryKey): CorrectedFamily | undefined {
   const family = queryFamily(queryKey);
   return family !== undefined && Object.hasOwn(CORRECTED_POST_FAMILIES, family)
     ? CORRECTED_POST_FAMILIES[family]
     : undefined;
 }
 
+/** The writer of the answers of the family `queryKey` is of, or undefined for a family that holds
+ *  no post. */
+function familyWrite(queryKey: QueryKey): FamilyWrite | undefined {
+  const family = correctedFamily(queryKey);
+  return typeof family === "object" ? family.answer : family;
+}
+
+/** The writer of a refusal a read of the family `queryKey` is of can hold, or undefined for a
+ *  family whose reads Dispatch refuses with no list of posts (`RefusedFamilyWrite`). */
+function refusalWrite(queryKey: QueryKey): RefusalWrite | undefined {
+  const family = correctedFamily(queryKey);
+  return typeof family === "object" ? family.refusal : undefined;
+}
+
 /**
- * Drops from the cache every read that gives `insert`'s text with no mark on it
+ * Drops from the cache every read that gives `document`'s text with no mark on it
  * (`UNMARKED_TEXT_FAMILIES`), and has each surface that draws one read it again.
  *
  * TanStack keeps no answer of a query it removes, where an invalidation keeps the old answer
@@ -524,21 +595,27 @@ function familyWrite(queryKey: QueryKey): FamilyWrite | undefined {
  * page, and Dispatch may have composed its answer before the delete committed. The read asked
  * again in its place is answered after that commit, and the delete settles the document in its
  * own transaction, so that answer holds none of the words. A read given up that would have
- * answered nothing of the document costs one read more.
+ * answered nothing of the document costs one read more. A read a refusal's correction asked
+ * (`askedAgain`, `correctRefusal`), which left no read from before the delete out, is asked after
+ * the delete, and is not given up: the refusal held beside it stays drawn, and the read answers
+ * the document as the delete left it.
  *
  * Each surface drawing a dropped query takes its key up again as its next render would
  * (`setOptions`, with its own options): that builds the query anew with no answer, draws that,
  * and asks Dispatch where the surface's read is enabled, which answers it as the delete left the
  * document. While that read fails, the surface draws its own error state, and never the words.
  */
-function dropUnmarkedText(queryClient: QueryClient, insert: InsertDocument): void {
-  const document: DroppedDocument = {
-    id: insert.id,
-    names: documentAddresses(queryClient, insert),
-  };
+function dropUnmarkedText(
+  queryClient: QueryClient,
+  document: DroppedDocument,
+  askedAgain: ReadonlySet<Query>
+): void {
   const dropped = new Set(
     queryClient.getQueryCache().findAll({
       predicate: (query) => {
+        if (askedAgain.has(query)) {
+          return false;
+        }
         const family = queryFamily(query.queryKey);
         if (family === undefined || !Object.hasOwn(UNMARKED_TEXT_FAMILIES, family)) {
           return false;
@@ -622,6 +699,75 @@ function corrected(query: Query, write: FamilyWrite, posts: readonly CorrectedPo
 }
 
 /**
+ * Writes `post`'s correction, by `write`, into the refusal `query` holds as its error where it
+ * lists the post or quotes its words (`markCorrectedPost`), and answers whether it read the query
+ * again, leaving no read of it from before the correction out: a correction need be kept for no
+ * read of it then.
+ *
+ * The refusal written takes the place of the one the query holds (`setState`), and stays a
+ * refusal, so each surface drawing it keeps drawing the list the reader chooses from. TanStack
+ * empties a query's error as a read of it that holds no answer starts (`fetchState` in
+ * `@tanstack/query-core`'s `query.ts`), and puts back the state from before that read where the
+ * read is given up, as `replaceQueryData` relies on. So a read out with no answer, after an earlier
+ * read of the query failed, is given up first: the refusal that failure may have been is in the
+ * cache again, and is written. A pending insert's delete takes words out of its document's text,
+ * which a refusal quotes where it lists a block of the document: a refusal it writes is read again
+ * too, for Dispatch to answer each block with its text as the delete left it, and a read of it out
+ * beside an answer is given up first. The query read again is asked after the correction, and the
+ * written refusal is held beside that read, so the cache holds it while the read is out, where a
+ * surface that draws a refusal while its read runs again reads it (the issue page's outline,
+ * `useAddressFallback`).
+ */
+function correctRefusal(
+  queryClient: QueryClient,
+  query: Query,
+  write: RefusalWrite,
+  post: CorrectedPost
+): boolean {
+  const { queryKey } = query;
+  const { data, errorUpdateCount, fetchStatus } = query.state;
+  const emptied = fetchStatus === "fetching" && data === undefined && errorUpdateCount > 0;
+  if (emptied) {
+    void queryClient.cancelQueries({ exact: true, queryKey });
+  }
+  const refusal = correctedRefusal(query.state.error, write, [post]);
+  const askAgain = emptied || (refusal !== undefined && post.insertDocument !== undefined);
+  // A read given up above leaves none out; this gives up one out beside an answer.
+  if (askAgain && query.state.fetchStatus === "fetching") {
+    void queryClient.cancelQueries({ exact: true, queryKey });
+  }
+  if (refusal !== undefined) {
+    query.setState({ error: refusal });
+  }
+  if (!askAgain) {
+    return false;
+  }
+  void queryClient.invalidateQueries({ exact: true, queryKey, refetchType: "active" });
+  if (refusal !== undefined && query.state.fetchStatus !== "idle") {
+    query.setState({ error: refusal });
+  }
+  return true;
+}
+
+/** `error` with each of `posts`' corrections written in, in order, by `write`, where it is a
+ *  refusal that lists items to choose between (`ID_AMBIGUOUS`); undefined for every other error,
+ *  and where the corrections leave it reading as it does. */
+function correctedRefusal(
+  error: unknown,
+  write: RefusalWrite,
+  posts: readonly CorrectedPost[]
+): ApiError | undefined {
+  if (!(error instanceof ApiError) || error.code !== ID_AMBIGUOUS) {
+    return undefined;
+  }
+  let refusal = error;
+  for (const post of posts) {
+    refusal = write(refusal, post) ?? refusal;
+  }
+  return refusal === error ? undefined : refusal;
+}
+
+/**
  * The most corrections a page keeps at once (`keepCorrection`). Each is kept only while a read
  * that was out at its arrival, of a query whose answer it wrote nothing, is still out, or an
  * optimistic write that was out at its arrival is still pending, so a page holds many only under
@@ -649,10 +795,11 @@ const keptCorrections = new WeakMap<QueryClient, KeptCorrection[]>();
  * each of them puts in the cache, which was composed before the correction:
  * - `correction.out` holds the reads whose query the correction wrote nothing into
  *   (`markCorrectedPost`). The answer such a read lands is written with the correction's facts,
- *   and no other answer of a read is: a read of a query the correction wrote is given up by that
- *   write (`replaceQueryData`), which leaves no answer of it composed before the correction to
- *   land, and a read that begins after the event is answered as the server reads the corrected
- *   post.
+ *   and so is the refusal it lands where its family's read can be refused with a list of posts
+ *   (`RefusedFamilyWrite`). No other answer of a read is: a read of a query the correction wrote
+ *   is given up by that write (`replaceQueryData`), which leaves no answer of it composed before
+ *   the correction to land, and a read that begins after the event is answered as the server
+ *   reads the corrected post.
  * - `correction.rollbacks` holds the optimistic writes out at the event: mutations still pending
  *   that hold what their `onMutate` answered, read before the correction, which TanStack hands
  *   their `onError` to put back. `onError` runs before the mutation leaves `pending` (`execute`
@@ -685,8 +832,8 @@ function keepCorrection(queryClient: QueryClient, correction: KeptCorrection): v
 }
 
 /** The corrections kept for `queryClient`, with the cache subscriptions that write each into the
- *  answer a read it was kept for lands and into each write by hand made while a write it was kept
- *  for is pending, and let each go once nothing it was kept for is out. */
+ *  answer or the refusal a read it was kept for lands and into each write by hand made while a
+ *  write it was kept for is pending, and let each go once nothing it was kept for is out. */
 function keptCorrectionsOf(queryClient: QueryClient): KeptCorrection[] {
   const existing = keptCorrections.get(queryClient);
   if (existing !== undefined) {
@@ -738,6 +885,21 @@ function keptCorrectionsOf(queryClient: QueryClient): KeptCorrection[] {
         }
       }
     }
+    if (change.type === "updated" && change.action.type === "error") {
+      // A refusal is no answer, so it is put in place of the one landed (`setState`), which the
+      // cache tells as no `error` of its own.
+      const write = refusalWrite(query.queryKey);
+      const posts = kept
+        .filter((correction) => correction.out.has(query.queryHash))
+        .map((correction) => correction.post);
+      const refusal =
+        write === undefined || posts.length === 0
+          ? undefined
+          : correctedRefusal(query.state.error, write, posts);
+      if (refusal !== undefined) {
+        query.setState({ error: refusal });
+      }
+    }
     if (change.type === "removed" || query.state.fetchStatus !== "fetching") {
       let shrank = false;
       for (const correction of kept) {
@@ -772,9 +934,10 @@ function keptCorrectionsOf(queryClient: QueryClient): KeptCorrection[] {
   return kept;
 }
 
-/** The post `event` corrects and what the correction writes; undefined for every other event, and
- *  for an edit or a delete whose event carries no time to write. */
-function correctedPost(event: DispatchEvent): CorrectedPost | undefined {
+/** The post `event` corrects and what the correction writes, as `queryClient`'s cache tells which
+ *  addresses name the document a pending insert's delete took words out of; undefined for every
+ *  other event, and for an edit or a delete whose event carries no time to write. */
+function correctedPost(queryClient: QueryClient, event: DispatchEvent): CorrectedPost | undefined {
   let kind: CorrectedPost["kind"];
   let mark: PostMark;
   let insertDocument: CorrectedPost["insertDocument"];
@@ -796,12 +959,13 @@ function correctedPost(event: DispatchEvent): CorrectedPost | undefined {
         anchor !== undefined &&
         anchor !== null
       ) {
-        insertDocument = {
+        const insert: InsertDocument = {
           id: anchor.artifact_id,
           issue: event.issue_key,
           project: event.payload.project_key || event.project,
           slug: event.payload.artifact_slug,
         };
+        insertDocument = { id: insert.id, names: documentAddresses(queryClient, insert) };
       }
       break;
     }
@@ -1242,6 +1406,53 @@ function markedHit(hit: SearchResult, mark: PostMark): SearchResult {
   }
   const { deleted_by: _by, snippet_tree: _tree, ...kept } = hit;
   return { ...kept, ...deletionMarks(mark.deletion), snippet: "" };
+}
+
+/** A refusal listing the items an id written short names (`ID_AMBIGUOUS`) once `post` is
+ *  corrected (`markedItem`), in a refusal of its own with the refusal's status, code and words;
+ *  undefined where it lists no item the correction changes. */
+function markedRefusal(refusal: ApiError, post: CorrectedPost): ApiError | undefined {
+  // The refusal's code says its items are those an id prefix names (`ErrorCandidate`).
+  const items = refusal.candidates as readonly IDCandidate[] | undefined;
+  const candidates = markEach(items, (item) => {
+    const marked = markedItem(item, post);
+    return marked === undefined || replaceEqualDeep(item, marked) === item ? undefined : marked;
+  });
+  return candidates === undefined
+    ? undefined
+    : new ApiError(
+        refusal.status,
+        { candidates, code: refusal.code, error: refusal.message, state: refusal.state },
+        refusal.retryAfterMs
+      );
+}
+
+/** An item a refusal lists once `post` is corrected: the post itself marked (`markedCandidate`);
+ *  or, for a pending insert's delete, a block of the document whose words it took out
+ *  (`insertDocument`), which stays listed with no first line, since the line the refusal quotes of
+ *  its text can hold them, and the block's text as the delete left it is Dispatch's to give;
+ *  undefined for every other item. */
+function markedItem(item: IDCandidate, post: CorrectedPost): IDCandidate | undefined {
+  if (item.kind === post.kind && item.id === post.id) {
+    return markedCandidate(item, post.mark);
+  }
+  if (item.kind !== "block" || post.insertDocument?.names(item.ref) !== true) {
+    return undefined;
+  }
+  const { first_line: _words, ...kept } = item;
+  return kept;
+}
+
+/** An item a refusal lists that is the post, once `mark` is written: the edit's time, or the
+ *  delete's mark with no first line, as the prefix layer lists a deleted post, whose cleared body
+ *  leaves none (`refs.Candidate` in `refs/prefix.go`), keeping the time of an edit before the
+ *  delete as it does. */
+function markedCandidate(item: IDCandidate, mark: PostMark): IDCandidate {
+  if (mark.kind === "edited") {
+    return { ...item, edited_at: editedAfter(item.edited_at, mark.at) };
+  }
+  const { deleted_by: _by, first_line: _words, ...kept } = item;
+  return { ...kept, ...deletionMarks(mark.deletion) };
 }
 
 /** A graph read (`referencesQuery`) once `post` is corrected: its node, where that is the post or
