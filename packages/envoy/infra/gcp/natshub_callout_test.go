@@ -3,7 +3,6 @@ package gcp_test
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"slices"
 	"strings"
 	"testing"
 
@@ -357,44 +356,6 @@ func TestAHubListenersIdentityFollowsTheCallout(t *testing.T) {
 				require.ErrorContains(t, err, r.want)
 				require.Empty(t, m.Registrations(), "nothing registered")
 			})
-		}
-	})
-}
-
-// A hub whose deployment may make a Dispatch project private tells its own listener so: with
-// privateProjects the listener's environment carries ENVOY_PRIVATE_PROJECTS=1, which a listener
-// that holds each session to its token's projects reads to decide a project frame carrying no
-// stamp as private, and without it the
-// environment holds no such line. privateProjects needs authCallout, so the listener is the one
-// that connects by its service identity. Both hubs, each read from the environment it renders.
-func TestAPrivateProjectsHubTellsItsListener(t *testing.T) {
-	const line = "ENVOY_PRIVATE_PROJECTS=1"
-	t.Run("gcp:NatsHub", func(t *testing.T) {
-		for _, private := range []bool{true, false} {
-			args := privateNatsHub()
-			args.PrivateProjects = private
-			args.Listener = calloutListener()
-			doc, _, err := gcp.CloudConfigOf(args)
-			require.NoError(t, err)
-			unit := fileOf(t, doc, "/etc/systemd/system/envoy-listener.service")
-			require.Equal(t, private, strings.Contains(unit, " -e "+line+" "), "privateProjects %v: the listener's unit\n%s", private, unit)
-			require.Equal(t, private, strings.Contains(unit, "ENVOY_PRIVATE_PROJECTS"), "privateProjects %v", private)
-		}
-	})
-	t.Run("gcp:ClusteredNatsHub", func(t *testing.T) {
-		for _, private := range []bool{true, false} {
-			args := calloutClusteredHubWithTailnet()
-			args.Users, args.SessionUser = []gcp.NATSUserArgs{authServiceUser()}, nil
-			args.PrivateProjects = private
-			s, err := gcp.ResolveClusteredNatsHub(args)
-			require.NoError(t, err)
-			require.Equal(t, private, slices.Contains(s.Listener.Env, line), "privateProjects %v: %v", private, s.Listener.Env)
-			env := containerEnv(t, podContainer(t, deploymentPodTemplate(t, runClusteredHub(t, args), clusteredListenerName), "listener"))
-			value, set := env["ENVOY_PRIVATE_PROJECTS"]
-			require.Equal(t, private, set, "privateProjects %v: the pod's env %v", private, env)
-			if private {
-				require.Equal(t, "1", value)
-			}
 		}
 	})
 }

@@ -138,10 +138,11 @@ type NatsHubArgs struct {
 	// of the hub's users; see docs/nats-hub.md, "The auth service". Unset, the hub renders exactly
 	// what it rendered before callouts existed.
 	AuthCallout *nats.AuthCalloutArgs `pulumi:"authCallout,optional"`
-	// The deployment may make a Dispatch project private (R12 of dispatch://INFRA-3862): it needs
-	// authCallout and no user but authCallout.serviceUser, so no session user, and a listener
-	// connects by its service identity; the listener's environment then carries
-	// ENVOY_PRIVATE_PROJECTS=1.
+	// The deployment may make a Dispatch project private (the private-projects work's R12): it needs
+	// authCallout and no user but authCallout.serviceUser, so no session user. The VM hub is never
+	// a private project's hub, so it is refused beside the hub's own listener
+	// (privateProjectsBesideListener): a private hub's listener reads each decision's privacy from
+	// the secrets broker, which is gcp:ClusteredNatsHub's listener's form.
 	PrivateProjects bool `pulumi:"privateProjects,optional"`
 }
 
@@ -322,6 +323,9 @@ func newSettings(args *NatsHubArgs) (settings, error) {
 	if args.Subnetwork != nil && args.Network == nil {
 		return settings{}, errors.New("subnetwork is set without network; the firewall needs the network the subnetwork belongs to")
 	}
+	if args.PrivateProjects && args.Listener != nil {
+		return settings{}, privateProjectsBesideListener()
+	}
 	var hubListener *listenerUser
 	if l := args.Listener; l != nil {
 		service := args.AuthCallout != nil
@@ -375,8 +379,8 @@ func newSettings(args *NatsHubArgs) (settings, error) {
 // Its NATS identity was checked against authCallout before the authorization was rendered
 // (listenerIdentity): without authCallout, the seed in listener.seedSecret, which the VM fetches
 // before each start; with it, the VM's Google identity token for listener.natsAudience
-// (NATS_SERVICE_GOOGLE_AUDIENCE), and no seed secret at all. ENVOY_PRIVATE_PROJECTS=1 is in its
-// environment exactly when privateProjects is.
+// (NATS_SERVICE_GOOGLE_AUDIENCE), and no seed secret at all. A hub with privateProjects has no
+// listener here: newSettings refuses the two together (privateProjectsBesideListener).
 func resolveListener(args *NatsHubArgs) (*listener, error) {
 	l := args.Listener
 	if l == nil {
@@ -401,7 +405,7 @@ func resolveListener(args *NatsHubArgs) (*listener, error) {
 	if err := core.CheckAllowedHosts("listener.allowedHosts", l.AllowedHosts); err != nil {
 		return nil, err
 	}
-	if err := core.CheckBroker("listener.", l.AgentSecretsUrl, l.AgentSecretsAudience, l.PublicUrl); err != nil {
+	if err := core.CheckBroker("listener.", l.AgentSecretsUrl, l.AgentSecretsAudience, "", l.PublicUrl); err != nil {
 		return nil, err
 	}
 	rate, burst, err := core.CheckSenderLimit("listener.", l.SenderMessagesPerMinute, l.SenderMessageBurst)
@@ -418,7 +422,6 @@ func resolveListener(args *NatsHubArgs) (*listener, error) {
 		AgentSecretsURL:         l.AgentSecretsUrl,
 		AgentSecretsAudience:    l.AgentSecretsAudience,
 		PublicURL:               l.PublicUrl,
-		PrivateProjects:         args.PrivateProjects,
 	}
 	if service {
 		config.ServiceGoogleAudience = l.NatsAudience
@@ -505,6 +508,15 @@ func calloutSeedFields(callout *nats.AuthCalloutArgs) []struct{ path, value stri
 	return []struct{ path, value string }{
 		{"authCallout.issuer", callout.Issuer}, {"authCallout.xkey", callout.XKey}, {"authCallout.serviceUser", callout.ServiceUser},
 	}
+}
+
+// privateProjectsBesideListener refuses gcp:NatsHub's privateProjects beside the hub's own
+// listener, naming privateProjects. The VM hub is never a private project's hub: a listener of a
+// hub that may make a project private reads each decision's privacy from the secrets broker with
+// the projected token of its own account (core.CheckPrivacySource), which a VM's listener has no
+// form of, so a VM hub that may hold a private project runs no listener of its own.
+func privateProjectsBesideListener() error {
+	return core.InputErrorf("privateProjects", "privateProjects and listener: the VM hub is never private, and a listener of a hub that may make a project private reads each decision's privacy from the secrets broker as the projected token of its own account, which gcp:ClusteredNatsHub's session listener does; drop listener, or privateProjects")
 }
 
 // listenerIdentity refuses a hub's own listener's NATS identity where it does not fit the hub,

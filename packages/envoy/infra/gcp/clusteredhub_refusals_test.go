@@ -354,6 +354,15 @@ func clusteredSeedRows() []clusteredSeedRow {
 		{"tailnet.listener.oidcAccounts", "tailnet.listener.oidcAccounts[0]", func(a *A, s string) {
 			listener(a).OidcAccounts = []string{"system:serviceaccount:legion:" + strings.ToLower(s)}
 		}},
+		{"tailnet.listener.agentSecretsUrl", "tailnet.listener.agentSecretsUrl", func(a *A, s string) { listener(a).AgentSecretsUrl = "https://" + strings.ToLower(s) + ".example.com" }},
+		{"tailnet.listener.publicUrl", "tailnet.listener.publicUrl", func(a *A, s string) { listener(a).PublicUrl = "http://" + strings.ToLower(s) + ".example.com:9020" }},
+		{"tailnet.listener.brokerAudience", "tailnet.listener.brokerAudience", func(a *A, s string) { listener(a).BrokerAudience = splitSeed(s, "-") }},
+		{"tailnet.listener.privacySourceUrl", "tailnet.listener.privacySourceUrl", func(a *A, s string) {
+			listener(a).PrivacySourceUrl = "https://" + strings.ToLower(s) + ".example.com/v1/project-privacy"
+		}},
+		{"tailnet.listener.allProjectsAccounts", "tailnet.listener.allProjectsAccounts[0]", func(a *A, s string) {
+			listener(a).AllProjectsAccounts = []string{"system:serviceaccount:dispatch:" + strings.ToLower(s)}
+		}},
 		{"listener.image", "listener.image", func(a *A, s string) { ownListener(a).Image = "example.invalid/" + s + digest }},
 		{"listener.machineId", "listener.machineId", func(a *A, s string) { ownListener(a).MachineID = str(s) }},
 		{"listener.seedSecretName", "listener.seedSecretName", func(a *A, s string) { ownListener(a).SeedSecretName = strings.ToLower(s) }},
@@ -371,6 +380,17 @@ func clusteredSeedRows() []clusteredSeedRow {
 		{"listener.oidcAudience", "listener.oidcAudience", func(a *A, s string) { ownListener(a).OidcAudience = s }},
 		{"listener.oidcAccounts", "listener.oidcAccounts[0]", func(a *A, s string) {
 			ownListener(a).OidcAccounts = []string{"system:serviceaccount:legion:" + strings.ToLower(s)}
+		}},
+		{"listener.agentSecretsUrl", "listener.agentSecretsUrl", func(a *A, s string) {
+			ownListener(a).AgentSecretsUrl = "https://" + strings.ToLower(s) + ".example.com"
+		}},
+		{"listener.publicUrl", "listener.publicUrl", func(a *A, s string) { ownListener(a).PublicUrl = "http://" + strings.ToLower(s) + ".example.com:9020" }},
+		{"listener.brokerAudience", "listener.brokerAudience", func(a *A, s string) { ownListener(a).BrokerAudience = splitSeed(s, "-") }},
+		{"listener.privacySourceUrl", "listener.privacySourceUrl", func(a *A, s string) {
+			ownListener(a).PrivacySourceUrl = "https://" + strings.ToLower(s) + ".example.com/v1/project-privacy"
+		}},
+		{"listener.allProjectsAccounts", "listener.allProjectsAccounts[0]", func(a *A, s string) {
+			ownListener(a).AllProjectsAccounts = []string{"system:serviceaccount:dispatch:" + strings.ToLower(s)}
 		}},
 		{"authCallout.issuer", "authCallout.issuer", func(a *A, s string) { a.AuthCallout = authCallout(); a.AuthCallout.Issuer = s }},
 		{"authCallout.xkey", "authCallout.xkey", func(a *A, s string) { a.AuthCallout = authCallout(); a.AuthCallout.XKey = strings.ToLower(s) }},

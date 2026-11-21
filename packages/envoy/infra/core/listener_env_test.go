@@ -280,30 +280,157 @@ func TestListenerEnvServiceIdentity(t *testing.T) {
 	}
 }
 
-// PrivateProjects renders ENVOY_PRIVATE_PROJECTS=1, last, which a listener that holds each session
-// to its token's projects reads to decide a project frame that carries no stamp as private
-// (PlanC's rule 3), and
-// false renders no such line: every config written before the field existed renders what it always
-// rendered (R9), so the goldens every component that renders a listener pins (gcp/testdata,
-// aws/testdata, host's) hold no such line. Negative control, run by hand: render the line whatever
-// the field says; this test's false row and those goldens then fail, naming the line.
-func TestListenerEnvPrivateProjects(t *testing.T) {
-	urls := []string{"nats://hub.internal.example:4222"}
-	config := core.ListenerConfig{
-		MachineID: "m", Port: 9020, ListenHost: "0.0.0.0", AllowedHosts: []string{"hub.internal.example"},
-		NATSReplicas: 3, StreamMaxBytes: 1073741824,
-		AgentSecretsURL: "https://example-broker.internal.example", AgentSecretsAudience: "example-broker-audience",
-		PublicURL:        "http://example-hub.example-tailnet.ts.net:9020",
+// privateListenerConfig is a listener of a hub that may make a project private, in the form
+// gcp:ClusteredNatsHub renders it: the broker check in its token-file form, and the privacy
+// settings.
+func privateListenerConfig() core.ListenerConfig {
+	return core.ListenerConfig{
+		MachineID: "m", Port: 9020, ListenHost: "0.0.0.0",
+		AgentSecretsURL: "https://example-broker.internal.example", BrokerTokenFile: "/var/run/secrets/envoy-broker/token",
+		PublicURL:        "http://example-hub-listener.example-namespace.svc.cluster.local:9020",
 		ServiceTokenFile: "/var/run/secrets/envoy/nats-token",
+		PrivacySourceURL: "https://example-broker.internal.example/v1/project-privacy", PrivacyRequired: true,
+		AllProjectsAccounts: []string{"system:serviceaccount:example-dispatch:example-dispatch"},
 	}
-	off, err := config.Env(urls)
-	require.NoError(t, err)
-	require.NotContains(t, strings.Join(off, "\n"), "ENVOY_PRIVATE_PROJECTS", "false renders no line")
+}
 
-	config.PrivateProjects = true
-	on, err := config.Env(urls)
+// The privacy settings render last, after the service identity, in a fixed order:
+// ENVOY_PROJECT_PRIVACY_URL, ENVOY_PROJECT_PRIVACY_REQUIRED=true and ENVOY_ALL_PROJECTS_ACCOUNTS,
+// each only on a config that sets it, so a config that sets none renders what it always rendered
+// (R9), and the goldens every component that renders a listener pins hold none of them. The broker
+// check's token-file form renders ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE between the audience's
+// place and ENVOY_PUBLIC_URL. The names are written out here rather than taken from the listener,
+// so a rename is seen in what the listener reads.
+func TestListenerEnvRendersThePrivacySettingsLast(t *testing.T) {
+	urls := []string{"nats://example-hub.example-namespace.svc.cluster.local:4222"}
+	private := privateListenerConfig()
+	public := private
+	public.PrivacySourceURL, public.PrivacyRequired, public.AllProjectsAccounts = "", false, nil
+	off, err := public.Env(urls)
 	require.NoError(t, err)
-	require.Equal(t, append(slices.Clone(off), "ENVOY_PRIVATE_PROJECTS=1"), on, "true adds the one line, last")
+	for _, name := range []string{"ENVOY_PROJECT_PRIVACY", "ENVOY_ALL_PROJECTS_ACCOUNTS"} {
+		require.NotContains(t, strings.Join(off, "\n"), name, "a config with no privacy setting renders none")
+	}
+	require.Equal(t, []string{
+		"PORT=9020", "ENVOY_LISTEN_HOST=0.0.0.0", "ENVOY_MACHINE_ID=m",
+		"NATS_URLS=nats://example-hub.example-namespace.svc.cluster.local:4222", "ENVOY_ALLOW_REMOTE_NATS=1",
+		"ENVOY_AGENT_SECRETS_URL=https://example-broker.internal.example",
+		"ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE=/var/run/secrets/envoy-broker/token",
+		"ENVOY_PUBLIC_URL=http://example-hub-listener.example-namespace.svc.cluster.local:9020",
+		"NATS_SERVICE_TOKEN_FILE=/var/run/secrets/envoy/nats-token",
+	}, off)
+	on, err := private.Env(urls)
+	require.NoError(t, err)
+	require.Equal(t, append(slices.Clone(off),
+		"ENVOY_PROJECT_PRIVACY_URL=https://example-broker.internal.example/v1/project-privacy",
+		"ENVOY_PROJECT_PRIVACY_REQUIRED=true",
+		"ENVOY_ALL_PROJECTS_ACCOUNTS=system:serviceaccount:example-dispatch:example-dispatch"), on)
+}
+
+// CheckBroker takes the broker check in either identity's form, the VM's Google audience or a
+// pod's projected token file, and refuses what the listener's resolveListenerBrokerConfig refuses
+// at boot: both identities at once, and a missing URL or origin beside either.
+func TestCheckBrokerTakesEitherIdentity(t *testing.T) {
+	const url, audience, file, origin = "https://example-broker.internal.example", "example-broker-audience", "/var/run/secrets/envoy-broker/token", "http://example-listener:9020"
+	require.NoError(t, core.CheckBroker("", url, audience, "", origin), "the audience form")
+	require.NoError(t, core.CheckBroker("", url, "", file, origin), "the token-file form")
+	require.NoError(t, core.CheckBroker("", "", "", "", ""), "no broker check at all")
+	for _, row := range []struct {
+		name, url, audience, file, origin string
+		input, err                        string
+	}{
+		{"both identities", url, audience, file, origin, "brokerTokenFile",
+			"agentSecretsAudience and brokerTokenFile are both set: the listener introspects as one identity"},
+		{"a token file with no broker", "", "", file, origin, "agentSecretsUrl", "agentSecretsUrl is required when brokerTokenFile is set"},
+		{"a token file with no origin", url, "", file, "", "publicUrl", "publicUrl is required when agentSecretsUrl is set"},
+		{"a broker with no identity", url, "", "", origin, "agentSecretsAudience",
+			"agentSecretsAudience is required when agentSecretsUrl is set: the listener takes a broker access token only with ENVOY_AGENT_SECRETS_URL, ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE or ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE, and ENVOY_PUBLIC_URL"},
+		{"a token file with a space", url, "", "/var/run/token --privileged", origin, "brokerTokenFile",
+			"brokerTokenFile holds whitespace or a control character, which ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE cannot carry"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			requireInputError(t, core.CheckBroker("", row.url, row.audience, row.file, row.origin), row.input, row.err)
+		})
+	}
+}
+
+// CheckPrivacySource holds a listener of a hub that may make a project private to the settings its
+// required mode reads: the privacy URL, the flag, the all-projects callers, and the broker check in
+// its token-file form (the URL, the token file and the origin, and no Google audience beside the
+// file), since the listener reads each decision's privacy from the secrets broker with the
+// projected token of its own account. Each refusal names the listener, as the component spells it,
+// and the variable left out. A listener of a hub that makes no project private renders none of the
+// privacy settings, whatever else it renders (R9).
+func TestCheckPrivacySourceNamesTheListenerAndThePiece(t *testing.T) {
+	require.NoError(t, core.CheckPrivacySource("tailnet.listener", privateListenerConfig(), true))
+	public := privateListenerConfig()
+	public.PrivacySourceURL, public.PrivacyRequired, public.AllProjectsAccounts = "", false, nil
+	require.NoError(t, core.CheckPrivacySource("tailnet.listener", public, false), "an all-public hub's listener with a broker check and no privacy setting")
+	for _, row := range []struct {
+		name, piece string
+		edit        func(*core.ListenerConfig)
+	}{
+		{"no privacy URL", "ENVOY_PROJECT_PRIVACY_URL", func(c *core.ListenerConfig) { c.PrivacySourceURL = "" }},
+		{"no flag", "ENVOY_PROJECT_PRIVACY_REQUIRED", func(c *core.ListenerConfig) { c.PrivacyRequired = false }},
+		{"no all-projects callers", "ENVOY_ALL_PROJECTS_ACCOUNTS", func(c *core.ListenerConfig) { c.AllProjectsAccounts = nil }},
+		{"no broker URL", "ENVOY_AGENT_SECRETS_URL", func(c *core.ListenerConfig) { c.AgentSecretsURL = "" }},
+		{"no broker token", "ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", func(c *core.ListenerConfig) { c.BrokerTokenFile = "" }},
+		{"no origin", "ENVOY_PUBLIC_URL", func(c *core.ListenerConfig) { c.PublicURL = "" }},
+		{"an audience beside the token file", "", func(c *core.ListenerConfig) { c.AgentSecretsAudience = "example-broker-audience" }},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			config := privateListenerConfig()
+			row.edit(&config)
+			want := "tailnet.listener renders no " + row.piece
+			if row.piece == "" {
+				want = "tailnet.listener renders ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE beside ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE"
+			}
+			requireInputError(t, core.CheckPrivacySource("tailnet.listener", config, true), "tailnet.listener", want)
+		})
+	}
+	for _, row := range []struct {
+		name, piece string
+		edit        func(*core.ListenerConfig)
+	}{
+		{"a privacy URL", "ENVOY_PROJECT_PRIVACY_URL", func(c *core.ListenerConfig) { c.PrivacyRequired = false }},
+		{"the flag", "ENVOY_PROJECT_PRIVACY_REQUIRED", func(c *core.ListenerConfig) { c.PrivacySourceURL = "" }},
+		{"all-projects callers", "ENVOY_ALL_PROJECTS_ACCOUNTS", func(c *core.ListenerConfig) { c.PrivacySourceURL, c.PrivacyRequired = "", false }},
+	} {
+		t.Run("an all-public hub's listener with "+row.name, func(t *testing.T) {
+			config := privateListenerConfig()
+			row.edit(&config)
+			requireInputError(t, core.CheckPrivacySource("tailnet.listener", config, false), "tailnet.listener",
+				"tailnet.listener renders "+row.piece+" on a hub that makes no project private")
+		})
+	}
+}
+
+// Check refuses a privacy setting the listener would refuse at boot: the URL without the flag and
+// the flag without the URL, which plan C's listener refuses as a half-set mode, a URL that is not an
+// http(s) URL with a host, and an all-projects caller that is not a ServiceAccount's subject or
+// repeats an earlier one.
+func TestListenerConfigCheckRefusesAHalfSetPrivacyMode(t *testing.T) {
+	for _, row := range []struct {
+		name, input, err string
+		edit             func(*core.ListenerConfig)
+	}{
+		{"a URL without the flag", "privacyRequired", "privacySourceUrl is set without privacyRequired", func(c *core.ListenerConfig) { c.PrivacyRequired = false }},
+		{"the flag without a URL", "privacySourceUrl", "privacySourceUrl is required with privacyRequired", func(c *core.ListenerConfig) { c.PrivacySourceURL = "" }},
+		{"a URL with no scheme", "privacySourceUrl", "privacySourceUrl \"example-broker/v1/project-privacy\" must be an http or https URL with a host",
+			func(c *core.ListenerConfig) { c.PrivacySourceURL = "example-broker/v1/project-privacy" }},
+		{"a caller that is no subject", "allProjectsAccounts", "allProjectsAccounts[0] \"dispatch\" must be system:serviceaccount:<namespace>:<name>",
+			func(c *core.ListenerConfig) { c.AllProjectsAccounts = []string{"dispatch"} }},
+		{"a repeated caller", "allProjectsAccounts", "allProjectsAccounts[1] \"system:serviceaccount:example-dispatch:example-dispatch\" repeats allProjectsAccounts[0]",
+			func(c *core.ListenerConfig) {
+				c.AllProjectsAccounts = append(c.AllProjectsAccounts, c.AllProjectsAccounts[0])
+			}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			config := privateListenerConfig()
+			row.edit(&config)
+			requireInputError(t, config.Check(), row.input, row.err)
+		})
+	}
 }
 
 // Check refuses a sender limit the listener refuses when it boots, and takes every limit it boots

@@ -98,10 +98,6 @@ func TestSchemaServesTheListenerComponentWithASecretSeed(t *testing.T) {
 	require.True(t, ok, "the schema lists envoy-infra:host:Listener")
 	require.True(t, listener.IsComponent)
 	require.True(t, listener.InputProperties["seed"].Secret, "seed is a secret input")
-	// privateProjects is an optional boolean under that name (t-e-45), the one a consumer's
-	// program sends; the hub it sits beside takes the same name.
-	require.Equal(t, "boolean", listener.InputProperties["privateProjects"].Type)
-	require.NotContains(t, listener.RequiredInputs, "privateProjects")
 
 	// Generated SDKs append Args to an object type's name for its input type, so a type named
 	// WatchdogArgs would reach consumers as WatchdogArgsArgs.
@@ -207,6 +203,7 @@ func TestSchemaServesTheClusteredNatsHubComponent(t *testing.T) {
 	require.ElementsMatch(t, []string{
 		"image", "machineId", "nkey", "seedSecretName", "seedSecretKey", "natsAudience", "clientNamespaces", "allowedHosts",
 		"oidcIssuer", "oidcAudience", "oidcAccounts", "senderMessagesPerMinute", "senderMessageBurst", "cpu", "memory",
+		"agentSecretsUrl", "publicUrl", "brokerAudience", "privacySourceUrl", "allProjectsAccounts",
 	}, slices.Collect(maps.Keys(listener.Properties)))
 	require.ElementsMatch(t, []string{"image"}, listener.Required, "the identity's inputs are the hub's to require, by authCallout")
 
@@ -377,10 +374,9 @@ func TestSchemaServesTheWebhookListenerComponentWithNoSecretInput(t *testing.T) 
 	for name, input := range listener.InputProperties {
 		require.False(t, input.Secret, "%s is not a secret input", name)
 	}
-	// Every input is required but the seed, each webhook's inputs, privateProjects, adopt and the
-	// sender limit.
+	// Every input is required but the seed, each webhook's inputs, adopt and the sender limit.
 	require.ElementsMatch(t, []string{
-		"seedSecretArn", "githubWebhookSecretArn", "slackSigningSecretArn", "reviewerAppId", "mentionTrigger", "privateProjects", "adopt",
+		"seedSecretArn", "githubWebhookSecretArn", "slackSigningSecretArn", "reviewerAppId", "mentionTrigger", "adopt",
 		"senderMessagesPerMinute", "senderMessageBurst",
 	}, optionalInputs(listener.InputProperties, listener.RequiredInputs))
 }
