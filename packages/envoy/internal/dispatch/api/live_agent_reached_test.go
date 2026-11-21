@@ -54,12 +54,19 @@ func newReachedRig(t *testing.T) contentAgentRig {
 // sessions holding a replay of PRIV's issue's text.
 func newReachedRigOf(t *testing.T, roster string, sessions ...string) contentAgentRig {
 	t.Helper()
+	return newReachedRigWith(t, testServerOptions{}, roster, sessions...)
+}
+
+// newReachedRigWith is newReachedRigOf on a test server built from options.
+func newReachedRigWith(t *testing.T, options testServerOptions, roster string, sessions ...string) contentAgentRig {
+	t.Helper()
 	listener, _ := newBroadcastListener(t, roster)
 	stream := agentstream.NewMemory()
 	for _, session := range sessions {
 		stream.SetReplay(session, reachedReplay(session))
 	}
-	seed := seedPrivateProjectWith(t, testServerOptions{envoyURL: listener.URL, agentStream: stream})
+	options.envoyURL, options.agentStream = listener.URL, stream
+	seed := seedPrivateProjectWith(t, options)
 	seedPeople(t, seed.database, reachedXavier, reachedGina, reachedOwen)
 	if _, err := seed.database.Pool.Exec(context.Background(), `
 		insert into route_roster (answered, sessions, sent_at, expires_at)
@@ -129,8 +136,9 @@ func (rig contentAgentRig) hidden(t *testing.T, state string, caller privateCall
 // for both sessions, the one whose listener lists PUB and the one with no list, and the relay
 // neither subscribes to them nor asks them for a replay. carol, who sees PRIV, still watches both.
 //
-// The last row is the switch of a public project to private (access.SetVisibility), which takes
-// PUB from every full member its list does not name (testPUBMadePrivate).
+// The last two rows switch a public project to private, by the switch route and by an SQL
+// statement alone, which takes PUB from every full member its list does not name: the projects
+// table's trigger records the pairs (testPUBMadePrivate).
 //
 // Control: the reached pairs left unwritten; alice is relayed each session's replay, which holds
 // PRIV's issue's text, and the test fails.
@@ -199,29 +207,49 @@ func TestAPersonsLostProjectStaysOnTheSessionsThatReadIt(t *testing.T) {
 			}
 		})
 	}
-	t.Run("PUB_made_private", testPUBMadePrivate)
+	for _, made := range []struct {
+		name        string
+		makePrivate func(t *testing.T, rig contentAgentRig)
+	}{
+		{"PUB_made_private_by_the_switch", func(t *testing.T, rig contentAgentRig) {
+			rig.seed.setVisibility(t, seedPublic, model.ProjectPrivate)
+		}},
+		{"PUB_made_private_by_SQL", func(t *testing.T, rig contentAgentRig) {
+			if _, err := rig.seed.database.Pool.Exec(t.Context(), `update projects set visibility = 'private' where key = $1`, seedPublic); err != nil {
+				t.Fatalf("make PUB private by an SQL statement alone: %v", err)
+			}
+		}},
+	} {
+		t.Run(made.name, func(t *testing.T) { testPUBMadePrivate(t, made.makePrivate) })
+	}
 }
 
 // testPUBMadePrivate is TestAPersonsLostProjectStaysOnTheSessionsThatReadIt's row for a project
-// switched from public to private. xavier, a full member no list names, has two sessions: one
-// whose listener lists CORE, a public project, and one with no list. Each reads PUB's issue while
-// PUB is public, which records nothing, and comments on CORE's, which ties it to xavier. A third
-// session, listed CORE too, is tied to nobody, its history in CORE written as a stand-in, since
-// every proved request ties its session. xavier also uploads a file to his unlisted session's
-// conversation and sends it a direct message, both of which alice, an open viewer, reads while PUB
-// is public. Then carol, PUB's owner, makes PUB private with a list naming nobody, so neither
-// xavier nor alice sees it. alice gets the no-responder verdict for all three sessions, and reads
-// the file and the direct message as ones nobody holds; carol, who sees PUB, still watches them.
+// switched from public to private, by switchPUB: the server's switch (access.SetVisibility, the
+// write the visibility route makes, committed), or an SQL statement alone. xavier, a full member
+// no list names, has two sessions: one whose listener lists CORE, a
+// public project, and one with no list. Each reads PUB's issue while PUB is public, which records
+// nothing, and comments on CORE's, which ties it to xavier. A third session, listed PUB and CORE,
+// is tied to nobody, its history in CORE written as a stand-in, since every proved request ties
+// its session. xavier also uploads a file to his unlisted session's conversation and sends it a
+// direct message, both of which alice, an open viewer, reads while PUB is public. Then carol, PUB's
+// owner, makes PUB private with a list naming nobody, so neither xavier nor alice sees it, and the
+// third session's listener lists CORE alone afterwards, as a token traded again without PUB lists
+// it. alice gets the no-responder verdict for all three sessions, and reads the file and the
+// direct message as ones nobody holds; carol, who sees PUB, still watches them.
 //
-// Controls: the switch writing no pair for the sessions of the people it took PUB from
-// (recordReachedProjects), and alice is relayed xavier's two sessions; the switch writing none for
-// the listed sessions no person is tied to, and alice is relayed the third.
-func testPUBMadePrivate(t *testing.T) {
-	rig := newReachedRigOf(t, `[
-		{"session_id":"`+reachedListedSession+`","title":"Lists CORE","capabilities":["btw"],"last_seen":900,"projects":["CORE"]},
-		{"session_id":"`+reachedUnlistedSession+`","title":"No list","capabilities":["btw"],"last_seen":800},
-		{"session_id":"`+reachedUntiedSession+`","title":"Lists CORE, tied to nobody","capabilities":["btw"],"last_seen":700,"projects":["CORE"]}
-	]`, reachedListedSession, reachedUnlistedSession, reachedUntiedSession)
+// Control: projects_made_private_reached dropped (migration 20261121173500); alice is relayed all
+// three sessions and reads the file and the message.
+func testPUBMadePrivate(t *testing.T, switchPUB func(t *testing.T, rig contentAgentRig)) {
+	listed := func(third string) string {
+		return `[
+		{"session_id":"` + reachedListedSession + `","title":"Lists CORE","capabilities":["btw"],"last_seen":900,"projects":["CORE"]},
+		{"session_id":"` + reachedUnlistedSession + `","title":"No list","capabilities":["btw"],"last_seen":800},
+		{"session_id":"` + reachedUntiedSession + `","title":"Tied to nobody","capabilities":["btw"],"last_seen":700,"projects":` + third + `}
+	]`
+	}
+	rig := newReachedRigOf(t, listed(`["PUB","CORE"]`),
+		reachedListedSession, reachedUnlistedSession, reachedUntiedSession)
 	rig.seed.mustRequest(t, callerCarol, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": reachedCore, "name": "Project " + reachedCore,
 	}, http.StatusCreated)
@@ -259,7 +287,14 @@ func testPUBMadePrivate(t *testing.T) {
 			t.Fatalf("alice reads %s of xavier's session while PUB is public as %d %s, want 200: the row proves nothing", name, got.Code, got.Body.String())
 		}
 	}
-	rig.seed.setVisibility(t, seedPublic, model.ProjectPrivate)
+	switchPUB(t, rig)
+	if _, err := rig.seed.database.Pool.Exec(context.Background(), `
+		insert into route_roster (answered, sessions, sent_at, expires_at)
+		values (true, $1::jsonb, now(), now() + interval '1 hour')
+		on conflict (id) do update set sessions = excluded.sessions, sent_at = excluded.sent_at, expires_at = excluded.expires_at`,
+		listed(`["CORE"]`)); err != nil {
+		t.Fatalf("store the listener's sessions, the third listed CORE alone: %v", err)
+	}
 	const state = "PUB made private"
 	for _, session := range []string{reachedListedSession, reachedUnlistedSession, reachedUntiedSession} {
 		rig.hidden(t, state, callerAlice, session)
