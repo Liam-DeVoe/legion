@@ -3,431 +3,20 @@ package main
 import (
 	"maps"
 	"os"
-	"os/exec"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 )
 
-// The tests in this file are more of the step's (jj_push_test.go): pushes of a revision argument
-// that a rewrite of the step can make name other commits, of a long history, and of a word of ids
-// or a command past the step's bound or limit, or under that limit only as the step counts it, with
-// the helpers that only they use. As jj_push_test.go does, the file names nothing the step's change
-// adds, so it compiles and runs at the base too.
+// The tests in this file are more of the step's (jj_push_test.go): pushes of a word of ids or a
+// command past the step's bound or limit, or under that limit only as the step counts it, with the
+// bounds and limits they set and the helpers that only they use. As jj_push_test.go does, the file
+// names nothing the step's change adds, so it compiles and runs at the base too.
 
 // rolePushRevisionBound is the bound, in bytes, under which the step keeps the word of a revision
 // argument that it gives the push as the ids of its commits.
 const rolePushRevisionBound = 100_000
-
-// rolePushHistory is how many commits a long history has (rolePushFixture.history and
-// mutableHistory): enough that the ids of its commits, joined by ` | `, are over
-// rolePushRevisionBound bytes and under the 131,072 bytes of one argv word that Linux takes, and
-// that `change_id(<change>)` of each, joined so, is over those 131,072 bytes.
-const rolePushHistory = 3001
-
-// offsets makes a divergent change of two commits on main, each a describe of one commit that the
-// reviewer made (diverge), with first's message and with second's, and answers the change's id and
-// the two commits. jj counts a change's commits newest first, so offset 1 of the change is the
-// first and offset 0 the second, which offsets checks.
-func (f *rolePushFixture) offsets(first, second string) (string, rolePushChange, rolePushChange) {
-	f.t.Helper()
-	x := f.commitOn(rolePushReviewer, rolePushReviewer, "main", "x\n")
-	f.jj(rolePushReviewer, "new", "main")
-	d1, d2 := f.diverge(x, first, second)
-	for offset, c := range []rolePushChange{d2, d1} {
-		if got := f.read(x.change + "/" + strconv.Itoa(offset)); got.commit != c.commit {
-			f.t.Fatalf("%s/%d is %s, want %s", x.change, offset, got.commit, c.commit)
-		}
-	}
-	return x.change, d1, d2
-}
-
-// rolePushOffsetSends is what a push of the two commits of a divergent change must leave
-// (rolePushFixture.offsets), sent being the bookmark on D1, offset 1 before the step, and held
-// the one on D2, offset 0: origin holds sent on the rewritten D1, with the implementer's author,
-// and held on D2 as it was; and alone, what jj alone leaves, D1 as it was too.
-func rolePushOffsetSends(sent, held string, d1, d2 rolePushChange) (want, alone rolePushWant) {
-	impl, rev := rolePushImplementer, rolePushReviewer
-	heldD2 := rolePushRef{ref: "refs/heads/" + held, commits: []rolePushCommit{{change: d2.change, author: rev, commit: d2.commit}}}
-	want = rolePushSends(sent, d1, "implementer", impl)
-	want.refs = append(want.refs, heldD2)
-	want.same = map[string]rolePushIdentity{d2.commit: rev}
-	alone = rolePushWant{
-		refs: []rolePushRef{heldD2, {ref: "refs/heads/" + sent, commits: []rolePushCommit{{change: d1.change, author: rev, commit: d1.commit}}}},
-		same: map[string]rolePushIdentity{d1.commit: rev, d2.commit: rev},
-	}
-	return want, alone
-}
-
-// mine makes the state of the rows of an author revset that the step's rewrite makes name more
-// commits: M on main, which the implementer made with its own trailer, under the bookmark other;
-// P on main, which the reviewer made with the implementer's trailer, under mid; A on P, made so
-// too, under top; each bookmark tracked, which origin holds at the seed; and @ the reviewer's, on
-// main. The implementer's mine() then names M alone, which mine checks, and once the step has
-// rewritten P and A, those too.
-func (f *rolePushFixture) mine() (m, p, a rolePushChange) {
-	f.t.Helper()
-	impl, rev := rolePushImplementer, rolePushReviewer
-	for _, name := range []string{"other", "mid", "top"} {
-		f.track(name)
-	}
-	m = f.commitOn(impl, impl, "main", rolePushMessage("M", "implementer"))
-	p = f.commitOn(rev, impl, "main", rolePushMessage("P", "implementer"))
-	a = f.commitOn(rev, impl, p.commit, rolePushMessage("A", "implementer"))
-	f.jj(rev, "new", "main")
-	f.bookmark("other", m.commit)
-	f.bookmark("mid", p.commit)
-	f.bookmark("top", a.commit)
-	if got := f.read("mine()"); got.commit != m.commit {
-		f.t.Fatalf("the implementer's mine() names %s before the push, want M, %s, alone", got.commit, m.commit)
-	}
-	return m, p, a
-}
-
-// rolePushMineSends is what a push of -b top and of an argument of mine() must leave
-// (rolePushFixture.mine), ref being the bookmark the argument sends M under: origin holds top on
-// the rewritten A and P, each with the implementer's author, ref on M as it was, and mid and other
-// where track put them, but where ref is other; and alone, what jj alone leaves, A and P as they
-// were.
-func rolePushMineSends(ref string, m, p, a rolePushChange) (want, alone rolePushWant) {
-	impl, rev := rolePushImplementer, rolePushReviewer
-	held := []rolePushRef{{ref: "refs/heads/" + ref, commits: []rolePushCommit{{change: m.change, author: impl, commit: m.commit}}}, {ref: "refs/heads/mid"}}
-	if ref != "other" {
-		held = append(held, rolePushRef{ref: "refs/heads/other"})
-	}
-	want = rolePushWant{
-		refs: append([]rolePushRef{{ref: "refs/heads/top", commits: []rolePushCommit{{change: a.change, author: impl}, {change: p.change, author: impl}}}}, held...),
-		rewrites: []rolePushRewrite{
-			{role: "implementer", author: impl, change: p.change, old: p.commit},
-			{role: "implementer", author: impl, change: a.change, old: a.commit},
-		},
-		same: map[string]rolePushIdentity{m.commit: impl},
-	}
-	alone = rolePushWant{
-		refs: append([]rolePushRef{{ref: "refs/heads/top", commits: []rolePushCommit{{change: a.change, author: rev, commit: a.commit}, {change: p.change, author: rev, commit: p.commit}}}}, held...),
-		same: map[string]rolePushIdentity{m.commit: impl, p.commit: rev, a.commit: rev},
-	}
-	return want, alone
-}
-
-// fastImport makes n empty commits on ref above the seed, with git fast-import in the colocated
-// repository, each authored by author (Legion test where it is the zero identity) with message,
-// its first line followed by the commit's number, and answers the last.
-func (f *rolePushFixture) fastImport(ref string, n int, author rolePushIdentity, message string) string {
-	f.t.Helper()
-	title, rest, _ := strings.Cut(message, "\n")
-	var stream strings.Builder
-	for i := 1; i <= n; i++ {
-		text := title + " " + strconv.Itoa(i) + "\n" + rest
-		stamp := strconv.Itoa(1_700_000_000+i) + " +0000\n"
-		stream.WriteString("commit " + ref + "\nmark :" + strconv.Itoa(i) + "\n")
-		if author != rolePushNobody {
-			stream.WriteString("author " + author.name + " <" + author.email + "> " + stamp)
-		}
-		stream.WriteString("committer Legion test <legion-test@example.invalid> " + stamp)
-		stream.WriteString("data " + strconv.Itoa(len(text)) + "\n" + text)
-		if i == 1 {
-			stream.WriteString("from " + f.seed + "\n")
-		}
-		stream.WriteString("\n")
-	}
-	if code, _, stderr := trailerRun(f.t, f.repo, f.env(f.setupPath, rolePushImplementer), stream.String(), f.git, "fast-import", "--quiet"); code != 0 {
-		f.t.Fatalf("git fast-import exited %d:\n%s", code, stderr)
-	}
-	return strings.TrimSpace(f.runner(f.setupPath, rolePushImplementer).Out(f.repo, f.git, "rev-parse", ref))
-}
-
-// history puts n empty commits on the remote's main above the seed (fastImport): the real git
-// pushes them, and jj imports them, so main and main@origin are on the last of them, which is then
-// the seed that every ref the tests read is above.
-func (f *rolePushFixture) history(n int) {
-	f.t.Helper()
-	last := f.fastImport("refs/heads/main", n, rolePushNobody, "history\n")
-	f.runner(f.setupPath, rolePushImplementer).Run(f.repo, f.git, "push", "--quiet", "origin", "main")
-	f.jj(rolePushImplementer, "git", "fetch")
-	if main := f.read("main").commit; main != last {
-		f.t.Fatalf("main is %s after the import of the history, want %s, its last commit", main, last)
-	}
-	f.seed = last
-}
-
-// mutableHistory puts legion/K-1 on the last of n commits above the seed that no remote holds,
-// each of which the reviewer authored with the implementer's trailer (fastImport), which jj
-// imports.
-func (f *rolePushFixture) mutableHistory(n int) {
-	f.t.Helper()
-	last := f.fastImport("refs/heads/legion/K-1", n, rolePushReviewer, rolePushMessage("work", "implementer"))
-	f.jj(rolePushImplementer, "git", "import")
-	if tip := f.read("legion/K-1").commit; tip != last {
-		f.t.Fatalf("legion/K-1 is %s after the import of the history, want %s, its last commit", tip, last)
-	}
-}
-
-// checkHistory checks that origin's legion/K-1 holds the n commits of a long history above the
-// seed (mutableHistory, rolePushHistory), and that its tip, every 500th commit below it and its
-// first have author.
-func (f *rolePushFixture) checkHistory(author rolePushIdentity, stderr string) {
-	f.t.Helper()
-	got, ok := f.remoteCommits(f.bare, "refs/heads/legion/K-1")
-	if !ok || len(got) != rolePushHistory {
-		f.t.Errorf("origin holds %d commits of legion/K-1 above the seed (%v), want %d; the push printed:\n%s", len(got), ok, rolePushHistory, stderr)
-		return
-	}
-	for i, c := range got {
-		if (i%500 == 0 || i == len(got)-1) && (c.name != author.name || c.email != author.email) {
-			f.t.Errorf("origin's legion/K-1 commit %d, %s, has author %s <%s>, want %s <%s>", i, c.id, c.name, c.email, author.name, author.email)
-		}
-	}
-}
-
-// onlyRefs checks that origin holds no ref but main and those of want's refs on origin that it
-// holds.
-func (f *rolePushFixture) onlyRefs(want rolePushWant) {
-	f.t.Helper()
-	named := map[string]bool{"refs/heads/main": true}
-	for _, ref := range want.refs {
-		if ref.remote == "" && !ref.absent {
-			named[ref.ref] = true
-		}
-	}
-	for _, ref := range strings.Fields(f.runner(f.setupPath, rolePushImplementer).Out(f.root, f.git, "--git-dir", f.bare, "for-each-ref", "--format=%(refname)")) {
-		if !named[ref] {
-			f.t.Errorf("origin holds %s afterwards, a ref the push must not make", ref)
-		}
-	}
-}
-
-// rolePushNamedRow is a push of a revision argument that a test may check against jj alone
-// (rolePushRunNamed): one that a rewrite of the step can make name other commits than it named
-// before the step, or one whose command would pass the step's limit. setup makes the state it
-// runs on, and answers the push's arguments, what the push through the form's jj must leave, and
-// what jj alone must leave on a twin state made the same way, which the row checks where alone is
-// true.
-type rolePushNamedRow struct {
-	name  string
-	alone bool
-	setup func(f *rolePushFixture) (args []string, want, alone rolePushWant)
-}
-
-// rolePushNamedRows are the revision arguments that name other commits after a rewrite of the
-// step: a change offset of a divergent change, which the step's rewrite of one of its commits
-// renumbers, whether that commit is the argument's own or another argument's, on a short history
-// and on one whose commits' ids, joined, are over the bound of a revision the step gives as ids,
-// and an author revset whose author the rewrite gives other commits too, whether of the argument
-// or of the push's other commits, each pushed by the implementer.
-func rolePushNamedRows() []rolePushNamedRow {
-	impl, rev := rolePushImplementer, rolePushReviewer
-	return []rolePushNamedRow{
-		{name: "--named x=<change>/1 of a divergent change", alone: true, setup: func(f *rolePushFixture) ([]string, rolePushWant, rolePushWant) {
-			change, d1, d2 := f.offsets(rolePushMessage("D1", "implementer"), rolePushMessage("D2", "reviewer"))
-			want := rolePushSends("x", d1, "implementer", impl)
-			want.same = map[string]rolePushIdentity{d2.commit: rev}
-			alone := rolePushWant{
-				refs: []rolePushRef{{ref: "refs/heads/x", commits: []rolePushCommit{{change: change, author: rev, commit: d1.commit}}}},
-				same: map[string]rolePushIdentity{d1.commit: rev, d2.commit: rev},
-			}
-			return []string{"git", "push", "--named", "x=" + change + "/1"}, want, alone
-		}},
-		// -r sends each bookmark that points at a commit it names, and jj refuses to make a remote
-		// bookmark for one that tracks nothing: b stays on origin where track put it, the seed.
-		{name: "-r <change>/1 of a divergent change, a tracked bookmark on each commit", setup: func(f *rolePushFixture) ([]string, rolePushWant, rolePushWant) {
-			f.track("a")
-			f.track("b")
-			change, d1, d2 := f.offsets(rolePushMessage("D1", "implementer"), rolePushMessage("D2", "reviewer"))
-			f.bookmark("a", d1.commit)
-			f.bookmark("b", d2.commit)
-			want := rolePushSends("a", d1, "implementer", impl)
-			want.refs = append(want.refs, rolePushRef{ref: "refs/heads/b"})
-			want.same = map[string]rolePushIdentity{d2.commit: rev}
-			return []string{"git", "push", "-r", change + "/1"}, want, rolePushWant{}
-		}},
-		// The step's rewrite of C gives it the implementer's author, which the argument names: C
-		// gets no bookmark of its own, as with jj alone.
-		{name: "-c author(<the implementer's email>) & mutable(), C the other role's under D", alone: true, setup: func(f *rolePushFixture) ([]string, rolePushWant, rolePushWant) {
-			c := f.commitOn(rev, impl, "main", rolePushMessage("C", "implementer"))
-			d := f.commitOn(impl, impl, c.commit, rolePushMessage("D", "implementer"))
-			f.jj(rev, "new", "main")
-			noC := rolePushRef{ref: "refs/heads/push-" + c.change[:12], absent: true}
-			want := rolePushWant{
-				refs: []rolePushRef{{ref: "refs/heads/push-" + d.change[:12], commits: []rolePushCommit{
-					{change: d.change, author: impl}, {change: c.change, author: impl},
-				}}, noC},
-				rewrites: []rolePushRewrite{{role: "implementer", author: impl, change: c.change, old: c.commit}},
-			}
-			alone := rolePushWant{
-				refs: []rolePushRef{{ref: "refs/heads/push-" + d.change[:12], commits: []rolePushCommit{
-					{change: d.change, author: impl, commit: d.commit}, {change: c.change, author: rev, commit: c.commit},
-				}}, noC},
-			}
-			return []string{"git", "push", "-c", `author(substring:"` + impl.email + `") & mutable()`}, want, alone
-		}},
-		// The step's rewrite of B and C takes the other role's author from both, which the
-		// argument names: B still has "base" in its description, and C nothing the argument names.
-		{name: `-c description(substring:"base") | (author(<the other role's email>) & mutable()), C on B`, alone: true, setup: func(f *rolePushFixture) ([]string, rolePushWant, rolePushWant) {
-			b := f.commitOn(rev, impl, "main", rolePushMessage("base", "implementer"))
-			c := f.commitOn(rev, impl, b.commit, rolePushMessage("work", "implementer"))
-			want := rolePushWant{
-				refs: []rolePushRef{
-					{ref: "refs/heads/push-" + b.change[:12], commits: []rolePushCommit{{change: b.change, author: impl}}},
-					{ref: "refs/heads/push-" + c.change[:12], commits: []rolePushCommit{{change: c.change, author: impl}, {change: b.change, author: impl}}},
-				},
-				rewrites: []rolePushRewrite{
-					{role: "implementer", author: impl, change: b.change, old: b.commit},
-					{role: "implementer", author: impl, change: c.change, old: c.commit},
-				},
-			}
-			heldB := rolePushCommit{change: b.change, author: rev, commit: b.commit}
-			alone := rolePushWant{refs: []rolePushRef{
-				{ref: "refs/heads/push-" + b.change[:12], commits: []rolePushCommit{heldB}},
-				{ref: "refs/heads/push-" + c.change[:12], commits: []rolePushCommit{{change: c.change, author: rev, commit: c.commit}, heldB}},
-			}}
-			return []string{"git", "push", "-c", `description(substring:"base") | (author(substring:"` + rev.email + `") & mutable())`}, want, alone
-		}},
-		// The row of -r <change>/1 on a long history: the ids of the commits ::<change>/1 names
-		// before the step are over the bound, so the real push's revision holds another form of
-		// them, and b stays where track put it, the history's last commit.
-		{name: "-r ::<change>/1 of a divergent change on a history of more than 3,000 commits, a tracked bookmark on each commit", setup: func(f *rolePushFixture) ([]string, rolePushWant, rolePushWant) {
-			f.history(rolePushHistory)
-			f.track("a")
-			f.track("b")
-			change, d1, d2 := f.offsets(rolePushMessage("D1", "implementer"), rolePushMessage("D2", "reviewer"))
-			f.bookmark("a", d1.commit)
-			f.bookmark("b", d2.commit)
-			ids := strings.Fields(f.jj(impl, "--ignore-working-copy", "log", "--no-graph", "-r", "::"+change+"/1", "-T", `commit_id ++ "\n"`))
-			if joined := len(strings.Join(ids, " | ")); joined < rolePushRevisionBound {
-				f.t.Fatalf("the %d ids of ::%s/1 joined are %d bytes, want %d or more", len(ids), change, joined, rolePushRevisionBound)
-			}
-			want := rolePushSends("a", d1, "implementer", impl)
-			want.refs = append(want.refs, rolePushRef{ref: "refs/heads/b"})
-			want.same = map[string]rolePushIdentity{d2.commit: rev}
-			want.pushed = func(words []string) {
-				if revision := words[len(words)-1]; len(revision) >= rolePushRevisionBound {
-					f.t.Errorf("the real push's revision is %d bytes, want under %d", len(revision), rolePushRevisionBound)
-				}
-			}
-			return []string{"git", "push", "-r", "::" + change + "/1"}, want, rolePushWant{}
-		}},
-		// The step's rewrite of D1 makes it the change's newest commit, offset 0, and D2 offset 1:
-		// f and g, whose own commit the step rewrites in g's case alone, each go to the push as the
-		// id of the commit they named before the step, as the step left it.
-		{name: "--named f and g of offsets 0 and 1 of a divergent change, the step rewriting offset 1's commit", alone: true, setup: func(f *rolePushFixture) ([]string, rolePushWant, rolePushWant) {
-			change, d1, d2 := f.offsets(rolePushMessage("D1", "implementer"), rolePushMessage("D2", "reviewer"))
-			want, alone := rolePushOffsetSends("g", "f", d1, d2)
-			return []string{"git", "push", "--named", "f=" + change + "/0", "--named", "g=" + change + "/1"}, want, alone
-		}},
-		// -r sends each bookmark that points at a commit it names: b, on D2, offset 0 before the
-		// step, whose rewrite of D1, which -b a sends, makes D1 offset 0.
-		{name: "-b a -r <offset 0 of a divergent change>, a on offset 1, b on offset 0, each tracked", alone: true, setup: func(f *rolePushFixture) ([]string, rolePushWant, rolePushWant) {
-			f.track("a")
-			f.track("b")
-			change, d1, d2 := f.offsets(rolePushMessage("D1", "implementer"), rolePushMessage("D2", "reviewer"))
-			f.bookmark("a", d1.commit)
-			f.bookmark("b", d2.commit)
-			want, alone := rolePushOffsetSends("a", "b", d1, d2)
-			return []string{"git", "push", "-b", "a", "-r", change + "/0"}, want, alone
-		}},
-		// -r sends each bookmark that points at a commit it names: other, on M, and not mid, on P,
-		// which mine() names only once the step has rewritten it.
-		{name: "-b top -r mine(), mine() naming M on other alone, the step rewriting P on mid and A on top", alone: true, setup: func(f *rolePushFixture) ([]string, rolePushWant, rolePushWant) {
-			m, p, a := f.mine()
-			want, alone := rolePushMineSends("other", m, p, a)
-			return []string{"git", "push", "-b", "top", "-r", "mine()"}, want, alone
-		}},
-		// --named names one commit: jj would refuse mine() once the step has rewritten P and A.
-		{name: "-b top --named nm=mine(), mine() naming M alone, the step rewriting P on mid and A on top", alone: true, setup: func(f *rolePushFixture) ([]string, rolePushWant, rolePushWant) {
-			m, p, a := f.mine()
-			want, alone := rolePushMineSends("nm", m, p, a)
-			return []string{"git", "push", "-b", "top", "--named", "nm=mine()"}, want, alone
-		}},
-	}
-}
-
-// rolePushRunNamed runs each row under each form: where alone is true, jj alone on a twin state
-// first, which must leave what the row's alone says and no other ref beside main on origin; then
-// the push through the form's jj, with a recording jj ahead of the real one, which must leave what
-// the row's want says and no other ref beside main on origin.
-func rolePushRunNamed(t *testing.T, rows []rolePushNamedRow) {
-	for _, row := range rows {
-		t.Run(row.name, func(t *testing.T) {
-			t.Parallel()
-			rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
-				if row.alone {
-					twin := newRolePushFixture(t, form, "")
-					args, _, alone := row.setup(twin)
-					divergent := twin.divergence()
-					code, _, stderr := twin.alone(rolePushImplementer, args...)
-					twin.check(alone, code, stderr, divergent, 0)
-					twin.onlyRefs(alone)
-				}
-				f := newRolePushFixture(t, form, rolePushRecords)
-				args, want, _ := row.setup(f)
-				f.pushAndCheck(args, want)
-				f.onlyRefs(want)
-			})
-		})
-	}
-}
-
-// A revision argument that a rewrite of the step can make name other commits than it named before
-// the step reaches the real push naming exactly the commits it named before, each one the step
-// rewrote as rewritten (rolePushNamedRows), whether the rewrite is of the argument's own commits or
-// of another argument's: a change offset `<change>/<n>`, which counts a change's commits newest
-// first, the step's own among them, and an author revset whose author the step's rewrite gives
-// another commit. The push exits 0, origin holds the refs the row names and no other beside main,
-// each commit with its trailer's author, the step prints each rewrite, and no change is divergent;
-// jj alone, on a twin state made the same way, sends what the row says it does. So `--named f=<X>/0
-// --named g=<X>/1` puts f on the commit offset 0 named before the step, `-b a -r <X>/0` still sends
-// b, on that commit, `-b top -r mine()` sends no bookmark of a commit that mine() names only after
-// the step, and `-b top --named nm=mine()` exits 0. `-r ::<change>/1` on a history of more than
-// 3,000 commits sends the rewritten commit alone, and the real push's revision, which a recording
-// jj ahead of the real one sees, is under the bound of 100,000 bytes, which the ids of the commits
-// it names are over. A -c of a change offset run twice has a test of its own,
-// TestAChangeOffsetPushRunAgainLeavesOriginAsItWas.
-func TestARevisionArgumentSendsTheCommitsItNamedBeforeTheStep(t *testing.T) {
-	t.Parallel()
-	rolePushRunNamed(t, rolePushNamedRows())
-}
-
-// `jj git push -c <change>/0` of a divergent change, two describes of one commit that the reviewer
-// made (rolePushFixture.offsets), D1 with the reviewer's trailer and D2, offset 0, with the
-// implementer's, run twice through the form's jj, with a recording jj ahead of the real one. The
-// first push exits 0, origin holds push-<change> with D2 rewritten, with the implementer's author,
-// and no other ref beside main, D1 keeps the reviewer's author, the step prints the rewrite, and
-// no change is more divergent. The same push run again exits 0, without `Bookmark already exists`,
-// and leaves origin as the first push left it.
-func TestAChangeOffsetPushRunAgainLeavesOriginAsItWas(t *testing.T) {
-	t.Parallel()
-	impl, rev := rolePushImplementer, rolePushReviewer
-	rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
-		f := newRolePushFixture(t, form, rolePushRecords)
-		change, d1, d2 := f.offsets(rolePushMessage("D1", "reviewer"), rolePushMessage("D2", "implementer"))
-		args := []string{"git", "push", "-c", change + "/0"}
-		want := rolePushSends("push-"+change[:12], d2, "implementer", impl)
-		want.same = map[string]rolePushIdentity{d1.commit: rev}
-		f.pushAndCheck(args, want)
-		f.onlyRefs(want)
-		if t.Failed() {
-			return
-		}
-		again := rolePushWant{refs: slices.Clone(want.refs)}
-		for i, ref := range again.refs {
-			sent, _ := f.remoteCommits(f.bare, ref.ref)
-			again.refs[i].commits = slices.Clone(ref.commits)
-			for j := range again.refs[i].commits {
-				again.refs[i].commits[j].commit = sent[j].id
-			}
-		}
-		divergent := f.divergence()
-		code, _, stderr := f.push(impl, args...)
-		if strings.Contains(stderr, "Bookmark already exists") {
-			t.Errorf("the push run again printed `Bookmark already exists`:\n%s", stderr)
-		}
-		f.check(again, code, stderr, divergent, 0)
-		f.onlyRefs(again)
-	})
-}
 
 // rolePushLowBound is the step's bound of a word of ids, in bytes, that two rows of
 // TestARevisionPastALoweredBoundGetsItsIDsInWordsOfItsOption set (rolePushBoundVariable): over the
@@ -439,8 +28,8 @@ const rolePushLowBound = 100
 
 // rolePushOneWordBound is the step's bound of a word of ids, in bytes, that a row of
 // TestARevisionPastALoweredBoundGetsItsIDsInWordsOfItsOption and
-// TestTheRealPushsArgumentCarriesNoIDOfACommitTheStepLeftAlone set (rolePushBoundVariable): over
-// the 126 bytes of three commit ids joined by ` | `, and over the 132 bytes of the primary form of
+// TestARevisionWhoseIDsPassALoweredBoundGetsItsPrimaryForm set (rolePushBoundVariable): over the
+// 126 bytes of three commit ids joined by ` | `, and over the 132 bytes of the primary form of
 // `::<C>` of one rewritten commit C, `(::<C>) ~ (<C>) | <C'>`; and under the 341 bytes of the ids
 // of eight commits joined so.
 const rolePushOneWordBound = 200
@@ -637,7 +226,7 @@ func TestARevisionPastALoweredBoundGetsItsIDsInWordsOfItsOption(t *testing.T) {
 	// split is the push of argument by option, which sends cs in count words under f's bound, and
 	// what it leaves; dry is whether each dry run gives the argument in words of option too.
 	split := func(f *rolePushFixture, option, argument string, cs []rolePushChange, count int, dry bool) ([]string, rolePushWant) {
-		want := rolePushWant{ids: []rolePushIDs{{argument: argument, commits: len(cs), words: count, bound: f.bound}}, oneWord: true}
+		want := rolePushWant{ids: []rolePushIDs{{argument: argument, commits: len(cs), words: count, bound: f.bound}}}
 		changes := map[string]bool{}
 		for _, c := range cs {
 			sent := rolePushSends("push-"+c.change[:12], c, "implementer", impl)
@@ -731,29 +320,31 @@ func rolePushCommitIDs(cs []rolePushChange) []string {
 // step's limit of a command lowered to rolePushLowArgMax bytes, under the push's command with the
 // argument as the role wrote it and as the ids of its commits, the larger of which the step counts
 // for each argument. The step decides before it rewrites anything but the fill of a commit with no
-// author that the push's command would then pass the limit. It sets no other author, prints one
-// line `legion jj: could not set the author: revision `<argument>` would go to the push as the ids
-// of its <n> commits, …` that names the limit, and the push runs as written but where the fill
-// ran, exit 0, with no change divergent and origin holding no ref beside main but those of -c:
+// author, and before it takes its snapshot of the working copy where no fill took it, that the
+// push's command would then pass the limit. It sets no other author, prints one line `legion jj:
+// could not set the author: revision `<argument>` would go to the push as the ids of its <n>
+// commits, …` that names the limit, and the push runs as written but where the fill ran, exit 0,
+// with no change divergent and origin holding no ref beside main but those of -c:
 //
 //   - `-c "<C1> | <C2>"`, C1 and C2 two commits that the reviewer made with the implementer's
-//     trailer: the step prints no rewrite and runs no metaedit (a recording jj ahead of the real
-//     one sees none), the real push gets the role's own words, every byte, and origin holds C1
-//     and C2 as they were, with the reviewer's author, as jj alone leaves them on a twin state
-//     made the same way;
+//     trailer: the step prints no rewrite, runs no metaedit and takes no snapshot (a recording jj
+//     ahead of the real one sees no metaedit and no command of the step's with no
+//     --ignore-working-copy), the real push gets the role's own words, every byte, and origin
+//     holds C1 and C2 as they were, with the reviewer's author, as jj alone leaves them on a twin
+//     state made the same way;
 //   - `-c "<E> | <C>"`, E a commit with an empty author and the implementer's trailer, which the
-//     step fills before it decides, and C one that the reviewer made with the implementer's
-//     trailer: the step prints the rewrite of E alone and runs one metaedit, that fill, and the
-//     real push sends E as the fill left it, with the implementer's author, in place of the hidden
-//     E, and C as it was, with the reviewer's author;
+//     step fills before it decides, after its one snapshot, and C one that the reviewer made with
+//     the implementer's trailer: the step prints the rewrite of E alone and runs one metaedit,
+//     that fill, and the real push gets the ids of E as the fill left it, with the implementer's
+//     author, in place of the hidden E, and of C as it was, with the reviewer's author (one line);
 //   - `-c <D> -c mine()`, D a commit that the reviewer made with the implementer's trailer on E,
-//     one with an empty author, which the step fills before it decides, and mine() naming M alone,
-//     a commit the implementer made with its own trailer: the step prints the rewrite of E alone
-//     and runs one metaedit, that fill, which rebases D, and gives each argument as the id of the
-//     commit it named before the step, as the fill left it (one line each). The real push sends
-//     the rebased D, with the reviewer's author, on E as the fill left it, with the
-//     implementer's, and M as it was, and makes no bookmark for E, which mine() names after the
-//     fill.
+//     one with an empty author, which the step fills before it decides, after its one snapshot,
+//     and mine() naming M alone, a commit the implementer made with its own trailer: the step
+//     prints the rewrite of E alone and runs one metaedit, that fill, which rebases D, and gives
+//     each argument as the id of the commit it named before the step, as the fill left it (one
+//     line each). The real push sends the rebased D, with the reviewer's author, on E as the fill
+//     left it, with the implementer's, and M as it was, and makes no bookmark for E, which mine()
+//     names after the fill.
 func TestAPushPastTheLimitOfACommandSetsNoAuthor(t *testing.T) {
 	t.Parallel()
 	impl, rev := rolePushImplementer, rolePushReviewer
@@ -765,7 +356,7 @@ func TestAPushPastTheLimitOfACommandSetsNoAuthor(t *testing.T) {
 		args := []string{"git", "push", "-c", strings.Join(rolePushCommitIDs(cs), " | ")}
 		want := alone
 		want.cannotSet, want.cannotSetNames = 1, rolePushPastTheLimit(args[3], n, f.argMax)
-		want.noMetaedit = true
+		want.noMetaedit, want.snapshots = true, rolePushTakesNoSnapshot
 		want.pushed = func(words []string) {
 			if !slices.Equal(words, args) {
 				f.t.Errorf("the real push ran with %q, want the role's own words %q", words, args)
@@ -802,7 +393,7 @@ func TestAPushPastTheLimitOfACommandSetsNoAuthor(t *testing.T) {
 					{argument: d.commit, commits: 1, words: 1, bound: rolePushRevisionBound},
 					{argument: "mine()", commits: 1, words: 1, bound: rolePushRevisionBound},
 				},
-				oneWord: true,
+				snapshots: rolePushTakesOneSnapshot,
 			}
 			return args, want, rolePushWant{}
 		}},
@@ -820,6 +411,8 @@ func TestAPushPastTheLimitOfACommandSetsNoAuthor(t *testing.T) {
 				same:      map[string]rolePushIdentity{c.commit: rev},
 				metaedits: 1,
 				cannotSet: 1, cannotSetNames: rolePushPastTheLimit(args[3], 2, f.argMax),
+				ids:       []rolePushIDs{{argument: args[3], commits: 2, words: 1, bound: rolePushRevisionBound}},
+				snapshots: rolePushTakesOneSnapshot,
 			}
 			return args, want, rolePushWant{}
 		}},
@@ -851,7 +444,6 @@ func TestAPushUnderTheLimitWithEachArgumentAtItsIDsSetsEveryAuthor(t *testing.T)
 	// under bound bytes, and what jj alone leaves.
 	arguments := func(f *rolePushFixture, n, bound int, words func(ids []string) []string) ([]string, rolePushWant, rolePushWant) {
 		cs, want, alone := f.reviewed(n)
-		want.oneWord = true
 		args := []string{"git", "push"}
 		for _, word := range words(rolePushCommitIDs(cs)) {
 			args = append(args, "-c", word)
@@ -962,69 +554,6 @@ func TestAMetaeditPastTheLimitOfACommandRunsInParts(t *testing.T) {
 			if size >= f.argMax {
 				t.Errorf("metaedit %d of %d took %d bytes of arguments and environment, want under the step's limit, %d", i+1, len(sizes), size, f.argMax)
 			}
-		}
-	})
-}
-
-// rolePushLongLimit is how long a push of a long history may run (pushLong): jj's own metaedit of
-// more than 3,000 commits takes half a minute on an idle machine, which a busy one stretches past
-// trailerRunLimit's minute.
-const rolePushLongLimit = 10 * time.Minute
-
-// pushLong is push with rolePushLongLimit in place of trailerRunLimit (trailerRunWithin): the push
-// runs in a process group of its own, which the limit kills whole, and a push that cannot start,
-// or that runs past the limit, fails the test.
-func (f *rolePushFixture) pushLong(as rolePushIdentity, args ...string) (code int, stderr string) {
-	f.t.Helper()
-	sh, err := exec.LookPath("sh")
-	if err != nil {
-		f.t.Fatal(err)
-	}
-	code, _, stderr = trailerRunWithin(f.t, rolePushLongLimit, f.repo, f.env(f.path, as), strings.NewReader(""), sh, append([]string{"-c", `exec jj "$@"`, "jj"}, args...)...)
-	return code, stderr
-}
-
-// rolePushCountRewrites reads a push's standard error, stderr: how many of its lines are rewrites
-// (rolePushRewriteLine), and every other line, printed, which check reads.
-func rolePushCountRewrites(stderr string) (rewrites int, printed string) {
-	var rest []string
-	for line := range strings.SplitSeq(stderr, "\n") {
-		if rolePushRewriteLine.MatchString(line) {
-			rewrites++
-		} else {
-			rest = append(rest, line)
-		}
-	}
-	return rewrites, strings.Join(rest, "\n")
-}
-
-// A push of a history that no remote holds and that is longer than one revset of the step's reads
-// can name, more than 3,000 commits, each of which the reviewer authored with the implementer's
-// trailer (rolePushFixture.mutableHistory): each read of the step that names those commits, or
-// their changes, goes to as many reads as keep each revset under 100,000 bytes, so the step
-// rewrites them all and the push exits 0. Origin's tip commit, every 500th commit below it and the
-// first have the implementer's author, the step prints one rewrite for each commit, and no change
-// is divergent. jj alone, on a twin history made the same way, sends them with the reviewer's
-// author.
-func TestAPushOfALongHistorySetsEveryAuthor(t *testing.T) {
-	t.Parallel()
-	// jj alone runs no form of Legion's, so one twin stands for both forms.
-	twin := newRolePushFixture(t, rolePushPod, "")
-	twin.mutableHistory(rolePushHistory)
-	if code, _, stderr := twin.alone(rolePushImplementer, rolePushBookmark...); code != 0 {
-		t.Fatalf("jj alone exited %d:\n%s", code, stderr)
-	}
-	twin.checkHistory(rolePushReviewer, "")
-	rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
-		f := newRolePushFixture(t, form, "")
-		f.mutableHistory(rolePushHistory)
-		divergent := f.divergence()
-		code, stderr := f.pushLong(rolePushImplementer, rolePushBookmark...)
-		rewrites, printed := rolePushCountRewrites(stderr)
-		f.check(rolePushWant{others: true}, code, printed, divergent, 0)
-		f.checkHistory(rolePushImplementer, printed)
-		if rewrites != rolePushHistory {
-			t.Errorf("the push printed %d rewrites, want %d; it printed beside them:\n%s", rewrites, rolePushHistory, printed)
 		}
 	})
 }

@@ -23,8 +23,15 @@ type jjPush struct {
 	// carries first, so it reads the repository and the configuration the push reads.
 	options []string
 	// pushOnly are the indexes of the words that stay on the real push alone: --quiet, --debug,
-	// --no-integrate-operation, --ignore-immutable, and --color with its value.
+	// --no-integrate-operation, --ignore-immutable, --ignore-working-copy, which the dry run's
+	// flags hold already (jjDryRunFlags) and which jj 0.38 refuses twice, and --color with its
+	// value.
 	pushOnly map[int]bool
+	// noSnapshot is whether the push takes no snapshot of the working copy: the role's own
+	// --ignore-working-copy, before or after the subcommand pair, as jj takes it. Every command of
+	// the step reads as such a push does, so the step takes no snapshot before it
+	// (jjStep.snapshotDue).
+	noSnapshot bool
 	// revisions are the push's revision arguments, in order.
 	revisions []jjRevision
 }
@@ -90,6 +97,8 @@ func readJJPush(args []string) jjPush {
 				p.leave = true
 			case "--quiet", "--debug", "--no-integrate-operation", "--ignore-immutable":
 				p.pushOnly[i] = true
+			case "--ignore-working-copy":
+				p.pushOnly[i], p.noSnapshot = true, true
 			default:
 				if !strings.HasPrefix(arg, "-") && len(pair) < 2 {
 					pair = append(pair, arg)
