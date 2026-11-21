@@ -1035,7 +1035,7 @@ func TestAMemberMadeFullTakesNoSessionOwnerLock(t *testing.T) {
 		values ('CORE', 'person', $1, '{"kind":"user","id":"alice"}')`, email); err != nil {
 		t.Fatalf("list the member on the project: %v", err)
 	}
-	if err := people.SignInSubject(ctx, email, "subject-1", "refresh-1", model.MemberRestricted); err != nil {
+	if err := people.SignInSubject(ctx, email, "subject-1", "refresh-1", "", model.MemberRestricted); err != nil {
 		t.Fatalf("the restricted sign-in: %v", err)
 	}
 	for _, write := range []struct {
@@ -1043,10 +1043,10 @@ func TestAMemberMadeFullTakesNoSessionOwnerLock(t *testing.T) {
 		write func() error
 	}{
 		{"the confirmation as full", func() error {
-			return people.ConfirmSubject(ctx, email, "subject-1", "refresh-1", "refresh-2", model.MemberFull)
+			return people.ConfirmSubject(ctx, email, "subject-1", "refresh-1", "refresh-2", "", model.MemberFull)
 		}},
 		{"the sign-in as full", func() error {
-			return people.SignInSubject(ctx, email, "subject-1", "refresh-3", model.MemberFull)
+			return people.SignInSubject(ctx, email, "subject-1", "refresh-3", "", model.MemberFull)
 		}},
 	} {
 		if _, err := database.Pool.Exec(ctx, `update people set member_kind = 'restricted' where email = $1`, email); err != nil {
