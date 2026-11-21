@@ -20,6 +20,12 @@ var ErrConvertedStore = errors.New("bus: the selection bucket says the cutover c
 // registration it refuses so 503 consumer_error, naming the marker.
 var ErrMarkerUnread = fmt.Errorf("bus: the cutover marker %s of the selection bucket %s has not been read on this NATS connection", consumernames.SentinelKey, consumernames.SessionBucket)
 
+// ErrMarkerRead marks ReadMarker's failed read of the selection bucket's cutover marker: the gate
+// stays shut, and the reconnect hook that read it fails its run, so the client's reconnect hooks
+// stall until a read succeeds. The listener's /healthz names the marker read, not the KV watch
+// rebuild, when it is what stalls them.
+var ErrMarkerRead = fmt.Errorf("bus: read the cutover marker %s of the selection bucket %s before running fixed names", consumernames.SentinelKey, consumernames.SessionBucket)
+
 // markerGate is a client's gate on the selection bucket's cutover marker, in the fixed naming mode
 // (GateOnMarker). It is open only for the connection a read of the marker answered on: the client's
 // *nats.Conn and that connection's reconnect count when the read began. A reconnect in place counts
@@ -120,11 +126,11 @@ func (c *Client) GateOnMarker(converted func(error)) {
 //     holds no such read at all;
 //   - ErrConvertedStore, naming ENVOY_CONSUMER_NAMES, when the sentinel says the cutover is done: the
 //     bucket holds the sessions' fresh names, and today's fixed names must not run over it;
-//   - any other failed read as its error, on which the gate stays shut and the caller reads again:
-//     no connection, a timeout, no responder (only the stream's own not-found answer is no
-//     bucket), a bucket that exists with no sentinel, or a value under the sentinel's key that is
-//     not the sentinel (consumernames.ErrNoSentinel: a server answer stored there through a
-//     request's reply subject, another key's record, a delete marker).
+//   - any other failed read as ErrMarkerRead wrapping its error, on which the gate stays shut and
+//     the caller reads again: no connection, a timeout, no responder (only the stream's own
+//     not-found answer is no bucket), a bucket that exists with no sentinel, or a value under the
+//     sentinel's key that is not the sentinel (consumernames.ErrNoSentinel: a server answer stored
+//     there through a request's reply subject, another key's record, a delete marker).
 func (c *Client) ReadMarker(ctx context.Context) error {
 	conn := c.Connection()
 	reconnects, connected := connectionNow(conn)
@@ -135,7 +141,7 @@ func (c *Client) ReadMarker(ctx context.Context) error {
 	case errors.Is(err, ErrPublishDenied):
 		err = fmt.Errorf("%w: %w", ErrConsumerNotGranted, err)
 	case err != nil:
-		return fmt.Errorf("bus: read the cutover marker of the selection bucket %s before running fixed names: %w", consumernames.SessionBucket, err)
+		return fmt.Errorf("%w: %w", ErrMarkerRead, err)
 	case state.Cutover == consumernames.CutoverDone:
 		return fmt.Errorf("%w: %s=%s runs today's fixed names, and the bucket %s holds fresh ones: set %s=%s", ErrConvertedStore, consumernames.ModeEnvVar, consumernames.ModeFixed, consumernames.SessionBucket, consumernames.ModeEnvVar, consumernames.ModeFresh)
 	}

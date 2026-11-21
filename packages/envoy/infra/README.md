@@ -2778,7 +2778,9 @@ missing data not breaching) and sends the OK transition there too, so the channe
 stop: `<N>-publish-failure` (a JetStream publish that did not complete), `<N>-webhook-refused` (a
 delivery NATS can never take, answered 422), `<N>-reconnect-hooks-stalled` (a KV watch rebuild that
 has not succeeded for a minute after a NATS reconnect, so the listener's caches serve what they
-last held and `/healthz` answers 200 `degraded`), `<N>-stream-subject-dropped` (a start that
+last held and `/healthz` answers 200 `degraded`; or, in the fixed consumer naming mode, a read of
+the cutover marker that keeps failing after the rebuild, which `/healthz` names as the `cutover
+marker read` with its bucket and key), `<N>-stream-subject-dropped` (a start that
 dropped another deployment's overlapping stream subject), `<N>-durable-refused` (a start that
 refused its durable consumer, or whose NATS grant refused the durable's read, create or update)
 and `<N>-subscribe-exhausted` (a start that gave up binding its durable subscription).

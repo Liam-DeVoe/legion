@@ -550,7 +550,12 @@ func sessionHealthFields(sessions *session.SessionRegistry) map[string]interface
 // nowhere here: the bus runs the hooks again within seconds of a failure (internal/bus/recovery.go,
 // recoverUntilHealthy), so a rebuild under the bound is being repaired, and a listener would
 // otherwise read as degraded over every reconnect. The stall is one bus.Client's, naming no
-// cache, so a listener that keeps no CI cache needs no branch of its own.
+// cache, so a listener that keeps no CI cache needs no branch of its own. In the fixed naming mode
+// the client's last hook reads the cutover marker on the new connection (bus.Client.GateOnMarker,
+// registered after the cache rewatch), so a stall whose last failure is that read
+// (bus.ErrMarkerRead) has rebuilt the watches: it is reported as the dependency "cutover marker
+// read", with the selection bucket and the sentinel's key beside the error, so neither the answer
+// nor the paging alarm sends an operator to watchers that are fine.
 //
 // The checks that go to the bus share one healthzBudget taken from the request's own context: the
 // flush, each cache's KV ping and the durable consumer's info read. A ping or that read that has
@@ -664,14 +669,19 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps], starting *atomic.Pointer
 		}
 		// Last, below every 503 check: "degraded" is the answer only when nothing worse holds.
 		if stall, hookErr := d.client.HookStall(); stall >= bus.RepairGrace {
-			rebuild := fmt.Errorf("no rebuild has succeeded for %s", stall.Round(time.Second))
+			dependency, step, extra := "KV watch rebuild", "rebuild", map[string]interface{}(nil)
+			if errors.Is(hookErr, bus.ErrMarkerRead) {
+				dependency, step = "cutover marker read", "read"
+				extra = map[string]interface{}{"bucket": consumernames.SessionBucket, "key": consumernames.SentinelKey}
+			}
+			stalled := fmt.Errorf("no %s has succeeded for %s", step, stall.Round(time.Second))
 			if hookErr != nil {
 				// The last failure says what is broken; the stall, for how long. A run still in
 				// flight past the grace has no error of its own, and writeDependencyHealth needs
 				// one, so then the stall is the whole report.
-				rebuild = fmt.Errorf("%w (%w)", hookErr, rebuild)
+				stalled = fmt.Errorf("%w (%w)", hookErr, stalled)
 			}
-			writeDependencyHealth(w, "KV watch rebuild", rebuild, false)
+			writeDependencyHealthWith(w, dependency, stalled, false, extra)
 			return
 		}
 		response := map[string]interface{}{"status": "healthy"}

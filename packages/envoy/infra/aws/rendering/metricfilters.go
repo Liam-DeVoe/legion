@@ -117,7 +117,10 @@ var ListenerLogSignals = []LogSignal{
 			"503, which would replace the only task into the same failing rebuild with empty caches. " +
 			"The bus keeps retrying the rebuild with backoff. Read the line's `error` in %s for the " +
 			"failing bucket read: typically a JetStream that refuses or does not answer consumer " +
-			"creation for the KV streams.",
+			"creation for the KV streams. The stall may instead be the fixed naming mode's read of " +
+			"the cutover marker (`envoy.bucket` in `envoy_session_consumers`), which runs after the " +
+			"rebuild, so the caches are then current: `/healthz` names which, `KV watch rebuild` or " +
+			"`cutover marker read` with that bucket and key.",
 	},
 	{
 		// A start that dropped another deployment's overlapping stream subject: the WARN the bus
