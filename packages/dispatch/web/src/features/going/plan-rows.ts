@@ -118,6 +118,36 @@ export function documentChange(row: GoingPlanRow, summary: string): DocumentChan
   }
 }
 
+/** The refusals of an upload whose document moved after the plan read its name: a document made
+ *  under the name (`DOCUMENT_EXISTS`), text other than the text read (`DOCUMENT_CHANGED`), or a
+ *  version written past the token read (`PRECONDITION_FAILED`). The route writes each for a caller
+ *  holding the `dispatch` command, naming the command that reads a token and the field that sends
+ *  it; the person who approved the row runs no command. */
+const UPLOAD_MOVED_CODES: ReadonlySet<string> = new Set([
+  "DOCUMENT_CHANGED",
+  "DOCUMENT_EXISTS",
+  "PRECONDITION_FAILED",
+]);
+
+/** What the row says of an upload its route refused because the document moved after the plan
+ *  read it. */
+export const UPLOAD_MOVED_REFUSAL =
+  "The document under this name changed after the plan read it, so the upload wrote nothing. Read what it holds now before you ask for this upload again.";
+
+/** What a row's result says to the person: the page's own words for an upload refused because
+ *  its document moved (`UPLOAD_MOVED_REFUSAL`), and every other result as Dispatch wrote it. */
+export function rowResultMessage(row: GoingPlanRow): string {
+  const result = row.result;
+  if (result === null) {
+    return "";
+  }
+  return row.tool === "dispatch_artifact" &&
+    row.state === "failed" &&
+    UPLOAD_MOVED_CODES.has(result.code)
+    ? UPLOAD_MOVED_REFUSAL
+    : result.message;
+}
+
 /** The rows that need `row`, and the rows that need those, by number. */
 function rowsNeeding(rows: readonly GoingPlanRow[], row: number): Set<number> {
   const needing = new Set<number>();

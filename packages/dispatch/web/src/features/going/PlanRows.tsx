@@ -25,6 +25,7 @@ import {
   makesIssue,
   rowChanges,
   rowLabel,
+  rowResultMessage,
   rowWaits,
   toggledDraft,
   valueText,
@@ -175,6 +176,7 @@ export function PlanRowView({
   const changes = rowChanges(row, edits);
   const rows = plan.rows ?? [];
   const label = rowLabel(row);
+  const resultMessage = rowResultMessage(row);
   return (
     <li
       className={`space-y-1 border-t py-2 first:border-t-0 ${borderDefault}`}
@@ -234,11 +236,11 @@ export function PlanRowView({
           Waits for you: {(row.waits ?? []).join("; ")}
         </p>
       ) : null}
-      {row.result !== null && row.result.message !== "" ? (
+      {resultMessage === "" ? null : (
         <p className={`text-xs ${row.state === "failed" ? dangerText : textMutedOnSurface}`}>
-          {row.result.message}
+          {resultMessage}
         </p>
-      ) : null}
+      )}
     </li>
   );
 }

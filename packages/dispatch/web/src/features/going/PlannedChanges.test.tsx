@@ -435,6 +435,59 @@ test("an upload row over a document shows that document's text taken out and the
   }
 });
 
+// An upload refused because its document moved after the plan read it says so in the page's own
+// words: the route's words are written for a caller of the `dispatch` command, and tell them to run
+// it and send a token, which the person who approved the row cannot do. Any other refusal of an
+// upload keeps the words Dispatch wrote.
+test("an upload refused because its document moved says so in the page's words, never the command's", async () => {
+  const uploadRow = (number: number, name: string, extra: Partial<GoingPlanRow>): GoingPlanRow =>
+    row(number, {
+      arguments: { content: "The split moves CORE-3.\n", issue: "CORE-1", name },
+      class: "create_text",
+      issue: "CORE-1",
+      item: name,
+      state: "failed",
+      tool: "dispatch_artifact",
+      ...extra,
+    });
+  const ran: GoingPlanAnswer = {
+    ...plan,
+    rows: [
+      uploadRow(0, "design.md", {
+        result: {
+          code: "PRECONDITION_FAILED",
+          delivery: null,
+          message:
+            'the document moved past the token the upload named; read the document with `dispatch doc-read`, which prints `Document token: sha256:…`, and upload again naming that token as the upload\'s precondition, `{"document":"sha256:…"}`',
+          status: 409,
+        },
+      }),
+      uploadRow(1, "notes.md", {
+        result: {
+          code: "CAP_EXCEEDED",
+          delivery: null,
+          message: "a markdown document is at most 1 MiB",
+          status: 413,
+        },
+      }),
+    ],
+    state: "done",
+  };
+  const { restore } = await openPlan("over", async () => ran);
+  try {
+    renderWithQueries(<Card />);
+    const card = await screen.findByTestId("going-plan-card-rows");
+    const [moved, tooLarge] = within(card).getAllByTestId("going-plan-row");
+    expect(moved).not.toHaveTextContent("dispatch doc-read");
+    expect(moved).toHaveTextContent(
+      "The document under this name changed after the plan read it, so the upload wrote nothing."
+    );
+    expect(tooLarge).toHaveTextContent("a markdown document is at most 1 MiB");
+  } finally {
+    restore();
+  }
+});
+
 // No plan frame says that a row ran, so the plan is read again once the run ends: the rows it
 // ran show as done, and the run's result offers Undo.
 function Conversation(): ReactNode {
