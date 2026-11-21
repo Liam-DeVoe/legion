@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -432,14 +433,24 @@ func (s *server) readNATSHoldRecords(w http.ResponseWriter, r *http.Request, _ s
 	writeJSON(w, http.StatusOK, answer)
 }
 
-// deleteNATSHoldCohort deletes the hold row's hold's cohort, for hold abort.
+// deleteNATSHoldCohort deletes the cohort record the query names (?hold_id=, ?kind=cohort, ?key=,
+// ?gen=, ?sig=), for hold abort from prepare, its one caller: once the operator's signature over
+// the record's delete at that gen verifies (signedrecord.RecordDelete), only while the row is
+// prepare with that hold id, and only the record at that gen, so neither the operator's token alone
+// nor an old signature deletes a record.
 func (s *server) deleteNATSHoldCohort(w http.ResponseWriter, r *http.Request, _ string) {
-	holdID, kind := r.URL.Query().Get("hold_id"), r.URL.Query().Get("kind")
-	if holdID == "" || kind != natshold.KindCohort {
-		writeHoldRefusal(w, http.StatusBadRequest, "bad_request", "the query names hold_id and kind=cohort, the one kind of record a delete takes", nil)
+	query := r.URL.Query()
+	holdID, kind, key := query.Get("hold_id"), query.Get("kind"), query.Get("key")
+	gen, err := strconv.ParseUint(query.Get("gen"), 10, 63)
+	if holdID == "" || kind != natshold.KindCohort || key == "" || err != nil || gen == 0 {
+		writeHoldRefusal(w, http.StatusBadRequest, "bad_request", "the query names hold_id, kind=cohort, the one kind of record a delete takes, its key, the gen it deletes (at least 1) and the sig over them", nil)
 		return
 	}
-	err := s.holdStore().DeleteCohort(r.Context(), holdID)
+	if err := signedrecord.Verify(s.deps.NATSHold.Keys, query.Get("sig"), signedrecord.RecordDelete(holdID, kind, key, gen)); err != nil {
+		writeHoldRefusal(w, http.StatusBadRequest, "bad_signature", "no key of BROKER_NATS_HOLD_SIGNING_KEYS signed the record's delete at the gen it names", nil)
+		return
+	}
+	err = s.holdStore().DeleteCohort(r.Context(), holdID, key, gen)
 	var conflict *natshold.Conflict
 	switch {
 	case err == nil:
@@ -447,7 +458,10 @@ func (s *server) deleteNATSHoldCohort(w http.ResponseWriter, r *http.Request, _ 
 		writeUnavailable(w, "DATABASE_UNAVAILABLE", "delete the cohort", err)
 		return
 	case errors.Is(err, natshold.ErrHoldMismatch):
-		writeHoldRefusal(w, http.StatusConflict, "hold_mismatch", err.Error(), conflict)
+		writeHoldRefusal(w, http.StatusConflict, "hold_mismatch", err.Error()+": the cohort is deleted only while the row is prepare with its hold id", conflict)
+		return
+	case errors.Is(err, natshold.ErrGenMismatch):
+		writeHoldRefusal(w, http.StatusConflict, "gen_mismatch", err.Error(), conflict)
 		return
 	default:
 		writeInternal(w, "delete the cohort", err)

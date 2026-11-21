@@ -262,7 +262,27 @@ func (c *Client) PutRecord(ctx context.Context, holdID, kind, key string, expect
 
 // DeleteCohort deletes the cohort record, for `hold abort` from `prepare`.
 func (c *Client) DeleteCohort(ctx context.Context, holdID string) error {
-	return c.call(ctx, http.MethodDelete, recordsPath, url.Values{"hold_id": {holdID}, "kind": {"cohort"}}, nil, nil)
+	if len(c.cfg.SigningKey) == 0 {
+		return errNoSigningKey
+	}
+	// The route deletes a record only at the gen its delete is signed over, so each cohort record
+	// is read and verified first, and its delete signed over the gen read: a write between the two
+	// answers gen_mismatch, and the operator runs the abort again.
+	records, err := c.Records(ctx, holdID, cohortKind)
+	if err != nil {
+		return err
+	}
+	for _, record := range records {
+		sig, err := signedrecord.Sign(c.cfg.SigningKey, signedrecord.RecordDelete(holdID, cohortKind, record.Key, record.Gen))
+		if err != nil {
+			return fmt.Errorf("holdrecord: sign the delete of hold %s's cohort record %s: %w", holdID, record.Key, err)
+		}
+		query := url.Values{"hold_id": {holdID}, "kind": {cohortKind}, "key": {record.Key}, "gen": {strconv.FormatUint(record.Gen, 10)}, "sig": {sig}}
+		if err := c.call(ctx, http.MethodDelete, recordsPath, query, nil, nil); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Cutovers reads and verifies every family's cutover row, through `/v1/nats-hold/cutover`.
@@ -462,6 +482,7 @@ const (
 	cutoverPath      = "/v1/nats-hold/cutover"
 	journalKind      = "done"
 	journalKey       = "hold"
+	cohortKind       = "cohort"
 	codeGenMismatch  = "gen_mismatch"
 	maxJournalWrites = 16
 	// maxAnswer bounds the answer body the client reads: the largest is a hold's records of one

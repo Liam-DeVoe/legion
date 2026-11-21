@@ -174,6 +174,29 @@ var twoDisks = map[string]string{"step1_disk_id.A": "1", "step1_disk_id.B": "2"}
 func TestTheHoldJournal(t *testing.T) {
 	ctx := context.Background()
 
+	t.Run("DeleteCohort deletes the cohort in prepare and is refused in held", func(t *testing.T) {
+		r := newRig(t)
+		c := r.client(t)
+		current := row(t, c)
+		prepared, err := c.MoveRow(ctx, current.Gen, natsgrant.OperatorPhasePrepare, "h-cohort", "cohort")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.PutRecord(ctx, "h-cohort", "cohort", "cohort", 0, json.RawMessage(`{"threshold":3}`)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.MoveRow(ctx, prepared.Gen, natsgrant.OperatorPhaseHeld, "h-cohort", "cohort"); err != nil {
+			t.Fatal(err)
+		}
+		var refusal *holdrecord.RouteError
+		if err := c.DeleteCohort(ctx, "h-cohort"); !errors.As(err, &refusal) || refusal.Code != "hold_mismatch" {
+			t.Fatalf("DeleteCohort in held answered %v, want 409 hold_mismatch", err)
+		}
+		if records, err := c.Records(ctx, "h-cohort", "cohort"); err != nil || len(records) != 1 {
+			t.Fatalf("after the refused delete the cohort records are %+v, %v; want the one", records, err)
+		}
+	})
+
 	t.Run("the route methods round-trip and verify", func(t *testing.T) {
 		r := newRig(t)
 		c := r.client(t)
