@@ -234,11 +234,13 @@ type sessionRelays struct {
 	// read-only after.
 	repositories *edgeRepositories
 	// repositoryGapsMu guards repositoryGaps: each session owed the gap mark of GitHub events
-	// the edge withheld while no fresh repository answer stood (relayNATS). It is kept across the
-	// session's relay runs, so a run that restarts before the session's next frame - a new
-	// delivery epoch, a pull or a frame-publish error, a receipt pause - still marks that frame,
-	// and it is cleared once a frame carrying the mark is published (repositoryGapSent), or once
-	// the session is no longer this listener's to relay (apply).
+	// the edge withheld while no fresh repository answer stood (relayNATS), as this process noted
+	// it. It is kept across the session's relay runs, so a run that restarts before the session's
+	// next frame - a new delivery epoch, a pull or a frame-publish error, a receipt pause - still
+	// marks that frame, and the session's entry carries the same mark for the next listener to
+	// relay it (session.SessionEntry.RepositoryGap). It is cleared once a frame carrying the mark
+	// is published (repositoryGapSent), or once the session is no longer this listener's to relay
+	// (forgetRepositoryGap), which leaves the entry's mark to the next owner.
 	repositoryGapsMu sync.Mutex
 	repositoryGaps   map[string]struct{}
 
@@ -702,7 +704,7 @@ func (m *sessionRelays) apply(sessionID string, notice relayNotice) {
 			run.cancel(why)
 			delete(m.relays, sessionID)
 		}
-		m.repositoryGapSent(sessionID)
+		m.forgetRepositoryGap(sessionID)
 		return
 	}
 	switch {
@@ -1110,7 +1112,7 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 		// the same frame already marks keeps no reason, since it lost more.
 		if withhold, reason := m.edgeWithholds(sessionID, msg); withhold {
 			if reason == withheldAnswerUnknown {
-				m.noteRepositoryGap(sessionID)
+				m.noteRepositoryGap(ctx, sessionID)
 				if !gap {
 					gapReason = relayGapRepositoryWithheld
 				}
@@ -1132,7 +1134,7 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 			return relayRetry
 		}
 		if gap {
-			m.repositoryGapSent(sessionID)
+			m.repositoryGapSent(ctx, sessionID)
 		}
 		gap, gapReason = false, ""
 	}
@@ -1140,27 +1142,56 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 
 // noteRepositoryGap records that sessionID is owed the gap mark of a GitHub event the edge
 // withheld while no fresh repository answer stood, until a frame carrying a gap mark is published
-// (repositoryGapSent).
-func (m *sessionRelays) noteRepositoryGap(sessionID string) {
+// (repositoryGapSent): in this process, and on the session's entry, which the next listener to
+// relay the session reads after a move or a restart (session.SessionEntry.RepositoryGap). A write
+// of the entry that fails is logged, and this process still sends the mark.
+func (m *sessionRelays) noteRepositoryGap(ctx context.Context, sessionID string) {
 	m.repositoryGapsMu.Lock()
-	defer m.repositoryGapsMu.Unlock()
 	if m.repositoryGaps == nil {
 		m.repositoryGaps = map[string]struct{}{}
 	}
 	m.repositoryGaps[sessionID] = struct{}{}
+	m.repositoryGapsMu.Unlock()
+	if entry, _ := m.sessions.Lookup(sessionID); entry.RepositoryGap {
+		return
+	}
+	if err := m.sessions.SetRepositoryGap(ctx, sessionID, true); err != nil {
+		m.logger.Warn("edge listener could not record the session's repository gap on its entry; a relay of the session by another listener does not send the mark",
+			slog.String("session_id", sessionID), slog.String("error", err.Error()))
+	}
 }
 
-// owesRepositoryGap reports whether sessionID is owed that mark (noteRepositoryGap).
+// owesRepositoryGap reports whether sessionID is owed that mark: this process noted it, or the
+// session's entry carries it (noteRepositoryGap).
 func (m *sessionRelays) owesRepositoryGap(sessionID string) bool {
 	m.repositoryGapsMu.Lock()
-	defer m.repositoryGapsMu.Unlock()
 	_, owed := m.repositoryGaps[sessionID]
-	return owed
+	m.repositoryGapsMu.Unlock()
+	if owed {
+		return true
+	}
+	entry, _ := m.sessions.Lookup(sessionID)
+	return entry.RepositoryGap
 }
 
-// repositoryGapSent clears what sessionID is owed: a frame carrying a gap mark was published, or
-// the session is no longer this listener's to relay.
-func (m *sessionRelays) repositoryGapSent(sessionID string) {
+// repositoryGapSent clears what sessionID is owed, a frame carrying a gap mark having been
+// published: in this process, and on the session's entry. A write of the entry that fails is
+// logged; the entry then keeps the mark, and the session's next relay run sends it once more.
+func (m *sessionRelays) repositoryGapSent(ctx context.Context, sessionID string) {
+	m.forgetRepositoryGap(sessionID)
+	if entry, _ := m.sessions.Lookup(sessionID); !entry.RepositoryGap {
+		return
+	}
+	if err := m.sessions.SetRepositoryGap(ctx, sessionID, false); err != nil {
+		m.logger.Warn("edge listener could not clear the session's repository gap on its entry; its next relay run sends the mark again",
+			slog.String("session_id", sessionID), slog.String("error", err.Error()))
+	}
+}
+
+// forgetRepositoryGap clears what this process noted for sessionID and leaves the session's entry
+// as it is: the session is no longer this listener's to relay, and the next listener that relays
+// it reads the mark there.
+func (m *sessionRelays) forgetRepositoryGap(sessionID string) {
 	m.repositoryGapsMu.Lock()
 	defer m.repositoryGapsMu.Unlock()
 	delete(m.repositoryGaps, sessionID)

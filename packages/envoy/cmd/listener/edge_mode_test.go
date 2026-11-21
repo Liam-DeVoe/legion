@@ -953,6 +953,31 @@ func TestAnEdgeReleasesAnotherProjectsClaimWhileTheClaimViewRefills(t *testing.T
 	}
 }
 
+// A claim of another project's role that the edge cannot release refuses the registration with
+// the retryable 503, and nothing of the registration is stored: the claim stands, and nothing else
+// frees it while the session lives. Here the claim's record cannot be read, so the release cannot
+// tell that it is not the session's. Control: with edge mode off the registration is taken.
+func TestAnEdgeRegistrationWhoseRoleReleaseFailsIsRefused(t *testing.T) {
+	rig := newEdgeRig(t)
+	const moved, infraRole = "ses_edge_release_fails", "legion-infra-infra-6-reviewer"
+	rig.placeElsewhereFollowing(t, moved, []string{}, contracts.RoleTopicPrefix+infraRole)
+	// JSON that is not a claim is a record no read can decode (store.ErrMalformedRoleClaim); a
+	// string that is not JSON would read as an earlier build's bare holder id.
+	if _, err := registryRoleKV(t, rig.deps.registry).Put(infraRole, []byte(`{"holder_session_id":7}`)); err != nil {
+		t.Fatalf("store an unreadable claim of %s: %v", infraRole, err)
+	}
+	before := storedEdgeSessionEntry(t, rig, moved)
+
+	answer := rig.subscribe(t, rig.personToken(moved, "PRIV"), moved)
+	if answer.Code != http.StatusServiceUnavailable || answer.Header().Get("Retry-After") == "" {
+		t.Fatalf("the registration whose release of %s fails: status %d, Retry-After %q (%s), want the retryable 503",
+			infraRole, answer.Code, answer.Header().Get("Retry-After"), strings.TrimSpace(answer.Body.String()))
+	}
+	if after := storedEdgeSessionEntry(t, rig, moved); after.MachineID != before.MachineID || after.UpdatedAt != before.UpdatedAt {
+		t.Fatalf("the refused registration wrote %s's entry: %+v, want it left at %+v", moved, after, before)
+	}
+}
+
 // A send at the edge is the session's own: one under another source (dispatch, human), and one
 // that names no source session, is refused 403 sender_not_session, and the peer receives none of
 // them; a send as agent naming the token's session reaches the peer with that session as its

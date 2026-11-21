@@ -2913,7 +2913,13 @@ func (d *listenerDeps) registerPass(
 		previous, err := d.sessions.Get(body.SessionID)
 		registered.epochChanged = err != nil || previous.Delivery != session.DeliveryConsumer || previous.Epoch != outcome.epoch
 	}
-	if err := d.sessions.PutWithin(ctx, body.SessionID, sessionEntryFromSubscribe(body, machineID, outcome, projects)); err != nil {
+	// The gap mark the session is owed (session.SessionEntry.RepositoryGap) is carried over from
+	// the entry this one replaces, so a registration never clears a mark no frame has carried.
+	entry := sessionEntryFromSubscribe(body, machineID, outcome, projects)
+	if previous, err := d.sessions.Get(body.SessionID); err == nil {
+		entry.RepositoryGap = previous.RepositoryGap
+	}
+	if err := d.sessions.PutWithin(ctx, body.SessionID, entry); err != nil {
 		// The row is stored and nothing tells another reader the session is here, so the
 		// registration travels as this error alone and no caller is handed it. The pass
 		// answers nothing: the error is the registration's, and the caller's switch over it
@@ -3032,6 +3038,19 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 				hold.renewThroughOutage(ctx, d.sessions, machineID)
 			}
 			refusal.write(w)
+			return
+		}
+		// At the edge every claim the session holds of a role of none of the token's projects,
+		// which another listener granted it or a token that listed more did, is released before
+		// anything of the registration is stored, and the answer's warnings name it
+		// (store.Registry.ReleaseRefusedRoleClaims). A release that fails refuses the registration
+		// with the retryable 503: the claim stands, and nothing else frees it while the session
+		// lives. The roles weighed are the stored row's role lanes and the claim copy's.
+		released, err := hold.releaseRefusedRoles(ctx, d.registry)
+		if err != nil {
+			logger.Warn("edge listener could not release a role claim of a project the session's token does not list; the registration is refused 503",
+				slog.String("session_id", body.SessionID), slog.String("error", err.Error()))
+			writeBusUnavailable(w, err)
 			return
 		}
 		// One read and one merge decide this registration's topics, which are both the row it
@@ -3205,31 +3224,23 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// stands.
 		//
 		// At the edge the renewal is held to the token's projects as a new claim is
-		// (roleOfProjects): a claim the session holds of a role of none of them, which another
-		// listener granted it or a token that listed more did, is not renewed but released, and
-		// the answer's warnings name it (store.Registry.RenewRoleClaims' holds). The renewal
-		// also weighs the role lanes the hold took out of the row (registeredSession.dropped):
-		// while the role claim copy refills it names no role, and the row no longer names those.
+		// (roleOfProjects): a claim of a role of none of them was released above, and one granted
+		// since is not renewed.
 		var holdsRole func(role string) bool
-		weighed := registered.row
 		if hold != nil {
 			holdsRole = func(role string) bool { return roleOfProjects(role, hold.projects) }
-			weighed.Topics = append(slices.Clone(registered.row.Topics), registered.dropped...)
 		}
-		renewal, err := d.registry.RenewRoleClaims(ctx, body.SessionID, strings.TrimSpace(body.ClientInstanceID), weighed, holdsRole)
+		renewal, err := d.registry.RenewRoleClaims(ctx, body.SessionID, strings.TrimSpace(body.ClientInstanceID), registered.row, holdsRole)
 		logger.LogEvent(slog.LevelDebug, "listener subscribe weighed the session's role claims",
 			slog.String("session_id", body.SessionID),
 			slog.Any("roles", renewal.Set),
-			slog.Any("renewed", renewal.Renewed),
-			slog.Any("released", renewal.Released))
+			slog.Any("renewed", renewal.Renewed))
 		if err != nil {
 			logger.Warn("listener subscribe left a role claim unrenewed",
 				slog.String("session_id", body.SessionID),
 				slog.String("error", err.Error()))
 		}
-		for _, role := range renewal.Released {
-			logger.Warn("edge listener released a role claim of a project the session's token does not list",
-				slog.String("session_id", body.SessionID), slog.String("role", role), slog.Any("projects", hold.projects))
+		for _, role := range released {
 			warnings = append(warnings, edgeReleasedRoleWarning(role, hold.projects))
 		}
 		// A registration that returns its session hands that session the kept lane of each role

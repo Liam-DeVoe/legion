@@ -21,7 +21,8 @@ package main
 //     session is dropped from its row and its consumer's filter. At relay a GitHub frame reaches
 //     the session only while a fresh answer names the repository its event names
 //     (sessionRelays.edgeWithholds), with the gap mark on the next frame while no answer stands,
-//     kept across the session's relay runs (sessionRelays.repositoryGaps), and the refresh removes
+//     kept across the session's relay runs and on its entry (sessionRelays.repositoryGaps,
+//     session.SessionEntry.RepositoryGap), and the refresh removes
 //     an interest in a repository that left (pruneEdgeInterests). What a session publishes is
 //     narrower: a role subject of its project in the form that names it (edgePublishRefusal). A
 //     refused registration names every topic it refused (listenerwire.EdgeRefusal).
@@ -30,9 +31,9 @@ package main
 //   - Roles: a claim or a read names a role that works for one of the token's projects
 //     (edgeRoleRefusal), and a read names the place and process of a holder of none of them (its
 //     directory, machine, host, title, client instance and capabilities) to nobody
-//     (edgeRoleHolder). A registration renews the session's claims of its token's projects'
-//     roles alone and releases the rest (roleOfProjects, store.Registry.RenewRoleClaims),
-//     and a claimant is handed the kept messages of those roles alone.
+//     (edgeRoleHolder). A registration first releases the session's claims of other projects'
+//     roles, refused 503 when a release fails (edgeTopicHold.releaseRefusedRoles), renews its
+//     token's projects' roles alone, and a claimant is handed the kept messages of those alone.
 //   - Sends: the target session's token lists one of the token's projects, else the send is
 //     answered as to a missing session (sessionOfProjects).
 //   - Reads: the session list, the registry, the session rows' roles and topics and the Legion
@@ -183,9 +184,27 @@ func roleOfProjects(role string, projects []string) bool {
 
 // edgeReleasedRoleWarning is the warning a registration's answer names a role by, one the edge
 // released from the session because it works for none of the token's projects
-// (store.Registry.RenewRoleClaims).
+// (edgeTopicHold.releaseRefusedRoles).
 func edgeReleasedRoleWarning(role string, projects []string) string {
 	return fmt.Sprintf("role %s was released and not renewed: a session at the edge holds only roles of %s", role, strings.Join(projects, ", "))
+}
+
+// releaseRefusedRoles releases every claim the hold's session holds of a role of none of the
+// token's projects (store.Registry.ReleaseRefusedRoleClaims), weighing the role lanes of the
+// session's stored row as this listener's copy of it holds them and the roles the role claim copy
+// names, and answers the roles it released. Its error is every release that failed. A nil hold
+// releases nothing.
+func (h *edgeTopicHold) releaseRefusedRoles(ctx context.Context, registry *store.Registry) ([]string, error) {
+	if h == nil {
+		return nil, nil
+	}
+	stored, _ := registry.Cached(h.sessionID)
+	released, err := registry.ReleaseRefusedRoleClaims(ctx, h.sessionID, stored, func(role string) bool { return !roleOfProjects(role, h.projects) })
+	for _, role := range released {
+		h.logger.Warn("edge listener released a role claim of a project the session's token does not list",
+			slog.String("session_id", h.sessionID), slog.String("role", role), slog.Any("projects", h.projects))
+	}
+	return released, err
 }
 
 // legionAgentOfProjects reports whether a Legion agent registry entry is one of projects': the
@@ -309,7 +328,10 @@ func (h *edgeTopicHold) refused(ctx context.Context, topics []string) ([]string,
 }
 
 // answer is the repositories the broker's answer for the hold's projects names, read fresh within
-// ctx the first time a topic asks and kept for the rest of the registration.
+// ctx the first time a topic asks and kept for the rest of the registration. The read ends
+// edgeRegistrationReserve before ctx does, so a broker that does not answer leaves the
+// registration the time its own writes need: the renewal of the session's entry a refused
+// registration still makes (renewThroughOutage).
 func (h *edgeTopicHold) answer(ctx context.Context) ([]string, error) {
 	if h.read {
 		return h.answered, nil
@@ -317,13 +339,24 @@ func (h *edgeTopicHold) answer(ctx context.Context) ([]string, error) {
 	if h.repositories == nil {
 		return nil, fmt.Errorf("%w: this listener reads no repository answer", errRepositoriesUnknown)
 	}
-	answered, err := h.repositories.readFresh(ctx, h.projects)
+	readCtx := ctx
+	if deadline, bounded := ctx.Deadline(); bounded {
+		var cancel context.CancelFunc
+		readCtx, cancel = context.WithDeadline(ctx, deadline.Add(-edgeRegistrationReserve))
+		defer cancel()
+	}
+	answered, err := h.repositories.readFresh(readCtx, h.projects)
 	if err != nil {
 		return nil, err
 	}
 	h.answered, h.read = answered, true
 	return answered, nil
 }
+
+// edgeRegistrationReserve is how much of a registration's budget (sendRequestBudget) the edge's
+// repository read leaves unspent: a bucket read and a write of the session's entry, each of which
+// answers in milliseconds on a bus that answers at all.
+const edgeRegistrationReserve = time.Second
 
 // refusal is the hold of the topics the registration names, or nil: a 403 naming every refused
 // topic (listenerwire.EdgeRefusal.Refused), so the client drops exactly those and registers the
