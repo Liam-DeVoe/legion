@@ -153,7 +153,9 @@ def repeated_keys(
     """Each key of one composed mapping that repeats an earlier key of that same mapping, as the
     node of its first copy and the node of the repeat, in the order they are written. Two keys are
     one key when `normal` gives them the same text; a key it gives None is compared with none,
-    and so is a key that is not a scalar. The mapping alone is read, not the nodes below it:
+    and so is a key that is not a scalar. A key written again as an alias of itself is a repeat,
+    though PyYAML composes the alias to the very node its anchor composed, so the two copies are
+    one node and the repeat is `first` itself. The mapping alone is read, not the nodes below it:
     whoever walks a tree calls this on each mapping of it. check-workflow-files.sh folds keys to
     upper case, as GitHub's workflow parser compares them; UniqueKeyLoader compares them exactly,
     as js-yaml does."""
@@ -164,9 +166,10 @@ def repeated_keys(
         key = normal(name)
         if key is None:
             continue
-        first = first_seen.setdefault(key, name)
-        if first is not name:
-            yield first, name
+        if key in first_seen:
+            yield first_seen[key], name
+        else:
+            first_seen[key] = name
 
 
 def written_key(name: yaml.ScalarNode) -> str | None:
@@ -187,16 +190,41 @@ class UniqueKeyLoader(yaml.SafeLoader):
     is composed, when it holds exactly what was written, and not in the constructor, whose
     flatten_mapping rewrites a mapping's node in place once another mapping merges it, which can
     be before that mapping is itself constructed. Anchors and aliases read as yaml.safe_load reads
-    them: an alias is the node its anchor composed, tested once. The refusal names both lines
-    itself and carries no mark, whose snippet would only repeat the line, and whose stream name is
-    `<unicode string>` for the text every reader passes, where the reader names the file."""
+    them: an alias is the node its anchor composed, tested once, and a key written again as an
+    alias of itself is a repeated key, which js-yaml refuses as well. A merge key written as an
+    alias is refused at that alias: js-yaml reads it as a key named `<<` (once, and as a duplicated
+    key twice), where PyYAML merges it, so the two would read different mappings. The refusal names
+    both lines itself, or the line and the alias for a repeat through an alias, whose node carries
+    only its anchor's line, and carries no mark, whose snippet would only repeat the line, and whose
+    stream name is `<unicode string>` for the text every reader passes, where the reader names the
+    file."""
+
+    def compose_node(self, parent, index):
+        # A mapping's key is composed with no index, and an alias there of a merge key is no merge
+        # to js-yaml (lib/loader.js, readBlockMapping and storeMappingPair).
+        if isinstance(parent, yaml.MappingNode) and index is None and self.check_event(yaml.AliasEvent):
+            event = self.peek_event()
+            merge = self.anchors.get(event.anchor)
+            if isinstance(merge, yaml.ScalarNode) and merge.tag == MERGE_TAG:
+                raise yaml.composer.ComposerError(
+                    problem=f"the mapping key '<<' of line {event.start_mark.line + 1} is the merge key of line "
+                            f"{merge.start_mark.line + 1} written as an alias (*{event.anchor}): js-yaml "
+                            f"(dorny/paths-filter's reader) reads it as a key named '<<', where PyYAML merges it, "
+                            f"so the two would read different mappings")
+        return super().compose_node(parent, index)
 
     def compose_mapping_node(self, anchor):
         node = super().compose_mapping_node(anchor)
         for first, repeat in repeated_keys(node, written_key):
+            line = first.start_mark.line + 1
+            if repeat is first:
+                alias = next(name for name, anchored in self.anchors.items() if anchored is first)
+                again = (f"the mapping key '{first.value}' of line {line} is written again in the same mapping as "
+                         f"an alias of it (*{alias})")
+            else:
+                again = (f"the mapping key '{repeat.value}' of line {repeat.start_mark.line + 1} is the key of "
+                         f"line {line} again")
             raise yaml.composer.ComposerError(
-                problem=f"the mapping key '{repeat.value}' of line {repeat.start_mark.line + 1} is the key of "
-                        f"line {first.start_mark.line + 1} again: js-yaml (dorny/paths-filter's reader) and "
-                        f"GitHub's workflow parser refuse a repeated key, where yaml.safe_load keeps the last "
-                        f"copy and reports nothing")
+                problem=f"{again}: js-yaml (dorny/paths-filter's reader) and GitHub's workflow parser refuse a "
+                        f"repeated key, where yaml.safe_load keeps the last copy and reports nothing")
         return node

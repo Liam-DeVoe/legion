@@ -15,13 +15,14 @@
 #   2. a file above 500,000 bytes, GitHub's own cap, which is the same fault with the consequence
 #      named, because such a file starts no run whatever this check says;
 #   3. a file that is not valid YAML, which GitHub reads no further than either;
-#   4. two keys of one mapping that are equal after upper-casing. GitHub's parsers refuse both a
-#      repeated key and a key differing only in case (actions/languageservices
-#      workflow-parser/src/templates/template-reader.ts:212 and :359, actions/runner
-#      TemplateReader.cs with StringComparer.OrdinalIgnoreCase), while the YAML layer passes them
-#      through on purpose (yaml-object-reader.ts parses with uniqueKeys: false). A load cannot find
-#      it — yaml.safe_load keeps the last of a repeated key and reports nothing — so this walks the
-#      composed nodes instead;
+#   4. two keys of one mapping that are equal after upper-casing, a key written again as an alias
+#      of itself among them. GitHub's parsers refuse both a repeated key and a key differing only
+#      in case (actions/languageservices workflow-parser/src/templates/template-reader.ts:212 and
+#      :359, actions/runner TemplateReader.cs with StringComparer.OrdinalIgnoreCase), and the
+#      first (@actions/workflow-parser 0.3.61) refuses any mapping key written as an alias, while
+#      the YAML layer passes them through on purpose (yaml-object-reader.ts parses with
+#      uniqueKeys: false). A load cannot find it — yaml.safe_load keeps the last of a repeated key
+#      and reports nothing — so this walks the composed nodes instead;
 #   5. a file calling more than 45 unique reusable workflows. GitHub allows 50 from a single
 #      workflow file, counting every tree of nested calls. This check follows only the calls to
 #      this repository's own workflows (`./.github/workflows/…`) and counts a call to another
@@ -158,13 +159,24 @@ def check_folded_keys(path: Path, root: object) -> None:
         if isinstance(node, yaml.MappingNode):
             for first, name in repeated_keys(node, lambda key: key.value.upper()):
                 line = name.start_mark.line + 1
+                if name is first:
+                    # A key written again as an alias of itself is one node twice, which carries
+                    # only its anchor's line.
+                    said = (
+                        f"the mapping key '{name.value}' of line {line} is written again in its "
+                        f"mapping as an alias of it. GitHub's workflow parser refuses a mapping key "
+                        f"written as an alias"
+                    )
+                else:
+                    said = (
+                        f"the mapping key '{name.value}' is the key '{first.value}' of line "
+                        f"{first.start_mark.line + 1} again after upper-casing. GitHub's workflow "
+                        f"parser compares keys without regard to case and refuses the file"
+                    )
                 problem(
                     path,
-                    f"{path}:{line}: the mapping key '{name.value}' is the key "
-                    f"'{first.value}' of line {first.start_mark.line + 1} again after "
-                    f"upper-casing. GitHub's workflow parser compares keys without regard "
-                    f"to case and refuses the file, while YAML keeps the last of the two "
-                    f"and reports nothing." + limits(path),
+                    f"{path}:{line}: {said}, while YAML keeps the last of the two and reports "
+                    f"nothing." + limits(path),
                     line=line,
                 )
             for name, value in node.value:

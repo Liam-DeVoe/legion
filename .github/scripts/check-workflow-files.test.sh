@@ -196,6 +196,28 @@ check "names the anchored mapping's second key" \
   "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=5::.github/workflows/ci.yaml:5: the mapping key 'HTTP_PROXY' is the key 'http_proxy' of line 4 again")"
 check "reports it once, not once per alias" "$(is "$(errors "$out")" 1)"
 
+echo "case: a key written again as an alias of itself"
+# PyYAML composes the alias to the very node its anchor composed, so the two copies are one node,
+# and that node carries the anchor's line alone. GitHub's workflow parser refuses the file.
+root=$(fixture aliased-key)
+cat > "$root/.github/workflows/ci.yaml" <<'YAML'
+name: Build
+on: push
+env:
+  &proxy HTTP_PROXY: http://proxy.invalid:3128
+  *proxy : http://proxy.invalid:3128
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo build
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the key, the line of its anchor and that it is written again as an alias" \
+  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=4::.github/workflows/ci.yaml:4: the mapping key 'HTTP_PROXY' of line 4 is written again in its mapping as an alias of it\. GitHub's workflow parser refuses a mapping key written as an alias, while YAML keeps the last of the two")"
+check "reports it once" "$(is "$(errors "$out")" 1)"
+
 echo "case: a key holding a newline and a workflow command, and its upper-case twin"
 # The message repeats both keys, and the runner reads each line of a step's output as a command
 # of its own: unescaped, the newline in each key would start a ::warning the file never asked for.

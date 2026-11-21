@@ -437,6 +437,24 @@ check_input_parse_error ".github/workflows/ci.yaml"
 check "a key repeated in a nested mapping is refused the same way" \
   "$(contains "$out" "^::error file=.github/workflows/ci.yaml::cannot read repository input: the mapping key 'filters' of line $((first + 1)) is the key of line $first again: ")"
 
+echo "case: a filters file that repeats a filter name through an alias of it"
+# PyYAML composes an alias to the very node its anchor composed, so a filter name written again as
+# an alias of itself is one node twice in the file's mapping. js-yaml 4.1.0, which dorny/paths-filter
+# v4.0.3 reads the file with, refuses it as a duplicated mapping key, so every job the file gates
+# is skipped. The repeat holds the same list as the first copy, so a check that took the last copy
+# would judge the very filters it judges green. The control is the same anchor aliased nowhere.
+root=$(fixture filters-aliased-key)
+replace "$root/.github/ci-filters.yaml" $'image:\n' $'&image image:\n'
+run_check "$root"
+check "an anchored filter name aliased nowhere passes" "$(is "$status" 0)"
+anchored=$(grep -n '^&image image:$' "$root/.github/ci-filters.yaml" | cut -d: -f1)
+printf "*image :\n  - 'docs/**'\n" >> "$root/.github/ci-filters.yaml"
+run_check "$root"
+check_input_parse_error ".github/ci-filters.yaml"
+check "names the file, the key, its line and the alias it is written again as" \
+  "$(contains "$out" "^::error file=.github/ci-filters.yaml::cannot read repository input: the mapping key 'image' of line $anchored is written again in the same mapping as an alias of it (\*image): ")"
+check "and judges nothing by either copy" "$(is "$(contains "$out" '^report: ')" false)"
+
 echo "case: importing an unsafe data string cannot inject warning commands"
 root=$(fixture import-warning-command)
 cat >> "$root/.github/scripts/ci_job_reads.py" <<'PY'
