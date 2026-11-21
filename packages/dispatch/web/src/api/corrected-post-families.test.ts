@@ -1157,7 +1157,7 @@ test("references to: a delete writes its mark into an answer a refused prefix re
       [OTHER, "Agreed.", undefined],
     ],
     node: [DELETION.deleted_at, ""],
-    status: "error",
+    status: "error" as const,
     words: false,
   };
   try {
