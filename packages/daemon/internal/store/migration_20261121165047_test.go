@@ -11,16 +11,17 @@ import (
 
 // taskCopiesVersion is the version of the migration this file tests, so a test can migrate through
 // everything before it whatever lands beside it.
-const taskCopiesVersion = 20261117194044
+const taskCopiesVersion = 20261121165047
 
-// 20261117194044 gives each task of a plan its branch and the needs whose join conflicted, keeps
+// 20261121165047 gives each task of a plan its branch and the needs whose join conflicted, keeps
 // the names a generation gave to its tasks, and lets the outbox queue a task's branch. A task the
 // upgrade finds was written by a release that gave no task a branch of its own, so it reads no
 // branch, which is the issue's own, and no conflicted join; the two columns are unknown before the
 // migration, which is what shows the fixture is the old shape. The outbox refuses a task_branch
 // row before the migration and queues it after, and every kind the check named before is still
-// queued, since the migration writes the list whole; a kind that is none is still refused. A name
-// given twice in one generation is refused by the table's own key.
+// queued, since the migration writes the list whole, the kinds of 20261119003157, the list it
+// stands above, among them; a kind that is none is still refused. A name given twice in one
+// generation is refused by the table's own key.
 func TestMigrationTaskCopiesKeepsEachTaskAndEveryOutboxKind(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
@@ -73,7 +74,8 @@ func TestMigrationTaskCopiesKeepsEachTaskAndEveryOutboxKind(t *testing.T) {
 		"linger_close", "workspace_remove", "issue_branch", "issue_suspend", "check_wake",
 		"check_look", "check_bound", "role_message", "phase_ended", "issue_bundle", "issue_release",
 		"gated_steps_publish", "claim_release", "hook_prompt", "design_gates_publish", "update_ask",
-		"merge_queue_read", "merge_queue_removal", "step_record", "plan_record", "task_branch",
+		"merge_queue_read", "merge_queue_removal", "role_holders_publish", "step_record", "plan_record",
+		"conflict_confirm", "merge_forward", "task_branch",
 	} {
 		if err := queue(kind); err != nil {
 			t.Fatalf("queue a %s row after the migration: %v", kind, err)

@@ -1,4 +1,4 @@
--- 20261117194044_task_copies.up.sql — the branch of each task of a plan, the needs whose join
+-- 20261121165047_task_copies.up.sql — the branch of each task of a plan, the needs whose join
 -- GitHub refused, the names a generation gave to its tasks, and the outbox kind that makes a task's
 -- branch on GitHub (task_branch).
 --
@@ -16,10 +16,11 @@
 -- cannot say it was given. Only AssignTaskBranch reads the table; it names no task, so a task's
 -- branch has one place, plan_tasks.branch.
 --
--- The outbox check is one list, so this migration names every kind, as 20261117023932 did: its
--- twenty-six kinds and task_branch. Its version stands above 20261117023932 on purpose: Migrate
--- applies every unrecorded migration in version order, so the list with the higher version is the
--- last word on any database.
+-- The outbox check is one list, so this migration names every kind, as 20261119003157 did: its
+-- twenty-nine kinds and task_branch. Its version stands above 20261119003157 on purpose, and above
+-- every other migration that writes the list again: Migrate applies every unrecorded migration in
+-- version order, so the list with the higher version is the last word on any database, a database
+-- that already took 20261119003157 among them.
 --
 -- There is no down file. This directory keeps none, so the way back is the transaction below, run
 -- with the daemon stopped, before the earlier image is pinned. It deletes each task_branch row
@@ -35,10 +36,11 @@
 --     'linger_close', 'workspace_remove', 'issue_branch', 'issue_suspend', 'check_wake',
 --     'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release',
 --     'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
---     'merge_queue_read', 'merge_queue_removal', 'step_record', 'plan_record'));
+--     'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
+--     'conflict_confirm', 'merge_forward'));
 --   alter table plan_tasks drop column if exists branch, drop column if exists join_conflicts;
 --   drop table if exists plan_branches;
---   delete from schema_version where version = 20261117194044;
+--   delete from schema_version where version = 20261121165047;
 --   commit;
 --   SQL
 --
@@ -70,4 +72,5 @@ alter table outbox add constraint outbox_kind_check check (kind in (
   'linger_close', 'workspace_remove', 'issue_branch', 'issue_suspend', 'check_wake',
   'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release',
   'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
-  'merge_queue_read', 'merge_queue_removal', 'step_record', 'plan_record', 'task_branch'));
+  'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
+  'conflict_confirm', 'merge_forward', 'task_branch'));

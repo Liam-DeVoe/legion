@@ -112,17 +112,18 @@ import (
 // is applied after all of these and touches no outbox_kind_check: it adds columns to
 // dispatch_issues at their defaults, an index on its parent, and a refill mark for each project the
 // copy holds rows of.
-// The copies of a plan's tasks (20261117194044) stand above the plan of an issue and need its
-// table: they add `plan_tasks.branch` and `plan_tasks.join_conflicts` at defaults every row reads
-// as the issue's own branch and no conflicted join, create `plan_branches`, and restate the plan
-// record's kinds with task_branch (migration_20261117194044_test.go). The working copies of a
-// saved bundle (20261117204629) add `workspace_bundles.working_copies` at a default that every row
-// it finds reads as no working copy of a task (migration_20261117204629_test.go), and touch no
-// outbox_kind_check. The held task (20261117224125) stands above the plan of an issue and needs
-// its table: it writes the state check of `plan_tasks` again with `held`, adds
-// `plan_tasks.hold_reason`, `plan_tasks.step_wait` and `plan_tasks.step_wait_since` at defaults
-// every row reads as no hold and no wait, holds the running task of each held issue
-// (migration_20261117224125_test.go), and touches no outbox_kind_check.
+// The working copies of a saved bundle (20261117204629) add `workspace_bundles.working_copies` at
+// a default that every row it finds reads as no working copy of a task
+// (migration_20261117204629_test.go), and touch no outbox_kind_check. The held task
+// (20261117224125) stands above the plan of an issue and needs its table: it writes the state
+// check of `plan_tasks` again with `held`, adds `plan_tasks.hold_reason`, `plan_tasks.step_wait`
+// and `plan_tasks.step_wait_since` at defaults every row reads as no hold and no wait, holds the
+// running task of each held issue (migration_20261117224125_test.go), and touches no
+// outbox_kind_check. The copies of a plan's tasks (20261121165047) stand above every other version
+// of this list and need the plan's table: they add `plan_tasks.branch` and
+// `plan_tasks.join_conflicts` at defaults every row reads as the issue's own branch and no
+// conflicted join, create `plan_branches`, and restate 20261119003157's kinds with task_branch, so
+// that list is the last word of outbox_kind_check now (migration_20261121165047_test.go).
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -131,8 +132,8 @@ var thisBranchsMigrations = []int{
 	20261111214351, 20261111225552, 20261112070503, 20261112180548, 20261113082214, 20261113082415,
 	20261113090512, 20261113110610, 20261113181500, 20261113182000, 20261114020537, 20261114031356,
 	20261114061900, 20261115194357, 20261116144907, 20261116165926, 20261116234034, 20261117000528,
-	20261117004117, 20261117023932, 20261117034837, 20261117064152, 20261117112334, 20261117194044,
-	20261117200337, 20261117204629, 20261117224125, 20261119003157, 20261120042902, 20261120055717,
+	20261117004117, 20261117023932, 20261117034837, 20261117064152, 20261117112334, 20261117200337,
+	20261117204629, 20261117224125, 20261119003157, 20261120042902, 20261120055717, 20261121165047,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -148,10 +149,11 @@ var thisBranchsMigrations = []int{
 // step record (20261117000528), the count of starts of each step (20261117004117) and its roll
 // forward (20261117064152), the kind list with the plan record (20261117023932), the plan of an
 // issue's 20261117034837, dispatch://INFRA-1997's 20261117112334, dispatch://INFRA-4109's
-// 20261117200337, dispatch://INFRA-4374's 20261119003157, dispatch://INFRA-4108's 20261120042902
-// and dispatch://INFRA-4729's 20261120055717. That is why the loop below holds the list rather
-// than counting it, so that a version added above any of them is named here rather than read as
-// main's.
+// 20261117200337, dispatch://INFRA-4374's 20261119003157, dispatch://INFRA-4108's 20261120042902,
+// dispatch://INFRA-4729's 20261120055717, and the three this branch adds, the working copies of a
+// saved bundle (20261117204629), the held task (20261117224125) and the copies of a plan's tasks
+// (20261121165047). That is why the loop below holds the list rather than counting it, so that a
+// version added above any of them is named here rather than read as main's.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main

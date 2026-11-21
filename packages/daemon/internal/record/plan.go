@@ -23,7 +23,7 @@ import (
 // daemon records its issue: such a plan is written at generation 0. An issue that ran before plans
 // has no rows, and goes on as it did then. The count of starts of a step is not the plan's: it lives
 // in step_starts alone, at the place TaskPlace.StepPlace names. Beside them, plan_branches holds
-// each branch name a generation gave to a task (store migration 20261117194044_task_copies): only
+// each branch name a generation gave to a task (store migration 20261121165047_task_copies): only
 // AssignTaskBranch writes it and decides by it, a carried CarryPlan copies it, and neither
 // DeleteTasks nor DeletePlan deletes it. A task's hold and the wait of the step at its place are
 // columns of its row (store migration 20261117224125_task_held).
