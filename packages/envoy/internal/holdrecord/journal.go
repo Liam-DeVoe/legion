@@ -3,6 +3,8 @@ package holdrecord
 import (
 	"errors"
 	"fmt"
+	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -22,10 +24,10 @@ const (
 	WorkflowStreamsCensus     Workflow = "streams-census"
 )
 
-// Operation is one journal entry. State is `intent`, `done` or `stop`. An `intent` entry carries
-// the command's inputs, a `done` entry its outputs, and a `stop` entry its reason in
+// Operation is one journal entry. State is StateIntent, StateDone or StateStop. An `intent` entry
+// carries the command's inputs, a `done` entry its outputs, and a `stop` entry its reason in
 // Outputs["reason"] and, when AppendStopLeft wrote it, what the command left in Outputs["left"]:
-// LeftUnchanged, or what it changed.
+// LeftUnchanged, or what it changed. Done.Latest and Entry.Left read them.
 type Operation struct {
 	Command string            `json:"command"`
 	State   string            `json:"state"`
@@ -145,12 +147,84 @@ const LeftUnchanged = "unchanged"
 // stopLeftKey is the key of a stop's Outputs that holds what its command left.
 const stopLeftKey = "left"
 
-// The three states of a journal entry, as the `done` record stores them.
+// The three states of a journal entry, as the `done` record stores them in Operation.State.
 const (
-	stateIntent = "intent"
-	stateDone   = "done"
-	stateStop   = "stop"
+	StateIntent = "intent"
+	StateDone   = "done"
+	StateStop   = "stop"
 )
+
+// Entry is one journal entry as the reader answers it: its index in Done.Ops and the entry.
+type Entry struct {
+	Index int
+	Operation
+}
+
+// LeftItem is one stop's record of what its command left: the stop's index in Done.Ops, its
+// command, and what it left, LeftUnchanged or what it changed (AppendStopLeft), or "" for a stop
+// that recorded nothing (AppendStop), which counts as changed.
+type LeftItem struct {
+	Stop    int
+	Command string
+	Left    string
+}
+
+// Latest is the journal's latest entry of command, among states when any are given (StateIntent,
+// StateDone, StateStop), and false when there is none: Latest(c) is c's latest entry, and
+// Latest(c, StateDone) its latest done entry, whose outputs a later command reads.
+func (d Done) Latest(command string, states ...string) (Entry, bool) {
+	return latest(d.Ops, command, states...)
+}
+
+// Left is the record of what stopped commands left that the entry carries, by the stops' order in
+// the journal: a stop's own, one item, and a hold abort intent's, one item for each stop before it
+// (Admit writes them, under `left.<index>`). It answers false for every other entry.
+func (e Entry) Left() ([]LeftItem, bool) {
+	switch {
+	case e.State == StateStop:
+		return []LeftItem{{Stop: e.Index, Command: e.Command, Left: stopLeft(e.Operation)}}, true
+	case e.State == StateIntent && e.Command == CommandAbort:
+		var items []LeftItem
+		for k, v := range e.Inputs {
+			index, ok := strings.CutPrefix(k, leftInputPrefix)
+			stop, err := strconv.Atoi(index)
+			if !ok || err != nil {
+				continue
+			}
+			command, left, _ := strings.Cut(v, leftInputSeparator)
+			if left == leftNothing {
+				left = ""
+			}
+			items = append(items, LeftItem{Stop: stop, Command: command, Left: left})
+		}
+		slices.SortFunc(items, func(a, b LeftItem) int { return a.Stop - b.Stop })
+		return items, true
+	default:
+		return nil, false
+	}
+}
+
+// The format of hold abort's intent's records (Admit, withStopRecords; read by Entry.Left): the key
+// `left.<the stop's index>`, the value `<command>: <left>`, with leftNothing for a stop that
+// recorded nothing. No command's name holds ": ".
+const (
+	leftInputPrefix    = "left."
+	leftInputSeparator = ": "
+	leftNothing        = "nothing recorded, so counted as changed"
+)
+
+// latest is Done.Latest over ops, which may be part of a journal (an epoch's entries, say).
+func latest(ops []Operation, command string, states ...string) (Entry, bool) {
+	for i := len(ops) - 1; i >= 0; i-- {
+		if ops[i].Command == command && (len(states) == 0 || slices.Contains(states, ops[i].State)) {
+			return Entry{Index: i, Operation: ops[i]}, true
+		}
+	}
+	return Entry{}, false
+}
+
+// stopLeft is what a stop entry recorded its command left, "" for nothing recorded.
+func stopLeft(o Operation) string { return o.Outputs[stopLeftKey] }
 
 // Commands returns the workflow's commands, in the table's order.
 func Commands(w Workflow) []string { return current.Commands(w) }
@@ -268,7 +342,7 @@ func Moved(d Done, read map[string]string) (bool, error) {
 // `hub-restore`, and the entries after it carry the epoch's census.
 func Epoch(d Done) (Operation, []Operation, bool) {
 	for i := len(d.Ops) - 1; i >= 0; i-- {
-		if d.Ops[i].Command == CommandProve && d.Ops[i].State == stateDone {
+		if d.Ops[i].Command == CommandProve && d.Ops[i].State == StateDone {
 			return d.Ops[i], d.Ops[i+1:], true
 		}
 	}
@@ -278,7 +352,7 @@ func Epoch(d Done) (Operation, []Operation, bool) {
 // hasDone reports whether the entries hold a `done` entry of the command.
 func hasDone(ops []Operation, command string) bool {
 	for _, o := range ops {
-		if o.Command == command && o.State == stateDone {
+		if o.Command == command && o.State == StateDone {
 			return true
 		}
 	}
@@ -298,39 +372,36 @@ func pending(d Done) []string {
 	}
 	var out []string
 	for _, c := range order {
-		if latest[c] == stateIntent {
+		if latest[c] == StateIntent {
 			out = append(out, c)
 		}
 	}
 	return out
 }
 
-// cutRun reports whether a run of command in ops ended with no entry: an intent of command followed
-// by another intent of it with no stop or done of it between, a run cut after its intent, whose
-// change no entry records.
+// CutRun reports whether a run of command in the journal ended with no entry: an intent of command
+// whose command's entry before it is another intent, with no stop or done of it between, a run cut
+// after its intent, whose change no entry records. By LeftUnchanged's rule a stop after a cut run
+// cannot record LeftUnchanged (AppendStopLeft refuses it), and hold release does not follow one.
+func (d Done) CutRun(command string) bool { return cutRun(d.Ops, command) }
+
+// cutRun is Done.CutRun over ops, which table.unchanged reads for each command.
 func cutRun(ops []Operation, command string) bool {
-	open := false
-	for _, o := range ops {
-		if o.Command != command {
+	for i, o := range ops {
+		if o.Command != command || o.State != StateIntent {
 			continue
 		}
-		if o.State == stateIntent && open {
+		if before, ok := latest(ops[:i], command); ok && before.State == StateIntent {
 			return true
 		}
-		open = o.State == stateIntent
 	}
 	return false
 }
 
 // latestIsStop reports whether command's latest entry in ops is a `stop`.
 func latestIsStop(ops []Operation, command string) bool {
-	latest := ""
-	for _, o := range ops {
-		if o.Command == command {
-			latest = o.State
-		}
-	}
-	return latest == stateStop
+	e, ok := latest(ops, command)
+	return ok && e.State == StateStop
 }
 
 // stoppedSinceProve reports whether, among the entries after the latest done hold prove (Epoch),
@@ -348,7 +419,7 @@ func anyStopped(ops []Operation) bool {
 		latest[o.Command] = o.State
 	}
 	for _, state := range latest {
-		if state == stateStop {
+		if state == StateStop {
 			return true
 		}
 	}

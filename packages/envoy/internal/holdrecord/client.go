@@ -28,11 +28,17 @@
 // onto the done prove's disk before running abort. If the proven disk is gone, abort's check writes
 // a stop naming it; the operator restores onto another disk and runs a new prove, and abort,
 // admitted again after its own stop, releases over that new epoch's disks. The workflow table and
-// Decide are the
-// ones model_test.go explores: every workflow from its true start, with crashes between any two
-// writes, two operator processes, restores landing outside the hold, the row lost and restored,
-// and any command failing for good after its intent, in hub-restore the census and a prove after a
-// done prove.
+// Decide are the ones model_test.go explores: every workflow from its true start, with crashes
+// between any two writes, two operator processes, restores landing outside the hold, the row lost
+// and restored, and any command failing for good after its intent, in hub-restore the census and a
+// prove after a done prove.
+//
+// A caller reads a journal through one reader, never through Operation's strings: Done.Latest is a
+// command's latest entry, of any state or of those it names (StateIntent, StateDone, StateStop),
+// as an Entry with its index; Done.CutRun is whether a run of a command ended with no entry; and
+// Entry.Left is what stopped commands left as LeftItems, a stop's own record (its `left` output)
+// or, on a `hold abort` intent, the record of every stop before it (its `left.<index>` inputs).
+// Decide's rules and the writers of those records read the journal through the same functions.
 package holdrecord
 
 import (
@@ -506,7 +512,8 @@ func (c *Client) Journal(ctx context.Context, holdID string) (Done, uint64, erro
 // reads and decides again. The entry sets `complete` to false, except `hold release`'s, which
 // keeps it. CommandAbort's entry also carries each stop entry's record of what its command left,
 // under `left.<the stop's index in the journal>` as `<command>: <left>`, so the operator ends the
-// hold knowing the state; those keys replace any of inputs'. It returns the record's workflow.
+// hold knowing the state; any key of inputs' under `left.` is dropped, so those records are the
+// journal's alone, and Entry.Left reads them back. It returns the record's workflow.
 //
 // Admit refuses another command while one's intent is pending (ErrBusy), but admits the same
 // command again, its rerun after a crash: a second process running the same command at once is
@@ -532,7 +539,7 @@ func (c *Client) Admit(ctx context.Context, holdID string, req Request, inputs m
 		if req.Command == CommandAbort {
 			inputs = withStopRecords(inputs, d)
 		}
-		d.Ops = append(d.Ops, Operation{Command: req.Command, State: stateIntent, Inputs: inputs})
+		d.Ops = append(d.Ops, Operation{Command: req.Command, State: StateIntent, Inputs: inputs})
 		if req.Command != CommandRelease {
 			d.Complete = false
 		}
@@ -552,7 +559,7 @@ func (c *Client) Admit(ctx context.Context, holdID string, req Request, inputs m
 // stood. `hold release` prints `hold_gen` and does not compare it with the row's `gen`.
 func (c *Client) AppendDone(ctx context.Context, holdID, command string, outputs map[string]string) error {
 	return c.appendEntry(ctx, holdID, command, func(d *Done) error {
-		d.Ops = append(d.Ops, Operation{Command: command, State: stateDone, Outputs: outputs})
+		d.Ops = append(d.Ops, Operation{Command: command, State: StateDone, Outputs: outputs})
 		if command == CommandRelease {
 			return nil
 		}
@@ -598,31 +605,37 @@ func (c *Client) appendStop(ctx context.Context, holdID, command string, outputs
 		if !Stoppable(d.Workflow, command) {
 			return fmt.Errorf("holdrecord: %s is not Stoppable in %s, so its refusal writes no stop entry", command, d.Workflow)
 		}
-		if outputs[stopLeftKey] == LeftUnchanged && cutRun(d.Ops, command) {
+		if outputs[stopLeftKey] == LeftUnchanged && d.CutRun(command) {
 			return fmt.Errorf("holdrecord: %s's stop cannot record %q: an earlier run of %s in this hold ended with no entry, so what it left is unknown; the stop names what the runs left (LeftUnchanged's rule)",
 				command, LeftUnchanged, command)
 		}
-		d.Ops = append(d.Ops, Operation{Command: command, State: stateStop, Outputs: outputs})
+		d.Ops = append(d.Ops, Operation{Command: command, State: StateStop, Outputs: outputs})
 		return nil
 	})
 }
 
-// withStopRecords is inputs with each stop entry's record of what its command left, keyed by
-// the stop's index in the journal.
+// withStopRecords is inputs with each stop entry's record of what its command left (Entry.Left),
+// keyed by the stop's index in the journal, in the format Entry.Left reads (leftInputPrefix); any
+// key of inputs' under that prefix is dropped.
 func withStopRecords(inputs map[string]string, d Done) map[string]string {
 	out := make(map[string]string, len(inputs))
 	for k, v := range inputs {
-		out[k] = v
+		if !strings.HasPrefix(k, leftInputPrefix) {
+			out[k] = v
+		}
 	}
 	for i, o := range d.Ops {
-		if o.State != stateStop {
+		if o.State != StateStop {
 			continue
 		}
-		left := o.Outputs[stopLeftKey]
-		if left == "" {
-			left = "nothing recorded, so counted as changed"
+		items, _ := Entry{Index: i, Operation: o}.Left()
+		for _, item := range items {
+			left := item.Left
+			if left == "" {
+				left = leftNothing
+			}
+			out[leftInputPrefix+strconv.Itoa(item.Stop)] = item.Command + leftInputSeparator + left
 		}
-		out["left."+strconv.Itoa(i)] = o.Command + ": " + left
 	}
 	return out
 }
@@ -671,7 +684,7 @@ func (c *Client) appendEntry(ctx context.Context, holdID, command string, change
 				latest = o.State
 			}
 		}
-		if latest != stateIntent {
+		if latest != StateIntent {
 			return wrap(ErrNoIntent, fmt.Sprintf("%s's latest entry is %q", command, latest))
 		}
 		if err := change(&d); err != nil {

@@ -346,16 +346,16 @@ func (t table) unchanged(ops []Operation) bool {
 		if o.Command == CommandRelease || (t.Rules.SetCommand && o.Command == CommandSet) {
 			continue
 		}
-		if !t.Rules.WayOut || o.State == stateDone || (o.State == stateStop && o.Outputs[stopLeftKey] != LeftUnchanged) {
+		if !t.Rules.WayOut || o.State == StateDone || (o.State == StateStop && stopLeft(o) != LeftUnchanged) {
 			return false
 		}
-		if o.State == stateIntent && latest[o.Command].State == stateIntent {
-			return false // the run before this intent ended with no entry
+		if o.State == StateIntent && cutRun(ops, o.Command) {
+			return false // a run of this command ended with no entry
 		}
 		latest[o.Command] = o
 	}
 	for _, o := range latest {
-		if o.State != stateStop {
+		if o.State != StateStop {
 			return false
 		}
 	}

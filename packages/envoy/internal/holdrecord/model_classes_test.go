@@ -321,7 +321,7 @@ func disagreement(sc modelScenario, s modelState) string {
 		}
 		since := ""
 		for _, o := range ents {
-			if o.State == stateDone {
+			if o.State == StateDone {
 				since = addSet(since, o.Command)
 			}
 		}

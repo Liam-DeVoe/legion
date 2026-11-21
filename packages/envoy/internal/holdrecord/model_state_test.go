@@ -256,7 +256,7 @@ func toDone(sc modelScenario, s modelState) Done {
 	stopsOf := func(set string) []Operation {
 		var out []Operation
 		for _, c := range list(set) {
-			o := Operation{Command: c, State: stateStop}
+			o := Operation{Command: c, State: StateStop}
 			if s.Left == 'U' {
 				o.Outputs = map[string]string{stopLeftKey: LeftUnchanged}
 			}
@@ -266,7 +266,7 @@ func toDone(sc modelScenario, s modelState) Done {
 	}
 	stops, before := stopsOf(s.StopLatest), stopsOf(s.StopBefore)
 	done := func(c string, out map[string]string) {
-		d.Ops = append(d.Ops, Operation{Command: c, State: stateDone, Outputs: out})
+		d.Ops = append(d.Ops, Operation{Command: c, State: StateDone, Outputs: out})
 	}
 	for _, c := range list(s.Ever) {
 		if c == CommandProve || c == s.Last || (s.Proved && inSet(s.Since, c)) {
@@ -294,7 +294,7 @@ func toDone(sc modelScenario, s modelState) Done {
 	}
 	d.Ops = append(d.Ops, stops...)
 	for _, c := range list(s.Intent) {
-		d.Ops = append(d.Ops, Operation{Command: c, State: stateIntent})
+		d.Ops = append(d.Ops, Operation{Command: c, State: StateIntent})
 	}
 	if sc.Hub && s.Rec {
 		d.Step1 = map[string]string{}

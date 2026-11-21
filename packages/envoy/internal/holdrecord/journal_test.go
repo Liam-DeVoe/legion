@@ -964,4 +964,5 @@ func TestTheHoldJournal(t *testing.T) {
 	rowFloorRows(t)
 	prepareRestoreRows(t)
 	restoreLogRows(t)
+	readerRows(t)
 }
