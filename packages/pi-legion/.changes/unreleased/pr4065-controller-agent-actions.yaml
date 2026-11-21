@@ -1,8 +1,8 @@
 kind: Added
 body: |-
-  The controller's `legion` tool gets four actions on an agent (stop, retry, suspend, resume,
-  compact and fresh session of one agent, named by its issue and role) beside `compact` and
-  `fresh_session`: `stop`, `retry`, `suspend` and `resume_agent`, each naming the claim by `issue`
+  Of the actions on an agent (stop, retry, suspend, resume, compact and fresh session of one
+  agent, named by its issue and role), the controller's `legion` tool gets four beside `compact`
+  and `fresh_session`: `stop`, `retry`, `suspend` and `resume_agent`, each naming the claim by `issue`
   and `role`. A tree's architect gets all six for the claims of the issues it owns. Each answers
   the claim's state and who holds a suspension over it. The claim's resume is `resume_agent`
   because `resume` is the project's resume, which ends a pause and names no claim.

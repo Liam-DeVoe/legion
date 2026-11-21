@@ -2440,7 +2440,7 @@ update claims set suspended_by = 'operator'
 ```
 
 It prints `UPDATE <n>`, and a rerun prints `UPDATE 0`.
-Each moved claim then stays suspended until the operator resumes it with `legion claims resume`, or the controller starts it in a new session with `fresh_session`: the earlier release gives the controller no resume, and the architects no operation on a claim.
+Each moved claim then stays suspended until the operator resumes it with `legion claims resume`, or the controller starts it in a new session with `fresh_session`: the earlier release gives the controller no resume, and the architects no action on an agent.
 Leave the statement out, and the earlier release repairs each such claim as one the daemon suspended.
 The two checks keep the new names after the rollback, and the rollback needs no statement for them: an earlier release never writes them, so the checks refuse nothing that release writes.
 The kind check also keeps every kind of the list of `20261119003157_conflict_reads_and_merge_forward`, `conflict_confirm`, `merge_forward` and `phase_ended` among them, so it refuses no row the earlier release writes either.

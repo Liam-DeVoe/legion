@@ -1,8 +1,8 @@
 kind: Added
 body: |-
-  The daemon serves the controller four actions on an agent (stop, retry, suspend, resume,
-  compact and fresh session of one agent, named by its issue and role) beside the two it had,
-  `POST /legion/v1/agents/stop`, `retry`, `suspend` and `resume`, behind the controller's grant
+  Of the actions on an agent (stop, retry, suspend, resume, compact and fresh session of one
+  agent, named by its issue and role), the daemon serves the controller four beside the two it
+  had, `POST /legion/v1/agents/stop`, `retry`, `suspend` and `resume`, behind the controller's grant
   and refused for the controller's own claim. A controller's suspension is recorded under its own
   source, `controller`: it holds against every daemon rule, the controller's `resume_agent` or the
   operator's resume lifts it, and `legion claims list` prints it as `suspended:controller`. While
