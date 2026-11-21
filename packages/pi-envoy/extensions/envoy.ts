@@ -3480,7 +3480,18 @@ export default function envoyExtension(hostApi: PiApi): void {
       ownAgentSubject: legacyAgentSubject(registeringFor),
       followed,
       roles: role === undefined ? [] : [role],
-      outage: inboundOutage,
+      // An answer that lands after the process moved to another session is the session it was
+      // sent for, and tells the session bound now nothing: that session's own registration tells
+      // it, from the record the bind read (`recordRead`).
+      outage: {
+        refused: (error) => {
+          if (sessionID === registeringFor) inboundOutage.refused(error);
+        },
+        accepted: () => {
+          if (sessionID === registeringFor) inboundOutage.accepted();
+        },
+        recordRead: (told) => inboundOutage.recordRead(told),
+      },
       send: (topics, delivery) =>
         send({
           sessionID: registeringFor,

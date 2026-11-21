@@ -20819,6 +20819,83 @@ console.log(JSON.stringify(args));
     }
   });
 
+  // A registration sent for one session that is answered only after the process moved to another
+  // with /new: its refusal is the session it was sent for, so the session bound now is told no
+  // outage and gets no outage record in its transcript.
+  test("a registration of the session left, refused after a /new, tells the new session no outage", async () => {
+    const left = "ses_late_answer_left";
+    let held: PromiseWithResolvers<Response> | undefined;
+    const heldAsked = Promise.withResolvers<void>();
+    globalThis.fetch = async (input, init) => {
+      const url = new URL(input.toString());
+      if (
+        held !== undefined &&
+        url.pathname === "/v1/interests/subscribe" &&
+        (init?.body?.toString() ?? "").includes(left)
+      ) {
+        const answer = held;
+        held = undefined;
+        heldAsked.resolve();
+        return answer.promise;
+      }
+      return responseWithRegistration(input, init, {});
+    };
+    const fixture = createPi();
+    let sessionID = left;
+    let entries = (): readonly unknown[] => fixture.entries;
+    const notifications: string[] = [];
+    const context = (): SessionContext => ({
+      ...sessionContext(sessionID),
+      sessionManager: {
+        ...topLevelSession,
+        getSessionId: () => sessionID,
+        getBranch: () => entries(),
+        getEntries: () => entries(),
+      },
+      ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
+    });
+    const unavailable = () =>
+      notifications.filter((m) => m.includes("inbound messages are unavailable"));
+    const { default: envoyExtension } = await import("./envoy.ts?late-answer-after-new");
+    envoyExtension(fixture.pi);
+    await fixture.handlers.get("session_start")?.({}, context());
+    expect(unavailable()).toEqual([]);
+
+    // A follow sends a registration of the session outside any pass; its answer is held.
+    const subscribe = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
+    if (subscribe === undefined) throw new Error("envoy_subscribe was not registered");
+    held = Promise.withResolvers<Response>();
+    const answer = held;
+    const followed = subscribe.execute("", { topics: ["team.late-answer"] });
+    await heldAsked.promise;
+
+    const start = fixture.entries.length;
+    await fixture.handlers.get("session_before_switch")?.({ reason: "new" }, context());
+    sessionID = "ses_late_answer_next";
+    entries = () => fixture.entries.slice(start);
+    await fixture.handlers.get("session_switch")?.({ reason: "new" }, context());
+
+    // The held registration of the session left is refused now, after the move.
+    answer.resolve(
+      new Response(
+        JSON.stringify({
+          error: "this session was given no durable consumer",
+          reason: "not_requested",
+        }),
+        { status: 409 }
+      )
+    );
+    await followed.catch(() => undefined);
+    await settle();
+    expect(unavailable()).toEqual([]);
+    expect(
+      fixture.entries
+        .slice(start)
+        .filter((entry) => JSON.stringify(entry).includes("Envoy inbound unavailable"))
+    ).toEqual([]);
+    await fixture.handlers.get("session_shutdown")?.({}, context());
+  });
+
   test("a relay lost after the start names its failure in the refused registration, and the next heartbeat opens it again and says so once", async () => {
     // The relay subject opened at the start. Later its connection closes for good, as nats.js
     // closes one on an authorization error it does not ignore, and the hub refuses every dial

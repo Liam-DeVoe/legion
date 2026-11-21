@@ -8,7 +8,9 @@ body: |-
   once, before its relay waits for a live connection: the new id is told its own outage and its
   end, recorded in its own file, and never the end of the outage the id it left was told, and a
   notice for the old id still waiting its turn when the move lands is not shown to the new
-  conversation.
+  conversation. A `/clear` made after the NATS connection closed for good is taken up before the
+  registration the new connection sends, so the new conversation is not told the end of the old
+  id's outage, and the old id's file keeps the outage told.
 time: 2026-11-20T14:07:49Z
 custom:
     Issue: pr4617

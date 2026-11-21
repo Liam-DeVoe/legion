@@ -312,6 +312,88 @@ test("a connection closed for good between a /clear's deregistration and its reg
   }
 }, 30_000)
 
+// The other order: the connection closes for good while the session runs, the session is told
+// it receives nothing, and only then does a `/clear` land. The handoff waits for a live
+// connection (its flush is refused on the closed one), so the id the server registers under is
+// still the old one when the new connection opens. The registration that the new connection
+// carries must not tell the end of the old id's outage to the conversation Claude Code moved to,
+// and must not clear the old id's record: the old conversation never saw that end, so a server
+// that resumes the old id later still owes it.
+test("a /clear made after the connection closed for good tells the new conversation nothing of the old id's outage, and the old id's file keeps it told", async () => {
+  const SESSION = "ses_closed_then_clear"
+  const NEXT = "ses_closed_then_clear_next"
+  const directory = scratchState()
+  const handoff = sessionHandoffFile(directory, 781)
+  await writeSessionHandoff(handoff, SESSION)
+  const first = new FakeNats()
+  const second = new FakeNats()
+  const notifier = new FakeNotifier()
+  const reopened = Promise.withResolvers<void>()
+  const registered: string[] = []
+  const told = async (id: string): Promise<boolean | undefined> =>
+    (await readReplayState(replayStateFile(directory, id)).catch(() => undefined))
+      ?.inboundOutageTold
+  const session = await startChannelSession(
+    sessionOptions(new SessionIdentity(SESSION, "/tmp"), directory, {
+      connection: first,
+      followSession: async () => undefined,
+      notifier,
+      heartbeatMs: 25,
+      handoffPid: 781,
+      reopen: async () => {
+        await reopened.promise
+        return { connection: second, followSession: async () => undefined }
+      },
+      client: recordingClient([], {
+        subscribe: async (input) => {
+          registered.push(input.sessionID)
+          return noInterest(input.sessionID)
+        },
+      }),
+    }),
+  )
+  try {
+    await first.closeForGood(serverRefusal("AUTHORIZATION_VIOLATION", "'Authorization Violation'"))
+    await waitFor(
+      async () => (await told(SESSION)) === true,
+      "the old id told its outage, and its file recording it",
+      () => JSON.stringify({ registered }),
+    )
+    expect(notices(notifier, "Envoy inbound unavailable")).toHaveLength(1)
+
+    // Claude Code moves to the new conversation. Several heartbeats pass with no connection, and
+    // none takes the handoff up: none flushes the closed connection for it. A handoff taken up
+    // here would run on the connection a reopen sets before that connection is admitted, and tell
+    // the new id a refusal and then its end. An absence needs the time to pass, eight 25 ms
+    // heartbeats; no fake clock drives the server's own heartbeat interval.
+    const flushesBefore = first.flushes
+    await writeSessionHandoff(handoff, NEXT)
+    await Bun.sleep(200)
+    expect(registered).not.toContain(NEXT)
+    expect(first.flushes).toBe(flushesBefore)
+
+    reopened.resolve()
+    await waitFor(
+      async () => registered.includes(NEXT) && second.subscriptions.has(deliverSubject(NEXT)),
+      "the /clear completed on the new connection",
+      () => JSON.stringify({ registered }),
+    )
+    // One more registration of the new id, so an answer the reopen owed has been handled.
+    const after = registered.length
+    await waitFor(
+      async () => registered.length >= after + 2,
+      "two more registrations",
+      () => JSON.stringify({ registered }),
+    )
+    expect(notices(notifier, "Envoy inbound restored")).toEqual([])
+    expect(notices(notifier, "Envoy inbound unavailable")).toHaveLength(1)
+    expect(await told(SESSION)).toBe(true)
+    expect(await told(NEXT)).not.toBe(true)
+  } finally {
+    await session.shutdown()
+  }
+}, 30_000)
+
 // A relay subscription that ends while a heartbeat's registration is still on the wire queues a
 // registration behind it, which names the outage. Shutdown then closes the relay and sends the
 // DELETE once its bounded wait for the chain gives up. The queued registration runs after that:

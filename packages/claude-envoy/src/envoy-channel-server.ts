@@ -1197,7 +1197,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       owner.subscription = undefined
       owner.stopped = { error }
       if (shuttingDown || relay !== owner) return
-      serialized(register).catch(() => {
+      serialized(registerCurrent).catch(() => {
         registrationFailed = true
       })
     }
@@ -1268,7 +1268,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
   const renewRelayEpoch = (): void => {
     if (shuttingDown || relay === undefined) return
     relay.delivery.beginEpoch()
-    serialized(register).catch((error: unknown) => {
+    serialized(registerCurrent).catch((error: unknown) => {
       process.stderr.write(
         `envoy-channel: could not register again after a reconnect (${messageFor(error)}); the next heartbeat retries\n`,
       )
@@ -1743,6 +1743,12 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     if (handoffFile === undefined) return
     const next = await readSessionHandoff(handoffFile)
     if (next === undefined || next === identity.id) return
+    // While the connection is closed for good the handoff waits for the one that replaces it,
+    // whose registration takes it up (`reopenFor`): the old id keeps what it was told of its
+    // inbound, in its own file, and the conversation Claude Code moved to is told nothing of an
+    // outage it never heard of. Taken up here instead, on a connection a reopen has set but not
+    // yet admitted, the new id would be told a refusal and its end in the same breath.
+    if (connectionLost !== undefined) return
     const previous = identity.id
     const previousSubject = directSubject
     const nextSubject = legacyAgentSubject(next)
@@ -1792,6 +1798,29 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     await register()
     await transferRole()
     process.stderr.write(`envoy: session id changed ${previous} -> ${next}; re-registered\n`)
+  }
+
+  /**
+   * A registration made outside the heartbeat: at a close for good, a reconnect, the connection
+   * that replaces a lost one, a relay subscription's own end, a follow. A `/clear` the heartbeat
+   * has not taken up yet is taken up first (`adoptHandoff`), as the heartbeat does, so the answer
+   * is told to the id Claude Code is on and recorded in that id's file. Registering under the id
+   * Claude Code left would show that id's outage, or its end, to the conversation it moved to, and
+   * record it as told in a file whose conversation never saw it. A handoff that fails before the
+   * id switch (its flush is refused on a connection closed for good, or the listener refuses the
+   * old id's DELETE) leaves this registration to the id the server is still on, as before the
+   * handoff was read, and the heartbeat takes the handoff up again and reports its failure. One
+   * that fails after the switch already sent the new id's registration, so its error is this
+   * registration's. Runs only inside `serialized`.
+   */
+  const registerCurrent = async (): Promise<void> => {
+    const before = identity.id
+    try {
+      await adoptHandoff()
+    } catch (error) {
+      if (identity.id !== before) throw error
+    }
+    await register()
   }
 
   /** Set by the first read `syncRegisteredInterests` completes, never cleared. */
@@ -2123,7 +2152,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     )
     // Refused now rather than at the next heartbeat, since the session receives nothing from this
     // moment: the refusal is told by the outage (`inboundOutage`), once.
-    serialized(register).catch(() => {
+    serialized(registerCurrent).catch(() => {
       registrationFailed = true
     })
     reopenConnection()
@@ -2195,7 +2224,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       if (shuttingDown || live !== connection || live.isClosed()) return
       connectionLost = undefined
       relay?.delivery.beginEpoch()
-      await register()
+      await registerCurrent()
     }).catch((error: unknown) => {
       registrationFailed = true
       process.stderr.write(
@@ -2257,7 +2286,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       // With no live connection there is nothing to flush, and the registration below is refused
       // naming why (`connectionClosed`).
       if (!connection.isClosed()) await connection.flush()
-      await serialized(register)
+      await serialized(registerCurrent)
       if (fresh.length > 0) {
         // Recorded at once, so a restart follows the topic again; the relay takes frames stored
         // from this follow on, never the stream's older ones (`setFollowed`).
@@ -2281,7 +2310,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     capabilitiesChanged() {
       if (shuttingDown) return
       // The same path a reconnect takes: one more registration, behind whatever is queued.
-      serialized(register).catch((error: unknown) => {
+      serialized(registerCurrent).catch((error: unknown) => {
         process.stderr.write(
           `envoy-channel: could not advertise this session's delivery modes (${messageFor(error)}); the next heartbeat retries\n`,
         )
