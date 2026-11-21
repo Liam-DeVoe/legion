@@ -533,11 +533,13 @@ func TestShutdownFinishesTheCompactionQueuesCompactionAndStopsItsWorker(t *testi
 	stepWhenDue(t, fake, service, compacting)
 	testwait.Receive(t, "the compaction queue's step to reach the held fold", held)
 	// Shutdown runs on a goroutine of its own and records whether the queue's compaction had been
-	// let go of its fold before it returned: one that returned before then did not wait for it.
+	// let go of its fold before it returned: one that returned before then did not wait for it. It
+	// runs on the shared wait's context: its drain budget is on fake, which nothing moves from here.
 	var released atomic.Bool
+	shutdownCtx := testwait.Context(t)
 	shutdown := make(chan heldReturn, 1)
 	go func() {
-		err := service.Shutdown(context.Background())
+		err := service.Shutdown(shutdownCtx)
 		shutdown <- heldReturn{err: err, afterRelease: released.Load()}
 	}()
 	waitFor(t, "Shutdown to stop the queue's intake", func() bool {

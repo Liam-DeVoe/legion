@@ -718,7 +718,14 @@ func TestShutdownReturnsAtItsDeadlineWithAnEditorConnectedAndAnAppendLocked(t *t
 		Settle:   time.Hour,
 		Clock:    callerClock,
 	})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	// On a passing run this is the service's second Shutdown: the row's own, below, ended at its
+	// caller's deadline, and the locked append has landed since, so this one drains nothing and
+	// returns nil.
+	t.Cleanup(func() {
+		if err := service.Shutdown(testwait.Context(t)); err != nil {
+			t.Errorf("shutdown document service: %v", err)
+		}
+	})
 	seedServiceText(t, service, artifactID, "before")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	t.Cleanup(httpServer.Close)

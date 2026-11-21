@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"slices"
@@ -165,14 +164,20 @@ type answerSurvivesFixture struct {
 
 // answerSurvivesHandler is blockAskHandler's server with its document service on settles: the
 // room's settle timer runs on that clock (docs.Deps.Clock), so what stands armed on it says
-// whether a settlement is still to come.
+// whether a settlement is still to come. Shutdown's drain budget runs on settles too, which nothing
+// moves once the test ends, so the cleanup shuts the service down on the shared wait's context: a
+// drain that cannot finish fails the test by name there.
 func answerSurvivesHandler(t *testing.T, settles *clocktest.Fake) http.Handler {
 	t.Helper()
 	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService := docs.New(docs.Deps{
 			Store: database, Identity: headerIdentity(database), Settle: answerSurvivesSettle, Clock: settles,
 		})
-		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
+		t.Cleanup(func() {
+			if err := documentService.Shutdown(testwait.Context(t)); err != nil {
+				t.Errorf("shutdown document service: %v", err)
+			}
+		})
 		return documentService
 	})
 	return handler

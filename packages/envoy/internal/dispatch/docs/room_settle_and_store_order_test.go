@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Two processes editing one document settle it as one process does (plan D3.7): a content change
@@ -204,6 +205,8 @@ func (g *gatedAppends) release() {
 }
 
 // newGatedServiceInstance is newTestServiceInstance whose room appends pass a gate the test holds.
+// Its shutdown ends at the shared wait's deadline, as newTestServiceInstanceOn's does: a test may
+// put it on a fake (newQueryProcesses), whose drain budget no one moves.
 func newGatedServiceInstance(t *testing.T, database *store.Store) (*Service, *gatedAppends) {
 	t.Helper()
 	gated := newGatedAppends(database)
@@ -216,7 +219,7 @@ func newGatedServiceInstance(t *testing.T, database *store.Store) (*Service, *ga
 		Settle:      time.Hour,
 	})
 	t.Cleanup(func() {
-		if err := service.Shutdown(context.Background()); err != nil {
+		if err := service.Shutdown(testwait.Context(t)); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})

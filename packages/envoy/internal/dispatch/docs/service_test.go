@@ -65,6 +65,11 @@ func testServiceDeps(database *store.Store) Deps {
 // check runs. A test that builds a service with New directly is outside it, and shuts that
 // service down itself.
 //
+// The shutdown ends at the shared wait's deadline (testwait.Context) at the latest. Shutdown's
+// drain budget runs on deps.Clock, and on a clocktest fake that no one moves while the shutdown
+// waits, that budget never ends: a drain that cannot finish then fails the test by name, where it
+// would hang it to the test binary's timeout. On the real clock the budget ends long before.
+//
 // Where that shutdown runs among the test's other cleanups matters to a test that swaps the
 // schema manifest: pmdoc's readers do not lock it, so the swap's restore must run after this
 // shutdown has stopped the service's room, settlement and flush goroutines, which read it.
@@ -73,7 +78,7 @@ func newTestServiceWith(t *testing.T, deps Deps) *Service {
 	t.Helper()
 	service := New(deps)
 	t.Cleanup(func() {
-		if err := service.Shutdown(context.Background()); err != nil {
+		if err := service.Shutdown(testwait.Context(t)); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})
