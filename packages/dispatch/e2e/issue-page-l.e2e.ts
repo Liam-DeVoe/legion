@@ -3,6 +3,7 @@ import type { Locator, Page } from "@playwright/test";
 import {
   ANSWER_LINES,
   CONTROL_LABELS,
+  CURRENT_POINT,
   PRESET_NAMES,
 } from "../web/src/features/issue-page/page-words";
 import { DWELL_MS } from "../web/src/features/shell/useDwell";
@@ -72,7 +73,8 @@ import { asUser } from "./users";
  * the verification document, named by its `-g` string: rows (1) to (4) are
  * c-replies, (5) and (6) c-box, (7) c-mark, (8) the outline's half of c-statement-reply, and (9)
  * its Spec view half, owed until the Spec view's keymap takes the box's writer and skipped until
- * then (`@owed`).
+ * then (`@owed`). Row (10) is R12's: the conversation's current point, which the outline marks on
+ * one row (`r-current-point` of the spec).
  *
  * The rows are on the real stack, each through `phase` (a reset database, alice signed in,
  * the new page turned on with `withIssuePage`): every row writes from the box and then reads its
@@ -234,6 +236,111 @@ async function oneRowHolding(page: Page, words: string, what: string): Promise<s
     `${what}'s words are held outside its row`
   ).toEqual([]);
   return id;
+}
+
+/** The rows the page names to a screen reader as the conversation's current point: each that
+ *  carries `aria-current`, whatever its value (R12). */
+function currentRows(page: Page): Locator {
+  return nodeRows(page).filter({ has: page.locator(":scope[aria-current]") });
+}
+
+/** The rows that carry a mark of the conversation's current point (R12): the point's own row
+ *  (`here`), or each drawn row above it on its path while its own row is folded away (`path`). */
+function markedRows(page: Page): Locator {
+  return nodeRows(page).filter({ has: page.locator(":scope[data-current-point]") });
+}
+
+/** Fails unless node `id`'s row, `what`, is the conversation's current point and no other row
+ *  carries a mark of it (R12): that row is the current location for a screen reader
+ *  (`aria-current`, `CURRENT_POINT`) and carries the point's own mark, and no other row carries
+ *  either. */
+async function expectPointOn(page: Page, id: string, what: string, when: string): Promise<void> {
+  const row = nodeRow(page, id).first();
+  await expect(row, `${what} is not the current location ${when}`).toHaveAttribute(
+    "aria-current",
+    CURRENT_POINT
+  );
+  await expect(row, `${what} does not carry the current point's own mark ${when}`).toHaveAttribute(
+    "data-current-point",
+    "here"
+  );
+  await expect(
+    currentRows(page),
+    `a row besides ${what} is the current location ${when}`
+  ).toHaveCount(1);
+  await expect(
+    markedRows(page),
+    `a row besides ${what} carries a mark of the current point ${when}`
+  ).toHaveCount(1);
+}
+
+/** An outline as the browser computes it: its colour, its offset, its style and its width. */
+interface Ring {
+  readonly color: string;
+  readonly offset: string;
+  readonly style: string;
+  readonly width: string;
+}
+
+/** A ring the page draws around a bullet's dot (R12): a solid outline `width` wide and `offset`
+ *  off the dot, in the colour of the page's token `--color-<token>`. */
+interface RingClass {
+  readonly offset: string;
+  readonly token: string;
+  readonly width: string;
+}
+
+/** The ring on the dot of the current point's own row, its branch not folded (`theme/classes.ts`'s
+ *  `pagePointRing`): 1.5 px of the page's quiet grey, 2 px off the dot. */
+const POINT_RING: RingClass = { offset: "2px", token: "page-quiet", width: "1.5px" };
+
+/** The lighter ring on the dot of a row above the current point on its path while the point's own
+ *  row is folded away, that row's own branch folded (`pagePathRingFolded`): 1 px of the bullets'
+ *  grey, 5 px off the dot, so it stands outside the folded branch's halo. */
+const PATH_RING_FOLDED: RingClass = { offset: "5px", token: "page-bullet", width: "1px" };
+
+/** The outline of the bullet's dot in `row` (`NodeRow.tsx`'s `Bullet`), as the browser computes
+ *  it. */
+function dotRing(row: Locator): Promise<Ring> {
+  return row
+    .locator("[data-node-bullet] > i")
+    .first()
+    .evaluate((dot) => {
+      const style = getComputedStyle(dot);
+      return {
+        color: style.outlineColor,
+        offset: style.outlineOffset,
+        style: style.outlineStyle,
+        width: style.outlineWidth,
+      };
+    });
+}
+
+/**
+ * `ring` as this browser computes it, read off a probe that is given its outline and its token as
+ * its `color` and is removed at once: the token's value in the scheme the page is drawn in, and
+ * the width as the browser keeps it. A browser that snaps an outline's width to whole device
+ * pixels at computed-value time, as CSS Values 4 has it ("snap as a border width"), keeps 1.5 px
+ * as 1 px on a screen of one device pixel to the CSS pixel, so a dot is held to the width its
+ * class computes to here rather than to the words of the class.
+ */
+function owedRing(page: Page, ring: RingClass): Promise<Ring> {
+  return page.evaluate(({ offset, token, width }) => {
+    const probe = document.createElement("i");
+    probe.style.color = `var(--color-${token})`;
+    probe.style.outline = `${width} solid`;
+    probe.style.outlineOffset = offset;
+    document.body.append(probe);
+    const style = getComputedStyle(probe);
+    const owed = {
+      color: style.color,
+      offset: style.outlineOffset,
+      style: style.outlineStyle,
+      width: style.outlineWidth,
+    };
+    probe.remove();
+    return owed;
+  }, ring);
 }
 
 // c-replies (1): a reply is drawn
@@ -1450,4 +1557,167 @@ test("today's docked composer lifts nothing at the foot of a short wide window",
   } finally {
     await context.close();
   }
+});
+
+// (10) R12 of dispatch://INFRA-3949, decision 354 of the parts: the outline marks the
+// conversation's current point on one row - the node the reader's next turn answers - as the
+// current location for a screen reader and with a quiet ring on its bullet's dot. On this seed it
+// is the open question at load, whether that question waits on the reader or is only the newest
+// act, since the seed asks it last. A Reply moves the mark to the row the box is aimed at and
+// Escape moves it back, the focus staying the box's; while the point's own row is folded away no
+// row is the current location and the row above it on its path carries a lighter ring; and an
+// answer and then a new comment, each the newest act, take the mark with them.
+// SLOW(>=2s): a seeded thread and three questions, the thread opened press by press twice, two
+// replies aimed and ended, and an answer and a comment written from the box, each waited on until
+// the outline marks it.
+test("the outline marks the conversation's current point on one row, and the mark follows the box and each new act", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedReplyNesting, async (page, seeded) => {
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+    // At load: the one question waiting on the reader, if the server says it waits on alice, and
+    // else the newest act on the issue, which is that question too, asked after every other node.
+    await expectPointOn(page, seeded.openAsk, "the open question's row", "at load");
+    // The probe reads what the page's own values compute to, which no state of the page moves, so
+    // one reading holds for the whole row.
+    const pointRing = await owedRing(page, POINT_RING);
+    await expect
+      .poll(() => dotRing(nodeRow(page, seeded.openAsk).first()), {
+        message:
+          "the open question's dot is not ringed as the point's own row: a solid 1.5 px line 2 px off it, in the page's quiet grey",
+      })
+      .toEqual(pointRing);
+
+    // A Reply aims the box at the thread's head: the mark moves to its row, and the focus is the
+    // box's, where the Reply put it, and not the mark's. Escape in the box ends the reply, and the
+    // mark goes back to the open question.
+    await focusRow(page, seeded.head);
+    await page.keyboard.press("r");
+    await expect(
+      composerField(page),
+      "r on the thread's head put no caret in the box"
+    ).toBeFocused();
+    await expectPointOn(page, seeded.head, "the thread's head", "while the box replies to it");
+    await expect(
+      nodeRow(page, seeded.openAsk).first(),
+      "the open question's row is still the current location while the box replies to the thread's head"
+    ).not.toHaveAttribute("aria-current");
+    await expect(composerField(page), "the mark took the focus from the box").toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(composerTarget(page), "Escape in the box did not end the reply").toHaveCount(0);
+    await expectPointOn(
+      page,
+      seeded.openAsk,
+      "the open question's row",
+      "once Escape ended the reply to the thread's head"
+    );
+
+    /** Opens the thread's folds by their fold controls and the line its fourth level is folded
+     *  to at this width, as the first row of this file does, so `third`'s row is drawn. */
+    const openThread = async (): Promise<void> => {
+      const folds = nodeRows(page).getByRole("button", {
+        exact: true,
+        name: CONTROL_LABELS.unfold,
+      });
+      // Each press redraws before the next count, so a count of none means every fold is open.
+      for (let pressed = 0; pressed < 20 && (await folds.count()) > 0; pressed += 1) {
+        await folds.first().click();
+      }
+      await openEveryDeeperBranch(page);
+      await expect(
+        nodeRow(page, seeded.third),
+        "the thread's fourth level is not drawn once its branches are open"
+      ).not.toHaveCount(0);
+    };
+
+    // The folded path: with the box replying to the fourth level, folding the thread's head folds
+    // the point's own row away. No row is then the current location, and the head, the one row
+    // of its path still drawn, carries the path's lighter ring, outside its folded halo.
+    await openThread();
+    await focusRow(page, seeded.third);
+    await page.keyboard.press("r");
+    await expect(
+      composerField(page),
+      "r on the fourth level's reply put no caret in the box"
+    ).toBeFocused();
+    await expectPointOn(
+      page,
+      seeded.third,
+      "the fourth level's row",
+      "while the box replies to it"
+    );
+    const head = nodeRow(page, seeded.head).first();
+    await head.getByRole("button", { exact: true, name: CONTROL_LABELS.fold }).click();
+    await expect(
+      nodeRow(page, seeded.third),
+      "folding the thread's head left its fourth level drawn"
+    ).toHaveCount(0);
+    await expect(
+      currentRows(page),
+      "a row is the current location while the point's own row is folded away"
+    ).toHaveCount(0);
+    await expect(
+      head,
+      "the thread's head does not carry the path's mark while the point is folded away under it"
+    ).toHaveAttribute("data-current-point", "path");
+    await expect(
+      markedRows(page),
+      "a row besides the thread's head carries a mark while the point is folded away under it"
+    ).toHaveCount(1);
+    // Read once, as the point's ring above is: the page's own values, which no state moves.
+    const pathRing = await owedRing(page, PATH_RING_FOLDED);
+    await expect
+      .poll(() => dotRing(head), {
+        message:
+          "the folded head's dot is not ringed as a row on the point's path: a solid 1 px line 5 px off it, outside the fold's halo, in the bullets' grey",
+      })
+      .toEqual(pathRing);
+    // Unfolded again, the point's own row is drawn and carries the mark once more.
+    await head.getByRole("button", { exact: true, name: CONTROL_LABELS.unfold }).click();
+    await openThread();
+    await expectPointOn(
+      page,
+      seeded.third,
+      "the fourth level's row",
+      "once the thread's head is unfolded again"
+    );
+    // A press on the deeper line's control, where that line came back, takes the focus from the
+    // box, as a press on a fold control does not, so the caret is put back in the box for Escape.
+    await composerField(page).focus();
+    await page.keyboard.press("Escape");
+    await expect(
+      composerTarget(page),
+      "Escape in the box did not end the reply to the fourth level"
+    ).toHaveCount(0);
+    await expectPointOn(
+      page,
+      seeded.openAsk,
+      "the open question's row",
+      "once Escape ended the reply to the fourth level"
+    );
+
+    // A new act moves the mark: the answer sent from the open question's row is the newest act,
+    // on that question's own row, and no question waits once it is answered; then a comment on
+    // the issue is the newest act, and the mark is on its row alone.
+    await focusRow(page, seeded.openAsk);
+    await nodeRow(page, seeded.openAsk).first().locator('[data-pick-option="Left"]').click();
+    await composer(page).getByRole("button", { name: CONTROL_LABELS.send_answer }).click();
+    await expect(
+      nodeRow(page, seeded.openAsk).first(),
+      "the answer sent from the open question's row did not land"
+    ).toHaveAttribute("data-node-state", "answered");
+    await expectPointOn(
+      page,
+      seeded.openAsk,
+      "the open question's row",
+      "once its answer, the newest act, landed"
+    );
+    const words = "A comment on the issue, the newest act of all.";
+    await sendFromComposer(page, words);
+    const comment = (await commentWithBody(seeded.key, undefined, words)).id;
+    await expect(nodeRow(page, comment), "the new comment is not drawn").not.toHaveCount(0);
+    await expectPointOn(page, comment, "the new comment's row", "once it landed on the issue");
+  });
 });
