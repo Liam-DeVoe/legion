@@ -147,6 +147,28 @@ func TestTheKVStoreRefusesAMissingBucketAndAMissingSentinel(t *testing.T) {
 	}
 }
 
+// A read no server answers tells nothing of the bucket: on a server with no JetStream every API
+// request meets no responders, and the store's read is a failed read, never a missing store, so a
+// fixed-mode listener never reads it as no marker. The control is a JetStream server with no
+// bucket, whose stream-not-found answer is the missing store.
+func TestAReadNoServerAnswersIsNoMissingStore(t *testing.T) {
+	conn := testnats.Connect(t, testnats.URL(t))
+	t.Cleanup(conn.Close)
+	if _, err := NewKVStore(SessionBucket, ConnRequester{conn}).State(context.Background()); !errors.Is(err, ErrNoStore) {
+		t.Fatalf("control: State with no bucket = %v, want ErrNoStore", err)
+	}
+	_, uri := testnats.StartConfig(t, "", nil, true)
+	silent, err := testnats.ConnectSeed(t, uri, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(silent.Close)
+	_, err = NewKVStore(SessionBucket, ConnRequester{silent}).State(context.Background())
+	if !errors.Is(err, natsgo.ErrNoResponders) || errors.Is(err, ErrNoStore) || IsSelectionStateLost(err) {
+		t.Fatalf("State that no server answered = %v, want a failed read wrapping nats.ErrNoResponders, no missing store", err)
+	}
+}
+
 func TestTheKVStoreSeesADeleteMarkerAsADeletedRecord(t *testing.T) {
 	live := newLiveStore(t, testnats.URL(t), &StoreState{Cutover: CutoverDone})
 	ctx := context.Background()

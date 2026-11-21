@@ -121,9 +121,10 @@ func (c *Client) GateOnMarker(converted func(error)) {
 //   - ErrConvertedStore, naming ENVOY_CONSUMER_NAMES, when the sentinel says the cutover is done: the
 //     bucket holds the sessions' fresh names, and today's fixed names must not run over it;
 //   - any other failed read as its error, on which the gate stays shut and the caller reads again:
-//     no connection, a timeout, a bucket that exists with no sentinel, or a value under the
-//     sentinel's key that is not the sentinel (consumernames.ErrNoSentinel: a server answer stored
-//     there through a request's reply subject, another key's record, a delete marker).
+//     no connection, a timeout, no responder (only the stream's own not-found answer is no
+//     bucket), a bucket that exists with no sentinel, or a value under the sentinel's key that is
+//     not the sentinel (consumernames.ErrNoSentinel: a server answer stored there through a
+//     request's reply subject, another key's record, a delete marker).
 func (c *Client) ReadMarker(ctx context.Context) error {
 	conn := c.Connection()
 	reconnects, connected := connectionNow(conn)

@@ -121,6 +121,48 @@ func TestAFixedModeReconnectMakesNoConsumerCallUntilItReadsTheMarker(t *testing.
 	}
 }
 
+// A marker read that no server answers (no responders: here a server with no JetStream, where
+// every API request meets none) is a failed read: the gate stays shut and the caller reads again.
+// Only the stream's own not-found answer is no bucket. The control is a JetStream server with no
+// bucket, whose read opens the gate.
+func TestAMarkerReadNoServerAnswersKeepsTheGateShut(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name      string
+		jetstream bool
+	}{{"control: a JetStream server with no bucket", true}, {"a server no JetStream answers on", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			var uri string
+			if tc.jetstream {
+				_, uri = testnats.Start(t)
+			} else {
+				_, uri = testnats.StartConfig(t, "", nil, true)
+			}
+			client, err := Connect([]string{uri})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(client.Close)
+			client.GateOnMarker(nil)
+			readCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			err = client.ReadMarker(readCtx)
+			cancel()
+			if tc.jetstream {
+				if err != nil || client.MarkerUnread() != nil {
+					t.Fatalf("control: the read with no bucket = %v, gate %v; want no marker and the gate open", err, client.MarkerUnread())
+				}
+				return
+			}
+			if err == nil || !errors.Is(err, natsgo.ErrNoResponders) {
+				t.Fatalf("the read no server answered = %v; want a failed read wrapping nats.ErrNoResponders", err)
+			}
+			if !errors.Is(client.MarkerUnread(), ErrMarkerUnread) {
+				t.Fatalf("the gate after a read no server answered = %v; want ErrMarkerUnread", client.MarkerUnread())
+			}
+		})
+	}
+}
+
 // todaysReconnectCheck is the fixed mode's reconnect check as it stood before the marker gate
 // (WatchConversion at 300bee77fd): each connection reads the marker and calls converted on done,
 // and a failed read fails the hook's run, but no consumer call waits for any of it.

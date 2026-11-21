@@ -59,12 +59,12 @@ const createBucketWait = 30 * time.Second
 
 // createBucket is CreateSessionBucket of the bucket config describes. On a cluster the new stream
 // answers nobody for a moment after its create: until it has a leader, and its interest has
-// reached the member conn is on, that member answers a read that the stream does not exist, or
-// finds no responder for a read or a write. Each is ErrNoStore, which for a bucket just created
-// means only "not yet", so the sentinel's leader read is tried again until the stream answers it
-// (no record, the key never written), and the sentinel's write until a responder takes it. Past
-// the bound the create fails naming the bucket; the bucket stays, with no sentinel, which every
-// call refuses (ErrNoSentinel) until a create-bucket run writes one.
+// reached the member conn is on, that member answers a read that the stream does not exist
+// (ErrNoStore), or finds no responder for a read or a write (nats.ErrNoResponders). For a bucket
+// just created each means only "not yet", so the sentinel's leader read is tried again until the
+// stream answers it (no record, the key never written), and the sentinel's write until a responder
+// takes it. Past the bound the create fails naming the bucket; the bucket stays, with no sentinel,
+// which every call refuses (ErrNoSentinel) until a create-bucket run writes one.
 func createBucket(ctx context.Context, conn *nats.Conn, config jetstream.KeyValueConfig, state StoreState) (*KVStore, error) {
 	js, err := jetstream.New(conn)
 	if err != nil {
@@ -93,12 +93,12 @@ func createBucket(ctx context.Context, conn *nats.Conn, config jetstream.KeyValu
 	return store, nil
 }
 
-// untilAnswered runs attempt until it answers anything but ErrNoStore, and answers that; once ctx
-// ends it answers the last ErrNoStore, naming the bucket.
+// untilAnswered runs attempt until it answers anything but ErrNoStore or nats.ErrNoResponders, and
+// answers that; once ctx ends it answers the last of those, naming the bucket.
 func untilAnswered(ctx context.Context, bucket string, attempt func() ([]byte, uint64, error)) ([]byte, uint64, error) {
 	for {
 		data, revision, err := attempt()
-		if !errors.Is(err, ErrNoStore) {
+		if !errors.Is(err, ErrNoStore) && !errors.Is(err, nats.ErrNoResponders) {
 			return data, revision, err
 		}
 		if sleep(ctx, 50*time.Millisecond) != nil {
@@ -238,7 +238,9 @@ func (s *KVStore) bound(ctx context.Context) (context.Context, context.CancelFun
 	return context.WithTimeout(ctx, s.timeout)
 }
 
-// last reads key's last message from the leader of the bucket's stream.
+// last reads key's last message from the leader of the bucket's stream. Only the server's answer
+// that the stream does not exist (10059) is ErrNoStore: a read no server answered (no responders)
+// tells nothing of the bucket, and is a failed read like a timeout.
 func (s *KVStore) last(ctx context.Context, key string) ([]byte, uint64, error) {
 	ctx, cancel := s.bound(ctx)
 	defer cancel()
@@ -250,9 +252,6 @@ func (s *KVStore) last(ctx context.Context, key string) ([]byte, uint64, error) 
 	}
 	reply, err := s.request.Request(ctx, &nats.Msg{Subject: "$JS.API.STREAM.MSG.GET." + s.stream(), Data: body})
 	if err != nil {
-		if errors.Is(err, nats.ErrNoResponders) {
-			return nil, 0, fmt.Errorf("%w: %s (%w)", ErrNoStore, s.stream(), err)
-		}
 		return nil, 0, fmt.Errorf("consumer names: read %s from %s: %w", key, s.stream(), err)
 	}
 	var response struct {
