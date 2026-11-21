@@ -32,7 +32,13 @@ export type StepRow = StepEnd & {
 /** Where a step of the plan stands, as the server answers it from the runs of the plan's own run of
  *  the issue: `not started`, `running`, or the result its newest run ended with. `other` is a word
  *  this build does not know, which only a newer Dispatch can send. */
-export type PlannedStepState = "not started" | "running" | "passed" | "failed" | "stopped" | "other";
+export type PlannedStepState =
+  | "not started"
+  | "running"
+  | "passed"
+  | "failed"
+  | "stopped"
+  | "other";
 
 /** One step the plan gives a task: `step` is its place in the task, from 1, and `name` the plan's
  *  word for it, a role or `role:key`. `state` is where the server says it stands, and `result` the
