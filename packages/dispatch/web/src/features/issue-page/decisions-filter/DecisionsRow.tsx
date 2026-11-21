@@ -89,7 +89,10 @@ interface RowPerson {
  * margin does not say it whole, and the control that keeps the body open.
  *
  * Every entry ends on a link to the node that holds it, in the conversation. Nothing inside a
- * row takes the tab order (R9): the row's own keys reach what it holds (`useTreeKeymap.ts`).
+ * row takes the tab order (R9): the row's own keys reach what it holds (`useTreeKeymap.ts`). The
+ * one exception is the focused row's, as on the outline's rows: a block of its words whose
+ * content runs past its box, a wide code block or table, keeps a tab stop of its own, so that a
+ * reader on the keyboard can scroll it sideways (`RowText.tsx`).
  */
 export function DecisionsRow({
   body,
@@ -214,7 +217,7 @@ export function DecisionsRow({
             ref={words}
             style={clamped ? { maxHeight: clamp.height } : undefined}
           >
-            <RowText markdown={node.text} source={node.source} tree={node.tree} />
+            <RowText focused={focused} markdown={node.text} source={node.source} tree={node.tree} />
             {clamped && !clamp.pictures ? (
               <span
                 aria-hidden="true"

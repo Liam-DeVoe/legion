@@ -29,8 +29,9 @@ import { chipWords } from "../node-row-chip";
 import { useTakeOutlineRequest } from "../outline-request";
 import { threadMarks } from "../outline-thread-read";
 import { useOutlineWriter } from "../outline-writer";
-import { authorText, pageChrome } from "../page-structure";
+import { authorText, KEY_REPORTS, pageChrome } from "../page-structure";
 import {
+  ANSWER_LINES,
   CONTROL_LABELS,
   DECISIONS_WORDS,
   isReader,
@@ -39,8 +40,9 @@ import {
 } from "../page-words";
 import { usePressFocus } from "../press-focus";
 import { FAILED_READ_RETRY, FailedReadLine } from "../slots/failed-read-line";
+import { focusIsLoose } from "../tree-focus";
 import type { DrawnRow } from "../tree-fold";
-import { nodesInOrder } from "../tree-keys";
+import { nodesInOrder, rowKeyOf } from "../tree-keys";
 import { useTreeKeymap } from "../useTreeKeymap";
 import { DecisionsRow } from "./DecisionsRow";
 import { useDecisionsEntries } from "./decisions-entries";
@@ -81,21 +83,26 @@ const NOTHING = (): void => {};
  * as the outline does, under the outline's own name, so a reader and the browser suite find one
  * tree on the page whatever filter is on: each part is a group named by its heading and each
  * entry a row of the tree. The focused row is the list's one tab stop and nothing inside a row
- * takes the tab order (R9); the keys are the outline's own (`useTreeKeymap.ts`): the arrows and
- * `j`/`k` move, `Shift+K` and `Shift+C` press Keep and Change, `a` and `r` answer and reply,
- * `f` steps through a row's links, Enter goes to the entry's node in the conversation, and the
- * key that cycles how much is drawn unfolds the foot. `q` and `w` walk the entries in the order
- * the list draws them and then the rest of the issue, so a question or a decision the words
- * filter left out is still found, and opens in the conversation, as an entry's link does. The
- * foot's own control is a plain button in the tab order, as the prototype's is, so Tab reaches
- * it where the foot is all the list holds. The tree element keeps no focus while the list draws
- * a row, nor while it draws the foot once the reads that say which questions and decisions there
- * are hold their answers: a focus on it goes on to the tab stop, or to the foot's control where
- * the list draws no row, which is how `t d` reaches a list that holds only the foot, and a page
- * opened on one reaches that control by the same rule. On an issue the view draws nothing for,
- * with no row and no foot, there is nowhere to pass it, and the tree keeps it. A key with nowhere
- * to go says so at the row it was pressed on, or at the list's tab stop where it was pressed on
- * no row, as the outline's keys do (the tester's F16). Until the reads that say which questions
+ * takes the tab order (R9), but for a block of the focused row's words whose content runs past
+ * its box, a wide code block or table, which keeps a tab stop of its own so that a reader on the
+ * keyboard can scroll it, as on the outline's rows (`RowText.tsx`). The keys are the outline's
+ * own (`useTreeKeymap.ts`): the arrows and `j`/`k` move, `Shift+K` and `Shift+C` press Keep and
+ * Change, `a` and `r` answer and reply, `f` steps through a row's links, Enter goes to the
+ * entry's node in the conversation, and the key that cycles how much is drawn unfolds the foot.
+ * `q` and `w` walk the entries in the order the list draws them and then the rest of the issue,
+ * so a question or a decision the words filter left out is still found, and opens in the
+ * conversation, as an entry's link does. The foot's own control is a plain button in the tab
+ * order, as the prototype's is, so Tab reaches it where the foot is all the list holds. The tree
+ * element keeps no focus while the list draws a row, nor while it draws the foot once the reads
+ * that say which questions and decisions there are hold their answers: a focus on it goes on to
+ * the tab stop, or to the foot's control where the list draws no row, which is how `t d` reaches
+ * a list that holds only the foot. A page opened on one reaches that control by the same rule
+ * where nothing holds the focus: on the page itself, or on the app's main element, which holds
+ * the list and which the app focuses when a link inside it opens the page (`focusIsLoose`). On
+ * an issue the view draws nothing for, with no row and no foot, there is nowhere to pass it, and
+ * the tree keeps it. A key with nowhere to go says so at the row it was pressed on, or at the
+ * list's tab stop where it was pressed on no row, as the outline's keys do (the tester's F16):
+ * Left on a row says the list has no level above it. Until the reads that say which questions
  * and decisions there are hold their answers, `q` and `w` with nowhere to go say nothing: no
  * question or decision to go to may mean only that they have not arrived
  * (`decisions-entries.ts`).
@@ -205,11 +212,13 @@ export function DecisionsFilterBody({
   // no row - on the foot's control, or with the focus on the page - and the list's tab stop
   // draws it then, as the outline places one (`IssueTree.tsx`); a list with no tab stop draws
   // none. The control's own focus clears a report, so one made while the focus is already on it
-  // stays.
+  // stays. The outline's report for a key that would go above the top level speaks of the whole
+  // issue, which this list is not, so here it says the list has no level above the row.
   const [report, setReport] = useState<{ readonly line: string; readonly row?: string }>();
   const reportHere = useCallback((line: string) => {
+    const said = line === KEY_REPORTS.whole_tree ? ANSWER_LINES.no_level_above : line;
     const row = document.activeElement?.closest<HTMLElement>("[data-node-row]")?.dataset.nodeId;
-    setReport(line === "" ? undefined : { line, ...(row === undefined ? {} : { row }) });
+    setReport(said === "" ? undefined : { line: said, ...(row === undefined ? {} : { row }) });
   }, []);
 
   // The rows in the order the page draws them, which is the order the outline's keys walk: the
@@ -224,10 +233,12 @@ export function DecisionsFilterBody({
     ],
     [footShown, parts]
   );
-  // The rows as the outline's keys read them: the nth is the nth row drawn.
+  // The rows as the outline's keys read them: the nth is the nth row drawn. Each sits at the
+  // list's one level, under the root the keys are given, which is the view (`keyOrder`), so Left
+  // on a row finds no row above it and says so, as on a top-level row of the outline.
   const rows = useMemo<DrawnRow[]>(
-    () => drawn.map((entry) => ({ kind: "node", level: 1, node: entry.node, trail: [] })),
-    [drawn]
+    () => drawn.map((entry) => ({ kind: "node", level: 1, node: entry.node, trail: [view.id] })),
+    [drawn, view.id]
   );
 
   // The decision the reader last pressed Keep on, or sent a Change on, on its row here. A press
@@ -405,18 +416,36 @@ export function DecisionsFilterBody({
   );
   // A page opened on a list that holds only the foot has no row for the stage to focus
   // (`slots/stage.tsx`), so the foot's control takes the focus once, on the stage's own terms:
-  // no address names an entry and nothing holds the focus. It is placed by `placeFoot`, as a
-  // focus on the tree is passed, so `t d` and a page opened here reach the control by one rule,
-  // and it waits, as the tree does, for the reads that say which questions and decisions there
-  // are. The reads may answer after the body mounts, so this looks again on every render until
-  // it has acted.
+  // no address names an entry and nothing holds the focus. Nothing holds it on the page itself,
+  // or on an element that holds the list (`focusIsLoose`): the app focuses its main element at
+  // each page change but the first (`app.tsx`), so a page opened by a link inside the app, from
+  // another issue, the Inbox or a board, finds the focus there. It is placed by `placeFoot`, as
+  // a focus on the tree is passed, so `t d` and a page opened here reach the control by one
+  // rule, and it waits, as the tree does, for the reads that say which questions and decisions
+  // there are. The reads may answer after the body mounts, so this looks again on every render
+  // until it has acted. Where they are cached, as on Back to the page's address, it acts in the
+  // commit the page mounts in, and the app then moves the focus to its main element, since React
+  // runs a child's effects before its parent's. So a frame after it placed the focus it looks
+  // once more, and places it again where nothing holds it then, as the stage does; a focus the
+  // reader or a script put elsewhere in that frame stays.
   const footReached = useRef(false);
+  // That frame, which goes with the body: the body cancels it as it leaves the page.
+  const footAgain = useRef<number | undefined>(undefined);
   useEffect(() => {
-    if (footReached.current || reveal !== undefined) return;
-    const active = document.activeElement;
-    if (active !== null && active !== document.body) return;
+    if (footReached.current || reveal !== undefined || !focusIsLoose(body.current)) return;
     footReached.current = placeFoot();
+    if (!footReached.current) return;
+    footAgain.current = requestAnimationFrame(() => {
+      footAgain.current = undefined;
+      if (focusIsLoose(body.current)) placeFoot();
+    });
   });
+  useEffect(
+    () => () => {
+      if (footAgain.current !== undefined) cancelAnimationFrame(footAgain.current);
+    },
+    []
+  );
   // The tree is built read by read (`useIssueTree.ts`), so a list can hold only the foot until
   // the asks read answers, and then draw its questions. The focus the body put on the foot's
   // control was for a list with no row: once one is drawn it goes to the tab stop, where the
@@ -588,7 +617,12 @@ export function DecisionsFilterBody({
     onEditEnd: NOTHING,
     onFold: NOTHING,
     onOpenDeeper: NOTHING,
-    onPin: pin,
+    // `o` names the row by its key (`rowKeyOf`), the view's id before the node's, and the list
+    // pins a row by its node's id, as the row's own control does.
+    onPin: (rowKey) => {
+      const row = rows.find((each) => rowKeyOf(each) === rowKey);
+      if (row?.kind === "node") pin(row.node.id);
+    },
     onReport: reportHere,
     onReveal: goToOrOpen,
     onZoom: NOTHING,

@@ -2,7 +2,7 @@ import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, type RenderResult, render, waitFor } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect, useRef } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { displayTree } from "../../../__tests__/display-trees";
@@ -32,6 +32,7 @@ import { NoTooltips } from "../NoTooltips";
 import { OutlineRequestProvider } from "../outline-request";
 import { KEY_REPORTS } from "../page-structure";
 import {
+  ANSWER_LINES,
   CONTROL_LABELS,
   DECISIONS_WORDS,
   EMPTY_STATE_LINES,
@@ -45,6 +46,7 @@ import {
 import { presetView } from "../presets";
 import { ViewStage } from "../slots/stage";
 import { decisionBehind } from "../tree-keys";
+import { overflowing, wordsScrollSheet } from "../words-scroll-fixtures";
 import { DecisionsFilterBody } from "./DecisionsFilterBody";
 import {
   answeredAsk,
@@ -172,6 +174,28 @@ function Where(): ReactNode {
   return <output data-testid="where">{`${pathname}${hash}`}</output>;
 }
 
+/** The app's main element, which focuses itself in an effect as it mounts, as the app focuses it
+ *  at each page change but the first (`app.tsx`): React runs the effects of the body drawn in it,
+ *  and so any focus the body places as it mounts, before this one. */
+function PageChangeMain({ children }: { children: ReactNode }): ReactNode {
+  const main = useRef<HTMLElement>(null);
+  useEffect(() => {
+    main.current?.focus();
+  }, []);
+  return (
+    <main ref={main} tabIndex={-1}>
+      {children}
+    </main>
+  );
+}
+
+/** Lets one animation frame pass. */
+async function nextFrame(): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  requestAnimationFrame(() => resolve());
+  await act(() => promise);
+}
+
 interface Drawn extends RenderResult {
   readonly client: QueryClient;
   /** Draws the body again with other props, as the page does when its address moves. */
@@ -244,9 +268,14 @@ function renderBody(
   },
   props: BodyProps = {},
   {
+    main = false,
     requests = false,
     stage = false,
   }: {
+    /** Whether the body is drawn in the app's main element, which takes the focus as the body
+     *  mounts, after the body's own first effects, as on a page opened by a link inside the app
+     *  (`PageChangeMain`). */
+    main?: boolean;
     /** Whether the page's outline requests are held above the body, as the issue page holds
      *  them (`slots/providers.tsx`), with a control beside the body to take the focus to. */
     requests?: boolean;
@@ -301,6 +330,7 @@ function renderBody(
       />
     ) : null;
     const staged = stage ? <ViewStage>{list}</ViewStage> : list;
+    const held = main ? <PageChangeMain>{staged}</PageChangeMain> : staged;
     return (
       <MemoryRouter>
         <QueryClientProvider client={client}>
@@ -314,10 +344,10 @@ function renderBody(
                 {requests ? (
                   <OutlineRequestProvider>
                     <button type="button">Elsewhere</button>
-                    {staged}
+                    {held}
                   </OutlineRequestProvider>
                 ) : (
-                  staged
+                  held
                 )}
               </NoTooltips>
             </MarginProvider>
@@ -1698,6 +1728,61 @@ test("a list that holds only the foot gives the focus to the foot's control", as
   expect(document.activeElement).toBe(control(pressed));
 });
 
+/** An issue whose only decision is an agent's that no statement rests on: the list draws its
+ *  foot and no row. */
+const FOOT_ONLY = { children: [decisionNode("minor")], made: [decision("minor")] };
+
+/** The foot's control, or null where the list draws no foot. */
+function footControlOf(drawn: RenderResult): Element | null {
+  return drawn.container.querySelector('[data-decisions-part="agents"] button');
+}
+
+// The app focuses its main element at each page change but the first (`app.tsx`), so a page
+// opened on a list that holds only the foot by a link inside the app - from another issue, the
+// Inbox or a board - finds the focus on what holds the list. Nobody put it there, as nobody puts
+// it on the page itself, so the foot's control takes it, here once the decisions read answers
+// after the page mounted. The body is drawn in the stage, as the page draws a view.
+test("a list that holds only the foot, opened by a link inside the app, gives its control the focus once the reads answer", async () => {
+  const answer = Promise.withResolvers<IssueDecisions>();
+  const getIssueDecisions = spyOn(api, "getIssueDecisions").mockReturnValue(answer.promise);
+  try {
+    const view = renderBody({ ...FOOT_ONLY, made: null }, {}, { main: true, stage: true });
+    // The foot is drawn from the tree, but until the read answers a row may yet come, so its
+    // control takes no focus.
+    await act(() => Promise.resolve());
+    expect(footControlOf(view)).not.toBeNull();
+    expect(document.activeElement).toBe(view.getByRole("main"));
+    await act(async () => answer.resolve(decisionsRead(FOOT_ONLY.made)));
+    await waitFor(() =>
+      expect(
+        document.activeElement,
+        "the reads answered after the page mounted, and the focus stayed on the app's main element"
+      ).toBe(footControlOf(view))
+    );
+    view.unmount();
+  } finally {
+    getIssueDecisions.mockRestore();
+  }
+});
+
+// The same with the reads cached, as on Back to the page's address: the body places the focus in
+// the commit the page mounts in, and the app then moves it to its main element, since React runs
+// a child's effects before its parent's. The control takes it back in the next frame.
+test("a list that holds only the foot, opened by a link inside the app with its reads cached, takes back the focus the app puts on its main element", async () => {
+  (document.activeElement as HTMLElement | null)?.blur();
+  const view = renderBody(FOOT_ONLY, {}, { main: true, stage: true });
+  expect(
+    document.activeElement,
+    "the app's main element did not take the focus after the body placed it"
+  ).toBe(view.getByRole("main"));
+  await nextFrame();
+  expect(
+    document.activeElement,
+    "the reads were cached, and the focus stayed on the app's main element"
+  ).toBe(footControlOf(view));
+  view.unmount();
+});
+
 // R13, the tester's F12: the header's count of what waits on the reader turns the filter on
 // and puts the focus on a thing that waits, in the filter's order: each open question whose
 // turn is the reader's, then each decision of the review list. Each press goes to the next
@@ -1903,6 +1988,69 @@ test("a key with nowhere to go reports at the row it was pressed on", async () =
     KEY_REPORTS.no_next_question
   );
   expect(noQuestion.container.querySelectorAll("[data-row-report]").length).toBe(1);
+});
+
+// The list has one level, so Left on a row has no level above it to go to, and it says so at the
+// row in the list's own words: the outline's report for that key speaks of the whole issue,
+// which the list is not. The focus stays on the row.
+test("Left on a row says the list has no level above it", async () => {
+  const user = userEvent.setup();
+  const view = renderBody(wholeIssue());
+  await act(async () => rowOf(view, D("first")).focus());
+  await user.keyboard("{ArrowLeft}");
+  expect(focusedRow(view)).toBe(D("first"));
+  expect(words(rowOf(view, D("first")).querySelector("[data-row-report]"))).toBe(
+    ANSWER_LINES.no_level_above
+  );
+  expect(view.container.querySelectorAll("[data-row-report]").length).toBe(1);
+});
+
+// Nothing inside a row takes the tab order but a block of the focused row's words whose content
+// runs past its box: a wide code block keeps a tab stop of its own there, named, so a reader on
+// the keyboard can scroll it sideways, and the same block on a row the reader is not on keeps
+// none.
+test("a focused row's wide code block keeps a tab stop, and another row's does not", async () => {
+  // The rows draw the reading of their words, which is the page's engine's.
+  await warmMarkdownRenderer();
+  const text = `Run it as one line.\n\n\`\`\`\n${"x".repeat(400)}\n\`\`\``;
+  const tree = displayTree(text);
+  // The rules that make a code block in a row's words scroll, which the row reads through the
+  // computed style, and its line laid out past its box, as a wide one's is: a unit test's DOM
+  // loads no style sheet and lays nothing out.
+  const sheet = wordsScrollSheet();
+  document.head.append(sheet);
+  const restore = overflowing("[data-node-words] pre");
+  try {
+    const view = renderBody({
+      children: [
+        statement("s1"),
+        decisionNode("first", { text, tree }),
+        decisionNode("second", { text, tree }),
+      ],
+      made: [
+        decision("first", { links: [shaped(specRef("s1"))] }),
+        decision("second", { links: [shaped(specRef("s1"))] }),
+      ],
+    });
+    /** The code block of one row's words: its name, and its place in the tab order. */
+    const code = (id: string) => {
+      const block = rowOf(view, id).querySelector("[data-node-words] pre");
+      if (block === null) throw new Error(`the row of ${id} draws no code block in its words`);
+      return { label: block.getAttribute("aria-label"), tabIndex: block.getAttribute("tabindex") };
+    };
+    await act(async () => rowOf(view, D("first")).focus());
+    await waitFor(() =>
+      expect(code(D("first")), "the focused row's wide code block keeps no tab stop").toEqual({
+        label: CONTROL_LABELS.scrolls_code,
+        tabIndex: "0",
+      })
+    );
+    expect(code(D("second"))).toEqual({ label: null, tabIndex: "-1" });
+    view.unmount();
+  } finally {
+    restore();
+    sheet.remove();
+  }
 });
 
 // R20: the filter by words narrows the list to the nodes the filter's own view kept. The keys
