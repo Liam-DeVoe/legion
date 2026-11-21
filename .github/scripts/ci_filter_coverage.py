@@ -43,7 +43,8 @@ from pathlib import Path
 
 import yaml
 from go_build_tags import constraint_names, decode_stream, go_files, go_skips_dir, is_tag, platforms
-from workflow_paths import PathsFilter, UniqueKeyLoader, events, glob_regex, unread_filter_patterns
+from workflow_paths import (PATHS_FILTER_JS_YAML, PathsFilter, UniqueKeyLoader, events, glob_regex, load_paths_filter,
+                            unread_filter_patterns)
 
 WORKFLOW = ".github/workflows/ci.yaml"
 # The workflow that fills, on a push to main, the Go cache families WORKFLOW's jobs restore.
@@ -136,6 +137,16 @@ def load_repository_yaml_text(path: str, text: str):
     key is refused, as load_repository_yaml refuses it."""
     try:
         return yaml.load(text, Loader=UniqueKeyLoader)
+    except yaml.YAMLError as exc:
+        raise RepositoryInputError(path, exc) from exc
+
+
+def load_repository_filters_text(path: str, text: str):
+    """Parse dorny/paths-filter's filters, retaining their file's path: read by the action's own
+    js-yaml as well as by PyYAML, and refused where js-yaml refuses them or the two readings differ
+    (workflow_paths.load_paths_filter)."""
+    try:
+        return load_paths_filter(text)
     except yaml.YAMLError as exc:
         raise RepositoryInputError(path, exc) from exc
 
@@ -844,7 +855,7 @@ def changes_filters(document: dict, problems: list[Annotation]) -> tuple:
                                             f"it means two things; give every such step the same quantifier"))
         return {}, {}, lines
     quantifier = declared.pop()
-    loaded = load_repository_yaml_text(FILTERS_FILE, text)
+    loaded = load_repository_filters_text(FILTERS_FILE, text)
     if not isinstance(loaded, dict) or not loaded:
         problems.append(error(FILTERS_FILE, "this file holds no filter: dorny/paths-filter reads it as a mapping of "
                                             "filter name to patterns, and the changes job selects every job by it"))
@@ -857,11 +868,22 @@ def check_filter_inputs(workflows: dict, problems: list[Annotation]) -> None:
     """Rule 21: every dorny/paths-filter step of every workflow of .github/workflows hands the
     action exactly .github/ci-filters.yaml. Every rule of this check reads that file, so a filter
     written into a workflow's own text instead would be read by none of them: it would gate its
-    job on patterns no coverage rule here has seen, and nothing would say so."""
+    job on patterns no coverage rule here has seen, and nothing would say so. And a step that pins
+    the action to a commit pins one whose js-yaml workflow_paths.PATHS_FILTER_JS_YAML records, since
+    the file is read with that js-yaml: a bump of the pin is refused until its js-yaml is recorded
+    and installed."""
     for path, document in workflows.items():
         jobs = document.get("jobs") if isinstance(document, dict) else None
         for job_id, job in (jobs if isinstance(jobs, dict) else {}).items():
             for step in filter_input_steps(job if isinstance(job, dict) else {}):
+                ref = str(step.get("uses", "")).partition("@")[2]
+                if re.fullmatch(r"[0-9a-f]{40}", ref) and ref not in PATHS_FILTER_JS_YAML:
+                    problems.append(error(path, f"the paths-filter step {step_label(step)} of job {job_id} pins "
+                                                f"dorny/paths-filter@{ref}, whose js-yaml "
+                                                f"workflow_paths.PATHS_FILTER_JS_YAML does not record; read that "
+                                                f"commit's package-lock.json (node_modules/js-yaml), record the pair "
+                                                f"there, and set package.json's js-yaml-paths-filter alias to that "
+                                                f"version, so this check reads the filters as the action does"))
                 if reads_filters_file(step):
                     continue
                 problems.append(error(path, f"the paths-filter step {step_label(step)} of job {job_id} passes a "

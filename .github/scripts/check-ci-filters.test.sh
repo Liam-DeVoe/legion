@@ -3465,6 +3465,23 @@ check "fails" "$(is "$status" 1)"
 check "names that workflow, its job and its step" \
   "$(contains "$out" "::error file=.github/workflows/other.yaml::the paths-filter step pick of job pick passes a \`filters\` input that is not exactly .github/ci-filters.yaml")"
 
+echo "case: a paths-filter step pinned to a commit whose js-yaml is not recorded"
+# The filters are read with the js-yaml workflow_paths.PATHS_FILTER_JS_YAML records for the pinned
+# commit, so a bump of the pin alone would leave this check reading them with the old one. The
+# control is the recorded commit, which passes.
+recorded=$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$script_dir" python3 -c 'import workflow_paths as wp; print(*wp.PATHS_FILTER_JS_YAML)')
+root=$(fixture paths-filter-pin-recorded)
+replace "$root/.github/workflows/ci.yaml" "      - uses: dorny/paths-filter@v4" "      - uses: dorny/paths-filter@$recorded # v4.0.3"
+run_check "$root"
+check "the recorded commit passes" "$(is "$status" 0)"
+root=$(fixture paths-filter-pin-unrecorded)
+replace "$root/.github/workflows/ci.yaml" "      - uses: dorny/paths-filter@v4" \
+  "      - uses: dorny/paths-filter@0123456789abcdef0123456789abcdef01234567 # v9.9.9"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the file, the step, its job, the commit and what to record" \
+  "$(contains "$out" "::error file=.github/workflows/ci.yaml::the paths-filter step filter of job changes pins dorny/paths-filter@0123456789abcdef0123456789abcdef01234567, whose js-yaml workflow_paths.PATHS_FILTER_JS_YAML does not record; read that commit's package-lock.json (node_modules/js-yaml), record the pair there, and set package.json's js-yaml-paths-filter alias to that version")"
+
 echo "case: two paths-filter steps reading the filters file under different quantifiers"
 root=$(fixture filters-two-quantifiers)
 replace "$root/.github/workflows/ci.yaml" "          filters: .github/ci-filters.yaml" \
