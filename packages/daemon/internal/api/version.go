@@ -2478,6 +2478,9 @@ package api
 // round's recorded reviewer's verdict on a head past review, refusing another caller
 // (VERDICT_CALLER_FORBIDDEN), a head that is not the current one (VERDICT_HEAD_NOT_CURRENT) and a
 // phase that is not accepting, retro or merging (VERDICT_NOT_PAST_REVIEW).
+// And one App serves every role, each with its own token set: a GitHub credential's `app` names
+// the role's set (implementer, merger, architect, planner, tester, reviewer or controller) in
+// place of the two Apps' `implement` and `review`.
 // (This entry takes 200: a reading of `const DaemonAPIVersion` at main and at refs/pull/<n>/head
 // for each open pull request of cybermonklabs/legion, made with
 // .github/scripts/check-daemon-api-contract.sh at 2026-11-20T21:14:22Z, found main at 193 and
