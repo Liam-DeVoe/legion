@@ -279,10 +279,10 @@ func TestRestingRootsHoldTheAncestorSignOff(t *testing.T) {
 		closeIssue(t, pool, engine, gatedRoot, "", "done", 20)
 		seedMirrorChild(t, pool, restingNeverLet, "backlog", basisAncestor)
 		message = refusedWith(t, closeRootNow(t, pool, "close-held-by-a-child", basisAncestor), signOffChildOpen, "LEGION-303 (backlog)")
-		if want := "LEGION-100 is not closed while these Dispatch children of it are open: LEGION-303 (backlog). A parent closes after its children. " +
-			"Close or icebox each child that was never released " + parkRule + ", say in a comment which of those it is, and close the tree again. " +
+		if want := "LEGION-100 is not closed while these Dispatch children of it are open: LEGION-303 (backlog). " +
+			"A parent closes after its children, and a child that was never released holds the close until it is done or in icebox: close the tree again once none of them is open. " +
 			"A child that runs as a tree of its own is moved by its own architect or a person. " +
-			"Ask the person about a child that can reach neither done nor icebox under that rule, and hold the close until they answer"; message != want {
+			endChildrenFirst("close"); message != want {
 			t.Fatalf("the refusal = %q, want %q", message, want)
 		}
 
@@ -342,8 +342,7 @@ func TestRestingRootsHoldTheAncestorSignOff(t *testing.T) {
 			"A parent is accepted after its children, a child that runs as a tree of its own included: run each one to done, releasing one that was never released. " +
 			restingReturn +
 			"A child that runs as a tree of its own is moved by its own architect or a person. " +
-			"Close or icebox a child " + parkRule + ", and say in a comment which of those it is. " +
-			"Ask the person about a child that can reach neither done nor icebox under that rule, and hold the acceptance until they answer"; message != want {
+			endChildrenFirst("acceptance"); message != want {
 			t.Fatalf("the refusal = %q, want %q", message, want)
 		}
 		mirrorChild(t, pool, restingNeverLet, basisAncestor, "icebox", 2)

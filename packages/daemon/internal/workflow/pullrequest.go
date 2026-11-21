@@ -386,6 +386,12 @@ func (e *Engine) reaskRound(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // return from that wait reads the merge and keeps the path of a merged pull request, back to the
 // very start it held (ReturnFromChildren, dispatch://INFRA-3320 R12).
 //
+// An issue out of Legion's work awaits no merge whatever phase it kept (R20): a done or a backlog
+// written while its pull request stood open, by a person or by its owning architect, leaves that
+// pull request open, and the merge queue can merge it after the move. The merge closes nothing of
+// it, and its architect is told that the pull request merged while the issue was out of Legion's
+// work, at the status it left for (dispatch://INFRA-3178/spec R4).
+//
 // In reviewing, after the architect's notice, the merge settles the review round (settleRound):
 // an approval that stands on the head the pull request merged at ends the round and moves the
 // issue to accepting, since a merged pull request leaves the round nothing to wait on
@@ -414,11 +420,14 @@ func (e *Engine) merged(ctx context.Context, tx pgx.Tx, fact intake.PullRequestM
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
-	if awaitsMerge(*issue) {
+	if awaitsMerge(*issue) && record.InLegionsWork(*issue) {
 		return intake.Result{}, e.closeMergedTelling(ctx, tx, *issue, pr)
 	}
-	if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: "pr-merged", Role: claim.RoleArchitect,
-		Reason: fmt.Sprintf("pull request #%d merged while %s was in %s, not merging", pr.Number, issue.Key, issue.Phase)}); err != nil {
+	reason := fmt.Sprintf("pull request #%d merged while %s was in %s, not merging", pr.Number, issue.Key, issue.Phase)
+	if !record.InLegionsWork(*issue) {
+		reason = fmt.Sprintf("pull request #%d merged while %s was out of Legion's work at %s", pr.Number, issue.Key, issue.Status)
+	}
+	if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: "pr-merged", Role: claim.RoleArchitect, Reason: reason}); err != nil {
 		return intake.Result{}, err
 	}
 	return intake.Result{}, e.reaskRound(ctx, tx, *issue, pr, prior, byMerge)
@@ -426,10 +435,12 @@ func (e *Engine) merged(ctx context.Context, tx pgx.Tx, fact intake.PullRequestM
 
 // waitingForTree is what the architect that owns a merged issue is told when the merge of its pull
 // request finds a Dispatch child of the issue not done: the close is waiting, and for which
-// children, each with its status (childrenNotDone).
+// children, each with its status (childrenNotDone). It also says how the architect ends a child
+// without its own merge, by its own status write (record.EndChildRule), and that such a write
+// counts once the daemon has taken it (record.StatusNotTakenYet).
 func waitingForTree(issue string, number int, waiting []string) string {
-	return fmt.Sprintf("pull request #%d merged, and %s's close is waiting for these children of it, which are not done: %s. Dispatch closes an issue only once each of its children is done, so %s stays in merging and closes once each of them is done. Run each one to done, or close or park one with close_child or park_child "+parkRule+", and say in a comment which of those it is",
-		number, issue, strings.Join(waiting, ", "), issue)
+	return fmt.Sprintf("pull request #%d merged, and %s's close is waiting for these children of it, which are not done: %s. Dispatch closes an issue only once each of its children is done, so %s stays in merging and closes once each of them is done.",
+		number, issue, strings.Join(waiting, ", "), issue) + " " + record.StatusNotTakenYet + " " + record.EndChildRule
 }
 
 // closeMergedTelling closes issue on its merged pull request (closeMerged) and, when the close

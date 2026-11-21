@@ -3,6 +3,8 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
@@ -38,8 +40,9 @@ import (
 // goes on, and so does the issue above it.
 //
 // The architect above it, where an issue above it is in Legion's work, is told (child-status, or
-// child-closed at a close): the owner walk starts at the parent (record.NoticeStartsAtParent). An
-// issue with nothing above it in Legion's work has no architect above to tell. A root whose step
+// child-closed at a close): the owner walk starts at the parent (record.NoticeStartsAtParent). The
+// notice names what the departure leaves for that architect to act on (leftNotice). An issue with
+// nothing above it in Legion's work has no architect above to tell. A root whose step
 // rests on an ancestor's approval ends here the wait that ancestor's sign-off and close hold for
 // it (dispatch://INFRA-3320, R8), whichever way it leaves, so that ancestor's architect is told,
 // and a step of it that waits on an ancestor's approval request ends that wait with nobody told,
@@ -124,7 +127,7 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 		if status == "done" {
 			kind = "child-closed"
 		}
-		if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: kind, Role: claim.RoleArchitect, Reason: fmt.Sprintf("%s is %s", issue.Key, status)}); err != nil {
+		if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: kind, Role: claim.RoleArchitect, Reason: leftNotice(issue, status, pr, chains.Children(issue.Key))}); err != nil {
 			return err
 		}
 	}
@@ -144,6 +147,37 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 		return nil
 	}
 	return e.openCheck(ctx, tx, issue, *pr, true)
+}
+
+// leftNotice is the reason of the child-closed or child-status notice that tells the architect
+// above child that it left Legion's work at status (leave). It starts with "<KEY> is <status>",
+// and it names after that what the departure leaves for that architect to act on
+// (dispatch://INFRA-3178/spec R4). The first is the child's pull request while it is open: the
+// daemon closes no pull request, and a merge of it later closes nothing (merged). The second is
+// each Dispatch child of child that is not done, with the status Dispatch shows it at, in key
+// order (children, the copy's rows, record.Chains.Children): the departure ends the child alone
+// (R20 of dispatch://INFRA-3320), so an issue under it in Legion's work goes on, and one out of it
+// stays out, and Dispatch closes child only once each of them is done (R24). A child with nothing
+// to name gets the first sentence alone, so every reader of that bare reason stays valid. The
+// record holds no state that says a pull request is in the merge queue (the daemon hears only
+// GitHub's removal from it, intake.PullRequestDequeued), so the notice cannot say so.
+func leftNotice(child record.Issue, status string, pr *record.PullRequest, children []record.DispatchIssueRow) string {
+	reason := fmt.Sprintf("%s is %s", child.Key, status)
+	if pr != nil && pr.State == record.PullRequestOpen {
+		reason += fmt.Sprintf(". Its pull request #%d is open", pr.Number)
+	}
+	under := slices.Clone(children)
+	slices.SortFunc(under, func(a, b record.DispatchIssueRow) int { return strings.Compare(a.Key, b.Key) })
+	var open []string
+	for _, row := range under {
+		if row.Status != record.DoneStatus {
+			open = append(open, fmt.Sprintf("%s (%s)", row.Key, row.Status))
+		}
+	}
+	if len(open) > 0 {
+		reason += ". Under it, not done: " + strings.Join(open, ", ")
+	}
+	return reason
 }
 
 // suspendPod queues the deletion of issue's pod with the disk it ran on (record.IssueSuspend),

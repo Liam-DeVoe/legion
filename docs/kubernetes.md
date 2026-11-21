@@ -2532,6 +2532,39 @@ A rating row left in place is not harmless in the same way: the release that rec
 
 The kind check keeps the name after the rollback, and the rollback needs no statement for it: an earlier release never writes the kind, so the check refuses nothing that release writes.
 
+#### Rolling back the release that lets the owning architect's status stand
+
+This release takes the owning architect's `done`, `backlog`, `icebox` or `triage` on a child as it takes a person's move.
+A set-back is the status row that writes the daemon's status back over a status that the daemon does not take (`record.ReassertStatusWrite`).
+The daemon queues a set-back in these cases.
+A session with a claim in the issue's tree writes a status, other than the owning architect's move of a child out of the workflow.
+A session with no claim in the tree writes a status on a root that runs or that waits on a person.
+The daemon's own hand-over `todo` on a child of a closed tree arrives stale, for example after the root of that tree came back.
+In this release each set-back carries `observedSeq`, the Dispatch sequence of the write it undoes.
+Before each write, the daemon reads the issue's events after that sequence.
+When a later event changed the status and the daemon did not write that event, the row ends and writes nothing.
+So a set-back never writes over a move that came after the write it undoes.
+Its migration `20261120012547_set_back_observed_seq` changes no table and runs no statement.
+
+**The key `observedSeq` must go before the earlier image is pinned.**
+The earlier release decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`).
+A set-back that carries `observedSeq` fails that decode at every attempt, and the earlier release retries it on its backoff until the roll forward.
+Run this with the daemon of the project that rolls back stopped, before its earlier image is pinned, with `<PROJECT>` replaced by the project's key: `project` in its `legion.yaml`, the part of each of its issue keys before the hyphen, such as `LEGION`:
+
+```sql
+-- The Dispatch sequence that each set-back of one project carries.
+update outbox set payload = payload - 'observedSeq' where kind = 'dispatch_status' and payload ? 'observedSeq' and split_part(issue, '-', 1) = '<PROJECT>';
+```
+
+The header of `20261120012547_set_back_observed_seq.up.sql` carries this same block.
+The statement removes the key and keeps every other field of the row, its attempts and its time to run.
+The earlier release then decodes and runs each set-back of the project.
+It writes the daemon's status as that release writes it, with no read of the events after the write it undoes.
+
+**Each project rolls back on its own.**
+Several projects' daemons can share one database ([Daemon-launched controller](#daemon-launched-controller), step 3), and the outbox is one table for all of them, but each daemon runs only its own project's rows (`DueRows` in `record/store.go`).
+So one project can roll back while another stays on this release, and the statement names the project: a daemon left on this release keeps the check on its own set-backs.
+
 #### Rolling back the release whose update round ends at its bound
 
 This release's migration `20261113110610_drop_claim_update_answer_marks` takes two columns off `claims`: `update_answered_by_turn_end` and `update_reasked_for_push_check`, which the two `alter` statements below add back.
@@ -2676,7 +2709,7 @@ This release adds a phase, `awaiting_children`, in which an issue whose phases h
 Its migration `20261114232555_awaiting_children` adds the phase to `issues_phase_check` and adds six columns to `issues`: the held start, `children_wait_start`, `children_wait_task`, `children_wait_reason`, `children_wait_since` and `children_wait_children`, which the check `issues_children_wait_shape` ties to the phase, and `children_waited_at`, which outlives it.
 It adds four columns to `phases` beside the phase entry.
 `entry_from` is the phase the move that raised a role's entry left, null where no move raised it (`record.PhaseRow.EntryFrom`), which the admission pass and the release of a hold read to leave a parent standing on an entry a role's move back raised out of `retro` or `merging` where it stands, and to restart such a held phase on it.
-`entry_given_task`, `entry_given_entry` and `entry_given_generation` are the last task a phase worker was given for an entry, as it was composed, that entry, and the issue's generation it was given in (`record.PhaseRow.EntryGivenTask`, `EntryGivenEntry` and `EntryGivenGeneration`), `''`, 0 and 0 until this release writes them, and on every architect's row: the raise of an entry writes the work it is raised with, and a retry of the entry writes the retry's own task, beside `entry_task`, which keeps the text the role was sent with the daemon's decorations of a send, the base-merge sentence of a testing task of a parent and the reviewer's two sentences of its review round.
+`entry_given_task`, `entry_given_entry` and `entry_given_generation` are the last task a phase worker was given for an entry, as it was composed, that entry, and the issue's generation it was given in (`record.PhaseRow.Given`, one `record.GivenTask`, which `record.PhaseRow.GivenFor` reads), `''`, 0 and 0 until this release writes them, and on every architect's row: the raise of an entry writes the work it is raised with, and a retry of the entry writes the retry's own task, beside `entry_task`, which keeps the text the role was sent with the daemon's decorations of a send, the base-merge sentence of a testing task of a parent and the reviewer's two sentences of its review round.
 The admission pass holds the given task for a parent whose start has not reached its worker, or whose worker it stops in the middle of its phase, where the given entry is the entry the row stands on and the given generation is the issue's, after the turn that took the task has ended too, and the return decorates the task it gives back once.
 The design-gate basis of dispatch://INFRA-3320, in this same release, adds the basis and kept-approval columns of `design_gates` and the column `issues.view_of` (`20261114064234_design_gate_basis`), and the outbox kinds `pending_basis_seed` and `reparent_seed` (`20261119185013_outbox_kinds_with_the_basis_seeds`).
 That migration also keeps `phase_ended` in the kind check, and this release queues rows of it again: the message that tells a parent's worker that the admission pass ended its phase.
@@ -2757,7 +2790,7 @@ Read it with:
 select count(*) from public.issues where phase = 'awaiting_children';
 ```
 
-Once it reads 0, everything below but the move out of `awaiting_children` is still needed: the outbox statements and the clear of `phases.entry_from`.
+Once it reads 0, everything below but the move out of `awaiting_children` is still needed: the outbox statements, the clear of `phases.entry_from` and, on a rollback below `20261111225552_phase_entry`, the clear of the three given columns.
 
 **Delete the rows an earlier release refuses, with every daemon of the database stopped, before the earlier image is pinned.**
 
@@ -2794,10 +2827,24 @@ update public.phases set entry_from = null where entry_from is not null;
 
 What it costs: once this release is rolled forward, a parent whose phase's role stood on an entry a role's move back raised out of `retro` or `merging` before the rollback reads as standing on an entry no move raised, so the first admission pass that finds an open child of it, or a retry of its hold, moves it into `awaiting_children`, as it moves any parent of a phase before `retro`.
 
-`phases.entry_given_task`, `phases.entry_given_entry` and `phases.entry_given_generation` take no statement.
-Their correctness rests on no clear: this release reads a given task only where its entry is the entry the row stands on and its generation is the issue's, so an entry the earlier release raises, and a generation it gives an issue it clears, are read as the release before leaves them.
-A clear would do harm: an entry this release raised, and the earlier release left standing, would read as one the release before raised, so the hold of a tester of a parent would be its `entry_task`, which this release wrote with the base-merge sentence, and a return on that held task would give the sentence twice.
+`phases.entry_given_task`, `phases.entry_given_entry` and `phases.entry_given_generation` take no statement on a rollback that stops at or above `20261111225552_phase_entry`, which leaves `phases.entry` standing.
+Their correctness there rests on no clear: this release reads a given task only where its entry is the entry the row stands on and its generation is the issue's, so an entry the earlier release raises, and a generation it gives an issue it clears, are read as the release before leaves them.
+A clear would do harm there: an entry this release raised, and the earlier release left standing, would read as one the release before raised, so the hold of a tester of a parent would be its `entry_task`, which this release wrote with the base-merge sentence, and a return on that held task would give the sentence twice.
 What it costs: a member of a tree whose root the earlier release re-admitted keeps its own generation, so where that release raised no entry of it afterwards, the given task of its entry from before the rollback stays readable beside the `entry_task` that clear emptied, and the first admission pass that stops it holds that task where the release before would hold the phase's resume task.
+
+**On a rollback below `20261111225552_phase_entry`, clear the three with the same daemons stopped.**
+
+```sql
+update public.phases set entry_given_task = '', entry_given_entry = 0, entry_given_generation = 0
+  where (entry_given_task, entry_given_entry, entry_given_generation) <> ('', 0, 0);
+```
+
+It prints `UPDATE <n>`, one for each row whose given columns are not at `''`, 0 and 0, and a rerun prints `UPDATE 0`.
+It is owed there because that rollback runs the phase entry's way back to contract 87 ([Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)), which drops `phases.entry`, and the roll forward runs `20261111225552_phase_entry` again, which puts every role the earlier release handed work at entry 1 again and leaves each issue's generation as the earlier release left it.
+A given task of entry 1 from before the rollback, in a generation its issue still stands in, would then match its row again, so the first admission pass that stops its parent would hold that task, and a return that goes back to the held start, as one of `planning` or `implementing` does, would give it back to the worker.
+A role the earlier release handed no work stays at entry 0 after the roll forward, so a given task of entry 0, which a restart of a row that stands at entry 0 writes, would match its row the same way, which is why the statement clears every row whose given columns are not at their defaults.
+On that path the clear does no harm: the same block drops `phases.entry_task`, and the roll forward fills it again from the start rows the earlier release still owes, which carry no base-merge sentence.
+So the hold is entry 1's work as the earlier release composed it, or the phase's resume task, which is the hold of the reviewer, whose `entry_task` the roll forward of `20261116234034_phase_reviewed_head` gives its round's two sentences again, and of a row the fill left empty; either way the return decorates the held task once.
 
 **Where the rollback cannot wait, move each issue out of `awaiting_children` before the earlier image is pinned, with every daemon of the database stopped.**
 The statement takes each one where this release's return would have taken it (workflow's `ReturnFromChildren`): a held start of `planning` or `implementing` goes back to that phase, and a held start of `testing`, `reviewing` or `accepting` goes to `testing`, since no round before the wait tested the head on a base that carries each needed child's merge.
@@ -3394,7 +3441,7 @@ The migrations recorded above this one are these.
 20261114031356_merge_queue_removal, of dispatch://INFRA-3274, touches none of the six either, so the block holds over it too, and a rollback to a release before it reverses it by its own steps.
 20261114061900_phase_entry_verbatim adds `phases.entry_verbatim` and touches none of the six, and the contract 146 block above reverses it too, so that the roll-forward can add it again.
 20261114064234_design_gate_basis, of dispatch://INFRA-3320, adds the basis and kept-approval columns of `design_gates` and `issues.view_of`, and touches none of the six, so the block holds over it and leaves the columns standing, which the earlier release names in no statement ([Rolling back the release that holds a parent's start while a child of it is open](#rolling-back-the-release-that-holds-a-parents-start-while-a-child-of-it-is-open)).
-20261114232555_awaiting_children, of dispatch://INFRA-3320 too, adds the phase `awaiting_children` to `issues_phase_check`, six columns of `issues`, `phases.entry_from`, `phases.entry_given_task`, `phases.entry_given_entry` and `phases.entry_given_generation`, and touches none of the six, so the block holds over it; a rollback to a release before it takes the steps of that same section first.
+20261114232555_awaiting_children, of dispatch://INFRA-3320 too, adds the phase `awaiting_children` to `issues_phase_check`, six columns of `issues`, `phases.entry_from`, `phases.entry_given_task`, `phases.entry_given_entry` and `phases.entry_given_generation`, and `phases.entry_given_entry` names an entry of `phases.entry`, one of the six, so the block holds over it only once the clear of the three given columns has run, the statement [Rolling back the release that holds a parent's start while a child of it is open](#rolling-back-the-release-that-holds-a-parents-start-while-a-child-of-it-is-open) gives for a rollback below `20261111225552`; a rollback to a release before it takes the steps of that section first, that clear among them.
 20261115194357_project_pause, of dispatch://INFRA-3759, adds the tables `project_pauses`, `project_pause_stops` and `project_pause_pod_holds`, two columns of `pod_resumes` and one of `outbox`, and touches none of the six, so the block holds over it and leaves all of them standing, which the earlier release names in no statement; the steps of its own section, [Rolling back the project pause](#rolling-back-the-project-pause), come before the earlier image is pinned.
 20261116144907_claim_sessions adds the table `claim_sessions`, which holds each name of a session to the claim that first recorded it, and fills it from each claim's session and the session it last abandoned; it touches none of the six, so the block holds over it and leaves the table standing, which the earlier release names in no statement, and at the roll forward each boot holds again every name no row holds that a claim's row still records, its current session and file and the session it last abandoned (`HoldRecordedSessions`), not a session the earlier release recorded and then replaced.
 20261116165926_role_holders_publish adds `role_holders_publish` to `outbox_kind_check` and touches none of the six, so the block holds over it, and a rollback to a release before it needs no statement for it ([Rolling back the release that publishes each issue's role sessions to Dispatch](#rolling-back-the-release-that-publishes-each-issues-role-sessions-to-dispatch)).
@@ -3407,6 +3454,7 @@ The migrations recorded above this one are these.
 20261117200337_update_ask_marks_at_delivery, of cybermonklabs/legion#4337, clears `claims.update_tasked_at` on each claim whose update ask of the round it records still waits in the outbox, and touches none of the six either, so the block holds over it; it alters no table and has no down file, so it leaves nothing for the block to reverse.
 20261119003157_conflict_reads_and_merge_forward, of cybermonklabs/legion#4464, writes the outbox's kind check again with `conflict_confirm` and `merge_forward` added to the plan record's list, deletes the queued `phase_ended` rows and adds `pull_requests.conflict_read` and `pull_requests.merge_forward`, and touches none of the six, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release that merges a conflicting head forward in its phase](#rolling-back-the-release-that-merges-a-conflicting-head-forward-in-its-phase).
 20261119185013_outbox_kinds_with_the_basis_seeds, of dispatch://INFRA-3320, writes the outbox's kind check again with `pending_basis_seed` and `reparent_seed` added to the merge forward's list and touches none of the six, so the block holds over it, and a rollback to a release before it deletes the rows of both kinds as that same section says.
+20261120012547_set_back_observed_seq, of dispatch://INFRA-3178, changes no table, runs no statement and touches none of the six, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release that lets the owning architect's status stand](#rolling-back-the-release-that-lets-the-owning-architects-status-stand).
 20261120042902_claim_agent_resume_generation, of dispatch://INFRA-4108, adds `claims.agent_resume_generation` at its default, 0, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which deletes the queued `session-forgotten` notices no earlier release decodes, drops the column and deletes its version row.
 20261120055717_dispatch_issue_value_sequences, of dispatch://INFRA-4729, adds seven columns of `dispatch_issues`, an index on `dispatch_issues.parent` and the table `dispatch_issue_refills`, and touches none of the six, so the block holds over it and leaves all of them standing, which the earlier release names in no statement, and a rollback to a release before it runs the statement of its own section, [Rolling back the release that fences each value of the copy of Dispatch's issues](#rolling-back-the-release-that-fences-each-value-of-the-copy-of-dispatchs-issues), before the earlier image is pinned.
 20261120091044_issue_holds_gate, of dispatch://INFRA-4730, adds `issues.holds_gate` at its default, false, sets it on every record whose key is its stored tree, and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement.

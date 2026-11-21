@@ -551,6 +551,16 @@ const releaseReason = "the issue was set to todo while its phase was held"
 // they are the workflow's to act on. So is any write on an issue on whose Dispatch chain no issue
 // carries the legion label (legionOnChain): its status is anyone's to write (R26 of
 // dispatch://INFRA-3320).
+//
+// One write of a session is not set back: the owning architect's done, backlog, icebox or triage on
+// an issue under its own on the Dispatch chain (owningArchitectsMove). The architect decides that
+// the work of a child is done, folded into another issue or no longer needed, and the child's
+// status in Dispatch is the one field that records that decision (dispatch://INFRA-3178). For that
+// write the function answers that it did not handle it, so dispatchIssue takes the move as it takes
+// a person's: it drops the status writes it queued for the child, and the child leaves Legion's
+// work (leave). Every other write of an agent of the tree is set back. That is a status that moves
+// the workflow or todo, any status of a phase worker, a child's own architect's status on its own
+// issue, an architect's status on an issue it does not own, and any status on a root.
 func (e *Engine) sessionStatusWrite(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) (bool, error) {
 	if fact.ActorSession == "" {
 		return false, nil
@@ -563,6 +573,9 @@ func (e *Engine) sessionStatusWrite(ctx context.Context, tx pgx.Tx, issue record
 		e.logOnCommit(ctx, "workflow: a session wrote the status of an issue on whose chain no issue carries the legion label; the daemon re-asserts nothing",
 			"issue", issue.Key, "session", fact.ActorSession, "wrote", fact.Status)
 		return false, nil
+	}
+	if stands, err := e.owningArchitectsMove(ctx, tx, chains, issue, fact); err != nil || stands {
+		return false, err
 	}
 	gateRoot := chains.GateRoot(issue.Key)
 	// The issue's own claims count whatever the chain reads, a chain with no gate root included.
@@ -590,7 +603,7 @@ func (e *Engine) sessionStatusWrite(ctx context.Context, tx pgx.Tx, issue record
 	if err := e.keepStatus(ctx, tx, issue, fact); err != nil {
 		return false, err
 	}
-	if err := e.enqueue(ctx, tx, issue.Key, record.ReassertStatusWrite(issue.Status, fact.Status)); err != nil {
+	if err := e.enqueue(ctx, tx, issue.Key, record.ReassertStatusWrite(issue.Status, fact.Status, fact.Seq)); err != nil {
 		return false, err
 	}
 	if agent {
@@ -598,6 +611,32 @@ func (e *Engine) sessionStatusWrite(ctx context.Context, tx pgx.Tx, issue record
 	}
 	return true, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "status-reasserted", Role: claim.RoleArchitect,
 		Reason: fmt.Sprintf("session %s set %s to %s, and the daemon set it back to %s", fact.ActorSession, issue.Key, fact.Status, issue.Status)})
+}
+
+// owningArchitectsMove says whether fact, a session's write, is the owning architect's move of
+// issue out of Legion's work, which sessionStatusWrite does not set back. Three conditions make it
+// one, each read from chains, the Dispatch chain the write is judged on, and none from the tree an
+// issue's record stores (R15 and R18 of dispatch://INFRA-3320):
+//   - The status is done, backlog, icebox or triage (record.OutOfWorkflow).
+//   - The issue stands under another in Legion's work on its Dispatch chain: a root, which no
+//     issue in Legion's work stands above, leaves only by its architect's sign-off or close_root,
+//     and the issues whose architects own a move of it are none (record.MoveOwners).
+//   - The session holds the architect claim of an issue above it on that chain, in any state
+//     (record.MoveOwners, record.Store.ArchitectIssueOfSession), so an architect owns every issue
+//     under its own, a grandchild under another architect that holds its role included.
+//
+// A move that stands writes its own log line, which names the architect's issue.
+func (e *Engine) owningArchitectsMove(ctx context.Context, tx pgx.Tx, chains *record.Chains, issue record.Issue, fact intake.DispatchIssue) (bool, error) {
+	if !record.OutOfWorkflow(fact.Status) {
+		return false, nil
+	}
+	architect, held, err := e.store.ArchitectIssueOfSession(ctx, tx, record.MoveOwners(chains, issue.Key), fact.ActorSession)
+	if err != nil || !held {
+		return false, err
+	}
+	e.logOnCommit(ctx, "workflow: the owning architect's status on its child stands", "issue", issue.Key,
+		"session", fact.ActorSession, "architect", architect, "status", fact.Status)
+	return true, nil
 }
 
 // observedIssue is issue with everything an observation of fact records on it: its title, rank,
@@ -1836,12 +1875,12 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 //
 // A release is a phase start like any other (dispatch://INFRA-3320 R9): a release into planning
 // through accepting of a parent whose Dispatch child is open moves it to awaiting_children instead,
-// holding the retried phase with the task the retry would have given its worker (heldTask) and the
+// holding the retried phase with the task the retry would have given its worker (task) and the
 // retry's reason (awaitChildren), and starts nobody. The round of a reviewing release is not read
 // then: the held reviewing goes back as testing, whatever that round came to. A retry of testing
 // tells the tester of a parent to test the head merged with its base's tip, as every testing task
 // of a parent does: the restart's start ends the task the retry composes with that sentence
-// (restart, withBaseMergeRunFor).
+// (restart, withBaseMergeRun).
 // The release restarts the held phase on the entry it was raised on (restart raises none), so a
 // phase whose role stands on an entry a role's move back raised out of retro or merging is
 // restarted whatever its children are, as the admission pass leaves it (acceptedEntry,
@@ -1875,7 +1914,7 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		}
 		if !acceptedEntry(entry) {
 			return phase.AwaitingChildren, e.awaitChildren(ctx, tx, issue, childrenHold{Start: from,
-				Task: heldTask(issue, from, record.PhaseRow{}, pr, reason), Cause: reason, Open: open})
+				Task: task(issue, record.PhaseRow{}, pr, reason), Cause: reason, Open: open})
 		}
 	}
 	if err := e.store.PutIssue(ctx, tx, issue); err != nil {
@@ -1986,11 +2025,15 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	return intake.Result{}, e.transition(ctx, tx, *issue, TriggerBackward, fact.To, row, pr, fact.Reason)
 }
 
-// parkRule is the condition dispatch://INFRA-2971 sets on each move of an issue to backlog,
-// icebox or triage. Each refusal and notice of this package that names such a move (park_child,
-// or icebox for a children-first wait) carries it word for word, as the skills and the prompts do,
-// so that an architect reads one rule wherever it reads of a park.
-const parkRule = "only when a person asked for that move, or when the work is done, folded into another issue or no longer needed"
+// endChildrenFirst is what the refusals over children, sign_off's and close_root's while an issue
+// beneath is still in the workflow or a Dispatch child is open (acceptanceRefusals), tell the
+// architect to do: wait for its status write to be taken, end a child by that write
+// (record.EndChildRule), and ask the person about a child that no move fits. hold is what the
+// architect holds until the person answers.
+func endChildrenFirst(hold string) string {
+	return record.StatusNotTakenYet + " " + record.EndChildRule +
+		" When a child can neither finish nor take one of these moves, ask the person. Hold the " + hold + " until they answer."
+}
 
 // The three holds on an issue's acceptance (signOff) and on a root's close (closeRoot) after the
 // work under it, by their refusal codes, in the order the daemon answers them when more than one
@@ -2023,21 +2066,22 @@ const (
 
 // acceptanceRefusals is the refusal text of each hold acceptanceHeld answers, by its code and by
 // the act it refuses. Each text is a format of the issue's key (%[1]s) and the names the hold
-// carries (%[2]s). It is the one place a hold's refusal is written for both acts, so a hold added
+// carries (%[2]s); the two holds over children end with endChildrenFirst's words, which carry no
+// formatting verb. It is the one place a hold's refusal is written for both acts, so a hold added
 // to acceptanceHeld is read here for each of them, and one the table misses for an act still
 // refuses that act (acceptanceHold.refusal).
 var acceptanceRefusals = map[string]map[architectAct]string{
 	signOffChildInWorkflow: {
-		actSignOff:   "%[1]s is not accepted while these issues beneath it are still in the workflow: %[2]s. A parent is accepted after them, on a head that need not carry its children's merges, once each check a role runs has a pass at that head whose observed line names a base commit that carries every needed child's merge. Run each one to done: unless the pull request of %[1]s has merged, the next admission pass moves it to awaiting_children, and once no child under it is open it goes back by itself to the start it held, a held acceptance as testing; otherwise sign off again. Park one with park_child " + parkRule + ", and say in a comment which of those it is. Ask the person about a child that can reach neither done nor a park under that rule, and hold the acceptance until they answer",
-		actCloseRoot: "%[1]s is not closed while these issues beneath it are still in the workflow: %[2]s. Closing it would close their parent under them mid-turn; run each one to done, and close the tree again. Park one with park_child " + parkRule + ", and say in a comment which of those it is. Ask the person about a child that can reach neither done nor a park under that rule, and hold the close until they answer",
+		actSignOff:   "%[1]s is not accepted while these issues beneath it are still in the workflow: %[2]s. A parent is accepted after them, on a head that need not carry its children's merges, once each check a role runs has a pass at that head whose observed line names a base commit that carries every needed child's merge. Run each one to done: unless the pull request of %[1]s has merged, the next admission pass moves it to awaiting_children, and once no child under it is open it goes back by itself to the start it held, a held acceptance as testing; otherwise sign off again. " + endChildrenFirst("acceptance"),
+		actCloseRoot: "%[1]s is not closed while these issues beneath it are still in the workflow: %[2]s. Closing it would close their parent under them mid-turn. Close the tree again when each of them has left the workflow. " + endChildrenFirst("close"),
 	},
 	signOffRestingRoot: {
 		actSignOff:   "%[1]s is not accepted while these roots that rest on its approval are still in the workflow: %[2]s. The design-gate step of each rests on an approval of %[1]s, so %[1]s is accepted after them. Each is a tree of its own: its own architect, or a person, moves it. Sign off again once each one is done or out of the workflow",
 		actCloseRoot: "%[1]s is not closed while these roots that rest on its approval are still in the workflow: %[2]s. The design-gate step of each rests on an approval of %[1]s, so %[1]s closes after them. Each is a tree of its own: its own architect, or a person, moves it. Close the tree again once each one is done or out of the workflow",
 	},
 	signOffChildOpen: {
-		actSignOff:   "%[1]s is not accepted while these Dispatch children of it are open: %[2]s. A parent is accepted after its children, a child that runs as a tree of its own included: run each one to done, releasing one that was never released. Unless the pull request of %[1]s has merged, the next admission pass moves it to awaiting_children, and once no child under it is open it goes back by itself to the start it held, a held acceptance as testing; otherwise sign off again. A child that runs as a tree of its own is moved by its own architect or a person. Close or icebox a child " + parkRule + ", and say in a comment which of those it is. Ask the person about a child that can reach neither done nor icebox under that rule, and hold the acceptance until they answer",
-		actCloseRoot: "%[1]s is not closed while these Dispatch children of it are open: %[2]s. A parent closes after its children. Close or icebox each child that was never released " + parkRule + ", say in a comment which of those it is, and close the tree again. A child that runs as a tree of its own is moved by its own architect or a person. Ask the person about a child that can reach neither done nor icebox under that rule, and hold the close until they answer",
+		actSignOff:   "%[1]s is not accepted while these Dispatch children of it are open: %[2]s. A parent is accepted after its children, a child that runs as a tree of its own included: run each one to done, releasing one that was never released. Unless the pull request of %[1]s has merged, the next admission pass moves it to awaiting_children, and once no child under it is open it goes back by itself to the start it held, a held acceptance as testing; otherwise sign off again. A child that runs as a tree of its own is moved by its own architect or a person. " + endChildrenFirst("acceptance"),
+		actCloseRoot: "%[1]s is not closed while these Dispatch children of it are open: %[2]s. A parent closes after its children, and a child that was never released holds the close until it is done or in icebox: close the tree again once none of them is open. A child that runs as a tree of its own is moved by its own architect or a person. " + endChildrenFirst("close"),
 	},
 }
 
@@ -2107,20 +2151,6 @@ func (e *Engine) childrenOpen(ctx context.Context, tx pgx.Tx, issue record.Issue
 	}
 	waits, err := record.OpenChildWaits(ctx, tx, e.store, e.cfg.Project, []record.Issue{issue})
 	return waits[issue.Key].Open, err
-}
-
-// testingParent is the parent flag of a task of the phase issue stands in (withBaseMergeRunFor):
-// whether issue is a parent where that phase is testing, the one phase whose task reads the flag,
-// and false with no read of the copy for any other, so a start of another phase, the admission
-// pass's send of each owed entry among them, reads nothing more. A parent is an issue with a
-// Dispatch child of any status in the daemon's copy of Dispatch (Store.HasDispatchChildren, one
-// exists query), whether or not it ever waited on one: every testing task of a parent asks for the
-// round on the head merged with the tip of the pull request's base branch (withBaseMergeRun).
-func (e *Engine) testingParent(ctx context.Context, tx pgx.Tx, issue record.Issue) (bool, error) {
-	if issue.Phase != phase.Testing {
-		return false, nil
-	}
-	return e.store.HasDispatchChildren(ctx, tx, e.cfg.Project, issue.Key)
 }
 
 // signOff is the architect's acceptance of a reviewed head: it moves the issue from accepting to

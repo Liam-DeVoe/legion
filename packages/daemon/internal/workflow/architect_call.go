@@ -81,8 +81,8 @@ func (e *Engine) architectCallRefusal(ctx context.Context, tx pgx.Tx, architect 
 	switch call.kind {
 	case root:
 		if above := chains.Above(issue.Key); len(above) > 0 {
-			return &intake.Refusal{Status: 403, Code: "ROOT_REQUIRED", Message: fmt.Sprintf("%s stands under %s in Legion's work on its Dispatch chain; close_root ends a root, and an issue under another leaves with park_child "+parkRule,
-				issue.Key, above[0])}, nil
+			return &intake.Refusal{Status: 403, Code: "ROOT_REQUIRED", Message: fmt.Sprintf("%s stands under %s in Legion's work on its Dispatch chain. close_root ends a root.",
+				issue.Key, above[0]) + " " + record.EndChildRule}, nil
 		}
 		if architect != "" && architect != own {
 			return &intake.Refusal{Status: 403, Code: "ROOT_REQUIRED", Message: fmt.Sprintf("close_root ends the root %s; its own architect closes it, not %s", issue.Key, architect)}, nil

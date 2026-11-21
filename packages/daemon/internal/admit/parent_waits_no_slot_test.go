@@ -36,7 +36,7 @@ const pnForwardMerge = "merge the default branch main into the branch, push, and
 // an issue with no Dispatch child carries not at all: the tester's rule for every round of a
 // parent (dispatch://INFRA-3320 R12 and R14), where a parent is an issue with a Dispatch child of
 // any status in the daemon's copy. The start of a phase worker of a parent in testing ends the
-// task it composed with it (workflow's withBaseMergeRunFor), the phase's resume task among them;
+// task it composed with it (workflow's withBaseMergeRun), the phase's resume task among them;
 // neither workflow's task nor ResumePhaseTask adds it.
 const pnBaseMerge = "Test the head merged with the tip of the pull request's base branch, read at the round's start once that tip carries each needed child's merge, in a checkout of your own outside the issue's workspace that you never push; record each result at the head with an `--observed` line naming that base commit, a carried pass too; size the round over the whole tested tree's difference."
 
@@ -448,12 +448,13 @@ type pnTestingPath struct {
 // accepting to testing, which stands for every move back into testing, since each reaches the same
 // task call of the transition; the architect's retry of a held testing; the operator's restart of
 // the tester; a todo on a root held from testing; and the return of a held testing, with its pull
-// request open and with it merged during the wait, whose task heldTask wrote before the wait. Five
-// send ResumePhaseTask's to a tester in testing: the catch-up of a ready claim (readyWorkerTask),
-// the silence repair, the boot's resume, the promotion of a root a hand-over of the release before
-// carried in (StartCarriedRun, StartPromotedWorker) and the admission pass's send of an entry whose
-// row names no task (sendOwedEntry's resume task). Each is driven here through the fact or the pass
-// the daemon drives it with: the engine handles the ready, the silence and the boot as facts.
+// request open and with it merged during the wait, whose task workflow's task wrote for the held
+// phase before the wait. Five send ResumePhaseTask's to a tester in testing: the catch-up of a
+// ready claim (readyWorkerTask), the silence repair, the boot's resume, the promotion of a root a
+// hand-over of the release before carried in (StartCarriedRun, StartPromotedWorker) and the
+// admission pass's send of an entry whose row names no task (sendOwedEntry's resume task). Each is
+// driven here through the fact or the pass the daemon drives it with: the engine handles the
+// ready, the silence and the boot as facts.
 func pnTestingPaths() []pnTestingPath {
 	slotted := func(t *testing.T, pool *pgxpool.Pool, at phase.Phase) {
 		spSeedParent(t, pool, spParent, at, record.PhaseKeepsSlot(at), nil)
@@ -869,11 +870,11 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 
 	// The children the return names: a parent waits on three children, and a fourth is filed and
 	// released under it during the wait, which the next pass adds to the wait's children. The first
-	// reaches done with its pull request merged, the second moves to icebox, the third is taken out
-	// with park_child (moved to the backlog, its record leaving the workflow), and the fourth reaches
-	// done with its pull request merged. The testing task the return starts names the first and the
-	// fourth, each with its pull request, and neither of the others, and it carries the Handoff line
-	// of the implementer's last handoff, which roles/tester.md tells the tester to read.
+	// reaches done with its pull request merged, the second moves to icebox, the third moves to the
+	// backlog by its owning architect's status write (its record leaving the workflow), and the
+	// fourth reaches done with its pull request merged. The testing task the return starts names the
+	// first and the fourth, each with its pull request, and neither of the others, and it carries the
+	// Handoff line of the implementer's last handoff, which roles/tester.md tells the tester to read.
 	t.Run("the return names the children that merged during the wait and no other", func(t *testing.T) {
 		const (
 			iceboxed = "LEGION-302"
@@ -886,7 +887,7 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 		pwPullRequest(t, pool, spParent, record.PullRequestOpen)
 		seedMirrorChild(t, pool, spChild, "todo", spParent)
 		seedMirrorChild(t, pool, iceboxed, "todo", spParent)
-		// The child park_child takes out is a released one, which the daemon records in the tree.
+		// The child its architect moves to the backlog is a released one, which the daemon records in the tree.
 		putIssue(t, pool, record.Issue{Key: parked, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 			Project: testProject, Title: parked, Tree: spParent, Parent: record.ParentOf(spParent), Phase: phase.Admitted, Generation: 1,
 			Status: "todo", DispatchStatus: "todo", Rank: parked, HandedOver: true, LastDispatchSeq: 1})
@@ -909,7 +910,7 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 		putIssue(t, pool, record.Issue{Key: parked, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 			Project: testProject, Title: parked, Tree: spParent, Parent: record.ParentOf(spParent), Phase: phase.Done, Generation: 1,
 			Status: "backlog", DispatchStatus: "backlog", Rank: parked, HandedOver: true, LastDispatchSeq: 2})
-		// The parked child had opened a pull request, which did not merge.
+		// The child on the backlog had opened a pull request, which did not merge.
 		seedPullRequest(t, pool, parked, 53, record.PullRequestOpen)
 		spMirror(t, pool, parked, "backlog", spParent, 2)
 		pnChildMerged(t, pool, late, spParent, 54)

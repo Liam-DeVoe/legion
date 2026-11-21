@@ -18,7 +18,8 @@ import (
 // shows, queued in the fact's own transaction with the reason posted first.
 //
 // It is refused, in this order: on an unknown chain (CHAIN_UNKNOWN, R16); for an issue the daemon
-// records, which ends through its workflow or a park (CHILD_RECORDED); for an issue that is not
+// records, which ends through its workflow or its owning architect's status write (CHILD_RECORDED,
+// record.EndChildRule); for an issue that is not
 // strictly under the caller's own on its chain (ISSUE_NOT_OWNED, R18); and while a Dispatch child
 // of the issue is not done (CHILDREN_NOT_DONE, R24), since Dispatch closes an issue only once each
 // of its children is done.
@@ -33,8 +34,8 @@ func (e *Engine) closeChild(ctx context.Context, tx pgx.Tx, fact intake.CloseChi
 	}
 	if recorded, err := e.store.Issue(ctx, tx, fact.Issue); err != nil || recorded != nil {
 		if recorded != nil {
-			return refused("CHILD_RECORDED", fmt.Sprintf("close_child of %s is refused: the daemon records %s (phase %s, status %s), so it ends through its workflow; park it with park_child "+parkRule,
-				fact.Issue, fact.Issue, recorded.Phase, recorded.Status)), nil
+			return refused("CHILD_RECORDED", fmt.Sprintf("close_child of %s is refused: the daemon records %s (phase %s, status %s), so it ends through its workflow.",
+				fact.Issue, fact.Issue, recorded.Phase, recorded.Status)+" "+record.EndChildRule), nil
 		}
 		return intake.Result{}, err
 	}

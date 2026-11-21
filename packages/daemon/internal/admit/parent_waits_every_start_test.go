@@ -1416,83 +1416,86 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 		}
 	})
 
-	// A task a retry gave the implementer for an entry before the one its phases row stands on is
-	// no task of that entry. A rollback and a roll forward leave such a task on the row: the
-	// earlier release raises the entry and names none of this release's columns of the task the
-	// role was given, its entry and its generation, so they keep what the retry wrote
-	// (record.PhaseRow.EntryGivenTask, EntryGivenEntry, EntryGivenGeneration). The pass that then
-	// finds a child open holds implementing with the work of the entry the row stands on, and the
-	// return starts implementing on it.
-	t.Run("a task given for an entry before the one the row stands on, then a child opens: the held task and the return's task are the entry's work", func(t *testing.T) {
-		pool := migratedPool(t)
-		admission := pwAdmission(t, 2)
-		token := pwMidPhase(t, pool, spParent, phase.Implementing, supervise.StateIdle, "")
-		older := "Continue " + spParent + ". Issue: " + spParent + ". Phase: implementing. Reason: the runner is back."
-		spSeedPhase(t, pool, record.PhaseRow{Issue: spParent, Role: claim.RoleImplementer, Claim: token, Entry: 3,
-			EntryTask: pwTask(spParent, phase.Implementing), EntryRaisedAt: fixedNow.Add(-time.Hour),
-			EntryGivenTask: older, EntryGivenEntry: 2, EntryGivenGeneration: 1})
-		seedMirrorChild(t, pool, spChild, "todo", spParent)
+	// A task the implementer's phases row keeps as given for another entry, or in another
+	// generation of the issue, is no task of the entry the row stands on in this run. Each case
+	// seeds such a row beside the work its entry was raised with, and the same steps follow.
+	for _, tc := range []struct {
+		name string
+		// seed records the parent with its implementer's claim in the middle of implementing,
+		// given entry 3, and answers the claim's token, which the case's phases row is written
+		// against.
+		seed func(*testing.T, *pgxpool.Pool) claim.Token
+		// given is the entry and the generation the row keeps its task as given for: an entry
+		// before the one the row stands on, or the entry it stands on in a generation of the issue
+		// before the one it runs now. The case's body writes the task on it.
+		given record.GivenTask
+		// entry names the entry whose work the hold keeps, and givenFor the entry, and the
+		// generation where it differs, the seeded task was given for, as the failure tells them.
+		entry, givenFor string
+	}{
+		// A task a retry gave the implementer for an entry before the one its phases row stands on
+		// is no task of that entry. A rollback and a roll forward leave such a task on the row: the
+		// earlier release raises the entry and names none of this release's columns of the task the
+		// role was given, its entry and its generation, so they keep what the retry wrote
+		// (record.PhaseRow.Given, record.GivenTask). The pass that then finds a child open holds
+		// implementing with the work of the entry the row stands on, and the return starts
+		// implementing on it.
+		{name: "a task given for an entry before the one the row stands on, then a child opens: the held task and the return's task are the entry's work",
+			given: record.GivenTask{Entry: 2, Generation: 1}, entry: "entry 3, which the row stands on", givenFor: "entry 2",
+			seed: func(t *testing.T, pool *pgxpool.Pool) claim.Token {
+				return pwMidPhase(t, pool, spParent, phase.Implementing, supervise.StateIdle, "")
+			}},
+		// A task the implementer was given for the entry its phases row stands on, in a generation
+		// of the issue before the one it runs now, is no task of this run
+		// (record.GivenTask.Generation): the release before names none of the given columns, so a
+		// generation it gives the issue leaves them beside the entry it keeps. Written straight to
+		// the store here, the row keeps the work its entry was raised with too, so the given task's
+		// generation alone decides the hold: the pass that finds a child open holds implementing
+		// with the entry's work, not the task of the earlier generation, and the return starts
+		// implementing on it.
+		{name: "a task given for the entry the row stands on in an earlier generation, then a child opens: the held task and the return's task are the entry's work",
+			given: record.GivenTask{Entry: 3, Generation: 1}, entry: "entry 3 in generation 2", givenFor: "entry 3 in generation 1",
+			seed: func(t *testing.T, pool *pgxpool.Pool) claim.Token {
+				spSeedParent(t, pool, spParent, phase.Implementing, true, func(rerun *record.Issue) { rerun.Generation = 2 })
+				pwPullRequest(t, pool, spParent, record.PullRequestOpen)
+				token := putWorkerClaim(t, pool, spParent, spParent, claim.RoleImplementer, 2, supervise.StateIdle, "")
+				markGivenEntry(t, pool, token, 3)
+				return token
+			}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			admission := pwAdmission(t, 2)
+			token := tc.seed(t, pool)
+			given := tc.given
+			given.Task = "Continue " + spParent + ". Issue: " + spParent + ". Phase: implementing. Reason: the runner is back."
+			spSeedPhase(t, pool, record.PhaseRow{Issue: spParent, Role: claim.RoleImplementer, Claim: token, Entry: 3,
+				EntryTask: pwTask(spParent, phase.Implementing), EntryRaisedAt: fixedNow.Add(-time.Hour), Given: given})
+			seedMirrorChild(t, pool, spChild, "todo", spParent)
 
-		spPass(t, pool, admission)
+			spPass(t, pool, admission)
 
-		wait := pwHeld(t, pool, spParent, phase.Implementing, "the admission pass stopped the implementer's implementing phase", spChild+" (todo)")
-		if wait.Task != pwTask(spParent, phase.Implementing) {
-			t.Fatalf("the held task = %q, want the work of entry 3, which the row stands on, %q, not the task %q given for entry 2",
-				wait.Task, pwTask(spParent, phase.Implementing), older)
-		}
+			wait := pwHeld(t, pool, spParent, phase.Implementing, "the admission pass stopped the implementer's implementing phase", spChild+" (todo)")
+			if wait.Task != pwTask(spParent, phase.Implementing) {
+				t.Fatalf("the held task = %q, want the work of %s, %q, not the task %q given for %s",
+					wait.Task, tc.entry, pwTask(spParent, phase.Implementing), given.Task, tc.givenFor)
+			}
 
-		pnChildMerged(t, pool, spChild, spParent, 51)
-		spPass(t, pool, admission)
+			pnChildMerged(t, pool, spChild, spParent, 51)
+			spPass(t, pool, admission)
 
-		work := pwTask(spParent, phase.Implementing) + " " + pnMergedChildren(spParent, pnMerged(spChild, 51)) + "."
-		if starts := pwWorkerStarts(t, pool, spParent); len(starts) != 1 || starts[0].role != claim.RoleImplementer || starts[0].task != work {
-			t.Fatalf("starts of %s = %+v, want one implementer start on the entry's work %q", spParent, starts, work)
-		}
-	})
-
-	// A task the implementer was given for the entry its phases row stands on, in a generation of
-	// the issue before the one it runs now, is no task of this run
-	// (record.PhaseRow.EntryGivenGeneration): the release before names none of the given columns,
-	// so a generation it gives the issue leaves them beside the entry it keeps. Written straight to
-	// the store here, the row keeps the work its entry was raised with too, so the given task's
-	// generation alone decides the hold: the pass that finds a child open holds implementing with
-	// the entry's work, not the task of the earlier generation, and the return starts implementing
-	// on it.
-	t.Run("a task given for the entry the row stands on in an earlier generation, then a child opens: the held task and the return's task are the entry's work", func(t *testing.T) {
-		pool := migratedPool(t)
-		admission := pwAdmission(t, 2)
-		spSeedParent(t, pool, spParent, phase.Implementing, true, func(rerun *record.Issue) { rerun.Generation = 2 })
-		pwPullRequest(t, pool, spParent, record.PullRequestOpen)
-		token := putWorkerClaim(t, pool, spParent, spParent, claim.RoleImplementer, 2, supervise.StateIdle, "")
-		markGivenEntry(t, pool, token, 3)
-		earlier := "Continue " + spParent + ". Issue: " + spParent + ". Phase: implementing. Reason: the runner is back."
-		spSeedPhase(t, pool, record.PhaseRow{Issue: spParent, Role: claim.RoleImplementer, Claim: token, Entry: 3,
-			EntryTask: pwTask(spParent, phase.Implementing), EntryRaisedAt: fixedNow.Add(-time.Hour),
-			EntryGivenTask: earlier, EntryGivenEntry: 3, EntryGivenGeneration: 1})
-		seedMirrorChild(t, pool, spChild, "todo", spParent)
-
-		spPass(t, pool, admission)
-
-		wait := pwHeld(t, pool, spParent, phase.Implementing, "the admission pass stopped the implementer's implementing phase", spChild+" (todo)")
-		if wait.Task != pwTask(spParent, phase.Implementing) {
-			t.Fatalf("the held task = %q, want the work of entry 3 in generation 2, %q, not the task %q given for entry 3 in generation 1",
-				wait.Task, pwTask(spParent, phase.Implementing), earlier)
-		}
-
-		pnChildMerged(t, pool, spChild, spParent, 51)
-		spPass(t, pool, admission)
-
-		work := pwTask(spParent, phase.Implementing) + " " + pnMergedChildren(spParent, pnMerged(spChild, 51)) + "."
-		if starts := pwWorkerStarts(t, pool, spParent); len(starts) != 1 || starts[0].role != claim.RoleImplementer || starts[0].task != work {
-			t.Fatalf("starts of %s = %+v, want one implementer start on the entry's work %q", spParent, starts, work)
-		}
-	})
+			work := pwTask(spParent, phase.Implementing) + " " + pnMergedChildren(spParent, pnMerged(spChild, 51)) + "."
+			if starts := pwWorkerStarts(t, pool, spParent); len(starts) != 1 || starts[0].role != claim.RoleImplementer || starts[0].task != work {
+				t.Fatalf("starts of %s = %+v, want one implementer start on the entry's work %q", spParent, starts, work)
+			}
+		})
+	}
 
 	// A tester stopped in the middle of testing on a task that ends with the base-merge sentence,
 	// as every testing task of a parent does (workflow's withBaseMergeRun), is held with no copy of
 	// it, and the return of its held testing after its pull request merged during the wait ends the
 	// task with the sentence once: the raise of the entry keeps the task the tester was given as it
-	// was composed, before the start added the sentence (record.PhaseRow.EntryGivenTask), and the
+	// was composed, before the start added the sentence (record.PhaseRow.Given), and the
 	// hold is that task, so a held task keeps no sentence that a later build's return would add its
 	// own beside.
 	t.Run("a tester stopped on a task ending with the base-merge sentence is held without it, and the return adds it once", func(t *testing.T) {
@@ -1501,7 +1504,7 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 		token := pwMidPhase(t, pool, spParent, phase.Testing, supervise.StateIdle, "")
 		spSeedPhase(t, pool, record.PhaseRow{Issue: spParent, Role: claim.RoleTester, Claim: token, Entry: 3,
 			EntryTask: pwTask(spParent, phase.Testing) + " " + pnBaseMerge, EntryRaisedAt: fixedNow.Add(-time.Hour),
-			EntryGivenTask: pwTask(spParent, phase.Testing), EntryGivenEntry: 3, EntryGivenGeneration: 1})
+			Given: record.GivenTask{Task: pwTask(spParent, phase.Testing), Entry: 3, Generation: 1}})
 		seedMirrorChild(t, pool, spChild, "todo", spParent)
 
 		spPass(t, pool, admission)

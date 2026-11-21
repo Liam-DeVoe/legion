@@ -34,7 +34,7 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		// carries its reason to post on the issue before the status (workflow's moveReason).
 		OrdinaryStatusWrite("in_progress", "testing", "Legion moved this issue from testing back to implementing at the tester's request: the fix does not cover the empty list."),
 		PersonHandoverStatusWrite("todo", "triage"),
-		ReassertStatusWrite("in_progress", "done"),
+		ReassertStatusWrite("in_progress", "done", 7),
 		// A write with options of Dispatch's status-change route, queued after the write of its
 		// parent it follows, for the controller (decisions 5, 6 and 12 of dispatch://INFRA-4730).
 		StatusWrite{Kind: OrdinaryStatusRow, Status: "backlog", ObservedStatus: "in_progress", IncludeChildren: true, UnlinkChildren: true,
@@ -197,7 +197,7 @@ func TestEveryStatusRowKindHasAConstructorThatSetsIt(t *testing.T) {
 	built := map[StatusRowKind]StatusWrite{
 		OrdinaryStatusRow:       OrdinaryStatusWrite("testing", "in_progress", ""),
 		PersonHandoverStatusRow: PersonHandoverStatusWrite("todo", "triage"),
-		ReassertStatusRow:       ReassertStatusWrite("in_progress", "done"),
+		ReassertStatusRow:       ReassertStatusWrite("in_progress", "done", 7),
 		CloseStatusRow:          CloseStatusWrite("done", "in_progress", "merged", 7),
 	}
 	if len(built) != len(StatusRowKinds) {
@@ -250,7 +250,7 @@ func TestPersonHandoverPendingCountsOnlyMarkedStatusRows(t *testing.T) {
 	}
 
 	enqueue("LEGION-208", PersonHandoverStatusWrite("todo", "triage"))
-	enqueue("LEGION-209", ReassertStatusWrite("todo", "backlog"))
+	enqueue("LEGION-209", ReassertStatusWrite("todo", "backlog", 2))
 	enqueue("LEGION-210", OrdinaryStatusWrite("todo", "triage", ""))
 	enqueue("LEGION-210", ControllerNotice{Kind: TriageNotice})
 

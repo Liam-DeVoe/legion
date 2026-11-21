@@ -16,7 +16,7 @@ import (
 // A child the daemon does not record at all is the opposite case and stays open in backlog or
 // triage: it is work the architect filed and has not released yet, which is exactly what the
 // parent must wait for.
-func TestAChildParkedInAnotherTreeHoldsNothing(t *testing.T) {
+func TestAChildInBacklogInAnotherTreeHoldsNothing(t *testing.T) {
 	const parent, parkedElsewhere, unrecorded, otherTree = "LEGION-500", "LEGION-501", "LEGION-502", "LEGION-600"
 	parentRecord := Issue{Key: parent, Tree: parent, Project: "LEGION", Phase: phase.Admitted, Status: "in_progress"}
 	// The parked child's own record stores another tree: a person moved it under this parent on

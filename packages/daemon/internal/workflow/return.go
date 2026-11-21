@@ -220,7 +220,7 @@ func (e *Engine) StartCarriedRun(ctx context.Context, tx pgx.Tx, root record.Iss
 // back into Legion's work after a stop (ReturnToWork): the phase's resume task (ResumePhaseTask),
 // since the phase's work is under way, with why the entry it is handed is a new one. It is the
 // work as it was composed, as every task is: the start that sends it ends a testing task of a
-// parent with the base-merge sentence (enter, withBaseMergeRunFor).
+// parent with the base-merge sentence (enter, withBaseMergeRun).
 func returnToWorkTask(issue record.Issue) string {
 	return continueLine(issue) + fmt.Sprintf(" Resume the existing phase work: %s came back into Legion's work after a stop, and this is a new entry of the phase it stood in.", issue.Key)
 }

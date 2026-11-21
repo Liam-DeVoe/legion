@@ -2979,6 +2979,46 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
+// 205: dispatch://INFRA-3178 -- the owning architect moves a child out of the workflow by its own
+// status write in Dispatch, and the operation that made that move through the daemon goes. The
+// daemon takes the owning architect's done, backlog, icebox or triage on a child of its tree as it
+// takes a person's move (workflow's sessionStatusWrite). The child route that operation called
+// stays in the route table only to refuse an older plugin's call (removedChildRoute): it reads no
+// body, applies no fact and answers 410 ROUTE_REMOVED with a reason that says which status to
+// write in Dispatch. The `legion` tool loses the operation, `@legion/pi-shared`'s
+// `LegionDaemonClient` loses its call, and `packages/contracts/fixtures/daemon-api` loses the
+// fixture of the route's answer. That directory gains `end-child-rule.json`, the rules for ending
+// a child and the sentence on a status the daemon has not taken yet, which the daemon's refusals
+// and notices over children carry (`record.EndChildRule` and `record.StatusNotTakenYet`), and the
+// `legion` tool's description is held to that file word for word. `api.ChildRequest` and
+// contracts' `LegionChildRequest` stay, because rerun_child takes them. A plugin below 205 still
+// offers the operation to its agents. On a daemon at 205 that call gets the refusal as its result,
+// so the agent reads the status to write.
+// Contract 205 is served with no code of its own (193's entry): no key path or value of any
+// answer moves, so a caller at 205 is served what one at 202 is, and 205's records are 202's under
+// its own number. The route leaves the empty object's row of answers.go's Answers, since no plugin
+// at 205 parses that answer there, and an older plugin parses the refusal it gets as it parses any
+// refusal. `ROUTE_REMOVED` is a value of the refusal's `code`, which no reader enumerates. The
+// request records of 193, 199 and 202 hold the route's body (`request-shapes.json`). The route
+// leaves the request types the gate walks, reads no body and answers that body with the refusal,
+// and requests.go's RemovedRoutes declares it removed at 205, so the record of 205 and of every
+// later contract holds no body for it.
+// (This entry took 191 at first, the lowest number above main's 188 that no other open pull
+// request declared at a reading that ended at 2026-11-20T10:18:19Z, and the forward merge of
+// 2026-11-20 that brought in 0ec9ed84 left main at 188 and found 191 still free. The forward merge
+// of 2026-11-21 that brought in 43b9c9c3 brought main's 199 (INFRA-4605's entry above). A reading
+// of every open pull request at that merge, which ended at 2026-11-21T02:21:13Z, found 200
+// (#4049), 201 (#4611), 202 (#3712, #4273, #4392, #4432, #4493, #4580 and #4590), 203 (#4065,
+// #4175, #4553, #4592 and #4661) and 204 (#4030) declared, so this entry moved to 205, the lowest
+// number above main's 199 that no other open pull request declares. The forward merge of
+// 2026-11-21 that brought in 1cdf5b9c brought main's 202 (INFRA-4401's entry above). A reading of
+// every open pull request at that merge, which ended at 2026-11-21T03:41:04Z, found 203 (#4065,
+// #4175, #4553, #4592 and #4661) and 204 (#3831 and #4030) declared and 205 declared by no other,
+// so this entry kept 205. The forward merge of 2026-11-21 that brought in 52f925ee left main at
+// 202, and a reading of every open pull request at that merge, which ended at
+// 2026-11-21T12:31:48Z, found 205 declared by no other, so this entry kept 205. Read the base's own
+// number and every open pull request again at every forward merge rather than from this line.)
+//
 // 214: dispatch://INFRA-3320 -- a root's design-gate step can stand open on an ancestor's
 // approval, or wait, closed, on an ancestor's open approval request: a basis. Three surfaces
 // move.
@@ -3030,7 +3070,8 @@ package api
 // on down `stateNarrowings`. 178's band and this one touch no key of each other's, and the bands
 // of 193 and 202 stand between them, so a caller at 202 through 213 is served the pause, the keys
 // 193 added and the repositories block 202 writes, and none of this entry's keys and words (a
-// caller that states 203 to 213 is served 202's shape, the nearest recorded contract below it), a
+// caller that states 203 to 213 is served the nearest recorded contract below it, 202's or 205's,
+// and 205's records are 202's under its own number, as 205's entry says), a
 // caller at 193 through 201 the pause, 193's keys and the block in 152's shape (one that states
 // 194 to 198 is served 193's shape and one that states 199 to 201 199's, and 199's is 193's, since
 // 199 moves no shape of an answer a plugin parses), a caller at 178 through 192 the pause and the
@@ -3076,6 +3117,15 @@ package api
 // is the one every refusal has. The new notice kind `awaiting-children`, which tells the parent's
 // architect of the wait in place of the phase-finished notice of the start it holds, is no part
 // of this number either: it reaches an architect's session as text, as every notice kind does.
+// The forward merge of main at 0497e861b0d9 brought in 205's removal of the operation that took a
+// child out of the workflow through the daemon, and this entry's refusals and notices lost their
+// sentences that named it: `SIGNOFF_CHILD_IN_WORKFLOW` and `SIGNOFF_CHILD_OPEN`, as
+// `POST /legion/v1/signoff` and `POST /legion/v1/roots/close` answer them, end with the rules for
+// ending a child and the sentence on a status the daemon has not taken yet
+// (`record.EndChildRule`, `record.StatusNotTakenYet`, workflow's endChildrenFirst), and
+// `WAITING_ON_CHILDREN`, the `awaiting-children` notice and the `children-first` notice end a
+// child by the same rules. Each refusal keeps its code and the shape every refusal has, so no
+// reader's parse moves.
 // (This change took 126 against the base 50bfbb0dec73, which carried 111, when the open pull
 // requests held 112 to 125 as read on 2026-11-14: 126 was the lowest number above the base's
 // that none of them declared. It kept 126 at the forward merge of 2026-11-14 that brought main
@@ -3173,7 +3223,9 @@ package api
 // each of the 417 open heads' file between 2026-11-21T17:12Z and 17:16Z found 203 to 213 declared
 // by other heads (212 by #4065 and #4771, and by #4596, which stacks on this change; 213 by #4030
 // and #4553), so this change moved 212 → 214, the lowest number above main's that no other open
-// head declares (dispatch://INFRA-4728/artifact/contract-census-2026-11-21d-md). Read the base's
-// own number and every open head again, by a REST raw read of each head's file, at the next
-// forward merge rather than from this line.)
+// head declares (dispatch://INFRA-4728/artifact/contract-census-2026-11-21d-md). At the forward
+// merge of 2026-11-21 that brought main in at 0497e861b0d9, main carried 205 (dispatch://INFRA-3178,
+// the entry above), below 214, and this change kept 214 at that merge. Read the base's own number
+// and every open head again, by a REST raw read of each head's file, at the next forward merge
+// rather than from this line.)
 const DaemonAPIVersion = 214

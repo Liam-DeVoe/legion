@@ -109,7 +109,6 @@ function recordingDaemon(options: {
     "phaseRetry",
     "signOff",
     "rootClose",
-    "childPark",
     "childRerun",
     "issueStatus",
     "freshSession",
@@ -262,18 +261,35 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "needed child's merge; send one whose pass names an older base commit, or none, back to testing with " +
   "request_backward_move. Run each one to done; unless its pull request has merged, the next admission pass moves the " +
   "parent to awaiting_children and it comes back by itself as testing, and otherwise you sign off again. " +
-  "Park one with park_child only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and say in a comment which of those it is. " +
-  "Ask the person about a child that can reach neither done nor a park under that rule, and hold the acceptance until they answer. " +
+  "The daemon takes the owning architect's done, backlog, icebox or triage on a child as it takes a person's move. " +
+  "End a child with your own status write in Dispatch. " +
+  "Write done with a reason when the child's work is done, folded into another issue or no longer needed: " +
+  "dispatch issue-update --issue <KEY> --status done --reason '<why>'. " +
+  "For a fold, name the carrier in the reason: the issue that carries the work. " +
+  "Before the done of a fold, make each issue that is blocked_by the child wait on the carrier instead. " +
+  "Done starts those issues, and the Referenced by list of dispatch read names each of them as blocked_by. " +
+  "Before done on a running child, have its worker push the work that the carrier needs. " +
+  "Done ends the worker's turn and the pod at once. " +
+  "Unless the work of the child's open pull request should land, close that pull request with your own App (gh pr close). " +
+  "When it is in the merge queue, first take it out (GraphQL dequeuePullRequest). " +
+  "Do this before done, or at once after a done that you wrote first. " +
+  "Write backlog or icebox only when a person asked for that move, or as the first step of a restart. " +
+  "A restart is backlog, then rerun_child. " +
+  "Say why in a dispatch comment. " +
+  "Write no status on a child that is already done, because a move out of done ends an open production check. " +
+  "After each move, read the child back (dispatch read --issue <KEY>). " +
+  "When the daemon set the move back, write it again. " +
+  "A status that you wrote and that the daemon has not taken yet does not count until read_record shows it. " +
+  "When a child can neither finish nor take one of these moves, ask the person. Hold the acceptance until they answer. " +
   "Past that refusal the daemon refuses it while a root whose design-gate step rests on the issue's approval is still " +
   "in the workflow (SIGNOFF_RESTING_ROOT_IN_WORKFLOW, naming each one): that root's own architect, or a person, " +
   "moves it, and you sign off again once each one is done or out of the workflow. " +
   "Last, it refuses it while a Dispatch child of the issue is open, one that runs as a tree of its own included " +
-  "(SIGNOFF_CHILD_OPEN, naming each one with its Dispatch status): run each one to done, or close or icebox one " +
-  "under the same rule, and the parent waits for them as it waits for an issue beneath it. " +
+  "(SIGNOFF_CHILD_OPEN, naming each one with its Dispatch status): run each one to done, or end one by the same rules, " +
+  "and the parent waits for them as it waits for an issue beneath it. " +
   "close_root is refused the same way, with the same three codes in the same order, while an issue beneath the root " +
   "is still in the workflow, a root rests on its approval or a Dispatch child of it is open, since closing it would " +
-  "stop that work mid-turn or leave it undone: answer it the same way, park_child under the same rule included, " +
-  "and close or icebox a child that was never released. " +
+  "stop that work mid-turn or leave it undone. Answer that refusal the same way. " +
   "release_children and rerun_child are refused for a child whose ancestor is in retro or merging " +
   "(CHILD_UNDER_ACCEPTED_PARENT, naming the ancestor), since that ancestor's approved head cannot carry work released " +
   "under it now: wait for the ancestor to close, then release it. " +
@@ -282,7 +298,7 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "capability, one line per recorded issue, and under each issue Legion still runs its slot, hold, gate and each claim's " +
   "state with its last turn times — and with issue, issues, phase or settings returns the full records it names; " +
   "set_status moves an issue to todo, backlog or icebox. " +
-  "Move an issue to backlog or icebox only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. " +
+  "With set_status, the controller moves an issue to backlog or icebox only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cites that reason in a comment on the issue. " +
   "Two writes are not that move: a root's restart, which sets backlog and then todo in the same turn, and the " +
   "controller's report issue's icebox, because that issue holds no work. " +
   "fresh_session (issue, role) has one claim leave the session it runs in behind and start again in a new one: the daemon " +
@@ -370,6 +386,25 @@ test("the legion tool's description is the exact text Oh My Pi agents read, for 
   }
 });
 
+// The daemon's refusals and notices over children carry its rules for ending a child
+// (record.EndChildRule) and its sentence on a status it has not taken yet
+// (record.StatusNotTakenYet), and the description gives an architect the same words. The daemon's
+// golden test (`packages/daemon/internal/api`, TestTheEndChildRuleGolden) writes both texts to
+// `end-child-rule.json`. This case holds the description to the file, so a word changed on either
+// side alone fails one test or the other. The first and the last sentence of the rule are written
+// out here, so a fixture that holds only a part of the rule fails here too.
+test("the legion tool's description carries the daemon's rules for ending a child and its not-taken-yet sentence, word for word", () => {
+  const { rule, notTakenYet } = daemonFixture("end-child-rule.json") as {
+    readonly rule: string;
+    readonly notTakenYet: string;
+  };
+  expect(rule).toStartWith("End a child with your own status write in Dispatch. ");
+  expect(rule).toEndWith(" When the daemon set the move back, write it again.");
+  const { description } = toolFor(claimSession("architect"));
+  expect(description).toContain(rule);
+  expect(description).toContain(notTakenYet);
+});
+
 /** The `legion` tool's parameter schema as Oh My Pi agents are given it, serialized whole: every
  * property and every `op` value in the order the tool declares them. */
 const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
@@ -385,7 +420,6 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
         "retry_or_escalate",
         "sign_off",
         "close_root",
-        "park_child",
         "rerun_child",
         "read_record",
         "read_release_records",
@@ -443,7 +477,7 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     reason: {
       type: "string",
       description:
-        "close_root's and request_backward_move's why, retry_or_escalate's optional why, the controller's pause's why, and register_gate's reason for its basis; no other operation takes it. park_child and rerun_child take only issue: say why you park a child in a dispatch comment on it",
+        "close_root's and request_backward_move's why, retry_or_escalate's optional why, the controller's pause's why, and register_gate's reason for its basis. No other operation takes it. rerun_child takes only issue: say why in a dispatch comment on the child",
     },
     decision: { type: "string", enum: ["retry", "escalate"] },
     summary: { type: "string" },
@@ -660,10 +694,6 @@ test("the legion tool exposes only the workflow operations each role owns", asyn
   await expect(run(architect, { op: "close_root", issue: "LEGION-208" })).resolves.toMatchObject({
     isError: true,
   });
-  await expect(run(architect, { op: "park_child", issue: "LEGION-209" })).resolves.toMatchObject({
-    details: {},
-  });
-  expect(calls.at(-1)).toEqual(["childPark", { grantId: "grant-208", issue: "LEGION-209" }]);
   await expect(run(architect, { op: "rerun_child", issue: "LEGION-209" })).resolves.toMatchObject({
     details: {},
   });
@@ -671,7 +701,7 @@ test("the legion tool exposes only the workflow operations each role owns", asyn
   await expect(run(architect, { op: "read_record", issue: "LEGION-208" })).resolves.toMatchObject({
     details: { record: state.issues["LEGION-208"] },
   });
-  for (const op of ["sign_off", "close_root", "park_child", "rerun_child"]) {
+  for (const op of ["sign_off", "close_root", "rerun_child"]) {
     await expect(run(worker, { op, issue: "LEGION-208" })).resolves.toMatchObject({
       isError: true,
     });
@@ -752,13 +782,13 @@ test("retry_or_escalate takes a reason", async () => {
   expect(calls).toHaveLength(before);
 });
 
-// Architects sent park_child a `reason`, as close_root and request_backward_move take one, and
-// were told only that the field is refused: five refusals over four days of architect sessions,
-// each sent again without it and its why lost. The daemon keeps no why for a park or a rerun, so
-// a refusal of their `reason` names the fields the operation takes and the dispatch comment on
-// the child the why goes in, before any grant is minted. Any other operation's refusal names the
+// Architects sent a child operation a `reason`, as close_root and request_backward_move take one,
+// and were told only that the field is refused: five refusals over four days of architect
+// sessions, each sent again without it and its why lost. The daemon keeps no why for a rerun, so a
+// refusal of its `reason` names the fields the operation takes and the dispatch comment on the
+// child the why goes in, before any grant is minted. Any other operation's refusal names the
 // fields it takes alone: it may name no single issue (release_children, whose field is `issues`).
-test("park_child refuses a reason before any grant, naming issue and the dispatch comment the why goes in", async () => {
+test("rerun_child refuses a reason before any grant, naming issue and the dispatch comment the why goes in", async () => {
   const { calls, daemon } = recordingDaemon({});
   const tool = createLegionTool({
     pi,
@@ -772,10 +802,6 @@ test("park_child refuses a reason before any grant, naming issue and the dispatc
     session: () => claimSession("architect"),
   });
   const refusals = [
-    [
-      { op: "park_child", issue: "LEGION-209", reason: "Folded into LEGION-208's pull request" },
-      'park_child does not accept field "reason"; it takes issue. Say why in a dispatch comment on the child',
-    ],
     [
       { op: "rerun_child", issue: "LEGION-209", reason: "The spec changed" },
       'rerun_child does not accept field "reason"; it takes issue. Say why in a dispatch comment on the child',

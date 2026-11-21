@@ -323,7 +323,7 @@ func TestAPendingPersonsHandoverSuppressesASecondAndAHandOverRowDoesNot(t *testi
 	}
 	t.Run("a pending re-assertion row", func(t *testing.T) {
 		pool := migratedPool(t)
-		handOver := record.ReassertStatusWrite("todo", "backlog")
+		handOver := record.ReassertStatusWrite("todo", "backlog", 2)
 		if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
 			store := record.NewStore()
 			row, err := record.NewFencedRow(context.Background(), tx, store, "LEGION-208", handOver, time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC))

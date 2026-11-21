@@ -29,11 +29,12 @@ const (
 	// at delivery when the re-read issue no longer carries the label: a person who took it off
 	// withdrew the handover.
 	PersonHandoverStatusRow StatusRowKind = "person-handover"
-	// ReassertStatusRow is the daemon setting its own status back over one a session wrote
-	// (workflow's sessionStatusWrite): the session's close or park stands in Dispatch and the
+	// ReassertStatusRow is the daemon setting its own status back over a status that it does not
+	// take (ReassertStatusWrite names the cases): a session's write, which the workflow keeps out
+	// of the record (workflow's sessionStatusWrite). The write it undoes stands in Dispatch and the
 	// record kept the daemon's status, so this row is queued observing a status the issue is not
-	// meant to be at — done, backlog or icebox — exactly as a person's handover is. Asking the
-	// ordinary rule of it, whether the issue is still in the workflow, would drop the row for
+	// meant to be at, such as done, backlog or icebox, exactly as a person's handover is. Asking
+	// the ordinary rule of it, whether the issue is still in the workflow, would drop the row for
 	// being at the status it exists to undo.
 	ReassertStatusRow StatusRowKind = "reassert"
 	// CloseStatusRow is the daemon's own close of an issue: the done a merge or an architect's
@@ -97,6 +98,15 @@ type StatusWrite struct {
 	// record undoes is told to the project's controller rather than to the issue's architect
 	// (decision 12 of dispatch://INFRA-4730).
 	Controller bool `json:"controller,omitempty"`
+	// ObservedSeq is the Dispatch sequence of the write that a set-back undoes (ReassertStatusRow),
+	// a session's write (ReassertStatusWrite names the cases). Before each write the runner reads
+	// the issue's events after it and finishes the row without writing when a later event changed
+	// the status and the daemon did not write that event, so a set-back never writes over a move
+	// that came after the write it undoes: the owning architect's, or a person's
+	// (dispatch://INFRA-3178 R3). A row with zero, which an earlier release queued, writes as that
+	// release wrote it. That release decodes a payload strictly, so a rollback removes the key
+	// first (the way back of migration 20261120012547).
+	ObservedSeq int64 `json:"observedSeq,omitempty"`
 }
 
 // HasOption says whether the write carries an option of the status-change route, the one route
@@ -121,10 +131,14 @@ func PersonHandoverStatusWrite(status, observed string) StatusWrite {
 	return StatusWrite{Kind: PersonHandoverStatusRow, Status: status, ObservedStatus: observed}
 }
 
-// ReassertStatusWrite is the daemon's own status set back over the one a session wrote, which the
-// row observes (ReassertStatusRow).
-func ReassertStatusWrite(status, observed string) StatusWrite {
-	return StatusWrite{Kind: ReassertStatusRow, Status: status, ObservedStatus: observed}
+// ReassertStatusWrite is the daemon's own status set back over a status that the daemon does not
+// take, which the row observes (ReassertStatusRow), at observedSeq, the Dispatch sequence of the
+// write that put that status on the issue. The workflow queues one in two cases (workflow's
+// sessionStatusWrite). A session with a claim in the issue's gate tree on the Dispatch chain writes
+// a status, other than the owning architect's move of a child out of the workflow. A session with
+// no claim there writes a status on a gate root that runs or that waits on a person.
+func ReassertStatusWrite(status, observed string, observedSeq int64) StatusWrite {
+	return StatusWrite{Kind: ReassertStatusRow, Status: status, ObservedStatus: observed, ObservedSeq: observedSeq}
 }
 
 // CloseStatusWrite is the daemon's own close of an issue, to status (done) from the observed

@@ -167,7 +167,7 @@ func TestTheReparentReadTellsEachDistinctArchitectOnce(t *testing.T) {
 	}
 	words := told[0].Reason
 	for _, want := range []string{"changed from LEGION-208 to LEGION-300", "phase implementing", "holding its admission slot", "spec open",
-		"The architect of LEGION-300 now stands above it", "park_child"} {
+		"The architect of LEGION-300 now stands above it", "ends it with its own status write in Dispatch"} {
 		if !strings.Contains(words, want) {
 			t.Errorf("the words of the change %q do not say %q", words, want)
 		}

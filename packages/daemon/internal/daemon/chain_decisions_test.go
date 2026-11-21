@@ -56,7 +56,10 @@ import (
 //   - a session's status write on an issue is set back when the session holds a claim of an issue
 //     with the same gate root (R26's repair, which reads the gate root where it reads the stored
 //     tree today), and, from any other session, set back with its architect told only on an issue
-//     that is its own gate root and has started; anything else is a person's move.
+//     that is its own gate root and has started; anything else is a person's move. The owning
+//     architect's move out of the workflow comes first (dispatch://INFRA-3178): the backlog of the
+//     architect of an issue above it on its chain, on an issue that is no root, is a person's move
+//     whatever gate root the two stand under (workflow's owningArchitectsMove, record.MoveOwners).
 //
 // The decisions are read through the daemon's own code over a migrated store, one database and
 // one runtime per project, and a stand-in Dispatch that answers from the fixture:
@@ -67,8 +70,9 @@ import (
 //     (active, waiting, held with its reason and holders), read through projection.Project;
 //   - the repair of a session's status write (workflow's sessionStatusWrite), by its effect: a
 //     reassert row, with or without its architect told;
-//   - the answer of each architect operation the table names (release_children, park_child,
-//     rerun_child, sign_off, close_root and register_gate), through api.Server's routes.
+//   - the answer of each architect operation the table names (release_children, rerun_child,
+//     sign_off, close_root and register_gate), through api.Server's routes. park_child is gone
+//     with #4573, and the rows that called it name no call in its place.
 //
 // A decision that changes the store is made in a transaction the test rolls back, or, for an
 // architect's call, which commits through the API's own pool, followed by the store put back as
@@ -100,7 +104,6 @@ const (
 // The architect operations a row's calls name, and the answer of a call the route took.
 const (
 	opRelease   = "release_children"
-	opPark      = "park_child"
 	opRerun     = "rerun_child"
 	opSignOff   = "sign_off"
 	opCloseRoot = "close_root"
@@ -196,30 +199,30 @@ var chainRows = []chainRow{
 		calls: []chainCall{{opSignOff, "INFRA-9010", "SIGNOFF_OUTSIDE_ACCEPTING"}, {opRegister, "INFRA-9010", taken},
 			{opCloseRoot, "INFRA-9010", "CLOSE_AFTER_PHASE_STARTED"}}},
 	// B in work under A. R18: its own architect, released for being idle, still holds its role;
-	// a notice from its parent reaches A's; park_child takes only an issue under the caller, not
-	// the caller's own; B holds no gate of its own. R26's repair: a session of A's or B's claim is
-	// an agent of B's gate root A; an outside write on an issue that is not its own gate root is a
+	// a notice from its parent reaches A's; B holds no gate of its own. R26's repair: a session of
+	// B's claim is an agent of B's gate root A; A's architect owns B, so its backlog is a person's
+	// move (dispatch://INFRA-3178); an outside write on an issue that is not its own gate root is a
 	// person's move.
 	{key: "INFRA-9011", shape: "B in work under A",
 		parent: "INFRA-9010", status: "in_progress", phase: phase.Planning, tree: "INFRA-9010", slot: true, architect: releasedForIdle,
 		notice: "INFRA-9011", noticeAbove: "INFRA-9010", place: heldPlace(record.HeldAwaitingChildren, "INFRA-9012"),
-		repairs: map[string]string{"INFRA-9010": setBack, "INFRA-9011": setBack, outsideWriter: personsMove},
+		repairs: map[string]string{"INFRA-9010": personsMove, "INFRA-9011": setBack, outsideWriter: personsMove},
 		calls: []chainCall{{opSignOff, "INFRA-9010", "SIGNOFF_OUTSIDE_ACCEPTING"}, {opSignOff, "INFRA-9011", "SIGNOFF_OUTSIDE_ACCEPTING"},
-			{opPark, "INFRA-9011", "ISSUE_NOT_OWNED"}, {opRegister, "INFRA-9011", "GATE_ROOT_ONLY"}}},
+			{opRegister, "INFRA-9011", "GATE_ROOT_ONLY"}}},
 	// C in work under B, its own architect failed. R18: a failed claim does not hold its role, so
 	// its notices go to the nearest architect above it in Legion's work that does, B's.
 	{key: "INFRA-9012", shape: "C in work under B, its architect failed",
 		parent: "INFRA-9011", status: "testing", phase: phase.Testing, tree: "INFRA-9010", slot: true, architect: failedClaim,
 		notice: "INFRA-9011", noticeAbove: "INFRA-9011", place: heldPlace(record.HeldAwaitingChildren, "INFRA-9013"),
-		repairs: map[string]string{"INFRA-9011": setBack, "INFRA-9012": setBack, outsideWriter: personsMove},
-		calls:   []chainCall{{opSignOff, "INFRA-9011", "SIGNOFF_OUTSIDE_ACCEPTING"}, {opPark, "INFRA-9012", "ISSUE_NOT_OWNED"}}},
+		repairs: map[string]string{"INFRA-9011": personsMove, "INFRA-9012": setBack, outsideWriter: personsMove},
+		calls:   []chainCall{{opSignOff, "INFRA-9011", "SIGNOFF_OUTSIDE_ACCEPTING"}}},
 	// D at todo under C. R19: an issue under a parent in Legion's work starts on todo, whatever its
 	// label, once every gate above it is open (A's is). R18: C's architect failed, so B's.
 	{key: "INFRA-9013", shape: "D at todo under C, three deep",
 		parent: "INFRA-9012", status: "todo", phase: phase.Admitted, tree: "INFRA-9010",
 		notice: "INFRA-9011", noticeAbove: "INFRA-9011", place: placeActive, starts: true,
-		repairs: map[string]string{"INFRA-9011": setBack, outsideWriter: personsMove},
-		calls:   []chainCall{{opRelease, "INFRA-9011", taken}, {opRelease, "INFRA-9012", taken}, {opPark, "INFRA-9010", taken}}},
+		repairs: map[string]string{"INFRA-9011": personsMove, outsideWriter: personsMove},
+		calls:   []chainCall{{opRelease, "INFRA-9011", taken}, {opRelease, "INFRA-9012", taken}}},
 
 	// An issue at work under a parent on the backlog under an issue in work: the state R24
 	// refuses, which stands only before R25's fix. R15: the parent on the backlog is not in
@@ -235,8 +238,8 @@ var chainRows = []chainRow{
 	{key: "INFRA-9022", shape: "an issue at work under a parent on the backlog under an issue in work",
 		parent: "INFRA-9021", status: "in_progress", phase: phase.Implementing, tree: "INFRA-9020", slot: true,
 		notice: "INFRA-9020", noticeAbove: "INFRA-9020", place: placeActive,
-		repairs: map[string]string{"INFRA-9020": setBack, outsideWriter: personsMove},
-		calls:   []chainCall{{opPark, "INFRA-9020", taken}, {opSignOff, "INFRA-9020", "SIGNOFF_OUTSIDE_ACCEPTING"}}},
+		repairs: map[string]string{"INFRA-9020": personsMove, outsideWriter: personsMove},
+		calls:   []chainCall{{opSignOff, "INFRA-9020", "SIGNOFF_OUTSIDE_ACCEPTING"}}},
 
 	// Unrecorded children under a parent at work. R19: a label on an issue under a parent in
 	// Legion's work changes nothing; release_children of the architect above it releases it, a
@@ -271,8 +274,8 @@ var chainRows = []chainRow{
 	{key: "INFRA-500", shape: "INFRA-500: a done parent under an issue in merging",
 		parent: "INFRA-205", status: "todo", phase: phase.Admitted, tree: "INFRA-205",
 		notice: "INFRA-430", noticeAbove: "INFRA-430", place: heldPlace(record.HeldAcceptedAncestor, "INFRA-430"),
-		repairs: map[string]string{"INFRA-430": setBack, outsideWriter: personsMove},
-		calls:   []chainCall{{opSignOff, "INFRA-430", "SIGNOFF_OUTSIDE_ACCEPTING"}, {opPark, "INFRA-430", taken}}},
+		repairs: map[string]string{"INFRA-430": personsMove, outsideWriter: personsMove},
+		calls:   []chainCall{{opSignOff, "INFRA-430", "SIGNOFF_OUTSIDE_ACCEPTING"}}},
 
 	// INFRA-1238's shape: a done parent under an admitted issue. R19 and R21: held ancestry
 	// under INFRA-7, which is in Legion's work while INFRA-1238's parent is not. INFRA-7 itself is
@@ -312,9 +315,10 @@ var chainRows = []chainRow{
 	// Two roots of the place walk under INFRA-3189 at work. R15: each is under INFRA-3189 and
 	// keeps its own gate, run and claims (R17, R21). R18: INFRA-904's own architect, suspended by
 	// the operator, does not hold its role, so its notices reach INFRA-3189's; INFRA-3189's
-	// architect acts on both and parks them; close_root ends a root only. R26's repair: a session
-	// of INFRA-3189's claim is no agent of a gate root other than INFRA-3189, and each runs as its
-	// own gate root.
+	// architect acts on both; close_root ends a root only. R26's repair: a session of INFRA-3189's
+	// claim is no agent of a gate root other than INFRA-3189, and each runs as its own gate root,
+	// but INFRA-3189's architect stands above each on its chain, so its backlog is a person's move
+	// (dispatch://INFRA-3178).
 	{key: "INFRA-3189", shape: "the parent at work of two roots of the place walk",
 		status: "in_progress", labelled: true, phase: phase.Implementing, tree: "INFRA-3189", slot: true, gate: true, lifecycle: true, architect: holdsItsRole,
 		notice: "INFRA-3189", noticeAbove: "INFRA-3189", place: heldPlace(record.HeldAwaitingChildren, "INFRA-2969", "INFRA-904"),
@@ -323,13 +327,13 @@ var chainRows = []chainRow{
 	{key: "INFRA-2969", shape: "the place walk's root INFRA-2969, implementing under INFRA-3189",
 		parent: "INFRA-3189", status: "in_progress", labelled: true, phase: phase.Implementing, tree: "INFRA-2969", slot: true, gate: true, lifecycle: true, architect: holdsItsRole,
 		notice: "INFRA-2969", noticeAbove: "INFRA-3189", place: placeActive,
-		repairs: map[string]string{"INFRA-3189": setBackTold, "INFRA-2969": setBack},
-		calls: []chainCall{{opSignOff, "INFRA-3189", "SIGNOFF_OUTSIDE_ACCEPTING"}, {opPark, "INFRA-3189", taken},
+		repairs: map[string]string{"INFRA-3189": personsMove, "INFRA-2969": setBack},
+		calls: []chainCall{{opSignOff, "INFRA-3189", "SIGNOFF_OUTSIDE_ACCEPTING"},
 			{opCloseRoot, "INFRA-2969", "ROOT_REQUIRED"}, {opRegister, "INFRA-2969", taken}}},
 	{key: "INFRA-904", shape: "the place walk's root INFRA-904, implementing under INFRA-3189, its architect suspended by the operator",
 		parent: "INFRA-3189", status: "in_progress", labelled: true, phase: phase.Implementing, tree: "INFRA-904", slot: true, gate: true, lifecycle: true, architect: suspendedByOperator,
 		notice: "INFRA-3189", noticeAbove: "INFRA-3189", place: placeActive,
-		repairs: map[string]string{"INFRA-3189": setBackTold, "INFRA-904": setBack},
+		repairs: map[string]string{"INFRA-3189": personsMove, "INFRA-904": setBack},
 		calls:   []chainCall{{opSignOff, "INFRA-904", "SIGNOFF_OUTSIDE_ACCEPTING"}, {opRegister, "INFRA-904", taken}}},
 
 	// INFRA-3206: no Dispatch parent, stored in INFRA-979's tree. R21: it holds no sign-off of
@@ -358,7 +362,7 @@ var chainRows = []chainRow{
 		status: "todo", labelled: true, phase: phase.Admitted, tree: "INFRA-302",
 		notice: "INFRA-533", noticeAbove: "INFRA-533", place: placeActive, starts: true,
 		repairs: map[string]string{"INFRA-302": personsMove, outsideWriter: personsMove},
-		calls:   []chainCall{{opSignOff, "INFRA-302", "ISSUE_NOT_OWNED"}, {opPark, "INFRA-302", "ISSUE_NOT_OWNED"}}},
+		calls:   []chainCall{{opSignOff, "INFRA-302", "ISSUE_NOT_OWNED"}}},
 
 	// INFRA-840: recorded at phase done while Dispatch shows it in work, stored in INFRA-514's
 	// tree, under an issue the daemon does not record. R15 and R21: it is not in Legion's work and
@@ -386,18 +390,17 @@ var chainRows = []chainRow{
 	{key: "BET-614", shape: "the place walk's root BET-614, implementing under BET-59",
 		parent: "BET-59", status: "in_progress", labelled: true, phase: phase.Implementing, tree: "BET-614", slot: true, gate: true, lifecycle: true, architect: holdsItsRole,
 		notice: "BET-614", noticeAbove: "BET-59", place: placeActive,
-		repairs: map[string]string{"BET-59": setBackTold, "BET-614": setBack},
+		repairs: map[string]string{"BET-59": personsMove, "BET-614": setBack},
 		calls:   []chainCall{{opSignOff, "BET-59", "SIGNOFF_OUTSIDE_ACCEPTING"}}},
 	{key: "BET-620", shape: "the place walk's root BET-620, accepting under BET-59, its architect failed",
 		parent: "BET-59", status: "needs_review", labelled: true, phase: phase.Accepting, tree: "BET-620", gate: true, lifecycle: true, architect: failedClaim,
 		notice: "BET-59", noticeAbove: "BET-59", place: heldPlace(record.HeldAtWork),
-		repairs: map[string]string{"BET-59": setBackTold, "BET-620": setBack},
+		repairs: map[string]string{"BET-59": personsMove, "BET-620": setBack},
 		calls:   []chainCall{{opSignOff, "BET-59", taken}, {opSignOff, "BET-620", taken}}},
 	{key: "BET-67", shape: "the place walk's root BET-67, admitted at todo under BET-59",
 		parent: "BET-59", status: "todo", labelled: true, phase: phase.Admitted, tree: "BET-67",
 		notice: "BET-59", noticeAbove: "BET-59", place: placeActive, starts: true,
-		repairs: map[string]string{"BET-59": personsMove},
-		calls:   []chainCall{{opPark, "BET-59", taken}}},
+		repairs: map[string]string{"BET-59": personsMove}},
 	{key: "BET-683", shape: "the place walk's root BET-683, admitted at in_progress under BET-59, over BET-690, BET-991 and BET-888",
 		parent: "BET-59", status: "in_progress", labelled: true, phase: phase.Admitted, tree: "BET-683",
 		notice: "BET-59", noticeAbove: "BET-59", place: heldPlace(record.HeldChildrenFirst, "BET-690", "BET-888", "BET-991"),
@@ -405,8 +408,8 @@ var chainRows = []chainRow{
 	{key: "BET-690", shape: "the place walk's root BET-690, implementing under BET-683",
 		parent: "BET-683", status: "in_progress", labelled: true, phase: phase.Implementing, tree: "BET-690", slot: true, gate: true, lifecycle: true, architect: holdsItsRole,
 		notice: "BET-690", noticeAbove: "BET-59", place: placeActive,
-		repairs: map[string]string{"BET-59": setBackTold, "BET-690": setBack},
-		calls: []chainCall{{opSignOff, "BET-59", "SIGNOFF_OUTSIDE_ACCEPTING"}, {opPark, "BET-59", taken},
+		repairs: map[string]string{"BET-59": personsMove, "BET-690": setBack},
+		calls: []chainCall{{opSignOff, "BET-59", "SIGNOFF_OUTSIDE_ACCEPTING"},
 			{opCloseRoot, "BET-690", "ROOT_REQUIRED"}, {opRegister, "BET-690", taken}}},
 	{key: "BET-991", shape: "the place walk's root BET-991, admitted at todo under BET-683",
 		parent: "BET-683", status: "todo", labelled: true, phase: phase.Admitted, tree: "BET-991",
@@ -422,8 +425,7 @@ var chainRows = []chainRow{
 		parent: "BET-683", status: "todo", phase: phase.Admitted, tree: "BET-1090",
 		notice: "BET-59", noticeAbove: "BET-59", place: heldPlace(record.HeldDesignGate, "BET-683"),
 		repairs: map[string]string{"BET-1090": personsMove, "BET-59": personsMove},
-		calls: []chainCall{{opSignOff, "BET-1090", "ISSUE_NOT_OWNED"}, {opSignOff, "BET-59", "SIGNOFF_OUTSIDE_ACCEPTING"},
-			{opPark, "BET-1090", "ISSUE_NOT_OWNED"}, {opPark, "BET-59", taken}}},
+		calls:   []chainCall{{opSignOff, "BET-1090", "ISSUE_NOT_OWNED"}, {opSignOff, "BET-59", "SIGNOFF_OUTSIDE_ACCEPTING"}}},
 	// The place walk's BET-951, admitted at todo under BET-305 at work. R19: it starts under its
 	// parent; R18: BET-305's architect acts on it.
 	{key: "BET-305", shape: "the place walk's parent at work of BET-951",
@@ -433,8 +435,7 @@ var chainRows = []chainRow{
 	{key: "BET-951", shape: "the place walk's root BET-951, admitted at todo under BET-305",
 		parent: "BET-305", status: "todo", labelled: true, phase: phase.Admitted, tree: "BET-951",
 		notice: "BET-305", noticeAbove: "BET-305", place: placeActive, starts: true,
-		repairs: map[string]string{"BET-305": personsMove},
-		calls:   []chainCall{{opPark, "BET-305", taken}}},
+		repairs: map[string]string{"BET-305": personsMove}},
 
 	// The place walk's LINUX-1535 under LINUX-1301, and the two LINUX members whose chain does
 	// not reach their stored tree, both at phase done while Dispatch shows them in work. R15 and
@@ -447,7 +448,7 @@ var chainRows = []chainRow{
 	{key: "LINUX-1535", shape: "the place walk's root LINUX-1535, implementing under LINUX-1301",
 		parent: "LINUX-1301", status: "in_progress", labelled: true, phase: phase.Implementing, tree: "LINUX-1535", slot: true, gate: true, lifecycle: true, architect: holdsItsRole,
 		notice: "LINUX-1535", noticeAbove: "LINUX-1301", place: placeActive,
-		repairs: map[string]string{"LINUX-1301": setBackTold, "LINUX-1535": setBack},
+		repairs: map[string]string{"LINUX-1301": personsMove, "LINUX-1535": setBack},
 		calls:   []chainCall{{opSignOff, "LINUX-1301", "SIGNOFF_OUTSIDE_ACCEPTING"}}},
 	{key: "LINUX-1270", shape: "the stored tree LINUX-1419 left, at work",
 		status: "in_progress", labelled: true, phase: phase.Implementing, tree: "LINUX-1270", slot: true, gate: true, lifecycle: true, architect: holdsItsRole,
@@ -475,7 +476,7 @@ var chainRows = []chainRow{
 	{key: "OSSV-135", shape: "the place walk's root OSSV-135, implementing under OSSV-276, its architect released for being idle",
 		parent: "OSSV-276", status: "in_progress", labelled: true, phase: phase.Implementing, tree: "OSSV-135", slot: true, gate: true, lifecycle: true, architect: releasedForIdle,
 		notice: "OSSV-135", noticeAbove: "OSSV-276", place: placeActive,
-		repairs: map[string]string{"OSSV-276": setBackTold, "OSSV-135": setBack},
+		repairs: map[string]string{"OSSV-276": personsMove, "OSSV-135": setBack},
 		calls:   []chainCall{{opSignOff, "OSSV-276", "SIGNOFF_OUTSIDE_ACCEPTING"}, {opSignOff, "OSSV-135", "SIGNOFF_OUTSIDE_ACCEPTING"}}},
 }
 
@@ -1171,8 +1172,6 @@ func (d *chainDaemon) calls(answer func(key, label, value string)) {
 			switch call.op {
 			case opRelease:
 				path, body = "/legion/v1/waves/release", api.WaveReleaseRequest{GrantID: grant.ID, Issues: []string{row.key}}
-			case opPark:
-				path, body = "/legion/v1/children/park", api.ChildRequest{GrantID: grant.ID, Issue: row.key}
 			case opRerun:
 				path, body = "/legion/v1/children/rerun", api.ChildRequest{GrantID: grant.ID, Issue: row.key}
 			case opSignOff:

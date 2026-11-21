@@ -108,8 +108,8 @@ func TestAnArchitectClosesItsRootThatWaitsOnAPerson(t *testing.T) {
 }
 
 // close_root ends a root only while it has started no phase, and only a root: past that the root
-// ends through its workflow or a human, and a child leaves with park_child under the park rule
-// the refusal states.
+// ends through its workflow or a human, and a child leaves by the status its owning architect
+// writes on it in Dispatch.
 func TestCloseRootIsRefusedOnceATreeHasStartedOrForAChild(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

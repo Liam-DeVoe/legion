@@ -783,6 +783,9 @@ func (s *Postgres) PhaseEntries(ctx context.Context, tx pgx.Tx, issues []string)
 }
 
 func (s *Postgres) PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) error {
+	if phase.Given.Generation > maxInt64 {
+		return fmt.Errorf("put %s phase on %s: the generation %d of its given task does not fit a bigint", phase.Role, phase.Issue, phase.Given.Generation)
+	}
 	var decision []byte
 	if phase.Decision != nil {
 		var err error
@@ -826,7 +829,7 @@ func (s *Postgres) PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) erro
 		reviewed_head = excluded.reviewed_head`,
 		phase.Issue, string(phase.Role), string(phase.Claim), phase.HandoffCommit, phase.Pass, phase.HandoffRecord, phase.HandoffVersion, phase.Rounds, phase.ConflictRounds,
 		backwardMoves, phase.CapTold, phase.Verdict, phase.Summary, phase.LastHandoff, decision, phase.CompletedAt,
-		phase.Entry, phase.EntryTask, phase.EntryVerbatim, raisedAt, phase.EntryMovedBack, from, phase.EntryGivenTask, phase.EntryGivenEntry, phase.EntryGivenGeneration,
+		phase.Entry, phase.EntryTask, phase.EntryVerbatim, raisedAt, phase.EntryMovedBack, from, phase.Given.Task, phase.Given.Entry, int64(phase.Given.Generation),
 		phase.ReviewedHead,
 	)
 	if err != nil {
@@ -840,12 +843,14 @@ func scanPhase(row scanner) (PhaseRow, error) {
 	var role, token string
 	var decision, backwardMoves []byte
 	var raisedAt *time.Time
+	var givenGeneration int64
 	if err := row.Scan(&phase.Issue, &role, &token, &phase.HandoffCommit, &phase.Pass, &phase.HandoffRecord, &phase.HandoffVersion, &phase.Rounds, &phase.ConflictRounds,
 		&backwardMoves, &phase.CapTold, &phase.Verdict, &phase.Summary, &phase.LastHandoff, &decision, &phase.CompletedAt,
-		&phase.Entry, &phase.EntryTask, &phase.EntryVerbatim, &raisedAt, &phase.EntryMovedBack, &phase.EntryFrom, &phase.EntryGivenTask, &phase.EntryGivenEntry,
-		&phase.EntryGivenGeneration, &phase.ReviewedHead); err != nil {
+		&phase.Entry, &phase.EntryTask, &phase.EntryVerbatim, &raisedAt, &phase.EntryMovedBack, &phase.EntryFrom, &phase.Given.Task, &phase.Given.Entry,
+		&givenGeneration, &phase.ReviewedHead); err != nil {
 		return PhaseRow{}, err
 	}
+	phase.Given.Generation = uint64(givenGeneration)
 	if raisedAt != nil {
 		phase.EntryRaisedAt = raisedAt.UTC()
 	}
@@ -1398,18 +1403,17 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues
 		// number is never reset, so a worker still holding the old entry's task is behind the row
 		// rather than level with it, and the new run's next start raises the entry again and
 		// writes the task of that entry beside it. The task the role was last given for an entry
-		// goes with it, with the entry and the generation it was given for (PhaseRow.EntryGivenTask,
-		// EntryGivenEntry, EntryGivenGeneration): it was the old run's. That the number is never
-		// reset is also what keeps a review of the old entry from moving the reviewer's commit after
-		// that start: its footer names a number the row has left (PhaseRow.ReviewedHead), and until
-		// that start the row holds no entry's task. The mark that the task is sent as written goes
-		// with the task it was about. The time the entry was raised stays with the number it belongs
-		// to, and so does the move that raised it (entry_moved_back), which that same start writes
-		// again. The counts go with the rounds: the new generation counts its moves back from
-		// nothing, and the cap mark goes with them, so the architect is told again at the new
-		// generation's own first crossing of the cap. The commit the daemon recorded for the
-		// reviewer's own review goes with the decision: the new generation's first review reads the
-		// whole change.
+		// goes with it, with the entry and the generation it was given for (PhaseRow.Given,
+		// GivenTask): it was the old run's. That the number is never reset is also what keeps a
+		// review of the old entry from moving the reviewer's commit after that start: its footer
+		// names a number the row has left (PhaseRow.ReviewedHead), and until that start the row
+		// holds no entry's task. The mark that the task is sent as written goes with the task it
+		// was about. The time the entry was raised stays with the number it belongs to, and so
+		// does the move that raised it (entry_moved_back), which that same start writes again. The
+		// counts go with the rounds: the new generation counts its moves back from nothing, and the
+		// cap mark goes with them, so the architect is told again at the new generation's own
+		// first crossing of the cap. The commit the daemon recorded for the reviewer's own review
+		// goes with the decision: the new generation's first review reads the whole change.
 		"update phases set handoff_commit = '', handoff_record = '', handoff_version = 0, rounds = 0, conflict_rounds = 0, " +
 			"backward_moves = '{}'::jsonb, cap_told = 0, verdict = '', summary = '', decision = null, reviewed_head = '', " +
 			"entry_task = '', entry_verbatim = false, entry_given_task = '', entry_given_entry = 0, entry_given_generation = 0 where " + where,

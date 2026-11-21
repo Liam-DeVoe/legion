@@ -14,7 +14,7 @@ import (
 )
 
 // TestParentWaitsHoldsTheWorkOfAnEntryRaisedAfterARetryOfTheOneBefore: the task of a retry is
-// kept on the entry it was given for (record.PhaseRow.EntryGivenTask) and no longer. The
+// kept on the entry it was given for (record.PhaseRow.Given, GivenFor) and no longer. The
 // implementer is retried on entry 3, completes implementing, and the tester's failure raises its
 // entry 4 with the work of that failure. When a child then opens with the implementer in the
 // middle of entry 4, the admission pass holds entry 4's work, not the task of the retry of

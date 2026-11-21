@@ -58,10 +58,7 @@ type roleForReader struct {
 // role whose claim it leaves for the hold's retry. The owner of the phase a return or a carried run
 // resumes (runOwner) is read past a guard that answers no owner for admitted, as for every phase
 // no worker owns. The owner walk reads no role: where it starts is its caller's to say
-// (record.NoticeStartsAtParent, for a notice). The phase's resume task reads it for the start's
-// base-merge sentence alone (Engine.resumePhaseTask, through withBaseMergeRunFor in
-// internal/workflow's effects.go), which only a testing task of a parent takes, so the architect it
-// answers at admitted and accepting leaves the task as every phase but testing does.
+// (record.NoticeStartsAtParent, for a notice).
 //
 // A reader this list does not hold fails the test, so a new one is decided rather than taking
 // whatever RoleFor answers at admitted.
@@ -78,7 +75,6 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/workflow/awaiting_children.go", fn: "undeliveredStart"}:          {calls: 1, test: "TestTheAdmissionPassStopsAStartedParentAnOpenChildHolds"},
 	{file: "internal/workflow/awaiting_children.go", fn: "Engine.ReturnFromChildren"}: {calls: 1, test: "TestAParentWhosePullRequestMergedGoesBackToTheStartItHeld"},
 	{file: "internal/workflow/catch_up.go", fn: "Engine.readyWorkerTask"}:             {calls: 1, test: "TestArchitectUnchangedByAReadyWorkerOfAnIssueAtAdmitted"},
-	{file: "internal/workflow/effects.go", fn: "Engine.resumePhaseTask"}:              {calls: 1, test: "TestParentWaitsHoldsNoSlotAndComesBack"},
 	{file: "internal/workflow/effects.go", fn: "HeldNotice"}:                          {calls: 1, test: "TestACarriedRootHeldFromItsPhaseStartsNoWorkerAndTellsItsArchitectTheHold"},
 	{file: "internal/workflow/effects.go", fn: "RoleFor"}:                             {calls: 1, test: "TestRoleForAnswersEveryPhaseOfPhaseAll"},
 	{file: "internal/workflow/effects.go", fn: "backwardMoveReason"}:                  {calls: 1, test: "TestArchitectUnchangedByABackwardMoveFromAdmitted"},

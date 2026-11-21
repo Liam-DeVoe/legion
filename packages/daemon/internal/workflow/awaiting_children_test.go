@@ -245,7 +245,7 @@ func TestTheAwaitingChildrenNoticeNamesTheWaitAndCarriesWhatItReplaces(t *testin
 				"The wait ends when no child under " + cwParent + " is open",
 				"goes back to the start it held by itself",
 				"(" + waitingOnChildren + ")",
-				parkRule,
+				"A child you released and a child you did not release leave by the same status write. " + record.EndChildRule,
 			}, tc.carries...) {
 				if !strings.Contains(notice.Reason, want) {
 					t.Fatalf("the notice's reason %q does not say %q", notice.Reason, want)
@@ -635,7 +635,7 @@ func TestABackwardMoveAndASignOffOfAWaitingParentAreRefused(t *testing.T) {
 			message := refusedWith(t, apply(tc.name, tc.fact), waitingOnChildren, cwChild+" (in_progress)")
 			if want := cwParent + " waits in awaiting_children on these open Dispatch children of it: " + cwChild + " (in_progress). " +
 				"It stands in no phase that " + tc.act + " acts on, so this " + tc.act + " changed nothing; once no child under it is open, " + cwParent + " " + back + ". " +
-				"Act on the children: release one that should run, or move one out from under " + cwParent + " to an issue outside its tree or to no parent; close one, move it to icebox or take it out with park_child " + parkRule + ", and cite that reason in a comment on the child"; message != want {
+				"Act on the children: release one that should run, or move one out from under " + cwParent + " to an issue outside its tree or to no parent. " + record.EndChildRule; message != want {
 				t.Fatalf("the refusal = %q, want %q", message, want)
 			}
 		})

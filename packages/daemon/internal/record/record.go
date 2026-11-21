@@ -781,7 +781,7 @@ type PhaseRow struct {
 	// rather than of the one outbox row that carried it: a claim behind the entry is sent this
 	// task again, however that row ended. Empty on a row no entry has been raised on, and on one
 	// ClearGeneration reset, whose re-admitted tree's promotion writes the task again. A retry of
-	// the entry leaves it as it stands and writes its own task beside it (EntryGivenTask).
+	// the entry leaves it as it stands and writes its own task beside it (Given).
 	EntryTask string
 	// EntryVerbatim says the sweep's send of a root architect's entry again sends EntryTask as
 	// written (workflow's SendArchitectStart). Only the resume of a root a person answered sets
@@ -837,40 +837,56 @@ type PhaseRow struct {
 	// stands, and a retry restarts the held phase on it. The role's next entry, raised by a move
 	// from a phase before retro, ends that.
 	EntryFrom phase.Phase
-	// EntryGivenTask is the last task a phase worker was given for the entry EntryGivenEntry
-	// names, in the issue's generation EntryGivenGeneration names, as it was composed, before the
-	// daemon decorated its send with the base-merge sentence a testing task of a parent ends with
-	// and the reviewer's two sentences of its review round, which EntryTask carries (workflow's
-	// enter and namingTheReviewRound). The raise of a phase worker's entry writes the work it
-	// raises the entry with (workflow's enter), and a retry of the entry writes its own task, which
-	// names the retry's reason (workflow's restart): the architect's retry of a held phase, a todo
-	// on a held root and the operator's restart each hand the role the entry its row already
-	// names, and leave EntryTask as the entry was raised with it, or empty where a generation's
-	// clear emptied it. The columns are written for phase workers alone: the architect's row
-	// keeps them at their defaults, since the one reader holds accepting, the architect's phase,
-	// with a task of its own.
-	//
-	// Its one reader is the admission pass's stop of a parent whose start is written and not
-	// delivered or whose worker is in the middle of its phase (workflow's entryWork,
-	// StopForChildren): the hold keeps it, after the turn that took it has ended too, and the
-	// return decorates it once (dispatch://INFRA-3320 R9 and R12). It is read only where
-	// EntryGivenEntry is Entry and EntryGivenGeneration is the issue's generation, so what the
-	// hold keeps is a fact of the record and never a reading of the task's text.
-	EntryGivenTask string
-	// EntryGivenEntry is the entry EntryGivenTask was given for, written with it. It is 0, beside
-	// an empty task, on every row a daemon upgraded in place found and on every row a generation's
-	// clear reset (ClearGeneration). An earlier release names none of the three columns, so an
-	// entry it raises leaves this at an entry before, which the read passes over.
-	EntryGivenEntry int64
-	// EntryGivenGeneration is the issue's generation (Issue.Generation) EntryGivenTask was given
-	// in, written with it, and 0 where EntryGivenEntry is 0. An earlier release's generation clear
-	// empties EntryTask and leaves the given task beside the entry it keeps; where that clear
-	// gives the issue a generation of its own (its rerun, its adoption, its re-admission as a
-	// root), the issue's generation passes this one, and the read passes the task over. A member
-	// of a tree whose root such a release re-admits keeps its own generation, so its given task
-	// outlives that clear (docs/kubernetes.md, the rollback of the release that holds a parent's
-	// start, says what that costs).
-	EntryGivenGeneration int64
+	// Given is the last task a phase worker was given for an entry, with that entry and the
+	// issue's generation it was given in (GivenTask); its one reader reads it through GivenFor.
+	Given GivenTask
+}
+
+// GivenTask is the last task a phase worker was given for an entry, as it was composed, with that
+// entry and the issue's generation it was given in (PhaseRow.Given). The raise of a phase
+// worker's entry writes the work it raises the entry with (workflow's enter), and a retry of the
+// entry writes its own task, which names the retry's reason (workflow's restart): the architect's
+// retry of a held phase, a todo on a held root and the operator's restart each hand the role the
+// entry its row already names, and leave PhaseRow.EntryTask as the entry was raised with it, or
+// empty where a generation's clear emptied it. Each writes the whole value, which the columns
+// entry_given_task, entry_given_entry and entry_given_generation store (Store.PutPhase). They are
+// written for phase workers alone: the architect's row keeps them at their defaults, since the one
+// reader holds accepting, the architect's phase, with a task of its own.
+type GivenTask struct {
+	// Task is that task as it was composed, before the daemon decorated its send with the
+	// base-merge sentence a testing task of a parent ends with and the reviewer's two sentences of
+	// its review round, which PhaseRow.EntryTask carries (workflow's enter and
+	// namingTheReviewRound).
+	Task string
+	// Entry is the entry Task was given for. It is 0, beside an empty task, on every row a daemon
+	// upgraded in place found and on every row a generation's clear reset (ClearGeneration). An
+	// earlier release names none of the three columns, so an entry it raises leaves this at an
+	// entry before, which GivenFor passes over.
+	Entry int64
+	// Generation is the issue's generation (Issue.Generation) Task was given in, and 0 where no task
+	// was given, beside an empty Task. A restart of a row that stands at entry 0 gives a task for
+	// entry 0 (workflow's restart), so Entry 0 is written there beside the issue's generation. An
+	// earlier release's generation clear empties PhaseRow.EntryTask and leaves the given task beside
+	// the entry it keeps; where that clear gives the issue a generation of its own (its rerun, its
+	// adoption, its re-admission as a root), the issue's generation passes this one, and GivenFor
+	// passes the task over. A member of a tree whose root such a release re-admits keeps its own
+	// generation, so its given task outlives that clear (docs/kubernetes.md, the rollback of the
+	// release that holds a parent's start, says what that costs).
+	Generation uint64
+}
+
+// GivenFor is the task p's worker was given for the entry p stands on, in the issue's generation
+// generation, as it was composed, and false where p keeps none: where its given task is empty, or
+// of another entry, or of another generation. Its one reader is the admission pass's stop of a
+// parent whose start is written and not delivered or whose worker is in the middle of its phase
+// (workflow's entryWork, StopForChildren): the hold keeps the task, after the turn that took it
+// has ended too, and the return decorates it once (dispatch://INFRA-3320 R9 and R12). So what the
+// hold keeps is a fact of the record and never a reading of the task's text.
+func (p PhaseRow) GivenFor(generation uint64) (string, bool) {
+	if p.Given.Task == "" || p.Given.Entry != p.Entry || p.Given.Generation != generation {
+		return "", false
+	}
+	return p.Given.Task, true
 }
 
 // Completed says whether the role completed its current phase: its completion reported a commit
@@ -2168,6 +2184,12 @@ type Store interface {
 	// whose gate root is one issue's, which the caller reads from its Chains, in place of the tree
 	// SessionClaimsTree reads off the claims (R18 of dispatch://INFRA-3320). No issues reads false.
 	SessionClaimsOf(ctx context.Context, tx pgx.Tx, issues []string, session string) (bool, error)
+	// ArchitectIssueOfSession is the issue of the architect claim that the agent session holds of
+	// one of issues, which the caller reads from its Chains as it reads SessionClaimsOf's, and
+	// whether it holds one. It reads the claim in any state, as SessionClaimsOf does: a suspended
+	// architect's session is still the session of its claim, and a write in Dispatch names that
+	// session. No issues reads none.
+	ArchitectIssueOfSession(ctx context.Context, tx pgx.Tx, issues []string, session string) (string, bool, error)
 	// SessionClaimsAnywhere says whether the agent session holds a claim in any tree the daemon
 	// records. It is what tells a holder the daemon records in another tree from one it records
 	// nowhere, which SessionClaimsTree's one boolean cannot.

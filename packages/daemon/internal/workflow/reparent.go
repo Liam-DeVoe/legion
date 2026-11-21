@@ -257,7 +257,7 @@ func reparentedWords(issue record.Issue, seed record.ReparentSeed, now string, v
 		fmt.Fprintf(&words, ", and its design-gate steps stay as they stand: %s.", strings.Join(steps, "; "))
 	}
 	if now != "" {
-		fmt.Fprintf(&words, " The architect of %s now stands above it: it reads the spec of %s against its own requirements, as it reads a child's spec, and keeps it or takes it out with park_child.", now, issue.Key)
+		fmt.Fprintf(&words, " The architect of %s now stands above it: it reads the spec of %s against its own requirements, as it reads a child's spec, and keeps it or ends it with its own status write in Dispatch.", now, issue.Key)
 	}
 	if version != 0 {
 		fmt.Fprintf(&words, " %s carries the legion label and marks requirement blocks in its primary document. "+
