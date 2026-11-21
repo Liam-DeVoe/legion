@@ -33,6 +33,15 @@ export const fullToken = "the-full-members-token";
 export const memberCookie = "dsession=the-restricted-members-cookie";
 export const fullCookie = "dsession=the-full-members-cookie";
 
+/** Both sockets served, and the full member's browser for the GitHub proxy and the agent view:
+ *  what a run needs to pass where its rows do. */
+export const served = { env: { SWEEP_FULL_COOKIE: fullCookie }, feed: { doc: true, live: true } };
+/** The verdict of a run that passes, of one run (a runner's goes on to name its live window). */
+export const passed = "PASS: no route and neither socket gave the member a row of TGT";
+
+/** `text` as a RegExp source that matches it literally. */
+export const literally = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 /** TGT's objects, as the fake's lookup answers them, and the reference scheme it writes: the sweep
  *  reads the scheme from the server's own answer rather than spelling one. */
 export const tgt = {
@@ -51,6 +60,8 @@ export const tgt = {
   conversationFile: "shot-png",
   directMessage: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
   repository: "acme/tgt-repo",
+  /** A person who wrote in TGT alone: the author of its issue's message. */
+  person: "dave@tgt.example",
 };
 /** The member's own session, in OWN, which the live check's control message is sent to. */
 export const ownSession = "ses-own-worker";
@@ -100,7 +111,8 @@ export function at(target: string, status: number, body: unknown): Leak {
  *  member as no one answers for it, unless `agentLeak` sends the member the replay too. The
  *  document socket: not at all, or, with `doc`, a room for the member's own document that admits
  *  them, as Hocuspocus answers a token frame, and a 404 for TGT's, whose body is `docRefusal`
- *  when a row sets it. */
+ *  when a row sets it; `ownDocSilent` leaves the member's own room unanswered, so the control's
+ *  probe gives no answer. */
 export interface FeedShape {
   readonly live?: boolean;
   readonly closes?: boolean;
@@ -113,6 +125,7 @@ export interface FeedShape {
   readonly agentLeak?: boolean;
   readonly doc?: boolean;
   readonly docRefusal?: unknown;
+  readonly ownDocSilent?: boolean;
 }
 
 /** What a fake changes of its answers. `omit` leaves a kind out of the lookup; `issues` is how many
@@ -122,7 +135,10 @@ export interface FeedShape {
  *  person alone, so the full member's token is answered there as a repository the App is not
  *  installed on; `notInstalled` answers that the App is installed on no repository, TGT's
  *  included; `sharedRepo` puts TGT's first issue and OWN's on one repository the App is installed
- *  on, which both callers may see; `full` plants answers for the full member's requests. */
+ *  on, which both callers may see; `full` plants answers for the full member's requests;
+ *  `createdAt` is when OWN was created, which GET /api/v1/projects answers either caller, so
+ *  fills made at one fake and a runner at another whose OWN was created otherwise stand for two
+ *  deployments. */
 export interface FakeShape {
   readonly omit?: ReadonlySet<string>;
   readonly issues?: number;
@@ -133,6 +149,7 @@ export interface FakeShape {
   readonly sharedRepo?: boolean;
   readonly full?: readonly Leak[];
   readonly feed?: FeedShape;
+  readonly createdAt?: string;
   /** The GET patterns of the route index a run reads, which the fake's own index (GET /api/v1)
    *  lists too, as a deployment's lists the routes its route table holds; the whole index when
    *  unset. */
@@ -145,8 +162,14 @@ function routeIndexOf(fake: FakeShape): unknown {
   return { routes: (fake.rows ?? getRows).map((path) => ({ method: "GET", path })) };
 }
 
+/** OWN, the member's own project, as GET /api/v1/projects lists it to either caller. */
+function ownProject(fake: FakeShape): unknown {
+  return { key: "OWN", created_at: fake.createdAt ?? "2026-01-01T00:00:00.123456Z" };
+}
+
 /** The lookup the full member is answered, by exact path and query: TGT's objects, and OWN's, the
- *  member's own project, whose issue names carol and no session. */
+ *  member's own project, whose issue names carol and no session. TGT's message is dave's, a
+ *  person of TGT alone. */
 function lookup(target: string, fake: FakeShape): unknown {
   const author = { kind: "user", id: "carol@example.com" };
   const agent = { kind: "session", id: tgt.session };
@@ -168,7 +191,7 @@ function lookup(target: string, fake: FakeShape): unknown {
   const answers: Record<string, unknown> = {
     "/api/v1": routeIndexOf(fake),
     "/api/v1/whoami": { kind: "agent", owner: "carol@example.com" },
-    "/api/v1/projects": [{ key: "OWN" }, { key: "TGT" }],
+    "/api/v1/projects": [ownProject(fake), { key: "TGT", created_at: "2026-01-02T00:00:00Z" }],
     "/api/v1/projects/TGT/access": { project: "TGT", people: [] },
     "/api/v1/projects/OWN/access": { project: "OWN", people: ["bob@outside.example"] },
     "/api/v1/issues?project=TGT&limit=50": { issues },
@@ -186,7 +209,9 @@ function lookup(target: string, fake: FakeShape): unknown {
       item: { issue_key: tgt.issue, ref: `${scheme}${tgt.issue}/comment/${tgt.comment}` },
     },
     [`/api/v1/issues/${tgt.issue}/asks`]: [{ id: tgt.ask, author: agent }],
-    [`/api/v1/issues/${tgt.issue}/messages`]: [{ message: { id: tgt.message, author } }],
+    [`/api/v1/issues/${tgt.issue}/messages`]: [
+      { message: { id: tgt.message, author: { kind: "user", id: tgt.person } } },
+    ],
     [`/api/v1/agents/${tgt.session}/messages`]: [
       { message: { id: tgt.directMessage, author, body: "A direct message to the worker." } },
     ],
@@ -346,7 +371,7 @@ export function fakeDispatch(leaks: readonly Leak[], fake: FakeShape) {
             member_kind: "restricted",
           });
         }
-        if (target === "/api/v1/projects") return Response.json([{ key: "OWN" }]);
+        if (target === "/api/v1/projects") return Response.json([ownProject(fake)]);
         if (feed.doc === true && target === "/api/v1/schema/blocks") {
           return Response.json({ version: 1 });
         }
@@ -400,8 +425,9 @@ export function fakeDispatch(leaks: readonly Leak[], fake: FakeShape) {
     websocket: {
       message(socket, raw) {
         if (socket.data.room !== undefined) {
-          // The one frame the probe sends is its token frame; a fake admits the member to it.
-          socket.send(admitted(socket.data.room));
+          // The one frame the probe sends is its token frame; a fake admits the member to it,
+          // unless it leaves the member's own room unanswered.
+          if (feed.ownDocSilent !== true) socket.send(admitted(socket.data.room));
           return;
         }
         const frame = JSON.parse(String(raw)) as {

@@ -35,12 +35,16 @@ import { hostTool } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 
 import { rowLimit, runBounded } from "./bounded-subprocess";
+import { literally, passed } from "./restricted-sweep-fake";
 import {
   dispatchPackage,
+  fillNames,
   getRows,
+  judgePart,
   proxyReads,
   proxySource,
   readCheckFile,
+  routeIndexSha256,
   sweepScript,
 } from "./restricted-sweep-index";
 import { noReadCheckBase, printedRuns, type StackRuns, worker } from "./restricted-sweep-stack";
@@ -164,34 +168,28 @@ describe("the inputs", () => {
   );
 });
 
-/** The fills whole fills hold, as the script lists them (restricted-sweep-fills.sh's
- *  fill_names), each of which a runner refuses fills without. */
-const fillNames = (() => {
-  const source = readFileSync(join(dirname(sweepScript), "restricted-sweep-fills.sh"), "utf8");
-  const listed = /^readonly fill_names='([^']*)'$/m.exec(source);
-  if (listed === null) throw new Error("restricted-sweep-fills.sh lists no fill_names");
-  return (listed[1] ?? "").split(/\s+/).filter((name) => name !== "");
-})();
-
 /** A runner's fills, every one read before the first request: those it cannot read are refused by
  *  name before it reaches the deployment, at a closed port here, and the last row, fills it reads,
  *  is their control: it reaches the port. */
 describe("a runner's fills", () => {
   const directories = temporaryDirectories("restricted-sweep-runner-fills");
   const now = () => Math.floor(Date.now() / 1000);
-  /** Whole fills of TGT for bob made at MADE (Unix seconds), but the fills `without` names, each
-   *  line of `more` after them. */
+  /** Whole fills of TGT for bob made at MADE (Unix seconds) from this checkout's route index, but
+   *  the lines `without` names, each line of `more` after them. */
   const made = (madeAt: number, more: readonly string[] = [], without: readonly string[] = []) =>
     [
-      "restricted-sweep-fills\t2",
+      "restricted-sweep-fills\t3",
       "project\tTGT",
       "origin\thttp://127.0.0.1:9",
+      `routes\t${routeIndexSha256}`,
+      `deployment\t${"d".repeat(64)}`,
       `made_at\t${madeAt}`,
       "member\tbob@outside.example",
       "own\tOWN",
-      ...fillNames.filter((name) => !without.includes(name)).map((name) => `${name}\tthe-${name}`),
-      ...more,
+      ...fillNames.map((name) => `${name}\tthe-${name}`),
     ]
+      .filter((line) => !without.includes(line.slice(0, line.indexOf("\t"))))
+      .concat(more)
       .map((line) => `${line}\n`)
       .join("");
   /** A runner's inputs with TEXT as its fills file, and no full member's credential. */
@@ -224,15 +222,33 @@ describe("a runner's fills", () => {
     ["an empty file", () => "", {}, "UNKNOWN: SWEEP_FILLS_FILE is empty"],
     [
       "fills of another version",
-      () => "restricted-sweep-fills\t1\nproject\tTGT\n",
+      () => "restricted-sweep-fills\t2\nproject\tTGT\n",
       {},
-      "UNKNOWN: SWEEP_FILLS_FILE holds no fills of this sweep's version 2",
+      "UNKNOWN: SWEEP_FILLS_FILE holds no fills of this sweep's version 3",
     ],
     [
       "fills of another project",
-      () => "restricted-sweep-fills\t2\nproject\tOWN\n",
+      () => "restricted-sweep-fills\t3\nproject\tOWN\n",
       {},
       "UNKNOWN: SWEEP_FILLS_FILE holds the fills of project OWN, not of TGT",
+    ],
+    [
+      "fills that name no route index they were made from",
+      () => made(now(), [], ["routes"]),
+      {},
+      "UNKNOWN: SWEEP_FILLS_FILE names no route index it was made from",
+    ],
+    [
+      "fills made from another route index",
+      () => made(now(), [`routes\t${"0".repeat(64)}`], ["routes"]),
+      {},
+      `UNKNOWN: SWEEP_FILLS_FILE was made from another route index: its routes.txt's SHA-256 is ${"0".repeat(64)}, and this run's is ${routeIndexSha256}`,
+    ],
+    [
+      "fills that name no deployment they were made at",
+      () => made(now(), [], ["deployment"]),
+      {},
+      "UNKNOWN: SWEEP_FILLS_FILE names no deployment it was made at",
     ],
     [
       "fills older than 55 minutes",
@@ -263,6 +279,12 @@ describe("a runner's fills", () => {
       () => made(now()),
       { SWEEP_FULL_COOKIE: "dsession=a-full-members-cookie" },
       "UNKNOWN: a runner holds no full member's credential",
+    ],
+    [
+      "a live window shorter than the writer's delivery bound leaves for a write",
+      () => made(now()),
+      { SWEEP_LIVE_SECONDS: "29" },
+      "UNKNOWN: SWEEP_LIVE_SECONDS must be at least 30 on a runner",
     ],
   ];
 
@@ -363,7 +385,7 @@ test(
       unavailable,
       `${proxySource} holds no unavailable function this row reads`
     ).not.toBeNull();
-    const script = readFileSync(join(dirname(sweepScript), "restricted-sweep-judge.sh"), "utf8");
+    const script = readFileSync(judgePart, "utf8");
     expect(script).toContain(`\nreadonly not_installed_code=${unavailable?.[1]}\n`);
   },
   rowLimit("short")
@@ -596,15 +618,27 @@ function linesOf(stdout: string, first: string): string[] {
   return stdout.split("\n").filter((line) => line.startsWith(first));
 }
 
+/** The routes of TGT's content the stack's seed writes so that each can fail: the issue's decision
+ *  record and its subscribed agent, the project's architecture and Legion board, the open P0 issue
+ *  nobody owns, which every delivery measure lists, and the worker's open ask, which the open asks
+ *  its session authored list. Each prints `(can fail)` on this checkout's server, and FAILs on a
+ *  build with no read check. */
+const seededRoutes = [
+  "GET /api/v1/issues/{key}/decisions",
+  "GET /api/v1/issues/{key}/subscribers",
+  "GET /api/v1/projects/{key}/architecture",
+  "GET /api/v1/projects/{key}/legion/board",
+  "GET /api/v1/delivery/measures?repo=",
+  "GET /api/v1/asks/open?author_session=",
+];
+
 describe.skipIf(withoutStacks)("against the local stack", () => {
   test(
     "on this checkout's server the member reads nothing of TGT: PASS, with rows that could fail",
     async () => {
       const { target } = (await stacks()).head;
       const { stdout } = target;
-      expect(stdout).toContain(
-        "\nPASS: no route and neither socket gave the member a row of TGT\n"
-      );
+      expect(stdout).toContain(`\n${passed}\n`);
       expect(target.code, stdout).toBe(0);
       expect(linesOf(stdout, "FAIL"), stdout).toEqual([]);
       expect(linesOf(stdout, "UNKNOWN"), stdout).toEqual([]);
@@ -653,24 +687,13 @@ describe.skipIf(withoutStacks)("against the local stack", () => {
       for (const shape of proxyReads) {
         expect(stdout).toMatch(
           new RegExp(
-            `^ok {6}GET /api/github/rest/repos/\\{owner\\}/\\{repo\\}/${shape.replace(/[{}?]/g, "\\$&")}: .*\\(can fail\\)$`,
+            `^ok {6}GET /api/github/rest/repos/\\{owner\\}/\\{repo\\}/${literally(shape)}: .*\\(can fail\\)$`,
             "m"
           )
         );
       }
-      // The routes of the project's content the seed writes so that each can fail: the issue's
-      // decision record and its subscribed agent, the project's architecture and Legion board,
-      // and the open P0 issue nobody owns, which every delivery measure lists.
-      for (const route of [
-        "GET /api/v1/issues/{key}/decisions",
-        "GET /api/v1/issues/{key}/subscribers",
-        "GET /api/v1/projects/{key}/architecture",
-        "GET /api/v1/projects/{key}/legion/board",
-        "GET /api/v1/delivery/measures?repo=",
-      ]) {
-        expect(stdout).toMatch(
-          new RegExp(`^ok {6}${route.replace(/[{}?]/g, "\\$&")}: .*\\(can fail\\)$`, "m")
-        );
+      for (const route of seededRoutes) {
+        expect(stdout).toMatch(new RegExp(`^ok {6}${literally(route)}: .*\\(can fail\\)$`, "m"));
       }
       const swept =
         /^swept {3}(\d+) GET rows: (\d+) calls judged, (\d+) can fail, (\d+) blind, (\d+) not filled;/m.exec(
@@ -683,7 +706,7 @@ describe.skipIf(withoutStacks)("against the local stack", () => {
       expect(Number(swept?.[5])).toBe(0);
       expect(linesOf(stdout, "not filled")).toEqual([]);
       for (const path of getRows) {
-        expect(stdout).toMatch(new RegExp(`^ok {6}GET ${path.replace(/[{}?]/g, "\\$&")}: `, "m"));
+        expect(stdout).toMatch(new RegExp(`^ok {6}GET ${literally(path)}: `, "m"));
       }
       expect(stdout).toMatch(
         /^ok {6}\/ws\/doc\/\{room\}: http 404 .*\(control: admitted to their own document\)$/m
@@ -750,7 +773,7 @@ describe.skipIf(withoutStacks)("against the local stack", () => {
       expect(runner, fills.stdout).toBeDefined();
       const runnerOut = runner?.stdout ?? "";
       expect(runnerOut.trimEnd().split("\n").at(-1), runnerOut).toStartWith(
-        "PASS: no route and neither socket gave the member a row of TGT; the live check holds once a writer's delivered write falls inside the live window "
+        `${passed}; the live check holds once a writer's delivered write falls inside the live window `
       );
       expect(runner?.code, runnerOut).toBe(0);
       expect(linesOf(runnerOut, "not filled")).toEqual([]);
@@ -836,17 +859,10 @@ describe.skipIf(withoutStacks)("against the local stack", () => {
       expect(stdout).toContain(
         "\nFAIL    GET /api/v1/github/app-installation/{owner}/{repo}: the member is answered 200 for TGT's object, otherwise than a missing one answered 200\n"
       );
-      // The routes of the project's content the seed writes so that each can fail, each of which
-      // the build with no read check answers bob.
-      for (const route of [
-        "GET /api/v1/issues/{key}/decisions",
-        "GET /api/v1/issues/{key}/subscribers",
-        "GET /api/v1/projects/{key}/architecture",
-        "GET /api/v1/projects/{key}/legion/board",
-        "GET /api/v1/delivery/measures?repo=",
-        "/ws/live agent view of {session_id}",
-      ]) {
-        expect(stdout).toMatch(new RegExp(`^FAIL {4}${route.replace(/[{}?]/g, "\\$&")}: `, "m"));
+      // Each route of the project's content the seed writes so that it can fail, and the agent
+      // view, the build with no read check answers bob.
+      for (const route of [...seededRoutes, "/ws/live agent view of {session_id}"]) {
+        expect(stdout).toMatch(new RegExp(`^FAIL {4}${literally(route)}: `, "m"));
       }
     },
     rowLimit({ atOnce: ["twoStackBuild", "twoStackBuild", "twoStackBuild"] })

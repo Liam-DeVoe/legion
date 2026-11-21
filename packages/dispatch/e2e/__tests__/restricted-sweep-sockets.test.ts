@@ -9,8 +9,9 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { rowLimit } from "./bounded-subprocess";
 import {
   failures,
-  fullCookie,
   ownSession,
+  passed,
+  served,
   stopFakes,
   sweep,
   tgt,
@@ -20,10 +21,9 @@ import {
 
 afterAll(stopFakes);
 
-/** Both sockets served, and the full member's browser for the GitHub proxy and the agent view:
- *  what a run needs to pass. */
-const served = { env: { SWEEP_FULL_COOKIE: fullCookie }, feed: { doc: true, live: true } };
-const passed = "PASS: no route and neither socket gave the member a row of TGT";
+/** Words of the project's that name no row whole, which no line copies: a refused upgrade's body,
+ *  or an event's text. */
+const words = "words only a member of TGT may read";
 
 describe.skipIf(withoutTools)("the document socket", () => {
   test(
@@ -47,8 +47,45 @@ describe.skipIf(withoutTools)("the document socket", () => {
       const { stdout } = await sweep([], { feed: { doc: true }, rows: ["/api/v1/whoami"] });
       expect(failures(stdout)).toEqual([]);
       expect(stdout).toContain(
-        "\nok      /ws/doc/{room}: http 404 document not found (control: admitted to their own document)\n"
+        "\nok      /ws/doc/{room}: http 404 (control: admitted to their own document)\n"
       );
+    },
+    rowLimit("short")
+  );
+
+  // A refusal that holds a row of the project is a FAIL whatever else the run saw of the socket,
+  // its control's probe failing included.
+  test(
+    "a row of the project in the member's refused document upgrade is a FAIL though the control's probe gave no answer",
+    async () => {
+      const { code, stdout } = await sweep([], {
+        feed: { doc: true, docRefusal: { key: tgt.issue, error: words }, ownDocSilent: true },
+        rows: ["/api/v1/whoami"],
+      });
+      expect(failures(stdout)).toEqual([
+        `/ws/doc/{room}: the refusal holds ${tgt.issue}, a row of TGT`,
+      ]);
+      expect(stdout).not.toContain(words);
+      expect(code).toBe(1);
+    },
+    rowLimit("short")
+  );
+
+  // The control of the row above: the same failed probe, the refusal naming nothing of TGT, is
+  // UNKNOWN, and names the probes' answers by their first words alone.
+  test(
+    "where the control's probe gives no answer, is UNKNOWN, and copies no refusal's text",
+    async () => {
+      const { code, stdout } = await sweep([], {
+        feed: { doc: true, docRefusal: { error: words }, ownDocSilent: true },
+        rows: ["/api/v1/whoami"],
+      });
+      expect(failures(stdout)).toEqual([]);
+      expect(stdout).toMatch(
+        /^UNKNOWN \/ws\/doc\/\{room\}: a probe failed \(control 1, member 0\): /m
+      );
+      expect(stdout).not.toContain(words);
+      expect(code).toBe(2);
     },
     rowLimit("short")
   );
@@ -79,9 +116,34 @@ describe.skipIf(withoutTools)("the live socket's event feed", () => {
         rows: ["/api/v1/whoami"],
       });
       expect(failures(stdout)).toEqual([]);
+      expect(stdout).toContain("\nok      /ws/live: the member's upgrade is refused: http 404\n");
+    },
+    rowLimit("short")
+  );
+
+  // A public runner's log is public: a line about either socket names the server's answer by its
+  // status or frame types alone, never the body it wrote.
+  test(
+    "a passing run copies no refused upgrade's text into its lines",
+    async () => {
+      const { code, stdout } = await sweep([], {
+        ...served,
+        feed: {
+          doc: true,
+          docRefusal: { error: words },
+          live: true,
+          memberRefusal: { error: words },
+        },
+        rows: ["/api/v1/whoami"],
+      });
+      expect(failures(stdout)).toEqual([]);
       expect(stdout).toContain(
-        `\nok      /ws/live: the member's upgrade is refused: http 404 {"error":"refused"}\n`
+        "\nok      /ws/doc/{room}: http 404 (control: admitted to their own document)\n"
       );
+      expect(stdout).toContain("\nok      /ws/live: the member's upgrade is refused: http 404\n");
+      expect(stdout).not.toContain(words);
+      expect(verdictOf(stdout)).toBe(passed);
+      expect(code, stdout).toBe(0);
     },
     rowLimit("short")
   );
@@ -170,7 +232,6 @@ describe.skipIf(withoutTools)("the live socket's event feed", () => {
   test(
     "where the full member's live feed misses the comment, is UNKNOWN and quotes no event's text",
     async () => {
-      const words = "words only a member of TGT may read";
       const { code, stdout } = await sweep([], {
         ...served,
         feed: { doc: true, live: true, noise: words },

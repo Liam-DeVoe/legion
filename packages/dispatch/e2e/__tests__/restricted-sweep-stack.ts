@@ -310,10 +310,11 @@ function stackVariable(env: Readonly<Record<string, string | undefined>>, name: 
  *  on with a pull request the GitHub proxy reads, a priority the issue advances, a broadcast to its
  *  agent, a direct message from carol to that agent, a merged pull request and a deploy run, and
  *  a file of its agent's conversation; and, so that the routes that read them can fail, a
- *  decision record of the issue, its agent subscribed to it, an architecture source of the
- *  repository, a Legion daemon the project names, an open P0 issue nobody owns, and the agent's
- *  conversation as its live view replays it. OWN holds bob's own issue and document, and bob's own
- *  session, which has commented on OWN's issue. EMPTY holds nothing. */
+ *  decision record of the issue, its agent subscribed to it, an open ask its agent wrote, an
+ *  architecture source of the repository, a Legion daemon the project names, an open P0 issue
+ *  nobody owns, and the agent's conversation as its live view replays it. OWN holds bob's own
+ *  issue and document, and bob's own session, which has commented on OWN's issue. EMPTY holds
+ *  nothing. */
 async function seed(
   origin: string,
   env: Readonly<Record<string, string | undefined>>,
@@ -448,6 +449,12 @@ async function seed(
   ]);
   await send(origin, asCarol, "POST", `/api/v1/issues/${first}/asks`, 201, {
     question: "Is this the right plan?",
+  });
+  // An open ask the worker writes, which the open asks its session authored list
+  // (GET /api/v1/asks/open?author_session=).
+  await send(origin, agent, "POST", `/api/v1/issues/${first}/asks`, 201, {
+    question: "Which reef is charted first?",
+    actor,
   });
   await send(origin, asCarol, "POST", `/api/v1/issues/${first}/messages`, 201, {
     body: "A message from carol.",
@@ -712,7 +719,8 @@ async function split(
       SWEEP_RESTRICTED_COOKIE: credentials.cookie,
       SWEEP_MEMBER_SESSION: ownSession,
       SWEEP_FILLS_FILE: file,
-      SWEEP_LIVE_SECONDS: "20",
+      // The shortest window a runner reads: it leaves the writer's 15 s delivery bound of it.
+      SWEEP_LIVE_SECONDS: "30",
     });
     runnerDone.resolve();
     return { fills, runner, writer: await writer };

@@ -38,6 +38,19 @@ call() {
 uri() { jq -rn --arg v "$1" '$v|@uri'; }
 # first_of FILE FILTER prints the first value jq's FILTER yields of FILE, or nothing.
 first_of() { jq -r "first($2) // empty" "$1" 2>/dev/null; }
+# post_as WHO PATH REQUEST: POSTs REQUEST (a file) as WHO, and sets posted to the id the server
+# answered 201 with, or nothing, the answer in the run's `body` and its status in `status`.
+post_as() {
+  posted=''
+  call "$1" "$2" "$work/body" "$3"
+  [ "$status" != 201 ] || posted=$(first_of "$work/body" '.id | select(type == "string" and length > 0)')
+}
+# word_before FILE REST: the first word of FILE's first line whose text after that word and one
+# space is REST, or nothing: a row's status by its label, a found value's kind by the value.
+word_before() {
+  awk -v l="$2" 'index($0, " ") && substr($0, index($0, " ") + 1) == l { print substr($0, 1, index($0, " ") - 1); exit }' \
+    "$1"
+}
 # Redact credentials before shortening diagnostics, including individually reflected cookie values.
 redacted() {
   local text=$1 header secret rest part
@@ -112,12 +125,22 @@ message_request() {
     '{body: $b, delivery: "btw"}' >"$1" || unknown 'could not write the live direct message request'
 }
 
-# put NAME VALUE: one fill, a line of the fills file fills mode writes. A value no line can hold
-# whole and plain (a tab, a line break, a byte outside printable ASCII) stops the run, as no fill
-# then says what it was.
-put() {
-  case $2 in *[!\ -~]*) unknown "the fill $1 holds a byte the fills file cannot: $(printf '%s' "$2" | cut -c1-60)" ;; esac
-  printf '%s\t%s\n' "$1" "$2" >>"$work/fills" || unknown 'could not write a fill'
+utc_of() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$1" +%Y-%m-%dT%H:%M:%SZ; }
+
+# sha256_of: the SHA-256 of its input in hex, or nothing where neither sha256sum nor shasum runs.
+sha256_of() {
+  local sum
+  if command -v sha256sum >/dev/null 2>&1; then
+    sum=$(sha256sum) || return 1
+  elif command -v shasum >/dev/null 2>&1; then
+    sum=$(shasum -a 256) || return 1
+  else
+    return 1
+  fi
+  printf '%s' "${sum%% *}"
 }
 
-utc_of() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$1" +%Y-%m-%dT%H:%M:%SZ; }
+# How long after a write the writer waits, at most, for the full member's feed to be sent it, and
+# so the margin a runner's live window leaves before its feed closes: a write the writer saw
+# delivered strictly inside the window reached the feeds while the member's was open.
+readonly delivery_seconds=15

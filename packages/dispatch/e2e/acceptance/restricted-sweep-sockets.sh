@@ -8,9 +8,12 @@
 
 # doc_socket: the member is not admitted to the room of the project's document, while the same
 # probe admits the member to a document of a project the member sees (`own`, read with the
-# lookup), the control.
+# lookup), the control. The member's answer is read for rows before anything else of it, so a
+# refusal that holds a row of the project FAILs whatever else the run saw, a failed probe
+# included. A line names each probe's answer by its first words alone (`http 404`, `denied ...`,
+# `closed 1011`), never the body a refusal holds: the log of a run on a public runner is public.
 doc_socket() {
-  local schema_version own own_doc='' own_exit answer_exit own_answer answer marker
+  local schema_version own own_doc='' own_exit answer_exit own_answer answer first marker
   call restricted /api/v1/schema/blocks "$work/body"
   schema_version=$(first_of "$work/body" '.version // .schema_version | tostring')
   while read -r own; do
@@ -32,39 +35,33 @@ doc_socket() {
   own_exit=$?
   bun "$socket_probe" doc "$origin" "$work/restricted.h" "$doc" "$schema_version" >"$work/doc-target" 2>&1
   answer_exit=$?
-  own_answer=$(head_of "$work/doc-own")
-  answer=$(head_of "$work/doc-target")
-  case $answer in
+  own_answer=$(frames_of "$work/doc-own")
+  answer=$(frames_of "$work/doc-target")
+  first=$(head -n 1 "$work/doc-target")
+  case $first in
     'authenticated '*)
       fail "/ws/doc/{room}: the member is admitted to the room of $project's document: $answer"
       return
       ;;
   esac
-  if [ "$own_exit" != 0 ] || [ "$answer_exit" != 0 ]; then
+  refusal_body "$work/doc-target" "$work/doc-body"
+  masked "$work/doc-body" "$doc" >"$work/doc-refusal" || unknown 'could not mask the document refusal'
+  marker=$(marker_in "$work/doc-refusal")
+  if [ -n "$marker" ]; then
+    fail "/ws/doc/{room}: the refusal holds $(shown "$marker"), a row of $project"
+  elif [ "$own_exit" != 0 ] || [ "$answer_exit" != 0 ]; then
     unproven "/ws/doc/{room}: a probe failed (control $own_exit, member $answer_exit): $own_answer; $answer"
-  elif [ "${own_answer#authenticated }" = "$own_answer" ]; then
-    unproven "/ws/doc/{room}: the control did not hold: the member is not admitted to their own document: $own_answer"
   else
-    refusal_body "$work/doc-target" "$work/doc-body"
-    masked "$work/doc-body" "$doc" >"$work/doc-refusal" || unknown 'could not mask the document refusal'
-    marker=$(marker_in "$work/doc-refusal")
-    if [ -n "$marker" ]; then
-      fail "/ws/doc/{room}: the refusal holds $(shown "$marker"), a row of $project"
-    else
-      case $answer in
-        'denied '* | 'http 403 '* | 'http 404 '*) printf 'ok      /ws/doc/{room}: %s (control: admitted to their own document)\n' "$answer" ;;
-        *) unproven "/ws/doc/{room}: the member's answer for $project's document is no admission and no refusal: $answer" ;;
-      esac
-    fi
+    case $(head -n 1 "$work/doc-own") in
+      'authenticated '*)
+        case $first in
+          'denied '* | 'http 403 '* | 'http 404 '*) printf 'ok      /ws/doc/{room}: %s (control: admitted to their own document)\n' "$answer" ;;
+          *) unproven "/ws/doc/{room}: the member's answer for $project's document is no admission and no refusal: $answer" ;;
+        esac
+        ;;
+      *) unproven "/ws/doc/{room}: the control did not hold: the member is not admitted to their own document: $own_answer" ;;
+    esac
   fi
-}
-
-# post_as WHO PATH REQUEST: POSTs REQUEST (a file) as WHO, and sets posted to the id the server
-# answered 201 with, or nothing, the answer in the run's `body` and its status in `status`.
-post_as() {
-  posted=''
-  call "$1" "$2" "$work/body" "$3"
-  [ "$status" != 201 ] || posted=$(first_of "$work/body" '.id | select(type == "string" and length > 0)')
 }
 
 # live_writes: one run's writes while the feeds are open, before the window: the full member's
@@ -93,11 +90,13 @@ live_writes() {
 # full member's feed open over the same window, which must be sent both (its control). A runner
 # holds no full member's credential: it reads the member's feed alone and prints the window it
 # read (`live window <W0> <W1>`, UTC, whole seconds), and its silence is proven only by a
-# writer's write delivered strictly inside that window. W1 leaves a margin before the window's
-# end, for a write's delivery.
+# writer's write delivered strictly inside that window. W1 leaves the writer's delivery bound
+# (delivery_seconds) before the window's end, so a write the writer saw delivered inside the
+# window reached the feeds while the member's was open; the entry script refuses a runner a
+# window that leaves less than that bound again. A refused upgrade is named by its status alone.
 live_socket() {
   local watcher_restricted watcher_full='' ready_started observation_started window_start elapsed
-  local restricted_exit full_exit feed pid refused_upgrade marker first_line frames margin own_message=''
+  local restricted_exit full_exit feed pid refused_upgrade marker first_line frames own_message=''
   live_result='' written='' written_message='' window_line=''
   bun "$socket_probe" watch "$origin" "$work/restricted.h" "$work/ready-restricted" "$work/written" \
     "$live_seconds" >"$work/live-restricted" 2>&1 &
@@ -208,7 +207,7 @@ live_socket() {
     unproven "/ws/live: the member's feed gave no answer: $(frames_of "$work/live-restricted")"
   else
     case $first_line in
-      'http 403 '* | 'http 404 '*) printf 'ok      /ws/live: the member'"'"'s upgrade is refused: %s\n' "$(head_of "$work/live-restricted")" ;;
+      'http 403 '* | 'http 404 '*) printf 'ok      /ws/live: the member'"'"'s upgrade is refused: %s\n' "$(frames_of "$work/live-restricted")" ;;
       'http '*) unproven "/ws/live: the member's upgrade is answered $(frames_of "$work/live-restricted")" ;;
       *)
         if [ ! -e "$work/ready-restricted" ] || ! jq -s -e '
@@ -223,8 +222,7 @@ live_socket() {
             printf 'ok      /ws/live: the member is sent %s events in %s s, none of %s; the full member is sent the comment and the direct message, and the member their own direct message (controls)\n' \
               "$frames" "$live_seconds" "$project"
           else
-            margin=$((live_seconds >= 20 ? 5 : 1))
-            window_line="$(utc_of "$window_start") $(utc_of "$((window_start + live_seconds - margin))")"
+            window_line="$(utc_of "$window_start") $(utc_of "$((window_start + live_seconds - delivery_seconds))")"
             printf 'ok      /ws/live: the member is sent %s events in %s s, none of %s, and their own direct message; its control is a writer'"'"'s write delivered inside the live window\n' \
               "$frames" "$live_seconds" "$project"
             printf 'live window %s\n' "$window_line"
@@ -254,10 +252,10 @@ own_message_read() {
 window_message_reads() {
   local suffix
   for suffix in '' /blocks; do
-    row filled 0 "GET /api/v1/messages/{id}$suffix (the live window's direct message)" \
+    row filled "GET /api/v1/messages/{id}$suffix (the live window's direct message)" \
       "/api/v1/messages/$(uri "$1")$suffix" "/api/v1/messages/$none_uuid$suffix" 1 "$1" "$none_uuid"
   done
-  row filled 0 "GET /api/v1/agents/{session_id}/messages (after the live window)" \
+  row filled "GET /api/v1/agents/{session_id}/messages (after the live window)" \
     "/api/v1/agents/$(uri "$dm_session")/messages" "/api/v1/agents/ses-nosuchsession/messages" 0 \
     "$dm_session" ses-nosuchsession
 }

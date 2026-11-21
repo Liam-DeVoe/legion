@@ -434,79 +434,27 @@ function endedBy(frame: Frame | undefined): string | undefined {
   return undefined;
 }
 
-/** What the event feed sends this caller in a window, each frame printed the moment it comes, so
- *  a driver reads the feed while it runs and a probe stopped early has printed all it was sent:
- *  the feed starts with no resume, the ready file says it has, and every frame but a heartbeat is
- *  printed as the server wrote it until `windowMs` after the written file appeared. A driver that
- *  makes no written file within `writtenWithinMs`, or a ready file that cannot be written, rejects
- *  the answer, which exits 1. A feed that closes first, or whose subscription the server ends or
- *  refuses, is answered then. */
-function watchAnswer(
-  socket: WebSocket,
-  readyFile: string,
-  writtenFile: string,
-  windowMs: number
-): Promise<undefined> {
-  const answer = Promise.withResolvers<undefined>();
-  const emit = (line: string) => console.log(line);
-  // Once the answer is in, the wait for the written file and the window stop, so neither keeps
-  // this process running past it.
-  let done = false;
-  let windowTimer: Timer | undefined;
-  const settled = () => {
-    done = true;
-    clearTimeout(windowTimer);
-    answer.resolve(undefined);
-  };
-  const failed = (error: unknown) => {
-    done = true;
-    clearTimeout(windowTimer);
-    answer.reject(error);
-  };
-  const awaitWritten = async () => {
-    await Bun.write(readyFile, "ready\n");
-    const deadline = Date.now() + writtenWithinMs;
-    while (!done && !(await Bun.file(writtenFile).exists())) {
-      if (Date.now() > deadline) {
-        throw new Error(`the written file did not appear within ${writtenWithinMs / 1000} s`);
-      }
-      await Bun.sleep(50);
-    }
-  };
-  let started = false;
-  socket.addEventListener("open", () =>
-    socket.send(JSON.stringify({ type: "subscribe", sub: "e", view: { kind: "events" } }))
-  );
-  socket.addEventListener("message", (event) => {
-    if (done || typeof event.data !== "string") return;
-    const frame = frameOf(event.data);
-    if (frame?.type === "heartbeat") return;
-    emit(event.data);
-    const ended = endedBy(frame);
-    if (ended !== undefined) {
-      emit(ended);
-      settled();
-      return;
-    }
-    // The window follows the first `events_start` alone: a second one starts no second wait.
-    if (frame?.type !== "events_start" || started) return;
-    started = true;
-    void awaitWritten().then(() => {
-      if (!done) windowTimer = setTimeout(settled, windowMs);
-    }, failed);
-  });
-  socket.addEventListener("close", (event) => {
-    if (done) return;
-    emit(`closed ${event.code} ${event.reason}`);
-    settled();
-  });
-  return answer.promise;
+/** What a printed window's start is given: `open` starts the window (a second call does nothing),
+ *  `failed` rejects the answer, and `answered` says the answer is in, after which neither acts. */
+interface WindowStart {
+  readonly open: () => void;
+  readonly failed: (error: unknown) => void;
+  readonly answered: () => boolean;
 }
 
-/** What the agent view of `sessionId` sends this caller: every frame but a heartbeat, printed as
- *  the server wrote it the moment it comes, until `windowMs` after the first. A view the server
- *  ends or refuses, or a socket that closes, is answered then. */
-function agentAnswer(socket: WebSocket, sessionId: string, windowMs: number): Promise<undefined> {
+/** The frame loop `watch` and `agent` share: it sends `subscribe` once the socket opens, prints
+ *  every frame but a heartbeat as the server wrote it the moment it comes, so a driver reads the
+ *  feed while it runs and a probe stopped early has printed all it was sent, and answers
+ *  `windowMs` after the window opens. `started` is told each printed frame, and opens the window
+ *  when its mode says. A subscription the server ends or refuses on the open socket, or a socket
+ *  that closes, is answered then, with the line that says so. Once the answer is in, a pending
+ *  start opens nothing, so no wait keeps this process running past it. */
+function printedFrames(
+  socket: WebSocket,
+  subscribe: Readonly<Record<string, unknown>>,
+  windowMs: number,
+  started: (frame: Frame | undefined, start: WindowStart) => void
+): Promise<undefined> {
   const answer = Promise.withResolvers<undefined>();
   let done = false;
   let windowTimer: Timer | undefined;
@@ -515,15 +463,18 @@ function agentAnswer(socket: WebSocket, sessionId: string, windowMs: number): Pr
     clearTimeout(windowTimer);
     answer.resolve(undefined);
   };
-  socket.addEventListener("open", () =>
-    socket.send(
-      JSON.stringify({
-        type: "subscribe",
-        sub: "a",
-        view: { kind: "agent", session_id: sessionId },
-      })
-    )
-  );
+  const start: WindowStart = {
+    open: () => {
+      if (!done) windowTimer ??= setTimeout(settled, windowMs);
+    },
+    failed: (error) => {
+      done = true;
+      clearTimeout(windowTimer);
+      answer.reject(error);
+    },
+    answered: () => done,
+  };
+  socket.addEventListener("open", () => socket.send(JSON.stringify(subscribe)));
   socket.addEventListener("message", (event) => {
     if (done || typeof event.data !== "string") return;
     const frame = frameOf(event.data);
@@ -535,7 +486,7 @@ function agentAnswer(socket: WebSocket, sessionId: string, windowMs: number): Pr
       settled();
       return;
     }
-    windowTimer ??= setTimeout(settled, windowMs);
+    started(frame, start);
   });
   socket.addEventListener("close", (event) => {
     if (done) return;
@@ -543,6 +494,50 @@ function agentAnswer(socket: WebSocket, sessionId: string, windowMs: number): Pr
     settled();
   });
   return answer.promise;
+}
+
+/** What the event feed sends this caller in a window (printedFrames): the feed starts with no
+ *  resume, the ready file says it has, and the window opens once the written file appears after
+ *  the first `events_start`. A driver that makes no written file within `writtenWithinMs`, or a
+ *  ready file that cannot be written, rejects the answer, which exits 1. */
+function watchAnswer(
+  socket: WebSocket,
+  readyFile: string,
+  writtenFile: string,
+  windowMs: number
+): Promise<undefined> {
+  let waiting = false;
+  return printedFrames(
+    socket,
+    { type: "subscribe", sub: "e", view: { kind: "events" } },
+    windowMs,
+    (frame, start) => {
+      // The window follows the first `events_start` alone: a second one starts no second wait.
+      if (frame?.type !== "events_start" || waiting) return;
+      waiting = true;
+      void (async () => {
+        await Bun.write(readyFile, "ready\n");
+        const deadline = Date.now() + writtenWithinMs;
+        while (!start.answered() && !(await Bun.file(writtenFile).exists())) {
+          if (Date.now() > deadline) {
+            throw new Error(`the written file did not appear within ${writtenWithinMs / 1000} s`);
+          }
+          await Bun.sleep(50);
+        }
+      })().then(start.open, start.failed);
+    }
+  );
+}
+
+/** What the agent view of `sessionId` sends this caller (printedFrames), until `windowMs` after
+ *  its first frame. */
+function agentAnswer(socket: WebSocket, sessionId: string, windowMs: number): Promise<undefined> {
+  return printedFrames(
+    socket,
+    { type: "subscribe", sub: "a", view: { kind: "agent", session_id: sessionId } },
+    windowMs,
+    (_frame, start) => start.open()
+  );
 }
 
 try {

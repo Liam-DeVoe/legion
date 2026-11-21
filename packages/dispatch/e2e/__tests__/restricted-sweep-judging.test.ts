@@ -5,15 +5,20 @@
  *  `restricted-sweep-split.test.ts`'s. */
 
 import { afterAll, describe, expect, test } from "bun:test";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 
 import { rowLimit } from "./bounded-subprocess";
 import {
   appInstallation,
   at,
   failures,
-  fullCookie,
   type Leak,
+  literally,
+  passed,
   type SweptRun,
+  served,
   stopFakes,
   sweep,
   tgt,
@@ -23,13 +28,6 @@ import {
 import { getRows, proxyReads } from "./restricted-sweep-index";
 
 afterAll(stopFakes);
-
-/** Both sockets served, and the full member's browser for the GitHub proxy: what a run needs to
- *  pass where its rows do. */
-const served = { env: { SWEEP_FULL_COOKIE: fullCookie }, feed: { doc: true, live: true } };
-
-/** `text` as a RegExp that matches it literally. */
-const literally = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 describe.skipIf(withoutTools)("each judging rule, alone", () => {
   test(
@@ -370,9 +368,7 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
         );
       }
       expect(stdout).not.toContain("the-full-members-cookie");
-      expect(verdictOf(stdout)).toBe(
-        "PASS: no route and neither socket gave the member a row of TGT"
-      );
+      expect(verdictOf(stdout)).toBe(passed);
       expect(code, stdout).toBe(0);
     },
     rowLimit("short")
@@ -562,6 +558,71 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
     rowLimit("short")
   );
 
+  // A value the lookup found that is a name - the project's repository, a person of the project
+  // alone, a file of its conversation - is private text as well: a FAIL names it by its kind, and
+  // never as it is.
+  test.each([
+    ["the project's repository", { repo: tgt.repository }],
+    ["a person of the project", { assignee: tgt.person }],
+    ["the project's conversation", { file: `${tgt.session}/${tgt.conversationFile}` }],
+  ] as const)(
+    "a FAIL names %s by its kind, never by its name",
+    async (kind, item) => {
+      const { code, stdout } = await sweep([at("/api/v1/inbox", 200, [item])], {
+        rows: ["/api/v1/inbox"],
+      });
+      expect(failures(stdout)).toEqual([
+        `GET /api/v1/inbox: the member is answered 200 holding ${kind}, a row of TGT`,
+      ]);
+      expect(code).toBe(1);
+    },
+    rowLimit("short")
+  );
+
+  // An answer the sweep could not mask was not read for rows: its row is UNKNOWN, never a FAIL
+  // whose row is the mask's own error. A jq that refuses to mask one answer, and is jq for every
+  // other read, stands for any failure of that read.
+  const toolDirectories = temporaryDirectories("restricted-sweep-tools");
+  const unmaskable = "an answer no jq masks";
+  test(
+    "an answer the sweep cannot mask leaves its row UNKNOWN, never a FAIL",
+    async () => {
+      const tools = toolDirectories();
+      const jq = Bun.which("jq");
+      if (jq === null) throw new Error("no jq on PATH");
+      writeFileSync(
+        join(tools, "jq"),
+        [
+          "#!/usr/bin/env bash",
+          `# jq, but for the mask of an answer holding "${unmaskable}" (--rawfile body FILE).`,
+          "previous=''",
+          'for argument in "$@"; do',
+          `  if [ "$previous" = body ] && grep -q -F '${unmaskable}' "$argument" 2>/dev/null; then exit 3; fi`,
+          "  previous=$argument",
+          "done",
+          `exec '${jq}' "$@"`,
+          "",
+        ].join("\n"),
+        { mode: 0o755 }
+      );
+      const { code, stdout } = await sweep(
+        [at(`/api/v1/issues/${tgt.issue}/comments`, 200, [{ note: unmaskable }])],
+        {
+          env: { PATH: `${tools}:${process.env.PATH ?? ""}` },
+          rows: ["/api/v1/issues/{key}/comments"],
+        }
+      );
+      expect(failures(stdout)).toEqual([]);
+      expect(stdout).toContain(
+        "\nUNKNOWN GET /api/v1/issues/{key}/comments: the member's answer could not be masked, so it was not read for rows of TGT\n"
+      );
+      expect(stdout).not.toMatch(/^ok {6}GET \/api\/v1\/issues\/\{key\}\/comments:/m);
+      expect(verdictOf(stdout)).toStartWith("UNKNOWN: ");
+      expect(code).toBe(2);
+    },
+    rowLimit("short")
+  );
+
   // GET /api/v1/github/app-installation/{owner}/{repo} answers a repository its caller may not see
   // as one the App is not installed on. Filled with TGT's repository, which the App is installed
   // on, the member must be answered exactly as for a missing repository; where the App is installed
@@ -591,9 +652,7 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
       expect(stdout).toContain(
         `\nok      GET ${appInstallation}: 200, as a missing one is answered (can fail)\n`
       );
-      expect(verdictOf(stdout)).toBe(
-        "PASS: no route and neither socket gave the member a row of TGT"
-      );
+      expect(verdictOf(stdout)).toBe(passed);
       expect(code, stdout).toBe(0);
     },
     rowLimit("short")
@@ -616,9 +675,7 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
       expect(stdout).toContain(
         `\nok      GET ${appInstallation}: 200, as a missing one is answered (can fail)\n`
       );
-      expect(verdictOf(stdout)).toBe(
-        "PASS: no route and neither socket gave the member a row of TGT"
-      );
+      expect(verdictOf(stdout)).toBe(passed);
       expect(code, stdout).toBe(0);
     },
     rowLimit("short")

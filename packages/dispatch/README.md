@@ -1003,22 +1003,32 @@ SWEEP_ORIGIN=https://dispatch.example SWEEP_PROJECT=PRIV SWEEP_WRITE_ISSUE=PRIV-
 Where no full member's credential may be, as on a public runner, the sweep splits in three. Fills
 mode (`SWEEP_MODE=fills`), where the full member's token is, does the full member's half: the
 lookup, the question and each row's can-fail call, and writes them to `SWEEP_FILLS_FILE` (ASCII
-`name<TAB>value` lines, version 2, at most 40 KiB, no credential, the origin they were made at and
-the target issue's title among them, as the search rows' text). A row that can fail is a
-`can_fail<TAB><row>` line, each proxy read, the agent view and the app-installation row among them.
-Fills mode needs `SWEEP_FULL_COOKIE` too, since a proxy read it cannot make fail leaves no file, and
-writes none that lacks a fill. It takes the member's login in `SWEEP_MEMBER`, and reads the
-member's own projects as the ones whose access lists name it. A runner, any run with
-`SWEEP_FILLS_FILE` and no `SWEEP_MODE`, does the member's half with the member's cookie alone,
-refuses a full member's credential, refuses fills of another project, older than 55 minutes or
-lacking a fill whole fills hold, and names the origin they were made at. It reads the member's
-live feed over a window it prints, `live window <W0> <W1>` (UTC), and writes the member's own direct
+`name<TAB>value` lines, version 3, at most 40 KiB, no credential, the origin they were made at and
+the target issue's title among them, as the search rows' text). It names the route index it was
+made from by its SHA-256 (`routes`), and the deployment by the SHA-256 of the key and creation
+time of each of the member's own projects (`deployment`), which tell one deployment from another
+and read the same at its private origin and its public one. A row that can fail is a
+`can_fail<TAB><row>` line, each proxy read, the agent view and the app-installation row among
+them, and every row it judged has a `full_status` line. Fills mode needs `SWEEP_FULL_COOKIE` too,
+since a proxy read it cannot make fail leaves no file, and writes none that lacks a fill. It takes
+the member's login in `SWEEP_MEMBER`, and reads the member's own projects as the ones whose access
+lists name it. A runner, any run with `SWEEP_FILLS_FILE` and no `SWEEP_MODE`, does the member's
+half with the member's cookie alone, refuses a full member's credential, and refuses fills of
+another project, made from another route index than its own, older than 55 minutes, lacking a fill
+whole fills hold, or made at another deployment; it names the origin they were made at, and the
+member's login, by the first 12 digits of their SHA-256 alone. A row the fills hold no line of,
+from fills made from another API document, was never asked of the full member: the member's
+answer still FAILs it where it holds a row of the project, and otherwise the row is `UNKNOWN`,
+never `blind`. A runner reads the member's live feed over a window it prints,
+`live window <W0> <W1>` (UTC), whose end leaves the writer's 15 s delivery bound before the feed
+closes, so `SWEEP_LIVE_SECONDS` is at least 30 on a runner; it writes the member's own direct
 message alone. Writer mode (`SWEEP_MODE=writer`) runs beside it with the full member's token and
 cookie and the fills: every `SWEEP_WRITE_EVERY` seconds it comments on `SWEEP_WRITE_ISSUE` and sends
 the fills' session of the project a direct message, and prints
 `write <UTC> <comment id> <message id> delivered`, or `not delivered`, as both reach the full
-member's own feed or do not. The runner's live check holds only once a delivered write falls
-strictly inside its window, which whoever ran both joins. The verdict is always a run's last line.
+member's own feed within `SWEEP_WRITE_EVERY` seconds (at least 5, at most that 15) or do not. The
+runner's live check holds only once a delivered write falls strictly inside its window, which
+whoever ran both joins. The verdict is always a run's last line.
 
 ```bash
 SWEEP_MODE=fills SWEEP_ORIGIN=... SWEEP_PROJECT=PRIV SWEEP_MEMBER=<login> SWEEP_FULL_TOKEN=... \
@@ -1033,18 +1043,21 @@ SWEEP_ORIGIN=... SWEEP_PROJECT=PRIV SWEEP_FILLS_FILE=fills.tsv SWEEP_RESTRICTED_
 Every row's line says whether it can fail (the full member is answered the project's object
 otherwise than a missing one, or a row of it) or is `blind` (the full member is answered no row of
 the project there either). A full member's read a row needs that is answered no rule reads (401,
-429, a 5xx, no answer) leaves the run `UNKNOWN`, naming it, as does a GitHub proxy read or the
-app-installation row that cannot fail. A proxy read can fail only where the full member's read of
-the project's repository is answered and a missing one's is the proxy's own answer for a
-repository the App is not installed on (503 `GITHUB_TOKEN_UNAVAILABLE`); any other 5xx on either
-side, a rate limit or an outage, is no answer. `PASS` (exit 0) needs every GET row filled and
-called, every kind of object found, at least one row that can fail and every socket control held;
-`FAIL` (exit 1) names each answer that gave the member a row of the project and, in its verdict,
-the first; everything that proved nothing, a project the full member finds nothing of among them,
-is `UNKNOWN` (exit 2). A `FAIL` line names the route, the status and the row of the project the
-answer held (a key or an id; the issue's title by its issue), never the answer's text, since a
-public runner's log is public. `SWEEP_PACE_SECONDS` (0.1 by default) pauses before each request,
-which keeps a run far under an edge's per-address request limit.
+429, a 5xx, no answer), or an answer the sweep could not mask, leaves the run `UNKNOWN`, naming it,
+as does a GitHub proxy read or the app-installation row that cannot fail. A proxy read can fail
+only where the full member's read of the project's repository is answered and a missing one's is
+the proxy's own answer for a repository the App is not installed on (503
+`GITHUB_TOKEN_UNAVAILABLE`); any other 5xx on either side, a rate limit or an outage, is no
+answer. `PASS` (exit 0) needs every GET row filled and called, every kind of object found, at
+least one row that can fail and every socket control held; `FAIL` (exit 1) names each answer that
+gave the member a row of the project and, in its verdict, the first; everything that proved
+nothing, a project the full member finds nothing of among them, is `UNKNOWN` (exit 2). A `FAIL`
+line names the route, the status and the row of the project the answer held (a key or an id; the
+issue's title by its issue; the project's repository, a person of the project alone and a file of
+its conversation by that kind), never the answer's text, and a line about either socket names the
+member's answer by its status or frame types, never a body the server wrote, since a public
+runner's log is public. `SWEEP_PACE_SECONDS` (0.1 by default) pauses before each request, which
+keeps a run far under an edge's per-address request limit.
 `e2e/__tests__/restricted-sweep-judging.test.ts`, `-sockets.test.ts` and `-split.test.ts` hold each
 judging rule alone, against a fake Dispatch (`restricted-sweep-fake.ts`) that keeps every route
 from the member but the one a row plants a leak in, and hold the sweep to calling every GET row,

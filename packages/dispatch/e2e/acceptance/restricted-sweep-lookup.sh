@@ -2,7 +2,8 @@
 # shellcheck disable=SC2154,SC2034 # restricted-sweep.sh sources this file: it sets what this reads, and reads what this sets
 # The restricted sweep's identities and the full member's lookup (restricted-sweep.sh sources this
 # file, beside it). It defines functions alone; they read and set the entry script's fills (every
-# name of fill_names), `member` and the run's `values`, `missing`, `own` and `seen-actors`.
+# name of fill_names), `member` and the run's `values`, `named`, `missing`, `own` and
+# `seen-actors`.
 
 # names_member FILE: whether the access list FILE holds names the member, by login, in any case.
 names_member() {
@@ -10,65 +11,97 @@ names_member() {
 }
 
 # member_projects: the projects the member is listed but SWEEP_PROJECT, into the run's `own`, as
-# the member's cookie reads them.
+# the member's cookie reads them (GET /api/v1/projects, kept in the run's `member-projects.json`).
 member_projects() {
-  call restricted /api/v1/projects "$work/body"
-  [ "$status" = 200 ] || unknown "GET /api/v1/projects as the member answered $status: $(head_of "$work/body")"
-  jq -r --arg p "$project" '.[]? | .key | select(type == "string" and . != $p)' "$work/body" >"$work/own" 2>/dev/null ||
-    unknown "GET /api/v1/projects as the member answered no list: $(head_of "$work/body")"
+  call restricted /api/v1/projects "$work/member-projects.json"
+  [ "$status" = 200 ] || unknown "GET /api/v1/projects as the member answered $status: $(head_of "$work/member-projects.json")"
+  jq -r --arg p "$project" '.[]? | .key | select(type == "string" and . != $p)' "$work/member-projects.json" >"$work/own" 2>/dev/null ||
+    unknown "GET /api/v1/projects as the member answered no list: $(head_of "$work/member-projects.json")"
 }
+
+# login_digest LOGIN: the first 12 hex digits of the SHA-256 of LOGIN in lower case, by which a
+# runner's lines name a login: a login is a person's address, and a public runner's log is public.
+login_digest() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sha256_of | cut -c1-12; }
 
 # identities: the member must be a restricted member the server signs in (fills mode, which holds
 # no member's cookie, takes SWEEP_MEMBER); the full member's token must see the project, whose
 # access list must not name the member. A runner's fills checked the full member's half, and its
-# member must be the one they were made for.
+# member must be the one they were made for; a runner names either login by its digest alone. The
+# full member's list of projects is kept in the run's `full-projects.json`, which tells fills mode
+# the deployment. A cookie that signs in no restricted member is named by the kind whoami answers,
+# never by its login.
 identities() {
+  local signed_in
   if [ "$mode" = fills ]; then
     member=$sweep_member
   else
     call restricted /api/v1/whoami "$work/body"
     [ "$status" = 200 ] || unknown "GET /api/v1/whoami as the member answered $status: $(head_of "$work/body")"
     member=$(first_of "$work/body" 'select(.kind == "user" and .member_kind == "restricted") | .login')
-    [ -n "$member" ] || unknown "the cookie signs in no restricted member: GET /api/v1/whoami answered $(head_of "$work/body")"
+    if [ -z "$member" ]; then
+      signed_in=$(first_of "$work/body" '"kind \(.kind // "none"), member kind \(.member_kind // "none")"')
+      unknown "the cookie signs in no restricted member: GET /api/v1/whoami answered ${signed_in:-no JSON object}"
+    fi
   fi
   if [ "$mode" = runner ]; then
     [ "$(printf '%s' "$member" | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "$fills_member" | tr '[:upper:]' '[:lower:]')" ] ||
-      unknown "the cookie signs in $member, and SWEEP_FILLS_FILE's fills are of $fills_member"
+      unknown "the cookie signs in the login whose SHA-256 starts $(login_digest "$member"), and SWEEP_FILLS_FILE's fills are of the login whose SHA-256 starts $(login_digest "$fills_member")"
   else
-    call full /api/v1/whoami "$work/body"
-    [ "$status" = 200 ] || unknown "GET /api/v1/whoami with SWEEP_FULL_TOKEN answered $status: $(head_of "$work/body")"
-    call full /api/v1/projects "$work/body"
-    [ "$status" = 200 ] || unknown "GET /api/v1/projects with SWEEP_FULL_TOKEN answered $status: $(head_of "$work/body")"
-    [ -n "$(first_of "$work/body" ".[] | select(.key == \"$project\") | .key")" ] ||
+    call full /api/v1/projects "$work/full-projects.json"
+    [ "$status" = 200 ] || unknown "GET /api/v1/projects with SWEEP_FULL_TOKEN answered $status: $(head_of "$work/full-projects.json")"
+    [ -n "$(first_of "$work/full-projects.json" ".[] | select(.key == \"$project\") | .key")" ] ||
       unknown "SWEEP_FULL_TOKEN does not see $project: GET /api/v1/projects lists no such project"
-    jq -r --arg p "$project" '.[]? | .key | select(type == "string" and . != $p)' "$work/body" >"$work/full-projects" 2>/dev/null
+    jq -r --arg p "$project" '.[]? | .key | select(type == "string" and . != $p)' "$work/full-projects.json" >"$work/full-projects" 2>/dev/null
     call full "/api/v1/projects/$project/access" "$work/body"
     [ "$status" = 200 ] || unknown "GET /api/v1/projects/$project/access with SWEEP_FULL_TOKEN answered $status: $(head_of "$work/body")"
     ! names_member "$work/body" ||
       unknown "$project's access list names $member, so the member may read it and this sweep proves nothing"
   fi
-  printf 'member  %s, a restricted member %s'"'"'s access list does not name\n' "$member" "$project"
+  if [ "$mode" = runner ]; then
+    printf 'member  a restricted member %s'"'"'s access list does not name, whose login'"'"'s SHA-256 starts %s\n' \
+      "$project" "$(login_digest "$member")"
+  else
+    printf 'member  %s, a restricted member %s'"'"'s access list does not name\n' "$member" "$project"
+  fi
 }
 
 # runner_projects: a runner's own projects, which the document socket's control reads too, must
 # be the ones the fills were made for: the fills told the project's sessions, people and
 # repositories from those of the member's own projects by them. A project the member sees that
 # the fills did not know leaves the run UNKNOWN; the project itself among them is judged by the
-# routes.
+# routes. And the fills must be of this deployment: made at another, every row is filled with
+# objects that name nothing here, which a correct server answers as missing. The member's own
+# projects were created on one deployment alone (deployment_of), so where they were created at
+# other times the run stops, UNKNOWN, before it calls a row. A member listed no project of their
+# own tells no deployment, which leaves the run UNKNOWN. The line names the member's login and the
+# fills' origin, a private one where the fills were made apart, by the first 12 digits of their
+# SHA-256 alone.
 runner_projects() {
-  local member_own
+  local member_own here
   member_projects
   member_own=$(sort -u "$work/own")
-  [ "$member_own" = "$fills_own" ] ||
+  if [ "$member_own" != "$fills_own" ]; then
     unproven "the member is listed the projects $(printf '%s' "$member_own" | tr '\n' ' '), but SWEEP_FILLS_FILE was made for $(printf '%s' "$fills_own" | tr '\n' ' ')"
-  printf 'fills   of %s for %s, made at %s %s s ago: %s values, %s rows that can fail\n' "$project" "$member" \
-    "$fills_origin" "$fills_age" "$(wc -l <"$work/values" | tr -d ' ')" "$(wc -l <"$work/can-fail" | tr -d ' ')"
+  elif [ -z "$member_own" ]; then
+    unproven "the member is listed no project of their own, so the run cannot tell the deployment SWEEP_FILLS_FILE was made at from this one"
+  else
+    here=$(deployment_of "$work/member-projects.json")
+    [ -n "$here" ] || unknown 'could not take the SHA-256 of the deployment'
+    [ "$here" = "$fills_deployment" ] ||
+      unknown "SWEEP_FILLS_FILE was made at another deployment: the member's own projects were created at other times there (fills $(printf '%s' "$fills_deployment" | cut -c1-12), here $(printf '%s' "$here" | cut -c1-12))"
+  fi
+  printf 'fills   of %s for the login whose SHA-256 starts %s, made %s s ago at the origin whose SHA-256 starts %s: %s values, %s rows that can fail\n' \
+    "$project" "$(login_digest "$member")" "$fills_age" "$(printf '%s' "$fills_origin" | sha256_of | cut -c1-12)" \
+    "$(wc -l <"$work/values" | tr -d ' ')" "$(wc -l <"$work/can-fail" | tr -d ' ')"
 }
 
-# found LABEL VALUE: a project object the lookup found, which marks a row of the project.
+# found LABEL VALUE [NAMED]: a project object the lookup found, which marks a row of the project.
+# NAMED is the kind of a value that is a name, private text a line names by its kind alone
+# (`shown`): `repository`, `person` or `conversation`.
 found() {
   printf 'found   %s %s\n' "$1" "$2"
   printf '%s\n' "$2" >>"$work/values"
+  [ -z "${3:-}" ] || printf '%s %s\n' "$3" "$2" >>"$work/named"
 }
 
 # need LABEL VALUE WHERE: a kind the project owns, found or missing.
@@ -83,12 +116,14 @@ actors_in() {
     "$1" 2>/dev/null
 }
 # authors FILE FILTER: the first person and the first session that FILTER's authors name, and
-# every session and person FILE names, into `actors`, its sessions also into `sessions`.
+# every session and person FILE names, into `actors`, its sessions also into `sessions` and its
+# people into `people`.
 authors() {
   [ -n "$person" ] || person=$(first_of "$1" "$2 | select(.kind == \"user\") | .id")
   [ -n "$session" ] || session=$(first_of "$1" "$2 | select(.kind == \"session\") | .id")
   actors_in "$1" '["user", "session"]' >>"$work/actors"
   actors_in "$1" '["session"]' >>"$work/sessions"
+  actors_in "$1" '["user"]' >>"$work/people"
 }
 # seen_in FILE: every session and person FILE names by kind, and every login it holds.
 seen_in() {
@@ -108,6 +143,7 @@ lookup() {
   [ -s "$work/keys" ] || unknown "the full member finds no issue of $project, so no route can be filled with its objects"
   : >"$work/actors"
   : >"$work/sessions"
+  : >"$work/people"
   # Every issue of the page, until an object of each kind is found: the page holds 50.
   while read -r key; do
     scanned=$((scanned + 1))
@@ -249,7 +285,10 @@ lookup() {
   done <"$work/own"
   sort -u "$work/actors" | grep -v -x -F -f "$work/seen-actors" >"$work/project-actors"
   if [ -s "$work/project-actors" ]; then
-    while read -r id; do found actor "$id"; done <"$work/project-actors"
+    # A person's id is their login, an address: a line names one by its kind.
+    while read -r id; do
+      if grep -q -x -F -e "$id" "$work/people"; then found actor "$id" person; else found actor "$id"; fi
+    done <"$work/project-actors"
   else
     missing_kind actor "every session and person the lookup read in $project also works in a project the member sees, so no list of sessions or people can fail"
   fi
@@ -274,7 +313,7 @@ lookup() {
   proxy_repo=$(jq -r '.[]? | (.repo, .resolved_repo) | select(type == "string" and test("^[^/]+/[^/]+$"))' "$work/issues" 2>/dev/null |
     grep -v -x -F -f "$work/own-repos" -e '' | head -n 1)
   if [ -n "$proxy_repo" ]; then
-    found proxy-repository "$proxy_repo"
+    found proxy-repository "$proxy_repo" repository
   else
     missing_kind proxy-repository "every repository $project's issues resolve to is one a project the member sees resolves to as well"
   fi
@@ -287,7 +326,7 @@ lookup() {
     else
       call full "/api/v1/agents/$(uri "$conversation_session")/artifacts/$(uri "$conversation_slug")" "$work/body"
       if [ "$status" = 200 ]; then
-        found conversation-file "$conversation_file"
+        found conversation-file "$conversation_file" conversation
       else
         conversation_why="the full member is answered $status for SWEEP_CONVERSATION_FILE's $conversation_file"
         conversation_session='' conversation_slug=''

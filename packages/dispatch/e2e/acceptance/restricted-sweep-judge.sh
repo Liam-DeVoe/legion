@@ -152,15 +152,22 @@ marker_in() {
     printf 'an answer the markers could not be read in\n' >>"$work/unknown"
 }
 
-# shown MARKER: a row of the project as a line names it: a key, an id or another value the lookup
-# found, never text a person wrote, so the issue's title is named by its issue. A line names what
-# the answer held, never the answer: the log of a run on a public runner is public.
+# shown MARKER: a row of the project as a line names it: a key or an id the lookup found, never
+# text a person wrote, so the issue's title is named by its issue, and never a name: a value the
+# run's `named` gives a kind (the project's repository, a person of the project alone, a file of
+# its conversation) is named by that kind. A line names what the answer held, never the answer:
+# the log of a run on a public runner is public.
 shown() {
   if [ -n "$issue_title" ] && [ "$1" = "$issue_title" ]; then
     printf 'the title of %s' "$issue"
-  else
-    printf '%s' "$1"
+    return
   fi
+  case $(word_before "$work/named" "$1") in
+    repository) printf "the project's repository" ;;
+    person) printf 'a person of the project' ;;
+    conversation) printf "the project's conversation" ;;
+    *) printf '%s' "$1" ;;
+  esac
 }
 
 # masked FILE VALUE... masks literal fills, their URL and JSON encodings, every RFC 3339 instant
@@ -186,13 +193,17 @@ masked() {
         "\"\(.key)\":\"<n>\"")' --args "$@"
 }
 
-# masked_marker FILE VALUE...: the first row of the project FILE holds once each VALUE, a value
-# the request was filled with and which the answer may echo, is masked.
+# masked_marker FILE VALUE...: sets `marker` to the first row of the project FILE holds once each
+# VALUE, a value the request was filled with and which the answer may echo, is masked, or to
+# nothing; it returns 1, `marker` empty, where the answer could not be masked, so it was not read
+# for rows at all, which its caller judges. It sets a variable rather than printing one: inside
+# $(...) a failure could stop nothing but that subshell, and its words would read as the marker.
 masked_marker() {
   local file=$1
   shift
-  masked "$file" "$@" >"$work/masked" || unknown 'could not mask an answer'
-  marker_in "$work/masked"
+  marker=''
+  masked "$file" "$@" >"$work/masked" || return 1
+  marker=$(marker_in "$work/masked")
 }
 
 # alike STATUS_A FILE_A STATUS_B FILE_B VALUE...: whether two answers say the same, one status and
@@ -213,7 +224,7 @@ lines_into() {
   eval "$1=(\${lines[@]+\"\${lines[@]}\"})"
 }
 
-live=0 blind=0 judged=0 unfilled=0
+live=0 blind=0 judged=0 unfilled=0 in_fills=1 can_text=''
 # counted CAN: counts the row as one that can fail (CAN 1) or a blind one, and sets can_text to
 # which, for the row's line.
 counted() {
@@ -227,48 +238,58 @@ counted() {
   fi
 }
 
-# fills_can LABEL: on a runner, whether the fills say the row LABEL can fail.
-fills_can() {
-  if grep -q -x -F -e "$1" "$work/can-fail"; then echo 1; else echo 0; fi
-}
-# fills_status LABEL: on a runner, the full member's status of the row LABEL, as the fills keep it.
-fills_status() {
-  awk -v l="$1" 'index($0, " ") && substr($0, index($0, " ") + 1) == l { print substr($0, 1, index($0, " ") - 1); exit }' \
-    "$work/full-status"
+# held LABEL TEXT: the row LABEL kept the project from the member, as TEXT says, and whether it
+# can fail. It prints nothing for a runner's row its fills hold no line of (`in_fills` 0), which
+# `row` leaves UNKNOWN.
+held() {
+  [ "$in_fills" = 1 ] || return 0
+  printf 'ok      %s: %s (%s)\n' "$1" "$2" "$can_text"
 }
 
-# row KIND MUST_FAIL LABEL ARGS...: the row LABEL, of KIND, with ARGS. Its full member's half,
+# row KIND LABEL ARGS...: the row LABEL, of KIND, with ARGS. Its full member's half,
 # `KIND_full LABEL ARGS...`, sets can (1 where the row can fail), ft (the full member's status of
 # it) and why (why it cannot fail), and control_failed where a read of its own was answered no
 # rule reads; a runner reads can and ft from the fills instead. A control that failed leaves the
-# run UNKNOWN, naming the read, and the member's half is not run: the row observed nothing. Fills
-# mode keeps the row's half - a can_fail line where it can fail, and ft - or, where a row of
-# MUST_FAIL 1 cannot fail, leaves the run UNKNOWN (no file): its rule compares the member's answer
-# with a missing object's, which the full member was answered alike too, so its answer then says
-# nothing either way. Every other mode then runs the member's half, `KIND_member LABEL ARGS...`.
+# run UNKNOWN, naming the read, and the member's half is not run: the row observed nothing, so it
+# is counted neither as a row that can fail nor as a blind one. Fills mode keeps the row's half
+# (put_row) or, where a row of a kind whose rule compares the member's answer with a missing
+# object's (as_missing, proxy) cannot fail, leaves the run UNKNOWN (no file): the full member was
+# answered alike for both, so the member's answer then says nothing either way. Every other mode
+# then runs the member's half, `KIND_member LABEL ARGS...`. A runner's row its fills hold no line
+# of was never asked of the full member (the fills were made from another route index or API
+# document): its member's half runs all the same, so a row of the project in the answer FAILs,
+# but nothing else the answer says proves the row, which is UNKNOWN, never blind.
 row() {
-  local kind=$1 must_fail=$2 label=$3
-  shift 3
-  can=0 ft=- why='' control_failed=''
+  local kind=$1 label=$2 must_fail=0 recorded
+  shift 2
+  case $kind in as_missing | proxy) must_fail=1 ;; esac
+  can=0 ft=- why='' control_failed='' in_fills=1 can_text=''
   if [ "$mode" = runner ]; then
     can=$(fills_can "$label")
     ft=$(fills_status "$label")
     why="SWEEP_FILLS_FILE holds no full member's read of it that could fail"
+    if [ -z "$ft" ]; then
+      in_fills=0 can=0 ft=-
+      why="SWEEP_FILLS_FILE holds no full member's read of it: the fills were made from another route index or API document"
+      recorded=$(cat "$work/failed" "$work/unknown" | wc -l)
+      "${kind}_member" "$label" "$@"
+      [ "$(cat "$work/failed" "$work/unknown" | wc -l)" != "$recorded" ] || unproven "$label: $why"
+      return
+    fi
   else
     "${kind}_full" "$label" "$@"
   fi
-  counted "$can"
   if [ -n "$control_failed" ]; then
     unproven "$label: $why"
     return
   fi
+  counted "$can"
   if [ "$mode" = fills ]; then
     if [ "$can" = 0 ] && [ "$must_fail" = 1 ]; then
       unproven "$label: $why"
       return
     fi
-    [ "$can" = 0 ] || put can_fail "$label"
-    put full_status "${ft%% *} $label"
+    put_row "$label"
     printf 'fill    %s (%s)\n' "$label" "$can_text"
     return
   fi
@@ -287,7 +308,7 @@ row() {
 # answer the member as a missing one, or refuse. It can fail where the full member is answered
 # the project's object otherwise than a missing one, or a row of it beyond what the request echoes.
 filled_full() {
-  local target=$2 missing=$3 strict=$4 fm=''
+  local target=$2 missing=$3 strict=$4 fm='' marker
   local -a t_list both_list
   lines_into t_list "$5"
   lines_into both_list "$5"$'\n'"$6"
@@ -304,9 +325,12 @@ filled_full() {
       can=1
     fi
   fi
-  if [ "$can" = 0 ] && ! is_refusal "$ft" &&
-    [ -n "$(masked_marker "$work/ft" ${t_list[@]+"${t_list[@]}"})" ]; then
-    can=1
+  if [ "$can" = 0 ] && ! is_refusal "$ft"; then
+    if ! masked_marker "$work/ft" ${t_list[@]+"${t_list[@]}"}; then
+      control_failed=1 why="the full member's answer could not be masked, so it was not read for rows of $project"
+      return
+    fi
+    [ -z "$marker" ] || can=1
   fi
   if [ "$can" = 0 ] && [ -n "$fm" ] && ! is_judgeable "$fm"; then
     control_failed=1 why="the full member is answered $fm for a missing one, so its control was not read: $(head_of "$work/fm")"
@@ -325,7 +349,10 @@ filled_member() {
   fi
   # The answer is read for rows before it is compared with anything, so an answer alike for a
   # missing object, a filter the server ignored, excuses none.
-  marker=$(masked_marker "$work/rt" ${t_list[@]+"${t_list[@]}"})
+  if ! masked_marker "$work/rt" ${t_list[@]+"${t_list[@]}"}; then
+    unproven "$label: the member's answer could not be masked, so it was not read for rows of $project"
+    return
+  fi
   if [ -n "$marker" ]; then
     if is_refusal "$rt"; then
       fail "$label: the refusal $rt holds $(shown "$marker"), a row of $project"
@@ -335,15 +362,15 @@ filled_member() {
     return
   fi
   if is_refusal "$rt"; then
-    printf 'ok      %s: %s (%s)\n' "$label" "$rt" "$can_text"
+    held "$label" "$rt"
     return
   fi
   call restricted "$missing" "$work/rm"
   rm=$status
   if alike "$rt" "$work/rt" "$rm" "$work/rm" ${both_list[@]+"${both_list[@]}"}; then
-    printf 'ok      %s: %s, as a missing one is answered (%s)\n' "$label" "$rt" "$can_text"
+    held "$label" "$rt, as a missing one is answered"
   elif is_2xx "$rt" && [ "$strict" = 0 ]; then
-    printf 'ok      %s: %s, no row of %s (%s)\n' "$label" "$rt" "$project" "$can_text"
+    held "$label" "$rt, no row of $project"
   elif is_2xx "$rt" && is_refusal "$rm"; then
     # The object exists for the member where a missing one does not, an empty answer included.
     fail "$label: the member is answered $rt for $project's object, where a missing one is refused $rm"
@@ -378,11 +405,11 @@ list_member() {
     return
   fi
   if is_refusal "$rt"; then
-    printf 'ok      %s: %s (%s)\n' "$label" "$rt" "$can_text"
+    held "$label" "$rt"
   elif is_2xx "$rt"; then
-    printf 'ok      %s: %s, no row of %s (%s)\n' "$label" "$rt" "$project" "$can_text"
+    held "$label" "$rt, no row of $project"
   elif is_judgeable "$rt" && [ "$rt" = "$ft" ]; then
-    printf 'ok      %s: %s, as the full member is answered (%s)\n' "$label" "$rt" "$can_text"
+    held "$label" "$rt, as the full member is answered"
   else
     unproven "$label: the member is answered $rt, the full member $ft"
   fi
@@ -425,7 +452,10 @@ as_missing_member() {
     unproven "$label: the member is answered $rt, and $rm for a missing one, which no rule judges"
     return
   fi
-  marker=$(masked_marker "$work/rt" ${t_list[@]+"${t_list[@]}"})
+  if ! masked_marker "$work/rt" ${t_list[@]+"${t_list[@]}"}; then
+    unproven "$label: the member's answer could not be masked, so it was not read for rows of $project"
+    return
+  fi
   if [ -n "$marker" ]; then
     fail "$label: the member is answered $rt holding $(shown "$marker"), a row of $project"
   elif ! alike "$rt" "$work/rt" "$rm" "$work/rm" ${both_list[@]+"${both_list[@]}"}; then
@@ -433,7 +463,7 @@ as_missing_member() {
   elif [ "$can" = 0 ]; then
     unproven "$label: the member is answered $rt, as a missing one is, but $why"
   else
-    printf 'ok      %s: %s, as a missing one is answered (%s)\n' "$label" "$rt" "$can_text"
+    held "$label" "$rt, as a missing one is answered"
   fi
 }
 
@@ -471,7 +501,7 @@ proxy_full() {
   fi
 }
 proxy_member() {
-  local label=$1 name=$4 rt rm
+  local label=$1 name=$4 rt rm marker
   call restricted "$2" "$work/rt"
   rt=$status
   call restricted "$3" "$work/rm"
@@ -482,13 +512,15 @@ proxy_member() {
     if [ "$can" = 0 ]; then
       unproven "$label: the member is answered $rt, but $why"
     else
-      printf 'ok      %s: %s, as a repository the App is not installed on (%s)\n' "$label" "$rt" "$can_text"
+      held "$label" "$rt, as a repository the App is not installed on"
     fi
-  elif [ "$rt" = 403 ] && [ -z "$(masked_marker "$work/rt" "$name")" ]; then
+  elif [ "$rt" = 403 ] && ! masked_marker "$work/rt" "$name"; then
+    unproven "$label: the member's answer could not be masked, so it was not read for rows of $project"
+  elif [ "$rt" = 403 ] && [ -z "$marker" ]; then
     if [ "$can" = 0 ]; then
       unproven "$label: the member is answered $rt, but $why"
     else
-      printf 'ok      %s: 403 (%s)\n' "$label" "$can_text"
+      held "$label" 403
     fi
   else
     fail "$label: the member is answered $rt for $project's repository, where one the App is not installed on is answered $rm"
@@ -541,11 +573,11 @@ agent_view_member() {
     unproven "$label: the member's view was answered $(frames_of "$work/agent-member")"
   else
     case $answer in
-      'http 403' | 'http 404') printf 'ok      %s: the member'"'"'s upgrade is refused: %s (%s)\n' "$label" "$answer" "$can_text" ;;
+      'http 403' | 'http 404') held "$label" "the member's upgrade is refused: $answer" ;;
       'http '*) unproven "$label: the member's upgrade is answered $answer" ;;
       *)
         if no_one_answers "$work/agent-member"; then
-          printf 'ok      %s: no one answers for it (%s)\n' "$label" "$can_text"
+          held "$label" 'no one answers for it'
         elif grep -q '^{' "$work/agent-member"; then
           fail "$label: the member is sent more of the session than that no one answers for it: $(agent_events "$work/agent-member")"
         else
@@ -679,7 +711,9 @@ query_kind() {
 }
 
 # sweep_queries PATTERN: each query parameter of the list PATTERN that names an object of a
-# project, filled with the project's and with a missing one.
+# project, filled with the project's and with a missing one. A project, an issue, a document and a
+# person fill a query as they fill a wildcard (`fill`): a list's pattern names no wildcard, so the
+# pattern-bound fills of `fill` never apply.
 sweep_queries() {
   local pattern=$1 param kind target missing strict t_fills m_fills fixed
   while read -r param; do
@@ -692,15 +726,15 @@ sweep_queries() {
         unproven "GET $pattern takes ?$param=, which the sweep does not classify"
         continue
         ;;
-      project) target=$project missing=ZZNONE ;;
-      issue) target=$issue missing=ZZNONE-1 ;;
+      project | issue | document | person)
+        fill "$kind" "$pattern"
+        target=$fill_target missing=$fill_missing strict=$fill_owned
+        ;;
       issue-ref) [ -z "$issue" ] || [ -z "$ref_prefix" ] || target=$ref_prefix$issue missing=${ref_prefix}ZZNONE-1 ;;
-      document) target=$doc missing=$none_uuid ;;
       comment) target=$comment missing=00000000-0000-4000-8000-000000000002 ;;
       repository) target=$proxy_repo missing=${proxy_repo%%/*}/no-such-repo strict=0 ;;
       title) target=$issue_title missing='zz no such words zz' strict=0 ;;
       project-session) target=$dm_session missing=ses-nosuchsession ;;
-      person) target=$person missing=nobody@example.com strict=0 ;;
       # Both ends of a block link must name a document: the issue's spec and the project's own.
       document-refs) [ -z "$issue" ] || [ -z "$pdoc_slug" ] || [ -z "$ref_prefix" ] || target=$issue ;;
     esac
@@ -715,17 +749,17 @@ sweep_queries() {
     t_fills=$target$'\n'$issue m_fills=$missing$'\n'ZZNONE-1
     case $kind in
       document-refs)
-        row filled 0 "GET $pattern?from=&to=" \
+        row filled "GET $pattern?from=&to=" \
           "$pattern?from=$(uri "$ref_prefix$issue/spec")&to=$(uri "$ref_prefix$project/artifact/$pdoc_slug")" \
           "$pattern?from=$(uri "${ref_prefix}ZZNONE-1/spec")&to=$(uri "${ref_prefix}ZZNONE/artifact/no-such-document")" \
           1 "$project/artifact/$pdoc_slug"$'\n'"$issue" "ZZNONE/artifact/no-such-document"$'\n'ZZNONE-1
         ;;
       comment)
-        row filled 0 "GET $pattern?kind=comment&id=" "$pattern?kind=comment&id=$(uri "$target")" \
+        row filled "GET $pattern?kind=comment&id=" "$pattern?kind=comment&id=$(uri "$target")" \
           "$pattern?kind=comment&id=$(uri "$missing")" 1 "$target" "$missing"
         ;;
       issue-ref)
-        row filled 0 "GET $pattern?$param=" "$pattern?$param=$(uri "$target")" "$pattern?$param=$(uri "$missing")" \
+        row filled "GET $pattern?$param=" "$pattern?$param=$(uri "$target")" "$pattern?$param=$(uri "$missing")" \
           1 "$t_fills" "$m_fills"
         ;;
       *)
@@ -735,7 +769,7 @@ sweep_queries() {
           '/api/v1/search q' | '/api/v1/search/results q') ;;
           '/api/v1/search '* | '/api/v1/search/results '*) [ -z "$issue_title" ] || fixed="q=$(uri "$issue_title")&" ;;
         esac
-        row filled 0 "GET $pattern?${fixed:+q=<title>&}$param=" "$pattern?$fixed$param=$(uri "$target")" \
+        row filled "GET $pattern?${fixed:+q=<title>&}$param=" "$pattern?$fixed$param=$(uri "$target")" \
           "$pattern?$fixed$param=$(uri "$missing")" "$strict" "$target" "$missing"
         ;;
     esac
@@ -763,9 +797,9 @@ sweep_filled() {
     [ "$fill_owned" = 0 ] || strict=1
   done
   if answers_as_missing "$pattern"; then
-    row as_missing 1 "GET $pattern" "$target" "$missing" "$t_fills" "$m_fills"
+    row as_missing "GET $pattern" "$target" "$missing" "$t_fills" "$m_fills"
   else
-    row filled 0 "GET $pattern" "$target" "$missing" "$strict" "$t_fills" "$m_fills"
+    row filled "GET $pattern" "$target" "$missing" "$strict" "$t_fills" "$m_fills"
   fi
 }
 
@@ -810,7 +844,7 @@ sweep_routes() {
     case $pattern in
       *'{'*) sweep_filled "$pattern" ;;
       *)
-        row list 0 "GET $pattern" "$pattern"
+        row list "GET $pattern" "$pattern"
         sweep_queries "$pattern"
         ;;
     esac
@@ -822,11 +856,11 @@ sweep_routes() {
       not_filled "GET /api/v1/messages/{id}$suffix (a direct message)" "the lookup found no direct message the full member reads"
       continue
     fi
-    row filled 0 "GET /api/v1/messages/{id}$suffix (a direct message)" "/api/v1/messages/$(uri "$dm_message")$suffix" \
+    row filled "GET /api/v1/messages/{id}$suffix (a direct message)" "/api/v1/messages/$(uri "$dm_message")$suffix" \
       "/api/v1/messages/$none_uuid$suffix" 1 "$dm_message" "$none_uuid"
   done
   if [ -n "$dm_session" ]; then
-    row agent_view 0 '/ws/live agent view of {session_id}' "$dm_session"
+    row agent_view '/ws/live agent view of {session_id}' "$dm_session"
   else
     not_filled '/ws/live agent view of {session_id}' "no session the lookup read in $project alone has a direct message the full member reads"
   fi
@@ -838,7 +872,7 @@ sweep_routes() {
     path=$shape
     path=${path//\{number\}/1}
     path=${path//\{sha\}/$proxy_sha}
-    row proxy 1 "GET /api/github/rest/repos/{owner}/{repo}/$shape" \
+    row proxy "GET /api/github/rest/repos/{owner}/{repo}/$shape" \
       "/api/github/rest/repos/$(uri "${proxy_repo%%/*}")/$(uri "${proxy_repo#*/}")/$path" \
       "/api/github/rest/repos/$(uri "${proxy_repo%%/*}")/no-such-repo/$path" "${proxy_repo#*/}"
   done <<EOF
