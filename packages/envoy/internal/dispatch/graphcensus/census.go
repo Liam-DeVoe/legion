@@ -1096,16 +1096,10 @@ func askProjection(name, table, note, member string, links []string, kinds strin
 const answerer = `coalesce(user_threads_login(k.answer->>'user'), '')`
 
 // authorNode is the far end of the authored_by tuple a row whose author is the jsonb actor states,
-// written kind:id: the node graphstore.AuthorOf reads off the actor the row stored - the session
-// it names, else the person authorLogin reads, a login canonicalised as commentWriterPeople
-// canonicalises one - and null for an actor that names nobody, whose row states no authored_by at
-// all.
+// written kind:id: the node graphstore.AuthorOf reads off the actor the row stored (actorAuthor),
+// and null for an actor that names nobody, whose row states no authored_by at all.
 func authorNode(actor string) string {
-	return `case
-			when ` + actor + `->>'kind' = 'session' and coalesce(` + actor + `->>'id', '') <> ''
-				then '` + graphstore.KindSession + `:' || (` + actor + `->>'id')
-			else '` + graphstore.KindPerson + `:' || user_threads_login(` + authorLogin(actor) + `)
-		end`
+	return `array_to_string(` + actorAuthor(actor) + `, ':')`
 }
 
 // authoredLink is the authored_by link a row whose author is the jsonb actor states, as
@@ -1122,9 +1116,10 @@ func authoredLink(actor string) string {
 // nobody. The login an actor of kind user carries is a person, and so is the owner a personal
 // token's actor carries, each canonicalised the way user_threads_login canonicalises a login
 // (migration 0095, which is model.CanonicalLogin in SQL); a session's id is the session. It is
-// spelled once here for the readings of who wrote a comment: the far end of the authored_by a row
-// states (commentAuthor), the people a comment names (commentWriterPeople) and the person whose
-// aliases the sizing counts (sizingWritesWith).
+// spelled once here for every reading of who wrote a row: the far end of the authored_by a
+// comment's or a run's row states (authorNode, which authoredLink reads for the census and the
+// sizing alike), the people a comment names (commentWriterPeople) and the person whose aliases
+// the sizing counts (sizingWritesWith).
 func actorAuthor(actor string) string {
 	return `case
 			when ` + actor + `->>'kind' = 'user' and coalesce(` + actor + `->>'id', '') <> ''
@@ -1135,11 +1130,6 @@ func actorAuthor(actor string) string {
 				then array['` + graphstore.KindPerson + `', user_threads_login(` + actor + `->>'owner')]
 		end`
 }
-
-// commentAuthor is the far end of the authored_by tuple a comment row states, written kind:id:
-// the node graphstore.AuthorOf reads off the actor the row stored (actorAuthor), and null for an
-// actor that names nobody, whose comment states no authored_by at all.
-var commentAuthor = `array_to_string(` + actorAuthor("c.author") + `, ':')`
 
 // commentWriters are the comments the store holds or held, each as the actor that wrote it, the
 // time it was written and the event that stored it, null for a row: every comments row the store

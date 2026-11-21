@@ -313,8 +313,11 @@ func Caused(ctx context.Context, tx pgx.Tx, write Uncaused, event int64) error {
 // relation whose kind the pointer type rules hold is held to its rule here, and a held part_of to
 // the visibility of its ends (pointerCheck), every end of either read from the store, before the
 // append. Those checks, and the run, read the held tuples each stated under event, which are
-// copied for them only where one of them reads any (heldTuplesRead), so a version's block index
-// made for no run copies none.
+// copied for them only where the write holds a tuple one of them reads (heldTuplesRead): a
+// relation the pointer type rules hold, asserted or retracted, such as a prevented_by or a
+// constrained_by a version's block index retracts; a part_of at a kind that takes a node reserved
+// for its author or out of a lens; or a fact marked as changing its node (Tuple.Changes), on a
+// batch made for no run too. A write that holds none of them copies nothing.
 //
 // On a batch made for a run (store.WriteBatch's Run), it appends with them one changed_by_run
 // tuple from each node the write marks changed (Node.Changed, Tuple.Changes) or names changed

@@ -639,10 +639,10 @@ What a reader sees while two servers are serving:
   versions can still leave a page asking for files no server has.
 - A document that a server of the earlier version removes or makes again during the rollout can
   leave this version's record of it out of step: `envoy-dispatch census --store` then names it
-  `orphaned` or `gone`. Once the rollout is done, run `envoy-dispatch backfill-graph-store` for
-  `gone`, and for each `orphaned` line the `envoy-dispatch erase` command that line prints. That
-  run of `envoy-dispatch backfill-graph-store` also gives each run of the command bar recorded
-  before this version its interaction node.
+  `orphaned` or `gone`. Once the rollout is done, run, for each `orphaned` line, the
+  `envoy-dispatch erase` command that line prints.
+- Once the rollout is done, run `envoy-dispatch backfill-graph-store`. It gives each run of the
+  command bar recorded before this version its interaction node, and it clears each `gone` line.
 - The dashboard's **A new version is available** notice waits until every server runs one
   version: while two versions are serving, nobody is told to reload. A page that fails to load one
   of its files reloads itself, at most three times in five minutes.

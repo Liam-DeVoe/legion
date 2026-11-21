@@ -27,13 +27,13 @@ import (
 // none. The test moves LM from A to C and LX from A to F through graphstore.Write, as the move step
 // of TestATriggerPointsOnlyAtALensInvokedBefore writes one (movePartOf): one write that retracts
 // the lens's part_of to its old parent and asserts one to its new parent; and LF from F to C
-// through the store's other write path, graphstore.WriteUncaused with the retraction and the
-// assertion as its stated tuples, then graphstore.Caused under an event the test appends
-// (QueueCaused, planPointerCheck). LM and LF then read live, answer their on in GET
-// /api/v1/lenses?on= naming C and record C's row; LX reads live on F and records no row. Alice's
-// removal of A leaves LM, LF and LX live, each answering its on in GET /api/v1/lenses?on= naming
-// the parent it was moved to; her removal of C takes LM and LF gone, each answering 404 NOT_FOUND
-// by its own address, and leaves LX live on F.
+// through the store's other write path, graphstore.PlanUncaused with the retraction and the
+// assertion as its stated tuples and graphstore.QueueNodes, then graphstore.Caused under an event
+// the test appends (QueueCaused, planPointerCheck). LM and LF then read live, answer their on in
+// GET /api/v1/lenses?on= naming C and record C's row; LX reads live on F and records no row.
+// Alice's removal of A leaves LM, LF and LX live, each answering its on in GET /api/v1/lenses?on=
+// naming the parent it was moved to; her removal of C takes LM and LF gone, each answering 404
+// NOT_FOUND by its own address, and leaves LX live on F.
 func TestALensMovedOntoADocumentRecordsThatDocumentsRow(t *testing.T) {
 	rig := newReasoningRig(t)
 	a := emptyDocument(t, rig.handler, rig.issue, "Notes A.md")
@@ -123,8 +123,9 @@ func TestALensMovedOntoADocumentRecordsThatDocumentsRow(t *testing.T) {
 // names and under the node keyed toKind and toID, through the store's write of a part_of tuple in
 // a transaction of its own: one write that retracts its current part_of tuple and asserts one to
 // its new parent, by alice now. Through graphstore.Write at the sentinel; or, where caused says so,
-// through the store's other write path: graphstore.WriteUncaused with the two as its stated tuples,
-// then graphstore.Caused under an event the test appends to issue (appendIssueEventDirectly).
+// through the store's other write path: graphstore.PlanUncaused with the two as its stated tuples
+// and graphstore.QueueNodes, then graphstore.Caused under an event the test appends to issue
+// (appendIssueEventDirectly).
 func movePartOf(t *testing.T, database *store.Store, issue, kind, id, toKind, toID string, caused bool) {
 	t.Helper()
 	ctx := context.Background()

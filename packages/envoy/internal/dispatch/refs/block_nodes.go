@@ -899,9 +899,10 @@ type heldLink struct{ kind, toKind, toID string }
 // heldLinkKinds is true of a tuple t of a kind a pair of a version writes into block_refs, the
 // kinds whose links the release before this one drops by deleting their rows: a mention and a
 // pointer of each `block[]` attribute the store's type nodes declare, which blockRefKinds, a
-// text[] parameter bound to what BlockRefKinds read in the same transaction, holds, and a
-// decision's ties, its decided_by, from_ask and shaped (typedKinds, TypedFacts.pairs). It is the
-// census's own reading of the tuples a block_refs row states (graphcensus's DigestedTuple).
+// text[] parameter bound to what BlockRefKinds read by a statement of its own in the caller's
+// transaction, holds, and a decision's ties, its decided_by, from_ask and shaped (typedKinds,
+// TypedFacts.pairs). It is the census's own reading of the tuples a block_refs row states
+// (graphcensus's DigestedTuple).
 func heldLinkKinds(blockRefKinds string) string {
 	return `(t.kind = any(` + blockRefKinds + `) or t.kind in (` + quotedKinds(typedKinds) + `))`
 }
@@ -924,17 +925,16 @@ func heldLinkKinds(blockRefKinds string) string {
 // one probe a block, in one statement: the links are the kinds a version's pairs write
 // (heldLinkKinds), a list that proves nothing of graph_tuples_current's predicate, and that index
 // leaves delivered_to out. The typed kinds and the value kind are written into the text, and the
-// block-reference kinds bound as one parameter, so the planner can prove each index's partial
-// predicate whatever plan it caches.
+// block-reference kinds, read first by a statement of their own in the caller's transaction
+// (BlockRefKinds), are bound as one parameter, so the planner can prove each index's partial
+// predicate whatever plan it caches, and the statement reads no attribute node of graph_nodes.
 //
 // Each member probes its own node through graph_nodes' primary key, in a subquery behind an
 // offset 0 the planner cannot flatten. Joined plainly, the planner took `kind = 'block'` alone
 // for the index's condition wherever the table's statistics counted few blocks, and read every
 // block node again for each member, its id left to a join filter: on a document of 1,000 blocks
 // that removed 499,500 rows, and a document of 150,000 blocks is the read this pass makes
-// (TestTheHeldDocumentReadProbesEachMembersNodeOnce). The kinds of the store's `block[]`
-// attributes are read first by a statement of their own (BlockRefKinds) and bound as a
-// parameter, so the statement reads no attribute node of graph_nodes, and none but by its key.
+// (TestTheHeldDocumentReadProbesEachMembersNodeOnce).
 func heldDocumentBlocks(ctx context.Context, q Queryer, refKey string) (map[string][]heldLink, error) {
 	blockRefKinds, err := BlockRefKinds(ctx, q)
 	if err != nil {

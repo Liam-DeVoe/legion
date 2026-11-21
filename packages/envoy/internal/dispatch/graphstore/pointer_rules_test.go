@@ -159,12 +159,13 @@ func pointerBlockRow(t *testing.T, ctx context.Context, database *store.Store, a
 // and the kinds the rule allows - with no statement of the write failing, so the transaction of a
 // refused write still runs one, and once its caller abandons it the log holds no tuple more than
 // it held (abandonRefusedWrite). A block's type is read off its document_blocks row whether or
-// not that row names its node yet. A second has_kind of a lens is ErrLensKindAsserted. Write,
-// WriteUncaused and Caused each hold the rule, and WriteArms refuses a ruled tuple it cannot
-// check. A retarget of a lens's kind appends a retraction and an assertion and touches no part_of
-// tuple; a retarget of a pre-mortem's away from pre-mortem is ErrLensKindKept in one body whether
-// a risk hangs under it or not, and a retarget to pre-mortem is taken. Two writes asserting a kind
-// of one kindless lens queue at the lens's row, and the second is refused.
+// not that row names its node yet. A second has_kind of a lens is ErrLensKindAsserted. Write
+// (QueueWrite) and Caused (QueueCaused) each hold the rule, Caused as well after PlanUncaused and
+// QueueNodes, and WriteArms refuses a ruled tuple it cannot check. A retarget of a lens's kind
+// appends a retraction and an assertion and touches no part_of tuple; a retarget of a
+// pre-mortem's away from pre-mortem is ErrLensKindKept in one body whether a risk hangs under it
+// or not, and a retarget to pre-mortem is taken. Two writes asserting a kind of one kindless lens
+// queue at the lens's row, and the second is refused.
 func TestTheStoreHoldsEachPointerToItsTypeRule(t *testing.T) {
 	fixture := newPointerFixture(t)
 	database := fixture.database

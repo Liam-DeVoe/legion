@@ -27,9 +27,10 @@
 -- once, as the runner runs every migration, and a second run is refused on graph_nodes' primary
 -- key and writes nothing. The nodes stand in ascending (kind, id), all before any tuple, and the
 -- tuples in the order of their node, then their kind and far end. Every row is dated
--- '2026-11-16 12:33:55+00', a literal at this migration's version, so a second run over its own
--- rows writes the same rows. No event records it, so every row carries the sentinel 0. No type node
--- moves, so the block schema the server installs does not.
+-- '2026-11-16 12:33:55+00', a literal at this migration's version, so a run after its own rows
+-- are taken out (requireASecondRunOfTheTypeMigrationsLeavesTheSameNodes) writes the same rows.
+-- No event records it, so every row carries the sentinel 0. No type node moves, so the block
+-- schema the server installs does not.
 
 -- The nodes: each kind's lens_kind node and its constraint node.
 insert into graph_nodes (kind, id, supertag, visibility, state, attributes, made_at, made_by, source_event)

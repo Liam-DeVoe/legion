@@ -163,29 +163,12 @@ func TestTheBackfillMendsWhatAnOlderPodWroteOfARun(t *testing.T) {
 		t.Errorf("the run an older pod deleted reads node %+v (held %t, %v), want it kept at state gone", node, held, err)
 	}
 
-	after := storeCensusOf(t, database)
-	for _, kind := range after.Kinds {
-		for _, difference := range append(append([]Difference{}, kind.ReportedRows...), kind.ReportedNodes...) {
-			t.Errorf("the census after the backfill reads a difference of kind %s at %s: %s", kind.Kind, difference.At, difference.Cause)
-		}
-	}
-	if after.Differences() != 0 {
-		t.Errorf("the census after the backfill reads %d difference(s), want none", after.Differences())
-	}
-	for _, kind := range []struct {
-		name        string
-		rows, nodes int64
-	}{
+	requireTheCensusAfterTheBackfill(t, database, []checkedKind{
 		{graphstore.KindInteraction, 2, 2},
 		{"frame", 4, 2},
 		{graphstore.KindInteraction + "_visibility_state", 2, 2},
 		{graphstore.KindPerson, 2, 2},
-	} {
-		if held := censusKind(t, after, kind.name); held.Rows != kind.rows || held.Nodes != kind.nodes {
-			t.Errorf("the census after the backfill checked %d rows and %d nodes of %s, want %d and %d",
-				held.Rows, held.Nodes, kind.name, kind.rows, kind.nodes)
-		}
-	}
+	})
 
 	second, err := Backfill(ctx, database, io.Discard)
 	if err != nil {
@@ -206,6 +189,34 @@ func hasDifference(found []Difference, at, cause string) bool {
 		}
 	}
 	return false
+}
+
+// checkedKind is how many rows and nodes of one kind the census is to have checked.
+type checkedKind struct {
+	name        string
+	rows, nodes int64
+}
+
+// requireTheCensusAfterTheBackfill takes the store census of database once the backfill is done,
+// reports every difference it reads, requires it to read none, and holds each of kinds to the
+// rows and nodes the census checked of it.
+func requireTheCensusAfterTheBackfill(t *testing.T, database *store.Store, kinds []checkedKind) {
+	t.Helper()
+	census := storeCensusOf(t, database)
+	for _, kind := range census.Kinds {
+		for _, difference := range append(append([]Difference{}, kind.ReportedRows...), kind.ReportedNodes...) {
+			t.Errorf("the census after the backfill reads a difference of kind %s at %s: %s", kind.Kind, difference.At, difference.Cause)
+		}
+	}
+	if census.Differences() != 0 {
+		t.Errorf("the census after the backfill reads %d difference(s), want none", census.Differences())
+	}
+	for _, kind := range kinds {
+		if held := censusKind(t, census, kind.name); held.Rows != kind.rows || held.Nodes != kind.nodes {
+			t.Errorf("the census after the backfill checked %d rows and %d nodes of %s, want %d and %d",
+				held.Rows, held.Nodes, kind.name, kind.rows, kind.nodes)
+		}
+	}
 }
 
 // TestTheBackfillGivesEveryRunRecordedBeforeThisReleaseItsNode holds backfillRuns to the runs a
@@ -325,32 +336,15 @@ func TestTheBackfillGivesEveryRunRecordedBeforeThisReleaseItsNode(t *testing.T) 
 		t.Errorf("the backfill made person nodes %v and session nodes %v, want alice, carol, dave and erin, and sess-carol", people, sessions)
 	}
 
-	census := storeCensusOf(t, database)
-	for _, kind := range census.Kinds {
-		for _, difference := range append(append([]Difference{}, kind.ReportedRows...), kind.ReportedNodes...) {
-			t.Errorf("the census after the backfill reads a difference of kind %s at %s: %s", kind.Kind, difference.At, difference.Cause)
-		}
-	}
-	if census.Differences() != 0 {
-		t.Errorf("the census after the backfill reads %d difference(s), want none", census.Differences())
-	}
 	// Each kind compared the runs: five runs, five frames over the four runs that hold one, the four
 	// people and the one session the authors name.
-	for _, kind := range []struct {
-		name        string
-		rows, nodes int64
-	}{
+	requireTheCensusAfterTheBackfill(t, database, []checkedKind{
 		{graphstore.KindInteraction, 5, 5},
 		{"frame", 5, 4},
 		{graphstore.KindInteraction + "_visibility_state", 5, 5},
 		{graphstore.KindPerson, 4, 4},
 		{graphstore.KindSession, 1, 1},
-	} {
-		if held := censusKind(t, census, kind.name); held.Rows != kind.rows || held.Nodes != kind.nodes {
-			t.Errorf("the census after the backfill checked %d rows and %d nodes of %s, want %d and %d",
-				held.Rows, held.Nodes, kind.name, kind.rows, kind.nodes)
-		}
-	}
+	})
 }
 
 // requireTheOwedRunLockOrder holds writeOwedRun to its steps. A run stands under no owner row, so

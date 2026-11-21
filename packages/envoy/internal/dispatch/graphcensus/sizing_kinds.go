@@ -573,13 +573,13 @@ func reachesANode(topic string) string {
 // people a comment first names, the roles an event first addresses, and the components an
 // import inside it wrote.
 //
-// A comment's facts are read off its row as their writers read them: its author as commentAuthor
-// does (graphstore.AuthorOf), a document it is anchored to or owned by only where the document's
-// address fits the store's bound, and its aliases as graphstore's aliases states them - the owner a
-// session's credential proved, the session a person's credential proved, and the raw id a person
-// was recorded under where that is not their canonical login. The person of the last two is the
-// author actorAuthor reads off the row, where that author is a person, as commentWriterPeople's
-// first arm reads one.
+// A comment's facts are read off its row as their writers read them: its authored_by as the
+// census reads it off the row (authoredLink, graphstore.AuthorOf), a document it is anchored to or
+// owned by only where the document's address fits the store's bound, and its aliases as
+// graphstore's aliases states them - the owner a session's credential proved, the session a
+// person's credential proved, and the raw id a person was recorded under where that is not their
+// canonical login. The person of the last two is the author actorAuthor reads off the row, where
+// that author is a person, as commentWriterPeople's first arm reads one.
 //
 // The people are the ones the census holds to a node (commentWriterPeople), each with the time
 // the first comment naming them was written, and with no erasure taken out: an erase removes a
@@ -591,9 +591,7 @@ var sizingWritesWith = `
 		       case when c.author->>'kind' = 'user' then user_threads_login(c.author->>'id') end as writer,
 		       (c.reply_to is not null or c.ask_id is not null or c.answers is not null
 		        or c.replies_to_block is not null) as replies,
-		       (case when c.author->>'kind' <> '` + graphstore.KindSession + `'
-		                  or octet_length(coalesce(c.author->>'id', '')) <= ` + addressBound + `
-		             then ` + commentAuthor + ` end) is not null as authored,
+		       (` + authoredLink("c.author") + `) is not null as authored,
 		       coalesce(octet_length(anchor.ref_key) <= ` + addressBound + `, false) as anchored,
 		       coalesce(octet_length(owner.ref_key) <= ` + addressBound + `, false) as owned,
 		       (case when ` + provedSessionOwner("c.author") + `

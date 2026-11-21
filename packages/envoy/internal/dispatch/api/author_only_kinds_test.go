@@ -233,7 +233,7 @@ func writeAuthorOnlyLens(t *testing.T, database *store.Store, issue string, auth
 
 // seedAuthorOnlyComment writes a comment on issue reserved for author as the comment write would
 // store it if the store took one: its node, its row naming that node, and its authored_by tuple
-// with the author's own person node (graphstore.Authored). It answers the comment's id.
+// with the author's own person node (graphstore.QueueAuthored). It answers the comment's id.
 func seedAuthorOnlyComment(t *testing.T, database *store.Store, issue string, author model.Actor, body string) string {
 	t.Helper()
 	ctx := context.Background()

@@ -65,8 +65,8 @@ const BlockRefKindsSQL = `select 'mentions'
 		union select attribute.attributes->>'name' from graph_nodes attribute
 		where attribute.kind = 'attribute' and attribute.attributes->>'kind' = '` + string(pmdoc.BlockAttributeBlockList) + `'`
 
-// BlockRefKinds reads the kinds BlockRefKindsSQL selects through q, by a statement of their own.
-// A read whose plan may reach graph_nodes only by its key reads them here first, in its own
+// BlockRefKinds reads the kinds BlockRefKindsSQL selects through q. A read whose plan may reach
+// graph_nodes only by its key reads them here first, by a statement of its own in the caller's
 // transaction, and binds them as a text[] parameter (`t.kind = any($N::text[])`), so the read of
 // the store's attribute nodes is no part of its plan: the store's held statement of a document
 // (heldDocumentBlocks) and the erase's read of the nodes stating a tuple into the node it erases

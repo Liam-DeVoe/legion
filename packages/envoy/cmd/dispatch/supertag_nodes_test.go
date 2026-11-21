@@ -291,14 +291,19 @@ func requireAttributeNodesMatchTheFile(t *testing.T, ctx context.Context, pool *
 		if err != nil {
 			t.Fatalf("read the type attribute node %q is tied to: %v", id, err)
 		}
-		if len(ties) == 1 && !slices.ContainsFunc(file.Types, func(typ pmdoc.BlockTypeSchema) bool { return typ.Name == ties[0].ToID }) {
+		if len(ties) == 1 && !isBlockType(file, ties[0].ToID) {
 			storeOnly = append(storeOnly, storeOnlyNode{node: held[id], tie: ties[0]})
 			continue
 		}
 		t.Errorf("the store holds attribute node %q, which %s declares nowhere", id, blockSchemaFile)
 		drift.add(id)
 	}
-	requireStoreOnlyAttributesMatchTheirMigrations(t, storeOnly)
+	requireStoreOnlyAttributesMatchTheirMigrations(t, file, storeOnly)
+}
+
+// isBlockType reports whether file declares a block type of that name.
+func isBlockType(file pmdoc.BlockSchema, name string) bool {
+	return slices.ContainsFunc(file.Types, func(typ pmdoc.BlockTypeSchema) bool { return typ.Name == name })
 }
 
 // storeOnlyNode is one attribute node of a type that declares no block type, with the one
@@ -308,11 +313,12 @@ type storeOnlyNode struct {
 	tie  graphstore.Tuple
 }
 
-// storeOnlyAttribute matches one attribute node a type migration writes of a type with no block
-// type, as the literal rows of 20261116123354 write it: the supertag and the attribute's name, which
-// the node's id `<supertag>/<name>` joins, and its attributes column, a JSON object written as an
-// SQL string (each quote in it doubled) that holds the attribute's kind, its name and its position
-// among that type's attributes.
+// storeOnlyAttribute matches one attribute node a type migration writes as the literal rows of
+// 20261116123354 write it, of any type (requireStoreOnlyAttributesMatchTheirMigrations passes over
+// a block type's): the supertag and the attribute's name, which the node's id `<supertag>/<name>`
+// joins, and its attributes column, a JSON object written as an SQL string (each quote in it
+// doubled) that holds the attribute's kind, its name and its position among that type's
+// attributes.
 var storeOnlyAttribute = regexp.MustCompile(`\('attribute', '([a-z_ ]+)/([a-z_]+)', 'attribute', '[a-z_]+', '[a-z_]+', '((?:[^']|'')*)'`)
 
 // requireStoreOnlyAttributesMatchTheirMigrations holds the attribute nodes of the types that
@@ -321,7 +327,10 @@ var storeOnlyAttribute = regexp.MustCompile(`\('attribute', '([a-z_ ]+)/([a-z_]+
 // the name, the store name (its own name, since none is a base attribute), the kind and the
 // position the migration gives it, and each attribute a migration declares is a node of the store.
 // A node no migration of typeMigrations or literalTypeMigrations declares fails, naming the node.
-func requireStoreOnlyAttributesMatchTheirMigrations(t *testing.T, nodes []storeOnlyNode) {
+// A row the scan matches whose supertag is a block type of file is passed over: that attribute is
+// the file's to declare (requireAttributeNodesMatchTheFile), so the scan does not depend on how a
+// migration writes the rows of a block type's attributes.
+func requireStoreOnlyAttributesMatchTheirMigrations(t *testing.T, file pmdoc.BlockSchema, nodes []storeOnlyNode) {
 	t.Helper()
 	type declaration struct {
 		supertag, name, kind, migration string
@@ -338,6 +347,9 @@ func requireStoreOnlyAttributesMatchTheirMigrations(t *testing.T, nodes []storeO
 			t.Fatalf("read the type migration %s: %v", filepath.Base(migration), err)
 		}
 		for _, match := range storeOnlyAttribute.FindAllStringSubmatch(string(text), -1) {
+			if isBlockType(file, match[1]) {
+				continue
+			}
 			id := match[1] + "/" + match[2]
 			var carried struct {
 				Kind     string `json:"kind"`
@@ -549,10 +561,13 @@ func (d *schemaDrift) report(t *testing.T) {
 // primary key, and its seed tuples at source_event 0 would be appended again. The runner applies a
 // version once, so no store runs one twice. 20261116123354_lens_catalogue writes the lens_kind
 // supertag and the attribute nodes of the types that declare no block type, each held to its file
-// by requireStoreOnlyAttributesMatchTheirMigrations.
+// by requireStoreOnlyAttributesMatchTheirMigrations. 20261116123355_lens_catalogue_further_kinds
+// writes no type node, but it signs its catalogue nodes with 20261116123354's writer, so the
+// second run, which takes rows out by their writer, takes out its rows too and runs it again.
 var literalTypeMigrations = []struct{ file, writer string }{
 	{"../../internal/dispatch/store/migrations/20261116082319_graph_supertags_decision_reading.up.sql", `{"kind": "system", "id": "block-schema-decision-reading"}`},
 	{"../../internal/dispatch/store/migrations/20261116123354_lens_catalogue.up.sql", `{"kind": "system", "id": "lens-catalogue"}`},
+	{"../../internal/dispatch/store/migrations/20261116123355_lens_catalogue_further_kinds.up.sql", `{"kind": "system", "id": "lens-catalogue"}`},
 }
 
 // requireASecondRunOfTheTypeMigrationsLeavesTheSameNodes runs the type migrations written before
@@ -563,11 +578,12 @@ var literalTypeMigrations = []struct{ file, writer string }{
 // typeMigrations, but never over their own rows. The second run of typeMigrations puts back what
 // those wrote, which each later migration has moved on from: 20261116082319's settings of the
 // `decision` and `reading` supertag nodes, of `ask/invalid` and of the element versions. Left
-// there, the nodes after the run would not be the nodes before it. So the nodes each literal
-// migration made and the tuples it appended, each carrying its writer, are taken out first, and it
-// runs again after typeMigrations, as the runner orders it: its stamps are literals, so each row it
-// writes is the one it wrote the first time, and its updates move again what the second run of
-// typeMigrations put back.
+// there, the nodes after the run would not be the nodes before it. So every node and every tuple
+// that carries a writer of literalTypeMigrations is taken out first, which takes out the rows of
+// every file that writer signs, so each such file is listed, and each file runs again after
+// typeMigrations, as the runner orders it: its stamps are literals, so each row it writes is the
+// one it wrote the first time, and its updates move again what the second run of typeMigrations
+// put back.
 func requireASecondRunOfTheTypeMigrationsLeavesTheSameNodes(t *testing.T, ctx context.Context, pool *store.Pool) {
 	t.Helper()
 	before, beforeTuples := schemaRows(t, ctx, pool)

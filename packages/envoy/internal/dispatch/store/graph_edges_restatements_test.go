@@ -58,7 +58,7 @@ const (
 func TestTheLastGraphEdgesRestatementAnswersWhatTheStoreClassRestatementAnswered(t *testing.T) {
 	ctx := context.Background()
 	store := openEmptyTestStore(t)
-	if err := store.migrate(ctx, migrationsWithout(t)); err != nil {
+	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	storeClassView, err := migrationFiles.ReadFile("migrations/" + storeClassRestatement + ".up.sql")
@@ -127,42 +127,46 @@ func TestTheLastGraphEdgesRestatementAnswersWhatTheStoreClassRestatementAnswered
 
 // graph_edges ends on one definition whatever order a database ran its restatements in. The
 // first database runs the set without 20261117020856 and 20261121104002, as a database that ran
-// the other branches' restatements (20261120122700, 20261121034242) before this branch merged
-// did, and then the whole set, so 20261117020856 runs after 20261121034242. The second runs the
-// whole set from empty, so 20261121034242 runs after 20261117020856. Both views have one
-// definition.
+// 20261120122700 and 20261121034242 before 20261117020856 did, and then the whole set, so
+// 20261117020856 runs after 20261121034242. The second runs the whole set from empty, so
+// 20261121034242 runs after 20261117020856. Both views have one definition.
 func TestGraphEdgesEndsOnOneDefinitionWhateverOrderItsRestatementsRan(t *testing.T) {
 	ctx := context.Background()
-	otherBranchesFirst := openEmptyTestStore(t)
-	if err := otherBranchesFirst.migrate(ctx, migrationsWithout(t, storeClassRestatement, lastRestatement)); err != nil {
+	ranLaterRestatementsFirst := openEmptyTestStore(t)
+	if err := ranLaterRestatementsFirst.migrate(ctx, migrationsWithout(t, storeClassRestatement, lastRestatement)); err != nil {
 		t.Fatalf("migrate without %s and %s: %v", storeClassRestatement, lastRestatement, err)
 	}
-	if err := otherBranchesFirst.migrate(ctx, migrationsWithout(t)); err != nil {
+	if err := ranLaterRestatementsFirst.Migrate(ctx); err != nil {
 		t.Fatalf("migrate the rest of the set: %v", err)
 	}
 	fromEmpty := openEmptyTestStore(t)
-	if err := fromEmpty.migrate(ctx, migrationsWithout(t)); err != nil {
+	if err := fromEmpty.Migrate(ctx); err != nil {
 		t.Fatalf("migrate from empty: %v", err)
 	}
+	const laterFirst = "20261120122700 and 20261121034242 before 20261117020856"
 	definitions := map[string]string{}
-	for name, database := range map[string]*Store{"other branches first": otherBranchesFirst, "from empty": fromEmpty} {
+	for name, database := range map[string]*Store{laterFirst: ranLaterRestatementsFirst, "from empty": fromEmpty} {
 		var definition string
 		if err := database.Pool.QueryRow(ctx, `select pg_get_viewdef('graph_edges', true)`).Scan(&definition); err != nil {
 			t.Fatalf("read graph_edges' definition %s: %v", name, err)
 		}
 		definitions[name] = definition
 	}
-	if definitions["other branches first"] != definitions["from empty"] {
-		t.Errorf("graph_edges' definition differs by the order its restatements ran in\nother branches first:\n%s\nfrom empty:\n%s",
-			definitions["other branches first"], definitions["from empty"])
+	if definitions[laterFirst] != definitions["from empty"] {
+		t.Errorf("graph_edges' definition differs by the order its restatements ran in\n%s:\n%s\nfrom empty:\n%s",
+			laterFirst, definitions[laterFirst], definitions["from empty"])
 	}
 }
 
 // migrationsWithout is the embedded set without every file of the migrations it names, each
-// named by its file's stem (<version>_<name>), and with them all when it names none. A name that
-// matches no file fails the test: such a set would be the whole set under another name.
+// named by its file's stem (<version>_<name>). It names at least one: the whole set is
+// Store.Migrate's. A name that matches no file fails the test: such a set would be the whole set
+// under another name.
 func migrationsWithout(t *testing.T, names ...string) fstest.MapFS {
 	t.Helper()
+	if len(names) == 0 {
+		t.Fatal("migrationsWithout names no migration to leave out: migrate the whole set with Store.Migrate")
+	}
 	entries, err := fs.ReadDir(migrationFiles, "migrations")
 	if err != nil {
 		t.Fatal(err)
