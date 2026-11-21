@@ -29,7 +29,8 @@ import (
 // of one eval, spanning their measured_at; an eval_versions row is one new version of a
 // definition or of one of its series and carries no span, since it changes how every window of
 // the eval reads; an eval_days row is one transaction's writes of one eval's day rows, spanning
-// midnight UTC of the first and the last day written.
+// midnight UTC of the first and the last day written, and its RunKind names the settings rewrite
+// where that wrote it (EvalDaysWrittenBySettingsRewrite).
 //
 // An issue_filings row holds none either: Repo carries the project key and Ref the filed issue's
 // key (migration 20261117100019). TOld and TNew are the filing's filed_at before and after: an
@@ -42,7 +43,7 @@ type Change struct {
 	Seq     int64
 	At      time.Time
 	Kind    string // one of the ChangeKind constants
-	RunKind string // "deploy" | "pr_checks" | "" for the rest
+	RunKind string // "deploy" | "pr_checks" for a run or a job; EvalDaysWrittenBySettingsRewrite (above); "" for the rest
 	Repo    string
 	Ref     string
 	TOld    *time.Time
@@ -68,6 +69,15 @@ const (
 	ChangeKindEvalDays     = "eval_days"
 	ChangeKindIssueFilings = "issue_filings"
 )
+
+// EvalDaysWrittenBySettingsRewrite is the RunKind of an eval_days change that the refresher's
+// rewrite of a delivery settings change wrote (evals.MarkSettingsRewrite). The rewrite's
+// transaction sets the transaction-local setting dispatch.eval_days_cause to it before its first
+// write of a day row, and eval_days_change_log records that setting as the change's run_kind
+// (migration 20261117100014); no other writer of day rows sets it. The Delivery page's live hub
+// recomputes an evals view such a change marks at once, where every other change waits the quiet
+// that gathers a burst into one recompute.
+const EvalDaysWrittenBySettingsRewrite = "settings_rewrite"
 
 // ChangeRetention is how long delivery_changes keeps a row: a page away longer reads its window once.
 const ChangeRetention = 24 * time.Hour

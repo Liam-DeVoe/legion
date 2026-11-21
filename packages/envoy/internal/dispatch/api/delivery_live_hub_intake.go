@@ -367,30 +367,24 @@ func (h *deliveryHub) dirtyAllLocked(g *hubGeneration, now time.Time) {
 // not already hold it: a change at or before a view's last answer, or the position of the read
 // under way, marks nothing.
 //
-// A change of the delivery settings row that marks an evals view is recorded on it (settingsAt),
-// and the first eval_days change of the view's project that marks it after that, inside
-// settingsRewriteWithin, is taken for the refresher's rewrite of what the settings moved: its mark
-// waits for no quiet (deliveryCauseSettingsRewrite, markDirtyLocked). That change takes the
-// record, inside the bound or not. The rewrite's other changes come in the same drain, since the
-// rewrite is one transaction, and the recompute the first one made due answers them; a day write
-// after them waits the quiet, as any change does.
+// An eval_days change that the refresher's rewrite of a delivery settings change wrote carries the
+// rewrite's mark (delivery.EvalDaysWrittenBySettingsRewrite in its RunKind, which the rewrite's
+// transaction sets: evals.MarkSettingsRewrite), and marks with cause settings-rewrite, which waits
+// for no quiet (markDirtyLocked). Every other change waits the quiet. The mark is the change's own,
+// so a rewrite is recomputed at once however long after its settings change it commits, and a day
+// write that is not the rewrite's waits the quiet whenever it comes, after a settings change that
+// moved no day row too. The rewrite writes every eval's rows in one transaction, so its changes
+// reach the log together, and the one recompute they make due answers them all.
 func (h *deliveryHub) markChangesLocked(g *hubGeneration, changes []delivery.Change, now time.Time) {
 	for _, change := range changes {
+		cause := deliveryCauseChange
+		if change.Kind == delivery.ChangeKindEvalDays && change.RunKind == delivery.EvalDaysWrittenBySettingsRewrite {
+			cause = deliveryCauseSettingsRewrite
+		}
 		for _, view := range g.views {
-			if change.Seq <= max(view.seq, view.readingSeq) || !view.touchedBy(change, now) {
-				continue
+			if change.Seq > max(view.seq, view.readingSeq) && view.touchedBy(change, now) {
+				h.markDirtyLocked(g, view, now, cause)
 			}
-			cause := deliveryCauseChange
-			switch {
-			case view.spec.kind == evalsView && settingsRowChange(change):
-				view.settingsAt = now
-			case change.Kind == delivery.ChangeKindEvalDays && !view.settingsAt.IsZero():
-				if !now.After(view.settingsAt.Add(settingsRewriteWithin)) {
-					cause = deliveryCauseSettingsRewrite
-				}
-				view.settingsAt = time.Time{}
-			}
-			h.markDirtyLocked(g, view, now, cause)
 		}
 	}
 }
@@ -439,10 +433,11 @@ func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool 
 	// (production_job_names and its kin) is answered instead by the refresher's rewrite of the
 	// days it moved, one transaction whose eval_days changes arrive together 1.2-1.7 s after the
 	// settings write at ten times INFRA's size, after this mark's own recompute has read the old
-	// figures: so the mark is recorded on the view (markChangesLocked), and the rewrite's first
-	// change recomputes it at once rather than after a second quiet of 250 ms, with which the
-	// change reached the page 1.49-1.93 s after the write, against R14's 2 s. A change of a
-	// repository's mapping begins the delivery walk again, whose eval_days changes mark the views.
+	// figures: so the mark waits its quiet as any change does, and the rewrite's changes, which
+	// carry its mark (markChangesLocked), recompute the view at once rather than after a second
+	// quiet of 250 ms, with which the change reached the page 1.49-1.93 s after the write, against
+	// R14's 2 s. A change of a repository's mapping begins the delivery walk again, whose eval_days
+	// changes mark the views.
 	if view.spec.kind == evalsView && settingsRowChange(change) {
 		return true
 	}

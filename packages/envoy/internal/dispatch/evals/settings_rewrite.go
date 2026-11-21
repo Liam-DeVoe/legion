@@ -320,8 +320,9 @@ func (s *Store) readMembers(ctx context.Context, projects, families, deployRepos
 //     (foldFiguresInTx, whose quantiles read each rank across the days' sorted samples,
 //     measures.SortedSamples); and the settings recorded as the ones the rows stand built under.
 //     Its eval_days changes are one per eval, as every transaction's are (migration
-//     20261117100014), so an evals view hears of the whole change once. With no day to build it
-//     writes the settings alone.
+//     20261117100014), so an evals view hears of the whole change once, and each carries the
+//     rewrite's mark (MarkSettingsRewrite), so the view is recomputed for them at once. With no day
+//     to build it writes the settings alone.
 //
 // A day it does not build holds the rows it would build: its inputs, its rows' first days and the
 // settings its rows read are what they were built from. It leaves eval_days_owed as it is: it
@@ -572,6 +573,9 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	if _, err := tx.Exec(ctx, `set local plan_cache_mode = force_custom_plan`); err != nil {
 		return fmt.Errorf("plan the rewrite of a settings change: %w", err)
 	}
+	if err := MarkSettingsRewrite(ctx, tx); err != nil {
+		return err
+	}
 	for part := range slices.Chunk(rows, rewriteChunk) {
 		if err := upsertDays(ctx, tx, part, r.build); err != nil {
 			return err
@@ -599,6 +603,20 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 		return fmt.Errorf("commit the rewrite of a settings change: %w", err)
 	}
 	r.store.drainChanges(ctx)
+	return nil
+}
+
+// MarkSettingsRewrite marks tx as the refresher's rewrite of a delivery settings change, before its
+// first write of a day row: it sets the transaction-local setting dispatch.eval_days_cause to
+// delivery.EvalDaysWrittenBySettingsRewrite, which eval_days_change_log records as the run_kind of
+// each eval_days change the transaction logs (migration 20261117100014). The Delivery page's live
+// hub recomputes an evals view at once for those changes alone: the rewrite's day rows arrive
+// together, in one transaction, with no burst left for the quiet to gather, while the page has
+// waited for the pass since the settings change. No other writer of day rows sets it.
+func MarkSettingsRewrite(ctx context.Context, tx pgx.Tx) error {
+	if _, err := tx.Exec(ctx, `select set_config('dispatch.eval_days_cause', $1, true)`, delivery.EvalDaysWrittenBySettingsRewrite); err != nil {
+		return fmt.Errorf("mark the rewrite of a settings change: %w", err)
+	}
 	return nil
 }
 

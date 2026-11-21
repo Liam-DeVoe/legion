@@ -615,7 +615,8 @@ func TestAReadingReachesAnEvalsPageOverTheLiveSocket(t *testing.T) {
 
 // evalsMarkStep is one thing an evals view of INFRA meets, after the moment of the first step: a
 // change of kind, of the eval slug names (deploy-frequency where it names none), heard by the
-// intake, or one of the moments of a recompute below.
+// intake, an eval_days change the settings rewrite wrote (evalsRewrite), or one of the moments of
+// a recompute below.
 type evalsMarkStep struct {
 	after time.Duration
 	kind  string
@@ -632,6 +633,11 @@ const (
 	evalsAnswered   = "a recompute answers every mark"
 	evalsRetryHeld  = "a failed read's retry"
 )
+
+// evalsRewrite is a step's kind for an eval_days change the settings rewrite wrote, which carries
+// the rewrite's mark (delivery.EvalDaysWrittenBySettingsRewrite); a step of kind eval_days is a
+// write of day rows that is not the rewrite's.
+const evalsRewrite = "the settings rewrite's eval_days change"
 
 // markEvalsView is an evals view of INFRA after steps, from start: each change marked as the
 // intake marks a page of the change log (markChangesLocked), each recompute's moment as
@@ -662,6 +668,9 @@ func markEvalsView(start time.Time, steps []evalsMarkStep) *deliveryView {
 				change = evalsChange(step.kind, "INFRA", cmp.Or(step.slug, evals.SlugDeployFrequency), nil, nil)
 			case delivery.ChangeKindEvalReadings, delivery.ChangeKindEvalDays:
 				change = evalsChange(step.kind, "INFRA", cmp.Or(step.slug, evals.SlugDeployFrequency), &today, &today)
+			case evalsRewrite:
+				change = evalsChange(delivery.ChangeKindEvalDays, "INFRA", cmp.Or(step.slug, evals.SlugDeployFrequency), &today, &today)
+				change.RunKind = delivery.EvalDaysWrittenBySettingsRewrite
 			}
 			change.Seq = seq
 			hub.mu.Lock()
@@ -672,19 +681,20 @@ func markEvalsView(start time.Time, steps []evalsMarkStep) *deliveryView {
 	return view
 }
 
-// TestASettingsRewriteIsRecomputedAtOnce: a change of the delivery settings row marks an evals
-// view, and the refresher's rewrite of what it moved, the first eval_days change of the view's
-// project inside settingsRewriteWithin after it, is due at its own mark rather than viewQuiet
-// after it (dueAt), with its own cause. So it is after the settings change's own recompute, which
-// reads the figures before the rewrite, and while that recompute still waits for its quiet, whose
-// mark the rewrite's then is, so the one recompute is due at once; and at the bound itself. A
-// failed read's retry still holds the rewrite back, and a view being computed is due nowhere until
-// that recompute ends, and the rewrite then at once.
+// TestASettingsRewriteIsRecomputedAtOnce: an eval_days change the settings rewrite wrote, which
+// carries the rewrite's mark, is due at its own mark rather than viewQuiet after it (dueAt), with
+// its own cause: after the settings change's own recompute, which reads the figures before the
+// rewrite; while that recompute still waits for its quiet, whose mark the rewrite's then is, so
+// the one recompute is due at once; more than 30 s after the settings change; and with no settings
+// change heard before it, as by a page that subscribed between the settings write and the
+// rewrite's commit. A failed read's retry still holds the rewrite back, and a view being computed
+// is due nowhere until that recompute ends, and the rewrite then at once.
 func TestASettingsRewriteIsRecomputedAtOnce(t *testing.T) {
 	start := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
-	settings, days := delivery.ChangeKindSettings, delivery.ChangeKindEvalDays
-	// The refresher's pass commits 1.2-1.7 s after the settings write at ten times INFRA's size.
-	rewrite := 1500 * time.Millisecond
+	settings, rewrite := delivery.ChangeKindSettings, evalsRewrite
+	// The refresher's pass commits 1.2-1.7 s after the settings write at ten times INFRA's size;
+	// a larger history's, or one a loaded database holds back, can take longer than 30 s.
+	pass, slow := 1500*time.Millisecond, 45*time.Second
 	cases := []struct {
 		name  string
 		steps []evalsMarkStep
@@ -695,52 +705,52 @@ func TestASettingsRewriteIsRecomputedAtOnce(t *testing.T) {
 	}{
 		{"the rewrite of two evals after the settings change's own recompute", []evalsMarkStep{
 			{0, settings, ""}, {viewQuiet, evalsAnswered, ""},
-			{rewrite, days, ""}, {rewrite, days, evals.SlugMergeToProduction},
-		}, rewrite, false},
+			{pass, rewrite, ""}, {pass, rewrite, evals.SlugMergeToProduction},
+		}, pass, false},
 		{"the rewrite inside the settings change's quiet, the one recompute due at the settings change's mark", []evalsMarkStep{
-			{0, settings, ""}, {100 * time.Millisecond, days, ""},
+			{0, settings, ""}, {100 * time.Millisecond, rewrite, ""},
 		}, 0, false},
-		{"the rewrite at the bound", []evalsMarkStep{
-			{0, settings, ""}, {viewQuiet, evalsAnswered, ""}, {settingsRewriteWithin, days, ""},
-		}, settingsRewriteWithin, false},
+		{"the rewrite more than 30 s after the settings change", []evalsMarkStep{
+			{0, settings, ""}, {viewQuiet, evalsAnswered, ""}, {slow, rewrite, ""},
+		}, slow, false},
+		{"the rewrite with no settings change heard before it", []evalsMarkStep{{0, rewrite, ""}}, 0, false},
 		{"the rewrite behind a failed read's retry", []evalsMarkStep{
-			{0, settings, ""}, {viewQuiet, evalsAnswered, ""}, {time.Second, evalsRetryHeld, ""}, {rewrite, days, ""},
+			{0, settings, ""}, {viewQuiet, evalsAnswered, ""}, {time.Second, evalsRetryHeld, ""}, {pass, rewrite, ""},
 		}, time.Second + deliveryLiveRetry, false},
 		{"the rewrite while the settings change's own recompute is computing", []evalsMarkStep{
-			{0, settings, ""}, {viewQuiet, evalsReadHeld, ""}, {rewrite, days, ""},
+			{0, settings, ""}, {viewQuiet, evalsReadHeld, ""}, {pass, rewrite, ""},
 		}, 0, true},
 		{"the rewrite once that recompute has ended", []evalsMarkStep{
-			{0, settings, ""}, {viewQuiet, evalsReadHeld, ""}, {rewrite, days, ""}, {rewrite + 40*time.Millisecond, evalsRecomputed, ""},
-		}, rewrite, false},
+			{0, settings, ""}, {viewQuiet, evalsReadHeld, ""}, {pass, rewrite, ""}, {pass + 40*time.Millisecond, evalsRecomputed, ""},
+		}, pass, false},
 	}
 	for _, c := range cases {
 		at, cause, ok := markEvalsView(start, c.steps).dueAt()
 		switch {
 		case c.computing:
 			if ok {
-				t.Errorf("%s: due %s after the settings change (%s), want nowhere while the view is computed", c.name, at.Sub(start), cause)
+				t.Errorf("%s: due %s after the first step (%s), want nowhere while the view is computed", c.name, at.Sub(start), cause)
 			}
 		case !ok || !at.Equal(start.Add(c.due)) || cause != deliveryCauseSettingsRewrite:
-			t.Errorf("%s: due %t, %s after the settings change (%s), want %s after it (%s)", c.name, ok, at.Sub(start), cause, c.due, deliveryCauseSettingsRewrite)
+			t.Errorf("%s: due %t, %s after the first step (%s), want %s after it (%s)", c.name, ok, at.Sub(start), cause, c.due, deliveryCauseSettingsRewrite)
 		default:
 			last := c.steps[len(c.steps)-1].after
-			t.Logf("%s: due %s after the settings change, its last step %s after it, cause %s", c.name, at.Sub(start), last, cause)
+			t.Logf("%s: due %s after the first step, its last step %s after it, cause %s", c.name, at.Sub(start), last, cause)
 		}
 	}
 }
 
 // TestEveryOtherEvalsViewMarkWaitsTheQuiet: every other mark of an evals view coalesces as before,
-// due viewQuiet after the last one, cause change: two of each kind that marks it with no settings
-// change before them (readings, versions, day rows) and two settings changes; a reading or a
-// version after a settings change, which is no rewrite of day rows; a day write past
-// settingsRewriteWithin after a settings change; and a day write after the rewrite took the
-// settings change's record.
+// due viewQuiet after the last one, cause change: two of each kind that marks it (readings,
+// versions, day writes that are not the rewrite's) and two settings changes; a reading or a
+// version after a settings change, which is no rewrite of day rows; a day write that is not the
+// rewrite's, inside 30 s of a settings change that moved no day row, whose rewrite therefore
+// committed none; and a day write after the rewrite's.
 func TestEveryOtherEvalsViewMarkWaitsTheQuiet(t *testing.T) {
 	start := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
-	settings, days := delivery.ChangeKindSettings, delivery.ChangeKindEvalDays
+	settings, days, rewrite := delivery.ChangeKindSettings, delivery.ChangeKindEvalDays, evalsRewrite
 	readings, versions := delivery.ChangeKindEvalReadings, delivery.ChangeKindEvalVersions
-	gap, rewrite := 100*time.Millisecond, 1500*time.Millisecond
-	pastTheBound := settingsRewriteWithin + time.Millisecond
+	gap, pass := 100*time.Millisecond, 1500*time.Millisecond
 	cases := []struct {
 		name  string
 		steps []evalsMarkStep
@@ -748,17 +758,17 @@ func TestEveryOtherEvalsViewMarkWaitsTheQuiet(t *testing.T) {
 	}{
 		{"two readings", []evalsMarkStep{{0, readings, ""}, {gap, readings, "pr-size"}}, gap},
 		{"two versions", []evalsMarkStep{{0, versions, ""}, {gap, versions, "review-time"}}, gap},
-		{"two day writes with no settings change before them", []evalsMarkStep{{0, days, ""}, {gap, days, evals.SlugMergeToProduction}}, gap},
+		{"two day writes", []evalsMarkStep{{0, days, ""}, {gap, days, evals.SlugMergeToProduction}}, gap},
 		{"two settings changes", []evalsMarkStep{{0, settings, ""}, {gap, settings, ""}}, gap},
-		{"a reading after a settings change", []evalsMarkStep{{0, settings, ""}, {viewQuiet, evalsAnswered, ""}, {rewrite, readings, ""}}, rewrite},
-		{"a version after a settings change", []evalsMarkStep{{0, settings, ""}, {viewQuiet, evalsAnswered, ""}, {rewrite, versions, ""}}, rewrite},
-		{"a day write past the bound after a settings change", []evalsMarkStep{
-			{0, settings, ""}, {viewQuiet, evalsAnswered, ""}, {pastTheBound, days, ""},
-		}, pastTheBound},
-		{"a day write after the rewrite took the settings change's record", []evalsMarkStep{
-			{0, settings, ""}, {viewQuiet, evalsAnswered, ""}, {rewrite, days, ""},
-			{rewrite + 40*time.Millisecond, evalsAnswered, ""}, {rewrite + time.Second, days, ""},
-		}, rewrite + time.Second},
+		{"a reading after a settings change", []evalsMarkStep{{0, settings, ""}, {viewQuiet, evalsAnswered, ""}, {pass, readings, ""}}, pass},
+		{"a version after a settings change", []evalsMarkStep{{0, settings, ""}, {viewQuiet, evalsAnswered, ""}, {pass, versions, ""}}, pass},
+		{"a day write inside 30 s of a settings change that moved no day row", []evalsMarkStep{
+			{0, settings, ""}, {viewQuiet, evalsAnswered, ""}, {pass, days, ""},
+		}, pass},
+		{"a day write after the rewrite's", []evalsMarkStep{
+			{0, settings, ""}, {viewQuiet, evalsAnswered, ""}, {pass, rewrite, ""},
+			{pass + 40*time.Millisecond, evalsAnswered, ""}, {pass + time.Second, days, ""},
+		}, pass + time.Second},
 	}
 	for _, c := range cases {
 		at, cause, ok := markEvalsView(start, c.steps).dueAt()
@@ -805,7 +815,10 @@ func newSettingsRewritePage(t *testing.T, configure func(*deliveryHub)) *setting
 
 // saveSettings saves the delivery settings with one more production job named, which logs one
 // change of the settings row, and moves the clock past its quiet: its own recompute reads the
-// figures before the refresher's rewrite and sends nothing.
+// figures before the refresher's rewrite and sends nothing. No run holds the name, so the change
+// moves no eval and the refresher's rewrite of it commits no day row (evals'
+// TestASettingsChangeThatMovesNoEvalWritesNothing); a test writes the day rows that follow it as
+// the rewrite's or as another writer's (writeDays).
 func (p *settingsRewritePage) saveSettings(t *testing.T) {
 	t.Helper()
 	before, mark := latestChange(t, p.rig.database), p.rig.mark()
@@ -833,35 +846,56 @@ func (p *settingsRewritePage) saveSettings(t *testing.T) {
 	p.conn.none(t, 200*time.Millisecond, "the settings change's own recompute, which reads the figures before the rewrite")
 }
 
-// rewrite writes today's day rows of deploy-frequency and merge-to-production, two evals of INFRA
-// that read the deploy repository, in one transaction, as the refresher's rewrite of what the
-// settings change moved writes every eval's rows, 1.25 s after the settings change on the hub's
-// clock: such a pass commits 1.2-1.7 s after the settings write at ten times INFRA's size. It
-// requires the one eval_days change of each eval the write logged, catches the hub up, and answers
-// the count of the hub's notes before the rewrite and the newest change.
-func (p *settingsRewritePage) rewrite(t *testing.T) (int, int64) {
+// writeDays writes today's day rows of deploy-frequency and merge-to-production, two evals of INFRA
+// that read the deploy repository, in one transaction, after moving the hub's clock on by after.
+// Where byRewrite, the transaction is the settings rewrite's, marked so before its write
+// (evals.MarkSettingsRewrite) as the refresher marks its rewrite of what a settings change moved,
+// which writes every eval's rows in one transaction; otherwise it is a write of day rows that is
+// not the rewrite's. It requires the one eval_days change of each eval the write logged, carrying
+// the rewrite's mark where byRewrite and none otherwise, catches the hub up, and answers the count
+// of the hub's notes before the write and the newest change.
+func (p *settingsRewritePage) writeDays(t *testing.T, after time.Duration, byRewrite bool) (int, int64) {
 	t.Helper()
-	p.clock.Advance(time.Second)
+	p.clock.Advance(after)
 	before, mark := latestChange(t, p.rig.database), p.rig.mark()
-	if _, err := p.rig.database.Pool.Exec(t.Context(), `
+	tx, err := p.rig.database.Pool.Begin(t.Context())
+	if err != nil {
+		t.Fatalf("begin the write of the day rows: %v", err)
+	}
+	defer tx.Rollback(t.Context())
+	runKind := ""
+	if byRewrite {
+		if err := evals.MarkSettingsRewrite(t.Context(), tx); err != nil {
+			t.Fatal(err)
+		}
+		runKind = delivery.EvalDaysWrittenBySettingsRewrite
+	}
+	if _, err := tx.Exec(t.Context(), `
 		insert into eval_days (project_key, eval_id, deploy_repo, series, repo, day, listed, n, sum, samples, counts, built_by)
 		values ('INFRA', 'INFRA/deploy-frequency', 'acme/widgets', 'deploys', '', $1, true, 2, 2, null, '{"with_prs": 2}', 'test'),
 		       ('INFRA', 'INFRA/merge-to-production', 'acme/widgets', 'minutes', '', $1, true, 1, null, '{42}', '{}', 'test')
 	`, p.today); err != nil {
-		t.Fatalf("write the rewrite's day rows: %v", err)
+		t.Fatalf("write the day rows: %v", err)
+	}
+	if err := tx.Commit(t.Context()); err != nil {
+		t.Fatalf("commit the day rows: %v", err)
 	}
 	latest := latestChange(t, p.rig.database)
 	changes, err := delivery.ChangesSince(t.Context(), p.rig.database.Pool, before, 100)
 	if err != nil {
-		t.Fatalf("read the changes the rewrite logged: %v", err)
+		t.Fatalf("read the changes the write logged: %v", err)
 	}
 	var logged []string
 	for _, change := range changes {
-		logged = append(logged, change.Kind+" "+change.Ref)
+		logged = append(logged, change.Kind+" "+change.Ref+" run_kind "+strconv.Quote(change.RunKind))
 	}
 	slices.Sort(logged)
-	if want := []string{"eval_days INFRA/deploy-frequency", "eval_days INFRA/merge-to-production"}; !slices.Equal(logged, want) {
-		t.Fatalf("the rewrite logged %v, want %v", logged, want)
+	want := []string{
+		"eval_days INFRA/deploy-frequency run_kind " + strconv.Quote(runKind),
+		"eval_days INFRA/merge-to-production run_kind " + strconv.Quote(runKind),
+	}
+	if !slices.Equal(logged, want) {
+		t.Fatalf("the write logged %v, want %v", logged, want)
 	}
 	p.rig.hub.catchUpNow()
 	return mark, latest
@@ -887,28 +921,72 @@ func (p *settingsRewritePage) apply(t *testing.T, delta DeliveryLiveDelta, route
 // TestASettingsChangeAndItsRewriteSendTheEvalsPageOneDeltaAtOnce: a settings change marks an
 // evals page, whose own recompute, viewQuiet after it, reads the figures before the rewrite and
 // sends nothing. The refresher's rewrite of what the change moved, one transaction holding two
-// evals' rows, arrives 1.25 s later on the hub's clock, which then stands still: the rewrite is
-// recomputed at its own mark, and the page gets one delta holding both evals' new numbers, which
-// lands on the route's body. Nothing follows it, however far the clock moves past every quiet.
+// evals' rows and marked the rewrite's, arrives on the hub's clock 1.25 s later, as a pass at ten
+// times INFRA's size commits 1.2-1.7 s after the settings write, or 45.25 s later, for a rewrite
+// slower than 30 s, and the clock then stands still: the rewrite is recomputed at its own mark, and
+// the page gets one delta holding both evals' new numbers, which lands on the route's body. Nothing
+// follows it, however far the clock moves past every quiet.
 func TestASettingsChangeAndItsRewriteSendTheEvalsPageOneDeltaAtOnce(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		after time.Duration
+	}{
+		{"the rewrite 1.25 s after the settings change", time.Second},
+		{"the rewrite 45.25 s after the settings change", 45 * time.Second},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			page := newSettingsRewritePage(t, nil)
+			page.saveSettings(t)
+			mark, _ := page.writeDays(t, c.after, true)
+			delta := page.conn.delta(t, 5*time.Second, "e")
+			moved := slices.Sorted(slices.Values(liveUpsertIDs(t, delta, "items")))
+			if want := []string{"INFRA/deploy-frequency", "INFRA/merge-to-production"}; !slices.Equal(moved, want) {
+				t.Fatalf("the rewrite's delta upserts %v, want %v", moved, want)
+			}
+			page.apply(t, delta, page.route(t))
+			page.conn.none(t, time.Second, "the rewrite's one delta")
+			page.clock.Advance(viewMaxWait)
+			page.conn.none(t, time.Second, "the rewrite's one delta, past every quiet")
+			begun, rewrites := page.rig.count(mark, recomputeBegin("")), page.rig.count(mark, recomputeBegin(deliveryCauseSettingsRewrite))
+			if begun != 1 || rewrites != 1 {
+				t.Fatalf("the rewrite began %d recomputes, %d of them %s, want the one", begun, rewrites, deliveryCauseSettingsRewrite)
+			}
+			t.Logf("the rewrite's eval_days changes were recomputed once (%s) on a clock standing at their mark, and its one delta upserts %v and lands on the route's body",
+				deliveryCauseSettingsRewrite, moved)
+		})
+	}
+}
+
+// TestADayWriteAfterASettingsChangeThatMovedNoDayRowWaitsItsQuiet: a settings change marks an evals
+// page, whose own recompute reads the figures and sends nothing, and the change moves no eval, so
+// the refresher's rewrite of it commits no day row. A write of two evals' day rows that is not the
+// rewrite's then lands 1.25 s after the settings change, well inside 30 s of it, on a clock that
+// then stands still: no recompute begins and nothing is sent until the clock passes the write's
+// quiet, and then the page gets one delta holding both evals' new numbers, from a recompute of
+// cause change, which lands on the route's body.
+func TestADayWriteAfterASettingsChangeThatMovedNoDayRowWaitsItsQuiet(t *testing.T) {
 	page := newSettingsRewritePage(t, nil)
 	page.saveSettings(t)
-	mark, _ := page.rewrite(t)
+	mark, _ := page.writeDays(t, time.Second, false)
+	page.conn.none(t, time.Second, "a day write that is not the rewrite's, on a clock that has not moved past its quiet")
+	if n := page.rig.count(mark, recomputeBegin("")); n != 0 {
+		t.Fatalf("the day write began %d recomputes on a clock that has not moved past its quiet, want 0", n)
+	}
+	page.clock.Advance(viewQuiet)
 	delta := page.conn.delta(t, 5*time.Second, "e")
 	moved := slices.Sorted(slices.Values(liveUpsertIDs(t, delta, "items")))
 	if want := []string{"INFRA/deploy-frequency", "INFRA/merge-to-production"}; !slices.Equal(moved, want) {
-		t.Fatalf("the rewrite's delta upserts %v, want %v", moved, want)
+		t.Fatalf("the day write's delta upserts %v, want %v", moved, want)
 	}
 	page.apply(t, delta, page.route(t))
-	page.conn.none(t, time.Second, "the rewrite's one delta")
-	page.clock.Advance(viewMaxWait)
-	page.conn.none(t, time.Second, "the rewrite's one delta, past every quiet")
-	begun, rewrites := page.rig.count(mark, recomputeBegin("")), page.rig.count(mark, recomputeBegin(deliveryCauseSettingsRewrite))
-	if begun != 1 || rewrites != 1 {
-		t.Fatalf("the rewrite began %d recomputes, %d of them %s, want the one", begun, rewrites, deliveryCauseSettingsRewrite)
+	page.conn.none(t, time.Second, "the day write's one delta")
+	changes, rewrites := page.rig.count(mark, recomputeBegin(deliveryCauseChange)), page.rig.count(mark, recomputeBegin(deliveryCauseSettingsRewrite))
+	if changes != 1 || rewrites != 0 {
+		t.Fatalf("the day write began %d %s recomputes and %d %s recomputes, want one %s alone",
+			changes, deliveryCauseChange, rewrites, deliveryCauseSettingsRewrite, deliveryCauseChange)
 	}
-	t.Logf("the rewrite's eval_days changes were recomputed once (%s) on a clock standing at their mark, and its one delta upserts %v and lands on the route's body",
-		deliveryCauseSettingsRewrite, moved)
+	t.Logf("the day write, 1.25 s after a settings change that moved no day row, sent nothing until its quiet passed, and then one delta upserting %v from one %s recompute",
+		moved, deliveryCauseChange)
 }
 
 // TestASettingsRewritesDeltaIsWholeWhenAChangeLandsDuringItsRecompute: the rewrite's recompute is
@@ -917,7 +995,7 @@ func TestASettingsChangeAndItsRewriteSendTheEvalsPageOneDeltaAtOnce(t *testing.T
 // and before the read took its position after them, so every statement of the read sees every
 // row of it: the page's one delta of the rewrite holds both evals' new numbers and lands on the
 // route's body as it stood before the reading. The reading marks the view while it is computed,
-// so nothing recomputes it a second time at once; the rewrite took the settings change's record,
+// so nothing recomputes it a second time at once; the reading's day write is not the rewrite's,
 // so it waits its own quiet, and the recompute after the quiet sends the reading's eval alone.
 func TestASettingsRewritesDeltaIsWholeWhenAChangeLandsDuringItsRecompute(t *testing.T) {
 	var pause *notePause
@@ -926,7 +1004,7 @@ func TestASettingsRewritesDeltaIsWholeWhenAChangeLandsDuringItsRecompute(t *test
 	point := pause.at(func(note deliveryHubNote) bool {
 		return note.what == "recompute read" && note.cause == deliveryCauseSettingsRewrite
 	})
-	mark, rewritten := page.rewrite(t)
+	mark, rewritten := page.writeDays(t, time.Second, true)
 	note := point.wait(t, "the read of the rewrite's recompute")
 	if note.through < rewritten {
 		t.Fatalf("the rewrite's read took position %d, before the rewrite's newest change %d", note.through, rewritten)

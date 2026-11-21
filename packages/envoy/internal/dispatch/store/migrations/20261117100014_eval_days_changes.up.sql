@@ -31,6 +31,16 @@
 -- at read time, and the stored figures' fold of the span (evals.figureChanges) reads every
 -- repository's.
 --
+-- run_kind holds the cause the writing transaction names in the transaction-local setting
+-- dispatch.eval_days_cause, null where it names none. The refresher's rewrite of a delivery
+-- settings change sets it to 'settings_rewrite' (delivery.EvalDaysWrittenBySettingsRewrite,
+-- through evals.MarkSettingsRewrite) before its first write of a day row, and no other writer sets
+-- it: the Delivery page's live hub recomputes an evals view at once for the rewrite's changes, and
+-- every other change waits its quiet. The pending row takes the cause its first write finds, and
+-- the drain (delivery_changes_drain, 20261117100001) copies it into delivery_changes.
+-- set_config(..., true) reverts the setting when the transaction ends, so a pooled connection's
+-- next transaction reads it empty, which nullif makes null.
+--
 -- An update logs only the rows whose content moved: as 0100's and 20261117100002's triggers ignore
 -- the columns a pass rewrites whatever it finds, the update half ignores updated_at and built_by,
 -- so a new build that rebuilds a row to the same values logs nothing. The old and the new rows are
@@ -57,7 +67,8 @@ begin
       return;
     end if;
   end if;
-  pending_id := delivery_change_log_pending('eval_days', null, p_project, p_eval, first_at, last_at);
+  pending_id := delivery_change_log_pending('eval_days', nullif(current_setting('dispatch.eval_days_cause', true), ''),
+    p_project, p_eval, first_at, last_at);
   perform set_config('dispatch.eval_days_pending', (logged || jsonb_build_object(p_eval, pending_id))::text, true);
 end $$;
 

@@ -519,6 +519,69 @@ func TestAProductionRuleChangeSendsOnlyTheMembersItMoves(t *testing.T) {
 		len(moved), len(gone), standing, len(before))
 }
 
+// TestOnlyTheSettingsRewritesEvalDaysChangesCarryItsMark: over a settled history, the eval_days
+// changes of the passes that walked it carry no cause in run_kind; the pass after the apply step
+// is named rewrites the evals that moves, and each eval_days change it logs carries the rewrite's
+// mark (delivery.EvalDaysWrittenBySettingsRewrite), for which the Delivery page's live hub
+// recomputes an evals view at once; and the ordinary pass after a merged pull request's opening
+// moves an hour earlier rewrites its merge day and logs eval_days changes that carry none. Each
+// pass's changes are read from the change log once a drain has moved the outbox's rows there.
+func TestOnlyTheSettingsRewritesEvalDaysChangesCarryItsMark(t *testing.T) {
+	r, deliveries := newSettingsRig(t, walkBatch)
+	// expect requires that the eval_days changes logged after seq are some, each with runKind.
+	expect := func(what string, seq int64, runKind string) {
+		t.Helper()
+		if _, err := delivery.DrainPending(t.Context(), r.database.Pool); err != nil {
+			t.Fatalf("drain the change log's outbox: %v", err)
+		}
+		changes, err := delivery.ChangesSince(t.Context(), r.database.Pool, seq, 100000)
+		if err != nil {
+			t.Fatalf("read the delivery changes after %d: %v", seq, err)
+		}
+		logged, carrying := 0, 0
+		for _, change := range changes {
+			if change.Kind != delivery.ChangeKindEvalDays {
+				continue
+			}
+			logged++
+			if change.RunKind == runKind {
+				carrying++
+			} else {
+				t.Errorf("%s: the eval_days change of %s carries run_kind %q, want %q", what, change.Ref, change.RunKind, runKind)
+			}
+		}
+		if logged == 0 {
+			t.Fatalf("%s logged no eval_days change", what)
+		}
+		t.Logf("%s logged %d eval_days changes, %d of them with run_kind %q", what, logged, carrying, runKind)
+	}
+
+	expect("the passes that walked the history", 0, "")
+
+	seq := r.latestSeq(t)
+	settings := deliveries.Settings
+	settings.ProductionApplyStepName = new(settingsApplyStep)
+	r.putSettings(t, settings, alice)
+	r.pass(t)
+	expect("the settings rewrite", seq, delivery.EvalDaysWrittenBySettingsRewrite)
+
+	var opened *delivery.DeliveryPullRequest
+	for i, pr := range deliveries.PullRequests {
+		if pr.MergedAt != nil && pr.CreatedAt != nil && !pr.Partial && slices.Contains(settings.PopulationAuthors, pr.Author) {
+			opened = &deliveries.PullRequests[i]
+		}
+	}
+	if opened == nil {
+		t.Fatal("the history holds no merged pull request of the population")
+	}
+	seq = r.latestSeq(t)
+	r.exec(t, "open a merged pull request an hour earlier", `
+		update delivery_pull_requests set created_at = created_at - interval '1 hour' where repo = $1 and number = $2
+	`, opened.Repo, opened.Number)
+	r.pass(t)
+	expect("the ordinary pass after "+opened.Repo+"#"+strconv.Itoa(opened.Number)+" opened earlier", seq, "")
+}
+
 // historyJobReads is a tracer (storetest.Traced) that records each read of the history's jobs on
 // the pool it traces: delivery.ReadHistoryRows' read of a repository's jobs, the one statement of
 // delivery_run_jobs that names the deploy runs on main by a subquery, with the job names it asks
