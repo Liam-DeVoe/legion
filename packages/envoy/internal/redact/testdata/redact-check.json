@@ -2345,8 +2345,15 @@
       "id": "results-ci",
       "requirement": "r3-each-site",
       "package": "./internal/dispatch/api",
+      "test": "TestAGitHubCheckRunsRefusalReachesTheDetailAsTheRuleReadsIt",
+      "production": "github.com/sjawhar/envoy/internal/dispatch/api.ciUnreadDetail over (*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).CommitCheckRuns: its rule call is the box's own printer now"
+    },
+    {
+      "id": "results-ci-answer",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/api",
       "test": "TestACheckRunsReadRefusalPrintsGitHubsMessageAsTheRuleReadsIt",
-      "production": "github.com/sjawhar/envoy/internal/dispatch/api.ciUnreadDetail: its rule call is the box's own printer now"
+      "production": "github.com/sjawhar/envoy/internal/dispatch/api.ciUnreadDetail over github.com/sjawhar/envoy/internal/dispatch/githubapp.CheckResponse: its rule call is the box's own printer now"
     },
     {
       "id": "listener-build-unsubscribe",

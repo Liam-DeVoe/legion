@@ -107,8 +107,9 @@ const (
 	printTable     = "packages/envoy/internal/redact/redacttest/printtable.go"
 	// githubRow is the GitHub check run's detail row, and githubBase the revision control (16)
 	// applies its test to: main before this change, a commit on origin, whose detail quoted GitHub's
-	// message raw. The test computes its expected detail with the rule (redact.Field), so the
-	// rule's own file goes in with it.
+	// message raw. The row's test reads GitHub's refusal through an API that revision has too
+	// (githubapp.New, CommitCheckRuns, ciUnreadDetail), and computes its expected detail with the
+	// rule (redact.Field), so the rule's own file goes in with it.
 	githubRow  = "results-ci"
 	githubBase = "87112a0b719fabfc6c6c44e0d7dc67c1ce8bfc3b"
 )
@@ -371,7 +372,7 @@ func controlAlias(words string) string {
 		own: func(repo string, inv inventory) (string, string) {
 			// The head's redacttest goes in with the test, since main has none, and the rule's file,
 			// which the test's expected detail is computed with.
-			return earlierTree(repo, inv, githubRow, githubBase, []string{"packages/envoy/internal/dispatch/api/remote_words_test.go", "packages/envoy/internal/redact/redacttest/redacttest.go", "packages/envoy/internal/redact/remote.go"}, "api.ci-detail")
+			return earlierTree(repo, inv, githubRow, githubBase, []string{"packages/envoy/internal/dispatch/api/ci_detail_refusal_test.go", "packages/envoy/internal/redact/redacttest/redacttest.go", "packages/envoy/internal/redact/remote.go"}, "api.ci-detail")
 		}},
 	{id: "18", what: "a planted direct call, outside the boundary function, to an exported function of golang.org/x/oauth2 and to one of openid-client", stage: 2,
 		each: [][]string{
