@@ -200,7 +200,8 @@ ci_filter_coverage.py's ENV_ALLOWED and stay in the browser step's `env:`; the
 multiprocess job's pinned build step, "Build the Dispatch server", is read under dispatch-browser.yaml's own `env:` and
 defaults, so neither may grow a name outside that set.
 
-The census both of this job's budgets are read from: main's own full-lane runs, read from the
+The census this job's budget counts its unbudgeted steps from, and main's browser-step budget:
+main's own full-lane runs, read from the
 jobs API on 2026-11-21 near 16:15Z at main 75bd096e02. It takes every run of ci.yaml with
 `event=merge_group`, and every run of dispatch-browser-nightly.yaml on branch `main`, that
 GitHub's `created=2026-11-18..2026-11-21` filter lists and whose head commit is on main's
@@ -222,16 +223,17 @@ which passed. The browser step over them, in seconds:
   2026-11-21    144    414    507  531
   all           672    380    486  531
 
-The browser step's budget, its `timeout-minutes: 11`, is that maximum by the rule in this file's
-head: 531 s, shard (2) of run 44917245139 (job 136888588252), and 531 x 1.15 = 611 s -> 11 min.
+By the rule in this file's head, that maximum, 531 s, shard (2) of run 44917245139 (job
+136888588252), would give the browser step 531 x 1.15 = 611 s -> 11 min. The step carries 12,
+from the larger maximum of this pull request's rows (below).
 The step grows with the suite, not with its rows getting slower: run 44423948511 of 2026-11-18
 ran 1,453 rows (363, 363, 364 and 363 a leg) and run 44909149810 at 67659e611c ran 1,600 (400 a
 leg), and the 1,260 rows both runs passed took 4,345 s and 4,393 s, a ratio of 1.011. So this
-budget is read again when the suite has grown: at the 9 minutes it replaces, derived from the
-419 s of the two runs of the head that sharded this suite (42334424798 and 42316487530), 42 of
-the census's legs came within 60 s of the limit, 34 of the 144 of 2026-11-21, and in run
-44908680493 of #4613 and run 44903205761 of #4199 three legs whose every row passed were cut
-at it.
+budget is read again when the suite has grown: at the 9 minutes main carried before it, derived
+from the 419 s of the two runs of the head that sharded this suite (42334424798 and
+42316487530), 42 of the census's legs came within 60 s of the limit, 34 of the 144 of 2026-11-21,
+and in run 44908680493 of #4613 and run 44903205761 of #4199 three legs whose every row passed
+were cut at it.
 
 The job budget, the shard job's `timeout-minutes`, follows the rule over the same census: one
 window for every step. Each step without a budget of its own is counted at its maximum over
