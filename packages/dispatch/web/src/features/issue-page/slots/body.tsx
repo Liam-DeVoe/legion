@@ -49,7 +49,7 @@ export function BodySlot({ issue, route }: SlotProps): ReactNode {
   // frontier, in place of the rows drawn with every branch open before it. The spec's summary
   // callout is no row of it: the Spec view draws it as the issue's three sentences.
   const { hash, search } = useLocation();
-  const locationKey = useFollowing();
+  const following = useFollowing();
   const specSlug = primarySpec(issue)?.slug;
   const address = issueAddress(route, search, hash, specSlug);
   // The tree, and whether every read its nodes come from holds its answer (`useOutlineReads`).
@@ -117,7 +117,7 @@ export function BodySlot({ issue, route }: SlotProps): ReactNode {
   const isClosed = issue.closed_at !== null;
   return (
     <NoTooltips>
-      <ReaderActsWatch into={acts} key={locationKey} />
+      <ReaderActsWatch into={acts} key={following} />
       {/* The outline's measure, the prototype's `#pane`: at most 1000 px, in the middle of the
           column. On a phone 4 px from the left edge and 10 px from the right, as the
           prototype's `#reading` is there, so the bullets keep the picture's place. Its
@@ -131,20 +131,20 @@ export function BodySlot({ issue, route }: SlotProps): ReactNode {
         {fallback?.kind === "landing" ? (
           // Keyed on the following, so a link to the same item followed again is drawn anew and
           // takes the focus again.
-          <ItemFallback fallback={fallback} key={locationKey} takesFocus={takesFocus} />
+          <ItemFallback fallback={fallback} key={following} takesFocus={takesFocus} />
         ) : fallback?.kind === "absent" ? (
           // Keyed on the following, as the item's own page is.
           <NotFoundLine
             heading={ABSENT_LINES[fallback.target.kind].heading}
             issueKey={key}
-            key={locationKey}
+            key={following}
             line={ABSENT_LINES[fallback.target.kind].line(key)}
             takesFocus={takesFocus}
           />
         ) : (
           <IssueTree
             addressActs={acts}
-            addressKey={locationKey}
+            addressKey={following}
             artifacts={artifacts}
             context={view.context}
             emptyLine={

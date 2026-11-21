@@ -167,6 +167,16 @@ function drawnSlot(view: RenderResult): string {
   return drawn === null ? "nothing" : "the view";
 }
 
+/** Waits for the row `selector` finds in `view` to hold the focus, saying what `what` drew
+ *  where it does not. */
+async function rowTakesFocus(view: RenderResult, selector: string, what: string): Promise<void> {
+  await waitFor(() => {
+    const row = view.container.querySelector(selector);
+    expect(row, `${what} drew no such row; the stage drew ${drawnSlot(view)}`).not.toBeNull();
+    expect(row, `${what} left the focus on ${focusedRow()}`).toHaveFocus();
+  });
+}
+
 // The line the Decisions view's slot hands its body for an issue that holds no question and no
 // decision it draws: the empty issue's own line where no words are typed, and the line that says
 // nothing matched where they are. Words of spaces alone filter nothing (the view trims them), so
@@ -539,6 +549,12 @@ const STATEMENT = "r1";
 const PLAN_TASK = "t1";
 const CHECK = "c1";
 
+/** The task's step in the Plan view's chart, the task's row of the outline, and the statement's
+ *  row of the outline. */
+const TASK_STEP = `[data-plan-body] [data-node-row][data-node-id="${blockNodeId(PLAN_DOCUMENT.slug, PLAN_TASK)}"]`;
+const TASK_ROW = `[data-issue-body] [data-node-row][data-node-id="${blockNodeId(PLAN_DOCUMENT.slug, PLAN_TASK)}"]`;
+const STATEMENT_ROW = `[data-issue-body] [data-node-row][data-node-id="${blockNodeId(SPEC_SLUG, STATEMENT)}"]`;
+
 /** One typed block of a document as the blocks read answers it, with the statement it serves
  *  (`serves`, a `block[]` pointer) where it is given one. */
 function typedBlock(id: string, type: string, serves?: string): ArtifactBlock {
@@ -676,43 +692,15 @@ test("a comment the issue holds none of, named on the Plan view's address, draws
 test("a comment of the issue, named on the Plan view's address, draws the outline in the view's place, with the focus on the comment's row", async () => {
   answerVerificationReads();
   const view = drawStage("?comment=head-b", { issue: verifiedIssue(), preset: "plan" });
-  await waitFor(() => {
-    const row = view.container.querySelector(
-      '[data-issue-body] [data-node-row][data-node-id="head-b"]'
-    );
-    expect(
-      row,
-      `the outline drew no row for the comment; the stage drew ${drawnSlot(view)}`
-    ).not.toBeNull();
-    expect(row, `the comment's address left the focus on ${focusedRow()}`).toHaveFocus();
-  });
+  await rowTakesFocus(
+    view,
+    '[data-issue-body] [data-node-row][data-node-id="head-b"]',
+    "the comment's address"
+  );
   expect(
     view.container.querySelector("[data-plan-body]"),
     "the Plan view was drawn beside the outline"
   ).toBeNull();
-});
-
-// A task the Plan view draws keeps the view, which lands on the task's step by its own rule. The
-// comments read is held out until the view has landed, so the view tells the stage whether it
-// draws the task as that read answers, which is the last read the tree waits on.
-test("a task of the plan, named on the Plan view's address, keeps the view, with the focus on the task's step", async () => {
-  answerVerificationReads();
-  const commentsOut = Promise.withResolvers<Comment[]>();
-  spyOn(api, "listComments").mockReturnValue(commentsOut.promise);
-  const view = drawStage(`#b-${PLAN_TASK}`, { issue: verifiedIssue(), preset: "plan" });
-  // The task's step: the row of the view's chart that stands for it.
-  const step = `[data-plan-body] [data-node-row][data-node-id="${blockNodeId(PLAN_DOCUMENT.slug, PLAN_TASK)}"]`;
-  await waitFor(() => {
-    const row = view.container.querySelector(step);
-    expect(
-      row,
-      `the view drew no step for the task; the stage drew ${drawnSlot(view)}`
-    ).not.toBeNull();
-    expect(row, `the task's address left the focus on ${focusedRow()}`).toHaveFocus();
-  });
-  await act(async () => commentsOut.resolve([...TWO_THREADS]));
-  expect(drawnSlot(view), "the stage drew the outline in place of the view").toBe("the view");
-  expect(view.container.querySelector(step), "the focus left the task's step").toHaveFocus();
 });
 
 /** A navigator that goes nowhere, for a router whose location the case sets itself. */
@@ -732,38 +720,20 @@ function drawAtBrowserEntry(
   issue: IssueDetails
 ): RenderResult & { readonly follow: (to: string) => void } {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const draw = (at: string): ReactNode => {
-    const { hash, pathname, search } = new URL(at, "http://dispatch.test");
-    const location = { hash, key: "default", pathname, search, state: null };
-    return (
-      <Router location={location} navigator={NO_NAVIGATION}>
-        <QueryClientProvider client={client}>
-          <KeymapProvider>
-            <MarginProvider>
-              <AddressedStage held={{}} issue={issue} />
-            </MarginProvider>
-          </KeymapProvider>
-        </QueryClientProvider>
-      </Router>
-    );
-  };
+  const draw = (at: string): ReactNode => (
+    <Router location={at} navigator={NO_NAVIGATION}>
+      <QueryClientProvider client={client}>
+        <KeymapProvider>
+          <MarginProvider>
+            <AddressedStage held={{}} issue={issue} />
+          </MarginProvider>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </Router>
+  );
   const view = render(draw(address));
   return { ...view, follow: (to) => view.rerender(draw(to)) };
 }
-
-/** Waits for the row `selector` finds in `view` to hold the focus, saying what `what` drew
- *  where it does not. */
-async function rowTakesFocus(view: RenderResult, selector: string, what: string): Promise<void> {
-  await waitFor(() => {
-    const row = view.container.querySelector(selector);
-    expect(row, `${what} drew no such row; the stage drew ${drawnSlot(view)}`).not.toBeNull();
-    expect(row, `${what} left the focus on ${focusedRow()}`).toHaveFocus();
-  });
-}
-
-/** The task's step in the Plan view's chart, and the statement's row of the outline. */
-const TASK_STEP = `[data-plan-body] [data-node-row][data-node-id="${blockNodeId(PLAN_DOCUMENT.slug, PLAN_TASK)}"]`;
-const STATEMENT_ROW = `[data-issue-body] [data-node-row][data-node-id="${blockNodeId(SPEC_SLUG, STATEMENT)}"]`;
 
 // Every entry the browser makes has the key "default", so each fragment it changes under the Plan
 // view's address is a following of its own though the key stays one. The task keeps the view;
@@ -782,6 +752,7 @@ test("fragments the browser changes under one key each land under the Plan view:
   expect(drawnSlot(view), "the task's fragment drew the outline in place of the view").toBe(
     "the view"
   );
+  expect(view.container.querySelector(TASK_STEP), "the focus left the task's step").toHaveFocus();
   view.follow(`${plan}#b-${STATEMENT}`);
   await rowTakesFocus(view, STATEMENT_ROW, "the statement's fragment under the same key");
   expect(
@@ -816,4 +787,92 @@ test("a fragment the browser changes under one key, from a block the tree holds 
     }
   );
   await waitFor(() => expect(heading).toHaveFocus());
+});
+
+// The outline lands on the address's node until the reader's first act since they followed the
+// address, which a watch of the following's own stops (`ReaderActsWatch`). A fragment the browser
+// changes under the one key "default", after the reader pressed a key, is a following of its own,
+// with a watch of its own, so the outline lands on the new node as it landed on the first.
+test("after the reader pressed a key, a fragment the browser changes under one key lands on its row of the outline", async () => {
+  answerVerificationReads();
+  const conversation = presetPath(KEY, "conversation");
+  const view = drawAtBrowserEntry(`${conversation}#b-${STATEMENT}`, verifiedIssue());
+  await rowTakesFocus(view, STATEMENT_ROW, "the statement's fragment");
+  // Shift alone, which moves no focus, pressed with the focus on the statement's row: the
+  // reader's act since the statement's fragment.
+  act(() => {
+    document.activeElement?.dispatchEvent(
+      new KeyboardEvent("keydown", { bubbles: true, key: "Shift" })
+    );
+  });
+  view.follow(`${conversation}#b-${PLAN_TASK}`);
+  await rowTakesFocus(view, TASK_ROW, "the task's fragment under the same key, after a key");
+});
+
+// Every entry the browser makes has the key "default". Under the Verification view a check keeps
+// the view. A plan task under the statement, changed to with the fragment alone under the same
+// key, is no row of the view, which draws a statement's checks alone: the stage draws the outline
+// in the view's place, which lands on the task's row.
+test("under the Verification view, a fragment the browser changes under one key from a check to a plan task draws the outline, with the focus on the task's row", async () => {
+  answerVerificationReads();
+  const commentsOut = Promise.withResolvers<Comment[]>();
+  spyOn(api, "listComments").mockReturnValue(commentsOut.promise);
+  const verification = presetPath(KEY, "verification");
+  const view = drawAtBrowserEntry(`${verification}#b-${CHECK}`, verifiedIssue());
+  const checkRow = `[data-verification-body] [data-node-row][data-node-id="${blockNodeId(VERIFICATION_SLUG, CHECK)}"]`;
+  await waitFor(() =>
+    expect(
+      view.container.querySelector(checkRow),
+      `the check's fragment drew no row of it; the stage drew ${drawnSlot(view)}`
+    ).not.toBeNull()
+  );
+  // The comments read answers last, and with it every read is held and the view has told the
+  // stage whether it draws the check.
+  await act(async () => commentsOut.resolve([...TWO_THREADS]));
+  expect(drawnSlot(view), "the check's fragment drew the outline in place of the view").toBe(
+    "the view"
+  );
+  view.follow(`${verification}#b-${PLAN_TASK}`);
+  await rowTakesFocus(view, TASK_ROW, "the task's fragment under the same key");
+  expect(
+    view.container.querySelector("[data-verification-body]"),
+    "the task's fragment drew the Verification view beside the outline"
+  ).toBeNull();
+});
+
+// Every entry the browser makes has the key "default". Under the Decisions view and words, a
+// decision its fragment names keeps the view, which draws it whatever the words. A person's
+// write-up, changed to with the fragment alone under the same key and words, is no row of the
+// list where the words match no question it answers: the stage draws the outline in the view's
+// place, which lands on the write-up's row.
+test("under the Decisions view and words, a fragment the browser changes under one key from a decision to a write-up the list draws no row for draws the outline, with the focus on the write-up's row", async () => {
+  spyOn(api, "listIssueAsks").mockResolvedValue([...ASKED]);
+  spyOn(api, "getIssueDecisions").mockResolvedValue(
+    decisionsRead([decision("d1"), ...(WRITE_UP.decisions ?? [])])
+  );
+  // The decisions read the view's entries come from reads the comments, so the messages read is
+  // the one held: it answers last, and with it every read the tree is built from is held.
+  const messagesOut = Promise.withResolvers<[]>();
+  spyOn(api, "listIssueMessages").mockReturnValue(messagesOut.promise);
+  const decisions = `${presetPath(KEY, "decisions")}?q=flag`;
+  const view = drawAtBrowserEntry(`${decisions}#b-d1`, issueDetails());
+  await rowTakesFocus(
+    view,
+    `[data-decisions-body] [data-node-row][data-node-id="${decisionNode("d1").id}"]`,
+    "the decision's fragment"
+  );
+  await act(async () => messagesOut.resolve([]));
+  expect(drawnSlot(view), "the decision's fragment drew the outline in place of the view").toBe(
+    "the view"
+  );
+  view.follow(`${decisions}#b-writeup`);
+  await rowTakesFocus(
+    view,
+    `[data-issue-body] [data-node-row][data-node-id="${WRITE_UP_NODE}"]`,
+    "the write-up's fragment under the same key and words"
+  );
+  expect(
+    view.container.querySelector("[data-decisions-body]"),
+    "the write-up's fragment drew the Decisions view beside the outline"
+  ).toBeNull();
 });

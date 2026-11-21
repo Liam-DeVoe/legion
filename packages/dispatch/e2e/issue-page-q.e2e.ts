@@ -973,6 +973,8 @@ test("an address the view draws no row for draws the outline's line for it in th
     ]);
     const taskBlock = seeded.planTasks[0] ?? "";
     const task = blockNodeId(planSlug, taskBlock);
+    const statementBlock = seeded.requirements[0] ?? "";
+    const statement = blockNodeId(specSlug, statementBlock);
     await gotoIssue(page, `${verification}#b-${taskBlock}`);
     await expect
       .poll(() => outlineRows(page).count(), {
@@ -987,7 +989,7 @@ test("an address the view draws no row for draws the outline's line for it in th
     expect(
       await parentOfRow(page, task),
       `the plan task the address names stands under no statement ${at}`
-    ).toBe(blockNodeId(specSlug, seeded.requirements[0] ?? ""));
+    ).toBe(statement);
     await expect(
       verificationBody(page),
       `a plan task under a statement draws the Verification view beside the outline ${at}`
@@ -1061,8 +1063,6 @@ test("an address the view draws no row for draws the outline's line for it in th
     ).toHaveCount(0);
     // The first statement's fragment, then the task's again, each changed alone with no load, and
     // each read once the page has gone quiet.
-    const statementBlock = seeded.requirements[0] ?? "";
-    const statement = blockNodeId(specSlug, statementBlock);
     await gotoIssue(page, `${plan}#b-${statementBlock}`);
     await expectLoadSettled(traffic);
     await expect
