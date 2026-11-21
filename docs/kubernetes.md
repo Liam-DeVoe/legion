@@ -7360,6 +7360,7 @@ A copy still building at its own budget of 4 minutes is abandoned and logged `bu
 In each case the issue keeps the copy it had, and the copy owes a retry.
 While the stop waits, the role whose turn ended is idle, takes no task, and holds the stop, and a suspension asked of it in that time is held with that stop, except the suspend a fresh session makes (`legion claims retry --fresh-session`), which stops the role at once.
 A stop that waits for the result of the turn's prompt, as a pause's does, waits for the copy once that result has come.
+A stop made where no stop is held, such as a role failed by a provider error or by its launch failures, a relaunch or a retirement, does not wait for a copy in flight: that copy fails, the issue keeps the copy it had, and the cadence retries the copy at the first period that finds a role of the issue with a running process, while an idle release saves its bundle only through the shim of a role still running, and the release of a pod whose roles have all stopped saves no bundle at all.
 
 The copy a turn's end takes is asked of the role whose turn ended, in the process that turn ran in, which the daemon hands the copy before anything can stop that role, and a copy owed behind one in flight is asked of the role of the last turn's end that owed it.
 The cadence and a push ask the first live role of the issue that has a running process.
