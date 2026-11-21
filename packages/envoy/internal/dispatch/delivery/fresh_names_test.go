@@ -721,11 +721,16 @@ func TestAStopAfterAFirstTakeOverFailedPastItsCreateCompletes(t *testing.T) {
 // attempt settles the reserved replace and delivers every message published meanwhile. While the
 // service is down, no later attempt reserves another candidate: each would be retired unborn, and
 // the record's retired list, with a cleanup connection for each of its names, would grow every
-// attempt for as long as the outage lasts.
+// attempt for as long as the outage lasts. On a cluster the outage is every member's: each sends
+// its clients to the one service.
 func TestForcedOrderACalloutOutageStopsTheTakeOverBeforeAnythingIsDeleted(t *testing.T) {
+	onEveryHub(t, aCalloutOutageStopsTheTakeOverBeforeAnythingIsDeleted)
+}
+
+func aCalloutOutageStopsTheTakeOverBeforeAnythingIsDeleted(t *testing.T, topology hubTopology) {
 	for _, kind := range durableKinds {
 		t.Run(kind.logical, func(t *testing.T) {
-			hub, pool := freshRig(t, 0)
+			hub, pool := freshRigOn(t, topology, 0)
 			spy := spyConsumerCalls(t, hub)
 			holder := startDurableProcess(t, hub, pool, kind, freshNames)
 			first := awaitDelivering(t, hub, pool, kind.logical)

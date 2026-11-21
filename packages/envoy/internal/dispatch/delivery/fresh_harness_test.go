@@ -50,11 +50,11 @@ const freshMachineID = "example-dispatch"
 // dispatchAccount is the platform account the rig's Dispatch connections present.
 const dispatchAccount = "system:serviceaccount:dispatch:dispatch"
 
-// freshHub is the NATS a row runs on: a lone nats-server whose connections the auth service
-// admits, with an admin user beside them that may publish and subscribe anything and the files
-// Dispatch's processes connect with; or a cluster of three, whose clients need no credential and
-// whose stream holds replicas copies. Only the lone hub grants by connection name, so only its rows
-// show the grants; the cluster's show the protocol on a clustered stream.
+// freshHub is the NATS a row runs on, whose every Dispatch connection the auth service admits and
+// grants by its name, as on the deployed hubs: a lone nats-server, or a cluster of three whose
+// stream holds replicas copies; with an admin user beside them that may publish and subscribe
+// anything (on the cluster also the user a client with no credential is admitted as), and the
+// files Dispatch's processes connect with.
 type freshHub struct {
 	server    *testnats.Server
 	cluster   *testnats.Cluster
@@ -69,23 +69,44 @@ type freshHub struct {
 	service *natscallout.Service
 }
 
+// adminUser is a user that may publish and subscribe anything, with its seed.
+func adminUser(t *testing.T) (testnats.StaticUser, string) {
+	t.Helper()
+	seed, key := testnats.User(t)
+	return testnats.StaticUser{NKey: key, Publish: []string{">"}, Subscribe: []string{">"}}, seed
+}
+
 // startFreshHub runs a lone hub and its auth service until the test ends.
 func startFreshHub(t *testing.T) *freshHub {
 	t.Helper()
 	keys := testnats.NewCalloutKeys(t)
-	adminSeed, adminKey := testnats.User(t)
-	server, url := testnats.StartWithCalloutServer(t, keys, testnats.StaticUser{NKey: adminKey, Publish: []string{">"}, Subscribe: []string{">"}})
+	admin, adminSeed := adminUser(t)
+	server, url := testnats.StartWithCalloutServer(t, keys, admin)
 	hub := &freshHub{server: server, replicas: 1, url: url, keys: keys, adminSeed: adminSeed, dir: t.TempDir()}
 	hub.tokenFile = hub.write(t, "dispatch.token", "dispatch-token")
 	hub.startService(t)
 	return hub
 }
 
-// startClusterHub runs a cluster of three until the test ends, its stream at replicas copies.
+// startClusterHub runs a cluster of three and its auth service until the test ends, its stream at
+// replicas copies.
 func startClusterHub(t *testing.T, replicas int) *freshHub {
 	t.Helper()
-	cluster := testnats.StartCluster(t, 3)
-	return &freshHub{cluster: cluster, replicas: replicas, url: cluster.URL()}
+	keys := testnats.NewCalloutKeys(t)
+	admin, adminSeed := adminUser(t)
+	cluster := testnats.StartClusterWithCallout(t, 3, keys, admin)
+	hub := &freshHub{cluster: cluster, replicas: replicas, url: cluster.URL(), keys: keys, adminSeed: adminSeed, dir: t.TempDir()}
+	hub.tokenFile = hub.write(t, "dispatch.token", "dispatch-token")
+	hub.startService(t)
+	return hub
+}
+
+// urls are the hub's client URLs: the lone server's, or every member's.
+func (h *freshHub) urls() []string {
+	if h.cluster != nil {
+		return h.cluster.URLs()
+	}
+	return []string{h.url}
 }
 
 // hubTopology is one of the three hubs a take-over row runs on.
@@ -94,7 +115,7 @@ type hubTopology struct {
 	start func(t *testing.T) *freshHub
 }
 
-// hubTopologies are one copy on a lone hub through the auth service, an R1 cluster and R3.
+// hubTopologies are one copy on a lone hub, an R1 cluster and R3, each through the auth service.
 var hubTopologies = []hubTopology{
 	{"one copy", startFreshHub},
 	{"R1 cluster", func(t *testing.T) *freshHub { return startClusterHub(t, 1) }},
@@ -115,7 +136,7 @@ func (h *freshHub) write(t *testing.T, name, content string) string {
 func (h *freshHub) startService(t *testing.T) {
 	t.Helper()
 	settings := natscallout.Settings{
-		URLs:           []string{h.url},
+		URLs:           h.urls(),
 		SeedFile:       h.write(t, "service.seed", h.keys.ServiceSeed),
 		IssuerSeedFile: h.write(t, "issuer.seed", h.keys.IssuerSeed),
 		XKeySeedFile:   h.write(t, "xkey.seed", h.keys.XKeySeed),
@@ -152,15 +173,11 @@ func (h *freshHub) stopService() {
 	service.Close()
 }
 
-// connect opens a connection of Dispatch's as envoy-dispatch does (cmd/dispatch serverBus): on the
-// lone hub its service account's token, its name, connecting in the background; on a cluster, no
-// credential.
+// connect opens a connection of Dispatch's as envoy-dispatch does (cmd/dispatch serverBus): its
+// service account's token, its name, connecting in the background, to any of the hub's servers.
 func (h *freshHub) connect(name string) (*bus.Client, error) {
-	if h.cluster != nil {
-		return bus.Connect(h.cluster.URLs(), bus.WithName(name), bus.WithConnectInBackground())
-	}
 	token := h.tokenFile
-	return bus.Connect([]string{h.url},
+	return bus.Connect(h.urls(),
 		bus.WithEnvironment(func(key string) (string, bool) {
 			if key == bus.ServiceTokenFileEnvVar {
 				return token, true
@@ -173,14 +190,9 @@ func (h *freshHub) connect(name string) (*bus.Client, error) {
 // admin is a connection of the admin user, closed when the test ends.
 func (h *freshHub) admin(t *testing.T) (*natsgo.Conn, natsgo.JetStreamContext) {
 	t.Helper()
-	var conn *natsgo.Conn
-	if h.cluster != nil {
-		conn = testnats.Connect(t, h.url)
-	} else {
-		var err error
-		if conn, err = testnats.ConnectSeed(t, h.url, h.adminSeed); err != nil {
-			t.Fatalf("connect the admin: %v", err)
-		}
+	conn, err := testnats.ConnectSeed(t, h.url, h.adminSeed)
+	if err != nil {
+		t.Fatalf("connect the admin: %v", err)
 	}
 	t.Cleanup(conn.Close)
 	js, err := conn.JetStream(natsgo.MaxWait(10 * time.Second))

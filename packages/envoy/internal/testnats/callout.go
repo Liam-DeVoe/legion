@@ -82,6 +82,11 @@ type StaticUser struct {
 // no curve key, so the server sends its requests in the clear: the control a test of the sealing
 // starts.
 func CalloutConfig(keys CalloutKeys, static ...StaticUser) string {
+	return "jetstream {}\n" + calloutAuthorization(keys, static)
+}
+
+// calloutAuthorization is CalloutConfig's authorization block.
+func calloutAuthorization(keys CalloutKeys, static []StaticUser) string {
 	users := []string{
 		userEntry(keys.ServicePublic, []string{"$SYS._INBOX.>"}, []string{"$SYS.REQ.USER.AUTH"}),
 	}
@@ -94,8 +99,7 @@ func CalloutConfig(keys CalloutKeys, static ...StaticUser) string {
 	if keys.XKeyPublic != "" {
 		xkey = fmt.Sprintf("\n    xkey: %q", keys.XKeyPublic)
 	}
-	return fmt.Sprintf(`jetstream {}
-authorization {
+	return fmt.Sprintf(`authorization {
   timeout: %d
   users = [
     %s
@@ -107,6 +111,19 @@ authorization {
   }
 }
 `, CalloutAuthTimeout, strings.Join(users, "\n    "), keys.IssuerPublic, strings.Join(authUsers, ", "), xkey)
+}
+
+// StartClusterWithCallout is a cluster of n (StartCluster) whose every member admits its clients as
+// a CalloutConfig server does: the auth service's user and each static user by the configuration,
+// and every other client by the auth service's answer, whichever member it reaches. A client with
+// no credential is admitted as anyone (the members' no_auth_user, a static user like the others),
+// which the cluster's own waits (AwaitReady, CreateStream, JetStream) and a test's admin connect
+// as; every client that sends a credential the configuration does not list, a service token among
+// them, is sent to the service. Until the service subscribes, such a client is refused.
+func StartClusterWithCallout(t testing.TB, n int, keys CalloutKeys, anyone StaticUser, static ...StaticUser) *Cluster {
+	t.Helper()
+	users := append([]StaticUser{anyone}, static...)
+	return StartClusterConfig(t, n, calloutAuthorization(keys, users)+fmt.Sprintf("no_auth_user: %q\n", anyone.NKey))
 }
 
 // userEntry is one nkey user of a configuration, with its grant.
