@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
@@ -143,12 +144,11 @@ type bridge struct {
 	armed               bool
 	seen, asked         map[pair]bool
 	seeing, asking      *call
-	// heldTask is the number of a take the daemon accepted while a turn ran, and heldText its
-	// text: that task starts a turn of its own once the turn ends (idle), and heldTask, never 0
-	// for an accepted take, is what says one is waiting. runTask is the number of the
-	// task whose turn is running (startTask), 0 for a turn of no task.
-	heldText          string
-	heldTask, runTask uint64
+	// held is the take the daemon accepted while a turn ran, nil for none: that task starts a
+	// turn of its own once the turn ends (idle). run is the task of the turn running (taskRun),
+	// its zero value for a turn of no task.
+	held *heldTake
+	run  taskRun
 	// refusedInTurn is a take of the held value the daemon refused in-turn during the turn
 	// running: the daemon writes the value again at that turn's end, so the take counts as pending
 	// (takePending) until that turn ends (runEnded) or a newer value is held (valueHanded). A
@@ -212,7 +212,10 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 	// interrupt a readLines blocked in ReadBytes, and Run does not wait for those readers.
 	stop := make(chan struct{})
 	defer close(stop)
-	b := &bridge{cfg: cfg, log: log.New(logOut, "[claude-bridge] ", 0), requests: requests, stop: stop,
+	// The bridge's own lines pass the URL rule: a turn report's failure quotes the daemon's URL,
+	// its user name among it. Claude Code's stderr is logOut itself, below, so a file stays the
+	// file Claude Code writes to and exec's Wait copies nothing.
+	b := &bridge{cfg: cfg, log: log.New(redact.Writer(logOut), "[claude-bridge] ", 0), requests: requests, stop: stop,
 		takeAnswers: make(chan takeAnswer), refusedReports: make(chan uint64), seen: map[pair]bool{}, asked: map[pair]bool{}}
 	b.frames = shimwire.NewWriter(&b.encoded)
 	b.daemon = dialDaemon(cfg, b.log)
@@ -549,7 +552,7 @@ func (b *bridge) sendQueued() {
 // against it — what the provider said about an earlier turn is not this turn's outcome — and as
 // the turn of no task, which startTask makes it once the turn has begun.
 func (b *bridge) beginRun() {
-	b.inRun, b.refusal, b.runTask = true, nil, 0
+	b.inRun, b.refusal, b.run = true, nil, taskRun{}
 	b.emit(shimwire.AgentStart{})
 }
 
@@ -791,7 +794,9 @@ func (b *bridge) assistant(message json.RawMessage, subagent bool) {
 
 // echoed answers the delivery Claude Code has just taken: the oldest one sent, not yet answered,
 // whose text is the re-emitted user message's. The bridge's own user message (the seed) is no
-// delivery sent, so its echo answers none.
+// delivery sent, so its echo answers none. The text of the task whose turn is running is read
+// first: its echo, and no other, is Claude Code having taken that text (taskRun.taken), so an Envoy
+// delivery's echo in the turn says nothing of the task's.
 func (b *bridge) echoed(message json.RawMessage) {
 	var texts []string
 	for _, block := range blocksOf(message) {
@@ -800,6 +805,10 @@ func (b *bridge) echoed(message json.RawMessage) {
 		}
 	}
 	text := strings.Join(texts, "\n")
+	if b.run.task != 0 && !b.run.taken && text == b.run.text {
+		b.run.taken = true
+		return
+	}
 	for i, d := range b.taking {
 		if d.content == text {
 			d.answer <- inboxReply{}
@@ -831,8 +840,14 @@ func answerAll(deliveries []delivery, err error) {
 // The turn's outcome is the outcome of its newest step (refusal), reported when the turn ends
 // with the bridge's own sequence (turnoutcome.go): a step the provider failed is the turn
 // refused, and a step that ran clears what an earlier failed one left, since the provider
-// answered after all. The report names the task whose turn it was (runTask), and a task's turn
-// the provider did not fail holds that task finished from its end (take.go's runEnded).
+// answered after all. The report names the task whose turn it was (taskRun.task) where Claude Code
+// re-emitted that task's text in the turn (taskRun.taken), or where the provider failed the turn
+// (refusal), whether or not the echo came: the report then takes the task to the daemon's
+// provider-error ladder, which gives it again after its wait, rather than counting the refusal
+// toward the launch-failure run. A turn of the task with no echo that the provider did not fail
+// names no task: Claude Code dropped the text, which the bridge takes again at its value's next
+// revision (take.go). A task's turn so named that the provider did not fail holds that task
+// finished from its end (take.go's runEnded).
 //
 // Once Claude Code is in no turn, what waits for that runs (idle): a task whose take was accepted
 // during the turn, then a take of the claim's task value, then the next Envoy delivery.
@@ -890,16 +905,45 @@ func (b *bridge) result(res resultLine) {
 	}
 	// A task whose take was accepted during this turn ends it here rather than wait behind the
 	// queue: its turn goes ahead of every queued delivery.
-	if stepped && len(b.queue) > 0 && b.heldTask == 0 {
+	if stepped && len(b.queue) > 0 && b.held == nil {
 		b.sendQueued()
 		return
 	}
-	refusal, task := b.refusal, b.runTask
-	b.inRun, b.refusal, b.runTask = false, nil, 0
+	refusal, task := b.refusal, b.run.task
+	if task != 0 && !b.run.taken && refusal == nil {
+		b.log.Printf("Claude Code ended task %d's turn without re-emitting its text, so it never took it: the turn is reported as no task's, and the task is taken again at its value's next revision", task)
+		task = 0
+	}
+	b.inRun, b.refusal, b.run = false, nil, taskRun{}
 	b.runEnded(task, refusal != nil)
 	b.emit(shimwire.AgentEnd{})
-	b.reports.turnEnded(task, refusal)
+	// A take accepted during this turn still has its text held here, to start a turn of its own
+	// once this one is over (idle, below): the report says so, which is the daemon's one certain
+	// sign that this turn was not that take's.
+	var held uint64
+	if b.held != nil {
+		held = b.held.number
+	}
+	b.reports.turnEnded(task, held, refusal)
 	b.idle()
+}
+
+// taskRun is the task whose turn is running (startTask): its number, 0 for a turn of no task; the
+// text that turn began with; and whether Claude Code has re-emitted that text in the turn
+// (echoed). The text has reached Claude Code only then, and a task's turn that ends without it,
+// and that the provider did not fail, is reported as no task's (result). A turn begins and ends
+// with the zero value.
+type taskRun struct {
+	task  uint64
+	text  string
+	taken bool
+}
+
+// heldTake is a take the daemon accepted while a turn ran (bridge.held): the task's number and
+// the text its take was answered with, which starts a turn of its own once the turn ends.
+type heldTake struct {
+	number uint64
+	text   string
 }
 
 // writeUser sends text to Claude Code as one user message: blocks as its content where a delivery

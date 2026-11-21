@@ -74,9 +74,13 @@ type taskRelayed struct {
 // taskRelay relays each claim's task value from the Legion task bucket (legiontasks.Bucket) to the
 // session that holds the claim's role, as a core frame on that session's relay subject
 // (bus.DeliverSubject), beside the session relays (sessionRelays) that relay the session's
-// messages on the same subject. A key of the bucket is a claim token, and a claim token is the
-// role its worker's session claims, so the session to relay key K to is the holder of role K. That
-// holder is read from role K's claim record, through the role lane's bounded claim read
+// messages on the same subject: the value reaches the session as a core message from the listener,
+// not from the session's durable consumer (bus.SessionConsumerName), which never holds it, and as no
+// retry of a role message: it is the delivered copy of the Legion daemon's record of the claim's
+// task (legiontasks), which the daemon alone writes and repairs, so the relay keeps nothing that
+// record does not. A key of the bucket is a claim token, and a claim token is the role its
+// worker's session claims, so the session to relay key K to is the holder of role K. That holder
+// is read from role K's claim record, through the role lane's bounded claim read
 // (roleLaneClaims.RoleClaim), as every listener act that turns on who holds a role reads it, and
 // never from the registry's watched copy of the role bucket, which can lack a claim the bucket
 // holds or keep one the bucket dropped.
@@ -455,7 +459,8 @@ func (r *taskRelay) relayedTo(key string, sent taskRelayed) {
 
 // publish publishes record, key's record of epoch, to holder as a task frame
 // (sessionRelays.publishTaskFrame): a core message on the holder's relay subject carrying the four
-// legiontasks headers and the value's bytes as the bucket holds them, empty for a delete.
+// legiontasks headers and the value's bytes as the bucket holds them, empty for a delete. No answer
+// the session gives acknowledges anything.
 func (r *taskRelay) publish(key, holder, epoch string, record taskRecord) error {
 	header := nats.Header{}
 	header.Set(legiontasks.HeaderClaim, key)

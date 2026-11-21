@@ -46,7 +46,7 @@
 // backward move that raises the implementer's entry and writes that entry's start row, deletes that
 // row, and lets the lock go, so the row's work exists only in the record. With no fact of the
 // project arriving after it, the daemon's own entry sweep (intake.EntrySweep,
-// workflowRuntime.tickEntrySweep) sends the entry's own task to the implementer's live connection.
+// workflowRuntime.tickEntrySweep) writes the entry's own task for the implementer, which takes it.
 // The sweep's period is a Go constant with a test override (the overrides' entrySweep,
 // convergeEntrySweep here); the shipped binary keeps entrySweepInterval's minute, which is why the
 // driver sets the override rather than waiting one.
@@ -140,16 +140,16 @@ type phaseEntryConvergeLive struct {
 	// the daemon.
 	imp, test, rev *convergeClaimant
 	// queued is the delivery of entry 1's task, which the tester's claim is queued while its
-	// launch waits and holds until run one's last check sends it.
+	// launch waits and holds until the tester takes it in run one's last check.
 	queued string
 }
 
 // TestAPhaseEntryConvergesOnARunningDaemonLive drives the proof's five checks against one booted
 // daemon, in the order each one's state follows from the last: the tester's start waiting for the
 // launch the pacing holds, the phase changing twice while the tester's claim, up on that launch,
-// holds the task of entry 1, the entry the phase is on reaching the tester after that held task
-// is sent and its completion refused, a start row deleted before any lane runs it whose work the
-// sweep sends all the same, and the state's two numbers.
+// holds the task of entry 1, the entry the phase is on reaching the tester after the tester takes
+// that held task and its completion is refused, a start row deleted before any lane runs it whose
+// work the sweep writes for the implementer all the same, and the state's two numbers.
 func TestAPhaseEntryConvergesOnARunningDaemonLive(t *testing.T) {
 	fixtureenv.Live(t)
 	r := newPhaseEntryConvergeLive(t)

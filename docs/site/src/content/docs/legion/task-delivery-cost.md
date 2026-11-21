@@ -33,8 +33,12 @@ kubectl -n legion logs deploy/legion-<project>-daemon -c legion | legion task-co
 - The command does not give `--since-time` to `kubectl`.
   So `kubectl` sends the whole log of the current container, from the start of the container.
   The command reads the lines before `<from>` only to know where each claim and each task stands at `<from>`.
-  For example, a task that the daemon wrote and the worker saw before `<from>`, and that no take reaches in the window, writes no line in the window.
-  A reading of the window alone does not see that task.
+  For example, take a task that the daemon wrote and the worker saw before `<from>`, and that no take reaches in the window.
+  No `task` attribute in the window names that task, unless its first bound passes inside the window while a hold stands over it.
+  The daemon then writes `supervise: the first bound passed while a hold stands over the task; the worker is not charged`, with the `task` attribute.
+  Without a hold, the daemon charges the worker when the first bound passes, with `supervise: prompt failure`, or `supervise: retired after prompt failures` at the limit.
+  That line names the number of the task only in the text of its `why` attribute, for example `task 3`.
+  Without the hold's line, a reading of the window alone does not see that task.
 
 - `--claim <token>` is optional.
   With it, the command counts the lines of one claim only.
@@ -98,7 +102,8 @@ So each figure that names a task names its claim too.
 
 - `daemon lines in the window` is the number of the daemon's log lines in the window, with the times of the first and the last.
   With `--claim`, only the lines of that claim count.
-  When these lines hold no task value written and no take answered, the next line says so.
+  When the window holds no line of the daemon, the line is only `daemon lines in the window: 0`, with no times, and no line about the evidence follows it.
+  When the window holds lines of the daemon but they hold no task value written and no take answered, the next line says so.
   It is `task values written and takes answered in the window: 0, so no verdict is judged` when each verdict gives `no evidence`.
   It is `task values written and takes answered in the window: 0, so only a fail carried into the window is judged` when a fail that the state at `<from>` proves fails a verdict.
   Each verdict that such a fail fails gives `fail`, and each other verdict gives `no evidence`.
@@ -125,6 +130,11 @@ So each figure that names a task names its claim too.
     When the worker's report of that turn names no task, that turn was the turn of something else.
     The daemon then puts the take back to wait for its own turn, and writes `supervise: a turn's report names no task of the take whose turn it was given; the take awaits its turn again`.
     The command counts the turn that the daemon put back as a turn with no cause, at its start and at its end, although these two lines name the task.
+    The worker's report says this for certain when it names the take as `held`: the take's text was still waiting, unrun, when the turn ended.
+    After a daemon restart under a live worker, the daemon has lost its count of the worker's turns, and such a report is the only one that puts the first take back.
+    A take that the daemon accepted before the restart is put back the same way, unless the daemon before the restart saw the end of the turn it gave that take: the daemon after it cannot tell then whether the take's own turn also ran before the restart, and that take's report puts nothing back.
+    When that report arrives before the start of its turn, the daemon gives that turn no take, and writes `supervise: a turn started that the producer said ran with the accepted take's text held; the turn is no task's, and the take awaits its turn`.
+    The command counts that turn as a turn with no cause, since its lines name no task.
 
 - `turns each number took` is, for each task, the number of turns that started with that task as their cause.
   A turn that the daemon put back does not count.
@@ -224,6 +234,8 @@ So each figure that names a task names its claim too.
   - `report` is a worker's report of the task's turn, which named the task.
 
   - `end-frame` is the end of the task's turn, when no report named the task in time.
+    Only a worker whose plugin takes no task, a contract below 203 (`supervise.TaskTakeContract`), has its task finished this way: such a worker names no task in its report.
+    A current worker's task finishes only by the report that names it.
 
 - `charges by wait` is the number of charges against the workers' prompt budget, by wait.
 
@@ -307,7 +319,7 @@ legion task-cost --from 2026-11-14T09:00:00Z --to 2026-11-14T10:00:00Z < package
 
 ```text
 window: 2026-11-14T09:00:00Z to 2026-11-14T10:00:00Z, every claim, first bound 5m0s
-daemon lines in the window: 64, the first at 2026-11-14T09:00:05.000Z, the last at 2026-11-14T09:55:30.000Z
+daemon lines in the window: 65, the first at 2026-11-14T09:00:05.000Z, the last at 2026-11-14T09:55:30.000Z
 turns started: 8 (by a task number 6, with no cause 2)
 turns ended: 7 (by a task number 5, with no cause 2)
 turns each number took:
@@ -324,7 +336,7 @@ numbers taken: 6
 numbers owed that no take reached within the first bound: 2
   legion-infra-infra-2811-implementer task 2: the clock started 2026-11-14T09:30:00.000Z, the bound passed 2026-11-14T09:35:00.000Z, taken 2026-11-14T09:35:20.000Z
   legion-infra-infra-2812-planner task 1: the clock started 2026-11-14T09:00:00.000Z, the bound passed 2026-11-14T09:05:00.000Z, taken 2026-11-14T09:06:00.000Z
-numbers finished, by what finished each: end-frame 1, report 4 (5 in all)
+numbers finished, by what finished each: report 5 (5 in all)
 charges by wait: take 2, turn-start 1 (3 in all)
 retirements: 0
 verdict: no charge of a worker whose turn began within the second bound after its take: pass
@@ -382,7 +394,7 @@ legion task-cost --from 2026-11-14T09:00:00Z --to 2026-11-14T10:00:00Z --claim l
 
 ```text
 window: 2026-11-14T09:00:00Z to 2026-11-14T10:00:00Z, claim legion-infra-infra-2811-implementer, first bound 5m0s
-daemon lines in the window: 24, the first at 2026-11-14T09:00:05.000Z, the last at 2026-11-14T09:55:00.000Z
+daemon lines in the window: 25, the first at 2026-11-14T09:00:05.000Z, the last at 2026-11-14T09:55:00.000Z
 turns started: 3 (by a task number 2, with no cause 1)
 turns ended: 3 (by a task number 2, with no cause 1)
 turns each number took:
@@ -394,7 +406,7 @@ silence repair (origin silence), counted apart from resume: numbers written 1, t
 numbers taken: 2
 numbers owed that no take reached within the first bound: 1
   legion-infra-infra-2811-implementer task 2: the clock started 2026-11-14T09:30:00.000Z, the bound passed 2026-11-14T09:35:00.000Z, taken 2026-11-14T09:35:20.000Z
-numbers finished, by what finished each: end-frame 1, report 1 (2 in all)
+numbers finished, by what finished each: report 2 (2 in all)
 charges by wait: take 1 (1 in all)
 retirements: 0
 verdict: no charge of a worker whose turn began within the second bound after its take: pass

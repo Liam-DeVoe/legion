@@ -2,7 +2,6 @@ package delivery
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -88,7 +87,7 @@ func retryGitHubPage(ctx context.Context, attempt, status int, err error) bool {
 		return false
 	}
 	if err != nil {
-		return errors.Is(err, context.DeadlineExceeded) || nettimeout.InChain(err)
+		return nettimeout.InChain(err)
 	}
 	return status == http.StatusBadGateway || status == http.StatusGatewayTimeout
 }

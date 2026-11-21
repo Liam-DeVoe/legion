@@ -99,7 +99,21 @@ func claimInNoTurn(t *testing.T, kinds ...string) *letGoCell {
 // its process reporting after the turn began.
 func claimInATurn(t *testing.T, kinds ...string) *letGoCell {
 	t.Helper()
-	h := newHarnessOf(t, olderToldClaim())
+	return workingInATurn(t, kinds)
+}
+
+// claimInATurnOfACurrentPlugin is claimInATurn on a plugin that names its task's number in its
+// reports (currentPlugin), whose task only the report of its take's turn finishes
+// (endFrameFinishes).
+func claimInATurnOfACurrentPlugin(t *testing.T, kinds ...string) *letGoCell {
+	t.Helper()
+	return workingInATurn(t, kinds, currentPlugin)
+}
+
+// workingInATurn is claimInATurn over a harness that set tunes.
+func workingInATurn(t *testing.T, kinds []string, set ...func(*Deps)) *letGoCell {
+	t.Helper()
+	h := newHarnessOf(t, olderToldClaim(), set...)
 	h.reach(StateWorking)
 	h.advance(time.Second)
 	h.reportActivity(kinds...)
@@ -265,7 +279,8 @@ func holdsTheSuspension(h *harness) {
 }
 
 // suspendsAtTheTurnsEnd lands the held suspension at the end of the turn it was held for
-// (turnEnded, suspendHeldAtEnd).
+// (turnEnded, suspendHeldAtEnd), or, where the turn was a task's whose plugin names its number, at
+// the report right behind that end, which finishes the task first (reportedTask, afterTurn).
 func suspendsAtTheTurnsEnd(c *letGoCell) {
 	c.h.t.Helper()
 	holdsTheSuspension(c.h)
@@ -528,6 +543,13 @@ func (h *harness) wantNoTaskSentInterruptedWithoutItsRecord(cause string, letGo 
 // (takeBackUnstarted) — so the next process takes the task afresh behind the joined record, which
 // that take tells once.
 //
+// The claim in a turn is driven a second time on a plugin that names its task's number
+// (claimInATurnOfACurrentPlugin), whose task only the report of its take's turn finishes. A
+// suspension held for that turn waits at its end for the report right behind it, which finishes
+// the task, and stops the process then, so the record and the next process's first take are
+// those of the older plugin's row: no turn cut off, no task held. At the hold's deadline in the
+// turn, the task is taken back from the turn it cuts off, as on the older plugin.
+//
 // The cells where the kind does not let the process go, each of which asserts that the claim
 // keeps its process and state and that nothing is recorded:
 //
@@ -563,8 +585,10 @@ func TestARelaunchRecordsEveryLetGoKindInEveryClaimState(t *testing.T) {
 			setup: claimIdleWithItsReportToCome}
 		awaitingTurn = claimState{name: "idle with an accepted take awaiting its turn", kinds: subagent,
 			told: earlierUntold().Kinds, setup: claimAwaitingItsTakesTurn}
-		compaction          = claimState{name: "in a compaction with no turn", kinds: subagent, setup: claimInACompaction}
-		turnUnderCompaction = claimState{name: "in a compaction with a turn", kinds: subagent, setup: claimInATurnUnderACompaction}
+		compaction              = claimState{name: "in a compaction with no turn", kinds: subagent, setup: claimInACompaction}
+		turnUnderCompaction     = claimState{name: "in a compaction with a turn", kinds: subagent, setup: claimInATurnUnderACompaction}
+		inATurnOfACurrentPlugin = claimState{name: "in a turn, on a plugin that names its task's number", kinds: subagent,
+			setup: claimInATurnOfACurrentPlugin}
 	)
 	var (
 		retirement        = letGoKind{name: "a retirement after prompt failures", drive: retiresAfterPromptFailures, next: relaunchedToReady}
@@ -654,6 +678,8 @@ func TestARelaunchRecordsEveryLetGoKindInEveryClaimState(t *testing.T) {
 		{kind: suspensionAtOnce, state: noTurn, record: recorded{cause: suspended}, sent: sentRecordAlone, says: saysNoTurn},
 		{kind: suspensionAtTurnEnd, state: inATurn, record: recorded{cause: suspended}, sent: sentRecordAlone, says: saysNoTurn},
 		{kind: suspensionAtDeadline, state: inATurn, record: recorded{cause: suspended, turn: true, taskTurn: true}, sent: sentTaskTakenBack, says: saysTaskTurn},
+		{kind: suspensionAtTurnEnd, state: inATurnOfACurrentPlugin, record: recorded{cause: suspended}, sent: sentRecordAlone, says: saysNoTurn},
+		{kind: suspensionAtDeadline, state: inATurnOfACurrentPlugin, record: recorded{cause: suspended, turn: true, taskTurn: true}, sent: sentTaskTakenBack, says: saysTaskTurn},
 		{kind: suspensionAtOnce, state: reportToCome, record: recorded{cause: suspended}, sent: sentRecordAlone, says: saysNoTurn},
 		{kind: suspensionAtOnce, state: reportToComeQuiet, sent: sentNothing},
 		{kind: suspensionAtOnce, state: awaitingTurn, record: recorded{cause: suspended}, sent: sentTask, says: saysNoTurn},

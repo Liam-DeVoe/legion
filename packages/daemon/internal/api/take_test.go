@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strconv"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -283,6 +284,52 @@ func TestTakeRouteAnswersAStaleClaimRefusedStalePluginRatherThan409(t *testing.T
 	}
 }
 
+// The report of a take's turn is not refused by the stale-contract 409 either: it is the only
+// thing that finishes the task of a worker whose plugin names its number (supervise's
+// reportedTask), so refused, it would leave the task to be taken back as a cut turn at the
+// stale-plugin relaunch and run again by the next process. The claim here is the shape every
+// contract raise leaves: idle, its take's turn ended on the worker stream before the report
+// arrived, and its plugin on a contract other than the daemon's that names the number (the
+// contract after this one stands in for the take contract once the next raise lands, since this
+// daemon's own contract is the take contract). The report naming the number finishes the task,
+// while the claim's ready, which the stale refusal covers, is still refused.
+func TestTurnOutcomeOfAStaleClaimNamingItsTakeFinishesTheTask(t *testing.T) {
+	h := newHarness(t)
+	c := h.readyClaim("LEGION-209", claim.RoleImplementer)
+	value := h.deliverTask(supervise.RequestDeliver{Claim: c.token, Task: "the task"})
+	recorder, answer := h.postTake(takeOf(c, value))
+	wantAccepted(t, recorder, answer, "the task")
+	h.startAndEndTurn(c.token)
+	stale := DaemonAPIVersion + 1
+	if supervise.TakesNoTask(stale) {
+		t.Fatalf("contract %d takes no task: this test proves nothing, since the end frame finishes such a claim's task", stale)
+	}
+	h.makeStale(t, c.token, c.session, c.secret, stale)
+	if stored := h.stored(c.token); stored.State != supervise.StateIdle || stored.Pending == nil || stored.Pending.Number != value.Number || stored.TaskFinished != 0 {
+		t.Fatalf("the stale claim is %s holding %+v with task %d finished, want idle with task %d's turn over and unfinished",
+			stored.State, stored.Pending, stored.TaskFinished, value.Number)
+	}
+
+	// The control: the same claim, as the claim routes read it, is stale.
+	ready := h.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
+		ClaimToken: c.token, SessionID: c.session, Secret: c.secret, Generation: c.generation,
+	}, nil)
+	wantRefusal(t, ready, http.StatusConflict, claim.StalePluginContract(stale, DaemonAPIVersion).Message)
+
+	outcome, _ := h.turnOutcome(claim.TurnOutcomeRequest{AgentCaller: c.agent(), Generation: c.generation, Sequence: 1,
+		Outcome: claim.TurnClean, Task: value.Number})
+	if outcome.Code != http.StatusOK {
+		t.Fatalf("the stale claim's turn outcome naming task %d = %d (body %s), want 200", value.Number, outcome.Code, outcome.Body)
+	}
+	if stored := h.stored(c.token); stored.TaskFinished != value.Number || (stored.Pending != nil && stored.Pending.Number == value.Number) {
+		t.Fatalf("after the report the claim records task %d finished, pending %+v; want task %d finished and no longer pending",
+			stored.TaskFinished, stored.Pending, value.Number)
+	}
+	if _, held := h.taskValues().Value(c.token); held {
+		t.Fatal("the bucket still holds the finished task's value")
+	}
+}
+
 // Every outcome a take has reaches the worker through the route, decided by a real machine: a
 // number the claim's record does not owe it is refused `not-owed` and records nothing (R3), and
 // the pending task of a phase its issue has left is dropped, its value deleted, so the read that
@@ -422,15 +469,13 @@ func TestTakeRouteTaskReadAnswersTheValueAndTheFinishedNumber(t *testing.T) {
 // The claim in a turn reads, on its own task route, the takes of its issue's other claims held
 // behind that turn (Supervisor.HeldBehind): each held claim's role and its task's number, so its
 // worker can tell its model that the take waits for this turn's end (dispatch://INFRA-4130 R2).
-// The key is written only for a caller whose claim records taskHoldsContract, the contract that
-// brought it, or a later one: a plugin before it reads the answer with a schema that knows no
-// `holds`. With nothing held the key is absent.
+// The key is served to a caller that states taskHoldsContract, the contract that brought it, or a
+// later one, and to one that states none, which is served this daemon's own body; a caller that
+// states a contract below it is answered its task read without the key (shapeAnswer's AnswerTask
+// row). With nothing held the key is absent.
 func TestTheTaskRouteNamesTheTakesHeldBehindTheCallersTurn(t *testing.T) {
 	h := newHarness(t)
 	c := h.readyClaim("LEGION-209", claim.RoleImplementer)
-	if got := h.stored(c.token).PluginContract; got < taskHoldsContract {
-		t.Fatalf("the claim records plugin contract %d, below taskHoldsContract %d: this case proves nothing", got, taskHoldsContract)
-	}
 	var held []claim.HeldTake
 	h.supervisor.holdTakes(func(issue string, holder claim.Token) []claim.HeldTake {
 		if issue != "LEGION-209" || holder != c.token {
@@ -438,10 +483,15 @@ func TestTheTaskRouteNamesTheTakesHeldBehindTheCallersTurn(t *testing.T) {
 		}
 		return held
 	})
-	// read is the claim's task read under req, as the keys of its answer.
-	read := func(req claim.TaskRequest) map[string]json.RawMessage {
+	// read is the claim's task read under req, stating contract where it is not 0, as the keys of
+	// its answer.
+	read := func(req claim.TaskRequest, contract int) map[string]json.RawMessage {
 		t.Helper()
-		recorder := h.request(http.MethodPost, "/legion/v1/claims/task", req, nil)
+		var header http.Header
+		if contract != 0 {
+			header = http.Header{pluginContractHeader: {strconv.Itoa(contract)}}
+		}
+		recorder := h.request(http.MethodPost, "/legion/v1/claims/task", req, header)
 		if recorder.Code != http.StatusOK {
 			t.Fatalf("the read = %d; body %s", recorder.Code, recorder.Body)
 		}
@@ -456,23 +506,19 @@ func TestTheTaskRouteNamesTheTakesHeldBehindTheCallersTurn(t *testing.T) {
 
 	held = []claim.HeldTake{{Role: claim.RoleTester, Task: 7}}
 	for _, req := range []claim.TaskRequest{byAgent, byBoot} {
-		if got := string(read(req)["holds"]); got != `[{"role":"tester","task":7}]` {
-			t.Fatalf("the read of a caller at or above %d with the tester's take held behind its turn answers holds %s, want the tester's task 7", taskHoldsContract, got)
+		for _, contract := range []int{taskHoldsContract, 0} {
+			if got := string(read(req, contract)["holds"]); got != `[{"role":"tester","task":7}]` {
+				t.Fatalf("the read of a caller stating contract %d with the tester's take held behind its turn answers holds %s, want the tester's task 7", contract, got)
+			}
 		}
+	}
+	if keys := read(byAgent, taskHoldsContract-1); keys["holds"] != nil || keys["task"] == nil {
+		t.Fatalf("the read of a caller stating contract %d answers %v, want its task read with no holds key", taskHoldsContract-1, keys)
 	}
 
 	held = nil
-	if keys := read(byAgent); keys["holds"] != nil {
+	if keys := read(byAgent, taskHoldsContract); keys["holds"] != nil {
 		t.Fatalf("the read with nothing held answers holds %s, want no key", keys["holds"])
-	}
-
-	h.makeStale(t, c.token, c.session, c.secret, taskHoldsContract-1)
-	if got := h.stored(c.token).PluginContract; got != taskHoldsContract-1 {
-		t.Fatalf("the claim records plugin contract %d, want %d: this case proves nothing", got, taskHoldsContract-1)
-	}
-	held = []claim.HeldTake{{Role: claim.RoleTester, Task: 7}}
-	if keys := read(byAgent); keys["holds"] != nil || keys["task"] == nil {
-		t.Fatalf("the read of a caller at %d answers %v, want its task read with no holds key", taskHoldsContract-1, keys)
 	}
 }
 
@@ -480,7 +526,7 @@ func TestTheTaskRouteNamesTheTakesHeldBehindTheCallersTurn(t *testing.T) {
 // contract is never below it: a merge that renumbers this change moves its entry and this
 // constant together, and a later contract bump changes neither.
 func TestTheTaskHoldsContractIsTheContractThatAddedHolds(t *testing.T) {
-	const addedHolds = 179
+	const addedHolds = 205
 	if taskHoldsContract != addedHolds {
 		t.Fatalf("taskHoldsContract = %d, want %d, the contract whose entry in version.go added holds to the task route",
 			taskHoldsContract, addedHolds)

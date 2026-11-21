@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -40,13 +39,15 @@ type CheckLook struct {
 // turn has started. The text stays for as long as the take does, through its turn, so a take of
 // the number sent again after its answer was lost is answered it whenever it comes. So the three
 // readings of a pending task are: ConfirmedAt zero, a task no take holds — queued, or taken back
-// under its number; ConfirmedAt set with TakenText and TurnStarted false, a take accepted whose
-// turn has not started (awaitsTurn); ConfirmedAt set with TurnStarted true, or with no TakenText,
-// a take whose turn has started and which nothing has finished yet (turnStarted). A confirmed
-// take with no text is one whose text no record kept — the release before the take cleared it at
-// the turn's start, and a migration filled its confirmed rows with none — and its turn started.
-// A task lives until it is finished — by the turn-outcome report that names its number, or by
-// the end of its turn with no report after it (finishTask) — or until the record drops it.
+// under its number; ConfirmedAt set and TurnStarted false, a take accepted whose turn has not
+// started (awaitsTurn); ConfirmedAt set and TurnStarted true, a take whose turn has started and
+// which nothing has finished yet (turnStarted). TakenText is the text alone and says nothing of
+// the turn: a confirmed take with no text is one whose text no record kept, which the migration
+// that added the column filled its confirmed rows with, and that migration set those rows'
+// TurnStarted (turn_started = confirmed_at is not null) before any other fill.
+// A task lives until it is finished — by the turn-outcome report that names its number, or, for a
+// plugin below TaskTakeContract or a finish the store refused, by the end of its turn with no
+// report after it (finishTask, endFrameFinishes) — or until the record drops it.
 //
 // The id is the daemon's and never changes: an outbox delivery id, an operator's minted one, or
 // the round an update round's ask is of (updateTaskPrefix, updateRoundOf), which is what names
@@ -87,9 +88,10 @@ type Delivery struct {
 	Origin string
 	// TakenText is the text the daemon's accepted take of this task was answered with, and ""
 	// while no take of it stands accepted, or for a confirmed take whose text no record kept (see
-	// above). A take of the same number sent again after its answer was lost is answered this same
-	// text, before the take's turn starts and after, across a daemon restart too, so it is
-	// persisted, and it goes only with the take (interrupted, clearTake).
+	// above): it is never read for where the take stands, which TurnStarted says. A take of the
+	// same number sent again after its answer was lost is answered this same text, before the
+	// take's turn starts and after, across a daemon restart too, so it is persisted, and it goes
+	// only with the take (interrupted, clearTake).
 	TakenText string
 	// TurnStarted is whether the turn of the accepted take has started (startTakesTurn): false
 	// while no take stands accepted or the accepted take awaits its turn. A turn whose report then
@@ -143,9 +145,9 @@ type Delivery struct {
 	// planning tasks held 31 and 33 hours, whose only record of each failed send was a log line
 	// inside the pod). All three are written together on every adoption that fails, and cleared
 	// together where a take is accepted (accept), so a task that got through carries zeroes.
-	// LastSendError is never the far side's text as it arrived: the write that records it scrubs
-	// and bounds it first (scrubSendError), because the text is the far side's own and the store
-	// takes only some of what the far side can say.
+	// LastSendError is the far side's text as the daemon keeps any far side's error text
+	// (storetext.FarSideError), set so in memory as well as in the store, and the whole text is in
+	// the log (refusedAdoption).
 	SendFailures      int
 	LastSendFailureAt time.Time
 	LastSendError     string
@@ -188,61 +190,24 @@ func (d Delivery) taken() bool { return !d.ConfirmedAt.IsZero() }
 // awaitsTurn is whether a take of the task was accepted and its turn has not started: the
 // window in which the claim counts as in a turn for another role's adoption (Claim.InTurn) and
 // R5's second wait is on the take (secondWaitNow).
-func (d Delivery) awaitsTurn() bool { return d.taken() && d.TakenText != "" && !d.TurnStarted }
+func (d Delivery) awaitsTurn() bool { return d.taken() && !d.TurnStarted }
 
 // turnStarted is whether the task's accepted take has had its turn start: the turn is running,
-// or it has ended and nothing has finished the task yet (finishTask). A confirmed take whose text
-// no record kept reads so whatever TurnStarted says (Delivery).
-func (d Delivery) turnStarted() bool { return d.taken() && (d.TakenText == "" || d.TurnStarted) }
+// or it has ended and nothing has finished the task yet (finishTask).
+func (d Delivery) turnStarted() bool { return d.taken() && d.TurnStarted }
 
 // TakenWith is whether c's worker took this task: the claim's last accepted take is this task's
 // number. It stays true after the task is taken back, since the worker read the task and may be
 // carrying on its work (Claim.ServingRun).
 func (d Delivery) TakenWith(c Claim) bool { return d.Number != 0 && c.TaskTaken == d.Number }
 
-// maxSendErrorRunes bounds the text of a failed send kept on a delivery (scrubSendError). What a
-// reader of that record needs is why the send failed: the first line of the far side's answer and
-// enough of what follows to name the failure — the shim's words name the stale lock's path and
-// its age within the first two hundred characters — so this is more room than the diagnosis asks
-// for and far less than the text can be. What it cuts is the rest of a relayed command's output:
-// a refused adoption carries the wedged command's whole stderr, measured at about a megabyte
-// (INFRA-1480), which would otherwise be stored on every failed send of the task and served
-// again in every operator listing of the claim.
-const maxSendErrorRunes = 2048
-
-// scrubSendError is the text of a failed adoption as a delivery may hold it. The text is the far
-// side's own and is not this daemon's to trust: a refused adoption carries the wedged command's
-// whole stderr, relayed by the shim, where a `\u0000` in it can become a NUL byte.
-//
-// The rule the store holds is that the text is valid UTF-8. Postgres refuses any byte its server
-// encoding cannot read — on the UTF8 encoding production runs, `select E'wedged\000lock'` is
-// "invalid byte sequence for encoding \"UTF8\": 0x00" and a lone 0xff is the same refusal — so
-// the NUL is one instance of that rule rather than the rule itself, and an SQL_ASCII server,
-// which takes the 0xff and refuses the NUL, draws the line in another place. So the text is made
-// valid UTF-8, with each run of bytes that reads as no character replaced by the replacement
-// character rather than dropped, so the record still shows where the far side's words were
-// unreadable; the NUL — valid UTF-8 and still refused by every encoding — goes; and what is left
-// is cut to maxSendErrorRunes. The start is what is kept, because that is where the far side
-// names the failure: the shim's own words give the stale lock's path and its age there. The cut
-// counts runes rather than bytes, so it can never make the text invalid again by ending inside a
-// character.
-//
-// Nothing of the far side's answer is lost this way, only moved: the whole unscrubbed text goes
-// to the log line this record stands beside (refusedAdoption), which has no store to refuse
-// it, so the operator who needs the megabyte still reads it in the pod's log.
-func scrubSendError(text string) string {
-	text = strings.ReplaceAll(strings.ToValidUTF8(text, "\uFFFD"), "\x00", "")
-	if runes := []rune(text); len(runes) > maxSendErrorRunes {
-		return string(runes[:maxSendErrorRunes]) + "…"
-	}
-	return text
-}
-
 // StillWorked says whether a claim in state will still work this task as the task of generation's
 // run in phase p: it is that run's task for that phase, and its turn is still to come — queued, a
 // task taken back included, or taken and awaiting its turn — or running in the turn the claim is
 // working. A task whose turn started on a claim not working is over: what finishes it is the
-// turn's report, or the end of that turn (finishTask).
+// turn's report, or, for a plugin below TaskTakeContract, the end of that turn (finishTask), and
+// a take of a plugin that names its number whose report never comes is taken back as a cut turn
+// (interrupted), its turn over all the same.
 func (d Delivery) StillWorked(generation uint64, p phase.Phase, state ClaimState) bool {
 	return d.Generation == generation && d.Phase == p && (!d.turnStarted() || state == StateWorking)
 }
@@ -494,7 +459,7 @@ func pendingID(p *Delivery) string {
 // one: it says why the architect's pod came back, which no entry's task says, so a newer entry's
 // task is refused behind it and the wake's task is offered first, as it was before
 // dispatch://INFRA-2614 (TestAnUnconfirmedTaskTheRuleDoesNotReachStillRefusesANewerOne), and the
-// entry's task is queued once the wake's turn has run
+// entry's task is queued once the wake's turn has started
 // (TestAnEntrysTaskRefusedBehindAWakesTaskIsSentOnceTheWakesTurnEnds).
 //
 // What the older task named of a person's decisions is not lost with it: its retirement releases
@@ -544,15 +509,29 @@ func pendingID(p *Delivery) string {
 // (operatorDelivery), neither thing accepted above can be true, so the refusal below is exactly
 // a claim that holds a pending delivery its worker has not finished with, that the record still
 // owes and that no newer task replaces. runParkedLaunchNow reads the same pending delivery before
-// it runs a parked launch for such a task, so nothing runs for one this refuses; a task that
-// replaces one runs that launch where it arrives, and retires the replaced delivery itself before
-// it does — the launch takes the ladder's wait with the claim's timers (letGo), so the claim
-// reaching here then holds no delivery at all.
+// it runs a parked launch for such a task, so nothing runs for one this refuses. A task that takes
+// the place of an untaken one — dropped as one the record no longer owes, or replaced
+// (replaceOwedTask) — runs that launch where it arrives, and drops or retires that delivery itself
+// before it does, by the same test and in the same order as here: the launch takes the ladder's
+// wait with the claim's timers (letGo), which is what makes the ladder's task replaceable, so the
+// claim reaching here then holds no delivery at all. So does a task over a delivery whose take's
+// turn has run on a claim in no turn: runParkedLaunchNow retires that delivery as the last case
+// below does, before the launch, which would otherwise take it back as a cut turn. Over a claim
+// that is working, such a delivery is retired below and the launch keeps its turn
+// (runParkedLaunchNow says why).
+//
+// The task is as the store keeps it: a deliver's request comes through Handle, which gives every
+// event's text through the store's rule, and the daemon's own delivery of a relaunch's record
+// (queueRelaunch) is written from the claim's record, which holds only text the store keeps. An
+// operator's task can hold a NUL, which the request holds as the stored delivery does and a
+// restart reads back. So the comparison with the pending task, the delivery written and the text
+// a take of it is answered with (accept, Delivery.TakenText) all read the stored text, before a
+// restart as after one.
 func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
-	id, task := request.ID, request.Task
+	id := request.ID
 	queued := m.given(request)
 	if pending := m.claim.Pending; pending != nil {
-		if (id != "" && pending.ID == id && pending.Task == task) || queued {
+		if (id != "" && pending.ID == id && pending.Task == request.Task) || queued {
 			return nil
 		}
 		switch {
@@ -612,7 +591,7 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 	if id == "" {
 		id = rand.Text()
 	}
-	d := Delivery{ID: id, Task: task, Phase: request.Phase, Generation: request.Generation, Kept: request.Kept,
+	d := Delivery{ID: id, Task: request.Task, Phase: request.Phase, Generation: request.Generation, Kept: request.Kept,
 		Entry: request.Entry, CheckLook: request.CheckLook, QueuedAt: m.deps.Clock.Now(), RoundNamed: request.RoundNamed,
 		Number: m.claim.TaskWritten + 1, Origin: originOf(request)}
 	// The claim records the row, the entry, its handshake and the number only once the store has
@@ -767,8 +746,10 @@ func (m *Machine) phaseHolds(ctx context.Context, d Delivery) (bool, error) {
 }
 
 // retirePending drops the pending delivery and leaves its value to whoever writes the next one:
-// queue, for the task a newer one replaces, and replaceOwedTask, for the task a provider error
-// took back that a newer one replaces (retireTask, which every end of a delivery goes through).
+// queue, for the task a newer one replaces; replaceOwedTask, for the task a provider error took
+// back that a newer one replaces; and runParkedLaunchNow, for the task whose take's turn has run
+// that an operator's task replaces before the launch it runs (retireTask, which every end of a
+// delivery goes through).
 func (m *Machine) retirePending(ctx context.Context) error {
 	return m.retireTask(ctx, false)
 }
@@ -847,7 +828,19 @@ func (m *Machine) retirePending(ctx context.Context) error {
 //
 // A retirement that landed is the repair of any claim write the machine owed: the store wrote
 // the claim beside the delete, so the row is no longer behind memory (settleOwedWrite).
+//
+// A project pause's stop the machine owes is written first, through its own transaction, with the
+// claim and this delivery as memory holds them now — the repair's own write (putClaimAndPending,
+// putStops) — and the retirement after it, as it would have run: the pause's records land with the
+// first claim write that lands, and the retirement keeps the store's fenced answers
+// (ErrNoSuchDelivery, ErrOtherDelivery) whole. A stop that fails again stops the retirement here,
+// with nothing retired, for the next decision's repair and settle to make in that same order.
 func (m *Machine) retireTask(ctx context.Context, finished bool) error {
+	if len(m.owedStops()) > 0 {
+		if err := m.putClaimAndPending(ctx); err != nil {
+			return m.owes("PauseStopped", err)
+		}
+	}
 	p := m.claim.Pending
 	retired := m.stored()
 	if p.turnStarted() {
@@ -913,20 +906,23 @@ func (m *Machine) putClaimAndPendingOwed(ctx context.Context) error {
 	return m.saved(m.owes("PutClaimAndDelivery", m.putClaimAndPending(ctx)))
 }
 
-// streaming asks the agent whether a turn is in flight; answered is false when the agent could not
-// say (the ask failed or timed out). Its callers are the questions a restart leaves: over a claim
-// stored working (askTurnOver), and over one stored ready or idle whose stale-plugin relaunch
-// waits for the answer (askRestoredTurn), which acts on the answer only as the worker stream
-// delivers it again behind the frames read before it (StreamTurnAnswered).
-func (m *Machine) streaming(ctx context.Context, conn runtime.Conn) (streaming, answered bool) {
+// streaming asks the agent whether a turn is in flight, and answers what it said with the id of
+// the ask (runtime.ConnState); answered is false when the agent could not say (the ask failed or
+// timed out). Its callers are the questions a restart leaves: over a claim stored working
+// (askTurnOver), and over one stored ready or idle whose stale-plugin relaunch waits for the
+// answer (askRestoredTurn), which acts on the answer only as the worker stream delivers it again
+// behind the frames read before it (StreamTurnAnswered); and the count of the process's turns a
+// take's report placed, which the delivery of the answer to its ask checks (learnTurns,
+// checkPlacedCount).
+func (m *Machine) streaming(ctx context.Context, conn runtime.Conn) (state runtime.ConnState, answered bool) {
 	asking, cancel := context.WithTimeout(ctx, m.deps.Timeouts.RPC)
 	defer cancel()
 	state, err := conn.GetState(asking)
 	if err != nil {
 		m.log.Warn("supervise: the agent could not say whether it is in a turn", "error", err)
-		return false, false
+		return runtime.ConnState{}, false
 	}
-	return state.IsStreaming, true
+	return state, true
 }
 
 // adopts is whether a take of d hands the claim's working copy the role's App identity first
@@ -1107,10 +1103,10 @@ func interruptedTask(cause string) string {
 // task (Delivery.Relaunch), neither carries one (Delivery.message).
 //
 // The reason is the provider's own text read into an agent's prompt, so it is quoted as a Go
-// string (strconv.Quote), the way a check run's name is where the daemon reads one into a prompt
+// string with %q, the way a check run's name is where the daemon reads one into a prompt
 // (workflow's namedConclusions): the quotes bound it, and a newline or a quote inside it is
 // escaped rather than ending the sentence that carries it, so no refusal text can read as an
-// instruction of the daemon's own.
+// instruction of the daemon's own. The abandoned session's id is quoted the same way, with %q.
 func abandonedTask(c Claim, last bool) string {
 	read := "read the issue"
 	if c.Role != claim.RoleController {
@@ -1118,11 +1114,11 @@ func abandonedTask(c Claim, last bool) string {
 			"the issue, which `dispatch handoff-read --issue %s --phase <word>` reads (%s)",
 			claim.IssueBranch(c.Issue), c.Issue, handoffWords())
 	}
-	sentence := fmt.Sprintf("The session this claim ran before this one, %s, was abandoned where it stood: %s. "+
+	sentence := fmt.Sprintf("The session this claim ran before this one, %q, was abandoned where it stood: %q. "+
 		"This session is a new one: the turns, tool calls, subagents and background jobs of that session are "+
 		"gone, and only what it pushed and committed survives. Before you repeat any of that work, %s, and "+
 		"tell the architect your Legion addressing line names what you found, unless that is you or it names none.",
-		c.Abandoned.Session, strconv.Quote(c.Abandoned.Why), read)
+		c.Abandoned.Session, c.Abandoned.Why, read)
 	if last {
 		sentence += " Then continue the task."
 	}

@@ -232,6 +232,32 @@ func TestTheOperatorsSuspensionMovesADaemonsDeadlineEarlierAndTakesTheHoldOver(t
 	}
 }
 
+// A ready the agent sends again while it is in a turn leaves a suspension held for that turn
+// held (reready): the hold runs at the turn's end, as every hold made in a turn does
+// (holdSuspension, turnEnded), and the turn runs whole meanwhile. pi-legion sends its ready again
+// from its capability schedule, and a turn can start between its read of the session and the ready
+// reaching the daemon. A claim held in a compaction is working too, and waits for the
+// compaction's end the same way.
+//
+// The negative control is reready running every hold the ready meets (before this change): the
+// ready stops the process in the middle of the turn, cutting off the call the hold exists to keep.
+func TestAReadySentAgainInATurnLeavesTheHoldForTheTurnsEnd(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateWorking)
+	if err := h.handle(RequestSuspend{Claim: testToken, By: SuspendedByOperator}); !errors.Is(err, ErrSuspendHeld) {
+		t.Fatalf("the suspension in a turn answered %v, want it held", err)
+	}
+	stops := len(h.calls("Suspend"))
+
+	h.must(RequestReady{Claim: h.token, Generation: h.generation(), Session: session})
+
+	h.wantState(StateWorking)
+	h.wantCalls("Suspend", stops)
+	h.must(StreamTurnEnd{Claim: h.token})
+	h.wantState(StateSuspended)
+	h.wantCalls("Suspend", stops+1)
+}
+
 // A held suspension whose stop the runtime refuses stays held and is tried again at the probe
 // interval, so it lands with nothing else retrying it — an operator's suspend has no outbox row.
 // At the turn's end the claim is left idle meanwhile, and is handed nothing while it is stopped.
@@ -397,7 +423,7 @@ func TestOnlyAHeldSuspensionLetsARowEndSuspendedWithoutNamingIt(t *testing.T) {
 			saved := table[k]
 			t.Cleanup(func() { table[k] = saved })
 			table[k] = rule{name: "a rogue row", to: saved.to, act: func(m *Machine, ctx context.Context, _ Event) error {
-				return m.suspendNow(ctx, RequestSuspend{Claim: testToken, By: SuspendedByOperator})
+				return m.suspendNow(ctx, RequestSuspend{Claim: testToken, By: SuspendedByOperator}, false)
 			}}
 
 			err := h.handle(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Alive, At: h.clock.Now()}})

@@ -3,6 +3,7 @@ package supervise
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -25,15 +26,16 @@ import (
 // sent it (dispatch://INFRA-2811): the contract whose entry in internal/api's version.go brings
 // the take, task and task-seen routes, and the one whose state body first carries
 // `unseenTaskValues` (R5's claims whose value nobody reported seeing). internal/api serves a
-// caller in a pod whose claims record a contract below it the state without that key (stateFor,
-// withoutUnseenTaskValues), and a claim whose plugin declares a contract below it cannot take a
-// task at all.
+// caller below it the state without that key and with `never_reconnected` served as
+// `never_registered`, and the registration without `task` and `finished` (shaping.go's
+// stateNarrowings, valueStrips and shapeAnswer), and a claim whose plugin declares a contract
+// below it cannot take a task at all.
 //
 // It lives here rather than beside DaemonAPIVersion because internal/api imports this package,
 // as PodUpdateContract does, and internal/api's own test pins the two to one number
 // (TestTaskTakeContractIsTheContractThatIntroducedTheTake): a merge that renumbers this change
 // moves both together.
-const TaskTakeContract = 174
+const TaskTakeContract = 203
 
 // TakesNoTask is whether a plugin that declared contract takes no task: it is below
 // TaskTakeContract, so its worker waits for a prompt this daemon never sends and never asks to
@@ -127,8 +129,9 @@ const (
 	TakeOutcomeDropped TakeOutcome = "dropped"
 )
 
-// The holds a take is refused by, by name. The first eight are a state of the claim, its issue or
-// its tree that the task waits out; the rest are a take the claim's own state refuses.
+// The holds a take is refused by, by name. The first nine are a state of the claim, its issue,
+// its tree or its project that the task waits out; the rest are a take the claim's own state
+// refuses.
 const (
 	// HoldIssueInTurn is another role of the claim's issue in a turn, or holding an accepted take
 	// whose turn has not ended, while this task would adopt the working copy they share.
@@ -149,6 +152,10 @@ const (
 	// HoldSessionNotHeld is a claim recording a session it does not hold, or one the store did not
 	// answer the hold of (holdRecorded): another claim recorded a name of it first, or two did.
 	HoldSessionNotHeld = "session-not-held"
+	// HoldProjectPaused is the project's pause holding the claim (pauseHolds): while the project
+	// is paused no task is taken by any role but the controller (decision 8 of
+	// dispatch://INFRA-3759's plan).
+	HoldProjectPaused = "project-paused"
 	// HoldAdoption is a working copy the shim did not adopt, or a role identity the daemon could
 	// not mint for it (adopt).
 	HoldAdoption = "adoption"
@@ -585,36 +592,44 @@ func adoptedTooLate(m *Machine, ctx context.Context, ev Event) error {
 }
 
 // refusedAdoption is a take whose adoption of the working copy failed. It is recorded on the
-// delivery (Delivery.SendFailures and its two companions, scrubbed), and only some failures cost
-// budget: a refused adoption is the shim's own answer about this workspace and is charged
-// (chargePrompt), so it cannot repeat without bound — the third charge retires the process —
-// while a role identity the daemon could not mint and a transport that lost the call are no
-// answer at all and charge nothing. The take is refused with the adoption's hold either way; the
-// value is written again once no hold stands, at the next sweep, hello or ready (offerPending).
+// delivery (Delivery.SendFailures and its two companions), and only some failures cost budget: a
+// refused adoption is the shim's own answer about this workspace and is charged (chargePrompt), so
+// it cannot repeat without bound — the third charge retires the process — while a role identity
+// the daemon could not mint and a transport that lost the call are no answer at all and charge
+// nothing. The take is refused with the adoption's hold either way; the value is written again
+// once no hold stands, at the next sweep, hello or ready (offerPending).
+//
+// The text is the far side's own — a refused adoption carries the wedged command's whole stderr —
+// so the delivery holds it, in memory as in the store, as the daemon keeps any far side's error
+// text (storetext.FarSideError), a text the store takes whatever the far side wrote: the text the
+// failure's line carries, which logFarSideError writes and returns, so the line, the record and
+// the charge's own sentence carry one text. That is why the line is chosen before the record is
+// written. The whole text follows the line under a message of its own (logFarSideError).
 //
 // The record's write is carried past rather than returned when it fails, so the charge is always
 // made (the delivery is left unsaved, and settle writes it again).
 func (m *Machine) refusedAdoption(ctx context.Context, request RequestTake, err error) error {
 	p := m.claim.Pending
+	// The line that names this failure, and for a charged one the words its charge puts before
+	// the far side's text ("" for a failure charged nothing).
+	msg, charge := "supervise: the adoption of the working copy was lost to the transport; the take is refused and the task waits", ""
+	switch {
+	case errors.Is(err, runtime.ErrAdoptRefused):
+		msg, charge = "supervise: the shim refused to adopt the working copy; the take is refused", "the working copy was not adopted: "
+	case errors.Is(err, runtime.ErrIdentityUnavailable):
+		msg = "supervise: the role's GitHub App identity could not be minted; the take is refused and the task waits"
+	}
 	p.SendFailures++
 	p.LastSendFailureAt = m.deps.Clock.Now()
-	p.LastSendError = scrubSendError(err.Error())
+	p.LastSendError = m.logFarSideError(ctx, slog.LevelWarn, msg, err, "task", p.Number)
 	if err := m.putPending(ctx); err != nil {
 		m.log.Warn("supervise: the failed adoption was not recorded on the delivery; settle writes it again and the charge goes on",
 			"task", p.Number, "error", err)
 	}
 	m.claim.recordTake(request, TakeRefused)
 	m.answer(request, TakeAnswer{Outcome: TakeOutcomeRefused, Hold: HoldAdoption})
-	switch {
-	case errors.Is(err, runtime.ErrAdoptRefused):
-		m.log.Warn("supervise: the shim refused to adopt the working copy; the take is refused", "task", p.Number, "error", err)
-		return m.chargePrompt(ctx, WaitAdoption, "the working copy was not adopted: "+err.Error())
-	case errors.Is(err, runtime.ErrIdentityUnavailable):
-		m.log.Warn("supervise: the role's GitHub App identity could not be minted; the take is refused and the task waits",
-			"task", p.Number, "error", err)
-	default:
-		m.log.Warn("supervise: the adoption of the working copy was lost to the transport; the take is refused and the task waits",
-			"task", p.Number, "error", err)
+	if charge != "" {
+		return m.chargePrompt(ctx, WaitAdoption, charge+p.LastSendError)
 	}
 	return m.persist(ctx)
 }
@@ -623,10 +638,10 @@ func (m *Machine) refusedAdoption(ctx context.Context, request RequestTake, err 
 // the text the take is answered with (TakenText), composed here with the notes the claim's state
 // puts in front of the task (Delivery.message) — so a take sent again is answered with exactly
 // this text, and after a restart too; the claim records the number taken (TaskTaken) and the take
-// at its revision; the record of failed sends is cleared, since this task got through; and the
-// records whose sentences this text carries are told. It all goes in one write, which is where
-// the store tells the decisions the task names (store's putDelivery), and once that write holds
-// the workflow is told the agent took its work (Deps.TaskConfirmed).
+// at its revision; the record of failed working-copy adoptions is cleared, since this task got
+// through; and the records whose sentences this text carries are told. It all goes in one write,
+// which is where the store tells the decisions the task names (store's putDelivery), and once
+// that write holds the workflow is told the agent took its work (Deps.TaskConfirmed).
 //
 // This is where the claim's two records of what became of the agent's earlier work — the session
 // the claim abandoned (AbandonedSession) and what the last let-go of its process ended
@@ -651,6 +666,10 @@ func (m *Machine) refusedAdoption(ctx context.Context, request RequestTake, err 
 //
 // The prompt budgets are not cleared here: a take resets no count (R5), and they go to zero at
 // the start of this take's turn, as at any turn's start or end (turnStarted).
+//
+// A take accepted while the claim's count of its process's turns is not known keeps what it saw,
+// in memory, for the report of its own turn to make that count known again (anchorTake,
+// learnTurns).
 //
 // None of it is the claim's until the store holds it. The take is composed on a copy of the
 // claim and one of its delivery, which memory takes only once the write lands, as queue's write
@@ -685,6 +704,7 @@ func (m *Machine) accept(ctx context.Context, request RequestTake) error {
 		c.EndedWork.Told, c.EndedWork.ToldBy = true, taken.ID
 	}
 	taken.TakeTold = Sentences{Abandoned: toldAbandoned, Ended: toldEnded}
+	first := m.claim.TaskTaken != taken.Number
 	c.TaskTaken = taken.Number
 	c.recordTake(request, TakeAccepted)
 	if err := m.saved(m.owes("PutClaimAndDelivery", m.putClaimAndDelivery(ctx, c, taken))); err != nil {
@@ -694,6 +714,7 @@ func (m *Machine) accept(ctx context.Context, request RequestTake) error {
 	c.Pending = p
 	m.claim = c
 	m.settleOwedWrite("PutClaimAndDelivery")
+	m.anchorTake(first)
 	if toldAbandoned {
 		m.log.Info("supervise: an accepted take told the agent of the session its claim abandoned",
 			"task", p.Number, "delivery", p.ID, "session", c.Abandoned.Session)
@@ -820,13 +841,16 @@ func (m *Machine) takeable(ctx context.Context, owed bool) (hold string, dropped
 // queued as a task, the daemon's own delivery of a relaunch's record whose record no longer
 // tells, and a task whose issue has left the phase it was queued for (phaseHolds, a read of the
 // issue's record in a transaction of its own). The task is retired and its value deleted
-// (dropPending), under the line that says which of the three it was. Two places ask it, so the
-// record's answer is one: a take or a hold's end (takeable), once no hold of the claim's stands,
-// which then gives the claim the daemon's own delivery of a record that still tells
-// (queueRelaunch); and a newer task that arrives behind the task (queue), whatever holds stand
-// and before any other case of a held task, which then takes its place and carries that sentence
+// (dropPending), under the line that says which of the three it was. Every place that asks it
+// gets the record's one answer: a take or a hold's end (takeable), once no hold of the claim's
+// stands, which then gives the claim the daemon's own delivery of a record that still tells
+// (queueRelaunch); a newer task that arrives behind the task (queue), whatever holds stand and
+// before any other case of a held task, which then takes its place and carries that sentence
 // itself, and where nothing was dropped hands that answer to the hold's end its refusal makes
-// (offer), so one decision asks the record once. A read of the record that fails drops nothing.
+// (offer), so that decision asks the record once; and an operator's task over a launch the pacing
+// parked above the claim's process (runParkedLaunchNow), which asks before the row's queue does,
+// so that the launch runs for the operator's task where queue would drop the task it arrived
+// behind. A read of the record that fails drops nothing.
 func (m *Machine) dropUnowed(ctx context.Context) (bool, error) {
 	p := m.claim.Pending
 	round, asks := updateRoundOf(p.ID)
@@ -852,18 +876,25 @@ func (m *Machine) dropUnowed(ctx context.Context) (bool, error) {
 }
 
 // claimHold is the hold the claim's own state puts on a take of its pending task, "" for none:
-// the claim not ready or idle, a suspension held over it, a launch the wake pacing holds over its
-// process, an update round it has answered, a plugin stale enough that its every `legion` call is
-// refused, and the wait a provider error armed for this task. It reads the claim and its memory
-// alone, so it is asked again after an adoption that ran with the lock let go (adopted).
+// the project's pause holding the claim, the claim not ready or idle, a suspension held over it, a
+// launch the wake pacing holds over its process, an update round it has answered, a plugin stale
+// enough that its every `legion` call is refused, and the wait a provider error armed for this
+// task. It reads the claim and its memory alone, so it is asked again after an adoption that ran
+// with the lock let go (adopted).
 //
-// Four of them hold the task instead of dropping it, each for a reason of its own: a worker that
-// answered its round is about to lose its process, and so is one whose launch waits its turn, and
-// a task started there would be retired as served at a turn it never finished; a stale plugin's
-// every call is refused, so a task taken there buys a model turn nothing can come of and puts the
-// claim in a turn, which postpones the relaunch it is waiting for; and the provider-error wait is
-// the task's own ladder (providererror.go).
+// Five of them hold the task instead of dropping it, each for a reason of its own: while the
+// project is paused no task is taken by any role but the controller (decision 8 of
+// dispatch://INFRA-3759's plan), so the task stays pending, decided nothing about and dropped for
+// nothing, and the resume's event writes its value again once the pause is over (resumePause,
+// offerPending); a worker that answered its round is about to lose its process, and so is one
+// whose launch waits its turn, and a task started there would be retired as served at a turn it
+// never finished; a stale plugin's every call is refused, so a task taken there buys a model turn
+// nothing can come of and puts the claim in a turn, which postpones the relaunch it is waiting
+// for; and the provider-error wait is the task's own ladder (providererror.go).
 func (m *Machine) claimHold() string {
+	if _, holds := m.pauseHolds(); holds {
+		return HoldProjectPaused
+	}
 	switch m.claim.State {
 	case StateReady, StateIdle:
 	case StateWorking:
@@ -919,128 +950,4 @@ func (m *Machine) takeBackInMemory(cause string) (claimMoved bool) {
 	claimMoved = m.clearTake(p, cause)
 	m.rewrite = valueRewrite{number: p.Number, cause: TaskValueRetake}
 	return claimMoved
-}
-
-// startTakesTurn is the write of a turn's start that is the turn of the pending task's accepted
-// take: the claim and the delivery together. The delivery records the turn started
-// (TurnStarted) and keeps the take's text, so a take of the number sent again from here on is
-// still answered it (answeredFromRecord), and a report that then says this turn was not the
-// take's gives the take back its turn with the same text (notTheTakesTurn). The claim it writes
-// carries the prompt budgets at zero, which is the reset every turn's start makes (turnStarted,
-// R5): the take that came before it reset nothing.
-func (m *Machine) startTakesTurn(ctx context.Context) error {
-	p := m.claim.Pending
-	p.TurnStarted = true
-	return m.putClaimAndPendingOwed(ctx)
-}
-
-// finishTask finishes the pending task, whose take's turn ran: the delivery retires, the claim
-// records the number finished and the session that finished it (Claim.TaskFinished,
-// TaskFinishedSession) in the same write, and the value is deleted. by names what finished it,
-// for the line: the turn-outcome report that named its number (finishedByReport), or the end of
-// its turn with no report after it (finishedByEndFrame).
-//
-// A finish whose retirement the store refused leaves the task pending with its turn over, so the
-// end-frame bound is armed again for it, whatever its plugin: the bound that fired, or the report
-// that named it, has been spent, nothing else would finish it (settle finishes it in every state
-// but ready, idle and working), and no worker sends a report again once it was answered. It is
-// armed at once over a ready or idle claim, and at the end of the turn running over a working
-// one — a report that came ahead of its own turn's end frame — so it is armed wherever the report
-// arrived, before a bound or after one fired (armEndFrameBound). A refusal of the report's own
-// finish leaves that finish owed (Machine.finishOwed), so the bound that makes it again finishes
-// by the report, whatever the claim's plugin, and each refusal of the bound's own write arms it
-// again, until one lands (decision 8 of dispatch://INFRA-2811). A plugin that names its
-// task's number is given no other bound than this one (endFrameFinishes).
-func (m *Machine) finishTask(ctx context.Context, by string) error {
-	p := m.claim.Pending
-	number, id := p.Number, p.ID
-	if err := m.retireTask(ctx, true); err != nil {
-		if by == finishedByReport {
-			m.finishOwed = true
-		}
-		if _, armed := m.timers[TimerFinish]; !armed && (m.claim.State == StateReady || m.claim.State == StateIdle) {
-			m.arm(TimerFinish, m.deps.Timeouts.RPC, id)
-		}
-		return err
-	}
-	m.log.Info(taskFinishedLine, "task", number, "by", by)
-	m.deleteValue(ctx, number, valueDeletedFinished)
-	return nil
-}
-
-// finishAtTurnsEnd is the end-frame bound over: the task's turn ended, and no turn-outcome
-// report named its number within the RPC timeout (Timeouts.RPC), so the end of the turn finishes
-// it — which is what finishes a task a worker whose plugin reports no number took
-// (endFrameFinishes). A bound that makes again a finish a report decided and the store refused
-// finishes by that report, and its line says so (overTurnFinish). What the turn's end held for
-// the task runs now (afterTurn), as the report's finish runs it.
-func finishAtTurnsEnd(m *Machine, ctx context.Context, _ Event) error {
-	by, _ := m.overTurnFinish()
-	if by == "" {
-		by = finishedByReport
-	}
-	if err := m.finishTask(ctx, by); err != nil {
-		return err
-	}
-	if m.claim.State == StateWorking {
-		return nil
-	}
-	return m.afterTurn(ctx)
-}
-
-// endFrameFinishes is whether the end of a take's turn finishes the task where no turn-outcome
-// report named its number within the RPC timeout: only for a claim whose plugin is below
-// TaskTakeContract (TakesNoTask), which names no number in any report, so its report can finish
-// nothing and the end of the turn is what finishes the task a migrated old worker took. A claim
-// whose plugin names its task's number has its task finished by the report that names it and by
-// nothing else: the end of a run says nothing of whose run it was, since the daemon gives a take
-// the first run that starts after it and the worker may run its text in the run after that
-// (decision 8 of dispatch://INFRA-2811; notTheTakesTurn).
-func (m *Machine) endFrameFinishes() bool { return TakesNoTask(m.claim.PluginContract) }
-
-// overTurnFinish is how a take's turn that is over settles its task where no write of the store
-// has finished it yet: by the report whose finish the store refused (finishOwed), else by its end
-// frame for a plugin that names no number (endFrameFinishes); false for neither, a task of a
-// plugin that names its number which no report has finished, which only that report finishes.
-func (m *Machine) overTurnFinish() (by string, finishes bool) {
-	switch {
-	case m.finishOwed:
-		return finishedByReport, true
-	case m.endFrameFinishes():
-		return finishedByEndFrame, true
-	}
-	return "", false
-}
-
-// armEndFrameBound arms the end-frame bound over the pending task whose take's turn ended
-// (TimerFinish), where that end finishes the task (overTurnFinish): a plugin that names no number,
-// or a finish a report decided and the store refused; and arms nothing for any other.
-func (m *Machine) armEndFrameBound(id string) {
-	if _, finishes := m.overTurnFinish(); finishes {
-		m.arm(TimerFinish, m.deps.Timeouts.RPC, id)
-	}
-}
-
-// armFinishAtAct arms the end-frame bound a daemon start left to the worker's first act
-// (finishAtAct, NewMachine), at the end of the decision that act made (unlock): the claim, one
-// whose end frame finishes its task (endFrameFinishes), was restored ready or idle over a take
-// whose turn had started and ended under the daemon before this one, so the report that would
-// finish it is the worker's to send again to this daemon, and a bound that ran from the start
-// would run over the time no daemon served the worker (dispatch://INFRA-2811, whose departure 7
-// restarts R5's clocks from the same act). The act's own decision may have settled the task
-// already — a report that finished it — or have started a turn, whose end arms the bound in its
-// turn (turnEnded), so the bound is armed only over a claim still ready or idle holding that take
-// with its turn started.
-func (m *Machine) armFinishAtAct() {
-	if !m.finishAtAct || m.awaitsAct {
-		return
-	}
-	m.finishAtAct = false
-	p := m.claim.Pending
-	if p == nil || !p.turnStarted() || (m.claim.State != StateReady && m.claim.State != StateIdle) {
-		return
-	}
-	if _, armed := m.timers[TimerFinish]; !armed {
-		m.armEndFrameBound(p.ID)
-	}
 }

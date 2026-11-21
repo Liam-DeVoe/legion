@@ -1,5 +1,9 @@
 import { messageFor } from "@legion/envoy-client/errors";
-import { claimCaller, type LegionDaemonClient } from "@legion/pi-shared/daemon-client";
+import {
+  type ClaimCaller,
+  claimCaller,
+  type LegionDaemonClient,
+} from "@legion/pi-shared/daemon-client";
 import {
   createHoldsRead,
   type HeldTake,
@@ -17,7 +21,12 @@ import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops";
 import type { SessionContext } from "@legion/pi-shared/pi-types";
 import { claimEnvoyRole, onEnvoyRoleRegained } from "@legion/pi-shared/role-claim-bridge";
 import { recordBootstrappedSession } from "@legion/pi-shared/subagent-session";
-import { type ClaimTaskTake, takeClaimTask } from "@legion/pi-shared/task-take";
+import {
+  type ClaimTaskTake,
+  type TaskTake,
+  type TaskTakeDeps,
+  takeClaimTask,
+} from "@legion/pi-shared/task-take";
 import { logger } from "@oh-my-pi/pi-utils";
 import pkg from "../package.json";
 import { requiredEnvironment, requiredSecret } from "./classify";
@@ -30,22 +39,23 @@ export interface ClaimSession {
   /** The claim `sessionID` registered, or undefined: before its registration, and for any other
    * session. */
   readonly capability: (sessionID: string) => ClaimCapability | undefined;
-  /** A run of this pane's session started (`legion.ts` calls it from `agent_start`, never for a
-   * `task` subagent's event): the claim's take no longer finds the host idle, and the first run
-   * after an accepted take is that task's turn (`@legion/pi-shared/task-take`); the run's tool
-   * results may read the takes it holds (`heldNotes`). It does nothing before the claim is
-   * registered. */
-  readonly runStarted: () => void;
-  /** That run ended (`agent_end`): the number of the task whose turn it was, which the turn's
-   * outcome report names, or undefined for a run of no task or a session with no claim.
-   * `providerError` is whether that report carries the provider's failure; without one the take
-   * holds the task finished (`TaskTake.runEnded`). The takes the run's holds reads named, and a
-   * read still unanswered, are dropped: each such take is accepted at this turn's end. */
-  readonly runEnded: (providerError: boolean) => number | undefined;
-  /** The daemon refused with a 4xx the report of a turn of task `number` that carried no provider
-   * error (`src/turn-outcome.ts`): the take holds the number finished no longer, since the record
-   * still owes it (`TaskTake.reportRefused`). It does nothing before the claim is registered. */
-  readonly reportRefused: (number: number) => void;
+  /** The take of this pane's claim (`@legion/pi-shared/task-take`), whose hooks `legion.ts` calls
+   * for a run of the claim's session (`agent_start` and `agent_end`, never a `task` subagent's
+   * event) and for the daemon's refusal of that run's report (`src/turn-outcome.ts`): the first
+   * run after an accepted take's text was handed to the idle host is that task's turn, and its end
+   * the report naming its number.
+   * Undefined for any other session than the one the claim registered, which a switch, a branch
+   * or a tree navigation can leave the pane on (`afterSessionChange` in `legion.ts`): a run of
+   * that session neither starts nor ends the take's turn, as its end reports nothing
+   * (`capability`). Undefined before the claim is registered. */
+  readonly take: (sessionID: string) => TaskTake | undefined;
+  /** A run of `sessionID` started (`going` true, from `agent_start`) or ended (false, from
+   * `agent_end`), never a `task` subagent's: the bounds of the run whose tool results read the
+   * takes it holds (`heldNotes`). At each bound the holds read drops what earlier reads named and
+   * a read still unanswered, since each take a read names is accepted at the end of the run it
+   * was named in, even where that run's end never came. Nothing for any other session than the
+   * one the claim registered, or before the claim is registered. */
+  readonly runBoundary: (sessionID: string, going: boolean) => void;
   /** The number of the claim's own task to note at this tool result (dispatch://INFRA-4130 R1,
    * `taskWaitingNote`): the take's `noteFor`, which gives each number once and records it, so
    * only the host's call at a tool result of the session's own agent may make it. Undefined
@@ -71,9 +81,15 @@ export interface ClaimSession {
    * registration, the relay and its own reads. The tool result does not wait for the read, so its
    * answer is noted at the next tool result after it. A read bounded out (`HOLDS_READ_BOUND_MS`)
    * or failed notes nothing, an answer that comes after the run's end is dropped, and no read
-   * starts while no run is going. Empty before the claim is registered.
+   * starts while no run is going (`runBoundary`). Empty before the claim is registered.
    */
   readonly heldNotes: () => readonly HeldTake[];
+}
+
+/** The take of this pane's claim (`takeClaimTask`), and the caller it takes for: the claim's
+ * registration, made for the session the boot ran in. */
+interface Taking extends ClaimTaskTake {
+  readonly caller: ClaimCaller;
 }
 
 /**
@@ -134,22 +150,23 @@ export function attributionInputs(
  *
  * The transcript is recorded as the bootstrapped session before the registration; the jj
  * attribution (`exportJjSessionAttribution`) runs once it answered, before the capability is set.
- * A 4xx registration refusal, and any failure after a registration, exit the process.
+ * A 4xx registration refusal, and any failure after a registration but the read after the ready,
+ * exit the process.
  */
 export function createClaimSession(deps: {
   readonly daemon: () => LegionDaemonClient;
   readonly persistedTranscript: (
     context: SessionContext
   ) => Promise<{ readonly sessionFile: string; readonly agentId: string }>;
-  /** Sends an accepted take's text as the turn's user message. */
-  readonly runTask: (text: string) => void;
+  /** An accepted take's text to the host (`TaskTakeDeps.run`). */
+  readonly runTask: TaskTakeDeps["run"];
   readonly exitProcess: (code: number) => never;
   /** The clock the holds reads are a minute apart by (`heldNotes`). */
   readonly now: () => number;
 }): ClaimSession {
   let capability: ClaimCapability | undefined;
   let booting: Promise<void> | undefined;
-  let taking: ClaimTaskTake | undefined;
+  let taking: Taking | undefined;
   // Ends the take's hold on its mark, kept until the read after the ready has answered
   // (`afterReadyRead`).
   let readAnswered: (() => void) | undefined;
@@ -177,12 +194,7 @@ export function createClaimSession(deps: {
       },
       afterRegister: async (claim) => {
         const caller = claimCaller(claim, sessionID);
-        taking = takeClaimTask({
-          daemon,
-          caller,
-          run: deps.runTask,
-          log: logger,
-        });
+        taking = { ...takeClaimTask({ daemon, caller, run: deps.runTask, log: logger }), caller };
         holdsRead = createHoldsRead({
           daemon,
           caller: () => caller,
@@ -204,7 +216,8 @@ export function createClaimSession(deps: {
       },
       // The claim's role topic is where the daemon sends every notice for an architect (the
       // notice executor, packages/daemon/internal/daemon/outbox.go), and where the listener
-      // relays the claim's task value: no issue topic carries one, so no claim subscribes to one.
+      // relays the claim's task value: no issue topic carries one, so no claim subscribes to one,
+      // and no phase worker is woken by an architect's notice.
       claimRole: (role) => claimEnvoyRole(sessionID, role, context),
       taskValue: (reading) => taking?.take.read(reading),
       afterReadyRead: () => readAnswered?.(),
@@ -236,19 +249,12 @@ export function createClaimSession(deps: {
   return {
     bootstrap,
     capability: (sessionID) => (capability?.sessionID === sessionID ? capability : undefined),
-    runStarted: () => {
-      if (taking === undefined) return;
-      running = true;
-      // A read an earlier run started answers for that run alone, even where its end never came.
+    take: (sessionID) => (taking?.caller.sessionId === sessionID ? taking.take : undefined),
+    runBoundary: (sessionID, going) => {
+      if (taking?.caller.sessionId !== sessionID) return;
+      running = going;
       holdsRead?.turnEnded();
-      taking.take.runStarted();
     },
-    runEnded: (providerError) => {
-      running = false;
-      holdsRead?.turnEnded();
-      return taking?.take.runEnded(providerError);
-    },
-    reportRefused: (number) => taking?.take.reportRefused(number),
     taskNote: () => taking?.take.noteFor(),
     taskPending: () => taking?.take.pending() ?? false,
     deferUntilTakeSettles: (callback) => taking?.take.deferUntilSettled(callback) ?? false,

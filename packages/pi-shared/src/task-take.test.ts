@@ -6,12 +6,12 @@ import {
   LegionTakeResponse,
   LegionTaskResponse,
 } from "@legion/contracts/legion-api";
-import type { RelayTaskValue } from "@legion/envoy-client/consumer-delivery";
+import type { RelayTaskValue } from "@legion/envoy-client/relay-frame";
 import {
   type ClaimCaller,
   DAEMON_ANSWER_TIMEOUT_MS,
-  DAEMON_RESEND_FIRST_DELAY_MS,
-  DAEMON_RESEND_MAX_DELAY_MS,
+  DAEMON_RESTART_FIRST_DELAY_MS,
+  DAEMON_RESTART_MAX_DELAY_MS,
   LegionDaemonApiError,
 } from "./daemon-client";
 import { createTaskTake } from "./task-take";
@@ -29,6 +29,12 @@ const REFUSED = LegionTakeResponse.parse(daemonFixture("take-refused.json"));
 const DROPPED = LegionTakeResponse.parse(daemonFixture("take-dropped.json"));
 const NOTHING_HELD = LegionTaskResponse.parse(daemonFixture("task.json"));
 const TEXT = ACCEPTED.outcome === "accepted" ? ACCEPTED.text : "";
+// The daemon's answer to a take it decided afresh after it took the task back: its text can differ
+// from the first accept's, since what that take told goes back to untold with it.
+const AFRESH_TEXT = `${TEXT} (taken again)`;
+const ACCEPTED_AFRESH = LegionTakeResponse.parse({ outcome: "accepted", text: AFRESH_TEXT });
+/** How Oh My Pi's `pi.sendUserMessage` rejects a message it drops before its turn begins. */
+const DROP = new Error("Prompt dropped before provider dispatch.");
 
 const caller: ClaimCaller = {
   claimToken: "legion-legion-legion-209-implementer",
@@ -75,18 +81,24 @@ async function flush(): Promise<void> {
  * with the next `seens` holds (204, by default). `advance` moves the clock, firing every wait it
  * passes; a wait that fired stops listening for its abort, as `timerWait` does, so a later abort
  * of its signal takes no other wait off the clock. `waits` is every wait between two attempts of
- * one request, in the order they were made.
+ * one request, in the order they were made. `handed` is the host's answer to each text the take
+ * handed it, in the order of `ran`, which a case rejects where the host dropped that text. `host`
+ * is the host's own idle reading at each hand-over: a case sets `idle` false while the host sets
+ * up a prompt it already took (a card's or a person's, before its `agent_start`), for which `run`
+ * answers that the host is not idle and hands nothing, as pi-legion's `runTask` does.
  */
 function rig() {
   const calls: Call[] = [];
   const takes: Attempt<LegionTake>[] = [];
   const seens: Attempt<undefined>[] = [];
   const ran: string[] = [];
+  const handed: { readonly reject: (reason: unknown) => void }[] = [];
   const marks: boolean[] = [];
   const warned: string[] = [];
   const waits: number[] = [];
   let now = 0;
   const timers: { readonly due: number; readonly fire: () => void }[] = [];
+  const host = { idle: true };
 
   const attempt = <T>(next: Attempt<T> | undefined, fallback: T, signal?: AbortSignal) => {
     if (next === undefined) return Promise.resolve(fallback);
@@ -110,7 +122,13 @@ function rig() {
         return attempt(takes.shift(), REFUSED, options?.signal);
       },
     },
-    run: (text) => ran.push(text),
+    run: (text) => {
+      if (!host.idle) return "not idle";
+      ran.push(text);
+      const hand = Promise.withResolvers<void>();
+      handed.push(hand);
+      return hand.promise;
+    },
     setPending: (pending) => marks.push(pending),
     log: { info: () => undefined, warn: (message) => warned.push(message) },
     wait: (ms, signal) => {
@@ -155,7 +173,7 @@ function rig() {
   const routed = (route: Call["route"]) =>
     calls.filter((call) => call.route === route).map((call) => call.body);
 
-  return { take, calls, takes, seens, ran, marks, warned, waits, advance, routed };
+  return { take, calls, takes, seens, ran, handed, marks, warned, waits, advance, routed, host };
 }
 
 const body = (number: number, revision: number) => ({
@@ -473,7 +491,7 @@ test("a take whose accepted answer was lost is answered again during a run that 
 
   // A run starts while the take waits to be sent again, and the re-sent take is answered then.
   take.runStarted();
-  await advance(DAEMON_RESEND_FIRST_DELAY_MS);
+  await advance(DAEMON_RESTART_FIRST_DELAY_MS);
   expect(routed("take")).toEqual([body(4, 12), body(4, 12)]);
   expect(ran).toEqual([]);
 
@@ -486,18 +504,115 @@ test("a take whose accepted answer was lost is answered again during a run that 
   expect(ran).toEqual([TEXT]);
 });
 
-test("a take sent again for a number already accepted runs the text once", async () => {
-  const { take, takes, ran, advance } = rig();
+// R5 and the plan's decision 9 for a host that is not idle though no run of its session is going:
+// it sets up a prompt it already took, a card's here, before that prompt's `agent_start`. The take
+// hands the text in no form into that setup — a follow-up's answer settles once the host queues
+// it, so a drop of it after that would not be seen —: `run` answers that the host is not idle, and
+// the take holds the text as it holds one accepted during a run. The card's run is the first to
+// start after the accept, so the daemon counts it as the take's turn; its end names no task, which
+// puts the take back, and the text goes to the idle host then, once, as the prompt that starts the
+// task's own turn, whose end names the number.
+test("a take accepted while the host sets up a card's prompt holds its text: the card's run names no task, and the text is handed at idle once, as the prompt of the next run, whose end names the task", async () => {
+  const { take, takes, ran, advance, marks, host, routed } = rig();
   take.ready();
+  host.idle = false;
   takes.push({ answer: ACCEPTED });
   take.relayed(put(4, 12));
   await advance(0);
-  // A newer revision of the same number before the turn started: the daemon answers the take of
-  // an accepted number with the same text, which is already on its way.
-  takes.push({ answer: ACCEPTED });
-  take.relayed(put(4, 13));
-  await advance(0);
+  expect(routed("take")).toEqual([body(4, 12)]);
+  expect(ran).toEqual([]);
+  expect(marks).toEqual([true]);
+
+  // The card's run starts and ends; the host is idle again at its end.
+  take.runStarted();
+  expect(marks).toEqual([true]);
+  host.idle = true;
+  expect(take.runEnded(false)).toBeUndefined();
   expect(ran).toEqual([TEXT]);
+
+  // The run the text starts is the task's turn, and only it names the number.
+  take.runStarted();
+  expect(marks).toEqual([true, false]);
+  expect(take.runEnded(false)).toBe(4);
+  take.runStarted();
+  expect(take.runEnded(false)).toBeUndefined();
+  expect(ran).toEqual([TEXT]);
+  expect(routed("take")).toEqual([body(4, 12)]);
+});
+
+// A run's end can find the host not idle as well: the host goes on with a continuation it has
+// already scheduled (`willContinue`). A text held for that end is held again, through the
+// continuation's run, whose end names no task either, and goes to the host at the first end that
+// finds it idle, once.
+test("a held text whose run's end finds the host not idle, a continuation following, is held through that continuation too, and handed at idle once", async () => {
+  const { take, takes, ran, advance, host } = rig();
+  take.ready();
+  const answer = Promise.withResolvers<LegionTake>();
+  takes.push({ late: answer.promise });
+  take.relayed(put(4, 12));
+  await advance(0);
+  take.runStarted();
+  answer.resolve(ACCEPTED);
+  await advance(0);
+
+  host.idle = false;
+  expect(take.runEnded(false)).toBeUndefined();
+  expect(ran).toEqual([]);
+  take.runStarted();
+  host.idle = true;
+  expect(take.runEnded(false)).toBeUndefined();
+  expect(ran).toEqual([TEXT]);
+  take.runStarted();
+  expect(take.runEnded(false)).toBe(4);
+  expect(ran).toEqual([TEXT]);
+});
+
+// The run a held text waits through is reported as holding it (`held`), read at that run's end
+// before `runEnded` hands the text on: that is the daemon's one certain word that the run was not
+// the task's turn, also where the daemon has lost its count of the session's turns. A run that
+// ends before the take's answer came holds nothing, nor does the run the text starts, nor a run
+// after a newer revision of the number let the held text go; a continuation the held text waits
+// through holds it too.
+test("names the text it holds through a run at that run's end, and nothing once the text is handed or let go", async () => {
+  const { take, takes, ran, advance, host } = rig();
+  take.ready();
+  expect(take.held()).toBeUndefined();
+  const answer = Promise.withResolvers<LegionTake>();
+  takes.push({ late: answer.promise });
+  take.relayed(put(4, 12));
+  await advance(0);
+  take.runStarted();
+  expect(take.held()).toBeUndefined();
+  answer.resolve(ACCEPTED);
+  await advance(0);
+
+  expect(take.held()).toBe(4);
+  host.idle = false;
+  expect(take.runEnded(false)).toBeUndefined();
+  expect(take.held()).toBe(4);
+  take.runStarted();
+  host.idle = true;
+  expect(take.held()).toBe(4);
+  expect(take.runEnded(false)).toBeUndefined();
+  expect(ran).toEqual([TEXT]);
+  expect(take.held()).toBeUndefined();
+  take.runStarted();
+  expect(take.held()).toBeUndefined();
+  expect(take.runEnded(false)).toBe(4);
+  expect(take.held()).toBeUndefined();
+
+  const letGo = rig();
+  letGo.take.ready();
+  const late = Promise.withResolvers<LegionTake>();
+  letGo.takes.push({ late: late.promise });
+  letGo.take.relayed(put(5, 20));
+  await letGo.advance(0);
+  letGo.take.runStarted();
+  late.resolve(ACCEPTED);
+  await letGo.advance(0);
+  expect(letGo.take.held()).toBe(5);
+  letGo.take.relayed(put(5, 21));
+  expect(letGo.take.held()).toBeUndefined();
 });
 
 // The daemon answers a take of the number it accepted with the same text until that task
@@ -523,6 +638,133 @@ test("a take of a newer revision of the accepted number, answered during that ta
 
   expect(take.runEnded(false)).toBe(4);
   expect(ran).toEqual([TEXT]);
+  take.runStarted();
+  expect(take.runEnded(false)).toBeUndefined();
+  expect(ran).toEqual([TEXT]);
+});
+
+// The plan's decision 9: a number held as accepted is a new offer at a newer revision of it only
+// while its text has not reached the host. A text held through a run the worker did not start was
+// never handed to it: where the daemon writes the number's value again meanwhile — it took the task
+// back, or only wrote the value again —, that run's end hands nothing, the take is made at the newer
+// revision once the host is idle, and the text that answer carries runs, once.
+test("a take's text held through a run the worker did not start is taken again at a newer revision of its number, and only that answer's text runs, once", async () => {
+  const { take, takes, ran, advance, routed, marks } = rig();
+  take.ready();
+  const first = Promise.withResolvers<LegionTake>();
+  takes.push({ late: first.promise });
+  take.relayed(put(4, 12));
+  await advance(0);
+  take.runStarted();
+  first.resolve(ACCEPTED);
+  await advance(0);
+  expect(ran).toEqual([]);
+
+  // The newer revision is reported seen, and asked about only once the run has ended.
+  take.relayed(put(4, 13));
+  await advance(0);
+  expect(routed("take")).toEqual([body(4, 12)]);
+  const again = Promise.withResolvers<LegionTake>();
+  takes.push({ late: again.promise });
+  expect(take.runEnded(false)).toBeUndefined();
+  await advance(0);
+  expect(ran).toEqual([]);
+  expect(routed("take")).toEqual([body(4, 12), body(4, 13)]);
+
+  again.resolve(ACCEPTED_AFRESH);
+  await advance(0);
+  expect(ran).toEqual([AFRESH_TEXT]);
+  // The task's turn was pending throughout, until the run that text starts.
+  expect(marks).toEqual([true]);
+  take.runStarted();
+  expect(marks).toEqual([true, false]);
+  expect(take.runEnded(false)).toBe(4);
+  take.runStarted();
+  expect(take.runEnded(false)).toBeUndefined();
+  expect(ran).toEqual([AFRESH_TEXT]);
+});
+
+// A text handed to the host and dropped by it before its turn started — a compaction aborted the
+// prompt the host was setting up, and `sendUserMessage` rejected — never reached the host either:
+// the take awaits the value's next revision, which the daemon writes once it has taken the task
+// back, takes at it, and hands that answer's text once.
+test("a take whose text the host dropped before its turn started is taken at the value's next revision, and its text runs once", async () => {
+  const { take, takes, ran, handed, advance, routed, marks } = rig();
+  take.ready();
+  takes.push({ answer: ACCEPTED });
+  take.relayed(put(4, 12));
+  await advance(0);
+  expect(handed).toHaveLength(1);
+  handed[0]?.reject(DROP);
+  await advance(0);
+
+  takes.push({ answer: ACCEPTED_AFRESH });
+  take.relayed(put(4, 13));
+  await advance(0);
+  expect(ran).toEqual([TEXT, AFRESH_TEXT]);
+  expect(routed("take")).toEqual([body(4, 12), body(4, 13)]);
+  take.runStarted();
+  expect(take.runEnded(false)).toBe(4);
+  takes.push({ answer: ACCEPTED_AFRESH });
+  take.relayed(put(4, 14));
+  await advance(0);
+  expect(routed("take")).toEqual([body(4, 12), body(4, 13)]);
+  expect(ran).toEqual([TEXT, AFRESH_TEXT]);
+  // The mark comes down at the drop, since nothing is pending until the daemon writes the value
+  // again, and goes up again with the take at the newer revision, until the task's turn starts.
+  expect(marks).toEqual([true, false, true, false]);
+});
+
+// The host can drop the text after the daemon wrote the value again and answered the take at that
+// newer revision: an abort ends a prompt the host is setting up only once that setup reaches its
+// next step, which can be after a short compaction that took the task back has ended. The answer
+// that came while the host still held the text is the next accepted answer, and its text goes to
+// the host in the dropped one's place, once; a rejection of a text whose run has started is no drop.
+test("a take answered at a newer revision while the host still held the text it then dropped hands that answer's text, once", async () => {
+  const { take, takes, ran, handed, advance, routed } = rig();
+  take.ready();
+  takes.push({ answer: ACCEPTED });
+  take.relayed(put(4, 12));
+  await advance(0);
+  takes.push({ answer: ACCEPTED_AFRESH });
+  take.relayed(put(4, 13));
+  await advance(0);
+  expect(routed("take")).toEqual([body(4, 12), body(4, 13)]);
+  expect(ran).toEqual([TEXT]);
+
+  expect(handed).toHaveLength(1);
+  handed[0]?.reject(DROP);
+  await advance(0);
+  expect(ran).toEqual([TEXT, AFRESH_TEXT]);
+  take.runStarted();
+  handed[1]?.reject(new Error("the run failed"));
+  await advance(0);
+  expect(take.runEnded(false)).toBe(4);
+  expect(routed("take")).toEqual([body(4, 12), body(4, 13)]);
+  expect(ran).toEqual([TEXT, AFRESH_TEXT]);
+});
+
+// Once the text is with the host and the host has not dropped it, a newer revision of its number
+// changes nothing, also while the host sets the prompt up before its `agent_start` (the first
+// prompt's recall can take 30 seconds): the daemon answers the take of the accepted number with the
+// same text, nothing more is handed, and the text runs once (plan review round 68: a guard keyed on
+// a run having started would hand the text a second time here).
+test("a take's text handed to the host and waiting on its setup hands nothing more at a newer revision of its number, and runs once", async () => {
+  const { take, takes, ran, advance, routed } = rig();
+  take.ready();
+  takes.push({ answer: ACCEPTED });
+  take.relayed(put(4, 12));
+  await advance(0);
+  expect(ran).toEqual([TEXT]);
+
+  takes.push({ answer: ACCEPTED });
+  take.relayed(put(4, 13));
+  await advance(30_000);
+  expect(routed("take")).toEqual([body(4, 12), body(4, 13)]);
+  expect(ran).toEqual([TEXT]);
+
+  take.runStarted();
+  expect(take.runEnded(false)).toBe(4);
   take.runStarted();
   expect(take.runEnded(false)).toBeUndefined();
   expect(ran).toEqual([TEXT]);
@@ -585,6 +827,8 @@ for (const [name, attempt] of [
   // Bun's fetch gives a read that timed out no code, only the name (Bun 1.4.4).
   ["a read timeout", { fail: new DOMException("The operation timed out.", "TimeoutError") }],
   ["a DNS failure", { fail: transport("ENOTFOUND") }],
+  ["a transport failure no list names", { fail: transport("FailedToOpenSocket") }],
+  ["a failure that names no code", { fail: new Error("the socket hung up") }],
   ["no answer within 5 minutes", { silent: true }],
   ["a 502 with no code", { fail: uncoded(502) }],
   ["a 503 with no code", { fail: uncoded(503) }],
@@ -603,7 +847,7 @@ for (const [name, attempt] of [
     expect(routed("take")).toEqual(Array(failures + 1).fill(body(4, 12)));
     expect(waits).toEqual(
       Array.from({ length: failures }, (_, n) =>
-        Math.min(DAEMON_RESEND_FIRST_DELAY_MS * 2 ** n, DAEMON_RESEND_MAX_DELAY_MS)
+        Math.min(DAEMON_RESTART_FIRST_DELAY_MS * 2 ** n, DAEMON_RESTART_MAX_DELAY_MS)
       )
     );
     expect(ran).toEqual([TEXT]);
@@ -653,7 +897,7 @@ test("a newer revision ends the re-sending of the older take and seen report, an
   takes.push({ answer: ACCEPTED });
   seens.splice(0);
   take.relayed(put(4, 13));
-  await advance(10 * DAEMON_RESEND_MAX_DELAY_MS);
+  await advance(10 * DAEMON_RESTART_MAX_DELAY_MS);
 
   expect(routed("take")).toEqual([body(4, 12), body(4, 13)]);
   expect(routed("task-seen")).toEqual([body(4, 12), body(4, 13)]);
@@ -667,7 +911,7 @@ test("a deleted value ends the re-sending of its take", async () => {
   take.relayed(put(4, 12));
   await advance(0);
   take.relayed({ claim: caller.claimToken, epoch: EPOCH, revision: 13, op: "delete" });
-  await advance(10 * DAEMON_RESEND_MAX_DELAY_MS);
+  await advance(10 * DAEMON_RESTART_MAX_DELAY_MS);
 
   expect(routed("take")).toEqual([body(4, 12)]);
   expect(marks).toEqual([true, false]);
@@ -692,7 +936,7 @@ test("a closed take sends nothing more, drops an answer that still arrives, clea
   expect(marks).toEqual([true, false]);
   // The seen report's re-sending stops, and the take's answer, arriving now, runs nothing.
   late.resolve(ACCEPTED);
-  await advance(10 * DAEMON_RESEND_MAX_DELAY_MS);
+  await advance(10 * DAEMON_RESTART_MAX_DELAY_MS);
   expect(routed("task-seen")).toEqual([body(4, 12)]);
   expect(ran).toEqual([]);
 

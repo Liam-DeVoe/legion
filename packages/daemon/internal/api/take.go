@@ -32,20 +32,19 @@ import (
 // it onto the current plugin.
 
 // taskHoldsContract is the daemon contract that added `holds` to the answer of the task route
-// (version.go's 179): the takes of the caller's issue's other claims held behind the caller's turn
-// (Supervisor.HeldBehind, claim.HeldTake). A caller whose claim records this contract or a later
-// one is served the key; a plugin below it reads the answer with a schema that knows no `holds`,
-// so it is served none, as the state route serves a caller only its contract's keys (stateFor).
-// It is pinned, not read from DaemonAPIVersion, so a later contract bump takes the key from no
-// plugin that reads it; a merge that renumbers this change moves it with its version.go entry.
-const taskHoldsContract = 179
+// (version.go's 205): the takes of the caller's issue's other claims held behind the caller's turn
+// (Supervisor.HeldBehind, claim.HeldTake). The route writes the key for every caller, and the
+// shaping serves it down (shapeAnswer's AnswerTask row): a caller whose header states a contract
+// below this one is answered without it. It is pinned, not read from DaemonAPIVersion, so a later
+// contract bump takes the key from no plugin that reads it; a merge that renumbers this change
+// moves it with its version.go entry and SupportedContracts.
+const taskHoldsContract = 205
 
 // task is the worker reading its claim's value: the value the bucket holds now, null for none,
-// and the number of the last task the claim finished (supervise's Machine.CurrentTask). A caller
-// on taskHoldsContract or a later one is also answered the takes of its issue's other claims held
-// behind its turn, so the worker of that turn can come to a safe point; the key is absent where
-// none is held (claim.TaskResponse). Both reads take the claim as its machine last published it,
-// waiting on no decision.
+// and the number of the last task the claim finished (supervise's Machine.CurrentTask), with the
+// takes of its issue's other claims held behind its turn, so the worker of that turn can come to
+// a safe point; the key is absent where none is held (claim.TaskResponse). Both reads take the
+// claim as its machine last published it, waiting on no decision.
 func (s *server) task(w http.ResponseWriter, r *http.Request) {
 	var req claim.TaskRequest
 	if !s.readTaskBody(w, r, &req) {
@@ -59,14 +58,12 @@ func (s *server) task(w http.ResponseWriter, r *http.Request) {
 	current, err := m.CurrentTask(r.Context())
 	if err != nil {
 		s.logRequestFailure(r, err, "api: read a claim's task value", "claim", token)
-		writeFailure(w, http.StatusInternalServerError, "TASK_VALUE_UNAVAILABLE", "task read failed: the daemon could not read the task bucket")
+		s.writeFailure(w, r, http.StatusInternalServerError, "TASK_VALUE_UNAVAILABLE", "task read failed: the daemon could not read the task bucket")
 		return
 	}
 	answer := taskResponseOf(current)
-	if view := m.View(); view.PluginContract >= taskHoldsContract {
-		answer.Holds = s.supervisor.HeldBehind(view.Issue, token)
-	}
-	writeJSON(w, http.StatusOK, answer)
+	answer.Holds = s.supervisor.HeldBehind(m.View().Issue, token)
+	s.writeAnswer(w, r, AnswerTask, http.StatusOK, answer)
 }
 
 // taskResponseOf is the claim's current task as the wire carries it.
@@ -92,7 +89,7 @@ func (s *server) taskSeen(w http.ResponseWriter, r *http.Request) {
 		Claim: token, Generation: req.Generation, Session: callerSession(caller),
 		Number: req.Number, Revision: supervise.TaskRevision{Epoch: req.Epoch, Revision: req.Revision},
 	}); err != nil {
-		s.taskRefusal(w, "seen report", token, err)
+		s.taskRefusal(w, r, "seen report", token, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -122,10 +119,10 @@ func (s *server) take(w http.ResponseWriter, r *http.Request) {
 		Number: req.Number, Revision: supervise.TaskRevision{Epoch: req.Epoch, Revision: req.Revision},
 	})
 	if answer.Outcome == "" {
-		s.taskRefusal(w, "take", token, err)
+		s.taskRefusal(w, r, "take", token, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, claim.TakeResponse{Outcome: string(answer.Outcome), Text: answer.Text, Hold: answer.Hold})
+	s.writeAnswer(w, r, AnswerTake, http.StatusOK, claim.TakeResponse{Outcome: string(answer.Outcome), Text: answer.Text, Hold: answer.Hold})
 }
 
 // callerSession is the session a worker's request names, which the machine holds to the claim's
@@ -141,12 +138,12 @@ func callerSession(caller claim.Caller) string {
 // taskCaller is a task route's claim and its machine once its body is decoded: the generation is
 // required, and the caller resolved (claimCaller), each refused in the coded shape (Failure).
 func (s *server) taskCaller(w http.ResponseWriter, r *http.Request, request string, caller claim.Caller, generation uint64) (claim.Token, *supervise.Machine, bool) {
-	if !requireTaskGeneration(w, generation) {
+	if !s.requireTaskGeneration(w, r, generation) {
 		return "", nil, false
 	}
 	token, m, refusal := s.claimCaller(r, request, caller, generation)
 	if refusal != nil {
-		writeFailure(w, refusal.status, refusal.code, refusal.message)
+		s.writeFailure(w, r, refusal.status, refusal.code, refusal.message)
 		return "", nil, false
 	}
 	return token, m, true
@@ -158,16 +155,16 @@ func (s *server) taskCaller(w http.ResponseWriter, r *http.Request, request stri
 func (s *server) readTaskBody(w http.ResponseWriter, r *http.Request, into any) bool {
 	if _, err := decodeJSON(w, r, into, true); err != nil {
 		s.log.Warn("api: refused an undecodable request body", "route", r.URL.Path, "error", err)
-		writeFailure(w, http.StatusBadRequest, "INVALID_BODY", "invalid request body: "+err.Error())
+		s.writeFailure(w, r, http.StatusBadRequest, "INVALID_BODY", "invalid request body: "+err.Error())
 		return false
 	}
 	return true
 }
 
 // requireTaskGeneration is requireGeneration in the coded shape (Failure).
-func requireTaskGeneration(w http.ResponseWriter, generation uint64) bool {
+func (s *server) requireTaskGeneration(w http.ResponseWriter, r *http.Request, generation uint64) bool {
 	if generation == 0 {
-		writeFailure(w, http.StatusBadRequest, "MISSING_FIELD", "generation is required")
+		s.writeFailure(w, r, http.StatusBadRequest, "MISSING_FIELD", "generation is required")
 		return false
 	}
 	return true
@@ -177,18 +174,18 @@ func requireTaskGeneration(w http.ResponseWriter, generation uint64) bool {
 // and sentence (refusalCode names it), a request the claim's state does not allow with 409 and the
 // machine's reason, and anything else — the store refusing a write — with a 500 that says what
 // failed and nothing the caller could use.
-func (s *server) taskRefusal(w http.ResponseWriter, request string, token claim.Token, err error) {
+func (s *server) taskRefusal(w http.ResponseWriter, r *http.Request, request string, token claim.Token, err error) {
 	var refusal claim.Refusal
 	if errors.As(err, &refusal) {
 		s.log.Info("api: refused a claim request", "request", request, "claim", token, "reason", err)
-		writeFailure(w, refusal.Status, refusalCode(refusal), refusal.Message)
+		s.writeFailure(w, r, refusal.Status, refusalCode(refusal), refusal.Message)
 		return
 	}
 	var refused *supervise.RefusedError
 	if errors.As(err, &refused) {
-		writeFailure(w, http.StatusConflict, "CLAIM_STATE_REFUSED", refused.Error())
+		s.writeFailure(w, r, http.StatusConflict, "CLAIM_STATE_REFUSED", refused.Error())
 		return
 	}
 	s.logFailure("api: a claim request failed", "request", request, "claim", token, "error", err)
-	writeFailure(w, http.StatusInternalServerError, "CLAIM_WRITE_FAILED", request+" failed: the daemon could not record it")
+	s.writeFailure(w, r, http.StatusInternalServerError, "CLAIM_WRITE_FAILED", request+" failed: the daemon could not record it")
 }

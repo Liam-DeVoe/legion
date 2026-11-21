@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import {
   createLegionDaemonClient,
   DAEMON_ANSWER_TIMEOUT_MS,
-  DAEMON_RESEND_FIRST_DELAY_MS,
+  DAEMON_RESTART_FIRST_DELAY_MS,
 } from "@legion/pi-shared/daemon-client";
 import type { AgentEndEvent } from "@legion/pi-shared/pi-types";
 import { taskStandIn } from "@legion/pi-shared/test/task-stand-in";
@@ -10,10 +10,13 @@ import {
   createTurnOutcomeReporter,
   type ReportedClaim,
   type TurnOutcomeLog,
-  type TurnReportAnswer,
+  type TurnOutcomeReporter,
 } from "./turn-outcome";
 
 const SESSION = "ses_implementer_208";
+
+/** The contract this build states on every request (`Legion-Plugin-Contract`). */
+const CONTRACT = 60;
 
 const implementer: ReportedClaim = {
   caller: {
@@ -27,11 +30,7 @@ const implementer: ReportedClaim = {
 };
 
 interface Rig {
-  readonly report: (
-    sessionID: string,
-    event: AgentEndEvent,
-    task?: number
-  ) => Promise<TurnReportAnswer | undefined>;
+  readonly report: TurnOutcomeReporter["report"];
   readonly sessionEnded: (sessionID: string) => void;
   readonly posted: Record<string, unknown>[];
   readonly debugged: string[];
@@ -69,7 +68,10 @@ function rig(
     debug: (message) => debugged.push(message),
     warn: (message) => warned.push(message),
   };
-  const client = createLegionDaemonClient("http://daemon.test", stub);
+  const client = createLegionDaemonClient("http://daemon.test", {
+    pluginContract: CONTRACT,
+    fetch: stub,
+  });
   const reporter = createTurnOutcomeReporter({
     daemon: () => client,
     claim: options.claim ?? ((sessionID) => (sessionID === SESSION ? implementer : undefined)),
@@ -153,6 +155,27 @@ test("the report of a take's turn names the task's number, and a turn of no task
     task: 4,
   });
   expect(posted[1]).not.toHaveProperty("task");
+});
+
+// A run that ended while the claim's take held an accepted take's text unrun names that take as
+// held, which tells the daemon for certain the run was not the task's turn; a report that names
+// none holds nothing, as every report before the field did.
+test("the report of a run that held a take's text names it held, and a report of none names nothing held", async () => {
+  const { report, posted } = rig();
+
+  await report(SESSION, clean, undefined, 4);
+  await report(SESSION, clean, 4);
+
+  expect(posted[0]).toEqual({
+    claimToken: "legion-legion-legion-208-implementer",
+    sessionId: SESSION,
+    secret: "U2VjcmV0",
+    generation: 3,
+    sequence: 1,
+    outcome: "clean",
+    held: 4,
+  });
+  expect(posted[1]).not.toHaveProperty("held");
 });
 
 // A provider error keeps the task under its number on the daemon, which decides by the status
@@ -286,11 +309,41 @@ test("a report whose first two attempts meet an uncoded 504 and a DNS failure is
   expect(posted[0]).toMatchObject({ sequence: 1, outcome: "clean", task: 4 });
   expect(posted[1]).toEqual(posted[0]);
   expect(posted[2]).toEqual(posted[0]);
-  expect(waits).toEqual([DAEMON_RESEND_FIRST_DELAY_MS, DAEMON_RESEND_FIRST_DELAY_MS * 2]);
+  expect(waits).toEqual([DAEMON_RESTART_FIRST_DELAY_MS, DAEMON_RESTART_FIRST_DELAY_MS * 2]);
   expect(debugged).toEqual(["legion: reported a turn's outcome"]);
   expect(warned).toEqual([
     "legion: claims/turn-outcome failed; it is sent again until the daemon answers it",
   ]);
+});
+
+// A failure that carries no answer of the daemon is sent again whatever the transport names it,
+// not only where a list names it: an attempt that never reached the daemon applied nothing, and
+// one that did is applied once however often it comes. Here a code Bun gives a socket it could
+// not open, a code no list holds, and an error with no code.
+test("a report whose attempts meet transport failures no list names is sent again, the same report, and delivered", async () => {
+  const tasks = taskStandIn();
+  const value = tasks.give("Implement LEGION-208 on its branch.");
+  const { report, posted, debugged, waits } = rig({
+    answer: (attempt, body) => {
+      if (attempt === 1) throw transport("FailedToOpenSocket");
+      if (attempt === 2) throw transport("ECONNABORTED");
+      if (attempt === 3) throw new Error("the socket hung up");
+      tasks.answer("/legion/v1/claims/turn-outcome", body);
+      return Response.json({ refusedRun: 0, failed: false });
+    },
+  });
+
+  expect(await report(SESSION, clean, value.number)).toBe("recorded");
+
+  expect(posted).toHaveLength(4);
+  expect(posted.slice(1)).toEqual([posted[0], posted[0], posted[0]]);
+  expect(waits).toEqual([
+    DAEMON_RESTART_FIRST_DELAY_MS,
+    DAEMON_RESTART_FIRST_DELAY_MS * 2,
+    DAEMON_RESTART_FIRST_DELAY_MS * 4,
+  ]);
+  expect(tasks.registered()).toEqual({ task: null, finished: value.number });
+  expect(debugged).toEqual(["legion: reported a turn's outcome"]);
 });
 
 // The daemon answers a report whose store write it could not make with a 500 that names no code,

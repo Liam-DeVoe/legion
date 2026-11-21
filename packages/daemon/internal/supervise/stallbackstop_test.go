@@ -505,7 +505,7 @@ func TestTheBackstopTellsTheOwnerOfAReplacementThePacingParkedOnce(t *testing.T)
 	working.State = StateWorking
 	working.Step = StepRecord{At: stepped, TurnStartedAt: stepped, Tool: "bash", CallID: "toolu_turn1_0", StartedAt: stepped}
 	working.TaskWritten, working.TaskTaken = 1, 1
-	working.Pending = &Delivery{ID: "outbox:7", Number: 1, Task: "implement the plan", QueuedAt: stepped, ConfirmedAt: stepped}
+	working.Pending = &Delivery{ID: "outbox:7", Number: 1, Task: "implement the plan", QueuedAt: stepped, ConfirmedAt: stepped, TurnStarted: true}
 	stalled := h.machineFor(working)
 
 	// The harness's own claim takes the limiter's one token, so the backstop's own relaunch

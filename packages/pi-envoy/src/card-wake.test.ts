@@ -734,8 +734,8 @@ describe("in the startup phase", () => {
 // The Legion controller's start message must be its session's first turn, ahead of any card. The
 // Legion entry names that session in the start-turn mark until the start turn's `agent_start`:
 // the operator's controller in a terminal from its `session_start` with the start unsent, sent
-// once `/legion-controller-start` sends it, and the daemon's in RPC mode sent right before the
-// daemon writes the prompt.
+// once `/legion-controller-start` sends it, and the daemon's in RPC mode sent right before it
+// reports ready, at which the daemon writes the start task the controller takes as its value.
 describe("while the start-turn mark names the session", () => {
   const oneCard = "1 Envoy message above arrived with no turn to read it: read it and act on it.";
   const twoCards =
@@ -925,7 +925,8 @@ describe("while the start-turn mark names the session", () => {
     host.markSent(host.clock());
     host.setIdle(true);
     host.message(host.card("rpc-owed").message);
-    // The daemon's start prompt starts its turn before the check the card armed runs.
+    // The start task the daemon's controller takes starts its turn before the check the card
+    // armed runs.
     host.setIdle(false);
     host.run();
     host.clearMark();
@@ -1034,7 +1035,7 @@ describe("while the start-turn mark names the session", () => {
       test(`sends no wake for an owed startup card when ${by} ends the start turn (${mode}), and the next run reads it with none after`, async () => {
         const host = harness({ mode });
         // The operator's controller in a terminal marks its start unsent at `session_start`; the
-        // daemon's in RPC mode marks it sent before the daemon's prompt.
+        // daemon's in RPC mode marks it sent before it takes the daemon's start task.
         if (mode === "tui") host.markUnsent();
         else host.markSent(host.clock());
         host.setIdle(true);
@@ -1232,11 +1233,12 @@ describe("a card sent while the host sets up a prompt", () => {
     expect(host.sent).toEqual([]);
   });
 
-  // A switch to a new or resumed session (`agent-session.ts` `newSession` ~10280-10282,
-  // `switchSession` ~11906-11907) and a manual or extension compaction (`session-maintenance.ts`
-  // ~1201-1202) disconnect the host from the agent before they abort a running run, so that run's
-  // `agent_end` never reaches an extension, and the abort leaves the host idle at the
-  // `session_switch` or `session_compact` after it (~10209-10227). A run the host drops with
+  // A switch to a new or resumed session (`agent-session.ts` `newSession` 13231-13233,
+  // `switchSession` 15047-15048, at the pinned tag) and a manual or extension compaction
+  // (`session-maintenance.ts` 1311-1312 at the pinned tag) disconnect the host from the agent
+  // before they abort a running run, so that run's `agent_end` never reaches an extension, and
+  // the abort leaves the host idle at the `session_switch` or `session_compact` after it
+  // (13143-13165 at the pinned tag). A run the host drops with
   // neither (a switch or a compaction that fails after its abort) is over by the next prompt sent
   // from idle, whose `input` event finds the host idle. The extension tells the wake of each such
   // event (`noteIfIdle`), and a host idle there has no run, whatever the switch's reason. Each row
@@ -1294,10 +1296,11 @@ describe("a card sent while the host sets up a prompt", () => {
     expect(host.sent).toHaveLength(1);
   });
 
-  // A fork neither disconnects the agent nor aborts the run (`agent-session.ts` `fork`, ~10494),
-  // an automatic compaction runs while the host is busy with the run (between its steps, or in
-  // its post-run maintenance), and a steer typed into a running turn finds it busy too: the run
-  // goes on, and its cards keep their wake. A compaction between a run's steps hands its
+  // A fork neither disconnects the agent nor aborts the run (`agent-session.ts` `fork`,
+  // 13369-13463 at the pinned tag), an automatic compaction runs while the host is busy with
+  // the run (between its steps, or in its post-run maintenance), and a steer typed into a running
+  // turn finds it busy too: the run goes on, and its cards keep their wake.
+  // A compaction between a run's steps hands its
   // `session_compact` and its `auto_compaction_end` to extensions detached, so the end can reach
   // the wake first. Each row is one event, run on a host of its own.
   test("leaves a card sent in a run its wake after an event that found the host busy", async () => {

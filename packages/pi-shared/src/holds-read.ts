@@ -61,14 +61,17 @@ export function createHoldsRead(deps: {
   let lastRead: number | undefined;
   // Counts the holder's turns, so that an answer that comes after its turn ended is dropped.
   let turn = 0;
-  let held: readonly HeldTake[] = [];
+  // The latest answer of this turn's reads, whose `holds` are read off it at each call.
+  let latest: LegionTask | undefined;
   // The role and task of each take this process has returned.
   const returned = new Set<string>();
   return {
     holds: () => {
       const caller = deps.caller();
       if (caller === undefined) return [];
-      const due = held.filter((take) => !returned.has(`${take.role} ${take.task}`));
+      const due = (latest?.holds ?? []).filter(
+        (take) => !returned.has(`${take.role} ${take.task}`)
+      );
       for (const take of due) returned.add(`${take.role} ${take.task}`);
       const now = deps.now();
       if (lastRead === undefined || now - lastRead >= HOLDS_READ_EVERY_MS) {
@@ -77,17 +80,17 @@ export function createHoldsRead(deps: {
         void deps.daemon
           .task(caller, { signal: AbortSignal.timeout(HOLDS_READ_BOUND_MS) })
           .then((reading) => {
-            if (turn === during) held = reading.holds ?? [];
+            if (turn === during) latest = reading;
           }, deps.failed);
       }
       return due;
     },
     turnEnded: () => {
       turn += 1;
-      held = [];
+      latest = undefined;
     },
     turnStarted: () => {
-      held = [];
+      latest = undefined;
     },
   };
 }

@@ -80,12 +80,13 @@ type CapabilityRow struct {
 // ReadyForUpdateRequest is the worker's answer to its update round's ask: it has pushed
 // everything it wants kept, and the process holding this claim may now be replaced. The daemon
 // opens an update round over a pod whose configuration has drifted, and asks every claim of the
-// round, on its own role topic, to push and answer here. The round replaces the pod once every
-// claim it asks has answered and no turn runs, or at its bound (pod_update_grace_minutes)
-// whatever the claims answered, so an answer only brings the replacement forward. A role's own
-// push is what keeps its work: the disk the replacement deletes takes all work not pushed before
-// the pod goes, which is why the round's ask tells the worker to push every commit it wants kept
-// and to put scratch evidence on Dispatch before it answers. `Round` is the round the worker
+// round, on its own role topic, to do the steps of its update message (supervise.UpdateTask) and
+// answer here. The round replaces the pod once every claim it asks has answered, no turn runs and
+// no claim's activity report holds it (internal/daemon's roundEnd.holding), or at its bound
+// (pod_update_grace_minutes) whatever the claims answered, so an answer only brings the
+// replacement forward. A role's own push is what keeps its work: the disk the replacement deletes
+// takes all work not pushed before the pod goes, which is why every step that pushes work comes
+// before the answer in the round's ask (supervise.UpdateTask). `Round` is the round the worker
 // answers for, as the ask it read named it: an answer counts only for the round whose ask the
 // worker has in front of it, so the daemon refuses one that names any other round
 // (supervise.ErrForeignUpdateRound). `Head` is the commit the worker
@@ -180,6 +181,13 @@ func callerOf(agent AgentCaller, boot BootCaller) (Caller, bool) {
 // the task and carries one keeps the task under its number and starts the wait before its value
 // is written again, rather than finishing it (supervise's reportedTask).
 //
+// Held is the number of the accepted take whose text the producer still held unrun when this
+// turn ended, 0, left out, for none: the producer was answered that take during this turn, or
+// while it set this turn's prompt up, and holds the text for a turn of its own, so this turn was
+// not that take's. A report the producer sent before the take's answer reached it names nothing
+// held. The field is optional: a report without it is read as one before it was, and the daemon
+// refuses none for lacking it (supervise's notTheTakesTurn).
+//
 // The caller is exactly one of AgentCaller and BootCaller, embedded so that each is a shape of
 // its own on the wire as well as in Go (@legion/contracts' LegionTurnOutcomeRequest is the same
 // union).
@@ -192,6 +200,7 @@ type TurnOutcomeRequest struct {
 	Message       string         `json:"message,omitempty"`
 	Task          uint64         `json:"task,omitempty"`
 	ProviderError *ProviderError `json:"providerError,omitempty"`
+	Held          uint64         `json:"held,omitempty"`
 }
 
 // Caller is the identity the body named, and false when it named both or neither.

@@ -264,7 +264,7 @@ func TestEventsCarryTheTurnAndTheStateAnswerInWireOrder(t *testing.T) {
 	p.conn.Close()
 	want := []Event{
 		Hello{Claim: testClaim, Generation: testGeneration},
-		TurnAnswered{Claim: testClaim},
+		TurnAnswered{Claim: testClaim, Ask: request.ID},
 		TurnStart{Claim: testClaim},
 		// The length and the fingerprint of what the frame carried, and no argument text at all:
 		// `{"command":"echo hi"}` is 21 bytes, and the first eight of its SHA-256 are this.
@@ -282,6 +282,93 @@ func TestEventsCarryTheTurnAndTheStateAnswerInWireOrder(t *testing.T) {
 	}
 	if rest := h.stop(); len(rest) != 0 {
 		t.Fatalf("further events = %#v, want none", rest)
+	}
+}
+
+// noAskLine is the line the reader logs for a get_state answer to no ask this connection waits on.
+const noAskLine = "worker-stream: a get_state answer to no ask this connection waits on; it decides nothing"
+
+// A connection that breaks between the daemon's get_state and Oh My Pi's answer leaves that
+// answer in the shim's backlog, and the shim replays it on the next connection, ahead of the
+// frames behind it — here the take's agent_start. That answer is to an ask the new connection
+// never made, and it says nothing of the turn the replay goes on to show, so it is no TurnAnswered:
+// the decision that waits for the answer (supervise's turnAnswered) would otherwise relaunch a
+// claim whose turn is running. The new connection's own ask is answered behind the replay, and
+// that answer is the TurnAnswered, in its wire place. The replayed answer is logged, with no
+// event.
+func TestAGetStateAnswerReplayedOnANewConnectionIsNoTurnAnswered(t *testing.T) {
+	h := startListener(t, harnessOptions{})
+	p := h.connect(testToken)
+	asked, result := h.getState(context.Background(), p)
+	p.conn.Close()
+	if err := awaitResult(t, result); !isClosed(err) {
+		t.Fatalf("GetState over a connection that closed before the answer = %v, want ErrClosed", err)
+	}
+	if event := h.next(); event != (Closed{Claim: testClaim}) {
+		t.Fatalf("event = %#v, want Closed", event)
+	}
+
+	replacement := h.connect(testToken)
+	replacement.send(answerState(t, asked))
+	replacement.send(shimwire.AgentStart{})
+	own, result := h.getState(context.Background(), replacement)
+	replacement.send(shimwire.Response{ID: own.ID, Command: shimwire.TypeGetState, Success: true,
+		Data: mustJSON(t, map[string]any{"isStreaming": true})})
+	if err := awaitResult(t, result); err != nil {
+		t.Fatalf("GetState on the new connection: %v", err)
+	}
+	replacement.conn.Close()
+	for _, want := range []Event{TurnStart{Claim: testClaim}, TurnAnswered{Claim: testClaim, Streaming: true, Ask: own.ID}, Closed{Claim: testClaim}} {
+		if got := h.next(); got != want {
+			t.Fatalf("event on the new connection = %#v, want %#v: the replayed answer is no TurnAnswered", got, want)
+		}
+	}
+	if rest := h.stop(); len(rest) != 0 {
+		t.Fatalf("further events = %#v, want none", rest)
+	}
+	if logs := h.logs.Lines(); len(logs) != 1 || !strings.HasPrefix(logs[0], noAskLine) ||
+		!strings.Contains(logs[0], "claim="+string(testClaim)) || !strings.Contains(logs[0], "streaming=false") {
+		t.Fatalf("logs = %q, want one line naming the claim and the replayed answer", logs)
+	}
+}
+
+// A get_state answer is a TurnAnswered only while the request that asked it on this connection
+// still waits: the connection's own ask answered is one, pushed before its request has the answer.
+// The same answer sent a second time is to an ask already answered, and the answer to a request
+// that ended first — its caller's context, or the RPC timeout — is to an ask the caller has given
+// up on, which the supervisor reads as unanswered and asks again; neither is one, and each is
+// logged.
+func TestOnlyTheAnswerToAGetStateThisConnectionWaitsOnIsATurnAnswered(t *testing.T) {
+	h := startListener(t, harnessOptions{})
+	p := h.connect(testToken)
+	conn := h.conn()
+	answered, result := h.getState(context.Background(), p)
+	p.send(answerState(t, answered))
+	if err := awaitResult(t, result); err != nil {
+		t.Fatalf("GetState: %v", err)
+	}
+	p.send(answerState(t, answered))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result = async(func() error { _, err := conn.GetState(ctx); return err })
+	abandoned := p.expect(shimwire.TypeGetState).(shimwire.GetState)
+	cancel()
+	if err := awaitResult(t, result); !errors.Is(err, context.Canceled) {
+		t.Fatalf("GetState after its context was cancelled = %v, want context.Canceled", err)
+	}
+	p.send(answerState(t, abandoned))
+	p.conn.Close()
+
+	for _, want := range []Event{TurnAnswered{Claim: testClaim, Ask: answered.ID}, Closed{Claim: testClaim}} {
+		if got := h.next(); got != want {
+			t.Fatalf("event = %#v, want %#v: only the answer its request waited on is a TurnAnswered", got, want)
+		}
+	}
+	if rest := h.stop(); len(rest) != 0 {
+		t.Fatalf("further events = %#v, want none", rest)
+	}
+	if logs := h.logs.Lines(); len(logs) != 2 || !strings.HasPrefix(logs[0], noAskLine) || !strings.HasPrefix(logs[1], noAskLine) {
+		t.Fatalf("logs = %q, want one line for the repeated answer and one for the abandoned ask's", logs)
 	}
 }
 
@@ -437,7 +524,7 @@ func TestAnOldWorkersPromptFramesAreDroppedQuietly(t *testing.T) {
 		t.Fatalf("GetState after the old frames: %v", err)
 	}
 	replacement.conn.Close()
-	for _, want := range []Event{TurnStart{Claim: testClaim}, TurnEnd{Claim: testClaim}, TurnAnswered{Claim: testClaim}, Closed{Claim: testClaim}} {
+	for _, want := range []Event{TurnStart{Claim: testClaim}, TurnEnd{Claim: testClaim}, TurnAnswered{Claim: testClaim, Ask: request.ID}, Closed{Claim: testClaim}} {
 		if got := h.next(); got != want {
 			t.Fatalf("event on the replacement = %#v, want %#v", got, want)
 		}
@@ -486,8 +573,11 @@ func TestChunkSequencesInterleavedWithWholeFramesReassemble(t *testing.T) {
 	if !state.IsStreaming {
 		t.Fatal("GetState lost the chunked answer's isStreaming")
 	}
+	if state.Ask != request.ID {
+		t.Fatalf("GetState answered ask %q, want the id of the get_state it wrote, %q", state.Ask, request.ID)
+	}
 	want := []Event{TurnStart{Claim: testClaim}, TurnEnd{Claim: testClaim}, TurnStart{Claim: testClaim},
-		TurnAnswered{Claim: testClaim, Streaming: true}, TurnEnd{Claim: testClaim}}
+		TurnAnswered{Claim: testClaim, Streaming: true, Ask: request.ID}, TurnEnd{Claim: testClaim}}
 	var got []Event
 	for range want {
 		got = append(got, h.next())

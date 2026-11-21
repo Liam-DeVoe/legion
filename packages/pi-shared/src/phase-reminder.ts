@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { ROLE_TOPIC_PREFIX, roleForPhase, roleToken } from "@legion/contracts";
-import type { LegionIssue, LegionState } from "@legion/contracts/legion-api";
+import type { LegionIssue } from "@legion/contracts/legion-api";
 import { messageFor } from "@legion/envoy-client/errors";
 import {
   EnvoyApiError,
@@ -30,13 +30,14 @@ import type { StallLimits } from "./stall-limits";
  *
  * The first reminder of a run is the `session_stop` continuation, which the host turns into one
  * more turn of the same session, and it is the only one of that run: every one after it is a
- * timer, so the run settles and the daemon sees the turn end, can deliver a queued task and can
- * land a held suspension. A turn the provider refused earns no continuation, since the worker
- * never read the last reminder and the next turn would be refused the same way; it earns one
- * timer instead, so a single transient refusal cannot leave the worker idle. The host's timer
- * cannot be cancelled (`SessionContext.setTimeout` returns void and there is no clearTimeout), so
- * a monotonic generation, bumped by everything that makes an armed timer stale, is the whole
- * defence against two timers sending two reminders.
+ * timer, so the run settles, the host is idle again and its take can ask for a task the daemon
+ * queued (`./task-take`), and the daemon sees the turn end and can land a held suspension. A turn
+ * the provider refused earns no continuation, since the worker never read the last reminder and
+ * the next turn would be refused the same way; it earns one timer instead, so a single transient
+ * refusal cannot leave the worker idle. The host's timer cannot be cancelled
+ * (`SessionContext.setTimeout` returns void and there is no clearTimeout), so a monotonic
+ * generation, bumped by everything that makes an armed timer stale, is the whole defence against
+ * two timers sending two reminders.
  *
  * A task the claim's take holds is the worker's next turn, and a reminder says nothing it does not
  * (dispatch://INFRA-4130 R6). So while the take is pending (`taskPending`) no reminder starts a
@@ -80,10 +81,13 @@ export interface PhaseReminderDeps {
   readonly saveEntry: (entry: PhaseStallEntry) => void;
   /** This session's own claim, or undefined before it has registered one. */
   readonly claim: () => ClaimCapability | undefined;
-  /** The daemon's whole state, read as the `legion` tool's `read_record` reads it. `signal` is
-   * aborted once the record check's bound passes without an answer, and the read is to abort with
-   * it (`LegionDaemonClient.state`'s `signal`), so a daemon that hangs is left no open request. */
-  readonly readState: (signal: AbortSignal) => Promise<LegionState>;
+  /** One issue's record, read as the `legion` tool's `read_record` reads it
+   * (`LegionDaemonClient.record`): the record, or `undefined` for an issue the daemon records
+   * nothing of. Every other refusal rejects, so the check's `undefined` is the absent record
+   * and its `catch` is the read that failed. `signal` is aborted once the record check's bound
+   * passes without an answer, and the read is to abort with it, so a daemon that hangs is left
+   * no open request. */
+  readonly readRecord: (issue: string, signal: AbortSignal) => Promise<LegionIssue | undefined>;
   /** The Envoy listener the architect notice goes to, or undefined when Envoy is off for this
    * session. Built lazily and once by the caller. */
   readonly publisher: () => EnvoyPublish | undefined;
@@ -279,7 +283,7 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
     if (claim === undefined) return { reminds: true };
     let record: LegionIssue | undefined;
     try {
-      record = (await withBound(deps.readState, boundMs)).issues[claim.issue];
+      record = await withBound((signal) => deps.readRecord(claim.issue, signal), boundMs);
     } catch (error) {
       deps.log.debug("legion: the daemon did not answer the phase reminder's record check", {
         issue: claim.issue,
@@ -301,7 +305,7 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
       });
       return { reminds: false, record };
     }
-    const state = record.workers[claim.role]?.claim.state;
+    const state = record.workers?.[claim.role]?.claim?.state;
     if (state === "failed") {
       deps.log.debug("legion: the daemon has failed this claim; no reminder is sent", {
         issue: claim.issue,
@@ -498,11 +502,14 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
         // The provider refused this turn, so the worker read nothing and said nothing: the state
         // stands, and this settle returns no continuation, because the host would turn it into
         // one more turn at once and the provider would refuse that one too. One timer is armed
-        // all the same: the task the refused turn carried ended with it, the daemon counts the
-        // turn rather than failing the claim while the run is short of `launch_failure_limit`,
-        // and nothing else would wake this worker, so a single transient refusal would leave its
-        // issue idle. By the time the timer fires the daemon has had every refusal of the run
-        // reported (`POST /legion/v1/claims/turn-outcome`): at the limit it has failed the claim,
+        // all the same: a refused turn that carried no task leaves nothing else to wake this
+        // worker, so a single transient refusal would leave its issue idle, and the daemon counts
+        // that turn toward `launch_failure_limit`. A task's refused turn is woken by the daemon as
+        // well: its provider-error wait keeps the task and writes its value again once the wait is
+        // over, unless the provider answered a 4xx other than 401, 403, 408 and 429, which the
+        // wait cannot wait out and which fails the claim. By the time the timer fires the daemon
+        // has had every refusal of the run reported
+        // (`POST /legion/v1/claims/turn-outcome`): at the limit it has failed the claim,
         // and the record check the timer runs drops the reminder, which is what stops the
         // reminding of a session the provider refuses for ever — the whole of
         // dispatch://INFRA-264.

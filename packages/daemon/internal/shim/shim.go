@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
@@ -106,7 +107,7 @@ type Config struct {
 	Env []string
 	// ProviderEnv is NAME=value pairs for OMP's environment only (--provider-env-dir).
 	ProviderEnv []string
-	// AgentSecrets is the pod's enrollment with the secrets broker (agentsecrets.go); nil on a
+	// AgentSecrets is the pod's enrollment with the secrets broker (cipher.go); nil on a
 	// tmux pane, which is never enrolled.
 	AgentSecrets *AgentSecrets
 	// WarmCodegraph, when set, is started once with the workspace the shim's LEGION_WORKSPACE
@@ -126,8 +127,10 @@ type Config struct {
 	// spawnOnce reads (leakguard.Installed) before the wrapped process is started; empty is
 	// leakguard.InstallDir. The launcher installs the check the daemon served once for the pod,
 	// before any role starts, so the shim only reads it: with a pin in the environment
-	// (leakguard.TagVariable, which the worker image sets and a tmux pane does not) a role whose
-	// install is absent or of another tag runs no agent.
+	// (leakguard.TagVariable, which the worker image sets and a tmux pane does not) and the
+	// deployment's checker (leakguard.CheckerVar, which the runtime tells a role of a deployment
+	// that runs a shared leak check), a role whose install is absent or of another tag runs no
+	// agent.
 	//
 	// The installed check's path is what the shim names in PUBLIC_LEAK_CHECK for everything it
 	// starts, where the environment names none of its own (spawnOnce): the runtime's own value
@@ -253,7 +256,7 @@ type shim struct {
 	thumbprint  string // agent-secrets keygen's thumbprint, generated once per shim
 	renewing    bool   // the agent-secrets renewer goroutine has been started
 
-	// renewers is the agent-secrets renewer goroutine (agentsecrets.go's startRenewer), reaped by
+	// renewers is the agent-secrets renewer goroutine (cipher.go's startRenewer), reaped by
 	// Run's deferred Wait before it returns.
 	renewers sync.WaitGroup
 
@@ -330,8 +333,9 @@ func (s *shim) connect() (acked bool, err error) {
 			break
 		}
 		// Nothing the daemon sends before its ack is meant for a child that does not exist yet
-		// (cmdWorkerShimConnect's onLine before hello_ack, worker-shim.ts).
-		s.log.Printf("[worker-shim] ignoring a frame received before hello_ack: %.80s", line)
+		// (cmdWorkerShimConnect's onLine before hello_ack, worker-shim.ts). The line is the far
+		// side's, so the URL rule reads it whole before it is cut (redact.Runes).
+		s.log.Printf("[worker-shim] ignoring a frame received before hello_ack: %s", redact.Runes(string(line), 80))
 	}
 	// Spawned here, before the next line is read: the daemon's first RPC frame may share a read
 	// with the ack, and it must find a child to go to (cmdWorkerShimConnect's ack, worker-shim.ts).
@@ -415,9 +419,10 @@ func (s *shim) toDaemon(frame shimwire.Frame) {
 //
 // The pod's launcher installs the check the daemon served once for the pod, before it starts any
 // role, so the shim reads it and installs nothing (leakguard.Installed, at Config.LeakCheckDir).
-// With no pin in the environment, which is every tmux pane, nothing is read and nothing refused.
-// With a pin, an install that is absent or of another tag ends the shim with exit 1 and runs no
-// agent.
+// With no pin in the environment, which is every tmux pane, and with no deployment checker in it
+// (leakguard.CheckerVar), which is every role of a deployment that runs no shared leak check,
+// nothing is read and nothing refused. With both, an install that is absent or of another tag
+// ends the shim with exit 1 and runs no agent.
 //
 // The read is here, and before the start, for two orderings this placement guarantees. The
 // harness is started after it, so no turn of the agent reaches a write path before the check its
@@ -537,14 +542,14 @@ func (s *shim) pump(stdout *os.File, done chan<- struct{}) {
 // outbox as one frame. So a connection that breaks under it leaves the whole sequence, from its
 // chunk 0, for the next, and nothing the shim sends of its own (a bundle result's sequence,
 // toDaemonChunked) lands between two of its chunks. A line that does not continue the sequence —
-// one that is not a chunk, a chunk at a place the daemon's reader refuses (RPCChunk's validate: a
-// count under two or over shimwire.MaxChunkCount, an index under zero or at or past its count), a
-// chunk of another sequence, or an index that is not the next — sends what is held first, as one
+// one that is not a chunk, a chunk at a place the daemon's reader refuses (shimwire's
+// RPCChunk.Placement, the check that reader makes first: an id empty or over its bound, a count
+// under two or over the most a sequence may declare, an index under zero or at or past its count),
+// a chunk of another sequence, or an index that is not the next — sends what is held first, as one
 // frame, and so does the pump's end: the daemon's reader drops that broken sequence as it would
 // have, and nothing changes order. The first two go alone after it, as every line went before the
 // pump held sequences. So the pump holds one sequence at most, which OMP writes back to back, and
-// no more of it than a sequence may declare: shimwire.MaxChunkCount lines, each under the line
-// limit.
+// no more of it than a sequence may declare, each line under the line limit.
 type chunkHold struct {
 	out   *outbox
 	lines [][]byte
@@ -562,9 +567,10 @@ type lineHead struct {
 }
 
 // forward sends one of OMP's lines to the outbox, or holds it with the rest of its sequence when
-// it is a chunk at a place the daemon's reader takes, which head reads.
+// it is a chunk at a place the daemon's reader takes (RPCChunk.Placement), which head reads.
 func (h *chunkHold) forward(line []byte, head lineHead, chunk bool) {
-	if !chunk || head.Count < 2 || head.Count > shimwire.MaxChunkCount || head.Index < 0 || head.Index >= head.Count {
+	place := shimwire.RPCChunk{ChunkID: head.ChunkID, Index: head.Index, Count: head.Count}
+	if !chunk || place.Placement() != nil {
 		h.release()
 		h.out.send(line)
 		return
@@ -802,7 +808,8 @@ func summarize(line []byte, typ string) string {
 			args.Reset()
 			args.WriteString("{}")
 		}
-		return shimwire.TypeToolExecutionStart + " " + tool + " " + truncate(args.String(), 80)
+		// The rule before the cut: a userinfo cut before its "@" is one the log's rule cannot find.
+		return shimwire.TypeToolExecutionStart + " " + tool + " " + redact.Runes(args.String(), 80)
 	case shimwire.Raw:
 		switch f.Type {
 		case rawErrorType:
@@ -826,13 +833,6 @@ func summarize(line []byte, typ string) string {
 		}
 	}
 	return ""
-}
-
-func truncate(s string, n int) string {
-	if runes := []rune(s); len(runes) > n {
-		return string(runes[:n])
-	}
-	return s
 }
 
 // outbox is every frame bound for the daemon: written to the connection when one is attached,

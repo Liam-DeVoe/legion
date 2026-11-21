@@ -505,6 +505,63 @@ func TestARowFromBeforeRepeatsReadsAsMovesNotPushed(t *testing.T) {
 	})
 }
 
+// A run the settlement's skipped group named is kept skipped with the word GitHub gave it, skipped,
+// beside a run that succeeded with its word, success: the pull request reads back whole, both in
+// its fence (check_runs) and in its head run's settlement step, which holds the settlement's runs
+// as the decoder gave them. A row written before either was kept holds each run as its name, id,
+// head and conclusion alone, a skipped run written as succeeded, and a step's runs as their name
+// and id: it reads back with no word and no run skipped, as it did.
+func TestAPullRequestKeepsASkippedRunAndItsWordThroughTheStore(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	issue := issueFixture("LEGION-208")
+	pr := PullRequest{Issue: issue.Key, Repo: "sjawhar/legion", Number: 1243, Branch: "legion/LEGION-208", HeadSHA: "b1", CheckedHead: "b1",
+		State: PullRequestOpen, Failing: []string{}, Cancelled: []string{}, Generation: 2, Snapshot: "snapshot-2",
+		Statuses: []CommitStatus{}, Pushes: []ClassifiedPush{}, Moves: []Move{},
+		CheckRuns: []AttemptRun{
+			{Name: "docs", ID: 117, Head: "b1", Conclusion: RunSkipped, GitHubConclusion: "skipped"},
+			{Name: "lint", ID: 110, Head: "b1", Conclusion: RunSucceeded, GitHubConclusion: "success"},
+		},
+		Run: &HeadRun{Anchor: Judgement{HeadSHA: "a0"}, Steps: []RunStep{{Head: "b1", Before: "a0"},
+			{Settlement: &Settlement{Head: "b1", Generation: 2, Snapshot: "snapshot-2", Failing: []string{}, Cancelled: []string{},
+				CheckRuns: []AttemptRun{
+					{Name: "docs", ID: 117, Conclusion: RunSkipped, GitHubConclusion: "skipped"},
+					{Name: "lint", ID: 110, GitHubConclusion: "success"},
+				}}}}}}
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.PutIssue(ctx, tx, issue))
+		must(t, records.PutPullRequest(ctx, tx, pr))
+	})
+	inTx(t, st, func(tx pgx.Tx) {
+		got, err := records.PullRequest(ctx, tx, issue.Key)
+		must(t, err)
+		if got == nil || !samePullRequest(*got, pr) {
+			t.Fatalf("pull request = %#v, want %#v: the skipped run and each word read back whole", got, pr)
+		}
+	})
+
+	inTx(t, st, func(tx pgx.Tx) {
+		_, err := tx.Exec(ctx, `update pull_requests set
+			check_runs = '[{"name":"docs","id":117,"head":"b1","conclusion":"succeeded"},{"name":"lint","id":110,"head":"b1","conclusion":"succeeded"}]'::jsonb,
+			head_run = '{"anchor":{"headSha":"a0","failing":null,"cancelled":null,"checkRuns":null},"pushes":null,"steps":[{"head":"b1","before":"a0"},{"settlement":{"head":"b1","checkRuns":[{"name":"docs","id":117},{"name":"lint","id":110}],"generation":2,"snapshot":"snapshot-2","failing":[],"cancelled":[]}}]}'::jsonb
+			where issue = $1`, issue.Key)
+		must(t, err)
+	})
+	inTx(t, st, func(tx pgx.Tx) {
+		got, err := records.PullRequest(ctx, tx, issue.Key)
+		must(t, err)
+		want := pr
+		want.CheckRuns = []AttemptRun{{Name: "docs", ID: 117, Head: "b1", Conclusion: RunSucceeded}, {Name: "lint", ID: 110, Head: "b1", Conclusion: RunSucceeded}}
+		want.Run = &HeadRun{Anchor: Judgement{HeadSHA: "a0"}, Steps: []RunStep{{Head: "b1", Before: "a0"},
+			{Settlement: &Settlement{Head: "b1", Generation: 2, Snapshot: "snapshot-2", Failing: []string{}, Cancelled: []string{},
+				CheckRuns: []AttemptRun{{Name: "docs", ID: 117}, {Name: "lint", ID: 110}}}}}}
+		if got == nil || !samePullRequest(*got, want) {
+			t.Fatalf("pull request written before the word = %#v, want %#v: no word and no run skipped", got, want)
+		}
+	})
+}
+
 // The mark that an issue has stood in a phase of its own is what promotion reads when a tree that
 // ran comes up again on a later pass, long after its run, so it has to survive the write: PutIssue
 // stores it and Issue, like every read behind issueColumns, gives it back. The store keeps
@@ -2285,11 +2342,13 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 		"production_checks": {"issue", "project", "tree", "repo", "pr_number", "merge_sha", "opened_at", "bound_at", "role", "looks", "look_open", "look_wake_at", "last_wake_kind", "last_wake_detail", "last_wake_at", "wake_at", "last", "closed_at", "outcome"},
 		"design_gates":      {"issue", "step", "artifact_id", "latest_version", "approved_version", "approved_seq", "approved_at", "told_changes_version", "told_changes_reason", "told_changes_seq", "told_changes_at", "ever_opened"},
 		"root_asks":         {"issue", "ask", "kind", "artifact", "open", "seq", "waiting_on", "waiting_on_seq", "closed_by", "closed_seq", "by_tree", "person_seq", "person_answer_seq", "declined", "declined_note", "declined_words"},
-		"dispatch_issues":   {"key", "project", "status", "blockers", "dispatch_seq", "parent"},
-		"dispatch_claims":   {"key", "claimed_by", "claim_seq"},
-		"slots":             {"issue", "index", "admitted_at"},
-		"processed_events":  {"source", "event_id", "processed_at"},
-		"outbox":            {"id", "kind", "issue", "payload", "attempts", "next_at", "last_error", "created_at", "lease_token", "lease_until", "write_mark"},
+		"dispatch_issues": {"key", "project", "status", "blockers", "dispatch_seq", "parent", "labels", "rank",
+			"status_seq", "parent_seq", "blockers_seq", "labels_seq", "rank_seq"},
+		"dispatch_issue_refills": {"project", "marked_at", "refilled_at"},
+		"dispatch_claims":        {"key", "claimed_by", "claim_seq"},
+		"slots":                  {"issue", "index", "admitted_at"},
+		"processed_events":       {"source", "event_id", "processed_at"},
+		"outbox":                 {"id", "kind", "issue", "payload", "attempts", "next_at", "last_error", "created_at", "lease_token", "lease_until", "write_mark", "held_by_pause"},
 	}
 	inTx(t, st, func(tx pgx.Tx) {
 		for table, expected := range want {
@@ -2614,36 +2673,36 @@ func TestRoleClaimsReadsTheClaimsAloneOfTheTokensItIsGiven(t *testing.T) {
 	})
 }
 
-// RoleClaims reads whether a text an accepted take was answered with stands, not the text: its
-// readers ask only that (supervise's Delivery.StillWorked), and the text stays on the row through
-// the take's turn, so a read of the whole of it would carry every running task's text on every
-// admission pass. The task's TakenText is that text's first character, and StillWorked answers
-// from the read as it answers from the record: a take awaiting its turn still works the task on
-// an idle claim, and a take whose turn started does not.
+// RoleClaims reads whether an accepted take's turn started, and not the text the take was
+// answered with: its readers ask only where the take stands (supervise's Delivery.StillWorked),
+// which turn_started says alone, and the text stays on the row through the take's turn, so a read
+// of it would carry every running task's text on every admission pass. StillWorked answers from
+// the read as it answers from the record: a take awaiting its turn still works the task on an
+// idle claim, and a take whose turn started does not, whether its text stands or no record kept
+// it — a confirmed row the task numbers' migration filled with no text, whose turn_started it set.
 //
-// The negative control is the read of the whole column (the taken_text select without left): the
-// task then reads back the whole text.
-func TestRoleClaimsReadsWhetherATakenTextStandsAndNotTheText(t *testing.T) {
+// The negative control is the read of the text put back (taken_text selected into the task's
+// TakenText): the task then reads back a text the reader has no use for.
+func TestRoleClaimsReadsWhetherATakesTurnStartedAndNotItsText(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
 	records := NewStore()
 	const text = "Your last turn was interrupted.\n\nTest it. Issue: LEGION-208. Phase: testing."
 	for _, tc := range []struct {
-		name        string
+		name, text  string
 		turnStarted bool
+		role        claim.Role
 	}{
-		{name: "a take awaiting its turn"},
-		{name: "a take whose turn started", turnStarted: true},
+		{name: "a take awaiting its turn", text: text, role: claim.RoleTester},
+		{name: "a take whose turn started", text: text, turnStarted: true, role: claim.RoleImplementer},
+		{name: "a migrated take whose turn started, its text kept by no record", turnStarted: true, role: claim.RoleReviewer},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			token := claim.Token("legion-legion-legion-208-tester")
-			if tc.turnStarted {
-				token = "legion-legion-legion-208-implementer"
-			}
+			token := claim.Token("legion-legion-legion-208-" + string(tc.role))
 			held := supervise.Claim{Token: token, Project: "legion", Tree: "LEGION-208", Issue: "LEGION-208",
-				Role: claim.RoleTester, Generation: 1, State: supervise.StateIdle, TaskWritten: 1, TaskTaken: 1}
+				Role: tc.role, Generation: 1, State: supervise.StateIdle, TaskWritten: 1, TaskTaken: 1}
 			task := supervise.Delivery{ID: "outbox:17", Task: "Test it.", Generation: 1, Phase: phase.Testing,
-				Number: 1, QueuedAt: time.Now(), ConfirmedAt: time.Now(), TakenText: text, TurnStarted: tc.turnStarted}
+				Number: 1, QueuedAt: time.Now(), ConfirmedAt: time.Now(), TakenText: tc.text, TurnStarted: tc.turnStarted}
 			if err := st.PutClaimAndDelivery(ctx, held, task); err != nil {
 				t.Fatalf("record the claim and the task its take holds: %v", err)
 			}
@@ -2656,8 +2715,9 @@ func TestRoleClaimsReadsWhetherATakenTextStandsAndNotTheText(t *testing.T) {
 				if read == nil || read.Pending == nil {
 					t.Fatalf("the claim reads %+v, want it holding the task the fixture wrote", read)
 				}
-				if read.Pending.TakenText != text[:1] {
-					t.Fatalf("the task's taken text reads %q, want only its first character, %q: the read says whether a text stands", read.Pending.TakenText, text[:1])
+				if read.Pending.TakenText != "" || read.Pending.TurnStarted != tc.turnStarted {
+					t.Fatalf("the task reads taken text %q and turn started %v, want no text and turn started %v: the read says where the take stands and carries no text",
+						read.Pending.TakenText, read.Pending.TurnStarted, tc.turnStarted)
 				}
 				if got, want := read.Pending.StillWorked(1, phase.Testing, read.State), task.StillWorked(1, phase.Testing, held.State); got != want {
 					t.Fatalf("StillWorked over the read = %v, want %v, as over the record", got, want)

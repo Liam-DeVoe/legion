@@ -11,6 +11,13 @@ import (
 	"time"
 )
 
+// agentBusyMessage is the message Oh My Pi refuses a prompt with when the agent is busy: the
+// default of its AgentBusyError (packages/agent/src/agent.ts of cybermonklabs/oh-my-pi at the
+// pinned tag), which it throws for a prompt sent with no streamingBehavior while a turn streams,
+// and which its own test of the refusal expects the error to start with
+// (packages/coding-agent/test/rpc-prompt-busy-code.test.ts there).
+const agentBusyMessage = "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."
+
 // Every frame the shim and the daemon exchange, as the shipped TypeScript writes it on the wire
 // (worker-rpc.ts:420, 430, 452, 475, 490, 493-496; worker-shim.ts:332, 356-366;
 // worker-stream-listener.ts:14; fake-omp-rpc.ts:24-79). A frame decodes to its Go type and
@@ -28,6 +35,14 @@ func TestEveryExchangedFrameRoundTripsItsWireLine(t *testing.T) {
 			"negotiate_protocol",
 			`{"type":"negotiate_protocol","id":"r1","protocolVersion":2}`,
 			NegotiateProtocol{ID: "r1", ProtocolVersion: 2},
+		},
+		{
+			// Oh My Pi's refusal of a prompt sent while a turn streams, as an old shim's backlog
+			// may still replay one: its error response carries `code` at the top level, right
+			// after `error`, and the member survives the round trip (Response.Code).
+			"busy refusal response",
+			`{"type":"response","id":"r2","command":"prompt","success":false,"error":"` + agentBusyMessage + `","code":"session_busy"}`,
+			Response{ID: "r2", Command: "prompt", Success: false, Error: agentBusyMessage, Code: "session_busy"},
 		},
 		{
 			"get_state response",
@@ -147,6 +162,13 @@ func TestEveryExchangedFrameRoundTripsItsWireLine(t *testing.T) {
 			LauncherStart{ID: "start-1", Generation: 7, Argv: []string{"omp", "--mode", "rpc"}, Env: []string{"A=B"}, Files: map[string]string{"LEGION_BOOT_TOKEN": "boot-7"}, ResumeFile: "/sessions/test.jsonl"},
 		},
 		{
+			// An Oh My Pi launch wrapped in the deployment's setup: the agent's executable is not
+			// the first word of Argv, so the start names it.
+			"launcher_start of an Oh My Pi launch",
+			`{"type":"launcher_start","id":"start-2","generation":8,"argv":["/bin/sh","-c","exec \"$@\"","legion-start","/opt/omp/bin/omp"],"env":["A=B"],"agentExecutable":"/opt/omp/bin/omp"}`,
+			LauncherStart{ID: "start-2", Generation: 8, Argv: []string{"/bin/sh", "-c", `exec "$@"`, "legion-start", "/opt/omp/bin/omp"}, Env: []string{"A=B"}, AgentExecutable: "/opt/omp/bin/omp"},
+		},
+		{
 			"launcher_start_result",
 			`{"type":"launcher_start_result","id":"start-1","ok":true,"runningGeneration":7}`,
 			LauncherStartResult{ID: "start-1", OK: true, RunningGeneration: 7},
@@ -213,7 +235,8 @@ func TestEveryExchangedFrameRoundTripsItsWireLine(t *testing.T) {
 
 // The daemon sends no prompt: a task is a value the worker takes (internal/supervise, take.go).
 // So no frame of the prompt's is modelled any more. An old shim or an old Oh My Pi may still write
-// one — a `prompt` command a backlog replays, a `prompt_result` behind a turn's end — and each
+// one — a `prompt` command a backlog replays, a `prompt_result` behind a turn's end, the pinned Oh
+// My Pi's refusal of a prompt while the agent is busy with the class it names (`code`) — and each
 // decodes to Raw, which the stream drops (internal/stream), rather than to a type a reader could
 // act on. The turn frames are what the daemon reads of a turn, and they still decode as before:
 // a start an old shim replayed with the delivery it named decodes to the plain start.
@@ -223,6 +246,8 @@ func TestNoPromptFrameIsModelledAndTheTurnFramesStillDecode(t *testing.T) {
 		`{"type":"prompt_result","id":"d1.XYZ","agentInvoked":true,"status":"completed","sessionSettled":false}`,
 		`{"type":"prompt_result","id":"d1.XYZ","agentInvoked":true,"status":"error",` +
 			`"error":{"message":"429 Too Many Requests","provider":"anthropic","httpStatus":429,"retryable":true},"sessionSettled":true}`,
+		`{"type":"prompt_result","id":"d1.XYZ","agentInvoked":false,"status":"error","sessionSettled":false,` +
+			`"error":{"message":"` + agentBusyMessage + `","retryable":false,"code":"session_busy"}}`,
 	} {
 		decoded, err := Decode([]byte(line))
 		if err != nil {
@@ -336,10 +361,10 @@ func TestALineThatIsNotAJSONObjectIsRefused(t *testing.T) {
 	}
 }
 
-// Four frames the shipped code refuses when their fields are malformed, because in each case the
+// Five frames the shipped code refuses when their fields are malformed, because in each case the
 // sender is the only writer and a malformed one is a bug to name: the hello
 // (worker-stream-listener.ts:140-148), the daemon's adoption request (worker-shim.ts:171-180), the
-// compaction request and the launcher's volume report.
+// compaction request, the launcher's volume report and the daemon's launcher bundle slice.
 func TestTheFramesTheShippedCodeValidatesRefuseTheirMalformedForms(t *testing.T) {
 	if err := (Hello{BootToken: "boot-1"}).Validate(); err != nil {
 		t.Fatalf("Hello.Validate: %v", err)
@@ -398,6 +423,31 @@ func TestTheFramesTheShippedCodeValidatesRefuseTheirMalformedForms(t *testing.T)
 			t.Fatalf("%s: Validate = %v, want ErrMalformedFrame", tc.name, err)
 		}
 	}
+	// A launcher_bundle slice's count is what the launcher sizes its sequence by
+	// (internal/launcher's restore), so a count whose slices could pass the body bound is refused
+	// as the leak check's is, and the largest count under it is not.
+	slice := LauncherBundle{ID: "bundle-LEGION-209", Index: 0, Count: 2, Release: 1, Payload: []byte("foo"),
+		SHA256: "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae"}
+	largest := slice
+	largest.Count = MaxWorkspaceBundleBodyBytes / LauncherBundlePayloadBytes
+	for _, frame := range []LauncherBundle{slice, largest} {
+		if err := frame.Validate(); err != nil {
+			t.Fatalf("LauncherBundle.Validate of %d of %d: %v", frame.Index, frame.Count, err)
+		}
+	}
+	for _, tc := range []struct {
+		name  string
+		count int
+	}{
+		{"a count whose slices pass the body bound", MaxWorkspaceBundleBodyBytes/LauncherBundlePayloadBytes + 1},
+		{"a count no body could need", 1 << 40},
+	} {
+		frame := slice
+		frame.Count = tc.count
+		if err := frame.Validate(); !errors.Is(err, ErrMalformedFrame) || !strings.Contains(err.Error(), "could pass") {
+			t.Fatalf("%s: Validate = %v, want ErrMalformedFrame for a count past the bound", tc.name, err)
+		}
+	}
 }
 
 // A volume report may hold each of its four lists up to the list's cap and not one entry past
@@ -431,6 +481,46 @@ func TestAVolumeReportOverAListCapIsRefused(t *testing.T) {
 			err := report.Validate()
 			if !errors.Is(err, ErrMalformedFrame) || !strings.Contains(err.Error(), tc.list+" holds") {
 				t.Fatalf("a report holding one entry past the cap of %s validated as %v, want ErrMalformedFrame naming the list", tc.list, err)
+			}
+		})
+	}
+}
+
+// A start that names a session by its id alone (resumeSession) is the launcher's to look up, and
+// the launcher resumes what it finds by replacing the argv's one `--resume=<id>` with the found
+// file's path: a start that also names a file names two sessions, and one whose argv does not
+// hold exactly one `--resume=<id>` of that session leaves the launcher no element to replace, or
+// two. The sandbox runtime is the frame's only sender, so each is a bug to name. The negative
+// control is the round-trip table's start naming its session by id in place of its file, with the
+// one element, which validates.
+func TestALauncherStartNamingASessionMustNameOneResumeOfIt(t *testing.T) {
+	const session = "01a1f5de-4835-7667-b005-e99e3e17edd3"
+	byID := LauncherStart{ID: "start-1", Generation: 7, Argv: []string{"omp", "--mode", "rpc", "--resume=" + session},
+		Env: []string{"A=B"}, Files: map[string]string{"LEGION_BOOT_TOKEN": "boot-7"}, ResumeSession: session}
+	if err := byID.Validate(); err != nil {
+		t.Fatalf("a start naming its session by id with one --resume of it was refused: %v", err)
+	}
+	for name, change := range map[string]func(*LauncherStart){
+		"a session file as well": func(s *LauncherStart) { s.ResumeFile = "/sessions/test.jsonl" },
+		"no --resume of the session": func(s *LauncherStart) {
+			s.Argv = []string{"omp", "--mode", "rpc"}
+		},
+		"two --resume of the session": func(s *LauncherStart) {
+			s.Argv = []string{"omp", "--resume=" + session, "--mode", "rpc", "--resume=" + session}
+		},
+		"a --resume of another session": func(s *LauncherStart) {
+			s.Argv = []string{"omp", "--mode", "rpc", "--resume=01a1f5de-4835-7667-b005-e99e3e28aa01"}
+		},
+		"the session as an element of its own": func(s *LauncherStart) {
+			s.Argv = []string{"omp", "--mode", "rpc", "--resume", session}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			start := byID
+			change(&start)
+			err := start.Validate()
+			if !errors.Is(err, ErrMalformedFrame) || !strings.Contains(err.Error(), "resumeSession") {
+				t.Fatalf("a start naming session %s with %s validated as %v, want ErrMalformedFrame naming resumeSession", session, name, err)
 			}
 		})
 	}

@@ -14,9 +14,13 @@ import type { AgentEndEvent, AgentEndMessage } from "@legion/pi-shared/pi-types"
  * model answered, and one the provider refused — is reported to the daemon over HTTP, under a
  * sequence this plugin counts itself, so the daemon, not a reminder, answers a session whose
  * provider refuses turn after turn (dispatch://INFRA-264). A refusal this plugin reports carries
- * the provider's failure (`providerError`, below), which the daemon answers with its provider-error
- * wait and counts toward no launch failure; only a refused turn with no such failure counts toward
- * the run that fails the claim at `launch_failure_limit`.
+ * the provider's failure (`providerError`, below). Where the report is of the turn of the task a
+ * take of the claim holds, the daemon's provider-error ladder takes it, and the turn counts toward
+ * no launch failure: the task is kept and given to the same session again after a wait, or, for a
+ * client error the ladder cannot wait out (a 4xx but 401, 403, 408 and 429), the claim fails and
+ * the workflow holds the issue. Every other refused turn — one with no such failure, and one whose
+ * report reaches no ladder, a reminder's, a card's or a background result's — counts toward the
+ * run that fails the claim at `launch_failure_limit`.
  *
  * The count is this producer's alone. It is not the daemon's turn ordinal and not
  * `supervise.StreamTurnEnd`'s: two counters would drift the moment one of them missed an end, and
@@ -33,17 +37,25 @@ import type { AgentEndEvent, AgentEndMessage } from "@legion/pi-shared/pi-types"
  * provider and model it went to, and the provider's message, with which the daemon keeps the task
  * under its number and writes its value again after a wait instead of finishing it
  * (dispatch://INFRA-2811 R2). The daemon-launched controller's turns are reported the same way,
- * its start task's naming that task's number.
+ * its start task's naming that task's number. A turn that ended while the claim's take still held
+ * an accepted take's text unrun — the take was answered during that turn, which the daemon gave
+ * it as the first to start after its accept — names that take's number as `held`
+ * (`TaskTake.held`): the turn was not the task's, which the daemon reads as certain and puts the
+ * take back to await its own turn by, even where it has lost its count of this session's turns.
  *
  * Because only the report finishes the task, a report is sent until the daemon answers it
- * (`sendUntilAnswered`, the policy a take is sent by): a refused, reset or closed connection, an
- * unreachable host or network, a connect or read timeout, a DNS failure, no answer within five
- * minutes, and a 502, 503 or 504 that names no Legion error code are sent again, the same
- * request, after a doubling wait with no attempt limit, and so is any 500 the route answers,
- * which is the daemon's own failure to record the report (`turn outcome failed: the daemon could
- * not record it`). The daemon stores one outcome per `(generation, sequence)` and applies a repeat
- * once, so a report sent again whose first attempt landed changes nothing, and one whose write
- * failed is applied. A 2xx ends the sending, and so does a refusal
+ * (`sendUntilAnswered`, the policy a take is sent by): any failure that carries no HTTP status,
+ * whatever the transport names it (a refused, reset or closed connection, an unreachable host or
+ * network, a connect or read timeout, a DNS failure among them), no answer within five minutes,
+ * and a 502, 503 or 504 that names no Legion error code are sent again, the same request, after a
+ * doubling wait with no attempt limit, and so is any 500 the route answers, which is the daemon's
+ * own failure to record the report (`turn outcome failed: the daemon could not record it`). No
+ * list of the transport's codes decides it: a report a failure stopped would leave its task's turn
+ * started on the daemon, which arms no bound over it, while the take holds the number finished
+ * from the turn's end, so nothing would finish the task or take it again until a newer task or
+ * the process's end. The daemon stores one outcome per `(generation, sequence)` and applies a
+ * repeat once, so a report sent again whose first attempt landed changes nothing, and one whose
+ * write failed is applied. A 2xx ends the sending, and so does a refusal
  * (a 4xx, or any other answer the daemon names a code for), which is warned about once: nothing
  * this pane can do changes it. The session's end stops what is still being sent for it
  * (`sessionEnded`). The report resolves how the daemon answered it (`TurnReportAnswer`): a 4xx
@@ -92,16 +104,20 @@ export type TurnReportAnswer = "recorded" | "refused";
 export interface TurnOutcomeReporter {
   /**
    * Reports the turn that `agent_end` just ended, for the claim the session holds; `task` is the
-   * number of the task whose turn it was, undefined for a turn of no task. Resolves how the
-   * daemon answered (`TurnReportAnswer`) once it answered or refused, and undefined for a session
-   * that holds no claim, a session that ended first, and a failure that is neither a 2xx nor a
-   * 4xx. Never rejects: Oh My Pi does not await an `agent_end` handler, so a rejection here would
-   * be an unhandled one, and nothing of the turn waits on the report either way.
+   * number of the task whose turn it was, undefined for a turn of no task, and `held` the number
+   * of the accepted take whose text the session's take held unrun through that turn
+   * (`TaskTake.held`), undefined for none, which the report names as `held` so the daemon knows
+   * for certain the turn was not that task's. Resolves how the daemon answered
+   * (`TurnReportAnswer`) once it answered or refused, and undefined for a session that holds no
+   * claim, a session that ended first, and a failure that is neither a 2xx nor a 4xx. Never
+   * rejects: Oh My Pi does not await an `agent_end` handler, so a rejection here would be an
+   * unhandled one, and nothing of the turn waits on the report either way.
    */
   readonly report: (
     sessionID: string,
     event: AgentEndEvent,
-    task?: number
+    task?: number,
+    held?: number
   ) => Promise<TurnReportAnswer | undefined>;
   /** The session ended (`session_shutdown`): every report of it still being sent stops. */
   readonly sessionEnded: (sessionID: string) => void;
@@ -161,7 +177,7 @@ export function createTurnOutcomeReporter(deps: TurnOutcomeReporterDeps): TurnOu
   const stops = new Map<string, AbortController>();
 
   return {
-    report: async (sessionID, event, task) => {
+    report: async (sessionID, event, task, held) => {
       const claim = deps.claim(sessionID);
       if (claim === undefined) return undefined;
       const { caller } = claim;
@@ -183,6 +199,7 @@ export function createTurnOutcomeReporter(deps: TurnOutcomeReporterDeps): TurnOu
         outcome: refusal === undefined ? ("clean" as const) : ("refused" as const),
         ...(refusal === undefined ? {} : { message: refusal }),
         ...(task === undefined ? {} : { task }),
+        ...(held === undefined ? {} : { held }),
         ...(refusal === undefined || last === undefined
           ? {}
           : { providerError: providerError(last, refusal) }),
@@ -198,6 +215,7 @@ export function createTurnOutcomeReporter(deps: TurnOutcomeReporterDeps): TurnOu
         sequence: mine,
         outcome: request.outcome,
         ...(task === undefined ? {} : { task }),
+        ...(held === undefined ? {} : { held }),
       };
       try {
         const outcome = await sendUntilAnswered(

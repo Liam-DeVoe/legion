@@ -138,7 +138,9 @@ func (c *Conn) Sequence() uint64 { return c.seq }
 
 // GetState asks OMP whether a turn is running. An answer that does not say is an error, never
 // "not streaming": a restart decides on it whether the turn it recorded is still running. An
-// answer that says reaches the event queue too (TurnAnswered, dispatch).
+// answer that says reaches the event queue too (TurnAnswered, dispatch), while this request still
+// waits for it: its id is one the connection waits on (pending) from before the frame is written
+// until it is answered or the request ends.
 func (c *Conn) GetState(ctx context.Context) (runtime.ConnState, error) {
 	if err := c.Negotiate(ctx); err != nil {
 		return runtime.ConnState{}, err
@@ -152,7 +154,7 @@ func (c *Conn) GetState(ctx context.Context) (runtime.ConnState, error) {
 	if err != nil {
 		return runtime.ConnState{}, err
 	}
-	return runtime.ConnState{IsStreaming: streaming}, nil
+	return runtime.ConnState{IsStreaming: streaming, Ask: id}, nil
 }
 
 // streamingOf is what a get_state answer says: whether a turn is running, and an error where it
@@ -457,11 +459,11 @@ func (c *Conn) logNotAFrame(line []byte, err error) {
 // the first decodes to Raw and the second answers no request this connection is waiting on.
 //
 // A get_state answer that says whether a turn is running is pushed as TurnAnswered before it is
-// handed to the request waiting on it, whether one still waits or not: pushed here, in the order
-// the frames were read, it follows every event of a frame read before it — a shim's replay of what
-// it held while no daemon was attached among them — and precedes the connection's Closed, so the
-// decision that waits for it reads the claim with all of those applied (supervise's
-// turnAnswered).
+// handed to the request waiting on it, and only while a get_state this connection wrote still
+// waits on it (stateAnswered): pushed here, in the order the frames were read, it follows every
+// event of a frame read before it — a shim's replay of what it held while no daemon was attached
+// among them — and precedes the connection's Closed, so the decision that waits for it reads the
+// claim with all of those applied (supervise's turnAnswered).
 func (c *Conn) dispatch(frame shimwire.Frame) {
 	switch frame := frame.(type) {
 	case shimwire.AgentStart:
@@ -476,9 +478,7 @@ func (c *Conn) dispatch(frame shimwire.Frame) {
 			End: true, ConnSequence: c.seq})
 	case shimwire.Response:
 		if frame.Command == shimwire.TypeGetState && frame.Success {
-			if streaming, err := c.streamingOf(frame); err == nil {
-				c.events.push(TurnAnswered{Claim: c.claim, Streaming: streaming})
-			}
+			c.stateAnswered(frame)
 		}
 		c.answerRequest(frame.ID, frame)
 	case shimwire.Raw:
@@ -506,6 +506,34 @@ func (c *Conn) dispatch(frame shimwire.Frame) {
 	case shimwire.BundleWorkspaceResult:
 		c.answerRequest(frame.ID, frame)
 	}
+}
+
+// stateAnswered is a get_state answer that says whether a turn is running, read in its wire place
+// (dispatch). It is a TurnAnswered only where it answers a request this connection wrote and still
+// waits on (pending), which dispatch hands it to after it (answerRequest), spending the id, so the
+// same answer read twice is one. The ids are random, and dispatch reads only an answer that names
+// get_state as its command, so the answer to another request of the connection, which names that
+// request's command, is none.
+// Any other answers no ask this connection is waiting on: an answer the shim replays from its
+// backlog after the connection that asked broke between the ask and the answer, a repeat, or the
+// answer to a request that ended first. It is logged and pushes nothing. A replayed answer of no
+// turn would otherwise decide a restored claim's stale-plugin relaunch ahead of the turn the
+// replay goes on to show, and cut that turn (supervise's turnAnswered); the supervisor asks again
+// on the current connection where its request ended unanswered (supervise's askRestoredTurn).
+func (c *Conn) stateAnswered(response shimwire.Response) {
+	streaming, err := c.streamingOf(response)
+	if err != nil {
+		return
+	}
+	c.mu.Lock()
+	_, asked := c.pending[response.ID]
+	c.mu.Unlock()
+	if !asked {
+		c.log.Info("worker-stream: a get_state answer to no ask this connection waits on; it decides nothing",
+			"claim", c.claim, "streaming", streaming)
+		return
+	}
+	c.events.push(TurnAnswered{Claim: c.claim, Streaming: streaming, Ask: response.ID})
 }
 
 // stepArgsHash is the fingerprint of a call's arguments: the first eight bytes of their SHA-256,

@@ -24,6 +24,7 @@ import (
 	"math"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -312,8 +313,8 @@ func cancelTheRelease(t *testing.T, pool *pgxpool.Pool, role claim.Role) {
 			Generation: generation}, seededRaisedAt)
 		return store.IdleReleaseRow{Kind: string(row.Kind), Payload: row.Payload}, err
 	}
-	resumed, _, err := st.CancelIssueRelease(ctx, "legion", entryIssue, resume, record.OutOfWorkflow)
-	if err != nil || len(resumed) != 1 || resumed[0] != role {
+	cancelled, err := st.CancelIssueRelease(ctx, "legion", entryIssue, resume, record.OutOfWorkflow, store.ReleaseCancelPause{At: time.Now()})
+	if resumed := cancelled.Resumed; err != nil || len(resumed) != 1 || resumed[0] != role {
 		t.Fatalf("the cancel resumed %v, %v; want the %s it suspended", resumed, err, role)
 	}
 	starts := superviseRowsOf(t, pool, entryIssue, "start")

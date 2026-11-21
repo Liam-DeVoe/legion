@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/projection"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -602,10 +603,12 @@ func TestPromotionStartsAChildUnlessItsWorkerIsStartedForTheRun(t *testing.T) {
 					t.Fatalf("record the %s claim %s: %v", state, token, err)
 				}
 			}
+			// putPending records the claim's pending task; a confirmed one is a take whose turn
+			// started (turn_started), as the task numbers' fill reads a confirmed row.
 			putPending := func(generation uint64, p phase.Phase, confirmedAt *time.Time) {
 				t.Helper()
-				if _, err := pool.Exec(context.Background(), `insert into pending_task_deliveries (claim_token, delivery_id, task, queued_at, generation, phase, confirmed_at)
-					values ($1, 'outbox:7', 'Carry on.', now(), $2, $3, $4)`, string(token), int64(generation), string(p), confirmedAt); err != nil {
+				if _, err := pool.Exec(context.Background(), `insert into pending_task_deliveries (claim_token, delivery_id, task, queued_at, generation, phase, confirmed_at, turn_started)
+					values ($1, 'outbox:7', 'Carry on.', now(), $2, $3, $4::timestamptz, $4::timestamptz is not null)`, string(token), int64(generation), string(p), confirmedAt); err != nil {
 					t.Fatalf("record the pending task: %v", err)
 				}
 			}
@@ -684,6 +687,56 @@ func TestApplyFactRecordsRankTitleAndParentChangesAtTheSameStatus(t *testing.T) 
 		t.Fatalf("observed record = %#v, want rank AB, title renamed, parent LEGION-9, seq 2", got)
 	}
 	assertWaiting(t, pool, []string{"LEGION-3", "LEGION-2"})
+}
+
+// A title is a person's own text, so it can hold a NUL, which the store keeps as U+FFFD. The boot
+// listing shows the title as Dispatch holds it, at the sequence the record has already applied, and
+// the record keeps what the store made of it: the two are the same title, so the listing writes
+// nothing, as it writes nothing of any title the record already holds. Compared as listed, the
+// title would differ from its own stored copy, and the record would be written again at every boot.
+func TestTheBootListingOfATitleHoldingNULWritesNothingTheRecordAlreadyHolds(t *testing.T) {
+	pool := migratedPool(t)
+	facts := store.NewPool(pool)
+	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
+	seedSlotted(t, pool, "LEGION-1", "A")
+	seedWaiting(t, pool, "LEGION-3", "C")
+	const title = "re\x00named"
+	ctx := context.Background()
+
+	if _, err := intake.ApplyFact(ctx, facts, "dispatch", "rename", intake.DispatchIssue{Key: "LEGION-3", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated",
+		Status: "todo", Title: title, Rank: "C", HandedOver: handed}, engine, admission); err != nil {
+		t.Fatalf("apply the rename: %v", err)
+	}
+	if got := issue(t, pool, "LEGION-3"); got.Title != "re\uFFFDnamed" || got.LastDispatchSeq != 2 {
+		t.Fatalf("the renamed record is titled %q at seq %d, want %q at 2", got.Title, got.LastDispatchSeq, "re\uFFFDnamed")
+	}
+	// xmin is the transaction that wrote the row's current version: every write of the row,
+	// whatever it changes, gives it another.
+	written := func() string {
+		t.Helper()
+		var xmin string
+		if err := pool.QueryRow(ctx, `select xmin::text from issues where key = $1`, "LEGION-3").Scan(&xmin); err != nil {
+			t.Fatalf("read the record's xmin: %v", err)
+		}
+		return xmin
+	}
+	before := written()
+
+	listed := []intake.DispatchIssue{intake.ListedIssue(dispatch.IssueSummary{Key: "LEGION-3", Title: title, Status: "todo", Rank: "C", HandedOver: handed, LastSeq: 2, ResolvedRepo: "acme/widgets"})}
+	scoped, committed := intake.WithCommitHooks(ctx)
+	if err := pgx.BeginFunc(scoped, facts, func(tx pgx.Tx) error {
+		return admission.Reconcile(scoped, tx, listed, 2, intake.DispatchConsumerPosition{AckFloorStream: 2, Idle: true})
+	}); err != nil {
+		t.Fatalf("reconcile the boot listing: %v", err)
+	}
+	committed()
+	if after := written(); after != before {
+		t.Fatalf("the boot listing of the title the record holds wrote the record again (xmin %s, then %s), want no write", before, after)
+	}
+	if got := issue(t, pool, "LEGION-3"); got.Title != "re\uFFFDnamed" || got.LastDispatchSeq != 2 {
+		t.Fatalf("the record after the boot listing is titled %q at seq %d, want %q at 2", got.Title, got.LastDispatchSeq, "re\uFFFDnamed")
+	}
 }
 
 // A generation owns its facts. Generation 1 left a merged, approved pull request, an implementer
@@ -1085,7 +1138,10 @@ func TestCapturedDispatchTodoEventAdmitsAndProjectsActiveSlot(t *testing.T) {
 			return false
 		}
 		defer tx.Rollback(context.Background())
-		state, err := projection.Project(context.Background(), tx, record.NewStore(), "CAPTURE", nil, nil, nil, nil, nil, time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC))
+		state, err := projection.Project(context.Background(), projection.Inputs{
+			Tx: tx, Store: record.NewStore(), Project: "CAPTURE",
+			Now: time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC),
+		})
 		if err != nil {
 			return false
 		}

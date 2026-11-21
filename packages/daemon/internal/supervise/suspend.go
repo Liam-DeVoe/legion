@@ -2,6 +2,7 @@ package supervise
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/sjawhar/legion/daemon/internal/wait"
@@ -12,6 +13,14 @@ import (
 // that keeps the request durably asks again, and the claim answers nil once it is suspended.
 var ErrSuspendHeld = wait.New("the suspension is held for the agent's turn to end")
 
+// ErrPauseEnded answers a project pause's stop (RequestSuspend.Pause) that reaches its claim once
+// that pause is no longer the open one (Deps.Paused): the pause the stop names has ended, so
+// nothing was stopped. The resume ended it between the stop's ask and the machine's decision —
+// the `pause_stop` executor read the pause open, and the resume committed before its Handle was
+// decided — or a later pause followed it, which asks its own stop. It is not a refusal: the
+// stop's asker is answered that its pause no longer asks anything (suspendRequest).
+var ErrPauseEnded = errors.New("the pause this stop names has ended, so nothing was stopped")
+
 // suspend stops the process and keeps the session. The daemon's own suspension ends the claim's
 // phase (the workflow suspends a worker only when its issue closes or its run is over), so a task
 // queued for a phase and still pending is dropped with it, its value deleted (settle): the next
@@ -20,16 +29,52 @@ var ErrSuspendHeld = wait.New("the suspension is held for the agent's turn to en
 // phase task of a claim whose idle pod was released: that suspension ends no phase, and the wake
 // that brings the pod back resumes the claim with the task it kept
 // (SuspendSource.RetiresPhaseTask).
+//
+// A claim idle while a held suspension waits past the end of its take's turn for the report that
+// settles the task (Machine.heldForReport) is still that hold's: a suspension asked again then —
+// the daemon's row or stopElsewhere asking again, a pause's stop row asking again, an operator's
+// second suspend — joins the hold as one asked during the turn does (holdSuspension) and is
+// answered ErrSuspendHeld. Stopped here, the process would take with it the report the hold waits
+// for, and settle would take back as a cut turn a task whose turn ran whole.
+//
+// So is a claim idle over a take whose turn ended with that report still to come and no hold yet
+// (reportSettles): the first suspension to reach it in that window — an operator's, a daemon
+// row's, a pause's stop, or the one its row asks again after a restart forgot the hold the first
+// ask made — is held for the report as one that met the turn's end is (holdForReport), bounded by
+// its own deadline (suspendAtTimeout), and the report's finish runs it (afterTurn). A pause's stop
+// then reads the task the report left, and owes the role a launch only for a task it holds
+// (putStop, holdsTask).
 func suspend(m *Machine, ctx context.Context, ev Event) error {
+	if m.held != nil && m.heldForReport {
+		return holdSuspension(m, ctx, ev)
+	}
+	if m.held == nil && m.reportSettles() {
+		return m.holdForReport(ctx, ev)
+	}
 	request, err := suspendRequest(m, ev)
 	if err != nil {
 		return err
 	}
-	return m.suspendNow(ctx, request)
+	return m.suspendNow(ctx, request, false)
 }
 
-// holdSuspension is a suspension that arrives while the agent is in a turn, and this is the one
-// statement of what a held suspension (Machine.held) does.
+// holdForReport holds a suspension that reaches an idle claim over a take whose turn ended with
+// its report still to come (suspend, reportSettles), as turnEnded holds one asked during that turn:
+// the hold is made (holdSuspension) and waits for the report (Machine.heldForReport). A suspension
+// holdSuspension decides where it arrives, or refuses, holds nothing.
+func (m *Machine) holdForReport(ctx context.Context, ev Event) error {
+	err := holdSuspension(m, ctx, ev)
+	if m.held != nil && errors.Is(err, ErrSuspendHeld) {
+		m.heldForReport = true
+		m.log.Info(heldForReportLine, "task", m.claim.Pending.Number, "by", m.held.By, "deadline", m.held.Deadline)
+	}
+	return err
+}
+
+// holdSuspension is a suspension that arrives while the agent is in a turn, or while the claim
+// waits past the end of its take's turn for that turn's report, a held suspension's or none yet
+// (suspend, holdForReport), and this is the one statement of what a held suspension
+// (Machine.held) does.
 //
 // A worker's issue can close, or an operator suspend it, while it is in a turn: the production
 // check's sign-off, say, arriving while the implementer's report of the check is still a tool call
@@ -38,17 +83,19 @@ func suspend(m *Machine, ctx context.Context, ev Event) error {
 // from that transcript holds a report with no answer. So the suspension is held:
 //
 //   - It runs when the turn ends (turnEnded), or at its deadline if the turn has not ended by then
-//     (TimerSuspend, suspendAtTimeout). The operator's suspension has one at the stop timeout from
+//     (TimerSuspend, suspendAtTimeout). The turn of a task whose plugin names its number is over
+//     for the hold once its report settles the task (reportSettles), so the hold waits for that
+//     report past the end frame and runs at its finish (reportedTask, afterTurn), the claim idle
+//     meanwhile and the deadline bounding that wait too: stopped at the end frame, the process
+//     would take with it the report that finishes the task, and settle would take back as a cut
+//     turn a task whose turn ran whole. The operator's suspension has one at the stop timeout from
 //     its arrival: an operator stopping the process — to drain the daemon, say — needs the stop
-//     bounded. The daemon's own suspension (its issue left the workflow, or its tree lingers) has
-//     none unless it names one (RequestSuspend.Deadline), and waits for the turn however long it
-//     takes: what bounds it is what ends the process anyway, the tree's close when its linger expires
-//     or the child's close as done. No close reaches a carried child's role still running in its old
-//     tree, since the child has left that tree, so the daemon names that suspension the deadline the
-//     old tree's close would have had, the old root's linger expiry. Asked again meanwhile, it is the
-//     same hold, under one rule: a request can only move the deadline earlier, and the operator's
-//     also takes the hold over, from then on the operator's. Until the deadline the agent keeps its
-//     process and its capability.
+//     bounded. The daemon's own suspension has none unless it names one
+//     (RequestSuspend.Deadline), and waits for the turn however long it takes: the tree's linger
+//     close or the child's close as done ends the process otherwise. Asked again meanwhile, it is
+//     the same hold, under one rule: a request can only move the deadline earlier, and the
+//     operator's also takes the hold over, from then on the operator's. Until the deadline the
+//     agent keeps its process and its capability.
 //   - A stop the runtime refuses keeps it held and tries again every probe interval (suspendHeld),
 //     so the deadline bounds the wait only while the runtime can stop the process. A claim
 //     whose turn ended stays idle meanwhile and a take of it is refused (claimHold); a turn it starts
@@ -57,8 +104,15 @@ func suspend(m *Machine, ctx context.Context, ev Event) error {
 //     suspended, charged nothing (endHeld). A prompt retirement meanwhile is the held stop itself
 //     (suspendHeld), charged nothing.
 //   - A start run against the claim drops a daemon's hold (StartedBy); one the operator's
-//     suspension holds waits instead. Every other end of the process drops it with the process
-//     (letGo).
+//     suspension holds waits instead, and a project pause's hold whose pause is still the open
+//     one stays (decision 5 of dispatch://INFRA-3759's plan). Every other end of the process
+//     drops it with the process (letGo).
+//   - A project pause's hold (RequestSuspend.Pause) whose pause has ended is dropped at the start
+//     of the claim's next decision instead of run (dropEndedPauseHold), the resume's event
+//     (ResumePause) among them. A pause's request that reaches a claim whose suspension is already
+//     held writes its own pause's id on a released hold — the idle release's, or an earlier
+//     pause's — so that hold fires for the open pause; a held daemon's or operator's suspension
+//     keeps its own source and reason.
 //   - It lives in memory only. A restart forgets it, so whoever holds the request asks again: the
 //     outbox retries its suspend row until the claim answers nil. A restart starts the operator's
 //     stop timeout over; a deadline the daemon names is a time, so it holds as named.
@@ -99,8 +153,14 @@ func holdSuspension(m *Machine, ctx context.Context, ev Event) error {
 	// the operator's hold the operator's source, which must not give it the operator's stop timeout
 	// too, nor hold a request whose asker reports a refusal as nothing having happened.
 	if ev.(RequestSuspend).NeverHold {
-		return &RefusedError{State: m.claim.State, Request: "suspend",
-			Reason: "the claim's agent is in a turn, and this suspension is not one that is held for the turn's end"}
+		reason := "the claim's agent is in a turn, and this suspension is not one that is held for the turn's end"
+		switch {
+		case m.heldForReport:
+			reason = "a held suspension waits for the report of the claim's last turn, and this suspension is not one that is held for it"
+		case m.claim.State != StateWorking:
+			reason = "the turn of the claim's task ended with its report still to come, and this suspension is not one that is held for that report"
+		}
+		return &RefusedError{State: m.claim.State, Request: "suspend", Reason: reason}
 	}
 	deadline := ev.(RequestSuspend).Deadline
 	if ev.(RequestSuspend).By == SuspendedByOperator {
@@ -108,11 +168,15 @@ func holdSuspension(m *Machine, ctx context.Context, ev Event) error {
 	}
 	switch {
 	case m.held == nil:
-		m.held = &RequestSuspend{Claim: request.Claim, Reason: request.Reason, By: request.By}
+		m.held, m.heldLaunch = &RequestSuspend{Claim: request.Claim, Reason: request.Reason, By: request.By, Pause: request.Pause}, false
 		m.log.Info("supervise: the suspension is held for the agent's turn to end", "reason", request.Reason, "by", request.By)
 	case request.By == SuspendedByOperator && m.held.By != SuspendedByOperator:
 		m.log.Info("supervise: the operator's suspension takes the held suspension over", "reason", request.Reason, "held", m.held.Reason)
-		m.held.By, m.held.Reason = request.By, request.Reason
+		m.held.By, m.held.Reason, m.held.Pause = request.By, request.Reason, 0
+	case request.Pause != 0 && m.held.By == SuspendedByReleased:
+		m.log.Info("supervise: the project's pause takes the held suspension over", "pause", request.Pause,
+			"heldPause", m.held.Pause, "held", m.held.Reason)
+		m.held.Pause, m.held.Reason = request.Pause, request.Reason
 	}
 	// The held deadline only moves earlier, and the timer is re-armed only when that deadline comes
 	// before the one already armed: a stop the runtime refused is retried at the probe interval
@@ -166,6 +230,27 @@ func holdSuspension(m *Machine, ctx context.Context, ev Event) error {
 // as it stood (parkWake), so its suspend is decided by the row of the state it still holds — and a
 // launch that did start a process reaches the hold here as it always did, since that process is
 // what the hold is for.
+//
+// A project pause's stop of a claim whose relaunch waits parked over the process it still records
+// — one that died and whose relaunch the pacing parked before letting it go (the gate sits before
+// letGo, launchAfter) — is decided where it arrives too: the parked relaunch is what the pause
+// holds, and the process it records is the one that relaunch was to replace, so the process is
+// stopped (letProcessGoFor) and the claim suspended now, with the parked launch owed, as the
+// pause's gate stops a process it held a launch over (pauseStopDue). Held until a ready instead,
+// the stop would land only at the wake's turn, which over a wave is tens of minutes out, and a
+// restart inside them would forget it and leave the claim to the boot (decision 4 of
+// dispatch://INFRA-3759's plan: a parked wake with no process is stopped at once).
+//
+// Each of them meets a launch, which a project pause's stop owes the role at the resume
+// (PauseStop.LaunchOwed, decision 6 of dispatch://INFRA-3759's plan): the start this suspension
+// cancelled, the wake parked over no process or over the process it would replace, and the launch
+// the hold waits on until ready (Machine.heldLaunch).
+//
+// A hold already standing is replaced by the newest request, as it always was, with two
+// exceptions that keep a stronger hold's own words: a released request — the idle release's or a
+// pause's — leaves a held daemon's suspension its source and reason (an operator's is kept by
+// suspendRequest before this reads it), and the idle release's leaves a pause's hold its pause, so
+// that hold still fires for the pause and is dropped once that pause ends (dropEndedPauseHold).
 func holdSuspendUntilReady(m *Machine, ctx context.Context, ev Event) error {
 	request, err := suspendRequest(m, ev)
 	if err != nil {
@@ -173,7 +258,7 @@ func holdSuspendUntilReady(m *Machine, ctx context.Context, ev Event) error {
 	}
 	if m.stoppedAStart() && m.launchRecordsNoProcess() {
 		m.log.Info("supervise: the suspension stopped the claim's start, so it suspends the claim now", "reason", request.Reason, "by", request.By)
-		return m.suspendedFor(ctx, request)
+		return m.suspendedFor(ctx, request, true)
 	}
 	if ev.(RequestSuspend).NeverHold {
 		return &RefusedError{State: m.claim.State, Request: "suspend",
@@ -182,10 +267,24 @@ func holdSuspendUntilReady(m *Machine, ctx context.Context, ev Event) error {
 	if m.wake != nil && m.claim.Locator == nil {
 		m.log.Info("supervise: a suspension reached a claim whose paced wake waits over no process; deciding it here",
 			"reason", request.Reason, "by", request.By, "kind", m.wake.kind, "due", m.wake.at)
-		return m.suspendedFor(ctx, request)
+		return m.suspendedFor(ctx, request, true)
 	}
-	m.held = &request
-	m.log.Info("supervise: the suspension waits for the rule-resuming agent to become ready", "reason", request.Reason, "by", request.By)
+	if m.wake != nil && request.Pause != 0 {
+		m.log.Info("supervise: a project pause's stop reached a claim whose paced relaunch waits over the process it would replace; stopping that process now",
+			"reason", request.Reason, "pause", request.Pause, "kind", m.wake.kind, "due", m.wake.at, "incarnation", m.claim.Locator.Incarnation)
+		return m.letProcessGoFor(ctx, request, true, stopOwed)
+	}
+	switch held := m.held; {
+	case held != nil && request.By == SuspendedByReleased && held.By != SuspendedByReleased:
+		m.log.Info("supervise: the held suspension keeps its own source over a released one", "reason", request.Reason,
+			"pause", request.Pause, "held", held.Reason, "by", held.By)
+	case held != nil && request.By == SuspendedByReleased && request.Pause == 0 && held.Pause != 0:
+		m.log.Info("supervise: the held suspension of the project's pause keeps its pause over the idle release's", "reason", request.Reason,
+			"pause", held.Pause)
+	default:
+		m.held, m.heldLaunch = &request, true
+		m.log.Info("supervise: the suspension waits for the rule-resuming agent to become ready", "reason", request.Reason, "by", request.By)
+	}
 	return ErrSuspendHeld
 }
 
@@ -228,7 +327,9 @@ func suspensionRank(source SuspendSource) int {
 }
 
 // suspendAtTimeout is the held suspension's timer: the turn did not end by the hold's deadline, so
-// the process is stopped mid-turn; or an earlier stop failed, and it is tried again.
+// the process is stopped mid-turn; or an earlier stop failed, and it is tried again. A project
+// pause's hold whose pause has ended by then is dropped at the start of the decision, and this
+// timer with it (dropEndedPauseHold, dropHeld), so the fence drops the timer and the turn runs on.
 //
 // A stop forced mid-turn is not the turn's end: the confirmed task did not finish, so it goes back
 // interrupted, as a death in a turn takes it back. The task is taken back before the stop, as died
@@ -240,15 +341,32 @@ func suspensionRank(source SuspendSource) int {
 // the workspace, the issue's branch and the session are kept either way. The stop records the turn
 // it cuts off, and the task it took back from that turn, as ended by the suspension (suspendNow,
 // Machine.cutTurnOf, recordEnd).
+//
+// A claim the deadline finds idle, the hold waiting past the end of its take's turn for the report
+// that settles the task (reportSettles, turnEnded), has its task taken back the same way before
+// the stop, with the note of a cut turn: no report came, the stop leaves no process to send one,
+// and only that report finishes such a task, as for a process that dies before its report
+// (interrupted).
 func suspendAtTimeout(m *Machine, ctx context.Context, _ Event) error {
-	if m.held != nil && m.claim.State == StateWorking {
+	if m.held == nil {
+		return nil
+	}
+	var why, stop string
+	switch {
+	case m.claim.State == StateWorking:
 		m.log.Warn("supervise: the agent's turn has not ended; suspending it mid-turn", "by", m.held.By, "deadline", m.held.Deadline)
-		if err := m.interrupted(ctx, "the held suspension's deadline ended the task's turn", ordinaryEnd); err != nil {
-			m.arm(TimerSuspend, m.deps.Timeouts.Probe, "")
-			return fmt.Errorf("take back the task of %s before its forced stop: %w", m.claim.Token, err)
-		}
-	} else {
+		why, stop = "the held suspension's deadline ended the task's turn", "its forced stop"
+	case m.reportSettles():
+		m.log.Warn(reportMissedLine, "task", m.claim.Pending.Number, "by", m.held.By, "deadline", m.held.Deadline)
+		why, stop = "the held suspension's deadline came before the report of the task's turn", "its stop"
+	default:
 		m.log.Info("supervise: trying the held suspension's stop again")
+	}
+	if why != "" {
+		if err := m.interrupted(ctx, why, ordinaryEnd); err != nil {
+			m.arm(TimerSuspend, m.deps.Timeouts.Probe, "")
+			return fmt.Errorf("take back the task of %s before %s: %w", m.claim.Token, stop, err)
+		}
 	}
 	return m.suspendHeld(ctx)
 }
@@ -257,8 +375,17 @@ func suspendAtTimeout(m *Machine, ctx context.Context, _ Event) error {
 // there (kindOf's onSuspend); another event is a wiring error, and so is a suspension that names
 // none of the operator, the daemon and the idle pod's release (a root's exit suspends it through
 // RequestExit, never this), since the source is what decides whether the daemon may resume the
-// claim and what becomes of the phase's task. Either is refused before anything is stopped, rather
-// than a panic, a journal line with no reason, or a claim suspended by nobody.
+// claim and what becomes of the phase's task. So is a project pause's id on any source but the
+// release's, or an id that is no pause's (RequestSuspend.Pause). Each is refused before anything
+// is stopped, rather than a panic, a journal line with no reason, or a claim suspended by nobody.
+//
+// A project pause's stop whose pause is no longer the open one is answered ErrPauseEnded before
+// anything reads the held suspension, in every row, so it stops nothing and takes no hold over: the
+// resume ended the pause after the stop was asked (pauseStopEnded). The one such stop decided
+// here is the one that already cut its claim's start short while its pause still stood (Handle,
+// stopStart): that start leaves the claim launching with nothing running, which only this stop's
+// own row completes (holdSuspendUntilReady), and the stop transaction then owes the role its
+// launch, since its pause has ended (projectPause.stopTx in internal/daemon).
 func suspendRequest(m *Machine, ev Event) (RequestSuspend, error) {
 	request, ok := ev.(RequestSuspend)
 	if !ok {
@@ -266,6 +393,16 @@ func suspendRequest(m *Machine, ev Event) (RequestSuspend, error) {
 	}
 	if request.By != SuspendedByOperator && request.By != SuspendedByDaemon && request.By != SuspendedByReleased {
 		return RequestSuspend{}, fmt.Errorf("suspend %s: the suspension names source %q, not operator, daemon or released", m.claim.Token, request.By)
+	}
+	if request.Pause < 0 {
+		return RequestSuspend{}, fmt.Errorf("suspend %s: the suspension names pause %d, which is no pause's id", m.claim.Token, request.Pause)
+	}
+	if request.Pause != 0 && request.By != SuspendedByReleased {
+		return RequestSuspend{}, fmt.Errorf("suspend %s: the suspension names pause %d with source %q; a pause's stop names its pause's id with source %q",
+			m.claim.Token, request.Pause, request.By, SuspendedByReleased)
+	}
+	if m.pauseStopEnded(request) && !m.startCutShort() {
+		return RequestSuspend{}, fmt.Errorf("suspend %s for pause %d: %w", m.claim.Token, request.Pause, ErrPauseEnded)
 	}
 	// An operator's held suspension wins everywhere — launching, registered, ready while its
 	// stop retries, and working — until it completes. A later daemon linger/leave request must
@@ -283,11 +420,14 @@ func suspendRequest(m *Machine, ev Event) (RequestSuspend, error) {
 // that a replacement or a wake's turn ends stops through endHeld and letProcessGoFor, and a
 // root's exit stops through exit. It sends the clean stop of the process's Envoy session once the
 // runtime's stop has returned, and none for a stop the runtime refused (stopForSuspension).
-func (m *Machine) suspendNow(ctx context.Context, request RequestSuspend) error {
+// launch is whether the stop meets a launch its caller knows of (suspendedFor); a launch still
+// waiting on the machine is read here, before the stop lets it go (launchMet).
+func (m *Machine) suspendNow(ctx context.Context, request RequestSuspend, launch bool) error {
+	launch = launch || m.launchMet()
 	if err := m.stopForSuspension(ctx, request.By, stopOwed); err != nil {
 		return fmt.Errorf("suspend %s: %w", m.claim.Token, err)
 	}
-	return m.suspendedFor(ctx, request)
+	return m.suspendedFor(ctx, request, launch)
 }
 
 // stopForSuspension asks the runtime to stop the claim's process for a suspension by by, and
@@ -307,9 +447,18 @@ func (m *Machine) stopForSuspension(ctx context.Context, by SuspendSource, clean
 }
 
 // suspendedFor moves the claim to suspended once request's stop has ended its process, and says
-// why.
-func (m *Machine) suspendedFor(ctx context.Context, request RequestSuspend) error {
-	if err := m.suspended(ctx, request.By); err != nil {
+// why. A suspension a project pause asked for (RequestSuspend.Pause) ends in the pause's stop
+// transaction rather than the plain write (suspended, persistStop), carrying whether the role is
+// owed a launch at the resume: launch is whether the stop met one its caller knows of — a start
+// it cancelled, a launch held until ready, a wake's turn, a waiting relaunch — and a launch still
+// waiting on the machine is read here too (launchMet); the task the claim holds is read where the
+// stop is written (putStop).
+func (m *Machine) suspendedFor(ctx context.Context, request RequestSuspend, launch bool) error {
+	var stop *PauseStop
+	if request.Pause != 0 {
+		stop = &PauseStop{Pause: request.Pause, LaunchOwed: launch || m.launchMet()}
+	}
+	if err := m.suspended(ctx, request.By, stop); err != nil {
 		return err
 	}
 	m.log.Info("supervise: suspended", "reason", request.Reason, "by", request.By)
@@ -320,7 +469,8 @@ func (m *Machine) suspendedFor(ctx context.Context, request RequestSuspend) erro
 // go for the resume to wait out. It only persists — revoking the stopped agent's capability, in
 // memory even when the write fails. The finished phase's unconfirmed task is retired after it by
 // settle, which Handle runs after every row; a retirement that fails is reported, and the claim's
-// next decision retires it before anything else.
+// next decision retires it before anything else. A project pause's stop is written through its
+// stop transaction (persistStop); nil is a suspension of no pause, written as it always was.
 //
 // A process still recorded here is one whose stop the runtime refused and the suspension let go
 // all the same (endHeld, exit): what it ended is recorded as a suspension by by, as the stop that
@@ -331,11 +481,17 @@ func (m *Machine) suspendedFor(ctx context.Context, request RequestSuspend) erro
 // never ran its text. So the resumed process's take of the number is decided afresh, behind the
 // records that tell then — the one this let-go wrote, joined with whatever the take had told
 // (recordEnd, joined) — and tells them once, rather than being answered with the text the stopped
-// process was given, which carries none of what this let-go recorded and marks nothing told.
-func (m *Machine) suspended(ctx context.Context, by SuspendSource) error {
+// process was given, which carries none of what this let-go recorded and marks nothing told. A
+// project pause's stop carries the delivery so taken back in its stop transaction, beside the
+// claim (persistStop).
+func (m *Machine) suspended(ctx context.Context, by SuspendSource, stop *PauseStop) error {
 	m.letGo(ctx, endSuspended(by))
 	m.claim.State, m.claim.SuspendedBy = StateSuspended, by
-	if m.takeBackUnstarted(takenBackSuspended) {
+	tookBack := m.takeBackUnstarted(takenBackSuspended)
+	switch {
+	case stop != nil:
+		return m.persistStop(ctx, *stop, tookBack)
+	case tookBack:
 		return m.putClaimAndPendingOwed(ctx)
 	}
 	return m.persist(ctx)
@@ -351,7 +507,7 @@ func (m *Machine) suspendHeld(ctx context.Context) error {
 	if request == nil {
 		return fmt.Errorf("supervise: no suspension of %s is held", m.claim.Token)
 	}
-	if err := m.suspendNow(ctx, *request); err != nil {
+	if err := m.suspendNow(ctx, *request, m.heldLaunch); err != nil {
 		if m.held != nil {
 			m.arm(TimerSuspend, m.deps.Timeouts.Probe, "")
 		}
@@ -374,9 +530,32 @@ func (m *Machine) suspendHeldAtEnd(ctx context.Context, back ClaimState) error {
 	return m.suspendHeld(ctx)
 }
 
+// heldForReportLine is the line of a held suspension that waits past the end of its take's turn
+// for the report that settles the task (turnEnded), at Info, with the task's number, the hold's
+// source and its deadline (the zero time for none).
+const heldForReportLine = "supervise: the turn of the task ended with its report still to come; the held suspension waits for that report"
+
+// reportMissedLine is the line of a held suspension whose deadline came before the report it
+// waited for (suspendAtTimeout), at Warn, with the task's number, the hold's source and its
+// deadline: the task goes back as a cut turn before the stop.
+const reportMissedLine = "supervise: the held suspension's deadline came before the report of the task's turn; the task is taken back and the agent stopped"
+
+// reportSettles is whether the claim's pending task is a take whose turn started and which only
+// the report naming its number settles: no end frame finishes it and no refused finish of a
+// report is owed (overTurnFinish). A held suspension waits for that report at the end of the
+// take's turn rather than stop the process before it (turnEnded), and at its deadline takes the
+// task back as a cut turn before the stop (suspendAtTimeout).
+func (m *Machine) reportSettles() bool {
+	if p := m.claim.Pending; p == nil || !p.turnStarted() {
+		return false
+	}
+	_, finishes := m.overTurnFinish()
+	return !finishes
+}
+
 // dropHeld ends the held suspension without running it.
 func (m *Machine) dropHeld() {
-	m.held = nil
+	m.held, m.heldForReport, m.heldLaunch = nil, false, false
 	m.disarm(TimerSuspend)
 }
 
@@ -390,16 +569,17 @@ func (m *Machine) dropHeld() {
 // have not (stopOwed). replaceNow is reached by displaced too — a process found gone, or another
 // runtime's process — and stopOwed is right there as well: a displaced process may still run
 // under another runtime, so its clean stop waits for the runtime's stop, and a stop the runtime
-// refused sends nothing.
+// refused sends nothing. launch is whether the caller ends the hold in a launch's place — a wake's
+// turn (wakeNow) — which a project pause's stop owes the role (suspendedFor).
 //
 // What the stop ends is recorded as a suspension by the held request's source (endSuspended):
 // the suspension is what ends the process, rather than the relaunch it replaces. A death or a
 // displacement that reached here recorded its own end first (died, displaced), and that record
 // stands.
-func (m *Machine) endHeld(ctx context.Context, cleanStopSent bool) error {
-	request := *m.held
+func (m *Machine) endHeld(ctx context.Context, launch, cleanStopSent bool) error {
+	request, launched := *m.held, m.heldLaunch
 	m.dropHeld()
-	return m.letProcessGoFor(ctx, request, cleanStopSent)
+	return m.letProcessGoFor(ctx, request, launch || launched, cleanStopSent)
 }
 
 // stopSent and stopOwed are the cleanStopSent of endHeld, letProcessGoFor and stopForSuspension:
@@ -462,7 +642,7 @@ func (m *Machine) suspendOverADeadProcess(ctx context.Context, request RequestSu
 	}
 	m.recordEnd(ctx, endDied(m.goneCause))
 	m.sessionGone(ctx)
-	return m.letProcessGoFor(ctx, request, stopSent)
+	return m.letProcessGoFor(ctx, request, false, stopSent)
 }
 
 // letProcessGoFor asks the runtime to let the claim's process go and suspends the claim for
@@ -477,12 +657,15 @@ func (m *Machine) suspendOverADeadProcess(ctx context.Context, request RequestSu
 //
 // Between the two it sends the clean stop of the process's Envoy session once the runtime's stop
 // has returned, unless cleanStopSent says this decision sent it already (stopForSuspension).
-func (m *Machine) letProcessGoFor(ctx context.Context, request RequestSuspend, cleanStopSent bool) error {
+// launch is suspendNow's: a launch the caller knows the stop meets, beside the one waiting on the
+// machine, read before the stop lets it go (launchMet).
+func (m *Machine) letProcessGoFor(ctx context.Context, request RequestSuspend, launch, cleanStopSent bool) error {
+	launch = launch || m.launchMet()
 	incarnation := m.claim.Locator.Incarnation
 	if err := m.stopForSuspension(ctx, request.By, cleanStopSent); err != nil {
 		m.stopUnconfirmed = true
 		m.log.Error("supervise: could not stop the process with the runtime; suspending its claim anyway",
 			"incarnation", incarnation, "error", err)
 	}
-	return m.suspendedFor(ctx, request)
+	return m.suspendedFor(ctx, request, launch)
 }

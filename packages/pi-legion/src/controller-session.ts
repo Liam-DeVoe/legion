@@ -13,6 +13,10 @@ import {
   LegionDaemonApiError,
   type LegionDaemonClient,
 } from "@legion/pi-shared/daemon-client";
+import {
+  claimRoleAgainOnBusy,
+  listenerAskedToClaimAgain,
+} from "@legion/pi-shared/legion-claim-core";
 import type { CommandContext, PiApi, SessionContext } from "@legion/pi-shared/pi-types";
 import { claimEnvoyRole, subscribeLegionNotice } from "@legion/pi-shared/role-claim-bridge";
 import {
@@ -21,7 +25,12 @@ import {
   markStartupTurnSent,
 } from "@legion/pi-shared/startup-turn";
 import { recordBootstrappedSession } from "@legion/pi-shared/subagent-session";
-import { type ClaimTaskTake, takeClaimTask } from "@legion/pi-shared/task-take";
+import {
+  type ClaimTaskTake,
+  type TaskTake,
+  type TaskTakeDeps,
+  takeClaimTask,
+} from "@legion/pi-shared/task-take";
 import { logger } from "@oh-my-pi/pi-utils";
 import pkg from "../package.json";
 import {
@@ -49,6 +58,10 @@ interface ClaimProgress {
   registered: boolean;
 }
 
+/** Who started a claim: the controller's own claim at `session_start` or after a session change
+ * (`daemon`), or a command a person typed (`typed`). It decides how long a `503` is waited out. */
+type ClaimStarter = "daemon" | "typed";
+
 export interface ControllerSession {
   readonly claim: (context: CommandContext | SessionContext) => Promise<void>;
   readonly handleSessionStart: (context: SessionContext) => Promise<void>;
@@ -57,20 +70,14 @@ export interface ControllerSession {
   readonly startCommand: (context: CommandContext) => Promise<void>;
   readonly isClaimedSession: (sessionID: string) => boolean;
   readonly mintGrant: (sessionID: string) => Promise<LegionGrant>;
-  /** A run of `sessionID` started (`agent_start`): the daemon-launched controller's take of its
-   * start task no longer finds the host idle, and the first run after its accepted take is the
-   * start task's turn. Another session's run changes nothing. */
-  readonly runStarted: (sessionID: string) => void;
-  /** That run ended (`agent_end`): the number of the task whose turn it was, which the turn's
-   * outcome report names, or undefined for a run of no task, another session's, or an
-   * operator's controller, which takes no task. `providerError` is whether that report carries
-   * the provider's failure; without one the take holds the task finished (`TaskTake.runEnded`). */
-  readonly runEnded: (sessionID: string, providerError: boolean) => number | undefined;
-  /** The daemon refused with a 4xx the report of a turn of `sessionID` that named task `number`
-   * with no provider error (`src/turn-outcome.ts`): the daemon-launched controller's take holds
-   * the number finished no longer, since the record still owes it (`TaskTake.reportRefused`).
-   * Another session's report changes nothing. */
-  readonly reportRefused: (sessionID: string, number: number) => void;
+  /** The daemon-launched controller's take of its start task (`@legion/pi-shared/task-take`),
+   * whose hooks `legion.ts` calls for a run of `sessionID` (`agent_start` and `agent_end`) and for
+   * the daemon's refusal of that run's report (`src/turn-outcome.ts`): the first run after its
+   * accepted take's text was handed to the idle host is the start task's turn, and its end the
+   * report naming that task's number.
+   * Undefined for another session than the one the take was made for, and for an operator's
+   * controller, which takes no task. */
+  readonly take: (sessionID: string) => TaskTake | undefined;
   /** The claim whose turns `sessionID` reports (`src/turn-outcome.ts`): the daemon-launched
    * controller's, for the session its take was made for, so the end of its start task's turn
    * names that task's number, which is what finishes it, and a provider error on it reaches the
@@ -81,6 +88,10 @@ export interface ControllerSession {
 
 /** The host widget a session change's re-claim shows its outcome in (`reclaimAfterSessionChange`). */
 const CLAIM_WIDGET = "legion-controller-claim";
+
+/** How many tries a person's controller claim makes while the listener answers it 503: four
+ * waits of 1, 2, 4 and 8 seconds, then the command fails with the listener's answer. */
+export const CONTROLLER_CLAIM_BUSY_ATTEMPTS = 5;
 
 /**
  * The controller `legion controller start` launched for the operator: the controller marker
@@ -100,8 +111,8 @@ export function createControllerSession(deps: {
   readonly daemon: () => LegionDaemonClient;
   readonly persistedTranscript: PersistedTranscript;
   readonly pi: PiApi;
-  /** Sends an accepted take's text as the turn's user message. */
-  readonly runTask: (text: string) => void;
+  /** An accepted take's text to the host (`TaskTakeDeps.run`). */
+  readonly runTask: TaskTakeDeps["run"];
   readonly exitProcess: (code: number) => never;
 }): ControllerSession {
   const { daemon, persistedTranscript, pi } = deps;
@@ -159,6 +170,13 @@ export function createControllerSession(deps: {
     taking = entry;
     return entry;
   };
+  // The wait notices of the claim running now (`claimWith`): a session change's re-claim holds its
+  // notices until it settles, and drops these once its claim landed, so no wait is shown after it.
+  const waitNotices = new Set<string>();
+  // The errors a bounded role claim gave up with on the listener's 503 (`claimWith`): the one
+  // failure of a typed claim the daemon-launched controller stays up for (`claimOnce`). Any other
+  // 503, such as one to the controller-topic subscription after the role landed, is not in it.
+  const roleClaimGaveUp = new WeakSet<object>();
 
   const serialised = (task: () => Promise<void>): Promise<void> => {
     claimsQueued += 1;
@@ -167,6 +185,26 @@ export function createControllerSession(deps: {
     });
     claimChain = run.catch(() => undefined);
     return run;
+  };
+
+  // The start message sent to an idle `sessionID`, marked as its startup turn right before.
+  const sendStartTurn = (sessionID: string, startMessage: string): void | Promise<void> => {
+    markStartupTurnSent(sessionID);
+    startTurnSession = sessionID;
+    return pi.sendUserMessage(startMessage);
+  };
+
+  // Oh My Pi dropped the start message sent to `sessionID` before its turn began
+  // (`PiApi.sendUserMessage`): nothing of it ran, so it is still to send, and the next claim
+  // (`/legion-claim-controller`, or a session change's re-claim) sends it. The startup mark the send
+  // set goes with it, so the Envoy entry holds no card back for a start that is not coming.
+  const startMessageDropped = (sessionID: string, error: unknown): void => {
+    logger.error(
+      `[legion] Oh My Pi dropped the controller's start message before its turn began; run /legion-claim-controller to send it again: ${messageFor(error)}`
+    );
+    startMessageSent = false;
+    clearStartupTurn(sessionID);
+    if (startTurnSession === sessionID) startTurnSession = undefined;
   };
 
   /**
@@ -180,7 +218,7 @@ export function createControllerSession(deps: {
    * be the daemon's, or the topic would be one nobody publishes on. Both are settled before
    * registering, since a registration replaces the running controller's session and secret: an unset
    * `LEGION_PROJECT` stops the claim, and so does one whose controller role is not that of the
-   * project `GET /legion/v1/state` names (`legionProjectToken`, the rule the daemon applies to its
+   * project `GET /healthz` names (`legionProjectToken`, the rule the daemon applies to its
    * own). The registration's claim token is compared once more after it, the daemon's own answer.
    * Once the registration is in, the session is the controller to the `legion` tool: its grants
    * are minted with the registration's secret from then on, before the role claim, so the start
@@ -218,7 +256,8 @@ export function createControllerSession(deps: {
    * registers the new session, sends the start message there, and tells the operator so
    * (`startHandedOver`). `startMessageSent` keeps this process from sending it twice: a retried
    * claim after a failure past the send, and a later `/legion-claim-controller` in the same
-   * session, send nothing more.
+   * session, send nothing more. A start message Oh My Pi dropped before its turn began ran nothing,
+   * so it is still to send (`startMessageDropped`): the next claim sends it.
    *
    * The controller topic is no live wake: this session receives what its own JetStream consumer
    * delivers and nothing else (INFRA-771), and the registration above puts the topic in that
@@ -264,7 +303,7 @@ export function createControllerSession(deps: {
    * daemon client sets no request timeout and a hung claim would otherwise hold it silently.
    */
   const claim = (context: CommandContext | SessionContext): Promise<void> =>
-    queueClaim(context, { registered: false });
+    queueClaim(context, { registered: false }, "typed");
 
   // Says so when the claim or command about to queue has to wait for one already running: the
   // daemon client sets no request timeout, so a hung claim would otherwise hold it silently.
@@ -279,21 +318,31 @@ export function createControllerSession(deps: {
 
   const queueClaim = (
     context: CommandContext | SessionContext,
-    progress: ClaimProgress
+    progress: ClaimProgress,
+    startedBy: ClaimStarter
   ): Promise<void> => {
     noteWait(context);
-    return serialised(() => claimOnce(context, progress));
+    return serialised(() => claimOnce(context, progress, startedBy));
   };
 
+  // A claim of the daemon-launched controller that fails exits Oh My Pi, so the daemon launches it
+  // again, except a command a person typed there whose role claim gave up on the listener's 503
+  // after its counted tries (`claimWith`, `roleClaimGaveUp`): that command fails where the person
+  // reads it, and the process, which still holds what it held, stays. Any other failure of a typed
+  // claim, a 503 to its controller-topic subscription after the role landed included, exits as
+  // the daemon's own claim does, so a controller never stays up without its topics.
   const claimOnce = async (
     context: CommandContext | SessionContext,
-    progress: ClaimProgress
+    progress: ClaimProgress,
+    startedBy: ClaimStarter
   ): Promise<void> => {
     const supervised = daemonLaunchedController(process.env);
-    if (!supervised) return claimWith(context, false, progress);
+    if (!supervised) return claimWith(context, false, progress, startedBy);
     try {
-      await claimWith(context, true, progress);
+      await claimWith(context, true, progress, startedBy);
     } catch (error) {
+      if (startedBy === "typed" && error instanceof Error && roleClaimGaveUp.has(error))
+        throw error;
       logger.error(
         `[legion] the daemon-launched controller's claim failed; exiting so the daemon launches it again: ${messageFor(error)}`
       );
@@ -304,7 +353,8 @@ export function createControllerSession(deps: {
   const claimWith = async (
     context: CommandContext | SessionContext,
     supervised: boolean,
-    progress: ClaimProgress
+    progress: ClaimProgress,
+    startedBy: ClaimStarter
   ): Promise<void> => {
     const sessionID = context.sessionManager.getSessionId();
     const capability =
@@ -333,7 +383,9 @@ export function createControllerSession(deps: {
     // them; any other ignores whatever LEGION_SLACK_CHANNELS it inherited.
     const slackChannels = supervised ? daemonControllerSlackChannels(process.env) : [];
     const client = daemon();
-    const { daemon: served } = await client.state();
+    // The health route, which answers the project in one word: the boot check read the whole
+    // project body for it before (dispatch://INFRA-2694).
+    const served = await client.health();
     const servedRole = controllerToken(legionProjectToken(served.project, "the daemon's project"));
     if (controllerToken(project) !== servedRole) {
       throw new Error(
@@ -395,14 +447,12 @@ export function createControllerSession(deps: {
         startHandedOver = true;
         return;
       }
-      if (context.isIdle?.() === false) {
-        pi.sendUserMessage(startMessage, { deliverAs: "followUp" });
-      } else {
-        markStartupTurnSent(sessionID);
-        startTurnSession = sessionID;
-        pi.sendUserMessage(startMessage);
-      }
+      const send =
+        context.isIdle?.() === false
+          ? pi.sendUserMessage(startMessage, { deliverAs: "followUp" })
+          : sendStartTurn(sessionID, startMessage);
       startMessageSent = true;
+      void Promise.resolve(send).catch((error: unknown) => startMessageDropped(sessionID, error));
     }
     const caller = claimCaller(registration, sessionID);
     const taken = supervised ? takeFor(client, caller) : undefined;
@@ -421,7 +471,80 @@ export function createControllerSession(deps: {
       await taken.read();
       readAnswered();
     }
-    await claimEnvoyRole(sessionID, registration.claimToken, envoyContext);
+    // A claim the listener answered 503 wrote nothing - every try met a conflict, or the takeover
+    // record a claim writes first did not store - and is made again after a growing wait
+    // (claimRoleAgainOnBusy), each wait logged with its attempt and the listener's answer, and the
+    // claim widget shows that the controller holds no Envoy role yet until the claim lands (taken
+    // down below). The bound follows who started the claim. The daemon-launched controller's own
+    // claim at `session_start` claims again, as the claim boot does, rather than exiting for a
+    // relaunch that would meet the same 503. It reported ready and read its start task's value
+    // above, which reports that value seen, and it takes the task only once its role is held, so it
+    // is bounded by the daemon's first take bound (`worker_take_timeout_seconds`, five minutes by
+    // default): each bound that passes with no take charges it, and the third charge retires and
+    // relaunches it, logging the task, the revision it saw and the bound (supervise's
+    // takeBoundOver). A session change there never reaches this claim: the daemon refuses a
+    // registration from a session other than the one it recorded (SameAgentRefusal, 409), so the
+    // controller exits (claimOnce) and is relaunched on its recorded session. Under `controller:
+    // daemon` the controller runs as `omp --mode rpc`, where the widget and the notices are frames
+    // to the daemon that nothing shows: each wait shows in the Oh My Pi log of the controller's
+    // session. A command a person typed (`/legion-claim-controller`, `/legion-controller-start`),
+    // wherever it runs, and any claim of a controller the daemon did not launch, also shows each
+    // wait as a notice and gives up after CONTROLLER_CLAIM_BUSY_ATTEMPTS tries, so it fails where
+    // the person sees it, with the listener's answer; in the daemon-launched controller its process
+    // stays up, with the role and topics its first claim took, and its waits are in that log.
+    const ui: SessionContext["ui"] = context.ui;
+    let waitShown = false;
+    const showWaiting = (line: string): void => {
+      const shown = `legion: this controller holds no Envoy role yet: ${line}`;
+      if (ui.setWidget === undefined) {
+        ui.notify(shown, "warning");
+        return;
+      }
+      ui.setWidget(CLAIM_WIDGET, [shown]);
+      claimWidget = { session: sessionID, clear: () => ui.setWidget?.(CLAIM_WIDGET, undefined) };
+      waitShown = true;
+    };
+    try {
+      await claimRoleAgainOnBusy(
+        () => claimEnvoyRole(sessionID, registration.claimToken, envoyContext),
+        registration.claimToken,
+        supervised && startedBy === "daemon"
+          ? {
+              log: (line) => {
+                logger.warn(`[legion] ${line}`);
+                showWaiting(line);
+              },
+            }
+          : {
+              log: (line) => {
+                logger.warn(`[legion] ${line}`);
+                const notice = `legion: ${line}`;
+                waitNotices.add(notice);
+                ui.notify(notice, "info");
+                if (ui.setWidget !== undefined) showWaiting(line);
+              },
+              maxAttempts: CONTROLLER_CLAIM_BUSY_ATTEMPTS,
+            }
+      );
+    } catch (error) {
+      // A claim that gave up, or met any other refusal, takes its waiting line down: the claim no
+      // longer claims again, and its failure is what the person reads now.
+      if (waitShown && claimWidget?.session === sessionID) {
+        claimWidget.clear();
+        claimWidget = undefined;
+      }
+      // The listener's 503 thrown here is the bounded role claim giving up after its counted tries,
+      // the one failure a typed claim of the daemon-launched controller is answered on screen for
+      // (`claimOnce`).
+      if (error instanceof Error && listenerAskedToClaimAgain(error)) roleClaimGaveUp.add(error);
+      throw error;
+    }
+    // The role is held: the waiting line comes down now, so a step after it that fails (the
+    // controller topic, a Slack channel) leaves no line saying the claim is still being made.
+    if (waitShown && claimWidget?.session === sessionID) {
+      claimWidget.clear();
+      claimWidget = undefined;
+    }
     await subscribeLegionNotice(
       sessionID,
       legionControllerNoticeSubject(project),
@@ -480,7 +603,7 @@ export function createControllerSession(deps: {
     }
     const sessionID = context.sessionManager.getSessionId();
     if (controllerSessionID === undefined || controllerSessionID === sessionID) {
-      await claim(context);
+      await queueClaim(context, { registered: false }, "daemon");
     }
   };
 
@@ -526,7 +649,7 @@ export function createControllerSession(deps: {
       // The session the claim reads first, which a refusal before the send leaves unmarked.
       const claimed = context.sessionManager.getSessionId();
       try {
-        await claimOnce(context, { registered: false });
+        await claimOnce(context, { registered: false }, "typed");
       } catch (error) {
         const message = messageFor(error);
         logger.error(`[legion] the controller claim failed: ${message}`);
@@ -594,13 +717,29 @@ export function createControllerSession(deps: {
       if (shown) context.ui.notify(message, level);
       else notices.push({ message, level });
     };
-    const deferred: SessionContext = Object.create(context, { ui: { value: { notify } } });
+    // The host's widget is passed through as it is: it outlasts the session change's reset, so a
+    // claim that waits on the listener shows so at once (`claimWith`'s waiting state).
+    const { setWidget } = context.ui;
+    const deferred: SessionContext = Object.create(context, {
+      ui: {
+        value: {
+          notify,
+          setWidget:
+            setWidget === undefined
+              ? undefined
+              : (key: string, lines: string[] | undefined) => context.ui.setWidget?.(key, lines),
+        },
+      },
+    });
     // Whether this claim reached its registration: one refused after it left this session
     // registered, so its grants mint; one refused before it registered nothing for it.
     const progress: ClaimProgress = { registered: false };
+    // Whether the re-claim's claim landed: its wait notices are then dropped from those it shows.
+    let landed = false;
     try {
       noteWait(context);
       await serialised(async () => {
+        waitNotices.clear();
         if (startHandedOver) {
           startHandedOver = false;
           notify(
@@ -608,7 +747,8 @@ export function createControllerSession(deps: {
             "info"
           );
         }
-        await claimOnce(deferred, progress);
+        await claimOnce(deferred, progress, "daemon");
+        landed = true;
       });
     } catch (error) {
       notify(
@@ -619,6 +759,10 @@ export function createControllerSession(deps: {
       );
     } finally {
       const { ui } = context;
+      if (landed) {
+        const kept = notices.filter(({ message }) => !waitNotices.has(message));
+        notices.splice(0, notices.length, ...kept);
+      }
       if (ui.setWidget === undefined) {
         context.setTimeout(() => {
           shown = true;
@@ -675,14 +819,7 @@ export function createControllerSession(deps: {
     startCommand,
     isClaimedSession,
     mintGrant,
-    runStarted: (sessionID) => {
-      if (taking?.caller.sessionId === sessionID) taking.take.runStarted();
-    },
-    runEnded: (sessionID, providerError) =>
-      taking?.caller.sessionId === sessionID ? taking.take.runEnded(providerError) : undefined,
-    reportRefused: (sessionID, number) => {
-      if (taking?.caller.sessionId === sessionID) taking.take.reportRefused(number);
-    },
+    take: (sessionID) => (taking?.caller.sessionId === sessionID ? taking.take : undefined),
     reportedClaim: (sessionID) =>
       taking?.caller.sessionId === sessionID
         ? { caller: taking.caller, role: "controller" }

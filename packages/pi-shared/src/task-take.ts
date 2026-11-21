@@ -1,6 +1,6 @@
 import type { LegionTake, LegionTask } from "@legion/contracts/legion-api";
-import type { RelayTaskValue } from "@legion/envoy-client/consumer-delivery";
 import { messageFor } from "@legion/envoy-client/errors";
+import type { RelayTaskValue } from "@legion/envoy-client/relay-frame";
 import { type ClaimCaller, type LegionDaemonClient, sendUntilAnswered } from "./daemon-client";
 import { takeTaskSignals, taskTurnMark } from "./task-values";
 
@@ -40,14 +40,41 @@ import { takeTaskSignals, taskTurnMark } from "./task-values";
  * Nothing sends a task into a busy worker (R5). A take the daemon accepts while a run is going —
  * the run started after the daemon decided the take and before its answer came back, or while a
  * take sent again after a lost answer waited — has its text held until that run's `agent_end`,
- * and sent then, so it starts a run of its own. The daemon gave the run that was going to the
- * take, as the first to start after its accept; that run's end is reported naming no task, which
- * puts the take back to awaiting its turn on the daemon (the plan's decisions 8 and 9), and the
- * run the held text starts is then the task's turn on both sides, its end the report that names
- * the number. The text is never sent as a follow-up into the running run: Oh My Pi folds a
- * follow-up sent during a run into that run (its agent loop reads the follow-up queue once the
- * run's last step has stopped, `getFollowUpMessages`, and goes on with no `agent_end` or
- * `agent_start` between), so the task would run inside a run whose end names no task.
+ * and sent then, so it starts a run of its own. So has a take whose accepted answer finds the host
+ * not idle by its own reading though no run is going: the host is setting up a prompt it already
+ * took, a card's or a person's, before that prompt's `agent_start`, so `run` answers that it is
+ * not idle and hands nothing, and the text waits for the end of the run that setup starts. A run's
+ * end that finds the host not idle, a continuation it scheduled following, holds the text on in
+ * the same way, to the end of that continuation. The daemon gave the run that was going, or the
+ * one the setup started, to the take, as the first to start after its accept; that run's end is
+ * reported naming no task and naming the take's number as held (`held`), which puts the take back
+ * to awaiting its turn on the daemon (the plan's decisions 8 and 9), also where the daemon's count
+ * of the session's turns is not known; and the run the held text starts is then the task's turn on
+ * both sides, its end the report that names the number. The text is never sent as a follow-up:
+ * Oh My Pi folds a follow-up sent during a run into that run (its agent loop reads the follow-up
+ * queue once the run's last step has stopped, `getFollowUpMessages`, and goes on with no
+ * `agent_end` or `agent_start` between), so the task would run inside a run whose end names no
+ * task, and a follow-up's answer settles once the host has queued it, so a drop of it after that
+ * would not be seen (plan review round 71). So every handing of the text settles at the text's own
+ * turn or at its drop. A setup the host gives up with no run (an interrupt while it sets the prompt
+ * up) ends no run, so the text stays held until the daemon writes the number's value again, which
+ * lets the held text go (`hold`): R5's second wait, which charges and takes back an accepted take
+ * whose turn has not started within its bound, makes that write.
+ *
+ * An accepted number's text reaches the host when the take hands it over (`run`), and from then
+ * on a newer revision of that number changes nothing: the daemon answers its take with the same
+ * text until the task finishes, and the host runs the text once, also when the newer revision
+ * comes while the host sets the text up before its `agent_start` (the first prompt's recall can
+ * take 30 seconds). Until the text has reached the host, a newer revision of its number is a new
+ * offer (the plan's decision 9). A text held through a run the worker did not start was never
+ * handed over, so it is let go at that revision, which the take asks about once the host is idle.
+ * A text the host dropped before its turn started — `run`'s answer rejects, as Oh My Pi's
+ * `pi.sendUserMessage` does for a message it drops before its turn begins, the abort a compaction
+ * makes of a prompt the host is setting up among them — leaves the take asking at the number's
+ * next revision. The next accepted answer's text goes to the host once, at idle: one that came
+ * while the host still held the text it then dropped goes in that text's place at the drop. The
+ * daemon answers such a take afresh where it took the task back (a provider error's ladder, R5's
+ * second wait, a compaction) and with the same text where it only wrote the value again.
  *
  * Nothing tells a busy worker that its task waits but the host's note (dispatch://INFRA-4130 R1).
  * At each tool result of the run the host asks `noteFor`, which gives the number of an owed value
@@ -73,13 +100,14 @@ import { takeTaskSignals, taskTurnMark } from "./task-values";
  * sent if the take is refused or dropped, since nothing else then starts the worker's work again.
  *
  * A seen report or a take is sent through `sendUntilAnswered` (`./daemon-client`): one the daemon
- * gave no answer to — a refused, reset or closed connection, an unreachable host or network, a
- * connect or read timeout, a DNS failure, no answer within `DAEMON_ANSWER_TIMEOUT_MS`, or a 502,
- * 503 or 504 that names no Legion error code — is sent again, the same request, after a doubling
- * wait with no attempt limit, until the daemon answers it or a newer value replaces it: a take the
- * daemon never received would otherwise be lost, since the worker asks once per revision. Such a
- * re-send is the same ask, not a second one, and the daemon answers a take repeated for the number
- * it accepted with the same text until that task finishes, whether or not its turn has started.
+ * gave no answer to — any failure that carries no HTTP status, whatever the transport names it (a
+ * refused, reset or closed connection, an unreachable host or network, a timeout, a DNS failure
+ * among them), no answer within `DAEMON_ANSWER_TIMEOUT_MS`, or a 502, 503 or 504 that names no
+ * Legion error code — is sent again, the same request, after a doubling wait with no attempt
+ * limit, until the daemon answers it or a newer value replaces it: a take the daemon never
+ * received would otherwise be lost, since the worker asks once per revision. Such a re-send is the
+ * same ask, not a second one, and the daemon answers a take repeated for the number it accepted
+ * with the same text until that task finishes, whether or not its turn has started.
  * Every refusal of these routes names a code, so a coded refusal is an answer and is not sent
  * again.
  *
@@ -104,9 +132,16 @@ export interface TaskTakeLog {
 export interface TaskTakeDeps {
   readonly daemon: Pick<LegionDaemonClient, "taskSeen" | "take">;
   readonly caller: ClaimCaller;
-  /** Runs an accepted take's text as the turn's user message, in the form that starts a turn on
-   * an idle host and waits behind a setup or a compaction that runs. */
-  readonly run: (text: string) => void;
+  /**
+   * Runs an accepted take's text as the turn's user message, in the form that starts a turn on
+   * an idle host and waits behind a compaction that runs, and never as a follow-up. Its answer,
+   * where the host gives one, rejects when the host dropped the text before its turn started, as
+   * Oh My Pi's `pi.sendUserMessage` does (`PiApi.sendUserMessage`). A host that is not idle by its
+   * own reading — one setting up a prompt it already took, before that prompt's `agent_start` —
+   * is handed nothing: `run` answers `"not idle"`, and the take holds the text until the end of
+   * the run that setup starts.
+   */
+  readonly run: (text: string) => "not idle" | void | Promise<void>;
   /** Sets the task-turn mark for the claim's session, or clears it. */
   readonly setPending: (pending: boolean) => void;
   readonly log: TaskTakeLog;
@@ -142,6 +177,16 @@ export interface TaskTake {
   /** A run of the claim's session started (its `agent_start`). */
   readonly runStarted: () => void;
   /**
+   * The number of the accepted take whose text this take holds unrun, for the end of the run
+   * going (or of the one the host was setting up when the answer came), and undefined for none:
+   * read at a run's end before `runEnded`, which hands the text on, it says the run ending was not
+   * that task's turn. The run's report names it as `held` (`packages/pi-legion/src/turn-outcome.ts`),
+   * which tells the daemon so for certain, even where it has lost its count of the session's turns
+   * (a daemon restarted under the process), and puts the take back to await its own turn there.
+   * A text handed to the host, or let go at a newer revision of its number, is held no more.
+   */
+  readonly held: () => number | undefined;
+  /**
    * That run ended (its `agent_end`): the number of the task whose turn it was, which the turn's
    * report names, or undefined for a run of no task. `providerError` is whether that report
    * carries the provider's failure (`reportsProviderError` in `packages/pi-legion/src/turn-outcome.ts`).
@@ -149,8 +194,9 @@ export interface TaskTake {
    * error, so from such a run's end the take holds that number finished, beside a reading's
    * `finished`, until the daemon refuses that report (`reportRefused`): a newer revision of the
    * same number, which the daemon may write before the report lands (a daemon start writes every
-   * owed value again) and would answer with the same text while the task is unfinished, is
-   * reported seen, owed nothing and runs nothing a second time. A report with a provider error
+   * owed value again, and the daemon writes the value again from its record where the bucket lost
+   * it or holds another write) and would answer with the same text while the task is unfinished,
+   * is reported seen, owed nothing and runs nothing a second time. A report with a provider error
    * finishes nothing: the daemon takes the task back, and the take takes that number again at
    * the revision the daemon writes after its wait.
    */
@@ -208,6 +254,37 @@ interface Sending {
   readonly stop: AbortController;
 }
 
+/**
+ * Where the take the daemon last accepted stands: none; its text held until the run going when
+ * it was accepted, or the one the host was setting up then, has ended on an idle host (`during`
+ * is the number of the task whose turn that run is, where it is one's); its text handed to the
+ * host, its turn not started; or its turn running. A handed text carries the count of its
+ * hand-over (`handing`), so a drop of an earlier one changes nothing, and `again`, the text of an
+ * accepted answer to a take at a newer revision of its number that came while the host held the
+ * text, which goes to the host in its place should the host drop it.
+ */
+type Accepted =
+  | { readonly kind: "none" }
+  | {
+      readonly kind: "held";
+      readonly number: number;
+      readonly text: string;
+      readonly during: number | undefined;
+    }
+  | {
+      readonly kind: "handed";
+      readonly number: number;
+      readonly handing: number;
+      readonly again: string | undefined;
+    }
+  | { readonly kind: "running"; readonly number: number };
+
+const NONE: Accepted = { kind: "none" };
+
+/** The number of the task whose turn is running. */
+const turnRunning = (state: Accepted): number | undefined =>
+  state.kind === "running" ? state.number : state.kind === "held" ? state.during : undefined;
+
 const keyOf = (value: { readonly epoch: string; readonly revision: number }): string =>
   `${value.epoch} ${value.revision}`;
 
@@ -226,12 +303,10 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
   const asked = new Set<string>();
   let armed = false;
   let busy = false;
-  // The number of the take the daemon accepted whose turn has not started, and of the task whose
-  // turn is running; and the text of an accepted take held until the run going when it was
-  // accepted has ended.
-  let accepted: number | undefined;
-  let running: number | undefined;
-  let heldText: string | undefined;
+  // Where the take the daemon last accepted stands (`Accepted`), and the count of its hand-overs
+  // (`hand`).
+  let accepted: Accepted = NONE;
+  let handings = 0;
   // The pair whose take the daemon refused `in-turn` during the run going now, which it writes
   // again at that run's end; and the task numbers this process has noted to its host (`noteFor`).
   let refusedInTurn: string | undefined;
@@ -281,6 +356,42 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
     );
   };
 
+  /**
+   * The host dropped the text of hand-over `handing` before that text's turn started: the text
+   * never reached it, so a newer revision of its number is a new offer. The text of an accepted
+   * answer at such a revision that came while the host held the dropped one goes to the host now,
+   * once; with none, the take asks at the number's next revision, and the text its accepted answer
+   * carries goes to the host.
+   */
+  const hostDropped = (handing: number, error: unknown): void => {
+    if (closed || accepted.kind !== "handed" || accepted.handing !== handing) return;
+    const { number, again } = accepted;
+    log.warn("legion: the host dropped an accepted take's text before its turn started", {
+      task: number,
+      error: messageFor(error),
+    });
+    if (again === undefined) accepted = NONE;
+    else hand(number, again);
+    settle();
+  };
+
+  /** Hands an accepted take's text to the host (`run`), when no run is going: from here it has
+   *  reached the host, unless the host's answer to it rejects before the text's turn starts
+   *  (`hostDropped`). A host that answers it is not idle, one setting up a prompt it already took,
+   *  took nothing: the text is held as one accepted during a run is, and goes to the host at the
+   *  end of the run that setup starts (`runEnded`). */
+  const hand = (number: number, text: string): void => {
+    handings += 1;
+    const handing = handings;
+    accepted = { kind: "handed", number, handing, again: undefined };
+    const answer = deps.run(text);
+    if (answer === "not idle") {
+      accepted = { kind: "held", number, text, during: undefined };
+      return;
+    }
+    Promise.resolve(answer).then(undefined, (error: unknown) => hostDropped(handing, error));
+  };
+
   const answered = (value: TaskValue, answer: LegionTake): void => {
     log.info("legion: the daemon answered a take", {
       task: value.number,
@@ -292,15 +403,29 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
       case "accepted":
         // The daemon answers a take of the number it accepted with the same text until that task
         // finishes, whether or not its turn has started: a take sent again at a newer revision
-        // of the same number, before the task's turn, during it, or after its end was reported
-        // with no provider error (`runEnded`) and until that report is refused, runs nothing more.
-        if (!owed(value) || accepted === value.number || running === value.number) return;
-        accepted = value.number;
+        // of a number whose text has reached the host, before the task's turn (while the host
+        // sets the text up), during it, or after its end was reported with no provider error
+        // (`runEnded`) and until that report is refused, runs nothing more. While the host holds
+        // the text unstarted, the answer is kept for the host's drop of it (`hostDropped`).
+        if (!owed(value) || turnRunning(accepted) === value.number) return;
+        if (accepted.kind === "handed" && accepted.number === value.number) {
+          accepted = { ...accepted, again: answer.text };
+          return;
+        }
         // Nothing goes into a busy worker: a text accepted while a run is going waits for that
         // run's end and starts a run of its own then (`runEnded`), and that run is the task's
-        // turn. Sent now, it goes to an idle host (`run`).
-        if (busy) heldText = answer.text;
-        else deps.run(answer.text);
+        // turn. Sent now, it goes to a host no run of which is going (`hand`), which holds it all
+        // the same where the host is setting a prompt up.
+        if (busy) {
+          accepted = {
+            kind: "held",
+            number: value.number,
+            text: answer.text,
+            during: turnRunning(accepted),
+          };
+        } else {
+          hand(value.number, answer.text);
+        }
         return;
       case "dropped":
         if (held?.number === value.number) held = undefined;
@@ -347,14 +472,19 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
   /** The take holds an owed value it has not asked about at this revision, a take is in flight, or
    * an accepted take's turn has not started: the task's turn is still to come. */
   const turnToCome = (): boolean =>
-    (owed(held) && !asked.has(keyOf(held))) || taking !== undefined || accepted !== undefined;
+    (owed(held) && !asked.has(keyOf(held))) ||
+    taking !== undefined ||
+    accepted.kind === "held" ||
+    accepted.kind === "handed";
 
   const pending = (): boolean => {
     if (closed) return false;
-    if (taking !== undefined || accepted !== undefined) return true;
+    if (taking !== undefined || accepted.kind === "held" || accepted.kind === "handed") {
+      return true;
+    }
     // A value naming the task whose turn is running is owed no take: that run's end holds the
     // number finished, so nothing is taken for it, and `noteFor` gives it no note either.
-    if (!owed(held) || held.number === running) return false;
+    if (!owed(held) || held.number === turnRunning(accepted)) return false;
     // A refusal `in-turn` holds only the revision it answered: a newer one ends it.
     const key = keyOf(held);
     return !asked.has(key) || key === refusedInTurn;
@@ -403,6 +533,13 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
       return;
     }
     held = value;
+    // A newer write of the number whose accepted text is held, a text never handed to the host, is
+    // a new offer: the held text is let go, and the take at this value, made once the host is idle,
+    // brings the text that runs. The run going keeps its own task, if it is one's.
+    if (accepted.kind === "held" && accepted.number === value.number) {
+      accepted =
+        accepted.during === undefined ? NONE : { kind: "running", number: accepted.during };
+    }
     replace(keyOf(value));
     reportSeen(value);
   };
@@ -411,7 +548,9 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
     read: (reading) => {
       if (closed) return;
       finished = Math.max(finished, reading.finished);
-      if (reading.task !== null) hold(reading.task);
+      // The value the reading names, field by field, as `relayed` builds one from a relayed write.
+      const task = reading.task;
+      if (task !== null) hold({ number: task.number, epoch: task.epoch, revision: task.revision });
       settle();
     },
     relayed: (value) => {
@@ -451,31 +590,32 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
       busy = true;
       // The worker is working again: a callback held for the take is not called.
       deferred = undefined;
-      // The first run that starts after an accepted take's text was sent is the task's turn. A
-      // text still held waits for the end of a run that started before it was accepted, so a run
-      // that starts before that end is not its turn.
-      if (accepted !== undefined && heldText === undefined) {
-        running = accepted;
-        accepted = undefined;
-      }
+      // The first run that starts after an accepted take's text was handed to an idle host is the
+      // task's turn. A text still held waits for the end of a run that was going when it was
+      // accepted, or that the host was setting up then (`hand`), so a run that starts before that
+      // end is not its turn: the daemon counts that run as the take's, and its end, reported
+      // naming no task and the text held (`held`), puts the take back.
+      if (accepted.kind === "handed") accepted = { kind: "running", number: accepted.number };
       settle();
     },
+    held: () => (closed || accepted.kind !== "held" ? undefined : accepted.number),
     runEnded: (providerError) => {
       if (closed) return undefined;
       busy = false;
       refusedInTurn = undefined;
-      const ended = running;
-      running = undefined;
+      const ended = turnRunning(accepted);
       // That run's report names the task with no provider error, which finishes it on the
       // daemon: the number is owed nothing from here on, before the report has even landed, and
       // until the daemon refuses it (`reportRefused`).
       if (ended !== undefined && !providerError) finishing = Math.max(finishing, ended);
-      // A text accepted during the run that just ended: that run was not the task's turn, so its
-      // end names no task (`ended` is undefined), and the text starts the next run, the task's.
-      if (heldText !== undefined) {
-        const text = heldText;
-        heldText = undefined;
-        deps.run(text);
+      // A text accepted during the run that just ended, or while the host set that run's prompt
+      // up: that run was not the task's turn, so its end names no task (`ended` is that run's own
+      // task, if any), and the text starts the next run, the task's, or waits for that next run's
+      // end too where the host is still not idle here (`hand`).
+      if (accepted.kind === "held") {
+        hand(accepted.number, accepted.text);
+      } else if (accepted.kind === "running") {
+        accepted = NONE;
       }
       settle();
       return ended;
@@ -494,7 +634,13 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
     noteFor: () => {
       if (closed || !busy || !owed(held)) return undefined;
       const { number } = held;
-      if (number === accepted || number === running || noted.has(number)) return undefined;
+      if (
+        (accepted.kind !== "none" && number === accepted.number) ||
+        number === turnRunning(accepted) ||
+        noted.has(number)
+      ) {
+        return undefined;
+      }
       noted.add(number);
       return number;
     },
@@ -532,7 +678,7 @@ export interface ClaimTaskTake {
 export function takeClaimTask(deps: {
   readonly daemon: Pick<LegionDaemonClient, "task" | "taskSeen" | "take">;
   readonly caller: ClaimCaller;
-  readonly run: (text: string) => void;
+  readonly run: TaskTakeDeps["run"];
   readonly log: TaskTakeLog;
 }): ClaimTaskTake {
   const { daemon, caller, log } = deps;

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto"
 import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
-import type { LegionState } from "@legion/contracts/legion-api"
+import type { LegionIssue } from "@legion/contracts/legion-api"
 import { messageFor } from "@legion/envoy-client/errors"
 import type { ActivityInput } from "@legion/pi-shared/daemon-client"
 import type { HoldsRead } from "@legion/pi-shared/holds-read"
@@ -34,9 +34,10 @@ import type { TakePending } from "./legion-inbox"
  *
  * The record lives in a file rather than a transcript entry, `<CLAUDE_CONFIG_DIR>/
  * legion-phase-stall-<session id>.json`. Nothing else writes that file: the Go bridge, which
- * wrote it until this change made it pure transport, is now only what carries a line into the
- * session. The path and the atomic rename are kept as the bridge left them, so a session carried
- * across the cutover from the build now in the pods still reads its record.
+ * wrote it until this change moved the phase-stall machine here, holds no phase rule now, and of a
+ * reminder it only carries the line into the session. The path and the atomic rename are kept as
+ * the bridge left them, so a session carried across the cutover from the build now in the pods
+ * still reads its record.
  *
  * The first reminder of a run is the `Stop` hook's `block`, which Claude Code turns into one more
  * turn of the same session. Every one after it is written into the session over the bridge's
@@ -192,9 +193,10 @@ export interface PhaseHookDeps {
    * reminder and the recreated-workspace notice both need the claim, and neither is sent before
    * one exists. Never rejects. */
   readonly booted: Promise<void>
-  /** The daemon's whole state, for the reminder's record check, aborted with `signal` once the
-   * check's bound passes (`PhaseReminderDeps.readState`). */
-  readonly readState: (signal: AbortSignal) => Promise<LegionState>
+  /** One issue's record, for the reminder's record check, aborted with `signal` once the
+   * check's bound passes (`PhaseReminderDeps.readRecord`): the record, or `undefined` for an
+   * issue the daemon records nothing of. */
+  readonly readRecord: (issue: string, signal: AbortSignal) => Promise<LegionIssue | undefined>
   /** Sends this session's activity report to the daemon (`LegionDaemonClient.activity`), so the
    * idle rule can decide whether the pane's pod may be released (INFRA-945). */
   readonly reportActivity: (input: ActivityInput) => Promise<void>
@@ -432,7 +434,7 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
     // count was never recorded is what the count exists to catch.
     saveEntry: saveRecord,
     claim: deps.claim,
-    readState: deps.readState,
+    readRecord: deps.readRecord,
     // The server's own listener client, so the notice reaches the one this session already talks
     // to; Envoy off for the session leaves it undefined, the runner says so once at debug, and
     // the reminder keeps coming without a notice.

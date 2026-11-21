@@ -3,11 +3,11 @@ import { join } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 import { SESSION_LIVE_WINDOW_MS } from "@legion/contracts"
 import type { LegionTask } from "@legion/contracts/legion-api"
-import type { RelayTaskValue } from "@legion/envoy-client/consumer-delivery"
 import { messageFor } from "@legion/envoy-client/errors"
+import type { RelayTaskValue } from "@legion/envoy-client/relay-frame"
 import { readSecretFile } from "@legion/envoy-client/secret-file"
 import type { EnvoyClient } from "@legion/envoy-client/transport"
-import type { LegionDaemonClient } from "@legion/pi-shared/daemon-client"
+import { createLegionDaemonClient, type LegionDaemonClient } from "@legion/pi-shared/daemon-client"
 import { bootLegionClaim, type LegionClaimBoot } from "@legion/pi-shared/legion-claim-core"
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops"
 import { legion } from "../package.json" with { type: "json" }
@@ -60,6 +60,16 @@ export function legionPane(env: NodeJS.ProcessEnv): LegionPane | undefined {
         : readSecretFile("LEGION_BOOT_TOKEN_FILE", pointer),
     launcherSaves: configuredValue(env["LEGION_CLAUDE_SESSION_ID"]) !== undefined,
   }
+}
+
+/**
+ * The pane's client for the daemon. It states this build's own `legion.daemonApiVersion` on
+ * every request, read from the manifest of the module this process loaded, as the claim's
+ * registration below reads it: the daemon serves each answer in the shape the contract the
+ * caller states describes, so a pane an older or newer daemon answers still reads its answers.
+ */
+export function paneDaemonClient(daemonUrl: string): LegionDaemonClient {
+  return createLegionDaemonClient(daemonUrl, { pluginContract: legion.daemonApiVersion })
 }
 
 /** Writes one line to the pane's log, the server's stderr. */
@@ -352,6 +362,8 @@ export function startLegionClaim(deps: {
       },
       onRoleRegained: (listener) => deps.session.onRoleRegained(listener),
       log: deps.log,
+      // The server's shutdown: a claim answered 503 is not made again once it aborts.
+      signal: deps.signal,
       stopping: "stopping the pane so the daemon launches it again",
       // A boot the shutdown aborted stops nothing: this server is already going, and `stop`
       // would SIGTERM the `claude` it runs under on its way out.

@@ -67,7 +67,13 @@ const (
 	CauseNeverRegistered FailureCause = "never_registered"
 	// CauseNeverReconnected: the shim of a claim a daemon start restored with its agent ready,
 	// idle or working never said hello before the reconnect deadline while its process lived, and
-	// the relaunches that followed ran the launch budget out (reconnectDeadline).
+	// the relaunches that followed ran the launch budget out (reconnectDeadline). It is the eighth
+	// word of the set, which TaskTakeContract added. The held and worker-died notices carry it
+	// raw, as the claim holds it, whatever plugin reads them (workflow's noticeFailure); only the
+	// state body serves it as never_registered to a plugin below that contract (api's
+	// withoutNeverReconnected). Beside never_registered, it is a cause the relaunch a release
+	// makes does not meet again: the relaunched process is a new one, whose shim says hello to
+	// the daemon that launched it, as a new agent registers afresh.
 	CauseNeverReconnected FailureCause = "never_reconnected"
 	// CauseStalePlugin: a relaunch onto the daemon's own plugin contract that ran out
 	// (staleRegistration).

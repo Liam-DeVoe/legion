@@ -70,11 +70,18 @@ func TestMain(m *testing.M) {
 //   - "held <name>": the re-emission only once the test releases name (rig.release);
 //   - "wait <name>": an assistant message "done" only once the test releases name;
 //   - "die": exits, never re-emitting it;
+//   - "drop <name>": once the test releases name, a success result and no re-emission: the step
+//     Claude Code ended without taking the message, as the bridge reads a message Claude Code
+//     dropped (errNotTaken). No recording shows Claude Code dropping a stdin message; this is the
+//     bridge's own reading of one, the turn end it acts on;
 //   - "fail <text>": an assistant message of text, then an error_during_execution result, as a
 //     turn a tool failed in ends, which is no provider failure;
 //   - "api-error-529 <text>": the same text, then the result a provider failure ends a turn with
 //     — `terminal_reason` "api_error" and `api_error_status` 529 — as the recordings carry it
 //     (testdata/api-error-529.jsonl:5);
+//   - "unechoed-api-error-529 <text>": the same, with no re-emission of the message: a provider
+//     failure that ends the turn before Claude Code re-emits it, which no recording shows or rules
+//     out;
 //   - "refusal <text>": the result a content filter's refusal ends a turn with, which is the
 //     same but names no `api_error_status` (testdata/refusal-turn.jsonl:5);
 //   - "max-turns": a result Claude Code's own turn limit ended, which is no provider failure;
@@ -165,6 +172,16 @@ func fakeClaude() int {
 		}
 		if body == "die" {
 			return 0
+		}
+		if name, ok := strings.CutPrefix(body, "drop "); ok {
+			released(name)
+			result("success", false)
+			continue
+		}
+		if rest, ok := strings.CutPrefix(body, "unechoed-api-error-529 "); ok {
+			assistant(text(rest))
+			providerFailed(529)
+			continue
 		}
 		emit(map[string]any{"type": "user", "message": msg.Message, "session_id": "s", "parent_tool_use_id": nil,
 			"uuid": "u", "timestamp": time.Now().UTC().Format(time.RFC3339Nano), "isReplay": true})
@@ -1704,7 +1721,11 @@ func TestNoTakeWhileARunIsInProgress(t *testing.T) {
 
 // The report of a task's turn the provider failed names the task and how the provider failed it:
 // the status Claude Code named, the provider, the model the turn's init line named, and its own
-// words. A content filter's refusal names no status (testdata/refusal-turn.jsonl:5).
+// words. A content filter's refusal names no status (testdata/refusal-turn.jsonl:5). A provider
+// failure that ends the turn before Claude Code re-emits the task's text names the task too,
+// whether or not the text reached Claude Code: its report takes the task to the daemon's
+// provider-error ladder, which gives it again after its wait, rather than counting the refusal
+// toward the launch-failure run (result).
 func TestTheTurnOutcomeNamesTheTaskAndTheProviderError(t *testing.T) {
 	for _, tc := range []struct {
 		name, text string
@@ -1714,6 +1735,8 @@ func TestTheTurnOutcomeNamesTheTaskAndTheProviderError(t *testing.T) {
 			want: claim.ProviderError{Status: 529, Provider: claudeProvider, Model: fakeClaudeModel, Retryable: true}},
 		{name: "a content filter's refusal, which names none", text: "refusal WAITING on the provider",
 			want: claim.ProviderError{Provider: claudeProvider, Model: fakeClaudeModel}},
+		{name: "a provider failure before Claude Code re-emitted the text", text: "unechoed-api-error-529 WAITING on the provider",
+			want: claim.ProviderError{Status: 529, Provider: claudeProvider, Model: fakeClaudeModel, Retryable: true}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d := newTaskDaemon(t)
@@ -2007,6 +2030,43 @@ func TestTheFirstEndReportDroppedThenTheTaskFinishesOnce(t *testing.T) {
 	}
 }
 
+// An end report whose attempt fails with no answer the daemon gave is sent again whatever the
+// transport names the failure, not only where unanswered's list names it: an attempt that never
+// reached the daemon applied nothing, and one that did is applied once. Here something in the
+// daemon's place answers what is no HTTP response, and then a response whose header is malformed,
+// two failures no case of the list names; the third attempt lands, and the task finishes once.
+func TestAnEndReportIsSentAgainOnATransportFailureNoListNames(t *testing.T) {
+	notHTTP := func(answer string) func(http.ResponseWriter, *http.Request) {
+		return func(w http.ResponseWriter, _ *http.Request) {
+			if conn := hijack(t, w); conn != nil {
+				_, _ = conn.Write([]byte(answer))
+				_ = conn.Close()
+			}
+		}
+	}
+	d := newTaskDaemon(t)
+	d.answerReports(notHTTP("not an answer of HTTP\r\n\r\n"), notHTTP("HTTP/1.1 200 OK\r\nContent-Length: many\r\n\r\n"))
+	r := newTakingRig(t, d, "", quickCalls)
+	r.handReady()
+
+	r.handTask(testTask, 1)
+	r.expect("agent_start", nil)
+	r.untilTurnEnds()
+	r.logged("claims/turn-outcome of turn 1 got no answer from the daemon (the transport failed:")
+	if report := d.reportOf(1); report.Task != testTask || report.Outcome != claim.TurnClean {
+		t.Fatalf("the daemon recorded %+v, want the clean report of task %d's turn", report, testTask)
+	}
+	r.quiet()
+
+	attempts := d.reportsAttempted()
+	if len(attempts) != 3 || attempts[1] != attempts[0] || attempts[2] != attempts[0] {
+		t.Fatalf("the bridge sent the reports %+v, want the one report three times", attempts)
+	}
+	if texts := r.userTexts(); !slices.Equal(texts, []string{"say the task"}) {
+		t.Errorf("Claude Code read %q, want the task's text once", texts)
+	}
+}
+
 // runFollowedByOneOfItsOwn is the turn of the card "wait r1", which the case holds open, whose
 // next step is a card that replays a recorded stream: that stream ends the card's turn and then has
 // Claude Code start a turn of its own (backgroundTurn), whose result the gate holds back. A value
@@ -2028,9 +2088,11 @@ func (r *rig) runFollowedByOneOfItsOwn(d *taskDaemon, inbox *inboxClient) {
 // A take the daemon accepts while Claude Code is in a turn starts nothing in it (the plan's
 // decision 9): the take, asked for between two turns, is answered `accepted` during the turn
 // Claude Code started by itself after it, which the daemon gave the take as the first to start
-// after its accept. The text is held, that turn is reported as no task's — which puts the take
-// back to awaiting its turn on the daemon —, and the text starts a turn of its own once Claude
-// Code is idle, whose report names the task.
+// after its accept. The text is held, that turn is reported as no task's and as holding the
+// take's text unrun (held) — which puts the take back to awaiting its turn on the daemon, also
+// where its count of the process's turns is not known —, and the text starts a turn of its own
+// once Claude Code is idle, whose report names the task and holds nothing. A report before the
+// take's answer came holds nothing either.
 func TestATakeAcceptedDuringARunStartsNothingInIt(t *testing.T) {
 	d := newTaskDaemon(t)
 	answered := make(chan struct{})
@@ -2055,13 +2117,16 @@ func TestATakeAcceptedDuringARunStartsNothingInIt(t *testing.T) {
 	r.quiet()
 	r.open()
 	r.expect("agent_end", nil)
-	if report := d.reportOf(2); report.Task != 0 {
-		t.Fatalf("the turn Claude Code started by itself was reported %+v, want a turn of no task", report)
+	if report := d.reportOf(2); report.Task != 0 || report.Held != testTask {
+		t.Fatalf("the turn Claude Code started by itself was reported %+v, want a turn of no task holding task %d", report, testTask)
+	}
+	if report := d.reportOf(1); report.Held != 0 {
+		t.Fatalf("the card's turn, before the take's answer, was reported %+v, want it holding nothing", report)
 	}
 	r.expect("agent_start", nil)
 	r.untilTurnEnds()
-	if report := d.reportOf(3); report.Task != testTask {
-		t.Fatalf("the turn after it was reported %+v, want the turn of task %d", report, testTask)
+	if report := d.reportOf(3); report.Task != testTask || report.Held != 0 {
+		t.Fatalf("the turn after it was reported %+v, want the turn of task %d holding nothing", report, testTask)
 	}
 	r.quiet()
 	if texts := r.userTexts(); !slices.Equal(texts, []string{"wait r1", backgroundTurn, "say the task"}) {
@@ -2120,6 +2185,159 @@ func TestALostAnswersRepeatAcceptedDuringARunIsHeldAndRunsNextOnce(t *testing.T)
 	r.quiet()
 	if texts := r.userTexts(); !slices.Equal(texts, []string{"wait r1", backgroundTurn, "say the task"}) {
 		t.Fatalf("Claude Code read %q, want the two cards and then the task's text once", texts)
+	}
+}
+
+// The plan's decision 9: a number held as accepted is a new offer at a newer revision of it only
+// while its text has not reached Claude Code. A text held through a turn the bridge did not start
+// was never written to it: where the daemon writes the number's value again meanwhile — it took the
+// task back, or only wrote the value again —, that turn's end starts nothing of the held text, the
+// take is made at the newer revision once Claude Code is idle, and the text that answer carries
+// runs, once.
+func TestTakeOfATextHeldThroughATurnIsMadeAgainAtANewerRevisionAndRunsOnce(t *testing.T) {
+	d := newTaskDaemon(t)
+	answered := make(chan struct{})
+	answer := sync.OnceFunc(func() { close(answered) })
+	t.Cleanup(answer)
+	d.answerTake = func(take claim.TakeRequest) (int, any) {
+		if take.Revision == 1 {
+			<-answered
+			return accepted("say the task")
+		}
+		return accepted("say the task taken again")
+	}
+	r := newTakingRig(t, d, "", daemonCalls{})
+	r.handReady()
+	inbox := r.dialInbox()
+
+	inbox.deliver("ev1", "wait r1")
+	r.expect("agent_start", nil)
+	r.handTask(testTask, 1)
+	r.runFollowedByOneOfItsOwn(d, inbox)
+	r.waitFor("the take to reach the daemon", func() bool { return len(d.takesMade()) == 1 })
+	answer()
+	r.logged("the daemon accepted the take of task 7 during a turn")
+
+	// The daemon writes the number's value again while the text is held: the value is reported
+	// seen at once, and asked about only once the turn has ended.
+	r.handTask(testTask, 2)
+	r.waitFor("the newer value to be reported seen", func() bool { return len(d.seenReports()) == 2 })
+	r.quiet()
+	r.open()
+	r.expect("agent_end", nil)
+	if report := d.reportOf(2); report.Task != 0 {
+		t.Fatalf("the turn Claude Code started by itself was reported %+v, want a turn of no task", report)
+	}
+	r.expect("agent_start", nil)
+	r.untilTurnEnds()
+	if report := d.reportOf(3); report.Task != testTask {
+		t.Fatalf("the turn after it was reported %+v, want the turn of task %d", report, testTask)
+	}
+	r.quiet()
+	if takes := pairsOf(t, d.takesMade()); !slices.Equal(takes, []string{"7 at 1", "7 at 2"}) {
+		t.Errorf("the bridge asked to take %q, want task 7 at revision 1 and again at revision 2", takes)
+	}
+	if texts := r.userTexts(); !slices.Equal(texts, []string{"wait r1", backgroundTurn, "say the task taken again"}) {
+		t.Fatalf("Claude Code read %q, want the two cards and then the newer answer's text once", texts)
+	}
+}
+
+// Once the text is written to Claude Code a newer revision of its number changes nothing, also
+// while Claude Code has not taken the text yet: the bridge starts the task's turn as it writes the
+// text (startTask), asks nothing while that turn runs, and holds the number finished from the
+// turn's end (the run-end mark). The text runs once (plan review round 68: a guard keyed on Claude
+// Code having begun the turn would hand the text a second time here).
+func TestTakeOfANewerRevisionBeforeClaudeCodeTakesTheTextHandsNothingMore(t *testing.T) {
+	d := newTaskDaemon(t)
+	d.answerTake = func(claim.TakeRequest) (int, any) { return accepted("held r1") }
+	r := newTakingRig(t, d, "", daemonCalls{})
+	r.handReady()
+
+	r.handTask(testTask, 1)
+	r.expect("agent_start", nil)
+	r.handTask(testTask, 2)
+	r.waitFor("the newer value to be reported seen", func() bool { return len(d.seenReports()) == 2 })
+	r.quiet()
+
+	r.release("r1")
+	r.untilTurnEnds()
+	if report := d.reportOf(1); report.Task != testTask {
+		t.Fatalf("the turn was reported %+v, want the turn of task %d", report, testTask)
+	}
+	r.quiet()
+	if takes := pairsOf(t, d.takesMade()); !slices.Equal(takes, []string{"7 at 1"}) {
+		t.Errorf("the bridge asked to take %q, want task 7 once", takes)
+	}
+	if texts := r.userTexts(); !slices.Equal(texts, []string{"held r1"}) {
+		t.Fatalf("Claude Code read %q, want the task's text once", texts)
+	}
+}
+
+// The plan's decision 9 in the bridge: the task's text has reached Claude Code only once Claude
+// Code re-emits it (--replay-user-messages), as an Envoy delivery has. A task's turn that ends with
+// no echo of the task's own text is a text Claude Code dropped: that turn is reported naming no
+// task, which puts the take back on the daemon (decision 8), nothing is held finished, and the
+// number is taken again at its value's next revision, whose accepted text is written once, at
+// idle, and runs once, re-emitted, its turn's report naming the number. An Envoy delivery's echo
+// in the dropped text's turn is no echo of the task's.
+func TestATaskTextClaudeCodeDoesNotReEmitIsTakenAgainAndRunsOnce(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		card  bool
+		texts []string
+	}{
+		{name: "no echo of the text", texts: []string{"drop r1", "say the task taken again"}},
+		{name: "an Envoy delivery's echo only", card: true, texts: []string{"drop r1", "say the card", "say the task taken again"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newTaskDaemon(t)
+			d.answerTake = func(take claim.TakeRequest) (int, any) {
+				if take.Revision == 1 {
+					return accepted("drop r1")
+				}
+				return accepted("say the task taken again")
+			}
+			r := newTakingRig(t, d, "", daemonCalls{})
+			r.handReady()
+			inbox := r.dialInbox()
+
+			r.handTask(testTask, 1)
+			r.expect("agent_start", nil)
+			if tc.card {
+				inbox.deliver("ev1", "say the card")
+				r.logged("Envoy delivery ev1 waits for the next step")
+			}
+			r.release("r1")
+			if tc.card {
+				if answer := inbox.answer(); answer != (InboxAnswer{ID: "ev1", OK: true}) {
+					t.Fatalf("the inbox answered %+v, want ev1 taken", answer)
+				}
+			}
+			r.untilTurnEnds()
+			if report := d.reportOf(1); report.Task != 0 {
+				t.Fatalf("the turn whose text Claude Code never re-emitted was reported %+v, want a turn of no task", report)
+			}
+			r.logged("Claude Code ended task 7's turn without re-emitting its text")
+			r.quiet()
+
+			// The daemon writes the number's value again, as it does once it has taken the task
+			// back: the take is made at that revision, and its text runs, once.
+			r.handTask(testTask, 2)
+			r.expect("agent_start", nil)
+			r.untilTurnEnds()
+			if report := d.reportOf(2); report.Task != testTask {
+				t.Fatalf("the turn of the text taken again was reported %+v, want the turn of task %d", report, testTask)
+			}
+			// That turn's report finishes the task: a later revision of its number runs nothing.
+			r.handTask(testTask, 3)
+			r.quiet()
+			if takes := pairsOf(t, d.takesMade()); !slices.Equal(takes, []string{"7 at 1", "7 at 2"}) {
+				t.Errorf("the bridge asked to take %q, want task 7 at revision 1 and again at revision 2", takes)
+			}
+			if texts := r.userTexts(); !slices.Equal(texts, tc.texts) {
+				t.Fatalf("Claude Code read %q, want %q", texts, tc.texts)
+			}
+		})
 	}
 }
 
@@ -2242,6 +2460,9 @@ func TestAValueNamingAFinishedNumberIsReportedSeenAndNotTaken(t *testing.T) {
 	r.handTask(testTask+1, 3)
 	r.expect("agent_start", nil)
 	r.untilTurnEnds()
+	// The seen report and the take of a value are sent apart, each until the daemon answers, so the
+	// take can land, and its turn run, before the seen report of the same value does.
+	r.waitFor("the third value to be reported seen", func() bool { return len(d.seenReports()) == 3 })
 	if seen := pairsOf(t, d.seenReports()); !slices.Equal(seen, []string{"7 at 1", "7 at 2", "8 at 3"}) {
 		t.Errorf("the bridge reported seen %q, want every value", seen)
 	}

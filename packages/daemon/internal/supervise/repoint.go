@@ -213,7 +213,7 @@ func (m *Machine) replaceNow(ctx context.Context, interruption string, outOfMemo
 		if err := takeBack(ctx); err != nil {
 			return err
 		}
-		return m.endHeld(ctx, stopOwed)
+		return m.endHeld(ctx, false, stopOwed)
 	}
 	return m.launchReplacing(ctx, ending, takeBack)
 }

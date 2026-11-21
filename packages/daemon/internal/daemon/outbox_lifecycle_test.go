@@ -1146,7 +1146,7 @@ func TestARetryOfAClaimWhoseKeptTasksTurnWasOverDeliversItsTask(t *testing.T) {
 	putOutboxIssue(t, pool, records, issue)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	kept := supervise.Delivery{ID: "kept-task", Task: "Continue Workflow. Issue: LEGION-208. Phase: implementing.",
-		Phase: phase.Implementing, Generation: issue.Generation, QueuedAt: time.Now(), ConfirmedAt: time.Now()}
+		Phase: phase.Implementing, Generation: issue.Generation, QueuedAt: time.Now(), ConfirmedAt: time.Now(), TurnStarted: true}
 	machine := heldImplementer(t, sup, issue, kept)
 	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir()}
 

@@ -7,7 +7,8 @@
 // session registered reaches it as the listener relays a value: a task frame on its deliver
 // subject (`publishTaskFrame`, on the connection `taskRelayConnection` opens).
 import type { LegionTask } from "@legion/contracts/legion-api";
-import { deliverSubject, TaskHeader } from "@legion/envoy-client/consumer-delivery";
+import { deliverSubject } from "@legion/envoy-client/consumer-delivery";
+import { TaskHeader } from "@legion/envoy-client/relay-frame";
 import { connect, headers, type NatsConnection } from "nats";
 import type { TaskValue } from "../src/task-take";
 import type { Cleanup } from "./omp-harness";

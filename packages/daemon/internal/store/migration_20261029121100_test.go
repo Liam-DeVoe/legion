@@ -114,3 +114,29 @@ func TestTaskNumberAndProviderErrorOfAClaimsTurnOutcomesAreKept(t *testing.T) {
 		t.Fatalf("the window an older daemon wrote reads back %+v, want %+v", got, want)
 	}
 }
+
+// The window's watermark, the newest key the window dropped to keep to its bound, carried on its
+// oldest entry, is kept with the window and survives a restart, so a restarted daemon still
+// answers a report sent again after newer reports pushed it out of the window as the repeat it
+// is (supervise's recordTurnOutcome). It needs no column of its own: it is a field of an entry
+// in the window's own array, which a window an older daemon stored reads back without (above).
+func TestTheTurnOutcomeWindowsWatermarkIsKept(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	c := tmuxClaim("legion-LEGION-209-implementer")
+	mark := supervise.TurnOutcomeKey{Generation: 2, Sequence: 4}
+	c.TurnOutcomes = []supervise.TurnOutcome{
+		{Generation: 2, Sequence: 5, Watermark: mark},
+		{Generation: 2, Sequence: 6},
+		{Generation: 2, Sequence: 7, Task: 3},
+	}
+	if err := store.PutClaim(ctx, c); err != nil {
+		t.Fatalf("put the claim with its window and its watermark: %v", err)
+	}
+
+	got := onlyClaim(t, reopenStore(t, store))
+	sameClaim(t, got, c)
+	if kept := got.TurnOutcomes; len(kept) != 3 || kept[0].Watermark != mark {
+		t.Fatalf("the window read back after a restart = %+v, want its oldest entry carrying the watermark %+v", kept, mark)
+	}
+}

@@ -2,6 +2,7 @@ package supervise
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -458,6 +459,110 @@ func TestTurnOutcomeRepeatedAfterARestartIsAppliedOnce(t *testing.T) {
 	}
 	if run := h.claim().ProviderErrorRun; run != 0 {
 		t.Fatalf("the run of provider errors is %d after a turn with none, want 0", run)
+	}
+}
+
+// A report the worker's plugin sends again after newer reports pushed it out of the window is a
+// repeat all the same (the window's watermark, recordTurnOutcome). Report k took its task back
+// for a provider error; reports k+1 to k+3, of turns no take started, leave the window holding
+// them alone; the ladder's wait gives the task again and the worker takes it. Report k sent again
+// then changes nothing: its provider error is not counted again, the take stands, and the window
+// is as it was. So in the daemon that applied k, and in one restarted over what the store holds.
+//
+// The negative control is a repeat found by the window's entries alone (recordTurnOutcome with no
+// watermark): k is no repeat once it has left the window, and its provider error takes the new
+// take back and counts a second step of the ladder.
+func TestTurnOutcomeSentAgainAfterItLeftTheWindowIsARepeat(t *testing.T) {
+	for _, restart := range []bool{false, true} {
+		t.Run(map[bool]string{false: "in the same daemon", true: "after a restart"}[restart], func(t *testing.T) {
+			h := workingClaim(t)
+			number := h.pending().Number
+			pe := ProviderError{Message: "overloaded_error", Status: 529}
+			h.errorTurn(pe)
+			first := RequestTurnOutcome{Claim: h.token, Generation: h.generation(), Sequence: h.worker.sequence,
+				Task: number, ProviderError: &pe}
+			for range testLimits().LaunchFailures {
+				h.must(StreamTurnStart{Claim: h.token})
+				h.mustQuiet(StreamTurnEnd{Claim: h.token})
+				if err := h.reportTurn(0, nil); err != nil {
+					t.Fatalf("report a turn no take started: %v", err)
+				}
+			}
+			if kept := h.claim().TurnOutcomes; slices.ContainsFunc(kept, func(o TurnOutcome) bool { return o.Sequence == first.Sequence }) {
+				t.Fatalf("the window keeps %+v, want report %d out of it", kept, first.Sequence)
+			}
+			h.advance(promptRetryDelay(1))
+			if p := h.pending(); !p.awaitsTurn() || p.Number != number {
+				t.Fatalf("after the ladder's wait the task is %+v, want task %d taken again and its turn not started", p, number)
+			}
+			if restart {
+				h.restart()
+				h.connect()
+			}
+			window := h.claim().TurnOutcomes
+
+			h.repeatReport(first)
+
+			if p := h.pending(); !p.awaitsTurn() || p.ProviderErrorRetries != 1 || h.claim().ProviderErrorRun != 1 {
+				t.Fatalf("after report %d was sent again the task is %+v with a run of %d provider errors, want the take standing, one retry and a run of one",
+					first.Sequence, p, h.claim().ProviderErrorRun)
+			}
+			if kept := h.claim().TurnOutcomes; !slices.Equal(kept, window) {
+				t.Fatalf("after report %d was sent again the window keeps %+v, want it as it was, %+v", first.Sequence, kept, window)
+			}
+			if lines := h.logs.lines("a turn's report repeats one already applied", "task="); len(lines) != 1 {
+				t.Errorf("the lines that say the report was a repeat are %q, want one", lines)
+			}
+		})
+	}
+}
+
+// A report never applied — its first attempt lost on the way, so no daemon saw it — that the
+// worker's plugin sends again only after newer reports of the same generation pushed the window
+// past its key is applied all the same: the window's watermark covers only keys below which every
+// report of the generation was applied (recordTurnOutcome), and the window keeps each applied
+// report above it. The take's turn k ends with its report lost; reports k+1 to k+4, of turns no
+// take started, land; report k, naming the take's number, then finishes the task once, in the
+// daemon that saw the others and in one restarted over what the store holds. The window is back
+// at its bound once the gap is filled.
+//
+// The negative control is the watermark raised to every key the bound drops (recordTurnOutcome
+// before this change): report k reads as a repeat of a report already applied, the task stays
+// unfinished, and a relaunch would give it again to a worker that ran it whole.
+func TestTurnOutcomeSentAgainAfterNewerOnesFilledTheWindowIsAppliedWhenItWasNever(t *testing.T) {
+	for _, restart := range []bool{false, true} {
+		t.Run(map[bool]string{false: "in the same daemon", true: "after a restart"}[restart], func(t *testing.T) {
+			h := newHarnessOf(t, queuedClaim(), currentPlugin)
+			h.reach(StateReady)
+			h.takesTurnEndsWithItsReportToCome()
+			number := h.pending().Number
+			h.worker.sequence++
+			lost := RequestTurnOutcome{Claim: h.token, Generation: h.generation(), Sequence: h.worker.sequence, Task: number}
+			for range testLimits().LaunchFailures + 1 {
+				h.must(StreamTurnStart{Claim: h.token})
+				h.mustQuiet(StreamTurnEnd{Claim: h.token})
+				if err := h.reportTurn(0, nil); err != nil {
+					t.Fatalf("report a turn no take started: %v", err)
+				}
+			}
+			if p := h.pending(); p.Number != number || !p.turnStarted() {
+				t.Fatalf("after the newer reports the claim holds %+v, want task %d's turn still waiting for its report", p, number)
+			}
+			if restart {
+				h.restart()
+				h.connect()
+			}
+
+			h.repeatReport(lost)
+
+			if p := h.claim().Pending; p != nil {
+				t.Fatalf("pending %+v after report %d came, want task %d finished", p, lost.Sequence, number)
+			}
+			h.wantFinishedOnce(finishedByReport)
+			if kept := h.claim().TurnOutcomes; len(kept) != testLimits().LaunchFailures {
+				t.Errorf("the window keeps %+v once the gap is filled, want %d reports", kept, testLimits().LaunchFailures)
+			}
+		})
 	}
 }
 

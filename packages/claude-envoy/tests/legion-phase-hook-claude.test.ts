@@ -3,7 +3,11 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { createServer, type Socket } from "node:net"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
-import { type LegionTask, LegionTaskResponse } from "@legion/contracts/legion-api"
+import {
+  LegionStateResponse,
+  type LegionTask,
+  LegionTaskResponse,
+} from "@legion/contracts/legion-api"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { REMINDER } from "@legion/pi-shared/phase-stall"
 import { heldTakeNote, taskWaitingNote } from "@legion/pi-shared/task-notes"
@@ -300,6 +304,8 @@ interface WorkerRun {
   readonly events: readonly Record<string, unknown>[]
   /** The Messages requests the stand-in gateway answered, in order. */
   readonly turns: readonly Request[]
+  /** Every daemon route this run asked for, in order. */
+  readonly daemonPaths: readonly string[]
   /** Every hook Claude Code ran, in order. */
   readonly hooks: readonly HookRun[]
   /** The `<server>/<tool>` each `mcp_tool` hook call named, in order. */
@@ -421,7 +427,12 @@ async function runWorker(options: {
       ready.resolve()
       return new Response(null, { status: 204 })
     }
-    if (url.pathname === "/legion/v1/state") return Response.json(state)
+    // The reminder's record check reads this issue's record, never the project
+    // (dispatch://INFRA-2694).
+    if (url.pathname === `/legion/v1/issues/${ISSUE}/record`) {
+      return Response.json(LegionStateResponse.parse(state).issues[ISSUE])
+    }
+    if (url.pathname === "/legion/v1/claims/activity") return new Response(null, { status: 204 })
     if (options.bridge !== undefined && url.pathname === "/legion/v1/claims/task") {
       taskReads += 1
       if (taskReads === 1) bootRead.resolve()
@@ -614,6 +625,10 @@ async function runWorker(options: {
   return {
     events,
     turns: requests.filter((request) => request.path === "/v1/messages"),
+    /** Every daemon route this run asked for, in order. */
+    daemonPaths: requests
+      .map(({ path }) => path)
+      .filter((path) => path.startsWith("/legion/") || path === "/healthz"),
     hooks: hookRuns(debug),
     mcpHookCalls: debug.split("\n").flatMap((line) => {
       const match = /Hooks: mcp_tool calling (\S+) with \d+ arg\(s\)$/.exec(line)
@@ -726,6 +741,11 @@ test.skipIf(skipped)(
       reported: false,
       lastMessage: "Still going.",
     })
+
+    // 5. The record check the server wires reads this issue's record and never the whole
+    // project body (dispatch://INFRA-2694).
+    expect(run.daemonPaths).toContain(`/legion/v1/issues/${ISSUE}/record`)
+    expect(run.daemonPaths).not.toContain("/legion/v1/state")
   },
   180_000,
 )

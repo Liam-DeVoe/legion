@@ -177,6 +177,7 @@ func samples(t *testing.T) map[string][]Event {
 		"RequestTake":          {RequestTake{}},
 		"TaskValueRead":        {TaskValueRead{}},
 		"RequestCompact":       {RequestCompact{}},
+		"ResumePause":          {ResumePause{}},
 		"CompactEnded":         {CompactEnded{}},
 	}
 	for _, kind := range timers {
@@ -282,7 +283,7 @@ func fixture(state ClaimState) Claim {
 		c.Session, c.SessionFile = session, sessionFile
 	}
 	if state == StateWorking {
-		c.Pending.ConfirmedAt, c.TaskTaken = epoch, 1
+		c.Pending.ConfirmedAt, c.Pending.TurnStarted, c.TaskTaken = epoch, true, 1
 	}
 	return c
 }
@@ -355,6 +356,8 @@ func fenced(ev Event, c Claim) Event {
 		return RequestDeliver{Claim: c.Token, Task: "another task"}
 	case RequestExit:
 		return RequestExit{Claim: c.Token, Generation: c.Generation, Session: session, Reason: "done"}
+	case ResumePause:
+		return ResumePause{Claim: c.Token, Pause: 1}
 	case RequestTurnOutcome:
 		return RequestTurnOutcome{Claim: c.Token, Generation: c.Generation, Sequence: 1}
 	case RequestTaskSeen:

@@ -31,6 +31,8 @@ legion config check --config legion.yaml
 | `worker_take_timeout_seconds must be a positive integer` or `worker_take_timeout_seconds must be at most 2147483` (or the same for `worker_turn_start_timeout_seconds`) | The two waits a worker is charged on are whole numbers of seconds above 0 and at most 2147483: 300 and 1500 by default ([legion.yaml](/legion/legion/running-legion/#legionyaml)). A take whose adoption of the working copy the shim refused is charged too, at the shim's answer, and waits on neither. |
 | `projects must configure <PROJECT>, the daemon's own project` | `project` must also be a key of `projects`. |
 | `postgres_dsn is required (or set LEGION_POSTGRES_DSN)` | Give the daemon its database. |
+| `<LEGION_LEAK_CHECK_REPOSITORY or leak_check.repository> is set and the manifest sha256 is not: …` or `<LEGION_LEAK_CHECK_MANIFEST_SHA256 or leak_check.manifest_sha256> is set and the repository is not: …` | The deployment's shared leak check is two values, set together or not at all: the repository it is published from and the check's manifest digest, one sha256 over every file it runs from ([Worker image](https://github.com/sjawhar/legion/blob/main/docs/kubernetes.md#worker-image)). Set the half the message names, in the daemon's environment or in `legion.yaml`; or unset the half that is set, and the daemon runs no shared leak check. |
+| `connect to Postgres at …: default_query_exec_mode=<mode> is refused: the store's text rule needs the type of each parameter, which pgx learns from the server only in cache_statement, cache_describe and describe_exec` | `postgres_dsn` sets `default_query_exec_mode` to `exec` or `simple_protocol`, in which pgx sends each value with no parameter type, so the store cannot apply its text rule to what it writes. Remove `default_query_exec_mode` from the DSN, or set another mode: `cache_statement` (pgx's default), `cache_describe` or `describe_exec`. |
 | `unknown key <key>` | A typo, or a setting Legion no longer has; the message says which when it knows. `Unknown key "projects.<KEY>.repo": Dispatch holds the project's repository mapping …` is one: map the repositories in Dispatch and delete the key ([Upgrade](/legion/legion/running-legion/#upgrade)). |
 | `omp_invocation is not used when runtime is kubernetes: …` | Remove it: every pod runs the worker image's Oh My Pi. |
 | `worker_backends.architect is claude (Claude Code), which runs only planner, implementer, tester, reviewer, merger: …` | Claude Code runs the phase workers alone; leave the architect on `omp`. |
@@ -220,6 +222,8 @@ stamps.
   wait ran out, which takes a call into a process that does not answer; `deciding` names each claim
   whose decision was still running, with its event. The daemon stopped anyway, and the next boot
   takes those claims up.
+- **`legion daemon stopped before Envoy's NATS was reachable`** at Info is a signal that came while the boot waited for Envoy's NATS, the readiness check that opens the task bucket.
+  The daemon stops without recording a boot, having supervised nothing.
 
 ## The controller
 
@@ -583,8 +587,14 @@ whole record.
 
 **A launch the shared public leak check refused** has a sentence of its own on the claim, as
 `leakCheckCause`. Under the Kubernetes runtime the daemon reads that check at the tag the worker
-image pins, and pushes it to the pod's launcher, which installs it before any role of the pod
-starts ([Worker image](https://github.com/sjawhar/legion/blob/main/docs/kubernetes.md#worker-image)).
+image pins, from the repository the deployment names (`LEGION_LEAK_CHECK_REPOSITORY` and
+`LEGION_LEAK_CHECK_MANIFEST_SHA256` in the daemon's environment, or `leak_check.repository` and
+`leak_check.manifest_sha256` in `legion.yaml`), and pushes it to the pod's launcher, which installs
+it before any role of the pod starts
+([Worker image](https://github.com/sjawhar/legion/blob/main/docs/kubernetes.md#worker-image)). A
+deployment that names no check runs none: the daemon logs `daemon: the deployment leak check is
+not configured` once at boot, and no launch is refused for the check and no claim carries this
+sentence.
 A start whose check could not be installed is not sent, and it is charged as a launch failure, so
 a claim that keeps meeting it fails with `launch failures ran out: <the refusal>` and the cause
 word `launch_refused`, or `died` where the refused launches were the relaunch of a process that
@@ -599,8 +609,9 @@ the try started or failed for another reason. It is not cleared while the claim 
 tries. It shows in `legion state --json`, `read_state` and `read_record` for a workflow role's
 claim, and in `legion claims list --json` and the last column of `legion claims list` for every
 claim. The project's controller is on no claim view of the state, so its sentence shows in the
-listing alone. What follows the colon says where to look. Each sentence names the repository
-the check is published from, written `<owner>/<repository>` below, and its owner, `<owner>`:
+listing alone. What follows the colon says where to look. Each sentence names the repository the
+deployment configured (`leak_check.repository`, or `LEGION_LEAK_CHECK_REPOSITORY` in the daemon's
+environment), written `<owner>/<repository>` below, and its owner, `<owner>`:
 
 - `the daemon runs with no GitHub App, so it cannot read <owner>/<repository>`, or `the daemon
   could not mint its read-only token for <owner>/<repository>: …`: the daemon's GitHub App
@@ -1115,7 +1126,7 @@ It writes the task's value again when that turn ends, the role takes it then, an
 The worker of each claim whose turn holds the take is told, within a minute and two tool boundaries of the refusal.
 While its host is in a turn, its plugin reads `POST /legion/v1/claims/task` at a tool result, at most once a minute, and the answer's `holds` names each held take by its role and its task number.
 The next tool result carries one note for each held take, which asks the agent to stop at a safe point and end its turn.
-A plugin on a daemon API contract below 179 is served no `holds`, and its worker is told nothing.
+A plugin on a daemon API contract below 205 is served no `holds`, and its worker is told nothing.
 A turn that is in one long tool call reads no note until that call returns.
 
 **Five lines in the daemon's log show what each adoption did.**
@@ -1197,9 +1208,10 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   5 minutes, serving nothing until one is placed and passes, and then reports the `pool-capacity`
   capability open with the count and the reason. Make room in the pool, or raise its limits; the
   probe pod itself needs only 500m and 1Gi.
-- **The `workspace-init` container fails.** It provisions the issue's workspace on the pod's own
-  disk, and its refusals name what to do, sometimes a `jj` command to run against the issue's
-  clone (a local bookmark deleted and never pushed, or a conflicted one). Read it with
+- **The `workspace-init` container fails.** It provisions the issue's workspace on the pod's disk
+  (the pod's own, or a kept volume, below), and its refusals name what to do, sometimes a `jj`
+  command to run against the issue's clone (a local bookmark deleted and never pushed, or a
+  conflicted one). Read it with
 
   ```sh
   kubectl -n legion logs <pod> -c workspace-init
@@ -1208,16 +1220,35 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   Nothing is registered before a refusal, so every later attempt in that pod refuses the same way.
   A pod whose `workspace-init` refuses runs no `roles` container, so there is no shell in which to
   run the commands it names; the remedy is letting the pod be replaced, and the issue's next launch
-  provisions a fresh clone and workspace from its pushed branch on a disk of its own. Run no `jj`,
-  `git` or `omp` in a running issue pod either: any role can plant configuration in its clone or
-  workspace that starts a program with every role's credentials in reach (`docs/kubernetes.md` in
-  the repository, "A shell on an issue's disk").
+  provisions a fresh clone and workspace from its pushed branch on a disk of its own, except on a
+  kept volume (below). Run no `jj`, `git` or `omp` in a running issue pod either: any role can
+  plant configuration in its clone or workspace that starts a program with every role's
+  credentials in reach (`docs/kubernetes.md` in the repository, "A shell on an issue's disk").
+
+  On a kept volume (`runtime.kubernetes.sandbox.microvm.keep_volume`), a failure of an init
+  container can come from the volume itself. So the issue's next launch gives the issue a new,
+  empty volume, except in these cases, which keep the volume:
+
+  - The container exited with code 2 or 3.
+  - The container ended as `OOMKilled`, or as `ContainerStatusUnknown`, which the kubelet writes
+    when the node or its container runtime restarts.
+  - The pod is being deleted.
+  - The kubelet ended the pod itself, for example in an eviction for node pressure or for a
+    storage limit, or in a graceful node shutdown.
+
+  The full rule is in `docs/kubernetes.md` in the repository ("A kept volume on a microVM pod",
+  "The reset").
 - **An issue's work is gone after its pod was replaced.** That is the shape of the runtime, not a
   failure: an issue's disk is its pod's own and is deleted with the pod, so a stop, a close, a
   node loss or a launch that replaces the pod takes the workspace with it. What survives is what
   was pushed to `legion/<issue>` and each role's conversation, which lives in the session
   database; the next pod provisions the workspace from that branch, and the agent is told its
   workspace is newer than its conversation before its next turn.
+  A microVM issue pod under `runtime.kubernetes.sandbox.microvm.keep_volume` is the exception: its
+  volume stays through a node loss and a replacement of the pod, and the next pod finds the
+  workspace as the last pod left it. That volume goes when the issue leaves the workflow, when its
+  disk's shape changes, or when the daemon resets it after a failed init container
+  (`docs/kubernetes.md` in the repository, "A kept volume on a microVM pod").
 - **`worker-stream: rejected hello (stale worker generation)`** in the daemon's log is the fence
   working: a pod from an older generation of a claim tried to connect after a newer one replaced it.
   Nothing to do.
@@ -1230,7 +1261,12 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   (`worker_boot_timeout_seconds × worker_boot_registration_deadline_intervals`, 6 minutes at the
   defaults), often because the registration's answer never reached it. The daemon resumes the same
   session one generation later and counts a launch failure; after `launch_failure_limit` of them
-  the claim fails.
+  the claim fails. The line carries `claim`, and `launchFailure` with `limit`, the launch failure
+  this retirement counts and the limit it counts toward. A daemon-launched controller whose Envoy
+  role claim the listener keeps answering `503` at its start lands here, and its waits are in the
+  Oh My Pi log of its session; a controller whose Oh My Pi session changed is refused when it
+  registers the new session (`SameAgentRefusal`, `409`), exits, and is relaunched on its recorded
+  session.
   While the tree's cleanup is reserved (the tree is closing), the retirement waits: the process is
   kept, nothing is counted, and the deadline is tried again at the probe interval
   (`probe_interval_seconds`, 30 seconds at the default). Each try logs **`supervise: timer`** at
@@ -1320,6 +1356,36 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   `supervise: claim failed`, `supervise: the agent reported its exit`, `supervise: the process
   speaks another plugin contract; relaunching it onto the current plugin`, or `supervise: the
   update round is over for this claim`, each of which says what became of the turn instead.
+- **`supervise: a turn's report names the accepted take's task before its turn start was seen; the turn is the take's`**, **`supervise: a turn's report names a task that no take of this claim holds; it finishes nothing`** and **`supervise: a turn's report repeats one already applied; it changes nothing more`** at Info are the daemon reading a worker's turn-outcome report (`POST /legion/v1/claims/turn-outcome`).
+  The first is a report that came before the start of its turn: the turn is counted as the take's, and the start that follows names that task and starts no second turn.
+  The second names a number no take of the claim holds, such as a late report of a task already finished or one from a process the claim has left: it finishes nothing, and a refused turn it reports counts toward `launch_failure_limit`.
+  The third is a report the worker sent again after the daemon had applied it, as it does until it reads an answer.
+  Nothing to do.
+- **`supervise: a turn's report names no task of the take whose turn it was given; the take awaits its turn again`** at Info, with the `task` and `by=`, is the daemon putting an accepted take back to wait for its own turn: the turn it gave the take, the first to start after the take, was a run of the worker's own.
+  `by=count` is the daemon's own count of the worker's turns saying so, and `by=held` the worker's report naming the take as `held`, its text still waiting when that turn ended, which is what puts a take back after a daemon restart under a live worker.
+  **`supervise: a turn started that the producer said ran with the accepted take's text held; the turn is no task's, and the take awaits its turn`** is the same word reaching the daemon before that turn's start.
+  **`supervise: a turn's report says the accepted take's text was held through it, but a turn may have started after it; the take keeps its turn`** is a `held` report that came after a later turn may have started, which may be the take's own; that turn's own report then finishes the task.
+  Nothing to do: R5's second wait bounds a take put back whose turn does not start.
+- **`supervise: a turn this daemon never saw begin has ended`** at Info is the end of a turn of a claim the daemon holds ready or idle: the agent's own turn, whose start the daemon did not see, is over.
+  A take that turn refused is offered again, and the end resets the prompt budgets as every turn's end does.
+  Nothing to do.
+- **`supervise: a take reached a claim a restart restored working; the worker's take says its host is idle, so the turn the store recorded is over`** at Info, with the `task`, is a claim the store held working after a daemon restart, with its task owed and no take of it accepted, as when the restart cut off a compaction.
+  A worker asks only once its host is idle, so the daemon takes the take as its word that the turn is over, records the claim idle and answers the take as an idle claim's.
+  Nothing to do.
+- **`supervise: the agent of this claim the daemon's start restored has not said whether it is in a turn; its stale-plugin relaunch waits for that answer`** at Info is a claim a daemon start restored ready or idle, holding an accepted take, whose plugin is too old for this daemon.
+  The daemon relaunches it onto the current plugin only once its agent has said whether it is in a turn, behind every frame its shim replayed from the time no daemon was attached, so a relaunch does not take back as unrun a take whose turn the replay shows running.
+  The shim's hello asks, and the answer is logged as `supervise: the agent of a claim the daemon's start restored said whether it is in a turn; its stale-plugin relaunch is decided behind the frames its shim replayed`, or, for an agent in a turn the replay did not show begin, as `… is in a turn its shim's replay did not show begin; the claim is working`.
+  An ask with no answer is logged `… did not say whether it is in a turn; its stale-plugin relaunch waits, and the next sweep asks again`, at Info and at Warn from the third in a row (`unanswered=`), and is asked again at every sweep.
+  At the reconnect deadline counted from the hello, **`supervise: the agent of a claim the daemon's start restored did not say whether it is in a turn within the reconnect deadline of its hello; the stale-plugin lane relaunches it, uncharged`** at Warn relaunches it without the answer.
+- **`supervise: the turn of the task ended with its report still to come; the held suspension waits for that report`** at Info, with the `task`, the hold's `by` and its `deadline`, is a suspension held over a claim in its task's turn.
+  The turn ended, and the daemon waits for the worker's report of it, which is what finishes the task, before it stops the process; the claim is idle meanwhile, and a take of it is refused.
+  **`supervise: the held suspension's deadline came before the report of the task's turn; the task is taken back and the agent stopped`** at Warn is that wait reaching the hold's deadline (an operator's suspension has one at the stop timeout): the task is taken back as a turn the stop cut off, and the process is stopped.
+- **`supervise: the pending task's turn has run, so the newer task takes its place`** at Info, with the number `taken` and the newer `delivery`, is a task queued while the claim's last task was taken and its turn had started: the newer task replaces it.
+  **`supervise: the root architect's untaken task of an earlier run or entry is superseded by the newer entry's task, which takes its place`** at Info is a root architect's task that no take holds, of an earlier run or phase entry, replaced by the task of the entry its phases row names now.
+  Nothing to do.
+- **`supervise: a provider error's report was applied before this daemon started and its take-back never written; the task goes to the ladder now`** at Warn, with the `task`, its `httpStatus` and the `providerErrorRun`, is a claim a daemon start restored over a turn-outcome report that carried a provider error: the earlier daemon applied the report and stopped before it wrote the task's take-back.
+  The claim's first decision makes that take-back, and the task goes on the provider-error ladder ([An issue is held](#an-issue-is-held)), or, for an error that holds the issue, the claim fails.
+  Nothing to do.
 - **`supervise: a task value was written`**, **`supervise: a task value was reported seen`**,
   **`supervise: a take was answered`**, **`supervise: a task was taken back`**, **`supervise: a
   task was finished`** and **`supervise: a task value was deleted`** at Info are a task's way
@@ -1350,6 +1416,13 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   turn started within the second bound after the accepted take; the worker is charged and the task
   taken back`) or `adoption` (a refused adoption of the working copy) — and the `bound=` that wait
   waited.
+  These three are the only charges.
+  A daemon of an earlier release, which pushed each task as a prompt, also charged a prompt that started no turn (`supervise: timer` with `timer=turn`), a prompt the agent refused (`supervise: prompt outcome`) and a late refusal (`supervise: an event failed` with `event=supervise.StreamLateRefusal`); this release sends no prompt and writes none of those lines.
+- **`supervise: the first bound passed while a hold stands over the task; the worker is not charged`** at Info, with the `task` and the `hold`, is a first bound that ended while the daemon itself refuses the take, for a reason a take's refusal names (the `hold` of `supervise: a take was answered`), such as another role of the issue in a turn (`issue-in-turn`) or a suspension held over the claim (`suspension`).
+  A hold charges nobody, and its end arms the wait again.
+  Nothing to do.
+- **`supervise: the failed adoption was not recorded on the delivery; settle writes it again and the charge goes on`** at Warn, with the `task` and the `error`, is a refused adoption of the working copy whose record on the task's delivery the store did not take.
+  The take is refused and the worker charged all the same, and the claim's next decision writes the delivery again.
 - **`supervise: nobody reported seeing the claim's latest value within the first bound; it is
   written again under its number, and nobody is charged`** at Info means the relay that carries a
   task value to its worker did not reach it: an Envoy listener stopped or older than the relay, or
@@ -1374,6 +1447,15 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   bucket, and a bucket it finds gone or created again is logged `legion daemon found the task
   bucket gone; it creates it again and writes every owed value` or `… created again; it writes
   every owed value into it`.
+- **`supervise: the task value could not be deleted; it is deleted again at the claim's next chance`** at Warn, with the `task`, its `cause` and the `error`, means the bucket did not take the delete of a value the record no longer owes, usually NATS unreachable, or a daemon grant without the key writes (`$KV.legion_tasks.>`).
+  The daemon deletes it again at the claim's next chance while the record still owes the claim no task, since its own watch leaves a value that is its own last write alone.
+  Until then every new holder of the role is handed that value; the record owes it nothing, so no take of it runs a task.
+- **`supervise: the task bucket holds a value for a claim the record owes nothing; it is deleted`** and **`supervise: the task bucket holds another value than the record's; it is written again from the record`** at Info, with the `task`, the bucket's `epoch` and `revision` and the read's `cause`, are a read of the bucket finding a key that is not what the record last wrote: the boot's whole read (`cause=boot`), or a later whole read or a change the watch delivered (`cause=repair`).
+  The daemon deletes a value its record owes no task and writes its record's value over any other, so the bucket stays the delivered copy of the record.
+  Nothing to do.
+- **`supervise: the task was taken back after a take at its latest revision, and its worker asks once per revision; it is written again`** at Info, with the `task` and the `revision`, is the boot's read finding a claim whose worker's take of the latest revision was accepted and then taken back with the task still owed.
+  The worker asks only at a new revision, so the daemon writes one.
+  Nothing to do.
 - **`legion daemon watches the task bucket again`** at Warn, with its `reason`, means the
   daemon's watch of the task bucket ended or could not start: the bucket is gone or was created
   again, the watch's consumer ended, or NATS refused or did not answer the watch's consumer
@@ -1391,6 +1473,16 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   seconds. Nothing waits on it. Beside `NATS refused the daemon a permission` naming
   `$JS.API.STREAM.PURGE.KV_legion_tasks`, the daemon's grant lacks the purge: apply the
   `envoy-infra` release that carries it.
+- **`legion daemon could not open the task bucket again; trying again`** at Error, with the wait (`after`) and the `error`, follows `legion daemon watches the task bucket again`: the open of the bucket, or its create where it is gone, failed, and the daemon tries it again every 30 seconds until it opens.
+  Look at NATS and at the daemon's grant, as for the boot's refusal ([The daemon will not start](#the-daemon-will-not-start)).
+- **`legion daemon could not read the task bucket's stream; reading it again at the next check`** and **`legion daemon could not read the task bucket's stream to purge its delete markers; purging them at the next check`** at Warn, with the `error`, are reads of the daemon's check of the bucket, every 30 seconds, that NATS refused or did not answer: the first is its read of whether the bucket is gone or was created again, the second its read before it purges old delete markers.
+  Both are made again at the next check, and nothing waits on them.
+  If the line keeps coming, look at NATS and at the daemon's grant of the bucket stream's info.
+- **`legion daemon leaves a task value of its project that no claim of its own holds`** at Warn, with the `key`, is a key of this daemon's project that no claim the daemon supervises holds, logged once per watch of the bucket.
+  The daemon's store holds every claim of its project, so no record of its own owes that key anything, and only another daemon of the same project would be writing it: the daemon leaves it as it stands.
+  Look for a second daemon running for the project.
+- **`legion daemon read the task bucket whole`** at Info, with the bucket's `epoch`, the number of `claims` and the read's `cause` (`boot` for the boot's, `repair` for every later watch's), is the first read of each watch of the bucket, which hands every claim the value its key holds, so that each claim writes its record's value where the two differ.
+  Nothing to do.
 - **`supervise: the relaunch ended work the agent had running`** at Warn, with the `cause`,
   whether a `turn` and the task's turn (`taskTurn`) were cut off, the `background` work and its
   `kinds` the process last reported, and whether a report covers its last turn (`reported`), is
@@ -1410,7 +1502,8 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   the daemon's own that carries the sentence alone (`supervise: the claim holds no task; a
   delivery of the daemon's own tells its agent what the relaunch ended`): a numbered task of
   origin `notice`, whose delivery id starts `relaunch:`, which the worker takes and which the
-  report naming its number, or the end of its turn, finishes as any task. A newer task replaces
+  report naming its number finishes as any task, or the end of its turn for a worker whose plugin
+  is below contract 203 and names no task in its reports. A newer task replaces
   it while no take of it is accepted, and carries the sentence in front of itself instead. The
   same task is given when the claim's held task is dropped rather than taken: the issue left the
   task's phase, the task is an ask an older daemon queued for an update round, or a root
@@ -1448,6 +1541,13 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   record no longer tells; it is dropped rather than taken`** at Info is a `relaunch:` task that
   the claim still held when its record was told by other means, as a fresh session's start tells
   it. Its value is deleted. Nothing to do.
+- **`workflow: a ready worker that finished its last task in this session is given nothing; its own reminder wakes it`** at Info, with the `claim`, the `task` it finished and its `session`, is a phase worker relaunched under its session — a death, a stale plugin, a displacement, a cancelled idle release — after it finished the last task written to it in that session.
+  The daemon writes it no resume task, which would only ask it to do again what it did, and the session's own resume reminder wakes a worker whose phase is still open.
+  **`workflow: the boot resumes a suspended claim that finished its last task in this session with no task; its own reminder wakes it`** is the same rule at the boot's resume of a claim a rule suspended.
+  A claim never written a task, and one whose session is new since it finished, is sent the resume task as before.
+  Nothing to do.
+- **`workflow: the cutover owes a merger its merging task`** at Info, with the `issue`, whether its merger was `stopped` and whether the start `needsSlot`, is the boot's one-time repair of a merger the `awaiting_merge` cutover left: the daemon queues the merger's merging task, and, where the cutover left the merger stopped, posts on the issue that it did.
+  Nothing to do.
 - **`supervise: restoring a launch the previous daemon did not finish as launch_uncertain; no
   process is recorded for it`** at boot names a claim the store held live with no process, with the
   state it was stored in (`stored=`): a launch the previous daemon began and never recorded. The
@@ -1629,7 +1729,9 @@ An issue that stays in `testing`, `reviewing`, `accepting`, `retro` or `merging`
 conflicts with its base is waiting on the daemon's merge forward or on nothing at all. GitHub sends
 no event when a head starts conflicting, so after each push onto the base the daemon reads GitHub's
 merge state for every open pull request on that base whose issue is in one of those phases, and
-reads it again while GitHub answers `unknown`. The daemon reads the pull request's mergeability
+reads it again while GitHub answers `unknown`. An issue in `merging` is read once for the push: its
+pull request sits in the merge queue, where GitHub answers `unknown` for the head, and that answer
+asks for no further read. The daemon reads the pull request's mergeability
 twice, at least a minute apart, and acts only on a conflict
 both reads report, and only when the next step needs a mergeable head: the issue stands past its
 review, a check the base requires has no green result on the head, the base requires a current
@@ -1637,7 +1739,9 @@ branch, or the daemon could not read the base's rules. Its log says which: `work
 read waits for a second read` for a first read, `workflow: a second read did not confirm the
 conflict` for a read GitHub took back or a second read whose attempts all answered no state (the
 merge-state reads then follow the head), `workflow: a confirmed conflict needs no merge yet` with the
-required contexts and the green ones, and `workflow: merge forward asked` with the reason. A read
+required contexts and the green ones, and `workflow: merge forward asked` with the reason and the
+read it rests on: GitHub's merge state for the head (`mergeState`) and when the daemon read it
+(`stateReadAt`), which the ask, the hold and the architect's `checks-red` notice name as well. A read
 GitHub answered before the newest read the record holds of the same head is dropped whole, with
 `workflow: GitHub's merge state answered before the read the record holds; the read is dropped`,
 so an answer that waited behind a newer one never releases a first read or clears a conflict. A merge
@@ -1811,6 +1915,38 @@ notice comes once per handoff commit, from whichever read finds it first.
   GitHub lists, applies a lost head, review or approval-carrying push, and tells an architect
   `pull-request-missing`, so an issue whose next handoff lands does not wait for the backlog to
   drain.
+- **A head got no `CI settled` message.** The Envoy listener and the daemon each write a line
+  that says where the settlement stopped. Each line names the head and the generation, and the
+  publish line and the drop lines also name the snapshot, so a drop line matches the publish line
+  of the same settlement. Each line is written once for each record state or settlement while the
+  listener or the daemon runs, and again after a restart of it, or once the daemon has kept 4,096
+  dropped settlements since: each remembers in memory what it logged.
+  - The listener writes `checks held a head` for a head's record that it has
+    not settled after 10 minutes with no event. The line names what holds the record: `running`
+    names each check run that has not finished, `suites` names each check suite that is not
+    completed with its App and run count, and `overflowed`, `no_run_id`, `legacy` and `claimed`
+    name the other holds. It is a warning when every recorded check run has finished.
+  - The listener writes `checks settlement published` for each settlement it publishes.
+  - The daemon writes one line for each checks settlement it drops before it applies it:
+    `intake: a checks settlement was dropped: the decoder refused it` (a warning that names the
+    field in `reason`, and the `sha`, `generation` and `snapshot` of the payload where each
+    reads), `workflow: a checks settlement was dropped: no pull request is recorded
+    for it`, `workflow: a checks settlement stands for no head the record holds` (with
+    `recorded_head` and `head_run_open`), and `workflow: a checks settlement of the head was not
+    applied` (with `classification`, `stale` or `conflict`). A settlement envelope the daemon
+    cannot decode at all, such as one whose source is not `github`, is logged as `poison JetStream
+    message` (an error with the `subject`) and dropped. A settlement delivered again after it
+    applied writes no line.
+
+  A published settlement with no new `CI settled` message and no drop line is one of three things:
+  - The daemon applied it, and the line it would tell is the line it already told for that head,
+    so it tells nobody again. The earlier `CI settled` message of that head stands for it.
+  - The daemon applied it on a tree that lingers after its root left the workflow, where the
+    daemon tells nobody.
+  - In every other case, it was lost between the listener and the daemon.
+
+  No line at all for a finished head means that no event of that head reached the listener's
+  record.
 - **`an intake handler outran its limit and was cut`** (a warning with `consumer`, `event_id`,
   `fact` and `limit`). One message's handling ran past `limit`, the handler limit
   `worker_rpc_timeout_seconds` derives for this deployment, so the daemon cancelled the
