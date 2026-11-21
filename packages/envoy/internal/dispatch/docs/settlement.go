@@ -132,6 +132,11 @@ type settlement struct {
 	// reconciliation before it did not see them (treePoint).
 	reads int
 	plan  *repairPlan
+	// stored says a pass of this settlement committed an update into the document's stored history
+	// - a stamp (commitStamp) or repairs (commitRepairs) - before the pass that versions the
+	// document, which reads the head after it and so cannot tell from its own reads
+	// (settlementPass.savedNothing).
+	stored bool
 	// stopShort is the outcome of the settlement stopping short with err having written nothing
 	// into the room (settleRoomWithin), removed being its read of whether the document was removed
 	// since it started (stoppedShort: removedThroughPool outside a pass, removedThroughTransaction
@@ -169,6 +174,11 @@ type settlementPass struct {
 		markdown         string
 		docUpdateVersion int64
 	}
+	// readHead is the head of the document's stored history this pass read under the document's
+	// lock, before it stored anything (readLocked). snapshotCursor is the head the version records
+	// (doc_update_version), through which every one of the room's updates it holds is stored; it
+	// equals readHead when the pass stored no update (savedNothing).
+	readHead       int64
 	snapshotCursor int64
 	credit         settlementVersionCredit
 	// issueClosed is the document's issue row as this pass's transaction read it under the
@@ -196,6 +206,21 @@ type settlementPass struct {
 	reconciliation settlementReconciliation
 	planned        *repairPlan
 	published      []model.Event
+}
+
+// savedNothing reports whether this settlement wrote nothing that a later move of an approval
+// request reads, given whether this pass writes a version (versioning): it writes no version,
+// stores no update in the document's history - none of the room's updates, no block-id stamp and
+// no ask- or check-block repair, neither in this pass, so the head it leaves is the head it read
+// (readHead), nor in a pass of this settlement before it (settlement.stored) - and lists no
+// author, neither a pending author nor an in-flight credit. A reopen's move reads the latest
+// version and the editor kept for it (FollowClosedIssueVersions); what else such a settlement
+// writes - block events in SettlementActor's name, the settled version's number in their
+// payloads, the recorded author of an unindexed ask block - changes neither. A settlement armed
+// while another one commits, as the resumption's pick of the row that one is about to delete arms
+// it, finds nothing owed and is such a settlement.
+func (p *settlementPass) savedNothing(versioning bool) bool {
+	return !versioning && !p.stored && p.snapshotCursor == p.readHead && len(p.credit.authors) == 0
 }
 
 // skipUnreadableSettlement reports whether err stops a settlement at a document whose tree it cannot
@@ -967,6 +992,7 @@ func (p *settlementPass) commitStamp(ctx context.Context) (settleStep, settleOut
 		return settleDone, p.commitFailed(advanced, fmt.Errorf("commit document identity update: %w", err))
 	}
 	p.finishSlots()
+	p.stored = true
 	if p.stampSuperseded {
 		return settleDone, settleOutcome{}
 	}
@@ -1135,6 +1161,7 @@ func (p *settlementPass) commitRepairs(ctx context.Context) (settleStep, settleO
 		s.afterSettleRepairCommit(room)
 	}
 	p.committed()
+	p.stored = true
 	return settleAgain, settleOutcome{}
 }
 
@@ -1259,17 +1286,24 @@ func (p *settlementPass) commitVersion(ctx context.Context) (settleStep, settleO
 	// doc_closed_edit_sources), for the reopen's mark to write back into the row it inserts
 	// (settlementPendingStatement) and the reopen's move to name (FollowClosedIssueVersions). A
 	// settlement on an open issue has named its editor itself, and one on a closed issue that
-	// credits SettlementActor names no editor, as the settlement after the reopen, crediting the
-	// same edits, named none then: each forgets the editor an earlier settlement kept. One on a
-	// closed issue whose credit is only the kept editor (settlementVersionCredit.kept), its version
-	// adding none of their text, keeps that same editor, so the reopen still finds the editor of
-	// the text the closed issue's versions hold. The delete and the keep are queued, as every write
-	// of this settlement is, for its write phase.
+	// credits SettlementActor for the edits it saves names no editor, as the settlement after the
+	// reopen, crediting the same edits, named none then: each forgets the editor an earlier
+	// settlement kept. One on a closed issue whose credit is only the kept editor
+	// (settlementVersionCredit.kept), its version adding none of their text, keeps that same
+	// editor, so the reopen still finds the editor of the text the closed issue's versions hold.
+	// So does one on a closed issue that saved nothing (savedNothing): it credits SettlementActor
+	// only because it found nothing to credit, and its commit deletes the pending row alone,
+	// whatever arming ran it after the settlement that kept the editor. The delete and the keep
+	// are queued, as every write of this settlement is, for its write phase.
 	var kept *model.Actor
 	if p.issueClosed && !p.credit.actor.SameAs(SettlementActor) {
 		kept = &p.credit.actor
 	}
-	if err := clearSettlementPending(ctx, p.tx, room, kept); err != nil {
+	if p.issueClosed && kept == nil && p.savedNothing(versioning) {
+		if err := clearSettlementPendingRow(ctx, p.tx, room); err != nil {
+			return settleDone, p.abandon(err)
+		}
+	} else if err := clearSettlementPending(ctx, p.tx, room, kept); err != nil {
 		return settleDone, p.abandon(err)
 	}
 	if err := p.reconciliation.nameVersion(ctx, p.tx, room, p.owner, settledVersion); err != nil {
@@ -1369,7 +1403,8 @@ func (p *settlementPass) commitVersion(ctx context.Context) (settleStep, settleO
 	}); err != nil {
 		return settleDone, p.commitFailed(advanced, fmt.Errorf("commit document settlement: %w", err))
 	}
-	// The commit deleted the row, and the lease with it (clearSettlementPending).
+	// The commit deleted the row, and the lease with it (clearSettlementPending, or
+	// clearSettlementPendingRow for a closed issue's settlement that saved nothing).
 	p.lease = nil
 	p.committed()
 	// A closed issue's settlement sweeps no marks: the unmark is an injection without the

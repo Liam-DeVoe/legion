@@ -58,6 +58,7 @@ func (p *settlementPass) readLocked(ctx context.Context, parent context.Context)
 	if err != nil {
 		return settleDone, p.stoppedShort(err)
 	}
+	p.readHead = head
 	// The gate, before this settlement writes anything. The room it holds must stand at that
 	// head: with two envoy-dispatch processes on one Postgres, an update the other process
 	// appended can be stored before this room's catch-up has taken it in, and settling from it

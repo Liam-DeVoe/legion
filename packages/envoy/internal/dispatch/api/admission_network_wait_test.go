@@ -278,19 +278,23 @@ func insideKeyLookup() bool {
 }
 
 // A boundary of the key cache passed between a request's admission and its key lookup - the set's
-// Lifetime ends, or the miss window for a key id the set does not hold opens again - turns a
-// lookup the cache would have answered from memory into a read of IAP's key set, and the request
-// still gives its admission unit back before it waits on that read: the read class's in-flight
-// count reads 0 while the read is held. The cache's clock crosses the boundary only inside the
-// lookup (boundaryClock), so it falls after anything the request asked the cache before it, every
-// run. Once the read answers, the request takes its unit back and is answered 200.
+// Lifetime ends, MinRefresh past it, or the miss window for a key id the set does not hold opens
+// again - turns a lookup the cache would have answered from memory into a read of IAP's key set,
+// and the request still gives its admission unit back before it waits on that read: the read
+// class's in-flight count reads 0 while the read is held. The cache's clock crosses the boundary
+// only inside the lookup (boundaryClock), so it falls after anything the request asked the cache
+// before it, every run. Once the read answers, the request takes its unit back and is answered
+// 200.
 func TestAKeySetBoundaryPassedBeforeTheLookupStillGivesTheUnitBackBeforeTheWait(t *testing.T) {
 	for _, boundary := range []string{"the set's Lifetime ends", "the miss window opens again"} {
 		t.Run(boundary, func(t *testing.T) {
 			clock := &boundaryClock{at: time.Now()}
 			rig := newIAPWaitRigOn(t, clock.now)
 			presented := rig.cached
-			jump := oidc.DefaultKeysLifetime + time.Second
+			// A set stale by less than MinRefresh still answers the key it holds at once, and
+			// refreshes in the background (oidc.Keys.Key): the lookup waits on a read only past
+			// Lifetime + MinRefresh.
+			jump := oidc.DefaultKeysLifetime + oidc.DefaultKeysMinRefresh + time.Second
 			if boundary == "the miss window opens again" {
 				// The rotated key's lookup reads the set while the window is open and closes it;
 				// a key published after that read is then one the set does not hold, inside the
