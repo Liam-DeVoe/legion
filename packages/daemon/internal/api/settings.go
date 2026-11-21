@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/natsurl"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -786,7 +787,7 @@ func experimentsOf(experiments []config.Experiment) []ExperimentSettings {
 // URL userinfo or a secret for credentials`), the scheme, redact.URLWithCredentials in place of the
 // authority, and the path: nothing after the last "@" is shown, since a password holding an
 // unencoded "@" leaves its tail there, read as a host. An address with an "@" past its host
-// (redact.UserinfoPastHost), where a credential holding a "/", "?" or "#" written as the user
+// (natsurl.UserinfoPastHost), where a credential holding a "/", "?" or "#" written as the user
 // lands with its head read as the host, is its scheme and the mark alone, no path. "" stays ""
 // (`dispatch_url` may be unset); an address that yields no scheme and host is `xxxxx` whole,
 // never the raw string. The result is composed from the parsed scheme, the host or the mark, and
@@ -803,7 +804,7 @@ func endpointOf(address string) string {
 	if err != nil || u.Scheme == "" || u.Host == "" {
 		return "xxxxx"
 	}
-	if redact.UserinfoPastHost(u) {
+	if natsurl.UserinfoPastHost(u) {
 		return u.Scheme + "://" + redact.URLWithCredentials
 	}
 	if u.User != nil {

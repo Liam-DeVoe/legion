@@ -15,6 +15,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
+	"github.com/sjawhar/envoy/natsurl"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
@@ -965,7 +966,7 @@ func sessionStoreName(kind ompsessions.StoreKind, dsnSecret string, proxy []stri
 // previous daemon accepted, or a direct Options caller supplied, even when this daemon's current
 // loader no longer accepts it. It names "(unset)" for none; otherwise it constructs the name from
 // exactly the scheme, host and port it accepts to show, or, when the URL carries userinfo or an
-// "@" past its host (redact.UserinfoPastHost: a credential holding a "/", "?" or "#" written as the
+// "@" past its host (natsurl.UserinfoPastHost: a credential holding a "/", "?" or "#" written as the
 // user, its head read as the host), the scheme and redact.URLWithCredentials, nothing after the last
 // "@" (a password holding an unencoded "@" leaves its tail there, read as a host). Path, query and
 // fragment never enter it. An endpoint that cannot yield a scheme and host is xxxxx whole, so
@@ -980,7 +981,7 @@ func namedURL(address string) string {
 	if err != nil || u.Scheme == "" || u.Host == "" {
 		return "xxxxx"
 	}
-	if u.User != nil || redact.UserinfoPastHost(u) {
+	if u.User != nil || natsurl.UserinfoPastHost(u) {
 		return u.Scheme + "://" + redact.URLWithCredentials
 	}
 	return u.Scheme + "://" + u.Host

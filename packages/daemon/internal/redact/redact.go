@@ -39,6 +39,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/sjawhar/envoy/natsurl"
 )
 
 // URLNotPrinted stands for a URL value URL will not print.
@@ -48,27 +50,20 @@ const URLNotPrinted = "(a URL that is not printed)"
 // what URL, URLCredentials and the state's endpointOf print: its userinfo is a credential, and a
 // password holding an unencoded "@" leaves its tail after the last "@", which reads as a host
 // (`http://user:p@ssword` names the host `ssword`), so nothing of such an authority is printed.
-// URLCredentials writes it for the whole of a URL with an "@" past its host (UserinfoPastHost).
+// URLCredentials writes it for the whole of a URL with an "@" past its host
+// (natsurl.UserinfoPastHost).
 const URLWithCredentials = "[a URL with credentials]"
-
-// UserinfoPastHost reports whether u holds an "@" after its host, in its path, its query or its
-// fragment: where a credential holding a "/", "?" or "#" written in the userinfo lands, its head
-// read as the host (`https://<head>?<tail>@host` parses with <head> as the host), so nothing of
-// such a URL is printed. It is natsurl.UserinfoPastHost's rule, kept here so this package, which
-// every binary's log lines pass, takes no NATS client with it.
-func UserinfoPastHost(u *url.URL) bool {
-	return strings.Contains(u.Path, "@") || strings.Contains(u.RawQuery, "@") || strings.Contains(u.Fragment, "@")
-}
 
 // URL is raw, one value known to be a URL (a setting's, an environment variable's), as a line
 // prints it: read by url.Parse, with its query and fragment removed, and its authority, when it
 // holds an "@", as URLWithCredentials. The rule on text, URLCredentials, finds a URL's end at a
 // character such as "'", which a password may hold; a value known to be a URL is read whole here
 // instead. A raw that does not parse as a URL with a host, or that holds an "@" past its host
-// (UserinfoPastHost), prints as URLNotPrinted.
+// (natsurl.UserinfoPastHost: where a credential holding a "/", "?" or "#" written in the userinfo
+// lands, its head read as the host), prints as URLNotPrinted.
 func URL(raw string) string {
 	u, err := url.Parse(raw)
-	if err != nil || u.Scheme == "" || u.Host == "" || UserinfoPastHost(u) || strings.Contains(u.EscapedPath(), "@") {
+	if err != nil || u.Scheme == "" || u.Host == "" || natsurl.UserinfoPastHost(u) || strings.Contains(u.EscapedPath(), "@") {
 		return URLNotPrinted
 	}
 	if u.User != nil {
@@ -94,7 +89,7 @@ func URL(raw string) string {
 //   - an "@" after the authority, in the path, the query or the fragment, is where a credential
 //     holding a "/", "?" or "#" written in the userinfo lands, its head then read as the authority
 //     (`https://<head>?<tail>@host`): such a URL is written URLWithCredentials from its "://" to
-//     its end, nothing of it kept (UserinfoPastHost's rule, read on the text). A file URL is the
+//     its end, nothing of it kept (natsurl.UserinfoPastHost's rule, read on the text). A file URL is the
 //     one exception: it names a path on this machine, RFC 8089 gives it no userinfo to write a
 //     credential in, and a path's own "@" is common there (`node_modules/@scope/…`), so its path
 //     stays;

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/sjawhar/envoy/natsurl"
 	"github.com/sjawhar/legion/daemon/internal/claudelaunch"
 	"github.com/sjawhar/legion/daemon/internal/launcher"
 	"github.com/sjawhar/legion/daemon/internal/ompdirs"
@@ -306,7 +307,7 @@ func dashboardShown(value string) string {
 // the URL standard's parser the agents' dispatch command reads the value with (envoy-client's
 // dispatchSettings), so boot accepts only values the agents accept, and refuses some they would
 // take (userinfo, a trailing dot, IPv4 shorthand, an internationalized name). It is http or https
-// with no userinfo and no "@" past its host (redact.UserinfoPastHost: a credential holding a "/",
+// with no userinfo and no "@" past its host (natsurl.UserinfoPastHost: a credential holding a "/",
 // "?" or "#" written as the user lands there, its head read as the host every dashboard link the
 // agents build would name); a plain host, which is a DNS name of ASCII letters, digits and
 // hyphens (no label empty, longer than 63 or starting `xn--`, and a last label neither all digits
@@ -314,7 +315,7 @@ func dashboardShown(value string) string {
 // bracketed IPv6 address with no zone; and, when it names one, a port from 1 to 65535.
 func dashboardURL(value string) bool {
 	parsed, err := url.Parse(value)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Opaque != "" || parsed.User != nil || redact.UserinfoPastHost(parsed) {
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Opaque != "" || parsed.User != nil || natsurl.UserinfoPastHost(parsed) {
 		return false
 	}
 	if port := parsed.Port(); port != "" {
