@@ -64,6 +64,13 @@ export const fillNames: readonly string[] = (() => {
   return (listed[1] ?? "").split(/\s+/).filter((name) => name !== "");
 })();
 
+/** The id a row is filled with on its missing side, as the rows part sets it (`none_uuid`). */
+export const noneUuid: string = (() => {
+  const set = /^readonly none_uuid=([0-9a-f-]+)$/m.exec(readFileSync(judgePart, "utf8"));
+  if (set === null) throw new Error(`${judgePart} sets no none_uuid`);
+  return set[1] ?? "";
+})();
+
 /** How long a writer waits at most for a write to reach the full member's feed, as the helpers
  *  part sets it (`delivery_seconds`), and so how long before its feed closes a runner's live window
  *  ends. */

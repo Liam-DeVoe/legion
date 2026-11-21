@@ -25,7 +25,7 @@ import {
   verdictOf,
   withoutTools,
 } from "./restricted-sweep-fake";
-import { getRows, proxyReads } from "./restricted-sweep-index";
+import { getRows, noneUuid, proxyReads } from "./restricted-sweep-index";
 
 afterAll(stopFakes);
 
@@ -99,6 +99,39 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
         `GET /api/v1/inbox: the member is answered 200 holding ${tgt.ask}, a row of TGT`,
       ]);
       expect(code).toBe(1);
+    },
+    rowLimit("short")
+  );
+
+  // An answer may echo the object it was asked for: the values a path was filled with are masked
+  // before the answer is read for rows, and both sides' before two answers are compared, so an
+  // echo of the project's document is no row of it, and an echo of the missing one's is alike.
+  const documentRow = "/api/v1/artifacts/{id}/asks";
+  test.each([
+    [
+      "a refusal",
+      [
+        at(`/api/v1/artifacts/${tgt.projectDocument}/asks`, 404, {
+          code: "NOT_FOUND",
+          id: tgt.projectDocument,
+        }),
+      ],
+      `\nok      GET ${documentRow}: 404 (can fail)\n`,
+    ],
+    [
+      "a 200 that a missing one is answered alike",
+      [
+        at(`/api/v1/artifacts/${tgt.projectDocument}/asks`, 200, [{ asked: tgt.projectDocument }]),
+        at(`/api/v1/artifacts/${noneUuid}/asks`, 200, [{ asked: noneUuid }]),
+      ],
+      `\nok      GET ${documentRow}: 200, as a missing one is answered (can fail)\n`,
+    ],
+  ] as const)(
+    "%s that echoes the object the path was filled with is no FAIL",
+    async (_what, leaks, line) => {
+      const { stdout } = await sweep(leaks, { rows: [documentRow] });
+      expect(failures(stdout)).toEqual([]);
+      expect(stdout).toContain(line);
     },
     rowLimit("short")
   );
