@@ -6042,6 +6042,20 @@
       "production": "daemon dispatchError: Dispatch's code decided as it came (oauth2call.CodedRefusal, Error.Code)"
     },
     {
+      "id": "dispatch-approval-at-not-printed",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/dispatch",
+      "test": "TestAnApprovalWhoseTimeDoesNotParseIsRefusedWithoutItsText",
+      "production": "daemon dispatch HTTPClient.Approval: an approval time that does not parse is refused naming the field, never time.Parse's error, which quotes Dispatch's value",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/dispatch.HTTPClient).Approval",
+      "capture": "dispatch.answer-words/approval-at",
+      "mutation": {
+        "file": "packages/daemon/internal/dispatch/client.go",
+        "preimage": "approval names an at that is not an RFC 3339 time (the value is not printed)\", artifactID)",
+        "replacement": "approval names an at that is not an RFC 3339 time: %w\", artifactID, err)"
+      }
+    },
+    {
       "id": "dispatch-sentence-as-it-came",
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/dispatch",
@@ -8133,6 +8147,11 @@
       "site": "appauth mintFromCommand decides on agent-secrets' stderr, which the CLI printed through the rule",
       "source": "the decision-class search of round 6 (refusal code slice)",
       "guard": "appauth-broker-phrases-survive-the-cli-rule"
+    },
+    {
+      "site": "daemon dispatch Approval: time.Parse's error, quoting Dispatch's approval time, printed with %w",
+      "source": "the decoder-error class search of round 6",
+      "guard": "dispatch-approval-at-not-printed"
     }
   ]
 }

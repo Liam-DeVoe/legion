@@ -473,9 +473,11 @@ func (c *HTTPClient) Approval(ctx context.Context, artifactID string) (Approval,
 		Slug:          response.Slug,
 	}
 	if response.Approval.At != nil {
+		// time.Parse's error quotes the value it could not read, which is Dispatch's words, or the
+		// words of whatever answers in its place: the refusal names the field and none of them.
 		at, err := time.Parse(time.RFC3339Nano, *response.Approval.At)
 		if err != nil {
-			return Approval{}, fmt.Errorf("Dispatch artifact %q approval has no RFC 3339 at: %w", artifactID, err)
+			return Approval{}, fmt.Errorf("Dispatch artifact %q approval names an at that is not an RFC 3339 time (the value is not printed)", artifactID)
 		}
 		approved.At = at.UTC()
 	}
