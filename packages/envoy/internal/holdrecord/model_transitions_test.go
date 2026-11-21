@@ -148,12 +148,12 @@ func next(r modelRules, t modelTable, sc modelScenario, s modelState, bound int)
 		// Once a command has failed for good after a done prove under HubAbortAfterStop, the
 		// operator may restore a target back onto its expected disk (the done prove's recorded one,
 		// or step 1's for a target it did not name), a restore the table already admits after the
-		// failed re-prove: then abort, which compares each disk with the prove's record, passes after
-		// a disk moved and no prove can prove the new one. If that disk is gone, abort's stop names
-		// it and the operator restores onto another disk (below). The step is the
-		// operator's, so liveness may use it, and A1 holds it out of the window between abort's or
-		// release's disk check and its row move, as it holds a restore.
-		if sc.Fail && s.Doomed != "" && r.HubAbortAfterStop && s.Proved && !window {
+		// failed re-prove (RestoreBack): then abort, which compares each disk with the prove's
+		// record, passes after a disk moved and no prove can prove the new one. If that disk is
+		// gone, abort's stop names it and the operator restores onto another disk (below). The step
+		// is the operator's, so liveness may use it, and A1 holds it out of the window between
+		// abort's or release's disk check and its row move, as it holds a restore.
+		if sc.Fail && s.Doomed != "" && r.HubAbortAfterStop && r.RestoreBack && s.Proved && !window {
 			for tg, n := range targets {
 				if want := expected(s, tg); s.Cur[tg].ID != want && s.Lost&(1<<tg) == 0 {
 					ns := s

@@ -80,13 +80,17 @@ type modelRules struct {
 	// DiskGoneRestore: after abort's disk check finds the done prove's disk gone and its stop names
 	// it, the operator restores that target onto another disk, where a new prove can pass.
 	DiskGoneRestore bool
+	// RestoreBack: once a command has failed for good after a done prove, the operator restores a
+	// target back onto the done prove's disk (step 1's for a target the prove did not name), where
+	// abort's disk check passes after a disk moved and no prove can prove the new one.
+	RestoreBack bool
 }
 
 // currentModel is the current rules as the model runs them: the package's currentRules and every
 // choice of the model's own.
 var currentModel = modelRules{rules: currentRules, Name: "v63", Step1Recorded: true, AbortMoveBeforeDone: true,
 	AtomicAdmit: true, Step1Whole: true, ExpectedMap: true, PrepareMarksUnresolved: true, CompletionSurvivesRowRestore: true,
-	DiskGoneRestore: true}
+	DiskGoneRestore: true, RestoreBack: true}
 
 // The earlier versions' rules. Their hub-restore runs with one operator process, as v53's model
 // did: the two-process race is shown by their generic workflows, and by the later controls in every
@@ -104,7 +108,7 @@ var (
 	v62 = func() modelRules {
 		r := currentModel
 		r.Name, r.WayOut, r.EveryCommandStoppable, r.EndIsFinal, r.BackupCommand, r.HubAbortAfterStop = "v62", false, false, false, false, false
-		r.AbortAfterOwnStop, r.DiskGoneRestore = false, false
+		r.AbortAfterOwnStop, r.DiskGoneRestore, r.RestoreBack = false, false, false
 		return r
 	}()
 )
@@ -195,8 +199,9 @@ func modelProfiles() []modelProfile {
 	}
 	// The current rules, with a command that fails for good modeled, and their controls: the same
 	// rules without WayOut, without EveryCommandStoppable (the buckets commands alone Stoppable),
-	// without HubAbortAfterStop (a done prove excludes abort for good) and without DiskGoneRestore
-	// (no restore onto another disk after abort's stop names the done prove's disk gone), each of
+	// without HubAbortAfterStop (a done prove excludes abort for good), without DiskGoneRestore
+	// (no restore onto another disk after abort's stop names the done prove's disk gone) and
+	// without RestoreBack (no restore back onto the done prove's disk after a disk moved), each of
 	// which strands the hold, and the same rules with each stop recording its own run alone
 	// (OwnRunOnly), under which hold release moves the row over an earlier run's change.
 	// AbortAfterOwnStop has no control here: without it a doomed census's rerun writes a stop after
@@ -210,6 +215,8 @@ func modelProfiles() []modelProfile {
 	proveExcludes.Name, proveExcludes.HubAbortAfterStop = currentModel.Name+"-HubAbortAfterStop", false
 	noGone := currentModel
 	noGone.Name, noGone.DiskGoneRestore = currentModel.Name+"-DiskGoneRestore", false
+	noBack := currentModel
+	noBack.Name, noBack.RestoreBack = currentModel.Name+"-RestoreBack", false
 	ownRun := currentModel
 	ownRun.Name = currentModel.Name + "-OwnRunOnly"
 	return append(out, modelProfile{modelRules: currentModel, Fail: true},
@@ -217,6 +224,7 @@ func modelProfiles() []modelProfile {
 		modelProfile{modelRules: bucketsAlone, Want: []string{classWayOut}, Fail: true},
 		modelProfile{modelRules: proveExcludes, Want: []string{classWayOut}, Fail: true},
 		modelProfile{modelRules: noGone, Want: []string{classWayOut}, Fail: true},
+		modelProfile{modelRules: noBack, Want: []string{classWayOut}, Fail: true},
 		modelProfile{modelRules: ownRun, Want: []string{classEveryRun}, Fail: true, OwnRunOnly: true})
 }
 
@@ -461,9 +469,9 @@ var (
 )
 
 // pinnedBound2 is this model's run at bound 2 of the rules added since the bundle, with a command
-// that fails for good modeled: the current rules and their five controls, the rules without
-// WayOut, without EveryCommandStoppable, without HubAbortAfterStop, without DiskGoneRestore, and
-// with each stop recording its own run alone.
+// that fails for good modeled: the current rules and their six controls, the rules without
+// WayOut, without EveryCommandStoppable, without HubAbortAfterStop, without DiskGoneRestore,
+// without RestoreBack, and with each stop recording its own run alone.
 //
 // Cost, measured with /usr/bin/time -v on the whole of TestTheHoldJournalModel at its default
 // (every profile at bound 2, and v62 at bound 3), -test.parallel=4 as on a 4-CPU runner, two large
@@ -475,6 +483,7 @@ var pinnedBound2 = map[string]modelCount{
 	"v63-EveryCommandStoppable": {1401500, 7058, map[string]int{classWayOut: 7058}},
 	"v63-HubAbortAfterStop":     {663146, 151408, map[string]int{classWayOut: 151408}},
 	"v63-DiskGoneRestore":       {1253520, 67238, map[string]int{classWayOut: 67238}},
+	"v63-RestoreBack":           {850830, 41760, map[string]int{classWayOut: 41760}},
 	"v63-OwnRunOnly":            {1456733, 144, map[string]int{classEveryRun: 144}},
 }
 
@@ -497,12 +506,13 @@ var failWalks = make(chan struct{}, 2)
 // that fails for good after its intent (in hub-restore the census, or a prove after a done prove,
 // after which a done prove's disk may be lost): they find no counterexample at bound 2 by default,
 // and at bound 3 with HOLDRECORD_MODEL_BOUND3=1, with pinned state counts. Their controls without
-// WayOut, without EveryCommandStoppable, without HubAbortAfterStop and without DiskGoneRestore find
-// the stranded hold (classWayOut): the first in every workflow but hub-restore, the second in every
-// workflow that runs no buckets command, the third and fourth in hub-restore. Their control in
-// which a stop records its own run alone (OwnRunOnly) finds hold release moving the row over an
-// earlier run's change (classEveryRun). At every hub-restore state of the current rules the
-// package's Step1, Proven, Epoch, Expected and Moved read the record as the model does.
+// WayOut, without EveryCommandStoppable, without HubAbortAfterStop, without DiskGoneRestore and
+// without RestoreBack find the stranded hold (classWayOut): the first in every workflow but
+// hub-restore, the second in every workflow that runs no buckets command, the last three in
+// hub-restore. Their control in which a stop records its own run alone (OwnRunOnly) finds hold
+// release moving the row over an earlier run's change (classEveryRun). At every hub-restore state of
+// the current rules the package's Step1, Proven, Epoch, Expected and Moved read the record as the
+// model does.
 func TestTheHoldJournalModel(t *testing.T) {
 	// A soft memory limit keeps the walks' heap near their live size, about 1.4 GiB each, rather
 	// than twice it, so two at once stay inside a CI runner. It is lifted in Cleanup, which runs
@@ -514,7 +524,7 @@ func TestTheHoldJournalModel(t *testing.T) {
 		t.Cleanup(func() { debug.SetMemoryLimit(prev) })
 	}
 	if currentModel.Name != "v63" || currentModel.rules != currentRules || v62.WayOut || v62.EveryCommandStoppable || v62.EndIsFinal ||
-		v62.BackupCommand || v62.HubAbortAfterStop || v62.AbortAfterOwnStop || v62.DiskGoneRestore {
+		v62.BackupCommand || v62.HubAbortAfterStop || v62.AbortAfterOwnStop || v62.DiskGoneRestore || v62.RestoreBack {
 		t.Fatalf("the current rules are %q, the model's runs another table than the package's, or v62 carries a rule added since; the counts below are v62's and v63's", currentModel.Name)
 	}
 	for _, p := range modelProfiles() {
@@ -583,9 +593,10 @@ func TestTheHoldJournalModel(t *testing.T) {
 				// good after a prove strands hub-restore.
 				t.Errorf("control %s found no %s in hub-restore", p.Name, classWayOut)
 			}
-			if p.Name == currentModel.Name+"-DiskGoneRestore" && got.classIn[classWayOut]["hub-restore"] == 0 {
+			if (p.Name == currentModel.Name+"-DiskGoneRestore" || p.Name == currentModel.Name+"-RestoreBack") && got.classIn[classWayOut]["hub-restore"] == 0 {
 				// Without the restore onto another disk, an abort whose stop names the done prove's
-				// disk gone can never pass its check, and no prove can be admitted that it reads.
+				// disk gone can never pass its check, and no prove can be admitted that it reads;
+				// without the restore back, an abort after a disk moved cannot pass its check either.
 				t.Errorf("control %s found no %s in hub-restore", p.Name, classWayOut)
 			}
 			if p.Name == currentModel.Name+"-EveryCommandStoppable" {
