@@ -153,11 +153,11 @@ func (r scriptedRow) Scan(dest ...any) error {
 	return nil
 }
 
-// A fixed process decides on the marker it read and on nothing else. A read Postgres refused
-// (42501), like a missing table, is no marker, and the process starts. A database it cannot reach,
-// one that does not answer, or a row it cannot read, it reads again until it can, and never starts
-// unread: the call returns only with the marker read, or when its context ends. The control is the
-// same unreachable database answering at last: done refuses, and no marker starts.
+// A fixed process decides on the marker it read and on nothing else. A missing table or sentinel
+// row is no marker, and the process starts. A read Postgres refused (42501), a database it cannot
+// reach, one that does not answer, or a row it cannot read, it reads again until it can, and never
+// starts unread: the call returns only with the marker read, or when its context ends. The control
+// is the same unreachable database answering at last: done refuses, and no marker starts.
 func TestTheFixedModeReadsItsMarkerBeforeItRuns(t *testing.T) {
 	shrink := namingMarkerRetry
 	namingMarkerRetry = 10 * time.Millisecond
@@ -167,7 +167,7 @@ func TestTheFixedModeReadsItsMarkerBeforeItRuns(t *testing.T) {
 		answers []any
 		refused bool
 	}{
-		"a read Postgres refused":                        {[]any{&pgconn.PgError{Code: "42501", Message: "permission denied for table intake_consumers"}}, false},
+		"a read Postgres refused, then no marker":        {[]any{&pgconn.PgError{Code: "42501", Message: "permission denied for table intake_consumers"}, pgx.ErrNoRows}, false},
 		"no table":                                       {[]any{&pgconn.PgError{Code: "42P01", Message: "relation does not exist"}}, false},
 		"no sentinel":                                    {[]any{pgx.ErrNoRows}, false},
 		"unreachable, then done":                         {[]any{unreachable, unreachable, `{"cutover":"done"}`}, true},
@@ -216,6 +216,53 @@ type signalledRow struct {
 func (r signalledRow) Scan(dest ...any) error {
 	defer func() { r.read <- struct{}{} }()
 	return r.Row.Scan(dest...)
+}
+
+// A fixed process whose database role may not read the cutover row has not read its marker:
+// Postgres's refusal of the read (SQLSTATE 42501) is a read error, never no marker, so the start
+// reads again until its context ends and never starts, and each take-over refuses before it
+// changes anything. Only a missing table or row is no marker. Before the fix the refusal read as no
+// marker, and the process ran the fixed names over a store it could not read.
+func TestAFixedProcessWhoseRoleMayNotReadTheMarkerNeverRuns(t *testing.T) {
+	shrink := namingMarkerRetry
+	namingMarkerRetry = 10 * time.Millisecond
+	t.Cleanup(func() { namingMarkerRetry = shrink })
+	pool, ctx := deliveryTestPool(t)
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire a connection: %v", err)
+	}
+	role := fmt.Sprintf("t4_marker_reader_%d", time.Now().UnixNano())
+	if _, err := conn.Exec(ctx, "create role "+role+" nologin"); err != nil {
+		t.Fatalf("create the reading role: %v", err)
+	}
+	if _, err := conn.Exec(ctx, "set role "+role); err != nil {
+		t.Fatalf("take the reading role: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = conn.Exec(context.Background(), "reset role")
+		_, _ = conn.Exec(context.Background(), "drop role "+role)
+		conn.Release()
+	})
+	db := conn.Conn()
+
+	// The role's read is refused, so the rows below test the refusal.
+	_, err = readFixedMarker(ctx, db)
+	var pg *pgconn.PgError
+	if !errors.As(err, &pg) || pg.Code != "42501" {
+		t.Fatalf("the role's read of the cutover row = %v, want refused (42501)", err)
+	}
+	d := &heldDurable{name: bus.DispatchDeliveryDurable, throttle: &bindThrottle{}}
+	d.guardFixedNames(db, func(err error) { t.Errorf("told the store converted over a marker it could not read: %v", err) })
+	if d.fixedNamesAllowed(ctx) {
+		t.Fatal("a take-over went on over a marker its role may not read")
+	}
+	// Last: the start's deadline can cut a read in flight, which closes the connection.
+	starting, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if err := CheckNamingMode(starting, db, consumernames.ModeFixed); err == nil {
+		t.Fatal("the fixed process started over a marker its role may not read")
+	}
 }
 
 // A fixed process's read of its marker after a reconnect is retried every namingMarkerRetry until

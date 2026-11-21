@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgconn"
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
@@ -66,13 +65,12 @@ type IntakeNaming struct {
 // CheckNamingMode is what a process in mode checks of the selection table at its start, before
 // any intake runs. In the fixed mode it refuses a store the cutover converted: with the table's
 // sentinel reading done, every durable is a fresh generation behind its record, and the fixed
-// names must not run over it. A missing table or sentinel, a read Postgres refused (the process's
-// role may read nothing of a table no fixed build needs), a cutover not yet run or one rolled back
+// names must not run over it. A missing table or sentinel, a cutover not yet run or one rolled back
 // is a store the fixed names own, and the fixed mode starts. A database it cannot reach, one that
-// does not answer within markerReadWithin, or a row it cannot read it reads again every
-// namingMarkerRetry, saying so at WARN, until it can or ctx ends: a fixed process never runs over a
-// marker it has not read. The fresh mode refuses nothing here; its take-over refuses every call
-// until the cutover is done (consumernames.Admit).
+// does not answer within markerReadWithin, a read Postgres refused (42501) or a row it cannot read
+// it reads again every namingMarkerRetry, saying so at WARN, until it can or ctx ends: a fixed
+// process never runs over a marker it has not read. The fresh mode refuses nothing here; its
+// take-over refuses every call until the cutover is done (consumernames.Admit).
 func CheckNamingMode(ctx context.Context, db consumernames.PGQuerier, mode consumernames.Mode) error {
 	if mode == consumernames.ModeFresh {
 		return nil
@@ -177,20 +175,16 @@ var namingMarkerRetry = 2 * time.Second
 
 const markerReadWithin = 5 * time.Second
 
-// insufficientPrivilege is Postgres's SQLSTATE for a statement the role may not run.
-const insufficientPrivilege = "42501"
-
 // readFixedMarker reads whether the cutover converted the store: true for a sentinel reading done;
-// false for no marker -- no table, no sentinel row, a read Postgres refused -- and for any other
-// marker; an error for a read that did not answer what the row says.
+// false for no marker -- no table, no sentinel row -- and for any other marker; an error for a read
+// that did not answer what the row says, a read Postgres refused (42501) among them: a role that
+// may not read the row has not read the marker.
 func readFixedMarker(ctx context.Context, db consumernames.PGQuerier) (bool, error) {
 	read, cancel := context.WithTimeout(ctx, markerReadWithin)
 	defer cancel()
 	state, err := consumernames.NewPGStore(db).State(read)
-	var pg *pgconn.PgError
 	switch {
-	case errors.Is(err, consumernames.ErrNoStore), errors.Is(err, consumernames.ErrNoSentinel),
-		errors.As(err, &pg) && pg.Code == insufficientPrivilege:
+	case errors.Is(err, consumernames.ErrNoStore), errors.Is(err, consumernames.ErrNoSentinel):
 		return false, nil
 	case err != nil:
 		return false, err
