@@ -2251,6 +2251,47 @@ func TestPlainStateCountsTheMemoryBlocksArmsWithNoExperimentsKey(t *testing.T) {
 	}
 }
 
+// `legion state` in a pane names the daemon LEGION_DAEMON_URL names without its userinfo
+// (redact.URL), a made-up password holding a "'" included, in its first line when the daemon
+// answers and in its refusal when the daemon cannot be reached.
+func TestStateNamesTheDaemonWithoutLEGIONDAEMONURLsUserinfo(t *testing.T) {
+	const credential = "madeUpStateUser0123:madeUpState'Password0123"
+	served := `{"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
+		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{}}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(served))
+	}))
+	defer server.Close()
+	holdsNone := func(t *testing.T, text string) {
+		t.Helper()
+		for i := 0; i+10 <= len(credential); i++ {
+			if strings.Contains(text, credential[i:i+10]) {
+				t.Fatalf("legion state printed %q, which holds %q of LEGION_DAEMON_URL's userinfo", text, credential[i:i+10])
+			}
+		}
+	}
+	for name, tc := range map[string]struct {
+		url, want string
+		code      int
+	}{
+		"a daemon that answers":         {server.URL, "legion LEGION on " + server.URL + " — ", 0},
+		"a daemon that does not answer": {"http://127.0.0.1:1", "legion state: read http://127.0.0.1:1/legion/v1/state: ", 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Chdir(t.TempDir())
+			t.Setenv("LEGION_DAEMON_URL", strings.Replace(tc.url, "http://", "http://"+credential+"@", 1))
+			t.Setenv("LEGION_ISSUE", "")
+			var out, errb bytes.Buffer
+			code := run(context.Background(), []string{"legion", "state"}, &out, &errb)
+			if code != tc.code || !strings.Contains(out.String()+errb.String(), tc.want) {
+				t.Fatalf("legion state = %d, stdout %q, stderr %q; want %d and %q", code, out.String(), errb.String(), tc.code, tc.want)
+			}
+			holdsNone(t, out.String()+errb.String())
+		})
+	}
+}
+
 // The deployment that writes no `memory` block and declares no `experiments` key — the
 // deployment this fleet runs — counts the memory arms its issues hold all the same: such a
 // project declares the memory experiment at mode off (config.Project.ExperimentsDeclared), under

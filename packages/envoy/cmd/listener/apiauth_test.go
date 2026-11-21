@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 const (
@@ -531,6 +532,17 @@ func TestDescribeListenerAPIAuth(t *testing.T) {
 				Origin:         "https://listener.example",
 			}),
 			want: "broker tokens at https://broker.example as google audience legion-broker-pod",
+		},
+		{
+			// A made-up user name and password in ENVOY_AGENT_SECRETS_URL: the line holds neither,
+			// the URL standing as redact.URL's NotPrinted.
+			name: "a broker URL with userinfo is not printed",
+			brokers: newBrokerTokens(listenerBrokerConfig{
+				BrokerURL:      "https://madeUpBrokerUser0123:" + "madeUpBrokerPassword0123@broker.example",
+				GoogleAudience: "legion-broker-pod",
+				Origin:         "https://listener.example",
+			}),
+			want: "broker tokens at " + redact.NotPrinted + " as google audience legion-broker-pod",
 		},
 		{
 			name:   "all three name all three",

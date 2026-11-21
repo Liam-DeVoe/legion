@@ -301,7 +301,7 @@ func main() {
 	if cfg.SignInOff {
 		slog.Info("approval sign-in off", "detail", "BROKER_SIGNIN=off: no approval page is served, and a request a person would approve is denied at once")
 	} else {
-		slog.Info("approval sign-in on", "issuer", cfg.SignIn.Issuer, "client_id", cfg.SignIn.ClientID, "domain", cfg.SignIn.Domain)
+		slog.Info("approval sign-in on", "issuer", redact.URL(cfg.SignIn.Issuer), "client_id", cfg.SignIn.ClientID, "domain", cfg.SignIn.Domain)
 	}
 	// The database, and with it the AWS config loaded once when anything needs it: an IAM-form
 	// BROKER_DATABASE_URL, whose connections sign in with RDS IAM tokens minted from it, and the
@@ -590,7 +590,7 @@ func main() {
 	}, oauthStore)
 	fatal(err)
 	if provider.DeviceGrant() {
-		slog.Info("machine login device grant", "state", "on", "verification_uri", cfg.MachineLoginURL)
+		slog.Info("machine login device grant", "state", "on", "verification_uri", redact.URL(cfg.MachineLoginURL))
 	} else {
 		slog.Info("machine login device grant", "state", "off", "detail", "BROKER_MACHINE_LOGIN_URL is unset, so no person types a code and POST /v1/oauth/device_authorization is not served")
 	}
@@ -1336,7 +1336,7 @@ func wireJudge(ctx context.Context, cfg config.Config, rules proxyrules.Rules, m
 	m.Judge = runner.Consider
 	identity := cmp.Or(account.ServiceAccount, "metadata")
 	slog.Info("model judge", "state", "on", "model", cfg.JudgeModel, "protocol", cfg.JudgeModelProtocol,
-		"dispatch", cfg.JudgeDispatchURL, "identity", identity, "skip_checks", cfg.JudgeTestSkipChecks)
+		"dispatch", redact.URL(cfg.JudgeDispatchURL), "identity", identity, "skip_checks", cfg.JudgeTestSkipChecks)
 }
 
 // logPodRegistrars logs, once at boot, what POST /v1/oauth/exchange/pod-sessions admits: how

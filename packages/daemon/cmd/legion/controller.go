@@ -336,9 +336,10 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 	defer func() { _ = os.Remove(promptFile) }()
 	command := omplaunch.WithPrefix(cfg.OmpLaunchPrefix, invocation) + " " + omplaunch.SystemPromptArgument(promptFile) +
 		" " + shellprefix.Word(daemon.ControllerStartCommand)
-	// daemon_url without its userinfo (the URL rule): the line is the operator's terminal's, and
-	// the scrollback outlives the run.
-	fmt.Fprintf(stderr, "[legion] starting the controller for %s against %s; state in %s\n", cfg.Project, redact.URLCredentials(cfg.DaemonURL), stateDir)
+	// daemon_url without its userinfo (redact.URL, which reads it as a URL, so a "'" in a password
+	// does not end it early): the line is the operator's terminal's, and the scrollback outlives
+	// the run.
+	fmt.Fprintf(stderr, "[legion] starting the controller for %s against %s; state in %s\n", cfg.Project, redact.URL(cfg.DaemonURL), stateDir)
 	// Interactive and in the foreground: the operator's terminal is Oh My Pi's. The child is not
 	// bound to ctx — a Ctrl-C reaches Oh My Pi through the terminal's process group and is its to
 	// handle, while this process, whose signals main has already caught, waits for its exit.

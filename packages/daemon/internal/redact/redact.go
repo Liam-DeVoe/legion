@@ -35,10 +35,36 @@ package redact
 import (
 	"fmt"
 	"log/slog"
+	"net/url"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 )
+
+// URLNotPrinted stands for a URL value URL will not print.
+const URLNotPrinted = "(a URL that is not printed: it does not parse as one with a host)"
+
+// URL is raw, one value known to be a URL (a setting's, an environment variable's), as a line
+// prints it: read by url.Parse, with its userinfo, query and fragment removed. The rule on text,
+// URLCredentials, finds a URL's end at a character such as "'", which a password may hold, and
+// then keeps the userinfo whole; a value known to be a URL is read whole here instead. A raw that
+// does not parse as a URL with a host, or that still holds an "@" once those parts are gone (a
+// credential holding a "/" written as the user, whose head url.Parse reads as the host), prints as
+// URLNotPrinted. Like URLCredentials and the state's endpointOf, URL prints the host that follows
+// the last "@": a value whose password holds an "@" and that names no host after it
+// (`http://user:p@ssword`) prints the password's tail as that host, which no rule on the value
+// can tell from a host; such a value reaches no daemon, so the line that prints it is a refusal.
+func URL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return URLNotPrinted
+	}
+	u.User, u.RawQuery, u.ForceQuery, u.Fragment, u.RawFragment = nil, "", false, "", ""
+	if shown := u.String(); !strings.Contains(shown, "@") {
+		return shown
+	}
+	return URLNotPrinted
+}
 
 // URLCredentials is text with the query and the userinfo of every URL written in it removed.
 //
