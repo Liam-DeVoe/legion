@@ -4,8 +4,9 @@ body: |-
   record that names another key, or names its key with no `machine_id`, no positive `updated_at`
   or (a session record) no `projects`, reads as absent and is replaced by the next write at the
   sequence it is really stored at. A server-written copy of one session's record or row under
-  another session's key therefore carries no scope. An edge listener also reads a session record
-  of an earlier build, which names no key, as absent; every other listener reads it as before.
+  another session's key therefore carries no scope. A session record of an earlier build, which
+  names no key, is read as before on every listener, and the edge reads it as no project's: it
+  lists such a session to no one and answers a send to it as to a missing session.
   The edge listener hands a session a frame only of a project its token lists, as the session's
   own message, or as a GitHub event of one of its projects' repositories (`edgeFrameVerdict`),
   in its relay and in its relay socket, reading the token and never a stored record; every other
