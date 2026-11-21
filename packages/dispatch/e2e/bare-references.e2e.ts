@@ -577,8 +577,12 @@ test("the one-line preview shows each reference the shared table links as its ta
     // The list draws a page at a time, with Show more under it while more are left; a press
     // reads "Loading…" on a disabled button until the next page is drawn. So each press waits
     // for the rows of the page it asked for, rather than retrying the whole step on a backoff,
-    // and the claim is the count once no Show more is left.
+    // and the claim is the count once no Show more is left. Whether Show more is drawn is read
+    // once each time rows have been drawn, and that one read is enough: `AnswersPage.tsx` draws
+    // the rows and the button from the same answer of its list query, in one render, so the
+    // render that draws the first rows, or a press's new rows, has already decided the button.
     await expect(rows.first()).toBeVisible();
+    // One instant's answer is safe here: the rows and Show more come from one render of one query.
     while (await more.isVisible()) {
       const drawn = await rows.count();
       await more.click();
