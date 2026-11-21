@@ -153,7 +153,8 @@ function directiveParse(context: TokenizeContext): DirectiveParse {
 /**
  * How many directive containers may stand inside one another. An opener standing inside this many
  * open directive containers does not open; the document service refuses a typed block nested that
- * deep.
+ * deep (`maxTypedNesting` in packages/envoy/internal/dispatch/pmdoc/nesting.go). Change the two
+ * together: no test compares them.
  */
 export const maxDirectiveNesting = 32;
 

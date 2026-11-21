@@ -55,7 +55,9 @@ const SCOPE_LABELS: Record<KeymapScope, string> = {
 /**
  * Section order in `?`: the shell's own scope, then page scopes outermost first, then dialogs.
  * Registration order would do, except React runs child layout effects first, so a page that
- * mounts straight into its Board would list `board` above `project`.
+ * mounts straight into its Board would list `board` above `project`. A scope missing here is left
+ * out of `?` with every binding under it, and nothing refuses the omission: tsc refuses a scope
+ * missing from `SCOPE_LABELS`, whose type names every scope, but not one missing from this list.
  */
 const SCOPE_ORDER: readonly KeymapScope[] = [
   "global",

@@ -13,6 +13,8 @@ import { useLayoutEffect, useRef, useSyncExternalStore } from "react";
  * `m`), because Option changes the character: `$mod+Alt+m` types `µ` there.
  */
 
+/** The scopes a binding registers under. A new scope also goes into `ShortcutHelp`'s `SCOPE_ORDER`:
+ *  `?` lists only the scopes named there, and leaves out the bindings of any other. */
 export type KeymapScope =
   | "global"
   | "dialog"

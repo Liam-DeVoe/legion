@@ -70,6 +70,13 @@ export type AskTurn = (typeof ASK_TURNS)[number];
  * Dispatch can request for a message. Every other spelling of this set —
  * `MessageDeliveryMode`, the delivery event payload schema, the envoy-client
  * targeted-frame schema — derives from this constant.
+ *
+ * A new mode joins this list before any server, adapter or UI accepts
+ * it: the readings of a bus frame parse its delivery mode against this
+ * list, the tolerant ones included, so a frame carrying a mode the
+ * reader's release does not list fails to parse. Go spells the list by
+ * hand, in the listener's `isDeliveryMode` and the Dispatch server's
+ * `validDelivery`.
  */
 export const DELIVERY_CAPABILITIES = ["aside", "btw", "steer"] as const;
 

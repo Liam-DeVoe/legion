@@ -64,7 +64,8 @@ declare module "micromark-util-types" {
 /**
  * How many blocks a document may open inside one another: `maxNesting` in
  * packages/envoy/internal/dispatch/pmdoc/nesting.go, whose comment names this one. A quote, a
- * list, a list item, a typed block and a footnote definition each count one.
+ * list, a list item, a typed block and a footnote definition each count one. Change the two
+ * together: no test compares them, and each side's tests pin its own copy of the number.
  */
 export const maxBlockNesting = 100;
 
