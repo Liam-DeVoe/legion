@@ -24,30 +24,35 @@ const WORK_PREFIX = "w";
 
 /** The work table's own stored layout (`IssuesTable`): the issue, its title, its status and its
  *  project. Every other column is one tick away under Columns, who holds the issue and when it
- *  last changed among them; a project's own table keeps its own layout. The widths fit the box a
- *  1280 px window leaves beside the margin, 606 px, as a desktop's box (`useTableLayout`): the
- *  key, the project's key, and the status with its longest pill, "Needs review", whole inside
- *  the cell's padding. It draws no row's actions after them (`rowActions`), so no empty column
+ *  last changed among them; a project's own table keeps its own layout. The key, the project and
+ *  the status are each as wide as what they hold (`fit`), as on each fault list
+ *  (`PrioritiesPage.tsx`'s `FAULT_WIDTHS`), so none cuts a key or a pill however wide
+ *  production's are. Measured in Chromium in the box a 1280 px window leaves beside the margin,
+ *  606 px, a desktop's box (`useTableLayout`), on the review corpus: Key stands at 96 px, its
+ *  widest key with the unread dot after it, and at 121 with keys as wide as production's
+ *  `INFRA-2947`, which a fixed 96 cut; Project at 65, its header; and Status at 150, its longest
+ *  pill, "Needs review". It draws no row's actions after them (`rowActions`), so no empty column
  *  stands at its right: the selection's bar keeps Start next. Title takes all the width they
- *  leave, and wraps (`wrapTitles`) onto up to eight lines: the work is read by its titles, which
- *  mostly run to 194 characters in production and a few to 1,000, which end in '…' there with
- *  the whole title in its tooltip. It pins the checkbox, the key and Title (`pins`), so its pinned
- *  divider falls after Title as each fault list's does: the registry's pins count the Priority
- *  column this table opens hidden, which in that box left Title no room to stay pinned. Its key
- *  is its own, not the one a scoped table without a layout keeps (`IssuesTable`), whose stored
- *  layouts were written for a project's opening set and would show that set again here. Its
- *  status bar draws the counts alone, with the names in a legend under it, where the segments
- *  with their names are wider than the bar (`statusLegend`): beside the margin at 1280 px a
- *  priority's work in eight statuses is, and the bar cut "Retro" at its edge. */
+ *  leave, 251 px there and 226 with production's keys, and wraps (`wrapTitles`) onto up to eight
+ *  lines, in which a title of 190 characters reads whole at 226: the work is read by its titles,
+ *  which mostly run to 194 characters in production and a few to 1,000, which end in '…' there
+ *  with the whole title in its tooltip. It pins the checkbox, the key and Title (`pins`), so its
+ *  pinned divider falls after Title as each fault list's does: the registry's pins count the
+ *  Priority column this table opens hidden, which in that box left Title no room to stay pinned.
+ *  Its key is its own, not the one a scoped table without a layout keeps (`IssuesTable`), whose
+ *  stored layouts were written for a project's opening set and would show that set again here.
+ *  Its status bar draws the counts alone, with the names in a legend under it, where the
+ *  segments with their names are wider than the bar (`statusLegend`): beside the margin at
+ *  1280 px a priority's work in eight statuses is, and the bar cut "Retro" at its edge. */
 const WORK_LAYOUT = {
   key: "priority-page-work",
   opens: ["key", "title", "status", "project"],
   pins: ["select", "key", "title"],
   rowActions: false,
   widths: {
-    key: { min: 96, size: 96 },
-    project: { min: 72, size: 72 },
-    status: { min: 150, size: 150 },
+    key: { fit: true },
+    project: { fit: true },
+    status: { fit: true },
   },
   wrapTitles: true,
   statusLegend: true,

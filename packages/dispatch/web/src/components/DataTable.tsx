@@ -223,8 +223,10 @@ export function useDataTable<Row>({
   // rows; the ones that stay say how many of their rows this page shows. A collapsed group
   // keeps its heading whatever the page holds — it is the only way back to its rows.
   const onThisPage = new Map<string, number>();
+  const leafIds: string[] = [];
   for (const row of pageRows)
     if (!row.getIsGrouped()) {
+      leafIds.push(row.id);
       const group = row.getParentRow()?.id;
       if (group !== undefined) onThisPage.set(group, (onThisPage.get(group) ?? 0) + 1);
     }
@@ -241,11 +243,10 @@ export function useDataTable<Row>({
   ];
   // The box measures itself: `useTableLayout` observes its size and the section around it, so
   // neither the rows this page holds nor a notice above the table is measured from here. What it
-  // is told is which rows the page holds, whose cells count toward the widths of the columns
-  // that fit what they hold (`LayoutColumns.fits`) whether the box has drawn them or not.
-  const pageRowIds = displayRows
-    .flatMap(({ row }) => (row.getIsGrouped() ? [] : [row.id]))
-    .join("\n");
+  // is told is which rows the page holds - its leaves, gathered in the walk above - whose cells
+  // count toward the widths of the columns that fit what they hold (`LayoutColumns.fits`)
+  // whether the box has drawn them or not.
+  const pageRowIds = leafIds.join("\n");
   const { setPageRows } = layout;
   useLayoutEffect(() => {
     setPageRows(pageRowIds === "" ? [] : pageRowIds.split("\n"));

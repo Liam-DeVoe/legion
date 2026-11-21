@@ -127,10 +127,13 @@ interface CellNeed {
   readonly narrowest: number;
 }
 
-/** A column's need as read off one cell, with the markup it was read from: the cell is read
- *  again only once what it holds changed. */
+/** A column's need as read off one cell, with the markup it was read from and the window's width
+ *  it was read at: the cell is read again only once what it holds changed, or once it is drawn
+ *  in a window of another width, whose breakpoints can move its padding where no markup says
+ *  so. Until it is read again it counts as it was read. */
 interface ReadNeed {
   readonly markup: string;
+  readonly windowWidth: number;
   readonly need: CellNeed;
 }
 
@@ -193,12 +196,16 @@ function cellNeeds(cells: readonly { readonly cell: Element; readonly narrowest:
  * visible range, so measuring there would be a reflow per scrolled row.
  *
  * A table whose columns fit what they hold (`fits`) reads those columns' header and cells too:
- * when the box is attached, when the window resizes, when the page's rows change
+ * when the box is attached, when the window's width changes, when the page's rows change
  * (`setPageRows`), and when anything in the box is drawn anew - a row the virtualizer draws, a
  * cell whose words change, a header that gains its sort arrow - which a `MutationObserver`
- * says. A cell is read once for what it holds and kept for as long as its row is on the page,
- * drawn or not, so the rows a scroll draws and takes away move no width back and forth: a width
- * that moved the virtualizer's window cannot move itself back by it.
+ * says. A cell is read once for what it holds at the window's width and kept for as long as its
+ * row is on the page, drawn or not, so the rows a scroll draws and takes away move no width back
+ * and forth: a width that moved the virtualizer's window cannot move itself back by it. A change
+ * of the window's width reads the header and the drawn cells again, and counts each cell the box
+ * does not draw as it was read until its row is drawn, so a resize moves no width by what the box
+ * happens to draw either; one that leaves the window's width as it was, its height alone, reads
+ * nothing.
  */
 export function useTableLayout(layoutKey: string, columns: LayoutColumns): TableLayoutModel {
   const saved = useMemo(() => readLayout(layoutKey, columns), [layoutKey, columns]);
@@ -223,6 +230,8 @@ export function useTableLayout(layoutKey: string, columns: LayoutColumns): Table
     headers: new Map<string, ReadNeed>(),
     rows: new Map<string, Map<string, ReadNeed>>(),
   });
+  /** The window's width the header and cells of `fits` were last read at (`ReadNeed`). */
+  const readWidth = useRef<number | undefined>(undefined);
   /** The rows the table's page holds, by id, once the table has said (`setPageRows`). */
   const pageRows = useRef<ReadonlySet<string> | undefined>(undefined);
   /** The observer of what the box draws anew, whose records of the copies a measure puts in and
@@ -269,17 +278,23 @@ export function useTableLayout(layoutKey: string, columns: LayoutColumns): Table
     // On a desktop, the column that fills the box takes what the others leave of the room inside
     // the box's borders and beside its scrollbar (`fills`), to the whole pixel, so the table's
     // lines reach the border and no fraction of a pixel scrolls sideways. A column that yields
-    // to it (`yields`) first gives it room, down to its own minimum, where the others would leave
-    // it less than that column leaves it.
+    // to it (`yields`) first gives it room where the others would leave it less than that column
+    // leaves it, and stops at its minimum or, for a column of `fits`, at the narrowest its
+    // content needs.
     const fill = () => {
       if (fills === undefined || sizing[fills] !== undefined) return;
       const room = () => Math.floor(boxWidth - boxEdge) - others();
       for (const [id, leaving = 0] of Object.entries(yields)) {
         const width = widths[id];
         const short = leaving - room();
-        if (width === undefined || short <= 0 || visibility[id] === false) continue;
-        const least = Math.max(minimums[id] ?? 0, fitted[id]?.narrowest ?? 0);
-        if (sizing[id] === undefined) widths[id] = Math.max(least, width - short);
+        if (
+          width === undefined ||
+          short <= 0 ||
+          visibility[id] === false ||
+          sizing[id] !== undefined
+        )
+          continue;
+        widths[id] = Math.max(minimums[id] ?? 0, fitted[id]?.narrowest ?? 0, width - short);
       }
       widths[fills] = Math.max(minimums[fills] ?? 0, room());
     };
@@ -380,18 +395,22 @@ export function useTableLayout(layoutKey: string, columns: LayoutColumns): Table
       (header) => fits[header.dataset.column ?? ""] !== undefined
     );
     if (shown.length === 0 || shown.every((header) => header.offsetWidth === 0)) return undefined;
+    const windowWidth = window.innerWidth;
+    readWidth.current = windowWidth;
     const drawnRows = [...box.querySelectorAll<HTMLTableRowElement>("tr[data-issue-row]")];
-    // The header and the cells whose markup changed since they were read, or were never read.
+    // The header and the cells whose markup changed since they were read, or that were read in
+    // a window of another width, or never read.
     const unread: { cell: Element; narrowest: boolean; keep: (need: CellNeed) => void }[] = [];
     for (const header of shown) {
       const id = header.dataset.column ?? "";
       const narrowest = fits[id]?.most !== undefined;
       const markup = header.innerHTML;
-      if (headers.get(id)?.markup !== markup)
+      const headerRead = headers.get(id);
+      if (headerRead?.markup !== markup || headerRead.windowWidth !== windowWidth)
         unread.push({
           cell: header,
           narrowest: false,
-          keep: (need) => headers.set(id, { markup, need }),
+          keep: (need) => headers.set(id, { markup, need, windowWidth }),
         });
       for (const line of drawnRows) {
         const row = line.dataset.issueRow ?? "";
@@ -400,8 +419,13 @@ export function useTableLayout(layoutKey: string, columns: LayoutColumns): Table
         const own = rows.get(row) ?? new Map<string, ReadNeed>();
         rows.set(row, own);
         const html = cell.innerHTML;
-        if (own.get(id)?.markup !== html)
-          unread.push({ cell, narrowest, keep: (need) => own.set(id, { markup: html, need }) });
+        const cellRead = own.get(id);
+        if (cellRead?.markup !== html || cellRead.windowWidth !== windowWidth)
+          unread.push({
+            cell,
+            narrowest,
+            keep: (need) => own.set(id, { markup: html, need, windowWidth }),
+          });
       }
     }
     const read = cellNeeds(unread);
@@ -455,12 +479,12 @@ export function useTableLayout(layoutKey: string, columns: LayoutColumns): Table
   useLayoutEffect(() => {
     if (columns.fits === undefined || box === null) return;
     keepFit(fit());
-    // A resize can move a cell's padding across a breakpoint, which no markup says: every
-    // header and drawn cell is read again.
+    // A resize can move a cell's padding across a breakpoint, which no markup says, so one that
+    // changes the window's width reads the header and each drawn cell again, and counts each cell
+    // the box does not draw as it was read until its row is drawn (`ReadNeed`). One that leaves
+    // the window's width as it was, its height alone, reads nothing.
     const refit = () => {
-      needs.current.headers.clear();
-      needs.current.rows.clear();
-      keepFit(fit());
+      if (window.innerWidth !== readWidth.current) keepFit(fit());
     };
     window.addEventListener("resize", refit);
     // happy-dom has a `MutationObserver`, and lays nothing out, so `fit` reads nothing there.

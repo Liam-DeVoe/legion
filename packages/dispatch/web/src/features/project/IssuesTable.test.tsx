@@ -2540,10 +2540,11 @@ test("a layout's Title fills a desktop box with what the other shown columns and
   full.unmount();
 });
 
-/** A priority's page's work layout, which fits a box 606 px wide, the box that page leaves its
- *  work table beside the margin at 1280 px: it draws no row's actions (`rowActions`), so select
- *  44, key 96, status 150 and project 72 leave Title 242 of the 604 px inside the box's two
- *  borders, past its 116 px minimum. */
+/** A layout that opens the columns a priority's work table opens, at set widths, where that
+ *  table fits them to what they hold, which the unit DOM lays out at no width: in a box 606 px
+ *  wide, the box that page leaves its work table beside the margin at 1280 px, it draws no row's
+ *  actions (`rowActions`), so select 44, key 96, status 150 and project 72 leave Title 242 of the
+ *  604 px inside the box's two borders, past its 116 px minimum. */
 const FITS_NARROW = {
   key: "fits-narrow",
   opens: ["key", "title", "status", "project"],

@@ -87,7 +87,7 @@ export const workspaceSessionIds = workspaceSessions.map((session) => session.se
  *  (`reviewSessions`): the Agents page of every other spec lists the five sessions above, and
  *  the review corpus's lists these two under Active beside them. Neither carries a `last_seen`,
  *  so both stay live however long a run takes. The titles are invented and name no one. */
-export const claimHolderSessions: FakeSession[] = [
+const claimHolderSessions: FakeSession[] = [
   {
     capabilities: ["aside"],
     dir: "/workspaces/cache",

@@ -509,13 +509,7 @@ export function issueTableLayout(
       ...Object.fromEntries(set.map(([id, { min }]) => [id, min])),
       ...Object.fromEntries(fitted.map(([id]) => [id, 0])),
     },
-    ...(fitted.length === 0
-      ? {}
-      : {
-          fits: Object.fromEntries(
-            fitted.map(([id, { most }]) => [id, most === undefined ? {} : { most }])
-          ),
-        }),
+    ...(fitted.length === 0 ? {} : { fits: Object.fromEntries(fitted) }),
     ...(yielding.length === 0 ? {} : { yields: Object.fromEntries(yielding) }),
     ...(pins === undefined || registryPins === undefined
       ? {}

@@ -255,14 +255,17 @@ export function Action({
   );
 }
 
+/** The type of a status segment, with its name or with its count alone. */
+const SEGMENT_TYPE = "text-xs font-medium whitespace-nowrap";
+
 /** What sets a status segment's width with its name, which the bar's hidden copy of its segments
  *  draws them with too (`IssueTableStatus`), so the copy is as wide as the segments it stands
  *  for. */
-const SEGMENT = "px-3 text-xs font-medium whitespace-nowrap";
+const SEGMENT = `px-3 ${SEGMENT_TYPE}`;
 
 /** The padding and type of a segment that draws its count alone (`IssueTableStatus`'s
  *  `legend`): on a phone the padding its count needs, and from `md` up a named segment's. */
-const COUNT_SEGMENT = "px-2 text-xs font-medium whitespace-nowrap md:px-3";
+const COUNT_SEGMENT = `px-2 ${SEGMENT_TYPE} md:px-3`;
 
 /** How narrow a segment that draws its count alone may be: 24 px, WCAG 2.5.8's least target
  *  width, in place of the 44 px floor `styles.css` gives every button below 1280 px, so the eight
@@ -375,9 +378,7 @@ export function IssueTableStatus({
               // and reads as shares; a phone keeps 44 px targets and scrolls sideways instead,
               // unless the table draws the counts alone with their names in a legend (`legend`),
               // each segment as narrow as its count and 24 px (`COUNT_SEGMENT_MIN`).
-              style={
-                countsOnly ? { flexGrow: count, minWidth: COUNT_SEGMENT_MIN } : { flexGrow: count }
-              }
+              style={{ flexGrow: count, minWidth: countsOnly ? COUNT_SEGMENT_MIN : undefined }}
               type="button"
             >
               {countsOnly ? (
