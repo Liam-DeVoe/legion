@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -189,11 +190,13 @@ func TestABoundCreateOnAClientWithStreamMessageReadsSendsNoDirectGet(t *testing.
 // markerGets is the JetStream context a stream-message-reads handle reads through, its last
 // message gets (GetLastMsg, the read of a delete marker in Create) taken over by the row: each fails
 // at once with nats.ErrTimeout (fail), or is held until the context it was given ends, or the row
-// ends (released). A get given no context fails at once too, and the row reads which context each
-// get was given (given).
+// ends (released); or, with after set, is sent as the handle would send it and then runs after. A
+// get given no context fails at once too (except when passed through), and the row reads which
+// context each get was given (given).
 type markerGets struct {
 	nats.JetStreamContext
 	fail     bool
+	after    func()
 	released chan struct{}
 	mu       sync.Mutex
 	// gets counts the last message gets; given is the context the last one was given, nil for none.
@@ -201,7 +204,7 @@ type markerGets struct {
 	given context.Context
 }
 
-func (g *markerGets) GetLastMsg(_, _ string, opts ...nats.JSOpt) (*nats.RawStreamMsg, error) {
+func (g *markerGets) GetLastMsg(stream, subject string, opts ...nats.JSOpt) (*nats.RawStreamMsg, error) {
 	var given context.Context
 	for _, opt := range opts {
 		if ctx, ok := opt.(nats.ContextOpt); ok {
@@ -212,6 +215,11 @@ func (g *markerGets) GetLastMsg(_, _ string, opts ...nats.JSOpt) (*nats.RawStrea
 	g.gets++
 	g.given = given
 	g.mu.Unlock()
+	if g.after != nil {
+		message, err := g.JetStreamContext.GetLastMsg(stream, subject, opts...)
+		g.after()
+		return message, err
+	}
 	if g.fail || given == nil {
 		return nil, nats.ErrTimeout
 	}
@@ -352,5 +360,52 @@ func TestABoundCreateWhoseMarkerReadFailsAnswersTheRefusedWrite(t *testing.T) {
 	entry, err := kv.WatchHandle().Get(t.Context(), key)
 	if err != nil || string(entry.Value()) != "live" {
 		t.Fatalf("read %s after the refused Create = %v, %v; want the live value", key, entry, err)
+	}
+}
+
+// A bound Create on a client with stream message reads writes nothing over a delete marker once its
+// caller has cancelled: the first write is refused (the key's last message is the marker), the
+// marker read is sent as the handle sends it, the caller cancels the moment it returns, and the
+// write over the marker must not go out. The Create answers the caller's context.Canceled and the
+// key stays deleted. A write over the marker sent with a context that does not end with the
+// caller's would store the value after the caller gave up.
+func TestABoundCreateWritesNothingOverAMarkerAfterItsCallerCancels(t *testing.T) {
+	const key = "ses_deleted"
+	kv := liveBucket(t, "kv_marker_write_cancel", key)
+	if err := kv.Delete(key); err != nil {
+		t.Fatalf("delete %s: %v", key, err)
+	}
+	caller, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	gets := markerGetsOn(t, &kv, false)
+	gets.after = cancel
+	revision, err := kv.Within(caller).Create(key, []byte("again"))
+	if n, given := gets.read(); n != 1 || given == nil {
+		t.Fatalf("the bound Create over a delete marker made %d marker reads (context %v), want one with a context, so this row holds nothing", n, given)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("a bound Create over a delete marker whose caller cancelled after the marker read = revision %d, %v; want context.Canceled", revision, err)
+	}
+	entry, err := kv.WatchHandle().Get(t.Context(), key)
+	if !errors.Is(err, jetstream.ErrKeyNotFound) && !errors.Is(err, jetstream.ErrKeyDeleted) {
+		t.Fatalf("read %s after the cancelled Create = %v, %v; want it still deleted: a write went out after the caller cancelled", key, entry, err)
+	}
+}
+
+// A bound Create on a client with stream message reads whose caller has already cancelled writes
+// nothing: its first write must not go out. The Create answers the caller's context.Canceled and
+// the key stays absent.
+func TestABoundCreateByACancelledCallerWritesNothing(t *testing.T) {
+	const key = "ses_fresh"
+	kv := liveBucket(t, "kv_create_cancelled_caller", "ses_other")
+	caller, cancel := context.WithCancel(context.Background())
+	cancel()
+	revision, err := kv.Within(caller).Create(key, []byte("fresh"))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("a bound Create by a caller that had cancelled = revision %d, %v; want context.Canceled", revision, err)
+	}
+	entry, err := kv.WatchHandle().Get(t.Context(), key)
+	if !errors.Is(err, jetstream.ErrKeyNotFound) {
+		t.Fatalf("read %s after a cancelled caller's Create = %v, %v; want it absent: the first write went out after the caller cancelled", key, entry, err)
 	}
 }
