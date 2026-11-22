@@ -19,6 +19,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -589,6 +590,10 @@ func TestWorkspaceInitGivesTheCheckoutABoundOfItsOwn(t *testing.T) {
 	}
 	t.Cleanup(func() { newProvisionRunner = saved })
 
+	// The shared clone's steps share one bound, read through programbound when the clone starts:
+	// in this binary what is left of its deadline, so it is read here first, no less than the
+	// clone's own.
+	cloneBound := programbound.Of(&workspace.CloneBound)
 	started := time.Now()
 	code, stdout, stderr := workspaceInitAnswered(t, "the provisioning of LEGION-42", v.args("LEGION-42"))
 	elapsed := time.Since(started)
@@ -613,8 +618,8 @@ func TestWorkspaceInitGivesTheCheckoutABoundOfItsOwn(t *testing.T) {
 			}
 		case command.Timeout == budget:
 			budgeted++
-		case command.Timeout > workspace.CloneTimeout || command.Timeout < workspace.CloneTimeout-elapsed:
-			t.Errorf("%q ran under %s, want the runner's budget %s or what remains of the shared clone's %s", argv, command.Timeout, budget, workspace.CloneTimeout)
+		case command.Timeout > cloneBound || command.Timeout < cloneBound-elapsed:
+			t.Errorf("%q ran under %s, want the runner's budget %s or what remains of the shared clone's %s", argv, command.Timeout, budget, cloneBound)
 		}
 	}
 	if checkouts != 1 || budgeted == 0 {

@@ -19,14 +19,15 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
 
-// cloneBound is CloneTimeout as ensureRepoClone reads it, through programbound: a variable so that
+// CloneBound is CloneTimeout as ensureRepoClone reads it, through programbound: a variable so that
 // cmd/legion's tests, whose workspace-init runs the shared clone on a stand-in jj, can give it their
 // own deadline, since a stand-in slower than CloneTimeout, as a loaded machine can make one, is
-// killed there. CloneTimeout stays the constant ProvisionBound sums.
-var cloneBound = CloneTimeout
+// killed there, and can read the bound the clone took (programbound.Of(&CloneBound)). CloneTimeout
+// stays the constant ProvisionBound sums.
+var CloneBound = CloneTimeout
 
 func init() {
-	programbound.Register(&cloneBound)
+	programbound.Register(&CloneBound)
 }
 
 const provisioningTokenFileEnv = "LEGION_PROVISIONING_TOKEN_FILE"
@@ -328,7 +329,7 @@ func ensureRepoClone(ctx context.Context, run Runner, clock Clock, cloneDir, rem
 	// Every step runs in the clone's parent, the directory os.MkdirAll made above: it is there
 	// before the first step starts, and it outlives them all, where temporary is filled by the
 	// steps themselves and then renamed or removed.
-	bound := programbound.Of(&cloneBound)
+	bound := programbound.Of(&CloneBound)
 	steps := cloneSteps{clock: clock, deadline: clock.Now().Add(bound), bound: bound, dir: filepath.Dir(cloneDir), credential: source}
 	if source.feed != "" {
 		if err := feedClone(ctx, run, steps, temporary, remote, defaultBranch, source); err != nil {
@@ -410,7 +411,7 @@ func feedClone(ctx context.Context, run Runner, steps cloneSteps, temporary, rem
 
 // cloneSteps is the one CloneTimeout the shared clone's size-following steps share, ending at
 // deadline by clock: ProvisionBound budgets one CloneTimeout for workspace-init's clone. bound is
-// that bound as the clone read it (cloneBound), which a step with nothing left names. dir is
+// that bound as the clone read it (CloneBound), which a step with nothing left names. dir is
 // where a step runs that opens no repository (`jj git clone`, `jj git init --colocate`): the
 // directory the shared clone is made beside, since a jj that opens no workspace would otherwise
 // search upwards from whatever directory the daemon or a test happens to run in and write the
