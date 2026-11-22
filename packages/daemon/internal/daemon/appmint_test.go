@@ -828,9 +828,9 @@ func TestABootWaitsOneMinuteThenTwoForRefusalsOfOneCallThatNameNoTime(t *testing
 
 // All rate-limit waits of one start end at the bound after the first of them (c-boot-mint-rate-limit
 // case 6, on the key proof, the bound shortened to 3 s): GitHub refuses every read of the App's
-// installations with a reset ten seconds ahead, the one wait ends at the bound, and the refusal
-// after it ends the start, naming the call, GitHub's last answer with its headers and message, the
-// 3 s waited and the App whose key the read proves.
+// installations with a reset a minute ahead, the one wait ends at the bound, and the refusal after
+// it ends the start, naming the call, GitHub's last answer with its headers and message, the 3 s
+// waited and the App whose key the read proves.
 func TestABootEndsWhenItsRateLimitWaitsReachTheirBound(t *testing.T) {
 	quickAppMints(t)
 	withStartRateLimits(t, func(policy *rateLimitPolicy) { policy.Bound = 3 * time.Second })
@@ -838,13 +838,27 @@ func TestABootEndsWhenItsRateLimitWaitsReachTheirBound(t *testing.T) {
 		if !keyProofRead(r) {
 			return false
 		}
-		spentLimit(w, time.Now().Add(10*time.Second).Unix())
+		spentLimit(w, time.Now().Add(time.Minute).Unix())
 		return true
 	})
 	logs := &syncBuffer{}
-	started := time.Now()
-	err := bootsOrExitsLogging(t, workflowConfig(t, workflowNATS(t)), tokens, 60*time.Second, slog.New(slog.NewJSONHandler(logs, nil)))
-	took := time.Since(started)
+	// Two minutes, so that a start that waited for GitHub's reset in place of the bound still ends
+	// here and fails on the ceiling below.
+	err := bootsOrExitsLogging(t, workflowConfig(t, workflowNATS(t)), tokens, 2*time.Minute, slog.New(slog.NewJSONHandler(logs, nil)))
+	ended := time.Now()
+	waits := loggedLines(t, logs.String(), rateLimitWaitLine)
+	if len(waits) != 1 {
+		t.Fatalf("rate-limit wait lines = %v, want the one that ended at the bound (boot = %v)", waits, err)
+	}
+	// The start is timed from its wait's own line, so neither the test's setup nor the boot's steps
+	// before the key proof count: the first test of a process starts the package's shared NATS
+	// container (testnats.URL), and the first boot of a process migrates the run's database
+	// (testDSN), and on a loaded machine either took longer than the whole ceiling. The ceiling
+	// still holds the bound: a start that waited for GitHub's reset, a minute after its refusal,
+	// would end past it.
+	if after, named := ended.Sub(loggedAt(t, waits[0])), loggedDuration(t, waits[0], "wait"); after < named-100*time.Millisecond || after > 30*time.Second {
+		t.Errorf("the start ended %s after its wait's line, want no sooner than the %s wait the line names and within 30s", after, named)
+	}
 	for _, want := range []string{
 		"the GitHub App key proof waited 3s for GitHub's rate limit, the most a start waits, and GitHub still refuses it: ",
 		"GitHub answered GET /app/installations with 403",
@@ -855,12 +869,6 @@ func TestABootEndsWhenItsRateLimitWaitsReachTheirBound(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Fatalf("boot = %v, want the start ended naming %q", err, want)
 		}
-	}
-	if took < 3*time.Second || took > 15*time.Second {
-		t.Errorf("the start ended %s after it began, want soon after the 3s bound", took)
-	}
-	if waits := loggedLines(t, logs.String(), rateLimitWaitLine); len(waits) != 1 {
-		t.Errorf("rate-limit wait lines = %v, want the one that ended at the bound", waits)
 	}
 }
 
