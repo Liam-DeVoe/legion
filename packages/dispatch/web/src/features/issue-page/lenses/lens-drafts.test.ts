@@ -580,10 +580,10 @@ test("an address of a risk the answer does not hold reads as the word for a risk
 });
 
 // An address in code - a code span, a code block - reads as its author wrote it, as a rendered
-// body draws it; the same address outside code is named. A link that already covers an address
-// keeps its own target and words in the reading, which hold no second link, and the line reads
-// those words as the word for a lens, as it reads a bare one. A reading that cites no store
-// address is the very reading the read sent.
+// body draws it; the same address outside code is named. A link to anything else that covers an
+// address keeps its own target, and the address in its words reads as the lens's name, as plain
+// words in that one link, which holds no second link. A reading that cites no store address is
+// the very reading the read sent.
 test("an address in code stays as written", () => {
   const cited = `dispatch://lens/${FIRST}`;
   const tree: DisplayTree = {
@@ -621,11 +621,11 @@ test("an address in code stays as written", () => {
   const statement = rowOf(root, blockNodeId("spec", "r1"));
 
   expect(lineWords(statement)).toBe(
-    `Run dispatch read ${cited} before Trade-off analysis, or lens.`
+    `Run dispatch read ${cited} before Trade-off analysis, or Trade-off analysis.`
   );
   expect(linksIn(statement.tree)).toEqual([
     ["Trade-off analysis", { href: cited, title: rowPath(FIRST) }],
-    [cited, { href: "https://example.com/lens" }],
+    ["Trade-off analysis", { href: "https://example.com/lens" }],
   ]);
   expect((statement.tree?.content as DisplayTree[] | undefined)?.[1]).toBe(
     (tree.content as DisplayTree[])[1]
@@ -850,6 +850,165 @@ test("a comment with no reading keeps its other references as written where it n
       type: "paragraph",
     },
   ]);
+});
+
+// An author's own link to a store address in a verdict, `[the failover risk](dispatch://risk/…)`,
+// keeps the author's words, linked to the risk's row where the answer holds it; a link to
+// anything else reads as its words, with no link. The row draws its words from one paragraph of
+// the verdict's plain words, and its text is that line.
+test("a verdict's author's link to a risk the read holds links its words to the risk's row", () => {
+  const risk = "d4000000-0000-4000-8000-000000000004";
+  const cited = `dispatch://risk/${risk}`;
+  const { root } = drawn(
+    answer(
+      [
+        block("r1", "requirement", KEY, SPEC, 0),
+        lens(FIRST, "r1", "2026-11-05T09:00:00Z", {
+          attributes: {
+            verdict: `See [the failover risk](${cited}) first, then [the runbook](https://example.com/r).`,
+          },
+        }),
+        bare(risk, "risk", FIRST, { attributes: { heading: "Failover takes minutes" } }),
+        PRE_MORTEM,
+      ],
+      [tuple("has_kind", FIRST, PRE_MORTEM.id)]
+    )
+  );
+  const verdict = rowOf(root, FIRST);
+
+  expect([verdict.text, lineWords(verdict)]).toEqual([
+    "See the failover risk first, then the runbook.",
+    "See the failover risk first, then the runbook.",
+  ]);
+  expect(verdict.tree?.content).toEqual([
+    {
+      content: [
+        { text: "See ", type: "text" },
+        {
+          marks: [{ attrs: { href: cited, title: rowPath(risk) }, type: "link" }],
+          text: "the failover risk",
+          type: "text",
+        },
+        { text: " first, then the runbook.", type: "text" },
+      ],
+      type: "paragraph",
+    },
+  ]);
+});
+
+// A risk's heading reads an author's link to a constraint and to a lens the answer holds as a
+// verdict does: the author's words, each linked to its node's row.
+test("a risk's heading links an author's words to a constraint's and a lens's rows", () => {
+  const constraint = "e5000000-0000-4000-8000-000000000005";
+  const toConstraint = `dispatch://constraint/${constraint}`;
+  const toLens = `dispatch://lens/${FIRST}`;
+  const { root } = drawn(
+    answer(
+      [
+        block("r1", "requirement", KEY, SPEC, 0),
+        lens(FIRST, "r1"),
+        bare("risk-1", "risk", FIRST, {
+          attributes: {
+            heading: `Replies break [the HTTP rule](${toConstraint}), as [this lens](${toLens}) found.`,
+          },
+        }),
+        bare(constraint, "constraint", KEY, { attributes: { standard: "RFC 9110" } }),
+        PRE_MORTEM,
+      ],
+      [tuple("has_kind", FIRST, PRE_MORTEM.id)]
+    )
+  );
+  const heading = rowOf(root, "risk-1");
+
+  expect([heading.text, nodeWords(heading)]).toEqual([
+    "Replies break the HTTP rule, as this lens found.",
+    "Replies break the HTTP rule, as this lens found.",
+  ]);
+  expect(linksIn(heading.tree)).toEqual([
+    ["the HTTP rule", { href: toConstraint, title: rowPath(constraint) }],
+    ["this lens", { href: toLens, title: rowPath(FIRST) }],
+  ]);
+});
+
+// A constraint's words that cite a risk the answer holds are read with their names as a verdict
+// is: a standard's bare address as the risk's name, and a measurement's value's author's link as
+// the author's words, each linked to the risk's row. The row draws its words from that one
+// paragraph, a measurement's `<measurement>: <value>`, and its text is the paragraph's words.
+test("a constraint's words link a risk they cite to its row", () => {
+  const risk = "d4000000-0000-4000-8000-000000000004";
+  const cited = `dispatch://risk/${risk}`;
+  const standard = "e5000000-0000-4000-8000-000000000005";
+  const measurement = "e6000000-0000-4000-8000-000000000006";
+  const { root } = drawn(
+    answer(
+      [
+        block("r1", "requirement", KEY, SPEC, 0),
+        lens(FIRST, "r1"),
+        bare(risk, "risk", FIRST, { attributes: { heading: "Failover takes minutes" } }),
+        bare(standard, "constraint", KEY, {
+          attributes: { standard: `Answer as ${cited} allows.` },
+        }),
+        bare(measurement, "constraint", KEY, {
+          attributes: {
+            measurement: "p99 *latency*",
+            value: `under [the failover risk](${cited})`,
+          },
+        }),
+        PRE_MORTEM,
+      ],
+      [tuple("has_kind", FIRST, PRE_MORTEM.id)]
+    )
+  );
+  const link = { attrs: { href: cited, title: rowPath(risk) }, type: "link" };
+
+  expect([rowOf(root, standard).text, rowOf(root, measurement).text]).toEqual([
+    "Answer as Failover takes minutes allows.",
+    "p99 latency: under the failover risk",
+  ]);
+  expect(linksIn(rowOf(root, standard).tree)).toEqual([["Failover takes minutes", link.attrs]]);
+  expect(rowOf(root, measurement).tree?.content).toEqual([
+    {
+      content: [
+        { text: "p99 latency", type: "text" },
+        { text: ": ", type: "text" },
+        { text: "under ", type: "text" },
+        { marks: [link], text: "the failover risk", type: "text" },
+      ],
+      type: "paragraph",
+    },
+  ]);
+});
+
+// A store address inside a link's words reads as its node's name, or as its kind's word where
+// the answer does not hold the node, as plain words in that one link, which holds no second
+// link: a link to a store address still opens that node's row, and a link to anything else
+// keeps its own target. No text run of the row holds an address or a uuid.
+test("a store address inside a link's words reads as its node's name in that one link", () => {
+  const risk = "d4000000-0000-4000-8000-000000000004";
+  const cited = `dispatch://risk/${risk}`;
+  const toRisk = [{ attrs: { href: cited }, type: "link" }];
+  const elsewhere = [{ attrs: { href: "https://example.com/" }, type: "link" }];
+  const statement = citingRisk(risk, [
+    { text: "Two regions, until ", type: "text" },
+    { marks: toRisk, text: `dispatch://lens/${FIRST}`, type: "text" },
+    { text: " or ", type: "text" },
+    { marks: toRisk, text: `dispatch://lens/${SECOND}`, type: "text" },
+    { text: "; ", type: "text" },
+    { marks: elsewhere, text: `see ${cited}`, type: "text" },
+    { text: ".", type: "text" },
+  ]);
+  const link = [{ attrs: { href: cited, title: rowPath(risk) }, type: "link" }];
+
+  expect((statement.tree?.content as DisplayTree[] | undefined)?.[0]?.content).toEqual([
+    { text: "Two regions, until ", type: "text" },
+    { marks: link, text: chipWords(kindWords(PRE_MORTEM_WORDS)), type: "text" },
+    { text: " or ", type: "text" },
+    { marks: link, text: "lens", type: "text" },
+    { text: "; ", type: "text" },
+    { marks: elsewhere, text: "see Failover takes minutes", type: "text" },
+    { text: ".", type: "text" },
+  ]);
+  expect(STORE_ADDRESS.test(nodeWords(statement))).toBe(false);
 });
 
 // A lens's row carries a chip for each lens its `triggered_by` names and for each lens whose

@@ -1,3 +1,5 @@
+import type { DisplayTree } from "../../../api/types";
+import { wordsOf } from "../../refs/tree-fragment";
 import { chipWords } from "../node-row-chip";
 import { NODE_TYPE_NAMES, sentenceCase } from "../page-words";
 import { blank, type Draft, plainWords } from "../tree-drafts";
@@ -117,7 +119,7 @@ interface StoredWords {
  * The lens attributes that hold stored words, each under the kind of node that holds it: the
  * row's own words - a lens's verdict, a risk's heading - and each fact line by its `LensFacts`
  * member and the rule a node draws it by - a risk's early warning and prevention; a standard's
- * reference, and where a measurement was taken. A constraint's own words are `constraintWords`'.
+ * reference, and where a measurement was taken. A constraint's own words are `constraintRuns`'.
  * `lensDrafts` reads each through `plainWords` (`storedRowWords`, `storedFacts`), and
  * `store-words.ts` through its reader that names each store address, so an attribute is named
  * here alone.
@@ -394,18 +396,35 @@ export function kindOf(lens: TreeAnswerNode, context: TreeDraftContext): string 
   return "";
 }
 
-/** A constraint's words: a standard's `standard`, else a measurement's
- *  `<measurement>: <value>`, each stored string read to words by `words`: `plainWords`, and in a
- *  row's words that string's reading with each store address named (`store-words.ts`). */
-export function constraintWords(
+/** A constraint's words: the text of its runs (`constraintRuns`), each stored string read to its
+ *  plain words. */
+export function constraintWords(constraint: TreeAnswerNode): string {
+  return wordsOf({ content: constraintRuns(constraint), type: "paragraph" });
+}
+
+/** A constraint's words as the runs of one paragraph: a standard's `standard`, else a
+ *  measurement's `<measurement>: <value>`, the `": "` a run of its own, and none where both are
+ *  empty. `read` gives each stored string's runs, none where it holds no words: its plain words
+ *  (`plainRuns`), and in a row's words its reading with each store address named
+ *  (`store-words.ts`). */
+export function constraintRuns(
   constraint: TreeAnswerNode,
-  words: (markdown: string) => string = plainWords
-): string {
+  read: (markdown: string) => DisplayTree[] = plainRuns
+): DisplayTree[] {
   const standard = constraint.attributes?.standard ?? "";
-  if (standard !== "") return words(standard);
-  const measurement = words(constraint.attributes?.measurement ?? "");
-  const value = words(constraint.attributes?.value ?? "");
-  return measurement === "" && value === "" ? "" : `${measurement}: ${value}`;
+  if (standard !== "") return read(standard);
+  const measurement = read(constraint.attributes?.measurement ?? "");
+  const value = read(constraint.attributes?.value ?? "");
+  return measurement.length === 0 && value.length === 0
+    ? []
+    : [...measurement, { text: ": ", type: "text" }, ...value];
+}
+
+/** The stored string `markdown`'s plain words (`plainWords`) as one text run, none where it holds
+ *  no words. */
+export function plainRuns(markdown: string): DisplayTree[] {
+  const words = plainWords(markdown);
+  return words === "" ? [] : [{ text: words, type: "text" }];
 }
 
 /** The nodes of the answer the tuples of `kind` from `node` point at, in the answer's order. */

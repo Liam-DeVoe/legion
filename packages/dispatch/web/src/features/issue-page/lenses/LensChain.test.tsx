@@ -9,8 +9,9 @@ import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 
 import { answerRequests } from "../../../__tests__/network";
 import { pageKindBullet, pageKindTag } from "../../../theme/classes";
+import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { node } from "../decisions-filter/decisions-fixtures";
-import { drawnLine, firstLineOf, type TreeNode } from "../issue-tree";
+import { buildIssueTree, drawnLine, firstLineOf, type TreeNode } from "../issue-tree";
 import { NodeRow } from "../NodeRow";
 import { NoTooltips } from "../NoTooltips";
 import { chipWords } from "../node-row-chip";
@@ -21,8 +22,9 @@ import {
   LENS_WORDS,
   NODE_TYPE_NAMES,
 } from "../page-words";
-import { statementRef } from "../spec-filter/spec-fixtures";
+import { issueDetails, statementRef } from "../spec-filter/spec-fixtures";
 import { blockNodeId } from "../tree-drafts";
+import { treeAnswer, treeNode } from "../tree-read/tree-fixtures";
 import { LensLines } from "./LensLines";
 import { kindWords, type LensFacts, type LensPlace } from "./lens-drafts";
 import { lensChainQuery } from "./lens-reads";
@@ -759,5 +761,44 @@ test("a constraint's row takes a statement's colour, and a lens's, a finding's a
   });
   for (const drawn of [premortem(), finding, risk({})]) {
     expect(tonesDrawn(drawn), `the ${drawn.type}`).toEqual({ bullet: "lens", tag: "lens" });
+  }
+});
+
+// A lens's verdict that links its author's words to a risk the tree read holds,
+// `[the failover risk](dispatch://risk/<uuid>)`, draws those words as a link that opens the
+// risk's row (`?node=`), as the lens's row draws its words from the tree read
+// (`buildIssueTree`).
+test("a lens row draws its verdict's author's link to a risk as a link to the risk's row", async () => {
+  await warmMarkdownRenderer();
+  const lens = "c3000000-0000-4000-8000-000000000003";
+  const risk = "d4000000-0000-4000-8000-000000000004";
+  const root = buildIssueTree({
+    issue: issueDetails(),
+    tree: treeAnswer(
+      [
+        treeNode(KEY, "issue", null, { text: "The issue page draws its lenses" }),
+        treeNode(lens, "lens", KEY, {
+          attributes: { verdict: `See [the failover risk](dispatch://risk/${risk}) first.` },
+        }),
+        treeNode(risk, "risk", lens, { attributes: { heading: "Failover takes minutes" } }),
+      ],
+      [],
+      { converted: true, tree: "artifact-tree" }
+    ),
+  });
+  const drawn = root.children.find((row) => row.id === lens);
+  if (drawn === undefined) throw new Error("the tree draws no row of the lens");
+  const view = renderOnIssue(<LensRow drawn={drawn} />);
+  try {
+    await waitFor(() => {
+      const links = [...view.container.querySelectorAll("a")].filter(
+        (anchor) => anchor.textContent === "the failover risk"
+      );
+      expect(links.map((link) => link.getAttribute("href"))).toEqual([
+        `/issues/${KEY}?node=${risk}`,
+      ]);
+    });
+  } finally {
+    view.unmount();
   }
 });
