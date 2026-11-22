@@ -4585,13 +4585,16 @@ takes any write a listed key signs. So a rotation goes in this order:
    Then read which records-only copies it signed, with `<copies>` the directory the copies are
    kept under: each copy is a directory whose `manifest.sig` opens with its key's id and a dot, or
    holds no dot when it was written before signatures named their key. The read first counts the
-   copies, and when the directory holds none it says so on stderr, naming the directory, and exits
-   1, so a wrong directory never reads as one with no copy the old key signed, to a person or to a
-   script that reads stdout or the exit status:
+   copies, and when the directory holds none it says so on stderr, naming the directory. Its exit
+   status is 0 when it lists a copy the old key signed, 1 when the directory holds copies and none
+   is the old key's (the clean answer), and 2 when the directory holds no copy at all, so a wrong
+   directory never reads as clean, to a person or to a script that reads stdout or the exit status.
+   It runs in a subshell, so pasted into an interactive shell its exit does not close that shell:
 
    ```sh
-   count=$(find <copies> -name manifest.sig | wc -l)
-   if [ "$count" -eq 0 ]; then echo "no manifest.sig under <copies>: not the records-only copies' directory" >&2; exit 1; else grep -rlE --include=manifest.sig '^(<old>\.|[^.]+$)' <copies>; fi
+   ( count=$(find <copies> -name manifest.sig | wc -l)
+   if [ "$count" -eq 0 ]; then echo "no manifest.sig under <copies>: not the records-only copies' directory" >&2; exit 2; fi
+   grep -rlE --include=manifest.sig '^(<old>\.|[^.]+$)' <copies> )
    ```
 
 4. The hand repair, which removes the old key. With no hold live, a database admin deletes by name
