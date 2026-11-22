@@ -207,8 +207,9 @@ var markVersionedDocuments = `
 // of what the backfill gives a comments row an older build wrote, through the backfill's own write
 // functions, in the order its passes run (graphcensus.CatchUpComments): each comment the batch gave
 // its node its pointers, what it owed its thread and its tuples_stored, under the event that stored
-// it; each one past the store's bound its threads_recorded; each comment the batch gave its node its
-// body's blocks, their links and its citations; and then the user_threads rows of every thread
+// it, and the delivery routes it names and their tuples_stored; each one past the store's bound its
+// threads_recorded; each comment the batch gave its node its body's blocks, their links and its
+// citations; and then the user_threads rows of every thread
 // those comments are in, stated and marked above every delivery the steps before stated. It reads
 // the comment's thread off the pointer tuples it appends, and who wrote in that thread before it
 // off the authored_by tuples the batch appended, so it runs after the batch rather than in it. It
@@ -408,8 +409,9 @@ const orphanedNodesSwept = 20
 // and a session only its outbox's fallback copy reached, wait as long. A pass with nothing to write
 // reads the four tables whole, 97 to 190 ms at production's row counts, and, once a backfill has
 // run, the rows the inbox's passes still owe, each table's through the index that holds those rows
-// alone but the asks, which that pass reads whole as the object pass does, and the published
-// fallback copies (graphcensus.CatchUpOwedRows), so each process spends that once in this interval
+// alone but the asks, which that pass reads whole as the object pass does, the published fallback
+// copies, and comment_mentions, which that pass reads in the order of its primary key
+// (graphcensus.CatchUpOwedRows), so each process spends that once in this interval
 // while this build serves alone, and on every tick while another build serves.
 const objectPassInterval = 10 * time.Minute
 

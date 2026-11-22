@@ -1557,6 +1557,13 @@ func readOnlySession(t *testing.T, ctx context.Context, databaseURL string) stri
 // projection equality says nothing about this: both sides can agree and the answer a reader gets
 // still change.
 //
+// Every read but one must answer exactly what the older build answers. The one is GET
+// /api/v1/asks/open: this change makes it the Inbox's read of open asks, so each ask it lists now
+// carries the Inbox's ask row (contracts' OpenAskRow) and with it fields the older build's row did
+// not answer (openAskFieldsAdded). Each of its ask rows is held to every field the older build's
+// row answers, equal, and may carry beside them only the fields that list names; the rest of its
+// answer must be equal whole, as every other read's is.
+//
 // A read counts as compared only where the older build's answer holds something
 // (answerElements): two empty lists agree field for field and prove nothing, so each read that
 // answers nothing fails the run by name, and the denominator printed is the reads that compared
@@ -1576,10 +1583,13 @@ func compareTheOldReadWithTheNew(t *testing.T, older, databaseURL string, now *d
 	// blocks, the lists a project page reads, the asks and the inbox. A read of an artifact
 	// that belongs to an issue is refused by its own route (ARTIFACT_LINKED), so the issue's
 	// own comment read is the one here. lists names the fields of an object answer that hold
-	// what the read lists; a read that names none lists its own items, or is one object.
+	// what the read lists; a read that names none lists its own items, or is one object. added
+	// names the fields this build's rows listed under lists may carry beside the older build's,
+	// and is nil for a read whose two answers must be equal whole.
 	reads := []struct {
 		path  string
 		lists []string
+		added []string
 	}{
 		{path: "/api/v1/issues/" + seeded.issue},
 		{path: "/api/v1/issues/" + seeded.issue + "/comments"},
@@ -1591,7 +1601,7 @@ func compareTheOldReadWithTheNew(t *testing.T, older, databaseURL string, now *d
 		{path: "/api/v1/artifacts/" + seeded.artifact + "/blocks"},
 		{path: "/api/v1/artifacts/" + seeded.artifact + "/references", lists: []string{"outgoing", "referenced_by"}},
 		{path: "/api/v1/projects/" + seeded.project + "/artifacts"},
-		{path: "/api/v1/asks/open?project=" + seeded.project, lists: []string{"asks"}},
+		{path: "/api/v1/asks/open?project=" + seeded.project, lists: []string{"asks"}, added: openAskFieldsAdded},
 		{path: "/api/v1/inbox"},
 	}
 	compared, differing := 0, 0
@@ -1605,10 +1615,15 @@ func compareTheOldReadWithTheNew(t *testing.T, older, databaseURL string, now *d
 		} else {
 			compared++
 		}
-		if !reflect.DeepEqual(was, is) {
+		if differences := answerDifferences(was, is, read.lists, read.added); len(differences) > 0 {
 			differing++
-			t.Errorf("GET %s answers differently on the two builds:\nthe older build %s\nthis build     %s",
-				read.path, mustEncode(t, was), mustEncode(t, is))
+			t.Errorf("GET %s answers differently on the two builds: %s\nthe older build %s\nthis build     %s",
+				read.path, strings.Join(differences, "; "), mustEncode(t, was), mustEncode(t, is))
+			continue
+		}
+		if read.added != nil {
+			t.Logf("GET %s answers every field the older build answers on both builds, over %d element(s), its rows adding only fields of %v",
+				read.path, elements, read.added)
 			continue
 		}
 		t.Logf("GET %s answers field for field on both builds, over %d element(s)", read.path, elements)
@@ -1616,6 +1631,88 @@ func compareTheOldReadWithTheNew(t *testing.T, older, databaseURL string, now *d
 	t.Logf("the old read beside the new: %d of %d read(s) compared an answer that holds something, %d of the %d answering differently",
 		compared, len(reads), differing, len(reads))
 	requireADenominator(t, "the old read beside the new read", compared)
+}
+
+// openAskFieldsAdded are the fields of contracts' OpenAskRow that each ask of this build's GET
+// /api/v1/asks/open carries and the older build's did not answer: the read now carries the Inbox's
+// ask row (compareTheOldReadWithTheNew).
+var openAskFieldsAdded = []string{
+	"anchor", "answer", "artifact_id", "asked_of", "asked_of_at", "asked_of_by", "author", "block_id", "edited_at",
+	"issue", "issue_key", "multiple", "opened_event_id", "options", "referenced_by_count", "revision",
+	"snoozed_until", "state", "thread",
+}
+
+// answerDifferences names each way this build's answer is differs from the older build's was. A
+// read that may add no field (added nil) differs wherever the two are not equal whole. One that may
+// (added) differs, each named by its field, where a field of the answer's object or of a row listed
+// under lists that the older build answers is dropped or answered otherwise, where this build's
+// object carries a field the older build's does not, where a list holds another number of rows,
+// and where one of this build's rows carries a field the older build's row does not and added does
+// not name.
+func answerDifferences(was, is any, lists, added []string) []string {
+	if added == nil {
+		if reflect.DeepEqual(was, is) {
+			return nil
+		}
+		return []string{"the two answers are not equal"}
+	}
+	wasObject, wasIsObject := was.(map[string]any)
+	isObject, isIsObject := is.(map[string]any)
+	if !wasIsObject || !isIsObject {
+		return []string{"an answer is no object"}
+	}
+	var found []string
+	heldEqual := func(at string, wasFields, isFields map[string]any) {
+		for name, value := range wasFields {
+			held, answered := isFields[name]
+			switch {
+			case !answered:
+				found = append(found, at+name+" is dropped")
+			case !reflect.DeepEqual(value, held):
+				found = append(found, at+name+" is answered otherwise")
+			}
+		}
+	}
+	others := map[string]any{}
+	for name, value := range wasObject {
+		if !slices.Contains(lists, name) {
+			others[name] = value
+		}
+	}
+	heldEqual("", others, isObject)
+	for name := range isObject {
+		if _, answered := wasObject[name]; !answered {
+			found = append(found, name+" is added")
+		}
+	}
+	for _, list := range lists {
+		wasRows, _ := wasObject[list].([]any)
+		isRows, _ := isObject[list].([]any)
+		if len(wasRows) != len(isRows) {
+			found = append(found, fmt.Sprintf("%s holds %d row(s) on the older build and %d on this one", list, len(wasRows), len(isRows)))
+			continue
+		}
+		for index := range wasRows {
+			row := fmt.Sprintf("%s[%d]", list, index)
+			at := row + "."
+			wasRow, wasIsRow := wasRows[index].(map[string]any)
+			isRow, isIsRow := isRows[index].(map[string]any)
+			if !wasIsRow || !isIsRow {
+				if !reflect.DeepEqual(wasRows[index], isRows[index]) {
+					found = append(found, row+" is answered otherwise")
+				}
+				continue
+			}
+			heldEqual(at, wasRow, isRow)
+			for name := range isRow {
+				if _, answered := wasRow[name]; !answered && !slices.Contains(added, name) {
+					found = append(found, at+name+" is added, which openAskFieldsAdded does not name")
+				}
+			}
+		}
+	}
+	slices.Sort(found)
+	return found
 }
 
 // answerElements counts what one read's answer holds: the items of a list answer, and an object

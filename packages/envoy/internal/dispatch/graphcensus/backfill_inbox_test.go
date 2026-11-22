@@ -1175,10 +1175,9 @@ func (r *roundTrips) count() int {
 // reached and the read of the dismissals it ended in one round trip: the two hang on who it
 // reached and not on each other, so they go as one pgx batch, the lock first. bob's reply to
 // alice's comment reached alice: recording it again takes four round trips - its thread, who it
-// reached, that batch, and the deliveries' store write, whose read of the nodes a tuple may not
-// run from and whose append go as one batch of their own (graphstore.ToPerson, a write phase of
-// one call) - where it took six with the lock and the read sent one by one and the store write's
-// two statements sent apart.
+// reached, that batch, and the deliveries' store write, one statement whose query is its read of
+// the nodes reserved for their author, which a tuple to a person may not run from
+// (graphstore.QueueToPerson) - where the lock and the read sent one by one took five.
 func TestRecordOlderLocksAndReadsTheDismissalsInOneRoundTrip(t *testing.T) {
 	writes := newAddressingWrites(t)
 	writes.createIssue(t, "CENS-1", 1, "U", alice)
@@ -1209,10 +1208,10 @@ func TestRecordOlderLocksAndReadsTheDismissalsInOneRoundTrip(t *testing.T) {
 		switch {
 		case len(trip) == 2 && strings.Contains(trip[0], "for no key update") && strings.Contains(trip[1], "current.from_id"):
 			locks++
-		case len(trip) == 2 && strings.Contains(trip[0], "n.visibility") && strings.Contains(trip[1], "graph_nodes_written"):
+		case len(trip) == 1 && strings.Contains(trip[0], "graph_nodes_written") && strings.Contains(trip[0], "n.visibility"):
 			storeWrites++
 		case len(trip) != 1 || strings.Contains(trip[0], "for no key update"):
-			t.Errorf("a round trip of the record carried %q, want one batch of the row lock and then the dismissals' read, and one of the deliveries' store write", trip)
+			t.Errorf("a round trip of the record carried %q, want one batch of the row lock and then the dismissals' read, and one statement of the deliveries' store write", trip)
 		}
 	}
 	if locks != 1 || storeWrites != 1 || len(recorded) != 4 {

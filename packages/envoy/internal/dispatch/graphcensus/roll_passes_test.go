@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -98,7 +99,9 @@ func TestTheThreadPassLeavesTheRowsOfAThreadWhoseCommentHoldsNoNodeYet(t *testin
 // Each event a build before this one appends with a write that leaves a row of the inbox's caches
 // owed makes the block-index tick owe its catch-up (EventsOweObjectPass), through a keyed read of
 // the rows that event names, and stops making it owe once the catch-up has marked them: a person's
-// read-state events, an answer, an item's create and edit, and an attempt's receipt and acceptance.
+// read-state events, an answer, an item's create and edit, a comment's create beside the delivery
+// routes it names, written with the comment's node as a build that writes the store's comment node
+// writes it, and an attempt's receipt and acceptance.
 // Each case writes its rows and its event as that build does, with this build's marker writer
 // setting off, and the object pass gives the item its node first, so the read answers true on the
 // inbox's rows alone. Its control is rollOwedByEvents answering false: every case owes nothing.
@@ -178,6 +181,28 @@ func TestAnEventOwesTheCatchUpWhileItLeavesAnInboxRowOwed(t *testing.T) {
 			_, err := tx.Exec(ctx, `insert into comment_deliveries (comment_id, target, attempt, delivery, state) values ($1::uuid, 'session:s-keyed', 1, 'aside', 'pending')`, thread.id)
 			return model.Event{IssueKey: issue, Type: "comment.delivery", Actor: alice,
 				Payload: model.CommentDeliveryEventPayload{CommentID: thread.id, Target: "session:s-keyed", Attempt: 1, Delivery: "aside", State: "failed"}}, err
+		}},
+		{"a comment mention's comment.created, the comment written with its node", func(ctx context.Context, tx pgx.Tx) (model.Event, error) {
+			var id string
+			var at time.Time
+			if err := tx.QueryRow(ctx, `select gen_random_uuid()::text, clock_timestamp()`).Scan(&id, &at); err != nil {
+				return model.Event{}, err
+			}
+			// The node before the row that names it, as that build's comment write takes them.
+			if err := graphstore.Write(ctx, tx, []graphstore.Node{{
+				Kind: graphstore.KindComment, ID: id, Supertag: graphstore.KindComment, Visibility: graphstore.VisibilityProject,
+				State: graphstore.StateLive, Project: "CENS", MadeAt: at, MadeBy: alice, SourceEvent: graphstore.NoEvent,
+			}}, nil); err != nil {
+				return model.Event{}, err
+			}
+			_, err := tx.Exec(ctx, `
+				with written as (
+					insert into comments (id, issue_key, author, body, node_kind, node_address)
+					values ($1::uuid, 'CENS-1', $2, 'For the role.', $3, $1) returning id
+				)
+				insert into comment_mentions (comment_id, target, delivery, resolved_session_id)
+				select id, 'role:keyed-role', 'steer', 's-keyed' from written`, id, actorJSON(t, alice), graphstore.KindComment)
+			return model.Event{IssueKey: issue, Type: "comment.created", Actor: alice, Payload: map[string]any{"id": id}}, err
 		}},
 		{"an ask's ask.opened", func(ctx context.Context, tx pgx.Tx) (model.Event, error) {
 			var id string

@@ -20,8 +20,9 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// The backfill of every kind the one inbox moves into the store but the mention tuples,
-// by the node store's contract (R9's view end): each pass walks only the rows its marker
+// The backfill of every kind the one inbox moves into the store but the identity mentions of a
+// text, which no row an older build wrote holds (refs.TargetOf), by the node store's contract (R9's
+// view end): each pass walks only the rows its marker
 // test passes, which are the rows a build of the release before this one wrote during a roll or
 // before it; it dates each tuple by the row's own created_at, or by the moment of the mark the row
 // stands for where the row holds none; it writes each tuple under the older write's own event,
@@ -33,7 +34,8 @@ import (
 // Each pass states exactly what this release's writer of the row states for it, through the same
 // writer's own statement of the facts: a message's pointers, its author and the page it hangs
 // from (graphstore.MessageFacts, graphstore.AuthorFacts), a comment's pointers
-// (graphstore.CommentPointerFacts), an item's blocks, their part_of and their links and its
+// (graphstore.CommentPointerFacts), the delivery routes a comment names (as api's
+// commentMentionFacts states them), an item's blocks, their part_of and their links and its
 // citations (as refs' item index states them), an attempt to reach a session or a role
 // (graphstore.AttemptNode, graphstore.AttemptFactsAsWritten), what each comment, message, ask,
 // answer and decline an older build wrote owed the threads it was written in
@@ -209,7 +211,8 @@ func backfillInbox(ctx context.Context, database *store.Store) ([]KindBackfill, 
 // inboxPasses is this child's passes in the order backfillInbox runs them, the order their facts
 // hang on each other.
 func inboxPasses() []inboxPass {
-	passes := []inboxPass{messagesPass(), commentPointersPass(), pastBoundRowsPass(pastBoundComments), pastBoundRowsPass(pastBoundMessages)}
+	passes := []inboxPass{messagesPass(), commentPointersPass(), commentMentionsPass(), pastBoundRowsPass(pastBoundComments),
+		pastBoundRowsPass(pastBoundMessages)}
 	for _, kind := range inboxItemKinds {
 		passes = append(passes, itemBlocksPass(kind), itemLinksPass(kind), itemCitationsPass(kind))
 	}
@@ -225,8 +228,8 @@ func inboxPasses() []inboxPass {
 // item and block tables, the store's two tables, the log each row's event is read from, and the
 // owner rows a batch takes and an ask's waiting person is read under.
 func inboxTables() []string {
-	tables := []string{"messages", "comments", "asks", "refs", "user_threads", "graph_nodes", "graph_tuples", "events",
-		"issues", "artifacts", "projects"}
+	tables := []string{"messages", "comments", "comment_mentions", "asks", "refs", "user_threads", "graph_nodes", "graph_tuples",
+		"events", "issues", "artifacts", "projects"}
 	for _, kind := range inboxItemKinds {
 		tables = append(tables, kind.blocks, kind.links, kind.state)
 	}
@@ -604,7 +607,8 @@ func HoldCommentCatchUp(ctx context.Context, tx pgx.Tx, ids []string) error {
 // owes, in the order the backfill runs the passes (inboxPasses), so a comment an older build wrote
 // after the backfill takes from the tick what the backfill gives one it read: the pointers of each
 // of written, what it owed its thread and its tuples_stored, under the event beside it
-// (writeCommentPointers); threads_recorded on each of named past the store's bound
+// (writeCommentPointers); the delivery routes each of written names and their tuples_stored (the
+// mention pass); threads_recorded on each of named past the store's bound
 // (pastBoundComments); the blocks of each of written, their links and its citations (the comment's
 // item passes); the delivery attempts of each of named (the attempt pass); and then the
 // user_threads rows of every thread those comments are in whose items all hold their nodes
@@ -624,6 +628,8 @@ func CatchUpComments(ctx context.Context, tx pgx.Tx, named, written []string, ca
 		width int
 		write func(context.Context, pgx.Tx, [][]string) (inboxWrote, error)
 	}{
+		{`select m.comment_id::text, m.target ` + commentMentionsOwed + ` and m.comment_id = any($1::uuid[])
+			order by m.comment_id, m.target`, written, 2, writeCommentMentions},
 		{`select c.id::text ` + pastBoundComments.owed + ` and c.id = any($1::uuid[]) order by c.id`,
 			named, 1, pastBoundComments.markRecorded},
 		{`select b.comment_id::text, b.block_id ` + comment.blocksOwed() + ` and b.comment_id = any($1::uuid[])
@@ -717,11 +723,17 @@ type RollRows struct {
 // (migration 20261116150000), and that build appends the comment.created or comment.answered that
 // stores the comment in the same transaction; the tick gives every comment those events name the
 // same two writes while it reads them (CatchUpComments), so either pass here would read comments
-// for rows it never finds. Each pass reads its rows through the index that holds the rows it owes
-// (TestTheRollPassesReadTheirOwedRowsThroughThePartialIndexes), but two: the asks pass reads asks
+// for rows it never finds. The comment mention pass owes only rows an older build inserts with
+// their comment too (migration 20261120090000), but it runs here: the tick gives that catch-up only
+// to a comment whose row names no node, and a build that writes a comment's node itself, as the
+// store's own release does, writes its comment_mentions rows beside a comment that names its node,
+// which only this pass reaches; the event that stores such a comment makes the tick owe it
+// (rollOwedByEvents). Each pass reads its rows through the index that holds the rows it owes
+// (TestTheRollPassesReadTheirOwedRowsThroughThePartialIndexes), but three: the asks pass reads asks
 // whole, as the object pass does, since its marker test reads an answer's moment through a cast no
-// index predicate may hold, and the fallback copies pass reads the published copies whole, a copy
-// holding no marker.
+// index predicate may hold, the fallback copies pass reads the published copies whole, a copy
+// holding no marker, and the comment mention pass reads comment_mentions in the order of its
+// primary key, which holds every row, no index holding the rows it owes alone.
 func rollPasses() []inboxPass {
 	passes := []inboxPass{fallbackSessionsPass()}
 	for _, pass := range inboxPasses() {
@@ -1011,6 +1023,134 @@ func (table pastBoundTable) markRecorded(ctx context.Context, tx pgx.Tx, keys []
 		return inboxWrote{}, fmt.Errorf("mark a batch of %s past the store's bound recorded: %w", table.table, err)
 	}
 	return inboxWrote{rows: tag.RowsAffected()}, nil
+}
+
+// --- the delivery routes a comment names ------------------------------------------------------
+
+// commentMentionsOwed is the comment_mentions rows the mention pass owes: each whose tuples_stored
+// is false (migration 20261120090000), of a comment whose node the store holds (the comment pass,
+// which runs first, or the tick that gave the comment its node), whose target routes to a session
+// or a role and whose resolved session the store can key - the rows the census counts unmarked
+// (commentMentionProjection). A row whose target or session is past the store's bound states no
+// tuple and keeps its false, as this release's comment write leaves one (api's mentionStored).
+var commentMentionsOwed = func() string {
+	_, route := routeEnd(`m.target`)
+	return `
+	from comment_mentions m
+	join comments c on c.id = m.comment_id
+	join graph_nodes n on n.kind = '` + graphstore.KindComment + `' and n.id = m.comment_id::text
+	where not m.tuples_stored and ` + route + ` is not null and ` + fits(`coalesce(m.resolved_session_id, '')`)
+}()
+
+// commentMentionsPass states each comment_mentions row an older build wrote as this release's
+// comment write states the delivery route it records (api's commentMentionFacts): a mentions tuple
+// out of the comment's node to the session or role its target routes to, a second to the session
+// it resolved to, and the comment's urgency, its delivery value, each made by the comment's author
+// at its created_at under the event that caused the comment's node - the comment's own write, the
+// event the census holds those tuples to (commentMentionProjection); and sets the row's
+// tuples_stored.
+func commentMentionsPass() inboxPass {
+	return inboxPass{
+		kind: "comment_mentions",
+		batch: `select m.comment_id::text, m.target ` + commentMentionsOwed + `
+			and (m.comment_id, m.target) > ($1::uuid, $2)
+			order by m.comment_id, m.target limit $3`,
+		start:     []string{zeroUUID, ""},
+		write:     writeCommentMentions,
+		remaining: commentMentionsOwed,
+	}
+}
+
+// writeCommentMentions takes the owner rows of the comments keys names, then reads again and locks
+// the comment_mentions rows of keys still owed, in key order, as the delivery sender takes a
+// mention's row after its comment's owner (api's claimCommentDeliveryAttempt), and states them. A
+// comment's mention of one session or role is stated once however many of its rows name it, and
+// its delivery once, the mode its first row records: the writer applies one mode to every target
+// (api's validateCommentMentions).
+func writeCommentMentions(ctx context.Context, tx pgx.Tx, keys [][]string) (inboxWrote, error) {
+	if err := lockOwnersOf(ctx, tx, commentOwners, column(keys, 0)); err != nil {
+		return inboxWrote{}, err
+	}
+	routeKind, routeID := routeEnd(`m.target`)
+	rows, err := tx.Query(ctx, `
+		select m.comment_id::text, m.target, `+routeKind+`, `+routeID+`, m.resolved_session_id, m.delivery,
+		       c.author, c.created_at, n.source_event
+		`+commentMentionsOwed+`
+		  and (m.comment_id, m.target) in (select * from unnest($1::uuid[], $2::text[]))
+		order by m.comment_id, m.target
+		for no key update of m
+	`, column(keys, 0), column(keys, 1))
+	if err != nil {
+		return inboxWrote{}, fmt.Errorf("read the comment_mentions rows no tuple states: %w", err)
+	}
+	type mention struct {
+		comment, target, routeKind, routeID, delivery string
+		resolved                                      *string
+		author                                        model.Actor
+		at                                            time.Time
+		event                                         int64
+	}
+	var read []mention
+	for rows.Next() {
+		var held mention
+		var author []byte
+		if err := rows.Scan(&held.comment, &held.target, &held.routeKind, &held.routeID, &held.resolved, &held.delivery,
+			&author, &held.at, &held.event); err != nil {
+			rows.Close()
+			return inboxWrote{}, fmt.Errorf("read a comment_mentions row no tuple states: %w", err)
+		}
+		if err := json.Unmarshal(author, &held.author); err != nil {
+			rows.Close()
+			return inboxWrote{}, fmt.Errorf("read the author of comment %s: %w", held.comment, err)
+		}
+		read = append(read, held)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return inboxWrote{}, fmt.Errorf("read the comment_mentions rows no tuple states: %w", err)
+	}
+	if len(read) == 0 {
+		return inboxWrote{}, nil
+	}
+	tuples := make([]graphstore.Tuple, 0, 3*len(read))
+	stated := make(map[[3]string]struct{}, 2*len(read))
+	comments, targets := make([]string, len(read)), make([]string, len(read))
+	ends := make([][2]string, 0, 2)
+	for index, held := range read {
+		comments[index], targets[index] = held.comment, held.target
+		ends = append(ends[:0], [2]string{held.routeKind, held.routeID})
+		if held.resolved != nil {
+			ends = append(ends, [2]string{graphstore.KindSession, *held.resolved})
+		}
+		for _, end := range ends {
+			key := [3]string{held.comment, end[0], end[1]}
+			if _, seen := stated[key]; seen {
+				continue
+			}
+			stated[key] = struct{}{}
+			tuples = append(tuples, graphstore.Tuple{
+				FromKind: graphstore.KindComment, FromID: held.comment, Kind: graphstore.TupleMentions, ToKind: end[0], ToID: end[1],
+				At: held.at, Who: held.author, SourceEvent: held.event, Asserted: true,
+			})
+		}
+		if index == 0 || read[index-1].comment != held.comment {
+			tuples = append(tuples, graphstore.Tuple{
+				FromKind: graphstore.KindComment, FromID: held.comment, Kind: graphstore.TupleDelivery, ToKind: graphstore.KindValue,
+				ToID: held.delivery, At: held.at, Who: held.author, SourceEvent: held.event, Asserted: true,
+			})
+		}
+	}
+	if err := writeRelations(ctx, tx, nil, tuples); err != nil {
+		return inboxWrote{}, fmt.Errorf("state the delivery routes of a batch of comments: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		update comment_mentions m set tuples_stored = true
+		from unnest($1::uuid[], $2::text[]) as named (comment_id, target)
+		where m.comment_id = named.comment_id and m.target = named.target and not m.tuples_stored
+	`, comments, targets); err != nil {
+		return inboxWrote{}, fmt.Errorf("mark a batch of comment_mentions rows stored: %w", err)
+	}
+	return inboxWrote{rows: int64(len(read)), tuples: int64(len(tuples))}, nil
 }
 
 // --- an item's blocks, their links and its citations ----------------------------------------------

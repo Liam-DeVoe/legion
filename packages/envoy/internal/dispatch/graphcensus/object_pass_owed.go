@@ -37,7 +37,8 @@ import (
 // a row of the five other read-state tables of that person is owed; an ask's ask.opened, ask.edited
 // or ask.answered, a comment's comment.created, comment.answered or comment.edited and a message's
 // message.created or message.answered, where that item's row, its blocks, their links, its
-// citations or its attempts are owed, or, for an answer, a user_threads row of the ask's thread; and
+// citations or its attempts are owed, or a comment's delivery routes (comment_mentions), or, for an
+// answer, a user_threads row of the ask's thread; and
 // a comment.delivery, a message.delivery or a message.accepted, the receipt of an attempt its
 // sender settled or its session accepted, where an attempt row of that item is owed. Its claims
 // append no event, so only a pass started for another reason reaches an attempt one moved.
@@ -107,6 +108,7 @@ func rollOwedByEvents() string {
 		`exists (select 1 ` + messagesOwed + ` and m.id = ` + named("messaged", "uuid") + `)`,
 		`exists (select 1 ` + pastBoundMessages.owed + ` and m.id = ` + named("messaged", "uuid") + `)`,
 		`exists (select 1 ` + commentAttempts.owed() + ` and d.comment_id = ` + named("attempted", "uuid") + `)`,
+		`exists (select 1 ` + commentMentionsOwed + ` and m.comment_id = ` + named("commented", "uuid") + `)`,
 		`exists (select 1 ` + messageAttempts.owed() + ` and (d.message_id = ` + named("delivered", "uuid") +
 			` or d.message_id = ` + named("messaged", "uuid") + `))`,
 	}

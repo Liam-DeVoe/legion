@@ -139,17 +139,19 @@ func owedBesideComments(t *testing.T, database *store.Store, comments []string) 
 // writeBesideAsThePreviousRelease has the stand-in for the release before this one write a comment
 // by author on issue CORE-1 as that release's API writes one, in one transaction: the comments row,
 // which names no node and holds neither marker, a reply to replyTo and an answer to the block
-// repliesToBlock names where either is not empty; the comment.created that stores it, whose payload
-// is the comment (model.CommentEventPayload); and what that release's index of the comment's text
-// writes in the same transaction (api's queueItemReferences): the body's one block, b1, its
-// comment_blocks row naming no node, and the comment's comment_block_state row at that index's
-// revision with its owed_at cleared - and, where cites is set, the block's link to issue CORE-1, its
-// comment_block_refs row naming no node, and the comment's citation of that issue, its refs row
-// holding no tuples_stored. The insert fires that release's triggers: user_threads_comment, which
-// writes the user_threads rows of the comment's thread as that release leaves them, and
+// repliesToBlock names where either is not empty; a comment_mentions row of each of mentions,
+// holding no tuples_stored; the comment.created that stores it, whose payload is the comment
+// (model.CommentEventPayload), its mentions among it; and what that release's index of the
+// comment's text writes in the same transaction (api's queueItemReferences): the body's one block,
+// b1, its comment_blocks row naming no node, and the comment's comment_block_state row at that
+// index's revision with its owed_at cleared - and, where cites is set, the block's link to issue
+// CORE-1, its comment_block_refs row naming no node, and the comment's citation of that issue, its
+// refs row holding no tuples_stored. The insert fires that release's triggers: user_threads_comment,
+// which writes the user_threads rows of the comment's thread as that release leaves them, and
 // item_blocks_owe, which marks the state row owed and its windows owed, of which that release's
 // index clears the first. It answers the comment.
-func writeBesideAsThePreviousRelease(t *testing.T, database *store.Store, author model.Actor, replyTo, repliesToBlock, text string, cites bool) string {
+func writeBesideAsThePreviousRelease(t *testing.T, database *store.Store, author model.Actor, replyTo, repliesToBlock, text string, cites bool,
+	mentions ...model.Mention) string {
 	t.Helper()
 	ctx := context.Background()
 	encoded, err := json.Marshal(author)
@@ -162,7 +164,7 @@ func writeBesideAsThePreviousRelease(t *testing.T, database *store.Store, author
 	}
 	defer tx.Rollback(ctx)
 	written := model.Comment{IssueKey: new("CORE-1"), Author: author, Body: text,
-		Mentions: []model.Mention{}, Deliveries: []model.CommentDelivery{}}
+		Mentions: append([]model.Mention{}, mentions...), Deliveries: []model.CommentDelivery{}}
 	if replyTo != "" {
 		written.ReplyTo = &replyTo
 	}
@@ -175,6 +177,13 @@ func writeBesideAsThePreviousRelease(t *testing.T, database *store.Store, author
 		returning id::text, created_at
 	`, encoded, text, written.ReplyTo, block).Scan(&written.ID, &written.CreatedAt); err != nil {
 		t.Fatalf("write the comment of %s: %v", author.ID, err)
+	}
+	for _, mention := range mentions {
+		if _, err := tx.Exec(ctx, `
+			insert into comment_mentions (comment_id, target, delivery, resolved_session_id) values ($1::uuid, $2, $3, $4)
+		`, written.ID, mention.Target, mention.Delivery, mention.SessionID); err != nil {
+			t.Fatalf("write the mention of %s of comment %s: %v", mention.Target, written.ID, err)
+		}
 	}
 	payload, err := json.Marshal(model.CommentEventPayload{Comment: written})
 	if err != nil {
