@@ -102,6 +102,13 @@ type Keys struct {
 	// set's address (URL), never a token. Calls come in the order the reads ran, outside the lock,
 	// and the callers waiting on that read wait for the call, so it does not block and does not
 	// call the Keys. It is set before the first Key, as the timing fields are.
+	//
+	// A residual, kept for the order: a read that finds a second change while OnChange is still
+	// telling the first waits for that call holding mu (complete, changeMu), so an OnChange that
+	// blocks — a log writer that has stopped — blocks every Key of this key set, a key the cache
+	// holds included, until it returns. The broker's OnChange writes one log line, which has to
+	// block past the next read of the key set, at least FailureSpacing after a failed one, for this
+	// to happen; by then every other log line of the process blocks too.
 	OnChange func(err error)
 
 	jwksURI string
@@ -120,7 +127,8 @@ type Keys struct {
 	// clock times, which can be equal.
 	failedAt time.Time
 	failure  error
-	// changeMu orders the OnChange calls by the reads they report (complete).
+	// changeMu orders the OnChange calls by the reads they report (complete). It is taken while mu
+	// is held, and so it is the residual OnChange names.
 	changeMu sync.Mutex
 
 	// afterState and missOpened are a test's seams into Key, nil outside a test: afterState runs
