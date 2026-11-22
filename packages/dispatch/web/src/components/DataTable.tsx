@@ -314,6 +314,10 @@ export interface DataTableProps<Row> {
   readonly noun: RowNoun;
   /** The width of a last, unheaded column that each row draws itself. */
   readonly trailingWidth?: number;
+  /** The box is as tall as its header and the rows of its page, and the page around it scrolls:
+   *  a table among a document's text, which takes no share of the window. Without it the box
+   *  takes the height the window allows (`useTableLayout`). */
+  readonly fitRows?: boolean;
 }
 
 /**
@@ -333,6 +337,7 @@ export function DataTable<Row>({
   renderRow,
   scrollTestId,
   trailingWidth = 0,
+  fitRows = false,
 }: DataTableProps<Row>): ReactNode {
   const { displayRows, layout, table, virtualizer } = model;
   const [dragColumn, setDragColumn] = useState<string>();
@@ -351,7 +356,7 @@ export function DataTable<Row>({
         data-testid={scrollTestId}
         style={{
           overflowAnchor: "none",
-          height: layout.boxHeight,
+          height: fitRows ? undefined : layout.boxHeight,
           scrollPaddingTop: 64,
         }}
       >

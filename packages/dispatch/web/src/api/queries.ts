@@ -472,6 +472,9 @@ export const queryIssuesQuery = (listing: QueryListing) =>
       listing.query.priorities,
     ] as unknown[],
     queryFn: () => api.listIssues(queryIssuesParams(listing)),
+    // A new pick of Status or Priority is a new key: the rows already drawn stay until it answers,
+    // so the list never falls back to its loading state under the reader's open filter.
+    placeholderData: keepPreviousData,
   });
 
 /** Every live priority with the work under each and the two faults beside them
