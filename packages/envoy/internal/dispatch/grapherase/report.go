@@ -106,9 +106,9 @@ type Erasure struct {
 	Rows []ErasedRows `json:"rows"`
 	// RedactedRows are the rows that derive from the node and that the run rewrote where it may
 	// take no row away: an excerpt of a block holding it, the append-only event log, the one
-	// stored update its document's replaced history is seeded with, and the search vectors and
-	// embedding rows written again from the latest version left. Each that held the bytes holds
-	// the marker where they were.
+	// stored update its document's replaced history is seeded with, the search vectors and
+	// embedding rows written again from the latest version left, and the related-item checks
+	// whose terms it emptied. Each text that held the bytes holds the marker where they were.
 	RedactedRows []ErasedRows `json:"redacted"`
 	// Versions and Reviews are the versions of the node's own document whose markdown holds the
 	// erased text and the approvals whose digest covered those bytes.

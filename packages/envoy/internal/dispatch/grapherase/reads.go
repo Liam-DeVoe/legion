@@ -78,7 +78,10 @@ type erasedRead struct {
 	// under them by key, so no read of every tree runs while the run holds its owners' writers.
 	heldTrees [][]byte
 	embedded  []embeddingRow
-	owners    events.OwnerRows
+	// relatedChecks are the ids of the related-item checks whose terms derive from the node and
+	// that apply clears (readRelatedChecks, clearRelatedCheckTerms).
+	relatedChecks []string
+	owners        events.OwnerRows
 	// termTotals are the projects whose term statistics totals row a confirmed run took before
 	// its owner locks (ownerProjects, api.TakeErasedTermTotalsTx), which api.ForgetErasedTermsTx
 	// then takes no wait for.
@@ -111,11 +114,13 @@ func (e *Erasure) read(ctx context.Context, tx pgx.Tx) (erasedRead, error) {
 // What derives from a node is fixed by the node, never by a search for its bytes: its tuples,
 // its projection rows and the rows that cannot exist without them, its own embedding rows and
 // keyword versions and the events about it, for a block its own document's versions, editing
-// state, search rows and windows and the excerpts cut from it, and for a comment the editing state
-// of every document whose margin record holds its body (marginDocuments). A row anywhere else
-// that holds the same bytes derives from another node - another issue's spec quoting a comment's
-// `Yes`, another person's comment, a sibling block of the same document - and is that node's text:
-// the run lists it (readLeft) and changes nothing in it.
+// state, search rows and windows and the excerpts cut from it, for a comment the editing state
+// of every document whose margin record holds its body (marginDocuments), for a decision block
+// the terms of its related-item checks, and for a block of an issue's spec those of the issue's
+// own check (readRelatedChecks). A row anywhere else that holds the same bytes derives from another
+// node - another issue's spec quoting a comment's `Yes`, another person's comment, a sibling block
+// of the same document - and is that node's text: the run lists it (readLeft) and changes nothing
+// in it.
 func (e *Erasure) readDerived(ctx context.Context, tx pgx.Tx) (erasedRead, error) {
 	var read erasedRead
 	if err := tx.QueryRow(ctx, `select supertag from graph_nodes where kind = $1 and id = $2`,
@@ -140,7 +145,7 @@ func (e *Erasure) readDerived(ctx context.Context, tx pgx.Tx) (erasedRead, error
 	}
 	for _, step := range []func(context.Context, pgx.Tx, *erasedRead) error{
 		e.readTuples, e.readRows, e.readAncestors, e.readVersions, e.readReviews, e.readEmbeddings,
-		e.readSearch, e.readExcerpts, e.readEvents, e.readHistory, e.readBlockers,
+		e.readSearch, e.readRelatedChecks, e.readExcerpts, e.readEvents, e.readHistory, e.readBlockers,
 	} {
 		if err := step(ctx, tx, &read); err != nil {
 			return erasedRead{}, err
@@ -704,6 +709,81 @@ func (e *Erasure) readReviews(ctx context.Context, tx pgx.Tx, read *erasedRead) 
 		e.Reviews = append(e.Reviews, review)
 		read.listing.reviews = append(read.listing.reviews, fmt.Sprintf("%s version %d %s (review %s)%s",
 			review.Document, review.Version, review.State, review.ID, owner(review.Issue, "")))
+	}
+	return nil
+}
+
+// readRelatedChecks lists the related-item checks whose terms derive from the node, each of which
+// apply rewrites with no terms (clearRelatedCheckTerms). A check of a decision block records in
+// related_checks.terms the lexemes its keyword search picked from the block's question (api's
+// decisionBlockChecks), so those lexemes are the block's text, stemmed. A search for the erased
+// bytes finds them only where a text is spelled inside a lexeme - `approv` is no part of
+// `approved` - so they are read by the check's source, which names the block. The row stays: its
+// other columns are the check's outcome, its counts and its times, which the records route
+// reports, and none of them holds text of the node. A check that holds no terms, as one its route
+// decided not to make holds none (relatedCheckNotRun), holds nothing of the node and is not
+// listed.
+//
+// A decision block's check is keyed by the block's id and by its document's issue, or by the
+// document where no issue owns it (api's recordRelatedChecks). The read takes a row keyed by
+// either, since a row keyed by the document is a check of this document's block. The issue's key
+// names no document, so a block of another document of the same issue with the same block id is
+// read as well, and the run clears that check's terms too: it errs toward erasing, as R5's rule
+// for an ambiguous value does. A block whose document no row holds any longer reads none: a check
+// keyed by that document went with it (the key cascades), and the issue the document belonged to
+// is not known.
+//
+// An issue's own check, made when the issue was created (api's createIssue), picks its terms from
+// the issue's title and its spec together, so no lexeme of it can be told to come from one block
+// of the spec: a block of the issue's spec - a document that is its issue's primary one
+// (ownDocument.spec) - empties that check's terms as well. A check of another issue, and the
+// issue's check where the block's document is not its spec, derive from other text, and stay.
+//
+// No ask's check is read: an ask is no node this erase takes, and a check of an ask goes with the
+// ask's row, since its key cascades.
+//
+// The reads probe related_checks by the block's id (related_checks_source_block) and, among the
+// issues' own checks, by the issue's key (related_checks_source_issue), so neither reads the table
+// whole under the run's locks (TestTheRelatedChecksReadsProbeTheirSourceIndexes).
+func (e *Erasure) readRelatedChecks(ctx context.Context, tx pgx.Tx, read *erasedRead) error {
+	if read.document == nil {
+		return nil
+	}
+	// checksOf is one source whose checks the run empties, as a predicate over a related_checks row
+	// named held and the arguments it binds.
+	type checksOf struct {
+		where string
+		args  []any
+	}
+	sources := []checksOf{{
+		where: `held.source_kind = 'decision_block' and held.source_block_id = $1
+		  and (held.source_issue_key = $2 or held.source_artifact_id = $3::uuid)`,
+		args: []any{read.blockID, read.document.issue, read.document.artifact},
+	}}
+	if issue := read.document.specIssue(); issue != "" {
+		sources = append(sources, checksOf{where: `held.source_kind = 'issue' and held.source_issue_key = $1`, args: []any{issue}})
+	}
+	for _, source := range sources {
+		rows, err := tx.Query(ctx, `
+			select held.id::text, 'rewrite related_checks.terms of ' || held.source_kind || ' check ' || held.id::text
+			from related_checks held
+			where `+source.where+` and cardinality(held.terms) > 0
+			order by held.created_at, held.id`, source.args...)
+		if err != nil {
+			return fmt.Errorf("read the related-item checks of %s:%s: %w", e.Kind, e.ID, err)
+		}
+		checks, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) ([2]string, error) {
+			var check [2]string
+			err := row.Scan(&check[0], &check[1])
+			return check, err
+		})
+		if err != nil {
+			return fmt.Errorf("read the related-item checks of %s:%s: %w", e.Kind, e.ID, err)
+		}
+		for _, check := range checks {
+			read.relatedChecks = append(read.relatedChecks, check[0])
+			read.listing.search = append(read.listing.search, check[1])
+		}
 	}
 	return nil
 }

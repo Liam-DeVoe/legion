@@ -61,11 +61,14 @@ func ParseNode(value string) (kind, id string, err error) {
 // document - the versions at which its own block held the text and the approvals over them, the
 // document's editing state, its search rows, the keyword versions of its issue that name one of
 // those versions where it is the issue's spec, and its windows - and the excerpts cut from its
-// text, and for a comment the editing state of every document whose margin record holds its body.
-// The run deletes those, or rewrites them with the marker where it may take no row away. Every
-// other row that holds the same bytes derives from another node and is that node's text - a
-// sibling block of the same document among them: the run lists it with its address and changes
-// nothing in it, and an operator erases that node by a run of its own.
+// text, for a comment the editing state of every document whose margin record holds its body, for
+// a decision block the terms of its related-item checks (related_checks.terms), and for a block of
+// an issue's spec the terms of the issue's own check.
+// The run deletes those, or rewrites them with the marker where it may take no row away, and
+// empties a check's terms, keeping its row. Every other row that holds the same bytes derives
+// from another node and is that node's text - a sibling block of the same document among them:
+// the run lists it with its address and changes nothing in it, and an operator erases that node
+// by a run of its own.
 //
 // confirm is the digest of a listing. With none the run reads everything it would delete,
 // rewrite, redact or leave in a read-only transaction, which takes no write lock and waits on no
@@ -186,7 +189,8 @@ func Erase(ctx context.Context, databaseURL, kind, id, confirm string, treeStore
 // on. Then it rewrites what it may not remove - the blocks holding the node's block and the
 // mentions whose excerpt was cut from it, the events about it, the search vectors that stood on
 // a version that went and the keyword vectors of its spec issue that did, once the node's own
-// keyword versions have gone (restateKeywordVersions), the embedding rows of what it leaves
+// keyword versions have gone (restateKeywordVersions), the terms of its related-item checks,
+// which it empties (clearRelatedCheckTerms), the embedding rows of what it leaves
 // (restateEmbeddings), and the live state of every document whose history it replaces - takes
 // out of the term statistics of every project whose items moved the lexemes the run removed
 // (api.ForgetErasedTermsTx, which reads no item but the ones the run changed, and waits on no
@@ -271,6 +275,9 @@ func (e *Erasure) apply(ctx context.Context, tx pgx.Tx, read erasedRead) error {
 	if err := e.restateKeywordVersions(ctx, tx, read); err != nil {
 		return err
 	}
+	if err := e.clearRelatedCheckTerms(ctx, tx, read); err != nil {
+		return err
+	}
 	if err := e.restateEmbeddings(ctx, tx, forgotten); err != nil {
 		return err
 	}
@@ -342,6 +349,22 @@ func (e *Erasure) eraseBlockTexts(ctx context.Context, tx pgx.Tx, read erasedRea
 		return fmt.Errorf("delete the texts of the block %s:%s: %w", e.Kind, e.ID, err)
 	}
 	e.removed("document_block_texts", tag.RowsAffected())
+	return nil
+}
+
+// clearRelatedCheckTerms empties the terms of every related-item check the read under the locks
+// listed (readRelatedChecks), by id, and keeps each row: its terms are the lexemes the check
+// picked from the node's text, and the rest of it is the check's outcome, counts and times, which
+// hold none of that text. A check written after that read is not one of them.
+func (e *Erasure) clearRelatedCheckTerms(ctx context.Context, tx pgx.Tx, read erasedRead) error {
+	if len(read.relatedChecks) == 0 {
+		return nil
+	}
+	tag, err := tx.Exec(ctx, `update related_checks set terms = '{}' where id = any($1::uuid[])`, read.relatedChecks)
+	if err != nil {
+		return fmt.Errorf("clear the terms of the related-item checks of %s:%s: %w", e.Kind, e.ID, err)
+	}
+	e.redacted("related_checks", tag.RowsAffected())
 	return nil
 }
 

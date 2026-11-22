@@ -1110,18 +1110,38 @@ func TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape(t *t
 // TestCensusAdmitsTheReplyIndexesTheEraseReadsThrough holds the census to admitting the two indexes
 // the erase's reads under its owner locks probe (20261121180000 on comment_deliveries.reply_id,
 // 20261121180100 on asks.handed_back_reply_id) over a database at 20261120122700, the version
-// before them, with the limit at one byte, where both tables are over it: each is one concurrent,
-// non-unique index of its own migration, which the limit never applies to at any size. Only each
-// entry is read, never the verdict of the whole set, for the reason
-// TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape gives.
+// before them, with the limit at one byte, where both tables are over it
+// (requireCensusAdmitsConcurrentIndexes).
 func TestCensusAdmitsTheReplyIndexesTheEraseReadsThrough(t *testing.T) {
+	requireCensusAdmitsConcurrentIndexes(t, 20261120122700, 20261121180000, 20261121180100)
+}
+
+// TestCensusAdmitsTheRelatedCheckIndexesTheEraseReadsThrough holds the census to admitting the two
+// indexes the erase's reads of a block's related-item checks probe (20261122010000 on
+// related_checks.source_block_id, 20261122010100 on the source_issue_key of the issues' own
+// checks) over a database at 20261121180100, the version before them, with the limit at one byte,
+// where related_checks is over it (requireCensusAdmitsConcurrentIndexes).
+func TestCensusAdmitsTheRelatedCheckIndexesTheEraseReadsThrough(t *testing.T) {
+	requireCensusAdmitsConcurrentIndexes(t, 20261121180100, 20261122010000, 20261122010100)
+}
+
+// requireCensusAdmitsConcurrentIndexes holds the census, over a database migrated through before
+// with the limit at one byte, to admitting each of versions, every one pending there, as one
+// concurrent, non-unique index of its own migration, which the limit never applies to at any size.
+// Only each entry is read, never the verdict of the whole set, for the reason
+// TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape gives.
+func requireCensusAdmitsConcurrentIndexes(t *testing.T, before int, versions ...int) {
+	t.Helper()
 	store := openEmptyTestStore(t)
-	migrateThrough(t, store, 20261120122700)
-	report, err := census(context.Background(), store.Pool.Config().ConnString(), migrationsThrough(t, 20261121180100), pgmigrate.CensusOptions{TableLimit: 1})
+	migrateThrough(t, store, before)
+	report, err := census(context.Background(), store.Pool.Config().ConnString(), migrationsThrough(t, slices.Max(versions)), pgmigrate.CensusOptions{TableLimit: 1})
 	if err != nil {
 		t.Fatalf("census: %v", err)
 	}
-	found := map[int]bool{20261121180000: false, 20261121180100: false}
+	found := map[int]bool{}
+	for _, version := range versions {
+		found[version] = false
+	}
 	for _, entry := range report.Pending {
 		if _, wanted := found[entry.Migration.Version]; !wanted {
 			continue
@@ -1133,7 +1153,7 @@ func TestCensusAdmitsTheReplyIndexesTheEraseReadsThrough(t *testing.T) {
 	}
 	for version, present := range found {
 		if !present {
-			t.Errorf("migration %d was not pending in the census over a database at 20261120122700", version)
+			t.Errorf("migration %d was not pending in the census over a database at %d", version, before)
 		}
 	}
 }
