@@ -6029,7 +6029,7 @@ export interface components {
       } & {
         [key: string]: unknown;
       };
-      /** @description Whether description_tree is an exact reading of description: true where the server's parser takes the description whole, false where it refuses a block of it or the whole of it, so the tree only draws that part, and an editor filled from it must not write it back. Present exactly where description_tree is. */
+      /** @description Whether the server's parser takes description whole, so a writer's editor may take its markdown: false where it refuses a block of it or the whole of it, which description_tree draws as no write would store it. description_tree still resets the attributes the server owns either way, so it is drawn and never written back. Present exactly where description_tree is. */
       description_tree_exact?: boolean;
       id: string;
       /** Format: date-time */
@@ -6071,7 +6071,7 @@ export interface components {
       } & {
         [key: string]: unknown;
       };
-      /** @description Whether description_tree is an exact reading of description: true where the server's parser takes the description whole, false where it refuses a block of it or the whole of it, so the tree only draws that part, and an editor filled from it must not write it back. Present exactly where description_tree is. */
+      /** @description Whether the server's parser takes description whole, so a writer's editor may take its markdown: false where it refuses a block of it or the whole of it, which description_tree draws as no write would store it. description_tree still resets the attributes the server owns either way, so it is drawn and never written back. Present exactly where description_tree is. */
       description_tree_exact?: boolean;
       id: string;
       /** Format: date-time */

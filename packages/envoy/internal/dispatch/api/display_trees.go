@@ -66,8 +66,8 @@ func builtDisplayTree(sum [32]byte, markdown string, mode pmdoc.DisplayMode) jso
 // the verdict cache is keyed by.
 var displayExactJudgements singleflight.Group
 
-// judgedDisplayExact is whether the display tree of a text whose sum its caller already holds is
-// an exact reading of it, judged once however many goroutines ask at the same moment.
+// judgedDisplayExact is whether Parse takes whole a text whose sum its caller already holds,
+// judged once however many goroutines ask at the same moment.
 func judgedDisplayExact(sum [32]byte, markdown string) bool {
 	judged, _, _ := displayExactJudgements.Do(string(sum[:]), func() (any, error) {
 		return pmdoc.DisplayExact(sum, markdown), nil

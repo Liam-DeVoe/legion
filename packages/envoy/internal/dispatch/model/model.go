@@ -308,18 +308,20 @@ var GatedStepsKnown = []string{GatedStepDecisions, GatedStepCriteria, GatedStepS
 // payload carries a priority: `priority.updated` names the id and the change alone
 // (PriorityEventPayload).
 //
-// DescriptionTreeExact stands beside DescriptionTree, present exactly where it is: true where
-// the tree is an exact reading of Description, because Parse takes the description whole, and
-// false where Parse refuses a block of it or the whole of it - a block of HTML, a description
-// past the element limit or nested past the mark bound - which the reading draws as no write
-// would store it (pmdoc.DisplayExact). A writer's editor is filled from the markdown only where
-// it is true: a tree that is not exact, written back, writes its reading over the text.
+// DescriptionTreeExact stands beside DescriptionTree, present exactly where it is. It is true
+// where Parse takes the description whole, so a writer's editor may take its markdown; the tree
+// still resets the attributes the server owns (pmdoc.ReadForDisplay), so an answered ask in it
+// draws open, and it is never a text to write back. It is false where Parse refuses a block of
+// the description or the whole of it - a block of HTML, a description past the element limit or
+// nested past the mark bound - which the tree draws as no write would store it
+// (pmdoc.DisplayExact): a writer's editor then shows the tree read-only, since an editor filled
+// from it and written back writes that reading over the text.
 type Priority struct {
 	ID                   string      `json:"id"`
 	Title                string      `json:"title"`
 	Description          string      `json:"description"`
 	DescriptionTree      DisplayTree `json:"description_tree,omitempty"`
-	DescriptionTreeExact *bool       `json:"description_tree_exact,omitempty" description:"Whether description_tree is an exact reading of description: true where the server's parser takes the description whole, false where it refuses a block of it or the whole of it, so the tree only draws that part, and an editor filled from it must not write it back. Present exactly where description_tree is."`
+	DescriptionTreeExact *bool       `json:"description_tree_exact,omitempty" description:"Whether the server's parser takes description whole, so a writer's editor may take its markdown: false where it refuses a block of it or the whole of it, which description_tree draws as no write would store it. description_tree still resets the attributes the server owns either way, so it is drawn and never written back. Present exactly where description_tree is."`
 	Owner                string      `json:"owner"`
 	Rank                 string      `json:"rank"`
 	State                string      `json:"state"`

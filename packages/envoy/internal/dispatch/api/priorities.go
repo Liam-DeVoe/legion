@@ -131,10 +131,10 @@ func priorityFrom(node prioritystore.Node) model.Priority {
 }
 
 // priorityAnswer is a write's own answer: the priority it wrote, with the tree of its description
-// and whether that tree is exact for a caller that sent `Dispatch-Trees: 1`, read where it stands
-// (shapeBuilt) as a comment's write answers the tree of its body. The handler builds it before
-// it stores the description's tree, so the store finds that reading in the process's cache
-// rather than reading the description again.
+// and whether Parse takes that description whole for a caller that sent `Dispatch-Trees: 1`, read
+// where it stands (shapeBuilt) as a comment's write answers the tree of its body. The handler
+// builds it before it stores the description's tree, so the store finds that reading in the
+// process's cache rather than reading the description again.
 func priorityAnswer(priority model.Priority, trees bool) model.Priority {
 	shapeBuilt(trees, func(reader *displayTreeReader) {
 		reader.textExact(&priority.DescriptionTree, &priority.DescriptionTreeExact, priority.Description)
@@ -158,8 +158,8 @@ func priorityAnswer(priority model.Priority, trees bool) model.Priority {
 //
 // Every description carries its display tree for a caller that sent `Dispatch-Trees: 1`, read
 // as a comment list reads its bodies' (displayTreeReader), so the page parses no description,
-// and whether that tree is exact (model.Priority.DescriptionTreeExact), which says whether a
-// writer's editor may take the markdown in.
+// and whether Parse takes the description whole (model.Priority.DescriptionTreeExact), which
+// says whether a writer's editor may take the markdown in.
 func (s *server) listPriorities(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return

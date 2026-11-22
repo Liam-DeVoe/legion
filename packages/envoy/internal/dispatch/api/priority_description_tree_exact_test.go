@@ -12,12 +12,11 @@ import (
 // editor that was filled from that tree wrote the tree's reading back over the text: a reading
 // that fell back draws a block Parse refuses, or the whole description, as text no write stores,
 // so one keystroke wrote `\# Why` for `# Why`. Each read that carries `description_tree` carries
-// `description_tree_exact` beside it, which says whether the tree is an exact reading - whether
-// Parse takes the description whole - so the page fills a writer's editor from the markdown only
-// where it is. A heading, a list and stars are exact; a description holding one block of HTML,
-// which Parse refuses and the reading draws as inline HTML, is not, and neither is emphasis
-// nested 4,000 deep, which the reading holds as its own characters. A read without
-// `Dispatch-Trees: 1` carries neither field.
+// `description_tree_exact` beside it, which says whether Parse takes the description whole, so
+// the page fills a writer's editor from the markdown only where it does. Parse takes a heading,
+// a list and stars whole; it refuses a description holding one block of HTML, which the reading
+// draws as inline HTML, and emphasis nested 4,000 deep, which the reading holds as its own
+// characters. A read without `Dispatch-Trees: 1` carries neither field.
 func TestAPriorityDescriptionTreeSaysWhetherItIsExact(t *testing.T) {
 	handler, _ := newTestHandlerWithStore(t)
 	cases := []struct {
@@ -41,8 +40,8 @@ func TestAPriorityDescriptionTreeSaysWhetherItIsExact(t *testing.T) {
 		requireExactness(t, "the listing's row of "+each.id, priorityRow(t, listing, each.id).Priority, each.exact)
 	}
 
-	// A write's answer reads the description it wrote: one Parse refuses, written over an exact
-	// one, answers false.
+	// A write's answer reads the description it wrote: one Parse refuses, written over one it
+	// takes whole, answers false.
 	patched := decodeBody[model.Priority](t, priorityTreesRequest(t, handler, http.MethodPatch,
 		"/api/v1/priorities/exact-heading", map[string]any{"description": "# Why\n\n<div>now HTML</div>"}, http.StatusOK))
 	requireExactness(t, "the write's answer", patched, false)
@@ -63,7 +62,7 @@ func TestAPriorityDescriptionTreeSaysWhetherItIsExact(t *testing.T) {
 }
 
 // requireExactness fails unless priority, read where where says, carries a description tree and
-// says that tree is exact exactly as want says.
+// says Parse takes its description whole exactly as want says.
 func requireExactness(t *testing.T, where string, priority model.Priority, want bool) {
 	t.Helper()
 	if priority.DescriptionTree == nil {

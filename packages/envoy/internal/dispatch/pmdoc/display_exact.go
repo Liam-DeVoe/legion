@@ -2,16 +2,18 @@ package pmdoc
 
 import "github.com/sjawhar/envoy/internal/dispatch/bytelru"
 
-// DisplayExact reports whether the display tree of markdown, the text whose SHA-256 is sum
-// (TextSum), is an exact reading of it: whether Parse takes markdown whole, with no fallback of a
-// block or of the whole text. ReadForDisplay never refuses, and where Parse would, the tree it
-// draws is not the text: a block Parse refuses is one paragraph of its literal characters, a
-// block of HTML a paragraph holding it as inline HTML, a directive the schema refuses its fence
-// lines, and a document past the element limit, nested past maxInlineNesting or one whose read
-// panicked is literal text throughout (literalDocument). An editor filled from such a tree and
-// written back writes that reading over the text: `# Why` comes back `\# Why`. A caller that
-// lets a reader edit a stored text reads this beside its tree, and fills a writer's editor from
-// the markdown only where it is exact.
+// DisplayExact reports whether Parse takes markdown, the text whose SHA-256 is sum (TextSum),
+// whole, with no fallback of a block or of the whole text, so a writer's editor may take that
+// markdown. It says nothing more of the display tree: in DisplayLatest the tree still resets the
+// attributes the server owns (ReadForDisplay), so an answered ask in it draws open, and a tree is
+// a thing to draw, never a text to write back. ReadForDisplay never refuses, and where Parse
+// would, the tree it draws is not the text: a block Parse refuses is one paragraph of its literal
+// characters, a block of HTML a paragraph holding it as inline HTML, a directive the schema
+// refuses its fence lines, and a document past the element limit, nested past maxInlineNesting
+// or one whose read panicked is literal text throughout (literalDocument). An editor filled from
+// such a tree and written back writes that reading over the text: `# Why` comes back `\# Why`. A
+// caller that lets a reader edit a stored text reads this beside its tree, and fills a writer's
+// editor from the markdown only where it is true.
 //
 // The text is read as ReadForDisplay reads it, with line feeds alone (LineFeeds), and no id is
 // minted, since the verdict is all this keeps. The verdict is kept by sum (displayExactCache),

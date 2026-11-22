@@ -87,8 +87,8 @@ type readDisplayText struct {
 	tree   json.RawMessage
 	fields []*model.DisplayTree
 	into   []func(json.RawMessage)
-	// exact are the fields told whether tree is an exact reading of text (textExact), and
-	// verdict is that answer once resolve has it.
+	// exact are the fields told whether Parse takes text whole (textExact), and verdict is that
+	// answer once resolve has it.
 	exact   []**bool
 	verdict bool
 }
@@ -151,11 +151,12 @@ func (r *displayTreeReader) textOf(field *model.DisplayTree, markdown *string) {
 	r.text(field, *markdown)
 }
 
-// textExact is text for a text a reader may edit, whose answer also says whether the tree is an
-// exact reading of it (pmdoc.DisplayExact): resolve points exact at that verdict where it fills
-// field, and leaves it nil - out of the answer - where the text has no tree. The verdict is what
-// tells the dashboard whether a writer's editor may be filled from the markdown or must show the
-// tree read-only, since a tree that is not exact, written back, writes its reading over the text.
+// textExact is text for a text a reader may edit, whose answer also says whether Parse takes it
+// whole (pmdoc.DisplayExact): resolve points exact at that verdict where it fills field, and
+// leaves it nil - out of the answer - where the text has no tree. The verdict is what tells the
+// dashboard whether a writer's editor may be filled from the markdown or must show the tree
+// read-only: a tree Parse did not take whole, written back, writes its reading over the text.
+// It says nothing more of the tree, which resets the attributes the server owns either way.
 // exact must stand where field does, for the reason text gives.
 func (r *displayTreeReader) textExact(field *model.DisplayTree, exact **bool, markdown string) {
 	if r == nil || markdown == "" {
@@ -212,13 +213,13 @@ func (r *displayTreeReader) slotOf(markdown string) *readDisplayText {
 //     use, exactly as every read did before there was a table, and stored afterwards on a
 //     connection of its own and outside any transaction of the caller's.
 //
-// A text registered with textExact is then judged, where it has a tree: whether that tree is an
-// exact reading of it (pmdoc.DisplayExact). A verdict this process holds already is taken here,
-// by the sum the text was registered under (pmdoc.HeldDisplayExact), as a held tree is; the rest
-// are judged on as many processors as the builds, each text once however many requests ask for
-// it at the same moment (judgedDisplayExact). The verdict is kept by the text's sum, however its
-// tree reached this read, so a text is parsed to judge it only while this process holds no
-// verdict of it, and a list read again parses nothing.
+// A text registered with textExact is then judged, where it has a tree: whether Parse takes it
+// whole (pmdoc.DisplayExact). A verdict this process holds already is taken here, by the sum the
+// text was registered under (pmdoc.HeldDisplayExact), as a held tree is; the rest are judged on as
+// many processors as the builds, each text once however many requests ask for it at the same
+// moment (judgedDisplayExact). The verdict is kept by the text's sum, however its tree reached
+// this read, so a text is parsed to judge it only while this process holds no verdict of it, and
+// a list read again parses nothing.
 //
 // A caller still holding a pooled connection reads nothing from the table and stores nothing: a
 // document load and a compaction shape their answers inside read-only transactions

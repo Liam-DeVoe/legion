@@ -124,6 +124,10 @@ const FIRST_DESCRIPTION =
   "took the build, and the roll-back a machine that refused it needs.\n\n" +
   "It is finished when no machine is left on the old build and nothing is waiting on one.";
 
+/** A description that nests emphasis 4,000 deep, 24,001 characters: the text #4835 measured at
+ *  about 55 s of the browser's parser, which the server reads as its own characters. */
+const NESTED = `${"*a ".repeat(4_000)}b${" c*".repeat(4_000)}`;
+
 async function seedPriorities(): Promise<Seeded> {
   await Promise.all([
     createProject({ key: "CORE", name: "Core" }),
@@ -2744,8 +2748,7 @@ test("what a reader types into a priority survives a reload made before the typi
 test("a person reads a description nested 4,000 deep on its priority's page and in its open row", async ({
   browser,
 }) => {
-  const nested = `${"*a ".repeat(4_000)}b${" c*".repeat(4_000)}`;
-  const deep = await createPriority({ description: nested, owner: "alice", title: "Nested deep" });
+  const deep = await createPriority({ description: NESTED, owner: "alice", title: "Nested deep" });
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
@@ -2757,7 +2760,7 @@ test("a person reads a description nested 4,000 deep on its priority's page and 
       soft(
         (await editor.allTextContents()).join("").length,
         `${where} draws every character of the server's reading of it`
-      ).toBe(nested.length);
+      ).toBe(NESTED.length);
       await soft(
         page.getByText(/could not be drawn/),
         `${where} says nothing of a description it could not draw`
@@ -2788,10 +2791,9 @@ test("a person reads a description nested 4,000 deep on its priority's page and 
 test("a writer's keystroke on a description the editor cannot keep whole writes nothing, and a one-word edit keeps the rest", async ({
   browser,
 }) => {
-  const nested = `${"*a ".repeat(4_000)}b${" c*".repeat(4_000)}`;
   const withHtml = "## Plan\n\n<div>held as HTML</div>\n\n- first host\n- second host";
   const plain = "## Plan\n\n- first host\n- second host\n\nShip **every** host, *then* check.";
-  const deep = await createPriority({ description: nested, owner: "alice", title: "Nested deep" });
+  const deep = await createPriority({ description: NESTED, owner: "alice", title: "Nested deep" });
   const held = await createPriority({ description: withHtml, owner: "alice", title: "Holds HTML" });
   const kept = await createPriority({ description: plain, owner: "alice", title: "Plain plan" });
   const stored = async (id: string) =>
@@ -2841,7 +2843,7 @@ test("a writer's keystroke on a description the editor cannot keep whole writes 
 
     for (const [priority, text, words, where] of [
       // Drawn as the server reads it, its own characters, stars and all.
-      [deep, nested, "*a *a *a", "a description nested 4,000 deep"],
+      [deep, NESTED, "*a *a *a", "a description nested 4,000 deep"],
       [held, withHtml, "first host", "a description holding a block of HTML"],
     ] as const) {
       await page.goto(`/priorities/${priority.id}`);

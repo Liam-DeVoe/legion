@@ -31,10 +31,10 @@ afterEach(() => {
 
 /**
  * The description as a page holds it, in the documents' own editor: `description` is the text
- * the server answered with, `tree` the reading the server sent of it and `exact` what it said of
- * that reading (`description_tree_exact`), which `rerender` moves, and every write lands in
- * `onSave`. `imports` is the length of each text the editor took in as markdown (`setMarkdown`),
- * its own parse of a text, which the browser spec counts as a parse of the page
+ * the server answered with, `tree` the reading the server sent of it and `exact` whether it said
+ * its parser takes the text whole (`description_tree_exact`), which `rerender` moves, and every
+ * write lands in `onSave`. `imports` is the length of each text the editor took in as markdown
+ * (`setMarkdown`), its own parse of a text, which the browser spec counts as a parse of the page
  * (`e2e/parse-counting.ts`). Queries are scoped to this render's container, since bun runs every
  * test file in one document.
  */
@@ -309,12 +309,9 @@ const NESTED = `${"*a ".repeat(4_000)}b${" c*".repeat(4_000)}`;
 
 /** The server's reading of `NESTED`, as Go's display read writes it for marks nested past its
  *  bound (pmdoc's `maxInlineNesting`, `literalDocument`): one paragraph of the text's own
- *  characters, no mark among them. It is written out here because the page's own engine, which
- *  `displayTree` reads with, is the parser this test keeps the page from running. */
-const NESTED_TREE: DisplayTree = {
-  content: [{ content: [{ text: NESTED, type: "text" }], type: "paragraph" }],
-  type: "doc",
-};
+ *  characters, no mark among them. It is built by hand (`asText`) because the page's own engine,
+ *  which `displayTree` reads with, is the parser this test keeps the page from running. */
+const NESTED_TREE = asText(NESTED);
 
 beforeEach(async () => {
   await warmMarkdownRenderer();
@@ -343,7 +340,8 @@ function countPageParses(): { parsed: number[]; restore: () => void } {
   };
 }
 
-/** The line under a description drawn from a reading the server says is not exact. */
+/** The line under a description drawn from the server's reading where its parser does not take
+ *  the description whole. */
 const NOT_MARKDOWN =
   "Dispatch cannot read this description as markdown, so it cannot be edited on this page.";
 
@@ -355,24 +353,39 @@ const PLAN = "# Why\n\n- first host\n- second host\n\nShip **every** host, *then
 const PLAN_WRITTEN =
   "# Why\n\n* first host\n* second host\n\nShip **every** host, *then* check. Done.\n";
 
-/** `PLAN` as a reading of the server's that fell back draws it (pmdoc's `literalDocument`): a
+/** `markdown` as a reading of the server's that fell back draws it (pmdoc's `literalDocument`): a
  *  paragraph of its own characters for each part between blank lines, a hard break between its
- *  lines. An editor that took it in and wrote it back would write `\# Why` for `# Why`. */
-const PLAN_AS_TEXT: DisplayTree = {
-  content: [
-    { content: [{ text: "# Why", type: "text" }], type: "paragraph" },
-    {
-      content: [
-        { text: "- first host", type: "text" },
-        { attrs: { isInline: false }, type: "hardbreak" },
-        { text: "- second host", type: "text" },
-      ],
-      type: "paragraph",
-    },
-    { content: [{ text: "Ship **every** host, *then* check.", type: "text" }], type: "paragraph" },
-  ],
-  type: "doc",
-};
+ *  lines. */
+function asText(markdown: string): DisplayTree {
+  const paragraph = (part: string) => ({
+    content: part
+      .split("\n")
+      .flatMap((line, at) => [
+        ...(at === 0 ? [] : [{ attrs: { isInline: false }, type: "hardbreak" }]),
+        { text: line, type: "text" },
+      ]),
+    type: "paragraph",
+  });
+  return { content: markdown.trimEnd().split("\n\n").map(paragraph), type: "doc" };
+}
+
+/** `PLAN` as a reading of the server's that fell back draws it (`asText`). An editor that took it
+ *  in and wrote it back would write `\# Why` for `# Why`. */
+const PLAN_AS_TEXT = asText(PLAN);
+
+/** Another person's text, which the server cannot read as markdown either. */
+const ELSEWHERE = "# Why\n\n- first host\n\nShip one host first.";
+
+/** That the editor draws the reading of `markdown` (`asText`) - its lines run together, since
+ *  neither a paragraph's end nor a hard break is a character of it - read-only, and described
+ *  by the line that says why. */
+function drawsReading(box: HTMLElement, markdown: string): void {
+  expect(box.textContent).toBe(markdown.trimEnd().split(/\n+/).join(""));
+  expect(within(box).queryByRole("heading")).toBeNull();
+  expect(box.getAttribute("contenteditable")).toBe("false");
+  const why = box.getAttribute("aria-describedby");
+  expect(why === null ? null : document.getElementById(why)?.textContent).toBe(NOT_MARKDOWN);
+}
 
 test.each([
   ["a reader who may not write it", false],
@@ -430,7 +443,7 @@ test("another person's text the server cannot read as markdown arrives in a writ
   const { parsed, restore } = countPageParses();
   try {
     // The writer is in the editor as another person writes the nested text, and the server
-    // answers with its reading of it, which it says is not exact.
+    // answers with its reading of it, and says its parser does not take the text whole.
     handle.view.focus();
     rerender(NESTED, true, NESTED_TREE, false);
     await waitFor(() => expect(box.textContent).toBe(NESTED));
@@ -439,7 +452,8 @@ test("another person's text the server cannot read as markdown arrives in a writ
     expect(scope.getByText(NOT_MARKDOWN)).toBeDefined();
     expect(box.querySelector("em, strong")).toBeNull();
     expect(parsed).toEqual([]);
-    // Only the text the editor opened with, which the server reads exactly, went in as markdown.
+    // Only the text the editor opened with, which the server's parser takes whole, went in as
+    // markdown.
     expect(imports).toEqual([stored.length]);
     // A change that reaches the editor's document now, and the writer leaving it, write nothing.
     writeAtEnd(handle, " x");
@@ -450,7 +464,7 @@ test("another person's text the server cannot read as markdown arrives in a writ
   }
 });
 
-test("a writer's editor takes in, as its markdown, a description the server reads exactly, and a one-word edit writes its heading, its list and its stars back with nothing escaped", async () => {
+test("a writer's editor takes in, as its markdown, a description the server's parser takes whole, and a one-word edit writes its heading, its list and its stars back with nothing escaped", async () => {
   const { editor, imports, onSave, scope } = described(PLAN, true, displayTree(PLAN), true);
   const { box, handle } = await editor();
   expect(box.getAttribute("contenteditable")).toBe("true");
@@ -488,7 +502,7 @@ test("an answer that says nothing of its reading, a pod's of the build before th
   expect(reader.scope.queryByText(NOT_MARKDOWN)).toBeNull();
 });
 
-test("an editor drawn from a reading the server said is not exact takes the text in as markdown once an answer that says nothing of it lets the writer write, so no keystroke writes the reading", async () => {
+test("an editor drawn from the reading of a text the server said it cannot read as markdown takes the text in as markdown once an answer that says nothing of it lets the writer write, so no keystroke writes the reading", async () => {
   const { editor, imports, onSave, rerender, scope } = described(PLAN, true, PLAN_AS_TEXT, false);
   const { box, handle } = await editor();
   expect(box.getAttribute("contenteditable")).toBe("false");
@@ -526,4 +540,92 @@ test("a description the reader has just written is drawn from its own text, neve
   // The server still answers the old text and its tree, and the editor shows what was written.
   expect(within(box).getByText("new").tagName).toBe("EM");
   expect(within(box).queryByText("old")).toBeNull();
+});
+
+test("a writer's write answered after the server said it cannot read the old text as markdown leaves the editor on the answer's reading, and no reading is ever offered or written as the writer's text", async () => {
+  const { editor, onSave, rerender, scope, view } = described(PLAN, true, displayTree(PLAN), true);
+  const { box, handle } = await editor();
+  handle.view.focus();
+  await onFakeClock(async () => {
+    // The writer types, and the typing at rest writes it.
+    writeAtEnd(handle, " Done.");
+    await jump(SAVE_AFTER_MS);
+    expect(onSave.mock.calls).toEqual([[PLAN_WRITTEN]]);
+    // Before the write's answer, the stored text comes back from a server that says it cannot
+    // read it as markdown: a pod of another build answering in turn during a rolling deploy.
+    // Then the write's answer comes, with the same word on it, and then another person's text.
+    rerender(PLAN, true, PLAN_AS_TEXT, false);
+    rerender(PLAN_WRITTEN, true, asText(PLAN_WRITTEN), false);
+    rerender(ELSEWHERE, true, asText(ELSEWHERE), false);
+    // The writer uses what the page offers as their text, if it offers any. The write was sent and
+    // answered, so nothing of theirs is left to offer: a reading offered as theirs and put back
+    // would write `\# Why` for `# Why`.
+    const offered = scope.queryByRole("alert", { name: /changed by another person/ });
+    if (offered !== null) {
+      act(() => within(offered).getByRole("button", { name: "Use my text" }).click());
+    }
+    expect(onSave.mock.calls.flat().filter((written) => /\\[#*-]/.test(written))).toEqual([]);
+    expect(onSave.mock.calls).toEqual([[PLAN_WRITTEN]]);
+    expect(offered).toBeNull();
+    // The editor draws the latest answer's reading, never the stale one, and writes nothing from
+    // it as the writer leaves it, the page goes, or the editor closes.
+    drawsReading(box, ELSEWHERE);
+    act(() => handle.view.dom.blur());
+    act(() => {
+      window.dispatchEvent(new Event("pagehide"));
+    });
+  });
+  view.unmount();
+  expect(onSave).toHaveBeenCalledTimes(1);
+});
+
+test("a writer's editor draws the reading of a text the server cannot read as markdown only once the typing in it is written and answered, and writes that typing once, as typed", async () => {
+  const { editor, onSave, rerender } = described(PLAN, true, displayTree(PLAN), true);
+  const { box, handle } = await editor();
+  handle.view.focus();
+  await onFakeClock(async () => {
+    writeAtEnd(handle, " Done.");
+    // The server says it cannot read the stored text as markdown while the typing waits to be
+    // written: the editor keeps the typing in the markdown it was made in.
+    rerender(PLAN, true, PLAN_AS_TEXT, false);
+    expect(within(box).getByRole("heading", { name: "Why" })).toBeDefined();
+    expect(box.textContent).toContain("check. Done.");
+    expect(onSave).not.toHaveBeenCalled();
+    // The typing at rest is written as typed, and its answer says the same of it.
+    await jump(SAVE_AFTER_MS);
+    expect(onSave.mock.calls).toEqual([[PLAN_WRITTEN]]);
+    rerender(PLAN_WRITTEN, true, asText(PLAN_WRITTEN), false);
+    drawsReading(box, PLAN_WRITTEN);
+    act(() => handle.view.dom.blur());
+    await jump(SAVE_AFTER_MS);
+  });
+  expect(onSave).toHaveBeenCalledTimes(1);
+});
+
+test("a writer's write answered after the editor drew another person's reading is taken in, and the text kept beside the editor as theirs is the one they wrote, never a reading", async () => {
+  const { editor, onSave, rerender, scope } = described(PLAN, true, displayTree(PLAN), true);
+  const { box, handle } = await editor();
+  handle.view.focus();
+  await onFakeClock(async () => {
+    writeAtEnd(handle, " Done.");
+    await jump(SAVE_AFTER_MS);
+    expect(onSave.mock.calls).toEqual([[PLAN_WRITTEN]]);
+    // Before the write's answer, the server says it cannot read the stored text as markdown, and
+    // then another person's text comes, which it cannot read either: the editor draws that reading.
+    rerender(PLAN, true, PLAN_AS_TEXT, false);
+    rerender(ELSEWHERE, true, asText(ELSEWHERE), false);
+    drawsReading(box, ELSEWHERE);
+    // The write is still out, so the writer's text is kept beside the editor: the text they wrote.
+    const notice = scope.getByRole("alert", {
+      name: "Description of P1, changed by another person",
+    });
+    expect(notice.textContent).toContain(PLAN_WRITTEN);
+    expect(notice.textContent).not.toMatch(/\\[#*-]/);
+    // The write's answer lands after that reading was drawn: it is the server's text now, and the
+    // editor draws its reading. The server holds the writer's text, so none is kept.
+    rerender(PLAN_WRITTEN, true, asText(PLAN_WRITTEN), false);
+    drawsReading(box, PLAN_WRITTEN);
+    expect(scope.queryByRole("alert", { name: /changed by another person/ })).toBeNull();
+  });
+  expect(onSave.mock.calls).toEqual([[PLAN_WRITTEN]]);
 });

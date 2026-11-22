@@ -20,7 +20,8 @@ import { arrival, NOTHING_KEPT } from "./field-arrival";
 import { ChangedMeanwhile, SAVE_AFTER_MS } from "./InPlaceField";
 
 const NONE_WRITTEN = "No description is written.";
-/** The line under a description drawn from a reading of the server's that is not exact. */
+/** The line under a description drawn from the server's reading of it where the server's parser
+ *  does not take the description whole. */
 const NOT_MARKDOWN =
   "Dispatch cannot read this description as markdown, so it cannot be edited on this page.";
 
@@ -39,8 +40,20 @@ interface Held {
   /** The write waiting for the typing to rest. */
   timer: number | undefined;
   /** Whether the editor drew its text from the server's reading of it (`draw`), rather than
-   *  taking it in as markdown. */
+   *  taking it in as markdown. It then holds nothing of the reader's, and writes nothing (`save`).
+   *  No write of theirs is counted out (`sent`) while it does: it draws a reading once none is
+   *  (`follow`), or as it takes another person's text in, which ends them all (`arrival`), so the
+   *  answer to a write that lands then is the server's text, taken in as any other is. */
   fromTree: boolean;
+}
+
+/** The component's props as they stand at its latest render, which the editor follows: the
+ *  server's text, the server's reading the editor draws it from (none where it takes the
+ *  markdown in), and where a write goes. */
+interface Latest {
+  readonly description: string;
+  readonly onSave: (next: string) => void;
+  readonly reading: DisplayTree | undefined;
 }
 
 /** A text the editor could not take in, with the reason. */
@@ -55,13 +68,17 @@ function stop(held: Held): void {
   held.timer = undefined;
 }
 
+/** The reader's text as compared with the server's: `base` while the editor draws a reading. */
+function heldText(held: Held): string {
+  return held.fromTree ? held.base : held.handle.getMarkdown();
+}
+
 /** Writes what the editor holds, at once, where it differs from the server's text. An editor that
  *  holds the server's reading of the text (`fromTree`) writes nothing, ever: a reading is a thing
  *  to draw, never a text to store. */
 function save(held: Held, onSave: (next: string) => void): void {
   stop(held);
-  if (held.fromTree) return;
-  const markdown = held.handle.getMarkdown();
+  const markdown = heldText(held);
   if (markdown === held.base) return;
   held.base = markdown;
   held.sent = [...held.sent, markdown];
@@ -87,14 +104,17 @@ function take(held: Held, markdown: string, tree: DisplayTree | undefined): void
 }
 
 /** Draws the server's text in an editor already open (`draw`), held then as the text the editor
- *  matches, or tells `fail` the editor could not take it in; and stops the write waiting for the
- *  typing to rest, which the draw's own Yjs update scheduled. */
+ *  matches. A text it cannot take in leaves what the editor holds in it, held all the same as
+ *  the text it matches, so that is not written over the text it could not draw as the editor
+ *  closes, and `fail` is told why. Either way it stops the write waiting for the typing to rest,
+ *  which would write over the server's text, and the save the redraw's own Yjs update scheduled. */
 function redraw(
   held: Held,
   markdown: string,
   tree: DisplayTree | undefined,
   fail: (failure: Failure) => void
 ): void {
+  held.base = held.handle.getMarkdown();
   try {
     draw(held, markdown, tree);
     held.base = held.handle.getMarkdown();
@@ -102,6 +122,28 @@ function redraw(
     fail({ reason: error instanceof Error ? error.message : String(error), text: markdown });
   }
   stop(held);
+}
+
+/** Moves an open editor between the server's text as its markdown and the server's reading of
+ *  it, as `latest` draws it now (`redraw`, and the component's own doc), once the writer is
+ *  settled: no write of theirs is out, and none of their typing is unwritten. So the answer to a
+ *  write of theirs comes back to the markdown it was written from, never to a reading drawn over
+ *  it, and a reading is drawn over nothing they typed that is not written. The editor asks it
+ *  again whenever one of those may have changed - the server's text or the form it is drawn in,
+ *  the typing at rest, and the editor or the page left - so a move held back is made once the
+ *  writer is settled. */
+function follow(held: Held, latest: Latest, fail: (failure: Failure) => void): void {
+  if (held.fromTree === (latest.reading !== undefined) || held.sent.length > 0) return;
+  if (heldText(held) !== held.base) return;
+  redraw(held, latest.description, latest.reading, fail);
+}
+
+/** The typing at rest, or the editor or the page left: writes what the editor holds (`save`),
+ *  and then moves it to the form the server's text is drawn in now, where that waited on the
+ *  typing (`follow`). */
+function rest(held: Held, latest: Latest, fail: (failure: Failure) => void): void {
+  save(held, latest.onSave);
+  follow(held, latest, fail);
 }
 
 /**
@@ -142,16 +184,28 @@ function redraw(
  * since what that editor writes back is its own reading of what it took in with the writer's
  * edits in it (`take`, `save`), and the tree is a thing to draw, never a thing to edit: it gives
  * every attribute the server owns its default, and a block Dispatch's parser refuses is no block
- * of the text in it. So it does where the server says its reading is exact
- * (`descriptionTreeExact`), and where the answer carries no word on that: the answer of a pod of
- * the build before this one during a rolling deploy, whose tree a writer's editor took in as
- * markdown before, as it does still, while a reader who may not write keeps the tree. Where the
- * server says its reading is not exact - a block its parser refuses, or a description past its
- * bounds, read as text no write stores - everyone, a writer too, reads the tree read-only, with
- * a line under it that says Dispatch cannot read the description as markdown, so no browser
- * parses it and nothing is ever written from that reading. An answer that carries no tree at
- * all is taken in as its markdown, by every reader, and so is a text of the reader's own the
- * server has not stored (one put back from beside the editor, `putBack`).
+ * of the text in it. So it does where the server says its parser takes the description whole
+ * (`descriptionTreeExact`), which says nothing more of the tree, and where the answer carries no
+ * word on that: the answer of a pod of the build before this one during a rolling deploy, whose
+ * tree a writer's editor took in as markdown before, as it does still, while a reader who may not
+ * write keeps the tree. Where the server says its parser does not take the description whole - a
+ * block it refuses, or a description past its bounds, read as text no write stores - everyone,
+ * a writer too, reads the tree read-only, with a line under it that says Dispatch cannot read the
+ * description as markdown, so no browser parses it and nothing is ever written from that reading.
+ * An answer that carries no tree at all is taken in as its markdown, by every reader, and so is a
+ * text of the reader's own the server has not stored (one put back from beside the editor,
+ * `putBack`).
+ *
+ * An editor already drawn moves between the markdown and the reading as the server's word on its
+ * text changes - pods of two builds answer in turn during a rolling deploy - and as the reader
+ * comes to write it or stops: to the markdown once the reader writes in it, so no keystroke
+ * reaches a reading, and to the reading once they do not, so every reader of a text the server's
+ * parser does not take whole is shown the server's reading. A writer's editor moves once they are
+ * settled (`follow`): with a write of theirs out, its answer would come back to a reading drawn
+ * over the markdown it was written from, and a reading would draw over typing not yet written.
+ * So the typing is written, as typed, and the editor moves once the answer is in. An editor drawn
+ * from a reading holds nothing of the reader's: no text of it is kept beside the editor as
+ * theirs, and none is written.
  */
 export function PriorityDescription({
   boxed = true,
@@ -172,10 +226,11 @@ export function PriorityDescription({
    *  answer that carries none: a read made without `Dispatch-Trees: 1`, and an empty
    *  description. */
   descriptionTree: DisplayTree | undefined;
-  /** Whether `descriptionTree` is an exact reading of `description` (the priority's
-   *  `description_tree_exact`): whether the server's parser takes the description whole. It
-   *  stands exactly where the tree does, except in the answer of a pod of the build before this
-   *  one, which sends a tree and no word on it. */
+  /** Whether the server's parser takes `description` whole (the priority's
+   *  `description_tree_exact`), so a writer's editor may take its markdown in. It says nothing
+   *  more of `descriptionTree`, which gives every attribute the server owns its default either
+   *  way. It stands exactly where the tree does, except in the answer of a pod of the build
+   *  before this one, which sends a tree and no word on it. */
   descriptionTreeExact: boolean | undefined;
   /** The reader's texts kept beside the editor, where the page holds them rather than the
    *  editor - in the write store (`usePriorityWrites`): `onKeptChange` hears each change of
@@ -200,7 +255,7 @@ export function PriorityDescription({
   // reader, a writer too, and never written back.
   const unreadable = descriptionTree !== undefined && descriptionTreeExact === false;
   // Whether the reader writes in the editor: one who may write the description, where the
-  // server reads it exactly or says nothing of that.
+  // server's parser takes it whole or the server says nothing of that.
   const writes = canWrite && !unreadable;
   // The tree the editor draws the server's text from (`draw`): none for an editor the reader
   // writes in, which takes its markdown in, and the server's reading for every other.
@@ -219,8 +274,8 @@ export function PriorityDescription({
   const login = useQuery(whoAmIQuery()).data?.login;
   const queryClient = useQueryClient();
   const followReference = useReferenceClick();
-  // The id of the line under a reading the server says is not exact, which the editor names as
-  // its description.
+  // The id of the line under a reading of a description the server's parser does not take whole,
+  // which the editor names as its description.
   const why = useId();
 
   const none = description.trim() === "";
@@ -234,13 +289,17 @@ export function PriorityDescription({
     let mounted = true;
     let ydoc: Doc | undefined;
     let handle: EditorHandle | undefined;
-    // Every edit reaches the editor's Yjs document, the reader's and a take of the server's
-    // text alike; `save` writes only what differs from that text.
+    // Every edit reaches the editor's Yjs document, the reader's and a draw of the server's text
+    // alike; `save` writes only what differs from that text, and the editor then moves to the
+    // form the text is drawn in where that waited on the typing (`rest`).
     const onUpdate = () => {
       const current = held.current;
       if (current === undefined) return;
       stop(current);
-      current.timer = window.setTimeout(() => save(current, latest.current.onSave), SAVE_AFTER_MS);
+      current.timer = window.setTimeout(
+        () => rest(current, latest.current, setFailure),
+        SAVE_AFTER_MS
+      );
     };
     const mount = async () => {
       const doc = await createDoc();
@@ -321,13 +380,15 @@ export function PriorityDescription({
   }, [editor, label, unreadable, why, writes]);
 
   // The server's text, as it changes under the editor (`arrival`, and the component's own doc).
+  // An editor drawn from a reading holds nothing of the reader's - what it holds is the
+  // server's reading, never a text of theirs to keep beside it - so it is compared as the text
+  // it last matched (`heldText`).
   useEffect(() => {
     const current = held.current;
     if (current === undefined || description === seen.current) return;
     seen.current = description;
-    const markdown = current.handle.getMarkdown();
     const { kept: mine, setKept: keep } = latest.current;
-    const next = arrival(description, markdown, {
+    const next = arrival(description, heldText(current), {
       base: current.base,
       kept: mine,
       sent: current.sent,
@@ -335,30 +396,17 @@ export function PriorityDescription({
     current.sent = next.sent;
     current.base = next.base;
     if (next.kept !== mine) keep(next.kept);
-    if (!next.take) return;
-    // A text the editor cannot take in leaves the reader's in it: it is not written over the
-    // text it could not draw as the editor closes. One it takes in is held in its own reading.
-    current.base = markdown;
-    // Stops the reader's write waiting for the typing to rest, which would write over the other
-    // person's text, and the save the take's own Yjs update scheduled.
-    redraw(current, description, latest.current.reading, setFailure);
+    if (next.take) redraw(current, description, latest.current.reading, setFailure);
   }, [description]);
 
-  // The form the editor holds the text in follows `reading` for the same text too. An editor that
-  // drew the server's reading takes the markdown in once the reader writes in it - a reader who
-  // may now write it, or a writer shown a reading that is not exact before the answer of a pod of
-  // the build before this one, which says nothing of the reading, during a rolling deploy - so no
-  // keystroke reaches a reading. One that took the markdown in draws the reading once the server
-  // says it is not exact, so every reader of such a text is shown the server's reading. A change
-  // of the writer's not yet written stays: it was made in the markdown, and is written as it
-  // would have been.
+  // The form the editor holds the text in follows `reading` (`follow`): as the form the server's
+  // text is drawn in changes, and after each text that arrives (the effect above), which may
+  // answer the last write of the writer's still out and leave them settled.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the text and the form it is drawn in are the triggers; the editor reads both as they stand (`latest`)
   useEffect(() => {
     const current = held.current;
-    if (current === undefined || !current.fromTree === fromMarkdown) return;
-    if (!current.fromTree && current.handle.getMarkdown() !== current.base) return;
-    // Stops the save the take's own Yjs update scheduled.
-    redraw(current, latest.current.description, latest.current.reading, setFailure);
-  }, [fromMarkdown]);
+    if (current !== undefined) follow(current, latest.current, setFailure);
+  }, [description, fromMarkdown]);
 
   // The page going is the editor left, as a blur is: a small write that starts now is let finish
   // as the page goes (`keepalive`, `api/client.ts`'s `pageGoing`); one that waits behind a write
@@ -366,7 +414,7 @@ export function PriorityDescription({
   // for a reload to make (`features/writes/write-storage.ts`).
   useEffect(() => {
     const leave = () => {
-      if (held.current !== undefined) save(held.current, latest.current.onSave);
+      if (held.current !== undefined) rest(held.current, latest.current, setFailure);
     };
     window.addEventListener("pagehide", leave);
     return () => window.removeEventListener("pagehide", leave);
@@ -410,7 +458,7 @@ export function PriorityDescription({
               event.currentTarget.contains(event.relatedTarget)
             )
               return;
-            if (held.current !== undefined) save(held.current, latest.current.onSave);
+            if (held.current !== undefined) rest(held.current, latest.current, setFailure);
           }}
           onClick={followReference}
         >
