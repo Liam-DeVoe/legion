@@ -91,7 +91,11 @@ func TestEveryClaimsSubcommandAnswersWithinItsWait(t *testing.T) {
 }
 
 // --wait defaults to one minute, and a command with no flag of its own runs under that default as
-// the call reads it (programbound: in this binary, what is left of its deadline).
+// the call reads it (programbound: in this binary, what is left of its deadline). The bound the
+// call took (operatorCall.waited, the fact the call records) is read against programbound's value
+// read just before the call and just after it: what is left of the deadline only shrinks, so the
+// call's own read lies between the two, and a call that took any other value, a fixed minute
+// among them, falls outside. No wall-clock span is read.
 func TestClaimsWaitDefaultsToOneMinute(t *testing.T) {
 	cmd := &cobra.Command{Use: "suspend"}
 	c := newClaimsCall(cmd, &bytes.Buffer{}, &bytes.Buffer{})
@@ -105,8 +109,9 @@ func TestClaimsWaitDefaultsToOneMinute(t *testing.T) {
 	if code, ok := c.check(); !ok {
 		t.Fatalf("check exited %d, want it to accept a command with no --wait", code)
 	}
-	if until := time.Until(c.until); c.waited > most || until <= 0 || until > most {
-		t.Fatalf("the call took a bound of %s, %s away, want the default as programbound gives it, at most %s", c.waited, until, most)
+	least := programbound.Of(&defaultWait)
+	if until := time.Until(c.until); c.waited > most || c.waited < least || until <= 0 || until > most {
+		t.Fatalf("the call took a bound of %s, %s away, want the default as programbound gives it, from %s to %s", c.waited, until, least, most)
 	}
 }
 

@@ -111,6 +111,12 @@ func signalWhileHeld(t *testing.T, command *exec.Cmd, name, pidFile, seconds, wh
 		pid, running = recordedHelper(pidFile, seconds)
 		return running
 	})
+	// The signal must come while the stand-in holds the work: with no running pid recorded, the
+	// end check below would pass a signal that came before the work was ever held (a pid of 0 is
+	// never running), so the row fails here by name instead.
+	if pid <= 0 || !helperRunning(pid, seconds) {
+		t.Fatalf("the stand-in holding %s had recorded no running pid (%d) in %s when the signal was to be sent: want the signal while %s is held", what, pid, pidFile, what)
+	}
 	if err := syscall.Kill(-command.Process.Pid, sig); err != nil {
 		t.Fatal(err)
 	}
