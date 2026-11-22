@@ -72,11 +72,12 @@
 # error line with no number when its exec fails, and a numeric line when it reads; (h)
 # render-nats.sh refuses its vendored chart archive with one byte changed, naming it and both
 # sha256s, before it runs go or writes a render, and, when go is on PATH, re-renders nats.yaml from
-# the unchanged archive with no curl call, equal to the committed file (else it says it skipped
-# that). That render runs helm through `go run`, so it needs go's module proxy, or offline
-# GOPROXY=file://$(go env GOMODCACHE)/cache/download with helm in the module cache; it fails rather
-# than skips without one, so that a helm pin go cannot fetch fails CI; (i) the run's residual
-# notes are replay-residual.md's lines, then the seed
+# the unchanged archive on a PATH with no curl and no jq, with no call that bash's search of that
+# PATH could not find, equal to the committed file (else it says it skipped that). That render
+# runs helm through `go run`, so it needs go's module proxy, or offline
+# GOPROXY=file://$(go env GOMODCACHE)/cache/download with helm in the module cache; it
+# fails rather than skips without one, so that a helm pin go cannot fetch fails CI; (i) the run's
+# residual notes are replay-residual.md's lines, then the seed
 # check's anchors by placement rule (with the share on the nearest surviving block) and its
 # sign-flipped versions, a count the check lacks written as "not recorded"; (j) stored-order.json
 # holds the checker's fields and a clean run's and a mismatching run's counts, and nulls (never 0)
@@ -266,6 +267,10 @@ flags_name_dir() {
 case $verb in
   get)
     case "$*" in
+      *"get --raw /.well-known/openid-configuration"*)
+        # The cluster's ServiceAccount token issuer, which up records for the copy's listener.
+        printf '{"issuer":"https://container.googleapis.com/v1/projects/example-project/locations/us-west1/clusters/example","jwks_uri":"https://203.0.113.1:443/openid/v1/jwks"}\n'
+        ;;
       *"configmap dispatch-loadtest-lock"*)
         # FAKE_LOCK_GET_FAIL: a read of the lock fails with a refused API server connection once
         # the lock exists, so the command that takes it goes on and every read after that fails.
@@ -2124,6 +2129,7 @@ pass "up stops after five quota races in a row on one manifest"
   NS=$ns
   digest=sha256:$(printf '%064d' 7)
   values=(NAMESPACE=loadtest RUN_ID=lt-20261028t120000-abcd STORAGE_CLASS=premium-rwo
+    OIDC_ISSUER=https://container.googleapis.com/v1/projects/example-project/locations/us-west1/clusters/example
     "ENVOY_IMAGE=ghcr.io/cybermonklabs/legion/envoy@$digest" "LISTENER_IMAGE=ghcr.io/cybermonklabs/legion/envoy@$digest"
     "PG_IMAGE=mirror.gcr.io/pgvector/pgvector@$digest" "SOCAT_IMAGE=mirror.gcr.io/alpine/socat@$digest"
     "RUNNER_IMAGE=mirror.gcr.io/library/debian@$digest")
@@ -2312,25 +2318,60 @@ pass "two starts of one runner job name get directories of their own, a start ne
 )
 pass "render-nats.sh refuses its vendored chart with one byte changed, naming it and both sums, before it runs go or writes a render"
 
-# The render runs on the real PATH for go, behind a curl that records each call and fails it: with
-# --pin-from it fetches nothing but helm, which go fetches itself through its module proxy.
+# The render runs on the real PATH with curl and jq taken off it: with --pin-from it reads no
+# registry, so it needs neither, and it fetches nothing but helm, which go fetches itself through
+# its module proxy. Each directory of the real PATH that holds curl or jq gives way, in its place,
+# to one that links each of its other entries, and every other directory stays as it is, so a
+# wrapper that runs the next command of its name on PATH still finds it. The render's bash, and
+# each bash it starts, runs a command_not_found_handle that logs each command its PATH search
+# could not find, whatever that call's output was sent to, and the log must stay empty.
 # shellcheck disable=SC2031 # (e) to (g) source cluster.sh in subshells; its here and tmp stay there
 if PATH=$real_path command -v go >/dev/null; then
-  mkdir -p "$tmp/no-curl"
-  cat >"$tmp/no-curl/curl" <<'EOF'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >>"$FAKE_DIR/no-curl.log"
-exit 1
-EOF
-  chmod +x "$tmp/no-curl/curl"
-  status=0
-  PATH=$tmp/no-curl:$real_path bash "$here/render-nats.sh" --pin-from "$here/manifests/nats.yaml" --out "$tmp/nats.yaml" 2>"$tmp/out" ||
-    status=$?
-  [ ! -s "$fake/no-curl.log" ] || fail "render-nats.sh --pin-from ran curl, which reads the network: $(cat "$fake/no-curl.log")"
-  [ "$status" = 0 ] || fail "render-nats.sh failed; if go could not fetch helm with no network, run with GOPROXY=file://$(PATH=$real_path go env GOMODCACHE)/cache/download"
-  diff -u "$here/manifests/nats.yaml" "$tmp/nats.yaml" >"$tmp/out" ||
-    fail "manifests/nats.yaml differs from a fresh render; run render-nats.sh and commit its output"
-  pass "manifests/nats.yaml equals a fresh render of the vendored chart with nats-values.yaml, which ran no curl"
+  (
+    path="" farms=0
+    IFS=: read -ra dirs <<<"$real_path"
+    for dir in "${dirs[@]}"; do
+      if [ -e "${dir:-.}/curl" ] || [ -e "${dir:-.}/jq" ]; then
+        farms=$((farms + 1))
+        mkdir -p "$tmp/no-registry/$farms"
+        dir=$(cd -- "${dir:-.}" && pwd)
+        links=()
+        for entry in "$dir"/*; do
+          case ${entry##*/} in
+            curl | jq) ;;
+            *) if [ -e "$entry" ]; then links+=("$entry"); fi ;;
+          esac
+        done
+        [ ${#links[@]} -eq 0 ] || ln -s -- "${links[@]}" "$tmp/no-registry/$farms/"
+        dir=$tmp/no-registry/$farms
+      fi
+      path+=${path:+:}$dir
+    done
+    PATH=$path command -v curl jq >"$tmp/out" || true
+    [ ! -s "$tmp/out" ] || fail "the PATH built for the render still finds curl or jq"
+    export RENDER_MISSING=$tmp/render-missing.log
+    : >"$RENDER_MISSING"
+    # Bash runs this, in a child of the shell that searched PATH, in place of its own "command not
+    # found" error. It logs the command whatever the call sent its error output to, and each bash
+    # that inherits it from the environment runs it too.
+    # shellcheck disable=SC2329 # bash itself calls command_not_found_handle
+    command_not_found_handle() {
+      printf '%s\n' "$1" >>"$RENDER_MISSING"
+      printf '%s: command not found\n' "$1" >&2
+      return 127
+    }
+    export -f command_not_found_handle
+    status=0
+    PATH=$path bash "$here/render-nats.sh" --pin-from "$here/manifests/nats.yaml" --out "$tmp/nats.yaml" 2>"$tmp/out" ||
+      status=$?
+    [ ! -s "$RENDER_MISSING" ] ||
+      fail "render-nats.sh --pin-from ran $(sort -u -- "$RENDER_MISSING" | paste -sd, -), which its PATH does not hold; curl and jq read a registry"
+    [ "$status" = 0 ] ||
+      fail "render-nats.sh --pin-from failed on a PATH with no curl and no jq; if go could not fetch helm with no network, run with GOPROXY=file://$(PATH=$real_path go env GOMODCACHE)/cache/download"
+    diff -u "$here/manifests/nats.yaml" "$tmp/nats.yaml" >"$tmp/out" ||
+      fail "manifests/nats.yaml differs from a fresh render; run render-nats.sh and commit its output"
+  )
+  pass "manifests/nats.yaml equals a fresh render of the vendored chart with nats-values.yaml, on a PATH with no curl and no jq"
 else
   printf 'SKIP: go is not on PATH, so manifests/nats.yaml was not compared with a fresh render\n'
 fi
