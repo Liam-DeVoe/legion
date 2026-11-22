@@ -380,11 +380,18 @@ func eventually(t *testing.T, what string, cond func() bool) {
 const waitSpare = 30 * time.Second
 
 // untilDeadline is a channel that receives waitSpare before the test binary's deadline
-// (testwait.Remaining), and never under -timeout 0: the end of a wait in a select whose failure
-// branch has work of its own to do, such as releasing a hold, before it fails the test.
+// (testwait.Left): the end of a wait in a select whose failure branch has work of its own to do,
+// such as releasing a hold, before it fails the test. It fails nothing itself. With waitSpare or
+// less of the deadline left, as under a -timeout of 30 s or less, it never receives, so the select
+// still takes a value already there, and one that never comes leaves the test to the binary's own
+// -timeout, which names it; under -timeout 0 it never receives either.
 func untilDeadline(t *testing.T) <-chan time.Time {
 	t.Helper()
-	return time.After(testwait.Remaining(t, waitSpare))
+	left, err := testwait.Left(t, waitSpare)
+	if err != nil {
+		return nil
+	}
+	return time.After(left)
 }
 
 // testContext is a context that ends waitSpare before the test binary's deadline
