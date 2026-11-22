@@ -69,7 +69,8 @@ jobs:
       - uses: ./.github/actions/install-elan
       - name: Build the Lean model
         run: |
-          lake build
+          . ../../../../../../.github/scripts/ci-log-guard.sh
+          ci_log_guard lake build
           test -x .lake/build/bin/airlock-model
         working-directory: packages/envoy/internal/cipher/proxyrules/lean
       # What the three axioms are, and why fewer theorems printed than the model has is a

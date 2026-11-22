@@ -42,19 +42,19 @@ import sys
 from pathlib import Path
 
 import yaml
-from shell_commands import ASSIGNMENT, EXPRESSION, SKIP_WORDS, Scanner, command_of
+from shell_commands import ASSIGNMENT, EXPRESSION, INTERPRETERS, SKIP_WORDS, Scanner, command_of
 
 MODE = sys.argv[1]
 ALLOW = Path(".github/log-guard-allow.tsv")
 WRAPPERS = ("ci_log_guard", "ci_log_guard_stderr")
-# env is a runner here (RUNNERS), read with its options, not a keyword shed before the command.
-KEYWORDS = SKIP_WORDS - set(WRAPPERS) - {"env"}
+# env and time are runners here (RUNNERS), read with their options, not keywords shed before the
+# command.
+KEYWORDS = SKIP_WORDS - set(WRAPPERS) - {"env", "time"}
 GROUP = re.compile(r"\{[ \t]*([^{}]*);[ \t]*\}[ \t]*2>&1[ \t]*\|[ \t]*ci_log_guard[ \t]+cat")
-# A call of ci_log_guard_stderr, and what makes its stdout no part of the log: a `$(` or a backtick
-# before it on its line, or a redirection of stdout after it (`>&2`, `> file`, `1>`, `&>`).
+# A call of ci_log_guard_stderr. Its stdout is no part of the log when the call stands inside a
+# `$(…)`, a backtick pair or a `<(…)` still open at the call, or when its own command, up to the
+# first unquoted `;`, `&&`, `||`, `|`, `&` or newline, redirects its stdout (stdout_safe).
 STDERR_CALL = re.compile(r"(?<![\w-])ci_log_guard_stderr[ \t]+")
-CAPTURED = re.compile(r"\$\(|`")
-REDIRECTED = re.compile(r"(?:^|[ \t;|&])(?:1?>>?|&>>?|>\|)")
 SHELLS = {None, "bash", "sh"}
 
 # client -> the subcommands that reach a server, or None for every use of the client. bun and bunx
@@ -119,14 +119,90 @@ def commands(run: str) -> list:
     return out
 
 
+def open_captures(line: str, upto: int) -> bool:
+    """Whether a `$(`, `<(` or backtick is still open at `upto` in the line, read quote-aware: a
+    command inside one has its stdout captured, not printed."""
+    stack, quote, i = [], None, 0
+    while i < upto:
+        ch, nxt = line[i], line[i + 1:i + 2]
+        if quote == "'":
+            quote = None if ch == "'" else quote
+        elif ch == "\\":
+            i += 1
+        elif ch == "`":
+            if stack and stack[-1] == "`":
+                stack.pop()
+            else:
+                stack.append("`")
+        elif ch in "$<" and nxt == "(":
+            stack.append("capture")
+            i += 1
+        elif quote == '"':
+            quote = None if ch == '"' else quote
+        elif ch in "'\"":
+            quote = ch
+        elif ch == "(":
+            stack.append("group")
+        elif ch == ")" and stack and stack[-1] != "`":
+            stack.pop()
+        i += 1
+    return any(entry in ("capture", "`") for entry in stack)
+
+
+def stdout_safe(line: str, start: int) -> bool:
+    """Whether the command that starts at `start` redirects its stdout before it ends: at the first
+    unquoted `;`, `&&`, `||`, `|`, a lone `&`, or a `)` or backtick closing what encloses it. A `>`
+    with no file descriptor or with 1 before it, `>&…`, `>>`, `>|` and `&>` redirect stdout; `2>`
+    and `2>&1` do not."""
+    quote, depth, i = None, 0, start
+    while i < len(line):
+        ch, nxt = line[i], line[i + 1:i + 2]
+        if quote == "'":
+            quote = None if ch == "'" else quote
+        elif ch == "\\":
+            i += 1
+        elif quote == '"':
+            quote = None if ch == '"' else quote
+        elif ch in "'\"":
+            quote = ch
+        elif ch in "$<" and nxt == "(":
+            depth += 1
+            i += 1
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            if depth == 0:
+                return False
+            depth -= 1
+        elif depth == 0:
+            if ch == "`" or ch == ";" or ch == "|":
+                return False
+            if ch == "&":
+                if nxt == ">":
+                    return True
+                if line[i - 1:i] != ">":
+                    return False
+            if ch == ">":
+                before = line[i - 1:i]
+                word_start = i == start or line[i - 2:i - 1] in ("", " ", "\t")
+                if before.isdigit() and word_start and before != "1":
+                    pass
+                else:
+                    return True
+        i += 1
+    return False
+
+
 def loose_stderr_guards(run: str) -> list:
     """Each ci_log_guard_stderr call whose stdout is neither captured nor redirected: that
     command's stdout reaches the log outside the block. Read by the line, a backslash-continued
-    line joined to the next first."""
+    line joined to the next first, and each call by its own command alone."""
     loose = []
     for line in EXPRESSION.sub("EXPR", run).replace("\\\n", " ").split("\n"):
+        if line.lstrip(" \t").startswith("#"):
+            continue
         for call in STDERR_CALL.finditer(line):
-            if not CAPTURED.search(line[:call.start()]) and not REDIRECTED.search(line[call.end():]):
+            if not open_captures(line, call.start()) and not stdout_safe(line, call.end()):
                 loose.append(line.strip(" \t"))
     return loose
 
@@ -146,6 +222,11 @@ RUNNERS = {
                "--replace", "--delimiter", "--eof", "--arg-file", "--max-chars"}, 0),
     "env": ({"-u", "--unset", "-C", "--chdir", "-S", "--split-string"}, 0),
     "command": (set(), 0),
+    "time": (set(), 0),
+    # .github/scripts/gh-read.sh's two: each runs the command after it, and prints a refused call's
+    # stderr itself outside any block, so a step that calls one is read as calling the client.
+    "gh_wait_reset": ({"--stderr"}, 0),
+    "gh_read": ({"--stderr"}, 0),
 }
 # find runs the words after each of these, up to `;` or `+`.
 FIND_EXEC = ("-exec", "-execdir", "-ok", "-okdir")
@@ -167,6 +248,15 @@ def network_client(words: list) -> str:
             words.pop(0)
         del words[:plain]
     if not words:
+        return ""
+    # A shell's `-c` script, or eval's words, after a runner: each of its commands is read the same
+    # way (shell_commands' command_of reads through the interpreter and its flags).
+    if words[0].rsplit("/", 1)[-1] in INTERPRETERS or words[0] == "eval":
+        for inner in command_of(list(words)):
+            if inner != words:
+                client = network_client(inner)
+                if client:
+                    return client
         return ""
     if words[0].rsplit("/", 1)[-1] == "find":
         for i, word in enumerate(words):

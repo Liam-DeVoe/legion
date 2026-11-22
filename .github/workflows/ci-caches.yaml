@@ -577,7 +577,9 @@ jobs:
       # airlock-lean will find rather than elan alone.
       - name: Build what airlock-lean builds
         if: steps.elan-cache.outputs.cache-hit != 'true'
-        run: lake build
+        run: |
+          . ../../../../../../.github/scripts/ci-log-guard.sh
+          ci_log_guard lake build
         working-directory: packages/envoy/internal/cipher/proxyrules/lean
 
       - if: steps.elan-cache.outputs.cache-hit != 'true'

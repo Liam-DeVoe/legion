@@ -432,15 +432,29 @@ jobs:
             fi
             sources+=("$IMAGE@sha256:$hex")
           done
-          docker buildx imagetools create --metadata-file "$RUNNER_TEMP/index-metadata.json" \
-            --tag "$IMAGE:$SHA" "${sources[@]}"
+          # The stop-commands block of .github/scripts/ci-log-guard.sh, written inline as the
+          # release jobs write it: this job holds packages: write. A fresh token from /dev/urandom,
+          # both markers on stderr, the end marker on a line of its own after the command exits, so
+          # the registry's error that imagetools prints stays text; the step's own ::error:: after
+          # a block goes to stderr, in order with it.
+          ci_log_guard_stderr() {
+            local t s=0
+            t=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+            [ "${#t}" -eq 32 ] || return 1
+            printf '::stop-commands::%s\n' "$t" >&2
+            "$@" || s=$?
+            printf '\n::%s::\n' "$t" >&2
+            return "$s"
+          }
+          ci_log_guard_stderr docker buildx imagetools create --metadata-file "$RUNNER_TEMP/index-metadata.json" \
+            --tag "$IMAGE:$SHA" "${sources[@]}" >&2
           digest=$(jq -r '."containerimage.descriptor".digest' "$RUNNER_TEMP/index-metadata.json")
           if [[ ! $digest =~ ^sha256:[0-9a-f]{64}$ ]]; then
-            echo "::error::imagetools create reported $(printf '%q' "$digest"), which is not a sha256 digest"
+            echo "::error::imagetools create reported $(printf '%q' "$digest"), which is not a sha256 digest" >&2
             exit 1
           fi
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
-          docker buildx imagetools inspect "$IMAGE@$digest"
+          ci_log_guard_stderr docker buildx imagetools inspect "$IMAGE@$digest" >&2
 
   # A GitHub artifact attestation of the index image_index wrote, stored with GitHub. The
   # `envoy:<sha>` tag alone cannot say which run published an image: a workflow_dispatch from any
@@ -770,7 +784,7 @@ jobs:
               latest_has_revision=$(printf '%s\n' "$latest_manifest" | jq -r '(.annotations // {}) | has("org.opencontainers.image.revision")')
               # Only a full commit sha: any other annotation (a ref such as `origin/main^{/…}` that
               # git resolves, carrying the registry's text) is refused below by name.
-              latest_sha=$(printf '%s\n' "$latest_manifest" | jq -r '(.annotations // {})["org.opencontainers.image.revision"] // empty | select(test("^[0-9a-f]{40}$"))')
+              latest_sha=$(printf '%s\n' "$latest_manifest" | jq -r '(.annotations // {})["org.opencontainers.image.revision"] // empty | strings | select(test("^[0-9a-f]{40}$"))')
 
               # Resolve the one legacy unannotated latest tag through its GHCR package-version
               # metadata. The package is the image without its registry and owner

@@ -1289,6 +1289,11 @@ jobs:
           test -n "$VERSION"
           ci_log_guard_stderr docker buildx imagetools create --prefer-index=false --tag "$IMAGE:$VERSION" "$IMAGE@$DIGEST" >&2
           tagged=$(ci_log_guard_stderr docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$IMAGE:$VERSION")
+          # The registry's answer is printed only once it is a digest's form.
+          if ! [[ $tagged =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::$IMAGE:$VERSION names no sha256 digest in the registry's answer" >&2
+            exit 1
+          fi
           if [ "$tagged" != "$DIGEST" ]; then
             echo "::error::$IMAGE:$VERSION names $tagged, not $DIGEST, the digest worker_image pushed" >&2
             exit 1

@@ -125,6 +125,49 @@ check "names the stderr guard whose stdout reaches the log" \
 check "reads \`command -v go\` as no client, and counts nine problems" \
   "$(contains "$out" '^::error::check-log-guard: 9 problem(s)$')"
 
+# The second review's forms. A ci_log_guard_stderr is judged by its own command: a redirection of
+# another command on its line, or a `$(` closed before it, does not capture its stdout. A shell's
+# -c script behind a runner, gh-read.sh's gh_wait_reset and `time -p` are read through.
+echo "case: a stderr guard judged by its own command, and a client behind a runner's shell, fail by name"
+root=$(fixture own-command "$(cat <<'SH'
+ci_log_guard_stderr gh api repos/o/a || { echo "::error::x" >&2; exit 1; }
+ci_log_guard_stderr gh api repos/o/b; echo ok >&2
+ci_log_guard_stderr gh api repos/o/c && echo done > out.txt
+v=$(date); ci_log_guard_stderr gh api repos/o/d
+x=$(ci_log_guard_stderr gh api repos/o/e); ci_log_guard_stderr gh api repos/o/f
+timeout 600 bash -c 'go test ./a'
+sudo sh -c 'apt-get install -y x'
+xargs -I{} sh -c 'go test {}'
+find . -exec sh -c 'go vet ./...' \;
+time -p go test ./b
+gh_wait_reset --stderr err.txt gh api repos/o/g
+SH
+)")
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+for found in 'gh api repos/o/a' 'gh api repos/o/b' 'gh api repos/o/c' 'gh api repos/o/d' 'gh api repos/o/f'; do
+  check "names the uncaptured stderr guard of \`$found\`" \
+    "$(contains "$out" "runs .[^\`]*ci_log_guard_stderr $found[^\`]*.: ci_log_guard_stderr blocks only stderr")"
+done
+check "reads the captured call of its line as captured" \
+  "$(is "$(grep -c 'ci_log_guard_stderr blocks only stderr' <<<"$out")" 5)"
+for found in "timeout 600 bash -c go test ./a" "sudo sh -c apt-get install -y x" "xargs -I{} sh -c go test {}" \
+  "find . -exec sh -c go vet ./... ;" "time -p go test ./b" "gh_wait_reset --stderr err.txt gh api repos/o/g"; do
+  check "names \`$found\`" "$(contains "$out" "step \"Fetch\" runs \`$found\`")"
+done
+
+echo "case: a stderr guard whose own command captures or redirects its stdout passes"
+root=$(fixture own-command-safe "$(cat <<'SH'
+ci_log_guard_stderr gh api repos/o/a >&2 || { echo "::error::x" >&2; exit 1; }
+v=$(ci_log_guard_stderr gh api repos/o/b) || exit 1
+ci_log_guard_stderr gh api repos/o/c > out.json 2>/dev/null
+ci_log_guard_stderr gh api repos/o/d &> both.txt
+ci_log_guard_stderr gh api repos/o/e 2>&1 >&2
+SH
+)")
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+
 echo "case: a row with its reason allows its command, and only that one"
 root=$(fixture allowed 'docker pull ghcr.io/o/i' \
   "$(printf '.github/workflows/app.yaml\tapp\tFetch\tdocker\tthe image is pulled by digest and its text was probed')")

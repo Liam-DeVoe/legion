@@ -26,7 +26,7 @@
 # can see a block on the wrong stream; and a step's own warning written on standard output beside
 # a block is dropped in the stdout-in-block order, so the parser can see that loss.
 #
-# The six release steps that hold credentials define the guard inline (they run no script of
+# The seven release steps that hold credentials define the guard inline (they run no script of
 # this repository): each one's run: text is read out of its workflow, its definition driven with
 # the stand-in client as the library is, and each npm publish step run whole against a stand-in
 # npm; the control is the same text with the inline guard taken out.
@@ -381,7 +381,7 @@ for rel in (".github/workflows/release.yaml", ".github/workflows/release-envoy-l
             print(f"{n}\t{rel}\t{step.get('name')}\t{'publish' if publish else 'other'}")
 PY
 )
-check "the reader finds the six release steps that define the guard inline" "$(is "${#inline[@]}" 6)"
+check "the reader finds the seven release steps that define the guard inline" "$(is "${#inline[@]}" 7)"
 
 # A stand-in npm for a whole publish step: `npm view` finds no published version, and `npm publish`
 # answers as a registry's 4xx would have it print, planting each form on both streams, and exits
