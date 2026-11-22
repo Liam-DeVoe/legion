@@ -470,3 +470,64 @@ func TestAMoveBackGoesToAnyEarlierStepInTheRoleParts(t *testing.T) {
 		})
 	}
 }
+
+// A step reads the reports of the steps before it in its task, and nothing of a step that comes
+// after it: a planner's plan exists for a step only where a planner step stands before it, and a
+// tester's handoff is read by the steps after the tester. A step after the reviewer can send the
+// work back, so an approval does not end the change. Each part is read alone, and the composition
+// of each step that builds from a plan is read whole, since Compose joins go/worker-common.md into
+// it. This shows the text is loaded, never that a worker follows it.
+func TestEachStepIsToldTheStepsAroundItInAnyOrder(t *testing.T) {
+	planRead := []string{
+		"where a planner step comes before yours, or your task has no `Task:` line, it is the issue's `plan.md`",
+		"where no planner step comes before yours, it is your task's `Task text:`",
+		"A task with no planner step before yours has no plan handoff for you",
+	}
+	planRetired := []string{"`Steps:` line names a planner,", "where the line names no planner", "`Steps:` line names no planner has no plan handoff"}
+	for _, tc := range []struct {
+		part       string
+		want, gone []string
+	}{
+		{
+			"tester.md",
+			append(slices.Clone(planRead),
+				"each step after yours reads what you wrote, and so does the retro",
+				"Read the implementation handoff at the version your task's `Step <j> (implementer) reported:` line names"),
+			append(slices.Clone(planRetired),
+				"the reviewer where your task has a reviewer step",
+				"Read the implementation handoff at the version your task's `Handoff:` line names"),
+		},
+		{"core/tester.md", []string{"so a defect comes back before the steps after yours run"}, []string{"so a defect comes back before the review"}},
+		{
+			"reviewer.md",
+			append(slices.Clone(planRead), "After your approval, the head changes only when a later step of your task sends the work back"),
+			append(slices.Clone(planRetired), "After approval, no implementation or further review change may happen"),
+		},
+		{
+			"implementer.md",
+			append(slices.Clone(planRead),
+				"so the steps after yours, the tester's among them, run on that head",
+				"the plan handoff's `requiredSkills` for your role, where a planner step comes before yours"),
+			append(slices.Clone(planRetired), "so the tester runs that head"),
+		},
+		{
+			"core/planner.md",
+			[]string{"Plan the assigned issue completely for each step that follows yours", "the plan goes to the steps after yours with the choice unmade", "a gap the steps after yours inherit"},
+			[]string{"completely for implementation, for each step", "the plan goes to the implementer", "a gap the implementation inherits"},
+		},
+	} {
+		t.Run(tc.part, func(t *testing.T) {
+			holdsAndRetires(t, "roles/"+tc.part, rolePart(t, tc.part), tc.want, tc.gone)
+		})
+	}
+	composer, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer} {
+		t.Run("composed "+string(role), func(t *testing.T) {
+			holdsAndRetires(t, "the composed "+string(role)+" prompt", composedText(t, composer, role, false), nil,
+				[]string{"`Steps:` line names a planner", "`Steps:` line names the planner", "`Steps:` line names no planner"})
+		})
+	}
+}
