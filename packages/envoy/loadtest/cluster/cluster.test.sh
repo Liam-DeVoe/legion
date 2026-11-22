@@ -178,8 +178,9 @@
 # between the disk watcher's failed act and its next nap leaves it without a second act, and one
 # that lands inside the watcher's read of the volume leaves it without acting at all; (ff) up
 # waits for each daemon it starts until that daemon writes its pidfile, however many naps a
-# loaded machine holds the daemon's start for, and start_daemon ends non-zero, naming the
-# daemon's end, once a daemon has ended without writing it.
+# loaded machine holds the daemon's start for, start_daemon ends non-zero, naming the daemon's
+# end, once a daemon has ended without writing it, and a shell with job control on starts a
+# daemon that lives.
 set -euo pipefail
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -4416,7 +4417,10 @@ pass "a runner pod that stops answering exec bounds the wait past its deadline, 
 # the daemon at any count below that, however fast or slow the machine is, and one that waits for
 # the pidfile takes it. A daemon that ends without writing its pidfile -- here one whose run has no
 # state.json, which use_run refuses -- ends that wait, which then names the daemon's end; the guard
-# makes a wait that outlives its daemon this case's failure rather than the suite's hang.
+# makes a wait that outlives its daemon this case's failure rather than the suite's hang. And a
+# shell with job control on (as SHELLOPTS=monitor or a sourcing interactive shell gives it) still
+# starts a daemon that lives: its background job leads a process group of its own, so setsid would
+# fork, and a wait that took the exiting launcher for the daemon would call a live daemon ended.
 reset_fake
 export LOADTEST_CLUSTER_ROOT=$tmp/root-slowstart
 rm -f -- "$fake/daemon-start-holds"
@@ -4461,4 +4465,29 @@ grep -qF "the heartbeat daemon ended before this command saw its pidfile name it
   fail "start_daemon's refusal of a daemon that ended does not name its end: $(cat "$tmp/dead-start.err")"
 grep -qF "no $LOADTEST_CLUSTER_ROOT/$dead_run/state.json" "$LOADTEST_CLUSTER_ROOT/$dead_run/logs/heartbeat.log" ||
   fail "the daemon did not end where this case ends it, at use_run's refusal of a run with no state.json: $(cat "$LOADTEST_CLUSTER_ROOT/$dead_run/logs/heartbeat.log")"
-pass "up waits for each daemon until it writes its pidfile, however many naps its start is held for, and start_daemon ends non-zero, naming the daemon's end, once a daemon has ended without writing it"
+# The shell with job control on, starting a daemon whose run has the state.json it needs.
+readonly monitor_run=lt-20261122t000000-0b0e
+monitor_dir=$LOADTEST_CLUSTER_ROOT/$monitor_run
+mkdir -p "$monitor_dir/logs"
+jq -n --arg ns "$ns" '{namespace: $ns}' >"$monitor_dir/state.json"
+(
+  # shellcheck source=packages/envoy/loadtest/cluster/cluster.sh
+  source "$cluster"
+  NS=$ns
+  set_run "$monitor_run"
+  set -m
+  start_daemon heartbeat
+) 2>"$tmp/monitor-start.err" &
+monitor_start=$!
+stop_watchdog 60 "$monitor_start"
+monitor_rc=0
+wait "$monitor_start" || monitor_rc=$?
+stop_watchdog_end
+[ ! -f "$fake/stop-late" ] ||
+  fail "start_daemon with job control on did not return within 60 s: $(cat "$tmp/monitor-start.err")"
+((monitor_rc == 0)) ||
+  fail "start_daemon with job control on refused a daemon it had started: $(cat "$tmp/monitor-start.err")"
+monitor_hb=$(cat -- "$monitor_dir/heartbeat.pid" 2>/dev/null) && kill -0 "$monitor_hb" 2>/dev/null ||
+  fail "the heartbeat start_daemon started with job control on is not running: $(cat "$monitor_dir/logs/heartbeat.log" 2>/dev/null)"
+kill -TERM -- "-$monitor_hb" 2>/dev/null || true
+pass "up waits for each daemon until it writes its pidfile, however many naps its start is held for, start_daemon ends non-zero, naming the daemon's end, once a daemon has ended without writing it, and a shell with job control on starts a daemon that lives"

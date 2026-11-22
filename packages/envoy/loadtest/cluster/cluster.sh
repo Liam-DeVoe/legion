@@ -1072,9 +1072,14 @@ kube_lock_take() {
 # waits for whichever comes first, that pidfile or the daemon's end, with no count of naps: a
 # daemon a loaded machine is slow to start is still starting, not failed. setsid runs the daemon
 # in place, since this shell's background job leads no process group of its own, so $! is the
-# daemon itself; a daemon that has ended is gone or a zombie (pid_running).
+# daemon itself; a daemon that has ended is gone or a zombie (pid_running). Job control is off for
+# the start (set +m, undone at return by local -): with it on, as SHELLOPTS=monitor or a sourcing
+# interactive shell gives it, the job would lead its own group, setsid would fork, and $! would be
+# a launcher that exits at once while its daemon lives on.
 start_daemon() {
   local name=$1 daemon
+  local -
+  set +m
   setsid bash "$SELF" "_$name" --namespace "$NS" --run "$RUN" >>"$RUN_DIR/logs/$name.log" 2>&1 </dev/null &
   daemon=$!
   until daemon_alive "$name"; do
@@ -1087,10 +1092,11 @@ start_daemon() {
 }
 
 # pid_running PID: PID is a process that has not ended. A child that has ended stays a zombie,
-# which kill -0 still finds, until this shell reaps it.
+# which kill -0 still finds, until this shell reaps it. The 2>/dev/null comes before the read's
+# input, so bash's own message for a /proc/PID that is gone is silenced too.
 pid_running() {
   local stat
-  read -r stat <"/proc/$1/stat" 2>/dev/null || return 1
+  read -r stat 2>/dev/null <"/proc/$1/stat" || return 1
   stat=${stat##*) }
   [ "${stat%% *}" != Z ]
 }
