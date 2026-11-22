@@ -277,8 +277,14 @@ and each command runs there.
 - `bun run test:repeat --lane <web|web-cold|harness> [--reruns <k>] [--seed <n>] --out <dir>` runs
   one lane with every test run k times (`--rerun-each`), 20 when `--reruns` is left out, and writes
   a report of every row that failed, with how many of its runs failed, its seed and the command
-  that runs it again, and of every failure that belongs to no row.
-  `.github/workflows/dispatch-unit-repeat.yaml` runs it weekly, each lane under three seeds.
+  that runs it again, and of every failure that belongs to no row. A SIGTERM or a SIGINT stops it:
+  it stops Bun and reports each test file a worker was in, with the run and the row it was in, by
+  the row's place and name. One that comes after Bun has ended, while it writes its report, is
+  named in the report beside Bun's results. A worker, or Bun's test process, killed from outside,
+  as the out-of-memory killer kills one, is named the same way: each file it was in, with the run
+  and the row. `.github/workflows/dispatch-unit-repeat.yaml` runs it weekly, each lane under three
+  seeds, under a deadline that sends it that SIGTERM; the step `exec`s `timeout`, so the SIGINT
+  that GitHub's runner sends a cancelled step, or one at its budget, reaches it too.
 
 - A rerun of a file keeps every module the run before loaded, so a module-level store or cache
   keeps what that run left in it. Where a row needs such state empty, the module exports a reset and
@@ -527,6 +533,18 @@ A package whose tests migrate into the database their DSN names, rather than tak
 takes one database for its whole run instead: `testdb.RunDatabaseMain` from its `TestMain`, and
 `testdb.RunDatabaseFor` wherever it reads the DSN (`internal/daemon`, whose daemons migrate the
 database they are given).
+
+A pgx pool a daemon test opens holds four connections, unless `LEGION_TEST_PG_DSN` sets a size of
+its own (`pool_max_conns`), which it keeps. pgx sizes a pool with no size of its own at the greater
+of 4 and the machine's CPU count, so on a large machine one test could ask for more connections
+than PostgreSQL's default 100 allow, and pass only on a small one. `testdb.PoolBounded` gives a
+URL the pool keys `LEGION_TEST_PG_DSN` sets, or `pool_max_conns=4` where it sets no size;
+`testdb.Database`, `testpg`'s `Clone`, and the `testDSN` of `internal/daemon` and
+`internal/store` answer such URLs. A URL that libpq, `pgx.Connect`, `psql`, a scratch Dispatch or
+another child process reads takes `testdb.PlainDatabase` or `testdb.DatabaseURL` instead, which
+hold none of pgxpool's keys even when `LEGION_TEST_PG_DSN` sets one: `pgx.Connect` sends such a
+key to the server, which refuses it, `psql` refuses the URL, and Dispatch refuses a URL that sets
+`pool_max_conns`.
 
 A test that needs one of envoy's binaries takes it from
 `packages/daemon/internal/testbuild`'s `EnvoyBinary`, which builds each command once per test

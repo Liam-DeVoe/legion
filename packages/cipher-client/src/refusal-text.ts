@@ -61,7 +61,7 @@ const ISSUER_NAME = "'[a-z0-9-]{1,64}'";
 const ISSUER_LIST = `\\[${ISSUER_NAME}(?: ${ISSUER_NAME}){0,31}\\]`;
 /** The exchange policy's one sentence of what a session name may be (Go's `sessionRule`). */
 const SESSION_RULE =
-  "a session name is printable, carries no whitespace, and is at most [0-9]{1,4} bytes";
+  "a session name is printable, carries no whitespace, '\\*' or '>', and is at most [0-9]{1,4} bytes";
 
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
