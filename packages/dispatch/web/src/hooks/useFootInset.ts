@@ -1,26 +1,37 @@
 import { type RefObject, useLayoutEffect } from "react";
 
 /**
- * The layers of the foot of the screen, from the bottom up. Everything fixed at the screen's
- * bottom edge, or sticky to the foot of a scroll, stacks through them, so none lies over another,
- * whichever of them show together and at any width. Each such element publishes into its layer
- * how far up from the screen's bottom edge it reaches (`useFootInset`), and each layer's
- * property, on the document element, holds the highest reach published into that layer or into
- * any layer below it, so an element placed above a layer reads that one property. A property is
- * unset while it holds 0. A new foot element picks its layer here by name and joins this list.
+ * The layers of the foot of the screen, from the bottom up. Everything at the foot of the screen
+ * stacks through them, so none lies over another, whichever of them show together and at any
+ * width. Each such element publishes into its layer how far up from the screen's bottom edge it
+ * reaches (`useFootInset`), and each layer's property, on the document element, holds the highest
+ * reach published into that layer or into any layer below it, so an element placed above a layer
+ * reads that one property. A property is unset while it holds 0.
+ *
+ * Registering an element through `useFootInset` is what makes it a foot element: no rule can tell
+ * from an element's style that a float may lie over it, since a composer laid out in the page's
+ * flow at the bottom of a page that fills the screen is as much at the foot as one fixed there.
+ * A registered element counts while it has a box on screen, wherever it sits and however it is
+ * placed - fixed, sticky to the foot, absolute or in flow - unless it is sticky to the top
+ * (`position: sticky` with a `top` other than `auto`, whatever its `bottom` says), which never
+ * counts. A new foot element picks its layer here by name and joins this list.
  *
  * - `page` (`--foot-page-inset`): the page's own foot controls. Each keeps its own place, and the
  *   page lays them out against each other.
  *   - The docked composer below `sm`, and a composer a host's frame fixes at the foot: a phone
  *     thread's and a phone reply's in the Conversation, and a phone margin thread's (`ThreadCard`'s
- *     composer frame), all through `MentionComposer`.
+ *     composer frame), all through `MentionComposer`. From `sm` up the docked composer sticks to
+ *     the top and counts nothing.
  *   - The issues table's selection bar from `sm` up (`IssueTableSelection`). Below `sm` it sits
  *     under the header and publishes nothing.
  *   - The margin's sheet below `xl` while it is collapsed (`MarginSheet`).
  *   - The Agents page's broadcast composer, sticky to the foot of the page's scroll
  *     (`AgentsPage`), wherever it is on screen, stuck or resting at the end of the list: the
- *     wrapper that holds it with the sends, and on a narrow or short screen, where the wrapper has
- *     no box, the composer's own section.
+ *     wrapper that holds it with the sends, and the composer's own section, which on a narrow or
+ *     short screen, where the wrapper has no box, is what sticks.
+ *   - The agent live view's composer (`AgentThread`), in the flow of a page that fills the
+ *     screen, whose reach takes in the row laid out under it, and the live thread's own `Jump to
+ *     latest`, just above the composer while it shows: both only in the view in front.
  * - `banner` (`--foot-banner-inset`): the update banner (`DeploymentResilience`), 1rem above the
  *   page layer.
  * - `status` (`--foot-status-inset`): the shell's status corner - Pending changes, the note on
@@ -46,7 +57,7 @@ export const FOOT_LAYERS = [
 export type FootLayer = (typeof FOOT_LAYERS)[number]["name"];
 
 /** One element this hook holds: how far up from the screen's bottom edge it reaches - 0 while it
- *  is laid out in the page, hidden, or not at the foot - and the measurement that reads that again
+ *  is hidden, off the screen, or sticky to the top - and the measurement that reads that again
  *  where the element now stands. */
 type FootControl = { measure: () => void; reach: number };
 
@@ -99,22 +110,24 @@ function publish(): void {
 }
 
 /**
- * While `active`, measures `ref`'s element whenever it or the screen changes size - a refusal's
- * row grows a composer upward, a widening moves it into the page - or whenever a published layer
- * moves it, and publishes into `layer` how far up from the screen's bottom edge it reaches. It
- * counts while the element has a box and is fixed (`position: fixed`), or while it is sticky to
- * the foot (`position: sticky` with a `bottom` other than `auto`) and its box is on screen. A
- * float lies over a foot element wherever their bands meet, not only where the element touches
- * the screen's bottom edge, so a sticky element counts where it rests above the foot too - at the
- * end of its scroll, or mid-screen under a short list - and the floats ride above it. One sticky
- * to the top (`bottom: auto`) never counts.
+ * While `active`, makes `ref`'s element a foot element of `layer` (`FOOT_LAYERS` says what that
+ * means): it measures the element whenever it or the screen changes size - a refusal's row grows
+ * a composer upward, a widening moves it - or whenever a published layer moves it, and publishes
+ * into `layer` how far up from the screen's bottom edge the element reaches: from its top edge
+ * down, so a row laid out under it is taken in too. It counts while the element has a box on
+ * screen, however it is placed, so it counts where it rests above the foot too - a sticky
+ * element at the end of its scroll, or anything mid-screen under a short list - and the floats
+ * ride above it, since a float lies over a foot element wherever their bands meet, not only where
+ * the element touches the screen's bottom edge. An element sticky to the top (`position: sticky`
+ * with a `top` other than `auto`) never counts, whatever its `bottom` says: the docked composer is
+ * `fixed` with a `bottom` below `sm` and sticks to the top from `sm` up, keeping that `bottom`.
  *
- * A sticky element moves when its scroll container scrolls, and when the content above it grows
- * or shrinks - agents joining or leaving the Agents list - and neither a `ResizeObserver` on the
- * element nor a `window` resize reports either move. So while the element is sticky to the foot
- * the hook also measures it on any scroll, once per animation frame, and whenever its parent
- * changes size: the parent element itself, or, where that is `display: contents` and has no box,
- * the nearest ancestor that has one.
+ * An element that is not fixed moves when its scroll container scrolls, and when the content
+ * around it grows or shrinks - agents joining or leaving the Agents list - and neither a
+ * `ResizeObserver` on the element nor a `window` resize reports either move. So while such an
+ * element has a box and is not sticky to the top, the hook also measures it on any scroll, once
+ * per animation frame, and whenever its parent changes size: the parent element itself, or, where
+ * that is `display: contents` and has no box, the nearest ancestor that has one.
  */
 export function useFootInset(
   ref: RefObject<HTMLElement | null>,
@@ -138,10 +151,10 @@ export function useFootInset(
     let parent: Element | null = null;
     // The scroll listener captures, since a scroll event does not bubble: it hears the scroll of
     // any container.
-    const follow = (sticky: boolean) => {
-      if (sticky === following) return;
-      following = sticky;
-      if (sticky) {
+    const follow = (moves: boolean) => {
+      if (moves === following) return;
+      following = moves;
+      if (moves) {
         window.addEventListener("scroll", measureNextFrame, { capture: true, passive: true });
         parent = element.parentElement;
         while (parent !== null && getComputedStyle(parent).display === "contents") {
@@ -159,14 +172,11 @@ export function useFootInset(
     const control: FootControl = {
       measure: () => {
         const box = element.getBoundingClientRect();
-        const { bottom, position } = getComputedStyle(element);
-        const shown = box.height > 0;
-        const stickyToFoot = shown && position === "sticky" && bottom !== "auto";
-        follow(stickyToFoot);
-        const counts =
-          (shown && position === "fixed") ||
-          (stickyToFoot && box.top < window.innerHeight && box.bottom > 0);
-        control.reach = counts ? Math.max(0, window.innerHeight - box.top) : 0;
+        const { position, top } = getComputedStyle(element);
+        const placed = box.height > 0 && !(position === "sticky" && top !== "auto");
+        follow(placed && position !== "fixed");
+        const onScreen = box.top < window.innerHeight && box.bottom > 0;
+        control.reach = placed && onScreen ? window.innerHeight - box.top : 0;
         publish();
       },
       reach: 0,

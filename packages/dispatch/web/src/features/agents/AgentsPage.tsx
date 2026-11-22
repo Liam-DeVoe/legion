@@ -1134,7 +1134,7 @@ function BroadcastComposer({
   // On a narrow or short screen this section is what sticks to the foot of the page's scroll
   // (`BroadcastFoot` has no box there), in the foot's page layer (`hooks/useFootInset.ts` lists
   // the foot's layers and the elements in each). Elsewhere it lays out in that wrapper, which
-  // sticks instead, and adds nothing.
+  // sticks instead and reaches at least as high.
   const sectionRef = useRef<HTMLElement>(null);
   useFootInset(sectionRef, true, "page");
 
