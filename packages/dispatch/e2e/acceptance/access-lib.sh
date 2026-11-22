@@ -544,18 +544,115 @@ main_additions_live=()
 main_additions_unused=''
 declare -A main_addition_uses=() main_addition_answers=()
 
-# The text of a member as a server writes it (jq's --arg text, `"NAME":VALUE`), taken out of an
-# answer wherever it stands as a member: after a comma, or first or alone in its object. A member
-# ends at a comma or at the close of its object, so `"n":1` is never taken out of `"n":12`.
-# shellcheck disable=SC2016 # a jq program: jq, not the shell, reads its $text and $m
-readonly strip_member='def literal: gsub("(?<c>[.*+?^$|(){}\\[\\]\\\\/])"; "\\\(.c)");
-  ($text | literal) as $m
-  | gsub("," + $m + "(?=[,}])"; "") | gsub("\\{" + $m + ","; "{") | gsub("\\{" + $m + "\\}"; "{}")'
+# The program main_addition_admits runs with python3 (a prerequisite of two-builds.sh) on one
+# answer: take_members FILE PATH VALUE OUT writes to OUT the answer in FILE with each member at PATH
+# whose value is written exactly VALUE taken out, together with the comma that joins it to its
+# object, and prints how many it took. It walks the answer's own text, so it takes out only those
+# members, wherever else the same text stands, and every other byte is written as it was. An answer
+# that is no JSON ends it with an error. PATH is an entry's path: `.name` for a member, `[]` for
+# each element of a list, its last step the member's name.
+readonly take_members='import json, re, sys
+source, path, value, out = sys.argv[1:5]
+steps = re.findall(r"\.([A-Za-z_][A-Za-z0-9_]*)|(\[\])", path)
+parent = [name if name else None for name, _ in steps[:-1]]
+member = steps[-1][0]
+with open(source, encoding="utf-8", newline="") as answer:
+    text = answer.read()
+n, i, taken = len(text), 0, []
+def skip():
+    global i
+    while i < n and text[i] in " \t\r\n":
+        i += 1
+def string():
+    global i
+    j = i + 1
+    while text[j] != "\"":
+        j += 2 if text[j] == "\\" else 1
+    word, i = text[i:j + 1], j + 1
+    return json.loads(word)
+def at_parent(where):
+    return len(where) == len(parent) and all(
+        isinstance(step, int) if want is None else step == want for step, want in zip(where, parent))
+def node(where):
+    global i
+    skip()
+    if text[i] == "{":
+        i, first = i + 1, True
+        skip()
+        while text[i] != "}":
+            start = i
+            key = string()
+            skip()
+            if text[i] != ":":
+                raise ValueError("no colon at %d" % i)
+            i += 1
+            skip()
+            begin = i
+            node(where + [key])
+            if key == member and text[begin:i] == value and at_parent(where):
+                taken.append((start, i, first))
+            skip()
+            first = False
+            if text[i] == ",":
+                i += 1
+                skip()
+            elif text[i] != "}":
+                raise ValueError("no comma at %d" % i)
+        i += 1
+    elif text[i] == "[":
+        i, index = i + 1, 0
+        skip()
+        while text[i] != "]":
+            node(where + [index])
+            skip()
+            index += 1
+            if text[i] == ",":
+                i += 1
+                skip()
+            elif text[i] != "]":
+                raise ValueError("no comma at %d" % i)
+        i += 1
+    elif text[i] == "\"":
+        string()
+    else:
+        j = i
+        while j < n and text[j] not in ",]} \t\r\n":
+            j += 1
+        json.loads(text[i:j])
+        i = j
+node([])
+skip()
+if i != n:
+    raise ValueError("text after the answer at %d" % i)
+cuts = []
+for start, end, first in taken:
+    if first:
+        j = end
+        while j < n and text[j] in " \t\r\n":
+            j += 1
+        cuts.append((start, j + 1 if j < n and text[j] == "," else end))
+    else:
+        k = start - 1
+        while text[k] in " \t\r\n":
+            k -= 1
+        cuts.append((k, end))
+kept, last = [], 0
+for begin, end in sorted(cuts):
+    kept.append(text[last:begin])
+    last = end
+kept.append(text[last:])
+with open(out, "w", encoding="utf-8", newline="") as written:
+    written.write("".join(kept))
+print(len(taken))'
 
 # main_additions_in_force ROOT BASE reads each entry of main_additions against this build's commit
 # (HEAD of the checkout at ROOT) and the base commit BASE, notes whether it is in force, and keeps
 # the index of each one that is in main_additions_live. An entry not written as the table above
-# says, or one naming a commit this build does not hold or git cannot read, fails the run.
+# says, or one naming a commit this build does not hold or git cannot read, fails the run. HEAD
+# stands for this build, which two-builds.sh builds from the working tree: where the two differ,
+# each way fails loudly. A HEAD that holds COMMIT over a tree without main's change leaves the entry
+# in force with nothing to admit, which fails the run once the reads are compared; a HEAD without
+# COMMIT over a tree with the change fails the run here.
 main_additions_in_force() {
   local root=$1 base=$2 i commit at path value said rc subject
   local -r commit_shape='^[0-9a-f]{40}$' route_shape='^[A-Z]+ /[^[:space:]]*$'
@@ -589,47 +686,31 @@ main_additions_in_force() {
 
 # main_addition_admits REQUEST BASE HEAD WHAT holds when BASE and HEAD, the masked answers of the
 # base and of this build to REQUEST ("METHOD PATH"), differ by the members the entries in force for
-# REQUEST's route name and by nothing else. Each such member is taken out of HEAD where it stands
-# with its VALUE. Then the two answers must be one JSON value (jq's ==), which holds the member to
-# its PATH and the base to having none there, and, with the member's text taken out of both as it
-# is written (strip_member), the same bytes, which holds every byte a JSON value does not show: the
-# order of members, an escape, a space. An answer that is no JSON is never admitted. Each entry that
-# took a member out of an admitted answer counts it in main_addition_uses and names WHAT under it
-# in main_addition_answers.
+# REQUEST's route name and by nothing else: with each member at an entry's PATH whose value is
+# written VALUE taken out of HEAD, and nothing taken out of BASE (take_members), the two answers are
+# the same bytes. So a member at PATH that the base answers too, the same text anywhere else, a
+# member planted beside it, another value, another order and another escape each still differ. An
+# answer that is no JSON is never admitted. Each entry that took a member out of an admitted answer
+# counts it in main_addition_uses and names WHAT under it in main_addition_answers.
 main_addition_admits() {
-  local request=$1 base=$2 head=$3 what=$4 route i commit at path value parent member taken text side
+  local request=$1 base=$2 head=$3 what=$4 route i commit at path value taken
   local -a used=()
   [ -n "$request" ] && [ ${#main_additions_live[@]} -gt 0 ] || return 1
   route=$(served_route head "${request%% *}" "${request#* }") || return 1
   route="${request%% *} $route"
-  cp "$head" "$work/admitted-head.json"
-  cp "$base" "$work/admitted-base.text"
-  cp "$head" "$work/admitted-head.text"
+  cp "$head" "$work/admitted-head"
   for i in "${main_additions_live[@]}"; do
     IFS=$'\t' read -r commit at path value <<<"${main_additions[$i]}"
     [ "$at" = "$route" ] || continue
-    # PATH's steps, each made optional (`.name?`, `[]?`), so an answer that holds no such list, or
-    # whose root is no object, has no member there rather than failing the read.
-    parent=$(sed -E 's/\.([A-Za-z_][A-Za-z0-9_]*)/.\1?/g; s/\[\]/[]?/g' <<<"${path%.*}")
-    member=${path##*.}
-    taken=$(jq --arg m "$member" --argjson v "$value" \
-      "[${parent:-.} | objects | select(has(\$m) and .[\$m] == \$v)] | length" "$work/admitted-head.json" 2>/dev/null) || return 1
+    taken=$(python3 -c "$take_members" "$work/admitted-head" "$path" "$value" "$work/admitted-head.next" 2>/dev/null) ||
+      return 1
+    mv "$work/admitted-head.next" "$work/admitted-head"
     [[ "$taken" =~ ^[0-9]+$ ]] || return 1
     [ "$taken" -gt 0 ] || continue
-    jq -c --arg m "$member" --argjson v "$value" \
-      "del(${parent:-.} | objects | select(has(\$m) and .[\$m] == \$v) | .[\$m])" \
-      "$work/admitted-head.json" >"$work/admitted-head.next" 2>/dev/null || return 1
-    mv "$work/admitted-head.next" "$work/admitted-head.json"
-    text=$(jq -rn --arg m "$member" --argjson v "$value" '"\($m | tojson):\($v | tojson)"')
-    for side in base head; do
-      jq -Rrj --slurp --arg text "$text" "$strip_member" "$work/admitted-$side.text" >"$work/admitted-$side.next" || return 1
-      mv "$work/admitted-$side.next" "$work/admitted-$side.text"
-    done
     used+=("$i")
   done
   [ ${#used[@]} -gt 0 ] || return 1
-  [ "$(jq -n --slurpfile b "$base" --slurpfile h "$work/admitted-head.json" '$b == $h' 2>/dev/null)" = true ] || return 1
-  cmp -s "$work/admitted-base.text" "$work/admitted-head.text" || return 1
+  cmp -s "$base" "$work/admitted-head" || return 1
   for i in "${used[@]}"; do
     main_addition_uses[$i]=$((${main_addition_uses[$i]:-0} + 1))
     main_addition_answers[$i]+="$what"$'\n'

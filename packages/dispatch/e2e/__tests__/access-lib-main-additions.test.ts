@@ -1,12 +1,13 @@
 /** How `e2e/acceptance/access-lib.sh` holds the blob driver's `main_additions`: the members main
  *  added to an answer after the commit the blob driver's base is pinned to. An entry admits an
  *  answer only where the base answers no member at its path and this build answers it with the
- *  entry's value, and nothing else differs, byte for byte: a member planted beside it, the member
- *  with another value, at another path or on another route, or a byte a JSON value does not show,
- *  such as the order of two members, still differs. An entry is in force only while this build
- *  holds its commit and the base does not; a build without the commit fails the run, a base with
- *  it leaves the entry admitting nothing, and an entry in force that admitted no answer fails the
- *  run once its report is read.
+ *  entry's value, and nothing else differs, byte for byte, once the members at its path are taken
+ *  out of this build's answer alone: a member planted beside it, the member with another value, at
+ *  another path or on another route, the same text moved or repeated outside the path, or a byte a
+ *  JSON value does not show, such as the order of two members, still differs. An entry is in force
+ *  only while this build holds its commit and the base does not; a build without the commit fails
+ *  the run, a base with it leaves the entry admitting nothing, and an entry in force that admitted
+ *  no answer fails the run once its report is read.
  *
  *  Each row sources the library alone in bash, with a work directory of its own and no server.
  *  The rows of an entry's force read a repository the row writes, its commits made with
@@ -169,6 +170,37 @@ test(
     });
   },
   rowLimit("short")
+);
+
+test(
+  "the member outside the path in both answers is left as it is, and the one main added is admitted",
+  async () => {
+    // Taking the text out of both answers, or out of this build's wherever it stands, would part
+    // these two: only the member at the path is taken out, and of this build's answer alone.
+    const outside = `,"x":{"holds":null}`;
+    expect(await judged(issue(gate, outside), issue(gateHolding("null"), outside))).toMatchObject({
+      differed: 0,
+      uses: 1,
+    });
+  },
+  rowLimit("short")
+);
+
+test(
+  "the member moved or repeated outside the path differs, though each pair is one JSON value",
+  async () => {
+    const moved = await judged(
+      issue(gate, `,"x":{"a":1,"holds":null}`),
+      issue(gateHolding("null"), `,"x":{"holds":null,"a":1}`)
+    );
+    expect(moved).toMatchObject({ differed: 1, uses: 0 });
+    const repeated = await judged(
+      issue(gate, `,"x":{"holds":null}`),
+      issue(gateHolding("null"), `,"x":{"holds":null,"holds":null}`)
+    );
+    expect(repeated).toMatchObject({ differed: 1, uses: 0 });
+  },
+  rowLimit("short", "short")
 );
 
 test(
