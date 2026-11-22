@@ -394,9 +394,15 @@ async function runWorker(options: {
       mcpServers: {
         legion: {
           command: "/bin/sh",
+          // The paths go as arguments, not into the command's text: a quote, a space or a `$` in
+          // TMPDIR reaches `exec` whole, where one written between single quotes ended them.
           args: [
             "-c",
-            `exec '${process.execPath}' '${join(plugin, "dist", "envoy-channel.js")}' 2>>'${paneLogFile}'`,
+            'exec "$1" "$2" 2>>"$3"',
+            "sh",
+            process.execPath,
+            join(plugin, "dist", "envoy-channel.js"),
+            paneLogFile,
           ],
           env: { CLAUDE_PLUGIN_DATA: join(configDir, "envoy-plugin-data") },
         },
