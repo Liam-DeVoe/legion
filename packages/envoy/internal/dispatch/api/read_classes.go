@@ -99,7 +99,7 @@ var readClasses = map[string]readEntry{
 	"GET /api/v1/whoami":                 reads("who the caller's own credential names", nil, readclass.Caller),
 	"GET /api/v1/me/agent-tokens":        reads("the caller's own personal tokens", nil, readclass.Caller),
 	"GET /api/v1/signins":                reads("the caller's own sign-ins", nil, readclass.Caller),
-	"GET /api/v1/credential-grants":      reads("the credential grants the caller may revoke: those they approve, and those of their own sessions, which they end as the operator (a restricted member is no approver, so lists only these)", nil, readclass.Caller),
+	"GET /api/v1/credential-grants":      reads("the credential grants the caller may revoke: those they approve, and those of their own sessions, which they end as the operator (a restricted member is no approver: Dispatch answers them the grants of their own sessions alone, whatever the secrets broker lists)", nil, readclass.Caller),
 	"GET /api/v1/me/answers":             reads("the caller's own answers and replies, each on an ask of a project", nil, readclass.Caller, readclass.Project),
 	"GET /api/v1/me/replies":             reads("the caller's own Inbox threads, each on an issue or document of a project or a conversation", nil, readclass.Caller, readclass.Project),
 	"GET /api/v1/me/state":               reads("the caller's read state, kept per issue of a project", nil, readclass.Caller, readclass.Project),
