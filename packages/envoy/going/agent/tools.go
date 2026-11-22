@@ -179,7 +179,7 @@ func (w *worker) tools(base int) []agentloop.Tool {
 		},
 		{
 			Name:        toolFindTools,
-			Description: "Find the tools of Dispatch that fit a need, and the two reads outside it (GitHub and the web): each tool's name, what it does and its arguments.",
+			Description: "Find the tools of Dispatch that fit a need, and the two reads outside it (GitHub and the web): each tool's name, the first sentence of what it does and its arguments. A need that is one tool's name alone, such as dispatch_doc_edit, answers that tool with all it does. Call it only for a tool whose name or arguments you do not know.",
 			Schema: schemaOf([]contracts.ToolField{
 				{Name: "need", Kind: contracts.ToolFieldString, Required: true, Description: "What you need a tool for, in a few words."},
 			}),
@@ -187,9 +187,9 @@ func (w *worker) tools(base int) []agentloop.Tool {
 		},
 		{
 			Name:        toolCallTool,
-			Description: "Run one tool find_tools named that reads, with its arguments, as the person. A tool that changes something is refused here: propose it in propose_plan.",
+			Description: "Run one tool that reads, by its name, with its arguments, as the person: a read the system prompt names, one find_tools named, or draw_block. A tool that changes something is refused here: propose it in propose_plan.",
 			Schema: json.RawMessage(`{"type":"object","properties":{` +
-				`"tool":{"type":"string","description":"The tool's name, as find_tools named it."},` +
+				`"tool":{"type":"string","description":"The tool's name, as the system prompt or find_tools names it."},` +
 				`"arguments":{"type":"object","description":"The tool's arguments."}},` +
 				`"required":["tool","arguments"]}`),
 			Run: w.toolRun(base, toolCallTool, w.callTool),
@@ -355,6 +355,10 @@ func needWords(need string) []string {
 // findTools answers the specs that fit the model's need (findableTools), scored by how many of the
 // need's words (needWords) its name and description hold, the best foundTools of them; of two
 // that hold as many, the one with the shorter description, whose words are more of it, first.
+// Each is given with the first sentence of its description (firstSentence) and its arguments'
+// schema whole, what a call of it needs: a spec's whole description runs to 7 KiB, and every model
+// call of the run's next eight turns is given the answer again. A need that is a tool's name alone
+// is answered with that tool whole. Either answer is bounded as every result is (foundAnswer).
 func (w *worker) findTools(_ context.Context, _ int, input json.RawMessage) (string, bool) {
 	var arguments struct {
 		Need string `json:"need"`
@@ -362,7 +366,17 @@ func (w *worker) findTools(_ context.Context, _ int, input json.RawMessage) (str
 	if err := json.Unmarshal(input, &arguments); err != nil || strings.TrimSpace(arguments.Need) == "" {
 		return "find_tools takes need, what you need a tool for", true
 	}
-	words := needWords(arguments.Need)
+	need := strings.TrimSpace(arguments.Need)
+	var named []findable
+	for _, tool := range findableTools() {
+		if tool.name == need {
+			named = append(named, tool)
+		}
+	}
+	if len(named) > 0 {
+		return foundAnswer(named, false), false
+	}
+	words := needWords(need)
 	type scored struct {
 		tool  findable
 		score int
@@ -391,12 +405,58 @@ func (w *worker) findTools(_ context.Context, _ int, input json.RawMessage) (str
 	if len(found) == 0 {
 		return "no tool fits that need; say it in other words", false
 	}
-	specs := make([]map[string]any, 0, len(found))
+	tools := make([]findable, 0, len(found))
 	for _, f := range found {
-		specs = append(specs, map[string]any{"name": f.tool.name, "description": f.tool.description, "arguments": f.tool.schema})
+		tools = append(tools, f.tool)
 	}
-	encoded, _ := json.Marshal(specs)
-	return string(encoded), false
+	return foundAnswer(tools, true), false
+}
+
+// foundNoteRoom is the bytes of a find_tools answer kept for the note that names the specs it
+// leaves out (foundLeftNote): the names of foundTools specs, the most an answer holds, fit in it.
+const foundNoteRoom = 1 << 10
+
+// foundLeftNote is the note after a find_tools answer that left specs out to stay within
+// modelResultLimit bytes, which names them.
+const foundLeftNote = "\n[This answer leaves out %d more tools that fit the need, to stay within %d bytes: %s. find_tools with a tool's name alone answers that tool.]"
+
+// foundAnswer is the JSON list find_tools answers of tools, at most foundTools of them, in order:
+// each tool's name, its description - its first sentence where short is set (firstSentence) - and
+// its arguments' schema, as many as fit in modelResultLimit bytes, the bound of every tool result
+// the model is given, with foundLeftNote naming those left out.
+func foundAnswer(tools []findable, short bool) string {
+	var out strings.Builder
+	out.WriteByte('[')
+	var left []string
+	for _, tool := range tools {
+		description := tool.description
+		if short {
+			description = firstSentence(description)
+		}
+		spec, _ := json.Marshal(map[string]any{"name": tool.name, "description": description, "arguments": tool.schema})
+		if out.Len()+len(spec)+2 > modelResultLimit-foundNoteRoom {
+			left = append(left, tool.name)
+			continue
+		}
+		if out.Len() > 1 {
+			out.WriteByte(',')
+		}
+		out.Write(spec)
+	}
+	out.WriteByte(']')
+	if len(left) > 0 {
+		fmt.Fprintf(&out, foundLeftNote, len(left), modelResultLimit, strings.Join(left, ", "))
+	}
+	return out.String()
+}
+
+// firstSentence is description up to the end of its first sentence, a period before a space, or
+// all of it where it holds one sentence.
+func firstSentence(description string) string {
+	if at := strings.Index(description, ". "); at >= 0 {
+		return description[:at+1]
+	}
+	return description
 }
 
 // callTool runs one read by a tool's name, as the person: a tool of Dispatch through the

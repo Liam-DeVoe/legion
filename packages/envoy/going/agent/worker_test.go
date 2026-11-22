@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"go.uber.org/goleak"
 
@@ -601,7 +602,7 @@ func TestATurnThatFansOutKeepsTheTurnBeforeItWhole(t *testing.T) {
 		comments[index] = fmt.Sprintf("the comments of issue %d", index+1)
 	}
 	history = append(history, turnSteps(t, 3, comments...)...)
-	messages, err := conversation(&agentwire.ClaimedRun{ID: "run-1", Words: "which agents are working now"}, lastWhole(history), nil)
+	messages, err := conversation(&agentwire.ClaimedRun{ID: "run-1", Words: "which agents are working now"}, lastWhole(history), nil, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -727,4 +728,365 @@ func TestACallsLineShowsAsItStarts(t *testing.T) {
 	if replies[0].Step != 1 || replies[0].Text != prose {
 		t.Errorf("the reply frame is step %d with %q, want step 1 with the whole prose %q", replies[0].Step, replies[0].Text, prose)
 	}
+}
+
+// TestThePagesIssueIsReadBeforeTheFirstModelCall: a run asked on an issue's page reads that issue
+// as the person before its first model call, as every read is made - a call of the server's,
+// saved as the run's step 1 with a read's call and tool frames - and each model call is given its
+// result, marked as data, in the person's message, never as the result of a call of the model's,
+// so no model call is spent on it: "what's the status of three things", asked on DEMO-1 in the
+// preview, spent its first model call reading DEMO-1. The run reads it once. A run whose page
+// names no issue reads nothing before its first model call.
+func TestThePagesIssueIsReadBeforeTheFirstModelCall(t *testing.T) {
+	const issue = `{"key":"DEMO-1","title":"Board redesign","status":"in_progress","children":[{"key":"DEMO-6"},{"key":"DEMO-7"}]}`
+	// work works a standard run of words asked on the page context names, whose model reads the
+	// comments of DEMO-1 and then answers.
+	work := func(t *testing.T, context string) (*fakeServer, *agenttest.Model) {
+		t.Helper()
+		fake := agenttest.New(t, func(request *agenttest.Request) agenttest.Reply {
+			if len(request.ToolResults()) == 0 {
+				return agenttest.Reply{Calls: []agenttest.Call{{Name: toolRead, Arguments: map[string]any{"ref": "dispatch://DEMO-1/comments"}}}}
+			}
+			return agenttest.Reply{Text: `{"answer":"[DEMO-1](dispatch://DEMO-1) is in progress.","waits_for_person":false}`}
+		})
+		server, client := newFakeServer(t, func(call agentwire.CallRequest) agentwire.CallAnswer {
+			if strings.Contains(string(call.Arguments), "/comments") {
+				return agentwire.CallAnswer{Status: http.StatusOK, Body: []byte(`{"comments":[]}`)}
+			}
+			return agentwire.CallAnswer{Status: http.StatusOK, Body: []byte(issue)}
+		})
+		a := &agent{client: client, config: Config{Model: fake.Model()}, held: map[string]*worker{}, claimed: make(chan struct{}, 1), exit: make(chan struct{})}
+		run := &agentwire.ClaimedRun{ID: "run-1", Words: "what's the status of three things", Context: json.RawMessage(context),
+			Level: "standard", Mode: "ask", LeaseToken: "lease-1"}
+		newWorker(t.Context(), a, run, func() {}).work()
+		if end, replies := server.end(t); end.State != agentwire.StateDone || len(replies) != 2 {
+			t.Fatalf("the run ended %s with %q after %d model calls, want done after the comments' read and the answer", end.State, end.Reason, len(replies))
+		}
+		return server, fake
+	}
+
+	t.Run("an issue's page", func(t *testing.T) {
+		server, fake := work(t, `{"path":"/issues/DEMO-1","project":"DEMO","issue":"DEMO-1","block":""}`)
+		server.mu.Lock()
+		defer server.mu.Unlock()
+		if len(server.calls) != 2 {
+			t.Fatalf("the run made the calls %+v, want the page's issue read once and the comments", server.calls)
+		}
+		if first := server.calls[0]; first.Step != 1 || first.Call != 1 || first.Kind != agentwire.KindRoute || first.Tool != dispatchRead || string(first.Arguments) != `{"issue":"DEMO-1"}` {
+			t.Errorf("the run's first call is %+v, want step 1, call 1: dispatch_read of DEMO-1", first)
+		}
+		read := storedDataNote + "\nstep 1, call 1: status 200\n" + issue
+		for at, request := range fake.Requests() {
+			if !strings.Contains(request.Text(), read) || strings.Contains(strings.Join(request.ToolResults(), "\n"), "Board redesign") {
+				t.Errorf("model call %d is not given the page's issue in the person's message, marked as data: %q", at+1, request.Text())
+			}
+		}
+		if given := fake.Requests()[0].ToolResults(); len(given) != 0 {
+			t.Errorf("the first model call is given the tool results %q, want none", given)
+		}
+		var page toolBody
+		if step := server.steps[0]; step.Step != 1 || step.Kind != agentwire.StepTool || json.Unmarshal(step.Body, &page) != nil || page.Call.ID != pageCallID || page.Result != read {
+			t.Errorf("the run's first saved step is %d (%s) %s, want step 1, the page's read", step.Step, step.Kind, step.Body)
+		}
+		var call callFrame
+		var tool toolFrame
+		if len(server.events) < 2 || json.Unmarshal(server.events[0].Data, &call) != nil || json.Unmarshal(server.events[1].Data, &tool) != nil {
+			t.Fatalf("the run's events %+v do not begin with the page read's frames", server.events)
+		}
+		if call.Step != 1 || call.Label != "Reading DEMO-1" || call.Text != nil || tool.Step != 1 || tool.Label != "Read DEMO-1" {
+			t.Errorf("the page read's frames are %+v and %+v, want step 1, Reading DEMO-1 then Read DEMO-1, with no prose", call, tool)
+		}
+		if reply := server.steps[len(server.steps)-1]; reply.Kind != agentwire.StepModel || reply.Step != 4 {
+			t.Errorf("the run's last saved step is %d (%s), want the answer as step 4, after the model call of step 2 and its read", reply.Step, reply.Kind)
+		}
+	})
+
+	t.Run("a page that names no issue", func(t *testing.T) {
+		server, _ := work(t, `{"path":"/projects/DEMO","project":"DEMO","issue":"","block":""}`)
+		server.mu.Lock()
+		defer server.mu.Unlock()
+		if len(server.calls) != 1 || server.calls[0].Step != 2 {
+			t.Errorf("the run made the calls %+v, want the comments' read alone, of the model call numbered 1", server.calls)
+		}
+	})
+}
+
+// TestAnAnswerSaysWhetherItWaitsForThePerson: each model call asks for the object of finalSchema
+// as its structured output - the answer, and waits_for_person - in the strict subset: one object,
+// each property required, no other, the answer first. The reply that ends the turn is saved and
+// shown as its answer alone, and its reply frame carries waits_for_person from the object, never
+// guessed from the words (R8): true for an answer that asks the person which changes to make, false
+// for one that asks nothing. A reply that is no object, as a model that writes prose writes it, is
+// its prose and waits for nobody; an object the output token bound cut off is its answer as far as
+// it goes.
+func TestAnAnswerSaysWhetherItWaitsForThePerson(t *testing.T) {
+	var schema struct {
+		Type       string `json:"type"`
+		Properties map[string]struct {
+			Type        string `json:"type"`
+			Description string `json:"description"`
+		} `json:"properties"`
+		Required             []string `json:"required"`
+		AdditionalProperties *bool    `json:"additionalProperties"`
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(finalSchema)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&schema); err != nil || schema.Type != "object" || schema.AdditionalProperties == nil || *schema.AdditionalProperties ||
+		!slices.Equal(schema.Required, []string{"answer", "waits_for_person"}) || len(schema.Properties) != 2 ||
+		schema.Properties["answer"].Type != "string" || schema.Properties["waits_for_person"].Type != "boolean" {
+		t.Fatalf("finalSchema is %s (%v), want one object of answer, a string, and waits_for_person, a boolean, both required and no other", finalSchema, err)
+	}
+	if strings.Index(string(finalSchema), `"answer"`) > strings.Index(string(finalSchema), `"waits_for_person"`) {
+		t.Errorf("finalSchema names waits_for_person before the answer: %s", finalSchema)
+	}
+
+	const asks = "Which of [DEMO-7](dispatch://DEMO-7) and [DEMO-8](dispatch://DEMO-8) should move to done?"
+	for _, c := range []struct {
+		name, text, prose string
+		finish, state     string
+		waits             bool
+	}{
+		{name: "an answer that asks which changes to make", text: `{"answer":` + strconv.Quote(asks) + `,"waits_for_person":true}`, prose: asks, state: agentwire.StateDone, waits: true},
+		{name: "an answer that asks nothing", text: `{"answer":"[DEMO-7](dispatch://DEMO-7) is done.","waits_for_person":false}`, prose: "[DEMO-7](dispatch://DEMO-7) is done.", state: agentwire.StateDone},
+		{name: "prose", text: "DEMO-7 is done. Shall I close it?", prose: "DEMO-7 is done. Shall I close it?", state: agentwire.StateDone},
+		{name: "an object cut at the output tokens", text: `{"answer":"DEMO-7 is in progress, and \"its tests \u`, finish: "length",
+			prose: `DEMO-7 is in progress, and "its tests `, state: agentwire.StateStopped},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			fake := agenttest.New(t, func(*agenttest.Request) agenttest.Reply { return agenttest.Reply{Text: c.text, Finish: c.finish} })
+			server, client := newFakeServer(t, func(agentwire.CallRequest) agentwire.CallAnswer { return agentwire.CallAnswer{} })
+			workRun(t, fake.Model(), client, "close the done children of DEMO-1")
+			end, replies := server.end(t)
+			if end.State != c.state || len(replies) != 1 || replies[0].Text != c.prose {
+				t.Fatalf("the run ended %s with %q, saving the replies %+v, want %s with the one reply %q", end.State, end.Reason, replies, c.state, c.prose)
+			}
+			if frame := server.lastReply(t); frame.Text != c.prose || frame.WaitsForPerson != c.waits {
+				t.Errorf("the reply frame carries %q waiting for the person %t, want %q and %t", frame.Text, frame.WaitsForPerson, c.prose, c.waits)
+			}
+			var format struct {
+				Type       string `json:"type"`
+				JSONSchema struct {
+					Schema struct {
+						Required []string `json:"required"`
+					} `json:"schema"`
+				} `json:"json_schema"`
+			}
+			encoded, _ := json.Marshal(fake.Requests()[0].Field("response_format"))
+			if err := json.Unmarshal(encoded, &format); err != nil || format.Type != "json_schema" || !slices.Equal(format.JSONSchema.Schema.Required, []string{"answer", "waits_for_person"}) {
+				t.Errorf("the model call asks for the response format %s (%v), want finalSchema as its json_schema", encoded, err)
+			}
+		})
+	}
+}
+
+// TestAReadTheRulesNameNeedsNoLookup: the preview's status question spent three model calls on
+// find_tools for reads it could name - an issue's messages, a document's text - since call_tool
+// said it runs a tool "find_tools named". It runs any read of Dispatch by its name: a call of
+// dispatch_list_issue_messages that no find_tools came before reaches the server as that read.
+// call_tool's text and the system prompt say so, and the prompt names the reads a status question
+// needs, with their arguments, and asks for the reads of one reply at once.
+func TestAReadTheRulesNameNeedsNoLookup(t *testing.T) {
+	server, client := newFakeServer(t, func(agentwire.CallRequest) agentwire.CallAnswer {
+		return agentwire.CallAnswer{Status: http.StatusOK, Body: []byte(`[]`)}
+	})
+	a := &agent{client: client, held: map[string]*worker{}, claimed: make(chan struct{}, 1), exit: make(chan struct{})}
+	w := newWorker(t.Context(), a, &agentwire.ClaimedRun{ID: "run-1", Level: "standard", LeaseToken: "lease-1"}, func() {})
+	if told, refused := w.callTool(t.Context(), 3, json.RawMessage(`{"tool":"dispatch_list_issue_messages","arguments":{"issue":"DEMO-1"}}`)); refused || !strings.Contains(told, "status 200") {
+		t.Fatalf("call_tool of dispatch_list_issue_messages told %q (refused %t), want its answer", told, refused)
+	}
+	server.mu.Lock()
+	if len(server.calls) != 1 || server.calls[0].Tool != "dispatch_list_issue_messages" || string(server.calls[0].Arguments) != `{"issue":"DEMO-1"}` {
+		t.Errorf("call_tool made the calls %+v, want the read of DEMO-1's messages", server.calls)
+	}
+	server.mu.Unlock()
+
+	tools := w.tools(0)
+	at := slices.IndexFunc(tools, func(tool agentloop.Tool) bool { return tool.Name == toolCallTool })
+	if text := tools[at].Description + string(tools[at].Schema); !strings.Contains(text, "by its name") || !strings.Contains(text, "a read the system prompt names") {
+		t.Errorf("call_tool says %q, which does not say it runs a read the system prompt names", text)
+	}
+	for _, said := range []string{
+		`read with ref dispatch://KEY/comments`,
+		`dispatch_list_issue_messages with {"issue": KEY}`,
+		`dispatch_handoff_read with {"issue": KEY, "phase": PHASE}`,
+		`{"issue": KEY} reads the spec's text`,
+		`Call it only for a tool whose name or arguments you do not know`,
+		`Make in one reply every read whose arguments you already know`,
+		`The page's issue, where the page names one, was read for you`,
+	} {
+		if !strings.Contains(systemPrompt, said) {
+			t.Errorf("the system prompt does not say %q", said)
+		}
+	}
+}
+
+// TestTheAnswerReadsAsTheIssuePageShowsIt: the preview's answers gave each item's title beside its
+// link, which the bar draws with its title already, ran past 250 words, printed a correction of
+// themselves, and wrote raw times, "priority 1" and session ids in code. The system prompt says
+// how an answer reads (state 4 of the bar's design), and each model call is told the time now, from
+// which a time is written as the issue page writes it.
+func TestTheAnswerReadsAsTheIssuePageShowsIt(t *testing.T) {
+	for _, said := range []string{
+		"the direct answer in one or two sentences, then at most a short list",
+		"under 120 words unless the person asks for more",
+		"Name each item once, by its link alone",
+		"never write an item's title beside its link",
+		"never a correction of yourself or your working",
+		"without saying what you read or how",
+		"a priority as P0, P1, P2 or P3",
+		`"In progress" for in_progress`,
+		`"2 days ago"`,
+		"never as a result writes it, such as 2026-11-12T09:00:00Z",
+		"Name an agent session by its title or its role",
+		"never in backticks",
+		"waits_for_person true only where the answer asks the person something",
+	} {
+		if !strings.Contains(systemPrompt, said) {
+			t.Errorf("the system prompt does not say %q", said)
+		}
+	}
+	now := time.Date(2026, 11, 22, 21, 16, 47, 0, time.FixedZone("CET", 3600))
+	messages, err := conversation(&agentwire.ClaimedRun{ID: "run-1", Words: "what is new"}, nil, nil, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opening := messages[0].Blocks[0].Text; !strings.Contains(opening, "The time now: 2026-11-22 20:16 UTC.") {
+		t.Errorf("the person's message is %q, which does not state the time now in UTC", opening)
+	}
+}
+
+// foundSpec is one spec of a find_tools answer.
+type foundSpec struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	Arguments   json.RawMessage `json:"arguments"`
+}
+
+// TestFindToolsAnswersWhatACallNeedsWithinTheBound: the preview's three find_tools calls answered
+// 76,767 bytes, which every later model call of the run was given again, 41,105 of them for one
+// need. Each spec find_tools answers now carries its name, the first sentence of its description
+// and its arguments' schema whole, what a call of it needs; a need that is a tool's name alone
+// answers that tool with its whole description. An answer stays within modelResultLimit, the bound
+// of every result, leaving out the specs past it, which a note names.
+func TestFindToolsAnswersWhatACallNeedsWithinTheBound(t *testing.T) {
+	// schemas is each findable tool's schemas by its name: dispatch_read is findable twice, as its
+	// own spec and as the form that lists an issue's comments.
+	schemas := map[string][]string{}
+	for _, tool := range findableTools() {
+		schemas[tool.name] = append(schemas[tool.name], string(tool.schema))
+	}
+	w := &worker{}
+	total := 0
+	for _, need := range []string{"list issue messages and handoffs for DEMO-1", "read document text of an issue spec", "dispatch_doc_read document contents with blocks"} {
+		told, refused := w.findTools(t.Context(), 0, json.RawMessage(`{"need":`+strconv.Quote(need)+`}`))
+		total += len(told)
+		var specs []foundSpec
+		if err := json.Unmarshal([]byte(told), &specs); refused || err != nil || len(specs) == 0 || len(told) > modelResultLimit {
+			t.Fatalf("find_tools answered %d bytes for %q (refused %t, %v), want a list of specs within %d bytes", len(told), need, refused, err, modelResultLimit)
+		}
+		for _, spec := range specs {
+			if strings.Contains(spec.Description, ". ") || !slices.Contains(schemas[spec.Name], string(spec.Arguments)) {
+				t.Errorf("find_tools answered %s with %q and the arguments %s, want its first sentence and its whole schema", spec.Name, spec.Description, spec.Arguments)
+			}
+		}
+	}
+	if total > 76_767/2 {
+		t.Errorf("the preview's three needs are answered %d bytes, want under half the 76,767 they were", total)
+	}
+
+	told, _ := w.findTools(t.Context(), 0, json.RawMessage(`{"need":"dispatch_doc_edit"}`))
+	edit, _ := dispatchTool("dispatch_doc_edit")
+	var named []foundSpec
+	if err := json.Unmarshal([]byte(told), &named); err != nil || len(named) != 1 || named[0].Name != "dispatch_doc_edit" || named[0].Description != edit.Description {
+		t.Errorf("find_tools answered %s for the need dispatch_doc_edit, want that tool alone with its whole description", note(told))
+	}
+
+	// The foundTools largest specs, whole, pass the bound together.
+	largest := slices.SortedFunc(slices.Values(findableTools()), func(a, b findable) int {
+		return len(b.description) + len(b.schema) - len(a.description) - len(a.schema)
+	})[:foundTools]
+	bounded := foundAnswer(largest, false)
+	if len(bounded) > modelResultLimit {
+		t.Fatalf("the %d largest specs are answered in %d bytes, past the bound of %d", foundTools, len(bounded), modelResultLimit)
+	}
+	list, left, found := strings.Cut(bounded, "\n[This answer leaves out ")
+	var kept []foundSpec
+	if err := json.Unmarshal([]byte(list), &kept); !found || err != nil || len(kept) == 0 || len(kept) == foundTools {
+		t.Fatalf("the %d largest specs are answered %s (%v), want those within the bound and a note naming the rest", foundTools, note(bounded), err)
+	}
+	answered := map[string]bool{}
+	for _, spec := range kept {
+		answered[spec.Name] = true
+	}
+	for _, tool := range largest {
+		if !answered[tool.name] && !strings.Contains(left, tool.name) {
+			t.Errorf("the note %q does not name %s, which the answer left out", left, tool.name)
+		}
+	}
+}
+
+// TestARefusedStructuredReplyIsMadeAgainInProse: a chat endpoint that refuses the structured reply
+// - a 400 to a call that sends finalSchema as its response format, as a service with no structured
+// outputs answers - has the step made again with no response format and a system prompt that asks
+// for prose; the refused call spends no call of the run's level, and each later step of the run
+// asks for prose too. Its prose is the answer, which waits for nobody. A reply that ends the turn
+// and is no object is that refusal too: it stands as the answer, and the run's later calls ask for
+// prose.
+func TestARefusedStructuredReplyIsMadeAgainInProse(t *testing.T) {
+	const prose = "DEMO-7 is done. Shall I close it?"
+	t.Run("a 400 to the response format", func(t *testing.T) {
+		fake := agenttest.New(t, func(request *agenttest.Request) agenttest.Reply {
+			switch {
+			case request.Field("response_format") != nil:
+				return agenttest.Reply{Status: http.StatusBadRequest,
+					Error: `{"error":{"message":"Invalid parameter: 'response_format' of type 'json_schema' is not supported with this model.","type":"invalid_request_error","param":"response_format"}}`}
+			case len(request.ToolResults()) == 0:
+				return agenttest.Reply{Calls: []agenttest.Call{{Name: toolRead, Arguments: map[string]any{"issue": "DEMO-7"}}}}
+			}
+			return agenttest.Reply{Text: prose}
+		})
+		server, client := newFakeServer(t, func(agentwire.CallRequest) agentwire.CallAnswer {
+			return agentwire.CallAnswer{Status: http.StatusOK, Body: []byte(`{"key":"DEMO-7","status":"done"}`)}
+		})
+		workRun(t, fake.Model(), client, "is DEMO-7 done")
+		end, replies := server.end(t)
+		requests := fake.Requests()
+		if end.State != agentwire.StateDone || len(requests) != 3 || len(replies) != 2 {
+			t.Fatalf("the run ended %s with %q after %d model calls and %d replies, want done after the refused call, the read and the answer", end.State, end.Reason, len(requests), len(replies))
+		}
+		if requests[0].Field("response_format") == nil || !strings.Contains(requests[0].Text(), finalRule) {
+			t.Errorf("the first call asked for no structured reply")
+		}
+		for at, request := range requests[1:] {
+			if request.Field("response_format") != nil || strings.Contains(request.Text(), finalRule) || !strings.Contains(request.Text(), proseRule) {
+				t.Errorf("call %d after the refusal sent the response format %v or the rule of the object, want prose asked for", at+2, request.Field("response_format"))
+			}
+		}
+		if frame := server.lastReply(t); frame.Text != prose || frame.WaitsForPerson {
+			t.Errorf("the answer's frame carries %q waiting for the person %t, want the prose and false", frame.Text, frame.WaitsForPerson)
+		}
+		if end.Used.Calls != 2 {
+			t.Errorf("the turn spent %d calls, want 2: the refused call spends none", end.Used.Calls)
+		}
+	})
+
+	t.Run("a reply that is no object", func(t *testing.T) {
+		fake := agenttest.New(t, func(*agenttest.Request) agenttest.Reply { return agenttest.Reply{Text: prose} })
+		server, client := newFakeServer(t, func(agentwire.CallRequest) agentwire.CallAnswer { return agentwire.CallAnswer{} })
+		a := &agent{client: client, config: Config{Model: fake.Model()}, held: map[string]*worker{}, claimed: make(chan struct{}, 1), exit: make(chan struct{})}
+		w := newWorker(t.Context(), a, &agentwire.ClaimedRun{ID: "run-1", Words: "is DEMO-7 done", Level: "fast", Mode: "ask", LeaseToken: "lease-1"}, func() {})
+		// Each step is made here, as work makes them, at the run's level.
+		w.level = Levels["fast"]
+		if outcome := w.step(); outcome.state != agentwire.StateDone {
+			t.Fatalf("the step ended %+v, want the answer", outcome)
+		}
+		if frame := server.lastReply(t); frame.Text != prose || frame.WaitsForPerson {
+			t.Errorf("the answer's frame carries %q waiting for the person %t, want the prose and false", frame.Text, frame.WaitsForPerson)
+		}
+		w.step()
+		if requests := fake.Requests(); len(requests) != 2 || requests[0].Field("response_format") == nil || requests[1].Field("response_format") != nil ||
+			!strings.Contains(requests[1].Text(), proseRule) {
+			t.Errorf("the run's calls sent the response formats %v, want the first alone, and the later one to ask for prose", []any{requests[0].Field("response_format"), requests[1].Field("response_format")})
+		}
+	})
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/agentloop"
@@ -138,15 +139,20 @@ func lastWhole(history []agentwire.SavedStep) []agentwire.SavedStep {
 	return out
 }
 
+// nowLayout is how the person's message states the time now, from which the model writes each
+// time as the issue page shows it ("2 days ago").
+const nowLayout = "2006-01-02 15:04 UTC"
+
 // conversation is what the next step of run gives the model, from history: one message of the
-// person's words, with the turns of the conversation before this run, the page they asked from
+// person's words, with the turns of the conversation before this run, the time now, the page they
+// asked from, the read of the page's issue the run made before its first model call (readPage)
 // and the notes of the run's older steps; then each whole step, a model step as the reply it was
 // and its tool steps as that reply's results. The person's answer to a plan, Auto-review's and
 // each row of the plan that ran are told the model as the person's next message. A tool call whose
 // result was not saved is answered as unsaved, so each call has its result, as the providers
 // require; a tool step whose model step is only a note is told as a note. The result of each
 // step withheld names, its note's too, is told as withheld (withheldHistory).
-func conversation(run *agentwire.ClaimedRun, history []agentwire.SavedStep, withheld map[int]string) ([]agentloop.Message, error) {
+func conversation(run *agentwire.ClaimedRun, history []agentwire.SavedStep, withheld map[int]string, now time.Time) ([]agentloop.Message, error) {
 	var opening strings.Builder
 	if len(run.Turns) > 0 {
 		opening.WriteString("Earlier in this conversation, oldest first:\n")
@@ -159,9 +165,14 @@ func conversation(run *agentwire.ClaimedRun, history []agentwire.SavedStep, with
 		opening.WriteString("\n")
 	}
 	fmt.Fprintf(&opening, "The person asks now:\n%s\n", run.Words)
+	fmt.Fprintf(&opening, "\nThe time now: %s.\n", now.UTC().Format(nowLayout))
 	if len(run.Context) > 0 && string(run.Context) != "null" {
 		fmt.Fprintf(&opening, "\nThe page the person asks from, %s:\n%s\n", storedDataNote, run.Context)
 	}
+	// page is the result of the read of the page's issue, which the run made before any model
+	// step; modelled is set once history holds a model step.
+	var page string
+	modelled := false
 	var older []string
 	var steps []agentloop.Message
 	// asked is the tool calls of the last model step, in its order, and pending those of them no
@@ -194,6 +205,7 @@ func conversation(run *agentwire.ClaimedRun, history []agentwire.SavedStep, with
 	}
 	history = withheldHistory(history, withheld)
 	for _, step := range history {
+		modelled = modelled || step.Kind == agentwire.StepModel
 		if len(step.Body) == 0 {
 			older = append(older, fmt.Sprintf("step %d (%s): %s", step.Step, step.Kind, step.Note))
 			continue
@@ -228,6 +240,10 @@ func conversation(run *agentwire.ClaimedRun, history []agentwire.SavedStep, with
 				told(fmt.Sprintf("Change %d of plan %d, %s %s: %s", body.Row.Row, body.Row.Plan, body.Call.Tool, body.Call.Arguments, body.Result))
 				continue
 			}
+			if !modelled && body.Call.ID == pageCallID {
+				page = body.Result
+				continue
+			}
 			if !pending[body.Call.ID] {
 				older = append(older, fmt.Sprintf("step %d (tool %s): %s", step.Step, body.Call.Tool, step.Note))
 				continue
@@ -254,6 +270,9 @@ func conversation(run *agentwire.ClaimedRun, history []agentwire.SavedStep, with
 		}
 	}
 	closeCalls()
+	if page != "" {
+		fmt.Fprintf(&opening, "\nThe page's issue, as read gave it before your first call:\n%s\n", page)
+	}
 	if len(older) > 0 {
 		fmt.Fprintf(&opening, "\nThe earlier steps of this run, as one-line notes:\n- %s\n", strings.Join(older, "\n- "))
 	}

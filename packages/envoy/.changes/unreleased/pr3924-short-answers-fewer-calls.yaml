@@ -1,0 +1,23 @@
+kind: Changed
+body: |-
+  The command bar's agent answers shorter and in fewer model calls. A run asked on an issue's
+  page reads that issue as the person before its first model call, saved as the run's step 1 with
+  a read's `call` and `tool` frames, and each model call is given its result, marked as data, in
+  the person's message, so no model call is spent on it. `call_tool` runs any read by its name,
+  and the system prompt names the reads a question about how an issue stands needs, with their
+  arguments, so the model calls `find_tools` only for a tool it cannot name; it asks for the reads
+  of one reply at once. `find_tools` answers each tool with the first sentence of its description
+  and its whole argument schema, within the 32 KiB every tool result keeps to, and a note names a
+  tool it left out; a need that is one tool's name answers that tool whole. The preview's three
+  lookups had answered 76,767 bytes, which every later model call was given again. The prompt
+  says how an answer reads: the direct answer first, under 120 words unless the person asks for
+  more, each item once by its link alone, which the bar draws with its title, no correction of
+  itself, and each value as the issue page shows it, a priority as P0 to P3, a time as "2 days
+  ago" from the time now that each model call is told, and an agent session by its title or role.
+  Each model call asks for the reply that ends the turn as one object of `answer` and
+  `waits_for_person`, and the `reply` frame carries `waits_for_person`, true where the answer
+  asks the person something the run needs before it can go on; its `text` is the answer alone, as
+  before. A chat endpoint that refuses that object with a 400 gets the step again in prose, and
+  a reply that is no object stands as prose; either waits for nobody, and every later step of the
+  run asks for prose. The refused call spends no call of the run's level. Every other frame and
+  field is unchanged.
