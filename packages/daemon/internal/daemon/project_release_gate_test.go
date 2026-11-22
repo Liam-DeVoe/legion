@@ -318,9 +318,11 @@ func TestProjectReleaseHoldsThePeriodicWork(t *testing.T) {
 // Every outbox row that would start or prompt a role waits while the release holds, and every
 // other kind runs (record.HeldByProjectRelease). Every kind of every lane is named here, so a kind
 // added to the outbox without a decision for the release fails this test, and so is every
-// supervise op, a project pause's `pause_stop` (a stop, which runs) and the launch the pause owes
-// a role it stopped (a start, which waits) among them, and the pause's two notices to the
-// controller, which wait as every controller notice does.
+// supervise op, a project pause's `pause_stop` (a stop, which runs), the launch the pause owes a
+// role it stopped and a start queued for news of the approved design alone (two starts, which
+// wait) among them, and the pause's two notices to the controller, which wait as every
+// controller notice does. The reconcile of a tree's news (design_changes) runs: it tells a role
+// only by such a news-only start.
 func TestProjectReleaseHoldsEveryOutboxKindThatStartsOrPromptsARole(t *testing.T) {
 	const ownRound = "release:7"
 	type row struct {
@@ -331,6 +333,7 @@ func TestProjectReleaseHoldsEveryOutboxKindThatStartsOrPromptsARole(t *testing.T
 	cases := map[record.OutboxKind][]row{
 		record.OutboxKindSupervise: {
 			{"a start", record.SuperviseRequest{Op: "start"}, true},
+			{"a start queued for news of the approved design alone", record.SuperviseRequest{Op: "start", Phase: phase.Reviewing, News: true}, true},
 			{"the launch a project pause owed a role it stopped", record.SuperviseRequest{Op: "start", Pause: 3, WakeKind: pods.WakePause}, true},
 			{"an idle release's role stop", record.SuperviseRequest{Op: "release"}, true},
 			{"a suspend", record.SuperviseRequest{Op: "suspend"}, false},
@@ -372,6 +375,7 @@ func TestProjectReleaseHoldsEveryOutboxKindThatStartsOrPromptsARole(t *testing.T
 		record.OutboxKindWorkspaceRemove:    {{"a workspace's removal", record.WorkspaceRemove{}, false}},
 		record.OutboxKindGateSeed:           {{"a gate's seed", record.GateSeed{}, false}},
 		record.OutboxKindIssueBranch:        {{"an issue's branch", record.IssueBranch{}, false}},
+		record.OutboxKindDesignChanges:      {{"a tree's reconcile of its news of the approved design", record.DesignNewsReconcile{}, false}},
 	}
 	for _, lane := range record.OutboxLanes() {
 		for _, kind := range record.LaneKinds(lane) {
