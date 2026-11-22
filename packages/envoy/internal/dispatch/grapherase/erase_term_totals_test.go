@@ -21,16 +21,32 @@ import (
 // (api.TakeErasedTermTotalsTx) and its bounded take under them (api.ForgetErasedTermsTx) alike.
 const termTotalsTakeStatement = "insert into search_term_totals (project_key, items, refreshed_at) values ($1, 0, now())"
 
-// erasedTermTotalsRefusal is how long TestTheEraseIsRefusedWhenAPassHoldsTheStatisticsOfAProjectOutsideItsOwners
-// gives the confirmed erase to answer: its search for the rows it leaves, which reads every text
-// column of the database, its locks and the read under them, and then the 100 ms
-// api.ForgetErasedTermsTx waits at most for the totals row of a project the erase did not take
-// before its owner locks. The bound only ends a run that hangs: an erase that waited for the pass
-// instead would wait for as long as the test holds the row, which it holds until the erase has
-// answered, and the refusal itself is proved by its lock_not_available (55P03), not by when it
-// came. So the bound is far above the run's own time, which on a pod running other packages'
-// tests beside it was measured past 10 s.
-const erasedTermTotalsRefusal = 2 * time.Minute
+// erasedTermTotalsHeldWait bounds how long TestTheEraseIsRefusedWhenAPassHoldsTheStatisticsOfAProjectOutsideItsOwners
+// lets the confirmed erase wait at the totals row the test holds, from the moment its statement
+// queued behind the row (pg_locks.waitstart, by the database's clock). R5 holds that wait to the
+// 100 ms lock_timeout api.ForgetErasedTermsTx sets for its take (erasedTermTotalsWait); the bound
+// leaves room for the server's lock timer and for the test's own reads, and an erase whose take
+// lost that lock_timeout waits for as long as the row is held and passes it.
+const erasedTermTotalsHeldWait = time.Second
+
+// erasedTermTotalsHang is how long the same test waits for the confirmed erase to answer at all,
+// a bound that only ends a run that hangs: the run's own time holds its search over every text
+// column of the database, its locks and the reads under them, which on a pod running other
+// packages' tests beside it was measured past 10 s, and its wait at the held row is held to
+// erasedTermTotalsHeldWait on its own.
+const erasedTermTotalsHang = 2 * time.Minute
+
+// heldRowWait is how long the longest lock wait queued behind backend holder has lasted, by the
+// database's clock (pg_locks.waitstart), and zero while nothing waits behind it.
+func heldRowWait(ctx context.Context, database *store.Store, holder int32) (time.Duration, error) {
+	var seconds float64
+	err := database.Pool.QueryRow(ctx, `
+		select coalesce(max(extract(epoch from clock_timestamp() - l.waitstart)), 0)::float8
+		from pg_locks l
+		where not l.granted and l.waitstart is not null and $1::int4 = any(pg_blocking_pids(l.pid))
+	`, holder).Scan(&seconds)
+	return time.Duration(seconds * float64(time.Second)), err
+}
 
 // holdTermTotals holds project's term statistics totals row `for update` in a transaction of its
 // own, as a refresh pass running holds it for its whole transaction (api's searchTermTotalsMode).
@@ -113,12 +129,14 @@ func TestTheEraseWaitsForARunningStatisticsPassBeforeItTakesAnOwnerLock(t *testi
 //
 // A pass counts CORE and OPS first, so both totals rows stand, the row is planted, and once the run
 // without --confirm has printed its digest a transaction holds OPS's totals row `for update`, as a
-// running pass holds it. The confirmed run must answer within erasedTermTotalsRefusal with the
-// refusal that names OPS and says nothing was removed, on Postgres's lock_not_available (55P03),
-// and the comment, its node and no record of an erase stand afterwards. A run that waited for the
-// pass would hold every writer of CORE-1 for as long as the pass held the row. Once the row is let
-// go the erase run again takes OPS's row at once, erases the comment and names both projects as
-// those it took the erased words out of.
+// running pass holds it. While the confirmed run goes on the test reads, every 10 ms, how long a
+// statement has been queued behind that transaction (heldRowWait): the wait R5 bounds, from the
+// start of the take's wait at the row to its lock_not_available (55P03), which may not pass
+// erasedTermTotalsHeldWait. The run must then answer with the refusal that names OPS and says
+// nothing was removed, on that 55P03, and the comment, its node and no record of an erase stand
+// afterwards. A run that waited for the pass would hold every writer of CORE-1 for as long as the
+// pass held the row. Once the row is let go the erase run again takes OPS's row at once, erases
+// the comment and names both projects as those it took the erased words out of.
 func TestTheEraseIsRefusedWhenAPassHoldsTheStatisticsOfAProjectOutsideItsOwners(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -133,6 +151,10 @@ func TestTheEraseIsRefusedWhenAPassHoldsTheStatisticsOfAProjectOutsideItsOwners(
 	}
 	listing := dryRun(t, database, commentNodeKind, seeded.comment)
 	pass := holdTermTotals(t, database, "OPS")
+	var holder int32
+	if err := pass.Tx.QueryRow(ctx, `select pg_backend_pid()`).Scan(&holder); err != nil {
+		t.Fatalf("read the backend holding %s: %v", pass.Name, err)
+	}
 
 	answered := make(chan eraseAnswer, 1)
 	go func() {
@@ -141,12 +163,31 @@ func TestTheEraseIsRefusedWhenAPassHoldsTheStatisticsOfAProjectOutsideItsOwners(
 		answered <- eraseAnswer{erasure, err}
 	}()
 	var answer eraseAnswer
-	select {
-	case answer = <-answered:
-	case <-time.After(erasedTermTotalsRefusal):
-		t.Fatalf("the confirmed erase of comment %s did not answer within %s while %s was held: it waits for the pass under its owner locks rather than refuse",
-			seeded.comment, erasedTermTotalsRefusal, pass.Name)
+	var longest time.Duration
+	hang := time.After(erasedTermTotalsHang)
+	read := time.NewTicker(10 * time.Millisecond)
+	defer read.Stop()
+answering:
+	for {
+		select {
+		case answer = <-answered:
+			break answering
+		case <-hang:
+			t.Fatalf("the confirmed erase of comment %s did not answer within %s, the bound that only ends a run that hangs, while %s was held, and never waited at that row past %s (the longest wait read was %s): it hangs somewhere other than the held row",
+				seeded.comment, erasedTermTotalsHang, pass.Name, erasedTermTotalsHeldWait, longest)
+		case <-read.C:
+			waited, err := heldRowWait(ctx, database, holder)
+			if err != nil {
+				t.Fatalf("read how long the erase has waited at %s: %v", pass.Name, err)
+			}
+			longest = max(longest, waited)
+			if waited > erasedTermTotalsHeldWait {
+				t.Fatalf("the confirmed erase of comment %s has waited %s at %s, past the %s bound on the wait api.ForgetErasedTermsTx's 100 ms lock_timeout holds (R5): it waits for the pass under its owner locks rather than refuse",
+					seeded.comment, waited.Round(time.Millisecond), pass.Name, erasedTermTotalsHeldWait)
+			}
+		}
 	}
+	t.Logf("the longest wait at %s read before the erase answered: %s", pass.Name, longest.Round(time.Millisecond))
 	var timedOut *pgconn.PgError
 	if answer.err == nil || !errors.As(answer.err, &timedOut) || timedOut.Code != "55P03" ||
 		!strings.Contains(answer.err.Error(), "the erase changed items of project OPS") ||
