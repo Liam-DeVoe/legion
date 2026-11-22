@@ -579,7 +579,7 @@ type factHold struct {
 func holdFacts(t *testing.T, pool *store.Pool) *factHold {
 	t.Helper()
 	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, pool.Config().ConnString())
+	conn, err := pgx.ConnectConfig(ctx, pool.Config().ConnConfig.Copy())
 	if err != nil {
 		t.Fatalf("open the connection the fact lock is held on: %v", err)
 	}
