@@ -625,7 +625,7 @@ func rebuildRefs(ctx context.Context, databaseURL, serverURL string, out io.Writ
 		return 1
 	}
 	if strings.TrimSpace(serverURL) == "" {
-		fmt.Fprintln(out, "rebuild-refs: dispatch.server_url is required to recognise dashboard URLs; refusing to drop URL-form mentions")
+		fmt.Fprintln(out, "rebuild-refs: DISPATCH_SERVER_URL (or dispatch.serverUrl in envoy.json) is required to recognise dashboard URLs; refusing to drop URL-form mentions")
 		return 1
 	}
 	database, ok := openMigrated(ctx, "rebuild-refs", databaseURL, out)

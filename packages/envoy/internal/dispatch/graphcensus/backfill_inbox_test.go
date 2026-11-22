@@ -461,8 +461,8 @@ func requireBlockNode(t *testing.T, database *store.Store, address, state, login
 // writes them: rows naming no node. The backfill writes each attempt's node, made at its row's
 // created_at - by the comment's or the message's author for a first attempt, which that write
 // opened under its event, and by the delivery machinery at the sentinel for a later one - names it
-// on the row, and states what the row holds as graphstore.Attempted does: its values, owed_to its
-// target while it is pending, and delivered_to the session that took it.
+// on the row, and states what the row holds as graphstore.QueueAttempted does: its values,
+// owed_to its target while it is pending, and delivered_to the session that took it.
 func TestTheBackfillStatesAnOlderBuildsDeliveryAttempts(t *testing.T) {
 	writes := newAddressingWrites(t)
 	writes.createIssue(t, "CENS-1", 1, "U", alice)

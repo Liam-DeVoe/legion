@@ -441,10 +441,10 @@ func TestOneReadAnswersEveryRelationToThePersonsNode(t *testing.T) {
 }
 
 // The identity rule of the read (person_nodes in meInboxBuild): a session the server proved the
-// person's - the alias_of tuple from it to the person's node, which graphstore.Authored writes
-// beside a write the person's credential made from that session - is one of the person's own
-// nodes. So a relation into the session is the person's, while none of the person's own nodes is
-// an entry, and an identity tuple is no relation of any entry, whichever person it ends at.
+// person's - the alias_of tuple from it to the person's node, which graphstore.QueueAuthored
+// writes beside a write the person's credential made from that session - is one of the person's
+// own nodes. So a relation into the session is the person's, while none of the person's own nodes
+// is an entry, and an identity tuple is no relation of any entry, whichever person it ends at.
 func TestTheOneReadTakesAProvedSessionAsThePersonsOwnNode(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	alice, bob := "alice", "bob"

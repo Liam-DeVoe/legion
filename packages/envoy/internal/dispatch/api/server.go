@@ -612,7 +612,7 @@ type server struct {
 	slowWriteRuns sync.Map
 	// failBetween is the set of writers whose next write the fail-between test hook armed
 	// (PUT /api/v1/writes/_test/fail-between/{writer}), which every request this server serves
-	// carries (routeHandler), so each writer's failpoint.Between finds it; nil on a server without
+	// carries (routeHandler), so each writer's failpoint.Planned finds it; nil on a server without
 	// TestHooksEnabled, whose requests carry none.
 	failBetween *failpoint.Armed
 	// newIssueOverride is what the new-issue test hook last set
@@ -977,7 +977,7 @@ func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFu
 	}
 	if s.failBetween != nil {
 		// Every request carries the fail-between set, so the writer it reaches finds whether a
-		// test armed it (failpoint.Between); a server without test hooks carries none.
+		// test armed it (failpoint.Planned); a server without test hooks carries none.
 		armed, inner := s.failBetween, handler
 		handler = func(w http.ResponseWriter, r *http.Request) {
 			inner(w, r.WithContext(failpoint.With(r.Context(), armed)))

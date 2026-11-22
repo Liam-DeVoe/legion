@@ -1203,8 +1203,8 @@ var ProvedSessionComments = `
 // writer stated (tuples_stored_at set) waits on, read through the one rule for that person
 // (asks.AskedOfPersonExpression), to whom its create and each move of it state a participates_in,
 // and a delivered_to but where that person made the move themselves (inboxwrite.Record and
-// inboxwrite.MoveWaiting, through graphstore.ToPerson, which makes the node either way), within
-// the store's bound, past which ToPerson states nothing. A row an older build wrote is
+// inboxwrite.QueueMoveWaiting, through graphstore.ToPerson, which makes the node either way),
+// within the store's bound, past which ToPerson states nothing. A row an older build wrote is
 // unmarked and names nobody here until the backfill marks it.
 //
 // Those rows name a person only while they stand as they were marked: an ask that closes, is

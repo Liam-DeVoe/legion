@@ -82,17 +82,12 @@ func messageEventOf(alias string) string {
 		order by e.id limit 1), ` + noEvent + `)`
 }
 
-// askEventTypes is the type list of the partial index events_ask_payload_id (migration 0030),
-// which a read of an ask's events by payload->>'id' repeats beside the one type it reads, so the
-// planner can prove the index's predicate and read it.
-const askEventTypes = `'ask.opened', 'ask.answered', 'ask.resolved', 'ask.edited'`
-
 // askOpenedOf is the ask.opened that recorded the ask alias names, and the sentinel where the log
 // holds none.
 func askOpenedOf(alias string) string {
 	return `coalesce((
 		select e.id from events e
-		where e.type in (` + askEventTypes + `) and e.type = 'ask.opened' and e.payload->>'id' = ` + alias + `.id::text
+		where e.type in (` + inboxwrite.AskEventTypes + `) and e.type = 'ask.opened' and e.payload->>'id' = ` + alias + `.id::text
 		order by e.id limit 1), ` + noEvent + `)`
 }
 
@@ -1053,7 +1048,7 @@ var commentMentionsOwed = func() string {
 	from comment_mentions m
 	join comments c on c.id = m.comment_id
 	join graph_nodes n on n.kind = '` + graphstore.KindComment + `' and n.id = m.comment_id::text
-	where not m.tuples_stored and ` + route + ` is not null and ` + fits(`coalesce(m.resolved_session_id, '')`)
+	where not m.tuples_stored and ` + route + ` is not null and ` + graphstore.AddressFitsSQL(`coalesce(m.resolved_session_id, '')`)
 }()
 
 // commentMentionsPass states each comment_mentions row an older build wrote as this release's

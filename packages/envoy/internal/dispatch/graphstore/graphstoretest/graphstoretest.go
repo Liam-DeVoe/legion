@@ -23,8 +23,8 @@ func BaseAttributes() []string { return []string{"visibility", "state", "project
 // Caused in a caller's transaction, and QueueWrite, QueueNodes and QueueCaused, the same writes
 // queued on a write phase's batch; WriteArms and WriteArmsUncaused spliced into a caller's
 // statement; QueueAuthored, QueueReached and QueueSessionRecorded, which queue those arms for the
-// writers that record an author, a reached session and a session an ask names; Attempted and
-// QueueAttempted, which state what a delivery attempt's row holds after each write of it;
+// writers that record an author, a reached session and a session an ask names; QueueAttempted,
+// which states what a delivery attempt's row holds after each write of it;
 // ToPerson, QueueToPerson and ToPersonArms, the one writer of a delivered_to, a mentions or a
 // participates_in that names a person; FromPerson, QueueFromPerson, QueueMarksEnded and MarkArm,
 // the one writer of a mark from a person (read_through, dismissed, cleared, reply_read and
@@ -38,7 +38,7 @@ func WriteFunctions() []string {
 	return []string{"Write", "WriteArms", "WriteArmsUncaused", "Caused",
 		"QueueWrite", "QueueNodes", "QueueCaused",
 		"QueueAuthored", "QueueReached", "QueueSessionRecorded",
-		"Attempted", "QueueAttempted", "ToPerson", "QueueToPerson", "ToPersonArms",
+		"QueueAttempted", "ToPerson", "QueueToPerson", "ToPersonArms",
 		"FromPerson", "QueueFromPerson", "QueueMarksEnded", "MarkArm",
 		"EraseNode", "FillScopes"}
 }

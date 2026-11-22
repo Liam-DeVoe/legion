@@ -93,11 +93,6 @@ func moment(expr string) string {
 	return `to_char((` + expr + `) at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`
 }
 
-// fits is true of an address within the store's bound (graphstore.AddressFits).
-func fits(expr string) string {
-	return `octet_length(` + expr + `) <= ` + addressBound
-}
-
 // authorEnd is the node graphstore.AuthorOf reads off the actor column holds (actorAuthor), as the
 // kind and the id of the far end of the authored_by tuple graphstore.AuthorFacts states: the
 // canonical login of a user, a session, or the canonical login of a personal token's owner; both
@@ -106,18 +101,18 @@ func fits(expr string) string {
 func authorEnd(column string) (kind, id string) {
 	author := `(` + actorAuthor(column) + `)`
 	named := author + `[2]`
-	return author + `[1]`, `case when ` + fits(named) + ` then ` + named + ` end`
+	return author + `[1]`, `case when ` + graphstore.AddressFitsSQL(named) + ` then ` + named + ` end`
 }
 
-// routeEnd is the session or role a route column names as model.ParseRoute reads it, as kind and
-// id, both null for a route ParseRoute does not read and the id null past the store's bound.
+// routeEnd is the session or role a route column names as model.ParseRoute reads it
+// (graphstore.RouteSQL), as kind and id, both null for a route ParseRoute does not read and the id
+// null past the store's bound.
 func routeEnd(route string) (kind, id string) {
-	role := `substring(` + route + ` from '^role:([a-z0-9-]+)$')`
-	session := `substring(` + route + ` from '^session:([A-Za-z0-9_-]+)$')`
+	role, session := graphstore.RouteSQL(route)
 	kind = `case when ` + role + ` is not null then '` + graphstore.KindRole + `' when ` + session + ` is not null then '` +
 		graphstore.KindSession + `' end`
 	named := `coalesce(` + role + `, ` + session + `)`
-	return kind, `case when ` + fits(named) + ` then ` + named + ` end`
+	return kind, `case when ` + graphstore.AddressFitsSQL(named) + ` then ` + named + ` end`
 }
 
 // liveHeld is the store side of a kind held triple by triple whose holders are the live nodes of
@@ -157,8 +152,8 @@ var messageProjection = func() projection {
 		              when m.target is not null then '` + graphstore.KindPage + `' end`
 	placeID := `case when m.in_reply_to is not null then m.in_reply_to::text
 		            when m.replies_to_block is not null then m.replies_to_block
-		            when m.issue_key is not null then case when ` + fits(`m.issue_key`) + ` then m.issue_key end
-		            when ` + routeID + ` is not null and ` + fits(`'session/' || `+routeID) + ` then ` + agentPage + ` end`
+		            when m.issue_key is not null then case when ` + graphstore.AddressFitsSQL(`m.issue_key`) + ` then m.issue_key end
+		            when ` + routeID + ` is not null and ` + graphstore.AddressFitsSQL(`'session/' || `+routeID) + ` then ` + agentPage + ` end`
 	return projection{
 		name: graphstore.KindMessage, nodeKind: graphstore.KindMessage, table: "messages",
 		note: "the messages node: the row side is every messages row naming its node, as the triples of that node and" +
@@ -192,9 +187,9 @@ var messageProjection = func() projection {
 		) newest
 		where n.kind = '` + graphstore.KindMessage + `' and n.state = '` + graphstore.StateLive + `' and newest.asserted`,
 		pastBound: `
-		select count(*) from messages m where not ` + fits(`coalesce(m.replies_to_block, '')`),
+		select count(*) from messages m where not ` + graphstore.AddressFitsSQL(`coalesce(m.replies_to_block, '')`),
 		unmarked: `
-		select count(*) from messages m where m.node_kind is null and ` + fits(`coalesce(m.replies_to_block, '')`),
+		select count(*) from messages m where m.node_kind is null and ` + graphstore.AddressFitsSQL(`coalesce(m.replies_to_block, '')`),
 		populations: createdPopulations(`messages m`, `m.created_at`, `m.node_kind is not null`),
 		emptyAgrees: true,
 	}
@@ -227,10 +222,10 @@ var commentPointerProjection = projection{
 	// replies_to_block is past it states no pointer by design (graphstore.CommentPointerFacts).
 	pastBound: `
 		select count(*) from comments c` + refs.CommentStoreJoins + `
-		where not (` + refs.CommentInTheStore + `) or not ` + fits(`coalesce(c.replies_to_block, '')`),
+		where not (` + refs.CommentInTheStore + `) or not ` + graphstore.AddressFitsSQL(`coalesce(c.replies_to_block, '')`),
 	unmarked: `
 		select count(*) from comments c` + refs.CommentStoreJoins + `
-		where not c.tuples_stored and ` + refs.CommentInTheStore + ` and ` + fits(`coalesce(c.replies_to_block, '')`),
+		where not c.tuples_stored and ` + refs.CommentInTheStore + ` and ` + graphstore.AddressFitsSQL(`coalesce(c.replies_to_block, '')`),
 	populations: createdPopulations(`comments c`, `c.created_at`, `c.tuples_stored`),
 	emptyAgrees: true,
 }
@@ -261,7 +256,7 @@ var commentMentionProjection = func() projection {
 		cross join lateral (values
 			('` + graphstore.TupleMentions + `', ` + routeKind + `, ` + routeID + `),
 			('` + graphstore.TupleMentions + `', '` + graphstore.KindSession + `',
-			 case when ` + fits(`m.resolved_session_id`) + ` then m.resolved_session_id end),
+			 case when ` + graphstore.AddressFitsSQL(`m.resolved_session_id`) + ` then m.resolved_session_id end),
 			('` + graphstore.TupleDelivery + `', '` + graphstore.KindValue + `', m.delivery)
 		) stated (kind, to_kind, to_id)
 		where m.tuples_stored and stated.to_id is not null`,
@@ -282,10 +277,10 @@ var commentMentionProjection = func() projection {
 		// states no tuple by design (api's mentionStored).
 		pastBound: `
 		select count(*) from comment_mentions m join comments c on c.id = m.comment_id` + refs.CommentStoreJoins + `
-		where not (` + refs.CommentInTheStore + `) or ` + routeID + ` is null or not ` + fits(`coalesce(m.resolved_session_id, '')`),
+		where not (` + refs.CommentInTheStore + `) or ` + routeID + ` is null or not ` + graphstore.AddressFitsSQL(`coalesce(m.resolved_session_id, '')`),
 		unmarked: `
 		select count(*) from comment_mentions m join comments c on c.id = m.comment_id` + refs.CommentStoreJoins + `
-		where not m.tuples_stored and ` + refs.CommentInTheStore + ` and ` + routeID + ` is not null and ` + fits(`coalesce(m.resolved_session_id, '')`),
+		where not m.tuples_stored and ` + refs.CommentInTheStore + ` and ` + routeID + ` is not null and ` + graphstore.AddressFitsSQL(`coalesce(m.resolved_session_id, '')`),
 		populations: createdPopulations(`comment_mentions m join comments c on c.id = m.comment_id`, `c.created_at`, `m.tuples_stored`),
 		emptyAgrees: true,
 	}
@@ -313,8 +308,8 @@ func itemProjections() []projection {
 		from ` + blocks + ` b
 		where b.node_kind is not null and b.position is not null`,
 			tuples:      liveHeld(ofItem, `t.kind = '`+graphstore.TuplePartOf+`'`, `held.to_id`, ""),
-			pastBound:   `select count(*) from ` + blocks + ` b where not ` + fits(`b.node_id`),
-			unmarked:    `select count(*) from ` + blocks + ` b where b.node_kind is null and ` + fits(`b.node_id`),
+			pastBound:   `select count(*) from ` + blocks + ` b where not ` + graphstore.AddressFitsSQL(`b.node_id`),
+			unmarked:    `select count(*) from ` + blocks + ` b where b.node_kind is null and ` + graphstore.AddressFitsSQL(`b.node_id`),
 			populations: createdPopulations(blocks+` b`, `b.created_at`, `b.node_kind is not null`),
 			narrowings: []narrowing{{
 				name:  "removed_blocks",
@@ -333,9 +328,9 @@ func itemProjections() []projection {
 		where r.node_kind is not null`,
 			tuples: liveHeld(ofItem, `t.kind <> '`+graphstore.TuplePartOf+`'`, `held.to_id`, ""),
 			pastBound: `
-		select count(*) from ` + links + ` r where not ` + fits(`r.from_node`) + ` or not ` + fits(`r.to_id`),
+		select count(*) from ` + links + ` r where not ` + graphstore.AddressFitsSQL(`r.from_node`) + ` or not ` + graphstore.AddressFitsSQL(`r.to_id`),
 			unmarked: `
-		select count(*) from ` + links + ` r where r.node_kind is null and ` + fits(`r.from_node`) + ` and ` + fits(`r.to_id`),
+		select count(*) from ` + links + ` r where r.node_kind is null and ` + graphstore.AddressFitsSQL(`r.from_node`) + ` and ` + graphstore.AddressFitsSQL(`r.to_id`),
 			populations: createdPopulations(links+` r`, `r.created_at`, `r.node_kind is not null`),
 			emptyAgrees: true,
 		})
@@ -379,7 +374,7 @@ func attemptFacts(target, session string) []string {
 		attemptValue(graphstore.AttemptError, `d.error`),
 		attemptValue(graphstore.AttemptClaimedAt, moment(`d.claimed_at`)),
 		`case when d.state = '` + model.DeliveryStatePending + `' then '` + graphstore.TupleOwedTo + `>' || ` + targetKind + ` || ':' || ` + targetID + ` end`,
-		`case when d.state in ` + model.DeliveryTakenStatesSQL + ` and coalesce(` + session + `, '') <> '' and ` + fits(session) + `
+		`case when d.state in ` + model.DeliveryTakenStatesSQL + ` and coalesce(` + session + `, '') <> '' and ` + graphstore.AddressFitsSQL(session) + `
 		      then '` + graphstore.TupleDeliveredTo + `>` + graphstore.KindSession + `:' || ` + session + ` end`,
 	}
 }
@@ -441,7 +436,7 @@ func attemptProjection(table attemptCensus) projection {
 			) r where r.asserted
 		) held (fact)))
 		from graph_nodes n where n.kind = '` + graphstore.KindDeliveryAttempt + `' and n.id like '` + table.prefix + `%'`,
-		pastBound:   `select count(*) from ` + table.table + ` d where not ` + fits(table.address),
+		pastBound:   `select count(*) from ` + table.table + ` d where not ` + graphstore.AddressFitsSQL(table.address),
 		unmarked:    `select count(*) from ` + table.table + ` d where ` + table.owedRow(),
 		populations: createdPopulations(table.table+` d`, `d.created_at`, `d.node_kind is not null`),
 		emptyAgrees: true,
@@ -486,7 +481,7 @@ var publishedPairs = `
 // within its bound: the pairs the outbox's record states one delivered_to of.
 var publishedOfAStoredItem = `p.reached_kind is not null and coalesce(p.reached_id, '') <> ''
 	  and (` + storeRelease + ` is null or p.created_at >= ` + storeRelease + `)
-	  and p.item_id is not null and ` + fits(`p.reached_id`) + ` and ` + fits(`p.item_id`) + `
+	  and p.item_id is not null and ` + graphstore.AddressFitsSQL(`p.reached_id`) + ` and ` + graphstore.AddressFitsSQL(`p.item_id`) + `
 	  and exists (select 1 from graph_nodes subject
 	              where subject.kind = p.item_kind and subject.id = p.item_id and subject.state = '` + graphstore.StateLive + `')`
 
@@ -540,7 +535,7 @@ var publishedDestinationsProjection = projection{
 		  and not ` + mentionReceiptDelivery + ` and not ` + fallbackCopyDelivery + ` and not ` + answeredDelivery,
 	pastBound: `
 		select count(*) from (` + publishedPairs + `) p
-		where p.reached_kind is not null and (not ` + fits(`coalesce(p.reached_id, '')`) + ` or not ` + fits(`coalesce(p.item_id, '')`) + `)`,
+		where p.reached_kind is not null and (not ` + graphstore.AddressFitsSQL(`coalesce(p.reached_id, '')`) + ` or not ` + graphstore.AddressFitsSQL(`coalesce(p.item_id, '')`) + `)`,
 	// An event an older build's outbox recorded since this release's schema reached the database,
 	// which the block-index tick has not stated the deliveries of yet, is a row of the queue the
 	// tick drains (publishedDeliveriesQueued), which reads zero once the tick has taken it.
@@ -561,7 +556,7 @@ var publishedDestinationsProjection = projection{
 		select count(*) from (` + publishedPairs + `) p
 		where p.reached_kind is not null and coalesce(p.reached_id, '') <> ''
 		  and (` + storeRelease + ` is null or p.created_at >= ` + storeRelease + `)
-		  and ` + fits(`p.reached_id`) + ` and ` + fits(`coalesce(p.item_id, '')`) + `
+		  and ` + graphstore.AddressFitsSQL(`p.reached_id`) + ` and ` + graphstore.AddressFitsSQL(`coalesce(p.item_id, '')`) + `
 		  and not exists (select 1 from graph_nodes subject
 		                  where subject.kind = p.item_kind and subject.id = p.item_id and subject.state = '` + graphstore.StateLive + `')`,
 	}, {
@@ -605,7 +600,7 @@ var userThreadsMarked = `u.marked_seq is not null and ` + userThreadsKeyed
 // bound (refs.CommentInTheStore) has no node its marks could point at, and the backfill marks no
 // row of it (userThreadsOwed). Such a row is counted with the addresses past the bound, and every
 // other row is held or is the unmarked class.
-var userThreadsKeyed = fits(`u.login`) + `
+var userThreadsKeyed = graphstore.AddressFitsSQL(`u.login`) + `
 	  and not (u.kind = '` + graphstore.KindComment + `' and exists (
 		select 1 from comments c` + refs.CommentStoreJoins + `
 		where c.id = u.thread_id and not (` + refs.CommentInTheStore + `)))`
@@ -769,8 +764,8 @@ var userThreadsPopulations = `
 // ask's create (ask.opened) and a move of who an ask waits on are no reply, and neither is an edit.
 const replyWrites = `('comment.created', 'comment.answered', 'message.created', 'message.answered', 'ask.answered')`
 
-// replyCaused is true of a delivered_to tuple d into a person that a reply caused, the deliveries
-// user_threads.version counts (R6, R9):
+// ReplyCaused is true of a delivered_to tuple d into a person that a reply caused, the deliveries
+// user_threads.version counts (R6, R9), which the erase of a reply reads too (grapherase):
 //
 //   - a tuple whose event is a reply's write (replyWrites). A delivered_to from an ask's create or
 //     from a move of who it waits on is caused by that create's or that move's event, and raises no
@@ -789,7 +784,7 @@ const replyWrites = `('comment.created', 'comment.answered', 'message.created', 
 //     and the create's or a move's otherwise. A backfilled one stands at or below its row's
 //     marked_seq (the backfill states it before it marks the row), so it counts in no version and
 //     is read only as the reply the mark carried (userThreadsCounted).
-var replyCaused = `(case
+var ReplyCaused = `(case
 	when d.source_event <> ` + noEvent + `
 		then exists (select 1 from events e where e.id = d.source_event and e.type in ` + replyWrites + `)
 	when d.from_kind in ('` + graphstore.KindComment + `', '` + graphstore.KindMessage + `') then true
@@ -804,7 +799,7 @@ var replyCaused = `(case
 // (kind, id), read off the store's own head pointers as inboxwrite's threadOf reads them: an ask is
 // its own thread; a comment's thread is the ask its replies_to names, else the comment its
 // replies_to names, else the comment itself; a message's is the root its replies_to chain reaches
-// within maxThreadDepth steps.
+// within inboxwrite.MaxThreadDepth steps.
 var deliveryThread = `
 	select case d.from_kind when '` + graphstore.KindComment + `' then coalesce(head.kind, d.from_kind) else d.from_kind end,
 	       case d.from_kind when '` + graphstore.KindComment + `' then coalesce(head.id, d.from_id)
@@ -835,15 +830,12 @@ var deliveryThread = `
 				) h where h.asserted
 				limit 1
 			) up
-			where climb.depth < ` + strconv.Itoa(maxThreadDepth) + `
+			where climb.depth < ` + strconv.Itoa(inboxwrite.MaxThreadDepth) + `
 		)
 		select climb.id from climb where d.from_kind = '` + graphstore.KindMessage + `' order by climb.depth desc limit 1
 	) top on true`
 
-// maxThreadDepth is inboxwrite's bound on a message thread's walk up, and 0095's.
-const maxThreadDepth = 64
-
-// replyDeliveries is every delivered_to into a person that a reply caused (replyCaused), with the
+// replyDeliveries is every delivered_to into a person that a reply caused (ReplyCaused), with the
 // thread it was delivered from (deliveryThread), as (login, thread_kind, thread_id, seq, at,
 // from_id).
 var replyDeliveries = `
@@ -851,7 +843,7 @@ var replyDeliveries = `
 	from graph_tuples d
 	cross join lateral (` + deliveryThread + `) thread (kind, id)
 	where d.to_kind = '` + graphstore.KindPerson + `' and d.kind = '` + graphstore.TupleDeliveredTo + `' and d.asserted
-	  and d.from_kind in ` + threadRootKinds + ` and ` + replyCaused
+	  and d.from_kind in ` + threadRootKinds + ` and ` + ReplyCaused
 
 // versionTriple is how both sides of user_threads_version write what a row says of the deliveries
 // it counted: its thread, its version, its replied_at and its last_reply_id.
@@ -862,7 +854,7 @@ func versionTriple(thread, version, repliedAt, lastReply string) string {
 
 // userThreadsVersionProjection proves R6's equation on every marked user_threads row: version is
 // marked_version plus the delivered_to tuples into that person from that thread with seq above
-// marked_seq that a reply caused (replyCaused), and replied_at and last_reply_id are the moment and
+// marked_seq that a reply caused (ReplyCaused), and replied_at and last_reply_id are the moment and
 // the near end of the newest of those same tuples, newest by moment and then by seq, as the
 // writer's update takes the later of two writes at one moment (inboxwrite's queueMoveRows). A row
 // the backfill marked carried its replied_at and last_reply_id across its mark; that reply is held
@@ -950,7 +942,7 @@ func readStateProjections() []projection {
 
 // keyed is true of a row r whose person and far end the store can key (api's markFits).
 func (table readStateKind) keyed() string {
-	return fits(`user_threads_login(r.login)`) + ` and ` + fits(table.toID)
+	return graphstore.AddressFitsSQL(`user_threads_login(r.login)`) + ` and ` + graphstore.AddressFitsSQL(table.toID)
 }
 
 // rowOf is true where the person n.id holds a row of the table naming held's far end, with more

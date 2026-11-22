@@ -2394,7 +2394,7 @@ The rows are literal because the census's bounded-write rule admits only literal
 It refuses and rewrites no existing row, and the runner applies it once: run again by hand, it would append every tuple a second time, since no unique key of `graph_tuples` covers a row at `source_event` 0.
 Its census answers `0`, and `TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt` holds its nodes to that test's own copy (`storeTypeAttributes`).
 
-Migration `20261116102800_delivery_attempts_node` adds `node_kind` and `node_address` to `comment_deliveries` and `message_deliveries`, nullable `text` with no default, and a foreign key over each pair to `graph_nodes (kind, id)`, added `not valid`: the node an attempt row projects, and the row's marker that its writer states the attempt in the store (`graphstore.Attempted`).
+Migration `20261116102800_delivery_attempts_node` adds `node_kind` and `node_address` to `comment_deliveries` and `message_deliveries`, nullable `text` with no default, and a foreign key over each pair to `graph_nodes (kind, id)`, added `not valid`: the node an attempt row projects, and the row's marker that its writer states the attempt in the store (`graphstore.QueueAttempted`).
 The writers of this release set both in the insert that writes the row, after writing the node (`graphstore.AttemptOpened`); a row the release before it inserts during the roll names no node, and is answered as it was until the backfill takes it.
 Each `alter table` holds its table `ACCESS EXCLUSIVE` and then takes `SHARE ROW EXCLUSIVE` on `graph_nodes` for its key, the other order from a comment write of the earlier release, which writes its comment's node before its mentions' attempts, so the migration sets `lock_timeout` to half a second, shorter than `deadlock_timeout`, and gives up first, as `20261109022248` does over `comments`: it fails with `55P03` having applied nothing, and the runner applies it again.
 It refuses and rewrites no row, since both columns are null in every row it finds and a `MATCH SIMPLE` key holds no row with a null column; its census answers `0`.
@@ -3977,7 +3977,7 @@ DATABASE_URL=postgres://... envoy-dispatch rebuild-refs
 ```
 
 reparses every source and reconciles the index with the text (surviving edges keep their provenance, edges of deleted sources are removed), marks every document owed a block index and every comment, message and ask owed a block index of its own blocks, an ask's parts included, which the server's block-index reconciliation then indexes, and prints `rebuild-refs: documents=N asks=N comments=N messages=N orphans=N edges=N blocks_owed=N items_owed=N`, `blocks_owed` being the documents it marked and `items_owed` the comments, messages and asks.
-It reads `dispatch.server_url` from the envoy config the same way the server does and refuses an empty value:
+It reads the dashboard origin (`DISPATCH_SERVER_URL`, or `dispatch.serverUrl` from `envoy.json`) the same way the server does and refuses an empty value:
 dashboard-URL mentions are recognised only against it, so an empty URL would drop them all.
 
 A picture in a message, comment, reply, ask question, answer or resolution reason is CommonMark's image syntax whose address is the picture's own Dispatch reference, versioned:

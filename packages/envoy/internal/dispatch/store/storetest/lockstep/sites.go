@@ -63,14 +63,14 @@ var storeWriteCallSites = map[string]string{
 	"api/comment_delivery.go#replyComment":            "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"api/message_delivery.go#completeMessageDelivery": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	// Every other write of a delivery attempt's row. Each states in the same write phase what the
-	// row now holds (graphstore.QueueAttempted, or Attempted where the write runs no batch of its
-	// own), and the two that open an attempt queue its node before the row (graphstore.AttemptOpened's
-	// plan, through QueueNodes), as the creates listed with their own nodes do (createCommentFor,
-	// createStoredMessage, queueBroadcastCopy). QueueAttempted appends tuples alone, which lock no
-	// row, so it adds no step to its caller's order; an opened attempt's node is one no other write
-	// can name yet, written before the row whose foreign key names it. No lock-step test drives these
-	// sites: api's TestMentionsAreTuplesAndEveryAttemptIsANode runs each one's real code and reads
-	// what it states of its attempt.
+	// row now holds (graphstore.QueueAttempted), and the two that open an attempt queue its node
+	// before the row (graphstore.AttemptOpened's plan, through QueueNodes), as the creates listed
+	// with their own nodes do (createCommentFor, createStoredMessage, queueBroadcastCopy).
+	// QueueAttempted appends tuples alone, which lock no row, so it adds no step to its caller's
+	// order; an opened attempt's node is one no other write can name yet, written before the row
+	// whose foreign key names it. No lock-step test drives these sites: api's
+	// TestMentionsAreTuplesAndEveryAttemptIsANode runs each one's real code and reads what it
+	// states of its attempt.
 	"api/comment_delivery.go#openCommentDeliveryAttempt":      "api#TestMentionsAreTuplesAndEveryAttemptIsANode",
 	"api/comment_delivery.go#recordCommentDeliveryResolution": "api#TestMentionsAreTuplesAndEveryAttemptIsANode",
 	"api/comment_delivery.go#standDown":                       "api#TestMentionsAreTuplesAndEveryAttemptIsANode",
@@ -187,13 +187,11 @@ var storeWriteCallSites = map[string]string{
 	"graphstore/write.go#Caused":                "graphstore#TestEveryStoreWriteTakesOneLockOrder",
 	"graphstore/write.go#QueueCaused":           "graphstore#TestEveryStoreWriteTakesOneLockOrder",
 	"graphstore/write.go#Write":                 "graphstore#TestEveryStoreWriteTakesOneLockOrder",
-	// Attempted, ToPerson and FromPerson run their queued forms (QueueAttempted, QueueToPerson,
-	// QueueFromPerson) as a batch of their own, for a writer that queues no write phase. ToPerson's
-	// and FromPerson's callers' drivers hold their steps; Attempted's callers are among the attempt
-	// writes above, which no lock-step test drives, and the test beside it runs their real code.
-	"graphstore/delivery_attempt.go#Attempted": "api#TestMentionsAreTuplesAndEveryAttemptIsANode",
-	"graphstore/from_person.go#FromPerson":     "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
-	"graphstore/to_person.go#ToPerson":         "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
+	// ToPerson and FromPerson run their queued forms (QueueToPerson, QueueFromPerson) as a batch of
+	// their own, for a writer that queues no write phase, and their callers' drivers hold their
+	// steps.
+	"graphstore/from_person.go#FromPerson": "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
+	"graphstore/to_person.go#ToPerson":     "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
 	// The one writer of an ask's answer state: asks.Settled.Queue states the answer on the ask's
 	// node, appended under the event it is given or held for the caller's, and then writes the
 	// row; the catch-up of a follow another build recorded states it on the node. Each site that

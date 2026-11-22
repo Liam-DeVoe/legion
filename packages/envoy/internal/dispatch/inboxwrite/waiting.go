@@ -75,18 +75,6 @@ func personOf(actor model.Actor) string {
 	return ""
 }
 
-// actorPerson is personOf in SQL, over an actor stored as jsonb at column: the canonical login of
-// the person it names, through user_threads_login (model.CanonicalLogin in SQL), and null for a
-// session or nobody.
-func actorPerson(column string) string {
-	return `(case
-				when ` + column + `->>'kind' = 'user' and coalesce(` + column + `->>'id', '') <> ''
-					then user_threads_login(` + column + `->>'id')
-				when ` + column + `->>'kind' = 'session' and coalesce(` + column + `->>'id', '') <> '' then null
-				when coalesce(` + column + `->>'owner', '') <> '' then user_threads_login(` + column + `->>'owner')
-			end)`
-}
-
 // OwnMove is true where person's participates_in in ask, stated under event, is the one
 // waitingOnTuples states for a move person made of the ask onto themselves, beside no
 // delivered_to: event is a write of that ask that decides who it waits on - its restore
@@ -116,8 +104,8 @@ func OwnMove(person, ask, event string) string {
 				      when 'settings.project_default_assignee.updated'
 				          then own_event.project_key = coalesce(own_issue.project_key, own_document.project_key)
 				      else false end
-				  and ` + actorPerson(`own_event.actor`) + ` = ` + person + `
-				  and ` + actorPerson(`own_ask.author`) + ` is distinct from ` + person + `)
+				  and ` + graphstore.PersonOfSQL(`own_event.actor`) + ` = ` + person + `
+				  and ` + graphstore.PersonOfSQL(`own_ask.author`) + ` is distinct from ` + person + `)
 			and not ` + deliveredUnder(ask, person, event, `own_delivery`) + `)`
 }
 
@@ -292,11 +280,11 @@ func moveLock(candidates string) string {
 // moveHeld is the common-table expressions of a move's statement over candidates, a select of
 // ask ids its parameters bind from $1: held, each candidate ask still open on an open issue or on
 // a project document, with who it waits on now (asks.AskedOfPersonExpression, canonical) and who
-// asked it (actorPerson); and reached, each person the arm of such an ask stands to, with whether
-// their participates_in stands and whether anything else holds them in the thread. Each is read
-// as the statement runs, after the write phase's lock of the asks (moveLock) and after every write
-// the batch queued before it - an ask the write itself reopens is read open - so nothing is read
-// back in Go between the lock and the tuples.
+// asked it (graphstore.PersonOfSQL); and reached, each person the arm of such an ask stands to,
+// with whether their participates_in stands and whether anything else holds them in the thread.
+// Each is read as the statement runs, after the write phase's lock of the asks (moveLock) and
+// after every write the batch queued before it - an ask the write itself reopens is read open - so
+// nothing is read back in Go between the lock and the tuples.
 //
 // The arm stands to a person whose newest arm tuple asserts it and whom no mention in the ask
 // holds. A person's arm tuples are the delivered_to tuples from the ask to them and the
@@ -310,7 +298,7 @@ func moveHeld(candidates string) string {
 	return `
 		held as (
 			select a.id::text as ask, user_threads_login(` + asks.AskedOfPersonExpression + `) as waiting,
-			       ` + actorPerson(`a.author`) + ` as asker
+			       ` + graphstore.PersonOfSQL(`a.author`) + ` as asker
 			from asks a` + asks.AskedOfPersonJoins + `
 			where a.id in (` + candidates + `) and a.state = '` + asks.StateOpen + `'
 			  and (a.issue_key is null or i.closed_at is null)

@@ -197,18 +197,6 @@ func QueueAttempted(b *store.WriteBatch, who model.Actor, event int64, keys ...A
 	})
 }
 
-// Attempted is QueueAttempted run at once, as a batch of its own, for a transition's writer with
-// no write phase: the facts are the delivery machinery's (AttemptWriter) and carry no cause. A
-// claim, a release and a sweep's reading of a lapsed claim record no event at all, so a
-// transition is stated at the sentinel, and each fact is appended once because the statement reads
-// what the node already states before it appends.
-func Attempted(ctx context.Context, tx pgx.Tx, keys ...AttemptKey) error {
-	return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
-		QueueAttempted(b, AttemptWriter, NoEvent, keys...)
-		return nil
-	})
-}
-
 // AttemptFactsAsWritten is what each named attempt holds against what the store holds of its node
 // now, for the backfill of an attempt row an older build wrote, whose node it has just written and
 // named on the row: the facts QueueAttempted states, read in one statement of the same SQL

@@ -806,12 +806,11 @@ var indexPasses = map[string]string{
 	"refs/decision_nodes.go#Queue": "the version's render and the credential its write proved",
 	"refs/refs.go#queueStamp":      "the event that recorded the write",
 	// Every write of a delivery attempt's row states what that row now holds
-	// (graphstore.Attempted, graphstore.QueueAttempted), and an insert writes the attempt's node
-	// before it, planned with the row it names (graphstore.AttemptOpened) and caused by the
-	// insert's event. Each reads the attempt row its own statement wrote, under the lock that
-	// statement holds, and what the store holds of that one node to append only what moved, the
-	// way a node write reads the row it moves (queueNodes): it never reads one side of a projection
-	// to mend the other.
+	// (graphstore.QueueAttempted), and an insert writes the attempt's node before it, planned with
+	// the row it names (graphstore.AttemptOpened) and caused by the insert's event. Each reads the
+	// attempt row its own statement wrote, under the lock that statement holds, and what the store
+	// holds of that one node to append only what moved, the way a node write reads the row it
+	// moves (queueNodes): it never reads one side of a projection to mend the other.
 	"api/comment_delivery.go#openCommentDeliveryAttempt":      "the attempt the retry opens",
 	"api/comment_delivery.go#take":                            "the attempt the claim takes",
 	"api/comment_delivery.go#standDown":                       "the attempt whose claim the sender gives back",

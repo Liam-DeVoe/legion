@@ -46,7 +46,7 @@ var publishedOwedPairs = `
 		            when topic.name like '` + contracts.RoleTopicPrefix + `%' then substring(topic.name from ` + roleTopicFrom + `) end as id
 	) reached
 	where item.id is not null and reached.kind is not null and reached.id <> ''
-	  and ` + fits(`item.id`) + ` and ` + fits(`reached.id`) + `
+	  and ` + graphstore.AddressFitsSQL(`item.id`) + ` and ` + graphstore.AddressFitsSQL(`reached.id`) + `
 	  and exists (select 1 from graph_nodes subject where subject.kind = item.kind and subject.id = item.id)
 	  and not exists (
 		select 1 from graph_tuples t

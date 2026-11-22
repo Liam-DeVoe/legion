@@ -128,7 +128,7 @@ func writeAsksOwed(ctx context.Context, tx pgx.Tx, ids []string) (inboxWrote, er
 	answers, err := tx.Query(ctx, `
 		select named.id, e.id, coalesce(e.payload->'answer'->>'user', ''), (e.payload->'answer'->>'at')::timestamptz
 		from unnest($1::text[], $2::timestamptz[]) as named (id, marker)
-		join events e on e.type in (`+askEventTypes+`) and e.type = 'ask.answered' and e.payload->>'id' = named.id
+		join events e on e.type in (`+inboxwrite.AskEventTypes+`) and e.type = 'ask.answered' and e.payload->>'id' = named.id
 		where e.payload->>'id' = any($1::text[])
 		  and e.payload->'answer'->>'user' is not null and e.payload->'answer'->>'at' is not null
 		  and (named.marker is null or (e.payload->'answer'->>'at')::timestamptz > named.marker)
@@ -194,10 +194,10 @@ func writeAsksOwed(ctx context.Context, tx pgx.Tx, ids []string) (inboxWrote, er
 // holds and an older build's does not.
 var declinesOwed = `
 	from events e
-	where e.type in (` + askEventTypes + `) and e.type = 'ask.resolved'
+	where e.type in (` + inboxwrite.AskEventTypes + `) and e.type = 'ask.resolved'
 	  and e.payload->'resolution'->>'kind' = '` + model.AskResolutionDeclined + `'
 	  and coalesce(e.payload->>'id', '') <> ''
-	  and ` + fits(`(`+actorAuthor(`e.actor`)+`)[2]`) + `
+	  and ` + graphstore.AddressFitsSQL(`(`+actorAuthor(`e.actor`)+`)[2]`) + `
 	  and not exists (
 	      select 1 from graph_tuples t
 	      where t.to_kind = '` + graphstore.KindAsk + `' and t.to_id = e.payload->>'id'
@@ -391,7 +391,7 @@ func writeUserThreads(ctx context.Context, tx pgx.Tx, keys [][]string) (inboxWro
 		           when u.kind = '`+graphstore.KindMessage+`' then (select `+messageEventOf("m")+` from messages m where m.id = u.last_reply_id)
 		           when u.kind = '`+graphstore.KindAsk+`' and u.last_reply_id = u.thread_id then coalesce((
 		               select e.id from events e
-		               where e.type in (`+askEventTypes+`) and e.type = 'ask.answered' and e.payload->>'id' = u.thread_id::text
+		               where e.type in (`+inboxwrite.AskEventTypes+`) and e.type = 'ask.answered' and e.payload->>'id' = u.thread_id::text
 		               order by (e.payload->'answer'->>'at')::timestamptz = u.replied_at desc, e.id desc
 		               limit 1), `+noEvent+`)
 		           else (select `+commentEventOf("c")+` from comments c where c.id = u.last_reply_id)

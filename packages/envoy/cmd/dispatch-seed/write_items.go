@@ -617,7 +617,7 @@ func (r *seedRun) writeMessages(ctx context.Context) error {
 		// Each message's node goes in before any row of the batch, in its issue's project, as the
 		// server's message create writes it; every seeded message is on an issue. Beside it go
 		// its pointers (graphstore.MessageFacts) and who wrote it, which graphstore.AuthorFacts
-		// states as graphstore.Authored does for a message of the server's, the author's node
+		// states as graphstore.QueueAuthored does for a message of the server's, the author's node
 		// once and restated, as commentStoreWrite gives a batch of comments theirs. Each row then
 		// names its node in its insert, as the server's does. The issues' owner locks come first,
 		// as for the asks (writeAsks): the window write takes them.

@@ -155,10 +155,11 @@ func storeKinds(messagesNamed string) []StoreKind {
 		count:  `(select coalesce(sum(aliases), 0) from sized_comments)`,
 	}, {
 		// Every attempt the listener took is two delivered_to facts of one delivery: the attempt's
-		// own, out of its node, which its settle states (graphstore.Attempted), and the comment's,
-		// out of the comment's node, which the outbox states under the attempt's comment.delivery
-		// receipt (outbox's mentionReached) - or, for an attempt a session's reply flipped to sent,
-		// which no receipt follows, the reply's write states (api's queueAnsweredDelivery).
+		// own, out of its node, which its settle states (graphstore.QueueAttempted), and the
+		// comment's, out of the comment's node, which the outbox states under the attempt's
+		// comment.delivery receipt (outbox's mentionReached) - or, for an attempt a session's reply
+		// flipped to sent, which no receipt follows, the reply's write states (api's
+		// queueAnsweredDelivery).
 		Name: "delivery", MovedBy: movedHere, Tuples: 2,
 		Driver: "comment_deliveries.created_at, taken by the listener: the attempt's delivered_to and the comment's" +
 			" for each attempt that reached its destination",

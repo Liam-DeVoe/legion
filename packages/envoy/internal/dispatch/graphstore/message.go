@@ -74,7 +74,8 @@ func (r MessageRow) OnAgentPage() bool {
 // (AuthorFacts).
 //
 // It is the one statement of these facts: every request path that writes a message (api's
-// writeMessageNode) and the seed write it.
+// planMessageNode), the backfill of a message an older build wrote (graphcensus) and the seed
+// write it.
 func MessageFacts(nodes []Node, tuples []Tuple, row MessageRow, author model.Actor, at time.Time, event int64) ([]Node, []Tuple, bool) {
 	if !AddressFits(row.InReplyTo) || !AddressFits(row.RepliesToBlock) {
 		return nodes, tuples, false

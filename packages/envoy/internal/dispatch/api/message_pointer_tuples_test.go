@@ -107,7 +107,7 @@ func TestAMessageWritesItsPointersAsTuples(t *testing.T) {
 	}
 
 	// A session that claimed a role carries no page of its own: the role's page is its page, as
-	// the publisher records it (graphstore.ClaimedRole), so a direct message to it hangs from that
+	// the publisher records it (graphstore.ClaimedRoles), so a direct message to it hangs from that
 	// page and never from one the publisher would not write.
 	const role = "pointers-role"
 	rolePage := graphstore.KindPage + ":" + graphstore.RolePageID(role)
