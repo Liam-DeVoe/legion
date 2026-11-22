@@ -2,6 +2,7 @@ package bus
 
 import (
 	"errors"
+	"maps"
 	"testing"
 	"time"
 
@@ -10,14 +11,15 @@ import (
 	"github.com/sjawhar/envoy/consumernames"
 )
 
-// The session creator names as the family table does: its Config's prefix, fixed name and key rule
-// are the table's for the session family (consumernames.SessionNaming), so its fence is the one
-// consumernames.CheckFamily applies for the session family, which gives the answer each round-6
-// case pins: a convert's open replace of s-ses-A served, a retired fixed name, another session's
-// fixed name and another family's current refused. The controls, each run with a fault and seen
-// failing: a creator whose prefix is not the table's fails the naming row, a creator whose key rule
-// is the durable's (CheckDurableKey) fails it on a session id, and a table with no fixed rule fails
-// the convert's case.
+// The session creator names as the family table does: its Config's prefix, fixed name, metadata and
+// key rule are the table's for the session family (consumernames.SessionNaming), so its fence is
+// the one consumernames.CheckFamily applies for the session family, which gives the answer each
+// round-6 case pins: a convert's open replace of s-ses-A served, a retired fixed name, another
+// session's fixed name and another family's current refused. The controls, each run with a fault
+// and seen failing: a creator whose prefix is not the table's fails the naming row, so does one
+// with no metadata of its own (its owner check then falls back to envoy.logical alone, which the
+// owner cases below cannot tell from the table's), and one whose key rule is the durable's
+// (CheckDurableKey) on a session id; a table with no fixed rule fails the convert's case.
 func TestTheSessionCreatorNamesAsTheFamilyTable(t *testing.T) {
 	_, consumers, _ := freshSessionConsumersOnStream(t)
 	names := consumers.fresh.names
@@ -28,6 +30,11 @@ func TestTheSessionCreatorNamesAsTheFamilyTable(t *testing.T) {
 		}
 		if got, want := creator.Fixed(id), table.Fixed(id); got != want {
 			t.Errorf("the session creator's fixed name of %s is %q, the table's %q", id, got, want)
+		}
+		if creator.Metadata == nil {
+			t.Errorf("the session creator has no metadata of its own; want the table's %v for %s", table.Metadata(id), id)
+		} else if got, want := creator.Metadata(id), table.Metadata(id); !maps.Equal(got, want) {
+			t.Errorf("the session creator's metadata of %s is %v, the table's %v", id, got, want)
 		}
 	}
 	if creator.CheckKey == nil {
