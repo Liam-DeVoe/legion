@@ -514,8 +514,10 @@ listener durable's key (`durable.listener-<machine id>`, escaped as the bucket k
 Dispatch's durables, or a daemon's `legion-go-<project key>-<kind>`; a bare `listener-<machine
 id>` is refused, naming its key. It refuses before its intent a SEQ past the stream's last
 sequence + 1, a session or listener key while the bucket is missing (`create-bucket makes first`),
-and a Postgres record it cannot read. It prints `<family>: K's record starts at SEQ with no
-current; retired: ...`. A stop names what the run left.
+a Postgres record it cannot read, and a daemon's key whose store, named by `--daemon-database`,
+the address rule leaves unreconciled or finds gone; it writes a daemon's store through the
+connection the rule opened. It prints `<family>: K's record starts at SEQ with no current;
+retired: ...`. A stop names what the run left.
 
 ### `convert`
 

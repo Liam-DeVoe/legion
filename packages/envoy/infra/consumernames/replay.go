@@ -35,7 +35,9 @@ const replayWrites = 8
 // open under a start it was not reserved at. A value under K that is no record of K is written
 // over, retiring nothing of it, and named (replayRead). Everything that can refuse it, the key,
 // the store and the stream's sequences, is read before its intent entry, so such a refusal leaves
-// the journal as it was; a refusal after its intent (a read that fails, a write the store refuses
+// the journal as it was; a daemon's store a --daemon-database file names is read by the census's
+// rule for the daemon stores, and one it leaves unreconciled or finds gone is such a refusal.
+// A refusal after its intent (a read that fails, a write the store refuses
 // past its retries, refuses for another reason or does not answer, a done entry whose write fails)
 // is its stop (createBucketStopped), naming what the run left.
 func (r *run) replay(ctx context.Context) error {
@@ -64,6 +66,23 @@ func (r *run) replayRun(ctx context.Context) error {
 	}
 	if last := stream.State.LastSeq; r.o.from > last+1 {
 		return fmt.Errorf("--from %d is past %s's last sequence %d + 1 (its first is %d): a consumer created there starts at the stream's first", r.o.from, notifications, last, stream.State.FirstSeq)
+	}
+	// A daemon's store a --daemon-database file names is read by the census's rule for the daemon
+	// stores, at exactly the address the project's one source names, and written through the pool
+	// the rule opened there (daemonStoresByRule): a store the rule leaves unreconciled or finds gone
+	// refuses the replay before its intent.
+	if project, ok := strings.CutPrefix(m.Family, familyDaemonPrefix); ok {
+		if _, named := r.o.daemonDatabase(project); named {
+			daemon, err := r.daemonStoreByRule(ctx, project)
+			switch {
+			case err != nil:
+				return err
+			case daemon.unreconciled != "":
+				return fmt.Errorf("%s's store is unreconciled, so replay writes no record there: %s", m.Family, daemon.unreconciled)
+			case daemon.gone != nil:
+				return fmt.Errorf("%s's store is gone at the address %s names, so replay writes no record there: %s", m.Family, daemon.addressSource(), daemonGoneText(*daemon.gone))
+			}
+		}
 	}
 	store, err := r.store(ctx, m.Family)
 	if err != nil {

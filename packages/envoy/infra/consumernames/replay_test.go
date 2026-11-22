@@ -3,6 +3,7 @@ package consumernames
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -10,8 +11,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	selection "github.com/sjawhar/envoy/consumernames"
+	"github.com/sjawhar/envoy/infra/writerhold"
 	"github.com/sjawhar/envoy/infra/writerhold/holdtest"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/holdrecord"
@@ -136,6 +139,50 @@ func TestReplayWritesTheKeysRecordWithItsStartAndNoCurrent(t *testing.T) {
 	got, _, err := bucket().Read(ctx, "ses_new")
 	require.NoError(t, err)
 	require.Equal(t, selection.Record{Key: "ses_new", Start: 3}, got, "a refused replay wrote the record")
+}
+
+// replay of a daemon's key reads the daemon's store, when a --daemon-database file names it, by
+// the census's rule for the daemon stores, at exactly the address the project's one source names,
+// before its intent, and writes that store alone: a file that reaches another database than the
+// project's Deployment names refuses the replay, naming the file's database and the Deployment's,
+// with no journal entry and no record written. Control, in the same hold: with the Deployment
+// naming the store the file reaches, the replay writes the key's record. And a100b59bf1's replay,
+// which opens the file's URL with no rule, writes through the file whatever the Deployment names.
+func TestReplayReadsADaemonStoreByTheAddressRule(t *testing.T) {
+	ctx := context.Background()
+	h := newStack(t)
+	createBucketNotifications(t, h, 5)
+	db := h.database(daemonFamily("rpa"), daemonMigrations...)
+	h.censusDeploy(censusDeployment("rpa", "daemon_elsewhere", censusInstance))
+	file := "rpa=" + h.enrollFile(db)
+	id := h.prepared(holdrecord.WorkflowCutover)
+	createBucketCohort(t, h.records(), id, 1)
+	h.held(id)
+	code, _, stderr := h.run("create-bucket", "--hold", id)
+	require.Equal(t, 0, code, stderr)
+	const key = "legion-go-rpa-dispatch"
+	store := pgFamilyOf(t, daemonFamily("rpa"), db)
+	before := len(createBucketEntries(h.journal(id), replayCommand))
+
+	code, _, stderr = h.run("replay", "--hold", id, "--key", key, "--from", "3", "--daemon-database", file)
+	require.Equal(t, 1, code, "replay beside a file for another Deployment's database: %s", stderr)
+	require.Contains(t, stderr, fmt.Sprintf("%s's store is unreconciled, so replay writes no record there: --daemon-database rpa=<file> reaches database %q, and Deployment legion/legion-daemon-rpa names database %q",
+		daemonFamily("rpa"), db.Config().ConnConfig.Database, "daemon_elsewhere"))
+	require.Len(t, createBucketEntries(h.journal(id), replayCommand), before, "the refused replay wrote a journal entry")
+	_, _, err := store.Read(ctx, key)
+	require.ErrorIs(t, err, selection.ErrNoRecord, "the refused replay wrote the record")
+
+	deployments := h.s.Kube.Client.AppsV1().Deployments(writerhold.DaemonNamespace)
+	rendered, err := deployments.Get(ctx, "legion-daemon-rpa", metav1.GetOptions{})
+	require.NoError(t, err)
+	rendered.Annotations[writerhold.DaemonStoreDatabaseAnnotation] = db.Config().ConnConfig.Database
+	_, err = deployments.Update(ctx, rendered, metav1.UpdateOptions{})
+	require.NoError(t, err)
+	code, _, stderr = h.run("replay", "--hold", id, "--key", key, "--from", "3", "--daemon-database", file)
+	require.Equal(t, 0, code, "control: replay with the Deployment naming the store: %s", stderr)
+	got, _, err := store.Read(ctx, key)
+	require.NoError(t, err)
+	require.Equal(t, uint64(3), got.Start)
 }
 
 // In a selection-recovery hold, replay follows create-bucket --after-loss: before it, replay is
