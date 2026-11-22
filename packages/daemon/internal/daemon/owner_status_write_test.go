@@ -24,8 +24,9 @@ import (
 )
 
 // The tree of the test below (dispatch://INFRA-3178, the plan's list L2): a root and one child. The
-// root's architect owns the child, and the child's implementer is a phase worker of it. A write in
-// Dispatch names its session, and the daemon finds the writer's claim by that session alone.
+// root's architect is the architect above the child, and the child's implementer is a phase worker
+// of it. A write in Dispatch names its session, and the daemon finds the writer's claim by that
+// session alone, among the claims it publishes as role holders (record.Store.LiveRoleHolders).
 const (
 	ownerMoveRoot      = "LEGION-1"
 	ownerMoveChild     = "LEGION-2"
@@ -156,10 +157,11 @@ type ownerMoveRig struct {
 }
 
 // newOwnerMoveRig records the root and the child in implementing at in_progress, each holding its
-// slot and the root's tree running, with the root's architect and the child's implementer claimed.
-// The copy of Dispatch's issues holds the chain the engine judges a write on: the child under the
-// root, which carries the legion label (R18 and R26 of dispatch://INFRA-3320). Dispatch shows the
-// child at in_progress, the daemon's own write at sequence 1, which the record took.
+// slot and the root's tree running, with the root's architect and the child's implementer claimed,
+// each working with its session held, as a registration holds it. The copy of Dispatch's issues
+// holds the chain the engine judges a write on: the child under the root, which carries the legion
+// label (R18 and R26 of dispatch://INFRA-3320). Dispatch shows the child at in_progress, the
+// daemon's own write at sequence 1, which the record took.
 func newOwnerMoveRig(t *testing.T) *ownerMoveRig {
 	t.Helper()
 	pool := isolatedOutboxPool(t)
@@ -209,6 +211,10 @@ func newOwnerMoveRig(t *testing.T) *ownerMoveRig {
 			values ($1, $2, $3, $4, $5, 1, $6, '', 'working', 0, 0, 0, 0)`,
 			string(token), project, ownerMoveRoot, c.issue, string(c.role), c.session); err != nil {
 			t.Fatalf("record the %s claim of %s: %v", c.role, c.issue, err)
+		}
+		if _, err := pool.Exec(context.Background(), `insert into claim_sessions (project, kind, name, claim) values ($1, 'session', $2, $3)`,
+			project, c.session, string(token)); err != nil {
+			t.Fatalf("hold the session of the %s claim of %s: %v", c.role, c.issue, err)
 		}
 	}
 	fake := &issueLogDispatch{log: []issueLogEntry{{seq: 1, typ: "issue.updated",

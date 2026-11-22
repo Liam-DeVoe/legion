@@ -266,10 +266,6 @@ func TestEveryWayOutOfAStepEndsItsRun(t *testing.T) {
 		}
 		return fact
 	}
-	rootArchitect, err := claim.NewToken("legion", finishedRoot, claim.RoleArchitect)
-	if err != nil {
-		t.Fatal(err)
-	}
 	moves := map[string][]row{
 		"DispatchIssue": {
 			{name: "a person parks a child", arrange: none, fact: issueFact(planning, "backlog"), leaves: planning},
@@ -284,17 +280,10 @@ func TestEveryWayOutOfAStepEndsItsRun(t *testing.T) {
 		"BackwardMove": {{name: "the implementer moves its retro back", arrange: none,
 			fact: intake.BackwardMove{Issue: inRetro, Requester: claim.RoleImplementer, To: phase.Implementing, Reason: "redo"}, leaves: inRetro}},
 		"SignOff": {{name: "the architect accepts a child", arrange: none, fact: intake.SignOff{Issue: inAccepting}, leaves: inAccepting}},
-		// close_child queues the close and moves nothing: the child keeps its step until Dispatch
-		// shows it done (R24 of dispatch://INFRA-3320, workflow's closeLanded).
-		"CloseChild": {{name: "the architect's close of a child keeps its step until Dispatch shows it done", arrange: none,
-			fact: intake.CloseChild{Issue: planning, Reason: "moot", Architect: rootArchitect}, keeps: planning}},
 		// Dispatch's refusal of a close the daemon queued moves nothing either: the issue keeps its
 		// phase and its run, and the close is written again once its children are done (R24).
-		"CloseRefused": {{name: "a refused close keeps the issue in its step", arrange: func(t *testing.T, pool *pgxpool.Pool, admission *Admission, engine intake.Handler) {
-			if _, err := intake.ApplyFact(context.Background(), pool, "api", "close-child", intake.CloseChild{Issue: planning, Reason: "moot", Architect: rootArchitect}, engine, admission); err != nil {
-				t.Fatalf("queue the close: %v", err)
-			}
-		}, source: "outbox", fact: intake.CloseRefused{Issue: planning, Generation: 1, Entry: 1, Children: []string{"LEGION-777 (todo)"}}, keeps: planning}},
+		"CloseRefused": {{name: "a refused close keeps the issue in its step", arrange: none, source: "outbox",
+			fact: intake.CloseRefused{Issue: planning, Generation: 1, Entry: 1, Children: []string{"LEGION-777 (todo)"}}, keeps: planning}},
 		// Dispatch's refusal of any other write the daemon queued moves nothing of the issue's step
 		// either: the record's status goes back to Dispatch's, where it still holds the refused one,
 		// and the caller is told (decision 12 of dispatch://INFRA-4730).

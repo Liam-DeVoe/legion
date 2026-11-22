@@ -497,6 +497,17 @@ func TestChangeStatusReadsEachSavedAnswerOfDispatch(t *testing.T) {
 			}
 			assertChanged(t, result.Changed[200:], "LEGION-203 backlog parent=none previous=402 issue=LEGION-203 backlog parent=none seq=403")
 		}},
+		{"role_holders_forbidden.http", func(t *testing.T, client *HTTPClient) {
+			// Read off the role-holder publication's route, which answered it: a publication whose
+			// actor is not the issue's project's daemon is refused 403 ROLE_HOLDER_FORBIDDEN, kept
+			// as every 403 is, and read by the daemon's outbox as a status write's
+			// LEGION_STATUS_SCOPE_REQUIRED (decision 12 of dispatch://INFRA-4730).
+			err := client.PutRoleHolders(ctx, "LEGION-1", nil)
+			assertRefusal(t, err, http.StatusForbidden, "ROLE_HOLDER_FORBIDDEN")
+			if _, permanent := PermanentRefusal(err); permanent {
+				t.Fatalf("PermanentRefusal(%v) = permanent, want a 403 the publication keeps and writes again", err)
+			}
+		}},
 	}
 	read := map[string]bool{}
 	for _, testCase := range cases {

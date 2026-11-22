@@ -271,9 +271,9 @@ func (r *personHandoverRig) launches(token string) int {
 // as admit does. It answers the operator's view of that claim, whose pending task is the new
 // generation's start task (none where the start names nothing), and the state the re-admission
 // left. That is the release before's path: on dispatch://INFRA-3320's R20 a stop keeps the phase
-// and its return opens no run, and k3 of dispatch://INFRA-4730 opens R's new run with park_child
-// and then rerun_child from the architect above R, which reads the Dispatch chain's ownership and
-// the mark park_child's row leaves (decision 8).
+// and its return opens no run, and k3 of dispatch://INFRA-4730 opens R's new run with the backlog
+// the architect above R writes in Dispatch and then that architect's rerun_child, which opens a new
+// run on a child Dispatch shows in backlog whoever wrote it (decision 8).
 func (r *personHandoverRig) readmit(key string) (api.OperatorClaim, api.State) {
 	t := r.t
 	t.Helper()

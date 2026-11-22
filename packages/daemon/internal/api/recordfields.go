@@ -234,8 +234,6 @@ var IssueRecordFields = []RecordFieldDecision{
 		Reason: "the generation a hand-over of the release before carried into the root it made, which the architect's start and catch-up read: the daemon's own record of how the run started, reaching no surface"},
 	{Field: "CarriedGate", Column: ColumnWithheld,
 		Reason: "whether that hand-over carried its old root's gate, which the architect's start reads to tell whether to register its own spec: the daemon's own record, reaching no surface"},
-	{Field: "ParkedByArchitect", Column: ColumnWithheld,
-		Reason: "the mark that the architect above parked the issue, which decides whether its next todo opens a new run: the daemon's own mark, reaching no surface"},
 	{Field: "PendingClose", Column: ColumnWithheld,
 		Reason: "a close Dispatch refused while a child was not done, which the decision pass writes again once every child is done: the daemon's own record of what it owes Dispatch, reaching no surface"},
 	{Field: "SeenSeq", Column: ColumnWithheld, Reason: BookkeepingReason},

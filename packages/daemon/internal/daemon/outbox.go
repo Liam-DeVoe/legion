@@ -191,7 +191,7 @@ type outbox struct {
 	// production, and zero in an outbox a test builds by hand, which reads the log at once.
 	seenWait time.Duration
 	// scopeTold is whether this daemon's run has queued the controller's status-scope notice, of
-	// which it queues one (statusRefusal).
+	// which it queues one for both refusals it is told of (tellStatusScopeOnce).
 	scopeTold atomic.Bool
 	// refreshPause reads the project's open pause into the daemon's flag
 	// (internal/pause's Service.Refresh) at each sweep (decision 18 of dispatch://INFRA-3759), so a
@@ -977,7 +977,7 @@ func (r *outbox) run(ctx context.Context, row record.OutboxRow) error {
 	case record.DesignGatesPublish:
 		return r.publishDesignGates(ctx, value)
 	case record.RoleHoldersPublish:
-		return r.publishRoleHolders(ctx, value)
+		return r.publishRoleHolders(ctx, row, value)
 	case record.StepRecord:
 		// A step record carrying a rating is the rating a retro gave the plan, which Dispatch
 		// takes on the record's rating route alone (publishStepRating).
@@ -1328,6 +1328,13 @@ func (r *outbox) awaitAfter(ctx context.Context, row record.OutboxRow, payload r
 // Dispatch's, so the two spellings change together.
 const statusScopeCode = "LEGION_STATUS_SCOPE_REQUIRED"
 
+// roleHolderForbiddenCode is Dispatch's code of the 403 it answers a publication of an issue's
+// role holders whose actor is not the session of the issue's project's daemon
+// (putIssueRoleHolders in packages/envoy/internal/dispatch/api/issue_role_holders.go), which a
+// token that does not prove that session gets once R26's refusal is on (R26 of
+// dispatch://INFRA-3320). The two spellings change together, as statusScopeCode's do.
+const roleHolderForbiddenCode = "ROLE_HOLDER_FORBIDDEN"
+
 // statusRefusal answers the two refusals of a status write that the row decides itself rather
 // than as dispatch.PermanentRefusal reads them, and says whether err was one of them; the error it
 // answers is the row's. A PARENT_STATUS_CONFLICT (R24 of dispatch://INFRA-3320) ends the row: on a
@@ -1336,7 +1343,8 @@ const statusScopeCode = "LEGION_STATUS_SCOPE_REQUIRED"
 // the record counted before its echo (intake.StatusRefused, decision 12 of dispatch://INFRA-4730).
 // A 403 LEGION_STATUS_SCOPE_REQUIRED keeps the row, as every 403 is kept, to be written again with
 // backoff once the daemon's token holds the scope: each refusal logs a line naming the code and
-// the issue, and the first in this daemon's run queues the controller's one status-scope notice.
+// the issue, and the first refusal of it or of a role-holder publication's ROLE_HOLDER_FORBIDDEN
+// in this daemon's run queues the controller's one status-scope notice (tellStatusScopeOnce).
 func (r *outbox) statusRefusal(ctx context.Context, row record.OutboxRow, payload record.StatusWrite, err error) (bool, error) {
 	var refusal *dispatch.Error
 	if !errors.As(err, &refusal) {
@@ -1348,13 +1356,13 @@ func (r *outbox) statusRefusal(ctx context.Context, row record.OutboxRow, payloa
 	case refusal.Status == http.StatusForbidden && refusal.Code == statusScopeCode:
 		r.log.Warn("outbox status write refused by Dispatch: the daemon's token lacks the scope Dispatch asks of a Legion issue's status; the write is kept and written again",
 			"row", row.ID, "issue", row.Issue, "status", payload.Status, "code", refusal.Code)
-		if r.scopeTold.CompareAndSwap(false, true) {
-			if tellErr := r.tellStatusScope(ctx, row, refusal); tellErr != nil {
-				r.scopeTold.Store(false)
-				return true, errors.Join(fmt.Errorf("set Dispatch issue %s to %s: %w", row.Issue, payload.Status, err), tellErr)
-			}
+		written := fmt.Errorf("set Dispatch issue %s to %s: %w", row.Issue, payload.Status, err)
+		if tellErr := r.tellStatusScopeOnce(ctx, row, fmt.Sprintf(
+			"Dispatch refused the daemon's status write on %s with %d %s: the token the daemon writes Dispatch with lacks the scope Dispatch asks of a write of a Legion issue's status. The daemon keeps the write and writes it again, and every later status write waits the same way, until a person gives the daemon a token that holds the scope.",
+			row.Issue, refusal.Status, refusal.Code)); tellErr != nil {
+			return true, errors.Join(written, tellErr)
 		}
-		return true, fmt.Errorf("set Dispatch issue %s to %s: %w", row.Issue, payload.Status, err)
+		return true, written
 	}
 	return false, nil
 }
@@ -1387,23 +1395,33 @@ func (r *outbox) parentRuleRefused(ctx context.Context, row record.OutboxRow, pa
 	return nil
 }
 
-// tellStatusScope queues the controller's status-scope notice of row's refusal (statusRefusal),
-// in a transaction of its own whose commit wakes the notice's lane.
-func (r *outbox) tellStatusScope(ctx context.Context, row record.OutboxRow, refusal *dispatch.Error) error {
+// tellStatusScopeOnce queues the controller's status-scope notice of row's refusal, whose reason
+// names the code and the issue and says that a person must give the daemon a token that holds the
+// scope, unless this daemon's run has queued it already: one notice for the run, whichever of the
+// two refusals it is told of comes first (statusRefusal's LEGION_STATUS_SCOPE_REQUIRED,
+// publishRoleHolders' ROLE_HOLDER_FORBIDDEN; decision 12 of dispatch://INFRA-4730). The notice is
+// queued in a transaction of its own whose commit wakes its lane; a queue that fails leaves the
+// notice to the next refusal.
+func (r *outbox) tellStatusScopeOnce(ctx context.Context, row record.OutboxRow, reason string) error {
+	if !r.scopeTold.CompareAndSwap(false, true) {
+		return nil
+	}
 	if r.pool == nil {
+		r.scopeTold.Store(false)
 		return fmt.Errorf("outbox row %d: no store to queue the controller's status-scope notice in", row.ID)
 	}
-	notice := record.ControllerNotice{Kind: record.StatusScopeNotice, Reason: fmt.Sprintf(
-		"Dispatch refused the daemon's status write on %s with %d %s: the token the daemon writes Dispatch with lacks the scope Dispatch asks of a write of a Legion issue's status. The daemon keeps the write and writes it again, and every later status write waits the same way, until a person gives the daemon a token that holds the scope.",
-		row.Issue, refusal.Status, refusal.Code)}
 	scoped, run := r.committing(ctx)
-	return run(func(tx pgx.Tx) error {
-		queued, err := record.NewFencedRow(scoped, tx, r.records, row.Issue, notice, r.now().UTC())
+	if err := run(func(tx pgx.Tx) error {
+		queued, err := record.NewFencedRow(scoped, tx, r.records, row.Issue, record.ControllerNotice{Kind: record.StatusScopeNotice, Reason: reason}, r.now().UTC())
 		if err != nil {
 			return err
 		}
 		return r.records.Enqueue(scoped, tx, queued)
-	})
+	}); err != nil {
+		r.scopeTold.Store(false)
+		return err
+	}
+	return nil
 }
 
 // changeStatus writes payload, a row with an option, on Dispatch's status-change route
@@ -1935,9 +1953,14 @@ func (r *outbox) publishDesignGates(ctx context.Context, payload record.DesignGa
 // A Dispatch that has not got the route yet answers its router's 404, which execute makes a wait,
 // so the daemon and Dispatch deploy in either order. Every other answer is decided by
 // permanentRefusal: the route's own 404 ISSUE_NOT_FOUND and a coded 400 end the row, and a 5xx, a
-// codeless 4xx, a handler's 404 NOT_FOUND "not found" and a transport failure are failures retried
-// on the row's backoff.
-func (r *outbox) publishRoleHolders(ctx context.Context, payload record.RoleHoldersPublish) error {
+// codeless 4xx, a 401, a 403, a handler's 404 NOT_FOUND "not found" and a transport failure are
+// failures retried on the row's backoff. Of those, a 403 ROLE_HOLDER_FORBIDDEN, which Dispatch
+// answers a token that does not prove the daemon's own session once R26's refusal is on, is read
+// as a status write's LEGION_STATUS_SCOPE_REQUIRED is (decision 12 of dispatch://INFRA-4730): the
+// row is kept and written again, each refusal logs a line naming the code and the issue, and the
+// first refusal of either code in this daemon's run queues the controller's one status-scope
+// notice (tellStatusScopeOnce).
+func (r *outbox) publishRoleHolders(ctx context.Context, row record.OutboxRow, payload record.RoleHoldersPublish) error {
 	if r.dispatch == nil {
 		return errors.New("role holders executor has no Dispatch client")
 	}
@@ -1953,10 +1976,23 @@ func (r *outbox) publishRoleHolders(ctx context.Context, payload record.RoleHold
 	for i, holder := range live {
 		holders[i] = dispatch.RoleHolder{Role: string(holder.Role), Session: holder.Session}
 	}
-	if err := r.dispatch.PutRoleHolders(ctx, payload.Issue, holders); err != nil {
-		return fmt.Errorf("publish the role holders of %s: %w", payload.Issue, err)
+	err := r.dispatch.PutRoleHolders(ctx, payload.Issue, holders)
+	if err == nil {
+		return nil
 	}
-	return nil
+	published := fmt.Errorf("publish the role holders of %s: %w", payload.Issue, err)
+	var refusal *dispatch.Error
+	if !errors.As(err, &refusal) || refusal.Status != http.StatusForbidden || refusal.Code != roleHolderForbiddenCode {
+		return published
+	}
+	r.log.Warn("outbox role-holder publication refused by Dispatch: the daemon's token does not prove the daemon's own session to Dispatch; the publication is kept and written again",
+		"row", row.ID, "issue", payload.Issue, "code", refusal.Code)
+	if tellErr := r.tellStatusScopeOnce(ctx, row, fmt.Sprintf(
+		"Dispatch refused the daemon's publication of the role holders of %s with %d %s: the token the daemon writes Dispatch with does not prove the daemon's own session with the scope Dispatch asks of a write of a Legion issue. The daemon keeps the publication and writes it again, and the architects' own status writes that Dispatch reads it for wait the same way, until a person gives the daemon a token that holds the scope.",
+		payload.Issue, refusal.Status, refusal.Code)); tellErr != nil {
+		return errors.Join(published, tellErr)
+	}
+	return published
 }
 
 // publishStepRecord writes one start or one end of a step onto Dispatch's record of it, under the

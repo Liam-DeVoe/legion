@@ -1470,6 +1470,11 @@ func (a *Admission) promote(ctx context.Context, tx pgx.Tx) (int, []string, erro
 // at every slot whose worker has lost its task, and at every tree a step that left gates.design
 // released (record.Waiting's LineFirstPhase).
 func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bool) (int, []string, error) {
+	// The session writes the repair holds on an unknown chain are judged at the first pass that
+	// knows the chain, a paused project's included, since a status write is no start.
+	if err := a.judgeHeldStatusWrites(ctx, tx); err != nil {
+		return 0, nil, err
+	}
 	// A paused project promotes nothing (decision 11 of dispatch://INFRA-3759): no slot, no owed
 	// entry, no stalled-tree notice and no children-first notice. The tick's wake of the
 	// controller is the caller's and still runs, and the resume applies one pass of its own. The
@@ -1895,6 +1900,29 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	// of its own — a merger's READY the dropped step refused — went with READY: the merger merges
 	// the head it read and no gate refuses a completion (dispatch://INFRA-714 R2).
 	return admitted, released, nil
+}
+
+// judgeHeldStatusWrites judges the session writes each issue of the project holds
+// (record.Issue.HeldSessionWrites) whose Dispatch chain the copy now knows, in Dispatch's order,
+// and clears them in this pass's transaction (workflow's Engine.JudgeHeldStatusWrites), so a later
+// pass of the same transaction finds none. An issue whose chain is still unknown keeps them, and its
+// key joins the issues the daemon reads Dispatch again for (noteUnknownChain; decision 24 of
+// dispatch://INFRA-4730).
+func (a *Admission) judgeHeldStatusWrites(ctx context.Context, tx pgx.Tx) error {
+	held, err := a.store.HeldSessionWriteIssues(ctx, tx, a.project)
+	if err != nil {
+		return err
+	}
+	for _, issue := range held {
+		known, err := a.engine.JudgeHeldStatusWrites(ctx, tx, issue)
+		if err != nil {
+			return fmt.Errorf("judge the session writes held on %s: %w", issue.Key, err)
+		}
+		if !known {
+			a.noteUnknownChain(ctx, issue.Key)
+		}
+	}
+	return nil
 }
 
 // reread takes this pass's shared reads again, after the pass has itself written something that

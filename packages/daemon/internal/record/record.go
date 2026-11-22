@@ -328,10 +328,6 @@ type Issue struct {
 	// fact of the issue). Zero and false for every record no hand-over made.
 	CarriedGeneration uint64
 	CarriedGate       bool
-	// ParkedByArchitect is the mark that the architect above the issue parked it (park_child):
-	// the `todo` that puts it back in work then opens a new run of it rather than resuming the one
-	// the park stopped. False for every other record.
-	ParkedByArchitect bool
 	// PendingClose is a close of the issue the daemon queued and Dispatch has not yet shown done
 	// (R24 of dispatch://INFRA-3320): the close paths write it with the close row, Dispatch's
 	// refusal of that row because a child of the issue was not done marks it refused, and the
@@ -345,6 +341,23 @@ type Issue struct {
 	// dispatch://INFRA-4730). It never goes back: PutIssue keeps the greater of the stored value
 	// and the copy's.
 	SeenSeq int64
+	// HeldSessionWrites is the status writes of sessions the repair holds while the issue's
+	// Dispatch chain is unknown (R16 of dispatch://INFRA-3320; decision 24 of
+	// dispatch://INFRA-4730), in Dispatch's order: neither taken nor set back at their events, so
+	// none is dropped unjudged, and judged one by one at the first pass that knows the chain
+	// (workflow's Engine.JudgeHeldStatusWrites), which clears the list in the transaction it judges
+	// it in. A later session write is appended while the list holds any, a person's later status
+	// write clears it, and the daemon's own echo leaves it. Nil for every other record. It is no
+	// part of Store.PendingStatusWrites, which is the outbox's queued status writes.
+	HeldSessionWrites []HeldSessionWrite
+}
+
+// HeldSessionWrite is one status write of a session the repair holds (Issue.HeldSessionWrites):
+// the session the Dispatch event names, the status it wrote, and the event's Dispatch sequence.
+type HeldSessionWrite struct {
+	Session string `json:"session"`
+	Status  string `json:"status"`
+	Seq     int64  `json:"seq"`
 }
 
 // PendingClose is one close of an issue the daemon queued: the run (Generation) and the phase
@@ -2184,12 +2197,10 @@ type Store interface {
 	// whose gate root is one issue's, which the caller reads from its Chains, in place of the tree
 	// SessionClaimsTree reads off the claims (R18 of dispatch://INFRA-3320). No issues reads false.
 	SessionClaimsOf(ctx context.Context, tx pgx.Tx, issues []string, session string) (bool, error)
-	// ArchitectIssueOfSession is the issue of the architect claim that the agent session holds of
-	// one of issues, which the caller reads from its Chains as it reads SessionClaimsOf's, and
-	// whether it holds one. It reads the claim in any state, as SessionClaimsOf does: a suspended
-	// architect's session is still the session of its claim, and a write in Dispatch names that
-	// session. No issues reads none.
-	ArchitectIssueOfSession(ctx context.Context, tx pgx.Tx, issues []string, session string) (string, bool, error)
+	// HeldSessionWriteIssues is every issue of the Dispatch project whose record holds session
+	// writes the repair held on an unknown chain (Issue.HeldSessionWrites), by key: the issues the
+	// admission pass judges once their chains are known.
+	HeldSessionWriteIssues(ctx context.Context, tx pgx.Tx, project string) ([]Issue, error)
 	// SessionClaimsAnywhere says whether the agent session holds a claim in any tree the daemon
 	// records. It is what tells a holder the daemon records in another tree from one it records
 	// nowhere, which SessionClaimsTree's one boolean cannot.

@@ -17,17 +17,21 @@ import (
 // backInWork is the engine's reaction to a newer status of a recorded issue that is not out of
 // the workflow (dispatchIssue): Dispatch shows the issue todo, in_progress, testing, needs_review
 // or retro, whoever wrote it (R20 of dispatch://INFRA-3320: the daemon acts on each issue's own
-// status). Only decision 8's three cases open a new run (NewRun):
+// status). Only two of decision 8's cases come through here and open a new run (NewRun):
 //
 //   - a todo on a record at phase done: an issue the daemon closed, or one the release before
 //     left there when it left the workflow;
 //   - a move out of Dispatch's done into any status in work of a record at phase done whose run's
-//     pull request is recorded merged: the reopen of an issue its merge closed (opensRunOnReopen);
-//   - the todo of rerun_child on an issue park_child parked (record.Issue.ParkedByArchitect).
+//     pull request is recorded merged: the reopen of an issue its merge closed (opensRunOnReopen).
+//
+// The third, rerun_child on a child Dispatch shows in backlog or icebox, opens its new run in the
+// call's own fact, whoever wrote that status, so the daemon keeps no mark of who stopped an issue.
 //
 // Any other status in work on a record at phase done opens nothing, and the issue stays out of
 // Legion's work (R15): R25's fix moving an issue the daemon closed into in_progress is one. An
-// issue a stop left in its phase that Dispatch shows in work again returns to work (ReturnToWork).
+// issue a stop left in its phase that Dispatch shows in work again returns to work at a new entry
+// (ReturnToWork), whoever stopped it and whoever wrote the status in work: a person's todo and
+// release_children's alike.
 //
 // An issue already in Legion's work moves only on a todo: a todo on a held issue releases its hold
 // (releaseHeldRoot), and a todo on a root whose architect claim failed starts that claim again
@@ -41,9 +45,6 @@ func (e *Engine) backInWork(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		}
 		return e.NewRun(ctx, tx, issue, fact)
 	case !record.InLegionsWork(issue):
-		if fact.Status == "todo" && issue.ParkedByArchitect {
-			return e.NewRun(ctx, tx, issue, fact)
-		}
 		return e.ReturnToWork(ctx, tx, issue, fact)
 	case fact.Status != "todo":
 		return nil
@@ -298,16 +299,17 @@ func (e *Engine) tellAbove(ctx context.Context, tx pgx.Tx, issue record.Issue, r
 }
 
 // NewRun opens a new run of issue: a new generation from its first phase, for decision 8's three
-// cases (backInWork says which). The run waits at admitted for its first start, at the status
+// cases (backInWork's two, and rerun_child's in its own fact). The run waits at admitted for its
+// first start, at the status
 // Dispatch shows, whichever status in work brought it: a root that a person handed to Legion waits
 // in the line for its promotion (record.QueuedRoot), and an issue under a parent in Legion's work
 // for its first phase (record.Waiting), as any first start does.
 //
 // It clears the issue's own run and nothing of another issue's (R17 of dispatch://INFRA-3320): the
 // held start, the hold, the wait on a person and the close Dispatch refused go with the run that
-// ended, so does the mark that the run stood in a phase (record.Issue.TakenBack, decision 19) and
-// the mark that the architect parked it (record.Issue.ParkedByArchitect), and the generation's
-// facts are cleared (record.Store.ClearGeneration): a merged or closed pull request, the rounds of
+// ended, so does the mark that the run stood in a phase (record.Issue.TakenBack, decision 19), and
+// the generation's facts are cleared (record.Store.ClearGeneration): a merged or closed pull
+// request, the rounds of
 // an open one, the design gate and the recorded handoffs. A person's approval of a version the
 // issue's document has since moved past is kept first (keepStaleApproval, R3), so the new run's
 // architect is told to request approval of the latest version. An open production check closes as
@@ -343,7 +345,7 @@ func (e *Engine) NewRun(ctx context.Context, tx pgx.Tx, issue record.Issue, fact
 	run := observedIssue(issue, fact)
 	run.Generation++
 	run.Phase, run.Hold, run.Awaiting, run.ChildrenWait, run.PendingClose = phase.Admitted, nil, nil, nil, nil
-	run.TakenBack, run.ParkedByArchitect = false, false
+	run.TakenBack = false
 	run.Status = fact.Status
 	if err := e.store.PutIssue(ctx, tx, run); err != nil {
 		return err

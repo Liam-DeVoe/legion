@@ -5,6 +5,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -160,6 +162,61 @@ func TestTheRemovedChildRouteAnswersWithTheStatusWrite(t *testing.T) {
 	}
 	if after := count("processed_events"); after != facts {
 		t.Fatalf("applied facts after the refusals = %d, want the %d before them", after, facts)
+	}
+}
+
+// No child route stands but the one that refuses an older plugin (cybermonklabs/legion#4573,
+// spec v12 of dispatch://INFRA-4730). park_child's route answers 410 ROUTE_REMOVED with the rules
+// for ending a child (record.EndChildRule), whatever body its caller sends: the architect's
+// request of contract 205 and before, the status and children a later park_child would have sent,
+// none, and one that does not decode. The daemon serves no close_child route: its path answers
+// the router's no-route 404. And neither the legion tool's operations
+// (packages/pi-legion/src/tools.ts) nor @legion/pi-shared's daemon client
+// (packages/pi-shared/src/daemon-client.ts) names either operation or its route, so no agent is
+// offered a call that cannot work.
+//
+// Negative control, run when this was written: with removedChildRoute answering 404 in place of
+// 410, the park rows fail.
+func TestNoCloseChildAndParkChildAnswersGone(t *testing.T) {
+	h, _, statuses := statusHarness(t)
+	architect := newLiveClaim(t, h, statusRoot, claim.RoleArchitect)
+	grant := architect.grant(t)
+	for _, tc := range []struct {
+		name string
+		body any
+	}{
+		{name: "an architect's park of its running child", body: map[string]any{"grantId": grant, "issue": statusChild}},
+		{name: "a park with a status and a children argument", body: map[string]any{"grantId": grant, "issue": statusChild, "status": "icebox", "children": "include"}},
+		{name: "no body"},
+		{name: "a body that does not decode", body: `{"grantId":`},
+	} {
+		t.Run("park_child: "+tc.name, func(t *testing.T) {
+			if reason := refused(t, h.request(http.MethodPost, "/legion/v1/children/park", tc.body, nil), http.StatusGone, "ROUTE_REMOVED"); !strings.HasSuffix(reason, record.EndChildRule) {
+				t.Fatalf("the park refusal says %q, want it to end with the rules for ending a child", reason)
+			}
+		})
+	}
+	t.Run("close_child", func(t *testing.T) {
+		if recorder := h.request(http.MethodPost, "/legion/v1/children/close", map[string]any{"grantId": grant, "issue": statusChild, "reason": "moot"}, nil); recorder.Code != http.StatusNotFound {
+			t.Fatalf("POST /legion/v1/children/close = %d %s, want the router's 404: the daemon serves no close_child route", recorder.Code, recorder.Body)
+		}
+	})
+	if len(statuses.writes) != 0 {
+		t.Fatalf("Dispatch writes = %#v, want none", statuses.writes)
+	}
+	for _, source := range []string{
+		filepath.Join("..", "..", "..", "pi-legion", "src", "tools.ts"),
+		filepath.Join("..", "..", "..", "pi-shared", "src", "daemon-client.ts"),
+	} {
+		text, err := os.ReadFile(source)
+		if err != nil {
+			t.Fatalf("read %s: %v", source, err)
+		}
+		for _, name := range []string{"close_child", "park_child", "/legion/v1/children/close", "/legion/v1/children/park"} {
+			if strings.Contains(string(text), name) {
+				t.Errorf("%s names %s, which the daemon does not serve", source, name)
+			}
+		}
 	}
 }
 

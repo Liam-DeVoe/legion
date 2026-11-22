@@ -70,7 +70,7 @@ func (s *Postgres) Processed(ctx context.Context, tx pgx.Tx, source, eventID str
 // unit was drawn is an assignment row of its own (AssignmentsOf, AssignmentsFor), and nothing this
 // release's daemon runs reads the columns but the back-fill of
 // 20261111045636_experiment_assignments.
-const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, coalesce(told_parent, ''), moved_at, tree_stalled_told_at, released_for_wait_at, coalesce(view_of, ''), children_wait_start, children_wait_task, children_wait_reason, children_wait_since, nullif(children_wait_children, '{}'), children_waited_at, holds_gate, retained_until, carried_generation, carried_gate, parked_by_architect, pending_close, seen_seq`
+const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, coalesce(told_parent, ''), moved_at, tree_stalled_told_at, released_for_wait_at, coalesce(view_of, ''), children_wait_start, children_wait_task, children_wait_reason, children_wait_since, nullif(children_wait_children, '{}'), children_waited_at, holds_gate, retained_until, carried_generation, carried_gate, pending_close, seen_seq, held_session_writes`
 
 func (s *Postgres) Issue(ctx context.Context, tx pgx.Tx, key string) (*Issue, error) {
 	issue, err := scanIssue(tx.QueryRow(ctx, "select "+issueColumns+" from issues where key = $1", key))
@@ -118,6 +118,14 @@ func (s *Postgres) IssuesOf(ctx context.Context, tx pgx.Tx, project string, keys
 	issues, err := queryIssues(ctx, tx, "select "+issueColumns+" from issues where project = $1 and key = any($2) order by key", project, keys)
 	if err != nil {
 		return nil, fmt.Errorf("read issues %v of project %s: %w", keys, project, err)
+	}
+	return issues, nil
+}
+
+func (s *Postgres) HeldSessionWriteIssues(ctx context.Context, tx pgx.Tx, project string) ([]Issue, error) {
+	issues, err := queryIssues(ctx, tx, "select "+issueColumns+" from issues where project = $1 and held_session_writes <> '[]'::jsonb order by key", project)
+	if err != nil {
+		return nil, fmt.Errorf("list the issues of project %s that hold session writes: %w", project, err)
 	}
 	return issues, nil
 }
@@ -271,6 +279,16 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 		}
 		pendingClose = encoded
 	}
+	// The held session writes are one list in Dispatch's order, written whole as the record holds
+	// it: the empty list is none held (Issue.HeldSessionWrites).
+	heldWrites := []byte("[]")
+	if len(issue.HeldSessionWrites) > 0 {
+		encoded, err := json.Marshal(issue.HeldSessionWrites)
+		if err != nil {
+			return fmt.Errorf("put issue %s: encode its held session writes: %w", issue.Key, err)
+		}
+		heldWrites = encoded
+	}
 	// The update's condition keeps a recorded issue on the repository, default branch and GitHub
 	// spelling it was recorded with: a write naming others changes no row, and is refused below.
 	// handout_seq, declared_seq and declared_at are StartHandout's, TakeInThrough's, Declare's and
@@ -306,11 +324,11 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 		awaiting_ask, awaiting_gate_version, awaiting_artifact, awaiting_answered_at, awaiting_answered_by, awaiting_answered_detail, awaiting_since_seq, awaiting_since,
 		ancestry, handed_over_from, told_parent, view_of,
 		children_wait_start, children_wait_task, children_wait_reason, children_wait_since, children_wait_children, children_waited_at, holds_gate,
-		retained_until, carried_generation, carried_gate, parked_by_architect, pending_close, seen_seq)
+		retained_until, carried_generation, carried_gate, pending_close, seen_seq, held_session_writes)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, nullif($15::text, ''), $16, $17, $18, $19, $20, $21, $22, $23, nullif($24::text, ''), nullif($25::text, ''), $26, $27,
 		coalesce($28::text[], '{}'), $29, nullif($30::text, ''), nullif($31::text, ''),
 		$32, $33, $34, $35, nullif($36::text[], '{}'), $37, $38,
-		$39, $40, $41, $42, $43, $44)
+		$39, $40, $41, $42, $43, $44::jsonb)
 		on conflict (key) do update set project = excluded.project, title = excluded.title,
 		parent = excluded.parent, phase = excluded.phase, generation = excluded.generation,
 		status = excluded.status, rank = excluded.rank, handed_over = excluded.handed_over, taken_back = excluded.taken_back,
@@ -329,15 +347,16 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 		children_wait_children = excluded.children_wait_children, children_waited_at = excluded.children_waited_at,
 		holds_gate = issues.holds_gate or excluded.holds_gate,
 		retained_until = excluded.retained_until, carried_generation = excluded.carried_generation,
-		carried_gate = excluded.carried_gate, parked_by_architect = excluded.parked_by_architect,
-		pending_close = excluded.pending_close, seen_seq = greatest(issues.seen_seq, excluded.seen_seq)
+		carried_gate = excluded.carried_gate,
+		pending_close = excluded.pending_close, seen_seq = greatest(issues.seen_seq, excluded.seen_seq),
+		held_session_writes = excluded.held_session_writes
 		where issues.repo = excluded.repo and issues.default_branch = excluded.default_branch and issues.github_repo = excluded.github_repo`,
 		issue.Key, issue.Tree, issue.Project, issue.Title, issue.Parent, string(issue.Phase), int64(issue.Generation), issue.Status,
 		issue.Rank, issue.HandedOver, issue.TakenBack, issue.LingerUntil, heldFrom, issue.LastDispatchSeq, string(holdReason), issue.DispatchStatus,
 		issue.Repo, issue.DefaultBranch, issue.GitHubRepo, awaitingAsk, awaitingGate, awaitingArtifact, answeredAt, string(answeredBy), answeredDetail,
 		sinceSeq, since, issue.Ancestry, issue.HandedOverFrom, issue.ToldParent, issue.ViewOf,
 		childrenWaitStart, childrenWaitTask, childrenWaitReason, childrenWaitSince, childrenWaitChildren, issue.ChildrenWaitedAt, issue.HoldsGate,
-		issue.RetainedUntil, int64(issue.CarriedGeneration), issue.CarriedGate, issue.ParkedByArchitect, pendingClose, issue.SeenSeq,
+		issue.RetainedUntil, int64(issue.CarriedGeneration), issue.CarriedGate, pendingClose, issue.SeenSeq, string(heldWrites),
 	)
 	if err != nil {
 		return fmt.Errorf("put issue %s: %w", issue.Key, err)
@@ -644,15 +663,15 @@ func scanIssue(row scanner) (*Issue, error) {
 	var childrenWaitStart, childrenWaitTask, childrenWaitReason *string
 	var childrenWaitChildren []string
 	var carriedGeneration int64
-	var pendingClose []byte
+	var pendingClose, heldWrites []byte
 	if err := row.Scan(&issue.Key, &issue.Tree, &issue.Project, &issue.Title, &issue.Parent, &phaseValue, &generation, &issue.Status,
 		&issue.Rank, &issue.HandedOver, &issue.TakenBack, &issue.LingerUntil, &heldFrom, &issue.LastDispatchSeq, &holdReason, &issue.DispatchStatus,
 		&issue.Repo, &issue.DefaultBranch, &issue.GitHubRepo, &awaitingAsk, &awaitingGate, &awaitingArtifact, &answeredAt, &answeredBy, &answeredDetail,
 		&sinceSeq, &since, &issue.HandoutSeq, &issue.DeclaredSeq, &declaredAt, &issue.Ancestry, &issue.HandedOverFrom,
 		&issue.ToldParent, &issue.MovedAt, &treeStalledToldAt, &releasedForWaitAt,
 		&issue.ViewOf, &childrenWaitStart, &childrenWaitTask, &childrenWaitReason, &childrenWaitSince, &childrenWaitChildren,
-		&childrenWaitedAt, &issue.HoldsGate, &retainedUntil, &carriedGeneration, &issue.CarriedGate, &issue.ParkedByArchitect,
-		&pendingClose, &issue.SeenSeq); err != nil {
+		&childrenWaitedAt, &issue.HoldsGate, &retainedUntil, &carriedGeneration, &issue.CarriedGate,
+		&pendingClose, &issue.SeenSeq, &heldWrites); err != nil {
 		return nil, err
 	}
 	if carriedGeneration < 0 {
@@ -669,6 +688,12 @@ func scanIssue(row scanner) (*Issue, error) {
 			return nil, fmt.Errorf("issue %s holds a refused close that does not decode: %w", issue.Key, err)
 		}
 		issue.PendingClose = &refused
+	}
+	if err := json.Unmarshal(heldWrites, &issue.HeldSessionWrites); err != nil {
+		return nil, fmt.Errorf("issue %s holds session writes that do not decode: %w", issue.Key, err)
+	}
+	if len(issue.HeldSessionWrites) == 0 {
+		issue.HeldSessionWrites = nil
 	}
 	if declaredAt != nil {
 		issue.DeclaredAt = declaredAt.UTC()

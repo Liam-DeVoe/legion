@@ -265,6 +265,7 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "End a child with your own status write in Dispatch. " +
   "Write done with a reason when the child's work is done, folded into another issue or no longer needed: " +
   "dispatch issue-update --issue <KEY> --status done --reason '<why>'. " +
+  "Dispatch closes an issue only once each issue under it is done, so when the child has open children, close each of them done first, from the bottom. " +
   "For a fold, name the carrier in the reason: the issue that carries the work. " +
   "Before the done of a fold, make each issue that is blocked_by the child wait on the carrier instead. " +
   "Done starts those issues, and the Referenced by list of dispatch read names each of them as blocked_by. " +
@@ -274,6 +275,7 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "When it is in the merge queue, first take it out (GraphQL dequeuePullRequest). " +
   "Do this before done, or at once after a done that you wrote first. " +
   "Write backlog or icebox only when a person asked for that move, or as the first step of a restart. " +
+  "A backlog or icebox of a child that has open children takes include_children, which moves those children with it. " +
   "A restart is backlog, then rerun_child. " +
   "Say why in a dispatch comment. " +
   "Write no status on a child that is already done, because a move out of done ends an open production check. " +
@@ -403,6 +405,24 @@ test("the legion tool's description carries the daemon's rules for ending a chil
   const { description } = toolFor(claimSession("architect"));
   expect(description).toContain(rule);
   expect(description).toContain(notTakenYet);
+});
+
+// Dispatch closes an issue only once each issue under it is done, and moves an issue out of work
+// with the open issues under it only when the write says so (R24 of INFRA-3320). So the rules for
+// ending a child say to close each open child of it done first, from the bottom, and that a backlog
+// or icebox of it takes include_children (spec v12 of INFRA-4730), in the daemon's rule
+// (record.EndChildRule, through end-child-rule.json) and in the description alike.
+test("end child rule closes children first", () => {
+  const { rule } = daemonFixture("end-child-rule.json") as { readonly rule: string };
+  const closesChildrenFirst =
+    "Dispatch closes an issue only once each issue under it is done, so when the child has open children, close each of them done first, from the bottom. ";
+  const parksWithChildren =
+    "A backlog or icebox of a child that has open children takes include_children, which moves those children with it. ";
+  const { description } = toolFor(claimSession("architect"));
+  for (const sentence of [closesChildrenFirst, parksWithChildren]) {
+    expect(rule).toContain(sentence);
+    expect(description).toContain(sentence);
+  }
 });
 
 /** The `legion` tool's parameter schema as Oh My Pi agents are given it, serialized whole: every

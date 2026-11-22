@@ -108,22 +108,6 @@ func (s *Postgres) SessionClaimsOf(ctx context.Context, tx pgx.Tx, issues []stri
 	return claims, nil
 }
 
-func (s *Postgres) ArchitectIssueOfSession(ctx context.Context, tx pgx.Tx, issues []string, session string) (string, bool, error) {
-	if len(issues) == 0 {
-		return "", false, nil
-	}
-	var issue string
-	err := tx.QueryRow(ctx, "select issue from claims where issue = any($1) and session = $2 and role = $3 and session <> '' order by issue limit 1",
-		issues, session, string(claim.RoleArchitect)).Scan(&issue)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", false, nil
-	}
-	if err != nil {
-		return "", false, fmt.Errorf("read the architect claim of session %s of %v: %w", session, issues, err)
-	}
-	return issue, true, nil
-}
-
 // keptCountsFor is the validity rule as SQL, over the decisions owed to one architect: the claim and the hold a
 // kept row carries count only while the claiming outbox row is root's own and the holding claim is
 // a claim of root, the issue whose architect the caller's members are owed to. row is the kept

@@ -71,7 +71,9 @@ func treeClaims() []ownerClaim {
 }
 
 // seedSessionClaims inserts each claim as the daemon records it, with the session that the store
-// finds a writer by (record.Store.SessionClaimsOf, ArchitectIssueOfSession).
+// finds a writer by (record.Store.SessionClaimsOf), and holds each name its record gives that
+// session (claim_sessions, supervise.RecordedHolds), as every registration does, so a claim in a
+// live state is one the daemon publishes as its role's holder (record.Store.LiveRoleHolders).
 func seedSessionClaims(t *testing.T, pool *pgxpool.Pool, claims ...ownerClaim) {
 	t.Helper()
 	project, err := claim.ProjectToken(testProject)
@@ -88,11 +90,18 @@ func seedSessionClaims(t *testing.T, pool *pgxpool.Pool, claims ...ownerClaim) {
 			if c.turn {
 				turn = &fixedNow
 			}
+			file := "/tmp/" + c.session + ".jsonl"
 			if _, err := tx.Exec(context.Background(), `insert into claims (token, project, tree, issue, role, generation, session,
 				session_file, state, launch_failures, prompt_failures, prompt_retires, uncertain_streak, turn_started_at)
 				values ($1, $2, $3, $4, $5, 1, $6, $7, $8, 0, 0, 0, 0, $9)`,
-				string(token), project, c.tree, c.issue, string(c.role), c.session, "/tmp/"+c.session+".jsonl", string(c.state), turn); err != nil {
+				string(token), project, c.tree, c.issue, string(c.role), c.session, file, string(c.state), turn); err != nil {
 				t.Fatalf("put the %s claim of %s: %v", c.role, c.issue, err)
+			}
+			for _, hold := range supervise.RecordedHolds(c.session, file) {
+				if _, err := tx.Exec(context.Background(), `insert into claim_sessions (project, kind, name, claim) values ($1, $2, $3, $4)`,
+					project, string(hold.Kind), hold.Name, string(token)); err != nil {
+					t.Fatalf("hold %s %s for the %s claim of %s: %v", hold.Kind, hold.Name, c.role, c.issue, err)
+				}
 			}
 		}
 	})
@@ -448,23 +457,31 @@ func TestTheOwningArchitectsBacklogIceboxOrTriageOnAChildSuspendsItsClaims(t *te
 	}
 }
 
-// A sub-architect owns the issues under its own issue, so its done on one of them stands. The
-// daemon reads which claim the writer's session holds with no regard to the claim's state: a
-// sub-architect whose own claim is suspended still writes as the owner, since the session in
-// Dispatch is the session of that claim.
+// A sub-architect is the architect of an issue above the issues under its own, so its done on one
+// of them stands while its claim is one the daemon publishes as its role's holder, working or idle
+// between turns alike (record.Store.LiveRoleHolders). A sub-architect whose own claim is suspended
+// holds no role Dispatch is told of, so its done is set back, as Dispatch refuses it once R26's
+// refusal is on (decision 24 of dispatch://INFRA-4730).
 func TestASubArchitectsDoneOnAnIssueUnderItsOwnStands(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		state supervise.ClaimState
+		name   string
+		state  supervise.ClaimState
+		stands bool
 	}{
-		{name: "its claim running", state: supervise.StateWorking},
+		{name: "its claim working", state: supervise.StateWorking, stands: true},
+		{name: "its claim idle", state: supervise.StateIdle, stands: true},
 		{name: "its own claim suspended", state: supervise.StateSuspended},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := seedOwnerTree(t, nil)
 			rig.setClaimState(ownerChild, claim.RoleArchitect, tc.state)
-			rig.write(ownerGrandchild, record.DoneStatus, childArchitect)
-			rig.assertLeft(ownerGrandchild, record.DoneStatus)
+			before := issue(t, rig.pool, ownerGrandchild)
+			fact := rig.write(ownerGrandchild, record.DoneStatus, childArchitect)
+			if tc.stands {
+				rig.assertLeft(ownerGrandchild, record.DoneStatus)
+				return
+			}
+			rig.assertSetBack(before, record.DoneStatus, fact)
 		})
 	}
 }
@@ -839,5 +856,183 @@ func TestTheOwningArchitectsMoveOfAChildItsMergeClosedIsAPersonsMove(t *testing.
 	}
 	if owner, _ := move(rootArchitect); !reflect.DeepEqual(owner, person) {
 		t.Fatalf("the owning architect's backlog on %s, closed by its merge, left %+v, want what a person's left, %+v", ownerChild, owner, person)
+	}
+}
+
+// moveOutcome is what a move leaves: every record of the tree, the slots and every queued row.
+type moveOutcome struct {
+	issues  map[string]record.Issue
+	slots   []record.Slot
+	effects []effect
+}
+
+// outcome reads what the moves on rig left.
+func (r *ownerRig) outcome() moveOutcome {
+	r.t.Helper()
+	got := moveOutcome{issues: map[string]record.Issue{}, slots: slots(r.t, r.pool), effects: effects(r.t, r.pool)}
+	rows, err := r.pool.Query(context.Background(), `select key from issues`)
+	if err != nil {
+		r.t.Fatalf("list the issues: %v", err)
+	}
+	keys, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		r.t.Fatalf("list the issues: %v", err)
+	}
+	for _, key := range keys {
+		got.issues[key] = withoutMovement(issue(r.t, r.pool, key))
+	}
+	return got
+}
+
+// The root left Legion's work at done while its architect's claim still runs, so the child under
+// it is a root of its own now (R15 of dispatch://INFRA-3320). The root's architect is still the
+// architect of the issue above the child on its Dispatch chain, and its move of the child gets what
+// a person's move of that child gets on the same record, as Dispatch takes it: the repair reads the
+// chain, whatever of it is in Legion's work (decision 24 of dispatch://INFRA-4730).
+func TestTheOwningArchitectsMoveUnderAParentOutOfWorkIsAPersonsMove(t *testing.T) {
+	for _, status := range []string{record.DoneStatus, "backlog"} {
+		t.Run(status, func(t *testing.T) {
+			move := func(session string) moveOutcome {
+				rig := seedOwnerTree(t, func(issues map[string]*record.Issue) {
+					root := issues[ownerRoot]
+					root.Phase, root.Status, root.DispatchStatus = phase.Done, record.DoneStatus, record.DoneStatus
+				})
+				rig.write(ownerChild, status, session)
+				return rig.outcome()
+			}
+			person := move("")
+			if got := person.issues[ownerChild]; record.InLegionsWork(got) || got.Status != status {
+				t.Fatalf("%s after a person's %s = phase %s, status %s, want it out of Legion's work: the comparison would be of two writes that did nothing", ownerChild, status, got.Phase, got.Status)
+			}
+			if owner := move(rootArchitect); !reflect.DeepEqual(owner, person) {
+				t.Fatalf("the owning architect's %s on %s under a parent out of Legion's work left %+v, want what a person's left, %+v", status, ownerChild, owner, person)
+			}
+		})
+	}
+}
+
+// The tree the moved-child case adds: a root of its own, whose architect holds a live claim, and
+// the child the daemon first recorded under it, which a person then moved in Dispatch under
+// ownerChild. The child's record keeps the tree it was first recorded under (issues.tree, R22 of
+// dispatch://INFRA-3320), and its parent is the one the copy of Dispatch shows.
+const (
+	movedOldRoot     = "LEGION-6"
+	movedChild       = "LEGION-7"
+	oldRootArchitect = "ses-old-root-architect"
+)
+
+// The repair takes a session's done, backlog, icebox or triage as a person's move where the session
+// holds a claim the daemon publishes as a role holder (registered, ready, working or idle, its
+// session held: record.Store.LiveRoleHolders) as the architect of an issue above the written issue
+// on its Dispatch chain, the parent's and the grandparent's alike, whether or not the written issue
+// or the issues above it are in Legion's work, so that architect's backlog and then done ends at
+// done (decision 24 of dispatch://INFRA-4730, INFRA-3178's R3). It reads the chain the copy of
+// Dispatch holds, never the tree an issue's record stores, so the architect above a child moved
+// under it in Dispatch takes it whatever tree the child was first recorded under. It sets back the
+// write of the issue's own architect, of a sibling's architect, of another role of the parent and
+// of an architect whose claim is suspended or failed, as every other write of an agent of the tree.
+//
+// Negative controls, run when this was written, each failing this test and then reverted: with the
+// repair taking the architect's write only while the written issue is in Legion's work, "an issue
+// out of Legion's work: the architect's backlog and then done" ends at backlog; with it reading the
+// issue's stored tree (issues.tree) instead of the Dispatch chain, the architect above the moved
+// child is set back.
+func TestTheRepairTakesTheWriteOfAnArchitectAboveOnTheChain(t *testing.T) {
+	for _, tc := range []struct {
+		state  supervise.ClaimState
+		stands bool
+	}{
+		{state: supervise.StateRegistered, stands: true},
+		{state: supervise.StateReady, stands: true},
+		{state: supervise.StateWorking, stands: true},
+		{state: supervise.StateIdle, stands: true},
+		{state: supervise.StateSuspended},
+		{state: supervise.StateFailed},
+	} {
+		t.Run("the parent's architect, its claim "+string(tc.state), func(t *testing.T) {
+			rig := seedOwnerTree(t, nil)
+			rig.setClaimState(ownerRoot, claim.RoleArchitect, tc.state)
+			before := issue(t, rig.pool, ownerChild)
+			fact := rig.write(ownerChild, record.DoneStatus, rootArchitect)
+			if tc.stands {
+				rig.assertLeft(ownerChild, record.DoneStatus)
+				return
+			}
+			rig.assertSetBack(before, record.DoneStatus, fact)
+		})
+	}
+	t.Run("the parent's architect, a sub-architect", func(t *testing.T) {
+		rig := seedOwnerTree(t, nil)
+		rig.write(ownerGrandchild, "icebox", childArchitect)
+		rig.assertLeft(ownerGrandchild, "icebox")
+	})
+	t.Run("the grandparent's architect", func(t *testing.T) {
+		rig := seedOwnerTree(t, nil)
+		rig.write(ownerGrandchild, "triage", rootArchitect)
+		rig.assertLeft(ownerGrandchild, "triage")
+	})
+	t.Run("an issue out of Legion's work: the architect's backlog and then done", func(t *testing.T) {
+		rig := seedOwnerTree(t, func(issues map[string]*record.Issue) { delete(issues, ownerGrandchild) })
+		rig.write(ownerChild, "backlog", rootArchitect)
+		rig.assertLeft(ownerChild, "backlog")
+		rig.write(ownerChild, record.DoneStatus, rootArchitect)
+		rig.assertOutAt(ownerChild, record.DoneStatus)
+	})
+	t.Run("an issue out of Legion's work: a person's backlog and then the architect's done", func(t *testing.T) {
+		rig := seedOwnerTree(t, func(issues map[string]*record.Issue) { delete(issues, ownerGrandchild) })
+		rig.write(ownerChild, "backlog", "")
+		rig.assertLeft(ownerChild, "backlog")
+		rig.write(ownerChild, record.DoneStatus, rootArchitect)
+		rig.assertOutAt(ownerChild, record.DoneStatus)
+	})
+	t.Run("an issue under a parent out of Legion's work", func(t *testing.T) {
+		rig := seedOwnerTree(t, func(issues map[string]*record.Issue) {
+			root := issues[ownerRoot]
+			root.Phase, root.Status, root.DispatchStatus = phase.Done, record.DoneStatus, record.DoneStatus
+		})
+		rig.write(ownerChild, "backlog", rootArchitect)
+		rig.assertOutAt(ownerChild, "backlog")
+	})
+	t.Run("a child moved under another architect's issue, its stored tree the old one", func(t *testing.T) {
+		rig := seedOwnerTree(t, func(issues map[string]*record.Issue) {
+			old := ownedMember(movedOldRoot, "", "F", phase.Implementing, "in_progress")
+			old.Tree = movedOldRoot
+			moved := ownedMember(movedChild, ownerChild, "G", phase.Implementing, "in_progress")
+			moved.Tree = movedOldRoot
+			issues[movedOldRoot], issues[movedChild] = old, moved
+		})
+		seedSessionClaims(t, rig.pool, ownerClaim{tree: movedOldRoot, issue: movedOldRoot, role: claim.RoleArchitect,
+			session: oldRootArchitect, state: supervise.StateWorking})
+		if got := issue(t, rig.pool, movedChild); got.Tree != movedOldRoot || deref(got.Parent) != ownerChild {
+			t.Fatalf("%s = tree %s, parent %s; want the tree it was first recorded under, %s, and the parent Dispatch shows, %s: this case proves nothing",
+				movedChild, got.Tree, deref(got.Parent), movedOldRoot, ownerChild)
+		}
+		rig.write(movedChild, record.DoneStatus, childArchitect)
+		rig.assertOutAt(movedChild, record.DoneStatus)
+	})
+	for _, writer := range []struct{ name, session string }{
+		{"the issue's own architect", childArchitect},
+		{"a sibling's architect", siblingArchitect},
+		{"another role of the parent", rootImplementer},
+	} {
+		t.Run(writer.name, func(t *testing.T) {
+			rig := seedOwnerTree(t, nil)
+			before := issue(t, rig.pool, ownerChild)
+			fact := rig.write(ownerChild, "backlog", writer.session)
+			rig.assertSetBack(before, "backlog", fact)
+		})
+	}
+}
+
+// assertOutAt holds that a write took key out of Legion's work, or kept it out, at status: its
+// record holds status out of Legion's work, and no status write of the daemon's is queued for it
+// after the tree's settle, so nothing sets the write back.
+func (r *ownerRig) assertOutAt(key, status string) {
+	r.t.Helper()
+	if got := issue(r.t, r.pool, key); record.InLegionsWork(got) || got.Status != status {
+		r.t.Fatalf("%s after the write of %s = phase %s, status %s; want it out of Legion's work at %s", key, status, got.Phase, got.Status, status)
+	}
+	if writes := payloadsOf[record.StatusWrite](rowsFor(r.sinceSettle(), key)); len(writes) != 0 {
+		r.t.Fatalf("status writes queued for %s after the write of %s = %+v, want none: the daemon sets nothing back over the move", key, status, writes)
 	}
 }

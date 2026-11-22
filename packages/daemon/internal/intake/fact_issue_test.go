@@ -28,7 +28,6 @@ func TestIssueOfAnswersEachFactThatNamesOneIssue(t *testing.T) {
 		"SignOff":                 SignOff{Issue: issue},
 		"GateRegistered":          GateRegistered{Issue: issue},
 		"CloseRoot":               CloseRoot{Issue: issue},
-		"CloseChild":              CloseChild{Issue: issue},
 		"CloseRefused":            CloseRefused{Issue: issue},
 		"StatusRefused":           StatusRefused{Issue: issue},
 		"ClaimFailed":             ClaimFailed{Issue: issue},

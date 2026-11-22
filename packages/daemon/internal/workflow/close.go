@@ -46,7 +46,7 @@ func (e *Engine) childrenNotDoneOf(ctx context.Context, tx pgx.Tx, issue record.
 
 // childrenNotDoneRefusal is the refusal of a close the caller asked for while a Dispatch child of
 // issue is not done: CHILDREN_NOT_DONE, naming each child with its status (R24 of
-// dispatch://INFRA-3320), which close_root and close_child answer after R8's codes.
+// dispatch://INFRA-3320), which close_root answers after R8's codes.
 func childrenNotDoneRefusal(call, key string, open []string) intake.Result {
 	return refused("CHILDREN_NOT_DONE", fmt.Sprintf("%s of %s is refused: Dispatch closes an issue only once each of its children is done, and these are not: %s. Close, park or run each one to done, and close %s again",
 		call, key, strings.Join(open, ", "), key))

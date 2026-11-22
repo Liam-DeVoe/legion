@@ -4,11 +4,13 @@
 -- The issue's columns. retained_until is when a linger the release before converted ends for the
 -- issue (record.Issue.RetainedUntil), carried_generation and carried_gate what a hand-over of that
 -- release carried into the root it made, copied off handed_over_roots by the first boot's
--- conversion (record.Issue.CarriedGeneration, CarriedGate), parked_by_architect the mark that the
--- architect above parked the issue (record.Issue.ParkedByArchitect), pending_close a close
--- Dispatch refused while a child was not done, written again once every child is
--- (record.Issue.PendingClose), and seen_seq the newest Dispatch sequence of the issue whose event
--- the consumer has handled or dropped (record.Issue.SeenSeq). pending_close is one nullable jsonb
+-- conversion (record.Issue.CarriedGeneration, CarriedGate), pending_close a close Dispatch refused
+-- while a child was not done, written again once every child is (record.Issue.PendingClose),
+-- seen_seq the newest Dispatch sequence of the issue whose event the consumer has handled or
+-- dropped (record.Issue.SeenSeq), and held_session_writes the status writes of sessions the
+-- repair holds, in Dispatch's order, while the issue's Dispatch chain is unknown, judged and
+-- cleared at the first pass that knows the chain (record.Issue.HeldSessionWrites, decision 24 of
+-- dispatch://INFRA-4730), the empty list for none. pending_close is one nullable jsonb
 -- of the four parts of one mark, its run, its phase entry, the close path that decided it and its
 -- reason, because the mark is set and cleared whole: four columns could hold half of one, and the
 -- kinds of close are the record's to name.
@@ -136,9 +138,9 @@ alter table issues
     add column retained_until timestamptz,
     add column carried_generation bigint not null default 0 check (carried_generation >= 0),
     add column carried_gate boolean not null default false,
-    add column parked_by_architect boolean not null default false,
     add column pending_close jsonb,
-    add column seen_seq bigint not null default 0 check (seen_seq >= 0);
+    add column seen_seq bigint not null default 0 check (seen_seq >= 0),
+    add column held_session_writes jsonb not null default '[]'::jsonb;
 
 alter table claims
     add column launch_tree text not null default '',

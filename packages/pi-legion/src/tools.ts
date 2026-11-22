@@ -637,6 +637,7 @@ export function createLegionTool(deps: {
         "End a child with your own status write in Dispatch. " +
         "Write done with a reason when the child's work is done, folded into another issue or no longer needed: " +
         "dispatch issue-update --issue <KEY> --status done --reason '<why>'. " +
+        "Dispatch closes an issue only once each issue under it is done, so when the child has open children, close each of them done first, from the bottom. " +
         "For a fold, name the carrier in the reason: the issue that carries the work. " +
         "Before the done of a fold, make each issue that is blocked_by the child wait on the carrier instead. " +
         "Done starts those issues, and the Referenced by list of dispatch read names each of them as blocked_by. " +
@@ -646,6 +647,7 @@ export function createLegionTool(deps: {
         "When it is in the merge queue, first take it out (GraphQL dequeuePullRequest). " +
         "Do this before done, or at once after a done that you wrote first. " +
         "Write backlog or icebox only when a person asked for that move, or as the first step of a restart. " +
+        "A backlog or icebox of a child that has open children takes include_children, which moves those children with it. " +
         "A restart is backlog, then rerun_child. " +
         "Say why in a dispatch comment. " +
         "Write no status on a child that is already done, because a move out of done ends an open production check. " +

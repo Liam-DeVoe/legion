@@ -95,87 +95,51 @@ func supervisedOps(t *testing.T, pool *pgxpool.Pool, issue string) []string {
 	return outboxStrings(t, pool, `select payload->>'op' from outbox where kind = 'supervise' and issue = $1 order by id`, issue)
 }
 
-// close_root and close_child write the close only when Dispatch's copy shows each child of the
-// issue done (R24 of dispatch://INFRA-3320): a child in icebox, the backlog or triage refuses the
-// call with CHILDREN_NOT_DONE naming each child with its status, after R8's codes, and nothing is
-// queued. Once each child is done the close is one status write, done with the reason, and the
-// issue keeps its phase, its claims and its slot until Dispatch shows it done: then close_root's
-// root moves to phase done and leaves. close_child closes only an issue under the caller's own that
-// the daemon records nothing of.
-func TestCloseRootAndCloseChildWaitForEveryChildDone(t *testing.T) {
-	t.Run("close_root", func(t *testing.T) {
-		pool := migratedPool(t)
-		seedIssue(t, pool, record.Issue{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-1",
-			Project: "LEGION", Title: "Root", Phase: phase.Admitted, Generation: 2, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
-		mirrorChild(t, pool, "LEGION-2", "LEGION-1", "icebox", 1)
-		mirrorChild(t, pool, "LEGION-3", "LEGION-1", "done", 1)
-		engine := testEngine(config.DesignGateRootIssues, nil)
-		apply := applyFacts(t, pool, engine)
-		closeRoot := intake.CloseRoot{Issue: "LEGION-1", Reason: "moot", Architect: architectOf(t, "LEGION-1")}
+// close_root writes the close only when Dispatch's copy shows each child of the root done (R24 of
+// dispatch://INFRA-3320): a child in icebox, the backlog or triage refuses the call with
+// CHILDREN_NOT_DONE naming each child with its status, after R8's codes, and nothing is queued.
+// Once each child is done the close is one status write, done with the reason, and the root keeps
+// its phase, its claims and its slot until Dispatch shows it done: then it moves to phase done and
+// leaves.
+func TestCloseRootWaitsForEveryChildDone(t *testing.T) {
+	pool := migratedPool(t)
+	seedIssue(t, pool, record.Issue{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-1",
+		Project: "LEGION", Title: "Root", Phase: phase.Admitted, Generation: 2, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
+	mirrorChild(t, pool, "LEGION-2", "LEGION-1", "icebox", 1)
+	mirrorChild(t, pool, "LEGION-3", "LEGION-1", "done", 1)
+	engine := testEngine(config.DesignGateRootIssues, nil)
+	apply := applyFacts(t, pool, engine)
+	closeRoot := intake.CloseRoot{Issue: "LEGION-1", Reason: "moot", Architect: architectOf(t, "LEGION-1")}
 
-		message := refusedWith(t, apply("close-held", closeRoot), "CHILDREN_NOT_DONE", "LEGION-2 (icebox)")
-		if strings.Contains(message, "LEGION-3") {
-			t.Fatalf("the refusal %q names LEGION-3, which is done", message)
-		}
-		assertOutboxCount(t, pool, "dispatch_status", 0)
+	message := refusedWith(t, apply("close-held", closeRoot), "CHILDREN_NOT_DONE", "LEGION-2 (icebox)")
+	if strings.Contains(message, "LEGION-3") {
+		t.Fatalf("the refusal %q names LEGION-3, which is done", message)
+	}
+	assertOutboxCount(t, pool, "dispatch_status", 0)
 
-		mirrorChild(t, pool, "LEGION-2", "LEGION-1", "done", 2)
-		if result := apply("close", closeRoot); result.Refusal != nil {
-			t.Fatalf("close refused once each child is done: %+v", result.Refusal)
-		}
-		apply("close-again", closeRoot)
-		want := []record.StatusWrite{record.CloseStatusWrite("done", "in_progress", "Closed by its architect before its first phase: moot", 2)}
-		if got := statusWrites(t, pool, "LEGION-1"); !reflect.DeepEqual(got, want) {
-			t.Fatalf("status writes = %#v, want the one close, %#v", got, want)
-		}
-		root := storedIssue(t, pool, "LEGION-1")
-		pending := record.PendingClose{Generation: 2, Entry: 1, Kind: "close_root", Reason: "Closed by its architect before its first phase: moot"}
-		if root.Phase != phase.Admitted || root.Status != "in_progress" || root.PendingClose == nil || *root.PendingClose != pending {
-			t.Fatalf("the root before Dispatch shows done = phase %s, status %s, pending %+v; want it admitted and in_progress with %+v",
-				root.Phase, root.Status, root.PendingClose, pending)
-		}
-		assertOutboxCount(t, pool, "issue_suspend", 0)
+	mirrorChild(t, pool, "LEGION-2", "LEGION-1", "done", 2)
+	if result := apply("close", closeRoot); result.Refusal != nil {
+		t.Fatalf("close refused once each child is done: %+v", result.Refusal)
+	}
+	apply("close-again", closeRoot)
+	want := []record.StatusWrite{record.CloseStatusWrite("done", "in_progress", "Closed by its architect before its first phase: moot", 2)}
+	if got := statusWrites(t, pool, "LEGION-1"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("status writes = %#v, want the one close, %#v", got, want)
+	}
+	root := storedIssue(t, pool, "LEGION-1")
+	pending := record.PendingClose{Generation: 2, Entry: 1, Kind: "close_root", Reason: "Closed by its architect before its first phase: moot"}
+	if root.Phase != phase.Admitted || root.Status != "in_progress" || root.PendingClose == nil || *root.PendingClose != pending {
+		t.Fatalf("the root before Dispatch shows done = phase %s, status %s, pending %+v; want it admitted and in_progress with %+v",
+			root.Phase, root.Status, root.PendingClose, pending)
+	}
+	assertOutboxCount(t, pool, "issue_suspend", 0)
 
-		landClose(t, pool, engine, "LEGION-1")
-		root = storedIssue(t, pool, "LEGION-1")
-		if root.Phase != phase.Done || root.PendingClose != nil {
-			t.Fatalf("the root once Dispatch shows done = phase %s, pending %+v; want done with no close pending", root.Phase, root.PendingClose)
-		}
-		assertOutboxCount(t, pool, "issue_suspend", 1)
-	})
-
-	t.Run("close_child", func(t *testing.T) {
-		pool := migratedPool(t)
-		seedIssue(t, pool, record.Issue{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-1",
-			Project: "LEGION", Title: "Root", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
-		mirrorChild(t, pool, "LEGION-4", "LEGION-1", "triage", 1)
-		mirrorChild(t, pool, "LEGION-5", "LEGION-4", "backlog", 1)
-		seedIssue(t, pool, record.Issue{Key: "LEGION-6", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-1",
-			Parent: new("LEGION-1"), Project: "LEGION", Title: "Released", Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "V", LastDispatchSeq: 1})
-		apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
-		closeChild := intake.CloseChild{Issue: "LEGION-4", Reason: "filed in error", Architect: architectOf(t, "LEGION-1")}
-
-		refusedWith(t, apply("close-held", closeChild), "CHILDREN_NOT_DONE", "LEGION-5 (backlog)")
-		if result := apply("close-own", intake.CloseChild{Issue: "LEGION-4", Reason: "filed in error", Architect: architectOf(t, "LEGION-4")}); result.Refusal == nil ||
-			result.Refusal.Status != 403 || result.Refusal.Code != "ISSUE_NOT_OWNED" {
-			t.Fatalf("close_child by the issue's own architect = %+v, want 403 ISSUE_NOT_OWNED: it closes an issue under the caller's", result.Refusal)
-		}
-		refusedWith(t, apply("close-recorded", intake.CloseChild{Issue: "LEGION-6", Reason: "moot", Architect: architectOf(t, "LEGION-1")}), "CHILD_RECORDED", "LEGION-6")
-		if result := apply("close-unknown", intake.CloseChild{Issue: "LEGION-9", Reason: "moot", Architect: architectOf(t, "LEGION-1")}); result.Refusal == nil ||
-			result.Refusal.Code != "CHAIN_UNKNOWN" {
-			t.Fatalf("close_child of an issue the copy holds no row of = %+v, want CHAIN_UNKNOWN", result.Refusal)
-		}
-		assertOutboxCount(t, pool, "dispatch_status", 0)
-
-		mirrorChild(t, pool, "LEGION-5", "LEGION-4", "done", 2)
-		if result := apply("close", closeChild); result.Refusal != nil {
-			t.Fatalf("close_child refused once each child is done: %+v", result.Refusal)
-		}
-		want := []record.StatusWrite{record.CloseStatusWrite("done", "triage", "Closed by the architect above it: filed in error", 0)}
-		if got := statusWrites(t, pool, "LEGION-4"); !reflect.DeepEqual(got, want) {
-			t.Fatalf("status writes of LEGION-4 = %#v, want its close, %#v", got, want)
-		}
-	})
+	landClose(t, pool, engine, "LEGION-1")
+	root = storedIssue(t, pool, "LEGION-1")
+	if root.Phase != phase.Done || root.PendingClose != nil {
+		t.Fatalf("the root once Dispatch shows done = phase %s, pending %+v; want done with no close pending", root.Phase, root.PendingClose)
+	}
+	assertOutboxCount(t, pool, "issue_suspend", 1)
 }
 
 // A merged issue's close waits in merging for each Dispatch child of it that is not done, one in

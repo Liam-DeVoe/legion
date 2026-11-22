@@ -35,6 +35,26 @@ import (
 // client makes of the route's real answer.
 func capturedAnswer(t *testing.T, name string, change dispatch.StatusChange) (dispatch.StatusChangeResult, error) {
 	t.Helper()
+	return dispatch.New(capturedServer(t, name).URL, "captured-answer-token").ChangeStatus(context.Background(), "LEGION-1", change)
+}
+
+// capturedRoleHoldersRefusal is the dispatch client's reading of Dispatch's captured 403
+// ROLE_HOLDER_FORBIDDEN of a publication of an issue's role holders
+// (internal/dispatch/testdata/role_holders_forbidden.http), served to the real client's
+// PutRoleHolders, so the outbox meets exactly the error the client makes of it.
+func capturedRoleHoldersRefusal(t *testing.T) error {
+	t.Helper()
+	err := dispatch.New(capturedServer(t, "role_holders_forbidden.http").URL, "captured-answer-token").PutRoleHolders(context.Background(), "LEGION-1", nil)
+	if err == nil {
+		t.Fatal("the captured role-holder refusal read as a publication Dispatch took")
+	}
+	return err
+}
+
+// capturedServer is an httptest server, stopped at the test's end, that answers every request with
+// name, one whole answer of Dispatch's saved under internal/dispatch/testdata.
+func capturedServer(t *testing.T, name string) *httptest.Server {
+	t.Helper()
 	path := filepath.Join("..", "dispatch", "testdata", name)
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -58,8 +78,8 @@ func capturedAnswer(t *testing.T, name string, change dispatch.StatusChange) (di
 		w.WriteHeader(saved.StatusCode)
 		_, _ = w.Write(body)
 	}))
-	defer server.Close()
-	return dispatch.New(server.URL, "captured-answer-token").ChangeStatus(context.Background(), "LEGION-1", change)
+	t.Cleanup(server.Close)
+	return server
 }
 
 // keyAnswer is one answer a keyRuleDispatch gives a fresh request key: a captured answer of
@@ -528,11 +548,18 @@ func (r *stopReturnRig) allAt(status string, keys ...string) {
 // wait is not silent: each refusal logs a line naming the code and the issue, and the first
 // refusal in a daemon run queues one notice to the project's controller alone, naming the code and
 // the issue and saying that a person must give the daemon a token that holds the scope. A 401 and
-// a 403 of another code keep and retry the row as they always did, and tell nobody.
+// a 403 of another code keep and retry the row as they always did, and tell nobody. A publication
+// of role holders that Dispatch refuses with 403 ROLE_HOLDER_FORBIDDEN, read from the answer
+// captured from a real Dispatch (internal/dispatch/testdata/role_holders_forbidden.http), is kept
+// and written again the same way, with a line of its own for each refusal, and the first refusal of
+// either code in the run queues that one notice: a role-holder refusal after a status write's scope
+// refusal tells nobody again.
 //
-// Negative control, run when this was written: with the refusal read as every 403 is read
+// Negative controls, run when this was written: with the refusal read as every 403 is read
 // (statusRefusal's scope arm taken out, so dispatch.PermanentRefusal alone decides) and no notice
-// queued, the "scope refused twice" case fails on its notice count.
+// queued, the "scope refused twice" case fails on its notice count; with a role-holder publication
+// refused with ROLE_HOLDER_FORBIDDEN queuing no notice, "role holders forbidden twice" fails on its
+// notice count.
 func TestAStatusScopeRefusalIsRetriedAndTellsTheController(t *testing.T) {
 	scope := &dispatch.Error{Status: http.StatusForbidden, Code: statusScopeCode, Message: "this token lacks the legion-status scope"}
 	for _, tc := range []struct {
@@ -593,6 +620,86 @@ func TestAStatusScopeRefusalIsRetriedAndTellsTheController(t *testing.T) {
 			}
 		})
 	}
+	forbidden := capturedRoleHoldersRefusal(t)
+	const roleHoldersLine = "outbox role-holder publication refused by Dispatch: the daemon's token does not prove the daemon's own session to Dispatch; the publication is kept and written again"
+	for _, tc := range []struct {
+		name string
+		// scopeFirst runs a status write of another issue to its LEGION_STATUS_SCOPE_REQUIRED
+		// before the publication runs.
+		scopeFirst bool
+		refusals   int
+	}{
+		{name: "role holders forbidden twice", refusals: 2},
+		{name: "a status write's scope refusal and then a role-holder refusal", scopeFirst: true, refusals: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := isolatedOutboxPool(t)
+			records := record.NewStore()
+			const issue, written = "LEGION-209", "LEGION-208"
+			client := &refusingRoleHolders{refusingStatus: refusingStatus{outboxDispatch: outboxDispatch{issue: dispatch.Issue{Key: written, Status: "in_progress", LastSeq: 7}}}}
+			logs := &syncBuffer{}
+			runner := &outbox{dispatchProject: "LEGION", pool: pool, records: records, dispatch: client, now: time.Now,
+				log: slog.New(slog.NewJSONHandler(logs, nil))}
+			run := func(kind record.OutboxKind) {
+				t.Helper()
+				if _, err := pool.Exec(context.Background(), "update outbox set next_at = now() where kind = $1", string(kind)); err != nil {
+					t.Fatalf("make the %s rows due: %v", kind, err)
+				}
+				if err := runner.RunOnce(context.Background()); err != nil {
+					t.Fatalf("run the %s rows: %v", kind, err)
+				}
+			}
+			if tc.scopeFirst {
+				client.refusingStatus.refusals = []error{scope}
+				enqueueOutbox(t, pool, records, mustOutboxRow(t, written, record.OrdinaryStatusWrite("testing", "in_progress", ""), time.Now()))
+				run(record.OutboxKindDispatchStatus)
+				if told := controllerNoticesOfKind(t, pool, written, record.StatusScopeNotice); len(told) != 1 {
+					t.Fatalf("status-scope notices of the refused status write = %+v, want one: this case proves nothing", told)
+				}
+			}
+			for range tc.refusals {
+				client.holderRefusals = append(client.holderRefusals, forbidden)
+			}
+			enqueueOutbox(t, pool, records, mustOutboxRow(t, issue, record.RoleHoldersPublish{Issue: issue}, time.Now()))
+			for range tc.refusals + 1 {
+				run(record.OutboxKindRoleHoldersPublish)
+			}
+			if client.published != tc.refusals+1 {
+				t.Fatalf("publications = %d, want the publication made again after each of the %d refusals", client.published, tc.refusals)
+			}
+			var left int
+			if err := pool.QueryRow(context.Background(), "select count(*) from outbox where kind = $1 and issue = $2",
+				string(record.OutboxKindRoleHoldersPublish), issue).Scan(&left); err != nil || left != 0 {
+				t.Fatalf("role-holder rows of %s after the publication was taken = %d, %v; want none", issue, left, err)
+			}
+			lines := loggedLines(t, logs.String(), roleHoldersLine)
+			if len(lines) != tc.refusals {
+				t.Fatalf("role-holder refusal lines = %d, want one for each of the %d refusals", len(lines), tc.refusals)
+			}
+			for _, line := range lines {
+				if line["code"] != roleHolderForbiddenCode || line["issue"] != issue {
+					t.Fatalf("role-holder refusal line = %v, want it to name %s and %s", line, roleHolderForbiddenCode, issue)
+				}
+			}
+			told := controllerNoticesOfKind(t, pool, issue, record.StatusScopeNotice)
+			want := 1
+			if tc.scopeFirst {
+				want = 0
+			}
+			if len(told) != want {
+				t.Fatalf("status-scope notices of %s = %+v, want %d: the run queues one notice for the first refusal of either code", issue, told, want)
+			}
+			for _, notice := range told {
+				if !strings.Contains(notice.Reason, roleHolderForbiddenCode) || !strings.Contains(notice.Reason, issue) ||
+					!strings.Contains(notice.Reason, "a person gives the daemon a token that holds the scope") {
+					t.Fatalf("status-scope notice reason = %q, want the code, the issue and the token a person must give", notice.Reason)
+				}
+			}
+			if architect := noticesOf(t, pool, issue); architect != 0 {
+				t.Fatalf("architect notices = %d, want none: no architect can change a token", architect)
+			}
+		})
+	}
 }
 
 // refusingStatus is outboxDispatch whose status write answers each of refusals in turn, and then
@@ -612,6 +719,24 @@ func (d *refusingStatus) SetStatusAt(ctx context.Context, issue dispatch.Issue, 
 	refusal := d.refusals[0]
 	d.refusals = d.refusals[1:]
 	return dispatch.Issue{}, refusal
+}
+
+// refusingRoleHolders is refusingStatus whose role-holder publication answers each of
+// holderRefusals in turn, and then takes the publication; published counts the publications.
+type refusingRoleHolders struct {
+	refusingStatus
+	holderRefusals []error
+	published      int
+}
+
+func (d *refusingRoleHolders) PutRoleHolders(context.Context, string, []dispatch.RoleHolder) error {
+	d.published++
+	if len(d.holderRefusals) == 0 {
+		return nil
+	}
+	refusal := d.holderRefusals[0]
+	d.holderRefusals = d.holderRefusals[1:]
+	return refusal
 }
 
 // seedRecords records each issue of seqs under LEGION-2, at work in planning, its record standing

@@ -60,8 +60,8 @@ func TestMirrorWritesTheRowOfADispatchIssueFact(t *testing.T) {
 // and its listing) each write the row of the issue they read; a turn that observed nothing writes
 // nothing; a claim event writes the claim and no row. Every other fact writes neither, whatever
 // issue it names: a fact the daemon makes says what the daemon intends, never what Dispatch said,
-// so an architect's close of an unrecorded child (CloseChild) and Dispatch's refusal of a write
-// the daemon queued (CloseRefused, StatusRefused) write nothing either, and a seed's read of a document or of a
+// so Dispatch's refusal of a write the daemon queued (CloseRefused, StatusRefused) writes nothing
+// either, and a seed's read of a document or of a
 // new parent (PendingBasisRead, BasisChangesRead, ReparentRead) carries no value of the copy at a
 // Dispatch sequence. The kinds are read from package intake's own source, each type that is an
 // intake.Fact, so a kind added there fails this test until a row here says what the mirror writes
@@ -92,7 +92,7 @@ func TestOnlyAReadingOfDispatchWritesTheCopy(t *testing.T) {
 		intake.PullRequestMergeability{}, intake.PullRequestMerged{}, intake.PullRequestClosed{}, intake.PullRequestDequeued{},
 		intake.MergeQueueReadDone{}, intake.ConflictConfirmDone{}, intake.PullRequestMissing{}, intake.Push{}, intake.BasePush{},
 		intake.HandoffComplete{}, intake.BackwardMove{}, intake.RetryOrEscalate{}, intake.RestartPhase{}, intake.SignOff{},
-		intake.GateRegistered{}, intake.CloseRoot{}, intake.CloseChild{}, intake.CloseRefused{}, intake.StatusRefused{}, intake.ClaimFailed{},
+		intake.GateRegistered{}, intake.CloseRoot{}, intake.CloseRefused{}, intake.StatusRefused{}, intake.ClaimFailed{},
 		intake.SessionLost{}, intake.SessionStoreFault{},
 		intake.MemoryGuardKill{}, intake.VolumeNearFull{}, intake.ClaimReady{}, intake.TaskConfirmed{}, intake.GateRequestFound{},
 		intake.CatchUpApplied{}, intake.DaemonBooted{}, intake.CutoverMergerRepair{}, intake.CheckReport{},

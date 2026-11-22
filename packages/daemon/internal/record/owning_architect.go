@@ -123,27 +123,6 @@ func ArchitectActsOn(project string, chains *Chains, architect claim.Token, key 
 	return false
 }
 
-// MoveOwners is the issues whose architects own key for a move of key into or out of the workflow
-// (dispatch://INFRA-3178): every issue above key on its Dispatch chain as chains hold it, nearest
-// first, whatever the status of the issues between them (R18 of dispatch://INFRA-3320). It is
-// ArchitectActsOn's rule without key itself: an architect moves the issues under its own issue and
-// not its own issue, which an architect above it moves, as one released it. So an architect owns
-// every issue under it, a grandchild under another architect that holds its role included, and no
-// issue above it, beside it or under an issue beside it. A root, which no issue in Legion's work
-// stands above (Chains.Above), has none: it leaves the workflow only by its own architect's
-// sign-off or close_root. The links of an unknown chain count as far as the copy shows them
-// (Chain.Known): an architect found below the gap stands above key whatever stands above the gap,
-// as the owner walk reads it (OwningIssue). A caller never writes into the answer.
-//
-// The workflow reads it before it takes the owning architect's status on a child as a person's
-// move (workflow's sessionStatusWrite).
-func MoveOwners(chains *Chains, key string) []string {
-	if len(chains.Above(key)) == 0 {
-		return nil
-	}
-	return chains.Chain(key).Links
-}
-
 // HoldsRole is whether a claim the store records in state, suspended by by, holds its role: this
 // daemon supervises it (state is not ""), it has not failed or retired, and it is not suspended,
 // unless the suspension is the idle release's (supervise.Claim's Released). A claim the outbox has

@@ -1,7 +1,8 @@
-Dispatch's answers to the daemon's status writes, which client_test.go serves from an httptest
-server to HTTPClient.ChangeStatus and HTTPClient.SetStatusAt, one case for each file here, and
-which the daemon's status executor's tests serve to its outbox (internal/daemon's
-capturedAnswer).
+Dispatch's answers to the daemon's status writes and to its publication of an issue's role
+holders, which client_test.go serves from an httptest server to HTTPClient.ChangeStatus,
+HTTPClient.SetStatusAt and HTTPClient.PutRoleHolders, one case for each file here, and which the
+daemon's outbox tests serve to its outbox (internal/daemon's capturedAnswer and
+capturedRoleHoldersRefusal).
 
 Each file is one whole answer as `curl --include` prints it: the status line, every header and
 the body, with CRLF line ends. A body Dispatch sent chunked was captured with `--raw` (or by
@@ -140,3 +141,16 @@ the rule on:
                       same key to the process started again on the same database, once the first
                       run's lease on the key lapsed. The route finished what the first run left
                       and answered the whole call: 201 entries, the named issue's last.
+
+The refusal of a publication of role holders was captured on 2026-11-22 at 01:07Z by
+TestCaptureRoleHoldersForbidden (internal/daemon/role_holders_capture_test.go, build tag capture,
+run by hand), from the rig's scratch Dispatch built from this repository's working copy of
+legion/INFRA-4730:
+
+  go -C packages/daemon test -tags capture -count=1 -run '^TestCaptureRoleHoldersForbidden$' ./internal/daemon/
+
+  role_holders_forbidden.http
+                      PUT /api/v1/issues/LEGION-1/role-holders with no holders under the scratch
+                      server's agent token, its actor {"kind":"session","id":"ses-not-the-daemon"},
+                      a session other than legion-daemon:LEGION: 403 ROLE_HOLDER_FORBIDDEN, as a
+                      token that does not prove the daemon's session gets once R26's refusal is on.

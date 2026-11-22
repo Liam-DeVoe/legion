@@ -301,8 +301,6 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.signOff(ctx, tx, fact)
 	case intake.CloseRoot:
 		return e.closeRoot(ctx, tx, fact)
-	case intake.CloseChild:
-		return e.closeChild(ctx, tx, fact)
 	case intake.CloseRefused:
 		return e.closeRefused(ctx, tx, fact)
 	case intake.StatusRefused:
@@ -453,6 +451,16 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 			return intake.Result{}, err
 		}
 	}
+	// A person's status write clears the session writes the repair holds on the issue
+	// (record.Issue.HeldSessionWrites): each is older than the person's move, which the workflow
+	// takes below as it takes every person's move. The daemon's own echo, an edit and a link event
+	// leave them for the pass that knows the issue's chain (JudgeHeldStatusWrites).
+	if len(issue.HeldSessionWrites) > 0 && fact.ActorSession == "" && !fact.DaemonActor && fact.Status != issue.DispatchStatus {
+		issue.HeldSessionWrites = nil
+		if err := e.store.PutIssue(ctx, tx, *issue); err != nil {
+			return intake.Result{}, err
+		}
+	}
 	// The engine reacts to a newer status alone: an event carrying the status the record holds is
 	// an edit, which it leaves to the observation admission records (admit's recordObservation).
 	if fact.Status == issue.Status {
@@ -470,28 +478,36 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 	if reasserted, err := e.sessionStatusWrite(ctx, tx, *issue, fact); err != nil || reasserted {
 		return intake.Result{}, err
 	}
+	return intake.Result{}, e.applyStatus(ctx, tx, *issue, fact)
+}
+
+// applyStatus takes fact's status on issue as the workflow takes a person's move: a status out of
+// the workflow takes the issue out of Legion's work (leave) over every status write the daemon
+// queued for it, and a status in work brings it back (backInWork). dispatchIssue takes an event's
+// status through it, and the judgment of held session writes each write it takes (judgeHeld).
+func (e *Engine) applyStatus(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) error {
 	if record.OutOfWorkflow(fact.Status) {
 		// The move is the issue's status now, so no status write the daemon queued before it lands
 		// over it: a set-back queued over an outside backlog would otherwise find a person's later
 		// backlog on Dispatch and write over that.
 		if err := e.store.DropStatusWrites(ctx, tx, issue.Key); err != nil {
-			return intake.Result{}, err
+			return err
 		}
 		// A done on an issue whose close the daemon queued ends its run there (closeLanded):
 		// the close's echo, or a person's done that came first.
 		if fact.Status == "done" && issue.PendingClose != nil {
-			return intake.Result{}, e.closeLanded(ctx, tx, *issue)
+			return e.closeLanded(ctx, tx, issue)
 		}
 		// The record holds the status the issue left for, as admission's observation of the event
 		// writes it after this handler, so every read of the issue in this fact — its leave, and
 		// the settle that ends the step it ran (SettleFact, runOver) — reads it out of work.
 		issue.Status = fact.Status
-		if err := e.store.PutIssue(ctx, tx, *issue); err != nil {
-			return intake.Result{}, err
+		if err := e.store.PutIssue(ctx, tx, issue); err != nil {
+			return err
 		}
-		return intake.Result{}, e.leave(ctx, tx, *issue, fact.Status)
+		return e.leave(ctx, tx, issue, fact.Status)
 	}
-	return intake.Result{}, e.backInWork(ctx, tx, *issue, fact)
+	return e.backInWork(ctx, tx, issue, fact)
 }
 
 // releaseHeldRoot takes a todo written on a held issue in Legion's work: the one status a
@@ -552,15 +568,24 @@ const releaseReason = "the issue was set to todo while its phase was held"
 // carries the legion label (legionOnChain): its status is anyone's to write (R26 of
 // dispatch://INFRA-3320).
 //
-// One write of a session is not set back: the owning architect's done, backlog, icebox or triage on
-// an issue under its own on the Dispatch chain (owningArchitectsMove). The architect decides that
-// the work of a child is done, folded into another issue or no longer needed, and the child's
-// status in Dispatch is the one field that records that decision (dispatch://INFRA-3178). For that
-// write the function answers that it did not handle it, so dispatchIssue takes the move as it takes
-// a person's: it drops the status writes it queued for the child, and the child leaves Legion's
-// work (leave). Every other write of an agent of the tree is set back. That is a status that moves
-// the workflow or todo, any status of a phase worker, a child's own architect's status on its own
-// issue, an architect's status on an issue it does not own, and any status on a root.
+// One write of a session is not set back: the done, backlog, icebox or triage of the architect of
+// an issue above the written issue on its Dispatch chain (architectAbovesMove), whether or not the
+// written issue is in Legion's work. The architect decides that the work of a child is done,
+// folded into another issue or no longer needed, and the child's status in Dispatch is the one
+// field that records that decision (dispatch://INFRA-3178), which Dispatch itself lets that
+// architect write once R26's refusal is on. For that write the function answers that it did not
+// handle it, so dispatchIssue takes the move as it takes a person's: it drops the status writes it
+// queued for the child, and the child leaves Legion's work (leave), or stays out of it at the new
+// status. Every other write of an agent of the tree is set back. That is a status that moves the
+// workflow or todo, any status of a phase worker, a child's own architect's status on its own
+// issue, a sibling's architect's, the status of an architect whose claim is suspended or failed,
+// and any status on a root by its own architect.
+//
+// A write on an issue whose Dispatch chain is unknown (R16 of dispatch://INFRA-3320) is neither
+// taken nor set back at its event, since who stands above the issue is not known: it is held
+// (holdSessionWrite), and so is every later session write while any is held, and the first pass
+// that knows the chain judges them in Dispatch's order (JudgeHeldStatusWrites, decision 24 of
+// dispatch://INFRA-4730).
 func (e *Engine) sessionStatusWrite(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) (bool, error) {
 	if fact.ActorSession == "" {
 		return false, nil
@@ -574,29 +599,13 @@ func (e *Engine) sessionStatusWrite(ctx context.Context, tx pgx.Tx, issue record
 			"issue", issue.Key, "session", fact.ActorSession, "wrote", fact.Status)
 		return false, nil
 	}
-	if stands, err := e.owningArchitectsMove(ctx, tx, chains, issue, fact); err != nil || stands {
+	write := record.HeldSessionWrite{Session: fact.ActorSession, Status: fact.Status, Seq: fact.Seq}
+	if !chains.Chain(issue.Key).Known() || len(issue.HeldSessionWrites) > 0 {
+		return true, e.holdSessionWrite(ctx, tx, chains, issue, fact, write)
+	}
+	verdict, agent, err := e.judgeSessionWrite(ctx, tx, chains, issue, write)
+	if err != nil || verdict == writeTaken {
 		return false, err
-	}
-	gateRoot := chains.GateRoot(issue.Key)
-	// The issue's own claims count whatever the chain reads, a chain with no gate root included.
-	tree := []string{issue.Key}
-	if gateRoot != "" {
-		tree = append(tree, chains.GateTree(gateRoot)...)
-	}
-	agent, err := e.store.SessionClaimsOf(ctx, tx, tree, fact.ActorSession)
-	if err != nil {
-		return false, err
-	}
-	if !agent {
-		// Whether the write lands on the root of a tree that is running now, by the one rule every
-		// reader of that question asks (record.TreeRunning, record.TreeRuns): it is in Legion's work
-		// and not itself waiting in the line for its run to be opened. A root waiting for its slot
-		// runs nothing: where no tree runs, an outside session's write is a person's move, which is
-		// the whole of the question.
-		waiting := gateRoot == issue.Key && issue.AwaitingPerson()
-		if admitted, err := record.TreeRunning(ctx, e.store, tx, issue, e.cfg.Steps); err != nil || !admitted && !waiting {
-			return false, err
-		}
 	}
 	e.logOnCommit(ctx, "workflow: a session wrote a lifecycle status; the daemon re-asserts its own", "issue", issue.Key,
 		"session", fact.ActorSession, "claims_tree", agent, "wrote", fact.Status, "status", issue.Status)
@@ -606,37 +615,95 @@ func (e *Engine) sessionStatusWrite(ctx context.Context, tx pgx.Tx, issue record
 	if err := e.enqueue(ctx, tx, issue.Key, record.ReassertStatusWrite(issue.Status, fact.Status, fact.Seq)); err != nil {
 		return false, err
 	}
-	if agent {
-		return true, nil
-	}
-	return true, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "status-reasserted", Role: claim.RoleArchitect,
-		Reason: fmt.Sprintf("session %s set %s to %s, and the daemon set it back to %s", fact.ActorSession, issue.Key, fact.Status, issue.Status)})
+	return true, e.tellSetBack(ctx, tx, issue, write, agent)
 }
 
-// owningArchitectsMove says whether fact, a session's write, is the owning architect's move of
-// issue out of Legion's work, which sessionStatusWrite does not set back. Three conditions make it
-// one, each read from chains, the Dispatch chain the write is judged on, and none from the tree an
-// issue's record stores (R15 and R18 of dispatch://INFRA-3320):
+// sessionVerdict is what the repair makes of one session's status write (judgeSessionWrite).
+type sessionVerdict int
+
+const (
+	// writeTaken is a write the workflow takes as it takes a person's move: the move of the
+	// architect of an issue above, or an outside session's write where no tree runs.
+	writeTaken sessionVerdict = iota
+	// writeSetBack is a write the daemon sets back to its own status.
+	writeSetBack
+)
+
+// judgeSessionWrite is the repair's rule for write, a session's status write of issue, over
+// chains, the Dispatch chain the write is judged on (sessionStatusWrite says the rule), and
+// whether the session is an agent of the issue's tree, which hears of its own set-back from no
+// one. It writes nothing.
+func (e *Engine) judgeSessionWrite(ctx context.Context, tx pgx.Tx, chains *record.Chains, issue record.Issue, write record.HeldSessionWrite) (sessionVerdict, bool, error) {
+	if stands, err := e.architectAbovesMove(ctx, tx, chains, issue, write); err != nil || stands {
+		return writeTaken, false, err
+	}
+	gateRoot := chains.GateRoot(issue.Key)
+	// The issue's own claims count whatever the chain reads, a chain with no gate root included.
+	tree := []string{issue.Key}
+	if gateRoot != "" {
+		tree = append(tree, chains.GateTree(gateRoot)...)
+	}
+	agent, err := e.store.SessionClaimsOf(ctx, tx, tree, write.Session)
+	if err != nil {
+		return writeTaken, false, err
+	}
+	if !agent {
+		// Whether the write lands on the root of a tree that is running now, by the one rule every
+		// reader of that question asks (record.TreeRunning, record.TreeRuns): it is in Legion's work
+		// and not itself waiting in the line for its run to be opened. A root waiting for its slot
+		// runs nothing: where no tree runs, an outside session's write is a person's move, which is
+		// the whole of the question.
+		waiting := gateRoot == issue.Key && issue.AwaitingPerson()
+		if admitted, err := record.TreeRunning(ctx, e.store, tx, issue, e.cfg.Steps); err != nil || !admitted && !waiting {
+			return writeTaken, false, err
+		}
+	}
+	return writeSetBack, agent, nil
+}
+
+// tellSetBack tells the architect of issue's tree that the daemon set back write, unless the
+// writer is an agent of that tree.
+func (e *Engine) tellSetBack(ctx context.Context, tx pgx.Tx, issue record.Issue, write record.HeldSessionWrite, agent bool) error {
+	if agent {
+		return nil
+	}
+	return e.notice(ctx, tx, issue.Key, record.Notice{Kind: "status-reasserted", Role: claim.RoleArchitect,
+		Reason: fmt.Sprintf("session %s set %s to %s, and the daemon set it back to %s", write.Session, issue.Key, write.Status, issue.Status)})
+}
+
+// architectAbovesMove says whether write, a session's status write, is the move of issue out of
+// the workflow by the architect of an issue above it, which sessionStatusWrite does not set back.
+// Two conditions make it one, read from chains, the Dispatch chain the write is judged on, and from
+// the claims the daemon publishes, and none from the tree an issue's record stores (R15 and R18 of
+// dispatch://INFRA-3320; decision 24 of dispatch://INFRA-4730):
 //   - The status is done, backlog, icebox or triage (record.OutOfWorkflow).
-//   - The issue stands under another in Legion's work on its Dispatch chain: a root, which no
-//     issue in Legion's work stands above, leaves only by its architect's sign-off or close_root,
-//     and the issues whose architects own a move of it are none (record.MoveOwners).
-//   - The session holds the architect claim of an issue above it on that chain, in any state
-//     (record.MoveOwners, record.Store.ArchitectIssueOfSession), so an architect owns every issue
-//     under its own, a grandchild under another architect that holds its role included.
+//   - The session holds a live claim, one the daemon publishes to Dispatch as a role holder
+//     (record.Store.LiveRoleHolders: registered, ready, working or idle, its session held), as
+//     the architect of an issue on issue's chain above it, the parent and the grandparent alike,
+//     whether those issues or issue itself are in Legion's work or not. It is the rule Dispatch
+//     applies to the same write once R26's refusal is on, over the holders the daemon published.
 //
-// A move that stands writes its own log line, which names the architect's issue.
-func (e *Engine) owningArchitectsMove(ctx context.Context, tx pgx.Tx, chains *record.Chains, issue record.Issue, fact intake.DispatchIssue) (bool, error) {
-	if !record.OutOfWorkflow(fact.Status) {
+// The issue's own architect is no issue above it, and a suspended or failed claim is no live
+// one, so those writes are set back with every other. A move that stands writes its own log line,
+// which names the architect's issue.
+func (e *Engine) architectAbovesMove(ctx context.Context, tx pgx.Tx, chains *record.Chains, issue record.Issue, write record.HeldSessionWrite) (bool, error) {
+	if !record.OutOfWorkflow(write.Status) {
 		return false, nil
 	}
-	architect, held, err := e.store.ArchitectIssueOfSession(ctx, tx, record.MoveOwners(chains, issue.Key), fact.ActorSession)
-	if err != nil || !held {
-		return false, err
+	for _, above := range chains.Chain(issue.Key).Links {
+		holders, err := e.store.LiveRoleHolders(ctx, tx, above)
+		if err != nil {
+			return false, err
+		}
+		for _, holder := range holders {
+			if holder.Role == claim.RoleArchitect && holder.Session == write.Session {
+				e.logOnCommit(ctx, "workflow: the status of the architect of an issue above stands", "issue", issue.Key,
+					"session", write.Session, "architect", above, "status", write.Status)
+				return true, nil
+			}
+		}
 	}
-	e.logOnCommit(ctx, "workflow: the owning architect's status on its child stands", "issue", issue.Key,
-		"session", fact.ActorSession, "architect", architect, "status", fact.Status)
-	return true, nil
+	return false, nil
 }
 
 // observedIssue is issue with everything an observation of fact records on it: its title, rank,

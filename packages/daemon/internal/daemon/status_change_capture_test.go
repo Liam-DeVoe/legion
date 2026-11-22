@@ -56,7 +56,7 @@ func captureMidwayRefusal(t *testing.T, d *scratchDispatch) {
 	for attempt := 1; attempt <= 5; attempt++ {
 		parent, seq := openChildren(t, d, fmt.Sprintf("midway refusal %d", attempt), childrenPerCall)
 		body := backlogWithChildren(t, parent, seq)
-		answered := make(chan capturedAnswer, 1)
+		answered := make(chan routeAnswer, 1)
 		go func() { answered <- sendStatusChange(d, parent, fmt.Sprintf("midway-refusal-%d", attempt), body) }()
 		awaitSteps(t, d, parent, seq, midwaySteps)
 		written := asScratchPerson(t, http.MethodPatch, d.base+"/api/v1/issues/"+url.PathEscape(parent),
@@ -83,7 +83,7 @@ func captureKeyedRepeat(t *testing.T, d *scratchDispatch) {
 	parent, seq := openChildren(t, d, "keyed repeat", childrenPerCall)
 	body := backlogWithChildren(t, parent, seq)
 	const requestKey = "keyed-repeat-1"
-	lost := make(chan capturedAnswer, 1)
+	lost := make(chan routeAnswer, 1)
 	go func() { lost <- sendStatusChange(d, parent, requestKey, body) }()
 	awaitSteps(t, d, parent, seq, 1)
 	d.kill()
@@ -93,7 +93,7 @@ func captureKeyedRepeat(t *testing.T, d *scratchDispatch) {
 	d.start()
 	// The killed run holds its key until the key's lease lapses (Dispatch's IdempotencyLease, a
 	// minute): until then a repeat is answered 409 KEY_IN_FLIGHT and asked again after Retry-After.
-	var answer capturedAnswer
+	var answer routeAnswer
 	if !testwait.Holds(3*time.Minute, time.Second, func() bool {
 		answer = sendStatusChange(d, parent, requestKey, body)
 		if answer.err != nil {
@@ -158,9 +158,9 @@ func awaitSteps(t *testing.T, d *scratchDispatch, parent string, seq int64, step
 	})
 }
 
-// capturedAnswer is one answer of the route: whole as it came (raw), its status, and the code and
+// routeAnswer is one answer of the route: whole as it came (raw), its status, and the code and
 // the committed entries its body names.
-type capturedAnswer struct {
+type routeAnswer struct {
 	raw     []byte
 	status  int
 	code    string
@@ -170,10 +170,10 @@ type capturedAnswer struct {
 
 // sendStatusChange posts body to the status-change route of key under requestKey, with the
 // headers the client sends, and returns the answer.
-func sendStatusChange(d *scratchDispatch, key, requestKey string, body []byte) capturedAnswer {
+func sendStatusChange(d *scratchDispatch, key, requestKey string, body []byte) routeAnswer {
 	request, err := http.NewRequest(http.MethodPost, d.base+"/api/v1/issues/"+url.PathEscape(key)+"/status-change", bytes.NewReader(body))
 	if err != nil {
-		return capturedAnswer{err: err}
+		return routeAnswer{err: err}
 	}
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("Authorization", "Bearer "+d.token)
@@ -181,21 +181,21 @@ func sendStatusChange(d *scratchDispatch, key, requestKey string, body []byte) c
 	request.Header.Set("Idempotency-Key", requestKey)
 	response, err := (&http.Client{Timeout: 5 * time.Minute}).Do(request)
 	if err != nil {
-		return capturedAnswer{err: err}
+		return routeAnswer{err: err}
 	}
 	defer response.Body.Close()
 	raw, err := httputil.DumpResponse(response, true)
 	if err != nil {
-		return capturedAnswer{err: err}
+		return routeAnswer{err: err}
 	}
 	var members struct {
 		Code    string            `json:"code"`
 		Changed []json.RawMessage `json:"changed"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&members); err != nil {
-		return capturedAnswer{err: fmt.Errorf("decode the answer %d: %w", response.StatusCode, err)}
+		return routeAnswer{err: fmt.Errorf("decode the answer %d: %w", response.StatusCode, err)}
 	}
-	return capturedAnswer{raw: raw, status: response.StatusCode, code: members.Code, changed: members.Changed}
+	return routeAnswer{raw: raw, status: response.StatusCode, code: members.Code, changed: members.Changed}
 }
 
 // saveAnswer writes raw to the dispatch client's saved answers under name.

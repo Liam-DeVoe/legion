@@ -60,12 +60,16 @@ func OutOfWorkflow(status string) bool {
 }
 
 // EndChildRule is how an architect ends a child, in the short form that the daemon's refusals
-// and notices carry (dispatch://INFRA-3178 R6). The daemon takes the owning architect's done,
-// backlog, icebox or triage on a child as it takes a person's move (workflow's
+// and notices carry (dispatch://INFRA-3178 R6). The daemon takes the done, backlog, icebox or
+// triage of the architect of an issue above a child as it takes a person's move (workflow's
 // sessionStatusWrite). So the move is the architect's own status write in Dispatch, and no
 // operation of the legion tool makes it. Each thing the rule says stops a loss
 // that the move alone does not stop. A fold names its carrier, and the issues that wait on the
-// folded child wait on the carrier first, because done starts them. A running child's worker
+// folded child wait on the carrier first, because done starts them. Dispatch closes an issue only
+// once each issue under it is done, and moves an issue out of work with the open issues under it
+// only when the write says so (R24 of dispatch://INFRA-3320), so a child with open children is
+// closed from the bottom, each of them done first, and its backlog or icebox takes
+// include_children. A running child's worker
 // pushes first, because done ends its turn and its pod at once. An open pull request leaves the
 // merge queue and closes unless its work should land, because the daemon changes no pull request.
 // Backlog and icebox are for a person's request or a restart, and finished work is done. A child
@@ -83,6 +87,7 @@ func OutOfWorkflow(status string) bool {
 const EndChildRule = "End a child with your own status write in Dispatch. " +
 	"Write done with a reason when the child's work is done, folded into another issue or no longer needed: " +
 	"dispatch issue-update --issue <KEY> --status done --reason '<why>'. " +
+	"Dispatch closes an issue only once each issue under it is done, so when the child has open children, close each of them done first, from the bottom. " +
 	"For a fold, name the carrier in the reason: the issue that carries the work. " +
 	"Before the done of a fold, make each issue that is blocked_by the child wait on the carrier instead. " +
 	"Done starts those issues, and the Referenced by list of dispatch read names each of them as blocked_by. " +
@@ -92,6 +97,7 @@ const EndChildRule = "End a child with your own status write in Dispatch. " +
 	"When it is in the merge queue, first take it out (GraphQL dequeuePullRequest). " +
 	"Do this before done, or at once after a done that you wrote first. " +
 	"Write backlog or icebox only when a person asked for that move, or as the first step of a restart. " +
+	"A backlog or icebox of a child that has open children takes include_children, which moves those children with it. " +
 	"A restart is backlog, then rerun_child. " +
 	"Say why in a dispatch comment. " +
 	"Write no status on a child that is already done, because a move out of done ends an open production check. " +
