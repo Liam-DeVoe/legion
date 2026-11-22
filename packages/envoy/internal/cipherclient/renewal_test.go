@@ -78,7 +78,7 @@ func TestABrokerThatIsDownIsWaitedOut(t *testing.T) {
 
 	// The held token is due for renewal and still live, so the caller keeps writing while the
 	// broker is down.
-	client.held.Expiry, client.renewsAt = time.Now().Add(30*time.Second), time.Now()
+	client.held.Expiry, client.held.renewsAt = time.Now().Add(30*time.Second), time.Now()
 	held, err := client.Token(ctx)
 	if err != nil || held.AccessToken != first.AccessToken {
 		t.Fatalf("Token while the broker is down = %v, %v; want the token in hand, which is still live", held, err)
@@ -86,7 +86,7 @@ func TestABrokerThatIsDownIsWaitedOut(t *testing.T) {
 
 	// Once it has run out there is no identity to write with, and the client says so rather
 	// than handing its caller a token the broker will refuse.
-	client.held.Expiry, client.renewsAt = time.Now().Add(-time.Second), time.Now()
+	client.held.Expiry, client.held.renewsAt = time.Now().Add(-time.Second), time.Now()
 	if token, err := client.Token(ctx); err == nil {
 		t.Fatalf("Token with nothing live left = %+v, want the failure", token)
 	}
@@ -124,7 +124,7 @@ func TestABusyBrokerIsAskedAgainRatherThanEndingTheLoop(t *testing.T) {
 
 	// A 429 while the token in hand is due for renewal and still live is no reason to stop
 	// writing with it.
-	client.held.Expiry, client.renewsAt = time.Now().Add(30*time.Second), time.Now()
+	client.held.Expiry, client.held.renewsAt = time.Now().Add(30*time.Second), time.Now()
 	held, err := client.Token(ctx)
 	if err != nil || held.AccessToken != first.AccessToken {
 		t.Fatalf("Token while the broker is busy = %v, %v; want the token in hand, which is still live", held, err)
@@ -154,28 +154,6 @@ func TestABusyBrokerIsAskedAgainRatherThanEndingTheLoop(t *testing.T) {
 	if trades := len(broker.Requests()); trades != refusals+2 {
 		t.Fatalf("the broker saw %d trades, want %d: Token's first, the loop's %d refused, and the one that landed",
 			trades, refusals+2, refusals)
-	}
-}
-
-// TestATokenShorterThanRenewBeforeIsNotRenewedInALoop: a token that lives less than
-// RenewBefore is renewed at half of what is left, so a deployment minting short tokens — or a
-// dev stack proving a renewal in seconds — renews steadily rather than trading again the
-// instant each token lands, which empties the broker's bucket.
-func TestATokenShorterThanRenewBeforeIsNotRenewedInALoop(t *testing.T) {
-	now := time.Now()
-	client, err := New(Config{BrokerURL: cipheraddr.New("https://secrets.example"), Key: testKey(t), Subject: projectedStub(),
-		Now: func() time.Time { return now }})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	if wait := client.renewalAt(&Token{Expiry: now.Add(time.Hour)}, now).Sub(now); wait != time.Hour-DefaultRenewBefore {
-		t.Errorf("a token of an hour is renewed in %s, want %s ahead of its expiry", wait, DefaultRenewBefore)
-	}
-	if wait := client.renewalAt(&Token{Expiry: now.Add(2 * time.Second)}, now).Sub(now); wait != time.Second {
-		t.Errorf("a token of two seconds is renewed in %s, want half of what is left", wait)
-	}
-	if wait := client.renewalAt(&Token{Expiry: now.Add(-time.Second)}, now).Sub(now); wait != 0 {
-		t.Errorf("a token already past its expiry is renewed in %s, want at once", wait)
 	}
 }
 
@@ -433,7 +411,7 @@ func TestARetriedTradeIsLoggedAsWhatHappened(t *testing.T) {
 				broker.server.Close()
 			}
 
-			client.held.Expiry, client.renewsAt = time.Now().Add(30*time.Second), time.Now()
+			client.held.Expiry, client.held.renewsAt = time.Now().Add(30*time.Second), time.Now()
 			if held, err := client.Token(ctx); err != nil || held.AccessToken != mintedToken(1)["access_token"] {
 				t.Fatalf("Token = %+v, %v; want the token in hand, which is still live", held, err)
 			}

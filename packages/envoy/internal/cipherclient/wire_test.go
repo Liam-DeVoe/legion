@@ -32,8 +32,8 @@ import (
 const corpusPath = "testdata/wire.json"
 
 // tokenFieldNames maps each field of Token to the name the corpus gives it in expect.token.
-// Every field must be named here: a field added to Token without an entry fails
-// TestTheCorpusNamesEveryFieldAClientReads, which is how "the corpus is the whole of what a
+// Every field but renewalMomentField must be named here: a field added to Token without an entry
+// fails TestTheCorpusNamesEveryFieldAClientReads, which is how "the corpus is the whole of what a
 // client reads" is kept true as this package changes.
 var tokenFieldNames = map[string]string{
 	"AccessToken":         "acc" + "ess_token",
@@ -42,6 +42,12 @@ var tokenFieldNames = map[string]string{
 	"CredentialID":        "credential_id",
 	"CredentialExpiresAt": "credential_expires_at",
 }
+
+// renewalMomentField is the one field of Token both corpus checks pass over, by name: it is no
+// member of the broker's answer but the moment the client works out from expires_in as the token
+// lands (Token.renewsAt, by renewalAt). testdata/wire.json is the whole of what a client reads out
+// of an answer, so it has nothing to name this by; testdata/renewal.json holds its rule.
+const renewalMomentField = "renewsAt"
 
 type corpus struct {
 	Version  int `json:"version"`
@@ -295,8 +301,8 @@ func checkPublicJWK(t *testing.T, embedded any) {
 }
 
 // checkToken holds what the client took out of the answer to the corpus's expect.token, whole:
-// every field of Token is read through tokenFieldNames, so a field this package adds without an
-// entry in the corpus is caught here as well as in the name test below.
+// every field of Token but renewalMomentField is read through tokenFieldNames, so a field this
+// package adds without an entry in the corpus is caught here as well as in the name test below.
 func checkToken(t *testing.T, exchange corpusExchange, token *Token) {
 	t.Helper()
 	got := tokenAsCorpus(t, token)
@@ -320,6 +326,9 @@ func tokenAsCorpus(t *testing.T, token *Token) map[string]any {
 	fields := value.Type()
 	read := map[string]any{}
 	for i := range fields.NumField() {
+		if fields.Field(i).Name == renewalMomentField {
+			continue
+		}
 		name, named := tokenFieldNames[fields.Field(i).Name]
 		if !named {
 			t.Fatalf("Token has the field %s, which testdata/wire.json names nowhere: add it to the corpus, so the TypeScript client is held to it too", fields.Field(i).Name)
@@ -376,8 +385,9 @@ func asRefused(err error, target **RefusedError) bool {
 }
 
 // TestTheCorpusNamesEveryFieldAClientReads is the other direction of the same rule, checked
-// without a stub broker: every field of Token is named in the corpus, so neither client can read
-// a member of an answer that the other knows nothing about.
+// without a stub broker: every field of Token but renewalMomentField, which no answer carries, is
+// named in the corpus, so neither client can read a member of an answer that the other knows
+// nothing about.
 func TestTheCorpusNamesEveryFieldAClientReads(t *testing.T) {
 	read := readCorpus(t)
 	named := map[string]bool{}
@@ -388,6 +398,9 @@ func TestTheCorpusNamesEveryFieldAClientReads(t *testing.T) {
 	}
 	fields := reflect.TypeOf(Token{})
 	for i := range fields.NumField() {
+		if fields.Field(i).Name == renewalMomentField {
+			continue
+		}
 		name, inMap := tokenFieldNames[fields.Field(i).Name]
 		if !inMap {
 			t.Fatalf("Token.%s is in no corpus entry's expect.token: add it to testdata/wire.json and to tokenFieldNames", fields.Field(i).Name)
