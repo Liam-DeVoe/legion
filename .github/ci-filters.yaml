@@ -69,6 +69,7 @@ daemon_envoy_deps: &daemon_envoy_deps
   - 'packages/envoy/internal/ciphertoken/*'
   - 'packages/envoy/internal/bus/*'
   - 'packages/envoy/internal/contracts/*'
+  - 'packages/envoy/internal/clock/*'
   - 'packages/envoy/internal/ctxlock/*'
   - 'packages/envoy/natscred/*'
   - 'packages/envoy/internal/dispatch/bytelru/*'
@@ -115,6 +116,7 @@ dispatch_server: &dispatch_server
   - 'packages/envoy/internal/ctxlock/*'
   - 'packages/envoy/natscred/*'
   - 'packages/envoy/internal/cistore/*'
+  - 'packages/envoy/internal/clock/*'
   - 'packages/envoy/internal/contracts/*'
   - 'packages/envoy/internal/dispatch/accesslog/*'
   - 'packages/envoy/internal/dispatch/cipher/*'
@@ -302,6 +304,7 @@ listener_command: &listener_command
   - 'packages/envoy/natscred/*'
   - 'packages/envoy/natsgrant/*'
   - 'packages/envoy/internal/cistore/*'
+  - 'packages/envoy/internal/clock/*'
   - 'packages/envoy/internal/config/*'
   - 'packages/envoy/internal/contracts/*'
   - 'packages/envoy/internal/dedupe/*'
@@ -1792,6 +1795,7 @@ dispatch_memory:
   - '.github/workflows/ci-job-dispatch-memory.yaml'
   - *go_workspace
   - *dispatch_command_tests
+  - 'packages/envoy/internal/clock/*'
   - 'packages/envoy/internal/githubtest/*'
   - 'packages/envoy/internal/testnats/*'
   - 'packages/envoy/internal/testport/*'
@@ -1829,6 +1833,7 @@ dispatch_multiprocess:
   - '.github/workflows/ci-job-dispatch-multiprocess.yaml'
   - *go_workspace
   - *dispatch_command_tests
+  - 'packages/envoy/internal/clock/*'
   - 'packages/envoy/internal/githubtest/*'
   - 'packages/envoy/internal/testnats/*'
   - 'packages/envoy/internal/testport/*'
@@ -1868,6 +1873,7 @@ dispatch_two_builds_go:
   - '.github/workflows/ci-job-dispatch-two-builds.yaml'
   - *go_workspace
   - *dispatch_command_tests
+  - 'packages/envoy/internal/clock/*'
   - 'packages/envoy/internal/githubtest/*'
   - 'packages/envoy/internal/testnats/*'
   - 'packages/envoy/internal/testport/*'
@@ -1960,6 +1966,7 @@ dispatch_two_builds:
   - '.github/workflows/ci-job-dispatch-two-builds.yaml'
   - *go_workspace
   - *dispatch_command_tests
+  - 'packages/envoy/internal/clock/*'
   - 'packages/envoy/internal/githubtest/*'
   - 'packages/envoy/internal/testnats/*'
   - 'packages/envoy/internal/testport/*'
@@ -2057,6 +2064,7 @@ listener_server_change:
   - *listener_command
   # why: .github/ci-notes/ci.md#listener_server_change-what-cmdlisteners-test-binary-compiles-that-go-list
   - 'packages/envoy/going/*'
+  - 'packages/envoy/internal/clock/*'
   - 'packages/envoy/internal/routing/*'
   - 'packages/envoy/infra/gcp/testdata/clustered-hub-listener-pod.golden'
   - 'packages/envoy/infra/gcp/testdata/dispatch-listener-pod.golden'
@@ -2155,6 +2163,7 @@ broker_multiprocess:
   - 'packages/envoy/cmd/cipherd/*'
   - 'packages/envoy/cmd/cipher/*'
   - 'packages/envoy/docker/rds-global-bundle.pem'
+  - 'packages/envoy/internal/clock/*'
   - 'packages/envoy/internal/cipher/proxyrules/*'
   - 'packages/envoy/internal/cipher/proxyrules/proxyrulestest/*'
   - 'packages/envoy/internal/cipher/proxy/*'
@@ -2316,6 +2325,7 @@ envoy_smoke:
   - '!packages/envoy/internal/cipherclient/**/*_test.go'
   - '!packages/envoy/internal/ciphertoken/**/*_test.go'
   - '!packages/envoy/internal/cistore/**/*_test.go'
+  - '!packages/envoy/internal/clock/**/*_test.go'
   - '!packages/envoy/internal/cmdtest/**/*_test.go'
   - '!packages/envoy/internal/config/**/*_test.go'
   - '!packages/envoy/internal/contracts/**/*_test.go'
@@ -2381,6 +2391,7 @@ envoy_e2e_local:
   - 'packages/cipher-client/**'
   - 'packages/contracts/src/**'
   - *listener_command
+  - 'packages/envoy/internal/clock/*'
   - 'packages/envoy/internal/testnats/*'
   - 'packages/envoy/internal/testnats/cmd/natsd/*'
   - 'packages/envoy/internal/testport/*'
@@ -2668,6 +2679,7 @@ envoy_go_race:
   - '!packages/envoy/internal/cipherclient/**/*_test.go'
   - '!packages/envoy/internal/ciphertoken/**/*_test.go'
   - '!packages/envoy/internal/cistore/**/*_test.go'
+  - '!packages/envoy/internal/clock/**/*_test.go'
   - '!packages/envoy/internal/cmdtest/**/*_test.go'
   - '!packages/envoy/internal/config/**/*_test.go'
   - '!packages/envoy/internal/contracts/**/*_test.go'
@@ -2771,6 +2783,8 @@ envoy_go_race_api:
   - 'packages/envoy/cipheraddr/*'
   - 'packages/envoy/going/*'
   - 'packages/envoy/going/goingtest/*'
+  - 'packages/envoy/internal/clock/*'
+  - 'packages/envoy/internal/clock/clocktest/*'
   - 'packages/envoy/internal/cipher/proxyrules/*'
   - 'packages/envoy/internal/cipher/answer/*'
   - 'packages/envoy/internal/cipher/api/*'
@@ -2911,6 +2925,7 @@ envoy_go_race_api:
   - '!packages/envoy/internal/cipher/**/*_test.go'
   - '!packages/envoy/internal/cipherclient/**/*_test.go'
   - '!packages/envoy/internal/ciphertoken/**/*_test.go'
+  - '!packages/envoy/internal/clock/**/*_test.go'
   - '!packages/envoy/internal/contracts/**/*_test.go'
   - '!packages/envoy/internal/ctxlock/**/*_test.go'
   - '!packages/envoy/internal/dispatch/accesslog/**/*_test.go'
@@ -3020,6 +3035,7 @@ envoy_go_claim_model:
   - '!packages/envoy/internal/cipherclient/**/*_test.go'
   - '!packages/envoy/internal/ciphertoken/**/*_test.go'
   - '!packages/envoy/internal/cistore/**/*_test.go'
+  - '!packages/envoy/internal/clock/**/*_test.go'
   - '!packages/envoy/internal/cmdtest/**/*_test.go'
   - '!packages/envoy/internal/config/**/*_test.go'
   - '!packages/envoy/internal/contracts/**/*_test.go'
@@ -3127,6 +3143,7 @@ envoy_go_race_docs:
   - '.github/scripts/race_memory.py'
   - '.github/scripts/pg-connection-ceiling.sh'
   - *go_workspace
+  - 'packages/envoy/internal/clock/*'
   - 'packages/envoy/internal/contracts/*'
   - 'packages/envoy/internal/id/*'
   - 'packages/envoy/internal/dispatch/accesslog/*'
