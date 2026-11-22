@@ -7825,3 +7825,144 @@ test("Unpin on a pinned agent keeps the keyboard focus on a control in sight, on
   }
   expect(wrong, wrong.join("; ")).toEqual([]);
 });
+
+// SLOW(>=2s): three comment threads seeded at each of two widths, and the Inbox opened at each.
+// INFRA-3135, round 24 (the tester's, measured in builds Jobs infra-3135-a5b-h and -a5b-b at
+// 3fce6150 and da0804df, and infra-3135-a5m at main's merge base 143b57a7): the Inbox lists
+// three comment threads, newest first, and the reader presses Enter on the first one's Dismiss.
+// The row goes once its write lands, the next thread's row moves up into its place, and the
+// focus goes to that row's Dismiss, in Chromium, Firefox and WebKit at 1440x900 and 390x664, at
+// both commits. At 1440 nothing scrolls. At 390 the rows are 459 px tall and the focus put on
+// the first Dismiss has scrolled the window to 437 px, with that row's top 132 px above the
+// window. In Chromium and Firefox the window holds at 437 px and the next row's Dismiss stands at
+// 270 px, in sight. In WebKit the window scrolls up to 167 px, though it can scroll to 1642 px,
+// so the page did not clamp it, and the landing stands at 540 px, in sight; at both commits.
+// Main, which has no focus rescue, leaves the focus on the body in WebKit at both widths, and at
+// 390 scrolls the window from 445 px to 0, though it can scroll to 1650 px. The architect's
+// rulings: the press that takes its own row away lands on the same control in the row now at
+// that place, so the reader can go on (2026-11-19 22:3xZ); a row the reader's own press takes
+// away frees its whole height and nothing scrolls (2026-11-21 17:0xZ); the one scroll a landing
+// may make is to the nearest edge of a control partly in sight (2026-11-21 12:3xZ), and this
+// landing stood in sight at 270 px. A focused control taken away, for which Firefox and WebKit
+// fire no `focusout`: the clause of the `webkit` and `firefox` projects that names the page-own
+// focus row (e2e/playwright.config.ts).
+test("a thread's Dismiss in the Inbox's list scrolls nothing and hands the focus to the next row's Dismiss in sight, at 1440 and 390 @firefox @webkit", async ({
+  page,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const list = page.getByTestId("inbox-list");
+  /** Where the window and the list's box stand and how far each can scroll, and what holds the
+   *  focus: its name, the row it is in, whether it is a row's Dismiss, its top, and whether its box
+   *  is inside the window and inside the list's box. */
+  const landing = () =>
+    page.evaluate(() => {
+      const frame = document.querySelector<HTMLElement>('[data-testid="inbox-list"]');
+      const scroller = document.scrollingElement ?? document.documentElement;
+      const scroll = {
+        farthestTop: frame === null ? 0 : Math.round(frame.scrollHeight - frame.clientHeight),
+        farthestY: Math.round(scroller.scrollHeight - scroller.clientHeight),
+        scrollTop: Math.round(frame?.scrollTop ?? 0),
+        scrollY: Math.round(window.scrollY),
+      };
+      const focused = document.activeElement;
+      if (!(focused instanceof HTMLElement) || focused === document.body) {
+        return {
+          ...scroll,
+          dismiss: false,
+          inSight: false,
+          name: "the body",
+          row: null,
+          top: null,
+        };
+      }
+      const own = focused.getBoundingClientRect();
+      const words = (focused.getAttribute("aria-label") || focused.textContent || "")
+        .trim()
+        .slice(0, 60);
+      const clip = frame?.getBoundingClientRect();
+      const top = Math.max(0, clip?.top ?? 0);
+      const bottom = Math.min(window.innerHeight, clip?.bottom ?? window.innerHeight);
+      return {
+        ...scroll,
+        dismiss: focused.matches("[data-inbox-dismiss]"),
+        inSight:
+          own.top >= top - 1 &&
+          own.bottom <= bottom + 1 &&
+          own.left >= -1 &&
+          own.right <= window.innerWidth + 1,
+        name: `${focused.tagName.toLowerCase()} "${words}"`,
+        row: focused.closest("[data-inbox-row]")?.getAttribute("data-inbox-row") ?? null,
+        top: Math.round(own.top),
+      };
+    });
+  const wrong: string[] = [];
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ]) {
+    await page.setViewportSize(size);
+    const where = `Inbox at ${size.width}x${size.height}`;
+    const issue = await createIssue({ project: "CORE", title: `Mirror lag at ${size.width}` });
+    for (const word of ["first", "second", "third"]) {
+      await seedCommentThread(
+        issue.key,
+        `Is the ${word} mirror caught up at ${size.width}?`,
+        "It is."
+      );
+    }
+    await page.goto("/");
+    const dismissable = page
+      .locator("[data-inbox-row]")
+      .filter({ has: page.locator("[data-inbox-dismiss]") });
+    await expect(dismissable.nth(2)).toBeVisible();
+    // One read of the order: the wait above found three thread rows drawn, newest first.
+    const target = (await dismissable.first().getAttribute("data-inbox-row")) ?? "";
+    const row = page.locator(`[data-inbox-row="${target}"]`);
+    // One read is the answer: the list is drawn, and nothing moves its rows before the press.
+    const next = await row.evaluate(
+      (node) => node.nextElementSibling?.getAttribute("data-inbox-row") ?? "no row"
+    );
+    const nextDismiss = page.locator(`[data-inbox-row="${next}"] [data-inbox-dismiss]`);
+    await expect(
+      nextDismiss,
+      `${where}: the row after the first thread draws no Dismiss`
+    ).toHaveCount(1);
+    // One read of the name: the next row is drawn, and its Dismiss names its thread.
+    const nextName = (await nextDismiss.getAttribute("aria-label")) ?? next;
+    await row.locator("[data-inbox-dismiss]").focus();
+    await nextFrames(page);
+    // One instant is the point: where the window and the list stand just before the press.
+    const before = await landing();
+    await page.keyboard.press("Enter");
+    await expect(row).toHaveCount(0);
+    // The hand-off runs with the commit that took the row away, and a scroll lands over frames.
+    await settledScrollTop(list);
+    await settledScrollTop(page);
+    // One read is the answer: every hand-off of the press has run, and nothing else moves.
+    const now = await landing();
+    const numbers = `window.scrollY ${before.scrollY} -> ${now.scrollY} (farthest ${now.farthestY}), list scrollTop ${before.scrollTop} -> ${now.scrollTop} (farthest ${now.farthestTop})`;
+    if (now.row !== next || !now.dismiss) {
+      wrong.push(
+        `${where}: after Enter on the first thread's Dismiss the focus is on ${now.name}, not on "${nextName}", the Dismiss of the row now at its place (${numbers})`
+      );
+    } else if (!now.inSight) {
+      wrong.push(
+        `${where}: after Enter on the first thread's Dismiss the focus is on ${now.name}, out of sight at ${now.top} px in a ${size.height} px window (${numbers})`
+      );
+    }
+    // A box the page clamped stands at its farthest scroll now, and stood farther before.
+    const windowClamped = now.scrollY >= now.farthestY - 1 && before.scrollY > now.farthestY;
+    const listClamped = now.scrollTop >= now.farthestTop - 1 && before.scrollTop > now.farthestTop;
+    if (Math.abs(now.scrollY - before.scrollY) > 1 && !windowClamped) {
+      wrong.push(
+        `${where}: after Enter on the first thread's Dismiss the window scrolled ${now.scrollY - before.scrollY} px, with the focus on ${now.name} at ${now.top} px (${numbers})`
+      );
+    }
+    if (Math.abs(now.scrollTop - before.scrollTop) > 1 && !listClamped) {
+      wrong.push(
+        `${where}: after Enter on the first thread's Dismiss the list scrolled ${now.scrollTop - before.scrollTop} px, with the focus on ${now.name} at ${now.top} px (${numbers})`
+      );
+    }
+  }
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
