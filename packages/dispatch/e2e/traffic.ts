@@ -109,8 +109,11 @@ export function watchApiRequests(page: Page): ApiRequests {
   const requests: ApiRequest[] = [];
   const inFlight = new Set<Request>();
   let lastSettledAt = Date.now();
+  // The request of a new document the main frame is loading, until that document commits.
+  let loading: Request | undefined;
   page.on("request", (request) => {
     inFlight.add(request);
+    if (request.isNavigationRequest() && request.frame() === page.mainFrame()) loading = request;
     const url = new URL(request.url());
     if (!url.pathname.startsWith("/api/")) return;
     requests.push({
@@ -124,6 +127,19 @@ export function watchApiRequests(page: Page): ApiRequests {
   };
   page.on("requestfinished", settle);
   page.on("requestfailed", settle);
+  // A new document takes the page's place: a read the document it replaced still had in flight
+  // can no longer answer the page, and the browser may report neither its end nor its failure,
+  // so it is settled here, as Playwright's own idle wait drops it at a new document (a move to
+  // a fragment of the same document loads none, and drops nothing). Kept, it would hold the
+  // page from ever going quiet again.
+  page.on("framenavigated", (frame) => {
+    if (frame !== page.mainFrame() || loading === undefined) return;
+    const document = loading;
+    loading = undefined;
+    for (const request of inFlight) {
+      if (request !== document && inFlight.delete(request)) lastSettledAt = Date.now();
+    }
+  });
   return {
     byRoute: () => {
       const counts = new Map<string, number>();
