@@ -94,9 +94,12 @@ revision:
   `<Prefix(logical)>~<nuid>` names of its own key. Its operation's old name may also be the key's
   fixed name, which the cutover replaces. Anything else is `ErrMalformedRecord`, naming the field.
   `Names.Check(logical, record)` is that fence, the one the creator applies to every record it
-  reads: a reader of the store that judges a record healthy (an operator's status, census or
-  cleanup) asks it, as it decodes the bucket's values with `DecodeKVValue`, so it judges a record
-  as the creator does.
+  reads. Its nil says only that the record's names are of its key's family. The record must come
+  from a store read or `DecodeKVValue`, which check its key and fields, and a name it gives must
+  pass `Names.Owns` (the consumer's own metadata) before anything reads, binds, updates or deletes
+  it: every session's prefix is `session`, so a record of one session can name another session's
+  consumer and pass the fence. A reader that deletes what a record names calls `Names.Cleanup`,
+  which does all three.
 - **The owner check.** A consumer a record names is used only when the consumer's own metadata
   names the key (`Names.Owns`, `Config.Metadata`). It is checked before every read, adoption and
   delete of such a name, so a record that names another key's consumer is malformed, and nothing
