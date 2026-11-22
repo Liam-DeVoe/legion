@@ -81,22 +81,34 @@ import { type RefObject, useLayoutEffect } from "react";
  *   over the issues table's last row at 1280x720. It skips every element inside a float and takes
  *   the first one left: the content under the float. An element hit at several points of one
  *   float is walked once.
- * - Why the first scroller whose foot reaches the float. From that element the hook walks up its
- *   ancestors, itself included. The first whose `overflow-y` is `auto` or `scroll`, whose lower
- *   edge, clipped to the screen, lies below the float's top edge, and whose content overflows it
- *   on the block axis with the hook's own end room left out (`scrollHeight - room >
- *   clientHeight + 1`) is the scroller under that float. It is the innermost box that scrolls
- *   that content, and the only one whose end room lets that content scroll clear: end room in a
- *   box further out moves the inner box whole. A scroll container whose lower edge is above the
- *   float's top does not hold that content where the float is: the content escapes it, fixed or
- *   absolute. A box that only scrolls sideways - a code block, the issue board, a settings table,
- *   whose `overflow-x: auto` makes `overflow-y` compute to `auto` too - is as tall as its content,
- *   so it never overflows on the block axis and never counts. End room in it would grow it and
- *   move the content after it. And since its own room is left out, marking a scroller cannot
- *   change whether it counts. Where no ancestor below `body` counts, the document scrolls that
- *   content, if anything does, and the scroller is the document's: `main` (`#main-content`) where
- *   it holds the element, else `body`, with no test of overflow, since the document's box grows
- *   with its content.
+ * - Why the walk. From that element the hook walks up its ancestors, itself included
+ *   (`scrollerUnder`), and stops at the first for which one of three questions, asked in this
+ *   order, has the answer yes. So the scroller under the float is the box where the walk stops,
+ *   or none, and end room goes only to a scroller whose scroll moves the content the float covers.
+ *   - Is it a scroller whose foot reaches the float: its `overflow-y` is `auto` or `scroll`, its
+ *     lower edge, clipped to the screen, lies below the float's top edge, and it can scroll on
+ *     the block axis (below)? Then it is the scroller. It is the innermost box that scrolls that
+ *     content, and the only one whose end room lets that content scroll clear: end room in a box
+ *     further out moves the inner box whole. A scroll container whose lower edge is above the
+ *     float's top does not hold that content where the float is: the content escapes it,
+ *     absolute, and the walk goes on.
+ *   - Is it fixed, or sticky on the block axis (`position: sticky` with a `top` or a `bottom`
+ *     other than `auto`)? Then the walk stops, and that point gives no scroller end room. A box
+ *     stuck to the top or the foot of a scroll holds its place on the screen while the scroll
+ *     goes on, and a fixed box holds it always, so no scroll further out moves what it holds
+ *     clear of the float: a fixed sheet, a stuck header, or a column stuck at the height of the
+ *     screen that is not a scroller itself. A box sticky only on the inline axis - a pinned cell
+ *     of the issues table, sticky with only a `left` - moves with a scroll on the block axis, the
+ *     one end room lengthens, so the walk goes on past it to the table's box.
+ *   - Is it `main` (`#main-content`) while `main` carries `data-document-scroll`? Then the
+ *     document scrolls that content, and the scroller is the document's, `main`, with no test of
+ *     overflow, since the document's box grows with its content.
+ *
+ *   `body` never takes room, and a walk that reaches it finds no scroller. Room in `body` lies
+ *   below the shell rather than in it, so at the end of the document's scroll it lifts the shell,
+ *   and the columns stuck in it, off the top of the screen: under Pending changes over an issue
+ *   page's Review margin it pushed the Navigation off and left an empty band at the foot. The
+ *   document's own content is in `main`, which takes the room while the document scrolls it.
  * - Why the shell says whether the document scrolls `main`. On a page that fills the screen
  *   `<main>` is a bounded box and the document scrolls nothing: room in `main` there would
  *   squeeze the page above it rather than lengthen it, lift the live view's composer, and hold
@@ -104,15 +116,49 @@ import { type RefObject, useLayoutEffect } from "react";
  *   `main` from one the document scrolls, since a page that fits the window exactly - the issues
  *   table sizes its box to it - reads the same. So `data-document-scroll` on `<main>` (`app.tsx`)
  *   is the shell's statement that the document scrolls main's content: on a page the document
- *   scrolls, outside the new issue page's frame. Only while `main` carries it is there a
- *   document's scroller; a walk that reaches `body` otherwise finds none.
+ *   scrolls, outside the new issue page's frame. Only while `main` carries it is `main` a
+ *   scroller.
+ * - Why a box can scroll on the block axis two ways (`scrollsOnBlockAxis`). Its content overflows
+ *   it now, with the hook's own end room left out (`scrollHeight - room > clientHeight + 1`). Or
+ *   its height is set by layout rather than by its content: it is taller than its content, so end
+ *   room lengthens its scroll and not its box - a column at the height of the screen with short
+ *   content, such as the Review margin, the contents column or the Navigation. A box as tall as
+ *   its content counts by neither: a box that only scrolls sideways - a code block, the issue
+ *   board, a settings table, whose `overflow-x: auto` makes `overflow-y` compute to `auto` too -
+ *   or a box below its `max-height`. End room in it would grow it under the float and move the
+ *   content after it. Neither way counts the hook's own room, so marking a scroller cannot change
+ *   whether it counts.
+ * - Why the height set by layout is read from the content's extent. Only a layout experiment -
+ *   give the box room and see whether its box grows - could tell it directly, and the hook makes
+ *   none. So it reads the extent of the content: from the top of the box's padding box, as its
+ *   scroll lays the content out (its top, below its top border, less `scrollTop`), to the foot of
+ *   that content, plus its own bottom padding without any room the hook gave it. A box taller
+ *   than that by more than 1px (`clientHeight > extent + 1`) has a height set by layout. The foot
+ *   of the content (`contentFoot`) is the lowest bottom margin edge of the box's element children,
+ *   or its top padding where it has none. The margin counts, since a box that scrolls holds its
+ *   last child's margin inside it. Every child is read, not only the last: in a row - a flexbox,
+ *   a grid - the last child is not the lowest. A `display: contents` child has no box, so its
+ *   own children are read in its place. Each pass reads a box's children once at most, however
+ *   many points of the floats walk through it. The spacer is a pseudo-element, not a child, and
+ *   bottom padding moves no child down, so the box's own room never makes it stop counting.
+ * - Why content in lines counts only by overflow. No element's box reaches the foot of a line:
+ *   the line's leading lies below its text. A code block's `code`, which is inline, ends 3px
+ *   above the foot of the block at 12px type, so read from its box the code block would seem
+ *   taller than its content and take end room it grows by. So where the content holds a text
+ *   node of more than white space or an inline-level child, the box has no extent the hook can
+ *   read, and its height is never taken as set by layout.
  *
- * The one case left: a box of bounded height whose content does not overflow it yet, with its
- * last content under a float. It does not count, so that content stays under the float until the
- * box overflows, and the walk goes on past it, so a scroller further out may take room that moves
- * none of that content. Its metrics are those of a box as tall as its content. Only a layout
- * experiment - give it room and see whether its box grows - could tell the two apart, and the
- * hook makes none.
+ * What the reading cannot see is what is left. A bounded box whose content is laid out in lines
+ * counts only once that content overflows it, so where nothing further out scrolls the box - it
+ * is stuck, or the page fills the screen - its last line stays under a float until then. And a
+ * box as tall as its content reads taller where something below its children is not read: a
+ * bottom margin that collapses out of a child's own last child, or an `::after` of the box's
+ * own; such a box would take end room it grows by. No box under a float on any page today is
+ * either, so no row reads one. The rows that read what the reader sees at the end of each
+ * scroller the floats lie over are in `e2e/issues-table.e2e.ts`: the Review margin's column, the
+ * live view's transcript and the Inbox reading pane each scroll their last content clear, the
+ * table's last row scrolls clear, and an issue page scrolled to its end keeps the shell's
+ * Navigation on the screen.
  *
  * A scroller's foot is the lower edge of its box, clipped to the screen, as an offset up from the
  * screen's bottom edge, or 0 where the document scrolls its content. Its clearance is how far
@@ -147,7 +193,7 @@ import { type RefObject, useLayoutEffect } from "react";
  *   `::after` as it marks it, and marks any other scroller `padding`: it takes the room as its
  *   inline bottom padding, the larger of its own and the clearance. Its own is read as it is
  *   marked, and again after a window resize, once the inline value is removed. The document's
- *   scroller, `main` or `body`, always takes the room that way, as padding: a page sized to the
+ *   scroller, `main`, always takes the room that way, as padding: a page sized to the
  *   window reads main's bottom padding as the room it keeps at the foot - the issues table's box
  *   is the window less that padding (`issues-table-layout.ts`) - so a spacer there would lengthen
  *   the document under the box instead, and each scroll to the end and the measure after it would
@@ -373,30 +419,100 @@ interface FoundScroller {
 }
 
 /**
- * The scroller under a float whose upper edge is `hi`, from `hit`, the element at a point of the
- * float (`FOOT_LAYERS` says what that is): the first of `hit` and its ancestors below `body` that
- * scrolls on the block axis, reaches below the float's top edge and overflows with its own end
- * room left out. Else, while `main` carries `data-document-scroll`, the document's: `main` where
- * it holds `hit`, else `body`, with a foot of 0. Else none.
+ * The foot of the content `parent` lays out (`FOOT_LAYERS` says why): the lowest bottom margin
+ * edge of its element children that have a box, and of the children of a `display: contents`
+ * child, read in its place; never above `lowest`. Undefined where that content is laid out in
+ * lines - a text node of more than white space, or an inline-level child - since no element's
+ * box reaches the foot of a line.
  */
-function scrollerUnder(hit: Element, hi: number, screen: number): FoundScroller | undefined {
+function contentFoot(parent: Element, lowest: number): number | undefined {
+  let foot = lowest;
+  for (const node of parent.childNodes) {
+    if (node instanceof Text) {
+      if (node.data.trim() !== "") return undefined;
+    } else if (node instanceof Element) {
+      const { display, marginBottom } = getComputedStyle(node);
+      if (display === "contents") {
+        const inner = contentFoot(node, foot);
+        if (inner === undefined) return undefined;
+        foot = inner;
+      } else if (display.startsWith("inline") || display.startsWith("ruby")) {
+        return undefined;
+      } else if (display !== "none") {
+        const { bottom } = node.getBoundingClientRect();
+        foot = Math.max(foot, bottom + (Number.parseFloat(marginBottom) || 0));
+      }
+    }
+  }
+  return foot;
+}
+
+/**
+ * Whether `box`, a scroll container whose top edge is `top` on the screen and whose computed
+ * style is `computed`, can scroll on the block axis (`FOOT_LAYERS` says why each part holds):
+ * its content overflows it with the hook's own end room left out, or its height is set by layout
+ * rather than by its content. That is, it is taller by more than 1px than its content extent:
+ * from the top of its padding box, as its scroll lays the content out, to the foot of that
+ * content (`contentFoot`), plus its own bottom padding without any room the hook gave it. A box
+ * whose content is laid out in lines has no extent the hook can read, so only an overflow counts.
+ */
+function scrollsOnBlockAxis(box: HTMLElement, computed: CSSStyleDeclaration, top: number): boolean {
+  const held = marks.get(box);
+  if (box.scrollHeight - (held?.room ?? 0) > box.clientHeight + 1) return true;
+  const origin = top + box.clientTop - box.scrollTop;
+  const foot = contentFoot(box, origin + (Number.parseFloat(computed.paddingTop) || 0));
+  if (foot === undefined) return false;
+  const own = held?.way === "padding" ? held.own : Number.parseFloat(computed.paddingBottom) || 0;
+  return box.clientHeight > foot - origin + own + 1;
+}
+
+/**
+ * The scroller under a float whose upper edge is `hi`, from `hit`, the element at a point of the
+ * float (`FOOT_LAYERS` says what that is and why each part holds). The walk goes up from `hit`,
+ * itself included, and stops at the first of these: a box whose `overflow-y` is `auto` or
+ * `scroll`, whose lower edge lies below the float's top edge and which can scroll on the block
+ * axis (`scrollsOnBlockAxis`, read once per pass for each box and held in `blockScrolls`), which
+ * is the scroller; a box that is fixed, or sticky on the block axis, under which no scroller is;
+ * and `main` while it carries `data-document-scroll`, which is the document's scroller, with a
+ * foot of 0. A walk that reaches `body` finds none.
+ */
+function scrollerUnder(
+  hit: Element,
+  hi: number,
+  screen: number,
+  blockScrolls: Map<HTMLElement, boolean>
+): FoundScroller | undefined {
   for (
     let element: Element | null = hit;
     element !== null && element !== document.body && element !== document.documentElement;
     element = element.parentElement
   ) {
     if (!(element instanceof HTMLElement)) continue;
-    const { overflowY } = getComputedStyle(element);
-    if (overflowY !== "auto" && overflowY !== "scroll") continue;
-    const lo = footOffset(element.getBoundingClientRect().bottom, screen);
-    const room = marks.get(element)?.room ?? 0;
-    if (lo < hi && element.scrollHeight - room > element.clientHeight + 1) {
-      return { byDocument: false, lo, scroller: element };
+    const computed = getComputedStyle(element);
+    const { overflowY, position } = computed;
+    if (overflowY === "auto" || overflowY === "scroll") {
+      const { bottom, top } = element.getBoundingClientRect();
+      const lo = footOffset(bottom, screen);
+      if (lo < hi) {
+        let scrolls = blockScrolls.get(element);
+        if (scrolls === undefined) {
+          scrolls = scrollsOnBlockAxis(element, computed, top);
+          blockScrolls.set(element, scrolls);
+        }
+        if (scrolls) return { byDocument: false, lo, scroller: element };
+      }
+    }
+    if (
+      position === "fixed" ||
+      (position === "sticky" && (computed.top !== "auto" || computed.bottom !== "auto"))
+    ) {
+      return undefined;
+    }
+    if (element.id === "main-content" && element.hasAttribute(DOCUMENT_SCROLL_ATTRIBUTE)) {
+      return { byDocument: true, lo: 0, scroller: element };
     }
   }
-  const main = document.getElementById("main-content");
-  if (main === null || !main.hasAttribute(DOCUMENT_SCROLL_ATTRIBUTE)) return undefined;
-  return { byDocument: true, lo: 0, scroller: main.contains(hit) ? main : document.body };
+  return undefined;
 }
 
 /** Takes away the mark of `scroller` and the end room it gave: its attribute, its property and
@@ -459,6 +575,7 @@ function clearScrollers(): void {
   const screen = window.innerHeight;
   const gap = remPixels();
   const found = new Map<HTMLElement, FoundScroller & { readonly floats: Band[] }>();
+  const blockScrolls = new Map<HTMLElement, boolean>();
   for (const { band, left, right } of placedFloats) {
     const walked = new Set<Element>();
     for (const offset of [band.hi - 2, (band.hi + band.lo) / 2, band.lo + 2]) {
@@ -468,7 +585,7 @@ function clearScrollers(): void {
           .find((element) => !placedFloats.some((float) => float.element.contains(element)));
         if (hit === undefined || walked.has(hit)) continue;
         walked.add(hit);
-        const under = scrollerUnder(hit, band.hi, screen);
+        const under = scrollerUnder(hit, band.hi, screen, blockScrolls);
         if (under === undefined) continue;
         const over = found.get(under.scroller) ?? { ...under, floats: [] };
         found.set(under.scroller, over);
