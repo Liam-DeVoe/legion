@@ -340,7 +340,9 @@ func legionAgentSessionHandler(d *listenerDeps, logger *logging.Logger) http.Han
 			ctx, cancel := legionAgentReadContext(r)
 			defer cancel()
 			agent, err := registry.Get(ctx, sessionID)
-			if errors.Is(err, legionagents.ErrNotFound) {
+			// At the edge an agent of another project's issue is answered as one the registry
+			// does not hold (edgeScope.showsAgent).
+			if errors.Is(err, legionagents.ErrNotFound) || (err == nil && !edgeScopeOf(r, nil).showsAgent(agent)) {
 				writeJSONError(w, http.StatusNotFound, "unknown legion agent "+sessionID)
 				return
 			}
@@ -354,6 +356,10 @@ func legionAgentSessionHandler(d *listenerDeps, logger *logging.Logger) http.Han
 			}
 			writeJSON(w, http.StatusOK, answerLegionAgent(d.sessions, agent, answering))
 		case http.MethodPut:
+			if refusal := edgeLegionWriteRefusal(r); refusal != nil {
+				refusal.write(w)
+				return
+			}
 			if refusal := registryWriteBySession(r, logger); refusal != "" {
 				writeJSONError(w, http.StatusForbidden, refusal)
 				return
@@ -410,6 +416,7 @@ func legionAgentRoleHandler(d *listenerDeps) http.HandlerFunc {
 			writeLegionAgentError(w, err)
 			return
 		}
+		agents = edgeScopeOf(r, nil).agents(agents)
 		list, err := answerLegionAgents(ctx, registry, d.sessions, agents)
 		if err != nil {
 			writeLegionAgentError(w, err)
@@ -446,6 +453,7 @@ func legionAgentsHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFu
 				writeLegionAgentError(w, err)
 				return
 			}
+			agents = edgeScopeOf(r, nil).agents(agents)
 			list, err := answerLegionAgents(ctx, registry, d.sessions, agents)
 			if err != nil {
 				writeLegionAgentError(w, err)
@@ -453,6 +461,10 @@ func legionAgentsHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFu
 			}
 			writeJSON(w, http.StatusOK, list)
 		case http.MethodPut:
+			if refusal := edgeLegionWriteRefusal(r); refusal != nil {
+				refusal.write(w)
+				return
+			}
 			if refusal := registryWriteBySession(r, logger); refusal != "" {
 				writeJSONError(w, http.StatusForbidden, refusal)
 				return
@@ -484,13 +496,18 @@ func legionAgentsHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFu
 // legionProjectHandler serves PUT /v1/legion/projects/<legion_project>: the project's answering
 // record, `{"answering":<bool>,"updated_at":"<RFC 3339 UTC>"}`, which the Legion daemon writes at
 // boot and every minute while it answers for the project's stopped agents (legionagents.Project).
-// It answers the record as stored. A caller whose credential names a session is refused 403
-// (registryWriteBySession); a path that is not a Legion project token, a body without answering,
-// or an updated_at that is not an RFC 3339 UTC time is a 400; and neither writes anything.
+// It answers the record as stored. The edge refuses it as it refuses every write of the Legion
+// agent registry (edgeLegionWriteRefusal); a caller whose credential names a session is refused
+// 403 (registryWriteBySession); a path that is not a Legion project token, a body without
+// answering, or an updated_at that is not an RFC 3339 UTC time is a 400; and none writes anything.
 func legionProjectHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPut {
 			writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		if refusal := edgeLegionWriteRefusal(r); refusal != nil {
+			refusal.write(w)
 			return
 		}
 		if refusal := registryWriteBySession(r, logger); refusal != "" {

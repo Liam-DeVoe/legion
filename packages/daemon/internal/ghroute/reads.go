@@ -23,8 +23,8 @@ import (
 // `git show <tag>:leak-check/public_leak_check.py | sha256sum` in the shared check's own
 // repository.
 const (
-	ReadsProvenCheckTag    = "leak-check-v21"
-	ReadsProvenCheckSHA256 = "5e5e0e00e4932ac307b79f53ac43e7cb156ed9dd38f01780022e69c18cce6354"
+	ReadsProvenCheckTag    = "leak-check-v31"
+	ReadsProvenCheckSHA256 = "b1dc67a3bfc1bebf6347f06c9197a27a72b7c8e593bd370ce571c2eafde3fe7c"
 )
 
 // readLeaves are the leaves that send GitHub no request that writes, by the canonical path the

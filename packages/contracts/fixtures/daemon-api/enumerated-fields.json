@@ -561,27 +561,27 @@
     "values": [
       {
         "value": "architect",
-        "since": 211
+        "since": 228
       },
       {
         "value": "implementer",
-        "since": 211
+        "since": 228
       },
       {
         "value": "merger",
-        "since": 211
+        "since": 228
       },
       {
         "value": "planner",
-        "since": 211
+        "since": 228
       },
       {
         "value": "reviewer",
-        "since": 211
+        "since": 228
       },
       {
         "value": "tester",
-        "since": 211
+        "since": 228
       }
     ]
   },
@@ -632,6 +632,10 @@
       {
         "value": "boot",
         "since": 46
+      },
+      {
+        "value": "caches",
+        "since": 213
       },
       {
         "value": "configuration",
