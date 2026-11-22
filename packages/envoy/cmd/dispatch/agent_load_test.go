@@ -294,16 +294,22 @@ func (r *loadRig) script(words string, spec *loadSpecOf) {
 }
 
 // loadPeaks is the most the server's live heap outside the rooms and the agent's total Go memory
-// reached while runs worked.
+// reached while runs worked, and how many reads of /metrics, one every 100 ms, work made of them.
 type loadPeaks struct {
 	serverOutside, agentTotal int64
+	reads                     int
 }
 
 // work starts a Deep run at its limits on each of specs, approves each plan as it waits, and
 // fails the test unless each run ends done. While they work it reads the server's live heap outside
-// the rooms every 2 s and the agent's total Go memory, as its renews carry it, every 500 ms, and
-// once they have ended it reads the agent's for two renews more, since a renew carries it at most
-// every 10 s and the runtime's total does not fall; it answers the most of each.
+// the rooms two ways: every 2 s as a collection it forces finds it (heapAndRooms), and every 100 ms
+// as /metrics shows it, the live heap as of the server's last collection, which every collection
+// of its own updates, less what the rooms held in the latest forced collection's profile. A
+// roster read's rows live less than 2 s, so the forced collections alone can miss them. Each read
+// of /metrics also carries the agent's total Go memory as its renews carry it. Once the runs have
+// ended it reads the agent's every 500 ms for two renews more, since a renew carries it at most
+// every 10 s and the runtime's total does not fall. It answers the most of each and how many reads
+// of /metrics it made while the runs worked.
 func (r *loadRig) work(t *testing.T, label string, specs []loadSpecOf) loadPeaks {
 	t.Helper()
 	starts := make([]agentRun, len(specs))
@@ -314,20 +320,30 @@ func (r *loadRig) work(t *testing.T, label string, specs []loadSpecOf) loadPeaks
 	}
 	ids := r.server.begin(t, starts...)
 	var peaks loadPeaks
-	sampleAgent := func() {
-		peaks.agentTotal = max(peaks.agentTotal, r.server.scrape(t)[`envoy_dispatch_process_memory_total_bytes{process="agent"}`])
+	// rooms is what the rooms held in the latest forced collection's profile.
+	var rooms int64
+	var forcedAt, readAt time.Time
+	force := func() {
+		var live int64
+		live, rooms = r.heapAndRooms(t)
+		peaks.serverOutside = max(peaks.serverOutside, live-rooms)
+		forcedAt = time.Now()
 	}
+	force()
 	approved := map[string]bool{}
-	var heapAt, agentAt time.Time
 	deadline := time.Now().Add(15 * time.Minute)
 	for {
-		if time.Since(heapAt) >= 2*time.Second {
-			peaks.serverOutside = max(peaks.serverOutside, r.heapOutsideRooms(t))
-			heapAt = time.Now()
+		// The read of /metrics comes before a forced collection, which replaces the figure of the
+		// server's last collection of its own.
+		if time.Since(readAt) >= 100*time.Millisecond {
+			readAt = time.Now()
+			figures := r.server.scrape(t)
+			peaks.serverOutside = max(peaks.serverOutside, figures[`envoy_dispatch_process_heap_live_bytes{process="server"}`]-rooms)
+			peaks.agentTotal = max(peaks.agentTotal, figures[`envoy_dispatch_process_memory_total_bytes{process="agent"}`])
+			peaks.reads++
 		}
-		if time.Since(agentAt) >= 500*time.Millisecond {
-			sampleAgent()
-			agentAt = time.Now()
+		if time.Since(forcedAt) >= 2*time.Second {
+			force()
 		}
 		ended := 0
 		for id, row := range r.server.runRows(t, ids) {
@@ -349,23 +365,24 @@ func (r *loadRig) work(t *testing.T, label string, specs []loadSpecOf) loadPeaks
 		if time.Now().After(deadline) {
 			t.Fatalf("%s: %d of %d runs ended within 15 minutes:\n%s", label, ended, len(ids), r.server.Output.String())
 		}
-		time.Sleep(50 * time.Millisecond)
+		// The loop waits 50 ms at most, and no longer than until the next read of /metrics is due.
+		time.Sleep(min(50*time.Millisecond, time.Until(readAt.Add(100*time.Millisecond))))
 	}
 	for renewed := time.Now(); time.Since(renewed) < 25*time.Second; time.Sleep(500 * time.Millisecond) {
-		sampleAgent()
+		peaks.agentTotal = max(peaks.agentTotal, r.server.scrape(t)[`envoy_dispatch_process_memory_total_bytes{process="agent"}`])
 	}
 	return peaks
 }
 
-// heapOutsideRooms is the server's live heap outside the document rooms as one collection finds
-// it: its profiler's heap profile makes it collect (gc=1, takeC28Set), /metrics shows the heap that
-// collection found live, and what that profile's samples with a frame of the rooms hold is taken
-// from it.
-func (r *loadRig) heapOutsideRooms(t *testing.T) int64 {
+// heapAndRooms is the server's live heap as one collection finds it and the part of it the
+// document rooms hold: its profiler's heap profile makes it collect (gc=1, takeC28Set), /metrics
+// shows the heap that collection found live, and the rooms' part is what that profile's samples
+// with a frame of the rooms hold.
+func (r *loadRig) heapAndRooms(t *testing.T) (live, rooms int64) {
 	t.Helper()
 	set := takeC28Set(t, r.profiler)
-	live := r.server.scrape(t)[`envoy_dispatch_process_heap_live_bytes{process="server"}`]
-	return live - set.inuse(t, loadRooms, nil)
+	live = r.server.scrape(t)[`envoy_dispatch_process_heap_live_bytes{process="server"}`]
+	return live, set.inuse(t, loadRooms, nil)
 }
 
 // loadRest is the server at rest between rounds of runs: its live heap outside the rooms, the heap
@@ -469,8 +486,8 @@ func TestTheServerHeapUnderEightDeepRuns(t *testing.T) {
 	before := rig.rest(t)
 	eight := rig.work(t, "eight Deep runs", rig.specs)
 	after := rig.rest(t)
-	t.Logf("the server's live heap outside the rooms: %d MiB at rest before the 8 runs, %d MiB at most while they worked (%+d MiB), %d MiB at rest after them; the agent's total Go memory at most %d MiB with its %d slots full, its GOMEMLIMIT %d MiB",
-		before.outside>>20, eight.serverOutside>>20, (eight.serverOutside-before.outside)>>20, after.outside>>20, eight.agentTotal>>20, slots, rig.limits.AgentLimit>>20)
+	t.Logf("the server's live heap outside the rooms: %d MiB at rest before the 8 runs, %d MiB at most while they worked (%+d MiB; %d reads of /metrics every 100 ms beside a forced collection every 2 s), %d MiB at rest after them; the agent's total Go memory at most %d MiB with its %d slots full, its GOMEMLIMIT %d MiB",
+		before.outside>>20, eight.serverOutside>>20, (eight.serverOutside-before.outside)>>20, eight.reads, after.outside>>20, eight.agentTotal>>20, slots, rig.limits.AgentLimit>>20)
 	t.Logf("once the rooms had closed the database owed the server %+v before the 8 runs and %+v after them; the caches held %v bytes before and %v bytes after; the functions whose flat heap outside the rooms grew most: %v",
 		before.owed, after.owed, before.caches, after.caches, grewMost(t, before.set, after.set))
 	if rise := eight.serverOutside - before.outside; rise >= loadServerRise {
