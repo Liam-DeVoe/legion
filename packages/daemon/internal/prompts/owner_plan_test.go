@@ -192,7 +192,7 @@ func TestTheRootsCatchUpStatesItsAcceptanceOnce(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	text := foldWhitespace(composedText(t, composer, claim.RoleArchitect, true))
-	stated := "No worker runs there and the notice that moved it there may never have reached you, so read each one's evidence, then `sign_off` it or send it back with `request_backward_move`. Sign off a parent only on a head that the step before your acceptance passed and that carries the merges of every child its criteria need; otherwise run its last round (`skill://legion-architect/references/acceptance.md`, \"The last round\")."
+	stated := "No worker holds that phase and the notice that moved it there may never have reached you, so read each one's evidence, then `sign_off` it or send it back with `request_backward_move`. Sign off a parent only on a head that the step before your acceptance passed and that carries the merges of every child its criteria need; otherwise run its last round (`skill://legion-architect/references/acceptance.md`, \"The last round\")."
 	if !strings.Contains(text, stated) {
 		t.Errorf("the composed root architect prompt omits %q", stated)
 	}
@@ -503,11 +503,12 @@ func TestEachStepIsToldTheStepsAroundItInAnyOrder(t *testing.T) {
 			append(slices.Clone(planRead),
 				"After your approval, a later step of your task can send the work back, and the new head then comes to your review again",
 				"the daemon asks you to approve that head only where the merge lands in `accepting`, `retro` or `merging`",
-				"so the merger merges the head you approved last, or the head of a merge forward that landed after it"),
+				"Retro commits nothing, so no step of Legion's moves the head after your approval but those two; nothing in Legion holds the head that merges to the one you approved"),
 			append(slices.Clone(planRetired),
 				"After approval, no implementation or further review change may happen",
 				"the head changes only when a later step of your task sends the work back",
-				"nothing of this tree pushes above it"),
+				"nothing of this tree pushes above it",
+				"so the merger merges the head you approved last"),
 		},
 		{
 			"implementer.md",
@@ -787,6 +788,88 @@ func TestThePartsSayWhatEndsAPhaseAndWhatTheDaemonReads(t *testing.T) {
 	} {
 		t.Run(tc.part, func(t *testing.T) {
 			holdsAndRetires(t, "go/"+tc.part, goPart(t, tc.part), tc.want, tc.gone)
+		})
+	}
+}
+
+// The fresh readers of the newest head showed more sentences false, and each says now what the
+// daemon does. In `accepting` no worker holds the phase (RoleFor gives the architect), though a
+// merge forward asks the implementer and the reviewer for work there. The architect's move back is
+// refused outside `accepting` (backwardRefusal), so it asks the role that works an ancestor's phase.
+// An architect's move back counts a conflict round where the head conflicts with its base. A
+// tester's fail goes to the step its `return_to` names. Besides a pending report's `wake_at`, the
+// bound and the retry of an unreported look start a look (check.go). A turn's working copy can
+// hold another role's edits, a tester may build from a copy outside the workspace, a session is
+// kept past the close for a production check, the legion tool has operations beside the three, a
+// root holds its slot only through its wait on a person, and the merge of a root whose tree runs,
+// or of a child with issues beneath it in the workflow, does not write `done` at once. Each part
+// is read alone, by its name. This shows the text is loaded, never that an agent follows it.
+func TestTheSentencesTheReadersOfTheNewestHeadShowedFalseSayWhatTheDaemonDoes(t *testing.T) {
+	const resumed = "holds edits made before this turn, your own resumed ones or another role's"
+	const onlyYours = "holds only your own resumed edits"
+	conflict := "counting a review round, or a conflict round where the record holds the head conflicting with its base"
+	for _, tc := range []struct {
+		part       string
+		read       func(*testing.T) string
+		want, gone []string
+	}{
+		{
+			"go/architect-common.md", func(t *testing.T) string { return goPart(t, "architect-common.md") },
+			[]string{
+				"where no worker holds the phase and the acceptance is yours",
+				"ask the role that works the ancestor's phase, the implementer in `retro` or the merger in `merging`, to take the ancestor back with `request_backward_move`",
+			},
+			[]string{"where no worker runs", "; take the ancestor back with `request_backward_move`"},
+		},
+		{
+			"go/architect-root.md", func(t *testing.T) string { return goPart(t, "architect-root.md") },
+			[]string{conflict, "No worker holds that phase"}, []string{"No worker runs there"},
+		},
+		{
+			"go/architect.md", func(t *testing.T) string { return goPart(t, "architect.md") },
+			[]string{conflict, "No worker holds that phase"}, []string{"No worker runs there"},
+		},
+		{
+			"go/tester.md", func(t *testing.T) string { return goPart(t, "tester.md") },
+			[]string{
+				"A `pending` report on a look before the last also names `wake_at`",
+				"Besides it, only the bound's last look and the retry of a look nobody reported start one",
+			},
+			[]string{"Nothing else starts one."},
+		},
+		{"go/worker-common.md", func(t *testing.T) string { return goPart(t, "worker-common.md") }, []string{resumed}, []string{onlyYours}},
+		{"roles/implementer.md", func(t *testing.T) string { return rolePart(t, "implementer.md") }, []string{resumed}, []string{onlyYours}},
+		{"roles/planner.md", func(t *testing.T) string { return rolePart(t, "planner.md") }, []string{resumed}, []string{onlyYours}},
+		{
+			"roles/tester.md", func(t *testing.T) string { return rolePart(t, "tester.md") },
+			[]string{resumed, "the daemon sends the issue back to the first implementation step before yours, or to the earlier step your completion's `return_to` names"},
+			[]string{onlyYours, "the daemon sends the issue back to the implementer."},
+		},
+		{
+			"roles/mechanics/headless.md", func(t *testing.T) string { return rolePart(t, "mechanics/headless.md") },
+			[]string{
+				"`LEGION_WORKSPACE` is the only workspace you change, and a copy outside it that a tester builds from between assignments changes nothing there",
+				"Your session is kept until your issue closes, and past the close for a production check that comes to it",
+				"`request_backward_move`, and the operations this prompt names for one case, such as `ready_for_update`",
+			},
+			[]string{"is the only place you work", "and `request_backward_move` — and nothing of yours runs"},
+		},
+		{
+			"roles/architect.md", func(t *testing.T) string { return rolePart(t, "architect.md") },
+			[]string{"where no worker holds the phase and the acceptance is yours"}, []string{"where no worker runs"},
+		},
+		{
+			"roles/architect-root.md", func(t *testing.T) string { return rolePart(t, "architect-root.md") },
+			[]string{
+				"Your root holds its admission slot throughout that wait",
+				"except that a root whose tree still runs, and a child with an issue beneath it still in the workflow, first wait in `merging` for those issues",
+				"the production check, where the project opens one, follows in the tester's own session",
+			},
+			[]string{"and the tester's production check follows in its own session"},
+		},
+	} {
+		t.Run(tc.part, func(t *testing.T) {
+			holdsAndRetires(t, tc.part, tc.read(t), tc.want, tc.gone)
 		})
 	}
 }

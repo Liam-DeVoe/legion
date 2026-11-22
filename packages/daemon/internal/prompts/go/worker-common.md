@@ -30,8 +30,8 @@ Read a piped command's status with `${PIPESTATUS[0]}`, or with `set -o pipefail`
 Make your own scratch with `mktemp -d` and delete only the paths you made, each by its exact path. Never delete by a glob in a shared directory: every role of this issue writes into the same `$TMPDIR` on the issue's volume, so a sweep like `rm -rf "$TMPDIR"/tmp.*` deletes directories another role has open.
 
 Before your turn's first commit, run `jj -R "$LEGION_WORKSPACE" log -r @ --no-graph -T 'empty'`.
-If it prints `true`, run `jj -R "$LEGION_WORKSPACE" new @-`; if it prints `false`, `@` holds only
-your own resumed edits, so run `jj -R "$LEGION_WORKSPACE" new`. Never `jj describe` or `jj split`
+If it prints `true`, run `jj -R "$LEGION_WORKSPACE" new @-`; if it prints `false`, `@` holds edits
+made before this turn, your own resumed ones or another role's, so run `jj -R "$LEGION_WORKSPACE" new`. Never `jj describe` or `jj split`
 the working-copy commit you found at the turn's start: it can hold another role's edits, which a
 `jj describe` would put under your trailers. Every role of an issue shares the workspace, so every
 commit you push must be one you made in this turn.

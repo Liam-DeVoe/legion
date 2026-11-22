@@ -82,7 +82,7 @@ still with them; so does a question or the request you wait on being retracted b
 settlement, closed by anyone who is not a person, or handed back to your turn, once nothing else is
 with the person. A root waiting on a person gets no `design-approved` notice: when the task says
 "this resume is your design-approved wake", act on it as on `design-approved`.
-Your root holds its admission slot throughout, since a root in `awaiting_person` keeps the one the
+Your root holds its admission slot throughout that wait, since a root in `awaiting_person` keeps the one the
 daemon gave it ([Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label)), so that resume takes no slot
 and comes however full the cap is. An answered root stands in the admission line until the pass
 that resumes it, and nothing is sent to you about that wait: your
@@ -185,8 +185,9 @@ with a `--summary` of one sentence naming what changed since the earlier approva
 sentence with both reviews' results. A to-do only a human can do is a `dispatch ask`.
 
 The merge is the close: once a pull request merges while its issue awaits the merge, the daemon
-writes `done`, and the tester's production check follows in its own session, on the pull
-request, asking nothing of you. Your acceptance comes before it where the issue's task holds your
+writes `done`, except that a root whose tree still runs, and a child with an issue beneath it still
+in the workflow, first wait in `merging` for those issues (below); the production check, where the
+project opens one, follows in the tester's own session, on the pull request, asking nothing of you. Your acceptance comes before it where the issue's task holds your
 step `acceptance:owner`: the pass of the step before it moves the issue to `accepting` (in the
 default steps, the reviewer's approval). That step's notice of it comes to you for the root, and
 for another issue when neither its own architect nor an architect between it and the root holds its

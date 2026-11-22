@@ -125,7 +125,7 @@ which the daemon's `holdsRole` decides, the child's notices come to you
 | Worker question or failure | Handle it or message the worker with `envoy_publish` to its role token. |
 
 Where this child's task holds your step `acceptance:owner`, the pass of the step before it moves
-the child to `accepting` (in the default steps, the reviewer's approval), where no worker runs and
+the child to `accepting` (in the default steps, the reviewer's approval), where no worker holds the phase and
 the acceptance is yours (`skill://legion-architect`, section 6): read
 `dispatch results --issue <issue>` at the head that step passed, the tester's handoff where a
 tester step comes before yours, and the reviewer's approval of the head by SHA where a reviewer
