@@ -61,6 +61,16 @@ func rolePart(t *testing.T, name string) string {
 	return string(body)
 }
 
+// goPart is one embedded daemon prompt part, by its path under go/.
+func goPart(t *testing.T, name string) string {
+	t.Helper()
+	body, err := goParts.ReadFile("go/" + name)
+	if err != nil {
+		t.Fatalf("read the daemon part go/%s: %v", name, err)
+	}
+	return string(body)
+}
+
 func TestCoresAndTheInteractiveFragmentCarryNoHeadlessMechanics(t *testing.T) {
 	for _, file := range modeNeutral {
 		text := rolePart(t, file)

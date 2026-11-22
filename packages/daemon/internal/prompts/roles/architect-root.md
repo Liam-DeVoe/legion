@@ -191,9 +191,9 @@ step `acceptance:owner`: the pass of the step before it moves the issue to `acce
 default steps, the reviewer's approval). That step's notice of it comes to you for the root, and
 for another issue when neither its own architect nor an architect between it and the root holds its
 role. You then read `dispatch results --issue <issue>` at the head that step passed, the tester's
-handoff where the task has a tester step, and the reviewer's approval of the head by SHA where it
-has a reviewer step (the daemon refuses a sign-off while an issue beneath it is still in the
-workflow, `SIGNOFF_CHILD_IN_WORKFLOW`; a parent's acceptance waits for its last round,
+handoff where a tester step comes before yours, and the reviewer's approval of the head by SHA
+where a reviewer step comes before yours (the daemon refuses a sign-off while an issue beneath it
+is still in the workflow, `SIGNOFF_CHILD_IN_WORKFLOW`; a parent's acceptance waits for its last round,
 `skill://legion-architect`, section 4). A task with no `acceptance:owner` step has no `accepting`:
 its last step passing starts the retro, or holds a parent before its retro.
 A parent whose plan has no step `acceptance:owner` gets no reading of its finished whole from

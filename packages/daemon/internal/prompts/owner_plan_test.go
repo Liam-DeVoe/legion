@@ -350,3 +350,54 @@ func TestTheArchitectRolePartsNameOnlyTheStepsAnIssuesTaskRuns(t *testing.T) {
 		}
 	}
 }
+
+// holdsAndRetires fails t for each phrase of want that the folded text of one part omits and for
+// each phrase of gone that it still holds, naming the part.
+func holdsAndRetires(t *testing.T, part, text string, want, gone []string) {
+	t.Helper()
+	text = foldWhitespace(text)
+	for _, phrase := range want {
+		if !strings.Contains(text, phrase) {
+			t.Errorf("%s omits %q", part, phrase)
+		}
+	}
+	for _, phrase := range gone {
+		if strings.Contains(text, phrase) {
+			t.Errorf("%s still says %q", part, phrase)
+		}
+	}
+}
+
+// An owner names the steps of its task in the order they run, and the one rule of that order is
+// that the implementer's step stands before each step that reads its pull request
+// (plan.Supported). The owner's acceptance reads a tester's handoff and a reviewer's approval only
+// where that step stands before the acceptance, since a step after it has written nothing yet.
+// Each part is read alone, never in the composition, so one part's words cannot stand for
+// another's. This shows the text is loaded, never that an owner follows it.
+func TestTheAgentsAreToldNoOrder(t *testing.T) {
+	evidence := "the tester's handoff where a tester step comes before yours, and the reviewer's approval of the head by SHA where a reviewer step comes before yours"
+	retiredEvidence := "the tester's handoff where the task has a tester step"
+	for _, tc := range []struct {
+		part       string
+		read       func(*testing.T) string
+		want, gone []string
+	}{
+		{
+			"go/architect-common.md", func(t *testing.T) string { return goPart(t, "architect-common.md") },
+			[]string{"Name the steps of a task in the order they run.", evidence},
+			[]string{"in that order", retiredEvidence},
+		},
+		{
+			"roles/architect.md", func(t *testing.T) string { return rolePart(t, "architect.md") },
+			[]string{evidence}, []string{retiredEvidence},
+		},
+		{
+			"roles/architect-root.md", func(t *testing.T) string { return rolePart(t, "architect-root.md") },
+			[]string{evidence}, []string{retiredEvidence},
+		},
+	} {
+		t.Run(tc.part, func(t *testing.T) {
+			holdsAndRetires(t, tc.part, tc.read(t), tc.want, tc.gone)
+		})
+	}
+}
