@@ -883,14 +883,10 @@ func (s *PgPeopleStore) EndSubject(ctx context.Context, email, subject, refreshT
 // endSubjectSQL is EndSubject's write of $1's row for each auth.EndMode. EndForget forgets the
 // refresh token and confirmation, as on main. EndHold does that and records a hold at the
 // database's clock_timestamp(), which is later than the signed_in_at of every sign-in committed
-// before it (a sign-in's now() is its transaction's start). EndKeep keeps the refresh token, and
-// sets the confirmation and signed_out_at to one clock_timestamp(), the end's time: Google answered
-// for the account and only the rule's list refused it, so the 24-hour rule measures from that
-// answer, and the row reads signed out.
+// before it (a sign-in's now() is its transaction's start).
 var endSubjectSQL = map[auth.EndMode]string{
 	auth.EndForget: `update people set refresh_token = null, confirmed_at = null where email = $1`,
 	auth.EndHold:   `update people set refresh_token = null, confirmed_at = null, held_since = clock_timestamp() where email = $1`,
-	auth.EndKeep:   `update people set confirmed_at = ended.at, signed_out_at = ended.at from (select clock_timestamp() as at) as ended where email = $1`,
 }
 
 // ClaimOverdueConfirmation stamps confirm_tried_at = clock_timestamp() on one row that has a

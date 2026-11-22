@@ -46,12 +46,12 @@ func databaseNow(t *testing.T, database *Store) time.Time {
 
 // TestHoldTriggerHoldsNobodyElse (c-trigger): only an end in EndHold records a hold. A sign-out (End,
 // KeepAfterSignOut, ForgetAfterSignOut), the boot's retirement of a plain-text refresh token, the
-// end of a row with no recorded Google account (EndForget, as Membership ends it), an EndKeep, and
-// an EndHold of a refresh read before the same account signed in again, which the guard refuses,
-// each leave held_since null and the row not held.
+// end of a row with no recorded Google account (EndForget, as Membership ends it), and an EndHold
+// of a refresh read before the same account signed in again, which the guard refuses, each leave
+// held_since null and the row not held.
 //
-// Control: write held_since on every end (endSubjectSQL's EndForget and EndKeep set it too); the
-// test fails naming the row with no recorded Google account and the kept row.
+// Control: write held_since on every end (endSubjectSQL's EndForget sets it too); the test fails
+// naming the row with no recorded Google account.
 func TestHoldTriggerHoldsNobodyElse(t *testing.T) {
 	ctx := context.Background()
 	database := migratedEmptyStore(t)
@@ -110,12 +110,6 @@ func TestHoldTriggerHoldsNobodyElse(t *testing.T) {
 	}
 	notHeld("the row with no recorded Google account", "no-account@example.com")
 
-	dana := signedIn("dana@outside.example", "g-dana", "refresh-dana", model.MemberRestricted)
-	if ended, err := people.EndSubject(ctx, "dana@outside.example", dana.Subject, dana.RefreshToken, auth.EndKeep); err != nil || !ended {
-		t.Fatalf("dana's EndKeep: ended %t, %v; want true", ended, err)
-	}
-	notHeld("the kept row (dana's list refusal)", "dana@outside.example")
-
 	stale := signedIn("ada@example.com", "g-ada", "refresh-1", model.MemberFull)
 	signedIn("ada@example.com", "g-ada", "refresh-2", model.MemberFull)
 	if ended, err := people.EndSubject(ctx, "ada@example.com", stale.Subject, stale.RefreshToken, auth.EndHold); err != nil || ended {
@@ -136,53 +130,6 @@ func TestHoldTriggerHoldsNobodyElse(t *testing.T) {
 	}
 	if membership, _, err := people.Membership(ctx, "leaver@example.com"); err != nil || !membership.Held {
 		t.Errorf("after EndHold the leaver's Membership = %+v, %v; want held", membership, err)
-	}
-}
-
-// An EndKeep ends the sessions and keeps the refresh token, and sets confirmed_at and signed_out_at
-// to the end's time, one clock_timestamp() of the end's transaction; the row reads signed out and
-// not held. An EndKeep whose guard misses writes nothing.
-func TestPgPeopleStoreEndKeepKeepsTheToken(t *testing.T) {
-	ctx := context.Background()
-	database := migratedEmptyStore(t)
-	people := NewPgPeopleStore(database.Pool, testSigningKey, nil)
-	sessions := NewPgSessionStore(database.Pool)
-	const email = "dana@outside.example"
-	if err := people.SignInSubject(ctx, email, "g-dana", "refresh-dana", "", model.MemberRestricted); err != nil {
-		t.Fatal(err)
-	}
-	generation, err := sessions.EnsureSession(ctx, email)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := database.Pool.Exec(ctx, `update people set confirmed_at = now() - interval '2 hours' where email = $1`, email); err != nil {
-		t.Fatal(err)
-	}
-	if ended, err := people.EndSubject(ctx, email, "g-dana", "refresh-other", auth.EndKeep); err != nil || ended {
-		t.Fatalf("an EndKeep naming another refresh token: ended %t, %v; want false", ended, err)
-	}
-	if row := readHoldRow(t, database, email); row.signedOutAt != nil {
-		t.Fatalf("an EndKeep whose guard missed set signed_out_at %s", row.signedOutAt)
-	}
-	before := databaseNow(t, database)
-	if ended, err := people.EndSubject(ctx, email, "g-dana", "refresh-dana", auth.EndKeep); err != nil || !ended {
-		t.Fatalf("EndKeep: ended %t, %v; want true", ended, err)
-	}
-	after := databaseNow(t, database)
-	row := readHoldRow(t, database, email)
-	if row.refreshToken == nil || row.heldSince != nil {
-		t.Fatalf("after EndKeep the row = %+v, want its refresh token kept and no hold", row)
-	}
-	if row.confirmedAt == nil || row.signedOutAt == nil || !row.confirmedAt.Equal(*row.signedOutAt) ||
-		row.confirmedAt.Before(before) || row.confirmedAt.After(after) {
-		t.Fatalf("after EndKeep confirmed_at = %v and signed_out_at = %v, want both the end's time, between %s and %s", row.confirmedAt, row.signedOutAt, before, after)
-	}
-	membership, _, err := people.Membership(ctx, email)
-	if err != nil || membership.RefreshToken != "refresh-dana" || !membership.SignedOut || membership.Held || !confirmedJustNow(membership) {
-		t.Fatalf("after EndKeep Membership = %+v, %v; want refresh-dana kept, signed out, not held, confirmed just now", membership, err)
-	}
-	if got, _ := sessionGeneration(t, sessions, email); got != generation+1 {
-		t.Fatalf("EndKeep left the session generation at %d, want %d", got, generation+1)
 	}
 }
 

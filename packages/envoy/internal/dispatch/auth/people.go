@@ -22,10 +22,6 @@ const (
 	EndForget EndMode = iota
 	// EndHold does all that EndForget does and records a hold: held_since = clock_timestamp().
 	EndHold
-	// EndKeep keeps the refresh token, records the confirmation (Google answered for the
-	// account; only the rule's list refused it) and marks the row signed out:
-	// confirmed_at = clock_timestamp(), signed_out_at = clock_timestamp().
-	EndKeep
 )
 
 // PersonMembership is what Dispatch holds to confirm that a person signed in through the sign-in
@@ -139,7 +135,7 @@ type PeopleStore interface {
 	// EndSubject ends email's sign-in only while its row still records subject (an
 	// empty subject: records none) and still holds refreshToken (an empty one: holds none), the
 	// refresh token the failed confirmation read. In one transaction it advances email's session
-	// generation and does what mode says (EndForget, EndHold or EndKeep), and ended reports that it
+	// generation and does what mode says (EndForget or EndHold), and ended reports that it
 	// did; a row another Google account has signed in to since, or the same account again with a
 	// new refresh token, is left as it is, so a failed refresh that began before a sign-in never
 	// ends that sign-in's sessions.
