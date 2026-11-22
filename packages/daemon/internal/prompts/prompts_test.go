@@ -1148,8 +1148,8 @@ func TestTheProductionCheckRuleHoldsInEveryPromptPart(t *testing.T) {
 // says how an issue with no pull request closes. A step worker's prompt holds under every plan the
 // release takes, a task of the tester alone among them, which has no pull request: each sentence in
 // retired said every task had one, and no composed step worker prompt still says it, while each
-// worker named in closes says how such an issue closes. This shows the text is loaded, never that
-// an agent follows it.
+// worker named in noPullRequest says what it does on an issue with none. This shows the text is
+// loaded, never that an agent follows it.
 func TestTheOwnersPromptNamesItsStepsAndNoStepWorkerAssumesAPullRequest(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
@@ -1169,9 +1169,14 @@ func TestTheOwnersPromptNamesItsStepsAndNoStepWorkerAssumesAPullRequest(t *testi
 		"the issue's close hands this session the check task",
 		"the daemon sends the issue back to the implementer",
 		"the architect where it has the step `acceptance:owner`, and the retro",
+		"A `verdict` is the tester's alone",
+		"and the implementer opens every Legion pull request",
+		"nothing of this tree pushes above it",
+		"the architect's acceptance is the gate, where its task has the step `acceptance:owner`",
 	}
-	closes := map[claim.Role]string{
-		claim.RoleTester: "An issue with no pull request closes when its retro ends",
+	noPullRequest := map[claim.Role]string{
+		claim.RoleTester:   "An issue with no pull request closes when its retro ends",
+		claim.RoleReviewer: "Where the issue has no pull request, no review on GitHub can exist to decide your step",
 	}
 	for _, role := range []claim.Role{claim.RolePlanner, claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer, claim.Role("acceptance")} {
 		text := foldWhitespace(composedText(t, composer, role, false))
@@ -1180,7 +1185,7 @@ func TestTheOwnersPromptNamesItsStepsAndNoStepWorkerAssumesAPullRequest(t *testi
 				t.Errorf("the composed %s prompt still says %q", role, phrase)
 			}
 		}
-		if want, ok := closes[role]; ok && !strings.Contains(text, want) {
+		if want, ok := noPullRequest[role]; ok && !strings.Contains(text, want) {
 			t.Errorf("the composed %s prompt omits %q", role, want)
 		}
 	}
