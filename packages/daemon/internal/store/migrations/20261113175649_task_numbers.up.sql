@@ -244,8 +244,9 @@
 -- 0, and rewrites no kind list,
 -- and 20261120055717_dispatch_issue_value_sequences adds seven columns of dispatch_issues, an
 -- index on dispatch_issues.parent and the table dispatch_issue_refills, and rewrites no kind list.
--- The release before this one, contract 205, carries all nineteen, so the rollback to it runs
--- this block alone and leaves the nineteen standing. A rollback to contract 202, the release
+-- The release before this one, contract 213, carries all nineteen (contract 205's schema, which
+-- 213 left as it was), so the rollback to it runs this block alone and leaves the nineteen
+-- standing. A rollback to contract 202, the release
 -- before 20261120012547_set_back_observed_seq, runs this block and then that migration's own
 -- statement, the last paragraph of its header (docs/kubernetes.md, "Rolling back the release that
 -- lets the owning architect's status stand"), which takes observedSeq off each set-back of the

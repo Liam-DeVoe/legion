@@ -3361,7 +3361,7 @@ A pending task's `take_told` names each of the claim's records whose `toldBy` is
 It drops the push path's three marks on a pending task, which a task the worker takes has no use for:
 `pending_task_deliveries.delivered_at`, `marked_by` and `prompted`.
 
-To roll this release back to contract 205, the release just before it, stop the daemon and run the twenty-two statements below, which leave the store at the earlier release's schema and at that release's own version, 20261120055717:
+To roll this release back to contract 213, the release just before it (whose store schema is contract 205's), stop the daemon and run the twenty-two statements below, which leave the store at the earlier release's schema and at that release's own version, 20261120055717:
 every database this release migrated records 20261120055717_dispatch_issue_value_sequences above this migration's own 20261113175649, so the version the store reports is that release's before the block and after it, and the block deletes no row but this migration's.
 
 ```sh
@@ -3396,7 +3396,7 @@ SQL
 It prints `BEGIN`, three `ALTER TABLE`s, `UPDATE <n>` for the supervise rows whose payload carried the key, `UPDATE <m>` for the merge-forward rows whose payload carried either of its two keys, `UPDATE <f>` for the claims whose failure cause it rewrote, `UPDATE <p>` for those whose pending cause it rewrote, fourteen more `ALTER TABLE`s, `DELETE 1` and `COMMIT`;
 a rerun prints a `NOTICE` for each of the seventeen columns it finds as it means to leave them, the same `ALTER TABLE`s, `UPDATE 0` four times, `DELETE 0` and `COMMIT`, and changes nothing.
 The three `add column`s come first because the earlier release cannot read the claims table without them:
-its claim read names `d.delivered_at`, `d.marked_by` and `d.prompted` (`claimSelect` in `internal/store/claims.go` at contract 205), so every claim read fails and its supervisor loads nothing, and its delivery write names all three.
+its claim read names `d.delivered_at`, `d.marked_by` and `d.prompted` (`claimSelect` in `internal/store/claims.go` at contract 213), so every claim read fails and its supervisor loads nothing, and its delivery write names all three.
 They come back at the defaults their own migrations gave them, which that release reads as a task it has queued and not yet sent:
 it sends an unconfirmed pending task at its claim's next ready, as it sends any task it queued itself, and reads a confirmed one as a turn under way.
 The first `update` takes `origin` back out of every supervise row of the outbox, as the phase entry's block takes out `entry` and `resendEntry`:
