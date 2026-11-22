@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/textversions"
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
 
@@ -218,6 +219,13 @@ type StoreReport struct {
 	// census command from docs' reader of the decisions documents' sections, nil where no caller
 	// read it. It refuses nothing.
 	Decisions *DecisionsCensus
+	// KeywordCutFirstBodies is how many comment.created versions of the keyword table keep their
+	// event's cut text although revision 1 of the comment's blocks proves the comment's own
+	// transaction wrote it (textversions.ProvenCutFirstBodiesQuery): versions a fill of the release
+	// before this one decided, which this release's fill rebuilds with its first-body repair when it
+	// takes its hold. It reads 0 once the repair has run, and refuses nothing, as the collision census
+	// refuses nothing: the driver that watches it holds it to zero.
+	KeywordCutFirstBodies int64
 	// Sizing is what the sizing pass found, or nil when it was not asked for.
 	Sizing *SizingReport
 	// RequireBothReleases says the corpus the census read holds rows a build of the release
@@ -1745,6 +1753,9 @@ func storeCensus(ctx context.Context, databaseURL string, sizing bool, declined 
 				return nil, err
 			}
 		}
+		if report.KeywordCutFirstBodies, err = textversions.CountProvenCutFirstBodies(ctx, tx); err != nil {
+			return nil, err
+		}
 	}
 	if sizing {
 		sized, err := readSizing(ctx, tx)
@@ -2327,6 +2338,8 @@ func (r *StoreReport) write(w io.Writer, verbose bool) {
 		if r.Decisions != nil {
 			writeDecisions(w, *r.Decisions)
 		}
+		fmt.Fprintf(w, "census: store keyword_cut_first_bodies=%s (comment.created versions of the keyword table that keep their event's cut text although revision 1 of the comment's blocks proves the comment's own transaction wrote it; the keyword fill's first-body repair rebuilds each when it takes its hold, after which this reads 0)\n",
+			pgmigrate.Thousands(r.KeywordCutFirstBodies))
 	}
 	writeProjectCensus(w, r.Projects)
 	for _, row := range r.ProjectIncomplete {

@@ -128,21 +128,35 @@ func presentBody(ctx context.Context, tx pgx.Tx, e event, kind, id string) (stri
 	return body, true, nil
 }
 
+// firstRevisionWrittenAt is the start of the transaction that wrote revision 1's text of a block of
+// a comment, over that text's row t and its block's row b (firstRevisionRows). A text row records
+// the start of the transaction that inserted it in transaction_started_at (migration
+// 20261122075823); a row written before that column holds null, and its block's row was then
+// inserted beside it at its first indexing, with a created_at a build before this release left to
+// the column's default, that transaction's start. A block row this release writes holds the moment
+// of the write it indexes as its created_at (refs' queueBlocks), which tells no transaction: a
+// comment's own index and the reconciliation of an older build's comment both write the comment's
+// created_at there. It is the one test of whose transaction wrote revision 1: the reader
+// (firstRevisionQuery), the first-body repair, which reads through that reader, and the census of
+// the cut first bodies the repair rebuilds (ProvenCutFirstBodiesQuery) compare it with a
+// comment.created event's created_at.
+const firstRevisionWrittenAt = `coalesce(t.transaction_started_at, b.created_at)`
+
+// firstRevisionRows is the from clause of revision 1's text rows of the comment the uuid
+// expression comment names, each aliased t and joined to its block's row, aliased b.
+func firstRevisionRows(comment string) string {
+	return `from public.comment_block_texts t
+	  join public.comment_blocks b on b.comment_id = t.comment_id and b.block_id = t.block_id
+	 where t.comment_id = ` + comment + ` and t.revision = 1`
+}
+
 // firstRevisionQuery reads the blocks of revision 1 of comment $1, the comment's first indexing,
 // in the order of their ids' numbers (b2 before b10), which the first indexing mints in body
 // order: each block's text and whether revision 1's text of it was written by the transaction
-// whose start is $2. A text row records the start of the transaction that inserted it in
-// transaction_started_at (migration 20261122075823); a row written before that column holds null,
-// and its block's row was then inserted beside it at its first indexing, with a created_at a build
-// before this release left to the column's default, that transaction's start. A block row this
-// release writes holds the moment of the write it indexes as its created_at (refs' queueBlocks),
-// which tells no transaction: a comment's own index and the reconciliation of an older build's
-// comment both write the comment's created_at there.
-const firstRevisionQuery = `
-	select t.text, coalesce(t.transaction_started_at, b.created_at) = $2
-	  from public.comment_block_texts t
-	  join public.comment_blocks b on b.comment_id = t.comment_id and b.block_id = t.block_id
-	 where t.comment_id = $1::uuid and t.revision = 1
+// whose start is $2 (firstRevisionWrittenAt).
+var firstRevisionQuery = `
+	select t.text, ` + firstRevisionWrittenAt + ` = $2
+	  ` + firstRevisionRows("$1::uuid") + `
 	 order by length(t.block_id), t.block_id`
 
 // firstRevisionBody is comment id's first body as revision 1 of its blocks holds it: their

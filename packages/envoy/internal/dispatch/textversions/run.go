@@ -215,8 +215,10 @@ func (r *runner) tryHold(ctx context.Context) (*duty.Hold, error) {
 // then one each time cfg.Events is signalled, and while the horizon stands below an id a read of
 // it saw (filler.heldBelow) one 1 s later, doubling to 8 s, as FillToHorizon reads it. A pass that
 // fails is followed by another 1 s later, doubling to failRetryMax, and the events do not hurry
-// it. Everything runs on a context the hold's loss ends, so a batch in flight as the hold is lost
-// rolls back, and a pause or a rest ends there.
+// it. Before the first pass of each hold it walks the first-body repair once
+// (filler.repairCutFirstBodies); a walk that fails is logged and walked again before the next
+// pass, and the passes run all the same. Everything runs on a context the hold's loss ends, so a
+// batch in flight as the hold is lost rolls back, and a pause or a rest ends there.
 func (r *runner) fillUnder(ctx context.Context, hold *duty.Hold) {
 	held, stop := context.WithCancel(ctx)
 	defer stop()
@@ -233,7 +235,18 @@ func (r *runner) fillUnder(ctx context.Context, hold *duty.Hold) {
 	default:
 	}
 	reread, failWait := rereadFirst, rereadFirst
+	repaired := false
 	for {
+		if !repaired {
+			_, err := r.fill.repairCutFirstBodies(held)
+			if ctx.Err() != nil || r.lost(held, hold, err) {
+				return
+			}
+			if err != nil {
+				r.fill.logger.Error("dispatch: the keyword fill's first-body repair failed; it walks again before the next pass", "error", err)
+			}
+			repaired = err == nil
+		}
 		safe, err := r.fill.pass(held)
 		if ctx.Err() != nil || r.lost(held, hold, err) {
 			return

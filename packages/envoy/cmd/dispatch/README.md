@@ -1665,6 +1665,14 @@ No route reads the table yet (Search, below), so search answers alike with the f
   `idle_in_transaction_session_timeout` is 10 s, which ends the transaction of a holder frozen inside a batch and frees the cursor row.
   After each batch the holder rests for as long as the batch ran, so the fill takes at most half of the time of one backend.
 
+- Each time it takes the hold, before its first pass, the fill walks its first-body repair once, the keyword table's second writer of an existing row beside the erase (`textversions`' `repairCutFirstBodies`).
+  A fill of the release before this one decides a long comment's `comment.created` by its own reader of revision 1, which takes a block as the comment's own only where the block's row holds the event's `created_at`; this release dates that row by the comment's own moment, so that fill, holding the hold during a roll or after a rollback, keeps the event's cut text of a long comment this release wrote and an edit changed before that fill reached it.
+  The repair reads only the comment versions marked cut, through the partial index `search_text_versions_cut_comments`, in `(id, event_seq)` order, at most 1,000 a batch, so a hold over a table that holds none costs one read of an empty index; each batch is one transaction under the fill's locks: the cursor row `for update`, the hold's check, and the log's check against the cursor, a reset ending the walk with nothing written.
+  Of each `comment.created` version marked cut in the window it decides the first body again by this release's reader, and where revision 1 holds a text in every block and proves, block by block, the comment's own transaction (`comment_block_texts.transaction_started_at`, or the block row's `created_at` for a text row written before that column), it writes revision 1's body, `body_from` `blocks`, and that body's vector; a version no source holds fails the same test and stays cut.
+  A batch ends early once it has rebuilt 2 MB of bodies, and the holder pauses before each batch and rests after it as after a pass's.
+  The walk is idempotent, logs each version it rebuilds, and a walk that fails is walked again before the next pass, which runs all the same.
+  `envoy-dispatch census --store` prints `keyword_cut_first_bodies`, the versions the repair rebuilds, which reads 0 once it has run.
+
 - The fill logs when it takes, loses or releases its hold, when it pauses and continues, when it finds a reset log, and when it keeps a cut body.
   While it catches up, it logs a progress line at most every 30 s.
   When it is caught up, a pass logs at most once a minute the reach, the lag of the reach behind `now()`, and how many events the cursor is behind the newest event.
@@ -2781,7 +2789,7 @@ This release also writes both again for every unpublished event a batch reads no
 
 Migration `20261120021308_search_text_versions` creates two new tables, which the keyword fill writes (Background loops, above) and a search at a past time reads (Search, below).
 `search_text_versions` holds one row for each version of the text that keyword search reads of an issue, a comment, an issue message or an ask.
-Its key is `(kind, id, event_seq)`, and a row is never updated, a new version being a new row, but for the erase, which deletes an erased comment's rows and writes again the vector of an issue's rows that name a version of its spec it deleted ("Erasing a node", below).
+Its key is `(kind, id, event_seq)`, and a row is never updated, a new version being a new row, but by two writers: the erase, which deletes an erased comment's rows and writes again the vector of an issue's rows that name a version of its spec it deleted ("Erasing a node", below), and the keyword fill's first-body repair, which rewrites the body, `body_from` and vector of a `comment.created` version a fill of the release before this one kept cut although revision 1 of the comment's blocks proves the comment's own transaction (Background loops, above).
 `search_text_versions_fill` holds the fill's one cursor row, with the reach the fill stored, the holder that wrote the last batch, and the version of the event rules that wrote the rows up to the cursor.
 `search_text_versions_item_start` on `(kind, id, started_at)` serves the relation's test for a later version of the same item.
 `search_text_versions_search` is a GIN index on the vector with `fastupdate = off`, so a search never scans a pending list and an insert never empties one.
@@ -2799,6 +2807,10 @@ The keyword fill takes a comment's whole first body from revision 1 of its block
 It read that from the block row's `created_at` while that column took its default; this release writes a block row's `created_at` as the moment of the write it indexes, the moment the store dates the block's `part_of` by, which for a comment is its clock-read `created_at` and tells no transaction, so the fill reads this column, and the block row's `created_at` for a row that holds null.
 Adding the column and then its default are each a catalog change that reads and rewrites no row, each holding `comment_block_texts` `ACCESS EXCLUSIVE` for that alone; its census answers `0`.
 The release before it names its columns in every statement on the table, so a row it inserts during a roll takes the default too.
+
+Migration `20261122100004_search_text_versions_cut_comments` builds `search_text_versions_cut_comments` on `search_text_versions (id, event_seq) where kind = 'comment' and body_from = 'cut'`, the comment versions that keep their event's cut text and nothing else, through which the keyword fill's first-body repair walks its candidates and the store census counts `keyword_cut_first_bodies`; without it both read every comment version of the table.
+The table records no event type, so the index holds a cut edit's or answer's version beside a cut `comment.created`'s, and both readers keep the `comment.created` ones by their event; each is a version the fill warned of when it kept the cut text, so the index stays small.
+The build is `concurrently`, outside the runner's transaction (`-- pgmigrate:non-transactional`), and holds off no read or write of the table while it scans it, whatever the table's size, which is above the census's limit at production's counts; its census answers `0`, and it carries a `.down.sql` an operator runs by hand to drop the index.
 
 Migration `20261102122300_pull_request_heads` creates `pull_request_heads`, the newest head Dispatch holds of every pull request it has seen an event for, so a recorded result can say whether it ran at the commit the work stands at.
 This is not `delivery_pull_requests`, which keeps the merged pull requests of the delivery population and no head commit:
