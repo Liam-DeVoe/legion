@@ -7537,3 +7537,128 @@ test("no list of options on R2's pages lacks a text box: no page draws a native 
   }
   expect(wrong, wrong.join("; ")).toEqual([]);
 });
+
+// SLOW(>=2s): two pages opened twice each at 390 px, once with no narrowing and once with more
+// chips than one line holds.
+// INFRA-3135, round 24 (the tester's, from the architect's goal red team of 2026-11-22T11:06Z;
+// measured in builds Job infra-3135-s-h-z2mdn at 3fce6150): at 390x664, with more narrowings on
+// than one line of chips holds, the chips stand in one strip that scrolls sideways
+// (`ControlRow.tsx`, the strip's `flex-nowrap ... overflow-x-auto`). On the Inbox, with the 17
+// chips this row puts on, the strip is 253 px wide with a scrollWidth of 2342 px, a scrollLeft
+// set to 120 reads back 120, and 14 chips stand right of the row's 24..366 px; the row grows from
+// 96 to 148 px and the first row moves 52 px, from 305 to 357 px. On the project List, with six
+// labels and three narrowings, the strip's scrollWidth is 1502 px against 253, 6 chips stand
+// outside the row, and the first row holds at 611 px. Spec v8, R1: "At a phone's width the
+// row wraps rather than scrolling sideways, and the rule above holds there too", the rule being
+// that the chips may take one more line inside the row, at most 52 px. The architect's ruling of
+// 2026-11-22 11:1xZ: chips that do not fit the one chip line collapse into one shared '+N more'
+// chip that opens the page's Filter panel, at every width, so nothing in the row scrolls sideways
+// and the chip line stays one line within 52 px. A box scrolls sideways where its `overflow-x`
+// lets the reader scroll it and its content is wider than it is; a chip's own text cut short with
+// an ellipsis is clipped rather than scrolled.
+test("at 390 px chips over one line scroll nothing in the row sideways and move the first row at most one chip line, on the Inbox and the project List", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  const labels = [
+    "alpha-rollout-review",
+    "beta-ledger-mirror",
+    "gamma-clock-drift",
+    "delta-replay-window",
+    "epsilon-lease-handover",
+    "zeta-budget-plan",
+  ];
+  await createProject({ key: "CORE", name: "Core" });
+  for (const title of ["Rollout order", "Rollout budget", "Ledger mirror", "Clock drift"]) {
+    const issue = await createIssue({ project: "CORE", title });
+    await patchIssue(issue.key, { labels, status: "todo" });
+    await createAsk(issue.key, { question: `${title}: what is the rule?` }, SURFACE_SESSION);
+  }
+  await page.setViewportSize({ height: 664, width: 390 });
+  // The List is the view the project page opens on from here on: the reader's stored choice.
+  await openIssuesTab(page, "CORE", "List");
+  const row = controlRow(page.getByTestId("main-content"));
+  const wrong: string[] = [];
+  for (const [name, address, narrowed, rows] of [
+    // Every value of the Inbox's four fields that a seeded row holds, and some it does not, so
+    // every row stays listed under 17 chips.
+    [
+      "Inbox",
+      "/",
+      "/?priority=P0,P1,P2,P3,none&urgency=blocking,high,med,low,none&type=question,decision,approval,reply,agent&project=CORE,none",
+      "[data-inbox-row]",
+    ],
+    // Six labels every seeded issue carries, and three narrowings every one of them passes.
+    [
+      "project List",
+      "/projects/CORE/issues",
+      `/projects/CORE/issues?${labels.map((label) => `label=${label}`).join("&")}&needs-you=1&status=todo&f.key=CORE`,
+      "[data-issue-row]",
+    ],
+  ] as const) {
+    const at = `${name} at 390x664 with chips over one line`;
+    const firstRow = page.locator(rows).first();
+    await page.goto(address);
+    await expect(firstRow).toBeVisible();
+    await resetScroll(page, firstRow);
+    // One read is the measure: the list is drawn with no narrowing, scrolled to its top.
+    const plain = await topOf(firstRow);
+    await page.goto(narrowed);
+    await expect(firstRow).toBeVisible();
+    await expect(control(row, CONTROL.chip).first()).toBeVisible();
+    await resetScroll(page, firstRow);
+    await nextFrames(page);
+    // One read is the measure: the chips are drawn and the list scrolled to its top.
+    const top = await topOf(firstRow);
+    if (top - plain > CHIP_LINE) {
+      wrong.push(
+        `${at}: the first row moved from ${Math.round(plain)} px to ${Math.round(top)} px, more than the one line of chips (${CHIP_LINE} px) R1 allows`
+      );
+    }
+    // One read is the answer: the chips are drawn, and nothing redraws the row now.
+    const read = await row.evaluate((node) => {
+      const box = node.getBoundingClientRect();
+      const scrolls = [node, ...node.querySelectorAll<HTMLElement>("*")]
+        .filter((element) => {
+          const { overflowX } = getComputedStyle(element);
+          const scrollable = overflowX === "auto" || overflowX === "scroll";
+          return (
+            (scrollable || element.hasAttribute("data-chip-strip")) &&
+            element.scrollWidth > element.clientWidth + 1
+          );
+        })
+        .map(
+          (element) =>
+            `${element.hasAttribute("data-chip-strip") ? "the chip strip" : element.tagName.toLowerCase()} (overflow-x ${getComputedStyle(element).overflowX}, scrollWidth ${element.scrollWidth} against clientWidth ${element.clientWidth})`
+        );
+      const outside = [...node.querySelectorAll<HTMLElement>("a, button, input, select")]
+        .filter((element) =>
+          element.checkVisibility({ opacityProperty: true, visibilityProperty: true })
+        )
+        .flatMap((element) => {
+          const own = element.getBoundingClientRect();
+          return own.left < box.left - 1 || own.right > box.right + 1
+            ? [
+                `"${element.getAttribute("aria-label") ?? (element.textContent ?? "").trim()}" at ${Math.round(own.left)}..${Math.round(own.right)} px`,
+              ]
+            : [];
+        });
+      return { left: Math.round(box.left), outside, right: Math.round(box.right), scrolls };
+    });
+    for (const scroll of read.scrolls) wrong.push(`${at}: ${scroll} scrolls sideways`);
+    if (read.outside.length > 0) {
+      wrong.push(
+        `${at}: ${read.outside.length} controls stand outside the row's ${read.left}..${read.right} px: ${read.outside.join(", ")}`
+      );
+    }
+  }
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
+
+/** The height of a row of the Delivery page's measures table at 1440x900 as main drew it before
+ *  this change, at 143b57a7, where `MeasuresPanel.tsx` wrote its own table with `py-0.5` cells
+ *  of a 16 px line: `getBoundingClientRect().height` of each `tbody tr` in Chromium, read in
+ *  builds Job infra-3135-s-b-h4hh4 over the measures fixture. Rows 1 to 28 of its 29 read 21 px
+ *  and the last 20.5 px, which the table's collapsed borders give it: both within the 0.5 px the
+ *  row allows. */
+const MEASURES_ROW_HEIGHT = 21;
