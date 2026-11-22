@@ -56,7 +56,7 @@ func sendPartOfBody(t *testing.T, address, target string, header http.Header, si
 		t.Fatalf("dial %s: %v", address, err)
 	}
 	t.Cleanup(func() { connection.Close() })
-	bound, _ := testwait.Context(t).Deadline()
+	bound, _ := testwait.GiveUpAt(t)
 	if err := connection.SetDeadline(bound); err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +103,7 @@ func (b *heldBackBody) answer() (*http.Response, []byte) {
 // connection's end, rather than a byte or the shared wait's bound.
 func (b *heldBackBody) closedByServer() bool {
 	b.t.Helper()
-	bound, _ := testwait.Context(b.t).Deadline()
+	bound, _ := testwait.GiveUpAt(b.t)
 	if err := b.connection.SetReadDeadline(bound); err != nil {
 		b.t.Fatal(err)
 	}

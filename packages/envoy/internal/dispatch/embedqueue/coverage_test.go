@@ -317,10 +317,10 @@ func TestRunEmbedsItemsNoTriggerSawWithNoCommand(t *testing.T) {
 	// which holds the coverage loop's ten-minute recheck off: the items are made current by the
 	// pass Run makes at boot, the scans its rows wake, and nothing that comes later.
 	fake := clocktest.New(databaseNow(t, database))
-	waits := &scanWaits{clock: fake}
+	waits := &scanWaits{clock: &scanClock{Fake: fake}}
 	go func() {
 		defer close(done)
-		Run(ctx, Deps{Store: database, Embedder: newPlaceEmbedder(configuredIdentity), Clock: fake, scanWaiting: waits.report})
+		Run(ctx, Deps{Store: database, Embedder: newPlaceEmbedder(configuredIdentity), Clock: waits.clock, scanWaiting: waits.report})
 	}()
 	reached := databasePassed(t, database)
 	testwait.Until(t, "every item current under Run", func() (coverageReading, bool) {
@@ -1087,8 +1087,8 @@ func TestTheIdentityRecheckDropsAVectorTheOldConfigurationCommitsAfterTheBootPas
 	drain(t, Deps{Store: database, Embedder: newPlaceEmbedder(foreignIdentity)})
 	mustExec(t, database.Pool, `update embeddings set embedding = null, model = null, embedded_hash = null, next_attempt_at = now() where id = 'ROLL-1'`)
 	fake := clocktest.New(databaseNow(t, database))
-	waits := &scanWaits{clock: fake}
-	runQueue(t, Deps{Store: database, Embedder: newSyncEmbedder(configuredIdentity), Clock: fake, scanWaiting: waits.report})
+	waits := &scanWaits{clock: &scanClock{Fake: fake}}
+	runQueue(t, Deps{Store: database, Embedder: newSyncEmbedder(configuredIdentity), Clock: waits.clock, scanWaiting: waits.report})
 	// The boot pass has dropped ROLL-2's vector, and the queue has embedded ROLL-1 here.
 	eventually(t, "the boot pass and the boot drain", func() bool {
 		waits.moveToArmed(fake, nil)
@@ -1113,8 +1113,8 @@ func TestTheIdentityRecheckDropsAVectorCommittedAfterAPassThatFoundNone(t *testi
 	database := storetest.Open(t)
 	seedIssue(t, database, "CLEAN", "CLEAN-1", "Embedded here at boot")
 	fake := clocktest.New(databaseNow(t, database))
-	waits := &scanWaits{clock: fake}
-	runQueue(t, Deps{Store: database, Embedder: newSyncEmbedder(configuredIdentity), Clock: fake, scanWaiting: waits.report})
+	waits := &scanWaits{clock: &scanClock{Fake: fake}}
+	runQueue(t, Deps{Store: database, Embedder: newSyncEmbedder(configuredIdentity), Clock: waits.clock, scanWaiting: waits.report})
 	// The boot drain embeds the issue here, so the boot pass's look for rows of another identity
 	// finds none: the database holds one row and this process made its vector.
 	eventually(t, "the boot pass and the boot drain", func() bool {
@@ -1145,8 +1145,8 @@ func TestTheIdentityStepsRunOnceTheQueueFirstEmbeds(t *testing.T) {
 	// the row moves the queue's clock to the timer the scan loop armed for it once the database's
 	// clock has passed it (moveToArmed), as the real clock would reach it.
 	fake := clocktest.New(databaseNow(t, database))
-	waits := &scanWaits{clock: fake}
-	runQueue(t, Deps{Store: database, Embedder: embedder, Clock: fake, scanWaiting: waits.report})
+	waits := &scanWaits{clock: &scanClock{Fake: fake}}
+	runQueue(t, Deps{Store: database, Embedder: embedder, Clock: waits.clock, scanWaiting: waits.report})
 	// Two canaries fail: the boot pass's, and the one confirming ANSR-1's own failed embed.
 	// ANSR-2 keeps the foreign vector throughout: nothing drops it before the embedder answers.
 	eventually(t, "the boot pass's canary, with ANSR-2's foreign vector still in place", func() bool {
@@ -1513,10 +1513,10 @@ func TestRunsCoveragePassIsNotRefusedWhileTheScanLoopHoldsACursor(t *testing.T) 
 	// it holds the pass's wake to), which holds the coverage loop's ten-minute recheck off, so the
 	// items current at the end are the pass's and no later one's.
 	fake := clocktest.New(databaseNow(t, database))
-	waits := &scanWaits{clock: fake}
+	waits := &scanWaits{clock: &scanClock{Fake: fake}}
 	go func() {
 		defer close(done)
-		Run(runCtx, Deps{Store: proxied, Embedder: newPlaceEmbedder(configuredIdentity), Clock: fake, scanWaiting: waits.report})
+		Run(runCtx, Deps{Store: proxied, Embedder: newPlaceEmbedder(configuredIdentity), Clock: waits.clock, scanWaiting: waits.report})
 	}()
 	defer func() {
 		cancel()

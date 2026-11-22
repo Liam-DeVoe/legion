@@ -579,7 +579,7 @@ func TestASubscriptionsContextEndsWhenItsSocketEnds(t *testing.T) {
 		"the page closes it": func(t *testing.T, _ *liveSocketRig, client *socketClient) {
 			closing := gws.FormatCloseMessage(gws.CloseGoingAway, "")
 			// The close's write ends where the shared wait gives up (none under -timeout 0).
-			closeBy, _ := testwait.Context(t).Deadline()
+			closeBy, _ := testwait.GiveUpAt(t)
 			if err := client.conn.WriteControl(gws.CloseMessage, closing, closeBy); err != nil {
 				t.Fatalf("the page's close: %v", err)
 			}

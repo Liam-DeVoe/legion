@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -158,10 +159,11 @@ func TestTheMigrationMarksAnEarlierBuildThatPublishedBeforeIt(t *testing.T) {
 // fleet does not see" (cmd/dispatch/README.md) names the three cases where it is not. No update
 // is lost, nothing deadlocks and nothing else fails, and this build's writers commit in both
 // modes. The test expires the mark itself, as the passing of its window would (ageLegacyMark),
-// once a writer of this build has committed beside the earlier build and the earlier build's
+// once the two builds' writes have overlapped - an earlier build's writer has committed, and a
+// writer of this build has committed beside the earlier build after it - and the earlier build's
 // writers have stopped, each write of theirs in flight ended, so the expiry falls inside the run
 // at a point the run has reached, however slow the machine: a window of real time could close
-// before any writer committed beside the earlier build, or while an earlier build's write was
+// before the earlier build's writers had written at all, or while an earlier build's write was
 // still in flight. The mark's age is read by the database's clock, the clock the fleet read
 // judges it by, and this build's writers run until one of them has committed in the advisory
 // mode, which only a fleet read that no longer counts the mark answers.
@@ -173,14 +175,28 @@ func TestTheMarkExpiresWhileWritersOfBothModesAreInFlight(t *testing.T) {
 	ledger := newRaceLedger()
 	publishAsAnEarlierBuild(t, s)
 	// The earlier build's writers have a stop and a join of their own, apart from this build's: the
-	// row stops them, and waits for their writes in flight to end, before it ages the mark.
+	// row stops them, and waits for their writes in flight to end, before it ages the mark. Each join
+	// is the shared wait's (testwait.Returns), outside the once that closes the stop, since a
+	// give-up inside a sync.OnceFunc becomes a panic with a nil argument; a second call closes
+	// nothing and finds the writers already joined.
 	earlierStop := make(chan struct{})
 	var earlier sync.WaitGroup
-	stopEarlier := sync.OnceFunc(func() {
-		close(earlierStop)
-		earlier.Wait()
-	})
+	closeEarlierStop := sync.OnceFunc(func() { close(earlierStop) })
+	stopEarlier := func() {
+		closeEarlierStop()
+		testwait.Returns(t, "the earlier build's writers to end their writes in flight once stopped", earlier.Wait)
+	}
 	t.Cleanup(stopEarlier)
+	// commits is how many writers of each build the ledger has seen commit: the earlier build's,
+	// and this build's beside the earlier build (its fleet read found the mark).
+	commits := func() (earlierBuild, besideAnEarlierBuild int) {
+		ledger.mu.Lock()
+		defer ledger.mu.Unlock()
+		if tally := ledger.tallies[string(rowFirstWriter)]; tally != nil {
+			earlierBuild = tally.commits
+		}
+		return earlierBuild, ledger.modes[true]
+	}
 	committed := func(besideAnEarlierBuild bool) bool {
 		ledger.mu.Lock()
 		defer ledger.mu.Unlock()
@@ -198,10 +214,11 @@ func TestTheMarkExpiresWhileWritersOfBothModesAreInFlight(t *testing.T) {
 	}
 	var writers sync.WaitGroup
 	// The writers stop and are joined however the wait below ends, so none outlives the test.
-	end := sync.OnceFunc(func() {
-		close(stop)
-		writers.Wait()
-	})
+	closeStop := sync.OnceFunc(func() { close(stop) })
+	end := func() {
+		closeStop()
+		testwait.Returns(t, "this build's writers to end their writes in flight once stopped", writers.Wait)
+	}
 	t.Cleanup(end)
 	for range gateRaceWriters {
 		writers.Go(func() {
@@ -222,8 +239,19 @@ func TestTheMarkExpiresWhileWritersOfBothModesAreInFlight(t *testing.T) {
 			}
 		})
 	}
-	testwait.Eventually(t, "a writer of this build to commit beside the earlier build while its mark is young", func() bool {
-		return committed(true)
+	// The two builds' writes overlap before the earlier build stops: one of its writers commits,
+	// and then a writer of this build commits beside it. A commit of this build's is counted only
+	// once its transaction has returned, so each of the gateRaceWriters writers can hold one commit
+	// made before the earlier build's that the ledger has not counted yet; the next commit counted
+	// past those is one made after it.
+	besideBefore := testwait.Until(t, "a writer of the earlier build to commit", func() (int, bool) {
+		earlierBuild, besideAnEarlierBuild := commits()
+		return besideAnEarlierBuild, earlierBuild > 0
+	})
+	testwait.Until(t, "a writer of this build to commit beside the earlier build after a writer of the earlier build committed", func() (string, bool) {
+		earlierBuild, besideAnEarlierBuild := commits()
+		return fmt.Sprintf("%d commits of the earlier build; %d of this build beside it, %d when the earlier build's first was counted",
+			earlierBuild, besideAnEarlierBuild, besideBefore), besideAnEarlierBuild > besideBefore+gateRaceWriters
 	})
 	stopEarlier()
 	ageLegacyMark(t, s, OwnerLockMarkWindow+time.Second)
@@ -232,8 +260,8 @@ func TestTheMarkExpiresWhileWritersOfBothModesAreInFlight(t *testing.T) {
 	})
 	end()
 
-	// Both modes committed, which the two waits above hold: each fails by name when no writer
-	// commits in its mode.
+	// Both modes committed, which the waits above hold: each fails by name when no writer commits
+	// in its mode.
 	lost, deadlocks, failures := ledger.settle(t, s, all, start)
 	t.Logf("the mark expired once a writer committed beside the earlier build: this build's writers committed %d in the mode beside an earlier build and %d in the advisory mode; %d increments lost",
 		ledger.modes[true], ledger.modes[false], lost)

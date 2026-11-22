@@ -45,6 +45,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nkeys"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -629,13 +630,24 @@ func startOn(t testing.TB, host, config string, serverArgs []string) *Server {
 	return server
 }
 
-// unbounded is the readiness wait under -timeout 0, where the test binary has no deadline.
+// unbounded is no span a test can reach: the bound of a call that takes a span under -timeout 0,
+// where the test binary has no deadline.
 const unbounded = time.Duration(math.MaxInt64)
+
+// left is what is left of t's shared wait, from now to the moment testwait gives up
+// (testwait.GiveUpAt), at least a millisecond, and unbounded under -timeout 0: the bound of a call
+// of nats-server's or nats.go's that takes a span where testwait.Context would give a context.
+func left(t testing.TB) time.Duration {
+	if end, bounded := testwait.GiveUpAt(t); bounded {
+		return max(time.Until(end), time.Millisecond)
+	}
+	return unbounded
+}
 
 // launch runs a nats-server on the server's configuration and store, and returns once it accepts
 // connections. That wait is nats-server's own (ReadyForConnections), which takes a span: it is
-// given what is left before the test binary's deadline less testwait's margin (testwait.Context),
-// the bound every wait of these tests has, and no bound under -timeout 0.
+// given what is left before the test binary's deadline less testwait's margin (left), the bound
+// every wait of these tests has, and no bound under -timeout 0.
 func (s *Server) launch(t testing.TB) {
 	t.Helper()
 	opts, err := serverOptions(s.configPath, s.args, s.store, s.host)
@@ -648,10 +660,7 @@ func (s *Server) launch(t testing.TB) {
 	}
 	srv.SetLoggerV2(s.log, opts.Debug, opts.Trace, false)
 	go srv.Start()
-	within := unbounded
-	if deadline, bounded := testwait.Context(t).Deadline(); bounded {
-		within = time.Until(deadline)
-	}
+	within := left(t)
 	if !srv.ReadyForConnections(within) {
 		srv.Shutdown()
 		srv.WaitForShutdown()
@@ -983,10 +992,7 @@ func Connect(t testing.TB, uri string) *natsgo.Conn {
 // binary's deadline less testwait's margin, and with no deadline (-timeout 0) by no bound a test
 // can reach, so a late answer costs the test time and not its result.
 func RequestTimeout(t testing.TB) jetstream.JetStreamOpt {
-	if deadline, bounded := testwait.Context(t).Deadline(); bounded {
-		return jetstream.WithDefaultTimeout(max(time.Until(deadline), time.Millisecond))
-	}
-	return jetstream.WithDefaultTimeout(unbounded)
+	return jetstream.WithDefaultTimeout(left(t))
 }
 
 // MaxWait is the option every legacy JetStream context a test makes takes
@@ -1002,28 +1008,22 @@ func RequestTimeout(t testing.TB) jetstream.JetStreamOpt {
 // readWait instead (Connect, awaitInfo, awaitBucketOn): with this option a send the server never
 // answers would hold that wait until the deadline.
 func MaxWait(t testing.TB) natsgo.JSOpt {
-	if deadline, bounded := testwait.Context(t).Deadline(); bounded {
-		return natsgo.MaxWait(max(time.Until(deadline), time.Millisecond))
-	}
-	return natsgo.MaxWait(unbounded)
+	return natsgo.MaxWait(left(t))
 }
 
 // Context is the context a test's call to nats.go takes, a flush's among them
 // (conn.FlushWithContext(testnats.Context(t))): testwait.Context(t), whose deadline is the test
 // binary's less testwait's margin, when the binary has a deadline. Under -timeout 0
 // testwait.Context has none, and nats.go refuses a flush whose context reports no deadline
-// (nats.ErrNoDeadlineContext), so the flush would fail correct code there. So with no deadline it
-// is testwait's context under a deadline unbounded off, the farthest a time.Duration reaches:
-// nats.go is shown a deadline, as it requires, and the deadline bounds nothing a test can reach,
-// so the call waits for its answer as every wait under -timeout 0 does.
+// (nats.ErrNoDeadlineContext), so the flush would fail correct code there. So it is testwait's
+// context as clock.WithShownDeadline shows it, the workaround bus's flushes on a fake clock take
+// too: with no deadline, under one the farthest a time.Duration reaches, so nats.go is shown a
+// deadline, as it requires, and the deadline bounds nothing a test can reach, so the call waits for
+// its answer as every wait under -timeout 0 does.
 func Context(t testing.TB) context.Context {
-	ctx := testwait.Context(t)
-	if _, bounded := ctx.Deadline(); bounded {
-		return ctx
-	}
-	far, cancel := context.WithDeadline(ctx, time.Now().Add(unbounded))
+	shown, cancel := clock.WithShownDeadline(testwait.Context(t))
 	t.Cleanup(cancel)
-	return far
+	return shown
 }
 
 // waitForJetStream retries a real JetStream operation rather than trusting a successful core-NATS

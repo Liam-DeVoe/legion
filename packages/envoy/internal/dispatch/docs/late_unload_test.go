@@ -413,7 +413,7 @@ func TestASettlementStartingAsASettlementRoomRetiresTakesUpNoRoomTheCloseTakesAw
 			return
 		}
 		started.Store(true)
-		go func() { settled <- r.service.settleOwedNow(waits, r.room, settleDeadline(waits)) }()
+		go func() { settled <- r.service.settleOwedNow(waits, r.room, settleDeadline(t)) }()
 		select {
 		case <-locked:
 		case <-waiting:
@@ -543,7 +543,7 @@ func TestARoomALateSettlementLoadedIsRetiredAsTheSynchronousSettlementThatTakesI
 	}
 
 	waits := testwait.Context(t)
-	if err := r.service.settleOwedNow(waits, r.room, settleDeadline(waits)); err != nil {
+	if err := r.service.settleOwedNow(waits, r.room, settleDeadline(t)); err != nil {
 		t.Fatalf("the synchronous settlement that takes the retry over: %v", err)
 	}
 	if got := versionWrites.Load(); got != 2 {
@@ -562,12 +562,12 @@ func signal(c chan struct{}) {
 }
 
 // settleDeadline is the deadline a test hands settleOwedNow, which bounds its wait for the room's
-// durable appends: the end of waits, the shared wait's context (testwait.Context), so appends that
-// never land fail the settlement by name where every wait here gives up. Under -timeout 0 waits
-// has no end, and neither has that wait: settleOwedNow takes a moment rather than a context, so
-// it is handed one a century on.
-func settleDeadline(waits context.Context) time.Time {
-	if deadline, bounded := waits.Deadline(); bounded {
+// durable appends: the moment the shared wait gives up in t (testwait.GiveUpAt), so appends that
+// never land fail the settlement by name where every wait here gives up. Under -timeout 0 the
+// shared wait has no end, and neither has that wait: settleOwedNow takes a moment rather than a
+// context, so it is handed one a century on.
+func settleDeadline(t testing.TB) time.Time {
+	if deadline, bounded := testwait.GiveUpAt(t); bounded {
 		return deadline
 	}
 	return time.Now().AddDate(100, 0, 0)

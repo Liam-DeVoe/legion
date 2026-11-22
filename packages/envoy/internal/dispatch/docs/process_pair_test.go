@@ -66,10 +66,10 @@ func newProcessPairOn(t *testing.T, taskAClock clock.Clock) processPair {
 // itself, on the clock it moves.
 func answerWait(t *testing.T) func() time.Duration {
 	t.Helper()
-	shared := testwait.Context(t)
+	end, bounded := testwait.GiveUpAt(t)
 	return func() time.Duration {
-		if deadline, ok := shared.Deadline(); ok {
-			return max(time.Until(deadline), time.Nanosecond)
+		if bounded {
+			return max(time.Until(end), time.Nanosecond)
 		}
 		return time.Duration(math.MaxInt64)
 	}

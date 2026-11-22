@@ -179,7 +179,7 @@ func TestContextEndsWhereAWaitGivesUpAndWithTheTest(t *testing.T) {
 	var taken context.Context
 	t.Run("taker", func(t *testing.T) {
 		taken = Context(t)
-		end, bounded := giveUpAt(t)
+		end, bounded := GiveUpAt(t)
 		deadline, has := taken.Deadline()
 		if has != bounded || !deadline.Equal(end) {
 			t.Fatalf("Context's deadline is %v (%t), want the moment a wait gives up, %v (%t)", deadline, has, end, bounded)
@@ -193,16 +193,16 @@ func TestContextEndsWhereAWaitGivesUpAndWithTheTest(t *testing.T) {
 	}
 }
 
-// A wait gives up the margin before the test binary's deadline. A *testing.T names that
-// deadline; a testing.TB without Deadline, and TestMain, read it from the -timeout flag and the
-// process's start, which is no later than testing's own.
+// A wait gives up the margin before the test binary's deadline, at the moment GiveUpAt names. A
+// *testing.T names that deadline; a testing.TB without Deadline, and TestMain, read it from the
+// -timeout flag and the process's start, which is no later than testing's own.
 func TestAWaitGivesUpTheMarginBeforeTheDeadline(t *testing.T) {
 	deadline, bounded := t.Deadline()
-	end, ok := giveUpAt(t)
+	end, ok := GiveUpAt(t)
 	if ok != bounded || ok && !end.Equal(deadline.Add(-margin)) {
 		t.Fatalf("a wait in a test whose deadline is %v (%t) gives up at %v (%t), want %s before it", deadline, bounded, end, ok, margin)
 	}
-	fromFlag, ok := giveUpAt(noDeadline{t})
+	fromFlag, ok := GiveUpAt(noDeadline{t})
 	if ok != bounded || ok && fromFlag.After(end) {
 		t.Fatalf("a wait in a testing.TB without Deadline gives up at %v (%t), want no later than %v (%t)", fromFlag, ok, end, bounded)
 	}
@@ -382,10 +382,10 @@ func TestNoDeadlineChild(t *testing.T) {
 	if os.Getenv(childEnv) == "" {
 		t.Skip(childEnv + " is not set: this test is the child of TestUnderNoTimeoutAWaitHasNoEnd")
 	}
-	if end, ok := giveUpAt(t); ok {
+	if end, ok := GiveUpAt(t); ok {
 		t.Errorf("under -timeout 0 a wait gives up at %v, want never", end)
 	}
-	if end, ok := giveUpAt(noDeadline{t}); ok {
+	if end, ok := GiveUpAt(noDeadline{t}); ok {
 		t.Errorf("under -timeout 0 a wait in a testing.TB without Deadline gives up at %v, want never", end)
 	}
 	if end, ok := mainGiveUpAt(); ok {

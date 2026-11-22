@@ -228,7 +228,7 @@ func storedDocumentText(t *testing.T, database *store.Store, artifactID string) 
 // connection left open fails by name.
 func waitForDocumentConnectionClose(t *testing.T, connection *gws.Conn) {
 	t.Helper()
-	deadline, _ := testwait.Context(t).Deadline()
+	deadline, _ := testwait.GiveUpAt(t)
 	connection.SetReadDeadline(deadline)
 	for {
 		if _, _, err := connection.ReadMessage(); err != nil {

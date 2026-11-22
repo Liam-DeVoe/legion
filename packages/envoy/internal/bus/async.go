@@ -331,25 +331,6 @@ func (c *Client) windowTime() clock.Clock {
 	return c.windowClock
 }
 
-// unreportedDeadline is how far off WithShownDeadline shows nats.go a deadline that a clock's
-// context does not report.
-const unreportedDeadline = 24 * time.Hour
-
-// WithShownDeadline is ctx, a context a clock.Clock's WithTimeout or WithDeadline made, as
-// nats.go is to see it: ctx itself when ctx reports its deadline, and otherwise ctx under a
-// deadline unreportedDeadline off on the wall clock, with the function that releases that
-// deadline. nats.go refuses a flush whose context reports no deadline (nats.ErrNoDeadlineContext),
-// and bounds a JetStream call on such a context by a wait of its own on the wall clock. A
-// clocktest.Fake keeps its deadlines to itself, so nats.go is shown one it never meets, and the
-// fake's own end is what ends the call. The real clock reports its deadline, so production never
-// takes the second branch.
-func WithShownDeadline(ctx context.Context) (context.Context, context.CancelFunc) {
-	if _, reported := ctx.Deadline(); reported {
-		return ctx, func() {}
-	}
-	return context.WithDeadline(ctx, time.Now().Add(unreportedDeadline))
-}
-
 // ConnLockWait is how long a caller that holds a lock of its own, or that something holding one
 // waits for, waits for a call to NATS before it takes nats.go's connection lock as held by a
 // reconnect. nats.go holds that lock for microseconds to write or read a frame, and for a whole
@@ -668,7 +649,7 @@ func (w *window) Probe(timeout time.Duration) error {
 	}
 	clocked, cancel := w.client.windowTime().WithTimeout(context.Background(), timeout)
 	defer cancel()
-	flush, cancelShown := WithShownDeadline(clocked)
+	flush, cancelShown := clock.WithShownDeadline(clocked)
 	defer cancelShown()
 	if err := w.conn.FlushWithContext(flush); err != nil {
 		return fmt.Errorf("bus: %w: the flush probe failed: %w", ErrUnavailable, err)

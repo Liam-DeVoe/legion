@@ -2,6 +2,7 @@ package testnats
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -10,7 +11,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 	"unsafe"
 
 	natsgo "github.com/nats-io/nats.go"
@@ -119,10 +119,7 @@ func (h *HandshakeHold) HoldReconnect(t testing.TB, conn *natsgo.Conn) {
 // as HoldWriteLock takes it.
 func OwnConnectTimeout(t testing.TB, conn *natsgo.Conn) {
 	t.Helper()
-	timeout := unbounded
-	if deadline, bounded := testwait.Context(t).Deadline(); bounded {
-		timeout = max(time.Until(deadline), time.Millisecond)
-	}
+	timeout := left(t)
 	lock := connLock(t, conn)
 	testwait.Eventually(t, "nats.go to let its connection lock go, so the row can set the connect timeout under it", lock.TryLock)
 	conn.Opts.Timeout = timeout
@@ -166,6 +163,24 @@ func (h *HandshakeHold) HoldWriteLock(t testing.TB, conn *natsgo.Conn) (release 
 	return release
 }
 
+// TakeWriteLock is HoldWriteLock for a hook the code under test runs on a goroutine of its own,
+// where no method of t that ends the test may run: it takes the lock through the shared wait's
+// helper form (testwait.InHelper), with the bound every wait has, and returns that wait's give-up,
+// or a nats.go whose Conn holds no connection lock, as an error rather than failing a test. It
+// registers no cleanup: the hook hands the error to the test goroutine, which fails the row on it,
+// and has the release run at the test's end. The release may be called more than once.
+func (h *HandshakeHold) TakeWriteLock(conn *natsgo.Conn) (release func(), err error) {
+	lock, err := connLockOf(conn)
+	if err != nil {
+		return nil, err
+	}
+	if err := testwait.InHelper("testnats", "nats.go to let its connection lock go, so the hook can take it as a write does", lock.TryLock); err != nil {
+		return nil, err
+	}
+	var once sync.Once
+	return func() { once.Do(lock.Unlock) }, nil
+}
+
 // RequireLockHeld fails the test when nats.go's connection lock on conn is free (lockFree): the
 // handshake or the write the row holds it with is not held. A row calls it once the calls it
 // measures have answered, so their answers are known to have come while the lock was held.
@@ -196,11 +211,20 @@ func lockFree(t testing.TB, conn *natsgo.Conn) bool {
 // listener's own types; a nats.go whose Conn holds no such field fails the test, naming it.
 func connLock(t testing.TB, conn *natsgo.Conn) *sync.RWMutex {
 	t.Helper()
+	lock, err := connLockOf(conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return lock
+}
+
+// connLockOf is connLock with no t: a nats.go whose Conn holds no such field is its error.
+func connLockOf(conn *natsgo.Conn) (*sync.RWMutex, error) {
 	field := reflect.ValueOf(conn).Elem().FieldByName("mu")
 	if !field.IsValid() || field.Type() != reflect.TypeFor[sync.RWMutex]() {
-		t.Fatal("nats.go's Conn holds no mu sync.RWMutex, the connection lock the handshake hold reads (nats.go v1.55.0 nats.go:659)")
+		return nil, errors.New("nats.go's Conn holds no mu sync.RWMutex, the connection lock the handshake hold reads (nats.go v1.55.0 nats.go:659)")
 	}
-	return (*sync.RWMutex)(unsafe.Pointer(field.UnsafeAddr()))
+	return (*sync.RWMutex)(unsafe.Pointer(field.UnsafeAddr())), nil
 }
 
 // Answers runs each call at once, each on a goroutine of its own, and returns their answers in

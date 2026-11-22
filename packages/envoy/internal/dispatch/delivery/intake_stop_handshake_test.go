@@ -387,17 +387,26 @@ func TestAnIntakesStopDoesNotWaitOutAHeldHandshake(t *testing.T) {
 	t.Run("a hand-back while a write holds the lock", func(t *testing.T) {
 		row := startGivenUpRow(t)
 		var holding sync.Once
-		published := make(chan struct{})
+		// The hook runs on the stop's goroutine, where no method of t that ends the test may run:
+		// it takes the write lock with no t (TakeWriteLock) and hands the take's error to the
+		// subtest's goroutine, which fails the row on it. The release is a cleanup from the hook
+		// itself, so a write the hook takes after the subtest has failed is let go at its end too.
+		taken := make(chan error, 1)
 		hook := func() {
 			holding.Do(func() {
-				row.hold.HoldWriteLock(t, row.conn)
-				close(published)
+				release, err := row.hold.TakeWriteLock(row.conn)
+				if err == nil {
+					t.Cleanup(release)
+				}
+				taken <- err
 			})
 		}
 		row.delivery().beforeHandBackPublish.Store(&hook)
 		// The stop gives the handler up at its start, and the handler hands its message back.
 		stopped := row.stopUnder(cancelled())
-		testwait.Receive(t, "control: a hand-back to reach its publish", published)
+		if err := testwait.Receive(t, "control: a hand-back to reach its publish", taken); err != nil {
+			t.Fatalf("the hook could not hold the write before the hand-back's publish: %v", err)
+		}
 		answersWhileWriteHeld(t, row.conn, "StopDelivering", stopped)
 	})
 

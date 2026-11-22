@@ -27,6 +27,7 @@ package clock
 
 import (
 	"context"
+	"math"
 	"time"
 )
 
@@ -97,3 +98,23 @@ func (t realTimer) C() <-chan time.Time { return t.timer.C }
 func (t realTimer) Stop() bool { return t.timer.Stop() }
 
 func (t realTimer) Reset(d time.Duration) bool { return t.timer.Reset(d) }
+
+// unreported is how far off WithShownDeadline shows a deadline that ctx does not report: the
+// farthest a time.Duration reaches, which no call meets.
+const unreported = time.Duration(math.MaxInt64)
+
+// WithShownDeadline is ctx as a call that refuses a context with no deadline is to see it: ctx
+// itself when ctx reports a deadline, and otherwise ctx under a deadline unreported off on the
+// wall clock, with the function that releases that deadline. nats.go refuses a flush whose
+// context reports no deadline (nats.ErrNoDeadlineContext), and bounds a JetStream call on such a
+// context by a wait of its own on the wall clock. Two contexts report none though they end: one
+// that a clocktest.Fake's WithTimeout or WithDeadline made, which keeps its deadline to itself, and
+// a test's testwait.Context under -timeout 0, which has no deadline. Each is shown one that bounds
+// nothing, and its own end is what ends the call. The real clock's contexts report their deadline,
+// so production never takes the second branch.
+func WithShownDeadline(ctx context.Context) (context.Context, context.CancelFunc) {
+	if _, reported := ctx.Deadline(); reported {
+		return ctx, func() {}
+	}
+	return context.WithDeadline(ctx, time.Now().Add(unreported))
+}

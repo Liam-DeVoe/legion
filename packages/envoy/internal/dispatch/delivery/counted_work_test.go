@@ -187,6 +187,12 @@ func countedBinary(t *testing.T) (bin, goCmd string) {
 	return countedBuild.bin, countedBuild.goCmd
 }
 
+// buildCounted builds the counted test binary into a directory of its own. The build passes
+// -race=false: the go command reads GOFLAGS from the test's environment, and a developer's GOFLAGS
+// holding -race would make it refuse the build, -covermode=count where cgo is on (`-covermode must
+// be "atomic"`, since the race detector takes only atomic counters) and -race itself where it is off
+// (`-race requires cgo`). The counts read here need no detector, and a flag on the command line
+// overrides GOFLAGS's.
 func buildCounted(t *testing.T) {
 	goCmd, err := exec.LookPath("go")
 	if err != nil {
@@ -202,7 +208,7 @@ func buildCounted(t *testing.T) {
 	}
 	countedBuild.dir = dir
 	bin := filepath.Join(dir, "delivery.test")
-	if _, err := countedCommand(t, "the build of the counted test binary", nil, goCmd, "test", "-c", "-cover",
+	if _, err := countedCommand(t, "the build of the counted test binary", nil, goCmd, "test", "-c", "-race=false", "-cover",
 		"-covermode=count", "-coverpkg="+strings.Join(countedPackages, ","), "-o", bin, "."); err != nil {
 		countedBuild.err = err.Error()
 		return

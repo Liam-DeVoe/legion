@@ -127,11 +127,23 @@ func stopWithAHeldHandBack(t *testing.T) heldHandBack {
 	t.Cleanup(restoreWait)
 	var holding sync.Once
 	held := make(chan struct{})
-	thawed := make(chan func(), 1)
+	// The hook runs on the stop's goroutine, where no method of t that ends the test may run: it
+	// takes the write lock with no t (TakeWriteLock) and hands what it took to the test goroutine,
+	// which fails the row on a give-up. The release is a cleanup from the hook itself, so a write the
+	// hook takes after the row has failed is let go at the test's end too.
+	type takenWrite struct {
+		release func()
+		err     error
+	}
+	taken := make(chan takenWrite, 1)
 	hook := func() {
 		holding.Do(func() {
 			restoreWait()
-			thawed <- link.HoldWriteLock(t, holderConn)
+			release, err := link.TakeWriteLock(holderConn)
+			if err == nil {
+				t.Cleanup(release)
+			}
+			taken <- takenWrite{release: release, err: err}
 			close(held)
 		})
 	}
@@ -141,8 +153,8 @@ func stopWithAHeldHandBack(t *testing.T) heldHandBack {
 	done := make(chan struct{})
 	row.stopped = done
 	go func() {
+		defer close(done)
 		holder.stop()
-		close(done)
 	}()
 	waitFor(t, holder.keyedRunnerStopped, func() string {
 		return "the stopping holder has not stopped its keyed runner: " + consumerState(publisher)
@@ -160,7 +172,11 @@ func stopWithAHeldHandBack(t *testing.T) heldHandBack {
 	}, func() string {
 		return "control: the stop's hand-back never reached its publish: the stop withheld it, as it does when its drain has not answered: " + consumerState(publisher)
 	})
-	row.thaw = testwait.Receive(t, "the hook's release of the held write, sent before held closed", thawed)
+	write := testwait.Receive(t, "the hook's take of the held write, sent before held closed", taken)
+	if write.err != nil {
+		t.Fatalf("the hook could not hold the write before the hand-back's publish: %v", write.err)
+	}
+	row.thaw = write.release
 	return row
 }
 

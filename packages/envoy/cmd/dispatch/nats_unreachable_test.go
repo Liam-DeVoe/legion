@@ -298,7 +298,7 @@ func (p *dispatchProcess) nextAgentViewFrame(t *testing.T, conn *gws.Conn, deadl
 func (p *dispatchProcess) openAgentView(t *testing.T) agentViewFrame {
 	t.Helper()
 	conn := p.startAgentView(t)
-	deadline, _ := testwait.Context(t).Deadline()
+	deadline, _ := testwait.GiveUpAt(t)
 	frame := p.nextAgentViewFrame(t, conn, deadline)
 	_ = conn.Close()
 	return frame
@@ -309,7 +309,7 @@ func (p *dispatchProcess) openAgentView(t *testing.T) agentViewFrame {
 // requires a frame the session publishes on conn to reach that view.
 func (p *dispatchProcess) requireAgentViewRelays(t *testing.T, conn *natsgo.Conn) {
 	t.Helper()
-	deadline, _ := testwait.Context(t).Deadline()
+	deadline, _ := testwait.GiveUpAt(t)
 	var view *gws.Conn
 	testwait.Eventually(t, "an agent view to open with the session's responder verdict", func() bool {
 		view = p.startAgentView(t)

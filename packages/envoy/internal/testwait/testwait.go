@@ -39,10 +39,12 @@
 // and waits for the other in its second. Returns waits for a call, run on a goroutine of its own,
 // to return: a call that waits on what the code under test holds, such as a database pool's Close,
 // which returns only once every connection in use has come back. Context gives a call that takes
-// a context the same bound. InMain is Eventually for a wait in TestMain, which has no t: it takes
-// its deadline from the -timeout flag and the process's start, and returns an error where the
-// others fail the test. InHelper and ReceiveInHelper are InMain and Receive for a helper whose
-// callers hand it no t, such as clocktest's fake, and name that helper where InMain names TestMain.
+// a context the same bound, and GiveUpAt names its moment for a call that takes a deadline or a
+// span instead (a socket's SetDeadline, a client's timeout option). InMain is Eventually for a
+// wait in TestMain, which has no t: it takes its deadline from the -timeout flag and the process's
+// start, and returns an error where the others fail the test. InHelper and ReceiveInHelper are
+// InMain and Receive for a helper whose callers hand it no t, such as clocktest's fake, and name
+// that helper where InMain names TestMain.
 //
 // A condition runs on the test goroutine, so a condition that reads a report which makes its fact
 // impossible (a process that exited, a daemon whose run returned) calls t.Fatalf itself and ends
@@ -233,10 +235,23 @@ func Next[T any](t testing.TB, what string, s *Stream[T], match func(T) bool) T 
 	return zero
 }
 
-// Context gives a context whose deadline is the binary's deadline less the margin, cancelled when
-// t ends. Under -timeout 0 it has no deadline.
+// GiveUpAt is the moment every wait in t gives up: the test binary's deadline less the margin, and
+// false when the binary has no deadline (-timeout 0). It is the one reading of that moment outside
+// this package, for a call that takes a deadline or a span where Context gives a context. A
+// *testing.T, or any testing.TB with a Deadline method, names the binary's deadline; for another (a
+// benchmark) it is the -timeout flag's span from the process's start, which is how testing arms its
+// own alarm.
+func GiveUpAt(t testing.TB) (time.Time, bool) {
+	if named, ok := t.(interface{ Deadline() (time.Time, bool) }); ok {
+		return lessMargin(named.Deadline())
+	}
+	return lessMargin(flagDeadline())
+}
+
+// Context gives a context whose deadline is the binary's deadline less the margin (GiveUpAt),
+// cancelled when t ends. Under -timeout 0 it has no deadline.
 func Context(t testing.TB) context.Context {
-	end, bounded := giveUpAt(t)
+	end, bounded := GiveUpAt(t)
 	if !bounded {
 		ctx, cancel := context.WithCancel(context.Background())
 		t.Cleanup(cancel)
@@ -335,11 +350,11 @@ func requireWhy(t testing.TB, function, why string) {
 	}
 }
 
-// poll asks holds at the package's pace until it reports true. Once the moment giveUpAt names has
+// poll asks holds at the package's pace until it reports true. Once the moment GiveUpAt names has
 // passed and holds still reports false, gaveUp fails t, with reading's text when the wait has one.
 func poll(t testing.TB, what string, holds func() bool, reading func() string) {
 	t.Helper()
-	end, bounded := giveUpAt(t)
+	end, bounded := GiveUpAt(t)
 	if !asked(end, bounded, holds) {
 		gaveUp(t, what, reading)
 	}
@@ -358,10 +373,10 @@ func asked(end time.Time, bounded bool, holds func() bool) bool {
 	return true
 }
 
-// expiry is a channel that receives once the moment giveUpAt names for t has passed, nil (which
+// expiry is a channel that receives once the moment GiveUpAt names for t has passed, nil (which
 // never receives) under -timeout 0, and the function that releases its timer.
 func expiry(t testing.TB) (<-chan time.Time, func() bool) {
-	return expiryAt(giveUpAt(t))
+	return expiryAt(GiveUpAt(t))
 }
 
 // expiryAt is a channel that receives once end has passed, nil (which never receives) when there
@@ -372,17 +387,6 @@ func expiryAt(end time.Time, bounded bool) (<-chan time.Time, func() bool) {
 	}
 	timer := time.NewTimer(time.Until(end))
 	return timer.C, timer.Stop
-}
-
-// giveUpAt is the moment a wait in t gives up: the test binary's deadline less margin, and false
-// when the binary has no deadline (-timeout 0). A *testing.T, or any testing.TB with a Deadline
-// method, names the deadline; for another (a benchmark) it is the -timeout flag's span from the
-// process's start, which is how testing arms its own alarm.
-func giveUpAt(t testing.TB) (time.Time, bool) {
-	if named, ok := t.(interface{ Deadline() (time.Time, bool) }); ok {
-		return lessMargin(named.Deadline())
-	}
-	return lessMargin(flagDeadline())
 }
 
 // mainGiveUpAt is the moment a wait in TestMain gives up: the -timeout flag's deadline less

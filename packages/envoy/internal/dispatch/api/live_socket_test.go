@@ -358,7 +358,7 @@ const bulkHeartbeat = 24 * time.Hour
 // binary's deadline less the shared wait's margin, or none under -timeout 0, so a transfer that
 // stalls fails the write by name rather than hanging the binary.
 func bulkWriteDeadline(t *testing.T) time.Time {
-	deadline, _ := testwait.Context(t).Deadline()
+	deadline, _ := testwait.GiveUpAt(t)
 	return deadline
 }
 
@@ -467,7 +467,7 @@ func smallReadDialer(t *testing.T) *gws.Dialer {
 // handshakeBound is a dial's handshake timeout that ends where the shared wait gives up, or none
 // (zero) under -timeout 0.
 func handshakeBound(t *testing.T) time.Duration {
-	deadline, bounded := testwait.Context(t).Deadline()
+	deadline, bounded := testwait.GiveUpAt(t)
 	if !bounded {
 		return 0
 	}
@@ -1044,7 +1044,7 @@ func TestPingsKeepAnIdleSocketOpen(t *testing.T) {
 	var pings atomic.Int32
 	// A pong's write ends where the shared wait gives up (none under -timeout 0), read once here
 	// rather than on the socket's reading goroutine for every ping.
-	pongBy, _ := testwait.Context(t).Deadline()
+	pongBy, _ := testwait.GiveUpAt(t)
 	answering.conn.SetPingHandler(func(data string) error {
 		pings.Add(1)
 		return answering.conn.WriteControl(gws.PongMessage, []byte(data), pongBy)

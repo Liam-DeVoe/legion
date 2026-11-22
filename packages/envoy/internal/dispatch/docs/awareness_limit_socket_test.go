@@ -25,7 +25,7 @@ import (
 // no deadline, as the shared wait has none.
 func socketReadDeadline(t *testing.T) time.Time {
 	t.Helper()
-	deadline, bounded := testwait.Context(t).Deadline()
+	deadline, bounded := testwait.GiveUpAt(t)
 	if !bounded {
 		return time.Time{}
 	}

@@ -124,12 +124,16 @@ func consumerStatePath(t testing.TB, conn *natsgo.Conn, stream, consumer string)
 
 // AwaitNoSubscription waits until the server conn is connected to holds no subscription that a
 // message published on subject reaches, in the account conn belongs to: the server's own list of
-// subscriptions (Subsz, tested against subject), which is what it routes a publish by. A
-// connection that closed keeps its subscriptions in that list until the server has read the
-// close: nats-server v2.15.1 drops the connection from its open connections (Connz) first and
-// its subscriptions after (client.closeConnection, server/client.go:6335-6343, removeClient then
-// clearAccountSubs), so a request routed between the two reaches the closed subscriber and gets
-// neither an answer nor the no-responders status. Once this returns, a request on subject that
+// subscriptions (Subsz, tested against subject), which is what it routes a publish by, and which
+// names them whichever connection holds them, so the wait needs no handle on the connection that
+// closed. A client that closed its connection stays a subscriber until the server reads the close:
+// until its read loop meets the end of the socket (nats-server v2.15.1, server/client.go:1566-1570),
+// both Connz and Subsz still list it, and a request on subject is delivered to it, into a socket no
+// one reads, so the request gets neither an answer nor the no-responders status. Once the server
+// reads the close, closeConnection marks the client closed (:6292) before it drops the connection
+// from Connz (removeClient, :6335) and its subscriptions from Subsz (clearAccountSubs, :6344), and
+// deliverMsg delivers nothing to a closed client (:4036), so from then on a request that reaches no
+// other subscriber gets the no-responders status. Once this returns, a request on subject that
 // conn sends reaches no subscriber that was gone by then.
 //
 // It fails the test when conn reaches no server this package started, or that server holds no

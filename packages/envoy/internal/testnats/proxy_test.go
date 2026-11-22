@@ -37,16 +37,6 @@ func proxiedClient(t *testing.T, proxy *Proxy) (conn *natsgo.Conn, disconnected,
 	return dial.conn, down, up
 }
 
-// binaryWait is what is left of the test binary's deadline less testwait's margin, and no bound a
-// test can reach under -timeout 0: a dial given it as its timeout ends by its server's answer and
-// not by a timer of its own.
-func binaryWait(t *testing.T) time.Duration {
-	if deadline, bounded := testwait.Context(t).Deadline(); bounded {
-		return max(time.Until(deadline), time.Millisecond)
-	}
-	return unbounded
-}
-
 // A proxy relays a client's connection, credentials and all, until Cut: the connection drops at
 // once and every dial is refused while it stays cut. Restore lets the client reconnect, and a new
 // client connect, through the same URL.
@@ -59,9 +49,10 @@ func TestAProxyRelaysUntilCutAndAgainOnceRestored(t *testing.T) {
 
 	proxy.Cut()
 	testwait.Receive(t, "the client's disconnect after the cut", disconnected)
-	// The dial's own timer is the binary's remaining time, so only the cut proxy's refusal, which
-	// comes at once, ends it with an error: a dial that would get through, however slowly, does.
-	if refused, err := natsgo.Connect(proxy.URL(), natsgo.NoReconnect(), natsgo.Timeout(binaryWait(t))); err == nil {
+	// The dial's own timer is what is left of the shared wait (left), so only the cut proxy's
+	// refusal, which comes at once, ends it with an error: a dial that would get through, however
+	// slowly, does.
+	if refused, err := natsgo.Connect(proxy.URL(), natsgo.NoReconnect(), natsgo.Timeout(left(t))); err == nil {
 		refused.Close()
 		t.Fatal("a client connected through a cut proxy")
 	}

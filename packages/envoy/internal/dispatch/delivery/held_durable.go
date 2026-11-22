@@ -576,8 +576,8 @@ func (d *heldDurable) finishTakeOver(create natsgo.ConsumerConfig, deleteFirst b
 	js := d.nats.JS()
 	clocked, cancel := d.holdClock.WithTimeout(context.Background(), takeOverFinishWithin)
 	defer cancel()
-	// nats.go is shown a deadline it can read: a fake's is its own (bus.WithShownDeadline).
-	finish, cancelShown := bus.WithShownDeadline(clocked)
+	// nats.go is shown a deadline it can read: a fake's is its own (clock.WithShownDeadline).
+	finish, cancelShown := clock.WithShownDeadline(clocked)
 	defer cancelShown()
 	if deleteFirst {
 		if d.retryHeld(finish, "delete NATS consumer to take it over", func(call context.Context) error {

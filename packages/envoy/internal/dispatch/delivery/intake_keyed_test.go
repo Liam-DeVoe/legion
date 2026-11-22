@@ -161,9 +161,12 @@ func deliveryConsumerInfo(t *testing.T, natsClient *bus.Client) *natsgo.Consumer
 	return info
 }
 
-// runIntake runs intake until the returned stop is called or the test ends, and stop waits for Run
-// to return.
-func runIntake(t *testing.T, intake *Intake) (stop func()) {
+// runIntake runs intake until the test ends, when a cleanup stops it and waits for Run to return.
+// It returns stopping, for a row that stops the intake itself and waits for the return on its own
+// test goroutine: stopping cancels Run's context and returns the channel Run's return closes, so
+// the row receives it (testwait.Receive) while it acts on the stop, and a give-up fails the row
+// there, by name, rather than on a goroutine of the row's.
+func runIntake(t *testing.T, intake *Intake) (stopping func() <-chan struct{}) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -171,16 +174,18 @@ func runIntake(t *testing.T, intake *Intake) (stop func()) {
 		defer close(done)
 		intake.Run(ctx)
 	}()
-	// The stop is not a sync.OnceFunc: a give-up inside one ends the goroutine (runtime.Goexit) in
-	// the once, which sync.OnceFunc turns into a panic with a nil argument. cancel may be called
-	// again, and a second receive finds done closed; a give-up once the row has failed is logged
-	// rather than failed again (failOnce).
-	stop = func() {
+	stopping = func() <-chan struct{} {
 		cancel()
-		testwait.Receive(failOnce{t}, "the intake's Run to return once its context ended", done)
+		return done
 	}
-	t.Cleanup(stop)
-	return stop
+	// The cleanup's stop is not a sync.OnceFunc: a give-up inside one ends the goroutine
+	// (runtime.Goexit) in the once, which sync.OnceFunc turns into a panic with a nil argument.
+	// cancel may be called again, and a second receive finds done closed; a give-up once the row has
+	// failed is logged rather than failed again (failOnce).
+	t.Cleanup(func() {
+		testwait.Receive(failOnce{t}, "the intake's Run to return once its context ended", stopping())
+	})
+	return stopping
 }
 
 // While GitHub holds the fetch of pull request 1, a message of pull request 2 is handled and
@@ -287,11 +292,7 @@ func TestAMessageQueuedBehindItsKeyAtStopIsRedeliveredAtOnce(t *testing.T) {
 	})
 
 	// Run stops delivering as its context ends, and returns once the held fetch has ended.
-	stopped := make(chan struct{})
-	go func() {
-		defer close(stopped)
-		stopFirst()
-	}()
+	stopped := stopFirst()
 	waitFor(t, func() bool { return !deliveryConsumerInfo(t, natsClient).PushBound }, func() string {
 		return "the stopping intake kept its subscription"
 	})
@@ -382,11 +383,7 @@ func TestAHandOverKeepsAPullRequestsMessagesInOrder(t *testing.T) {
 	// deploy is.
 	standbyLeases := &holdReads{intakeLeases: deliveryTestLeases(t, pool)}
 	runIntake(t, newIntake(intakeTestClient(t), pool, standbyLeases, github, events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
-	stopped := make(chan struct{})
-	go func() {
-		defer close(stopped)
-		stopFirst()
-	}()
+	stopped := stopFirst()
 	waitFor(t, func() bool {
 		first.mu.Lock()
 		defer first.mu.Unlock()
@@ -467,11 +464,7 @@ func TestAStoppingIntakeDoesNotWaitOutAGitHubCallThatDoesNotAnswer(t *testing.T)
 	publishPullRequestEnvelope(t, natsClient, "acme", "widgets", 1, mergedPullRequest(1))
 	held.awaitEntered(t)
 	signalled := stopClock.Now()
-	stopped := make(chan struct{})
-	go func() {
-		defer close(stopped)
-		stop()
-	}()
+	stopped := stop()
 	if armed := stopClock.AwaitArmed(t, "the stop's deadline", 1); !armed[0].Equal(signalled.Add(intakeStopBudget)) {
 		t.Fatalf("the stop armed its deadline for %v, want %v: intakeStopBudget from the signal", armed[0], signalled.Add(intakeStopBudget))
 	}
@@ -523,11 +516,7 @@ func TestABindThatReturnsAfterTheSignalStopsByTheBudgetFromTheSignal(t *testing.
 	held.awaitEntered(t)
 
 	signalled := stopClock.Now()
-	stopped := make(chan struct{})
-	go func() {
-		defer close(stopped)
-		stop()
-	}()
+	stopped := stop()
 	// The deadline is armed as ctx ends, while the bind is still held: a stop that armed it at the
 	// bind's return would leave nothing armed here.
 	if armed := stopClock.AwaitArmed(t, "the stop's deadline, armed as Run's ctx ended", 1); !armed[0].Equal(signalled.Add(intakeStopBudget)) {
@@ -593,11 +582,7 @@ func TestAMessageInTheClientBufferAtStopIsGivenBack(t *testing.T) {
 		return err == nil && buffered >= 2
 	}, func() string { return "the pull request's message never reached the client's buffer" })
 
-	stopped := make(chan struct{})
-	go func() {
-		defer close(stopped)
-		stopFirst()
-	}()
+	stopped := stopFirst()
 	waitFor(t, delivery.stopping.Load, func() string { return "the intake never began stopping" })
 	release()
 	testwait.Receive(t, "the stopping intake to return once its callback was free", stopped)
@@ -658,11 +643,7 @@ func TestAHandlerThatFinishesInsideTheStopIsAcknowledgedAtOnce(t *testing.T) {
 
 	// The stop runs beside this turn, as TestAMessageInTheClientBufferAtStopIsGivenBack runs it:
 	// it waits here for both handlers, until the budget.
-	stopped := make(chan struct{})
-	go func() {
-		defer close(stopped)
-		stop()
-	}()
+	stopped := stop()
 	// The subscription goes before the stop waits for its handlers, so from here on what the
 	// durable reports outstanding is what this stopping process still owes it.
 	waitFor(t, func() bool { return !deliveryConsumerInfo(t, natsClient).PushBound }, func() string {
@@ -844,11 +825,7 @@ func TestAStopAfterTheConnectionWasReplacedDrainsTheRestoredSubscription(t *test
 
 	publishPullRequestEnvelope(t, natsClient, "acme", "widgets", 1, mergedPullRequest(1))
 	held.awaitEntered(t)
-	stopped := make(chan struct{})
-	go func() {
-		defer close(stopped)
-		stop()
-	}()
+	stopped := stop()
 	waitFor(t, delivery.stopping.Load, func() string { return "the intake never began stopping" })
 	waitFor(t, func() bool { return !deliveryConsumerInfo(t, natsClient).PushBound }, func() string {
 		return "the stopping intake's subscription stayed bound to the durable while its handler ran: the stop did not drain " +

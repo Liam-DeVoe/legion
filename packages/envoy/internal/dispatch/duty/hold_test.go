@@ -135,32 +135,54 @@ type lapsingHold struct {
 }
 
 // newLapsingHold takes the hold on a second process and closes that process's pool, so no
-// renewal lands again, and checks that before the lapse the standby is refused and Expiry reads
-// time left on a held name.
+// renewal lands again, and checks that while the hold is live on the database's clock the standby
+// is refused and Expiry reads time left on a held name. That the standby's try came while the hold
+// was live is read off the database's clock, never off the machine's pace: Expiry, read after the
+// refused try, reads time left only when the try came before the lapse. A try the machine held
+// past the lapse proves nothing about a live hold: one that took the hold is a lawful take-over,
+// and the standby lets the name go again; one refused with Expiry reading no time left may have
+// come either side of the lapse. Either way the setup is made again, with a new first holder, until
+// a try comes while the hold is live. A try that took the hold before the lapse, read on the
+// database's clock as the moment its own take ran (its expiry less the TTL), fails the test.
 func newLapsingHold(t *testing.T) *lapsingHold {
 	t.Helper()
 	database := storetest.Open(t)
-	dying := storetest.SecondProcess(t, database)
 	opts := duty.HoldOptions{TTL: 2 * time.Second, Renew: 300 * time.Millisecond, Margin: time.Second}
 	ctx := context.Background()
-
-	first, err := duty.TryHold(ctx, dying.Pool, holdName, uuid.New(), opts)
-	if err != nil || first == nil {
-		t.Fatalf("take the hold on the first process: hold %v, error %v", first, err)
-	}
-	// Closing the first process's pool waits for its renewal in flight and fails every later one.
-	testwait.Returns(t, "the first process's renewal in flight and every other connection of its pool to come back, so the pool closes", dying.Pool.Close)
-	_, _, lapse := holdRow(t, database.Pool)
-
 	standby := uuid.New()
-	if refused, err := duty.TryHold(ctx, database.Pool, holdName, standby, opts); err != nil || refused != nil {
-		t.Fatalf("the standby's try before the lapse: hold %v, error %v; want neither", refused, err)
-	}
-	remaining, held, err := duty.Expiry(ctx, database.Pool, holdName)
-	if err != nil || !held || remaining <= 0 {
-		t.Fatalf("Expiry before the lapse = %s, held %v, error %v; want a positive remainder of a held name", remaining, held, err)
-	}
-	return &lapsingHold{database: database, opts: opts, first: first, lapse: lapse, standby: standby}
+	return testwait.Until(t, "a try of the standby's to come while the first holder's hold is live on the database's clock", func() (*lapsingHold, bool) {
+		dying := storetest.SecondProcess(t, database)
+		first, err := duty.TryHold(ctx, dying.Pool, holdName, uuid.New(), opts)
+		if err != nil || first == nil {
+			t.Fatalf("take the hold on the first process: hold %v, error %v", first, err)
+		}
+		// Closing the first process's pool waits for its renewal in flight and fails every later one.
+		testwait.Returns(t, "the first process's renewal in flight and every other connection of its pool to come back, so the pool closes", dying.Pool.Close)
+		_, _, lapse := holdRow(t, database.Pool)
+
+		tried, err := duty.TryHold(ctx, database.Pool, holdName, standby, opts)
+		if err != nil {
+			t.Fatalf("the standby's try of the first holder's hold: %v", err)
+		}
+		if tried != nil {
+			_, _, expiresAt := holdRow(t, database.Pool)
+			if took := expiresAt.Add(-opts.TTL); took.Before(lapse) {
+				t.Fatalf("the standby took the hold %s before the lapse on the database's clock", lapse.Sub(took))
+			}
+			if err := tried.Release(ctx); err != nil {
+				t.Fatalf("release the hold the standby took once the machine held its try past the lapse: %v", err)
+			}
+			return nil, false
+		}
+		remaining, held, err := duty.Expiry(ctx, database.Pool, holdName)
+		if err != nil || !held {
+			t.Fatalf("Expiry once the standby was refused: held %v, error %v; want the name still held", held, err)
+		}
+		if remaining <= 0 {
+			return nil, false
+		}
+		return &lapsingHold{database: database, opts: opts, first: first, lapse: lapse, standby: standby}, true
+	})
 }
 
 // takenBy checks that the row names the standby, whose hold taken is, and that the first holder

@@ -111,7 +111,7 @@ func TestHeldPortStaysHeldUntilItsProcessServes(t *testing.T) {
 	}
 	// The child's answer is bounded by the binary's deadline less testwait's margin, so a late answer
 	// costs the row time, and one that never comes fails the read below by name.
-	bound, _ := testwait.Context(t).Deadline()
+	bound, _ := testwait.GiveUpAt(t)
 	if err := conn.SetDeadline(bound); err != nil {
 		t.Fatal(err)
 	}

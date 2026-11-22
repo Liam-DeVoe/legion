@@ -124,13 +124,13 @@ const (
 const spentGateBound = -time.Nanosecond
 
 // gateBoundPastEveryRead is what every server a test builds runs the gate under
-// (newRegisteredTestServer): what is left of the shared wait (testwait.Context) as the server is
+// (newRegisteredTestServer): what is left of the shared wait (testwait.GiveUpAt) as the server is
 // built, so no read of a test project outlasts it before the test itself gives up, and what a
 // case reads is what its project holds. Under -timeout 0 the shared wait has no end, and the gate
 // is given the longest statement_timeout Postgres takes. The replay sets a bound of its own, for
 // its own reason (nearCopyGateBound).
 func gateBoundPastEveryRead(t testing.TB) time.Duration {
-	if deadline, bounded := testwait.Context(t).Deadline(); bounded {
+	if deadline, bounded := testwait.GiveUpAt(t); bounded {
 		return time.Until(deadline)
 	}
 	return math.MaxInt32 * time.Millisecond

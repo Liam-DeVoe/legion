@@ -40,9 +40,9 @@ func socketURL(serverURL, id string) string {
 }
 
 // readDeadline is when a read of a test's socket gives up: where the shared wait does, the test
-// binary's deadline less its margin (testwait.Context), and never under -timeout 0.
+// binary's deadline less its margin (testwait.GiveUpAt), and never under -timeout 0.
 func readDeadline(t *testing.T) time.Time {
-	deadline, _ := testwait.Context(t).Deadline()
+	deadline, _ := testwait.GiveUpAt(t)
 	return deadline
 }
 

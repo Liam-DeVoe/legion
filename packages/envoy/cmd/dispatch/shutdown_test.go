@@ -463,7 +463,7 @@ func TestShutdownWaitsForDeliveryWorkBeforeClosingThePool(t *testing.T) {
 	}
 	// The reads below wait under the shared wait's deadline, so a socket that answers nothing
 	// fails the test rather than hangs it.
-	deadline, _ := testwait.Context(t).Deadline()
+	deadline, _ := testwait.GiveUpAt(t)
 	_ = conn.SetReadDeadline(deadline)
 	var refusal struct {
 		Type, Sub, Code string
@@ -1989,7 +1989,7 @@ func (p *dispatchProcess) watchAgent(t *testing.T, conn *gws.Conn, session strin
 	if err := conn.WriteJSON(map[string]any{"type": "subscribe", "sub": "agent", "view": map[string]string{"kind": "agent", "session_id": session}}); err != nil {
 		t.Fatalf("subscribe the live socket to the agent view: %v", err)
 	}
-	deadline, _ := testwait.Context(t).Deadline()
+	deadline, _ := testwait.GiveUpAt(t)
 	_ = conn.SetReadDeadline(deadline)
 	for {
 		// An event frame's event is an object, an agent frame's a string, so it is read raw.

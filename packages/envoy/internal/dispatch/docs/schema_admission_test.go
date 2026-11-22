@@ -548,7 +548,7 @@ func TestARevokeWaitsForTheMessageTheServerHasInFlight(t *testing.T) {
 	}
 
 	biggest := 0
-	if deadline, bounded := testwait.Context(t).Deadline(); bounded {
+	if deadline, bounded := testwait.GiveUpAt(t); bounded {
 		_ = reader.SetReadDeadline(deadline)
 	}
 	for {
