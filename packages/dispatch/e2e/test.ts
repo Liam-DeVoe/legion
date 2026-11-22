@@ -10,11 +10,13 @@
  *  the worker empties it once, before its first row (`workerDatabase`, through `emptyDatabase`),
  *  for whatever a run before it left there. The few rows docs/testing.md names empty it again
  *  inside themselves, through `emptyDatabase`; among them are the rows that measure layout over
- *  text of a fixed width (`fixedKey` in e2e/api.ts, `fixedPerson` below), whose project keys and
- *  issue numbers must be the same on every run. What the fake services hold - the fake Envoy's
- *  sessions and subscriptions, the broker's credential requests, the fake GitHub's repositories,
- *  the embedder's counts - is the row's, and no key separates it, so an automatic fixture resets
- *  the fakes before every row (`freshFakes`, through `resetFakes` in e2e/seed.ts). Both used to
+ *  text of a fixed width under a fixed project key (`fixedKey` in e2e/api.ts), whose project keys
+ *  and issue numbers must be the same on every run. A fixed login (`fixedPerson`, below) needs no
+ *  emptying, since `ownPeople` deletes its rows when the row ends. What the fake services hold -
+ *  the fake Envoy's sessions and subscriptions, the broker's credential requests, the fake
+ *  GitHub's repositories, the embedder's counts - is the row's, and no key separates it, so an
+ *  automatic fixture resets the fakes before every row (`freshFakes`, through `resetFakes` in
+ *  e2e/seed.ts). Both used to
  *  be a `test.beforeEach` at the top of every spec file that emptied the database and the fakes
  *  before each row: one copy of one hook in each file, as many places to read it, and one chance
  *  to forget it in every spec written since. As fixtures they run for every row of every file

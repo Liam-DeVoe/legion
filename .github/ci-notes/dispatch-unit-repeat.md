@@ -122,9 +122,8 @@ and 2,375 s is inside the deadline set here. If it merges, its harness legs come
 and set the harness budgets again by the rule.
 
 Pull request #4523 set its own web and web-cold budgets and changed the lanes' tests, so its runs
-were not in this window either. Its run 44922135913's web-cold legs took 169, 169 and 185 s, and
-185 s is above the table's 175 s. With #4523 merged, its legs come into the window: "The web
-lane's sharded legs, and #4523's web-cold legs", below, reads them.
+were not in this window either. With #4523 merged, its legs come into the window: "The web lane's
+sharded legs, and #4523's web-cold legs", below, reads them.
 
 The other steps took at most 37 s in a web leg (run 44751162563, round 3), 44 s in a web-cold leg
 (run 44814644776, round 1) and 229 s in a harness leg (run 44709413418, round 1, most of it zsh's

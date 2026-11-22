@@ -54,7 +54,8 @@
  *  the summary is appended to as well as printed. It writes nothing to GitHub. A read GitHub
  *  refuses - three times, or once with a 403 that names no rate limit, or with a rate limit whose
  *  time falls past that deadline - exits 1 too, and says it is a failed read rather than a
- *  finding. Its last line on stderr gives the REST and GraphQL calls it made, the GraphQL points
+ *  finding; a refused compare of a run's head (`readHolds`) alone leaves that run counted, and
+ *  named. Its last line on stderr gives the REST and GraphQL calls it made, the GraphQL points
  *  they cost, and what the token has left of each budget. Usage errors exit 2.
  *  From a workstation, with gh signed in, in a checkout of the commit GITHUB_SHA names:
  *
@@ -243,6 +244,30 @@ export function pairKey(commit: string, head: string): string {
   return `${commit}...${head}`;
 }
 
+/** A commit the head of a run must hold for a flake of a row in it to count: what its absence is
+ *  (`missing`), the commit, and how the summary names it (`what`). */
+interface RowCommit {
+  readonly missing: "change" | "fix";
+  readonly oid: string;
+  readonly what: string;
+}
+
+/** The commits a run's head must hold for a flake of a row in it to count: the last change of the
+ *  row's own lines, `change`, and its fix where `fixes` names one. */
+function rowCommits(change: RowChange, fix: FixEntry | undefined): RowCommit[] {
+  const commits: RowCommit[] = [
+    {
+      missing: "change",
+      oid: change.oid,
+      what: `its own lines' last change, ${change.oid} at ${change.committedDate}`,
+    },
+  ];
+  if (fix !== undefined) {
+    commits.push({ missing: "fix", oid: fix.fixed, what: `its fix, ${fix.fixed}` });
+  }
+  return commits;
+}
+
 /** What `runs` say of `entries` and `fixReadings` at `now`, with `changes` the last change of
  *  each row flaky in `flakyRunsToQuarantine` runs, by `rowName`, and `holds` whether the head of
  *  each run that named such a row holds the row's last change and its fix; a row it holds no
@@ -276,17 +301,7 @@ export function decide(
       continue;
     }
     const fix = fixReadings.find((reading) => rowName(reading.entry) === name)?.entry;
-    // The commits the head of a run that counts holds: the row's last change, and its fix.
-    const commits: { missing: "change" | "fix"; oid: string; what: string }[] = [
-      {
-        missing: "change",
-        oid: change.oid,
-        what: `its own lines' last change, ${change.oid} at ${change.committedDate}`,
-      },
-    ];
-    if (fix !== undefined) {
-      commits.push({ missing: "fix", oid: fix.fixed, what: `its fix, ${fix.fixed}` });
-    }
+    const commits = rowCommits(change, fix);
     const counting: RunReading[] = [];
     for (const run of named) {
       const placed = commits.map((commit) => ({
@@ -1284,13 +1299,13 @@ export async function readHolds(
   changes: ReadonlyMap<string, RowChange>,
   fixEntries: readonly FixEntry[],
   now: Date
-): Promise<Map<string, boolean | string>> {
+): Promise<Holds> {
   const pairs = new Map<string, { commit: string; head: string }>();
   for (const [name, { runs: named }] of flakyRows(runs, now).rows) {
     const change = changes.get(name);
     if (named.length < flakyRunsToQuarantine || change === undefined) continue;
     const fix = fixEntries.find((entry) => rowName(entry) === name);
-    for (const commit of fix === undefined ? [change.oid] : [change.oid, fix.fixed]) {
+    for (const { oid: commit } of rowCommits(change, fix)) {
       for (const run of named) {
         pairs.set(pairKey(commit, run.headSha), { commit, head: run.headSha });
       }
