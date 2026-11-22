@@ -151,11 +151,15 @@ const (
 )
 
 // queryTakes is the supertags each query takes out of the issue's tree, in the order its
-// definition names them: the spec its memo callout, its criteria and its requirements; the
-// verification its checks and their results; the plan its plan nodes; and the decisions the asks,
-// the decisions and the readings under an agent's decision (dispatch://INFRA-1150's supertags).
+// definition names them: the spec its memo callout, its criteria, its requirements and the
+// components and interfaces it proposes (R22: "the spec query of a change request also returns the
+// component and interface nodes that the issue proposes"); the verification its checks and their
+// results; the plan its plan nodes; and the decisions the asks, the decisions and the readings
+// under an agent's decision. Adding component to the spec's takes changes no record's layout and no
+// record of an issue that holds no component block, which no build before block schema version 7
+// could write, so QueryDefinitionVersion stays (TestTheSpecQueryTakesComponentsUnderOneDefinition).
 var queryTakes = map[string][]string{
-	QuerySpec:         {"callout", "criterion", "requirement"},
+	QuerySpec:         {"callout", "criterion", "requirement", "component"},
 	QueryVerification: {"check", "result"},
 	QueryPlan:         {"plan_task"},
 	QueryDecisions:    {"ask", "decision", "reading"},

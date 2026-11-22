@@ -1,5 +1,5 @@
 {
-  "version": 6,
+  "version": 7,
   "nodes": [
     { "name": "doc" },
     { "name": "paragraph" },
@@ -125,6 +125,38 @@
           "items": ["ask", "comment", "message"],
           "since": 6,
           "creatable_since": 6
+        },
+        "kind": {
+          "kind": "enum",
+          "choices": ["behavior", "structure", "property"],
+          "since": 7,
+          "creatable_since": 7
+        },
+        "under": {
+          "kind": "string",
+          "since": 7,
+          "creatable_since": 7
+        },
+        "supports": {
+          "kind": "string",
+          "since": 7,
+          "creatable_since": 7
+        },
+        "about": {
+          "kind": "string",
+          "since": 7,
+          "creatable_since": 7
+        },
+        "base": {
+          "kind": "string",
+          "since": 7,
+          "creatable_since": 7
+        },
+        "removes": {
+          "kind": "bool",
+          "default": false,
+          "since": 7,
+          "creatable_since": 7
         }
       },
       "since": 3,
@@ -194,6 +226,54 @@
           "items": ["ask", "comment", "message"],
           "since": 6,
           "creatable_since": 6
+        },
+        "statement": {
+          "kind": "string",
+          "since": 7,
+          "creatable_since": 7
+        },
+        "subject": {
+          "kind": "enum",
+          "choices": ["code", "production", "graph"],
+          "since": 7,
+          "creatable_since": 7
+        },
+        "procedure": {
+          "kind": "enum",
+          "choices": ["program", "query", "agent"],
+          "since": 7,
+          "creatable_since": 7
+        },
+        "runner": {
+          "kind": "string",
+          "since": 7,
+          "creatable_since": 7
+        },
+        "selector": {
+          "kind": "string",
+          "since": 7,
+          "creatable_since": 7
+        },
+        "job": {
+          "kind": "string",
+          "since": 7,
+          "creatable_since": 7
+        },
+        "time_limit": {
+          "kind": "string",
+          "since": 7,
+          "creatable_since": 7
+        },
+        "base": {
+          "kind": "string",
+          "since": 7,
+          "creatable_since": 7
+        },
+        "removes": {
+          "kind": "bool",
+          "default": false,
+          "since": 7,
+          "creatable_since": 7
         }
       },
       "since": 3,
@@ -279,6 +359,47 @@
       },
       "since": 6,
       "creatable_since": 6
+    },
+    {
+      "name": "component",
+      "content": "paragraph+",
+      "render": "host",
+      "attributes": {
+        "name": {
+          "kind": "string",
+          "since": 7,
+          "creatable_since": 7
+        },
+        "kind": {
+          "kind": "enum",
+          "choices": ["interface"],
+          "since": 7,
+          "creatable_since": 7
+        },
+        "under": {
+          "kind": "string",
+          "since": 7,
+          "creatable_since": 7
+        },
+        "joins": {
+          "kind": "string",
+          "since": 7,
+          "creatable_since": 7
+        },
+        "base": {
+          "kind": "string",
+          "since": 7,
+          "creatable_since": 7
+        },
+        "removes": {
+          "kind": "bool",
+          "default": false,
+          "since": 7,
+          "creatable_since": 7
+        }
+      },
+      "since": 7,
+      "creatable_since": 7
     }
   ]
 }
