@@ -217,12 +217,13 @@ type rolePushCall struct {
 
 func (c rolePushCall) has(word string) bool { return slices.Contains(c.args, word) }
 
-// rolePushGlobalValues are jj's global options whose value may be the next word, which the pod's
-// wrapper (packages/daemon/docker/jj) skips to find a command's subcommand pair.
+// rolePushGlobalValues are jj's global options whose value may be the next word, which legion jj's
+// reading of a push (readJJPush, jjGlobalValues) skips to find a command's subcommand pair.
 var rolePushGlobalValues = []string{"-R", "--repository", "--at-operation", "--at-op", "--color", "--config", "--config-file", "--config-toml"}
 
-// pair is the call's subcommand pair, as the pod's wrapper finds it: its first two words that are
-// no option and no value of one of rolePushGlobalValues.
+// pair is the call's subcommand pair, as legion jj's reading of a push finds it in a line jj has
+// no alias left to expand in: its first two words that are no option and no value of one of
+// rolePushGlobalValues.
 func (c rolePushCall) pair() [2]string {
 	var pair [2]string
 	n := 0
@@ -2813,31 +2814,38 @@ export HOST_JJ_DEPTH
 exec jj "$@"
 `
 
+// rolePushHostPath is the PATH of a host's jj script that calls jj by PATH, after the form's jj.
+func rolePushHostPath(f *rolePushFixture) string {
+	host := filepath.Join(f.root, "host")
+	f.script(host, "jj", rolePushHostJJ)
+	if f.form == rolePushTmux {
+		return f.install(host+":"+f.after) + ":" + host + ":" + f.after
+	}
+	return f.formDir + ":" + host + ":" + f.after
+}
+
 // rolePushPanesRows are the PATHs on which a pane's jj comes back to itself: its directory twice, a
 // host's jj that runs jj by PATH after it, and a second Legion directory in front of it, as a
-// controller started from a pane has. The pod's wrapper runs its jj by its full path, so under the
-// pod's form a host's jj after it is never reached, and the second directory is another of the
-// image's: a bin that workerbin.Install writes in front of the pod's wrappers would hold a git of
-// its own, which the pod's jj refuses as no leak check's.
+// controller started from a pane has. A row whose alias is not "" sets aliases.p to it in the
+// repository's configuration and pushes with `jj p --bookmark legion/K-1`, a push that jj expands.
+// The pod's wrapper runs its jj by its full path, so under the pod's form a host's jj after it is
+// never reached, and the second directory is another of the image's: a bin that workerbin.Install
+// writes in front of the pod's wrappers would hold a git of its own, which the pod's jj refuses as
+// no leak check's.
 var rolePushPanesRows = []struct {
-	name string
-	path func(f *rolePushFixture) string
+	name  string
+	path  func(f *rolePushFixture) string
+	alias string
 }{
 	{name: "its directory twice on PATH", path: func(f *rolePushFixture) string { return f.formDir + ":" + f.path }},
-	{name: "a host jj script that calls jj by PATH", path: func(f *rolePushFixture) string {
-		host := filepath.Join(f.root, "host")
-		f.script(host, "jj", rolePushHostJJ)
-		if f.form == rolePushTmux {
-			return f.install(host+":"+f.after) + ":" + host + ":" + f.after
-		}
-		return f.formDir + ":" + host + ":" + f.after
-	}},
+	{name: "a host jj script that calls jj by PATH", path: rolePushHostPath},
 	{name: "two Legion bin directories", path: func(f *rolePushFixture) string {
 		if f.form == rolePushTmux {
 			return f.install(f.path) + ":" + f.path
 		}
 		return f.podDir(filepath.Join(f.root, "second-pod-bin")) + ":" + f.path
 	}},
+	{name: "an alias push through a host jj script that calls jj by PATH", path: rolePushHostPath, alias: `["git", "push"]`},
 }
 
 // A pane's jj never runs itself again: with its directory twice on PATH, with a host's jj script
@@ -2847,6 +2855,11 @@ var rolePushPanesRows = []struct {
 // come before its metaedit, since no commit the push sends lacks an author, so a dry run after it
 // is a second run of the step: one on the real push takes no snapshot, since the push's words carry
 // the step's --ignore-working-copy, and runs no metaedit, since the commit has its author by then.
+// A push that jj expands from an alias, through that host's jj, runs the step once too. Under the
+// tmux form legion jj reads the aliases once, a `jj config list` that names no key, which the
+// host's jj brings back into the pane's jj, and that jj passes it on with no read of its own.
+// Under the pod's form the pod's wrapper expands the line, with reads that each name a key, and
+// legion jj makes no read.
 func TestThePanesJJNeverRunsItselfAgain(t *testing.T) {
 	t.Parallel()
 	impl, rev := rolePushImplementer, rolePushReviewer
@@ -2855,17 +2868,29 @@ func TestThePanesJJNeverRunsItselfAgain(t *testing.T) {
 			t.Parallel()
 			rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
 				f := newRolePushFixture(t, form, rolePushRecords)
+				args, reads := rolePushBookmark, 0
+				if row.alias != "" {
+					f.jj(impl, "config", "set", "--repo", "aliases.p", row.alias)
+					args = []string{"p", "--bookmark", "legion/K-1"}
+					if form == rolePushTmux {
+						reads = 1
+					}
+				}
 				c := f.commitOn(rev, impl, "main", rolePushMessage("work", "implementer"))
 				f.bookmark("legion/K-1", c.commit)
 				path := row.path(f)
 				divergent := f.divergence()
-				code, _, stderr := f.pushOn(path, impl, rolePushBookmark...)
-				f.check(rolePushSends("legion/K-1", c, "implementer", impl), rolePushBookmark, code, stderr, divergent, 0)
+				code, _, stderr := f.pushOn(path, impl, args...)
+				f.check(rolePushSends("legion/K-1", c, "implementer", impl), args, code, stderr, divergent, 0)
 				calls := f.calls()
-				var snapshot, metaedit, push int
+				var snapshot, metaedit, push, read int
 				var again [][]string
 				for _, call := range calls {
 					switch {
+					case call.pair() == [2]string{"config", "list"}:
+						if !slices.ContainsFunc(call.args, func(arg string) bool { return strings.HasPrefix(arg, "aliases.") || arg == "ui.default-command" }) {
+							read++
+						}
 					case call.has("metaedit"):
 						metaedit++
 					case call.has("--dry-run"):
@@ -2883,6 +2908,9 @@ func TestThePanesJJNeverRunsItselfAgain(t *testing.T) {
 				}
 				if len(again) != 0 {
 					t.Errorf("the recording jj saw the dry runs %q after the step's metaedit, want none: the step ran again on the real push, which the loop guard skips where wrappedJJStepped is the digest of the push's own words, the step's --ignore-working-copy among them (jjStepped)\n%v", again, calls)
+				}
+				if read != reads {
+					t.Errorf("the recording jj saw %d reads of the aliases by legion jj, want %d\n%v", read, reads, calls)
 				}
 			})
 		})

@@ -6,9 +6,13 @@ import (
 	"strings"
 )
 
-// This file reads a jj command line as `legion jj` (jj.go) reads it: its subcommand pair, whether
-// it is a push the step runs before, the options every command of the step carries, the words
-// that stay on the real push alone, and each revision argument (readJJPush).
+// This file reads a jj command line as `legion jj` (jj.go) reads it once jj has no alias left to
+// expand in it: its subcommand pair, whether it is a push the step runs before, the options every
+// command of the step carries, the words that stay on the real push alone, and each revision
+// argument (readJJPush). Each line it reads is a line that jj expands no further: one whose command
+// word is a built-in jj command, as the role wrote it, or the expansion of the role's line through
+// jj's aliases and ui.default-command, which the pod's wrapper (packages/daemon/docker/jj) makes in
+// a pod and expandJJ under tmux.
 
 // jjPush is a jj command line as legion jj reads it (readJJPush).
 type jjPush struct {
@@ -85,8 +89,9 @@ func (p jjPush) revisionWords(i int, words []string) iter.Seq[string] {
 // index from offset on. jj itself resolves it (jjStep.readRevisions).
 type jjRevision struct{ index, offset int }
 
-// jjGlobalValues are jj's global options whose value may be the next word: the list of the pod's
-// wrapper (packages/daemon/docker/jj), which finds the subcommand pair past them.
+// jjGlobalValues are jj's global options whose value may be the next word, which readJJPush skips
+// to find the subcommand pair: those that the pod's wrapper (packages/daemon/docker/jj) and
+// jjCommandWord skip, and --config-toml.
 var jjGlobalValues = []string{"-R", "--repository", "--at-operation", "--at-op", "--color", "--config", "--config-file", "--config-toml"}
 
 // jjPushValues are jj's global options and `jj git push`'s own whose value may be the next word.
@@ -101,13 +106,12 @@ type jjOccurrence struct {
 	level, first, last int
 }
 
-// readJJPush reads args, a jj command line. It finds the subcommand pair as the pod's wrapper
-// (packages/daemon/docker/jj) finds it: the first two words that are no option and no option's
-// value, jj's global options being the ones that take one. Past the pair it reads `git push`'s
-// options too, and each revision argument (jjRevision). An option takes its value as the next
-// word, after `=` (`--change=X`, `-c=X`), or attached to a short name (`-cX`), as clap reads each.
-// It reads no word from the first `--` on (end), each of which clap reads as a positional
-// argument.
+// readJJPush reads args, a jj command line that jj expands no further. It finds the subcommand
+// pair: the first two words that are no option and no option's value, jj's global options being
+// the ones that take one. Past the pair it reads `git push`'s options too, and each revision
+// argument (jjRevision). An option takes its value as the next word, after `=` (`--change=X`,
+// `-c=X`), or attached to a short name (`-cX`), as clap reads each. It reads no word from the
+// first `--` on (end), each of which clap reads as a positional argument.
 //
 // It records each -R/--repository, --config, --config-file and --config-toml with its level
 // (jjOccurrence), and keeps in options those jj keeps, in the order written: every

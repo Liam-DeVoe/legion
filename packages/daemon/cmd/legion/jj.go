@@ -29,6 +29,8 @@ A jj wrapper runs this command, never a person. It runs a jj with the arguments 
 Before a jj git push, it first sets the author of each commit the push sends from that
 commit's first Legion-Role trailer: the identity LEGION_ROLE_IDENTITIES gives that role, by
 one jj metaedit --update-author for each role. It prints one line for each commit it rewrote.
+With --after, it first expands the arguments as jj does, through jj's aliases and
+ui.default-command, so a command that jj runs as a jj git push is one too.
 
   --real <jj>          run <jj>, the real jj (the pod's form: /usr/local/bin/jj)
   --after <directory>  run the next jj on PATH after <directory>, the wrapper's own directory
@@ -68,39 +70,49 @@ func jjStepped(words []string) string {
 }
 
 // runJJ is `legion jj`. Both of Legion's jj wrappers run it: the pod's /opt/legion/bin/jj
-// (packages/daemon/docker/jj) hands it each `jj git push` with --real /usr/local/bin/jj after its
-// two setup checks, and the jj first on a tmux pane's PATH (workerbin.Install's bin/jj) hands it
-// every command with --after and its own directory. It reads its arguments and puts back the
-// signals' actions as runGit does (startWrapper), chooses the jj to run (pickAfter for --after),
-// runs the author step before a push (jjStep), and replaces itself with that jj (execWrapped), so
-// a stop of the process group and its budgets reach jj as before. A command that is no push, a
-// push the step leaves alone (readJJPush), a process with no table (runtime.RoleIdentitiesVariable
-// unset, as a controller's is), and a push whose wrappedJJStepped is the digest of its own words
-// (jjStepped), the same push come back after its step, run that jj at once, with nothing printed
-// and no other process started. A table that is set but cannot be used
-// (runtime.ReadRoleIdentities) prints one line, and then runs the same. The push that runs after
-// the step gets each revision argument in the words the step gives it (jjStep.given), the role's
-// own where they still name the commits jjStep.revisionGiven says it names; the line of an
-// argument it gets as the ids of its commits comes after the step's lines of its rewrites
-// (report). The step takes at most one snapshot of the working copy, the one the push would take
-// itself, before it changes a commit or a word of the push, and only where the push takes a
-// snapshot of its own (jjPush.noSnapshot); errJJSnapshot lists what makes it take it. Where the
-// step took its snapshot (jjStep.snapshotted), the real push runs with --ignore-working-copy, on
-// every path, and takes no snapshot of its own: @ resolves against the step's snapshot, a write
-// another process makes after the step's snapshot stays in the working copy for the next jj
-// command, and a warning a snapshot prints is printed once. The role's own --ignore-working-copy
-// keeps the step from taking a snapshot, so the real push never gets that flag twice, which jj
-// 0.38 refuses. After a step that changes nothing more (errJJAsWritten), past a dry run it cannot
-// read, a metaedit that jj refuses because the commit it would make exists already
-// (jjStep.metaedit), or a push whose command would pass jjArgMax bytes (jjStep.checkArgMax), only
-// a commit that a metaedit of the step moved counts as replaced, and every argument is held to
-// the commits it named before the step only where a metaedit ran. The push that runs after the
-// step, or after the line of a table it cannot use, gets wrappedJJStepped set to the digest of the
-// words it runs with, the step's --ignore-working-copy among them; the step's own commands do not.
+// (packages/daemon/docker/jj) hands it each line it expands into a `jj git push`, with --real
+// /usr/local/bin/jj, after its two setup checks, and the jj first on a tmux pane's PATH
+// (workerbin.Install's bin/jj) hands it every command with --after and its own directory. It reads
+// its arguments and puts back the signals' actions as runGit does (startWrapper), chooses the jj to
+// run (pickAfter for --after), runs the author step before a push (jjStep), and replaces itself
+// with that jj (execWrapped), so a stop of the process group and its budgets reach jj as before.
+// A process under shell completion (jjCompleting), a process with no table
+// (runtime.RoleIdentitiesVariable unset, as a controller's is), and a command whose
+// wrappedJJStepped is the digest of its own words (jjStepped), the same push come back after its
+// step, run that jj at once, with nothing printed and no other process started. Under --after,
+// every other command is first expanded as jj expands it (expandJJ): a command whose word is a
+// built-in command, `jj git push` among them, with no read, and any other, a bare `jj` included,
+// after one read of jj's aliases and ui.default-command (readJJAliases). A command that is no push
+// the step runs before (readJJPush), as the role wrote it or as jj expands it, runs that jj at once
+// with the role's own words, byte for byte, which jj then expands itself; one that legion jj cannot
+// expand (jjUnexpandable) prints one line first, `legion jj: could not expand <what>: <why>; the
+// command runs as written`. The --real form expands nothing: its line is the pod's wrapper's
+// expansion already. A table that is set but cannot be used (runtime.ReadRoleIdentities) prints
+// one line before a push, which then runs as jj expands it, with no step. A push the step runs
+// before, written or expanded, is the line the step reads and the line the real push runs with
+// the step's words. The push that runs after the step gets each revision argument in the words the
+// step gives it (jjStep.given), the role's own where they still name the commits
+// jjStep.revisionGiven says it names; the line of an argument it gets as the ids of its commits
+// comes after the step's lines of its rewrites (report). The step takes at most one snapshot of the
+// working copy, the one the push would take itself, before it changes a commit or a word of the
+// push, and only where the push takes a snapshot of its own (jjPush.noSnapshot); errJJSnapshot
+// lists what makes it take it. Where the step took its snapshot (jjStep.snapshotted), the real push
+// runs with --ignore-working-copy, on every path, and takes no snapshot of its own: @ resolves
+// against the step's snapshot, a write another process makes after the step's snapshot stays in
+// the working copy for the next jj command, and a warning a snapshot prints is printed once. The
+// role's own --ignore-working-copy keeps the step from taking a snapshot, so the real push never
+// gets that flag twice, which jj 0.38 refuses. After a step that changes nothing more
+// (errJJAsWritten), past a dry run it cannot read, a metaedit that jj refuses because the commit
+// it would make exists already (jjStep.metaedit), or a push whose command would pass jjArgMax bytes
+// (jjStep.checkArgMax), only a commit that a metaedit of the step moved counts as replaced, and
+// every argument is held to the commits it named before the step only where a metaedit ran. The
+// push that runs after the step, or after the line of a table it cannot use, gets wrappedJJStepped
+// set to the digest of the words it runs with, the step's --ignore-working-copy among them; the
+// step's own commands do not.
 //
-// An interrupt or a terminate ends legion jj where it stands. The step's own commands are
-// children in this process's group, so a signal sent to the group ends them too, and the push
-// never starts.
+// An interrupt or a terminate ends legion jj where it stands. The read of the aliases and the
+// step's own commands are children in this process's group, so a signal sent to the group ends
+// them too, and the command never starts.
 func runJJ(ctx context.Context, args []string, _, stderr io.Writer) int {
 	if status, runs := startWrapper(ctx, "jj", jjUsage, args, stderr); !runs {
 		return status
@@ -116,15 +128,25 @@ func runJJ(ctx context.Context, args []string, _, stderr io.Writer) int {
 		next, chain = pick.run, pick.chain
 	}
 	env := withVariable(os.Environ(), wrappedJJAt, chain.String())
-	push := readJJPush(jjArgs)
 	value, set := os.LookupEnv(runtime.RoleIdentitiesVariable)
-	if !push.steps() || !set || os.Getenv(wrappedJJStepped) == jjStepped(jjArgs) {
+	if jjCompleting() || !set || os.Getenv(wrappedJJStepped) == jjStepped(jjArgs) {
+		return execWrapped("legion jj", next, jjArgs, env, nil, stderr)
+	}
+	line := jjArgs
+	if args[0] == "--after" {
+		var err error
+		if line, err = expandJJ(jjArgs, next, env); err != nil {
+			fmt.Fprintf(stderr, "legion jj: %v; the command runs as written\n", err)
+		}
+	}
+	push := readJJPush(line)
+	if !push.steps() {
 		return execWrapped("legion jj", next, jjArgs, env, nil, stderr)
 	}
 	table, why := runtime.ReadRoleIdentities(value)
 	if why != "" {
 		fmt.Fprintf(stderr, "legion jj: %s is %s; the push runs with no author step\n", runtime.RoleIdentitiesVariable, why)
-		return execWrapped("legion jj", next, jjArgs, withVariable(env, wrappedJJStepped, jjStepped(jjArgs)), nil, stderr)
+		return execWrapped("legion jj", next, line, withVariable(env, wrappedJJStepped, jjStepped(line)), nil, stderr)
 	}
 	step := &jjStep{push: push, next: next, env: env, table: table, stderr: stderr}
 	err := step.rewrite()
@@ -391,7 +413,7 @@ func (s *jjStep) dryRunFilled() ([]string, error) {
 		}
 		id, refusal, ok := jjNoAuthorCommit(stderr)
 		if !ok {
-			return nil, s.unreadable(jjErrorLine(stderr, code))
+			return nil, s.unreadable(jjErrorLine(stderr, "the dry run", code))
 		}
 		fillable, err := s.readFillable(given)
 		if err != nil {
@@ -957,11 +979,13 @@ func (s *jjStep) command(env, args []string) (stdout, stderr string, code int, e
 	return out.String(), errOut.String(), 0, nil
 }
 
-// jjErrorLine is the line the step names when it cannot read a dry run that exited code: the
-// first line of output that starts with `Error: `, jj's error, which may follow a notice such as
-// the `Creating bookmark push-<change> for revision <change>` of `jj git push -c`; else the first
-// line that is not blank, or what stands for it when there is none.
-func jjErrorLine(output string, code int) string {
+// jjErrorLine is the line that names the failure of a jj command that exited code, command being
+// what stands for the command: the first line of output, its standard error, that starts with
+// `Error: `, jj's error, which may follow a notice such as the `Creating bookmark push-<change> for
+// revision <change>` of `jj git push -c`; else the first line that is not blank, or a line that
+// says it printed nothing. The step names it where it cannot read a dry run, and the expansion
+// where its read of the aliases fails (readJJAliases).
+func jjErrorLine(output, command string, code int) string {
 	first := ""
 	for line := range strings.SplitSeq(output, "\n") {
 		if strings.HasPrefix(line, "Error: ") {
@@ -974,5 +998,5 @@ func jjErrorLine(output string, code int) string {
 	if first != "" {
 		return first
 	}
-	return fmt.Sprintf("the dry run exited %d and printed nothing", code)
+	return fmt.Sprintf("%s exited %d and printed nothing", command, code)
 }

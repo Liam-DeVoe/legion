@@ -25,8 +25,9 @@ import (
 // daemon started from a pane's shell can resolve either wrapper here. Workspace jj then runs the
 // git wrapper as its git.executable-path, which does no harm: the wrapper reaches a real git one
 // exec later, and provisioning makes no commit. The jj wrapper does no harm either: `legion jj`
-// runs every command but a push on the next jj unchanged, checkJJVersion reads `jj --version`
-// through it, and provisioning runs no push.
+// runs every command but a push on the next jj with its own words, provisioning's commands and
+// checkJJVersion's `jj --version` with no read before them, since each is a built-in jj command or
+// a version flag, and provisioning runs no push.
 var daemonTools = []string{"git", "jj", "gh"}
 
 // toolEnv is the daemon's own override for a tool at boot, LEGION_<TOOL>_PATH. A pane is told
