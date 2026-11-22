@@ -189,3 +189,42 @@ func TestHoldEveryExitAfterAnIntentWritesItsStop(t *testing.T) {
 		})
 	}
 }
+
+// The exception to that rule: `hold abort` and `hold release` cut after their row move (here their
+// done write fails, as a database away for that request) exit with their intent pending, the row
+// released, and no stop. Their own rerun is admitted on that intent, reads the row released, writes
+// the done entry the move left and ends the hold. Control: a go test -overlay copy of hold.go whose
+// two exits after the move write the stop instead; the rerun then cannot end the hold (abort reads
+// the released row as already released and writes nothing; release refuses a released row whose
+// journal has not ended), and the row fails naming it.
+func TestHoldAbortAndReleaseCutAfterTheirMoveLeaveTheirIntentForTheirRerun(t *testing.T) {
+	for _, row := range []struct {
+		name, command, action string
+		hold                  func(h *heldStack) string
+	}{
+		{"hold abort", holdrecord.CommandAbort, actionAbort, func(h *heldStack) string {
+			h.seedProtectedStreams()
+			return h.hubRestoreHold()
+		}},
+		{"hold release", holdrecord.CommandRelease, actionRelease, func(h *heldStack) string {
+			id := h.s.Prepare(h.t, holdrecord.WorkflowBucketsCreate)
+			h.s.HoldWithoutTheSteps(h.t, id)
+			return id
+		}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			h := newHeldStack(t)
+			id := row.hold(h)
+			h.brokerFails(journalWrite(row.command, holdrecord.StateDone))
+			code, stdout, stderr := h.run(row.action, "--hold", id, "--reason", "cut after its move")
+			require.NotZero(t, code, "%s whose done write failed exited 0: %s%s", row.name, stdout, stderr)
+			require.Equal(t, natsgrant.OperatorPhaseReleased, h.row().Phase, "%s did not move the row before its done write", row.name)
+			require.Equal(t, holdrecord.StateIntent, latestState(h.journal(id), row.command), "%s's exit after its move did not leave its intent pending: %v", row.name, h.journalCommands(id))
+
+			code, stdout, stderr = h.run(row.action, "--hold", id, "--reason", "the rerun")
+			require.Zero(t, code, "%s's rerun after its cut: %s%s", row.name, stdout, stderr)
+			require.Contains(t, stdout, "done entry is now written")
+			require.Equal(t, holdrecord.StateDone, latestState(h.journal(id), row.command), "%s's rerun did not end the hold", row.name)
+		})
+	}
+}

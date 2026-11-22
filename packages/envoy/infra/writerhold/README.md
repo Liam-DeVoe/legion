@@ -108,6 +108,19 @@ hold whose `hold set` is not done (one `hold prepare` made, or one whose set sto
 first, and that set checks `--minters-report` as `hold set` does, printing each allowance and
 recording it in its done entry.
 
+### Every exit after an intent writes its stop
+
+Every command's exit after its intent, an UNKNOWN included, writes the command's stop, which ends
+the pending intent, so `hold abort` (or `hold release`, where the record allows it) is admitted
+after it. That holds for an intent a killed run left too: its rerun's exits before its own
+admission write that stop (`hold set`'s rerun and `hold prove`'s on the probe check, a held
+command's on its hub connect). The exception is `hold abort`'s and `hold release`'s exits after
+their row move: there the intent stays pending on purpose, since their own rerun is admitted on
+it, reads the row released, and writes the done entry the move left; a stop there would leave a
+released row whose journal no command ends, since a released row admits `hold abort` only while
+the journal shows prepare (TestHoldEveryExitAfterAnIntentWritesItsStop,
+TestHoldAbortAndReleaseCutAfterTheirMoveLeaveTheirIntentForTheirRerun).
+
 ### The probe's refusal
 
 Each dial of the probe, at `hold set`'s step 2 and at the proof of each restarted server in
