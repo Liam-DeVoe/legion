@@ -26,12 +26,6 @@ import (
 // (registrationLockTimeout), spelled again here for the timing lane's reading of the refusal.
 const registrationGateBound = 5 * time.Second
 
-// pastRegistrationBound is how far past registrationGateBound the row requires a dashboard
-// publish to be still waiting for the gate, on the database's clock: room for the statement's
-// start before its trigger asks for the gate, and for a bound of the publish's own at the
-// registration's 5 seconds to have ended its wait by then.
-const pastRegistrationBound = time.Second
-
 // registrationLockTimeout is the setting owner_lock_legacy_registration runs under (pg_proc's
 // proconfig), as Postgres holds it: what bounds the registration's wait, and the one place the
 // migration (20261115200014_owner_lock_legacy_gate) sets it.
@@ -57,10 +51,13 @@ func registrationLockTimeout(t *testing.T, s *Store) []string {
 // fails by name. The bound itself is the function's lock_timeout of 5 seconds, read off pg_proc,
 // so a migration that raised it fails here; how long the refusal takes on the clock is the timing
 // lane's (TestAnEarlierBuildsRegistrationIsRefusedWithinItsBoundOnTheClock). That the publish
-// waits past the bound is read on the database's clock, where the product's bounds run: its
-// backend still waits for the gate once its insert has run registrationGateBound and
-// pastRegistrationBound, so a bound set anywhere on its path (its session, the gate's trigger
-// function, or a function that one calls) ends the publish first and fails the row by name.
+// waits past the bound is read off that bound itself, and the row reads no clock: the publish
+// waits for the gate first, then two registrations wait behind it one after the other, each until
+// its lock_timeout refuses it, and the publish still waits. Each registration began to wait after
+// the publish did, so by the second refusal the publish has waited longer than two of those
+// lock_timeouts: a bound of the publish's own (in its session, the gate's trigger function, or a
+// function that one calls) at the registration's 5 seconds, or up to about twice that, has ended
+// its wait by then and fails the row by name.
 func TestAnEarlierBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *testing.T) {
 	s, owners := openFleetStore(t)
 	ctx := context.Background()
@@ -81,29 +78,6 @@ func TestAnEarlierBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *testi
 	}
 
 	registration, publish := earlierBuildArrivals[1], earlierBuildArrivals[0]
-	registrationConn, err := s.Pool.Acquire(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer registrationConn.Release()
-	registered := make(chan error, 1)
-	go func() { registered <- arriveOn(ctx, registrationConn, registration, uuid.NewString()) }()
-	awaitGateWait(t, s, registrationConn.Conn().PgConn().PID(), registered, registration.name)
-	beat := make(chan error, 1)
-	go func() { beat <- heartbeatAsThisBuild(ctx, s, mine) }()
-	err = testwait.Receive(t, registration.name+" behind a transaction holding the gate to be refused at its lock_timeout", registered)
-	var pgErr *pgconn.PgError
-	if !errors.As(err, &pgErr) || pgErr.Code != "55P03" {
-		t.Fatalf("%s behind a transaction holding the gate past the bound ended with %v, want 55P03 lock_not_available", registration.name, err)
-	}
-	t.Logf("%s was refused: %s", registration.name, pgErr.Message)
-	if err := testwait.Receive(t, "this build's heartbeat to go through once "+registration.name+" was refused", beat); err != nil {
-		t.Fatalf("this build's heartbeat after %s was refused: %v", registration.name, err)
-	}
-	if hasLegacyMark(t, s) {
-		t.Errorf("%s was refused and the earlier build's mark is stamped, want none", registration.name)
-	}
-
 	publishConn, err := s.Pool.Acquire(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -114,7 +88,8 @@ func TestAnEarlierBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *testi
 	// statement_timeout, and the gate's trigger function it waits in (owner_lock_legacy_arrival)
 	// carries neither in its settings, as owner_lock_legacy_registration's settings carry its own
 	// (registrationLockTimeout). A bound set anywhere else on the publish's path, in a function's
-	// body or a callee's settings, is caught by what the publish does: the wait below.
+	// body or a callee's settings, is caught by what the publish does: it still waits for the gate
+	// once the registrations below are refused.
 	var sessionLockTimeout, sessionStatementTimeout string
 	if err := publishConn.QueryRow(ctx, `select current_setting('lock_timeout'), current_setting('statement_timeout')`).Scan(&sessionLockTimeout, &sessionStatementTimeout); err != nil {
 		t.Fatalf("read %s's session timeouts: %v", publish.name, err)
@@ -135,36 +110,60 @@ func TestAnEarlierBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *testi
 	go func() { published <- arriveOn(ctx, publishConn, publish, uuid.NewString()) }()
 	publishPID := publishConn.Conn().PgConn().PID()
 	awaitGateWait(t, s, publishPID, published, publish.name)
-	// The publish still waits for the gate past the registration's bound, read on the database's
-	// clock in one statement: its backend waits on a Lock, its gate request is not granted, and its
-	// insert, the statement whose trigger waits, started registrationGateBound and
-	// pastRegistrationBound before the database's now(). A publish that ends first, as one a bound
-	// on its path cuts off ends, fails the row naming its error. No clock of the test process is read.
-	want := registrationGateBound + pastRegistrationBound
-	testwait.Until(t, publish.name+" to still wait for the gate "+want.String()+" into its insert, on the database's clock", func() (string, bool) {
-		select {
-		case err := <-published:
-			t.Fatalf("%s ended (%v) while a transaction held the gate shared, before it had waited %s on the database's clock; want it to keep waiting past the registration's bound",
-				publish.name, err, want)
-		default:
+	// Two registrations, one after the other on a connection of their own, wait for the gate
+	// behind the publish, and each is refused at its lock_timeout. Each began to wait after the
+	// publish did, so the publish has waited for the gate longer than one lock_timeout at the first
+	// refusal and longer than two at the second.
+	registrationConn, err := s.Pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer registrationConn.Release()
+	for _, nth := range []string{"first", "second"} {
+		what := fmt.Sprintf("%s (the %s)", registration.name, nth)
+		registered := make(chan error, 1)
+		go func() { registered <- arriveOn(ctx, registrationConn, registration, uuid.NewString()) }()
+		awaitGateWait(t, s, registrationConn.Conn().PgConn().PID(), registered, what)
+		beat := make(chan error, 1)
+		go func() { beat <- heartbeatAsThisBuild(ctx, s, mine) }()
+		err := testwait.Receive(t, what+" behind a transaction holding the gate to be refused at its lock_timeout", registered)
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Code != "55P03" {
+			t.Fatalf("%s behind a transaction holding the gate past the bound ended with %v, want 55P03 lock_not_available", what, err)
 		}
-		var waitEventType string
-		var waitedMicros int64
-		var gateWaiting bool
-		if err := s.Pool.QueryRow(ctx, `
-			select coalesce(a.wait_event_type, ''), (extract(epoch from now() - a.query_start) * 1000000)::bigint,
-			  exists (select 1 from pg_locks l
-			    where l.pid = a.pid and l.locktype = 'advisory' and not l.granted and l.mode = 'ExclusiveLock'
-			      and l.database = (select oid from pg_database where datname = current_database())
-			      and l.classid::bigint = $2 and l.objid::bigint = $3 and l.objsubid = 2)
-			from pg_stat_activity a where a.pid = $1`,
-			publishPID, OwnerLockGateNamespace, OwnerLockGateKey).Scan(&waitEventType, &waitedMicros, &gateWaiting); err != nil {
-			t.Fatalf("read %s's wait on the database: %v", publish.name, err)
+		t.Logf("%s was refused: %s", what, pgErr.Message)
+		if err := testwait.Receive(t, "this build's heartbeat to go through once "+what+" was refused", beat); err != nil {
+			t.Fatalf("this build's heartbeat after %s was refused: %v", what, err)
 		}
-		waited := time.Duration(waitedMicros) * time.Microsecond
-		return fmt.Sprintf("wait event type %q, waiting for the gate %t, %s into its statement", waitEventType, gateWaiting, waited),
-			waitEventType == "Lock" && gateWaiting && waited >= want
-	})
+		if hasLegacyMark(t, s) {
+			t.Errorf("%s was refused and the earlier build's mark is stamped, want none", what)
+		}
+	}
+	// The publish still waits for the gate after the second refusal, read once: its backend waits
+	// on a Lock, its gate request is not granted, and it has not ended. Its end is read after its
+	// backend, so a publish that a bound of its own cut off fails the row naming its error.
+	var waitEventType string
+	var gateWaiting bool
+	if err := s.Pool.QueryRow(ctx, `
+		select coalesce(a.wait_event_type, ''),
+		  exists (select 1 from pg_locks l
+		    where l.pid = a.pid and l.locktype = 'advisory' and not l.granted and l.mode = 'ExclusiveLock'
+		      and l.database = (select oid from pg_database where datname = current_database())
+		      and l.classid::bigint = $2 and l.objid::bigint = $3 and l.objsubid = 2)
+		from pg_stat_activity a where a.pid = $1`,
+		publishPID, OwnerLockGateNamespace, OwnerLockGateKey).Scan(&waitEventType, &gateWaiting); err != nil {
+		t.Fatalf("read %s's wait on the database: %v", publish.name, err)
+	}
+	select {
+	case err := <-published:
+		t.Fatalf("%s ended (%v) while a transaction held the gate shared, by the time %s was refused twice at its lock_timeout; want it to keep waiting past the registration's bound",
+			publish.name, err, registration.name)
+	default:
+	}
+	if waitEventType != "Lock" || !gateWaiting {
+		t.Fatalf("%s's backend has wait event type %q and waits for the gate %t once %s was refused twice at its lock_timeout, while a transaction holds the gate shared; want it still waiting for the gate",
+			publish.name, waitEventType, gateWaiting, registration.name)
+	}
 	if err := holder.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
