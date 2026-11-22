@@ -753,3 +753,40 @@ func TestTheSentencesTheLastAcceptanceRoundShowedFalseAgreeWithTheDaemon(t *test
 		})
 	}
 }
+
+// The daemon does none of the merger's reads for it, though it reads the head, the reviews and the
+// checks for its own record (reviewRound, tellChecks). A phase moves on from the legion tool's
+// handoff_complete and request_backward_move and from GitHub's events: the reviewer's review ends
+// its round with or without its completion (workflow's reviewRound), and the merge ends merging. A
+// completion that comes after the review is recorded on the round the review ended
+// (reportEndedStep). Each part is read alone, by its name. This shows the text is loaded, never
+// that an agent follows it.
+func TestThePartsSayWhatEndsAPhaseAndWhatTheDaemonReads(t *testing.T) {
+	for _, tc := range []struct {
+		part       string
+		want, gone []string
+	}{
+		{
+			"merger.md",
+			[]string{"it makes for you none of the reads of the head you merge, its checks and the reviewer's approval"},
+			[]string{"it reads neither the head you merge, nor its checks, nor the reviewer's approval"},
+		},
+		{
+			"worker-common.md",
+			[]string{"moves a phase on only from the `legion` tool's `handoff_complete` and `request_backward_move` and from the GitHub events your role part names, such as the reviewer's review and the merge."},
+			[]string{"`handoff_complete` is the only way to finish a phase"},
+		},
+		{
+			"reviewer.md",
+			[]string{
+				"Your review ends the round whether or not your completion has come: a `REQUEST_CHANGES` at once, and an approval once GitHub reports the approved head one the issue may advance on",
+				"a completion that comes after it is recorded on the round it ended, so complete all the same.",
+			},
+			[]string{"Your approval does not end the round on its own", "whichever of the two is second"},
+		},
+	} {
+		t.Run(tc.part, func(t *testing.T) {
+			holdsAndRetires(t, "go/"+tc.part, goPart(t, tc.part), tc.want, tc.gone)
+		})
+	}
+}
