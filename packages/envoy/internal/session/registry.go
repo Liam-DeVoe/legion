@@ -1280,20 +1280,14 @@ func (r *SessionRegistry) StoredByWriter(ctx context.Context, sessionID string) 
 		return res.entry, res.written, res.err
 	}
 	kv, _ := r.watcher.Handle()
-	leader, err := kv.ReadFromLeader(ctx, sessionID)
+	entry, _, found, err := readEntryFromLeader(ctx, kv, sessionID)
 	switch {
 	case errors.Is(err, bus.ErrRefused):
 		return SessionEntry{}, false, nil
 	case err != nil:
 		return SessionEntry{}, false, fmt.Errorf("read session %s from the bucket's stream leader: %w", sessionID, err)
-	case leader.Kind != bus.LeaderPut:
-		return SessionEntry{}, false, nil
 	}
-	entry, err := DecodeEntry(sessionID, leader.Value)
-	if err != nil {
-		return SessionEntry{}, false, nil
-	}
-	return entry, true, nil
+	return entry, found, nil
 }
 
 // applyRead is what Refresh and RefreshFromLeader both do with the read they made: got and err
