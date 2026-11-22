@@ -654,9 +654,11 @@ func (l launch) runsClaude() bool { return runtime.Of(l.spec.Backend) == runtime
 // controller's claim (`controller: daemon`) runs the controller's pod, every workflow claim
 // its issue's pod, which refuses a spec with no repository (issuePod.prepare). The labels the kind
 // gives the pod must name that kind back (podKindOf), so a launch and the Sandbox it leaves cannot
-// disagree on the pod's roles. It decides the pod's sandbox too, once: an issue pod's is its
-// issue's (SandboxConfig.Of), and the controller's pod runs in gVisor whatever the configuration
-// names. The system prompt is composed here (runtime.ComposePrompt), and a prompt whose start
+// disagree on the pod's roles, and each of those roles must have a token set (podTokenSets): a
+// pod one of whose roles has none is refused with that refusal, before any of it is built. It
+// decides the pod's sandbox too, once: an issue pod's is its issue's (SandboxConfig.Of), and the
+// controller's pod runs in gVisor whatever the configuration names. The system prompt is
+// composed here (runtime.ComposePrompt), and a prompt whose start
 // frame no launcher would read is refused here too (runtime.PromptTooLarge, wrapped so the
 // supervisor can tell it from a launch that failed). So is a Claude Code spec that names its
 // session by its id alone (ResumeSession), whoever was to resolve that id: a Claude Code claim's
@@ -712,6 +714,9 @@ func (r *Runtime) prepare(spec runtime.SpawnSpec) (launch, error) {
 		return launch{}, refuse("its pod's labels %v name another kind of pod than the one it builds", r.labels(l))
 	}
 	l.roles = named.roles()
+	if _, err := podTokenSets(l.kind); err != nil {
+		return launch{}, refuse("its pod's token sets: %w", err)
+	}
 	prompt, err := runtime.ComposePrompt(spec.Prompt)
 	if err != nil {
 		return launch{}, refuse("%w", err)

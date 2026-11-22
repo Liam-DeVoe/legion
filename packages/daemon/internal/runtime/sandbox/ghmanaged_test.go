@@ -105,7 +105,7 @@ func TestAManagedUsersGhKeysReadBackAsItsDirectoryAndItsPodHasNotDrifted(t *test
 	if projected, _ := ghProjectionOf(pod, claim.RoleTester); !slices.Contains(projected.dirs, managedUser) {
 		t.Errorf("the tester's projection reads as the directories %q, want %s among them", projected.dirs, managedUser)
 	}
-	if served := g.r.gitHubDirs(managedIssue, podTokenSets(podKindFor(claim.RoleTester))); !slices.Contains(served, managedUser) {
+	if served := g.r.gitHubDirs(managedIssue, kindSets(t, podKindFor(claim.RoleTester))); !slices.Contains(served, managedUser) {
 		t.Fatalf("the daemon serves %q, want %s among them: the drift check would compare nothing of that owner's", served, managedUser)
 	}
 	if named := ghDriftReasons(t, g, loc, claim.RoleTester); len(named) != 0 {

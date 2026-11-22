@@ -461,6 +461,10 @@ func (r *Runtime) driftedInPod(pod *corev1.Pod, role claim.Role) []movedAddress 
 // owner an issue role's mint was refused is one its own `gh` reaches all the same, so a
 // controller pod without that owner's directory has drifted and is replaced by its next launch.
 //
+// A pod whose kind holds a role with no token set (podTokenSets) is no pod a launch builds now
+// (prepare refuses it), so it has moved, and the refusal is its reason: it is not kept running a
+// role with no credential, and its next launch says why it cannot be built.
+//
 // Owner directories alone are compared, on both sides (ghOwnerDirs). A bundle this daemon
 // builds holds none but owner directories: a lease reaches every repository its installation
 // holds, so there is nothing narrower for a directory to stand for (appauth.GitHubCredential,
@@ -521,8 +525,12 @@ func (r *Runtime) movedGhDirs(pod *corev1.Pod, role claim.Role) (movedAddress, b
 		return movedAddress{where: name + " holds no " + ghconfig.PairsFile, held: ghDirsName(owned),
 			handed: "the same directories beside the configured renames the wrappers route by"}, true
 	}
+	sets, err := podTokenSets(podKindFor(role))
+	if err != nil {
+		return movedAddress{where: name, held: ghDirsName(owned), handed: "no pod at all: " + err.Error()}, true
+	}
 	repo, _ := fetchRepository(pod)
-	served := ghOwnerDirs(r.gitHubDirs(repo, podTokenSets(podKindFor(role))))
+	served := ghOwnerDirs(r.gitHubDirs(repo, sets))
 	lacking := slices.ContainsFunc(served, func(dir string) bool {
 		_, found := slices.BinarySearch(owned, dir)
 		return !found
@@ -573,17 +581,20 @@ func ghProjectionOf(pod *corev1.Pod, role claim.Role) (ghProjection, bool) {
 // podTokenSets are the sets a pod of kind holds a bundle of, one per role (appauth.SetFor): every
 // workflow role's for an issue pod, and the controller's alone for the project controller's. It
 // is what the record of the directories a mint found GitHub refuses is read for (movedGhDirs,
-// appauth.LeftOut). A role SetFor keeps no set for holds no bundle, so it adds no set: its bundle
-// fails with SetFor's refusal, and with it every launch of a pod of its kind (gitHubBundles).
-func podTokenSets(kind podKind) []appauth.TokenSet {
+// appauth.LeftOut). A role SetFor keeps no set for fails it with SetFor's refusal
+// (appauth.ErrNoTokenSet), naming that role: no pod of that kind is built (prepare), since one
+// built without that role's credential would start the role with none.
+func podTokenSets(kind podKind) ([]appauth.TokenSet, error) {
 	roles := kind.roles()
 	sets := make([]appauth.TokenSet, 0, len(roles))
 	for _, role := range roles {
-		if set, err := appauth.SetFor(role); err == nil {
-			sets = append(sets, set)
+		set, err := appauth.SetFor(role)
+		if err != nil {
+			return nil, err
 		}
+		sets = append(sets, set)
 	}
-	return sets
+	return sets, nil
 }
 
 // PodTokenSets is podTokenSets of the pod role runs in (podKindFor): every workflow role's set
@@ -591,8 +602,9 @@ func podTokenSets(kind podKind) []appauth.TokenSet {
 // more (gitHubBundles, volumes), and the controller's alone for the project controller. A role's
 // container holds only the directories of that projection, so a caller that says which owners a
 // role's token reaches in a pod of this runtime reads them for these sets together
-// (internal/daemon's plan.appOwners), as the drift check does (movedGhDirs).
-func PodTokenSets(role claim.Role) []appauth.TokenSet { return podTokenSets(podKindFor(role)) }
+// (internal/daemon's plan.appOwners), as the drift check does (movedGhDirs). It fails as
+// podTokenSets does, for a pod that is never built.
+func PodTokenSets(role claim.Role) ([]appauth.TokenSet, error) { return podTokenSets(podKindFor(role)) }
 
 // ghOwnerDirs is the owner directories of a gh directory set, in the order they come: the names
 // holding no slash, where a repository's directory a pod launched before INFRA-2543 projects is

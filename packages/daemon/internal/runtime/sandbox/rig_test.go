@@ -136,6 +136,17 @@ func roleSet(role claim.Role) appauth.TokenSet {
 	return set
 }
 
+// kindSets is podTokenSets of kind, every one of whose roles has a set, failing t where one has
+// none.
+func kindSets(t *testing.T, kind podKind) []appauth.TokenSet {
+	t.Helper()
+	sets, err := podTokenSets(kind)
+	if err != nil {
+		t.Fatalf("the token sets of a %T: %v", kind, err)
+	}
+	return sets
+}
+
 // staticCredentialToken is the write token staticCredential renders for role: one per token set,
 // so a reviewer's files and an implementer's differ as their sets' tokens do.
 func staticCredentialToken(role claim.Role) string {

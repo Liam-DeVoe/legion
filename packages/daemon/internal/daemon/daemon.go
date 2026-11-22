@@ -1054,7 +1054,8 @@ type plan struct {
 //
 // A role SetFor keeps no set for holds no bundle, so its container holds no directory and it is
 // named no owner; its launch then fails at its git identity with SetFor's refusal
-// (workflowRuntime.identity).
+// (workflowRuntime.identity). Under Kubernetes, so is a role whose pod holds another role with no
+// set (sandbox.PodTokenSets): that pod is never built, and the launch fails at it.
 func (p plan) appOwners(runtimeName string) func(claim.Role) []string {
 	return func(role claim.Role) []string {
 		set, err := appauth.SetFor(role)
@@ -1067,7 +1068,9 @@ func (p plan) appOwners(runtimeName string) func(claim.Role) []string {
 		}
 		sets := []appauth.TokenSet{set}
 		if runtimeName == "kubernetes" {
-			sets = sandbox.PodTokenSets(role)
+			if sets, err = sandbox.PodTokenSets(role); err != nil {
+				return nil
+			}
 		}
 		held := appauth.AddressingDirs(p.repositories.servesRepository, p.repositories.renames, p.installed, p.left, sets, ghrepo.Repository{})
 		return slices.DeleteFunc(owners, func(owner string) bool { return !slices.Contains(held, owner) })

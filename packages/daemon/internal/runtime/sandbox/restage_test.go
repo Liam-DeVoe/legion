@@ -615,7 +615,7 @@ func servedOwnerDirs(t *testing.T, repos []ghrepo.Repository) []string {
 			t.Fatalf("the %s's bundle: %v", role, err)
 		}
 	}
-	return appauth.GitHubDirs(served, renames, installed, nil, podTokenSets(kind), recordedSmoke)
+	return appauth.GitHubDirs(served, renames, installed, nil, kindSets(t, kind), recordedSmoke)
 }
 
 // A pod created before this change, whose gh volume projects one directory for each owner the
