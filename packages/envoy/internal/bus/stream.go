@@ -237,15 +237,17 @@ func DeliverSubject(sessionID string) string {
 // (relayreply.<machine>.<nuid>.<session id>.<token>; natsgrant.EdgeRelayReplyPrefix).
 // Its grant subscribes only its own machine's and publishes every machine's, since the listener
 // serving a session's relay socket answers on the family of the machine holding the session's
-// consumer (natsgrant.Edge). The relay socket of #4819 is the first to use it; at this head no
-// program names a receipt here, and the edge's session relay takes its receipts under its
-// connection's inbox. No stream subject captures it (StreamCaptures), so a receipt travels over
-// core NATS, as the frame does, and the stream stores none.
+// consumer (natsgrant.Edge). The edge's session relay names its frames' receipts here, and the
+// relay socket publishes each receipt its client sends on the subject the frame named
+// (cmd/listener's startSessionRelays and relay_socket.go). No stream subject captures it
+// (StreamCaptures), so a receipt travels over core NATS, as the frame does, and the stream stores
+// none.
 const RelayReplyPrefix = NotificationTopicPrefix + "envoy.relayreply."
 
 // SessionReplySubject is the reply subject of one request made of session sessionID,
-// <inbox>.<session id>.<token>: inbox a reply inbox of the requester's own (nats.NewInbox), then
-// the session's id, then a token of 128 random bits (crypto/rand.Text, 26 base32 characters).
+// <inbox>.<session id>.<token>: inbox a reply inbox of the requester's own (nats.NewInbox), or an
+// edge listener's receipt family and a nuid (RelayReplyPrefix), then the session's id, then a
+// token of 128 random bits (crypto/rand.Text, 26 base32 characters).
 // Every request a session answers carries one - the relay's frames (cmd/listener's
 // sessionRelays), the listener's connection probe and Dispatch's agent stream replay
 // (internal/dispatch/agentstream). The id is there so that a grant can admit a session's own

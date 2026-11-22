@@ -63,7 +63,7 @@ func (e reconnectingSend) Unwrap() []error { return []error{ErrReconnecting, e.r
 //     wrapKeyValue).
 //
 // A caller that sends through a nats.go handle none of these cover names its error with it too,
-// such as kvwatch's delete of a watcher's consumer.
+// such as kvwatch's delete of a watcher's consumer and cmd/listener's relay socket's publishes.
 func Reconnecting(err error) error {
 	if err == nil {
 		return nil

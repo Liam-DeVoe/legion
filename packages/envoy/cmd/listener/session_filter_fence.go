@@ -336,12 +336,12 @@ func (m *sessionDelivery) storedFilterWrite(ctx context.Context, registry *store
 // and ends the fence, there being no consumer for a filter of any row to stand on
 // (filterWriteSettled). after names what the write follows, for the log.
 //
-// A row it could not read is a pass that planned nothing, and a call the server refused one that
-// sent nothing: both leave what the pass before them left and end the fence
-// (filterWriteNotMade). A call whose answer did not come back may have set this row's filter, so
-// it is the fence's to judge like one that answered (filterWriteLanded, consumerCallAnswered).
-// The read's or the call's failure, which it logs, is its third answer, nil for a pass that met
-// none (storedFilterWrite).
+// A row it could not read, or whose topics it could not judge (storedRowFilter), is a pass that
+// planned nothing, and a call the server refused one that sent nothing: each leaves what the pass
+// before it left and ends the fence (filterWriteNotMade). A call whose answer did not come back may
+// have set this row's filter, so it is the fence's to judge like one that answered
+// (filterWriteLanded, consumerCallAnswered). The read's, the judgement's or the call's failure,
+// which it logs, is its third answer, nil for a pass that met none (storedFilterWrite).
 //
 // It takes no lock and bounds nothing: the caller holds the session's lock over every pass of
 // the fence and bounds ctx (storedFilterWrite, and sessionRelays.settleFilter under a restart).
@@ -355,7 +355,13 @@ func (m *sessionDelivery) storedFilterStep(ctx context.Context, registry *store.
 	if m.afterStoredRowRead != nil {
 		m.afterStoredRowRead()
 	}
-	if err := m.consumers.UpdateFilter(ctx, sessionID, m.storedRowFilter(registry, sessionID, topics)); err != nil {
+	filter, err := m.storedRowFilter(ctx, registry, sessionID, topics)
+	if err != nil {
+		m.logger.Warn("session consumer filter left unchanged: the session's interests could not be judged",
+			slog.String("session_id", sessionID), slog.String("after", after), slog.String("error", err.Error()))
+		return 0, filterWriteNotMade, err
+	}
+	if err := m.consumers.UpdateFilter(ctx, sessionID, filter); err != nil {
 		if errors.Is(err, bus.ErrSessionConsumerNotFound) {
 			return 0, filterWriteSettled, nil
 		}

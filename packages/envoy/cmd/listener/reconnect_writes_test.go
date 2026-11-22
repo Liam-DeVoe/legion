@@ -312,7 +312,7 @@ func TestAWriteThroughANATSReconnectWaitsOrFailsByNameInASessionRelay(t *testing
 	// The listener reaches the server through a proxy the row can cut. The session's stand-in
 	// reaches it directly, so it stays connected while the listener's connections are cut.
 	proxy := testnats.StartProxy(t, uri)
-	rig := newRelayRigUnownedOn(t, proxy.URL(), relayPauseFirst, relayPauseMax)
+	rig := newRelayRigUnownedOn(t, proxy.URL(), relayPauseFirst, relayPauseMax, nil)
 	// The receipt wait is longer than the row, so the relay cannot pause, and so forget the frames
 	// it holds, before the row takes the session away.
 	rig.relays.receiptWait = time.Minute

@@ -44,7 +44,7 @@ func TestHandleAgentMessageDecidesOnTheRowAndTheRecord(t *testing.T) {
 	sessions := newSessionRegistry(t)
 	// A record with no consumer of its own: the consumer the session's next registration starts
 	// delivers the message, so the record alone decides.
-	if err := sessions.Put("ses_recorded", session.SessionEntry{Dir: "/test"}); err != nil {
+	if err := sessions.Put("ses_recorded", session.SessionEntry{MachineID: "test-machine", Dir: "/test"}); err != nil {
 		t.Fatalf("register ses_recorded: %v", err)
 	}
 	here := &store.Interest{SessionID: "ses_target", MachineID: "test-machine"}
