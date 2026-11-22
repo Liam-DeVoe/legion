@@ -202,11 +202,13 @@ func (n *sweepCount) report(t *testing.T, in sweepInput, moved []string, failure
 // sweepAgainst derives each input of base, the base name, in the reader's process p and compares its
 // states with those of the base, as the process reads it: an input that moves a state toward true
 // fails the test, unless the input has a right to it, by the judgment (judgeAnswer), which it hands,
-// for each input that the process reads, the base's states and the input's as the process reads them,
-// whether the input has a right and the places that its right names, in one call, unchanged. No branch
-// of it decides an answer that the process read apart from the judgment: what it does with the answer
-// is that call, and with the call's result, the report of each line beyond the input's right and the
-// count of the rest as read.
+// for each input that the process reads, the process's reply for the base and for the input as the
+// process wrote them (readerReply, a string, which no code changes and judgeAnswer reads itself),
+// whether the input has a right and the places that its right names, in one call. No branch of it
+// decides an answer that the process read apart from the judgment, and it holds the replies that it
+// hands the judgment in no form that it could change (the base's states that it reads for its known
+// positives are a copy of their own): what it does with the reply is that call, and with the call's
+// result, the report of each line beyond the input's right and the count of the rest as read.
 // The floor's digest holds the key of the base's line, the bytes that the process read of it
 // (sweepCount.judged), so a base that a writer or code of the sweep changed, whose change the sweep
 // would read both as its input's and as its want's, fails by the base's name. A right with allowed
@@ -232,9 +234,13 @@ func sweepAgainst(t *testing.T, reader *readerProcess, name string, base fstest.
 	if err != nil {
 		t.Fatalf("the base: %v", err)
 	}
+	states, err := whole.states()
+	if err != nil {
+		t.Fatalf("the base: %v", err)
+	}
 	n := sweepCount{inputs: len(inputs), known: map[string][]string{}}
 	n.judged = append(n.judged, baseKey[:]...)
-	known := knownPositives(t, name, base, whole)
+	known := knownPositives(t, name, base, states)
 	inputs = append(slices.Clone(inputs), known...)
 	seen := map[[sha256.Size]byte]string{}
 	for _, in := range inputs {
