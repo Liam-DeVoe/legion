@@ -90,15 +90,19 @@ func protocolInfo(info *nats.ConsumerInfo) *jetstream.ConsumerInfo {
 
 // durableNames is the protocol over the listener's durable named durable, on client: its record in
 // the client's selection store, each generation's calls on its own connection (durableConns), and
-// the adapter that serves it.
+// the adapter that serves it. Its naming is the family table's for a durable's key
+// (consumernames.DurableNaming), the one an operator's reader judges the record by
+// (consumernames.CheckFamily): Prefix(DurableKey(durable)) is durable.
 func durableNames(client *bus.Client, durable string) (*consumernames.Names, *durableServer) {
 	host, _ := os.Hostname()
 	conns := connsOf(client, durable)
 	server := &durableServer{conns: conns}
+	naming := consumernames.DurableNaming()
 	return consumernames.New(consumernames.Config{
 		Store:  client.SelectionStore(),
 		Server: server,
-		Prefix: func(string) string { return durable },
+		Prefix: naming.Prefix,
+		Fixed:  naming.Fixed,
 		Floor:  func(info *jetstream.ConsumerInfo) uint64 { return info.AckFloor.Stream },
 		StreamID: func(ctx context.Context) (string, error) {
 			info, err := client.JS().StreamInfo(bus.Stream, nats.Context(ctx))

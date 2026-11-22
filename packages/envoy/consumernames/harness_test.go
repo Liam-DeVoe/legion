@@ -125,6 +125,9 @@ type fakeServer struct {
 	createFault func(name string) (applied bool, err error)
 	// lastSeq is the stream's last sequence, which a native DeliverNew create starts after.
 	lastSeq uint64
+	// deleteFault, when set, decides what a delete answers: a non-nil error leaves the consumer
+	// held and is the caller's answer.
+	deleteFault func(name string) error
 }
 
 func newFakeServer() *fakeServer {
@@ -167,6 +170,11 @@ func (f *fakeServer) Delete(_ context.Context, name string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.deletes = append(f.deletes, name)
+	if f.deleteFault != nil {
+		if err := f.deleteFault(name); err != nil {
+			return err
+		}
+	}
 	delete(f.consumers, name)
 	return nil
 }

@@ -38,8 +38,14 @@ func (n *Names) freshOf(logical, name string) bool {
 // one of those or logical's fixed name, which the cutover's convert replaces. Each is a name the
 // protocol creates, binds, updates or deletes, so a record that names another family's consumer (a
 // daemon's durable, a session's of another prefix) never gets one of those calls on it. It is the
-// creator's own check of every record it reads (read), so a reader of the store that judges a record
-// healthy (an operator's status, census or cleanup) judges it as the creator does.
+// creator's own fence on every record it reads (read).
+//
+// Its nil says only that the record's names are of logical's family. It says nothing of the record
+// itself, which must come from a store read or DecodeKVValue (Record.check: its own key, well-formed
+// fields), nor of the consumers: every session's prefix is "session", so a record of one session
+// passes with another session's consumer as its current. A name the record gives must pass Owns,
+// the consumer's own metadata, before anything reads, binds, updates or deletes it, as the creator
+// does. A reader that deletes what a record names calls Cleanup, which does all three.
 func (n *Names) Check(logical string, record Record) error {
 	refuse := func(field, name string) error {
 		return fmt.Errorf("%w: the key %s's %s %q is no %s~<nuid> name", ErrMalformedRecord, logical, field, name, n.cfg.Prefix(logical))
