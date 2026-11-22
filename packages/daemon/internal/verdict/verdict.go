@@ -3,24 +3,29 @@
 // nothing, so the writer (the daemon's writeVerdict), the merge-group write and the sweep all
 // decide a head by this one rule.
 //
-// On a head a Legion issue owns, the verdict is the tester's pass and the reviewer's approve at
-// that head. A pass the tester recorded at another commit counts at the head only where the
-// reviewer's verdict at the head names that commit as its testedCommit, by which the reviewer says
-// that no commit since it changes code that runs; the daemon reads no diff. A person's approval of
-// such a head is no verdict. On any other head, the verdict is the last review at the head of the
-// entry's ci_reviewer, the side reviewer's verdict where the entry takes side reviews, or a
-// person's approval. A person is an account of type User with write access to the repository.
+// On a head a Legion issue owns, the verdict follows the steps of the task's plan (Steps): the head
+// concludes success only when every testing step reads yes at that head for each check, every
+// review step's agent approved that head, and at least one review step that approved it was run by
+// an agent whose claim wrote none of the change (Step.Wrote). Each of those is read at the head
+// alone, so a step's pass at an earlier commit counts at no later head; the daemon reads no diff.
+// Once every step has passed with no independent review, the head concludes failure, for a reason
+// Decide names, so the merger can tell the owner. A person's approval of such a head is no verdict.
+// On any other head, the verdict is the last review at the head of the entry's ci_reviewer, the
+// side reviewer's verdict where the entry takes side reviews, or a person's approval. A person is
+// an account of type User with write access to the repository.
 //
-// A refusal at a head beats every approval there: the tester's fail, a reviewer's changes, the CI
-// reviewer's request for changes, or a person's last review at the head asking for changes. A
-// person's refusal stands on every kind of head until that person approves the same head, and a
-// comment lifts nothing. A head that holds no verdict and no refusal concludes nothing, and nothing
-// is written on it, so it cannot merge.
+// A refusal at a head beats every approval there: a testing step's check reading no, a review
+// step's changes, the CI reviewer's request for changes, or a person's last review at the head
+// asking for changes. A person's refusal stands on every kind of head until that person approves
+// the same head, and a comment lifts nothing. A head that holds no verdict and no refusal
+// concludes nothing, and nothing is written on it, so it cannot merge.
 package verdict
 
 import (
 	"strings"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/plan"
 )
 
 // CheckName is the name of the required check the daemon writes, as a check run and, over a commit
@@ -44,14 +49,16 @@ const (
 	StateChangesRequested = "changes_requested"
 )
 
-// The tester's words, as its completion carries them.
+// The states of a check at a head, as Dispatch publishes them (check.state_changed): a testing
+// step passes on yes alone, fails on no, and waits on any other.
 const (
-	TesterPass = "pass"
-	TesterFail = "fail"
+	StateYes     = "yes"
+	StateNo      = "no"
+	StateUnknown = "unknown"
 )
 
-// Word is a reviewer's verdict on a head: a Legion issue's reviewer's, or the side reviewer's a
-// controller named. The store records it as it is (store.VerdictWord).
+// Word is a review step's verdict on a head, its agent's, or the side reviewer's a controller
+// named. The store records it as it is (store.VerdictWord).
 type Word string
 
 const (
@@ -59,28 +66,48 @@ const (
 	ReviewerChanges Word = "changes"
 )
 
-// Tester is the tester's recorded completion of a Legion issue: its verdict and the commit it
-// tested.
-type Tester struct {
-	Verdict string
-	Commit  string
+// Reason is why Decide concludes failure on a Legion head where no step failed: every testing and
+// review step passed at the head, and no review step that approved it counts as independent. ""
+// for every other conclusion. The writer names it in the run's title and summary (the daemon's
+// verdictOutput), which the merger reads to tell the owner.
+type Reason string
+
+const (
+	// NoIndependentReview is a head whose approving review steps' agents each wrote part of the
+	// change, or a plan with no review step.
+	NoIndependentReview Reason = "no independent review"
+	// ChangeUnread is a head where the daemon could not read the change's commits, or the sessions
+	// of an approving review step's claim that wrote nothing it could see, so it counts that review
+	// as no independent one.
+	ChangeUnread Reason = "change unread"
+)
+
+// Step is one step of the task's plan on a Legion head, as the writer reads it at Inputs.Head: its
+// type (#4611's plan.Type) and, for a step of the type review, its agent's verdict at the head and
+// what the daemon could tell of that agent's claim. Every other field is read of a review step
+// alone.
+type Step struct {
+	Type plan.Type
+	// Verdict is the review step's agent's verdict at the head, "" for none.
+	Verdict Word
+	// Wrote is whether the review step's agent's claim wrote part of the change: it ran an
+	// implementation step of the task, or a commit of the change carries one of its sessions in its
+	// Omp-Session trailer.
+	Wrote bool
+	// Unread is whether the daemon could read none of the sessions it records for that claim, so it
+	// cannot tell whether a commit carries one.
+	Unread bool
 }
 
-// NoTestingPass is the tester's result that every reader of a Legion head takes until legion-verdict
-// decides a testing step by Dispatch's check states at the head: no pass. The record keeps no
-// tester's verdict since store migration 20261121074614_phase_verdict_gone dropped
-// phases.verdict (a tester's completion carries none, and the states decide the testing phase), so
-// no testing step reads as passed at any head, no Legion head concludes success, and no reviewer's
-// approve sends its issue back to testing. The writer (the daemon's legionInputs) and the
-// workflow's carry (uncarried) read it in place of the tester's row.
-var NoTestingPass = Tester{}
+// independent is whether step is a review step whose agent approved the head and whose claim, as
+// far as the daemon could read it, wrote none of the change.
+func (step Step) independent() bool {
+	return step.Type == plan.TypeReview && step.Verdict == ReviewerApprove && !step.Wrote && !step.Unread
+}
 
-// Reviewer is a Legion issue's reviewer's verdict: its word, the commit it reviewed, and the commit
-// of the tester's pass it carries to that commit ("" for none).
-type Reviewer struct {
-	Verdict      Word
-	Commit       string
-	TestedCommit string
+// Check is the state of one check of the head's set at the head, "" where the daemon holds none.
+type Check struct {
+	Name, State string
 }
 
 // Review is one review of the pull request, delivered by webhook: the head it read, its author,
@@ -100,11 +127,20 @@ type Review struct {
 type Inputs struct {
 	// Head is the commit decided.
 	Head string
-	// Legion is whether a Legion issue of this daemon's project owns the head (a legion/<KEY>
-	// head); Tester and Reviewer are that issue's, and read on no other head.
-	Legion   bool
-	Tester   Tester
-	Reviewer Reviewer
+	// Legion is whether a Legion issue of this daemon's project owns the head (a legion/<KEY> head,
+	// or a task branch legion/<KEY>.<slug>); Steps, Checks and Unread are that issue's, and read on
+	// no other head.
+	Legion bool
+	// Steps are the steps of the task's plan, in its order.
+	Steps []Step
+	// Checks is each check of the head's set with its state at the head, nil where the daemon holds
+	// no set there. A testing step passes at a head when each check of its task reads yes there, so
+	// every testing step of the task reads these same states: they are the issue's at the head, not
+	// one step's.
+	Checks []Check
+	// Unread is whether the daemon could not read the change's commits, so no review step counts as
+	// independent.
+	Unread bool
 	// CIReviewer is the bot login the repository's entry names as its ci_reviewer, "" for none.
 	CIReviewer string
 	// SideReviews is whether the entry takes side reviews, and Side the side reviewer's verdict at
@@ -117,15 +153,16 @@ type Inputs struct {
 	Reviews []Review
 }
 
-// Decide is legion-verdict's conclusion on in.Head.
-func Decide(in Inputs) Conclusion {
+// Decide is legion-verdict's conclusion on in.Head, and on a Legion head the reason of a failure no
+// step refused (Reason).
+func Decide(in Inputs) (Conclusion, Reason) {
 	refused, approved := personsAt(in)
+	var reason Reason
 	if in.Legion {
-		refused = refused || in.Tester.Commit == in.Head && in.Tester.Verdict == TesterFail ||
-			in.Reviewer.Commit == in.Head && in.Reviewer.Verdict == ReviewerChanges
-		// A person's approval is no verdict on a Legion head: only the reviewer's approve, with
-		// the tester's pass at the head or carried to it, is.
-		approved = in.Reviewer.Commit == in.Head && in.Reviewer.Verdict == ReviewerApprove && PassCounts(in.Tester, in.Head, in.Reviewer.TestedCommit)
+		// A person's approval is no verdict on a Legion head: only the steps of its plan are.
+		var failed bool
+		failed, approved, reason = stepsAt(in)
+		refused = refused || failed
 	} else {
 		if ci := ciReviewerAt(in); ci != "" {
 			refused = refused || ci == StateChangesRequested
@@ -138,23 +175,80 @@ func Decide(in Inputs) Conclusion {
 	}
 	switch {
 	case refused:
-		return Failure
+		return Failure, reason
 	case approved:
-		return Success
+		return Success, ""
 	}
-	return None
+	return None, ""
 }
 
-// PassCounts is whether the tester's pass counts at head, a head a Legion issue owns: recorded at
-// head, or recorded at the commit the reviewer's verdict at head names as its testedCommit, by
-// which the reviewer states that no commit since changes code that runs. It is the one rule of the
-// carry: Decide reads it, and the workflow sends an issue back to testing where a reviewer's
-// approve fails it (spec R4). It compares two recorded commits and reads no diff.
-func PassCounts(tester Tester, head, testedCommit string) bool {
-	if tester.Verdict != TesterPass || tester.Commit == "" {
+// stepsAt is what the steps of a Legion head's plan say at the head: failed where a testing step's
+// check reads no there or a review step's agent asked for changes there, or where every step passed
+// with no independent review, which reason then names; and passed where every step passed and at
+// least one approving review step is independent.
+func stepsAt(in Inputs) (failed, passed bool, reason Reason) {
+	for _, step := range in.Steps {
+		switch step.Type {
+		case plan.TypeTesting:
+			failed = failed || in.checkReads(StateNo)
+		case plan.TypeReview:
+			failed = failed || step.Verdict == ReviewerChanges
+		}
+	}
+	if failed || !StepsPassed(in) {
+		return failed, false, ""
+	}
+	unread := in.Unread
+	for _, step := range in.Steps {
+		if step.independent() && !in.Unread {
+			return false, true, ""
+		}
+		unread = unread || step.Type == plan.TypeReview && step.Verdict == ReviewerApprove && !step.Wrote && step.Unread
+	}
+	if unread {
+		return true, false, ChangeUnread
+	}
+	return true, false, NoIndependentReview
+}
+
+// StepsPassed is whether every testing and review step of a Legion head's plan passed at the head:
+// each check of the head's set reads yes there, where the plan has a testing step, and each review
+// step's agent approved the head. Only then does the independence of a review decide anything, so
+// the writer reads the change's commits for the Omp-Session test only then. A head no Legion issue
+// owns has no such steps, and answers false.
+func StepsPassed(in Inputs) bool {
+	if !in.Legion {
 		return false
 	}
-	return tester.Commit == head || testedCommit == tester.Commit
+	for _, step := range in.Steps {
+		switch {
+		case step.Type == plan.TypeTesting && (in.Checks == nil || !in.everyCheckYes()):
+			return false
+		case step.Type == plan.TypeReview && step.Verdict != ReviewerApprove:
+			return false
+		}
+	}
+	return true
+}
+
+// everyCheckYes is whether each check of the head's set reads yes at the head: an empty set does.
+func (in Inputs) everyCheckYes() bool {
+	for _, check := range in.Checks {
+		if check.State != StateYes {
+			return false
+		}
+	}
+	return true
+}
+
+// checkReads is whether a check of the head's set reads state at the head.
+func (in Inputs) checkReads(state string) bool {
+	for _, check := range in.Checks {
+		if check.State == state {
+			return true
+		}
+	}
+	return false
 }
 
 // personsAt is whether a person's last deciding review at the head refuses it, and whether one

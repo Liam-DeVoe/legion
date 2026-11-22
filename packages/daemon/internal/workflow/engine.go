@@ -2540,7 +2540,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 func (e *Engine) arrive(ctx context.Context, tx pgx.Tx, issue *record.Issue, w *Walk, trigger TriggerKind, to phase.Phase, status string,
 	hold *record.Hold, handoff record.PhaseRow, pr *record.PullRequest, reason string) (phase.Phase, error) {
 	// A backward move is asked for by the role whose row it hands on: a worker's own move hands its
-	// own row (backward), and the carry's move back to testing the reviewer's (testAgain).
+	// own row (backward).
 	if err := e.status(ctx, tx, *issue, status, moveReason(trigger, issue.Phase, to, handoff.Role, reason)); err != nil {
 		return "", err
 	}
@@ -2621,11 +2621,11 @@ func (e *Engine) holdBeforeRetro(ctx context.Context, tx pgx.Tx, issue record.Is
 // A backward move (TriggerBackward) keeps the phase-finished kind the architect's prompt routes on,
 // and says in its reason what happened and who asked: the phase it moved the issue to, the role
 // that asked - the role whose row the move hands on, which is the worker of the phase left for its
-// own request_backward_move and the reviewer for the carry's move back to testing (testAgain) - and
-// the words given. The handoff row a move writes is empty, so without that reason the architect
-// reads a completion with no summary and cannot tell it from a worker that finished its phase. The
-// notice carries no verdict: the tester's move back says in its reason what the check states said,
-// each check that does not pass at the tested head (decideTesting).
+// own request_backward_move - and the words given. The handoff row a move writes is empty, so
+// without that reason the architect reads a completion with no summary and cannot tell it from a
+// worker that finished its phase. The notice carries no verdict: the tester's move back says in its
+// reason what the check states said, each check that does not pass at the tested head
+// (decideTesting).
 func noticeFor(trigger TriggerKind, from, to phase.Phase, handoff record.PhaseRow, reason string) record.Notice {
 	switch trigger {
 	case TriggerGateOpened:

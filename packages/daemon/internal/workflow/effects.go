@@ -255,12 +255,10 @@ func (e *Engine) status(ctx context.Context, tx pgx.Tx, issue record.Issue, stat
 // Dispatch explains: a backward move (TriggerBackward), which by asked for. A worker's own move
 // (request_backward_move) reaches the daemon's API and no Dispatch record, so an architect's
 // send-back from accepting showed a bare status change, with its reason only in the notice and the
-// next role's task over Envoy; and the carry's move back to testing on a reviewer's approve that
-// carries no tester's pass (testAgain) follows a verdict past review that writes no Dispatch record
-// either. Every other move is recorded on Dispatch by the act that makes it, a tester's or a
-// reviewer's hand-off, so it posts nothing: transition also carries a review's whole body, which
-// does not go on the issue a second time. A person reads this text on the issue, so a backward
-// move's names the role that asked and gives its words.
+// next role's task over Envoy. Every other move is recorded on Dispatch by the act that makes it, a
+// tester's or a reviewer's hand-off, so it posts nothing: transition also carries a review's whole
+// body, which does not go on the issue a second time. A person reads this text on the issue, so a
+// backward move's names the role that asked and gives its words.
 func moveReason(trigger TriggerKind, from, to phase.Phase, by claim.Role, reason string) string {
 	if trigger != TriggerBackward {
 		return ""
@@ -270,8 +268,7 @@ func moveReason(trigger TriggerKind, from, to phase.Phase, by claim.Role, reason
 
 // backwardMoveReason is a backward move as the issue shows it: the phase it left, the one it went
 // to, the role that asked (by: the role running the phase left, which backward holds a worker's
-// requester to, or the reviewer for the carry's move) and that role's own words, or that it gave
-// none.
+// requester to) and that role's own words, or that it gave none.
 func backwardMoveReason(from, to phase.Phase, by claim.Role, reason string) string {
 	asked := fmt.Sprintf("Legion moved this issue from %s back to %s at the %s's request", from, to, by)
 	reason = strings.TrimSpace(reason)
@@ -1095,13 +1092,14 @@ const (
 // reviewer's.
 //
 // A merger started in merging at a head that moved past the review, a merge forward's landing or
-// any other push, is told to merge that head only once legion-verdict at that head is success:
-// owed is the head of the reviewer's last verdict where the pull request's head is another
-// (owedVerdict), "" where the reviewer's verdict names the head. Under one App no review on GitHub
-// approves a Legion head, and the daemon writes that check from the reviewer's verdict there
-// (spec R4, R5). The merger's task is built at retro's completion, the one move into merging, and
-// at the retry of a held merging (retryPhase); each reads the pull request in its own transaction,
-// so pr says what the record holds.
+// any other push, is told to merge that head only once legion-verdict at that head is success, and
+// that the agent of each review step is asked for its verdict on it (askReviewSteps): owed is the
+// head of the reviewer's last verdict where the pull request's head is another (owedVerdict), ""
+// where the reviewer's verdict names the head. Under one App no review on GitHub approves a Legion
+// head, and the daemon writes that check from every review step's verdict and the check states at
+// that head (spec R4, R5). The merger's task is built at retro's completion, the one move into
+// merging, and at the retry of a held merging (retryPhase); each reads the pull request in its own
+// transaction, so pr says what the record holds.
 func task(issue record.Issue, at Standing, handoff record.PhaseRow, pr *record.PullRequest, reason, owed string) string {
 	text := continueLine(issue) + at.lines
 	if handoff.HandoffRecord != "" {
@@ -1118,7 +1116,7 @@ func task(issue record.Issue, at Standing, handoff record.PhaseRow, pr *record.P
 		text += fmt.Sprintf(" %s: #%d.", pullRequestLabel, pr.Number)
 	}
 	if issue.Phase == phase.Merging && pr != nil && owed != "" {
-		text += fmt.Sprintf(" Head %s came after the reviewer's verdict at head %s, and the reviewer is asked for its verdict on it: merge head %s only once legion-verdict at that head is success.",
+		text += fmt.Sprintf(" Head %s came after the reviewer's verdict at head %s, and the agent of each review step is asked for its verdict on it: merge head %s only once legion-verdict at that head is success.",
 			pr.HeadSHA, owed, pr.HeadSHA)
 	}
 	if reason != "" {

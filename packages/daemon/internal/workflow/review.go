@@ -1156,12 +1156,14 @@ func told(row record.PhaseRow, r round) bool {
 //
 // The switch also names the head whose verdict a fact can change, which has legion-verdict written
 // before any read (Config.WriteVerdict, askVerdictWrite): the reviewer's verdict, at the commit its
-// completion of reviewing names or its verdict past review does (reviewVerdict); a webhook's
-// approval or request for changes not written with the one App's token, at the commit it read;
-// and the tester's verdict, at the commit it tested, which owes no read, since nothing GitHub
-// answers waits on it. No other fact changes a verdict, and a push writes nothing on the head it
-// makes: a check run belongs to one commit, so the new head has no legion-verdict until a verdict
-// names it (spec R4).
+// completion of reviewing names, and a review step's verdict past review, at the commit it names
+// (reviewVerdict); and a webhook's approval or request for changes not written with the one App's
+// token, at the commit it read. Two more facts ask for that write in their own handlers, and owe no
+// read, since nothing GitHub answers waits on them: the owner's acceptance, at the head the record
+// holds (recordAcceptance), and a check state at the head the pull request stands at (checkState).
+// No other fact changes a verdict, and a push writes nothing on the head it makes: a check run
+// belongs to one commit, so the new head has no legion-verdict until every step's pass names it
+// (spec R4).
 //
 // A base push is the one fact of many pull requests, and the one this leaves alone: its handler
 // walks the open pull requests recorded on the base once, and asks for each read inside that
@@ -1393,9 +1395,12 @@ func (e *Engine) reviewStepRefusal(ctx context.Context, tx pgx.Tx, issue record.
 
 // recordAcceptance records the owner's acceptance as the verdict of its review step (spec R5):
 // by's sign_off as approve, and its request_backward_move as changes, word either, at the head the
-// record holds for issue's pull request pr, which is the head the owner accepted or sent back. An
-// issue that does not stand in accepting, a request that names no claim, a pull request not
-// recorded or at no head, and a tree that lingers, whose request changes nothing, record nothing.
+// record holds for issue's pull request pr, which is the head the owner accepted or sent back, and
+// asks, on the commit, for the write of legion-verdict there (askVerdictWrite): with the default
+// steps the acceptance is the last review step to pass, so its approve is what writes success, and
+// its changes refuse the head (spec R4). An issue that does not stand in accepting, a request that
+// names no claim, a pull request not recorded or at no head, and a tree that lingers, whose request
+// changes nothing, record nothing and ask nothing.
 func (e *Engine) recordAcceptance(ctx context.Context, tx pgx.Tx, issue record.Issue, by claim.Token, word store.VerdictWord, pr *record.PullRequest) error {
 	if issue.Phase != phase.Accepting || by == "" || pr == nil || pr.HeadSHA == "" {
 		return nil
@@ -1403,7 +1408,10 @@ func (e *Engine) recordAcceptance(ctx context.Context, tx pgx.Tx, issue record.I
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
 		return err
 	}
-	return e.recordStepVerdict(ctx, tx, issue, pr, phase.Accepting, by, string(word), pr.HeadSHA)
+	if err := e.recordStepVerdict(ctx, tx, issue, pr, phase.Accepting, by, string(word), pr.HeadSHA); err != nil {
+		return err
+	}
+	return e.askVerdictWrite(ctx, tx, pr, pr.HeadSHA)
 }
 
 // recordStepVerdict records the verdict of the review step issue runs at at on the walk of its run,

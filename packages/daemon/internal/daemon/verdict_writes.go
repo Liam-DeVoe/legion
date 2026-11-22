@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	planwords "github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/verdict"
@@ -392,11 +395,14 @@ func (w *workflowRuntime) wroteSuccess(ctx context.Context, target verdictTarget
 	return newest[store.VerdictWriteCheckRun] == store.VerdictConclusionSuccess || newest[store.VerdictWriteStatus] == store.VerdictConclusionSuccess, err
 }
 
-// verdictDecision is what writeVerdictOver decided of a head: legion-verdict's conclusion, the kind of
-// head (headLegion, headOutside) and, on a Legion head, the issue that owns it; or otherIssue,
-// another project's issue whose branch the head is, on which this daemon writes nothing.
+// verdictDecision is what writeVerdictOver decided of a head: legion-verdict's conclusion, on a
+// Legion head the reason of a failure no step refused (verdict.Reason, which the run's output
+// names), the kind of head (headLegion, headOutside) and, on a Legion head, the issue that owns
+// it; or otherIssue, another project's issue whose branch the head is, on which this daemon writes
+// nothing.
 type verdictDecision struct {
 	conclusion verdict.Conclusion
+	reason     verdict.Reason
 	kind       string
 	issue      string
 	otherIssue string
@@ -410,19 +416,22 @@ const currentHead = ""
 // decideVerdict decides head of pull request number of repository, entry being the repository's
 // verdict entry, or, for currentHead, the head the pull request stands at now: the record's, or the
 // one GitHub shows. A pull request the project's records hold is a Legion head of the issue that
-// owns it, decided from the tester's completion, the reviewer's verdict at the head and the reviews
-// delivered at the head (legionInputs); one another project's records hold is that project's.
-// Every other pull request is an outside one, decided from its reviews and, where the entry takes
-// them, its side reviewer's verdict (outsideInputs). A pull request no record holds yet - one
-// opened before the daemon heard its repository - is read from GitHub once (GET /pulls/{number}):
-// one GitHub shows closed merges nothing and has no verdict, as a closed Legion pull request is
-// written on by nobody (workflow's askVerdictWrite); a legion/<KEY> head is KEY's; and any other is
-// recorded as an outside pull request at the head GitHub shows and decided as one.
+// owns it, decided from the steps of its task's plan at the head and the reviews delivered at the
+// head (legionInputs), and, where every step passed there, from the change's commits
+// (independence), read after the transaction so it holds no connection over a GitHub call; one
+// another project's records hold is that project's. Every other pull request is an outside one,
+// decided from its reviews and, where the entry takes them, its side reviewer's verdict
+// (outsideInputs). A pull request no record holds yet - one opened before the daemon heard its
+// repository - is read from GitHub once (GET /pulls/{number}): one GitHub shows closed merges
+// nothing and has no verdict, as a closed Legion pull request is written on by nobody (workflow's
+// askVerdictWrite); a legion/<KEY> head is KEY's; and any other is recorded as an outside pull
+// request at the head GitHub shows and decided as one.
 func (w *workflowRuntime) decideVerdict(ctx context.Context, entry config.VerdictRepository, repository ghrepo.Repository, number int, head string) (verdictDecision, error) {
 	if other := w.verdicts.otherIssue(repository.String(), number); other != "" {
 		return verdictDecision{otherIssue: other}, nil
 	}
 	var decided verdictDecision
+	var legion *legionHead
 	known := false
 	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
 		pr, err := ghrepo.Under(w.renames(), repository.String(), func(name string) (*record.PullRequest, error) {
@@ -441,8 +450,9 @@ func (w *workflowRuntime) decideVerdict(ctx context.Context, entry config.Verdic
 			if head == currentHead {
 				head = pr.HeadSHA
 			}
-			in, err := w.legionInputs(ctx, tx, *issue, *pr, head)
-			decided = verdictDecision{conclusion: verdict.Decide(in), kind: headLegion, issue: issue.Key}
+			read, err := w.legionInputs(ctx, tx, *issue, *pr, head)
+			legion = &read
+			decided = verdictDecision{kind: headLegion, issue: issue.Key}
 			return err
 		}
 		outside, found, err := store.OutsidePullRequestTx(ctx, tx, repository, number)
@@ -454,10 +464,16 @@ func (w *workflowRuntime) decideVerdict(ctx context.Context, entry config.Verdic
 			head = outside.Head
 		}
 		in, err := outsideInputs(ctx, tx, entry, repository, number, head)
-		decided = verdictDecision{conclusion: verdict.Decide(in), kind: headOutside}
+		decided.conclusion, _ = verdict.Decide(in)
+		decided.kind = headOutside
 		return err
-	}); err != nil || known {
+	}); err != nil || known && legion == nil {
 		return decided, err
+	}
+	if legion != nil {
+		w.independence(ctx, repository, number, legion)
+		decided.conclusion, decided.reason = verdict.Decide(legion.in)
+		return decided, nil
 	}
 	pull, err := w.readVerdictPullRequest(ctx, repository, number)
 	if err != nil {
@@ -482,31 +498,190 @@ func (w *workflowRuntime) decideVerdict(ctx context.Context, entry config.Verdic
 			return err
 		}
 		in, err := outsideInputs(ctx, tx, entry, repository, number, head)
-		decided = verdictDecision{conclusion: verdict.Decide(in), kind: headOutside}
+		decided.conclusion, _ = verdict.Decide(in)
+		decided.kind = headOutside
 		return err
 	})
 	return decided, err
 }
 
-// legionInputs is what the record holds of head of issue's pull request pr: the tester's result,
-// which is no pass until legion-verdict decides a testing step by Dispatch's check states at the
-// head (verdict.NoTestingPass), the reviewer's verdict at the head (store.Verdict, workflow's
-// recordVerdict), and every review of the pull request delivered by webhook (store.VerdictReview).
-func (w *workflowRuntime) legionInputs(ctx context.Context, tx pgx.Tx, issue record.Issue, pr record.PullRequest, head string) (verdict.Inputs, error) {
+// legionHead is what decideVerdict reads of a Legion head in its transaction (legionInputs): the
+// inputs verdict.Decide reads, and, by its index among their steps, the session names the daemon
+// records for the claim of each review step whose agent approved the head and ran no
+// implementation step of the task: the claims the Omp-Session test of the change's commits is
+// still to read (independence).
+type legionHead struct {
+	in       verdict.Inputs
+	sessions map[int][]string
+}
+
+// legionInputs is what the record holds of head of issue's pull request pr: the steps of the task
+// its run walks (workflow.Engine.VerdictSteps), by #4611's step type; for the task's testing
+// steps, the states Dispatch published of its checks at the head (record.HeadStates), which every
+// testing step reads; for each review step, the verdict at the head of its step (store.StepVerdict,
+// workflow's recordVerdict), and whether the claim that gave it ran an implementation step of the
+// task, as the step starts record each step's agent; the sessions that claim records
+// (store.ClaimSessionNamesTx), none of which can be read where it records none; and every review
+// of the pull request delivered by webhook (store.VerdictReview). Each is read at head alone, so a
+// pass at an earlier commit counts at no later head.
+func (w *workflowRuntime) legionInputs(ctx context.Context, tx pgx.Tx, issue record.Issue, pr record.PullRequest, head string) (legionHead, error) {
 	repository, err := ghrepo.Parse("the repository of "+issue.Key+"'s pull request", pr.Repo)
 	if err != nil {
-		return verdict.Inputs{}, err
+		return legionHead{}, err
 	}
-	in := verdict.Inputs{Head: head, Legion: true, Tester: verdict.NoTestingPass}
-	given, found, err := store.VerdictTx(ctx, tx, repository, pr.Number, head)
+	steps, err := w.engine.VerdictSteps(ctx, tx, issue)
 	if err != nil {
-		return verdict.Inputs{}, err
+		return legionHead{}, err
 	}
-	if found && given.Issue == issue.Key {
-		in.Reviewer = verdict.Reviewer{Verdict: given.Verdict, Commit: given.Head}
+	implemented := map[claim.Token]bool{}
+	tested := false
+	for _, step := range steps {
+		switch {
+		case step.Type == planwords.TypeImplementation && step.Agent != "":
+			implemented[step.Agent] = true
+		case step.Type == planwords.TypeTesting:
+			tested = true
+		}
 	}
-	in.Reviews, err = reviewsOf(ctx, tx, repository, pr.Number)
-	return in, err
+	read := legionHead{in: verdict.Inputs{Head: head, Legion: true, Steps: make([]verdict.Step, 0, len(steps))}, sessions: map[int][]string{}}
+	for i, step := range steps {
+		read.in.Steps = append(read.in.Steps, verdict.Step{Type: step.Type})
+		if step.Type != planwords.TypeReview {
+			continue
+		}
+		given, found, err := store.StepVerdictTx(ctx, tx, repository, pr.Number, head, step.Place.Task, step.Place.Place)
+		if err != nil {
+			return legionHead{}, err
+		}
+		if !found || given.Issue != issue.Key {
+			continue
+		}
+		agent := claim.Token(given.Session)
+		read.in.Steps[i].Verdict, read.in.Steps[i].Wrote = given.Verdict, implemented[agent]
+		if given.Verdict != verdict.ReviewerApprove || implemented[agent] {
+			continue
+		}
+		names, err := store.ClaimSessionNamesTx(ctx, tx, agent)
+		if err != nil {
+			return legionHead{}, err
+		}
+		read.in.Steps[i].Unread, read.sessions[i] = len(names) == 0, names
+	}
+	if tested {
+		held, err := w.records.HeadStates(ctx, tx, issue.Key, pr.Repo, head)
+		if err != nil {
+			return legionHead{}, err
+		}
+		read.in.Checks = checksAt(held)
+	}
+	read.in.Reviews, err = reviewsOf(ctx, tx, repository, pr.Number)
+	return read, err
+}
+
+// checksAt is each check of the head's set and the state the daemon holds of it there, "" for
+// none, in the set's order: nil where no set is held at the head.
+func checksAt(held record.HeadStates) []verdict.Check {
+	if held.Checks == nil {
+		return nil
+	}
+	checks := make([]verdict.Check, 0, len(held.Checks))
+	for _, check := range held.Checks {
+		checks = append(checks, verdict.Check{Name: check, State: held.States[check].State})
+	}
+	return checks
+}
+
+// changeUnread is what the writer logs when it cannot read the change's commits, and so counts no
+// review step of the head as independent.
+const changeUnread = "verdict: the change's commits could not be read, so no review step counts as independent"
+
+// independence reads the change's commits for the Omp-Session test of read's head where that test
+// decides anything: every testing and review step passed at the head (verdict.StepsPassed), and an
+// approving review step's claim ran no implementation step and records a session. A commit whose
+// Omp-Session trailer names one of that claim's sessions marks its step as one whose claim wrote
+// part of the change. Where the commits cannot be read the change is unread, and no review step
+// counts as independent (verdict.Inputs.Unread); the line it logs says why.
+func (w *workflowRuntime) independence(ctx context.Context, repository ghrepo.Repository, number int, read *legionHead) {
+	readable := false
+	for _, names := range read.sessions {
+		readable = readable || len(names) > 0
+	}
+	if !readable || !verdict.StepsPassed(read.in) {
+		return
+	}
+	trailers, err := w.changeSessions(ctx, repository, number, read.in.Head)
+	if err != nil {
+		read.in.Unread = true
+		w.log.Warn(changeUnread, "repository", repository.String(), "pull_request", number, "head", read.in.Head, "error", err)
+		return
+	}
+	for i, names := range read.sessions {
+		if slices.ContainsFunc(names, func(name string) bool { return trailers[name] }) {
+			read.in.Steps[i].Wrote = true
+		}
+	}
+}
+
+// listedCommit is one commit of a pull request as GitHub lists them (GET /pulls/{number}/commits):
+// its id and its message.
+type listedCommit struct {
+	SHA    string `json:"sha"`
+	Commit struct {
+		Message string `json:"message"`
+	} `json:"commit"`
+}
+
+// changeCommitsListed is the most commits GitHub lists of a pull request: a list that long may
+// leave commits of the change out.
+const changeCommitsListed = 250
+
+// changeSessions is every session the Omp-Session trailers of the change's commits name: pull
+// request number's commits as GitHub lists them with the daemon's read token, which must reach
+// head, the head decided. A list GitHub refuses, one that holds as many commits as GitHub lists at
+// most, and one that does not reach head - the pull request stands at another head - is no
+// reading of the change, and an error.
+func (w *workflowRuntime) changeSessions(ctx context.Context, repository ghrepo.Repository, number int, head string) (map[string]bool, error) {
+	serving := w.repositories.serving(repository)
+	lease, err := w.tokens.ReadToken(ctx, serving.Owner())
+	if err != nil {
+		return nil, fmt.Errorf("mint the read token for %s: %w", serving, err)
+	}
+	client := githubrest.Client{Token: lease.Token, API: githubrest.RepositoryAPI(w.githubAPI, serving)}
+	read, cancel := context.WithTimeout(ctx, issueRead)
+	defer cancel()
+	commits, err := githubrest.GetPages[listedCommit](read, client, "/pulls/"+strconv.Itoa(number)+"/commits")
+	if err != nil {
+		return nil, fmt.Errorf("list the commits of %s#%d: %w", serving, number, err)
+	}
+	if len(commits) >= changeCommitsListed {
+		return nil, fmt.Errorf("%s#%d lists %d commits, the most GitHub lists, so the change may hold more", serving, number, len(commits))
+	}
+	if !slices.ContainsFunc(commits, func(c listedCommit) bool { return c.SHA == head }) {
+		return nil, fmt.Errorf("the %d commits GitHub lists of %s#%d do not reach %s", len(commits), serving, number, head)
+	}
+	sessions := map[string]bool{}
+	for _, c := range commits {
+		for _, session := range ompSessions(c.Commit.Message) {
+			sessions[session] = true
+		}
+	}
+	return sessions, nil
+}
+
+// ompSessionLine is a commit message's Omp-Session trailer line, as `legion git` writes it
+// (cmd/legion's gitTrailers): the key in any case, as git compares trailer keys, and the session
+// id.
+var ompSessionLine = regexp.MustCompile(`(?im)^omp-session:[ \t]*(\S+)[ \t\r]*$`)
+
+// ompSessions is every session id an Omp-Session line of message names, wherever it stands in the
+// message: a squash or a cherry-pick can carry a commit's trailer into the body of another, and a
+// line read so can only take a review's independence away.
+func ompSessions(message string) []string {
+	var sessions []string
+	for _, match := range ompSessionLine.FindAllStringSubmatch(message, -1) {
+		sessions = append(sessions, match[1])
+	}
+	return sessions
 }
 
 // outsideInputs is what the daemon records of head of an outside pull request: its reviews, and,
@@ -673,7 +848,7 @@ func (w *workflowRuntime) writeDecidedChanged(ctx context.Context, target verdic
 				own = run
 			}
 		default:
-			if err := w.updateVerdictRun(call, client, target, decided.kind, run.ID, over, run.ID); err != nil {
+			if err := w.updateVerdictRun(call, client, target, decided, run.ID, over, run.ID); err != nil {
 				return false, err
 			}
 			carried = carried || over == decided.conclusion
@@ -683,7 +858,7 @@ func (w *workflowRuntime) writeDecidedChanged(ctx context.Context, target verdic
 	if decided.conclusion != verdict.None {
 		switch {
 		case own != nil && own.Conclusion != string(decided.conclusion):
-			if err := w.updateVerdictRun(call, client, target, decided.kind, own.ID, decided.conclusion, 0); err != nil {
+			if err := w.updateVerdictRun(call, client, target, decided, own.ID, decided.conclusion, 0); err != nil {
 				return false, err
 			}
 			changed = true
@@ -731,12 +906,27 @@ func (w *workflowRuntime) recordedVerdictWrites(ctx context.Context, target verd
 	return runs, statuses, err
 }
 
-// verdictOutput is the title and summary a check run of legion-verdict shows.
-func verdictOutput(kind string, conclusion verdict.Conclusion) map[string]string {
-	return map[string]string{
-		"title":   verdict.CheckName + ": " + string(conclusion),
-		"summary": "The Legion daemon wrote this from the verdicts it records at this " + kind + " head.",
+// The summaries of a legion-verdict run that concludes failure for want of an independent review
+// (verdict.NoIndependentReview, verdict.ChangeUnread), under the title verdictOutput gives it. The
+// merger reads them on the head it would merge and tells the owner (spec R4), so their words are
+// the merger's prompt's to quote: change them with prompts/roles/merger.md.
+const (
+	noIndependentReviewSummary = "Every testing and review step of the task's plan passed at this head, and no review step that approved it was run by an agent whose claim wrote none of the change: an independent review is missing."
+	changeUnreadSummary        = "Every testing and review step of the task's plan passed at this head, but the daemon could not read the change's commits or the sessions of the review steps' claims, so it counts no review as independent: an independent review is missing."
+)
+
+// verdictOutput is the title and summary a check run of legion-verdict shows when it concludes
+// conclusion on a head of kind, decided being what the writer decided there: a failure for want
+// of an independent review says so, and every other conclusion names the head's kind alone.
+func verdictOutput(decided verdictDecision, conclusion verdict.Conclusion) map[string]string {
+	summary := map[verdict.Reason]string{verdict.NoIndependentReview: noIndependentReviewSummary, verdict.ChangeUnread: changeUnreadSummary}[decided.reason]
+	if summary == "" || conclusion != decided.conclusion {
+		return map[string]string{
+			"title":   verdict.CheckName + ": " + string(conclusion),
+			"summary": "The Legion daemon wrote this from the verdicts it records at this " + decided.kind + " head.",
+		}
 	}
+	return map[string]string{"title": verdict.CheckName + ": " + string(conclusion) + " (no independent review)", "summary": summary}
 }
 
 // createVerdictRun creates the daemon's own legion-verdict check run on target's head, completed
@@ -746,21 +936,21 @@ func (w *workflowRuntime) createVerdictRun(ctx context.Context, client githubres
 		ID int64 `json:"id"`
 	}
 	if err := client.Post(ctx, "/check-runs", map[string]any{"name": verdict.CheckName, "head_sha": target.head, "status": "completed",
-		"conclusion": string(decided.conclusion), "output": verdictOutput(decided.kind, decided.conclusion)}, &created); err != nil {
+		"conclusion": string(decided.conclusion), "output": verdictOutput(decided, decided.conclusion)}, &created); err != nil {
 		return fmt.Errorf("create legion-verdict on %s at %s: %w", target.repository, target.head, err)
 	}
 	return w.recordVerdictWrite(ctx, target, decided.kind, store.VerdictWriteCheckRun, created.ID, decided.conclusion, 0)
 }
 
-// updateVerdictRun updates check run id on target's head to conclusion (PATCH /check-runs/{id}) and
-// records it, foreign being the id of the run when another writer made it, 0 when it is the
-// daemon's own.
-func (w *workflowRuntime) updateVerdictRun(ctx context.Context, client githubrest.Client, target verdictTarget, kind string, id int64, conclusion verdict.Conclusion, foreign int64) error {
+// updateVerdictRun updates check run id on target's head to conclusion (PATCH /check-runs/{id}),
+// with the output decided gives it (verdictOutput), and records it, foreign being the id of the
+// run when another writer made it, 0 when it is the daemon's own.
+func (w *workflowRuntime) updateVerdictRun(ctx context.Context, client githubrest.Client, target verdictTarget, decided verdictDecision, id int64, conclusion verdict.Conclusion, foreign int64) error {
 	if err := client.Patch(ctx, "/check-runs/"+strconv.FormatInt(id, 10), map[string]any{"status": "completed",
-		"conclusion": string(conclusion), "output": verdictOutput(kind, conclusion)}, nil); err != nil {
+		"conclusion": string(conclusion), "output": verdictOutput(decided, conclusion)}, nil); err != nil {
 		return fmt.Errorf("update legion-verdict run %d on %s at %s: %w", id, target.repository, target.head, err)
 	}
-	return w.recordVerdictWrite(ctx, target, kind, store.VerdictWriteCheckRun, id, conclusion, foreign)
+	return w.recordVerdictWrite(ctx, target, decided.kind, store.VerdictWriteCheckRun, id, conclusion, foreign)
 }
 
 // createVerdictStatus sets a legion-verdict commit status of the daemon's own on target's head with
