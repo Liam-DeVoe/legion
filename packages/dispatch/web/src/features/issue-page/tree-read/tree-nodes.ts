@@ -643,10 +643,11 @@ function draftDecision(
 /**
  * A question asked of the issue: who asked it and when, its `shaped` tuples as chips, each naming
  * a node the question shaped, and from the asks read how it stands, its options, a person's
- * answer, and whether it waits on the reader, whose turn it is, as the outline drew a question. An
- * approval request belongs to the document it reviews and is no node of the tree, as in the
- * outline. An ask the asks read has not answered for yet is open, as the outline drew an ask
- * block before that read answered.
+ * answer, and whether it waits on the reader, whose turn it is, as the outline drew a question,
+ * with the ask as the record its words are, kept by the tree read's reading of them, else by the
+ * node (`stableSourceOf`). An approval request belongs to the document it reviews and is no node
+ * of the tree, as in the outline. An ask the asks read has not answered for yet is open, as the
+ * outline drew an ask block before that read answered.
  *
  * An `ask` block of a document is drawn by its question as the asks read holds it, with that
  * read's reading of it, as the outline drew an ask: the read's reading of the block is of its
@@ -664,7 +665,7 @@ function draftAsk(
   madeBy(draft, node);
   draft.chips = tupleChips(node, "shaped", context);
   const askId = askIdOf(node, ask);
-  if (askId !== undefined) draft.source = stableSourceOf("ask", askId);
+  if (askId !== undefined) draft.source = stableSourceOf(draft.tree ?? node, "ask", askId);
   if (ask === undefined) {
     draft.state = "open";
     return draft;
@@ -696,7 +697,8 @@ function draftAsk(
 }
 
 /** A turn of the conversation, a comment or a message: who wrote it and when, and the record
- *  its words are, which its body's links resolve against. */
+ *  its words are, which its body's links resolve against, kept by the reading of its words
+ *  (`stableSourceOf`). */
 function draftTurn(
   node: TreeAnswerNode,
   _answer: TreeAnswer,
@@ -705,7 +707,7 @@ function draftTurn(
   if (node.supertag !== "comment" && node.supertag !== "message") return undefined;
   const draft = draftOf(node, node.supertag, context);
   madeBy(draft, node);
-  draft.source = stableSourceOf(node.supertag, node.id);
+  draft.source = stableSourceOf(draft.tree ?? node, node.supertag, node.id);
   return draft;
 }
 
@@ -749,7 +751,8 @@ function draftChild(
 /** A draft of `node` as every kind starts one: its tree id, its words and their reading
  *  (`readingOf`), its address (`referenceOf`), and, where the read sent a reading, the document a
  *  typed block is written in, which the links of the body drawn from that reading resolve
- *  against. The order and the read id are `treeDraftsFrom`'s. */
+ *  against, kept by that reading (`stableSourceOf`). The order and the read id are
+ *  `treeDraftsFrom`'s. */
 function draftOf(node: TreeAnswerNode, type: NodeType, context: TreeDraftContext): Draft {
   const draft = blank(context.treeIdOfNode(node), type, 0);
   draft.text = node.text;
@@ -759,7 +762,7 @@ function draftOf(node: TreeAnswerNode, type: NodeType, context: TreeDraftContext
   if (reading !== undefined) {
     draft.tree = reading;
     if (node.document !== undefined) {
-      draft.source = stableSourceOf("artifact", node.document.artifact_id);
+      draft.source = stableSourceOf(reading, "artifact", node.document.artifact_id);
     }
   }
   return draft;
@@ -767,7 +770,8 @@ function draftOf(node: TreeAnswerNode, type: NodeType, context: TreeDraftContext
 
 /** Each typed block's reading cut to its own content (`readingOf`), by the reading it was cut
  *  from. A re-read whose answer is unchanged keeps each reading's object, and so a row is handed
- *  the cut it was handed before, and its words are not drawn again. */
+ *  the cut it was handed before, and the source kept by that cut (`stableSourceOf`), and its
+ *  words are not drawn again. */
 const cutReadings = new WeakMap<DisplayTree, DisplayTree>();
 
 /** The reading of `node`'s words that a row and a chip draw. The read sends a block's reading

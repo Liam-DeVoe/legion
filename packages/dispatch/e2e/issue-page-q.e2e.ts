@@ -19,6 +19,7 @@ import {
   DESKTOP,
   drawnRows,
   expectIssuePageDrawn,
+  expectOpeningLanded,
   expectRowGroups,
   expectRowLayouts,
   focusRow,
@@ -265,6 +266,7 @@ test("the Decisions filter draws its four parts and quotes the person's answer",
     await page.setViewportSize(DESKTOP);
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
+    await expectOpeningLanded(page);
     await expect
       .poll(
         async () => {
@@ -357,6 +359,7 @@ test("only a decision that changed a statement waits for review @phone", async (
     await page.setViewportSize(DESKTOP);
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
+    await expectOpeningLanded(page);
     await unfoldEveryBranch(page);
     for (const block of [seeded.tiedToNote, seeded.untied]) {
       const row = await focusRow(page, id(block));
@@ -478,6 +481,7 @@ test("a change sent on a decision is drawn on it, and the decision leaves the re
     // lands, so the facts are read again, every branch unfolded first, until the reads are in.
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
+    await expectOpeningLanded(page);
     await expect
       .poll(
         async () => {

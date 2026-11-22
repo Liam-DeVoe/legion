@@ -14,6 +14,7 @@ import {
   type DecisionsRead,
   type DecisionsReadWatch,
   type Gate,
+  linksTo,
   OWED_BY,
   type TreeView,
   treeReadRoute,
@@ -50,8 +51,8 @@ import type { ApiRequests } from "./traffic";
  * - **What the page draws.** `reviewWordOf` is the state word a decision's row draws from its
  *   node; `specColumn` is, for each statement the Spec view draws, what stands beside it - the
  *   decision cell whose bracket spans it (`[data-spec-cell]`) and the links of its line
- *   (`[data-spec-because]`) - and `statementsBeside` the statements a decision stands beside,
- *   and `linksTo` whether one link goes to a node, by any of the node's names.
+ *   (`[data-spec-because]`) - and `statementsBeside` the statements a decision stands beside, a
+ *   link going to a node by part T's rule (`issue-page-t-tree.ts`' `linksTo`).
  *   `readFilter` and `releaseFilter` press one filter on and off as part T's rows do
  *   (`e2e/issue-page-t-rows.ts`).
  * - **What the page sends and receives.** `watchWrites` keeps every request under `/api/` that is
@@ -213,20 +214,6 @@ export function specColumn(page: Page): Promise<SpecColumnRow[]> {
       }
     );
   });
-}
-
-/** Whether the link `href` goes to a node `names` holds: a block by its fragment (`#b-<id>`), a
- *  block by its row id, the link's last path segment followed by its fragment (`<slug>#b-<id>`,
- *  as `/issues/<KEY>/artifacts/<slug>#b-<id>` ends), an ask by its address (`/asks/<id>`). */
-export function linksTo(href: string, names: readonly string[]): boolean {
-  const url = new URL(href, "http://links.invalid");
-  // A row id always ends in a block's fragment, so a link with none is no block's row id.
-  const rowId = url.hash.startsWith("#b-")
-    ? `${url.pathname.slice(url.pathname.lastIndexOf("/") + 1)}${url.hash}`
-    : null;
-  return names.some(
-    (name) => url.hash === `#b-${name}` || rowId === name || url.pathname.endsWith(`/asks/${name}`)
-  );
 }
 
 /** The statements of `column` a decision stands beside, by any of its `names` (its row id, its

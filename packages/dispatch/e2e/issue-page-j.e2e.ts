@@ -53,6 +53,7 @@ import {
   DESKTOP,
   drawnRows,
   expectIssuePageDrawn,
+  expectOpeningLanded,
   focusRow,
   focusThePage,
   longWords,
@@ -1160,6 +1161,7 @@ test("the Spec view stands as the approved picture draws it @phone", async ({ br
     // From the outline, `t s` leaves the focus on a statement of the view's tree, on screen.
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
+    await expectOpeningLanded(page);
     await focusThePage(page);
     await page.keyboard.press("t");
     await page.keyboard.press("s");

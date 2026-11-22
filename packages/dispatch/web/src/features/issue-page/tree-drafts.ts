@@ -586,29 +586,37 @@ export function askState(ask: Ask): AskState | undefined {
   return words[token] === undefined ? undefined : (token as AskState);
 }
 
-/** Each record's text source, by its kind and then its id: `textSourceOf`'s, made once, so every
- *  build of the drafts hands a row the source object it handed it before, and the row's words are
- *  not drawn again for a source that only looks new. */
-const sources: { readonly [Kind in TextSource["kind"]]: Map<string, TextSource> } = {
-  artifact: new Map(),
-  ask: new Map(),
-  comment: new Map(),
-  message: new Map(),
+/** Each text source (`textSourceOf`) a row was handed, by its kind, since one object can stand
+ *  for more than one - an ask block's reading is its ask's text and a block of its document - and
+ *  then by the object the row draws: the reading of its words, else the node or the entry it was
+ *  drafted from. A re-read whose answer is unchanged keeps each of these objects, and one whose
+ *  node changed beside its words keeps the node's reading, so every build of the drafts hands a
+ *  row the source object it handed it before, and the row's words are not drawn again for a
+ *  source that only looks new; and a source goes when that object does. */
+const recordSources: Readonly<Record<TextSource["kind"], WeakMap<object, TextSource>>> = {
+  artifact: new WeakMap(),
+  ask: new WeakMap(),
+  comment: new WeakMap(),
+  message: new WeakMap(),
 };
 
-/** The text source of record `id` of `kind` (`textSourceOf`), the one object `sources` holds; none
- *  where there is no id, as `textSourceOf` answers. */
+/** The text source of record `id` of `kind` (`textSourceOf`) for `drawn`, the object the row it
+ *  is handed to draws - its reading, else the node or the entry it is drafted from: the one
+ *  object `recordSources` holds for that object and kind, made again only where `id` is not the
+ *  one it was made with, since the reads an id is found through can change while the object
+ *  stays; none where there is no id, as `textSourceOf` answers. */
 export function stableSourceOf(
+  drawn: object,
   kind: TextSource["kind"],
   id: string | undefined
 ): TextSource | undefined {
   if (id === undefined) return undefined;
-  const byId = sources[kind];
-  let source = byId.get(id);
-  if (source === undefined) {
-    source = textSourceOf(kind, id);
-    if (source !== undefined) byId.set(id, source);
-  }
+  const sources = recordSources[kind];
+  const kept = sources.get(drawn);
+  if (kept?.id === id) return kept;
+  const source = textSourceOf(kind, id);
+  if (source === undefined) return undefined;
+  sources.set(drawn, source);
   return source;
 }
 

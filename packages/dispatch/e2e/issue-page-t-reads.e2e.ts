@@ -1,7 +1,7 @@
-import type { DisplayTree, IssueTreeNode } from "../web/src/api/types";
+import type { IssueTreeNode } from "../web/src/api/types";
+import { firstBlockWordsRaw, firstLineOf } from "../web/src/features/issue-page/issue-tree";
 import { PRESET_NAMES } from "../web/src/features/issue-page/page-words";
 import { readingOf, treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
-import { wordsOf } from "../web/src/features/refs/tree-fragment";
 import { seedWholeIssue } from "./issue-layout-seed";
 import { closeDetails, openDetails, phase, presetCount } from "./issue-page";
 import { nodeRow } from "./issue-page-g";
@@ -27,6 +27,7 @@ import {
   drawnNodes,
   headerStatus,
   heldAnswer,
+  linksTo,
   owedUnless,
   partUGate,
   R2_COUNTED_KINDS,
@@ -38,13 +39,7 @@ import {
   viewCount,
   viewNodeIds,
 } from "./issue-page-t-tree";
-import {
-  decisionRowId,
-  decisionsViewServedGate,
-  heldDecisionsRead,
-  idReadsOf,
-  linksTo,
-} from "./issue-page-u";
+import { decisionsViewServedGate, heldDecisionsRead, idReadsOf } from "./issue-page-u";
 import { expect, test } from "./test";
 import { expectLoadSettled, watchApiRequests } from "./traffic";
 
@@ -227,16 +222,15 @@ test("each filter draws its view read's rows", async ({ browser }) => {
 });
 
 /** The first line of decision node `node`, the words the quote that heads a statement's line opens
- *  with (`spec-decided-by.ts`'s `decisionOf`): those of the first block of its reading that holds
- *  any (`wordsOf`), its heading where it opens with one, read inside the one `decision` block the
- *  read sends its reading as (`readingOf`). Where the read sent no reading it is the heading the
- *  model reads off that same first block (`Decision.heading`): the node's text is no help there,
- *  since its first line is the block's own `:::decision{…}` line. */
+ *  with (`spec-decided-by.ts`'s `decisionOf`): the first line of the first block of its reading
+ *  (`readingOf`, `firstBlockWordsRaw`), cut as the page cuts it (`firstLineOf`). A decision
+ *  node's text is the decision's own words (`issue_tree_read.go`: `node.Text = decision.Text`),
+ *  not its `:::decision{…}` line. Where the read sent no reading, or one whose first block holds
+ *  no words, the heading the model reads off the decision (`Decision.heading`) stands in. */
 function decisionFirstLine(node: IssueTreeNode): string {
-  const content = readingOf(node)?.content;
-  const blocks = Array.isArray(content) ? (content as DisplayTree[]) : [];
-  const words = blocks.map((block) => wordsOf(block).replace(/\s+/g, " ").trim());
-  return words.find((one) => one !== "") ?? (node.decision?.heading ?? "").trim();
+  const reading = readingOf(node);
+  const words = reading === undefined ? "" : firstBlockWordsRaw(reading);
+  return firstLineOf(words.trim() === "" ? (node.decision?.heading ?? "") : words).line;
 }
 
 // c-views' decision lines, owed until the server serves the tree read's Decisions view
@@ -284,7 +278,7 @@ test("each filter draws its view read's rows, and each decision that shaped a st
         if (tuple.kind !== "shaped" || decision?.supertag !== "decision") return [];
         if (decision.decision?.replaced === true) return [];
         if (!statements.has(statement)) return [];
-        return [{ first: decisionFirstLine(decision), row: decisionRowId(decision), statement }];
+        return [{ first: decisionFirstLine(decision), row: idOf(tuple.from.id), statement }];
       });
       expect(
         lines.length,
