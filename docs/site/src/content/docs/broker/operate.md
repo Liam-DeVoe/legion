@@ -874,14 +874,16 @@ Dispatch also places each approve against each replacement. Its revoke carries
 `session_generation`, the address's session generation at Dispatch once the replacing sign-in
 committed, which the route requires (`400 SESSION_GENERATION_REQUIRED` without it), and the broker
 records it beside the replaced account, keeping the greater one on a repeat. Its approve carries
-`approver_session_generation`, the generation its check of the approver read. An approval whose
+`approver_session_generation`, the generation its check of the approver read, whenever the
+broker's settings answer `approver_fields: true`, as this one's do. An approval whose
 generation is below one a revoke recorded for the address was checked before that replacement,
 and is `403 APPROVER_REPLACED`, minting nothing, whatever account it names. Where nothing places
 an approval (one carrying no generation that names no account, as a Dispatch from before the field
-relays it, or one with `DISPATCH_AGENT_SECRETS_APPROVER_FIELDS` off), it is refused for 50 seconds
-after the replacement was recorded: the longest an approve can be in flight, since Dispatch gives
-up a call to the broker after 5 seconds and the broker ends a request 45 seconds after it arrives,
-so every approve whose check passed before the replacement is refused.
+relays it, or a current one that could not read this broker's settings), it is refused for 50
+seconds after the replacement was recorded: the longest an approve can be in flight, since
+Dispatch gives up its settings read and its call to the broker 5 seconds after its check and the
+broker ends a request 45 seconds after it arrives, so every approve whose check passed before the
+replacement is refused.
 `broker_machine_login_approvals_without_generation_total` ([Metrics](#metrics)) counts the
 approves that carry no generation; once it stays at zero, the fallback can come out.
 
@@ -1579,9 +1581,13 @@ secret is refused, so no session gets one until the broker is rolled forward aga
   the Cloud KMS key's name with the project number; and, on either store,
   `google_exchange_audience` (`BROKER_GOOGLE_OIDC_AUDIENCE`, absent unless `BROKER_VM_SERVICES`
   lists a machine), from which `agent-secrets` finds the machine's own identity with no setting;
-  and `secret_type_tag: true`, which says the broker reads a secret's type from the `type` tag,
+  `secret_type_tag: true`, which says the broker reads a secret's type from the `type` tag,
   without which `agent-secrets` writes no typed secret
-  ([People who manage secrets](#people-who-manage-secrets)).
+  ([People who manage secrets](#people-who-manage-secrets)); and `approver_fields: true`, which
+  says the broker takes `approver_issuer`, `approver_subject` and `approver_session_generation` in
+  a machine login's approve, without which Dispatch sends the approve without them, since a broker
+  from before them refuses them `400 INVALID_DECISION`. Dispatch reads it, with its own account
+  token, after its check of the approver, at most once every five seconds.
   It names no Kubernetes exchange audience: a pod's trade mints no launcher credential, so no
   machine could register a session under it. When the profiles' proxy blocks give the model judge
   seconds of any profile it also answers `judge_keys`: each such name with its judge seconds and its
@@ -2431,7 +2437,7 @@ own listing.
 | `broker_mint_attempts_total` | counter | `type`, `outcome`, `attempt` | Each attempt of each call a minter makes to GitHub or Google ([the mint retry](#the-mint-retry)). `type` is the secret's type. `outcome` is `ok`, `upstream` (an answer of 500 or above, no answer, or an answer it could not use), `rate_limited`, `refused` (a `4xx` that is no rate limit) or `cancelled` (the caller's request ended). `attempt` is `1`, `2` or `3`. |
 | `broker_unservable_secrets` | gauge | `secret`, `reason`, `owner` | One series of value 1 for each secret the broker refuses to serve now. `secret` is the secret's whole name in the store, or `profile:<NAME>` for a refused profile, as the `agent secret policy refused` line names it, `reason` is that line's reason, and `owner` its owner tag, empty for `owner-tag-missing` and `owner-tag-malformed`. A secret that becomes servable, or leaves the store, is gone from the next scrape, and a reread of a name nobody created adds no series. Nor does a secret waiting for its value in the ten minutes after its creation (`agent secret policy waiting for a value`), which is no refusal, nor a source served only through its profiles. |
 | `broker_policy_store_reads_total` | counter | `read` | Each call the policy makes to the secret store, a failed one too: `list` for a load of the whole namespace, `describe` for one secret's reread, and `value` for one type secret's value ([the value read](#the-value-read)). It is how to see that this pod read the store: the broker logs no line for a read whose secrets it serves. On Secret Manager each of them spends the project's read quota. A `list` is one `ListSecrets` for each page and one `GetSecretVersion` for each secret, and a `describe` is one `GetSecret` and one `GetSecretVersion`. A `value` is one `GetSecret`, or none when this pod read that secret in the 30 seconds before, and then the `AccessSecretVersion` that reads the value, which counts against Secret Manager's separate access quota. |
-| `broker_machine_login_approvals_without_generation_total` | counter | none | Each machine-login approve whose body carries no `approver_session_generation`, as a Dispatch from before the field relays it, or one with `DISPATCH_AGENT_SECRETS_APPROVER_FIELDS` off. Against a replacement of its approver's address, such an approve is decided only by the 50-second fallback the revoke's description above gives; once this stays at zero on every pod, no relaying Dispatch omits the field, and the fallback can come out. |
+| `broker_machine_login_approvals_without_generation_total` | counter | none | Each machine-login approve whose body carries no `approver_session_generation`, as a Dispatch from before the field relays it, or a current one that could not read this broker's settings. Against a replacement of its approver's address, such an approve is decided only by the 50-second fallback the revoke's description above gives; once this stays at zero on every pod, no relaying Dispatch omits the field, and the fallback can come out. |
 | `broker_nats_callout_decisions_total` | counter | `kind`, `outcome`, `reason` | Each NATS connection the auth service answered, where the broker runs it. `kind` is the credential the connection presented: `session`, `service` or `none`. `outcome` is `admitted` or `refused`, and `reason` is a refusal's one fixed word (empty when admitted), such as `waiting_bound` for one refused at once because the replica already held 1024 requests waiting for a decision. |
 | `broker_nats_callout_seconds` | histogram | | How long the auth service took to answer one connection, from the request reaching the replica. Its buckets straddle the decision's 1.5-second budget and the two seconds the hub waits for an answer. |
 | `broker_nats_callout_dropped_total` | counter | `reason` | Each authorization request the auth service answered not at all; the hub refuses that client at its own timeout. `reason` is `past_bounds` (the replica already held 1024 requests waiting and 1024 being refused), `hub_gave_up` (the hub had stopped waiting for the answer, read from the hub's own clock, so no skew between the broker's clock and the hub's counts here), `unopened` (not sealed to the service's curve key), `not_a_request`, or `pending_limit` (dropped by the NATS client on arrival, past the subscription's pending limits). The count moves every second whether or not the log takes writes. The broker logs the first drop in a minute, at WARN, `natscallout: dropped authorization requests unanswered` with each reason's count since the last such line and each reason's first drop (`<reason>_first`); a replica that stops logs what it counted since its last line. |

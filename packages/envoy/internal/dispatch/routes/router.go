@@ -213,10 +213,6 @@ type AppContextOptions struct {
 	// client; empty URL means the feature is off. See api.DepsInput.
 	AgentSecretsURL       string
 	AgentSecretsTokenFile string
-	// BrokerApproverFields is cmd/dispatch's DISPATCH_AGENT_SECRETS_APPROVER_FIELDS=on: a machine
-	// login's approve names the approving account and its session generation to the broker. See
-	// api.Deps.BrokerApproverFields.
-	BrokerApproverFields bool
 	// SignInIssuer is the issuer people sign in through (cmd/dispatch: DISPATCH_SIGNIN_ISSUER);
 	// empty for none. See api.DepsInput.
 	SignInIssuer string
@@ -355,7 +351,6 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		AgentPublisher:          opts.AgentPublisher,
 		AgentSecretsURL:         opts.AgentSecretsURL,
 		AgentSecretsTokenFile:   opts.AgentSecretsTokenFile,
-		BrokerApproverFields:    opts.BrokerApproverFields,
 		SignInIssuer:            opts.SignInIssuer,
 		Passkeys:                opts.Passkeys,
 		PasskeyAccounts:         opts.PasskeyAccounts,

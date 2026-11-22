@@ -120,11 +120,6 @@ type testServerOptions struct {
 	// names its own token's file (agentSecretsTokenFile).
 	agentSecretsURL       string
 	agentSecretsTokenFile string
-	// approverFieldsOff serves with Deps.BrokerApproverFields off, the production default
-	// (DISPATCH_AGENT_SECRETS_APPROVER_FIELDS unset): a machine login's approve carries the
-	// approver and the code alone. Every other test serves with it on, the broker that takes the
-	// approving account and the session generation.
-	approverFieldsOff bool
 	// identity resolves a cookie caller; nil is headerIdentity, which names the person the
 	// X-Dispatch-User header names.
 	identity identity.Identity
@@ -379,7 +374,6 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		BrokerTokens:            brokerTokens,
 		AgentSecretsURL:         options.agentSecretsURL,
 		AgentSecretsTokenFile:   agentSecretsTokenFile,
-		BrokerApproverFields:    !options.approverFieldsOff,
 		AgentStream:             options.agentStream,
 		AgentPublisher:          agentPublisher,
 		Embedder:                options.embedder,

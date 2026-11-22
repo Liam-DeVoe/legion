@@ -276,11 +276,6 @@ type bootConfig struct {
 	// by the broker client on each call, never here: a projected token rotates.
 	AgentSecretsURL       string
 	AgentSecretsTokenFile string
-	// AgentSecretsApproverFields is DISPATCH_AGENT_SECRETS_APPROVER_FIELDS=on: a machine login's
-	// approve names the approving Google account and the session generation its check read to the
-	// broker (api.Deps.BrokerApproverFields). Unset or off, it sends neither, the body a broker from
-	// before those fields takes. The setting exists only until every deployment's broker takes them.
-	AgentSecretsApproverFields bool
 	// FileStoreBucket is DISPATCH_FILE_STORE_BUCKET: the bucket uploaded files are stored in,
 	// gs://<bucket> for Cloud Storage or an S3 bucket's name (files.Open). Empty keeps them in
 	// Postgres.
@@ -754,10 +749,6 @@ func main() {
 	built.BrokerTokens = brokerTokens
 	if brokerTokens != nil {
 		slog.Info("dispatch: deciding access tokens the secrets broker issued", "broker", redact.URL(boot.AgentSecretsURL))
-	}
-	if boot.AgentSecretsURL != "" {
-		message, value := approverFieldsLine(boot.AgentSecretsApproverFields)
-		slog.Info(message, "setting", "DISPATCH_AGENT_SECRETS_APPROVER_FIELDS", "value", value)
 	}
 	// Under a Google rule, whether a person's personal tokens and broker credentials are held
 	// (identity.Membership.Standing), asked by the API and answered on the person route; nil, which
@@ -1822,9 +1813,6 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 			return bootConfig{}, errors.New("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE is required when DISPATCH_AGENT_SECRETS_URL is set: Dispatch calls the broker with its own projected Kubernetes ServiceAccount token")
 		}
 	}
-	if boot.AgentSecretsApproverFields, err = approverFieldsOn(env); err != nil {
-		return bootConfig{}, err
-	}
 	boot.Embedder, err = resolveEmbedder(env)
 	if err != nil {
 		return bootConfig{}, err
@@ -2255,7 +2243,6 @@ func appContextOptions(boot bootConfig, rule identity.SignInRule, built routes.A
 	built.GitHubAPIBase = boot.GitHubAPIBase
 	built.AgentSecretsURL = boot.AgentSecretsURL
 	built.AgentSecretsTokenFile = boot.AgentSecretsTokenFile
-	built.BrokerApproverFields = boot.AgentSecretsApproverFields
 	built.SignInIssuer = accountIssuer(boot)
 	built.TestHooksEnabled = boot.TestHooksEnabled
 	built.RouteRosterTTL = boot.RouteRosterTTL
@@ -2386,30 +2373,6 @@ func searchFillOff(env settingValues) (bool, error) {
 	default:
 		return false, fmt.Errorf("DISPATCH_SEARCH_FILL=%q (expected on or off)", value)
 	}
-}
-
-// approverFieldsOn reads DISPATCH_AGENT_SECRETS_APPROVER_FIELDS: on sends the approving account and
-// the session generation with each machine-login approve, and off, or unset, sends neither. Any
-// other value refuses the boot, naming the variable.
-func approverFieldsOn(env settingValues) (bool, error) {
-	switch value := env.get("DISPATCH_AGENT_SECRETS_APPROVER_FIELDS"); value {
-	case "", "off":
-		return false, nil
-	case "on":
-		return true, nil
-	default:
-		return false, fmt.Errorf("DISPATCH_AGENT_SECRETS_APPROVER_FIELDS=%q (expected on or off)", value)
-	}
-}
-
-// approverFieldsLine is the line a process with a secrets broker logs once at boot saying what its
-// machine-login approves name to the broker, and the DISPATCH_AGENT_SECRETS_APPROVER_FIELDS value it
-// names.
-func approverFieldsLine(on bool) (message, value string) {
-	if on {
-		return "dispatch: machine-login approves name the approving account and its session generation to the secrets broker", "on"
-	}
-	return "dispatch: machine-login approves name no approving account and no session generation to the secrets broker, which then neither records the approving account nor refuses a replaced one's approval", "off"
 }
 
 // openFileStore is the uploaded-file store boot names (files.Open: gs://<bucket> is a Cloud

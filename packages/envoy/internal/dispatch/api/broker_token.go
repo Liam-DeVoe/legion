@@ -173,10 +173,15 @@ func errBrokerTokenLapsed() error {
 // decides.
 //
 // That leaves no window to wait out while the broker pays a revocation: every credential the
-// replaced account holds records it or was made before the recording that replaced it, since
-// every credential the broker has made since it recorded accounts records the account that made
-// it, and the replacing sign-in sets sub_recorded_at in the transaction that records the
-// revocation (store.PgPeopleStore.SignInSubject). The broker revocation still ends those
+// replaced account holds records it, or records no account and was made before the recording that
+// replaced it or within brokerCredentialMargin after it, which refuses it. A credential the broker
+// made after it recorded accounts records none only where the approve that made it named none: the
+// approving credential is bound to no account, or Dispatch relayed it to a broker whose settings did
+// not say it takes the approver fields, or that it could not read then
+// (cipher.Client.TakesApproverFields). An approve of the replaced account's passed its last check
+// (approverStanding) before the recording, and reaches the broker within the margin, so its login
+// is refused that way. The replacing sign-in sets sub_recorded_at in the transaction that records
+// the revocation (store.PgPeopleStore.SignInSubject). The broker revocation still ends those
 // credentials at the broker, for the secret reads Dispatch does not see (pass, broker_revocations).
 //
 // A restricted member is then held to restrictedOwnerAdmitted, the one check both credentials
@@ -286,8 +291,10 @@ func personCredential(caller ciphertoken.Caller) bool {
 // have to run unsynchronized for about 58 days to use it up, which monitoring of either database
 // meets long before. A skew refuses, never admits. The
 // cost is one sign-in at the broker again for a credential recording no account made within five
-// minutes after its address's account was recorded, which after the recording only an older broker
-// makes: every approve then names the account (credentialSubjectSQL).
+// minutes after its address's account was recorded, which after the recording a broker makes only
+// for an approve that named no account: one relayed to a broker that did not say it takes the
+// approver fields (an older broker), or whose settings Dispatch could not read then
+// (cipher.Client.TakesApproverFields); every other approve names the account (credentialSubjectSQL).
 const brokerCredentialMargin = 5 * time.Minute
 
 // brokerCredentialMarginSQL is brokerCredentialMargin as an SQL interval.

@@ -5,6 +5,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -86,7 +87,6 @@ func newCredentialTestHandlerReading(t *testing.T, brokerURL, tokenFile string) 
 	if brokerURL != "" {
 		depsInput.AgentSecretsURL = brokerURL
 		depsInput.AgentSecretsTokenFile = tokenFile
-		depsInput.BrokerApproverFields = true
 	}
 	deps, err := NewDeps(depsInput)
 	if err != nil {
@@ -172,22 +172,40 @@ func TestListCredentialPendingWithAndWithoutABroker(t *testing.T) {
 // every request in order, answering canned status/body pairs keyed by "METHOD path". A hook in
 // beforeAnswer under that key runs as the request arrives, before it is answered, as a slow broker
 // call would leave the world while it is in flight.
+//
+// GET /v1/settings, which Dispatch reads to learn whether the broker takes an approve's approver
+// fields (cipher.Client.TakesApproverFields), is answered settingsBody (status settingsStatus,
+// 200 for 0) and counted in settingsReads alone, never in calls, routes or the last request: it
+// carries nothing of any caller, and every assertion on those is about what Dispatch asked the
+// broker to read or decide for a person. settingsBody starts as a broker that takes the fields,
+// the broker this build ships with.
 type fakeBrokerRig struct {
-	server        *httptest.Server
-	lastAuth      string
-	lastQuery     string
-	lastBody      string
-	calls         int
-	routes        []string
-	statusByRoute map[string]int
-	bodyByRoute   map[string]string
-	beforeAnswer  map[string]func()
+	server         *httptest.Server
+	lastAuth       string
+	lastQuery      string
+	lastBody       string
+	calls          int
+	routes         []string
+	statusByRoute  map[string]int
+	bodyByRoute    map[string]string
+	beforeAnswer   map[string]func()
+	settingsBody   string
+	settingsStatus int
+	settingsReads  int
 }
 
 func newFakeBrokerRig(t *testing.T) *fakeBrokerRig {
 	t.Helper()
-	rig := &fakeBrokerRig{statusByRoute: map[string]int{}, bodyByRoute: map[string]string{}, beforeAnswer: map[string]func(){}}
+	rig := &fakeBrokerRig{statusByRoute: map[string]int{}, bodyByRoute: map[string]string{}, beforeAnswer: map[string]func(){},
+		settingsBody: `{"approver_fields":true}`}
 	rig.server = httptest.NewServer(approvetimingtest.Broker(func() string { return rig.server.URL }, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/v1/settings" {
+			rig.settingsReads++
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(cmp.Or(rig.settingsStatus, http.StatusOK))
+			_, _ = w.Write([]byte(rig.settingsBody))
+			return
+		}
 		rig.calls++
 		rig.lastAuth = r.Header.Get("Authorization")
 		rig.lastQuery = r.URL.RawQuery
@@ -329,7 +347,7 @@ func TestAnApproveCarriesTheSessionGenerationItsCheckRead(t *testing.T) {
 	deps, err := NewDeps(DepsInput{
 		Store: database, Identity: headerIdentity(database), AgentTokens: sharedAgentTokens(t, "agent-token"),
 		ServerURL: "https://dispatch.example", Events: events.NewBroker(),
-		AgentSecretsURL: rig.server.URL, AgentSecretsTokenFile: accountTokenFile(t, credentialTestAccountToken), BrokerApproverFields: true,
+		AgentSecretsURL: rig.server.URL, AgentSecretsTokenFile: accountTokenFile(t, credentialTestAccountToken),
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)

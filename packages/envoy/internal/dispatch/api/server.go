@@ -206,13 +206,6 @@ type Deps struct {
 	// is unconfigured) means the feature is off: the pending list answers null, and every other
 	// handler that needs it answers 404 FEATURE_OFF.
 	AgentSecrets *cipher.Client
-	// BrokerApproverFields is cmd/dispatch's DISPATCH_AGENT_SECRETS_APPROVER_FIELDS=on: a machine
-	// login's approve names the approving Google account (approver_issuer, approver_subject) and
-	// carries the session generation its check read (approver_session_generation)
-	// (approveCredentialRecord). Off, the approve carries the approver and the code alone, the body
-	// a broker from before those fields takes, since such a broker refuses a field it does not know
-	// (400 INVALID_DECISION). The setting exists only until every deployment's broker takes them.
-	BrokerApproverFields bool
 	// Outliving answers whether a person has access that outlives their browser session: an
 	// unrevoked personal token, or a live broker credential, an exchange entry or an account
 	// BROKER_POD_OPERATORS maps to them (cipher.OutlivingAccess). A sign-out under a Google rule
@@ -400,8 +393,6 @@ type DepsInput struct {
 	// projected Kubernetes ServiceAccount token, which the client presents on every broker call.
 	AgentSecretsURL       string
 	AgentSecretsTokenFile string
-	// BrokerApproverFields is Deps.BrokerApproverFields.
-	BrokerApproverFields bool
 	// SignInIssuer is the issuer people sign in through; see Deps.SignInIssuer. NewDeps spells it as
 	// oidc.CanonicalIssuer does.
 	SignInIssuer string
@@ -557,7 +548,6 @@ func NewDeps(input DepsInput) (Deps, error) {
 		AgentStream:             input.AgentStream,
 		AgentPublisher:          input.AgentPublisher,
 		AgentSecrets:            agentSecretsClient,
-		BrokerApproverFields:    input.BrokerApproverFields,
 		Outliving:               outliving,
 		SignInIssuer:            signInIssuer,
 		Passkeys:                input.Passkeys,
