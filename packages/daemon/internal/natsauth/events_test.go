@@ -5,9 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"net"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -204,17 +202,17 @@ func TestTheDaemonsOwnCloseAfterARefusalLogsNoClose(t *testing.T) {
 // A connection lost with no reconnect to follow is a terminal close, logged once at error with the
 // connection's cause.
 func TestAConnectionLostWithoutReconnectLogsOneClose(t *testing.T) {
-	proxy := dropProxy(t, strings.TrimPrefix(testnats.URL(t), "nats://"))
+	proxy := testnats.NewCutProxy(t, strings.TrimPrefix(testnats.URL(t), "nats://"))
 	var out lockedBuffer
 	closed := make(chan struct{}, 1)
-	conn, err := natsauth.Connect([]string{"nats://" + proxy.addr}, "", t.Name(), nats.Timeout(5*time.Second), nats.NoReconnect(),
+	conn, err := natsauth.Connect([]string{"nats://" + proxy.Addr}, "", t.Name(), nats.Timeout(5*time.Second), nats.NoReconnect(),
 		natsauth.LogEvents(slog.New(slog.NewTextHandler(&out, nil))),
 		signalled(make(chan struct{}, 1), make(chan struct{}, 1), make(chan struct{}, 1), closed))
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(conn.Close)
-	proxy.drop()
+	proxy.Cut()
 	wait(t, closed, "the close", &out)
 	logged := out.String()
 	if strings.Count(logged, "NATS connection closed") != 1 || !strings.Contains(logged, `level=ERROR msg="NATS connection closed" error=`) {
@@ -261,101 +259,27 @@ func TestAnAsynchronousErrorIsLoggedWithItsSubscriptionSubject(t *testing.T) {
 // the server.
 func TestADisconnectAndItsReconnectAreLogged(t *testing.T) {
 	upstream := strings.TrimPrefix(testnats.URL(t), "nats://")
-	proxy := dropProxy(t, upstream)
+	proxy := testnats.NewCutProxy(t, upstream)
 	var out lockedBuffer
 	disconnected, reconnected := make(chan struct{}, 1), make(chan struct{}, 1)
-	conn, err := natsauth.Connect([]string{"nats://" + proxy.addr}, "", t.Name(), nats.Timeout(5*time.Second),
+	conn, err := natsauth.Connect([]string{"nats://" + proxy.Addr}, "", t.Name(), nats.Timeout(5*time.Second),
 		nats.ReconnectWait(10*time.Millisecond), nats.ReconnectJitter(0, 0),
 		natsauth.LogEvents(slog.New(slog.NewTextHandler(&out, nil))),
 		signalled(make(chan struct{}, 1), disconnected, reconnected, make(chan struct{}, 1)))
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	proxy.drop()
+	proxy.Drop()
 	wait(t, disconnected, "the disconnect", &out)
 	wait(t, reconnected, "the reconnect", &out)
 	conn.Close()
 	logged := out.String()
 	for _, want := range []string{
 		`level=WARN msg="NATS connection lost" error=`,
-		`level=INFO msg="NATS connection restored" server=nats://` + proxy.addr + "\n",
+		`level=INFO msg="NATS connection restored" server=nats://` + proxy.Addr + "\n",
 	} {
 		if strings.Count(logged, want) != 1 {
 			t.Errorf("log = %s\nwant exactly one line containing %s", logged, want)
 		}
 	}
-}
-
-// proxy forwards every connection to its address on to upstream until drop closes them. While cut,
-// it closes each connection it accepts at once, so a client stays disconnected until restore.
-type proxy struct {
-	addr    string
-	mu      sync.Mutex
-	conns   []net.Conn
-	refused bool
-}
-
-// dropProxy is a proxy to upstream, closed with t.
-func dropProxy(t *testing.T, upstream string) *proxy {
-	t.Helper()
-	ln, err := testnats.ListenLoopback()
-	if err != nil {
-		t.Fatal(err)
-	}
-	p := &proxy{addr: ln.Addr().String()}
-	go func() {
-		for {
-			client, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			p.mu.Lock()
-			refused := p.refused
-			p.mu.Unlock()
-			if refused {
-				client.Close()
-				continue
-			}
-			server, err := net.Dial("tcp", upstream)
-			if err != nil {
-				client.Close()
-				continue
-			}
-			p.mu.Lock()
-			p.conns = append(p.conns, client, server)
-			p.mu.Unlock()
-			go func() { _, _ = io.Copy(server, client); server.Close() }()
-			go func() { _, _ = io.Copy(client, server); client.Close() }()
-		}
-	}()
-	t.Cleanup(func() {
-		ln.Close()
-		p.drop()
-	})
-	return p
-}
-
-// drop closes every connection forwarded so far.
-func (p *proxy) drop() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	for _, c := range p.conns {
-		c.Close()
-	}
-	p.conns = nil
-}
-
-// cut drops every connection and refuses new ones until restore.
-func (p *proxy) cut() {
-	p.mu.Lock()
-	p.refused = true
-	p.mu.Unlock()
-	p.drop()
-}
-
-// restore forwards new connections again.
-func (p *proxy) restore() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.refused = false
 }

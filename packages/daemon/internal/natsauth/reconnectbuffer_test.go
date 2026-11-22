@@ -49,8 +49,8 @@ func TestAConsumerCreateSentWhileCutNeverReachesTheServer(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			p := dropProxy(t, strings.TrimPrefix(upstream, "nats://"))
-			conn, err := tc.dial("nats://" + p.addr)
+			p := testnats.NewCutProxy(t, strings.TrimPrefix(upstream, "nats://"))
+			conn, err := tc.dial("nats://" + p.Addr)
 			if err != nil {
 				t.Fatalf("connect: %v", err)
 			}
@@ -64,7 +64,7 @@ func TestAConsumerCreateSentWhileCutNeverReachesTheServer(t *testing.T) {
 			if _, err := js.Consumer(ctx, streamName, name); !errors.Is(err, jetstream.ErrConsumerNotFound) {
 				t.Fatalf("the guard's read of %s = %v, want not found", name, err)
 			}
-			p.cut()
+			p.Cut()
 			waitFor(t, "the connection cut", func() bool { return conn.IsReconnecting() })
 			create, cancel := context.WithTimeout(ctx, time.Second)
 			_, err = js.CreateConsumer(create, streamName, jetstream.ConsumerConfig{Durable: name, AckPolicy: jetstream.AckExplicitPolicy})
@@ -75,7 +75,7 @@ func TestAConsumerCreateSentWhileCutNeverReachesTheServer(t *testing.T) {
 			if !tc.lands && !errors.Is(err, nats.ErrReconnectBufExceeded) {
 				t.Fatalf("the daemon's create while cut = %v, want it refused at once by the empty reconnect buffer", err)
 			}
-			p.restore()
+			p.Restore()
 			waitFor(t, "the reconnect", conn.IsConnected)
 			// A round trip on the new connection: whatever was buffered was written before its answer.
 			if err := conn.Flush(); err != nil {

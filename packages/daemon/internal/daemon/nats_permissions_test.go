@@ -332,6 +332,43 @@ func TestEveryConnectionOfAFreshDaemonDialsAsItsOwn(t *testing.T) {
 	}
 }
 
+// Each fresh generation's connection is watched for a reconnect as the daemon's own is
+// (reconnectWatchdogWith): one that stays disconnected warns "NATS has not reconnected" every
+// reconnectWarnEvery, naming the connection, until it reconnects or closes. Its durable reads
+// nothing meanwhile, and nats.go logs its loss once. The daemon's own connection's watchdog runs
+// beside Run and is not started here, so each warn the row reads is a generation's. The control is
+// the code before this row, which watched the daemon's own connection alone: no generation warned.
+func TestEachFreshGenerationsConnectionIsWatchedForItsReconnect(t *testing.T) {
+	daemonSeed, admin, js, server, uri := startDaemonGrantServer(t, testnatsimages.Images[0].Ref, natsgrant.Daemon())
+	defer admin.Close()
+	createDaemonNotificationStream(t, js)
+	cfg := daemonGrantConfig(uri)
+	cfg.ConsumerNames = consumernames.ModeFresh
+	logs := &syncBuffer{}
+	w := grantWorkflow(t, logs)
+	w.reconnectPollInterval, w.reconnectWarnEvery = 50*time.Millisecond, 500*time.Millisecond
+	writeConvertedSentinel(t, w, cfg.Project)
+	if err := w.connect(t.Context(), cfg, natsConnection{seed: daemonSeed}); err != nil {
+		t.Fatalf("connect the daemon on fresh names: %v", err)
+	}
+	defer w.closeNATS()
+	admin.Close()
+	stop := 10 * time.Second
+	if err := server.Stop(t.Context(), &stop); err != nil {
+		t.Fatalf("stop the server: %v", err)
+	}
+	logicals := []string{dispatchGrantConsumer, githubGrantConsumer, wakeGrantConsumer}
+	testwait.Eventually(t, "a reconnect warn from each generation's connection", func() bool {
+		logged := logs.String()
+		for _, logical := range logicals {
+			if !strings.Contains(logged, `msg="NATS has not reconnected" connection=`+logical+"/") {
+				return false
+			}
+		}
+		return true
+	})
+}
+
 func grantLogger(logs *syncBuffer) *slog.Logger {
 	return slog.New(slog.NewTextHandler(logs, nil))
 }

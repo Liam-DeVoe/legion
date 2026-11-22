@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"maps"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 
@@ -99,6 +100,9 @@ type durableNames struct {
 	pool    Pool
 	logger  *slog.Logger
 	connect func(ctx context.Context, name string) (*nats.Conn, error)
+	// own is JetStream on the daemon's own connection, whose grant holds the fixed names' info: a
+	// fixed name, which no generation's connection is granted, is read there (durableServer.Info).
+	own jetstream.JetStream
 
 	mu sync.Mutex
 	// generations is JetStream on each open connection, by the physical name the connection is
@@ -130,7 +134,7 @@ func daemonNaming(project string) (consumernames.Naming, error) {
 	return consumernames.FamilyNaming(family, dispatchConsumerName(project))
 }
 
-func newDurableNames(pool Pool, spec ConsumerSpec) (*durableNames, error) {
+func newDurableNames(own jetstream.JetStream, pool Pool, spec ConsumerSpec) (*durableNames, error) {
 	store, err := daemonStore(pool, spec.Project)
 	if err != nil {
 		return nil, err
@@ -139,7 +143,7 @@ func newDurableNames(pool Pool, spec ConsumerSpec) (*durableNames, error) {
 	if err != nil {
 		return nil, err
 	}
-	d := &durableNames{naming: naming, store: store, pool: pool, logger: spec.Logger, connect: spec.Connect, generations: map[string]jetstream.JetStream{}}
+	d := &durableNames{naming: naming, store: store, pool: pool, logger: spec.Logger, connect: spec.Connect, own: own, generations: map[string]jetstream.JetStream{}}
 	d.names = consumernames.New(consumernames.Config{
 		Store:             store,
 		Server:            durableServer{d},
@@ -237,6 +241,26 @@ func (d *durableNames) keep(logical, current string) {
 	}
 }
 
+// drop closes the connections of the names record retired and of its open operation's candidate,
+// which a failed Ensure leaves: a create the server refused, at the stream's max_consumers, leaves
+// its candidate open for Step 0, and each try reserves and dials another. None of them is a consumer
+// Run reads. The record's current keeps its connection, and so does every name the record does not
+// name, since what a failed read of the record selects is not known.
+func (d *durableNames) drop(record consumernames.Record) {
+	names := slices.Clone(record.Retired)
+	if record.Op != nil {
+		names = append(names, record.Op.Candidate)
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for _, physical := range names {
+		if open, ok := d.generations[physical]; ok && physical != record.Current {
+			open.Conn().Close()
+			delete(d.generations, physical)
+		}
+	}
+}
+
 // watch has nothing to watch beside Run: the fresh names read no cutover marker once open, since
 // a store converted to them is the one they run on.
 func (d *durableNames) watch(context.Context) error { return nil }
@@ -257,13 +281,15 @@ func (d *durableNames) close() {
 // selected is gone (consumernames.Names.Ensure), and updates the one selected otherwise, keeping
 // the start it was created with, as openConsumer does for a fixed name. It then writes the
 // consumer's floor as the record's last floor, and closes the connections of the logical name's
-// other generations. A failed Ensure closes none: what the record selects is not known then, and
-// the consumer Run reads from stays bound to its own connection, so a failed repositories change
-// stops nothing and its caller retries it.
+// other generations. A failed Ensure closes only the connections of the names the record retired
+// and of its open candidate (drop): what the record selects is not known then, and the consumer Run
+// reads from stays bound to its own connection, so a failed repositories change stops nothing and
+// its caller retries it.
 func (d *durableNames) open(ctx context.Context, config jetstream.ConsumerConfig) (jetstream.Consumer, error) {
 	logical := config.Durable
 	sel, _, err := d.names.Ensure(ctx, logical, consumernames.CreateRequest{Create: d.create(config), First: d.first})
 	if err != nil {
+		d.drop(sel.Record)
 		return nil, d.failed(logical, sel, consumernames.OperationCreate, err)
 	}
 	defer d.keep(logical, sel.Record.Current)
@@ -447,16 +473,21 @@ func (d *durableNames) physicalConfig(config jetstream.ConsumerConfig, name stri
 	return config
 }
 
-// durableServer is the daemon's consumers as its own NATS grant reaches them, each on its own
-// connection (durableNames.on): info, and no delete.
+// durableServer is the daemon's consumers as its own NATS grant reaches them: a fresh name's on its
+// own connection (durableNames.on), a fixed name's on the daemon's own: info, and no delete.
 type durableServer struct{ d *durableNames }
 
-// Info reads consumer name on name's own connection, through a handle of its own, as the readers
-// of a fixed name do.
+// Info reads consumer name through a handle of its own, as the readers of a fixed name do: a fresh
+// name on its own connection, and a fixed name on the daemon's own connection, whose grant holds
+// the fixed names' info. A fixed name reaches here only as a convert's replace's predecessor, which
+// Step 0 reads before it closes the replace (consumernames' finishFixedDelete).
 func (s durableServer) Info(ctx context.Context, name string) (*jetstream.ConsumerInfo, error) {
-	js, err := s.d.on(ctx, name)
-	if err != nil {
-		return nil, err
+	js := s.d.own
+	if consumernames.LogicalOf(name) != name {
+		var err error
+		if js, err = s.d.on(ctx, name); err != nil {
+			return nil, err
+		}
 	}
 	consumer, err := js.Consumer(ctx, notificationStream, name)
 	if errors.Is(err, jetstream.ErrConsumerNotFound) {
