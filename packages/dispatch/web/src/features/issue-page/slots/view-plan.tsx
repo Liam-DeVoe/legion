@@ -14,7 +14,7 @@ import { EMPTY_STATE_LINES } from "../page-words";
 import { type PlanFailedRead, PlanFilterBody, type PlanReads } from "../plan-filter/PlanFilterBody";
 import { presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
-import { useTreeRead } from "../tree-read/tree-read";
+import { useTreeReadRunning } from "../tree-read/tree-read";
 import { useTellsAddressDrawn } from "./refused-reads";
 import type { ViewSlotProps } from "./stage";
 
@@ -38,29 +38,30 @@ export function ViewPlanSlot({
   // The tree, the line of each read it is built from that stands refused, and whether every one
   // of those reads has settled (`useOutlineReads`), each under the key and with the freshness the
   // tree reads it by, so they cost no request of their own.
-  const { readsSettled, refused: refusedLines, root } = useOutlineReads(issue);
-  const { blocksOf } = useTreeRead(issue);
+  const { blocksOf, readsSettled, refused: refusedLines, root } = useOutlineReads(issue);
   // The view waits on the reads of the two documents it draws from, and on no other: the plan's
   // blocks, which are its tasks, and the spec's, which are the statements a task serves. Both are
-  // the tree read's (`useTreeRead`'s `blocksOf`), as the plan's blocks are again for the order
+  // the tree read's (`useOutlineReads`' `blocksOf`), as the plan's blocks are again for the order
   // they are written in (`PlanFilterBody`), so the view sends no request of its own, and a failed
   // line's Retry reads the tree again. A document the issue does not name needs no read.
   //
   // A read has answered where it holds data, whatever its status, and has failed where it stands
   // failed (`refs/reference-target.ts`'s `standsFailed`, the one rule, which says why neither
-  // is read from the status). Each failed read draws one line, which stays while the read runs
+  // is read from the status). The failed read draws one line, which stays while the read runs
   // again or waits for the network, its Retry busy while it runs (`retrying`), and says each
   // failure again (`failure`). The view draws its tasks, its switch and its empty line once both
-  // reads hold data, so it never says the issue has no plan tasks before they are in; until then
-  // its tree holds nothing, and each read that failed is one line over the tree, in the order
-  // plan, statements, with a Retry that asks that read alone again (`PlanFilterBody`). The view
-  // stays mounted through all of it, as the outline does (`slots/body.tsx`), so no read takes
-  // from the reader the press of "Steps", the focused row and its mark, a step being edited, or
-  // the address's step having taken the focus, which it takes once.
+  // documents' blocks are held, so it never says the issue has no plan tasks before they are in;
+  // until then its tree holds nothing, and a refused read is one line over the tree, with a Retry
+  // that asks it again (`PlanFilterBody`). The view stays mounted through all of it, as the
+  // outline does (`slots/body.tsx`), so no read takes from the reader the press of "Steps", the
+  // focused row and its mark, a step being edited, or the address's step having taken the focus,
+  // which it takes once.
   const planId = roleDocument(issue, "plan")?.id;
   const planBlocks = blocksOf("plan");
   const specId = spec?.id;
   const specBlocks = blocksOf("spec");
+  // Whether the tree read runs, from an observer of its own (`useTreeReadRunning`).
+  const running = useTreeReadRunning(issue.key);
   const answered =
     (planId === undefined || planBlocks.data !== undefined) &&
     (specId === undefined || specBlocks.data !== undefined);
@@ -77,7 +78,7 @@ export function ViewPlanSlot({
             failure: query.errorUpdateCount,
             read,
             retry: query.refetch,
-            retrying: query.isFetching,
+            retrying: running,
           },
         ]
       : []
@@ -87,7 +88,7 @@ export function ViewPlanSlot({
   // the network (paused), is not out.
   const out = watched.some(
     ({ id, query }) =>
-      id !== undefined && query.data === undefined && (query.isFetching || !standsFailed(query))
+      id !== undefined && query.data === undefined && (running || !standsFailed(query))
   );
   const reads: PlanReads =
     failed.length > 0

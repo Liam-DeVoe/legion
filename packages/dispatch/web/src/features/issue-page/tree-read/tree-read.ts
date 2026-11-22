@@ -205,13 +205,12 @@ export const viewQuery = (key: string, filter: TreeFilter) =>
 
 /** One role's blocks from the tree read, answered as the blocks read of that role's document
  *  answered them (`artifactBlocksQuery`), so a caller's lines that read these members stay as
- *  they are. The state is the tree read's own. */
+ *  they are. The state is the tree read's own; whether that read runs is read apart, by the views
+ *  that draw it (`useTreeReadRunning`). */
 export interface TreeBlocksRead {
   readonly data: TreeBlock[] | undefined;
   readonly errorUpdateCount: number;
   readonly isError: boolean;
-  readonly isFetching: boolean;
-  readonly isSuccess: boolean;
   readonly refetch: () => Promise<unknown>;
 }
 
@@ -237,9 +236,6 @@ export interface TreeRead {
    *  blocks here and costs no request of its own; the same value for a role until the answer or
    *  the read's state changes. */
   readonly blocksOf: (role: TreeFilter) => TreeBlocksRead;
-  /** How many times the read has been refused (TanStack Query's `errorUpdateCount`), which keys
-   *  the alert of the line a refusal draws. */
-  readonly errorUpdateCount: number;
   /** Whether the read was refused with no answer held, its retries spent, and holds none yet:
    *  from that refusal until a read answers, the reads asked again in between included, whoever
    *  asked them - the reader's Retry, an event, the live feed coming back, a focus while the
@@ -248,8 +244,6 @@ export interface TreeRead {
    *  A refetch that fails over a held answer is no such failure, since the page still draws what
    *  it holds. */
   readonly failed: boolean;
-  /** Whether the read runs, a first read or again (TanStack Query's `isFetching`). */
-  readonly isFetching: boolean;
   /** Whether the read holds no answer and has not settled since its last read began: its first
    *  read is out, or a read asked again after a refusal is, while `failed` holds too. It is what
    *  holds back a read that waits on every other read of the page, as the batched name read does
@@ -271,7 +265,6 @@ export function useTreeRead(issue: IssueDetails): TreeRead {
     data: answer,
     errorUpdateCount,
     isError,
-    isFetching,
     isPending,
     isSuccess,
     refetch,
@@ -287,12 +280,10 @@ export function useTreeRead(issue: IssueDetails): TreeRead {
           data: blocks(role),
           errorUpdateCount,
           isError,
-          isFetching,
-          isSuccess,
           refetch,
         })
       ),
-    [blocks, errorUpdateCount, isError, isFetching, isSuccess, refetch]
+    [blocks, errorUpdateCount, isError, refetch]
   );
   return useMemo(
     () => ({
@@ -300,14 +291,20 @@ export function useTreeRead(issue: IssueDetails): TreeRead {
       blocksHeld: answer !== undefined,
       blocksRead: isSuccess,
       blocksOf,
-      errorUpdateCount,
       failed: answer === undefined && errorUpdateCount > 0,
-      isFetching,
       pending: isPending,
       refetch,
     }),
-    [answer, blocksOf, errorUpdateCount, isFetching, isPending, isSuccess, refetch]
+    [answer, blocksOf, errorUpdateCount, isPending, isSuccess, refetch]
   );
+}
+
+/** Whether the tree read of issue `key` runs (TanStack Query's `isFetching`): its first read, a
+ *  refresh, or a Retry. An observer of its own beside `useTreeRead`'s, which reads none of it, so
+ *  a reader of the tree is drawn again as each read of it starts and ends only where it reads
+ *  this: a view that draws a failed read's Retry busy while it runs. */
+export function useTreeReadRunning(key: string): boolean {
+  return useQuery(issueTreeQuery(key)).isFetching;
 }
 
 /** `make`'s value for each role, made on the first ask for that role and the same value on

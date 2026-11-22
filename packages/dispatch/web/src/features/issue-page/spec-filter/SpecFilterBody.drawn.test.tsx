@@ -61,7 +61,7 @@ import { ProvidersSlot } from "../slots/providers";
 import { StageSlot, ViewStage } from "../slots/stage";
 import { nodeRowSelectorOf } from "../tree-focus";
 import { decisionBehind } from "../tree-keys";
-import { treeAnswer, treeNode, treeTuple } from "../tree-read/tree-fixtures";
+import { commentNode, treeAnswer, treeNode, treeTuple } from "../tree-read/tree-fixtures";
 import { issueTreeQuery, type TreeAnswer } from "../tree-read/tree-read";
 import { issueAsksQuery } from "../useIssueTree";
 import { check, checkNode, result } from "../verification-filter/verification-fixtures";
@@ -870,13 +870,7 @@ function AddressedStage({ issue }: { issue: IssueDetails }): ReactNode {
 function threadsTree(): TreeAnswer {
   return treeAnswer([
     treeNode(KEY, "issue", null),
-    ...TWO_THREADS.map((comment) =>
-      treeNode(comment.id, "comment", comment.reply_to ?? KEY, {
-        author: [comment.author],
-        made_at: comment.created_at,
-        text: comment.body,
-      })
-    ),
+    ...TWO_THREADS.map((comment) => commentNode(comment)),
   ]);
 }
 

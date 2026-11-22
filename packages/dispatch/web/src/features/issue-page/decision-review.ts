@@ -20,7 +20,7 @@ import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
  *
  * This module is pure and imports no code of the tree, only the types of a document's blocks and
  * of the tree read, so the tree (`issue-tree.ts`, `tree-read/tree-nodes.ts`), the Decisions
- * filter and the header's count of what waits on the
+ * filter (`decisions-filter/decisions-parts.ts`) and the header's count of what waits on the
  * reader (`waiting.ts`) read one rule each and cannot disagree.
  *
  * An agent's decision is a `decision` block of one of the issue's documents, the spec's or
@@ -30,7 +30,7 @@ import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
  * whose address is the ask's: no Change is written on it, and it is on no review list.
  *
  * A Change is a comment of the issue anchored to the decision's own words in the document its
- * block stands in (`features/issue/DecisionsPanel.tsx`'s Change composer writes it so);
+ * block stands in (`DecisionActions.tsx`'s Change composer writes it so);
  * `changeAnchor` gives the quote and the occurrence it is written with, counted over that
  * document's own reading, so it lands on the decision's first block that is no heading though
  * another decision, or the document's text around it, holds the same words. The decisions read
@@ -53,9 +53,9 @@ import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
  * person wrote that the read hangs under it, made since it last changed and was last kept
  * (`decisionNodeChanges`), and no quote is matched for it. A decision the read holds no node
  * for is found by the decision's block that holds the anchor's block where its document's blocks
- * are read, which the Decisions filter reads (`decisions-entries.ts`), and by its words alone
- * where they are not, which is how the outline and the header's count read it: the change is
- * then the first decision's whose words hold the quote.
+ * are given, and by its words alone where they are not, which is how the outline, the Decisions
+ * filter (`decisions-entries.ts`) and the header's count read it, since none reads a document's
+ * blocks: the change is then the first decision's whose words hold the quote.
  */
 
 /** The fields of a comment this module reads. */
@@ -157,6 +157,12 @@ export function decisionBlockId(
   return route !== undefined && "block" in route ? route.block?.id : undefined;
 }
 
+/** The block id the tree read names `node` by: a typed block's own (`block_id`), else the node's
+ *  id, which names a node that is no block. */
+export function blockIdOfNode(node: Pick<TreeAnswerNode, "block_id" | "id">): string {
+  return node.block_id ?? node.id;
+}
+
 /**
  * The decision node of the tree read each decision of the decisions read is, by the decision's
  * address (`DecisionEntry.ref`): a decision node of this issue whose block id (`block_id`) is the
@@ -174,7 +180,7 @@ export function decisionNodes(
   const nodes = new Map<string, TreeAnswerNode[]>();
   for (const node of tree?.nodes ?? []) {
     if (node.supertag !== "decision" || node.issue !== undefined) continue;
-    const block = node.block_id ?? node.id;
+    const block = blockIdOfNode(node);
     const same = nodes.get(block);
     if (same === undefined) nodes.set(block, [node]);
     else same.push(node);
@@ -298,15 +304,15 @@ export function decisionChangeComments(
   tree?: TreeAnswer
 ): ReadonlyMap<string, string> {
   const changes = new Map<string, string>();
-  const onNodes = decisionNodes(
-    (decisions?.entries ?? []).filter((row) => !row.replaced),
-    tree
-  );
+  const standing = (decisions?.entries ?? []).filter((row) => !row.replaced);
+  const onNodes = decisionNodes(standing, tree);
   const byNode = new Map([...onNodes].map(([ref, node]) => [node, ref]));
   for (const [comment, node] of nodeChangeComments(tree)) {
     const ref = byNode.get(node);
     if (ref !== undefined) changes.set(comment.id, ref);
   }
+  // Every decision that stands is a node, so no quote is matched for any.
+  if (standing.every((row) => onNodes.has(row.ref))) return changes;
   // Each decision by the document its block stands in, replaced ones included: their blocks hold
   // blocks too, and a comment anchored in one changes no other decision. An ask's entry stands in
   // no document's block by its address (`decisionDocumentId`), so it takes no change.

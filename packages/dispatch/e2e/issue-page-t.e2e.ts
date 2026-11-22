@@ -834,7 +834,7 @@ test("each filter draws its view read's rows", async ({ browser }) => {
         expect(
           idSet(drawn.nodes.flatMap((node) => (node.context ? [node.id] : []))),
           `${where}, the rows drawn as context are the view read's context`
-        ).toEqual(idSet(expected.flatMap((node) => (node.mark === "context" ? [node.id] : []))));
+        ).toEqual(idSet(expected.flatMap((node) => (node.role === "context" ? [node.id] : []))));
         if (filter === "verification") {
           expect(
             checksOutOfPlace(drawn.rows, answer, reads),
@@ -946,7 +946,7 @@ test("each filter draws its view read's rows, and the Decisions filter draws its
       expect(
         idSet(drawn.nodes.flatMap((node) => (node.context ? [node.id] : []))),
         `${where}, the rows drawn as context are the view read's context`
-      ).toEqual(idSet(expected.flatMap((node) => (node.mark === "context" ? [node.id] : []))));
+      ).toEqual(idSet(expected.flatMap((node) => (node.role === "context" ? [node.id] : []))));
       expect(
         drawn.count?.trim(),
         `${where}, the control counts the view read's own ${R2_COUNTED_KINDS.decisions.join(", ")}`

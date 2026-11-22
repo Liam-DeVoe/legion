@@ -32,7 +32,8 @@ import { useLineRefusals } from "./useLineRefusals";
 
 /** The issue's tree, and how far the tree read it is built from has got (`TreeRead`): `root` is
  *  built from what that read holds, and keeps standing on it through a refetch that fails. */
-export interface IssueTreeView extends Pick<TreeRead, "blocksHeld" | "blocksOf" | "blocksRead"> {
+export interface IssueTreeView
+  extends Pick<TreeRead, "blocksHeld" | "blocksOf" | "blocksRead" | "failed" | "pending"> {
   /** The names line's state while the names stand failed (`useLineRefusals`), and none while
    *  they do not: what a view reads to draw the page's line that the names failed. The names
    *  reads are the batched one and the one more that names what a block's stored source cites
@@ -501,10 +502,21 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
       blocksHeld: read.blocksHeld,
       blocksOf: read.blocksOf,
       blocksRead: read.blocksRead,
+      failed: read.failed,
       namesFailure,
       namesHeld,
+      pending: read.pending,
       root,
     }),
-    [read.blocksHeld, read.blocksOf, read.blocksRead, namesFailure, namesHeld, root]
+    [
+      read.blocksHeld,
+      read.blocksOf,
+      read.blocksRead,
+      read.failed,
+      namesFailure,
+      namesHeld,
+      read.pending,
+      root,
+    ]
   );
 }

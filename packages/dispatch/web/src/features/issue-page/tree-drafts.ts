@@ -24,6 +24,7 @@ import {
 import { type TextSource, textSourceOf } from "../refs/text-references";
 import { wordsOf } from "../refs/tree-fragment";
 import {
+  blockIdOfNode,
   decisionChangeComments,
   decisionChanges,
   decisionContent,
@@ -145,7 +146,7 @@ export interface TreeContext {
    *  (`ReferenceTarget.name`), with a typed block's directive left out (`blockWords`); `""` for
    *  a target the read has not answered for and for one nothing answers to now. It is a block's
    *  source, cut at 480 runes and unread, so no chip draws it: it is where a node's citations
-   *  are read from beside its words, and a block's words where the read sent no reading. */
+   *  are read from beside its words (`addDocumentChips`). */
   readonly excerptOf: (reference: string) => string;
   readonly key: string;
   /** The node `reference` names, as this issue addresses it; undefined for anything else. */
@@ -154,9 +155,6 @@ export interface TreeContext {
   readonly specSlug: string;
   /** The slug of one document of the issue, by its artifact id. */
   readonly slugOf: (artifactId: string) => string | undefined;
-  /** The server's reading of what `reference` points at, where the batched reference read sent
-   *  one: a typed block's own inner content, whole, references kept (`ReferenceTarget.text_tree`). */
-  readonly treeOf: (reference: string) => DisplayTree | undefined;
   /** The reader's login, which an open question waits on where its turn is theirs; undefined
    *  until the login resolves, and nothing waits on nobody. */
   readonly viewer: string | undefined;
@@ -278,10 +276,7 @@ export function treeContext(
   const kinds = new Map<string, NodeType>();
   for (const node of reads.tree?.nodes ?? []) {
     if (node.document !== undefined && node.issue === undefined && types.includes(node.supertag)) {
-      kinds.set(
-        blockNodeId(node.document.slug, node.block_id ?? node.id),
-        node.supertag as NodeType
-      );
+      kinds.set(blockNodeId(node.document.slug, blockIdOfNode(node)), node.supertag as NodeType);
     }
   }
   const nodeIdOfReference = nodeIdOf(reads.issue);
@@ -347,7 +342,6 @@ export function treeContext(
     nodeIdOf: nodeIdOfReference,
     specSlug,
     slugOf: (artifactId: string) => slugs.get(artifactId),
-    treeOf: (reference: string) => names.get(reference)?.text_tree,
     viewer: reads.viewer,
   };
 }

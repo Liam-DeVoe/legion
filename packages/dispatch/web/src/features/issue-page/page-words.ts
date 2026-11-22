@@ -625,9 +625,10 @@ export const STATE_LINES = freeze({
   /** What the outline says over its rows, on load as much as later, of each read they come from
    *  that stands failed, beside that read's Retry (`outline-reads.ts`): the names the rows cite,
    *  which checks serve each statement, the issue's decisions, the checks' results, the
-   *  questions, the comments, the messages, and each document whose blocks it draws, named by
-   *  the part the document plays: the spec, the plan or Verification, since a decision is a block
-   *  of a document and no document of its own. */
+   *  questions, the comments and the messages. The spec's, the plan's and the verification
+   *  document's lines, last, are what the Plan and the Verification views say of a tree read
+   *  refused before it first answered, each named by the part the document whose blocks the view
+   *  waits on plays (`PlanFilterBody`, `VerificationFilterBody`). */
   names_unreadable: "Could not load the names this issue's rows cite.",
   coverage_unreadable: "Could not load which checks serve each statement.",
   issue_decisions_unreadable: "Could not load this issue's decisions.",

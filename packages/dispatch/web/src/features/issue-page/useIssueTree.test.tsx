@@ -70,6 +70,7 @@ import { BodySlot } from "./slots/body";
 import { ProvidersSlot } from "./slots/providers";
 import { nodesInOrder } from "./tree-keys";
 import {
+  commentNode,
   treeAnswer as fixtureAnswer,
   type TreeNodeExtra,
   treeNode,
@@ -144,13 +145,7 @@ function treeAnswer(
     [
       answerNode(KEY, "issue", { parent: null }),
       task,
-      ...comments.map((one) =>
-        answerNode(one.id, "comment", {
-          author: [one.author],
-          made_at: one.created_at,
-          text: one.body,
-        })
-      ),
+      ...comments.map((one) => commentNode(one, KEY)),
       ...(more.nodes ?? []),
     ],
     more.tuples
@@ -3817,11 +3812,7 @@ test("the outline's tree that took the focus for want of a row hands it to the f
     ...treeAnswer([]),
     nodes: [answerNode(KEY, "issue", { parent: null }), ...nodes],
   });
-  const reply = answerNode(comment.id, "comment", {
-    author: [comment.author],
-    made_at: comment.created_at,
-    text: comment.body,
-  });
+  const reply = commentNode(comment, KEY);
   let reads = 0;
   (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async () => {
     reads += 1;

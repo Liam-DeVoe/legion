@@ -73,7 +73,7 @@ import { specSummary } from "../spec-summary";
 import { nodeRowSelectorOf, TAB_STOP_ROW } from "../tree-focus";
 import type { DrawnRow } from "../tree-fold";
 import { nodesInOrder } from "../tree-keys";
-import { issueTreeQuery, useTreeRead } from "../tree-read/tree-read";
+import { issueTreeQuery, useTreeRead, useTreeReadRunning } from "../tree-read/tree-read";
 import { issueAsksQuery, type NamesFailure } from "../useIssueTree";
 import { type LineRead, useLineRefusals } from "../useLineRefusals";
 import { moveToRow, useTreeKeymap } from "../useTreeKeymap";
@@ -191,9 +191,12 @@ export function SpecFilterBody({
   const asksQuery = issueAsksQuery(issue.key);
   const coverageRead = useQuery(treeRead(coverageQuery));
   const { blocksOf } = useTreeRead(issue);
-  const specBlocksRead = blocksOf("spec");
+  // Whether the tree read runs, from an observer of its own (`useTreeReadRunning`): what a line
+  // of the blocks draws its Retry busy by.
+  const running = useTreeReadRunning(issue.key);
+  const specBlocksRead = { ...blocksOf("spec"), isFetching: running };
   const resultsRead = useQuery(treeRead(resultsQuery));
-  const checksRead = blocksOf("verification");
+  const checksRead = { ...blocksOf("verification"), isFetching: running };
   const decisionsRead = useQuery(treeRead(decisionsQuery));
   const asksRead = useQuery(treeRead(asksQuery));
   // One predicate per read: whether it holds an answer. Every part of the body that says what

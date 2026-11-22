@@ -53,15 +53,14 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
   const following = useFollowing();
   const specSlug = primarySpec(issue)?.slug;
   const address = issueAddress(route, search, hash, specSlug);
-  // The tree, and whether every read its nodes come from holds its answer (`useOutlineReads`).
+  // The tree, and whether every read it is built from holds its answer (`useOutlineReads`).
   // Until then a tree with no node is one whose nodes have not arrived, and the outline's line
   // that the issue holds nothing would be false on every cold load, so the outline draws nothing
   // in its place; so would `q` and `w` saying there is no question or decision to go to, so they
   // say nothing. A read that stands failed holds nothing either, and the outline says so over
   // its rows (`failed`). Under a words filter the line that nothing holds the words waits on the
-  // names as well (`namesHeld`): a plan task's or a callout's words come from them alone, so
-  // before they are held such a node matches nothing, and the outline draws nothing in the
-  // line's place. With no filter on the line reads no words, and does not wait on the names.
+  // names as well (`namesHeld`), and the outline draws nothing in the line's place until they are
+  // held. With no filter on the line reads no words, and does not wait on the names.
   const { failed, namesHeld, reads, readsHeld, readsSettled, root } = useOutlineReads(issue);
   const key = issue.key;
   // The address's own node is resolved against the whole tree and then kept by the view, so an

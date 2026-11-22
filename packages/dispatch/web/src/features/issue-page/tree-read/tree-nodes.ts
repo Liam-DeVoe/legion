@@ -21,7 +21,12 @@ import {
 } from "../../refs/routes";
 import { textSourceOf } from "../../refs/text-references";
 import { checkFacts, resultFacts } from "../check-facts";
-import { decisionNodeChanges, decisionNodes, inReviewList } from "../decision-review";
+import {
+  blockIdOfNode,
+  decisionNodeChanges,
+  decisionNodes,
+  inReviewList,
+} from "../decision-review";
 import type { IssueTreeReads, NodeChip, TreeAsk, TreeNode } from "../issue-tree";
 import { blockAttributeLabel, type NodeType } from "../page-words";
 import {
@@ -210,12 +215,8 @@ export function treeDraftsFrom(
   const tuples = new Map<string, TreeTuple[]>();
   const ending = new Map<string, TreeTuple[]>();
   for (const tuple of answer.tuples ?? []) {
-    const from = tuples.get(tuple.from.id);
-    if (from === undefined) tuples.set(tuple.from.id, [tuple]);
-    else from.push(tuple);
-    const to = ending.get(tuple.to.id);
-    if (to === undefined) ending.set(tuple.to.id, [tuple]);
-    else to.push(tuple);
+    pushInto(tuples, tuple.from.id, tuple);
+    pushInto(ending, tuple.to.id, tuple);
   }
   const idOfNode = nodeIdsIn(reads);
   const idOf = (readId: string): string => {
@@ -284,6 +285,13 @@ export function treeDraftsFrom(
     for (const [draft, node] of made) mark(draft, node, answer, drafting);
   }
   return drafts;
+}
+
+/** Adds `value` to the list `groups` holds under `key`, which it starts where there is none. */
+function pushInto<Value>(groups: Map<string, Value[]>, key: string, value: Value): void {
+  const group = groups.get(key);
+  if (group === undefined) groups.set(key, [value]);
+  else group.push(value);
 }
 
 /** The first draft a step of `treeDraftSteps` answers for `node`, in the list's order. A node the
@@ -357,7 +365,7 @@ export function treeIdOfNode(
   key: string,
   askIds: ReadonlyMap<string, string> = NO_ASK_IDS
 ): string {
-  const blockId = node.block_id ?? node.id;
+  const blockId = blockIdOfNode(node);
   if (isForeign(node, key)) return blockId;
   // The issue the read is of is the outline's root, the parent of every top-level node.
   if (node.supertag === "issue" && (node.id === key || node.parent === null)) return key;
@@ -439,13 +447,21 @@ function draftRequirement(
   if (isStatementNode(node, context)) draft.statement = true;
   if (coverage !== undefined) {
     draft.counts = { checks: coverage.checks, planTasks: coverage.plan_tasks };
-    const shapers = new Set(
-      context.tuplesTo(node.id).flatMap((tuple) => {
-        const shaper = tuple.kind === "shaped" ? context.nodeOf(tuple.from.id) : undefined;
-        return shaper !== undefined && isDecisionNode(shaper) ? [context.treeIdOfNode(shaper)] : [];
-      })
-    );
-    draft.gaps = requirementGaps(coverage.gaps ?? [], originOf(node, context), shapers);
+    // The decisions that shaped it count only against an origin (`requirementGaps`), so they are
+    // read only where it has one.
+    const origin = originOf(node, context);
+    const shapers =
+      origin === undefined
+        ? undefined
+        : new Set(
+            context.tuplesTo(node.id).flatMap((tuple) => {
+              const shaper = tuple.kind === "shaped" ? context.nodeOf(tuple.from.id) : undefined;
+              return shaper !== undefined && isDecisionNode(shaper)
+                ? [context.treeIdOfNode(shaper)]
+                : [];
+            })
+          );
+    draft.gaps = requirementGaps(coverage.gaps ?? [], origin, shapers);
   }
   return draft;
 }
@@ -539,7 +555,7 @@ function isStatementNode(node: TreeAnswerNode, context: TreeDraftContext): boole
   return (
     node.supertag === "requirement" &&
     context.specSlug !== "" &&
-    context.treeIdOfNode(node) === blockNodeId(context.specSlug, node.block_id ?? node.id)
+    context.treeIdOfNode(node) === blockNodeId(context.specSlug, blockIdOfNode(node))
   );
 }
 
@@ -617,7 +633,7 @@ function draftDecision(
 /**
  * A question asked of the issue: who asked it and when, its `shaped` tuples as chips, each naming
  * a node the question shaped, and from the asks read how it stands, its options, a person's
- * answer, and whether it waits on the reader, whose turn it is (the outline's `addAsks`). An
+ * answer, and whether it waits on the reader, whose turn it is, as the outline drew a question. An
  * approval request belongs to the document it reviews and is no node of the tree, as in the
  * outline. An ask the asks read has not answered for yet is open, as the outline drew an ask
  * block before that read answered.
@@ -785,7 +801,7 @@ function referenceOf(node: TreeAnswerNode, context: TreeDraftContext): string | 
   return node.document === undefined
     ? undefined
     : buildDispatchReference({
-        block: { id: node.block_id ?? node.id },
+        block: { id: blockIdOfNode(node) },
         key,
         kind: "artifact",
         slug: node.document.slug,
@@ -968,7 +984,7 @@ function keptReads(
     for (const node of answer.nodes ?? []) {
       if (node.supertag !== "check" || node.document !== undefined) continue;
       if (isForeign(node, context.key)) continue;
-      const row = checks.get(blockNodeId(verificationSlug, node.block_id ?? node.id));
+      const row = checks.get(blockNodeId(verificationSlug, blockIdOfNode(node)));
       if (row !== undefined) checks.set(idOf(node), row);
     }
   }
@@ -1006,7 +1022,7 @@ function indexBy<Row>(
 }
 
 /** The issue's asks by id: the issue read's open asks and the asks read, the asks read's where
- *  both hold one, since it is the newer read of the two (the outline's `addAsks`). */
+ *  both hold one, since it is the newer read of the two. */
 function asksOf(reads: TreeIdReads): Map<string, TreeAsk> {
   const asks = new Map<string, TreeAsk>();
   for (const ask of [...(reads.issue.open_asks ?? []), ...(reads.asks ?? [])]) {
@@ -1128,7 +1144,7 @@ function blockOf(
   return {
     attributes: attributesOf(node),
     from: place,
-    id: node.block_id ?? node.id,
+    id: blockIdOfNode(node),
     references: hung.get(node) ?? { asks: 0, comments: 0 },
     text: node.text,
     text_tree: node.text_tree,

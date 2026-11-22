@@ -206,7 +206,7 @@ export const R2_COUNTED_KINDS: Readonly<Record<TreeView, readonly string[]>> = {
 /** A node a view draws as a row, by the id its row carries, and the role its view gives it. */
 export interface ViewNodeId {
   readonly id: string;
-  readonly mark: "context" | "query";
+  readonly role: "context" | "query";
 }
 
 /**
@@ -225,12 +225,12 @@ export function viewNodeIds(
   const kinds = R2_ROW_KINDS[filter];
   const named = new Set<string>();
   return (answer.nodes ?? []).flatMap((node): ViewNodeId[] => {
-    const mark = node.role === "query" ? "query" : "context";
+    const role = node.role === "query" ? "query" : "context";
     const foreign = node.issue !== undefined && node.issue !== reads.issue.key;
     const id = idOf(node.id);
-    if (foreign || !kinds[mark].includes(node.supertag) || named.has(id)) return [];
+    if (foreign || !kinds[role].includes(node.supertag) || named.has(id)) return [];
     named.add(id);
-    return [{ id, mark }];
+    return [{ id, role }];
   });
 }
 

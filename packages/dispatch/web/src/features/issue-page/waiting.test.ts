@@ -16,7 +16,7 @@ import { anchorQuote, changeAnchor, decisionChangeComments } from "./decision-re
 import { buildIssueTree, type DocumentBlocks, isStatement, type TreeNode } from "./issue-tree";
 import { blockNodeId, coverageStatements } from "./tree-drafts";
 import { nodesInOrder } from "./tree-keys";
-import { treeNode as fixtureNode, type TreeNodeExtra, treeAnswer } from "./tree-read/tree-fixtures";
+import { commentNode, type TreeNodeExtra, treeAnswer, treeNode } from "./tree-read/tree-fixtures";
 import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
 import { waitingOnReader } from "./waiting";
 
@@ -288,34 +288,24 @@ const change: Comment = {
 
 /** One node of the tree read's answer, under the issue unless the case gives it another parent,
  *  with nothing on it but what the case gives it. */
-function treeNode(
+function answerNode(
   id: string,
   supertag: string,
   { parent = KEY, ...extra }: TreeNodeExtra & { readonly parent?: string | null } = {}
 ): TreeAnswerNode {
-  return fixtureNode(id, supertag, parent, extra);
+  return treeNode(id, supertag, parent, extra);
 }
 
 /** The tree read's answer for the issue: its own node, then `nodes` in the read's order. */
 function answerOf(nodes: readonly TreeAnswerNode[]): TreeAnswer {
-  return treeAnswer([treeNode(KEY, "issue", { parent: null }), ...nodes]);
+  return treeAnswer([answerNode(KEY, "issue", { parent: null }), ...nodes]);
 }
 
 /** The spec's statement `r1` as the tree read answers it, a typed block of the spec. */
-const statement = treeNode("r1", "requirement", {
+const statement = answerNode("r1", "requirement", {
   document: { artifact_id: spec.id, position: 0, slug: "spec" },
   text: "The first.",
 });
-
-/** A person's comment as the tree read answers it, under the node `parent`. */
-function commentNode(comment: Comment, parent: string): TreeAnswerNode {
-  return treeNode(comment.id, "comment", {
-    author: [comment.author],
-    made_at: comment.created_at,
-    parent,
-    text: comment.body,
-  });
-}
 
 /** A decision as the tree read answers its node, carrying the object the decisions read answers
  *  for it; a block of the document `at.document` at `at.position` where it is one. */
@@ -323,7 +313,7 @@ function decisionTreeNode(
   row: Decision,
   at?: { readonly document: Artifact; readonly position: number }
 ): TreeAnswerNode {
-  return treeNode(row.block_id, "decision", {
+  return answerNode(row.block_id, "decision", {
     decision: row,
     ...(at === undefined
       ? {}
@@ -339,7 +329,7 @@ function decisionTreeNode(
 const issueTree = answerOf([
   statement,
   ...(issue.open_asks ?? []).map((ask) =>
-    treeNode(ask.id, "ask", { author: [ask.author], made_at: ask.created_at, text: ask.question })
+    answerNode(ask.id, "ask", { author: [ask.author], made_at: ask.created_at, text: ask.question })
   ),
   commentNode(change, KEY),
 ]);
@@ -671,7 +661,7 @@ test("waitingOnReader counts a Change under the decision whose block holds its a
 test("a tie to a requirement the coverage read does not hold puts no decision on the review list", () => {
   const tree = answerOf([
     statement,
-    treeNode("p1", "requirement", {
+    answerNode("p1", "requirement", {
       document: { artifact_id: plan.id, position: 0, slug: "plan-md" },
     }),
   ]);
@@ -735,10 +725,10 @@ test("the count and the tree read a tie by one rule for a statement, whatever ad
   const reviewed = decisionsRead(tied);
   const tree = answerOf([
     statement,
-    treeNode("r2", "requirement", {
+    answerNode("r2", "requirement", {
       document: { artifact_id: spec.id, position: 1, slug: "spec" },
     }),
-    treeNode("p1", "requirement", {
+    answerNode("p1", "requirement", {
       document: { artifact_id: plan.id, position: 0, slug: "plan-md" },
     }),
   ]);
@@ -773,18 +763,17 @@ test("the count and the tree read a tie by one rule for a statement, whatever ad
 // and matches no quote: the comment here is anchored nowhere. The decision then waits on its
 // agent, in the count as in the tree; without the Change it waits on the reader in both.
 test("a Change under its decision node is counted without the decisions document", () => {
-  const bare: IssueDetails = { ...issue, artifacts: [spec], decisions_artifact_id: "" };
   const row = waitingDecision("noded", ["r1"]);
   const read = decisionsRead([row]);
   const asked: Comment = { ...change, anchor: null, id: "c-noded" };
   const waits = (tree: TreeAnswer): readonly [number, readonly string[]] => [
-    waitingOnReader(bare, "alice", read, isCoverageStatement, [asked], tree).decisions,
+    waitingOnReader(issue, "alice", read, isCoverageStatement, [asked], tree).decisions,
     waitingIn(
       buildIssueTree({
         comments: [asked],
         coverage,
         decisions: read,
-        issue: bare,
+        issue,
         tree,
         viewer: "alice",
       })
@@ -803,16 +792,15 @@ test("a Change under its decision node is counted without the decisions document
 // answered before the Change was written: the count does not call the decision waiting on the
 // reader while the outline draws it waiting on its agent.
 test("the count and the tree agree on a decision node's Change the comments read does not hold", () => {
-  const bare: IssueDetails = { ...issue, artifacts: [spec], decisions_artifact_id: "" };
   const row = waitingDecision("noded", ["r1"]);
   const read = decisionsRead([row]);
   const asked: Comment = { ...change, anchor: null, id: "c-noded" };
   const tree = answerOf([statement, decisionTreeNode(row), commentNode(asked, "noded")]);
   for (const comments of [undefined, []]) {
     expect([
-      waitingOnReader(bare, "alice", read, isCoverageStatement, comments, tree).decisions,
+      waitingOnReader(issue, "alice", read, isCoverageStatement, comments, tree).decisions,
       waitingIn(
-        buildIssueTree({ comments, coverage, decisions: read, issue: bare, tree, viewer: "alice" })
+        buildIssueTree({ comments, coverage, decisions: read, issue, tree, viewer: "alice" })
       ),
     ]).toEqual([0, []]);
   }
@@ -866,7 +854,7 @@ test("a Change of a decision node is no Change of another document's decision of
   const row = waitingDecision("d1", ["r1"]);
   const read = readIn(row, made);
   const asked: Comment = { ...change, anchor: null, id: "c-on-decision" };
-  const other = treeNode("d1", "decision", {
+  const other = answerNode("d1", "decision", {
     decision: { changed_at: row.changed_at, kept: null, replaced: false, waiting_review: true },
     document: { artifact_id: spec.id, position: 1, slug: "spec" },
   });

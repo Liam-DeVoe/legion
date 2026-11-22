@@ -29,7 +29,7 @@ import { EMPTY_STATE_LINES, type Preset, STATE_LINES } from "../page-words";
 import { FAILED_READ_RETRY } from "../slots/failed-read-line";
 import { AddressedStage, drawAtBrowserEntry, drawnSlot } from "../slots/stage-fixtures";
 import { blockNodeId } from "../tree-drafts";
-import { treeAnswer, treeNode, treeTuple } from "../tree-read/tree-fixtures";
+import { commentNode, treeAnswer, treeNode, treeTuple } from "../tree-read/tree-fixtures";
 import { issueTreeQuery, type TreeAnswerNode, type TreeTuple } from "../tree-read/tree-read";
 import { issueAsksQuery } from "../useIssueTree";
 import { check, VERIFICATION_SLUG } from "../verification-filter/verification-fixtures";
@@ -96,16 +96,9 @@ function answerTree(nodes: readonly TreeAnswerNode[], tuples: readonly TreeTuple
   spyOn(api, "getIssueTree").mockImplementation(treeReadOf(nodes, tuples));
 }
 
-/** Each of `comments` as the tree read answers it: a comment node under the comment it replies
- *  to, else under the issue, with its words and who wrote it when. */
+/** Each of `comments` as the tree read answers it (`commentNode`). */
 function commentNodes(comments: readonly Comment[]): TreeAnswerNode[] {
-  return comments.map((comment) =>
-    treeNode(comment.id, "comment", comment.reply_to ?? KEY, {
-      author: [comment.author],
-      made_at: comment.created_at,
-      text: comment.body,
-    })
-  );
+  return comments.map((comment) => commentNode(comment));
 }
 
 let stubs: { mockRestore(): void }[] = [];
