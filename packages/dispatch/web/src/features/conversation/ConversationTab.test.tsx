@@ -8,6 +8,7 @@ import { MemoryRouter } from "react-router-dom";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { type Lists, newQueryClient, stubLists, tab } from "../../__tests__/draft-matrix-fixture";
 import { jump, settle } from "../../__tests__/fake-clock";
+import { pressHeld } from "../../__tests__/held-press";
 import {
   dwellOn,
   type IntersectionControl,
@@ -39,7 +40,6 @@ import type {
   UserState,
 } from "../../api/types";
 import { messageDeliveryFields } from "../agents/delivery-fixture";
-import { emulateChromiumFocusFixup } from "../issue-page/chromium-focus-fixup";
 import { PHONE_WIDTH, stubViewport } from "../margin/margin-fixture";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
@@ -2129,10 +2129,9 @@ test("a comment-delivery retry guards a same-tick double click to exactly one at
   }
 });
 
-// A mention's Retry is held while its retry is out, by `aria-disabled`, never `disabled`. A
-// disabled button drops the focus to the page's body in a browser, and does here under
-// `emulateChromiumFocusFixup`. So the pressed Retry keeps the focus through the write, and a
-// second press, by key or by pointer, sends nothing.
+// A mention's Retry is held while its retry is out, by `aria-disabled`, never `disabled`
+// (`pressHeld`): the pressed Retry keeps the focus through the write, and a second press, by key or
+// by pointer, sends nothing.
 test("a mention's held Retry keeps the focus while its retry is out, and a second press sends nothing", async () => {
   const user = userEvent.setup();
   const stub = stubLists({
@@ -2148,29 +2147,17 @@ test("a mention's held Retry keeps the focus while its retry is out, and a secon
   // The retry's answer, held until the case gives it inside `act`.
   const answer = Promise.withResolvers<CommentDelivery>();
   const createCommentDelivery = spyOn(api, "createCommentDelivery").mockReturnValue(answer.promise);
-  const stopFocusFixup = emulateChromiumFocusFixup();
   const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
 
   try {
-    const retry = await screen.findByRole("button", { name: "Retry" });
-    // What holds the focus, as a string a failed assertion prints whole.
-    const focused = () =>
-      document.activeElement === retry ? "Retry" : (document.activeElement?.tagName ?? "nothing");
-    act(() => retry.focus());
-    await user.keyboard("{Enter}");
-    await waitFor(() => expect(createCommentDelivery).toHaveBeenCalledTimes(1));
-    expect(focused()).toBe("Retry");
-    expect(retry.getAttribute("aria-disabled")).toBe("true");
-
-    await user.keyboard("{Enter}");
-    await user.click(retry);
-    expect(createCommentDelivery).toHaveBeenCalledTimes(1);
-    expect(focused()).toBe("Retry");
+    await pressHeld(user, await screen.findByRole("button", { name: "Retry" }), {
+      name: "Retry",
+      sent: () => createCommentDelivery.mock.calls.length,
+    });
   } finally {
     await act(async () =>
       answer.resolve(mentionAttempt({ attempt: 2, error: null, state: "sent" }))
     );
-    stopFocusFixup();
     view.unmount();
     createCommentDelivery.mockRestore();
     stub.restore();

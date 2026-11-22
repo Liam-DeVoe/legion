@@ -23,6 +23,18 @@ export function heldPress(
 }
 
 /**
+ * What a text field spreads onto itself to be held while a write holds the form it is part of:
+ * `aria-disabled`, and read-only, so it takes no typing. It is never disabled, so the field the
+ * reader submitted from with Enter keeps the focus, as a held button does (`heldPress`).
+ */
+export function heldField(held: boolean): {
+  "aria-disabled": true | undefined;
+  readOnly: boolean;
+} {
+  return { "aria-disabled": held || undefined, readOnly: held };
+}
+
+/**
  * Whether a control whose press started a write is held: from the first render with `pending`
  * until the commit after `pending` turns false. A list that holds the write itself, as the Inbox
  * does a row's snooze (`useAskSnoozeWrites`) and its Assign to me (`AskAssignWritesProvider`),

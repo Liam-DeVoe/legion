@@ -6,6 +6,7 @@ import { deliverySettingsQuery } from "../../api/queries";
 import { isLiveQuery } from "../../api/query-refresh";
 import { useReadBound } from "../../api/read-bound";
 import type { DeliverySettings, DeliverySettingsInput } from "../../api/types";
+import { heldField } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { borderDefault, textMutedOnCanvas } from "../../theme/classes";
@@ -227,8 +228,6 @@ function DeliverySettingsFields({
     },
   });
   const held = save.isPending || drawing;
-  // What each field carries while Save is held (the comment above `DeliverySettingsFields`).
-  const heldField = { "aria-disabled": held || undefined, readOnly: held };
   // A refusal speaks of the fields as the reader had them, so it goes once a new stored record
   // fills them again.
   const refused = useRefusalOfSubject(save, () => pressedOver === version);
@@ -261,7 +260,7 @@ function DeliverySettingsFields({
           <label className={settingsFieldLabel} htmlFor={`${id}-deploy-repo`}>
             Deploy repository
             <input
-              {...heldField}
+              {...heldField(held)}
               className={settingsMonoInput}
               id={`${id}-deploy-repo`}
               onChange={(event) => setDraft({ ...draft, deploy_repo: event.target.value })}
@@ -274,7 +273,7 @@ function DeliverySettingsFields({
           <label className={settingsFieldLabel} htmlFor={`${id}-deploy-workflow`}>
             Deploy workflow
             <input
-              {...heldField}
+              {...heldField(held)}
               className={settingsMonoInput}
               id={`${id}-deploy-workflow`}
               onChange={(event) =>
@@ -289,7 +288,7 @@ function DeliverySettingsFields({
             <label className={settingsFieldLabel} htmlFor={`${id}-production-jobs`}>
               Production jobs
               <textarea
-                {...heldField}
+                {...heldField(held)}
                 aria-describedby={`${id}-production-jobs-hint`}
                 className={settingsMonoInput}
                 id={`${id}-production-jobs`}
@@ -312,7 +311,7 @@ function DeliverySettingsFields({
             <label className={settingsFieldLabel} htmlFor={`${id}-production-apply-step`}>
               Production apply step
               <input
-                {...heldField}
+                {...heldField(held)}
                 aria-describedby={`${id}-production-apply-step-hint`}
                 className={settingsMonoInput}
                 id={`${id}-production-apply-step`}
@@ -332,7 +331,7 @@ function DeliverySettingsFields({
             <label className={settingsFieldLabel} htmlFor={`${id}-${key}`} key={key}>
               {label}
               <input
-                {...heldField}
+                {...heldField(held)}
                 aria-describedby={`${id}-pipeline-jobs-hint`}
                 className={settingsMonoInput}
                 id={`${id}-${key}`}
@@ -349,7 +348,7 @@ function DeliverySettingsFields({
           <label className={settingsFieldLabel} htmlFor={`${id}-pr-checks-workflow`}>
             PR checks workflow
             <input
-              {...heldField}
+              {...heldField(held)}
               className={settingsMonoInput}
               id={`${id}-pr-checks-workflow`}
               onChange={(event) =>
@@ -364,7 +363,7 @@ function DeliverySettingsFields({
             <label className={settingsFieldLabel} htmlFor={`${id}-population-authors`}>
               Population authors
               <textarea
-                {...heldField}
+                {...heldField(held)}
                 aria-describedby={`${id}-population-authors-hint`}
                 className={settingsMonoInput}
                 id={`${id}-population-authors`}
@@ -385,7 +384,7 @@ function DeliverySettingsFields({
             <label className={settingsFieldLabel} htmlFor={`${id}-excluded-repos`}>
               Excluded repositories
               <textarea
-                {...heldField}
+                {...heldField(held)}
                 aria-describedby={`${id}-excluded-repos-hint`}
                 className={settingsMonoInput}
                 id={`${id}-excluded-repos`}

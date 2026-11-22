@@ -6,6 +6,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { jump, realClock } from "../../__tests__/fake-clock";
 import { afterRescue, RescuedMain } from "../../__tests__/focus-rescue";
+import { pressHeld } from "../../__tests__/held-press";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { seedDeliveryReads } from "../../__tests__/live-socket-harness";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
@@ -707,14 +708,10 @@ test("Create group keeps the focus while its write is out and once it has emptie
     await user.click(screen.getByLabelText("New group name"));
     await user.paste("Night crew");
     const button = screen.getByRole("button", { name: "Create group" });
-    act(() => button.focus());
-    await user.keyboard("{Enter}");
-    await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
-    expect(named(document.activeElement)).toBe("Create group");
-    expect(button.getAttribute("aria-disabled")).toBe("true");
-    await user.keyboard("{Enter}");
-    await user.click(button);
-    expect(create).toHaveBeenCalledTimes(1);
+    await pressHeld(user, button, {
+      name: "Create group",
+      sent: () => create.mock.calls.length,
+    });
 
     await act(async () => answer.resolve({ ...crew, name: "Night crew", sessions: ["s1"] }));
     await waitFor(() => expect(editor.queryClient.isMutating()).toBe(0));

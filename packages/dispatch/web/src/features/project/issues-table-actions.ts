@@ -615,8 +615,9 @@ export function useIssueTableActions({
     // once its hold ran out (`unsettled`). The commit that lets the action go draws that read at
     // the latest, and a read that outlived the hold is drawn in the commit that ends `unsettled`.
     // The List's anchor asks the render before a commit as well (`ViewportAnchor`'s `leaving`), so
-    // the rows are named in that commit. A row a later live update takes away is not named.
-    leaving: (key: string) => (busy || unsettled !== undefined) && moved.has(key),
+    // the rows are named in that commit. A row a later live update takes away is not named. With
+    // no action out, `leaving` is undefined and names no row.
+    leaving: busy || unsettled !== undefined ? (key: string) => moved.has(key) : undefined,
     duplicateEpic,
     setDuplicateEpic,
     unansweredEpic,

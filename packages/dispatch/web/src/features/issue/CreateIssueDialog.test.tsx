@@ -8,12 +8,12 @@ import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { pressHeld } from "../../__tests__/held-press";
 import { listOf, panelOf, pickNamed, textBoxes } from "../../__tests__/list-picks";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
 import type { CreateIssueInput, Issue, Project } from "../../api/types";
-import { emulateChromiumFocusFixup } from "../issue-page/chromium-focus-fixup";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { CreateIssueDialog } from "./CreateIssueDialog";
@@ -261,10 +261,9 @@ test("a possible duplicate names the candidate and Create anyway forces the crea
 });
 
 // While the create is out, the field or the button the reader submitted from is held -
-// `aria-disabled`, and a field read-only - never disabled. A disabled control drops the focus to
-// the page's body in a browser, out of the open modal dialog, and does here under
-// `emulateChromiumFocusFixup`. So the pressed control keeps the focus through the create, and a
-// second press sends nothing.
+// `aria-disabled`, and a field read-only - never disabled (`pressHeld`). A disabled control drops
+// the focus to the page's body in a browser, out of the open modal dialog. So the pressed control
+// keeps the focus through the create, and a second press sends nothing.
 test.each([
   { label: "Title", name: "Title", press: "{Enter}", role: "textbox" },
   { label: /^Spec/, name: "Spec", press: "{Control>}{Enter}{/Control}", role: "textbox" },
@@ -282,30 +281,19 @@ test.each([
     calls.push(input);
     return answer.promise;
   });
-  const stopFocusFixup = emulateChromiumFocusFixup();
   try {
     await projectPicked();
     await view.user.click(screen.getByRole("textbox", { name: "Title" }));
     await view.user.paste("Held create");
-    const pressed = screen.getByRole(role, { name: label });
-    // What holds the focus, as a string a failed assertion prints whole.
-    const focused = () =>
-      document.activeElement === pressed ? name : (document.activeElement?.tagName ?? "nothing");
-    act(() => pressed.focus());
-    await view.user.keyboard(press);
-    await waitFor(() => expect(calls).toHaveLength(1));
-    expect(focused()).toBe(name);
-    expect(pressed.getAttribute("aria-disabled")).toBe("true");
-
-    await view.user.keyboard(press);
-    if (role === "button") await view.user.click(pressed);
-    expect(calls).toHaveLength(1);
-    expect(focused()).toBe(name);
+    await pressHeld(view.user, screen.getByRole(role, { name: label }), {
+      name,
+      press,
+      sent: () => calls.length,
+    });
   } finally {
     await act(async () =>
       answer.resolve(issue(calls[0] ?? { project: "CORE", title: "Held create" }, "CORE-9"))
     );
-    stopFocusFixup();
     view.unmount();
   }
 });

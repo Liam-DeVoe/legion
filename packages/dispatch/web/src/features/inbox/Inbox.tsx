@@ -563,14 +563,7 @@ function AskShortRow({
           />
           <RowWriteNote
             out={clarification.isPending ? "Asking back…" : undefined}
-            refusal={
-              clarification.error === null
-                ? undefined
-                : clarificationRefusal({
-                    error: clarification.error,
-                    method: clarification.method,
-                  })
-            }
+            refusal={clarification.error === null ? undefined : clarificationRefusal(clarification)}
           />
         </>
       )}
@@ -629,11 +622,7 @@ function ThreadShortRow({
       {selected || thread.kind !== "ask" ? null : (
         <RowWriteNote
           out={reply.isPending ? "Replying…" : undefined}
-          refusal={
-            reply.error === null
-              ? undefined
-              : replyRefusal({ error: reply.error, method: reply.method })
-          }
+          refusal={reply.error === null ? undefined : replyRefusal(reply)}
         />
       )}
     </ShortRowFrame>

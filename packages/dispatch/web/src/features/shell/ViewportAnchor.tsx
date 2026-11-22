@@ -368,9 +368,7 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     // No box check of its own: nothing is ever held without one (`rememberHeld`), and `heldTop`
     // below answers null where the host names none.
     if (held === null || root === null) return;
-    const element = root.querySelector<HTMLElement>(
-      `[${this.props.item}="${CSS.escape(held.id)}"]`
-    );
+    const element = this.rowById(root, held.id);
     if (element === null) {
       this.held = null;
       return;
@@ -495,6 +493,11 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     return id;
   }
 
+  /** The row of `root` whose `item` attribute is `id`, else null. */
+  private rowById(root: HTMLElement, id: string): HTMLElement | null {
+    return root.querySelector<HTMLElement>(`[${this.props.item}="${CSS.escape(id)}"]`);
+  }
+
   /** The rows above `row` that the host names as leaving (`leaving`), in the render that last
    *  drew them (`previous`) or in this one, each with how far `row` moves up once it has gone:
    *  the whole space it takes (`spaceTaken`), the part above the view's top included. Layout
@@ -526,7 +529,7 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
   private freedAbove(root: HTMLElement, row: HTMLElement, leaving: readonly Leaving[]): number {
     let freed = 0;
     for (const { by, id, lead } of leaving) {
-      const now = root.querySelector(`[${this.props.item}="${CSS.escape(id)}"]`);
+      const now = this.rowById(root, id);
       const above =
         now !== null && (row.compareDocumentPosition(now) & Node.DOCUMENT_POSITION_PRECEDING) !== 0;
       if (above) continue;
@@ -562,8 +565,11 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     const held = this.heldTop(current.id, at);
     const leaving = this.leavingAbove(current.row, previousProps);
     const top = held ?? current.row.getBoundingClientRect().top;
-    const rootTop = leaving.length > 0 ? (this.root?.getBoundingClientRect().top ?? null) : null;
-    if (leaving.length > 0) this.holdNativeAnchoring();
+    let rootTop: number | null = null;
+    if (leaving.length > 0) {
+      rootTop = this.root?.getBoundingClientRect().top ?? null;
+      this.holdNativeAnchoring();
+    }
     return { group: at, id: current.id, leaving, rootTop, top, via: current.via };
   }
 
@@ -587,9 +593,7 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
   private keepPlace(snapshot: Snapshot | null): void {
     const root = this.root;
     if (snapshot === null || root === null) return;
-    const element = root.querySelector<HTMLElement>(
-      `[${this.props.item}="${CSS.escape(snapshot.id)}"]`
-    );
+    const element = this.rowById(root, snapshot.id);
     if (element === null) return;
     const { group } = this.props;
     if (group !== undefined && element.getAttribute(group) !== snapshot.group) return;

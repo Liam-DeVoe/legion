@@ -19,7 +19,7 @@ import { api, apiErrorMessage } from "../../api/client";
 import { legionDaemonQuery } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
 import type { LegionSetting } from "../../api/types";
-import { heldPress } from "../../components/held-press";
+import { heldField, heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import {
   TableBody,
@@ -330,12 +330,11 @@ export function LegionDaemonsSection(): ReactNode {
               <label className={settingsFieldLabel} htmlFor="legion-state-url">
                 Legion daemon state URL
                 <input
-                  aria-disabled={writing || undefined}
+                  {...heldField(writing)}
                   className={settingsMonoInput}
                   id="legion-state-url"
                   onChange={(event) => setStateUrl(event.target.value)}
                   placeholder="https://daemon.example"
-                  readOnly={writing}
                   required
                   value={stateUrl}
                 />

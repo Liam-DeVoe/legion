@@ -3514,14 +3514,15 @@ function layRowsDown(scrollY: number, above: () => number = () => 0): () => void
   const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: Element
   ) {
-    const rows = [...document.querySelectorAll("[data-inbox-row]")];
     if (this.matches('[data-testid="inbox-list"] > *')) {
-      return new DOMRect(0, above() - window.scrollY, 200, rows.length * LAID_ROW_PX);
+      const count = document.querySelectorAll("[data-inbox-row]").length;
+      return new DOMRect(0, above() - window.scrollY, 200, count * LAID_ROW_PX);
     }
     const row = this.matches('[data-inbox-row], input[type="checkbox"]')
       ? this.closest("[data-inbox-row]")
       : null;
     if (row === null) return real.call(this);
+    const rows = [...document.querySelectorAll("[data-inbox-row]")];
     const top = above() + rows.indexOf(row) * LAID_ROW_PX - window.scrollY;
     return new DOMRect(0, top, 200, LAID_ROW_PX);
   });

@@ -35,7 +35,7 @@ export function useHoldUntilDrawn(
   const drawn = useRef<string | null | undefined>(undefined);
   useLayoutEffect(() => {
     drawn.current = version;
-  });
+  }, [version]);
   useLayoutEffect(
     () => () => {
       drawn.current = undefined;

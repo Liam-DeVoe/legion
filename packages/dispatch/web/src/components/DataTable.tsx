@@ -403,12 +403,10 @@ export interface DataTableProps<Row> {
   /** The width of a last, unheaded column that each row draws itself (`DataTableCells`'
    *  `trailing`). */
   readonly trailingWidth?: number;
-  /** Whether a press of the reader's is taking row `id` out of the view: the rows a table action
-   *  changed, while the read that draws them is out and in the commit that draws it. The rows
-   *  after such a row move up into its place, and the box does not scroll to hold the row in hand
-   *  where it stood (`ViewportAnchor`'s `leaving`). A row no press names, taken away by a live
-   *  update, is made up for, so the rows in view stay where they were. A table given none names
-   *  no row. */
+  /** Whether a press of the reader's is taking row `id` out of the view (`ViewportAnchor`'s
+   *  `leaving`). The rows after such a row move up into its place, and the box does not scroll to
+   *  hold the row in hand where it stood. A row no press names, taken away by a live update, is
+   *  made up for, so the rows in view stay where they were. A table given none names no row. */
   readonly leaving?: (id: string) => boolean;
 }
 

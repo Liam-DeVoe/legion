@@ -1565,7 +1565,7 @@ test("a send the server refuses keeps its row after a later send succeeds, and R
     // answer, is the same write. The third is the refused one's message under a key of its own.
     const keys = distinctKeys(posted);
     expect(keys).toHaveLength(3);
-    const refused = posted.find((write) => write.key === keys[0]);
+    const refused = posted[0];
     expect(refused).toEqual({
       input: {
         body: "Refused first.",

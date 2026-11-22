@@ -12,6 +12,7 @@ import {
 } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
 import type { CreateProjectInput, ProjectDefaultAssignee } from "../../api/types";
+import { heldField } from "../../components/held-press";
 import { MultiSelect } from "../../components/MultiSelect";
 import { QueryError } from "../../components/QueryError";
 import {
@@ -191,7 +192,7 @@ export function ProjectsSection(): ReactNode {
             <label className={settingsFieldLabel} htmlFor="project-key">
               Key
               <input
-                aria-disabled={createProject.isPending || undefined}
+                {...heldField(createProject.isPending)}
                 className={settingsMonoInput}
                 id="project-key"
                 onChange={(event) => {
@@ -199,7 +200,6 @@ export function ProjectsSection(): ReactNode {
                   setProjectKey(event.target.value.trim().toUpperCase());
                 }}
                 placeholder="CORE"
-                readOnly={createProject.isPending}
                 required
                 value={projectKey}
               />
@@ -207,13 +207,12 @@ export function ProjectsSection(): ReactNode {
             <label className={settingsFieldLabel} htmlFor="project-name">
               Name
               <input
-                aria-disabled={createProject.isPending || undefined}
+                {...heldField(createProject.isPending)}
                 className={`rounded-md px-3 py-2 ${inputClasses(false)} ${textPrimaryOnSurface}`}
                 id="project-name"
                 maxLength={PROJECT_NAME_MAX}
                 onChange={(event) => setProjectName(event.target.value)}
                 placeholder="Core"
-                readOnly={createProject.isPending}
                 required
                 value={projectName}
               />

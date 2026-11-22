@@ -1,9 +1,9 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, test } from "bun:test";
 import { act, render, renderHook, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef, type ReactNode, useRef, useState } from "react";
 
-import { drawOver, layRowsOut, watchMoves } from "../__tests__/laid-out-rows";
+import { drawAt, drawOver, layRowsOut, watchMoves } from "../__tests__/laid-out-rows";
 import { useFocusRescue } from "./focus-place";
 import { ROW_MARKER } from "./row-marker";
 import { SelectionBar, useLastMarkedPlace } from "./SelectionBar";
@@ -502,17 +502,6 @@ function without(keys: readonly string[], ...taken: string[]): string[] {
   return keys.filter((key) => !taken.includes(key));
 }
 
-/** Answers `document.elementFromPoint` with `at(row, y)`, where `row` is the row that
- *  `layRowsOut("[data-row]", 9)` lays at the point's `y`, else no element: what the page draws
- *  there. Answers the function that gives happy-dom its own answer back. */
-function drawAtPoints(at: (row: Element, y: number) => Element | null): () => void {
-  const point = spyOn(document, "elementFromPoint").mockImplementation((_x, y) => {
-    const row = document.querySelectorAll("[data-row]")[9 + Math.floor(y / 100)];
-    return row === undefined ? null : at(row, y);
-  });
-  return () => point.mockRestore();
-}
-
 /** The accessible name of what holds the focus, as a string a failed assertion prints whole. */
 function focusedName(): string | null {
   return document.activeElement?.getAttribute("aria-label") ?? null;
@@ -621,7 +610,7 @@ test("a press still taking away the row marked last hands the focus to the row a
 // moves up there. The focus goes to that row, with no scroll, and not to the row before it.
 test("a press still taking away the row marked last hands the focus to the row after it where the page draws a card nested in the leaving row", () => {
   const laidOut = layRowsOut("[data-row]", 9);
-  const drawn = drawAtPoints((row) => row.querySelector("article"));
+  const drawn = drawAt("[data-row]", 9, (row) => row.querySelector("article"));
   const view = render(<PlacedList cards count={1} last="CORE-17" listed={PLACED_KEYS} />);
   const moves = watchMoves();
   try {
@@ -646,7 +635,7 @@ test("a press still taking away the row marked last hands the focus to the row a
 // 900 px down until CORE-17 goes, and its centre will stand 750 px down then.
 test("a press still taking away the row marked last hands the focus to the row after it where its mark will stand in a gap between the list's rows", () => {
   const laidOut = layRowsOut("[data-row]", 9);
-  const drawn = drawAtPoints((row, y) =>
+  const drawn = drawAt("[data-row]", 9, (row, y) =>
     y === 750 ? screen.getByRole("list", { name: "Rows" }) : row.querySelector("input")
   );
   const view = render(<PlacedList count={1} last="CORE-17" listed={PLACED_KEYS} />);

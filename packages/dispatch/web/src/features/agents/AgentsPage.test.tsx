@@ -13,6 +13,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { jump, realClock, tick } from "../../__tests__/fake-clock";
 import { afterRescue } from "../../__tests__/focus-rescue";
+import { pressHeld } from "../../__tests__/held-press";
 import { listOf, panelOf, pickNamed, textBoxes } from "../../__tests__/list-picks";
 import { answerAgentStates } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -2435,10 +2436,9 @@ test("Agents Clear hides every exchange up to now for this viewer and persists t
   }
 });
 
-// Clear conversation is held while its write is out, by `aria-disabled`, never `disabled`. A
-// disabled button drops the focus to the page's body in a browser, and does here under
-// `emulateChromiumFocusFixup`. So the pressed Clear keeps the focus through the write, and a second
-// press, by key or by pointer, sends nothing.
+// Clear conversation is held while its write is out, by `aria-disabled`, never `disabled`
+// (`pressHeld`): the pressed Clear keeps the focus through the write, and a second press, by key
+// or by pointer, sends nothing.
 test("Clear conversation, held while its write is out, keeps the focus, and a second press sends nothing", async () => {
   const user = userEvent.setup();
   const page = renderAgents({
@@ -2452,28 +2452,20 @@ test("Clear conversation, held while its write is out, keeps the focus, and a se
     if (stored === undefined) throw new Error("the agent-state write has no answer");
     return stored(session, input, bounds);
   });
-  const stopFocusFixup = emulateChromiumFocusFixup();
 
   try {
     const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
     await expand(user, planner, "Planner");
     const clear = await within(planner).findByRole("button", { name: "Clear conversation" });
-    act(() => clear.focus());
-    await user.keyboard("{Enter}");
-    await waitFor(() => expect(page.putAgentState).toHaveBeenCalledTimes(1));
-    expect(focusedControl()).toBe("button Clear conversation");
-    expect(clear.getAttribute("aria-disabled")).toBe("true");
-
-    await user.keyboard("{Enter}");
-    await user.click(clear);
-    expect(page.putAgentState).toHaveBeenCalledTimes(1);
-    expect(focusedControl()).toBe("button Clear conversation");
+    await pressHeld(user, clear, {
+      name: "Clear conversation",
+      sent: () => page.putAgentState.mock.calls.length,
+    });
   } finally {
     await act(async () => {
       answer.resolve();
       await answer.promise;
     });
-    stopFocusFixup();
     page.view.unmount();
     page.restore();
   }

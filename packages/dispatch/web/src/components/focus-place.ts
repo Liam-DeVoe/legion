@@ -171,8 +171,8 @@ export function useFocusPlace(
     const walked = held.container.isConnected
       ? walkBack(focusableIn(held.container), held.index)
       : [];
-    const last = fallback(held.container);
-    const candidates = last === null ? walked : [...walked, last];
+    const fallbackControl = fallback(held.container);
+    const candidates = fallbackControl === null ? walked : [...walked, fallbackControl];
     if (candidates.length === 0) return;
     // One read of each box's style for the whole hand-off (`clippingBoxes`).
     const clips = new Map<Element, boolean>();
@@ -627,7 +627,8 @@ function onHeldControl(press: Press, target: Element): boolean {
  *  null: a press's action is the writes it starts among them (`noteWrites`). */
 let pageWrites: Writes | null = null;
 
-/** The ids of the page's writes that are live now (`isLive`). */
+/** The ids of the page's writes that are live now (`isLive`): waiting their turn, or out, within
+ *  their deadline or past it. One that landed, was refused or was discarded is not. */
 function liveWriteIds(): Set<number> {
   const ids = new Set<number>();
   for (const write of pageWrites?.rows() ?? []) {
@@ -636,21 +637,13 @@ function liveWriteIds(): Set<number> {
   return ids;
 }
 
-/** Whether the write `id` is still live among the page's writes (`isLive`): waiting its turn, or
- *  out, within its deadline or past it. One that landed, was refused or was discarded is not. */
-function writeLive(id: number): boolean {
-  for (const write of pageWrites?.rows() ?? []) {
-    if (write.id === id) return isLive(write);
-  }
-  return false;
-}
-
 /** Whether `press`'s action is still out: a hold begun while it is live is still on (`answers`),
- *  or a write it started is still live (`writeLive`). */
+ *  or a write it started is still live among the page's writes (`liveWriteIds`). */
 function actionOut(press: Press): boolean {
   if (press.answers.size > 0) return true;
+  const live = liveWriteIds();
   for (const id of press.writes) {
-    if (writeLive(id)) return true;
+    if (live.has(id)) return true;
   }
   return false;
 }
@@ -662,8 +655,8 @@ function noteWrites(): void {
   const press = lastPress;
   if (press === null) return;
   if (press.starting) {
-    for (const write of pageWrites?.rows() ?? []) {
-      if (isLive(write) && !press.liveBefore.has(write.id)) press.writes.add(write.id);
+    for (const id of liveWriteIds()) {
+      if (!press.liveBefore.has(id)) press.writes.add(id);
     }
   }
   press.changed();
@@ -747,9 +740,7 @@ function watchAction(press: Press): void {
   };
   const bound = window.setTimeout(() => {
     stop();
-    press.stop = afterComponents(() => {
-      press.live = false;
-    });
+    endAfterComponents(press);
   }, SEND_DEADLINE_MS);
   press.changed = read;
   press.stop = stop;
@@ -789,9 +780,7 @@ function watchHold(press: Press): void {
   const end = () => {
     watcher.disconnect();
     window.clearTimeout(bound);
-    press.stop = afterComponents(() => {
-      press.live = false;
-    });
+    endAfterComponents(press);
   };
   // The whole document is watched, so that the control going with a parent of it, a fieldset
   // around it enabled again, or the region the press landed in going, ends the hold too.
@@ -808,6 +797,14 @@ function watchHold(press: Press): void {
     watcher.disconnect();
     window.clearTimeout(bound);
   };
+}
+
+/** Ends `press` a frame and a task from now (`afterComponents`), unless `press.stop` cancels the
+ *  end first. */
+function endAfterComponents(press: Press): void {
+  press.stop = afterComponents(() => {
+    press.live = false;
+  });
 }
 
 /** The reader's latest press while it can still be the cause of a loss (`answerPress`). */

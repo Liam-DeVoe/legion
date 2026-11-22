@@ -1,10 +1,10 @@
 import { expect, jest, spyOn, test } from "bun:test";
-import { QueryClient } from "@tanstack/react-query";
 import { render, renderHook, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createElement, type ReactNode, useRef } from "react";
 
 import { useReadBound } from "../api/read-bound";
+import { signedIn } from "../features/conversation/held-sends-fixture";
 import { KeymapProvider } from "../features/shell/KeymapProvider";
 import { PANEL_ATTRIBUTE, useKeymap } from "../features/shell/keymap";
 import { SEND_DEADLINE_MS } from "../features/writes/keyed-write";
@@ -1725,9 +1725,7 @@ test("a row its list's pick held, taken away after the hold ended, hands the foc
 /** The page's writes, signed in as the app's are, for a case to hand the rescue as `app.tsx`
  *  hands it the app's (`useFocusRescue`'s `writes`). */
 function signedInWrites(): Writes {
-  const client = new QueryClient();
-  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
-  return writesOf(client);
+  return writesOf(signedIn());
 }
 
 /** A write `writes` makes at the reader's press, as a press's handler makes one, out until the
@@ -3423,7 +3421,7 @@ function focusInFilterPanel(control: HTMLElement): void {
 /** The name of the element holding the focus: its `aria-label`, else its text. */
 function focusedName(): string | null {
   const focused = document.activeElement;
-  return focused?.getAttribute("aria-label") ?? focused?.textContent ?? null;
+  return focused === null ? null : nameOf(focused);
 }
 
 // (bl) Every control that fires its `change` at the reader's pick, as the date box of (bk) does,

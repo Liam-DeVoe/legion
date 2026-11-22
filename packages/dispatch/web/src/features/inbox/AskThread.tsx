@@ -4,7 +4,7 @@ import { type FormEvent, type ReactNode, useContext, useId, useState } from "rea
 
 import { type ArtifactOwner, api, type WriteBounds, type WriteMethod } from "../../api/client";
 import type { Ask, AskRead, Comment, CommentWithTrees, CreateCommentInput } from "../../api/types";
-import { useHeldThroughAnswer } from "../../components/held-press";
+import { heldField, useHeldThroughAnswer } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import { useTooltips } from "../../components/tooltips";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
@@ -182,7 +182,7 @@ export function UnsentReply({ className, text }: { className?: string; text: str
  *  may have been posted, and Retry makes that very press again. The Inbox's row of the ask's
  *  thread says the same words of it (`ThreadShortRow`). */
 export function replyRefusal(reply: {
-  readonly error: Error;
+  readonly error: unknown;
   readonly method: WriteMethod | undefined;
 }): string {
   return stoppedNote(reply, "your reply", "posted") ?? "Could not post your reply.";
@@ -267,7 +267,7 @@ export function AskReplyComposer({
     method: options.method,
     mutationKey,
     write: options.write,
-    onSuccess: (comment, press) => options.onSuccess?.(comment, press),
+    onSuccess: options.onSuccess,
   });
   const inbox = useInboxAnswerWrite(useContext(AskReplyWritesContext), ask.id, options);
   const submit: OutstandingAnswerWrite<ReplyPress> = inbox ?? own;
@@ -290,7 +290,7 @@ export function AskReplyComposer({
       <label className={`block text-sm font-medium ${textSecondaryOnCanvas}`} htmlFor={fieldId}>
         Reply
         <textarea
-          aria-disabled={held || undefined}
+          {...heldField(held)}
           className={`mt-1 block w-full rounded-lg px-3 py-2 font-normal outline-none ${inputClasses(true)}`}
           id={fieldId}
           onChange={(event) => setBody(event.target.value)}
@@ -309,7 +309,6 @@ export function AskReplyComposer({
                   if (!held) upload.paste(event, uploadOwner, ask.id);
                 }
           }
-          readOnly={held}
           value={body}
         />
       </label>
@@ -323,7 +322,7 @@ export function AskReplyComposer({
       </button>
       {submit.error === null ? null : (
         <QueryError
-          message={replyRefusal({ error: submit.error, method: submit.method })}
+          message={replyRefusal(submit)}
           onRetry={submit.retry}
           retrying={submit.isPending}
         />
