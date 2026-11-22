@@ -273,7 +273,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "github_apps", Default: "none: a file that configures the workflow is refused without it", RequiredBy: "when any of `dispatch_url`, `dispatch_token_file` and `projects` is set, and when runtime is kubernetes: every pod's workspace is cloned with the implement App's token",
-			Description: "The implement App (the implementer's and merger's identity) and the review App (every other role's), each with its id and its private key, from which the daemon mints every agent's GitHub token, which carries that App's permissions over every repository its installation holds (INFRA-2543).",
+			Description: "The implement App (the identity of the implementer, the merger and each role of an issue's plan of the type implementation) and the review App (every other role's, but a role of `roles` works as the App its `github_app` names), each with its id and its private key, from which the daemon mints every agent's GitHub token, which carries that App's permissions over every repository its installation holds (INFRA-2543).",
 			Read:        reads(readGitHubApps, func(f *fileConfig, v *GitHubApps) { f.GitHubApps = v }),
 		},
 		{
@@ -289,7 +289,7 @@ var topLevelKeys = func() []keyDescriptor {
 			},
 		},
 		{
-			Name: rolesKey, Default: "the deployment defines no role: a plan's steps name Legion's own roles alone", RequiredBy: "no",
+			Name: rolesKey, Default: "the deployment defines no role: a plan's steps name Legion's own roles and the roles the plan defines", RequiredBy: "no",
 			Description: "The roles the deployment defines of its own, which a step of a plan names as it names Legion's: each key a role's name, a word of `a-z`, `0-9` and `-` that starts with a letter, at most 32 characters and none of Legion's own names (`architect`, `planner`, `implementer`, `tester`, `reviewer`, `merger`, `controller`, `acceptance`), each value the role's `type`, `prompt_file`, `model` and `github_app`.",
 			Read:        reads(readRoles, func(f *fileConfig, v []Role) { f.Roles = v }),
 		},
@@ -528,9 +528,9 @@ var nestedKeys = []memberGroup{
 	}},
 	{Path: "github_apps", Members: []member{
 		{Name: "implement", Default: "none: a file that names no implement App is refused", RequiredBy: "yes",
-			Description: "The App the implementer and the merger work as, whose token clones every pod's workspace and pushes and lands the change; no review ever comes from it."},
+			Description: "The App the implementer, the merger and each role of an issue's plan of the type implementation work as, and each role of `roles` whose `github_app` names it, whose token clones every pod's workspace and pushes and lands the change; no review ever comes from it."},
 		{Name: "review", Default: "none: a file that names no review App is refused", RequiredBy: "yes",
-			Description: "The App every other role works as — architect, planner, tester and reviewer — whose token writes the reviews and the check runs the implement App may not."},
+			Description: "The App every other role works as — the architect, the planner, the tester, the reviewer, a role of `roles` whose `github_app` names it and each role of an issue's plan of another type or of none — whose token writes the reviews and the check runs the implement App may not."},
 	}},
 	{Path: "github_apps.<APP>", Members: []member{
 		{Name: "app_id", Default: "none: an App that names no id is refused", RequiredBy: "yes",
