@@ -979,7 +979,7 @@ env -u DISPATCH_TOKEN -u DISPATCH_TOKEN_FILE DATABASE_URL="$database_url" \
   envoy-dispatch census --store >"$work/census" 2>&1 || census_code=$?
 [[ "$census_code" == 0 ]] ||
   fail E8 "the store census after the erase" "envoy-dispatch census --store exited $census_code: $(cat "$work/census")"
-grep -Eq '^census: store rows_checked=[0-9,]+ differences=0$' "$work/census" ||
+grep -Eq '^census: store rows_checked=[0-9,]+ differences=0 read_seq=[0-9]+$' "$work/census" ||
   fail E8 "the store census after the erase" "$(grep -E '^census: store (rows_checked|REFUSED)' "$work/census" || true)"
 # Zero differences over zero rows compares nothing with nothing, so the census must have read rows.
 grep -Eq '^census: store rows_checked=[1-9][0-9,]* ' "$work/census" ||

@@ -106,7 +106,6 @@ func (f *xidFixture) measure(t *testing.T, want int, shape storetest.XidShape, r
 	if response.Code != want {
 		t.Fatalf("XID RIG PROBLEM (not a finding about the code): the measured request answered %d, want %d: %s", response.Code, want, response.Body.String())
 	}
-	report.MayHoldNoXid = f.mayHoldNoXid
 	storetest.AssertXidWindows(t, report, shape)
 	return report
 }
@@ -611,12 +610,12 @@ func xidWindowIssueCreateWithSpec(t *testing.T, f *xidFixture) {
 }
 
 // A create naming a GitHub issue Dispatch already tracks answers that issue
-// (respondWithExistingExternalIssue), with its advice. The answer writes nothing: today its row
-// lock gives it an xid, and once the owner lock is advisory (plan M1) it may hold none at all. The
-// advice's related-item check records its row after the answer, in a transaction of its own under
-// the request's marked context (insertRelatedChecks): the insert, sent with the lock_timeout it
-// sets for itself, and its COMMIT, a window of two statements, the widest the measured request
-// holds.
+// (respondWithExistingExternalIssue), with its advice, and creates nothing. The answer's own
+// transaction holds no xid: it writes no row, and the issue's owner lock it reads under is the
+// advisory lock alone, which assigns none while no earlier build is in the fleet (store.LockOwner).
+// The request still holds one xid window on every run, since it records the related-item check it
+// did not make (reason already_exists) in a transaction of its own after that commit
+// (insertRelatedChecks), and the record's insert assigns that transaction its xid.
 func xidWindowExistingExternalIssue(t *testing.T, f *xidFixture) {
 	if mapped := dispatchRequest(t, f.handler, http.MethodPut, "/api/v1/settings/repo-projects/owner/repo", map[string]string{
 		"project": xidProject,
@@ -627,10 +626,16 @@ func xidWindowExistingExternalIssue(t *testing.T, f *xidFixture) {
 	if created := sessionRequest(t, f.handler, http.MethodPost, "/api/v1/issues", body); created.Code != http.StatusCreated {
 		t.Fatalf("create the external issue: status=%d body=%s", created.Code, created.Body.String())
 	}
-	f.mayHoldNoXid = true
-	defer func() { f.mayHoldNoXid = false }()
+	// Spec R5: "The record of a related-item check is written in a transaction of its own, after
+	// the write that ran the check has committed (`writeRelatedChecks`, `api/suggestions.go`)."
+	// That transaction is the window: its owner lock is advisory and its read and setting of
+	// lock_timeout write no row, so its xid comes with the batch that restores lock_timeout and
+	// inserts the related_checks row, and the window holds that batch and the COMMIT ending it.
+	// Nothing here contends for the owner lock, so the record always lands within the request and
+	// a run with no window fails.
 	f.measureAdvised(t, http.StatusOK, storetest.XidWindowOf(2,
-		"the related-item check's record: its insert, with the lock_timeout it sets, and its COMMIT (insertRelatedChecks); the answer itself writes nothing and locks no row"), func(h http.Handler) *httptest.ResponseRecorder {
+		"the related-item check's record in its own transaction (writeRelatedChecks): the batch restoring lock_timeout "+
+			"and inserting the related_checks row, and the COMMIT ending it"), func(h http.Handler) *httptest.ResponseRecorder {
 		return sessionRequest(t, h, http.MethodPost, "/api/v1/issues", body)
 	})
 }
