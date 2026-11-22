@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { scratchNeed } from "./scratch-need";
 
 // Shared fixtures for the multi-repository acceptance observer's tests:
 // scripts/e2e/multi-repo-acceptance.sh reads only structured sources — the daemon's state JSON (a
@@ -42,8 +43,11 @@ export function useScratchDirectory(): void {
   // On the memory root (memoryRoot): a file's fixtures leave 1,869 entries here for the one
   // `afterAll` to remove, which timed out against Bun's 5 s when each entry on the dev box's shared
   // disk cost 4 ms (dispatch://INFRA-4311). memoryRoot refuses a noexec /dev/shm, since the fake
-  // binaries written here are run from here.
-  dir = temporaryDirectory("multi-repo-acceptance-test", { root: memoryRoot() });
+  // binaries written here are run from here, and one with less free than the tree needs
+  // (lib/scratch-need.ts).
+  dir = temporaryDirectory("multi-repo-acceptance-test", {
+    root: memoryRoot({ need: scratchNeed.multiRepo }),
+  });
   tokenFile = join(dir, "dispatch-token");
   beforeAll(() => {
     writeFileSync(tokenFile, "dispatch-bearer\n");

@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { scratchNeed } from "./scratch-need";
 import { scriptFunctions } from "./script-functions";
 
 // session_psql, session_text and session_byte_len, taken from lib/session-db.sh by name, and
@@ -32,8 +33,11 @@ const fn = scriptFunctions(join(import.meta.dir, "..", "stage4b-sandbox-tree.sh"
 const appsFn = scriptFunctions(join(import.meta.dir, "github-apps.sh"));
 // On the memory root (memoryRoot): the rows leave 870 entries here for the one `afterAll` to
 // remove, which timed out against Bun's 5 s when each entry on the dev box's shared disk cost 4 ms
-// (dispatch://INFRA-4311).
-const dir = temporaryDirectory("stage4b-session-text-test", { root: memoryRoot() });
+// (dispatch://INFRA-4311). memoryRoot refuses one with less free than the tree needs
+// (lib/scratch-need.ts).
+const dir = temporaryDirectory("stage4b-session-text-test", {
+  root: memoryRoot({ need: scratchNeed.stage4bSessionText }),
+});
 
 const sessions = "/home/legion/.omp/profiles/legion/agent/sessions";
 const key = `${sessions}/-legion-workspaces-sjawhar-legion-smoke-legsmoke-1/2026-10-25_4242.jsonl`;

@@ -6,6 +6,7 @@ import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-
 import { argMaxForceHolds } from "./arg-max-force";
 import { ownGroup, untilRunning } from "./own-group";
 import { procRootOf } from "./proc-root";
+import { scratchNeed } from "./scratch-need";
 
 // run_processes (lib/rig.sh) names the processes of a run still alive, and stop_marked_processes
 // (lib/process-tree.sh) ends them: each that carries the run's mark, LEGION_E2E_RUN=$work, which the
@@ -17,7 +18,9 @@ import { procRootOf } from "./proc-root";
 const rig = join(import.meta.dir, "rig.sh");
 const force = join(import.meta.dir, "arg-max-force.sh");
 const root = join(import.meta.dir, "..", "..", "..");
-const dir = temporaryDirectory("run-processes-test", { root: memoryRoot() });
+const dir = temporaryDirectory("run-processes-test", {
+  root: memoryRoot({ need: scratchNeed.runProcesses }),
+});
 // perl: every process a row starts, and every harness, runs through ownGroup (lib/own-group.ts).
 const skip = skipWithout("perl");
 // python3: the newline-name row renames its process through prctl (ctypes).
