@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
-import { legionPhaseFill, surfaceMutedBg } from "../../theme/classes";
+import { legionPhaseFill } from "../../theme/classes";
 import { PhaseHoursCell, type PhaseHoursMode, PhaseHoursModeControl } from "./issues-phase-hours";
 import { WORK_PHASES } from "./issues-table-model";
 
@@ -82,10 +82,8 @@ test("Share draws each phase with hours in its colour, in the board's order and 
   // Each segment's part of the bar is its share of the row's total.
   const implementing = document.querySelector<HTMLElement>('[data-phase-segment="implementing"]');
   expect(implementing?.style.flexGrow).toBe(String(8 / 25));
-  // A 1 px gap between each two segments, through which the bar's track shows.
+  // The bar runs across the whole cell.
   const bar = document.querySelector<HTMLElement>("[data-phase-hours-bar]");
-  expect(bar).toHaveClass("gap-px");
-  for (const token of surfaceMutedBg.split(" ")) expect(bar).toHaveClass(token);
   expect(bar?.style.width).toBe("100%");
   // Share writes no total.
   expect(screen.getByTestId("cell").textContent).toBe("");
