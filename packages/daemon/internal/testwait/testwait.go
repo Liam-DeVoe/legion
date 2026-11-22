@@ -17,18 +17,26 @@ import (
 // milliseconds still does, and long enough that a waiting test costs a loaded machine little.
 const Poll = 10 * time.Millisecond
 
-// Eventually waits for condition, failing the test with what it waited for when the deadline
-// passes. The deadline is a minute, or the test binary's own less a second when that is sooner,
-// so a `-timeout` smaller than a minute still reports the wait rather than the binary's panic.
+// Eventually waits until condition holds, asking every Poll. Its one bound is the test binary's
+// deadline less margin, as Receive's is, and under -timeout 0 it has none: a condition a loaded
+// machine makes slow still passes, and one that never holds fails the test naming what it waited
+// for, on the line Receive gives up with (gaveUp). A wait that begins with margin or less of the
+// deadline left, as every wait does under a -timeout of 30 s or less, asks once.
 func Eventually(t *testing.T, what string, condition func() bool) {
 	t.Helper()
-	WithinPolling(t, Bounded(t, time.Minute, time.Second), Poll, what, condition)
+	start := time.Now()
+	end := start.Add(unboundedRemaining)
+	if deadline, bounded := t.Deadline(); bounded {
+		end = deadline.Add(-margin)
+	}
+	if !waitUntil(end, Poll, condition) {
+		gaveUp(t, what, time.Since(start))
+	}
 }
 
 // Bounded is bound, or what is left of the test binary's own deadline less margin when that is
 // sooner, so a -timeout smaller than bound still reports the wait rather than the binary's panic.
-// Eventually is Bounded of a minute and a second; a wait with a span or a margin of its own takes
-// those.
+// A wait with a span or a margin of its own takes those; Eventually and Receive have none.
 func Bounded(t *testing.T, bound, margin time.Duration) time.Duration {
 	if testDeadline, ok := t.Deadline(); ok {
 		if left := time.Until(testDeadline) - margin; left < bound {
@@ -40,8 +48,7 @@ func Bounded(t *testing.T, bound, margin time.Duration) time.Duration {
 
 // WithinPolling waits for condition under the caller's own bound and its own pace, with no
 // clamp to the test binary's deadline, failing the test with what it waited for when the bound
-// passes: a wait whose span is the thing under test, or one that must outlast a minute, says
-// how long it means to wait.
+// passes: a wait whose span is the thing under test says how long it means to wait.
 func WithinPolling(t *testing.T, bound, poll time.Duration, what string, condition func() bool) {
 	t.Helper()
 	if waitUntil(time.Now().Add(bound), poll, condition) {

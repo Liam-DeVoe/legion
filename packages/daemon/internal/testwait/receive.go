@@ -8,8 +8,9 @@ import (
 	"time"
 )
 
-// margin is how long before the test binary's deadline Receive gives up: the time the failing
-// test's cleanups and the failure itself have to run in before Go's alarm panics the binary.
+// margin is how long before the test binary's deadline Receive and Eventually give up: the time
+// the failing test's cleanups and the failure itself have to run in before Go's alarm panics the
+// binary.
 const margin = 30 * time.Second
 
 // Receive waits for one receive from ch (a value, or the close of ch, which gives the zero value)

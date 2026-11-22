@@ -1123,7 +1123,7 @@ const idleRigPoll = idleRigTick
 
 // idleRigWaiting waits for condition until it holds or the wait gives up, asking it once every
 // pace, and fails naming what it waited for. The bound is within from now, or the test binary's
-// own deadline less the margin above when that is sooner, which is the clamp testwait.Eventually
+// own deadline less the margin above when that is sooner, which is the clamp testwait.Bounded
 // makes (internal/testwait). A run whose remaining deadline is shorter than the span — a package
 // `-timeout` smaller than it, or a run far enough in that less than the span is left — fails the
 // wait rather than the binary, and a run with no deadline at all (`go test -timeout 0`) fails it
