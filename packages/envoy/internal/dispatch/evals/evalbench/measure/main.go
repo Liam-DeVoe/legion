@@ -28,12 +28,12 @@
 // range's GET /api/v1/delivery/measures beside it, and at 28 days), followed by k2's six
 // statements and its refusals and controls, k13's run-jobs rule over every read of the paint, its
 // named-jobs read and P0 count, k16's hand folds, and the probe of the 84-day compare read's
-// day-row statement (probe.go). In mode failure-day they are the Delivery timeline's reads alone,
-// over the same windows, one of which holds the failure day, with k13's run-jobs rule and the
-// failure day the database holds. At the base head (-mode base) they are the base Delivery page's
-// timeline, measures, pipeline and compare views at 84 days, k8's negative control, and the base
-// statements k13's control names. -info measures the first paint alone and judges no budget, for
-// the round after a Postgres restart that the Job records for information.
+// stored-figures statements (probe.go). In mode failure-day they are the Delivery timeline's reads
+// alone, over the same windows, one of which holds the failure day, with k13's run-jobs rule and
+// the failure day the database holds. At the base head (-mode base) they are the base Delivery
+// page's timeline, measures, pipeline and compare views at 84 days, k8's negative control, and the
+// base statements k13's control names. -info measures the first paint alone and judges no budget,
+// for the round after a Postgres restart that the Job records for information.
 //
 // The server runs background loops that touch the database between requests. Each read's
 // statements are told from theirs by a catalogue taken first: every statement the database ran in
