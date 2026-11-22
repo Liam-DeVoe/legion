@@ -146,8 +146,8 @@ parent's own first phase can start once the last of them has left the workflow, 
 request then builds on a base that already carries their merges. For the same reason the daemon
 refuses a parent's acceptance, and a root's close, while an issue beneath it is still in the
 workflow. A child's own architect starts with the child's first phase, so the children it files
-run beside the child's own work, and the child is accepted only after its last round, on an
-approved head at which its checks pass.
+run beside the child's own work, and the child is accepted only after its last round, on a head
+that the step before the acceptance passed and at which its checks pass.
 
 ## Phase workers
 
@@ -462,8 +462,8 @@ Legion uses GitHub's own review mechanisms rather than labels:
   pull request to be current with it; or the daemon could not read the base's rules, which it
   reads (rulesets and branch protection) only on a conflicting read. Otherwise it records the
   conflict, and the task's steps go on at that head; an approval of the head ends the review
-  round. In `accepting` and `retro` the work has passed its review and the merge comes next, so
-  the conflict waits there, and the daemon acts once the issue enters `merging`.
+  round. In `accepting` and `retro` the work has passed every step of its task and the merge
+  comes next, so the conflict waits there, and the daemon acts once the issue enters `merging`.
   When it acts, the issue keeps its phase and takes no admission slot for the merge. Before
   `merging` the implementer is asked on its role topic to merge the base forward in the issue
   workspace and push, with no handoff and no completion for it, and the tester or the reviewer
