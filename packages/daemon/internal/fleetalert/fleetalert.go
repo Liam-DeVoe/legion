@@ -51,7 +51,8 @@ var (
 		Sentence: "the project's controller is out of reach of Envoy and the daemon's relaunch of it did not bring it back; nobody else holds that role, so a person must start it",
 	}
 	// ControllerRelaunchRefused is the controller out of reach with the daemon's relaunch of it
-	// refused by the guard, or ended by a process that outlived its stop.
+	// refused by the guard or anything else, or ended by a process that outlived its stop; a
+	// suspension an operator holds over it writes no line.
 	ControllerRelaunchRefused = Case{
 		Word:     "controller_relaunch_refused",
 		Sentence: "the project's controller is out of reach of Envoy and the daemon cannot relaunch it; a person must look at its process",
@@ -64,8 +65,9 @@ var (
 	}
 	// ClaimRelaunchRefused is a workflow role's claim out of reach whose relaunch the daemon cannot
 	// make: its launcher is not connected, the launch would replace its pod, its process outlived
-	// the stop, Envoy lists no other claim of its pod of two or more as live, or the guard has
-	// refused it for 60 minutes.
+	// the stop, Envoy lists no other claim of its pod of two or more as live, or the guard or
+	// anything else has refused it for 60 minutes; a suspension an operator holds over it writes no
+	// line.
 	ClaimRelaunchRefused = Case{
 		Word:     "claim_relaunch_refused",
 		Sentence: "a workflow role's claim is out of reach of Envoy and the daemon cannot relaunch it; a person must look at its pod or its process",

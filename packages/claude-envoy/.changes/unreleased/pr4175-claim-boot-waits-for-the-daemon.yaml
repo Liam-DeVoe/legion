@@ -13,8 +13,8 @@ body: |-
     slow read is not taken for a daemon that does not answer. Only Claude Code's cancel of the tool
     call stops that read.
     The `envoy_publish` tool's description says to start no replacement for a session whose
-    `last_seen` is 20 minutes old or less, and that the Legion daemon starts a Legion claim whose
-    session Envoy has not heard from for more than 20 minutes again on the same session.
+    `last_seen` is 20 minutes old or less, and names `skill://envoy/references/legion.md` for a
+    Legion claim past that.
 time: 2026-11-18T13:20:10Z
 custom:
     Issue: pr4175

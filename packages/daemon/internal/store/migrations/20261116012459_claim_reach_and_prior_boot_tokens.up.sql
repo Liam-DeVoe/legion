@@ -4,17 +4,15 @@
 --
 -- claims.reach is supervise.Claim.Reach: the session it is about and when that session first said
 -- ready, the mark of a claim whose session's last registration is more than 20 minutes old and
--- the moment the 20 minutes were counted from, whether the controller has been told of it, what
--- the relaunch guard and the relaunch did to it, and the last relaunch the record has taken in.
--- Three of those must outlive a daemon restart, which is the very case R5 exists for: a claim
--- reported before a boot is not reported again after it, a second relaunch within 6 hours of the
--- first is refused whatever happened between them, and the daemon relaunches its own controller at
--- most once in 6 hours. The rest rides beside them so that one notice is sent once across a restart
--- as well. jsonb on the claim's own row, written by its own narrow statement (store's
--- PutClaimReach, or in the transaction of the notice a write marks told) and by no write a machine
--- makes, as the step and activity columns are, because the daemon's minute sweep writes it between
--- a machine's writes. Every existing row takes '{}', the record of a claim nothing has been read of
--- yet.
+-- the moment the 20 minutes were counted from, what the relaunch guard and the relaunch did to it,
+-- and the last relaunch the record has taken in. Two of those must outlive a daemon restart, which
+-- is the very case R5 exists for: a second relaunch within 6 hours of the first is refused whatever
+-- happened between them, and the daemon relaunches its own controller at most once in 6 hours.
+-- The rest rides beside them so that a refusal's 60 minutes count across a restart as well. jsonb
+-- on the claim's own row, written by its own narrow statement (store's PutClaimReach) and by no
+-- write a machine makes, as the step and activity columns are, because the daemon's minute sweep
+-- writes it between a machine's writes. Every existing row takes '{}', the record of a claim
+-- nothing has been read of yet.
 --
 -- claims.relaunched_at is supervise.Claim.LastRelaunch: when a relaunch of a claim Envoy could not
 -- reach last ended its process to start it again on the same session. It is a column of the claim's

@@ -233,7 +233,7 @@ func (k *reachKeeper) storeEach(ctx context.Context, token claim.Token, next sup
 // reading of each first, then what the daemon does about each (judge), so a pod's claims are
 // judged against each other's marks of the same minute.
 //
-// A read that fails changes no mark and sends no notice: it says nothing of any session. Its end
+// A read that fails changes no mark: it says nothing of any session. Its end
 // is one of the moments the 20 minutes are counted from, and reads that fail for 20 minutes write
 // R6's line once, until a read answers (fleetalert.SessionListUnreadable). A list that holds no
 // live session — Legion's or any other — marks none: its read is counted from as well, and after
@@ -276,7 +276,7 @@ func (k *reachKeeper) sweep(ctx context.Context, claims []supervise.Claim) {
 			k.alerts.Open(fleetalert.SessionListUnreadable, "", "since", k.failingSince, "error", err.Error())
 		}
 		if ctx.Err() == nil {
-			k.log.Warn("reach: Envoy's session list could not be read; no claim's mark changes and nobody is told", "error", err)
+			k.log.Warn("reach: Envoy's session list could not be read; no claim's mark changes", "error", err)
 		}
 		return
 	}
@@ -772,8 +772,8 @@ func runsOnSession(state supervise.ClaimState) bool {
 // state (runsOnSession), so a claim relaunched again and again on its session stays marked
 // through its launches, and the two a launch waits in. A boot restores a claim the last daemon
 // left mid-launch as launch_uncertain, and a claim with nothing launched yet is queued: neither
-// has left the session it records, so a claim reported before the boot is not reported again
-// after it, and a relaunch's not-back notice still counts from that relaunch (R5).
+// has left the session it records, so a relaunch made before the boot still counts its 6 hours
+// after it, and R6's not-back line still counts from that relaunch (R5).
 func holdsEpisode(state supervise.ClaimState) bool {
 	return runsOnSession(state) || state == supervise.StateLaunchUncertain || state == supervise.StateQueued
 }
@@ -789,5 +789,5 @@ func latest(moments ...time.Time) time.Time {
 	return last
 }
 
-// stamp is a moment as a notice writes it.
+// stamp is a moment as an error or a line writes it.
 func stamp(at time.Time) string { return at.UTC().Format(time.RFC3339) }

@@ -178,7 +178,7 @@ describe("envoyToolSpecs", () => {
       "For a holder that is not live, start no replacement for that session while its last_seen is 20 minutes old or less."
     );
     expect(publish?.description).toContain(
-      "A Legion claim whose session Envoy has not heard from for more than 20 minutes is unreachable, and the Legion daemon starts that claim's process again on the same session, which replaces no session."
+      "For a Legion claim, skill://envoy/references/legion.md says what happens past that."
     );
   });
 

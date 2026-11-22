@@ -567,7 +567,7 @@ type Claim struct {
 	LastRelaunch           time.Time
 	LastRelaunchGeneration uint64
 	// Reach is the daemon's record of whether Envoy can reach this claim's session (R5): the mark
-	// of a claim out of reach and what the daemon has told and done about it. It is written by the
+	// of a claim out of reach and what the daemon has done about it. It is written by the
 	// store's PutClaimReach and read back with the claim, as Step is: no write a machine makes
 	// carries it, a launch's included, since a relaunch keeps the session the record speaks of.
 	// The mark changes no state, so every rule that reads the state reads it as before.

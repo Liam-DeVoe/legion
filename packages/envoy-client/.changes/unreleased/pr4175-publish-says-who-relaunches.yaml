@@ -2,9 +2,8 @@ kind: Changed
 body: |-
     The `envoy_publish` tool's description, which both plugins show their model, says that for a
     role holder that is not live, a session starts no replacement for that holder's session while
-    its `last_seen` is 20 minutes old or less. It also says that a Legion claim whose session Envoy
-    has not heard from for more than 20 minutes is unreachable, and that the Legion daemon starts
-    that claim's process again on the same session, which replaces no session.
+    its `last_seen` is 20 minutes old or less, and names `skill://envoy/references/legion.md` for
+    what happens to a Legion claim past that.
 time: 2026-11-18T13:20:10Z
 custom:
     Issue: pr4175

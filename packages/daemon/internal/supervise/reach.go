@@ -23,11 +23,11 @@ const UnreachableAfter = 20 * time.Minute
 
 // Reach is the daemon's record of whether Envoy can reach a claim's session (R5), kept on the
 // claim's own row (store's PutClaimReach) because two of its facts must outlive a daemon restart:
-// an architect told before a boot is not told again after it, and a second relaunch within 6
-// hours is refused whatever the claim did between them. No write a machine makes carries it, as
-// none carries the step or the activity report: the daemon's minute sweep and its relaunches write
-// it between a machine's writes (internal/daemon's reach keeper). The one exception is
-// LastRelaunch, which only a relaunch makes and which a machine's write alone carries.
+// a second relaunch within 6 hours is refused whatever the claim did between them, and the guard's
+// 60 minutes count from the episode's first refusal, whichever daemon made it. No write a machine
+// makes carries it, as none carries the step or the activity report: the daemon's minute sweep and
+// its relaunches write it between a machine's writes (internal/daemon's reach keeper). The one
+// exception is LastRelaunch, which only a relaunch makes and which a machine's write alone carries.
 //
 // Its fields fall in four groups. Session and FirstReady are of the session the claim records,
 // which is what the 20 minutes are counted from. Since through Relaunched are one episode of the
@@ -131,9 +131,8 @@ var (
 // its last activity report since its launch shows a background job or a subagent running, or
 // there is no such report. steppedAt is a later step than c's record holds, where the caller knows
 // one (the machine's own, Machine.steppedAt); the zero time adds nothing. The daemon's sweep asks
-// it of the stored claim for the notice that the guard would now let a refused claim through, and
-// for its own relaunch of its controller, and the machine asks it again under its own lock with
-// what it read since.
+// it of the stored claim before it relaunches a claim, its controller's included, and the machine
+// asks it again under its own lock with what it read since.
 //
 // A session sends its report again every 5 minutes while a turn is open, whatever it says
 // (pi-legion's TURN_ACTIVITY_HEARTBEAT_MS), from a timer of its process's own, which a frozen or

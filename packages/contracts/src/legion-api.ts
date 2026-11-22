@@ -269,7 +269,7 @@ const legionPendingTaskView = z.object({
  * claim's session and the end of the daemon's last failed or empty read of the listener's session
  * list. `since` is when the daemon found it so, and `lastSeen` is the last registration of its
  * session the daemon read, absent where it read none. The claim keeps its state: this says only
- * that no message reaches it, and the daemon relaunches it on its same session (R5). */
+ * that no message reaches it (R5). */
 const legionUnreachableView = z.object({
   since: timestamp,
   lastSeen: timestamp.optional(),
