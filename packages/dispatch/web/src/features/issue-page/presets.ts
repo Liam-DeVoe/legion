@@ -103,6 +103,12 @@ const COUNTED_KINDS: Readonly<Record<Filter, readonly NodeType[]>> = {
 /** No node named by the address, which is every address but a deep link's. */
 const EMPTY: ReadonlySet<string> = new Set();
 
+/** A node of the tree, with the node it stands under at its first place in the tree. */
+interface Placed {
+  readonly node: TreeNode;
+  readonly parent: TreeNode;
+}
+
 /** What the view draws over the tree it was given. */
 export interface PresetView {
   /** The ids of the rows drawn as context: with no filter on, the chain above a match of the
@@ -296,7 +302,8 @@ function filterView(
  * a constraint are never rows: each is a line of the row its tie names (`PresetView.lines`). The
  * words filter keeps the rows whose words hold it, as `filterView` keeps them, and a node the
  * address names is drawn whatever the filter, from the view where it holds the node and from the
- * tree where not.
+ * tree where not, under the nearest row of the view above it in the tree, as `filterView` lifts
+ * it, else at the top.
  */
 function heldFilterView(
   root: TreeNode,
@@ -312,7 +319,7 @@ function heldFilterView(
   const byRead = new Map<string, TreeNode>();
   const ofRead = new Map<string, TreeNode[]>();
   const placements = new Map<string, TreeNode>();
-  const byId = new Map<string, { readonly node: TreeNode; readonly parent: TreeNode }>();
+  const byId = new Map<string, Placed>();
   const index = (parent: TreeNode): void => {
     for (const child of parent.children) {
       if (child.readId !== undefined) {
@@ -396,10 +403,44 @@ function heldFilterView(
       else under.push(node);
     }
   }
+  // Each node the address names that is no row of the view, by the row it stands under: the
+  // nearest node above it in the tree that is a row of the view, as `filterView` lifts a node to
+  // the nearest row it draws above it. So the view draws it where the view read off the tree
+  // draws it, and whether the view's own read has answered yet never moves it: under
+  // Verification a plan task the tree places under a statement stands under that statement,
+  // where the view draws the statement's checks alone, and not at the top, where it would be a
+  // row of its own. One with no row of the view above it is drawn at the top (`addressed`).
+  const namedUnder = new Map<string, Placed[]>();
+  for (const id of named) {
+    const found = rowIds.has(id) ? undefined : byId.get(id);
+    if (found === undefined) continue;
+    let home = found.parent;
+    while (home !== root && !rowIds.has(home.id)) home = byId.get(home.id)?.parent ?? root;
+    if (home === root) continue;
+    const under = namedUnder.get(home.id);
+    if (under === undefined) namedUnder.set(home.id, [found]);
+    else under.push(found);
+  }
   const counted: readonly NodeType[] = COUNTED_KINDS[filter];
   const context = new Set<string>();
   const matched = new Set<string>();
   const drawnIds = new Set<string>();
+  // The nodes the address names that are drawn under a row (`namedUnder`).
+  const placed = new Set<string>();
+  // A node the address names under the row `home` (`namedUnder`), as `filterView`'s `lift` draws
+  // it there: a row with no rows under it, which carries its own parent's line where that parent
+  // is no row of the view, and the line of `home` where `home` is drawn as none.
+  const drawNamed = (
+    found: Placed,
+    home: TreeNode
+  ): { readonly drawn: boolean; readonly rows: TreeNode[] } => {
+    const lifted = found.parent.id !== home.id;
+    if (counted.includes(found.node.type)) matched.add(found.node.id);
+    placed.add(found.node.id);
+    const line = lifted ? lineOfParent(found.parent) : undefined;
+    const row = { ...found.node, children: [], held: 0 };
+    return { drawn: !lifted, rows: [line === undefined ? row : { ...row, parentLine: line }] };
+  };
   // As `filterView`'s `lift`: the node with its own rows under it, or, where it is no row, the
   // rows of its branch at its place, each carrying it as its parent's line.
   const draw = (
@@ -414,7 +455,10 @@ function heldFilterView(
         : placements.get(`${held.id} ${home.id}`)) ?? held;
     if (tree === undefined || above.has(tree.id)) return { drawn: false, rows: [] };
     const inner = new Set([...above, tree.id]);
-    const parts = (below.get(tree.id) ?? []).map((child) => draw(child, tree, inner));
+    const parts = [
+      ...(below.get(tree.id) ?? []).map((child) => draw(child, tree, inner)),
+      ...(namedUnder.get(tree.id) ?? []).map((found) => drawNamed(found, tree)),
+    ];
     const own = named.has(tree.id) || (node.role === "query" && holds(tree, wanted));
     const placing =
       !own &&
@@ -438,9 +482,10 @@ function heldFilterView(
     const line = part.drawn ? viewParentLine(node, root, parentOf.get(node)) : undefined;
     return line === undefined ? part.rows : part.rows.map((row) => ({ ...row, parentLine: line }));
   });
-  // A node the address names that the view does not draw, from the tree, at the top.
+  // A node the address names that the view draws nowhere, with no row of the view above it in
+  // the tree, from the tree, at the top.
   const addressed = [...named].flatMap((id) => {
-    const found = drawnIds.has(id) ? undefined : byId.get(id);
+    const found = drawnIds.has(id) || placed.has(id) ? undefined : byId.get(id);
     if (found === undefined) return [];
     if (counted.includes(found.node.type)) matched.add(id);
     const line = found.parent === root ? undefined : lineOfParent(found.parent);
