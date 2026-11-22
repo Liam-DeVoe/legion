@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { timeLeft, until } from "@legion/test-fixtures/wait";
 import {
   type ActiveDispatchConfig,
   type DispatchConfigResolution,
@@ -23,12 +24,14 @@ import {
 import type * as EnvoyConfigModule from "../envoy-config";
 import {
   askgateSetting,
+  type CommandSpawnRecord,
   commandTimeoutMs,
   type EnvoyConfig,
   type EnvoyHarness,
   envoyConfigPath,
   missingConfigNotice,
   readEnvoyConfig,
+  recordCommandSpawnsForTests,
   type SectionOff,
 } from "../envoy-config";
 import { type EnabledEnvoySettings, envoySettings as resolveEnvoy } from "../envoy-settings";
@@ -1246,8 +1249,19 @@ describe("a ! command in envoy.json", () => {
     return readdirSync(scratch);
   }
 
-  /** The bound of the two rows below that wait for a killed process to end, passed to each. */
-  const KILL_ROW_MS = 20_000;
+  /** Runs `body` with each `!` command's spawn recorded (`recordCommandSpawnsForTests`) and
+   * returns the records: the timeout the read armed and what ended the command, the read's own
+   * record rather than a time taken around a call that blocks this thread (R4). */
+  function spawnsDuring(body: () => void): CommandSpawnRecord[] {
+    const spawns: CommandSpawnRecord[] = [];
+    recordCommandSpawnsForTests((spawn) => spawns.push(spawn));
+    try {
+      body();
+    } finally {
+      recordCommandSpawnsForTests(undefined);
+    }
+    return spawns;
+  }
 
   /** Whether the process with this pid still runs: `kill(pid, 0)` answers, and it is no zombie. A
    * killed orphan is a zombie until the process it was reparented to reaps it, which a loaded host
@@ -1268,81 +1282,125 @@ describe("a ! command in envoy.json", () => {
     return stat.charAt(stat.lastIndexOf(")") + 2) !== "Z";
   }
 
-  /** Whether the process with this pid has ended by `deadline` (a `performance.now()` reading): the
-   * kernel delivers a SIGKILL when it schedules the process, so the wait is on the fact, bounded
-   * only by the row's own bound less 2 s. */
-  function gone(pid: number, deadline: number): boolean {
-    for (; running(pid); Bun.sleepSync(20)) {
-      if (performance.now() > deadline) return false;
-    }
-    return true;
+  /** Waits until the process with this pid is gone: the kernel delivers a SIGKILL when it schedules
+   * the process, so the wait is on the fact, and it ends at the row's deadline. */
+  async function gone(pid: number): Promise<void> {
+    await until(`process ${pid} to be gone`, () => !running(pid));
   }
 
-  test(
-    "that exits 0 is its value at once, and a process it left running is killed",
-    () => {
-      const deadline = performance.now() + KILL_ROW_MS - 2_000;
-      const home = tempDir();
-      const env = commandEnvironment(home);
-      const pidFile = path.join(home, "child.pid");
-      const lingeringSecret = fixtureSecret("linger");
-      const file = writeFile(path.join(home, "envoy.json"), {
-        dispatch: {
-          ...dispatchOn,
-          token: `!sleep 30 & echo $! > ${pidFile}; echo ${lingeringSecret}`,
-        },
-      });
-      const cwd = tempDir();
-      let dispatch: DispatchWithToken | undefined;
-      const left = inScratchTmp(() => {
+  // The process the command leaves running writes `finished` only if it runs to its end, so a
+  // file there says the read waited for it instead of killing it. "At once" is the spawn's own
+  // record: the shell's exit ended it, not the 10 s timeout it was armed with, so a read that
+  // waited the timeout out on what the command left running fails here, whatever it then answers.
+  test("that exits 0 is its value at once, and a process it left running is killed", async () => {
+    const home = tempDir();
+    const env = commandEnvironment(home);
+    const pidFile = path.join(home, "child.pid");
+    const finished = path.join(home, "finished");
+    const lingeringSecret = fixtureSecret("linger");
+    const file = writeFile(path.join(home, "envoy.json"), {
+      dispatch: {
+        ...dispatchOn,
+        token: `!(sleep 30; echo done > ${finished}) & echo $! > ${pidFile}; echo ${lingeringSecret}`,
+      },
+    });
+    const cwd = tempDir();
+    let dispatch: DispatchWithToken | undefined;
+    let left: string[] = [];
+    const spawns = spawnsDuring(() => {
+      left = inScratchTmp(() => {
         dispatch = dispatchSettings(env, readEnvoyConfig(file, env, { cwd }));
       });
-      // The value is what says the read did not wait for the process the command left running: a
-      // read that waited would have run into the command's 10 s timeout and answered its error
-      // (the row below), and no bound on the read's own time is needed for that.
-      expect(dispatch).toEqual({
-        enabled: true,
-        url: "https://dispatch.example",
-        token: lingeringSecret,
-      });
-      const child = Number(readFileSync(pidFile, "utf-8").trim());
-      expect(child).toBeGreaterThan(0);
-      expect(gone(child, deadline)).toBe(true);
-      expect(left).toEqual([]);
-    },
-    KILL_ROW_MS
-  );
+    });
+    expect(spawns).toEqual([
+      { timeoutMs: 10_000, detached: true, exitedDueToTimeout: false, success: true },
+    ]);
+    expect(dispatch).toEqual({
+      enabled: true,
+      url: "https://dispatch.example",
+      token: lingeringSecret,
+    });
+    const child = Number(readFileSync(pidFile, "utf-8").trim());
+    expect(child).toBeGreaterThan(0);
+    await gone(child);
+    expect(existsSync(finished)).toBe(false);
+    expect(left).toEqual([]);
+  });
 
-  test(
-    "still running after 10 s is an error naming the field and the file, and every process it started is killed",
-    () => {
-      const deadline = performance.now() + KILL_ROW_MS - 2_000;
-      const home = tempDir();
-      const env = commandEnvironment(home);
-      const pidFile = path.join(home, "child.pid");
-      const file = writeFile(path.join(home, "envoy.json"), {
-        dispatch: {
-          ...dispatchOn,
-          token: `!echo canary; sleep 40 & echo $! > ${pidFile}; sleep 30 # ${home}`,
-        },
-      });
-      const cwd = tempDir();
-      let dispatch: DispatchWithToken | undefined;
-      const left = inScratchTmp(() => {
+  // The tests' slot runs once the command's process group is killed, outside the spawn's own
+  // `try`: a slot that throws leaves the value read and the group kill as they were, where one
+  // inside the `try` read as a command that never started and left what it started running.
+  test("whose spawn record throws is still its value, and a process it left running is still killed", async () => {
+    const home = tempDir();
+    const env = commandEnvironment(home);
+    const pidFile = path.join(home, "child.pid");
+    const slotSecret = fixtureSecret("slot");
+    const file = writeFile(path.join(home, "envoy.json"), {
+      dispatch: { ...dispatchOn, token: `!sleep 900 & echo $! > ${pidFile}; echo ${slotSecret}` },
+    });
+    const cwd = tempDir();
+    let dispatch: DispatchWithToken | undefined;
+    recordCommandSpawnsForTests(() => {
+      throw new Error("the tests' slot threw");
+    });
+    try {
+      inScratchTmp(() => {
         dispatch = dispatchSettings(env, readEnvoyConfig(file, env, { cwd }));
       });
-      // The error is what says the read ended at the command's 10 s timeout: a read that waited
-      // for the command's own 30 s would answer its value no sooner than the row's bound.
-      expect(dispatch).toEqual({
-        enabled: false,
-        notice: null,
-        error: `${file}: dispatch.token's command did not finish within 10 s, and does not run again in this process`,
+    } finally {
+      recordCommandSpawnsForTests(undefined);
+    }
+    expect(dispatch).toEqual({
+      enabled: true,
+      url: "https://dispatch.example",
+      token: slotSecret,
+    });
+    await gone(Number(readFileSync(pidFile, "utf-8").trim()));
+  });
+
+  // The command never ends by itself while the row runs: it waits for a `release` file that nothing
+  // in the row creates, so only the read's own 10 s timeout ends it, however long this process is
+  // not run. Its wait ends unreleased only at the row's deadline (`timeLeft`, in turns of its 0.1 s
+  // look at the file), so a read that lost its timeout fails the row there rather than hang the
+  // suite: the read blocks this process, so no timer of the row can end it sooner. That the
+  // timeout is the 10 s the error names is the spawn's own record of what it was armed with and
+  // what ended it (R4), so a timer armed longer than its message says fails here too. The process
+  // it leaves running, `sleep 900`, outlives any run, so its absence is the group kill and not its
+  // own end.
+  test("still running after 10 s is an error naming the field and the file, and every process it started is killed", async () => {
+    const home = tempDir();
+    const env = commandEnvironment(home);
+    const pidFile = path.join(home, "child.pid");
+    const release = path.join(home, "release");
+    const ended = path.join(home, "ended");
+    const turns = Math.ceil(timeLeft() / 100);
+    const file = writeFile(path.join(home, "envoy.json"), {
+      dispatch: {
+        ...dispatchOn,
+        token: `!echo canary; sleep 900 & echo $! > ${pidFile}; i=0; while [ ! -e ${release} ] && [ $i -lt ${turns} ]; do sleep 0.1; i=$((i+1)); done; echo ended > ${ended}`,
+      },
+    });
+    const cwd = tempDir();
+    let dispatch: DispatchWithToken | undefined;
+    let left: string[] = [];
+    const spawns = spawnsDuring(() => {
+      left = inScratchTmp(() => {
+        dispatch = dispatchSettings(env, readEnvoyConfig(file, env, { cwd }));
       });
-      expect(gone(Number(readFileSync(pidFile, "utf-8").trim()), deadline)).toBe(true);
-      expect(left).toEqual([]);
-    },
-    KILL_ROW_MS
-  );
+    });
+    expect(spawns).toEqual([
+      { timeoutMs: 10_000, detached: true, exitedDueToTimeout: true, success: false },
+    ]);
+    // An answer of `canary` is a command that ended by itself: its timeout did not end it.
+    expect(dispatch).toEqual({
+      enabled: false,
+      notice: null,
+      error: `${file}: dispatch.token's command did not finish within 10 s, and does not run again in this process`,
+    });
+    expect(existsSync(ended)).toBe(false);
+    await gone(Number(readFileSync(pidFile, "utf-8").trim()));
+    expect(left).toEqual([]);
+  });
 
   // A test that holds a command on its own gate while it waits on other processes sets the bound
   // to its own timeout (claude-envoy's answers-hook rows); any other value keeps the 10 s.
