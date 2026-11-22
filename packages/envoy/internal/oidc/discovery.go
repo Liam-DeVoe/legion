@@ -182,15 +182,15 @@ func NewLazyVerifier(issuer, audience string) *LazyVerifier {
 	return newLazyVerifier(issuer, audience, DefaultKeysFailureSpacing)
 }
 
-// newLazyVerifier is NewLazyVerifier with keySpacing as its key set's FailureSpacing, for an
+// newLazyVerifier is NewLazyVerifier with failureSpacing as its key set's FailureSpacing, for an
 // IssuerSet whose caller chooses the spacing (NewIssuerSet).
-func newLazyVerifier(issuer, audience string, keySpacing time.Duration) *LazyVerifier {
+func newLazyVerifier(issuer, audience string, failureSpacing time.Duration) *LazyVerifier {
 	return &LazyVerifier{discovery: newDiscovery(issuer, func(ctx context.Context) (*Verifier, error) {
 		keys, err := NewKeys(ctx, issuer)
 		if err != nil {
 			return nil, err
 		}
-		keys.FailureSpacing = keySpacing
+		keys.FailureSpacing = failureSpacing
 		return NewWithKeys(issuer, audience, keys), nil
 	})}
 }

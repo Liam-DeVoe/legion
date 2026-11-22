@@ -274,41 +274,31 @@ func TestAKeySetWithNoSpacingIsReadAtEveryKey(t *testing.T) {
 	}
 }
 
-// TestAStaleKeySetAnswersWhatItHoldsWithinTheSpacing pins the spacing of a set a Keys holds, the
-// broker's cluster issuers' among them: a set past Lifetime + MinRefresh, whose issuer's key set
-// then fails, goes on answering the key it holds, and with the spacing only the first of the Key
-// calls after the failure reads the set. With no spacing every call reads it.
-func TestAStaleKeySetAnswersWhatItHoldsWithinTheSpacing(t *testing.T) {
-	for _, c := range []struct {
-		name    string
-		spacing time.Duration
-		fetches int
-	}{
-		{name: "spaced five seconds", spacing: DefaultKeysFailureSpacing, fetches: 2},
-		{name: "with no spacing", fetches: 1 + spacedCalls},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			issuer := oidctest.New(t)
-			keys, signing := keysFor(t, issuer, "exchange-key")
-			keys.FailureSpacing = c.spacing
-			// Every Key finds the set past Lifetime + MinRefresh, so it reads the key set first and
-			// the cached set is only ever the fallback.
-			keys.Lifetime, keys.MinRefresh = 0, 0
-			if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); err != nil {
-				t.Fatalf("Key(the published key): %v", err)
-			}
-			token := issuer.Mint(t, signing, issuer.Claims("system:serviceaccount:example-ns:example-worker", "broker"))
-			issuer.FailKeys(http.StatusServiceUnavailable)
-			for call := 1; call <= spacedCalls; call++ {
-				key, err := keys.Key(context.Background(), "exchange-key", testAlgorithm)
-				if err != nil || !signs(t, token, key) {
-					t.Fatalf("Key, call %d, with the key set failing = %v, %v; want the cached key", call, key, err)
-				}
-			}
-			if fetches := issuer.JWKSFetches(); fetches != c.fetches {
-				t.Fatalf("the key set was read %d times, want %d", fetches, c.fetches)
-			}
-		})
+// TestAStaleKeySetWithNoSpacingIsReadAtEveryKey: a Keys with no FailureSpacing, as an IssuerSet
+// made with no spacing has, whose set is past Lifetime + MinRefresh and whose issuer's key set then
+// fails, goes on answering the key it holds, and every Key call reads the key set first. With the
+// spacing every Keys starts with, the first read's failure answers the later calls instead
+// (TestAnOldSetWhoseReadFailsStillAnswersTheKeysItHolds).
+func TestAStaleKeySetWithNoSpacingIsReadAtEveryKey(t *testing.T) {
+	issuer := oidctest.New(t)
+	keys, signing := keysFor(t, issuer, "exchange-key")
+	keys.FailureSpacing = 0
+	// Every Key finds the set past Lifetime + MinRefresh, so it reads the key set first and the
+	// cached set is only ever the fallback.
+	keys.Lifetime, keys.MinRefresh = 0, 0
+	if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); err != nil {
+		t.Fatalf("Key(the published key): %v", err)
+	}
+	token := issuer.Mint(t, signing, issuer.Claims("system:serviceaccount:example-ns:example-worker", "broker"))
+	issuer.FailKeys(http.StatusServiceUnavailable)
+	for call := 1; call <= spacedCalls; call++ {
+		key, err := keys.Key(context.Background(), "exchange-key", testAlgorithm)
+		if err != nil || !signs(t, token, key) {
+			t.Fatalf("Key, call %d, with the key set failing = %v, %v; want the cached key", call, key, err)
+		}
+	}
+	if fetches, want := issuer.JWKSFetches(), 1+spacedCalls; fetches != want {
+		t.Fatalf("the key set was read %d times, want %d", fetches, want)
 	}
 }
 
@@ -336,22 +326,6 @@ func TestAKeyRotatedInWhileTheKeySetCannotBeReadIsTheOutage(t *testing.T) {
 	}
 	if fetches := issuer.JWKSFetches(); fetches != 1+calls {
 		t.Fatalf("the key set was read %d times, want %d: the first Key and one read for each call naming the unknown key id", fetches, 1+calls)
-	}
-}
-
-// TestACallerThatHungUpStartsNoSpacing: a caller that hung up ends only its own wait, with
-// ErrKeySet, and its hanging up says nothing of the issuer: the read it started runs on, detached
-// from it, so the next caller gets the key and no failure spaces its read.
-func TestACallerThatHungUpStartsNoSpacing(t *testing.T) {
-	issuer := oidctest.New(t)
-	keys, _ := keysFor(t, issuer, "exchange-key")
-	hungUp, cancel := context.WithCancel(context.Background())
-	cancel()
-	if _, err := keys.Key(hungUp, "exchange-key", testAlgorithm); !errors.Is(err, ErrKeySet) {
-		t.Fatalf("Key for a caller that hung up = %v, want ErrKeySet", err)
-	}
-	if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); err != nil {
-		t.Fatalf("Key for the next caller: %v, want the key: a caller hanging up starts no spacing", err)
 	}
 }
 

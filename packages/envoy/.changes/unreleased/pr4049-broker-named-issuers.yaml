@@ -17,7 +17,8 @@ body: |-
   or since, can be read, written by whichever comes first: a token of that issuer that verifies,
   or, for an issuer its start could not read, the background read of it. Before, it refused to
   start when it could not read its one issuer, and it answered a token whose key it could not read
-  `403 POD_IDENTITY_MISMATCH` or `401 TOKEN_INVALID`.
+  as unverified: `403 POD_IDENTITY_MISMATCH`, `401 TOKEN_INVALID`, `401 ACCOUNT_TOKEN_INVALID`,
+  `401 POD_TOKEN_INVALID`, or `invalid_request` on the token exchange.
   An entry of `BROKER_API_ACCOUNTS` or `BROKER_SERVICE_LOGINS` may end with
   `=<issuer name>[,<issuer name>…]`, the issuers its account's token is taken from. An entry that
   names none takes the first issuer of the list alone, so an existing entry keeps its meaning. A

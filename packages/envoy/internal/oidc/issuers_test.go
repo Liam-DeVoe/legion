@@ -248,33 +248,45 @@ func TestAnIssuerSetBootsAndReadsTheRestInTheBackground(t *testing.T) {
 	}
 }
 
-// An issuer set made with a key spacing (NewIssuerSet), as the broker's cluster issuers are,
-// spaces the refresh of a key set it holds: once that set is stale and the issuer's key set fails,
-// the tokens that arrive go on verifying from the set it holds and cost the issuer one read of it.
+// An issuer set gives each issuer's key set the failure spacing its caller names (NewIssuerSet):
+// once a key set it holds is stale and the issuer's key set fails, the tokens that arrive go on
+// verifying from the set it holds, and cost the issuer one read of it with the broker's spacing,
+// or one read each with none.
 func TestAnIssuerSetSpacesTheRefreshOfAKeySetItHolds(t *testing.T) {
-	issuer := oidctest.New(t)
-	verifier := NewIssuerSet([]NamedIssuer{{URL: issuer.URL()}}, testAudience, DefaultKeysFailureSpacing).entries[0].verifier
-	token := issuer.Mint(t, issuer.PublishKey(t, "signing-key"), issuer.Claims(testSubject, testAudience))
-	ctx := context.Background()
-	if _, err := verifier.Verify(ctx, token); err != nil {
-		t.Fatalf("Verify(the first token): %v", err)
-	}
-	discovered, err := verifier.discovery.discover(ctx)
-	if err != nil {
-		t.Fatalf("the discovered verifier: %v", err)
-	}
-	// Every token finds the set past Lifetime + MinRefresh, so it reads the key set first and the
-	// set held is only ever the fallback.
-	keys := discovered.keys.(*Keys)
-	keys.Lifetime, keys.MinRefresh = 0, 0
-	issuer.FailKeys(http.StatusServiceUnavailable)
-	before := issuer.JWKSFetches()
-	for i := range spacedCalls {
-		if _, err := verifier.Verify(ctx, token); err != nil {
-			t.Fatalf("Verify, token %d, with the stale key set failing: %v, want it verified from the set held", i+1, err)
-		}
-	}
-	if reads := issuer.JWKSFetches() - before; reads != 1 {
-		t.Fatalf("%d tokens read the failing key set %d times, want 1", spacedCalls, reads)
+	for _, c := range []struct {
+		name    string
+		spacing time.Duration
+		reads   int
+	}{
+		{name: "spaced as the broker spaces it", spacing: DefaultKeysFailureSpacing, reads: 1},
+		{name: "with no spacing", reads: spacedCalls},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			issuer := oidctest.New(t)
+			verifier := NewIssuerSet([]NamedIssuer{{URL: issuer.URL()}}, testAudience, c.spacing).entries[0].verifier
+			token := issuer.Mint(t, issuer.PublishKey(t, "signing-key"), issuer.Claims(testSubject, testAudience))
+			ctx := context.Background()
+			if _, err := verifier.Verify(ctx, token); err != nil {
+				t.Fatalf("Verify(the first token): %v", err)
+			}
+			discovered, err := verifier.discovery.discover(ctx)
+			if err != nil {
+				t.Fatalf("the discovered verifier: %v", err)
+			}
+			// Every token finds the set past Lifetime + MinRefresh, so it reads the key set first
+			// and the set held is only ever the fallback.
+			keys := discovered.keys.(*Keys)
+			keys.Lifetime, keys.MinRefresh = 0, 0
+			issuer.FailKeys(http.StatusServiceUnavailable)
+			before := issuer.JWKSFetches()
+			for i := range spacedCalls {
+				if _, err := verifier.Verify(ctx, token); err != nil {
+					t.Fatalf("Verify, token %d, with the stale key set failing: %v, want it verified from the set held", i+1, err)
+				}
+			}
+			if reads := issuer.JWKSFetches() - before; reads != c.reads {
+				t.Fatalf("%d tokens read the failing key set %d times, want %d", spacedCalls, reads, c.reads)
+			}
+		})
 	}
 }
