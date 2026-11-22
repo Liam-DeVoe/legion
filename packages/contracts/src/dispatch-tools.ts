@@ -478,28 +478,47 @@ const readValidation: NonNullable<DispatchToolSpec["validation"]> = {
 /** Component attachment modes an issue write accepts. */
 export const ISSUE_COMPONENTS_MODES = ["inherit", "explicit", "none"] as const;
 
+/** The rule of a `components` argument's parts, which the server holds every issue write to. */
+const COMPONENTS_RULE = "components mode explicit names ids, and mode none names a reason.";
+
 /** The `components` argument of dispatch_issue and dispatch_issue_update. */
 function componentsArgument<E extends SchemaNode<E>>(z: SchemaApi<E>): E {
   return z
-    .object({
-      mode: z
-        .enum(ISSUE_COMPONENTS_MODES)
-        .describe(
-          "inherit: take the parent chain's attachment (the default; deletes this issue's own). explicit: attach to ids. none: not architectural work, with reason."
-        ),
-      ids: z
-        .array(z.string({ min: 1 }), { min: 1, max: 50 })
-        .describe(
-          "For mode explicit: bare component ids from the project's architecture model (web, dispatch-server), not external ones."
-        )
-        .optional(),
-      reason: z
-        .string({ min: 1 })
-        .describe("For mode none: why this issue is not architectural (process, hiring, ops).")
-        .optional(),
-    })
+    .refineObject(
+      {
+        mode: z
+          .enum(ISSUE_COMPONENTS_MODES)
+          .describe(
+            "inherit: take the parent chain's attachment (the default; deletes this issue's own). explicit: attach to ids, which it requires. none: not architectural work, with the reason it requires."
+          ),
+        ids: z
+          .array(z.string({ min: 1 }), { min: 1, max: 50 })
+          .describe(
+            "Required for mode explicit: bare component ids from the project's architecture model (web, dispatch-server), not external ones."
+          )
+          .optional(),
+        reason: z
+          .string({ min: 1 })
+          .describe(
+            "Required for mode none: why this issue is not architectural (process, hiring, ops)."
+          )
+          .optional(),
+      },
+      (value) => {
+        const input = value as {
+          readonly mode?: unknown;
+          readonly ids?: unknown;
+          readonly reason?: unknown;
+        };
+        if (input.mode === "explicit") return Array.isArray(input.ids) && input.ids.length > 0;
+        if (input.mode === "none")
+          return typeof input.reason === "string" && input.reason.trim() !== "";
+        return true;
+      },
+      COMPONENTS_RULE
+    )
     .describe(
-      "Attach the issue to architecture components. Attach the root before decomposing it; children inherit unless they choose."
+      `Attach the issue to architecture components. Attach the root before decomposing it; children inherit unless they choose. ${COMPONENTS_RULE}`
     );
 }
 
@@ -887,7 +906,12 @@ export const dispatchToolSpecs = [
           "Ids of the deployment's priorities this issue advances, which dispatch priorities lists. A child inherits every priority the issues above it advance, so name here only what this issue adds."
         )
         .optional(),
-      external: z.string().describe("Optional external issue reference.").optional(),
+      external: z
+        .string()
+        .describe(
+          "Optional external issue reference, owner/repo#n. Its repository is mapped to this project in repository settings (dispatch_map_repo): a repository mapped to no project is refused with 400 PROJECT_UNMAPPED unless the deployment names a default project, and one mapped to another project with 400 EXTERNAL_PROJECT_MISMATCH."
+        )
+        .optional(),
       force: z
         .boolean()
         .describe(

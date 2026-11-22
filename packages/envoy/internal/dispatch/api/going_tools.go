@@ -481,14 +481,17 @@ var goingWriteTools = map[string]goingWriteTool{
 		Class: goingClassMessage, Event: "message.created", Proposed: true,
 	},
 	// A document's content is written back by an upload of the content read before the edit,
-	// under the document's own name, through its owner's upload route.
+	// under the document's own name, through its owner's upload route. The issue row binds both
+	// its placeholders to the issue, so a call naming the issue alone takes it and edits the
+	// issue's spec, as the tool's spec says; the translation reads the document's slug from
+	// artifact (goingTranslateIssueDocEdit).
 	"dispatch_doc_edit": {
 		Routes: []goingToolRoute{
 			{
 				Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/artifacts/{slug}/edits",
-				Path:       map[string]string{"key": "issue", "slug": "artifact"},
+				Path:       map[string]string{"key": "issue", "slug": "issue"},
 				Relations:  []string{"mentions", "needs", "serves"},
-				Translate:  goingTranslateDocEdit,
+				Translate:  goingTranslateIssueDocEdit,
 				UndoRoutes: []string{goingIssueUploadRoute},
 			},
 			{
@@ -509,22 +512,35 @@ var goingWriteTools = map[string]goingWriteTool{
 		Observe: goingObserver.documentEditedBy, Undo: goingUndoWriteBack,
 		Class: goingClassText, Event: "artifact.version", Proposed: true,
 	},
-	// An approval request opens an ask, so its undo is that ask's retraction.
+	// An approval request opens an ask, so its undo is that ask's retraction. The first row binds
+	// the request's document to the issue the call names, whose spec, or whose document the call
+	// names, the translation reads; the second takes a call naming the document alone, by id or
+	// by slug on the project the call names.
 	"dispatch_request_approval": {
-		Routes: []goingToolRoute{{
-			Method: http.MethodPost, Pattern: "/api/v1/artifacts/{id}/approval-requests",
-			Path: map[string]string{"id": "artifact"}, Relations: []string{"owned_by"},
-			Translate:  goingTranslateRequestApproval,
-			UndoRoutes: []string{goingAskResolveRoute},
-		}},
+		Routes: []goingToolRoute{
+			{
+				Method: http.MethodPost, Pattern: "/api/v1/artifacts/{id}/approval-requests",
+				Path: map[string]string{"id": "issue"}, Relations: []string{"owned_by"},
+				Translate:  goingTranslateRequestApproval,
+				UndoRoutes: []string{goingAskResolveRoute},
+			},
+			{
+				Method: http.MethodPost, Pattern: "/api/v1/artifacts/{id}/approval-requests",
+				Path: map[string]string{"id": "artifact"}, Relations: []string{"owned_by"},
+				Translate:  goingTranslateRequestApproval,
+				UndoRoutes: []string{goingAskResolveRoute},
+			},
+		},
 		Observe: goingObserver.approvalRequested, Undo: goingUndoReverse,
 		Class: goingClassMessage, Event: "ask.opened", Proposed: true,
 	},
-	// A plan review's approval is the review's own word, so it stays.
+	// A plan review's approval is the review's own word, so it stays. The row binds the review's
+	// document to the issue the call names, whose plan.md, or whose document the call names, the
+	// translation reads.
 	"dispatch_plan_approve": {
 		Routes: []goingToolRoute{{
 			Method: http.MethodPost, Pattern: "/api/v1/artifacts/{id}/plan-reviews",
-			Path:      map[string]string{"id": "artifact"},
+			Path:      map[string]string{"id": "issue"},
 			Translate: goingTranslatePlanApprove,
 		}},
 		Undo: goingUndoNotUndone, Class: goingClassReview, Event: "artifact.approved", Proposed: true,

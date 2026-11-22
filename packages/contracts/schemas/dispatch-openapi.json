@@ -30505,6 +30505,12 @@
           "kind": {
             "type": "string"
           },
+          "max": {
+            "type": "number"
+          },
+          "min": {
+            "type": "number"
+          },
           "name": {
             "type": "string"
           },

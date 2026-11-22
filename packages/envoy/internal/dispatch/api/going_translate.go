@@ -1183,16 +1183,26 @@ func goingTranslateSendOnIssue(ctx context.Context, read goingReader, call going
 	return posted, nil
 }
 
-// goingTranslateDocEdit sends the edit's operations, its precondition and its summary; the issue
-// and project rows take the document's slug in their path as the call names it.
+// goingTranslateDocEdit sends the edit's operations, its precondition and its summary; the project
+// row takes the document's slug in its path as the call names it.
 func goingTranslateDocEdit(_ context.Context, _ goingReader, call goingCallInput) (goingCall, error) {
 	return goingCall{path: call.path, body: goingPick(call.arguments, "ops", "precondition", "summary")}, nil
 }
 
+// goingTranslateIssueDocEdit is goingTranslateDocEdit on a document of the issue: the one the call
+// names by slug or filename, and the issue's spec where it names none, as `dispatch doc-edit`
+// edits the primary document by default. The row binds the issue to both placeholders, so the
+// slug is read here.
+func goingTranslateIssueDocEdit(ctx context.Context, read goingReader, call goingCallInput) (goingCall, error) {
+	edit, err := goingTranslateDocEdit(ctx, read, call)
+	edit.path = map[string]string{"key": call.path["key"], "slug": cmp.Or(goingText(call.arguments, "artifact"), "spec")}
+	return edit, err
+}
+
 // goingTranslateRequestApproval asks for approval of the document the call names: on the issue it
-// names, on its project, or by id.
+// names, its spec where it names none; on its project; or by id.
 func goingTranslateRequestApproval(ctx context.Context, read goingReader, call goingCallInput) (goingCall, error) {
-	reference := call.path["id"]
+	reference := goingText(call.arguments, "artifact")
 	var id string
 	var err error
 	if issue := goingText(call.arguments, "issue"); issue != "" {
@@ -1209,9 +1219,10 @@ func goingTranslateRequestApproval(ctx context.Context, read goingReader, call g
 	}, nil
 }
 
-// goingTranslatePlanApprove records the plan review on the issue's document the call names.
+// goingTranslatePlanApprove records the plan review on the issue's document the call names, its
+// plan.md where it names none.
 func goingTranslatePlanApprove(ctx context.Context, read goingReader, call goingCallInput) (goingCall, error) {
-	id, err := read.issueDocument(ctx, goingText(call.arguments, "issue"), call.path["id"])
+	id, err := read.issueDocument(ctx, call.path["id"], cmp.Or(goingText(call.arguments, "artifact"), "plan.md"))
 	if err != nil {
 		return goingCall{}, err
 	}

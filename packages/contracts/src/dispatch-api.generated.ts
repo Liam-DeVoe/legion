@@ -7258,6 +7258,8 @@ export interface components {
       fields?: components["schemas"]["ToolField"][];
       item?: components["schemas"]["ToolField"];
       kind: string;
+      max?: number;
+      min?: number;
       name?: string;
       nullable?: boolean;
       required?: boolean;

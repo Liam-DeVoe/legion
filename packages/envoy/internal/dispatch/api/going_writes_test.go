@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -396,8 +397,11 @@ func goingRowCases(f goingRowFixtures) map[string]goingRowCase {
 		"dispatch_doc_edit POST /api/v1/artifacts/{id}/edits": {arguments: map[string]any{
 			"artifact": f.notesID, "ops": []any{map[string]any{"op": "replace", "find": "Notes", "with": "Jottings"}},
 		}},
-		"dispatch_request_approval POST /api/v1/artifacts/{id}/approval-requests": {arguments: map[string]any{
+		"dispatch_request_approval POST /api/v1/artifacts/{id}/approval-requests by issue": {arguments: map[string]any{
 			"issue": f.issue, "artifact": "spec", "summary": "Ready for review.",
+		}},
+		"dispatch_request_approval POST /api/v1/artifacts/{id}/approval-requests by artifact": {arguments: map[string]any{
+			"project": "DEMO", "artifact": f.guideSlug, "summary": "Ready for review.",
 		}},
 		"dispatch_plan_approve POST /api/v1/artifacts/{id}/plan-reviews": {arguments: map[string]any{
 			"issue": f.issue, "artifact": f.planSlug, "version": f.planVersion,
@@ -426,6 +430,23 @@ func goingRowCases(f goingRowFixtures) map[string]goingRowCase {
 	}
 }
 
+// goingRowName is how a row case names one row of action: the action and the row's method and
+// pattern, and, for a route the action calls through more than one row, the arguments the row's
+// path binds, which tell those rows apart.
+func goingRowName(action GoingAction, route GoingRoute) string {
+	name := action.Action + " " + route.Method + " " + route.Pattern
+	same := 0
+	for _, other := range action.Routes {
+		if other.Method == route.Method && other.Pattern == route.Pattern {
+			same++
+		}
+	}
+	if same > 1 {
+		name += " by " + strings.Join(slices.Sorted(maps.Values(route.path)), ", ")
+	}
+	return name
+}
+
 // TestEveryGoingRowExecutesThroughTheCallerAgainstTheServedTable is c8: every row of the catalogue
 // BuildGoingCatalogue holds, counted against that builder, executes through GoingCaller.Do against
 // the server's own route table called in-process, under the credential kind its route accepts,
@@ -447,7 +468,7 @@ func TestEveryGoingRowExecutesThroughTheCallerAgainstTheServedTable(t *testing.T
 	}
 	for _, action := range catalogue.Actions() {
 		for _, route := range action.Routes {
-			name := action.Action + " " + route.Method + " " + route.Pattern
+			name := goingRowName(action, route)
 			t.Run(name, func(t *testing.T) {
 				row, held := cases[name]
 				if !held {

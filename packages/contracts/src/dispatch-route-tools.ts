@@ -712,7 +712,9 @@ export const dispatchRouteToolSpecs = [
     arguments: (z) => ({
       title: z
         .string({ min: 1, max: ISSUE_TITLE_MAX })
-        .describe(`The priority's title, at most ${ISSUE_TITLE_MAX} characters.`),
+        .describe(
+          `The priority's title, at most ${ISSUE_TITLE_MAX} characters. A title over ${PRIORITY_ID_MAX} characters names id as well: the id the title would give is longer than an id may be.`
+        ),
       id: z
         .string({ max: PRIORITY_ID_MAX })
         .describe(
@@ -722,6 +724,13 @@ export const dispatchRouteToolSpecs = [
       description: z.string().describe("What the priority is, in markdown.").optional(),
       owner: z.string().describe("The person who owns the priority.").optional(),
     }),
+    validation: crossFieldRule(
+      `A title over ${PRIORITY_ID_MAX} characters names id as well: the id the title would give is longer than an id may be.`,
+      (input) =>
+        names(input, "id") ||
+        typeof input.title !== "string" ||
+        input.title.length <= PRIORITY_ID_MAX
+    ),
     strict: true,
     routes: send("POST", "/api/v1/priorities", { body: ["title", "id", "description", "owner"] }),
   },

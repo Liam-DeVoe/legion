@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  `bun run gen:go` carries each tool argument's bounds into Go as `ToolField.Min` and
+  `ToolField.Max` (`min` and `max` in JSON): a text's length, a list's count of items, or a
+  number's value. `dispatch_issue` and `dispatch_issue_update` refuse a `components` of mode
+  explicit with no ids and of mode none with no reason, as the server does; `dispatch_issue`'s
+  `external` says its repository is mapped to the project; and `dispatch_create_priority` refuses
+  a title over 200 characters that names no id, since the id the title would give is longer than
+  an id may be.

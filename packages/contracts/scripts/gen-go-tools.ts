@@ -7,17 +7,21 @@ import {
 import type { SchemaApi, SchemaNode } from "../src/tool-schema";
 
 // The slice of a schema the Go side needs to check a proposed call: what each argument holds,
-// whether it is required, and the names an enum allows. gen-go runs every dispatch tool's
-// arguments through a SchemaApi that records these calls instead of building zod, so the Go the
-// server validates a call with is the TypeScript declaration itself rather than a second copy
-// of it. Bounds (min, max) are left out on purpose: the server's own handler enforces them and
-// names them in its refusal, and a bound carried here would be a number nothing checks.
+// whether it is required, the names an enum allows, and the bounds it states. gen-go runs every
+// dispatch tool's arguments through a SchemaApi that records these calls instead of building zod,
+// so the Go the server validates a call with is the TypeScript declaration itself rather than a
+// second copy of it. A bound (min, max) is a text's length, a list's count of items or a number's
+// value. The server's own handler enforces each bound and names it in its refusal; the catalogue
+// serves it beside the field, and the server's test of every write tool's schema against its route
+// sends a call at each edge.
 type RecordedField = {
   kind: "string" | "number" | "boolean" | "enum" | "array" | "object" | "any";
   optional: boolean;
   nullable: boolean;
   description: string;
   values?: readonly string[];
+  min?: number;
+  max?: number;
   item?: RecordedField;
   fields?: [string, RecordedField][];
 };
@@ -53,11 +57,12 @@ function recordedFields(shape: Record<string, RecordedNode>): [string, RecordedF
 // handler's to enforce, and the catalogue's check is of the arguments an action names, not of
 // how they agree.
 const recordingApi: SchemaApi<RecordedNode> = {
-  string: () => recordedNode({ kind: "string" }),
-  number: () => recordedNode({ kind: "number" }),
+  string: (opts = {}) => recordedNode({ kind: "string", min: opts.min, max: opts.max }),
+  number: (opts = {}) => recordedNode({ kind: "number", min: opts.min, max: opts.max }),
   boolean: () => recordedNode({ kind: "boolean" }),
   enum: (values) => recordedNode({ kind: "enum", values }),
-  array: (item) => recordedNode({ kind: "array", item: item.field }),
+  array: (item, opts = {}) =>
+    recordedNode({ kind: "array", item: item.field, min: opts.min, max: opts.max }),
   unknown: () => recordedNode({ kind: "any" }),
   object: (shape) => recordedNode({ kind: "object", fields: recordedFields(shape) }),
   refineObject: (shape) => recordedNode({ kind: "object", fields: recordedFields(shape) }),
@@ -88,6 +93,8 @@ function renderToolField(name: string, field: RecordedField): string {
   if (field.nullable) parts.push("Nullable: true");
   if (field.description !== "") parts.push(`Description: ${goString(field.description)}`);
   if (field.values) parts.push(`Values: []string{${field.values.map(goString).join(", ")}}`);
+  if (field.min !== undefined) parts.push(`Min: new(float64(${field.min}))`);
+  if (field.max !== undefined) parts.push(`Max: new(float64(${field.max}))`);
   if (field.item) parts.push(`Item: &ToolField${renderToolField("", field.item)}`);
   if (field.fields) {
     const nested = field.fields.map(([key, value]) => `${renderToolField(key, value)},`).join("\n");
@@ -166,7 +173,8 @@ const (
 )
 
 // ToolField is one argument a tool takes: an element of an array carries no name, and an
-// object's own arguments hang from Fields.
+// object's own arguments hang from Fields. Min and Max are the bounds the spec states, nil for
+// none: a text's length in characters, a list's count of items, or a number's value.
 type ToolField struct {
 	Name        string        \`json:"name,omitempty"\`
 	Kind        ToolFieldKind \`json:"kind"\`
@@ -174,6 +182,8 @@ type ToolField struct {
 	Nullable    bool          \`json:"nullable,omitempty"\`
 	Description string        \`json:"description,omitempty"\`
 	Values      []string      \`json:"values,omitempty"\`
+	Min         *float64      \`json:"min,omitempty"\`
+	Max         *float64      \`json:"max,omitempty"\`
 	Item        *ToolField    \`json:"item,omitempty"\`
 	Fields      []ToolField   \`json:"fields,omitempty"\`
 }
