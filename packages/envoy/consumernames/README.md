@@ -121,7 +121,11 @@ revision:
   that fixed name first, before anything else, and only then closes; a delete that fails is the
   call's error and keeps the replace open. Otherwise its candidate, if the server holds it, is
   published (adopted). If not, once the operation is 2 s old (`Config.SettleAge`), the candidate is
-  retired and a fresh one is created at the saved start.
+  retired and a fresh one is created at the saved start. A call that creates nothing (`Resolve`,
+  `Delete`, `Cleanup`) retires the candidate and closes the operation instead, but closes a
+  convert's replace of the fixed name only once that name is gone: with a saved start it deletes
+  the fixed name first, a failed delete being the call's error with the replace kept open; with no
+  saved start it leaves the replace open for a call that creates.
 - **Adoption.** A candidate this call did not see created (Step 0, or a create whose answer was
   lost) is published only when it is as the family creates it (`ErrUnexpectedConsumer` otherwise,
   naming it, and the operation stays open):

@@ -546,13 +546,13 @@ func DurableKey(durable string) string {
 	return key.String()
 }
 
-// CheckDurableKey refuses a key DurableKey did not make (ErrInvalidKey): a family keyed by
-// DurableKey passes it as Config.CheckKey.
+// CheckDurableKey refuses a key DurableKey did not make (ErrInvalidKey): one whose escapes
+// durableOfKey cannot read back, or that DurableKey would not write for the durable it reads back
+// (a lowercase escape, an escape of a byte DurableKey writes as itself), so every key it passes
+// names one durable, the prefix its naming reads (DurableNaming). A family keyed by DurableKey
+// passes it as Config.CheckKey.
 func CheckDurableKey(key string) error {
-	name, ok := strings.CutPrefix(key, durableKeyPrefix)
-	if !ok || name == "" || strings.ContainsFunc(name, func(r rune) bool {
-		return !(r == '-' || r == '_' || r == '=' || ('a' <= r && r <= 'z') || ('A' <= r && r <= 'Z') || ('0' <= r && r <= '9'))
-	}) {
+	if durable, ok := durableOfKey(key); !ok || durable == "" || DurableKey(durable) != key {
 		return fmt.Errorf("%w: %q is no durable's key", ErrInvalidKey, key)
 	}
 	return nil
