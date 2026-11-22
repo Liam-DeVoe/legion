@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"maps"
 	"slices"
@@ -219,15 +220,19 @@ type sessionRelays struct {
 	pauseFirst  time.Duration
 	pauseMax    time.Duration
 	receiptWait time.Duration
-	// handOverWait is how long a stop gives every run's hand-over between them,
-	// bus.SessionPullDrainWait; a test lengthens it, so a row about a hand-over that a live hub
-	// confirms does not turn on how fast the machine is. Set before the first relay starts and
-	// read-only after. handOverOnce makes, at most once, the context of that one wait
-	// (stopHandOver), whose cancel stop runs once the runs have ended.
+	// handOver is the context every run's hand-over waits under, whatever cancelled the run, and
+	// handOverEnd ends it: stop does, handOverWait (bus.SessionPullDrainWait) after the stop
+	// began, so a hand-over still waiting then on a hub that answers nothing, one the stop
+	// cancelled or one already under way for another reason, ends at once, and the stop spends
+	// no longer on them. Until a stop, a hand-over waits as long as nats.go makes the drain take.
+	// A test lengthens handOverWait, so a row about a hand-over that a live hub confirms does not
+	// turn on how fast the machine is, and sets handOverBegins, which a hand-over calls once it
+	// knows its reason and before it waits (nil in production). Both are set before the first
+	// relay starts and read-only after.
 	handOverWait   time.Duration
-	handOverOnce   sync.Once
 	handOver       context.Context
-	handOverCancel context.CancelFunc
+	handOverEnd    context.CancelCauseFunc
+	handOverBegins func(sessionID string, reason relayCancelReason)
 
 	ctx    context.Context
 	cancel context.CancelCauseFunc
@@ -542,6 +547,7 @@ func startSessionRelays(delivery *sessionDelivery, cfg listenerDeliveryHandlerCo
 		return nil, err
 	}
 	m.ctx, m.cancel = context.WithCancelCause(context.Background())
+	m.handOver, m.handOverEnd = context.WithCancelCause(context.Background())
 	m.stopChange = cfg.sessions.OnChange(m.onChange)
 	delivery.relay = m
 	go m.loop()
@@ -604,8 +610,8 @@ func (m *sessionRelays) signal() {
 
 // stop stops every relay and waits, within ctx, for their goroutines to return, so no relay acks or
 // publishes after it; the session-consumer connection is drained after it (sessionDelivery.drain).
-// The runs' hand-overs share one wait, which starts here (stopHandOver), so a stop on a hub that
-// answers nothing spends no longer on them than handOverWait.
+// The hand-overs' one wait ends handOverWait after the stop began, or when stop returns, so a stop
+// on a hub that answers nothing spends no longer on them than that.
 func (m *sessionRelays) stop(ctx context.Context) {
 	if m == nil {
 		return
@@ -614,8 +620,12 @@ func (m *sessionRelays) stop(ctx context.Context) {
 	m.eventsMu.Lock()
 	m.events = nil
 	m.eventsMu.Unlock()
-	m.stopHandOver()
-	defer m.handOverCancel()
+	ended := fmt.Errorf("the listener's stop gave its relays' hand-overs %s", m.handOverWait)
+	end := time.AfterFunc(m.handOverWait, func() { m.handOverEnd(ended) })
+	defer func() {
+		end.Stop()
+		m.handOverEnd(ended)
+	}()
 	m.cancel(relayCancelListenerStopping)
 	select {
 	case <-m.loopDone:
@@ -626,17 +636,6 @@ func (m *sessionRelays) stop(ctx context.Context) {
 	if !waitWithin(ctx, &m.runs) {
 		m.logger.Warn("session relays still running at shutdown")
 	}
-}
-
-// stopHandOver is the context of the one wait a stop gives every run's hand-over between them: it
-// ends handOverWait after its first call, which stop makes before it cancels a run, or once stop
-// has returned. A run cancelled for the stop hands over under it (relayNATS), so the runs wait in
-// parallel and none past that end; the connection closing ends each run's own wait at once (Detach).
-func (m *sessionRelays) stopHandOver() context.Context {
-	m.handOverOnce.Do(func() {
-		m.handOver, m.handOverCancel = context.WithTimeout(context.Background(), m.handOverWait)
-	})
-	return m.handOver
 }
 
 // loop applies the relay's events in order until the relay stops, and prunes the lapsed entries of
@@ -1028,14 +1027,13 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 		// promises the delivery of a next pull that neither case makes (relayHandOverLines).
 		reason := relayCancelledFor(ctx)
 		whole, failed := relayHandOverLines(reason)
-		// A stopping listener gives every run's hand-over one wait between them, which ends at
-		// SessionPullDrainWait after the stop began (stopHandOver); any other reason waits as
-		// long as nats.go makes the drain take. A hand-over the wait ended is written as failed,
-		// naming what the server had not confirmed.
-		handOver := context.Background()
-		if reason == relayCancelListenerStopping {
-			handOver = m.stopHandOver()
+		// Every hand-over waits under the one context a stop ends (handOver), whatever cancelled
+		// its run, so a stop also ends one already under way. A hand-over that wait ended is
+		// written as failed, naming what the server had not confirmed.
+		if m.handOverBegins != nil {
+			m.handOverBegins(sessionID, reason)
 		}
+		handOver := m.handOver
 		// The pull is detached before anything is naked. A cancelled pull still has a pull
 		// request standing at the server, so a nak sent while that pull is subscribed can be
 		// delivered straight back into the pull this run is giving up; its drain queues the
