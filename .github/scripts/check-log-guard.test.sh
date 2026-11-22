@@ -197,10 +197,11 @@ for found in h i j k l m n; do
 done
 check "and counts seven problems" "$(contains "$out" '^::error::check-log-guard: 7 problem(s)$')"
 
-# The fourth review's forms: after a pipe the last stage writes after the guard's block has
-# closed, so only a file keeps that output out of the log; a stage naming /dev/stderr, a dup to a
-# file descriptor and a pipe into ci_log_guard (whose block interleaves with this one under the
-# runner's one stop state) all reach it.
+# The fourth and fifth reviews' forms: after a pipe the last stage writes after the guard's block
+# has closed, so only a file keeps that output out of the log; a stage naming /dev/stderr, a dup to
+# a file descriptor and a pipe into ci_log_guard (whose block interleaves with this one under the
+# runner's one stop state) all reach it. The shell applies redirections left to right, so the last
+# one of stdout decides: a file followed by a dup or /dev/stderr reaches the log too.
 echo "case: a call piped into a stage that writes to the log, or into ci_log_guard, fails by name"
 root=$(fixture piped "$(cat <<'SH'
 ci_log_guard_stderr gh api repos/o/u | sort >&2
@@ -209,15 +210,29 @@ ci_log_guard_stderr gh api repos/o/w | jq . 1>&2
 ci_log_guard_stderr gh api repos/o/x | tee /dev/stderr > out.json
 ci_log_guard_stderr gh api repos/o/y | ci_log_guard cat
 ci_log_guard_stderr gh api repos/o/z | jq . > /dev/stdout
+ci_log_guard_stderr gh api repos/o/A | sort > out.json >&2
+ci_log_guard_stderr gh api repos/o/B | sort > out.json 1>&2
+ci_log_guard_stderr gh api repos/o/C | sort > out.json > /dev/stderr
+ci_log_guard_stderr gh api repos/o/D > out.json >&1
 SH
 )")
 run_check "$root"
 check "fails" "$(is "$status" 1)"
-for found in u v w x y z; do
+for found in u v w x y z A B C D; do
   check "names the stderr guard of \`gh api repos/o/$found\`" \
     "$(contains "$out" "runs .[^\`]*ci_log_guard_stderr gh api repos/o/${found}[^\`]*.: ci_log_guard_stderr blocks only stderr")"
 done
-check "and counts six problems" "$(contains "$out" '^::error::check-log-guard: 6 problem(s)$')"
+check "and counts ten problems" "$(contains "$out" '^::error::check-log-guard: 10 problem(s)$')"
+
+echo "case: the last redirection of stdout decides, so a file after a dup keeps the stdout"
+root=$(fixture last-redirect "$(cat <<'SH'
+ci_log_guard_stderr gh api repos/o/E | sort >&2 > out.json
+ci_log_guard_stderr gh api repos/o/F >&2 > out.json
+ci_log_guard_stderr gh api repos/o/G > /dev/stderr 2>/dev/null
+SH
+)")
+run_check "$root"
+check "passes" "$(is "$status" 0)"
 
 echo "case: a row with its reason allows its command, and only that one"
 root=$(fixture allowed 'docker pull ghcr.io/o/i' \

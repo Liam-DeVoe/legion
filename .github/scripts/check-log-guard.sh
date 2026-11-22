@@ -202,17 +202,21 @@ def _target(line: str, i: int) -> str:
 
 def stdout_safe(line: str, start: int, frames: list) -> bool:
     """Whether the command that starts at `start`, inside `frames`, keeps its stdout out of the
-    log. Before any pipe, a redirection of stdout does (`>`, `1>`, `>>`, `>|`, `>&…`, `&>`, but
-    not `2>` and not into a `>(…)`): the command's stdout then goes where it goes while the block
-    is open. After a pipe, the last stage writes after the block has closed, so only a redirection
-    to a file does, not to a file descriptor, `/dev/stdout`, `/dev/stderr` or a `>(…)`, and any
-    stage naming one of LOG_TARGETS refuses the call (`| tee /dev/stderr > f`); a pipe into
-    `ci_log_guard` is refused too, since its block and this one interleave under one stop state.
-    The command ends at an unquoted `;`, `&&`, `||`, a lone `&`, a newline, a `#` at a word's
-    start, or its frame's close; inside a `{ …; }` or `( … )` group, the group's own redirection
-    is then read the same way. Each character is read in the state _scan gives it, so a quote, a
-    nested capture or an escape hides it."""
-    piped = False
+    log. The last redirection of stdout in the command's last stage decides, as the shell applies
+    redirections left to right (`> out.json >&2` sends stdout to stderr). Before any pipe, a
+    redirection does (`>`, `1>`, `>>`, `>|`, `>&…`, `&>`, but not `2>`, not `>&1` or
+    `/dev/stdout`, and not into a `>(…)`): the command's stdout then goes where it goes while the
+    block is open. After a pipe, the last stage writes after the block has closed, so only a
+    redirection to a file does, not to a file descriptor, `/dev/stdout`, `/dev/stderr` or a
+    `>(…)`; a pipe starts the decision afresh, any stage naming one of LOG_TARGETS refuses the call
+    (`| tee /dev/stderr > f`), and a pipe into `ci_log_guard` is refused too, since its block and
+    this one interleave under one stop state. The command ends at an unquoted `;`, `&&`, `||`, a
+    lone `&`, a newline, a `#` at a word's start, or its frame's close; a command with no pipe and
+    no redirection of its own inside a `{ …; }` or `( … )` group is then read by the group's
+    redirection the same way (a piped one is refused: the group's redirection would apply after the
+    block has closed). Each character is read in the state _scan gives it, so a quote, a nested
+    capture or an escape hides it."""
+    piped, verdict = False, None
     for i in range(start, len(line)):
         stack, quote, escaped = _scan(line, i)
         if len(stack) < len(frames):
@@ -235,7 +239,7 @@ def stdout_safe(line: str, start: int, frames: list) -> bool:
                 continue
             if line[i + 1:].lstrip(" \t").startswith("ci_log_guard"):
                 return False
-            piped = True
+            piped, verdict = True, None
         elif ch == "&":
             if nxt == ">":
                 continue
@@ -252,16 +256,17 @@ def stdout_safe(line: str, start: int, frames: list) -> bool:
                 continue
             target = _target(line, i)
             if target == "(":
-                return False
-            if target.startswith("&"):
-                if piped or target == "&1":
-                    return False
-                return True
-            if target in LOG_TARGETS:
-                if piped or target in ("/dev/stdout", "/dev/fd/1", "/proc/self/fd/1"):
-                    return False
-                return True
-            return True
+                verdict = False
+            elif target.startswith("&"):
+                verdict = not (piped or target == "&1")
+            elif target in LOG_TARGETS:
+                verdict = not (piped or target in ("/dev/stdout", "/dev/fd/1", "/proc/self/fd/1"))
+            else:
+                verdict = True
+    if verdict is not None:
+        return verdict
+    if piped:
+        return False
     groups = [f for f in frames if f[0] in ("brace", "subshell")]
     if not groups or frames[-1][0] not in ("brace", "subshell"):
         return False
