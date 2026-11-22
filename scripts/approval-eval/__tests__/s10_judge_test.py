@@ -72,22 +72,23 @@ INPUTS_VERSION = 4
 
 def plain_base(start):
     """The base of this suite's temporary directories: `start` where omp's path grammar, as point
-    5's checks model it, reads its path as a plain path, with no glob character
-    (`CHECKS.GLOB_START`), no syntax the checks refuse (`CHECKS.UNMODELLED`) and no `:` (a
-    selector); else its closest ancestor that does and takes a directory; else /tmp. A judge's
-    sandbox paths live under it, and a path omp cannot take as written is a deviation, so a
-    `TMPDIR` holding a space, a quote or a `?` would make each judging test's verdict the machine's."""
+    5's checks model it, reads its path as one plain path: no glob character
+    (`CHECKS.GLOB_START`), no syntax the checks refuse (`CHECKS.UNMODELLED`), no `:` (a selector),
+    no `;` (the checks split a target on it) and nothing `CHECKS.expansions` reads as other than
+    the path itself (a `,` outside braces, a stray `}` or `]`). Else its closest ancestor below the
+    root that is one, and takes a directory; else /tmp. A judge's sandbox paths live under it, and
+    a path omp cannot take as written is a deviation, so a `TMPDIR` holding any of those would make
+    each judging test's verdict the machine's."""
     def plain(path):
-        return not (CHECKS.GLOB_START.search(path) or CHECKS.UNMODELLED.search(path) or ":" in path)
+        return not (CHECKS.GLOB_START.search(path) or CHECKS.UNMODELLED.search(path)
+                    or ":" in path or ";" in path) and CHECKS.expansions(path) == [path]
 
     candidate = os.path.abspath(start)
-    while True:
+    while candidate != os.path.dirname(candidate):
         if plain(candidate) and os.path.isdir(candidate) and os.access(candidate, os.W_OK | os.X_OK):
             return candidate
-        parent = os.path.dirname(candidate)
-        if parent == candidate:
-            return "/tmp"
-        candidate = parent
+        candidate = os.path.dirname(candidate)
+    return "/tmp"
 
 
 tempfile.tempdir = plain_base(tempfile.gettempdir())

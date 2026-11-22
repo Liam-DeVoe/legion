@@ -13,8 +13,13 @@ import { moduleRoot, temporaryDirectories } from "./temporary-directories";
 // own row and no row of its `describe`, and once with no filter at all, each under a TMPDIR of its
 // own, and read that TMPDIR afterwards.
 
-// Bun runs the fixture file from its directory, and loads no module from a path holding a `?`.
-const makeDirectory = temporaryDirectories("test-fixtures-filtered-run", { root: moduleRoot() });
+// Bun runs the fixture file from its directory, and loads no module from a path holding a `?`, so
+// that file sits under `moduleRoot()`. The child's TMPDIR, which is no module, stays under this
+// run's own, so the fixtures still run under whatever TMPDIR names.
+const makeModuleDirectory = temporaryDirectories("test-fixtures-filtered-run", {
+  root: moduleRoot(),
+});
+const makeDirectory = temporaryDirectories("test-fixtures-filtered-run-tmp");
 
 /** The marker the fixture file prints as its module body runs, so a run that made nothing is told
  *  apart from a run that never loaded the file. */
@@ -63,10 +68,11 @@ function runFixture(filter: string | null): {
   readonly exitCode: number | null;
   readonly left: string[];
 } {
-  const work = makeDirectory(filter === null ? "unfiltered" : "filtered");
+  const label = filter === null ? "unfiltered" : "filtered";
+  const work = makeModuleDirectory(label);
   const file = join(work, "lock.test.ts");
   writeFileSync(file, fixtureSource());
-  const tmp = join(work, "tmp");
+  const tmp = join(makeDirectory(label), "tmp");
   mkdirSync(tmp);
   const argv = [
     process.execPath,

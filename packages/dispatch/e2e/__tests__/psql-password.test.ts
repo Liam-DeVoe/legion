@@ -4,7 +4,7 @@ import { delimiter, join } from "node:path";
 import { captureEnvironment } from "@legion/test-fixtures/environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
-import { handOverMessage } from "../local-instance-support";
+import { handOverMessage, shellQuote } from "../local-instance-support";
 import { DatabaseUrlRefused, splitDatabaseUrl } from "../pg-url";
 import { resetSession, sql, sqlAt } from "../psql";
 
@@ -232,15 +232,15 @@ test.skipIf(process.platform !== "linux")(
       join(work, "broker"),
       [
         "#!/bin/sh",
-        `tr '\\0' ' ' </proc/$$/cmdline >'${work}/cmdline'`,
-        `printf '%s' "$BROKER_DATABASE_URL" >'${work}/database-url'`,
+        `tr '\\0' ' ' </proc/$$/cmdline >${shellQuote(join(work, "cmdline"))}`,
+        `printf '%s' "$BROKER_DATABASE_URL" >${shellQuote(join(work, "database-url"))}`,
         "",
       ].join("\n"),
       { mode: 0o755 }
     );
     writeFileSync(
       join(work, "bin", "env"),
-      `#!/bin/sh\nprintf '%s\\n' "$*" >>'${work}/env-args'\nexec ${Bun.which("env")} "$@"\n`,
+      `#!/bin/sh\nprintf '%s\\n' "$*" >>${shellQuote(join(work, "env-args"))}\nexec ${Bun.which("env")} "$@"\n`,
       { mode: 0o755 }
     );
     const url = "postgres://tester:not-a-secret%40broker@127.0.0.1:5999/dispatch_broker";
@@ -310,7 +310,7 @@ for (const signIn of serverSignIns) {
       for (const tool of ["python3", "env"]) {
         writeFileSync(
           join(work, "bin", tool),
-          `#!/bin/sh\nprintf '%s\\n' "${tool} $*" >>'${work}/argv'\nexec ${Bun.which(tool)} "$@"\n`,
+          `#!/bin/sh\nprintf '%s\\n' "${tool} $*" >>${shellQuote(join(work, "argv"))}\nexec ${Bun.which(tool)} "$@"\n`,
           { mode: 0o755 }
         );
       }
@@ -318,10 +318,10 @@ for (const signIn of serverSignIns) {
         join(work, "server"),
         [
           "#!/bin/sh",
-          `tr '\\0' ' ' </proc/$$/cmdline >'${work}/server-cmdline'`,
+          `tr '\\0' ' ' </proc/$$/cmdline >${shellQuote(join(work, "server-cmdline"))}`,
           `printf '%s\\n' "$DATABASE_URL" "\${#DISPATCH_APP_PEM_B64}" ${secretNames
             .map((name) => `"$${name}"`)
-            .join(" ")} >'${work}/server-env'`,
+            .join(" ")} >${shellQuote(join(work, "server-env"))}`,
           "",
         ].join("\n"),
         { mode: 0o755 }
