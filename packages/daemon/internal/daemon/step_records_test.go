@@ -383,13 +383,17 @@ func (r *stepRecordsRig) rollBackStepRecords() {
 // header gives from `begin;` to `commit;`, with <PROJECT> the run's project. A rollback of the
 // release whose owner's plan picks the steps to any release before it takes that way back too
 // (docs/kubernetes.md, "Rolling back the release whose owner's plan picks the steps"), which drops
-// the plan's tables and columns, so the roll forward creates them again empty. The name of each
-// step's agent (planStepAgentMigration) adds a column to plan_steps, so its way back runs first,
-// as the guide's list says: left recorded, its version would keep the roll forward from adding the
-// column to the plan_steps it creates again, and every later write of a plan would fail.
+// the plan's tables and columns, so the roll forward creates them again empty. Two later
+// migrations' way backs run first, as the guide's list says. The key of a phases row by its step
+// (phaseStepKeyMigration) names step_task and step_place, so dropping either drops the key of
+// phases with it: left recorded, its version would keep the roll forward from writing that key
+// again, and every later write of a phases row would fail for a conflict target no unique index
+// answers. The name of each step's agent (planStepAgentMigration) adds a column to plan_steps:
+// left recorded, its version would keep the roll forward from adding the column to the plan_steps
+// it creates again, and every later write of a plan would fail.
 func (r *stepRecordsRig) rollBackOwnersPlans() {
 	r.t.Helper()
-	for _, name := range []string{planStepAgentMigration, inFlightPlanMigration} {
+	for _, name := range []string{phaseStepKeyMigration, planStepAgentMigration, inFlightPlanMigration} {
 		r.exec(strings.ReplaceAll(r.headerTransaction(name), "<PROJECT>", r.cfg.Project))
 	}
 }
@@ -425,6 +429,11 @@ func (r *stepRecordsRig) headerTransaction(suffix string) string {
 // planStepAgentMigration is the migration that adds plan_steps.agent, the name of each step's
 // agent.
 const planStepAgentMigration = "_plan_step_agent.up.sql"
+
+// phaseStepKeyMigration is the migration that keys a phases row by its step, so a role that
+// stands at two steps of a task keeps a row for each; its way back writes the key (issue, role)
+// again, which every release before it writes its phases rows by.
+const phaseStepKeyMigration = "_phase_step_key.up.sql"
 
 // The record of a member of a tree: a child's acceptance is the work of the architect that owns
 // the child when its step starts, so the record of its step 5 names that architect, with the
