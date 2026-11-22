@@ -438,12 +438,13 @@ func TestAnUnknownProjectRefusesTheConnection(t *testing.T) {
 	requireRefused(t, err, labelProjectNotFound, "project not found: GONE")
 }
 
-// An edge listener's entry lists its own projects, and scopeGrant refuses its connection before it
-// reads any answer, so the broker asks Dispatch nothing about it. Here the exchange list also
+// An edge listener's entry lists its own projects, and scopeGrant takes its grant whole without
+// reading any answer, so the broker asks Dispatch nothing about it. Here the exchange list also
 // gives the edge listener's account EDGE; a refresh asks Dispatch about PUB, the held daemon's
-// project, once, and never about EDGE, and the edge listener's connection is refused by name.
-// The control drops newHeldAccess's skip of an edge listener's entry: the refresh then asks
-// Dispatch about EDGE.
+// project, once, and never about EDGE, and the edge listener's connection is answered with its
+// grant whole (natsgrant.Edge for the projects its entry lists), not one held to its exchange
+// projects. The control drops newHeldAccess's skip of an edge listener's entry: the refresh then
+// asks Dispatch about EDGE.
 func TestAnEdgeListenersEntryAsksDispatchNothing(t *testing.T) {
 	now := time.Now()
 	services := []config.NATSService{
@@ -458,8 +459,11 @@ func TestAnEdgeListenersEntryAsksDispatchNothing(t *testing.T) {
 	dispatch.mu.Unlock()
 	require.Equal(t, map[string]int{"PUB": 1}, asked, "the refresh asked Dispatch about an edge listener's projects")
 
-	_, err := Decide(t.Context(), deps, services, serviceRequest("edge-token"))
-	requireRefused(t, err, labelHeldToProjects, "held to the projects its entry lists, for which this broker has no edge listener's grant: service edge-listener/edge-a")
+	decision, err := Decide(t.Context(), deps, services, serviceRequest("edge-token"))
+	require.NoError(t, err)
+	want, err := natsgrant.Edge("edge-a", []string{"EDGE"})
+	require.NoError(t, err)
+	require.Equal(t, Decision{Name: "edge-listener/edge-a", Grant: want, Expires: now.Add(time.Hour)}, decision)
 }
 
 // The connection is held to what the token exchange holds the account's token to: the person its
