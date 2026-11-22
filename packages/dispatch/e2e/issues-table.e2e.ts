@@ -780,6 +780,76 @@ test("with the update banner shown, every control of the selection bar takes a p
   }
 });
 
+// The issues table's own scroll box and the floats over it. With a selection made, a refused
+// change pending and the update banner shown, the bar, the banner and Pending changes stack up
+// the foot (`web/src/hooks/useFootInset.ts`), and Pending changes rides above the banner. Once
+// the table's box is scrolled to its end, its last row must still scroll clear of the floats, as
+// a scroller's last content does there ("so its last content scrolls clear of those floats").
+test("with the bar, the banner and Pending changes shown, the table's last row scrolls clear of the floats", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const epic = await createIssue({ project: "CORE", title: "Parser rollout" });
+  await patchIssue(epic.key, { labels: ["epic"] });
+  const refused = await createIssue({ project: "CORE", parent: epic.key, title: "Refused move" });
+  const other = await createIssue({ project: "CORE", title: "Ship the parser" });
+  // Enough issues that the table's box scrolls at the desktop sizes below.
+  for (let index = 0; index < 40; index++) {
+    await createIssue({ project: "CORE", title: `Filler issue number ${index}` });
+  }
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await page.setViewportSize({ width: 1600, height: 1000 });
+    await page.route(`**/api/v1/issues/${refused.key}`, async (route) => {
+      if (route.request().method() === "PATCH")
+        await route.fulfill({ status: 403, json: { error: "Move refused" } });
+      else await route.continue();
+    });
+    // Every live process now serves one build the page does not run (`deploymentChanged`).
+    await page.route("**/api/v1/dashboard/builds", (route) =>
+      route.fulfill({
+        json: { live: ["/assets/index-next.js"], serving: "/assets/index-next.js" },
+      })
+    );
+    await page.goto("/projects/CORE/issues");
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await expect(page.getByRole("status", { name: "A new version is available" })).toBeVisible();
+    const select = (key: string) =>
+      page.getByRole("checkbox", { name: `Select ${key}`, exact: true });
+    await select(refused.key).check();
+    await page.getByRole("toolbar").getByRole("button", { name: "Take out of epic" }).click();
+    const pending = pendingWrites(page);
+    await expect(pending).toContainText(refused.key);
+    await select(refused.key).setChecked(false);
+    await select(other.key).check();
+    // The table's rows, each with its checkbox; the box draws no other row that has one.
+    const lastRow = page
+      .locator("tbody tr")
+      .filter({ has: page.getByRole("checkbox", { name: /^Select / }) })
+      .last();
+    for (const size of [
+      { width: 1600, height: 1000 },
+      { width: 1920, height: 1080 },
+    ]) {
+      await page.setViewportSize(size);
+      await lastRow.scrollIntoViewIfNeeded();
+      await expect
+        .poll(
+          async () => {
+            const row = await lastRow.boundingBox();
+            const panel = await pending.boundingBox();
+            return row !== null && panel !== null && boxesApart(row, panel);
+          },
+          { message: `Pending changes meets the table's last row at ${size.width}x${size.height}` }
+        )
+        .toBe(true);
+    }
+  } finally {
+    await context.close();
+  }
+});
+
 test("a live insertion above a vertically and horizontally scrolled reader keeps their row in place", async ({
   browser,
 }) => {
