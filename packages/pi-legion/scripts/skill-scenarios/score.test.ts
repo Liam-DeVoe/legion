@@ -4718,6 +4718,33 @@ redRun("trial-i-head-132", {}, [
   ),
   redReviewStep,
 ]);
+// INFRA-1303, the tester's round 22 at 221488c0: q-head-3, whose message to the controller went
+// out from an eval cell (`tool.envoy_publish` in the cell's code) and opened a paragraph with "No
+// tracking issue found". The message is a string literal in the code, so its paragraph break is the
+// two characters `\n` in the call's arguments, and a reader of the code as it stands finds no word
+// boundary before `No`.
+redRun("trial-i-head-137", {}, [
+  ...header,
+  turn[0],
+  redPage,
+  ...redRead(redLine),
+  writeHandoff,
+  toolCall("call-rr", "bash", { command: "gh run rerun 7001001 --failed" }),
+  redSubscribe,
+  redSearch,
+  result("call-s", `No results for "${redTest}".`),
+  toolCall("call-p", "eval", {
+    language: "js",
+    code: [
+      "print(await tool.envoy_publish({",
+      '  topic: "notifications.role.legion-lweval-controller",',
+      `  message: "Flaky-test census (reviewer, LWEVAL-1).\\n\\nNo tracking issue found for ${redTest}: it failed at the head and passed on the re-run.",`,
+      "  expects_reply: false,",
+      "}))",
+    ].join("\n"),
+  }),
+  redReviewStep,
+]);
 // INFRA-1303 D7: b-head-2 and j-head-1 of the batch of record at 9c3bd9df, whose full record named
 // the attempts in camel-case keys of their own, and a record that names the attempt as GitHub's
 // `run_attempt` does.
@@ -6057,6 +6084,15 @@ test("a paraphrased search scores by its outcome: the message says no issue trac
 test("a message that says no issue tracks the test at the start of a paragraph is read as it says", () => {
   expect(rowOf("trial-i-head-132")).toMatch(/^trial-i-head-132\tpass=true\t.* told=true /);
   expect(rowOf("trial-i-head-132")).toContain("posted=true controller=true");
+});
+
+// INFRA-1303, the class of D8 in an eval cell: catches a scorer that reads a message the role
+// published from an eval cell as the cell's code, where the string literal's paragraph break is
+// the two characters `\n` and no word boundary falls before "No tracking issue", so a run whose
+// message said no issue tracks the test fails `told` (q-head-3 of the batch at 221488c0).
+test("a message published from an eval cell is read as its words, not as the code's escapes", () => {
+  expect(rowOf("trial-i-head-137")).toMatch(/^trial-i-head-137\tpass=true\t.* told=true /);
+  expect(rowOf("trial-i-head-137")).toContain("posted=true controller=true");
 });
 
 // INFRA-1303 D7: catches a scorer that reads the attempt as the bare word `attempt`, so a record
