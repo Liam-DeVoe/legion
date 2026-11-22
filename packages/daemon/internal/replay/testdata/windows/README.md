@@ -173,8 +173,10 @@ reconstruction error the tool reports; these windows hold the exact one.
   and strictly before its end; a stretch is a conflict where a recorded `conflict` move ended it.
   A held merge ends its stretch at the merge's own line, not at the later move to `done`.
 - The chance of a conflict is `1 / (1 + exp(−(b0 + b1 × log2(1 + M))))`, b0 and b1 fitted by maximum
-  likelihood on the window's own recorded stretches; `Merges = zero` sets b1 to 0. A window that
-  records no conflict fits a chance of 0 for every stretch, and no conflict is drawn in it.
+  likelihood on the window's own recorded stretches, those that start at or after `from` and end
+  before `to` (a stretch that began in the reach is left out); `Merges = zero` sets b1 to 0. A
+  window that records no conflict fits a chance of 0 for every stretch, and no conflict is drawn
+  in it.
 - In a replay each stretch draws once, at the moment its recorded end falls by its segments, with M
   counted over the replayed stretch: a draw u from the run's seeded source makes a conflict where
   u < the chance. A recorded `conflict` move is never injected: the draw makes it.

@@ -120,8 +120,9 @@ func partsRule(parts []Part) string {
 // windowRecord is a window's record.json in a directory of runs: its name, its place among the
 // windows compared (0 for the window before the change of the rule), its project, span and parts,
 // the rule its daemon ran ("" where its parts name more than one), its record's scorecard (Score),
-// and its recorded stretches with how many ended in a conflict, which say whether a branch of it
-// draws (draws).
+// and the recorded stretches inside its span, which its conflict model is fitted on
+// (windowConflicts), with how many ended in a conflict, which say whether a branch of it draws
+// (draws).
 type windowRecord struct {
 	Name       string    `json:"name"`
 	Order      int       `json:"order"`
@@ -163,7 +164,7 @@ func newWindowRecord(w Window, name string, order int) (windowRecord, error) {
 	if err != nil {
 		return windowRecord{}, err
 	}
-	model := FitConflicts(recordedStretches(t, newBaseMerges(w, t)))
+	model := windowConflicts(t, newBaseMerges(w, t))
 	return windowRecord{Name: name, Order: order, Project: w.Project, From: w.From, To: w.To, Rule: partsRule(w.Parts), Parts: w.Parts,
 		Scorecard: scoreTrace(t), Stretches: model.Stretches, Conflicted: model.Conflicts}, nil
 }

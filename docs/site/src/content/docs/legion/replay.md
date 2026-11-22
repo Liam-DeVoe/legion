@@ -299,7 +299,8 @@ legion replay run \
 It enters each Dispatch event, each recorded phase move, each tick and each boot at its recorded time or offset.
 After each fact, a worker stub runs the outbox rows that the daemon's lanes would take.
 Each work segment runs its recorded length times `f^((n − m)/42)`, where n is the number of issues in flight in the replay at the segment's start, and m the number in the record.
-Each stretch draws, with `--seed`, whether its head conflicts with its base, from a model that the run fits on the window's own stretches.
+Each stretch draws, with `--seed`, whether its head conflicts with its base, from a model that the run fits on the stretches that begin and end inside the window.
+A stretch that began in the reach is not in the fit, because the reach can be of a release that recorded a conflict as another move back.
 `run` asks nothing outside: no Dispatch, no GitHub and no NATS.
 
 | Flag | What it gives |
@@ -316,7 +317,7 @@ Each stretch draws, with `--seed`, whether its head conflicts with its base, fro
 
 `run` prints the window, the rule, the branch, the seed, f and the database.
 It prints each move that the daemon's code refused, with the reason, and counts what the replay could not enter as recorded.
-It prints the scenario of the work of an issue that never started, the conflict model with its intervals, and the widest gap between the run's two scorecards.
+It prints the scenario of the work of an issue that never started, the conflict model with the window that it was fitted on and its intervals, and the widest gap between the run's two scorecards.
 Last, it prints each assumption that the run rests on, with the number of outbox rows that it finished under each.
 
 `--out` receives these files:
@@ -815,12 +816,12 @@ A window recorded under a rule that keeps slots past the review gives a second r
 Doubtful for conflicts.
 The first replay saw more conflicts after a longer wait for a slot.
 If a longer wait brings more conflicts than the fitted rate gives, the replay favours a rule under which branches wait longer.
-The tool draws conflicts from a rate that it fits on the window, with a branch that sets the merges term of that rate to zero.
+The tool draws conflicts from a rate that it fits on the stretches inside the window, with a branch that sets the merges term of that rate to zero.
 It keeps every other send-back loop at its recorded count and length.
 
 **Evidence in a recorded window.** _A conflict rate fitted on the window, and loops kept as recorded._
 The phase lines give each move back with its trigger, and the trace names its cause.
-`run` prints the conflict model: the stretches and conflicts that it was fitted on, each coefficient with its interval, and the odds ratio for each doubling of the merges.
+`run` prints the conflict model: the window, and the stretches and conflicts, that it was fitted on, each coefficient with its interval, and the odds ratio for each doubling of the merges.
 In the design's record, that odds ratio was 1.21, with a 95% interval of 0.92 to 1.35, so the record does not show the merges term.
 
 **If it is wrong.**

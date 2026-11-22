@@ -8,10 +8,13 @@ import (
 	"math/rand/v2"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // The conflict model is fitted by maximum likelihood and printed with its interval (spec R2): on
@@ -205,6 +208,97 @@ func TestAStretchCountsNoMergeOfItsOwn(t *testing.T) {
 		if got := squashedPullRequest(message); got != want {
 			t.Errorf("the commit message %q names pull request %d, want %d", message, got, want)
 		}
+	}
+}
+
+// reachedConflictWindow is a window from 12:00 to 18:00 recorded under legion-v20.42.5, its inputs
+// reaching back to 00:00, whose reach and window hold stretches at two rates of conflict. ACME-1, a
+// root promoted at 00:30, is in implementing from 01:00. In the reach it goes to testing and back 30
+// times, 10 minutes each way, its tester failing every round: 30 stretches, none a conflict, the
+// last ending at 11:00. It goes to testing again at 11:50, and a conflict at 12:05 ends that stretch
+// inside the window, though it began in the reach. In the window it goes to testing and back 10
+// times from 12:20, its head conflicting in every second round and its tester failing in the
+// others: 10 stretches, 5 of them conflicts. It goes to testing a last time at 15:40 and stands
+// there at the window's end, a stretch with no outcome. Its base branch took no merge, so every
+// stretch has M = 0.
+func reachedConflictWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(12, 0), clock(18, 0))
+	b.window.Parts[0].Rule = "legion-v20.42.5"
+	b.reaches(12 * time.Hour)
+	b.capped(2)
+	b.boot(clock(0, 30))
+	b.file(clock(0, 30), "ACME-1", filing{Title: "Export the widget list", Status: "todo", Rank: "a0", Labels: handedToLegion})
+	b.rootPromoted(clock(0, 30), "ACME-1")
+	b.rootDesigned(clock(0, 45), "ACME-1")
+	b.segmentEnds(clock(1, 0), "ACME-1", phase.Planning, phase.Implementing, workflow.TriggerPlannerCompleted)
+	round := func(at time.Time, back workflow.TriggerKind) {
+		b.segmentEnds(at, "ACME-1", phase.Implementing, phase.Testing, workflow.TriggerImplementationReady)
+		b.segmentEnds(at.Add(10*time.Minute), "ACME-1", phase.Testing, phase.Implementing, back)
+	}
+	for i := range 30 {
+		round(clock(1, 10).Add(time.Duration(i)*20*time.Minute), workflow.TriggerTesterFailed)
+	}
+	b.segmentEnds(clock(11, 50), "ACME-1", phase.Implementing, phase.Testing, workflow.TriggerImplementationReady)
+	b.segmentEnds(clock(12, 5), "ACME-1", phase.Testing, phase.Implementing, workflow.TriggerConflict)
+	for i := range 10 {
+		back := workflow.TriggerTesterFailed
+		if i%2 == 0 {
+			back = workflow.TriggerConflict
+		}
+		round(clock(12, 20).Add(time.Duration(i)*20*time.Minute), back)
+	}
+	b.segmentEnds(clock(15, 40), "ACME-1", phase.Implementing, phase.Testing, workflow.TriggerImplementationReady)
+	return b.build()
+}
+
+// The conflict model is fitted on the stretches inside the window alone (plan D3): a stretch that
+// began in the reach ran under what the reach recorded, and a reach of a release with no conflict
+// trigger records each of its conflicts as another move back. The test reads
+// reachedConflictWindow, whose record holds 41 ended stretches, 6 of them conflicts: 30 in the reach
+// with none, one from the reach into the window that ends in one, and 10 in the window, 5 of them
+// conflicts. It fails where the model is fitted on other than the window's 10 over the window's
+// span; where its base is not the window's rate, the log-odds of 5 conflicts to 5 stretches
+// without one (0), or its interval does not hold that; where the interval holds the base of the 41
+// pooled (the log-odds of 6 to 35, about −1.76); where the printed model does not give the span;
+// and where the window's record in a directory of runs counts other stretches than the model.
+func TestTheConflictModelIsFittedOnTheWindowAlone(t *testing.T) {
+	window := reachedConflictWindow(t)
+	trace, err := BuildTrace(window)
+	if err != nil {
+		t.Fatalf("build the window's trace: %v", err)
+	}
+	merges := newBaseMerges(window, trace)
+	pooled := FitConflicts(recordedStretches(trace, merges))
+	if pooled.Stretches != 41 || pooled.Conflicts != 6 {
+		t.Fatalf("the record holds %d ended stretches, %d of them conflicts; want 41 and 6: 30 in the reach, one from the reach into the window and 10 in the window",
+			pooled.Stretches, pooled.Conflicts)
+	}
+	const stretches, conflicts = 10, 5
+	model := windowConflicts(trace, merges)
+	if model.Stretches != stretches || model.Conflicts != conflicts || !model.From.Equal(window.From) || !model.To.Equal(window.To) {
+		t.Fatalf("the model was fitted on %d stretches, %d of them conflicts, over %s to %s; want the window's %d and %d over %s to %s",
+			model.Stretches, model.Conflicts, stamp(model.From), stamp(model.To), stretches, conflicts, stamp(window.From), stamp(window.To))
+	}
+	t.Logf("the window's conflict model: %s; the base of the window's and the reach's stretches pooled: %v [%v, %v]", model,
+		pooled.Base.Estimate, pooled.Base.Low, pooled.Base.High)
+	rate := math.Log(float64(conflicts) / float64(stretches-conflicts))
+	if base := model.Base; math.Abs(base.Estimate-rate) > 1e-6 || base.Low > rate || rate > base.High {
+		t.Errorf("the base is %v [%v, %v], want the window's rate %v within its interval", base.Estimate, base.Low, base.High, rate)
+	}
+	if base := model.Base; base.Low <= pooled.Base.Estimate && pooled.Base.Estimate <= base.High {
+		t.Errorf("the base's interval [%v, %v] holds %v, the base of the window's and the reach's stretches pooled", base.Low, base.High,
+			pooled.Base.Estimate)
+	}
+	if span := "began and ended inside the window from 2001-03-05T12:00:00Z to 2001-03-05T18:00:00Z"; !strings.Contains(model.String(), span) {
+		t.Errorf("the printed model %q does not give the span it was fitted on, %q", model, span)
+	}
+	rec, err := newWindowRecord(window, "window-one", 1)
+	if err != nil {
+		t.Fatalf("the window's record: %v", err)
+	}
+	if rec.Stretches != stretches || rec.Conflicted != conflicts {
+		t.Errorf("the window's record counts %d stretches, %d of them conflicts; want the model's %d and %d", rec.Stretches, rec.Conflicted,
+			stretches, conflicts)
 	}
 }
 

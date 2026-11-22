@@ -139,9 +139,10 @@ func ownPullRequest(iss *IssueTrace) int {
 // recordedStretches is every ended stretch of the issues of t's project as the record shows it,
 // by issue and then time, with its M counted from merges. A stretch the record shows open at the
 // window's end, or cut by its issue's leave, has no outcome, and one whose start lies before the
-// inputs reach (Visit.Before) has no known M; neither is an observation of the model. A merge whose
-// close waited for the issues beneath it ends its stretch at the merge (Visit.Merge), not at the
-// close's later move to done, nor open where that move falls after the window's end.
+// inputs reach (Visit.Before) has no known M; neither is an observation of the model, which is
+// fitted on the stretches inside the window alone (windowConflicts). A merge whose close waited
+// for the issues beneath it ends its stretch at the merge (Visit.Merge), not at the close's later
+// move to done, nor open where that move falls after the window's end.
 func recordedStretches(t Trace, merges baseMerges) []Stretch {
 	var stretches []Stretch
 	for _, key := range sortedKeys(t.Issues) {
@@ -177,6 +178,21 @@ func recordedStretches(t Trace, merges baseMerges) []Stretch {
 		}
 	}
 	return stretches
+}
+
+// windowConflicts is the conflict model of t's window (spec R2; plan D3, which fits the rate on
+// one window alone): fitted on the recorded stretches (recordedStretches) that start at or after
+// the window's start and end before its end, with M counted from merges, and that span. A
+// stretch that starts in the reach before the window is left out: the reach may have run another
+// release, and one with no conflict trigger records a conflict as another move back, so each of
+// its stretches would enter the fit as one without a conflict.
+func windowConflicts(t Trace, merges baseMerges) ConflictModel {
+	inside := slices.DeleteFunc(recordedStretches(t, merges), func(s Stretch) bool {
+		return s.Start.Before(t.From) || !s.End.Before(t.To)
+	})
+	m := FitConflicts(inside)
+	m.From, m.To = t.From, t.To
+	return m
 }
 
 // stretchStartAt is the record's start of the stretch iss stands in at at, and false where it
@@ -244,13 +260,17 @@ func (c Coefficient) MarshalJSON() ([]byte, error) {
 	}{end(c.Estimate), end(c.Low), end(c.High)})
 }
 
-// ConflictModel is the chance that a stretch of an issue's work ends in a conflict, fitted on a
-// window's own recorded stretches (spec R2; plan D3: only window one records conflict moves, so
-// only it fits a chance above zero): logistic(Base + Term × log2(1 + M)), M the merges into the
-// stretch's base branch during it, the coefficients fitted by maximum likelihood with their
-// intervals. A window that records no conflict fits a chance of 0 for every stretch, and one whose
-// every stretch conflicted a chance of 1, without a fit.
+// ConflictModel is the chance that a stretch of an issue's work ends in a conflict, fitted on the
+// recorded stretches inside a window (windowConflicts; spec R2; plan D3: only window one records
+// conflict moves, so only it fits a chance above zero): logistic(Base + Term × log2(1 + M)), M the
+// merges into the stretch's base branch during it, the coefficients fitted by maximum likelihood
+// with their intervals. A window that records no conflict fits a chance of 0 for every stretch,
+// and one whose every stretch conflicted a chance of 1, without a fit.
 type ConflictModel struct {
+	// From and To are the span of the window the model was fitted on: each of its stretches began
+	// at or after From and ended before To. Both are zero for a fit of stretches no window gave.
+	From time.Time `json:"from"`
+	To   time.Time `json:"to"`
 	// Stretches and Conflicts are the stretches the model was fitted on and how many ended in a
 	// conflict.
 	Stretches int `json:"stretches"`
@@ -295,26 +315,27 @@ func (m ConflictModel) WithoutTerm() ConflictModel {
 	return m
 }
 
-// String is the model as a run prints it: the stretches and conflicts it was fitted on, each
-// coefficient with its interval, the odds ratio per doubling of 1 + M, and the stretches whose M
-// may hold their own merge.
+// String is the model as a run prints it: the span and the stretches and conflicts it was fitted
+// on, each coefficient with its interval, the odds ratio per doubling of 1 + M, and the stretches
+// whose M may hold their own merge.
 func (m ConflictModel) String() string {
+	span := fmt.Sprintf("began and ended inside the window from %s to %s", stamp(m.From), stamp(m.To))
 	unknown := fmt.Sprintf("; %d of the window's stretches and %d of the replay's counted a merge that may be their own", m.OwnMergeUnknown,
 		m.DrawnOwnMergeUnknown)
 	switch {
 	case m.Stretches == 0:
-		return "no stretch of the window ended, so no conflict is drawn" + unknown
+		return fmt.Sprintf("no stretch %s, so no conflict is drawn", span) + unknown
 	case m.Conflicts == 0:
-		return fmt.Sprintf("none of the window's %d stretches conflicted, so every stretch draws a chance of 0", m.Stretches) + unknown
+		return fmt.Sprintf("none of the %d stretches that %s conflicted, so every stretch draws a chance of 0", m.Stretches, span) + unknown
 	case !m.fitted():
-		return fmt.Sprintf("all of the window's %d stretches conflicted, so every stretch draws a chance of 1", m.Stretches) + unknown
+		return fmt.Sprintf("all of the %d stretches that %s conflicted, so every stretch draws a chance of 1", m.Stretches, span) + unknown
 	}
 	interval := func(c Coefficient, scale func(float64) float64) string {
 		return fmt.Sprintf("%.4g [%s, %s]", scale(c.Estimate), endText(scale(c.Low)), endText(scale(c.High)))
 	}
 	same := func(v float64) float64 { return v }
-	text := fmt.Sprintf("fitted on %d stretches, %d of them conflicts: base %s, merges term %s (%g intervals), odds ratio per doubling of 1 + M %s",
-		m.Stretches, m.Conflicts, interval(m.Base, same), interval(m.Term, same), m.Level, interval(m.Term, math.Exp))
+	text := fmt.Sprintf("fitted on the %d stretches that %s, %d of them conflicts: base %s, merges term %s (%g intervals), odds ratio per doubling of 1 + M %s",
+		m.Stretches, span, m.Conflicts, interval(m.Base, same), interval(m.Term, same), m.Level, interval(m.Term, math.Exp))
 	if m.TermZero {
 		text += "; the branch sets the merges term to 0"
 	}

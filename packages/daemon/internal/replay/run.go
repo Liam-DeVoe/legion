@@ -106,9 +106,9 @@ type RunResult struct {
 	// run.json names beside them.
 	Assumptions []int
 	// Conflicts is the conflict model the run drew each stretch's conflict by (spec R2): fitted on
-	// the window's own recorded stretches with each coefficient's interval, its merges term set to
-	// zero where the branch's Merges is zero, and how many stretches, of the window's and of the
-	// replay's, counted a merge in M that may be their own.
+	// the recorded stretches inside the window (windowConflicts) with each coefficient's interval,
+	// its merges term set to zero where the branch's Merges is zero, and how many stretches, of the
+	// window's and of the replay's, counted a merge in M that may be their own.
 	Conflicts ConflictModel
 
 	// snapshot is the snapshot timeline Scorecard is read from, which a test reads states from.
@@ -164,7 +164,8 @@ const specAssumptionsTop = 25
 // anchors of the events that end a wait and of a person's answers (Timing, Answer), the length of
 // the work after a send-back (AfterSendBack), the ranks the replay's copy of Dispatch shows
 // (FirstStarts, design 10.7), the work of an issue the record never started (NeverStarted), and
-// the conflict model each stretch draws by (Merges), fitted on the window's own stretches.
+// the conflict model each stretch draws by (Merges), fitted on the recorded stretches inside the
+// window.
 func Run(ctx context.Context, cfg RunConfig) (RunResult, error) {
 	began := time.Now()
 	w := cfg.Window
@@ -204,7 +205,7 @@ func Run(ctx context.Context, cfg RunConfig) (RunResult, error) {
 		ranks = nil
 	}
 	merges := newBaseMerges(w, trace)
-	conflicts := FitConflicts(recordedStretches(trace, merges))
+	conflicts := windowConflicts(trace, merges)
 	if cfg.Branch.Merges == mergesZero {
 		conflicts = conflicts.WithoutTerm()
 	}
