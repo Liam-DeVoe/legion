@@ -1445,11 +1445,10 @@ func (f PodBackstopDue) namedIssue() (string, bool) { return f.Issue, true }
 // WorkHoldOpened is the work hold of tree Tree found ended under a claim it stopped (`gates.hold:
 // work`): the opening committed and may have started nothing of the claim, and the claim stands
 // stopped by the hold. The opening takes the tree's work hold row for update before it reads the
-// claims, and each decision that may make the hold's stop decides it under a lock on that row for
-// share. The decision ends that lock before the runtime stops the process, so the opening can
-// read the claim live and commit before the stop is written. A held stop made under no lock, or
-// after its decision's report of a durable state or its launch check ended the lock, can follow
-// the opening too. Once the stop is written, the claim's machine reads the row again, and where
+// claims, and each decision that may make the hold's stop reads that row for share and lets the
+// lock go at once. So the opening can read the claim live and commit after a decision's read and
+// before its stop is written. A held stop made after a read that failed can follow the opening
+// too. Once the stop is written, the claim's machine reads the row again, and where
 // the row is gone, the daemon applies this fact at once (supervise.Deps.WorkHoldEndedUnderStop),
 // under an event that names the claim, its generation and the version. The stop's outbox row
 // applies it as well where it meets the open gate and the claim stopped, under the row's id, so a

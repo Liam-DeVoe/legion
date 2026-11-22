@@ -297,13 +297,14 @@ type IssueVolumeReader interface {
 
 // WorkspaceBundler asks one live role's process to bundle the unpushed work of the issue
 // workspace every role of the issue shares, so a release can keep it while the pod, its disk and
-// the workspace on it go. A kept volume does not go: the release keeps the Sandbox that owns it
-// (IssueReleaser), and the pod after the release takes no saved work that volume holds
-// (HeldWorkspaceBundleDrop). The save is still made, because a reset replaces a kept volume, and
-// the save is then the one copy of the unpushed work. The role named must be one whose process
-// runs: the shim builds the bundle with the jj and git of the workspace it already works in. A
-// runtime whose processes share no workspace implements nothing here, and the release of such a
-// pod saves nothing because there is no such pod.
+// the workspace on it go. A pod update round keeps it the same way before it replaces the pod of a
+// claim the work hold stopped (internal/daemon's saveHeldWork). A kept volume does not go: the
+// release keeps the Sandbox that owns it (IssueReleaser), and the pod after the release takes no
+// saved work that volume holds (HeldWorkspaceBundleDrop). The save is still made, because a reset
+// replaces a kept volume, and the save is then the one copy of the unpushed work. The role named
+// must be one whose process runs: the shim builds the bundle with the jj and git of the workspace
+// it already works in. A runtime whose processes share no workspace implements nothing here, and
+// the release of such a pod saves nothing because there is no such pod.
 type WorkspaceBundler interface {
 	BundleWorkspace(ctx context.Context, issue string, role claim.Role) (WorkspaceBundle, error)
 }

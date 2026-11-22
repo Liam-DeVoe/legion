@@ -53,6 +53,52 @@ func (s *Store) PutWorkspaceBundle(ctx context.Context, issue string, release in
 	return nil
 }
 
+// PutRoundWorkspaceBundle saves issue's workspace bundle for the pod that a pod update round is
+// about to replace (internal/daemon's saveHeldWork), and answers the id it saved the bundle
+// under. The round's replacement takes the pod's disk, as a release's teardown takes it, so the
+// round saves the work of a claim the work hold stopped in the row a release saves into
+// (PutWorkspaceBundle). The next pod restores it through the same take
+// (TakeWorkspaceBundleForRestore) and confirms it through the same delete
+// (DeleteRestoredWorkspaceBundle). No release saves this bundle, so the id is drawn from the
+// sequence of issue_releases.id: no release ever has the round's id, so a release's late restore
+// report or a release's cancel deletes no bundle a round saved, and the round's report deletes no
+// bundle a release saved.
+//
+// It replaces a bundle that no pod has had its one restore attempt of, as a release's save does.
+// It refuses, and writes nothing, where the issue holds a bundle whose one attempt is spent: such
+// a bundle is the one copy of earlier work, kept for a person to recover, and the idle rule
+// releases no pod of such an issue for the same reason (workspaceBundleUnrestored). The bundle
+// names the pod its work came off, as PutWorkspaceBundle requires.
+func (s *Store) PutRoundWorkspaceBundle(ctx context.Context, issue string, b runtime.WorkspaceBundle) (int64, error) {
+	if issue == "" {
+		return 0, errors.New("a workspace bundle needs its issue")
+	}
+	if b.PodUID == "" {
+		return 0, fmt.Errorf("the workspace bundle of %s needs the uid of the pod its work came off", issue)
+	}
+	tips, bookmarks, err := bundleJSON(b)
+	if err != nil {
+		return 0, fmt.Errorf("save the workspace bundle of %s: %w", issue, err)
+	}
+	var id int64
+	err = s.pool.QueryRow(ctx, `insert into workspace_bundles (issue, release_id, source_pod_uid, bundle, size_bytes, at, head, tips, bookmarks)
+		values ($1, nextval(pg_get_serial_sequence('issue_releases', 'id')), $2, $3, $4, $5, $6, $7, $8)
+		on conflict (issue) do update set release_id = excluded.release_id, source_pod_uid = excluded.source_pod_uid,
+			bundle = excluded.bundle, size_bytes = excluded.size_bytes, at = excluded.at, head = excluded.head,
+			tips = excluded.tips, bookmarks = excluded.bookmarks,
+			attempt_pod_uid = null, attempt_at = null, attempt_outcome = null
+		where workspace_bundles.attempt_pod_uid is null
+		returning release_id`,
+		issue, b.PodUID, b.Bundle, b.Size(), b.At, b.Head, tips, bookmarks).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, fmt.Errorf("save the workspace bundle of %s: the issue holds a saved bundle whose one restore attempt is spent, the one copy of that work", issue)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("save the workspace bundle of %s: %w", issue, err)
+	}
+	return id, nil
+}
+
 // TakeWorkspaceBundleForRestore answers the bundle issue's last release saved for the pod of
 // podUID, created at podCreated, whose launcher it is about to be sent to, and records in the
 // same statement what that ask did to the bundle. project is the token of the daemon whose pod
@@ -64,15 +110,18 @@ func (s *Store) PutWorkspaceBundle(ctx context.Context, issue string, release in
 //
 // A bundle is project's only where project records its issue (issues.project, the Dispatch key
 // the token lowercases). The row names no project, and its release's mark, which does, is gone
-// once the release has finished, so the issue's record stands in for it. That holds because
-// the one writer of a bundle is the save of an idle release (PutWorkspaceBundle, run by
-// internal/daemon's bundleIssueWorkspace from the release's save row). A daemon's outbox runs
-// only the rows of its own project's keys (record's DueRows), and a release only marks a pod
-// whose issue its project records (ReleaseIdleIssue, readIdleView). So a bundle of an issue this
-// project does not record was saved by another project's daemon on a database the two share,
-// for that daemon's own pod. The operator's spawn makes a claim of such an issue under this
-// project's token, and a new pod of that claim would otherwise spend the other daemon's one
-// attempt and leave that daemon's pod nothing to restore.
+// once the release has finished, so the issue's record stands in for it. That holds because each
+// of the two writers of a bundle writes only a bundle of an issue its project records. One is the
+// save of an idle release (PutWorkspaceBundle, run by internal/daemon's bundleIssueWorkspace from
+// the release's save row): a daemon's outbox runs only the rows of its own project's keys
+// (record's DueRows), and a release only marks a pod whose issue its project records
+// (ReleaseIdleIssue, readIdleView). The other is the save of a pod update round
+// (PutRoundWorkspaceBundle), made only for a claim the work hold stopped, and only the project's
+// own workflow holds the work of a tree. So a bundle of an issue this project does not record was
+// saved by another project's daemon on a database the two share, for that daemon's own pod. The
+// operator's spawn makes a claim of such an issue under this project's token, and a new pod of
+// that claim would otherwise spend the other daemon's one attempt and leave that daemon's pod
+// nothing to restore.
 //
 // One attempt per bundle is the rule, and this statement is where it is kept. The launcher's own
 // record of the restore it ran lives in the process that ran it: a roles container that restarts
@@ -182,7 +231,9 @@ func (s *Store) DeleteWorkspaceBundle(ctx context.Context, issue string) error {
 // issue's row on it would take work no pod holds any more. The row goes only while it is still
 // the one that release saved; a report of any other release deletes nothing, and its work stays
 // for the issue's next pod. Deleting a row the table no longer holds is success, so a
-// confirmation the daemon read twice finishes.
+// confirmation the daemon read twice finishes. A pod update round deletes its own save through it
+// too (PutRoundWorkspaceBundle, whose id names no release), where the round's last word refused
+// the replacement that the save was for: the pod stays, and its disk holds the work.
 func (s *Store) DeleteRestoredWorkspaceBundle(ctx context.Context, issue string, release int64) error {
 	if _, err := s.pool.Exec(ctx, `delete from workspace_bundles where issue = $1 and release_id = $2`, issue, release); err != nil {
 		return fmt.Errorf("delete the restored workspace bundle of %s saved by release %d: %w", issue, release, err)

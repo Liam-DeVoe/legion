@@ -157,11 +157,11 @@ type memStore struct {
 	holds map[Hold]claim.Token
 	// opened is each tree whose work hold an opening ended (openHold): its work_holds row is gone.
 	// Every other tree's hold stands, so no decision drops the hold stop of a tree the test did
-	// not open (lockHoldStop).
+	// not open (readHoldForStop).
 	opened map[string]bool
 	// locksTaken and locksReleased count the locks on a tree's work hold row the store granted
-	// (LockWorkHold) and the releases called on them, so a test sees that no lock outlives its
-	// decision (locks).
+	// (LockWorkHold) and the releases called on them, so a test sees that each read of the row
+	// released its lock (locks).
 	locksTaken, locksReleased int
 }
 

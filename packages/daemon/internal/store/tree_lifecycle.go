@@ -114,24 +114,10 @@ func (s *Store) CheckLaunch(ctx context.Context, c supervise.Claim) error {
 // transaction (record.Store.PutWorkHold, LockWorkHold, OpenWorkHold). The opening keeps the hold
 // as the record of the tree's last opening, in work_hold_openings, which this lock does not read:
 // a hold an opening ended does not stand. The lock is held by a transaction of its own, which
-// writes nothing and lasts until release rolls it back, so a decision of a claim holds it across
-// its other store calls, each on a connection of its own.
-// Each claim and delivery write of that decision waits at most the claim-write deadline, for its
-// connection and for its answer (supervise's Machine.write), so a pool with no connection left
-// holds such a write no longer than that bound. Two calls with no such deadline never run under
-// the lock: a tool step's write of the claim's steps, whose decision takes no lock (supervise's
-// lockHoldStop), and the launch check, which ends the lock first (supervise's checkLaunch). A
-// turn's start writes its step only once its report of the claim working has ended the lock
-// (supervise's Machine.report). A call the decision makes under the lock with no deadline of its
-// own holds the lock, and its second connection, for as long as it waits. The transaction is the
-// lock's alone: it is begun apart from the caller's mark of the connection it holds
-// (ForConcurrentWorker), so the claim writes the caller makes while the lock lasts are not refused
-// as a second connection (ErrNestedAcquire). A caller that holds a connection already is refused,
-// as any caller is. The pool's idle bound (idleBound) still ends a lock whose decision runs past
-// it, and its connection with it. So the decision ends the lock before the runtime stops a
-// process for the hold, which can run past the bound (supervise's stopForSuspension), and once
-// the stop is written, it takes the lock again and ends it at once, to read whether the hold
-// still stands (supervise's holdReadAfterStop).
+// writes nothing and lasts until release rolls it back. The machine calls release at once, so the
+// call is a read of whether the hold stands that waits for an opening in flight (supervise's
+// Machine.readWorkHold). No decision of a claim holds the row across another store call or a call
+// of the runtime. While the lock lasts, its transaction is the caller's connection of the pool.
 //
 // The wait for the row ends at ctx's deadline, laid twice as the state route lays its bound
 // (internal/api's projectState): the context ends the Go side's wait, and the same bound is the
@@ -149,7 +135,7 @@ func (s *Store) LockWorkHold(ctx context.Context, tree string) (stands bool, rel
 			return false, nil, fmt.Errorf("lock the work hold of %s: %w", tree, context.DeadlineExceeded)
 		}
 	}
-	tx, err := s.pool.begin(ForConcurrentWorker(ctx), pgx.TxOptions{})
+	tx, err := s.pool.begin(ctx, pgx.TxOptions{})
 	if err != nil {
 		return false, nil, fmt.Errorf("lock the work hold of %s: %w", tree, err)
 	}

@@ -9,10 +9,11 @@ import "time"
 // that holding the pod for it is the cheaper mistake.
 const MaxWorkspaceBundleBytes = 40 << 20
 
-// WorkspaceBundle is the unpushed work of one issue's workspace, saved when its pod is released
-// and restored into the workspace of the pod that replaces it. The bundle itself is a git bundle
-// holding every visible commit no remote branch holds, on any head, and the working copy's own
-// change, with the commits a new pod's workspace fetch already holds as its bases.
+// WorkspaceBundle is the unpushed work of one issue's workspace, saved when its pod is released,
+// or when a pod update round replaces the pod of a claim the work hold stopped, and restored into
+// the workspace of the pod that replaces it. The bundle itself is a git bundle holding every
+// visible commit no remote branch holds, on any head, and the working copy's own change, with the
+// commits a new pod's workspace fetch already holds as its bases.
 //
 // Head is the commit the bundle's working copy sat on, Bookmarks maps each local bookmark that
 // points into the saved set to its commit, and Tips names the heads the bundle carries, so the
@@ -32,9 +33,10 @@ type WorkspaceBundle struct {
 	// Release is the id of the release that saved the row this bundle was read from, which the
 	// store fills on the read. The save takes that id as an argument of its own
 	// (store.Store.PutWorkspaceBundle): the bundle itself is the shim's, built in a pod that
-	// knows nothing of the release, and the id is the release's. The restore of the pod that
-	// replaces the released one carries it to the launcher and back, so the report that confirms
-	// a restore names the release whose work it put back and deletes no other
+	// knows nothing of the release, and the id is the release's. A pod update round's save draws
+	// an id of its own from the same sequence (store.Store.PutRoundWorkspaceBundle). The restore of
+	// the pod that replaces the released one carries it to the launcher and back, so the report
+	// that confirms a restore names the release whose work it put back and deletes no other
 	// (internal/runtime/sandbox's restoreReported).
 	Release int64
 	// PodUID is the uid of the pod the work was taken off: the issue pod the save's own

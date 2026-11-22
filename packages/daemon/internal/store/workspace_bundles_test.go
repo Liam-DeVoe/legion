@@ -220,12 +220,78 @@ func TestABundleIsTakenForOneRestoreAttemptAndThenKept(t *testing.T) {
 	}
 }
 
-// The one writer of a bundle is the save of an idle release, which an outbox row runs
-// (internal/daemon's bundleIssueWorkspace), and a daemon's outbox runs only the rows of its own
-// project's keys, of a release its idle rule marked over a record of its own project
-// (readIdleView). So a bundle of an issue another project records was saved by that project's
-// daemon, for its own pod, on a database the two daemons share. The operator's spawn makes a
-// claim of that issue under this project's token, and a new pod of that claim is answered
+// A pod update round saves the work of a claim the work hold stopped in the row a release saves
+// into (PutRoundWorkspaceBundle), under an id drawn from the sequence of the release ids, so no
+// release ever has that id: the next pod takes it for its one restore as it takes a release's
+// bundle, and a late confirmation of a release deletes nothing of it. A second save of the round
+// replaces a bundle no pod has had its attempt of, under a new id. A bundle whose one attempt is
+// spent is the one copy of that work, so a save over it is refused and the row stays as it was.
+func TestARoundSavesItsWorkspaceBundleUnderAnIdNoReleaseHas(t *testing.T) {
+	ctx := context.Background()
+	const issue, project = "LEGION-945", "legion"
+	s := migratedStore(t)
+	if _, err := s.Pool().Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
+		values ($1, $1, 'LEGION', 'root', 'implementing', 1, 'in_progress', 'A', 1)`, issue); err != nil {
+		t.Fatalf("record %s: %v", issue, err)
+	}
+	at := time.Date(2026, 11, 22, 9, 30, 0, 0, time.UTC)
+	replacement := at.Add(time.Minute)
+	saved := runtime.WorkspaceBundle{Bundle: []byte("PACK the held worker's work"), Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661",
+		Tips: []string{"da4f9f492e9f8349389c243743e0a000cd1c676f"}, At: at, PodUID: releasedPodUID}
+
+	first, err := s.PutRoundWorkspaceBundle(ctx, issue, saved)
+	if err != nil || first <= 0 {
+		t.Fatalf("the round's save answered the id %d, %v; want an id above 0", first, err)
+	}
+	var next int64
+	if err := s.Pool().QueryRow(ctx, `select nextval(pg_get_serial_sequence('issue_releases', 'id'))`).Scan(&next); err != nil {
+		t.Fatalf("read the release ids' sequence: %v", err)
+	}
+	if next <= first {
+		t.Fatalf("the release ids' sequence gives %d after the round's save of %d, want the save's id drawn from it", next, first)
+	}
+	if err := s.DeleteRestoredWorkspaceBundle(ctx, issue, next); err != nil {
+		t.Fatal(err)
+	}
+	second := saved
+	second.Bundle = []byte("PACK the held worker's work, saved again")
+	again, err := s.PutRoundWorkspaceBundle(ctx, issue, second)
+	if err != nil || again <= next {
+		t.Fatalf("the round's second save answered the id %d, %v; want a new id above %d", again, err, next)
+	}
+	if _, take, err := s.TakeWorkspaceBundleForRestore(ctx, project, issue, releasedPodUID, replacement); err != nil || take != runtime.WorkspaceBundleNone {
+		t.Fatalf("the pod the work came off was answered %v, %v; want nothing", take, err)
+	}
+	read, take, err := s.TakeWorkspaceBundleForRestore(ctx, project, issue, "pod-that-replaces-it", replacement)
+	if err != nil || take != runtime.WorkspaceBundleSend || !bytes.Equal(read.Bundle, second.Bundle) || read.Release != again ||
+		read.Head != saved.Head || !slices.Equal(read.Tips, saved.Tips) {
+		t.Fatalf("the next pod was answered %q at %s, tips %v, id %d (%v, %v); want the second save, id %d", read.Bundle, read.Head, read.Tips,
+			read.Release, take, err, again)
+	}
+
+	refused := saved
+	refused.Bundle = []byte("PACK work saved over a spent bundle")
+	if id, err := s.PutRoundWorkspaceBundle(ctx, issue, refused); err == nil {
+		t.Fatalf("a save over a bundle whose one attempt is spent was accepted under the id %d", id)
+	}
+	if size, held, err := s.WorkspaceBundleSize(ctx, issue); err != nil || !held || size != len(second.Bundle) {
+		t.Fatalf("after the refused save the store holds %d bytes (held=%t, %v), want the %d of the spent bundle kept", size, held, err, len(second.Bundle))
+	}
+	noPod := saved
+	noPod.PodUID = ""
+	if _, err := s.PutRoundWorkspaceBundle(ctx, issue, noPod); err == nil {
+		t.Fatal("a save without the pod its work came off was accepted")
+	}
+}
+
+// The two writers of a bundle each write only a bundle of an issue their project records. One is
+// the save of an idle release, which an outbox row runs (internal/daemon's bundleIssueWorkspace),
+// and a daemon's outbox runs only the rows of its own project's keys, of a release its idle rule
+// marked over a record of its own project (readIdleView). The other is a pod update round's save
+// of a claim the work hold stopped, and only the project's own workflow holds the work of a tree
+// (PutRoundWorkspaceBundle). So a bundle of an issue another project records was saved by that
+// project's daemon, for its own pod, on a database the two daemons share. The operator's spawn
+// makes a claim of that issue under this project's token, and a new pod of that claim is answered
 // nothing and leaves the row and its one attempt as they were, for the other daemon's pod. A
 // bundle of an issue this project records is taken as before.
 func TestARestoreTakesNoBundleOfAnIssueAnotherProjectRecords(t *testing.T) {

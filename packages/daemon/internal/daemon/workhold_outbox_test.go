@@ -1300,8 +1300,8 @@ func TestWorkHoldMakesNoStopOfAReleasedWorkerWhileTheOpeningCommits(t *testing.T
 }
 
 // heldStopWrite is the rig's store with the work hold's stop of one claim held at its write: the
-// decision that makes the stop closes writing there and waits until proceed closes, its lock on
-// the tree's work hold row still taken. Every other call goes straight to the store.
+// decision that makes the stop has read the tree's work hold row, closes writing there and waits
+// until proceed closes. Every other call goes straight to the store.
 type heldStopWrite struct {
 	supervise.Store
 	token            claim.Token
@@ -1320,11 +1320,96 @@ func (s heldStopWrite) PutClaim(ctx context.Context, c supervise.Claim) error {
 	return s.Store.PutClaim(ctx, c)
 }
 
+// heldReadAfterStop is the rig's store with the read of the tree's work hold row after the work
+// hold's stop of one claim held: once the store has taken that stop's write, the next lock on a
+// tree's work hold row closes reading and waits until proceed closes. That lock is the read after
+// the stop (supervise's holdReadAfterStop). Every other call goes straight to the store.
+type heldReadAfterStop struct {
+	supervise.Store
+	token            claim.Token
+	written          *atomic.Bool
+	reading, proceed chan struct{}
+}
+
+func (s heldReadAfterStop) PutClaim(ctx context.Context, c supervise.Claim) error {
+	err := s.Store.PutClaim(ctx, c)
+	if err == nil && c.Token == s.token && c.State == supervise.StateSuspended && c.SuspendedBy == supervise.SuspendedByHold {
+		s.written.Store(true)
+	}
+	return err
+}
+
+func (s heldReadAfterStop) LockWorkHold(ctx context.Context, tree string) (bool, func(), error) {
+	if s.written.CompareAndSwap(true, false) {
+		close(s.reading)
+		<-s.proceed
+	}
+	return s.Store.LockWorkHold(ctx, tree)
+}
+
 // Spec step 7, H33, the other order: the released tester's stop is made and committed before the
-// opening reads the claims. The stop's decision holds the tree's work hold row while it writes the
-// stop, and the opening waits for that row. Once the stop has committed, the opening reads the
-// tester stopped by the hold, and it starts the tester once, with the opening's own task.
+// opening reads the claims. The stop's decision read the tree's work hold row and let it go at
+// once (supervise's readHoldForStop), and the read of the row after the stop waits here. So the
+// opening waits for no lock: it reads the tester stopped by the hold, queues its start and
+// commits. The read after the stop then finds the row gone and the daemon is told, but the
+// opening's start covers the tester, so the tester is started once, with the opening's own task.
 func TestWorkHoldOpeningStartsAStopCommittedBeforeIt(t *testing.T) {
+	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
+	read := heldReadAfterStop{Store: r.trees, token: r.token(claim.RoleTester), written: &atomic.Bool{},
+		reading: make(chan struct{}), proceed: make(chan struct{})}
+	letGo := sync.OnceFunc(func() { close(read.proceed) })
+	r.sup.deps.Store = read
+	r.released(claim.RoleTester)
+	r.close(4)
+
+	ran := r.inBackground(func() error { return r.runner.RunOnce(r.ctx) })
+	t.Cleanup(letGo)
+	select {
+	case <-read.reading:
+	case err := <-ran:
+		t.Fatalf("the tester's stop row returned %v before it read the row after its stop", err)
+	}
+	if state, by := r.stored(claim.RoleTester); state != supervise.StateSuspended || by != supervise.SuspendedByHold {
+		t.Fatalf("before the opening the tester is stored %s by %q, want its stop committed", state, by)
+	}
+	opened := r.inBackground(func() error {
+		result, err := intake.ApplyFact(r.ctx, r.pool, "test", "approved-4-after-the-stop", r.approval(4, 12), r.engine, r.admission)
+		if err == nil && result.Refusal != nil {
+			err = fmt.Errorf("the approval was refused: %+v", result.Refusal)
+		}
+		return err
+	})
+	t.Cleanup(letGo)
+	returned, err := r.waitsOrReturns("the opening", opened)
+	if !returned {
+		t.Fatal("the opening waits for a lock while the tester's stop row runs, want it to commit at once: the stop's decision let the tree's work hold row go once it read it")
+	}
+	if err != nil {
+		t.Fatalf("apply the approval: %v", err)
+	}
+	if got := r.startsSince(claim.RoleTester, 0); got != 1 {
+		t.Fatalf("the opening queued %d starts of the tester, want one: it reads the tester stopped by the hold", got)
+	}
+
+	letGo()
+	if err := <-ran; err != nil {
+		t.Fatalf("drain the outbox: %v", err)
+	}
+	r.drain()
+	r.wantStarted(claim.RoleTester, 0, r.opening(4, 4)+"\n\n"+"The issue's other roles may ask you questions.")
+	if stops := r.holdStops(claim.RoleTester); len(stops) != 0 {
+		t.Fatalf("after the drain the tester's stops are %+v, want the row finished", stops)
+	}
+}
+
+// Spec step 7, H33, and decision 1 of the review's first round, for the one order the decision's
+// read leaves: the released tester's stop is decided before the opening commits and written after
+// it. The stop's decision reads the tree's work hold row standing and lets it go at once
+// (supervise's readHoldForStop), and the stop's write waits here. The opening waits for no lock:
+// it reads the tester released, queues no start of it, deletes the row and commits. The stop is
+// then made. The read of the row after the stop's write finds the row gone (supervise's
+// holdReadAfterStop), so the daemon starts the tester at once, once, with the opening's task.
+func TestWorkHoldStartsAStopDecidedBeforeTheOpeningCommitsWithTheOpeningsTask(t *testing.T) {
 	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
 	write := heldStopWrite{Store: r.trees, token: r.token(claim.RoleTester), writing: make(chan struct{}), proceed: make(chan struct{})}
 	letGo := sync.OnceFunc(func() { close(write.proceed) })
@@ -1340,7 +1425,7 @@ func TestWorkHoldOpeningStartsAStopCommittedBeforeIt(t *testing.T) {
 		t.Fatalf("the tester's stop row returned %v before it wrote the stop", err)
 	}
 	opened := r.inBackground(func() error {
-		result, err := intake.ApplyFact(r.ctx, r.pool, "test", "approved-4-after-the-stop", r.approval(4, 12), r.engine, r.admission)
+		result, err := intake.ApplyFact(r.ctx, r.pool, "test", "approved-4-before-the-stop-is-written", r.approval(4, 12), r.engine, r.admission)
 		if err == nil && result.Refusal != nil {
 			err = fmt.Errorf("the approval was refused: %+v", result.Refusal)
 		}
@@ -1348,22 +1433,22 @@ func TestWorkHoldOpeningStartsAStopCommittedBeforeIt(t *testing.T) {
 	})
 	t.Cleanup(letGo)
 	returned, err := r.waitsOrReturns("the opening", opened)
-	if returned {
-		t.Errorf("the opening returned (%v) while the stop's decision held the tree's work hold row; want it to wait for the stop's commit", err)
-	}
-	letGo()
-	if err := <-ran; err != nil {
-		t.Fatalf("drain the outbox: %v", err)
-	}
 	if !returned {
-		err = <-opened
+		t.Fatal("the opening waits for a lock while the stop's decision writes the stop, want it to commit at once: the decision let the tree's work hold row go once it read it")
 	}
 	if err != nil {
 		t.Fatalf("apply the approval: %v", err)
 	}
+	if got := r.startsSince(claim.RoleTester, 0); got != 0 {
+		t.Fatalf("the opening queued %d starts of the tester, want none: it read the tester released", got)
+	}
 
+	letGo()
+	if err := <-ran; err != nil {
+		t.Fatalf("drain the outbox: %v", err)
+	}
 	if got := r.startsSince(claim.RoleTester, 0); got != 1 {
-		t.Fatalf("the opening queued %d starts of the tester, want one: it reads the tester stopped by the hold", got)
+		t.Fatalf("after the stop the outbox holds %d starts of the tester, want one: the read of the row after the stop finds the hold ended", got)
 	}
 	r.drain()
 	r.wantStarted(claim.RoleTester, 0, r.opening(4, 4)+"\n\n"+"The issue's other roles may ask you questions.")
@@ -1372,9 +1457,67 @@ func TestWorkHoldOpeningStartsAStopCommittedBeforeIt(t *testing.T) {
 	}
 }
 
+// Decision 1 of the review's first round, for the stall the review named: a decision of another
+// source that calls the runtime while the opening runs. The close's stop is held for the turn its
+// message starts in the ready implementer, so each decision of the implementer reads the tree's
+// work hold row (supervise's readHoldForStop). The daemon's own suspension of the implementer, as
+// a linger or a park asks it, stops the implementer's process, and the runtime holds that stop.
+// The opening commits meanwhile and waits for no lock: the decision let the row go once it read
+// it. Before, the decision held the row for share across the runtime's stop, and the opening,
+// which takes the row for update under the lock every fact takes, held every fact of the daemon
+// until the stop returned or the database ended the decision's lock 30 s later.
+func TestWorkHoldOpeningWaitsForNoRuntimeCallOfAnotherDecision(t *testing.T) {
+	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
+	token := r.token(claim.RoleImplementer)
+	slow := slowProcessStop{Runtime: r.rt, token: token, stopping: make(chan struct{}), proceed: make(chan struct{})}
+	letGo := sync.OnceFunc(func() { close(slow.proceed) })
+	t.Cleanup(letGo)
+	r.sup.deps.Runtime = slow
+	machine := r.live(claim.RoleImplementer)
+	r.close(4)
+	r.runOnce()
+	r.runOnce()
+	if c := machine.Claim(); !c.WorkHeld() || c.State == supervise.StateSuspended {
+		t.Fatalf("before the opening the implementer is %s, held %v; want its hold stop held for the turn its message starts", c.State, c.WorkHeld())
+	}
+
+	stopped := r.inBackground(func() error {
+		return machine.Handle(r.ctx, supervise.RequestSuspend{Claim: token, By: supervise.SuspendedByDaemon, Reason: "LEGION-208 lingers"})
+	})
+	select {
+	case <-slow.stopping:
+	case err := <-stopped:
+		t.Fatalf("the daemon's suspension of the implementer returned %v before the runtime stopped its process", err)
+	}
+	opened := r.inBackground(func() error {
+		result, err := intake.ApplyFact(r.ctx, r.pool, "test", "approved-4-while-another-stop-runs", r.approval(4, 12), r.engine, r.admission)
+		if err == nil && result.Refusal != nil {
+			err = fmt.Errorf("the approval was refused: %+v", result.Refusal)
+		}
+		return err
+	})
+	t.Cleanup(letGo)
+	returned, err := r.waitsOrReturns("the opening", opened)
+	if !returned {
+		t.Fatal("the opening waits for a lock while the daemon's suspension of the implementer waits on the runtime's stop, want it to commit at once")
+	}
+	if err != nil {
+		t.Fatalf("apply the approval: %v", err)
+	}
+
+	letGo()
+	if err := <-stopped; err != nil {
+		t.Fatalf("suspend the implementer: %v", err)
+	}
+	if state, by := r.stored(claim.RoleImplementer); state != supervise.StateSuspended || by != supervise.SuspendedByDaemon {
+		t.Fatalf("the implementer is stored %s by %q, want it suspended by the daemon", state, by)
+	}
+}
+
 // refusedHoldLock is the rig's store with every lock on a tree's work hold row refused while
-// refuse is set: the decision that asks for it goes on without it (supervise's lockHoldStop), so
-// a stop held over its claim is made under no lock. Every other call goes straight to the store.
+// refuse is set: the decision that asks for it goes on without its read (supervise's
+// readHoldForStop), so a stop held over its claim is made on no read of the row. Every other call
+// goes straight to the store.
 type refusedHoldLock struct {
 	supervise.Store
 	refuse *atomic.Bool
@@ -1387,11 +1530,11 @@ func (s refusedHoldLock) LockWorkHold(ctx context.Context, tree string) (bool, f
 	return s.Store.LockWorkHold(ctx, tree)
 }
 
-// Spec step 7, the backstop of a stop made without the lock on the tree's work hold row
+// Spec step 7, the backstop of a stop made with no read of the tree's work hold row
 // (holdStopUnmade's stopped case). The close's stop is held for the implementer's turn, and the
 // opening commits while the turn runs, so it reads the implementer working and starts nothing of
-// it. The turn's end is refused its lock, so it makes the held stop under no lock, after the
-// opening. The read of the row after that stop is refused too (supervise's holdReadAfterStop), so
+// it. The turn's end is refused its read of the row, so it makes the held stop on no read, after
+// the opening. The read of the row after that stop is refused too (supervise's holdReadAfterStop), so
 // the turn's end answers that read's error and the daemon is not told. The stop's row then meets
 // the open gate and finds the implementer stopped by the hold: it logs that the stop was made
 // after the gate opened again, naming the implementer and the version that closed the gate, and
@@ -1541,8 +1684,8 @@ func TestWorkHoldStartsAStopMadeNowWhoseLockTheDatabaseEnded(t *testing.T) {
 }
 
 // R2 and spec step 7, for the hold's stop made now while the opening commits. The decision of the
-// stop ends its lock on the tree's work hold row before the runtime stops the process
-// (supervise's stopForSuspension). The rig's runtime holds the implementer's process stop, far
+// stop read the tree's work hold row and let the lock go before the runtime stops the process
+// (supervise's readHoldForStop). The rig's runtime holds the implementer's process stop, far
 // short of the store's idle bound, and the person's approval commits the opening meanwhile
 // without waiting for the row: the opening reads the implementer live and queues no start of it.
 // Once the stop is written, the implementer's machine reads the row again, finds it gone, and the

@@ -942,11 +942,10 @@ type Store interface {
 	// release ends it. So an opening that commits while the lock is held waits for release, and a
 	// lock asked for while an opening holds the row waits for the opening's commit and then reads
 	// no row. The wait for the lock ends at ctx's deadline. release is never nil when err is nil,
-	// and the caller calls it once. A decision that may make the hold's stop holds the lock until
-	// it ends, until the runtime stops the process for the hold, until it reports a durable state,
-	// or until it checks a launch, whichever comes first (Machine.lockHoldStop). Once the hold's
-	// stop is written, the machine takes the lock again and ends it at once, to read whether the
-	// hold still stands (Machine.holdReadAfterStop).
+	// and the caller calls it once. The machine calls release at once, so the call is a read of
+	// whether the hold stands (Machine.readWorkHold): a decision that may make the hold's stop
+	// reads the row before it decides (Machine.readHoldForStop), and once the hold's stop is
+	// written, the machine reads it again (Machine.holdReadAfterStop).
 	LockWorkHold(ctx context.Context, tree string) (stands bool, release func(), err error)
 }
 
@@ -1195,14 +1194,13 @@ type Deps struct {
 	// hold of the claim's tree ended under that stop: the read of the tree's work hold row after
 	// the stop's write found the row gone (holdReadAfterStop), or the hold's stop asked again of
 	// the claim it already stopped, whose stop write is in the store, found it gone
-	// (lockHoldStop). The opening may have read the claim before the stop's write and started
+	// (readHoldForStop). The opening may have read the claim before the stop's write and started
 	// nothing of it. version is the version of the gated document that closed the gate, as the
 	// hold's stop named it (RequestSuspend.HoldVersion). The daemon applies the fact of the hold's
 	// end at once (intake.WorkHoldOpened), which starts each claim the hold stopped that no
 	// opening start covers. nil tells nobody: a daemon with no workflow keeps no hold. It is
-	// called inside the machine's decision, after the decision's lock on the row has ended, as a
-	// durable state's report is (report), and the fact it applies waits there for the lock every
-	// fact takes.
+	// called inside the machine's decision, which holds no lock on the row, and the fact it
+	// applies waits there for the lock every fact takes.
 	WorkHoldEndedUnderStop func(c Claim, version int)
 	// Paused is the daemon's project pause flag (decision 18 of dispatch://INFRA-3759's plan):
 	// the id of the open pause and true while the project is paused, 0 and false while it runs.
@@ -1377,30 +1375,17 @@ var ErrHeldByOperator = wait.New("the suspension holds until the operator resume
 var ErrHeldByWorkHold = wait.New("the work hold holds the claim until its tree's standing design gate opens")
 
 // ErrWorkHoldEnded is the work hold's stop (RequestSuspend, By SuspendedByHold) meeting a tree
-// whose hold the opening has ended: the decision took the tree's work hold row for share
-// (Store.LockWorkHold) and read no row. The stop is not made. Where the stop's row posts the stop
+// whose hold the opening has ended: the decision read the tree's work hold row for share
+// (Store.LockWorkHold) and found no row. The stop is not made. Where the stop's row posts the stop
 // again while that stop is held over the claim, the held stop is dropped, as every decision that
-// reads no row drops it (lockHoldStop), and the task it held back is sent. Where the claim already
-// stands stopped by the hold, the daemon is told that the hold has ended under the stop
+// reads no row drops it (readHoldForStop), and the task it held back is sent. Where the claim
+// already stands stopped by the hold, the daemon is told that the hold has ended under the stop
 // (Deps.WorkHoldEndedUnderStop), so it starts the claim. Where that claim's stop write is still
 // owed, the decision answers an error that wraps errClaimWriteOwed instead and tells nobody, so
 // the row asks again. The decision answers it before the fence and the row. The outbox's stop row
 // reads it as the stop not made and finishes (internal/daemon's holdStop); where the claim
 // stands stopped by the hold, its line says the stop was made and the opening starts the claim.
 var ErrWorkHoldEnded = errors.New("the work hold of the claim's tree has ended, so its stop is not made")
-
-// ErrWorkHoldLockEnded is the work hold's stop asked now (RequestSuspend, By SuspendedByHold)
-// meeting a decision whose lock on the tree's work hold row (lockHoldStop) ended before the stop
-// was decided: an earlier write of the decision landed a write a failed decision owed, and the
-// report that landing made ended the lock (settleOwedWrite, report). The opening may have
-// committed since the lock read the row, and a stop the daemon has not made when the gate opens
-// again is not made. A stop decided then would stop a claim the opening left running, and only
-// the read of the row after the stop would start it again (holdReadAfterStop). So the row of the
-// stop answers it at the point where it would make the stop, and the stop is not made: no process
-// is stopped, no released claim is taken over and nothing is written (holdStopUnlocked). It is a
-// wait: the outbox asks the stop's row again on its backoff, and that decision takes the lock
-// again (internal/daemon's holdStop).
-var ErrWorkHoldLockEnded = wait.New("the lock on the work hold's row ended before the hold's stop was made, so the stop waits for a decision that holds the lock")
 
 // ErrNoSuchDelivery is the store's refusal of a retirement of a delivery the claim's row no
 // longer holds. It is named here, rather than matched as a string where the refusal is read,
@@ -1569,13 +1554,6 @@ type Machine struct {
 	// rather than a field of the request, because the request is the event the daemon posts and
 	// carries nothing a caller may not set.
 	heldLaunch bool
-	// holdLock is the release of the lock this decision holds on its tree's work hold row
-	// (lockHoldStop), nil when it holds none. It is set and cleared under mu, within one decision:
-	// stopForSuspension ends it before the runtime stops the process for the hold, report ends it
-	// before the daemon hears a durable state, checkLaunch ends it before the launch check, and
-	// Handle ends it, if still held, once the decision has run (releaseHoldLock). The work hold's
-	// stop asked now is never decided once it is nil (holdStopUnlocked).
-	holdLock func()
 	// staleRelaunch is the stale-plugin relaunch held for the agent's turn to end, naming the pass
 	// that found the claim ("boot", "sweep"); nil for none. Relaunching a stale claim where it
 	// stands would end a turn whose worker the stale-plugin lane asked nothing of, so the relaunch
@@ -1900,22 +1878,17 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 // process to stop (holdSuspendUntilReady). A project pause's stop whose pause has ended cancels
 // nothing, since it stops nothing (pauseStopEnded, ErrPauseEnded): the start it would cut short
 // may be the very launch the resume let out. Nor does the work hold's stop cancel anything: the
-// lock its decision takes on the tree's work hold row may find the hold ended, and then it stops
-// nothing (lockHoldStop, ErrWorkHoldEnded). It waits for the start's decision, and a launch it
+// read of the tree's work hold row its decision makes may find the hold ended, and then it stops
+// nothing (readHoldForStop, ErrWorkHoldEnded). It waits for the start's decision, and a launch it
 // meets is held until its ready.
 //
-// A decision that may make the work hold's stop holds the tree's work hold row for share from
-// before the fence until its act, its writes and its send have run (lockHoldStop), so it decides
-// the stop under the lock. Three calls end the lock earlier. The runtime's stop of the process
-// for the hold (stopForSuspension) ends it first, because that stop can wait for minutes, and the
-// database ends a transaction left open that long. A durable state's report (report) and the
-// launch check (checkLaunch) end it too, because each can wait on the lock every fact takes,
-// which the opening holds while it waits for the row: the daemon applies a ready's or a failure's
-// fact, and the store checks the tree's epoch under that lock. So the hold's opening can read the
-// claims before a stop's write. Each write of the hold's stop is followed by a read of the row in
-// a transaction of its own (holdReadAfterStop), and where the opening has deleted the row, the
-// daemon starts the claim. The work hold's stop asked now is not decided once its decision's lock
-// has ended (holdStopUnlocked).
+// A decision that may make the work hold's stop reads the tree's work hold row for share before
+// the fence and lets the lock go at once (readHoldForStop). So no decision holds the row across
+// its act, its writes, its send or a call of the runtime, and the hold's opening, which waits for
+// the row under the lock every fact takes, waits for no decision. The opening can then read the
+// claims after a decision's read and before its stop's write. Each write of the hold's stop is
+// followed by a read of the row in a transaction of its own (holdReadAfterStop), and where the
+// opening has deleted the row, the daemon starts the claim.
 //
 // Handle gives ev through the store's rule first; the comment that opens its body says why.
 func (m *Machine) Handle(ctx context.Context, ev Event) (err error) {
@@ -1940,14 +1913,11 @@ func (m *Machine) Handle(ctx context.Context, ev Event) (err error) {
 	// A project pause's hold whose pause has ended goes before anything of the decision reads the
 	// hold, so the fence, the row, the send and every place a hold fires read only one that stands.
 	m.dropEndedPauseHold()
-	// The work hold's row is taken for share where the decision may make the hold's stop, and let
-	// go only after everything below, the deferred send included (lockHoldStop), unless the
-	// runtime's stop of the process for the hold, a durable state's report or the launch check
-	// lets it go first (stopForSuspension, report, checkLaunch). A stop whose hold
-	// the opening ended goes here, before anything of the decision reads the hold, as the pause's
-	// does above; the hold's stop asked now is answered ErrWorkHoldEnded.
-	stopDropped, err := m.lockHoldStop(ctx, ev)
-	defer m.releaseHoldLock()
+	// The work hold's row is read where the decision may make the hold's stop, and the lock ends
+	// at that read (readHoldForStop). A stop whose hold the opening ended goes here, before
+	// anything of the decision reads the hold, as the pause's does above; the hold's stop asked
+	// now is answered ErrWorkHoldEnded.
+	stopDropped, err := m.readHoldForStop(ctx, ev)
 	if stopDropped {
 		// The work hold's stop may have held a task back (sendPending hands nothing while a stop is
 		// held), so the task is sent once the decision has run, whatever its row or the fence made
@@ -2559,39 +2529,9 @@ func (m *Machine) OnDurableState(callback func(Claim, ClaimState)) {
 // report kept from the decision that owed it (makeOwedReports). Both go through here so that
 // what a report is — a state and the claim it is true of — is spelled in one place, and so is
 // the daemon that may have installed no callback at all.
-//
-// A decision that holds the lock on its tree's work hold row (lockHoldStop) lets it go here,
-// before the daemon hears the state, whatever the state. The daemon applies a ready's or a
-// failure's fact at once (internal/daemon's terminal), and that fact waits on the lock every fact
-// takes (intake.SerializeFacts). The hold's opening holds that lock while it waits for the row,
-// so a decision that kept the row would wait on the opening, and the opening on the decision,
-// until the database ended the idle transaction. The launch check lets the lock go for the same
-// reason (checkLaunch). Once the lock is gone, a stop this same decision makes after the report is
-// made without the lock, and the opening may have read the claims before it. Every write of the
-// hold's stop is followed by a read of the row in a transaction of its own (holdReadAfterStop),
-// and where the opening has deleted the row, the daemon starts the claim. The hold's stop asked
-// now meets a report before its own stop only where an earlier write of the decision lands a
-// write a failed decision owed, and makes that decision's reports (settleOwedWrite). That
-// decision makes no stop: it answers ErrWorkHoldLockEnded, a wait, and the stop's row asks again
-// with a lock of its own (holdStopUnlocked).
 func (m *Machine) report(c Claim, state ClaimState) {
-	m.releaseHoldLock()
 	if m.onDurableState != nil {
 		m.onDurableState(c, state)
-	}
-}
-
-// releaseHoldLock ends the lock this decision holds on its tree's work hold row, if it holds
-// one, and once: it is nil after, so the early releases and Handle's deferred one never both end
-// it. A decision ends it early at three calls: the runtime's stop of the process for the hold
-// (stopForSuspension), which can wait for minutes, and a durable state's report (report) and the
-// launch check (checkLaunch), each of which can wait on the lock every fact takes. The daemon's
-// start of a claim whose hold ended under its stop ends it too (holdEndedUnderStop). The caller
-// holds mu.
-func (m *Machine) releaseHoldLock() {
-	if release := m.holdLock; release != nil {
-		m.holdLock = nil
-		release()
 	}
 }
 

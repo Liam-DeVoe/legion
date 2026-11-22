@@ -31,7 +31,8 @@ import (
 // that a project's pause still keeps and that the round does not ask (unansweredClaims,
 // dispatch://INFRA-4109 R8). A role's own push is what keeps its work: what it has not pushed when
 // the pod goes is lost with the pod, unless the pod's disk is a kept volume that the issue's next
-// pod mounts (roundKeptVolume). An answer from every role the round asks ends the round early
+// pod mounts (roundKeptVolume), or the round saved it for a claim the work hold stopped
+// (saveHeldWork). An answer from every role the round asks ends the round early
 // once nothing else holds it (roundEnd.holding, dispatch://INFRA-4203 R1); no answer holds it past
 // the bound. An operator's suspension of a claim is the one wait that outlasts the bound, and
 // only over a pod that is there: a gone pod ends its round whatever the hold (readReplacement).
@@ -45,10 +46,12 @@ import (
 // left unpushed goes with the pod (or, on a kept volume that the issue's next pod mounts, stays
 // there: roundKeptVolume), so the replacement first reads the issue's workspace through a role
 // whose process runs in the pod, and names on its line, and to the issue where the read found work
-// or failed, what the read found (replacePodForRound, readRoundWorkspace). Every role claim of one
-// issue shares that issue's one Sandbox and pod, so the issue is what groups them. A group whose
-// claims' locators name two different pods is left alone this tick: a replacement is already in
-// flight, and the next tick reads it settled.
+// or failed, what the read found (replacePodForRound, readRoundWorkspace). Where the work hold
+// stopped such a claim, the replacement then saves the workspace as a bundle, as an idle release
+// does, and the next pod restores it (saveHeldWork). Every role claim of one issue shares that
+// issue's one Sandbox and pod, so the issue is what groups them. A group whose claims' locators
+// name two different pods is left alone this tick: a replacement is already in flight, and the
+// next tick reads it settled.
 //
 // Two kinds of claim are left out of every group, and so out of every decision below. A retired
 // claim runs nothing on any pod: it holds no process, it blocks no round, and a round an earlier
@@ -1037,6 +1040,19 @@ type podReplacement struct {
 // The read decides nothing: the replacement is made at the same sweep whether the read found
 // work, found none, or failed.
 //
+// Where the round passed over a claim that the work hold stopped (heldWorkClaims), the
+// replacement then saves the issue's workspace as a bundle, still outside the pod's launch turn
+// (saveHeldWork). The daemon keeps the pod of such a claim for its worker's unpushed work, and the
+// replacement takes the pod's disk as an idle release's teardown takes it, so the round keeps that
+// work as the release does: the next pod restores the bundle before any role starts. A save that
+// fails holds the replacement: nothing is replaced, a line names the issue, and the next sweep
+// saves again. Each save is bounded to one sweep interval. A save that keeps failing holds the
+// round past its bound, so it is told to the operator's side once the bound has come
+// (tellLateRound, heldWorkUnsavedReason), as a ReplacePod that keeps failing is. A replacement
+// that the last word refuses deletes the bundle it saved (dropRoundSave): the pod and its disk
+// stay, and a bundle left behind would be applied over the work done on that disk since. A
+// ReplacePod that fails in any other way keeps the bundle, since the pod may be gone already.
+//
 // ReplacePod is called once, with the process of a claim that records this round's own pod. A
 // failed ReplacePod is logged and retried at the next sweep: nothing is ended, so the round
 // still holds every answered worker's next task. A ReplacePod that keeps failing holds the round
@@ -1047,12 +1063,13 @@ type podReplacement struct {
 // answers or by its bound. It names each claim with a session that the round did not wait for
 // and that had not answered (notWaitedFor): a failed claim, and a claim the round passed over.
 // What each left unpushed went with the pod, unless the pod's disk is a kept volume that the
-// issue's next pod mounts (roundKeptVolume), where the work stays. The line names too what the
-// read of the workspace found, or why no read was made (workspaceRead.attrs). One that the bound
-// made — a claim had not answered, a turn ran, or a claim's report named background work or was
-// missing, when the last word let it through — is logged on a second line of its own, `supervise
-// pod update replaced at the bound`, naming the claims that answered and those that did not, the
-// turns that ran, and apart from them the roles whose reports held the round
+// issue's next pod mounts (roundKeptVolume), where the work stays, or the replacement saved it as
+// a bundle (saveHeldWork), which the next pod restores. The line names too what the read of the
+// workspace found, or why no read was made (workspaceRead.attrs), and the bundle the replacement
+// saved. One that the bound made — a claim had not answered, a turn ran, or a claim's report named
+// background work or was missing, when the last word let it through — is logged on a second line
+// of its own, `supervise pod update replaced at the bound`, naming the claims that answered and
+// those that did not, the turns that ran, and apart from them the roles whose reports held the round
 // (dispatch://INFRA-2981 R8, whose production check reads those words; dispatch://INFRA-4203 R4).
 // That line is written only where the last word ran and let the replacement through. A runtime
 // that found no pod to replace and returned nil without asking the last word replaced nothing, so
@@ -1128,6 +1145,16 @@ func (s *supervision) replacePodForRound(ctx context.Context, replace podReplace
 		return
 	}
 	read := s.readRoundWorkspace(ctx, issue, round, live, reading.process, clock)
+	held := heldWorkClaims(live, round, clock)
+	saved, err := s.saveHeldWork(ctx, issue, held, reading.process)
+	if err != nil {
+		if ctx.Err() == nil {
+			s.log.Error(heldWorkNotSaved, "issue", issue, "round", round, "pod", pod, "held", namesOf(held), "error", err)
+			s.tellLateRound(ctx, issue, live, round, pod, reasons, heldWorkUnsavedReason(err), clock)
+		}
+		return
+	}
+	read.saved = saved
 	limited, done := context.WithTimeout(ctx, s.plan.orphanSweep)
 	defer done()
 	// ended is what the last word read of the round's end under the launch turn, which is the
@@ -1138,6 +1165,7 @@ func (s *supervision) replacePodForRound(ctx context.Context, replace podReplace
 	var ended roundEnd
 	if err := s.runtime.ReplacePod(limited, reading.process, s.replacementDue(issue, round, &ended)); err != nil {
 		if errors.Is(err, errReplacementNotDue) {
+			s.dropRoundSave(ctx, issue, round, saved)
 			s.log.Info("supervise: this update round's replacement was no longer due when its pod's launch turn came; nothing was replaced and the round stays open",
 				"issue", issue, "round", round, "pod", pod, "reason", err)
 			return
@@ -1168,7 +1196,10 @@ func (s *supervision) replacePodForRound(ctx context.Context, replace podReplace
 // round that had not answered it (lostClaims), under unansweredMembers. Where the pod's disk is a
 // kept volume that is still there and that the issue's next launch keeps (roundKeptVolume, read
 // once the replacement is made, which may have marked the volume for a reset), the line carries
-// keptVolume and the message says the work is on that volume.
+// keptVolume and the message says the work is on that volume. Where the replacement saved the
+// workspace as a bundle first (workspaceRead.saved, saveHeldWork), the line carries the save's id
+// and size as workspaceBundleSave and workspaceBundleBytes, and the message says that the next
+// pod restores the work.
 func (s *supervision) roundReplaced(ctx context.Context, issue, round, pod, reasons string, ended roundEnd,
 	named []supervise.Claim, read workspaceRead, members []supervise.Claim) {
 	bounded := ended.bounded()
@@ -1181,6 +1212,9 @@ func (s *supervision) roundReplaced(ctx context.Context, issue, round, pod, reas
 	}
 	if kept {
 		line = append(line, "keptVolume", true)
+	}
+	if read.saved.id > 0 {
+		line = append(line, "workspaceBundleSave", read.saved.id, "workspaceBundleBytes", read.saved.bytes)
 	}
 	s.log.Info("supervise: the pod of this update round is replaced and the round is over", append(line, read.attrs()...)...)
 	if bounded {
@@ -1230,6 +1264,10 @@ func (s *supervision) tellIssueOfRound(ctx context.Context, issue, round, body, 
 // notMade is why no read was made, and it is set with the round alone, or with the round and a
 // replacer that no process ran under (processlessRead). Only a read that was made is kept
 // (podUpdateWorkspace).
+//
+// saved is the bundle the replacement saved of the workspace after the read (saveHeldWork), the
+// zero roundSave for none. The replacement sets it on its own copy of the read, never on the read
+// the round keeps, since each attempt of the replacement saves again.
 type workspaceRead struct {
 	round   string
 	by      roundReplacer
@@ -1237,6 +1275,91 @@ type workspaceRead struct {
 	work    runtime.WorkspaceWork
 	err     error
 	notMade string
+	saved   roundSave
+}
+
+// roundSave is what a round's replacement saved of the issue's workspace before it replaced the
+// pod (saveHeldWork): the id the store saved the bundle under (store.PutRoundWorkspaceBundle) and
+// the bundle's size in bytes. The zero roundSave is no save.
+type roundSave struct {
+	id    int64
+	bytes int
+}
+
+// heldWorkClaims is the part of passedOverClaims that the work hold stopped (supervise's
+// Claim.WorkHeld): the claims whose unpushed work the replacement saves before it replaces the
+// pod (saveHeldWork). A claim whose hold stop is still held for its agent's turn is not passed
+// over, so it is not one of them: its agent runs in the pod and answers the round.
+func heldWorkClaims(group []supervise.Claim, round string, clock roundClock) []supervise.Claim {
+	return slices.DeleteFunc(passedOverClaims(group, round, clock), func(c supervise.Claim) bool { return !c.WorkHeld() })
+}
+
+// saveHeldWork saves the issue's workspace as a bundle before the round's replacement takes the
+// pod's disk, where the round passed over a claim that the work hold stopped (held,
+// heldWorkClaims). It is the idle release's save (outbox's bundleIssueWorkspace) for a round:
+// the shim of the role whose process the pod is replaced through (process) builds the bundle
+// (runtime.WorkspaceBundler), and the store keeps it in the row a release saves into
+// (store.PutRoundWorkspaceBundle), so the next pod restores it before any role starts, as it
+// restores a release's bundle (sandbox's launchers.restoreWorkspace). It answers the save, or the
+// zero roundSave where it saved nothing: no claim the hold stopped, a runtime that bundles no
+// workspace, which shares no workspace between its roles, or a workspace with nothing unpushed,
+// whose bundle is empty.
+//
+// The bundle is saved on a kept volume too (roundKeptVolume): the replacement can mark the volume
+// for a reset, and the next launch deletes a Sandbox whose disk shape changed, and the bundle is
+// then the one copy of the work. Where the volume stays, the next pod drops the bundle, because
+// the volume holds the work (store.DropHeldWorkspaceBundle).
+//
+// An error is a save that failed: a bundle the shim could not build, one above
+// runtime.MaxWorkspaceBundleBytes, or a store that did not take it, a bundle of earlier work whose
+// one restore attempt is spent among them. The caller holds the replacement on it. The save is
+// bounded to one sweep interval, as the read of the workspace is.
+func (s *supervision) saveHeldWork(ctx context.Context, issue string, held []supervise.Claim, process runtime.Known) (roundSave, error) {
+	if len(held) == 0 {
+		return roundSave{}, nil
+	}
+	bundler, ok := s.runtime.(runtime.WorkspaceBundler)
+	if !ok {
+		return roundSave{}, nil
+	}
+	role, named := process.Claim.Role()
+	if !named {
+		return roundSave{}, fmt.Errorf("the claim %s names no role to bundle the workspace through", process.Claim)
+	}
+	limited, done := context.WithTimeout(ctx, s.plan.orphanSweep)
+	defer done()
+	bundle, err := bundler.BundleWorkspace(limited, issue, role)
+	if err != nil {
+		return roundSave{}, err
+	}
+	size := bundle.Size()
+	switch {
+	case size > runtime.MaxWorkspaceBundleBytes:
+		return roundSave{}, fmt.Errorf("the workspace's unpushed work is %d bytes, over the %d a bundle carries", size, runtime.MaxWorkspaceBundleBytes)
+	case size == 0:
+		return roundSave{}, nil
+	}
+	id, err := s.supervisor.store.PutRoundWorkspaceBundle(limited, issue, bundle)
+	if err != nil {
+		return roundSave{}, err
+	}
+	return roundSave{id: id, bytes: size}, nil
+}
+
+// dropRoundSave deletes the bundle the replacement saved (saved, saveHeldWork) where the last word
+// refused that replacement (errReplacementNotDue): the pod and its disk stay, the roles go on
+// working on that disk, and a bundle left in the store would be restored over that work if the pod
+// went in another way. The next sweep that replaces the pod saves again. The delete is the
+// restore's own (store.DeleteRestoredWorkspaceBundle), which deletes the row only while it is
+// still this save's. A delete that fails is logged, and the next save replaces the row.
+func (s *supervision) dropRoundSave(ctx context.Context, issue, round string, saved roundSave) {
+	if saved.id == 0 {
+		return
+	}
+	if err := s.supervisor.store.DeleteRestoredWorkspaceBundle(ctx, issue, saved.id); err != nil && ctx.Err() == nil {
+		s.log.Warn("supervise: the bundle saved for an update round's replacement that was not made could not be deleted; the next save replaces it",
+			"issue", issue, "round", round, "save", saved.id, "error", err)
+	}
 }
 
 // processlessRead is the read of a replacement by issue or at a launch (by): none was made,
@@ -1421,6 +1544,47 @@ func refusedReason(err error) string {
 	return boundPastReason + "The runtime refused the pod replacement: " + storetext.FarSideError(err.Error())
 }
 
+// heldWorkUnsavedReason is the reason the late-round notice gives for a round whose replacement a
+// save of the work of a claim the work hold stopped holds past its bound (saveHeldWork), naming
+// the save's error. The error is kept in the notice as refusedReason keeps the runtime's.
+func heldWorkUnsavedReason(err error) string {
+	return boundPastReason + "The daemon cannot save the issue workspace of a claim that the work hold stopped, so it does not replace the pod. The save failed: " +
+		storetext.FarSideError(err.Error())
+}
+
+// heldWorkNotSaved is the line of a round's replacement that the work of a claim the work hold
+// stopped holds back: the save failed (replacePodForRound, saveHeldWork), or no role process runs
+// in the pod to make it (heldWorkKeepsPod).
+const heldWorkNotSaved = "supervise: the issue workspace of a claim the work hold stopped could not be saved before this update round's replacement; nothing was replaced and the round stays open"
+
+// errNoProcessToSave is the save that no role process in the round's pod can make: only a shim
+// builds the bundle (heldWorkKeepsPod).
+var errNoProcessToSave = errors.New("no role process runs in the pod, and only a role process can bundle the issue workspace")
+
+// heldWorkKeepsPod is the walk's part of a round whose pod no role process runs in, where the
+// work hold stopped a claim of the round (heldWorkClaims): only a role's shim can bundle the
+// workspace (saveHeldWork), so the round does not replace that pod by issue, as an idle release
+// keeps a pod whose bundle it cannot build (outbox's bundleIssueWorkspace). It holds the
+// replacement as a failed save holds it: the line names the issue, the held claims and the error,
+// and once the round's bound has come the operator's side is told once (tellLateRound,
+// heldWorkUnsavedReason). The round still passes over the held claim. It goes on once a role
+// process runs in the pod, since a launch into the pod keeps the pod for the held work
+// (roundPodEnds), or once the hold ends. An operator's suspension and a project pause's hold are
+// read first, as roundPodEnds reads them, and a runtime that replaces no pod by issue takes no pod
+// here, so neither is this pod's to hold. It reports whether it held the replacement.
+func (s *supervision) heldWorkKeepsPod(ctx context.Context, issue string, live []supervise.Claim, round, pod, reasons string, clock roundClock) bool {
+	if _, replaces := s.runtime.(runtime.IssuePodReplacer); !replaces || len(heldByOperator(live, round, clock)) > 0 || clock.held() {
+		return false
+	}
+	held := heldWorkClaims(live, round, clock)
+	if len(held) == 0 {
+		return false
+	}
+	s.log.Error(heldWorkNotSaved, "issue", issue, "round", round, "pod", pod, "held", namesOf(held), "error", errNoProcessToSave)
+	s.tellLateRound(ctx, issue, live, round, pod, reasons, heldWorkUnsavedReason(errNoProcessToSave), clock)
+	return true
+}
+
 // roundWithNoProcessInItsPod decides a round, before or past its bound, whose live claims record
 // no process in the round's own pod. There is nothing to replace the pod through, and that is no
 // statement about the pod: a suspension lets the worker's process go (letGo clears the locator),
@@ -1491,6 +1655,9 @@ func (s *supervision) roundWithNoProcessInItsPod(ctx context.Context, issue stri
 		s.log.Info("supervise: no claim of this update round records a process in its pod, and a project's pause holds the pod; the round waits for the hold to end",
 			"issue", issue, "round", round, "pod", pod)
 	default:
+		if s.heldWorkKeepsPod(ctx, issue, live, round, pod, reasons, clock) {
+			return nil, true
+		}
 		if replace := s.replacementByIssue(issue, live, round, pod, reasons, clock); replace != nil {
 			return replace, true
 		}
@@ -1665,13 +1832,18 @@ func (s *supervision) replacementByIssue(issue string, live []supervise.Claim, r
 // the launch runs, so the bound is read then rather than when the claim was resumed
 // (roundPodEndsAtLaunch).
 //
-// Four things hold the pod, read in this order:
+// Five things hold the pod, read in this order:
 //
 //   - An operator's suspension of a claim the round asks (heldByOperator), whatever the round's
 //     bound: it is a person's hold (dispatch://INFRA-2981 R5).
 //   - A project's pause's hold that stands on the pod (roundClock.held), whatever the round's
 //     bound: the pause kept the pod for the work on its disk (decision 12 of
 //     dispatch://INFRA-3759).
+//   - A claim of the round that the work hold stopped (heldWorkClaims), whatever the round's
+//     bound: no role process runs in the pod, and only a role's shim can bundle the work the
+//     claim left there (saveHeldWork), as only a shim can for an idle release. The pod stays until
+//     a role process runs in it, through which the round saves the work and replaces the pod, or
+//     until the hold ends (heldWorkKeepsPod).
 //   - Before the round's bound, a claim of the group that a project's pause still keeps: the one
 //     exception (podHolds.owes). Every claim of the group is read, and not only the claims the
 //     round waits for (waitingClaims): the launch the pause owes can be a claim that the round
@@ -1697,7 +1869,7 @@ func (s *supervision) replacementByIssue(issue string, live []supervise.Claim, r
 //     round passes over holds nothing either, even where the daemon suspended it after its ask
 //     reached it (roundClock.passesOver, dispatch://INFRA-4109 R1).
 //
-// Past the bound only the first two hold the pod: the bound ends every other wait of a round. The
+// Past the bound only the first three hold the pod: the bound ends every other wait of a round. The
 // bound has already moved by the time the pause held the pod (roundClock.roundBound).
 func roundPodEnds(group []supervise.Claim, round string, clock roundClock) (bool, string) {
 	if held := heldByOperator(group, round, clock); len(held) > 0 {
@@ -1705,6 +1877,10 @@ func roundPodEnds(group []supervise.Claim, round string, clock roundClock) (bool
 	}
 	if clock.held() {
 		return false, "a project's pause holds the pod"
+	}
+	if held := heldWorkClaims(group, round, clock); len(held) > 0 {
+		return false, "the work hold stopped " + strings.Join(namesOf(held), ", ") +
+			", and no role process runs in the pod to save the work as a bundle"
 	}
 	if clock.pastBound(group, round) {
 		return true, ""
@@ -2309,7 +2485,11 @@ func (s *supervision) podlessRound(ctx context.Context, issue string, group []su
 			return nil
 		}
 		if read {
-			if replace := s.replacementByIssue(issue, s.liveGroup(group), round, sandboxPod, roundReasons(group, round), clock); replace != nil {
+			live := s.liveGroup(group)
+			if s.heldWorkKeepsPod(ctx, issue, live, round, sandboxPod, roundReasons(group, round), clock) {
+				return nil
+			}
+			if replace := s.replacementByIssue(issue, live, round, sandboxPod, roundReasons(group, round), clock); replace != nil {
 				return replace
 			}
 		}
@@ -3207,7 +3387,8 @@ func awaitsAnswer(c supervise.Claim, round string, clock roundClock) bool {
 //     that claim only once its agent is ready, and a ready claim is no longer suspended.
 //
 // Work that a claim left out of the round left unpushed on the pod's disk goes with the pod, unless
-// that disk is a kept volume the issue's next pod mounts (roundKeptVolume). The
+// that disk is a kept volume the issue's next pod mounts (roundKeptVolume), or the work hold
+// stopped the claim and the replacement saved the workspace as a bundle (saveHeldWork). The
 // replacement's log line names each failed claim and each claim the round passed over that it
 // did not wait for and that had not answered (notWaitedFor). Where it passed over a claim the
 // daemon suspended, the replacement first reads the issue's workspace, and the line names what
@@ -3514,7 +3695,10 @@ The daemon starts each role again, in the same session, on a new pod. Each role 
 // wait for (notWaitedFor), or, for a pod no role process ran in, each member of the round that had
 // not answered it (lostClaims) — and what the read found (workspaceRead.found). Where kept is
 // true, the pod's disk is a kept volume that is still there and that the issue's next pod mounts
-// (roundKeptVolume), so the message says the work is on that volume, as podWentMessage does. The
+// (roundKeptVolume), so the message says the work is on that volume, as podWentMessage does.
+// Where the disk is not kept and the replacement saved the workspace as a bundle first
+// (workspaceRead.saved, saveHeldWork), the message says that the next pod restores that work, and
+// not that it is lost. The
 // issue's spec requires this message (dispatch://INFRA-4109 R1, R7). Another agent reads it, so
 // it follows ASD-STE100, as podWentMessage does.
 func workspaceLostMessage(round, reasons string, named []supervise.Claim, read workspaceRead, kept bool) string {
@@ -3523,9 +3707,12 @@ func workspaceLostMessage(round, reasons string, named []supervise.Claim, read w
 		roles = "These roles did not answer the update ask before the replacement. No process of these roles ran in the pod: "
 	}
 	gone, work := "The pod and its disk are gone.", "Work that is not on a branch at origin is lost."
-	if kept {
+	switch {
+	case kept:
 		gone = "The pod is gone. Its disk is a kept volume, and the volume is still there."
 		work = "Work that is not on a branch at origin is on that volume. The next pod of this issue mounts the volume."
+	case read.saved.id > 0:
+		work = "Before the replacement, the daemon saved the work that is not on a branch at origin as a bundle. The next pod of this issue restores the bundle before any role starts."
 	}
 	return fmt.Sprintf(`The daemon replaced the pod that ran this issue's roles. The daemon opened an update round over that pod (%s). %s %s
 
