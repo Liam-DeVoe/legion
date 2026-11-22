@@ -1796,6 +1796,7 @@ dispatch_memory:
   - *go_workspace
   - *dispatch_command_tests
   - 'packages/envoy/internal/clock/*'
+  - 'packages/envoy/internal/clock/clocktest/*'
   - 'packages/envoy/internal/githubtest/*'
   - 'packages/envoy/internal/testnats/*'
   - 'packages/envoy/internal/testport/*'
@@ -1834,6 +1835,7 @@ dispatch_multiprocess:
   - *go_workspace
   - *dispatch_command_tests
   - 'packages/envoy/internal/clock/*'
+  - 'packages/envoy/internal/clock/clocktest/*'
   - 'packages/envoy/internal/githubtest/*'
   - 'packages/envoy/internal/testnats/*'
   - 'packages/envoy/internal/testport/*'
@@ -1874,6 +1876,7 @@ dispatch_two_builds_go:
   - *go_workspace
   - *dispatch_command_tests
   - 'packages/envoy/internal/clock/*'
+  - 'packages/envoy/internal/clock/clocktest/*'
   - 'packages/envoy/internal/githubtest/*'
   - 'packages/envoy/internal/testnats/*'
   - 'packages/envoy/internal/testport/*'
@@ -1967,6 +1970,7 @@ dispatch_two_builds:
   - *go_workspace
   - *dispatch_command_tests
   - 'packages/envoy/internal/clock/*'
+  - 'packages/envoy/internal/clock/clocktest/*'
   - 'packages/envoy/internal/githubtest/*'
   - 'packages/envoy/internal/testnats/*'
   - 'packages/envoy/internal/testport/*'
