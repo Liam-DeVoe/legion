@@ -27,6 +27,7 @@ import {
 import { control, controlRow } from "./filters";
 import {
   ACME,
+  boardAtRest,
   cardsOf,
   drawnColumns,
   issuesTable,
@@ -1050,9 +1051,7 @@ test("a drop between two placed cards whose ranks run against their Places sends
     });
     await page.setViewportSize({ height: 1200, width: 1920 });
     const card = (key: string) => page.locator(`[data-board-card="${key}"]`);
-    const changed = page.getByText("The board changed while you were moving this card", {
-      exact: false,
-    });
+    const board = page.getByRole("region", { name: "Project board" });
     for (const address of ["group=legion_phase&layout=board", "layout=board"]) {
       await page.goto(`/projects/${ACME}/issues?${address}`);
       const queue = page.locator(
@@ -1073,9 +1072,14 @@ test("a drop between two placed cards whose ranks run against their Places sends
         .waitForResponse((response) => response.request().method() === "PATCH", { timeout: 10_000 })
         .catch(() => undefined);
       await mouseDrag(page, card("ACME-5"), card("ACME-3"), 4);
-      await written;
+      const write = await written;
       expect(refused, address).toEqual([]);
-      await expect(changed, address).toHaveCount(0);
+      // A write the server took, or a refusal in the page that names why; never the Board's
+      // alert, which is what a write the server refused draws. The Board draws that alert as it
+      // lands the answer, so it is read once the cards are at rest.
+      if (write === undefined) await expect(board.getByTestId("board-refusal")).toBeVisible();
+      await boardAtRest(page);
+      await expect(board.getByRole("alert"), address).toHaveCount(0);
     }
   } finally {
     await context.close();
