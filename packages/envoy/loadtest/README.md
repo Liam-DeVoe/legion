@@ -3610,7 +3610,9 @@ same run directory — and only the deployment changes, from a Kubernetes namesp
 virtual machines and a managed instance. The machines and the instance are INFRA-1051's to create
 and to remove: no subcommand creates, resizes or removes one.
 
-Every subcommand needs `--config`, the deployment file (below); there is no default. After `up`,
+Every subcommand needs `--config`, the deployment file (below); there is no default. A subcommand
+reads that file once, when it starts, and works from that reading to its end: an edit made while
+a `series` or a `seed` runs reaches the next subcommand, not the running one. After `up`,
 a subcommand takes the run named in `<root>/current` unless `--run` names another. The run
 directory is `${LOADTEST_VM_ROOT:-$TMPDIR/dispatch-loadtest-vm}/<run id>`, on the worker pod:
 `state.json` (mode 600), the run's own OS Login keypair with the `oslogin.imported` record of

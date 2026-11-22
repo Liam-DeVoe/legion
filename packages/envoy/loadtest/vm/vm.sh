@@ -482,6 +482,7 @@ parse() {
   [ -n "${OPT[config]:-}" ] || die "$CMD: --config is required: name the deployment's JSON file (there is no default; the deployment is dispatch://INFRA-1051's, and nothing of it is named in this script)"
   CONFIG=$(abs_file --config "${OPT[config]}")
   jq -e . "$CONFIG" >/dev/null 2>&1 || die "$CMD: --config $CONFIG is not readable JSON"
+  cfg_load
   check_placement
   check_route_mixes
 }
@@ -493,11 +494,107 @@ positional() {
 
 # ---- the deployment file -------------------------------------------------------------------------
 
+# The deployment file is read once per subcommand, by cfg_load, which parse runs before anything
+# else reads it: one jq takes every value of the file into CFG_TYPE and CFG_VALUE, by its path,
+# with its type and what `jq -r` prints of it, and cfg_read answers a filter out of them. Before,
+# every value read ran a jq of its own over the same file: 297 of them in one up and 408 in a
+# step, each a process started and waited on in turn. So the file is the file as the subcommand
+# found it, and an edit while a series runs reaches the next subcommand, as an edit of .vms or
+# .containers always has (check_placement reads those once, in parse). What cfg_read cannot answer
+# exactly as jq would -- an object or an array, which jq prints whole, and a step jq refuses, such
+# as a name under a string -- still runs jq, and so does every read of a shell that never ran
+# cfg_load.
+CFG_LOADED=""
+declare -A CFG_TYPE=() CFG_VALUE=()
+
+# CFG_DUMP: the program cfg_load runs. For each path of the file, three fields, each ended by a
+# NUL: the path as a filter spells it (.name for a name of letters, digits and '_', ["key"] for
+# any other key, [N] for an index), the value's jq type, and what `jq -r` prints of it, empty for
+# null and false since `// empty` drops them. A string that holds a NUL is typed `nul`, which
+# cfg_read leaves to jq: no shell variable holds a NUL. The last field is `end`, so a reading cut
+# short is no reading, and a file whose top level is not an object gives none.
+# shellcheck disable=SC2016 # a jq program, not a shell expansion
+CFG_DUMP='if type == "object" then
+  (. as $doc
+    | paths
+    | . as $p
+    | ($doc | getpath($p)) as $v
+    | (if ($v | type) == "string" and ($v | explode | any(. == 0)) then "nul" else ($v | type) end) as $t
+    | ($p | map(if type == "number" then "[\(.)]"
+        elif test("^[A-Za-z_][A-Za-z0-9_]*$") then ".\(.)"
+        else "[\(tojson)]" end) | join("")),
+      $t,
+      (if $t == "string" then $v elif $t == "number" or $v == true then ($v | tojson) else "" end)
+    | ., "\u0000"),
+  "end", "\u0000"
+else empty end'
+
+# cfg_load: the deployment file read, once, into CFG_TYPE and CFG_VALUE (above). A file this cannot
+# read leaves nothing loaded, and every read runs jq as it did before.
+cfg_load() {
+  local fields=() i
+  CFG_LOADED="" CFG_TYPE=() CFG_VALUE=()
+  mapfile -d '' -t fields < <(jq -j "$CFG_DUMP" "$CONFIG" 2>/dev/null)
+  ((${#fields[@]} % 3 == 1)) && [ "${fields[-1]}" = end ] || return 0
+  for ((i = 0; i + 3 < ${#fields[@]}; i += 3)); do
+    CFG_TYPE[${fields[i]}]=${fields[i + 1]}
+    CFG_VALUE[${fields[i]}]=${fields[i + 2]}
+  done
+  CFG_LOADED=$CONFIG
+}
+
+# cfg_read FILTER: what `jq -r "FILTER // empty"` prints of the file cfg_load read, into CFG_READ,
+# when FILTER is a path -- steps of .name, ["key"] with no quote or backslash in the key, and [N]
+# -- and the answer is a string, a number, true or nothing; 1 for every other case, which the
+# caller hands to jq. A step under null or under nothing is nothing, as jq has it; a name under
+# anything but an object, and an index under anything but an array, are jq's to refuse.
+cfg_read() {
+  local rest=$1 path="" step kind key type=object
+  local name_re='^\.([A-Za-z_][A-Za-z0-9_]*)(.*)$' key_re='^\["([^"\\]*)"\](.*)$'
+  local index_re='^\[(0|[1-9][0-9]*)\](.*)$' ident_re='^[A-Za-z_][A-Za-z0-9_]*$'
+  CFG_READ=""
+  [ -n "$CFG_LOADED" ] && [ "$CFG_LOADED" = "$CONFIG" ] && [ -n "$rest" ] || return 1
+  while [ -n "$rest" ]; do
+    if [[ $rest =~ $name_re ]]; then
+      step=.${BASH_REMATCH[1]} kind=name rest=${BASH_REMATCH[2]}
+    elif [[ $rest =~ $key_re ]]; then
+      key=${BASH_REMATCH[1]} kind=name rest=${BASH_REMATCH[2]}
+      step="[\"$key\"]"
+      [[ ! $key =~ $ident_re ]] || step=.$key
+    elif [[ $rest =~ $index_re ]]; then
+      step="[${BASH_REMATCH[1]}]" kind=index rest=${BASH_REMATCH[2]}
+    else
+      return 1
+    fi
+    # The rest of the filter is still read through after nothing, so a filter jq cannot compile
+    # is still jq's to refuse.
+    case $type:$kind in
+      object:name | array:index)
+        path+=$step
+        type=${CFG_TYPE[$path]-absent}
+        ;;
+      null:* | absent:*) ;;
+      *) return 1 ;;
+    esac
+  done
+  case $type in
+    string | number | boolean) CFG_READ=${CFG_VALUE[$path]} ;;
+    null | absent) ;;
+    *) return 1 ;;
+  esac
+  # What a command substitution of jq's output keeps: no trailing newline.
+  while [[ $CFG_READ == *$'\n' ]]; do CFG_READ=${CFG_READ%$'\n'}; done
+}
+
 # cfg FILTER [DEFAULT]: one value of the deployment file. Without a DEFAULT, a missing value is
 # refused naming the filter, so no command runs half configured.
 cfg() {
   local v
-  v=$(jq -r "$1 // empty" "$CONFIG") || die "reading $1 from $CONFIG failed"
+  if cfg_read "$1"; then
+    v=$CFG_READ
+  else
+    v=$(jq -r "$1 // empty" "$CONFIG") || die "reading $1 from $CONFIG failed"
+  fi
   if [ -z "$v" ]; then
     [ $# -ge 2 ] || die "the deployment file $CONFIG names no $1"
     v=$2
@@ -532,6 +629,10 @@ vm_keys() { jq -r '.vms // {} | keys_unsorted[]' "$CONFIG"; }
 # container_vm_configured ROLE: the machine the deployment file starts ROLE on, empty when it
 # places ROLE nowhere. check_placement is what reads it; everything else takes CONTAINER_VM.
 container_vm_configured() {
+  if cfg_read ".containers[\"$1\"]"; then
+    [ -z "$CFG_READ" ] || printf '%s\n' "$CFG_READ"
+    return 0
+  fi
   jq -r --arg role "$1" ".containers[\$role] // empty" "$CONFIG" ||
     die "reading .containers from $CONFIG failed"
 }
@@ -633,7 +734,11 @@ port_of() { cfg_valid port ".ports.$1"; }
 # load_listener_port N: the port of the Nth load listener (1-based), from ports.load_listeners.
 load_listener_port() {
   local v
-  v=$(jq -r ".ports.load_listeners[$(($1 - 1))] // empty" "$CONFIG")
+  if cfg_read ".ports.load_listeners[$(($1 - 1))]"; then
+    v=$CFG_READ
+  else
+    v=$(jq -r ".ports.load_listeners[$(($1 - 1))] // empty" "$CONFIG")
+  fi
   [ -n "$v" ] || die "the deployment file $CONFIG gives no ports.load_listeners[$(($1 - 1))]: name a port for each of the ${#LOAD_LISTENERS[@]} load listeners"
   valid port "$v" || die "the deployment file $CONFIG gives ports.load_listeners[$(($1 - 1))] as '$v', which is not a port"
   printf '%s\n' "$v"
