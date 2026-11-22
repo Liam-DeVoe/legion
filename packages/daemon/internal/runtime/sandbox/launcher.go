@@ -83,6 +83,13 @@ type launcherSession struct {
 	// apart by its uid and not by this, so a role relaunched in the pod being released spends
 	// nothing.
 	podCreated time.Time
+	// repo is the repository this launcher's pod was built from, as the pod's own workspace fetch
+	// names it (fetchRepositoryName, read off the pod the connection was accepted for), and "" for
+	// a pod whose fetch names none. The pod's workspace is a clone of it, so it is what a
+	// release's saved work is compared with before any of it is sent to this pod
+	// (store.TakeWorkspaceBundleForRestore): work of another repository has no bases there. No pod
+	// changes its fetch, so the read at the hello holds for the session.
+	repo string
 	// keptSince is when the API server created this launcher's pod's Sandbox, where that Sandbox
 	// owns the issue's kept volume (ownsKeptVolume), and the zero time for a pod on a volume of its
 	// own. A Sandbox created before a release's save holds the volume the work was taken off, so
@@ -116,12 +123,12 @@ func newLaunchers(setting leakguard.Setting, leakCheck LeakCheckReader, saved ru
 		saved: saved, restored: restored, held: held, guardKilled: guardKilled, volume: volume, log: log}
 }
 
-// accept registers a launcher connection of the pod of issue, created at podCreated, whose
-// Sandbox owns the issue's kept volume since keptSince (the zero time for a pod on a volume of its
-// own). The newest authenticated connection for a role wins: a half-open predecessor is closed so
-// its pending requests fail instead of waiting forever.
-func (d *launchers) accept(token claim.Token, issue string, podCreated, keptSince time.Time, hello shimwire.LauncherHello) *launcherSession {
-	s := &launcherSession{owner: d, token: token, issue: issue, podCreated: podCreated, keptSince: keptSince, id: hello.LauncherID, podUID: hello.PodUID,
+// accept registers a launcher connection of the pod of issue, built from repo, created at
+// podCreated, whose Sandbox owns the issue's kept volume since keptSince (the zero time for a pod
+// on a volume of its own). The newest authenticated connection for a role wins: a half-open
+// predecessor is closed so its pending requests fail instead of waiting forever.
+func (d *launchers) accept(token claim.Token, issue, repo string, podCreated, keptSince time.Time, hello shimwire.LauncherHello) *launcherSession {
+	s := &launcherSession{owner: d, token: token, issue: issue, repo: repo, podCreated: podCreated, keptSince: keptSince, id: hello.LauncherID, podUID: hello.PodUID,
 		ready: make(chan struct{}), waiters: map[string]chan shimwire.Frame{},
 		leakCheckTag: hello.LeakCheckTag, leakCheckInstalled: hello.LeakCheckInstalled, resumesBySession: hello.ResumesBySession}
 	d.mu.Lock()
@@ -540,14 +547,18 @@ const bundleRestoreBound = 2 * time.Minute
 // that replaces it. Every other pod spends the attempt the first time it asks, and a pod that
 // is not newer than the save (launcherSession.podCreated) spends it on a refusal: nothing is
 // sent to it, and nothing is sent to the pod after it either, since its roles go on working and
-// pushing from the workspace its own fetch provisioned. A bundle of a repository the issue has
-// left, or one that names no repository, is spent on a refusal of its own, whatever the pod's age:
-// this pod's workspace is a clone of the issue's repository now, which can hold none of the saved
-// commits' bases (runtime.WorkspaceBundleRefusedRepository). The store keeps that work in a table
-// of its own, which holds no pod. It is the one refusal this hop logs nothing of: the daemon logs
-// it where it writes it on the issue, with whether that write landed (internal/daemon's
-// tellBundleRepositoryRefused), and a second line here would say the same thing to the same
-// reader, the operator reading this daemon's log.
+// pushing from the workspace its own fetch provisioned. Whatever the pod's age, the attempt is
+// spent on a refusal of its own where the bundle is of another repository than the one this pod
+// was built from (launcherSession.repo), where the bundle names no repository, and where this
+// pod's repository could not be read (runtime.WorkspaceBundleRefusedRepository): this pod's
+// workspace is a clone of its own repository, which can hold none of the saved commits' bases,
+// and an unknown is never taken for a match. It is the pod's repository that is read and never
+// the issue's record, since the record can have moved, or moved back, while this pod provisioned
+// from what it named before. The store keeps that work in a table of its own, which holds no
+// pod. It is the one refusal this hop logs nothing of: the daemon logs it where it writes it on
+// the issue, with whether that write landed (internal/daemon's tellBundleRepositoryRefused), and
+// a second line here would say the same thing to the same reader, the operator reading this
+// daemon's log.
 //
 // A pod whose own kept volume holds the work takes none of it, and the store drops the bundle
 // first. That pod's Sandbox owns the issue's kept volume and was created before the save
@@ -560,8 +571,8 @@ const bundleRestoreBound = 2 * time.Minute
 // drop runs at a role's start, after the pod's launcher connected, and that launcher runs after
 // both init containers of the pod. So a kept volume whose init failed never drops the bundle its
 // reset needs: the reset replaces that Sandbox, and the pod of the new Sandbox restores the work.
-// The drop keeps a bundle of a repository the issue has left, too
-// (runtime.HeldWorkspaceBundleDrop): the work is in the old repository's workspace on the volume,
+// The drop keeps a bundle of another repository than this pod's, too
+// (runtime.HeldWorkspaceBundleDrop): the work is in that repository's workspace on the volume,
 // which this pod does not work in, so the take refuses that bundle for its repository and the
 // daemon writes on the issue where it is.
 func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, podUID string) {
@@ -569,9 +580,10 @@ func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, pod
 		return
 	}
 	// The session names the issue its pod is of, as the Secret its launcher authenticated with
-	// did, and when that pod was created, as the API server stamped it. For a pod of a Sandbox
-	// that owns the issue's kept volume, it names when that Sandbox was created too. A launcher
-	// that never arrives is the start's own error to report, not this hop's.
+	// did, the repository that pod was built from, and when that pod was created, as the API
+	// server stamped it. For a pod of a Sandbox that owns the issue's kept volume, it names when
+	// that Sandbox was created too. A launcher that never arrives is the start's own error to
+	// report, not this hop's.
 	session, err := d.await(ctx, token, podUID)
 	if err != nil || session.issue == "" {
 		return
@@ -580,7 +592,7 @@ func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, pod
 	restoring, cancel := context.WithTimeout(ctx, bundleRestoreBound)
 	defer cancel()
 	if !session.keptSince.IsZero() && d.held != nil {
-		held, dropped, err := d.held(restoring, issue, podUID, session.keptSince)
+		held, dropped, err := d.held(restoring, issue, podUID, session.repo, session.keptSince)
 		if err != nil {
 			d.log.Warn("launcher bundle: the saved workspace bundle that this pod's kept volume may hold could not be dropped, so the pod is sent nothing and the bundle stays for the next start",
 				"issue", issue, "launcher", token, "pod", podUID, "volume_created", session.keptSince, "error", err)
@@ -592,7 +604,7 @@ func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, pod
 			return
 		}
 	}
-	bundle, take, err := d.saved(restoring, issue, podUID, session.podCreated)
+	bundle, take, err := d.saved(restoring, issue, podUID, session.repo, session.podCreated)
 	if err != nil {
 		d.log.Warn("launcher bundle: the saved workspace bundle could not be taken for this pod's one restore attempt, so the pod starts on what was pushed",
 			"issue", issue, "launcher", token, "pod", podUID, "error", err)

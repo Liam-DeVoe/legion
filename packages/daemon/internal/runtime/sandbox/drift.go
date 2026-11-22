@@ -450,15 +450,19 @@ func (r *Runtime) PodRepository(_ context.Context, k runtime.Known) (string, err
 	if err := r.checkLocator(*k.Locator); err != nil {
 		return "", err
 	}
-	pod := r.storedPod(k.Locator.Sandbox.Name)
-	if pod == nil || string(pod.UID) != k.Locator.Sandbox.PodUID {
-		return "", nil
+	return r.locatedPodRepository(*k.Locator), nil
+}
+
+// locatedPodRepository is the repository the pod loc records was built from, as that pod's own
+// workspace fetch names it (fetchRepositoryName), and "" where this runtime's store holds no pod
+// of loc's Sandbox under loc's pod uid, or the pod's fetch names none. PodRepository answers it,
+// and so does the bundle of a release's save (BundleWorkspace), so the two read one pod alike.
+func (r *Runtime) locatedPodRepository(loc runtime.Locator) string {
+	pod := r.storedPod(loc.Sandbox.Name)
+	if pod == nil || string(pod.UID) != loc.Sandbox.PodUID {
+		return ""
 	}
-	repo, named := fetchRepository(pod)
-	if !named {
-		return "", nil
-	}
-	return repo.String(), nil
+	return fetchRepositoryName(pod)
 }
 
 // ReplacePod satisfies runtime.Runtime: it ends the pod k's process runs in, once its update round

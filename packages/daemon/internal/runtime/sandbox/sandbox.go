@@ -1092,8 +1092,13 @@ func (r *Runtime) BundleWorkspace(ctx context.Context, issue string, role claim.
 	// this work came off is the one pod the restore refuses by name, so that a role relaunched
 	// in it before the teardown is answered nothing and leaves the bundle's one attempt for the
 	// pod that replaces it (store.TakeWorkspaceBundleForRestore). It is the pod runningRoleConn
-	// checked, the running pod the claim's locator records.
-	bundle.PodUID = loc.Sandbox.PodUID
+	// checked, the running pod the claim's locator records. The repository that pod was built
+	// from is read off it too: its workspace is a clone of that repository, so the work is in
+	// that repository's history, and the restore refuses the bundle to a pod of any other. Both
+	// are read off the one pod the bundle came through, so they never name two pods. A pod this
+	// store no longer holds under that uid answers no repository, and the save is refused for it
+	// (store.Store.PutWorkspaceBundle).
+	bundle.PodUID, bundle.Repo = loc.Sandbox.PodUID, r.locatedPodRepository(loc)
 	return bundle, nil
 }
 

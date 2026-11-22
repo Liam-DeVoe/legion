@@ -152,7 +152,8 @@ func TestRepositoryCorrectionLabelsTheSavedBundleWithThePodsOwnRepository(t *tes
 		t.Fatalf("the saved bundle is labelled %q, want %q: the work is of the repository the released pod was a clone of", got, rig.issue.Repo)
 	}
 	// The pod of the new repository, created after the save: the store refuses it the work.
-	bundle, outcome, err := rig.st.TakeWorkspaceBundleForRestore(ctx, "legion", rig.issue.Key, "pod-of-the-new-repository", time.Now().UTC().Add(time.Hour), unrenamed)
+	bundle, outcome, err := rig.st.TakeWorkspaceBundleForRestore(ctx, "legion", rig.issue.Key, "pod-of-the-new-repository", correctedRepo,
+		time.Now().UTC().Add(time.Hour), unrenamed)
 	if err != nil {
 		t.Fatalf("take the saved bundle for the pod of the new repository: %v", err)
 	}
@@ -167,15 +168,16 @@ func TestRepositoryCorrectionLabelsTheSavedBundleWithThePodsOwnRepository(t *tes
 	}
 }
 
-// A runtime that releases issue pods (runtime.IssueReleaser) answers the repository of every pod
-// it holds (runtime.Runtime.PodRepository), and "" only where it cannot say: the Sandbox runtime
-// answers "" for a pod its store does not hold, or holds under another uid. An empty answer at the
-// save is that unknown, and the save takes it as it takes a read that failed: the release is
-// cancelled under the bundle-save hold, no bundle is stored, and the role in the pod stays idle in
-// it. The record's repository is no answer for the pod: a correction can have moved the record
-// while the pod is still a clone of the repository the issue left, and a bundle of that
-// repository labelled with the new one is sent into the new clone. Control: with the record as
-// the fallback, the save stores the bundle under acme/widgets and the release goes on.
+// A runtime that releases issue pods (runtime.IssueReleaser) names the repository of the pod a
+// bundle came off (runtime.WorkspaceBundle.Repo), and none only where it cannot read it: the
+// Sandbox runtime names none for a pod its store does not hold, or holds under another uid. The
+// store refuses a save that names no repository (store.Store.PutWorkspaceBundle), and the save
+// takes that as it takes any refused save: the release is cancelled under the bundle-save hold,
+// no bundle is stored, and the role in the pod stays idle in it. The record's repository is no
+// answer for the pod: a correction can have moved the record while the pod is still a clone of
+// the repository the issue left, and a bundle of that repository labelled with the new one is
+// sent into the new clone. Control: a store that saves a bundle with no repository stores this
+// one, and the release goes on.
 func TestASaveThatCannotReadThePodsRepositoryCancelsTheRelease(t *testing.T) {
 	rig := newIdleRig(t)
 	ctx := context.Background()
@@ -226,10 +228,10 @@ func TestRepositoryCorrectionKeepsTheRefusedBundleThroughTheNextRelease(t *testi
 			rig := newIdleRig(t)
 			ctx := context.Background()
 			rig.earlierReleasesBundle(t)
-			refused := idleRigEarlierBundle(rig.issue.Key, time.Now())
+			refused := idleRigEarlierBundle(rig.issue.Key, rig.issue.Repo, time.Now())
 			rig.corrects(t, correctedRepo, correctedBranch)
 			rig.podBuiltFrom(correctedRepo)
-			if _, outcome, err := rig.st.TakeWorkspaceBundleForRestore(ctx, "legion", rig.issue.Key, releasedPodUID, time.Now().UTC(), unrenamed); err != nil ||
+			if _, outcome, err := rig.st.TakeWorkspaceBundleForRestore(ctx, "legion", rig.issue.Key, releasedPodUID, correctedRepo, time.Now().UTC(), unrenamed); err != nil ||
 				outcome != runtime.WorkspaceBundleRefusedRepository {
 				t.Fatalf("the new pod of %s was answered %v (%v), want the earlier bundle refused for its repository", correctedRepo, outcome, err)
 			}

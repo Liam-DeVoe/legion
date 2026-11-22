@@ -1010,7 +1010,7 @@ func (g *rig) reportLauncher(token claim.Token, state shimwire.LauncherState) {
 	if pod == nil {
 		g.t.Fatal("cannot report launcher state without its pod")
 	}
-	s := g.r.launchers.accept(token, launcherIssue(token), pod.CreationTimestamp.Time, g.keptSince(token), shimwire.LauncherHello{LauncherID: "test-" + string(token), PodUID: string(pod.UID)})
+	s := g.r.launchers.accept(token, launcherIssue(token), fetchRepositoryName(pod), pod.CreationTimestamp.Time, g.keptSince(token), shimwire.LauncherHello{LauncherID: "test-" + string(token), PodUID: string(pod.UID)})
 	s.mu.Lock()
 	s.state = state
 	close(s.ready)
@@ -1171,7 +1171,7 @@ func (g *rig) connect(token claim.Token) { g.connectRunning(token, 0) }
 func (g *rig) connectRunning(token claim.Token, running uint64) {
 	server, client := net.Pipe()
 	pod := g.pod(SandboxName(token))
-	session := g.r.launchers.accept(token, launcherIssue(token), pod.CreationTimestamp.Time, g.keptSince(token), shimwire.LauncherHello{
+	session := g.r.launchers.accept(token, launcherIssue(token), fetchRepositoryName(pod), pod.CreationTimestamp.Time, g.keptSince(token), shimwire.LauncherHello{
 		LauncherID: "test-" + string(token), PodUID: string(pod.UID),
 		LeakCheckTag: g.leakCheckTag, LeakCheckInstalled: g.leakCheckInstalled, ResumesBySession: g.resumesBySession,
 	})

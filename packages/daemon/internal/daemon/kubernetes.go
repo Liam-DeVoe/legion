@@ -616,7 +616,7 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 // serving as the rule every provisioning token's repository is read through
 // (repositories.serving, the repository state's own, so a configured rename's mint follows the
 // owner whose installation holds the repository now), with leftRepository as the rule a saved
-// bundle's restore reads whether the issue has left the bundle's repository by
+// bundle's restore reads whether the bundle's repository and the asking pod's are two by
 // (repositories.left, the rule the update round reads a pod by), with the repositories the
 // project works as the ones its repository caches follow (cached: those of its live issue records
 // and of the launches since their last read, workflowRuntime.cacheRepositories), with the store's
@@ -651,17 +651,17 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, served func(ghrepo.Re
 		// attempt: the first pod that is not the one the work came off takes it, whether the
 		// bundle is sent or that pod is refused as no newer than the save, and nothing is
 		// answered for that bundle again. The take is project's alone (savedWorkspaceBundle). A
-		// bundle of a repository the issue has left is refused too, and that refusal is the one a
-		// person must read, so the take is wrapped with the message it writes on the issue
-		// (tellBundleRepositoryRefused).
+		// bundle of another repository than the one the asking pod was built from is refused too,
+		// and that refusal is the one a person must read, so the take is wrapped with the message
+		// it writes on the issue (tellBundleRepositoryRefused).
 		opts.SavedWorkspaceBundle = tellBundleRepositoryRefused(st, opts.Project, leftRepository, writeOnIssue, opts.Log)
 		opts.WorkspaceBundleRestored = st.DeleteRestoredWorkspaceBundle
 		// A pod whose Sandbox owns the issue's kept volume, and was created before the save,
 		// mounts the volume the work was taken off. The runtime asks this drop first for such a
 		// pod, and the store deletes the bundle the take would answer, without its body, so the
 		// pod is sent nothing and the bundle holds the issue's pod no longer. The drop reads the
-		// take's repository rule (heldWorkspaceBundle): a bundle of a repository the issue has left
-		// is kept for the take, which refuses it and tells the issue.
+		// take's repository rule (heldWorkspaceBundle): a bundle of another repository than the
+		// pod's is kept for the take, which refuses it and tells the issue.
 		opts.HeldWorkspaceBundle = heldWorkspaceBundle(st, opts.Project, leftRepository)
 		// The cache trimmer's own half: every report a pod's trimmer sends — of a sweep that
 		// left the volume above its low mark, or of the trimmer switching itself off — reaches
@@ -706,14 +706,14 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, served func(ghrepo.Re
 
 // savedWorkspaceBundle is st's take of a release's saved work for a pod of project, the runtime's
 // project token (sandbox.Options.Project), in the shape the runtime calls it
-// (runtime.SavedWorkspaceBundle), with left as the rule it reads whether the issue has left the
-// bundle's repository by (repositories.left). A bundle is project's only where project records
-// its issue (store.Store.TakeWorkspaceBundleForRestore): on a database shared with another
-// project's daemon, a bundle of that project's issue is that daemon's, whatever pod of this
-// daemon asks.
-func savedWorkspaceBundle(st *store.Store, project string, left func(saved, recorded string) bool) runtime.SavedWorkspaceBundle {
-	return func(ctx context.Context, issue, podUID string, podCreated time.Time) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
-		return st.TakeWorkspaceBundleForRestore(ctx, project, issue, podUID, podCreated, left)
+// (runtime.SavedWorkspaceBundle), with left as the rule it reads whether the bundle's repository
+// and the asking pod's are two repositories by (repositories.left). A bundle is project's only
+// where project records its issue (store.Store.TakeWorkspaceBundleForRestore): on a database
+// shared with another project's daemon, a bundle of that project's issue is that daemon's,
+// whatever pod of this daemon asks.
+func savedWorkspaceBundle(st *store.Store, project string, left func(saved, pod string) bool) runtime.SavedWorkspaceBundle {
+	return func(ctx context.Context, issue, podUID, podRepo string, podCreated time.Time) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
+		return st.TakeWorkspaceBundleForRestore(ctx, project, issue, podUID, podRepo, podCreated, left)
 	}
 }
 
@@ -722,14 +722,14 @@ func savedWorkspaceBundle(st *store.Store, project string, left func(saved, reco
 // project is the runtime's project token (sandbox.Options.Project). The drop follows the take's
 // project rule (store.Store.DropHeldWorkspaceBundle): a bundle of an issue that project does not
 // record is another project's daemon's, and a pod of this daemon drops none of it. It follows the
-// take's repository rule by the same left (repositories.left): a bundle of a repository the issue
-// has left, or one that names no repository, is not dropped, because the volume holds that work in
-// the workspace of its own repository, which the pod does not work in, or in one nothing recorded.
-// The take that runs next refuses it, and the daemon writes on the issue where the work is
+// take's repository rule by the same left (repositories.left): a bundle of another repository
+// than the pod's, or where either name is unknown, is not dropped, because the volume holds that
+// work in the workspace of its own repository, which the pod is not known to work in. The take
+// that runs next refuses it, and the daemon writes on the issue where the work is
 // (tellBundleRepositoryRefused).
-func heldWorkspaceBundle(st *store.Store, project string, left func(saved, recorded string) bool) runtime.HeldWorkspaceBundleDrop {
-	return func(ctx context.Context, issue, podUID string, keptSince time.Time) (runtime.WorkspaceBundle, bool, error) {
-		return st.DropHeldWorkspaceBundle(ctx, project, issue, podUID, keptSince, left)
+func heldWorkspaceBundle(st *store.Store, project string, left func(saved, pod string) bool) runtime.HeldWorkspaceBundleDrop {
+	return func(ctx context.Context, issue, podUID, podRepo string, keptSince time.Time) (runtime.WorkspaceBundle, bool, error) {
+		return st.DropHeldWorkspaceBundle(ctx, project, issue, podUID, podRepo, keptSince, left)
 	}
 }
 

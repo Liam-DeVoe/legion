@@ -11,8 +11,7 @@
 --
 -- repo_before is the repository the record held before the newest correction, empty when there
 -- has been none: what the next task of each worker names beside the new repository, so a role
--- reading its task knows which clone its earlier work is in, and what tells a restore that a
--- saved bundle is of the repository the issue has left.
+-- reading its task knows which clone its earlier work is in.
 --
 -- repo_corrected_at is the moment the daemon applied that correction, null when there has been
 -- none, which is what the spec means by recording the correction with the moment it happened: every
@@ -33,13 +32,13 @@
 -- is not applied into the new clone (dispatch://INFRA-3136/spec R3), and this column is what the
 -- restore reads to tell the two apart. This release ships both halves: the idle release writes it
 -- from the repository the released pod itself was built from (daemon's bundleIssueWorkspace,
--- store.PutWorkspaceBundle), and the restore refuses a bundle whose repository the issue has left
--- by it (store.TakeWorkspaceBundleForRestore, runtime.WorkspaceBundleRefusedRepository). Every row
--- already there takes its issue's issues.repo: no release before this one could move a record off
--- its repository, so the repository the record holds is the one the bundle's work is of. A row
--- whose issue no record holds, or whose record holds no repository yet, keeps the empty name, and
--- the restore refuses a bundle with no repository too, keeping it in workspace_bundles_refused, as
--- it never knows which repository that work is of.
+-- store.PutWorkspaceBundle), and the restore refuses a bundle by it to a pod built from another
+-- repository (store.TakeWorkspaceBundleForRestore, runtime.WorkspaceBundleRefusedRepository).
+-- Every row already there takes its issue's issues.repo: no release before this one could move a
+-- record off its repository, so the repository the record holds is the one the bundle's work is
+-- of. A row whose issue no record holds, or whose record holds no repository yet, keeps the empty
+-- name, and the restore refuses a bundle with no repository too, keeping it in
+-- workspace_bundles_refused, as it never knows which repository that work is of.
 --
 -- workspace_bundles_refused keeps the bundles the restore refused for their repository, one row
 -- per refusal under an id of its own, so two refusals of one issue are two rows. The take moves

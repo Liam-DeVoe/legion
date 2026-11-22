@@ -119,8 +119,8 @@ func TestTheIdleViewReadsTheUnrestoredBundleAndTheRunningHoldStreak(t *testing.T
 		t.Fatalf("view = %+v, want no stored bundle and no running streak", view)
 	}
 
-	if err := st.PutWorkspaceBundle(ctx, rootIssue, 7, "",
-		runtime.WorkspaceBundle{Bundle: []byte("PACK"), Head: "abc", At: now, PodUID: "pod-being-released"}); err != nil {
+	if err := st.PutWorkspaceBundle(ctx, rootIssue, 7, runtime.WorkspaceBundle{Bundle: []byte("PACK"), Head: "abc", At: now,
+		PodUID: "pod-being-released", Repo: "acme/widgets"}); err != nil {
 		t.Fatalf("save a bundle for %s: %v", rootIssue, err)
 	}
 	if err := st.RecordPodHold(ctx, PodHold{Project: "legion", Issue: rootIssue, Reason: "image", At: now}); err != nil {

@@ -48,13 +48,15 @@ type WorkspaceBundle struct {
 	// start, its workspace is the one the work came from, and it must leave the attempt for the
 	// pod that replaces it. The read fills it back in from the row.
 	PodUID string
-	// Repo is the repository (owner/name) the saved work is of: the repository the released pod
-	// was built from, which the save reads off the pod and cancels without (internal/daemon's
-	// bundleIssueWorkspace). The store fills it on the read. The save takes it as an argument of
-	// its own (store.Store.PutWorkspaceBundle) for the reason Release is one: the bundle is the
-	// shim's, built in a pod that knows nothing of the daemon's record. It is empty for a row an
-	// earlier release saved, whose repository nothing recorded. The store refuses a bundle whose
-	// repository the issue has left, and one that names none (WorkspaceBundleRefusedRepository).
+	// Repo is the repository (owner/name) the saved work is of: the repository the pod the work
+	// was taken off was built from, which is the repository its workspace is a clone of. The
+	// runtime fills it beside PodUID, off that same pod (sandbox's Runtime.BundleWorkspace reads
+	// it from the pod's own workspace fetch), and "" where it cannot read it. The store refuses a
+	// save without it, as it refuses one without PodUID (store.Store.PutWorkspaceBundle), and the
+	// read fills it back in from the row. A row an earlier release saved, whose repository
+	// nothing recorded, reads back "". The store refuses a bundle whose repository is not the one
+	// the pod asking for it is a clone of, and one that names none
+	// (WorkspaceBundleRefusedRepository).
 	Repo string
 }
 
@@ -96,12 +98,13 @@ const (
 	// bookmarks back behind it. The work stays in the database for a person to recover and holds
 	// the issue's pod (workflow.IdleHoldBundleUnrestored).
 	WorkspaceBundleRefusedOlder
-	// WorkspaceBundleRefusedRepository: the bundle is of a repository the issue has left, as
-	// Dispatch corrected it and the record followed (record.Store.CorrectIssueRepository), or it
-	// names no repository, so nothing says which repository it is of, and nothing is sent to this
-	// pod or to any pod after it. The pod's workspace is a clone of the issue's repository now,
-	// which can hold none of the saved commits' bases, so the bundle cannot be applied there. The
-	// refusal is the bundle's one attempt, and the store moves the bundle to
+	// WorkspaceBundleRefusedRepository: the bundle is of another repository than the one this
+	// pod's workspace is a clone of, as when the pod is built from the repository a correction in
+	// Dispatch moved the issue to (record.Store.CorrectIssueRepository), or the bundle names no
+	// repository, or this pod's repository could not be read, and nothing is sent to this pod or
+	// to any pod after it. A clone of another repository can hold none of the saved commits'
+	// bases, so the bundle cannot be applied there, and a name nothing read is never taken for a
+	// match. The refusal is the bundle's one attempt, and the store moves the bundle to
 	// workspace_bundles_refused as it records it, where the issue's later releases neither
 	// overwrite nor delete it. The daemon writes on the issue where it is, since nothing puts it
 	// back (internal/daemon's bundleRepositoryMessage); it holds no pod, because a hold for work no

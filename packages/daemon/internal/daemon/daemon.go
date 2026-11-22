@@ -468,7 +468,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		// copies the plan and would otherwise read no drift at all.
 		plan.recordedRepository = recordedRepositoryOf(workflow.recordedIssue)
 		// Everything that writes on a Dispatch issue outside the workflow itself reads this one
-		// field: the runtime's refusal of a saved bundle of a repository the issue has left
+		// field: the runtime's refusal of a saved bundle for its repository
 		// (tellBundleRepositoryRefused, over plan.writeBodyOnIssue), which is built before the
 		// workflow attaches to supervision, and supervision's own writes, which read it through
 		// the plan it holds (plan.writeOnIssue).
@@ -1032,8 +1032,8 @@ type plan struct {
 	// enqueue (workflowRuntime.enqueueOutbox); nil in a deployment with no workflow, which has no
 	// outbox to write to and no Dispatch issue to write on. run fills it beside repository, before
 	// the runtime is built and before the workflow attaches, because it is the one enqueue outside
-	// the workflow: the runtime's refusal of a saved bundle of a repository the issue has left
-	// reads it (tellBundleRepositoryRefused, over plan.writeBodyOnIssue), and so does every write
+	// the workflow: the runtime's refusal of a saved bundle for its repository reads it
+	// (tellBundleRepositoryRefused, over plan.writeBodyOnIssue), and so does every write
 	// supervision makes on an issue, through the plan it holds: the update-round sweep's notices,
 	// asks and issue message (reconcilePodUpdates) and the stall backstop's owner notices
 	// (tellStallBackstopped). Rows that must land together go in one call, since a stall told the

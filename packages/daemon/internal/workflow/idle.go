@@ -30,9 +30,10 @@ const (
 	// holds, because Dispatch moved the issue and the daemon's record followed it
 	// (record.Store.CorrectIssueRepository). Such a pod is a replacement's to take and never a
 	// release's: every role in it works a clone of the repository the issue has left, and the
-	// bundle a release would save out of it is work no pod of the issue can ever restore
-	// (store.TakeWorkspaceBundleForRestore refuses it). It is the image hold's neighbour for
-	// that reason — a pod already behind is a relaunch's to replace, not a release's to save.
+	// bundle a release would save out of it is work of a repository the issue's next pods are no
+	// clones of, which the restore refuses to each of them (store.TakeWorkspaceBundleForRestore).
+	// It is the image hold's neighbour for that reason — a pod already behind is a relaunch's to
+	// replace, not a release's to save.
 	IdleHoldRepository
 	// IdleHoldPluginContract: a live claim of the pod speaks a plugin contract other than the
 	// daemon's current one.
@@ -68,9 +69,9 @@ const (
 	IdleHoldReleasing
 	// IdleHoldBundleUnrestored: a release of this pod saved a bundle of unpushed work whose
 	// restore no pod has confirmed. Releasing the pod again would store a bundle of a workspace
-	// that never had that work over the one that does. A bundle refused because it is of a
-	// repository the issue has left is no such bundle: no pod can ever restore it, so it holds
-	// nothing (store's workspaceBundleUnrestored).
+	// that never had that work over the one that does. A bundle refused for its repository
+	// (runtime.WorkspaceBundleRefusedRepository) is no such bundle: no pod is ever sent it again,
+	// so it holds nothing (store's workspaceBundleUnrestored).
 	IdleHoldBundleUnrestored
 	// IdleHoldBundleTooLarge: the save of the issue's last release found the workspace's unpushed
 	// work over the bound a release carries (runtime.MaxWorkspaceBundleBytes), so the pod is kept
@@ -257,8 +258,9 @@ type IdleDecision struct {
 //   - no bundle of the issue's unpushed work is waiting to be restored. A release saves that
 //     work out of the pod it deletes, and the pod that replaces it puts it back; until a
 //     restore is confirmed, a second release would take a bundle of a workspace that never had
-//     that work and store it over the one that does. A bundle the store refused because it is
-//     of a repository the issue has left, or names none, waits for nothing and holds nothing
+//     that work and store it over the one that does. A bundle the store refused for its
+//     repository — of another repository than the pod that asked for it, or where either name is
+//     unknown — waits for nothing and holds nothing
 //     (runtime.WorkspaceBundleRefusedRepository): the refusal moves it to a table of its own,
 //     where no release of the issue overwrites or deletes it and no pod is ever sent it, so a
 //     hold for it would never end. The daemon writes on the issue where the work is (store's
@@ -276,8 +278,8 @@ type IdleDecision struct {
 //     which the daemon reads of the pod itself against that record). A correction of the
 //     repository in Dispatch leaves the pod a clone of the repository the issue has left, and
 //     the update round that replaces it opens on a later sweep: a release taken in between
-//     would save that pod's unpushed work, which the store then refuses to every pod of the
-//     issue, since no clone of the new repository can take commits of the old one
+//     would save that pod's unpushed work, which the store then refuses to every pod of the new
+//     repository, since no clone of it can take commits of the old one
 //     (store.TakeWorkspaceBundleForRestore). The pod is replaced rather than released, as a pod
 //     on an image this daemon does not serve is;
 //

@@ -97,8 +97,10 @@ func (r *releaseRuntime) IssueSandbox(string) (string, bool) {
 // BundleWorkspace refuses a role whose stored claim records no process before it bundles
 // anything, as the Sandbox runtime does (sandbox's runningRoleConn): only that role's shim can
 // build the bundle, and it dies with the role's process. A save that got a bundle therefore always
-// has its role's claim recording a process in the pod, which is the claim the save reads the
-// pod's repository through (outbox.bundleIssueWorkspace).
+// has its role's claim recording a process in the pod. The bundle names the repository of the pod
+// that process runs in, as the Sandbox runtime reads it off that same pod (sandbox's
+// Runtime.BundleWorkspace): here, what the rig scripts as that pod's repository through the
+// claim (fake.Runtime.ScriptPodRepository), "" where it scripts none.
 func (r *releaseRuntime) BundleWorkspace(ctx context.Context, issue string, role claim.Role) (runtime.WorkspaceBundle, error) {
 	r.mu.Lock()
 	r.bundled = append(r.bundled, role)
@@ -111,13 +113,22 @@ func (r *releaseRuntime) BundleWorkspace(ctx context.Context, issue string, role
 	if readErr != nil {
 		return runtime.WorkspaceBundle{}, fmt.Errorf("bundle %s's workspace: %w", issue, readErr)
 	}
-	if !slices.ContainsFunc(stored, func(c supervise.Claim) bool { return c.Issue == issue && c.Role == role && c.Locator != nil }) {
+	at := slices.IndexFunc(stored, func(c supervise.Claim) bool { return c.Issue == issue && c.Role == role && c.Locator != nil })
+	if at < 0 {
 		return runtime.WorkspaceBundle{}, fmt.Errorf("bundle %s's workspace: its %s holds no role process to bundle it", issue, role)
 	}
 	if via != nil {
-		return via(ctx, issue)
+		bundle, err = via(ctx, issue)
 	}
-	return bundle, err
+	if err != nil {
+		return runtime.WorkspaceBundle{}, err
+	}
+	repo, err := r.PodRepository(ctx, runtime.Known{Claim: stored[at].Token, Locator: stored[at].Locator})
+	if err != nil {
+		return runtime.WorkspaceBundle{}, fmt.Errorf("bundle %s's workspace: read the repository of its pod: %w", issue, err)
+	}
+	bundle.Repo = repo
+	return bundle, nil
 }
 
 func (r *releaseRuntime) SuspendIssue(ctx context.Context, _, _ string, authorize func(context.Context) (bool, error)) error {
@@ -861,7 +872,7 @@ func TestACancelWhoseBundleDeleteFailsStillLeavesNoBundleForALaterPod(t *testing
 
 	// The pod an eviction or an update round makes hours later, with the resumed roles' work
 	// pushed in between: it is sent nothing at all.
-	later, take, err := rig.st.TakeWorkspaceBundleForRestore(ctx, "legion", rig.issue.Key, "pod-after-an-eviction", time.Now().UTC().Add(time.Hour), unrenamed)
+	later, take, err := rig.st.TakeWorkspaceBundleForRestore(ctx, "legion", rig.issue.Key, "pod-after-an-eviction", rig.issue.Repo, time.Now().UTC().Add(time.Hour), unrenamed)
 	if err != nil || take != runtime.WorkspaceBundleNone {
 		t.Fatalf("a pod created after the cancelled release's save was answered %q (%v, %v), want nothing", later.Bundle, take, err)
 	}

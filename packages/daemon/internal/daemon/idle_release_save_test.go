@@ -3,15 +3,11 @@ package daemon
 import (
 	"context"
 	"errors"
-	"slices"
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/legion/daemon/internal/api"
-	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
-	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -125,6 +121,30 @@ func TestAFailedSaveWhoseCancelFailsCannotDeleteThePod(t *testing.T) {
 		}
 		return left
 	}
+	// cancelledKeepsPod is what a release leaves once its save's retry cancelled it: the save and
+	// the teardown it held back both finished, the teardown reading the release as over, so the
+	// mark is gone, the pod is kept, and the implementer's one resume, which the cancel queues, is
+	// in the outbox.
+	cancelledKeepsPod := func(t *testing.T, rig *idleRig) {
+		t.Helper()
+		if left := releaseRowsLeft(t, rig); left != 0 {
+			t.Fatalf("%d of the save and the teardown are left, want both finished once the save's retry cancelled the release", left)
+		}
+		if rig.marked(t) {
+			t.Fatal("the release's mark outlived its cancel")
+		}
+		if _, teardowns := rig.rt.reads(); teardowns != 0 {
+			t.Fatalf("Sandbox teardowns = %d, want none: the cancelled release keeps the pod", teardowns)
+		}
+		var resumes int
+		if err := rig.pool.QueryRow(ctx, `select count(*) from outbox where issue = $1 and kind = 'supervise'
+			and payload->>'op' = 'start' and payload->>'role' = 'implementer'`, rig.issue.Key).Scan(&resumes); err != nil {
+			t.Fatal(err)
+		}
+		if resumes != 1 {
+			t.Fatalf("queued resumes of the implementer = %d, want the one the cancel queues", resumes)
+		}
+	}
 
 	t.Run("the save's cancel fails", func(t *testing.T) {
 		rig := newIdleRig(t)
@@ -145,23 +165,7 @@ func TestAFailedSaveWhoseCancelFailsCannotDeleteThePod(t *testing.T) {
 		// finishes without a teardown, and the implementer's resume is queued.
 		faults.cancelErr = nil
 		nextPass(t, rig)
-		if left := releaseRowsLeft(t, rig); left != 0 {
-			t.Fatalf("%d of the save and the teardown are left, want both finished once the save's retry cancelled the release", left)
-		}
-		if rig.marked(t) {
-			t.Fatal("the release's mark outlived its cancel")
-		}
-		if _, teardowns := rig.rt.reads(); teardowns != 0 {
-			t.Fatalf("Sandbox teardowns = %d, want none: the cancelled release keeps the pod", teardowns)
-		}
-		var resumes int
-		if err := rig.pool.QueryRow(ctx, `select count(*) from outbox where issue = $1 and kind = 'supervise'
-			and payload->>'op' = 'start' and payload->>'role' = 'implementer'`, rig.issue.Key).Scan(&resumes); err != nil {
-			t.Fatal(err)
-		}
-		if resumes != 1 {
-			t.Fatalf("queued resumes of the implementer = %d, want the one the cancel queues", resumes)
-		}
+		cancelledKeepsPod(t, rig)
 	})
 
 	t.Run("the save's authorization fails once", func(t *testing.T) {
@@ -184,25 +188,9 @@ func TestAFailedSaveWhoseCancelFailsCannotDeleteThePod(t *testing.T) {
 		// bundle-save hold, so the teardown it held back reads the release as over and finishes
 		// without a teardown, the pod is kept, and the implementer's resume is queued.
 		nextPass(t, rig)
-		if left := releaseRowsLeft(t, rig); left != 0 {
-			t.Fatalf("%d of the save and the teardown are left, want both finished once the save's retry cancelled the release", left)
-		}
-		if rig.marked(t) {
-			t.Fatal("the release's mark outlived its cancel")
-		}
-		if _, teardowns := rig.rt.reads(); teardowns != 0 {
-			t.Fatalf("Sandbox teardowns = %d, want none: the cancelled release keeps the pod", teardowns)
-		}
+		cancelledKeepsPod(t, rig)
 		if rig.bundled(t) {
 			t.Fatal("the save's retry stored a bundle with no role process to build it")
-		}
-		var resumes int
-		if err := rig.pool.QueryRow(ctx, `select count(*) from outbox where issue = $1 and kind = 'supervise'
-			and payload->>'op' = 'start' and payload->>'role' = 'implementer'`, rig.issue.Key).Scan(&resumes); err != nil {
-			t.Fatal(err)
-		}
-		if resumes != 1 {
-			t.Fatalf("queued resumes of the implementer = %d, want the one the cancel queues", resumes)
 		}
 		if holds := rig.records(t).Holds; len(holds) != 1 || holds[0].Reason != workflow.IdleHoldBundleSave.String() {
 			t.Fatalf("holds = %+v, want the one %s", holds, workflow.IdleHoldBundleSave)
@@ -270,61 +258,4 @@ func TestAFailedSaveWhoseCancelFailsCannotDeleteThePod(t *testing.T) {
 			t.Fatal("the unowned release stored a bundle")
 		}
 	})
-}
-
-// The save labels its bundle through the claim it took the bundle through, and through no other
-// claim of the issue. The release's own role here is the implementer, whose process runs in the
-// pod being released, built from the repository the record holds. The architect's claim has the
-// lower token and records a process as well, of the pod before this one: that pod was built from
-// the repository the issue was on before Dispatch moved it, and the architect failed there and
-// has run nowhere since. A label read through the architect, as the idle rule reads the pod
-// (issuePodRepository), names the earlier pod's repository, and the restore refuses the work to
-// every pod of the repository it is in. Control: with the save reading through
-// issuePodRepository, the bundle is labelled acme/gadgets.
-//
-// The earlier pod's repository is scripted only after the mark, because the idle rule's
-// repository hold asks the pod through that same lowest-token claim, and a repository the
-// record has left there holds the pod rather than releasing it (workflow.IdleHoldRepository).
-func TestASaveLabelsTheBundleThroughTheClaimItTookTheBundleThrough(t *testing.T) {
-	const earlierRepo = "acme/gadgets"
-	rig := newIdleRig(t)
-	ctx := context.Background()
-	architect := mustClaimToken(t, rig.issue.Key, claim.RoleArchitect)
-	if architect >= rig.token {
-		t.Fatalf("the architect's token %s is not below the implementer's %s", architect, rig.token)
-	}
-	failed := supervise.Claim{Token: architect, Project: "legion", Tree: rig.issue.Tree, Issue: rig.issue.Key,
-		Role: claim.RoleArchitect, TreeEpoch: 1, Generation: 1, State: supervise.StateFailed,
-		Budgets: supervise.Budgets{Deaths: 3}, Session: "ses-architect", SessionFile: "/tmp/architect.jsonl",
-		PluginContract: api.DaemonAPIVersion, Locator: podUpdateLocator(architect, rig.issue.Key, "pod-before-this-one")}
-	if err := rig.st.PutClaim(ctx, failed); err != nil {
-		t.Fatalf("seed the architect that failed in the earlier pod: %v", err)
-	}
-	if _, err := rig.sup.restore(ctx, []supervise.Claim{failed}); err != nil {
-		t.Fatalf("restore the failed architect: %v", err)
-	}
-	// As quiet as the rest of the pod, so the rule reads the pod as idle.
-	if _, err := rig.pool.Exec(ctx, `update claims set updated_at = now() - interval '30 minutes'
-		where token = $1`, string(architect)); err != nil {
-		t.Fatalf("backdate the failed architect: %v", err)
-	}
-
-	rig.w.releaseIdlePod(ctx, rig.issue.Key)
-	if !rig.marked(t) {
-		t.Fatal("the pass marked no release of an idle pod")
-	}
-	rig.rt.ScriptPodRepository(architect, earlierRepo)
-
-	rig.drain(t)
-
-	if bundled, _ := rig.rt.reads(); !slices.Equal(bundled, []claim.Role{claim.RoleImplementer}) {
-		t.Fatalf("the bundle was taken through %v, want the implementer, the release's own role", bundled)
-	}
-	if !rig.bundled(t) {
-		t.Fatal("the release saved no bundle of the workspace's unpushed work")
-	}
-	if got := rig.bundleRepository(t); got != rig.issue.Repo {
-		t.Fatalf("the saved bundle is labelled %q, want %q: the work came off the implementer's pod, built from %s, not the architect's earlier pod, built from %s",
-			got, rig.issue.Repo, rig.issue.Repo, earlierRepo)
-	}
 }

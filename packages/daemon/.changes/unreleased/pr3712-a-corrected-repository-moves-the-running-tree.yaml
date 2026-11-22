@@ -3,7 +3,11 @@ body: |-
   An issue's repository in Legion's record follows the repository Dispatch resolves it to, in the
   pass that reads the change: a live event, the boot listing, or a hand-over. The daemon replaces
   the issue's pod, each worker's next task names both repositories, and a saved bundle of the old
-  repository is kept in `workspace_bundles_refused` and never restored into the new clone. A
+  repository is kept in `workspace_bundles_refused` and never restored into the new clone: the
+  restore compares a bundle with the repository the asking pod was built from, not with the
+  record, so a correction that lands or is undone while a pod starts sends no bundle into a clone
+  of another repository. A saved bundle that names no repository, which an earlier release saved
+  and restored into the next pod, is now refused and kept in `workspace_bundles_refused` too. A
   microVM pod's kept volume (`keep_volume`) does not drop that bundle: the volume holds the work
   only in the old repository's workspace, which the new pod does not work in. A correction reads
   GitHub at that event (both Apps' installation, the spelling and the default branch) and never

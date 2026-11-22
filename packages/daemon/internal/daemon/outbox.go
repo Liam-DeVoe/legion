@@ -216,7 +216,7 @@ type outboxTrees interface {
 	CancelIssueRelease(ctx context.Context, project, issue string, resume store.ReleaseResumeRow, outOfWorkflow func(status string) bool,
 		paused store.ReleaseCancelPause) (store.ReleaseCancelled, error)
 	ClearIssueRelease(ctx context.Context, project, issue string) error
-	PutWorkspaceBundle(ctx context.Context, issue string, release int64, repo string, bundle runtime.WorkspaceBundle) error
+	PutWorkspaceBundle(ctx context.Context, issue string, release int64, bundle runtime.WorkspaceBundle) error
 	WorkspaceBundleSize(ctx context.Context, issue string) (int, bool, error)
 	DeleteWorkspaceBundle(ctx context.Context, issue string) error
 	RecordBundleRefusal(ctx context.Context, project, issue string, tell []store.IdleReleaseRow) (bool, error)
@@ -3487,55 +3487,26 @@ func (r *outbox) bundleIssueWorkspace(ctx context.Context, row record.OutboxRow,
 		return nil
 	}
 	// The bundle is stored under the release that took it, so the restore of the pod that
-	// replaces this one names the release whose work it put back (store.PutWorkspaceBundle), and
-	// under the repository the released pod itself was built from, which is the repository its
-	// workspace is a clone of and so the repository this work is in the history of
-	// (podRepository): a restore into a pod of another repository is refused by it
+	// replaces this one names the release whose work it put back (store.PutWorkspaceBundle). The
+	// bundle names the pod its work came off and the repository that pod was built from
+	// (runtime.WorkspaceBundle.PodUID and Repo), which the runtime reads off the one pod whose
+	// role it asked: that pod's workspace is a clone of that repository, so this work is in its
+	// history, and a restore into a pod of another repository is refused by it
 	// (store.TakeWorkspaceBundleForRestore).
-	//
-	// That pod is asked through the claim the bundle was taken through, the release's own role's
-	// (payload.Role), and through no other claim of the issue: the bundle came off the pod that
-	// claim's process runs in (runtime.WorkspaceBundler), so the label and the work name one pod
-	// by construction. Another claim of the issue can record a process of an earlier pod, built
-	// from another repository, the lowest-token claim the idle rule asks the pod through
-	// (issuePodRepository) among them, and a label read through it would name that pod's
-	// repository and not the one this work is in.
 	//
 	// It is the pod's repository and never the record's, because the two differ for exactly as
 	// long as this save matters. A correction in Dispatch moves the record to the new repository
 	// while the released pod is still a clone of the old one (record.Store.CorrectIssueRepository,
 	// supervision.repositoryDrift), and a bundle of the old repository's commits labelled with
-	// the new one is answered `sent` into a clone that holds none of them. The idle rule holds
-	// such a pod rather than releasing it (workflow.IdleHoldRepository), so a release reaches
-	// this line only where the correction landed after the rule read the pod; this label is what
-	// makes that race harmless, and the hold is what makes it rare.
+	// the new one would be sent into a clone that holds none of them. The idle rule holds such a
+	// pod rather than releasing it (workflow.IdleHoldRepository), so a release reaches this line
+	// only where the correction landed after the rule read the pod; the bundle's own repository
+	// is what makes that race harmless, and the hold is what makes it rare.
 	//
-	// The runtime here releases issue pods (runtime.IssueReleaser, checked above), and such a
-	// runtime answers the repository of every pod it holds: it answers "" only where it cannot
-	// say, for a pod its store does not hold or holds under another uid (the Sandbox runtime's
-	// PodRepository), or for a claim with no process. An empty answer is that unknown, so the save
-	// takes it as it takes a read that failed: the release is cancelled and nothing is stored.
-	// The record's repository is no answer in its place, for the reason above: after a correction
-	// it labels work of the old repository with the new one. No runtime that reaches this line
-	// lacks a pod repository: the tmux runtime, whose panes are in no pod, releases no pod and
-	// returned at the IssueReleaser check, so the record is the fallback of no runtime here.
-	repo, err := podRepository(ctx, r.supervisor.deps.Runtime, func(yield func(supervise.Claim) bool) {
-		for _, m := range r.supervisor.supervised() {
-			if c := m.View().Claim; c.Issue == row.Issue && c.Role == payload.Role {
-				yield(c)
-				return
-			}
-		}
-	})
-	switch {
-	case err != nil:
-		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave,
-			fmt.Sprintf("read the repository the pod of %s was built from: %v", row.Issue, err))
-	case repo == "":
-		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave,
-			fmt.Sprintf("the runtime names no repository the pod of %s was built from", row.Issue))
-	}
-	if err := r.trees.PutWorkspaceBundle(ctx, row.Issue, decision.Release, repo, bundle); err != nil {
+	// A bundle whose pod's repository the runtime could not read names none, and the store
+	// refuses that save as it refuses one that names no pod: the release is cancelled here,
+	// nothing is stored, and the pod and the work on its disk stay.
+	if err := r.trees.PutWorkspaceBundle(ctx, row.Issue, decision.Release, bundle); err != nil {
 		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, err.Error())
 	}
 	return nil
