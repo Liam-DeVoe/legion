@@ -99,12 +99,16 @@ ARG MISE_VERSION=v2026.8.12
 # command reports a good signature from release key 24853EC9F655CE80B48E6C3A8B81C9D17413A06D
 # (published at https://mise.jdx.dev/gpg-key.pub, and at keys.openpgp.org by the same fingerprint).
 ARG MISE_SHA256=0c782233b97745fd3ed317ba3acbfd7d256e6268470373757f0cc48d57bb87e6
-# Sami's jj fork, at the release of sjawhar/jj#3 (INFRA-4036): jj 0.46 with a gix-pack that maps
-# each pack, index and multi-pack-index in 8 MiB chunks and keeps the chunks reads mark within
-# 512 MiB (JJ_PACK_MAPPED_LIMIT sets another budget). Under gVisor a whole mapping counts as the
-# pod's memory once one page of it is read, so a later pin must carry that patch, or one jj command
-# on a large pack fills an issue pod again.
-ARG JJ_TOOL=github:sjawhar/jj@0.46.0-sami.20261120-120102
+# The jj fork sjawhar/jj, at a release built from sjawhar/jj#4 on top of sjawhar/jj#3. sjawhar/jj#3
+# gives jj 0.46 a gix-pack that maps each pack, index and multi-pack-index in 8 MiB chunks and keeps
+# the chunks reads mark within 512 MiB (JJ_PACK_MAPPED_LIMIT sets another budget): under gVisor a
+# whole mapping counts as the pod's memory once one page of it is read. sjawhar/jj#4 starts from
+# jj-vcs/jj#10100 and keeps, in a merge of two commits with several merge bases, what both sides
+# hold (jj-vcs/jj#6369). Where both sides changed the merge bases' own conflict, it merges them
+# against a virtual merge base, as git does, if that conflict is between text files, and gives a
+# conflict if it is not. A later pin must carry both patches, or one jj command on a large pack
+# fills an issue pod again, or a role's merge silently reverts work.
+ARG JJ_TOOL=github:sjawhar/jj@0.46.0-sami.20261122-131522
 ARG GH_TOOL=gh@2.98.0
 # The SHA-256 of the release archive the tools stage fetches for each of its three tools, which it
 # checks before it unpacks anything, as the toolchain stage does its downloads: the linux-x64
@@ -122,7 +126,7 @@ ARG GH_TOOL=gh@2.98.0
 # verified that archive against cli/cli's deployment.yml workflow; the Oh My Pi and jj releases
 # carry no attestation (the same command answers 404 for both). A bump repeats those reads.
 ARG OMP_SHA256=9fd84e4ff44cddef87f323100e5cb30ca235284033c8a05192f90c69481fea68
-ARG JJ_SHA256=770b129af434b0b93edfea6de3960a34b82e4f77fda30960aa18f816d543a1de
+ARG JJ_SHA256=84822cab5620a645d75863b0f529991e5ed9be09604f57836ddfba09045ec1e9
 ARG GH_SHA256=3b8ac6b30336802fc1a858d7c084e11cdf24ac1a761ca90b68022d7d729208de
 # The pin of the shared public leak check: the tag of the repository a deployment names in its
 # leak check setting (legion.yaml's leak_check, or LEGION_LEAK_CHECK_REPOSITORY), whose leak-check
