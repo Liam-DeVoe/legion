@@ -87,9 +87,20 @@ type documentState struct {
 	approval, asks            string
 }
 
-// readDocumentState reads document's state, with the block and document each of asks' rows names.
+// readDocumentState reads document's state, with the block and document each of asks' rows names
+// and the tuples its node holds. A database this build's migrations have not reached yet may hold
+// no graph_tuples table, as the base release's does: its asks' nodes hold no tuple
+// (readDatabaseWrites).
 func readDocumentState(t *testing.T, ctx context.Context, database *pgx.Conn, document string, asks ...string) documentState {
 	t.Helper()
+	var graph bool
+	if err := database.QueryRow(ctx, `select to_regclass('graph_tuples') is not null`).Scan(&graph); err != nil {
+		t.Fatalf("read whether the database holds graph_tuples: %v", err)
+	}
+	tuples := `0`
+	if graph {
+		tuples = `(select count(*) from graph_tuples t where t.from_kind = 'ask' and t.from_id = k.id::text)`
+	}
 	var state documentState
 	if err := database.QueryRow(ctx, `
 		select (select count(*) from artifact_versions where artifact_id = $1::uuid),
@@ -98,7 +109,7 @@ func readDocumentState(t *testing.T, ctx context.Context, database *pgx.Conn, do
 		       coalesce((select artifact_reviews.id::text || ' ' || artifact_reviews.state || ' of version ' || artifact_reviews.version
 		                 from artifact_reviews where artifact_id = $1::uuid order by `+docs.ReviewOrder+` limit 1), 'no review'),
 		       coalesce((select string_agg(k.id || '@' || k.block_artifact_id || '#' || k.block_id ||
-		                   '/tuples=' || (select count(*) from graph_tuples t where t.from_kind = 'ask' and t.from_id = k.id::text), ',' order by k.id)
+		                   '/tuples=' || `+tuples+`, ',' order by k.id)
 		                 from asks k where k.id::text = any($2::text[])), '')
 	`, document, asks).Scan(&state.versions, &state.latest, &state.reviews, &state.approval, &state.asks); err != nil {
 		t.Fatalf("read the state of %s: %v", document, err)

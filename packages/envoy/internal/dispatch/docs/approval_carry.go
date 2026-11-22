@@ -126,6 +126,33 @@ const carriedReasonPrefix = CarriedReviewReasonPrefix + "%d: "
 // carriedReasonEnd closes a carried reason after the changes it names (carryVerdict).
 const carriedReasonEnd = ", were the whole change since it."
 
+// FormGate is the form gate of The Spec (R49) as a carry asks it: whether the approval the carry
+// would write in the person's name - of document, at its version, answering request, the approval
+// request open on it, or nil when none is - breaks the form. An approval that answers a request
+// covers each document the request names, so the gate judges each of them, as it judges the
+// person's own Approve of that request. The API package's gate is the one implementation
+// (api.FormGate): one function gives the documents an approval covers and judges each, and it
+// reads nothing more for a document that no root of The Spec covers. A carry writes no approval
+// in the person's name, and answers no open request with Approve, when the gate finds a break:
+// the person's own Approve then gets the gate's refusal.
+type FormGate func(ctx context.Context, tx pgx.Tx, request *model.AskApproval, document model.AskApprovalDocument) (bool, error)
+
+// SetFormGate is the gate each carry of this service's version writes asks before it writes an
+// approval (writeCarriedReview). A service built without one carries no approval at all: a
+// process that builds its document service with no API, such as a backfill command, writes
+// nothing in a person's name.
+func (s *Service) SetFormGate(gate FormGate) {
+	s.formGate.Store(&gate)
+}
+
+// gate is the form gate SetFormGate set, or nil, with which no carry writes anything.
+func (s *Service) gate() FormGate {
+	if gate := s.formGate.Load(); gate != nil {
+		return *gate
+	}
+	return nil
+}
+
 // askServerAttributeNames are the attributes of an ask block the release before kept in agreement
 // with its ask row, which a stored version may hold: `invalid` never reaches stored bytes
 // (pmdoc.BlockAttributeSchema.InMarkdown), and the other seven do wherever that release wrote
@@ -417,7 +444,7 @@ func (s *Service) carryApproval(ctx context.Context, tx pgx.Tx, artifactID strin
 // carryStandingApproval is carryApproval once newest, the document's newest review, is known to be
 // an approval (carryNewestApproval). It hands sink the events it appends, as carryApproval does.
 func (s *Service) carryStandingApproval(ctx context.Context, tx pgx.Tx, artifactID string, number int, rendered renderedTree, newest model.ArtifactReview, steps decisionStepCases, sink func(model.Event)) error {
-	return carryNewestApproval(ctx, tx, s.events, artifactID, number, rendered.markdown, rendered.tree, newest, s.serverURL, steps, sink)
+	return carryNewestApproval(ctx, tx, s.events, s.gate(), artifactID, number, rendered.markdown, rendered.tree, newest, s.serverURL, steps, sink)
 }
 
 // CarryUploadedApproval is carryApproval for the route that writes a document version itself
@@ -432,8 +459,9 @@ func (s *Service) carryStandingApproval(ctx context.Context, tx pgx.Tx, artifact
 // carries nothing by their cases (restoreCase, conversionCase), which no route can reach. Its
 // reads run where it is called, the route's read phase, and its writes are queued there, as
 // carryApproval's are; the events it appends reach the ledger of the transaction it runs in
-// (eventSink), which publishes them after its Commit, beside the version move's own.
-func CarryUploadedApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, number int, markdown string, tree *pmdoc.Node, serverURL string) error {
+// (eventSink), which publishes them after its Commit, beside the version move's own. gate judges
+// the version's form, as every carry's (writeCarriedReview).
+func CarryUploadedApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, gate FormGate, artifactID string, number int, markdown string, tree *pmdoc.Node, serverURL string) error {
 	if err := refuseSecondCarry(ctx, tx, artifactID); err != nil {
 		return err
 	}
@@ -446,7 +474,7 @@ func CarryUploadedApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker
 			return skipUnreadableVersion(artifactID, number, err)
 		}
 	}
-	return carryNewestApproval(ctx, tx, broker, artifactID, number, markdown, tree, *newest, serverURL, decisionStepCases{}, eventSink(ctx))
+	return carryNewestApproval(ctx, tx, broker, gate, artifactID, number, markdown, tree, *newest, serverURL, decisionStepCases{}, eventSink(ctx))
 }
 
 // carryNewestApproval carries newest, the document's newest review and an approval of version A,
@@ -458,8 +486,9 @@ func CarryUploadedApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker
 // is a difference in one of those blocks, and a version holding neither either holds A's text or
 // holds none of A's decisions and ask blocks, which still have to stand. steps names the decisions
 // step's phases whose own write the version is, and what that write added, whose cases
-// (restoreCase, conversionCase) it weighs beside the other two; zero for every other write.
-func carryNewestApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, number int, markdown string, tree *pmdoc.Node, newest model.ArtifactReview, serverURL string, steps decisionStepCases, sink func(model.Event)) error {
+// (restoreCase, conversionCase) it weighs beside the other two; zero for every other write. gate
+// is the form gate every carry asks before it writes (writeCarriedReview).
+func carryNewestApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, gate FormGate, artifactID string, number int, markdown string, tree *pmdoc.Node, newest model.ArtifactReview, serverURL string, steps decisionStepCases, sink func(model.Event)) error {
 	shown, agrees, err := asksAgreeWithTheirNodes(ctx, tx, artifactID, tree)
 	if err != nil || !agrees {
 		return err
@@ -473,7 +502,7 @@ func carryNewestApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, 
 		if err != nil {
 			return err
 		}
-		return writeCarriedReview(ctx, tx, broker, artifactID, number, newest, reason, serverURL, sink)
+		return writeCarriedReview(ctx, tx, broker, gate, artifactID, number, newest, reason, serverURL, sink)
 	}
 	if len(shown.nodes) == 0 && !holdsDecision(tree) {
 		return nil
@@ -504,7 +533,7 @@ func carryNewestApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, 
 	if err != nil {
 		return err
 	}
-	return writeCarriedReview(ctx, tx, broker, artifactID, number, newest, fmt.Sprintf(carriedReasonPrefix, origin)+change, serverURL, sink)
+	return writeCarriedReview(ctx, tx, broker, gate, artifactID, number, newest, fmt.Sprintf(carriedReasonPrefix, origin)+change, serverURL, sink)
 }
 
 // restoredReason is the reason of the carry of newest, the approval of version A, to a version
@@ -831,12 +860,26 @@ func withoutReadings(tree *pmdoc.Node, answered map[string]bool) (*pmdoc.Node, b
 // names its kind, and a review that names none is a person's, as the column's default says. It
 // holds no document service: every write it makes is a package function over tx and the broker,
 // which is what the upload's own caller outside this package holds (CarryUploadedApproval).
-func writeCarriedReview(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, number int, review model.ArtifactReview, reason, serverURL string, sink func(model.Event)) error {
+// Every kind of carry writes here, so the form gate judges the approval first - this version, and
+// each other document of the open request the carried review is given against - and an approval
+// that breaks the form carries nothing, and nothing is written or queued in anyone's name. With
+// no gate, nothing is carried either.
+func writeCarriedReview(ctx context.Context, tx pgx.Tx, broker *events.Broker, gate FormGate, artifactID string, number int, review model.ArtifactReview, reason, serverURL string, sink func(model.Event)) error {
+	if gate == nil {
+		return nil
+	}
 	var askID *string
 	// The request as the version write's own move left it (MoveApprovalAsk), which names this
 	// version already.
 	open, err := openApprovalAsk(ctx, tx, artifactID)
 	if err != nil {
+		return err
+	}
+	var request *model.AskApproval
+	if open != nil {
+		request = open.Approval
+	}
+	if breaks, err := gate(ctx, tx, request, model.AskApprovalDocument{ArtifactID: artifactID, Version: number}); err != nil || breaks {
 		return err
 	}
 	artifact, err := reviewedArtifact(ctx, tx, artifactID)
@@ -847,7 +890,7 @@ func writeCarriedReview(ctx context.Context, tx pgx.Tx, broker *events.Broker, a
 	// issue's Verification document - is answered by this carry, as it always was. One that names
 	// two is answered only once both stand approved at the versions it names, which this review
 	// settles for this document; the request stays open for the other, and the carried review
-	// records the request it was given against either way.
+	// records the request it was given against either way. The gate above judged both.
 	if open != nil {
 		// This document's own review, the one this carry queues, is never read back: the carry
 		// hands its verdict over (carriedAtNamedVersion), which is what known is for. Every

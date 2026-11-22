@@ -139,17 +139,27 @@ export interface InboxRoute {
    *  with nothing chosen is absent, never an empty array. */
   filters?: Partial<Record<InboxFilterField, readonly string[]>>;
 }
-export type IssueTab =
-  | "spec"
-  | "verification"
-  | "plan"
-  | "steps"
-  | "conversation"
-  | "children"
-  | "artifacts"
-  | "activity"
-  | "decisions"
-  | "collaborators";
+/** Every tab of the issue page, each the path segment that opens it (`/issues/<KEY>/<tab>`). The
+ *  dashboard's pages file (`dashboard-pages-file.ts`) is generated from this list, so a tab added
+ *  here reaches the server's and the agent client's readers of a dashboard address. */
+export const ISSUE_TABS = [
+  "spec",
+  "verification",
+  "plan",
+  "steps",
+  "conversation",
+  "children",
+  "artifacts",
+  "activity",
+  "decisions",
+  "collaborators",
+] as const;
+export type IssueTab = (typeof ISSUE_TABS)[number];
+
+/** The path segments under an issue that open one of its documents by slug
+ *  (`/issues/<KEY>/artifacts/<slug>`): the plural the dashboard writes, and the singular it reads
+ *  as the same page. */
+export const ISSUE_DOCUMENT_SEGMENTS = ["artifacts", "artifact"] as const;
 
 /** The issue tabs whose whole route is the tab itself: no block, no slug, no id. Each one is
  *  parsed from the segment of its own name, built as `<issue>/<kind>`, shown as `<KEY> <kind>`
@@ -190,6 +200,10 @@ const issueKeyOnlyPattern = new RegExp(`^${issueKeyPattern}$`);
 const projectKeyOnlyPattern = new RegExp(`^${projectKeyPattern}$`);
 const issuePathPattern = new RegExp(`^/issues/(${issueKeyPattern})(?:/(.*))?$`);
 const projectPathPattern = new RegExp(`^/projects/(${projectKeyPattern})(?:/(.*))?$`);
+/** A document of an issue by slug, under any segment of `ISSUE_DOCUMENT_SEGMENTS`. */
+const issueDocumentPathPattern = new RegExp(
+  `^(?:${ISSUE_DOCUMENT_SEGMENTS.join("|")})/([^/?#\\s]+)$`
+);
 const artifactSlugOnlyPattern = new RegExp(`^${artifactSlugPattern}$`);
 const issueArtifactReferencePattern = new RegExp(
   `^artifact/(${artifactSlugPattern})(?:@v([1-9]\\d*))?$`
@@ -442,7 +456,7 @@ export function parseIssuePath(pathname: string, search = ""): IssueRoute | unde
   if (target === "conversation") {
     return { key, kind: "conversation" };
   }
-  const artifact = target.match(/^artifacts?\/([^/?#\s]+)$/);
+  const artifact = target.match(issueDocumentPathPattern);
   if (artifact !== null) {
     return artifactRoute(key, artifact[1] ?? "", new URLSearchParams(search).get("v"));
   }

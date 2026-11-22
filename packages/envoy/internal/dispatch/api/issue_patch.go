@@ -420,14 +420,16 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	// Its writes and events queue after the document writes and before everything the patch
 	// queues below, which is where its writes run in the write phase.
 	var closingAsks withdrawal
-	var reopened restoredAsks
+	var restore restoration
 	var restoredEvents []*model.Event
 	switch {
 	case closing:
 		closingAsks, err = s.prepareWithdrawal(documentCtx, tx, key, actor)
 	case reopening:
-		if reopened, err = s.prepareRestoration(documentCtx, tx, key, actor); err == nil {
-			restoredEvents, err = s.recordRestoredAsksTx(documentCtx, ledger, key, reopened, actor)
+		// A withdrawn approval request whose text breaks the form of The Spec stays resolved,
+		// with the findings as its reason (prepareRestoration), and the reopen still answers 200.
+		if restore, err = s.prepareRestoration(documentCtx, tx, key, actor); err == nil {
+			restoredEvents, err = s.recordRestoredAsksTx(documentCtx, ledger, key, restore, actor)
 		}
 	}
 	if err != nil {
@@ -452,7 +454,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	advice := s.writeAdviceBefore(r.Context(), tx, "PATCH /api/v1/issues/{key}", key, actor, afterStatus, afterRow, adviceAsks{
 		excluded: askIDs(closingAsks.asks),
-		opened:   askIDs(reopened.asks),
+		opened:   askIDs(restore.restored),
 	})
 	// What the issue's waits stand at, read here in the read phase, under the owner lock, for the
 	// write below to move (readIssueNeeds).

@@ -43,10 +43,13 @@ func blockIndexService(t *testing.T) (*store.Store, *Service) {
 // blockIndexProcess is one process's document service on database, serving the build of commit
 // (the empty string: an unstamped build's), whose settle delay is an hour, so no timer settles a
 // document during a test. A test that builds a second one on the same database has a second
-// process of that build start beside the first, or after it.
+// process of that build start beside the first, or after it. Its form gate keeps every form
+// (formKept), as a server's gate does for a document no root of The Spec covers, so its carries
+// write as a server's do (writeCarriedReview).
 func blockIndexProcess(t *testing.T, database *store.Store, commit string) *Service {
 	t.Helper()
 	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour, BuildCommit: commit})
+	service.SetFormGate(formKept)
 	t.Cleanup(func() {
 		stop, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
