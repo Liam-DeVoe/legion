@@ -19,17 +19,18 @@ import { pageFocusedRow } from "../../../theme/classes";
 import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { MarginProvider } from "../../margin/margin-context";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
-import {
-  type PublishedReferences,
-  type ReferenceNameReading,
-  ReferenceNamesProvider,
-} from "../../refs/reference-names";
-import { firstWordedBlock } from "../../refs/tree-fragment";
+import { type PublishedReferences, ReferenceNamesProvider } from "../../refs/reference-names";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { useKeymapScope } from "../../shell/keymap";
 import { artifact, issueDetails } from "../decisions-filter/decisions-fixtures";
 import { FocusedNodeProvider, useFocusedNode } from "../focused-node";
-import { firstLineOf, type NodeChip, type ParentLine, type TreeNode } from "../issue-tree";
+import {
+  firstLineOf,
+  type IssueTreeReads,
+  type NodeChip,
+  type ParentLine,
+  type TreeNode,
+} from "../issue-tree";
 import { NO_FAILED_READS } from "../outline-reads";
 import {
   BLOCK_ATTRIBUTE_LABELS,
@@ -40,11 +41,11 @@ import {
   PLAN_WORDS,
   STATE_LINES,
 } from "../page-words";
-import { Publisher, publishedChips, publishedNames } from "../projection-fixture";
+import { blockReads, Publisher, publishedChips, publishedNames } from "../projection-fixture";
 import { ProvidersSlot } from "../slots/providers";
 import { ViewStage } from "../slots/stage";
 import { ViewPlanSlot } from "../slots/view-plan";
-import { blockNodeId } from "../tree-drafts";
+import { blockNodeId, treeContext } from "../tree-drafts";
 import { issueAsksQuery } from "../useIssueTree";
 import { PlanFilterBody, type PlanRead, type PlanReads } from "./PlanFilterBody";
 
@@ -56,10 +57,12 @@ import { PlanFilterBody, type PlanRead, type PlanReads } from "./PlanFilterBody"
  *
  * The nodes are built as `presets.ts`'s `filterView` leaves them for the Plan filter: each task
  * a row of its own, the statement it serves its parent line, and any further statement a chip
- * naming what it is also under; and each `needs` chip carries the reading the tree names its
- * target by, from the task it points at (`issue`). The body is drawn under the names store, with
- * what the page publishes for those tasks, their statements and their chips (`publishedPlan`):
- * the view draws the names the store projects from it and names no edge itself.
+ * naming what it is also under; and each chip carries the reading the tree names its target by,
+ * made by the page's own rule (`tree-drafts.ts`'s `treeContext`) from the reads the page names
+ * the tasks and the statements from (`planReads`). The body is drawn under the names store, with
+ * what the page publishes for those tasks, their statements and their chips, by that rule too
+ * (`publishedPlan`): the view draws the names the store projects from it and names no edge
+ * itself.
  *
  * Two cases draw the Plan view's slot itself (`slots/view-plan.tsx`), over a query client that
  * holds the reads the issue's tree is built from, for what the slot hands the body as the reads
@@ -108,8 +111,8 @@ function taskRef(blockId: string): string {
 }
 
 /** The chip the tree draws for one `needs` pointer of a task's block (`tree-drafts.ts`'s
- *  `placeBlocks`), under the attribute's own word; `issue` names it from the task it points at,
- *  once a test has built every task. */
+ *  `placeBlocks`), under the attribute's own word; `issue` names it as the tree names the task it
+ *  points at, once a test has built every task. */
 function need(blockId: string): NodeChip {
   return {
     answered: true,
@@ -117,26 +120,6 @@ function need(blockId: string): NodeChip {
     label: BLOCK_ATTRIBUTE_LABELS.needs,
     ref: taskRef(blockId),
   };
-}
-
-/** How the page names a block of the issue by its words (`tree-drafts.ts`'s `treeContext`): by
- *  the reading of its whole text, with the page's word for its kind beside it, and by that word
- *  alone where no block of the reading holds a word. */
-function blockReading(text: string, type: NodeType): ReferenceNameReading {
-  const tree = displayTree(text);
-  const word = NODE_TYPE_NAMES[type];
-  return tree === undefined || firstWordedBlock(tree) === undefined
-    ? { words: word }
-    : { fallback: word, tree };
-}
-
-/** `chip` named as the tree names a `needs` chip: by the reading of the needed task's words, by
- *  the page's word for its kind where that task holds no words ("plan task"), and as gone where
- *  the plan holds no such task, which is how the reference read answers for a block a write
- *  removed (`tree-drafts.ts`'s `chipOf`). */
-function namedBy(chip: NodeChip, needed: TreeNode | undefined): NodeChip {
-  if (needed === undefined) return { ...chip, gone: true };
-  return { ...chip, reading: blockReading(needed.text, needed.type) };
 }
 
 /** One statement, as a task's row holds the parent the filter draws as no row: its words, and
@@ -150,6 +133,45 @@ function serves(blockId: string, words: string): ParentLine {
     ...(tree === undefined ? {} : { tree }),
     type: "requirement",
   };
+}
+
+/** The reads the page names `nodes` from (`blockReads`): the issue's read, which holds the spec
+ *  and the plan (`issueRead`); the server's reading of each node's words, the node's own where
+ *  it holds one, as a statement does (`serves`), and that of its text where it holds none, since
+ *  the server sends one for every block it answers for; and each of `gone` answered as gone, as
+ *  the read answers for a block a write removed. */
+function planReads(
+  nodes: readonly (ParentLine | TreeNode)[],
+  gone: readonly string[] = []
+): IssueTreeReads {
+  const reads = blockReads(
+    issueRead(),
+    nodes.map((one) => ({ ...one, tree: one.tree ?? displayTree(one.text) }))
+  );
+  return {
+    ...reads,
+    targets: [
+      ...(reads.targets ?? []),
+      ...gone.map((ref) => ({ gone: true, kind: "block", name: "", ref })),
+    ],
+  };
+}
+
+/** The reads the page names a plan's `tasks` from (`planReads`): each task, each statement a
+ *  task serves as its parent, and each task a chip of theirs points at that none of them is,
+ *  which the read answers gone. */
+function tasksReads(tasks: readonly TreeNode[]): IssueTreeReads {
+  const held = new Set(tasks.map((one) => one.reference));
+  return planReads(
+    tasks.flatMap((one) => (one.parentLine === undefined ? [one] : [one, one.parentLine])),
+    tasks.flatMap((one) => one.chips.map((chip) => chip.ref)).filter((ref) => !held.has(ref))
+  );
+}
+
+/** The chip of `statement` on a task that is also under it, as the tree names the statement
+ *  (`treeContext`'s `chipOf`) from the reads the page names it from (`planReads`). */
+function alsoUnder(statement: ParentLine): NodeChip {
+  return treeContext(planReads([statement])).chipOf(statement.reference ?? "");
 }
 
 /** One plan task, by its block id: what it needs, by their block ids, and the statement it
@@ -181,14 +203,17 @@ function task(
   };
 }
 
-/** The issue's root over a test's tasks, each `needs` chip named from the task it points at
- *  among them (`namedBy`), as the filter's view hands the tree over. */
+/** The issue's root over a test's tasks, each `needs` chip named as the tree names it, from the
+ *  reads the page names the tasks from (`tasksReads`, `treeContext`'s `chipOf`), with its label
+ *  spread into a chip of its own, as the filter's view hands the tree over. */
 function issue(tasks: readonly TreeNode[]): TreeNode {
-  const byReference = new Map(tasks.map((one) => [one.reference, one]));
+  const { chipOf } = treeContext(tasksReads(tasks));
   const children = tasks.map((one) => ({
     ...one,
     chips: one.chips.map((chip) =>
-      chip.label === BLOCK_ATTRIBUTE_LABELS.needs ? namedBy(chip, byReference.get(chip.ref)) : chip
+      chip.label === BLOCK_ATTRIBUTE_LABELS.needs
+        ? { ...chipOf(chip.ref), label: chip.label }
+        : chip
     ),
   }));
   return {
@@ -221,25 +246,19 @@ function Place(): ReactNode {
   return <output data-focused={focused?.id ?? ""} data-path={`${pathname}${hash}`} data-place="" />;
 }
 
-/** What the page publishes for `tasks`, as its batched read names a block of the issue
- *  (`issue-tree.ts`'s `chipNaming`, `tree-drafts.ts`'s `treeContext`): each task, and each
- *  statement a task serves as its parent, by the reading of its words (`blockReading`), which the
- *  names store projects the line the chart names it by from (`KnownReferences.lines`); each chip
- *  the tasks hold, a `needs` chip and one of a statement a task is also under, by the reading it
- *  carries; and every one of their addresses as one the page asks for. */
+/** What the page publishes for `tasks`, by its own rule (`issue-tree.ts`'s `chipNaming`, as
+ *  `targetNaming` names the read's targets): each task, and each statement a task serves as its
+ *  parent, by the chip the tree names it by from the reads the page names them from
+ *  (`tasksReads`, `treeContext`'s `chipOf`), whose reading the names store projects the line the
+ *  chart names it by from (`KnownReferences.lines`); each chip the tasks hold, a `needs` chip and
+ *  one of a statement a task is also under, by the reading it carries; and every one of their
+ *  addresses as one the page asks for. */
 function publishedPlan(tasks: readonly TreeNode[]): PublishedReferences {
-  const named = (ref: string, text: string, type: NodeType): NodeChip => ({
-    answered: true,
-    gone: false,
-    reading: blockReading(text, type),
-    ref,
-  });
+  const { chipOf } = treeContext(tasksReads(tasks));
   return publishedChips(
     tasks.flatMap((one) => [
-      ...(one.reference === undefined ? [] : [named(one.reference, one.text, one.type)]),
-      ...(one.parentLine?.reference === undefined
-        ? []
-        : [named(one.parentLine.reference, one.parentLine.text, one.parentLine.type)]),
+      ...(one.reference === undefined ? [] : [chipOf(one.reference)]),
+      ...(one.parentLine?.reference === undefined ? [] : [chipOf(one.parentLine.reference)]),
       ...one.chips,
       ...one.alsoUnder,
     ])
@@ -522,6 +541,29 @@ test("the plan opens on the chart: one bar per step, each after every step it ne
   }
 });
 
+// A task is named by the line the names store projects from its words (`taskLine`), not by its
+// stored text: the cycle line names a task whose words hold markdown by those words as they read,
+// with no syntax of the source. Every other row's tasks have plain words, which read the same
+// either way.
+test("a cycle names a task by the line the store projects, not its stored marks", async () => {
+  setViewport(1440);
+  const view = renderBody(
+    issue([
+      { ...task("t2", { needs: ["t3"] }), text: "**Draw** the `rows` first" },
+      task("t3", { needs: ["t2"] }),
+    ])
+  );
+  try {
+    await waitFor(() =>
+      expect(
+        [...view.container.querySelectorAll("[data-plan-cycle] a")].map((one) => one.textContent)
+      ).toEqual(["Draw the rows first", "Task t3"])
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
 // A task's serves chips can repeat: two chips of one task can carry the same words, or the same
 // reference, since the server refuses a pointer named twice only by its raw value. The row draws
 // each of them, and React is never handed two chips under one key, which would drop or reorder
@@ -531,24 +573,18 @@ test("the plan opens on the chart: one bar per step, each after every step it ne
 test("a bar draws every serves chip, two with the same words or the same reference included", () => {
   setViewport(1440);
   // A chip of a statement the task is also under, carrying the reading the tree names the
-  // statement by (`NodeChip.reading`), which the page publishes for it (`publishedPlan`).
-  const chip = (words: string, ref: string): NodeChip => ({
-    answered: true,
-    gone: false,
-    reading: blockReading(words, "requirement"),
-    ref,
-  });
-  const statement = `dispatch://${KEY}/spec#b-r3`;
+  // statement by (`alsoUnder`), which the page publishes for it (`publishedPlan`).
+  const same = serves("r3", "The same statement");
   const errors = spyOn(console, "error");
   const view = renderBody(
     issue([
       {
         ...task("t1"),
         alsoUnder: [
-          chip("Same words", `dispatch://${KEY}/spec#b-r4`),
-          chip("Same words", `dispatch://${KEY}/spec#b-r5`),
-          chip("The same statement", statement),
-          chip("The same statement", statement),
+          alsoUnder(serves("r4", "Same words")),
+          alsoUnder(serves("r5", "Same words")),
+          alsoUnder(same),
+          alsoUnder(same),
         ],
       },
     ])
@@ -744,25 +780,18 @@ test("the control switches to the ordered steps, which are the outline's own row
 });
 
 // A step's serves chips name each statement it serves as every chip of the page names a block
-// (`chipName`), the statement its parent is (`parentLine`) as the statements it is also under: by
-// the line the names store projects from the reading the page published for it, its first block
-// that holds words (`KnownReferences.lines`), with no mark the author typed and no markdown pass
-// over the words, so words that open on "1." keep it. A statement the store holds no line for yet
-// is named by nothing, and draws no chip, until it does.
+// (`chipLine`, `chipName`), the statement its parent is (`parentLine`) as the statements it is
+// also under: by the line the names store projects from the reading the page published for it,
+// its first block that holds words (`KnownReferences.lines`), with no mark the author typed and
+// no markdown pass over the words, so words that open on "1." keep it. A statement the store
+// holds no line for yet is named by nothing, and draws no chip, until it does.
 test("a step's serves chips name each statement by the line the store projects for it, and nothing before", async () => {
   setViewport(1440);
   const other = `dispatch://${KEY}/spec#b-r2`;
   const root = issue([
     {
       ...task("t1", { parentLine: serves("r1", "**Stand** the page up first.\n\nThen the rest.") }),
-      alsoUnder: [
-        {
-          answered: true,
-          gone: false,
-          reading: blockReading("1\\. Number the steps.", "requirement"),
-          ref: other,
-        },
-      ],
+      alsoUnder: [alsoUnder(serves("r2", "1\\. Number the steps."))],
     },
   ]);
   const asked = [taskRef("t1"), `dispatch://${KEY}/spec#b-r1`, other];
@@ -781,6 +810,38 @@ test("a step's serves chips name each statement by the line the store projects f
       expect(chips()).toEqual([
         ["Stand the page up first.", `/issues/${KEY}/spec#b-r1`],
         ["1. Number the steps.", `/issues/${KEY}/spec#b-r2`],
+      ])
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
+// A statement whose words hold no block of words is named by the page's word for its kind, as the
+// tree names it (`tree-drafts.ts`'s `treeContext`) and a tie's chip draws it (`NodeRow.tsx`'s
+// `Chip`): the names store holds that word as the statement's name and projects no line for it.
+// A step's serves chip names it by that word, as the row's needs are named (`chipLine`), the
+// statement its parent is (`parentLine`) as one it is also under, and draws no chip of it short.
+test("a task that serves a statement with no worded block draws a serves chip named by the statement's kind word", async () => {
+  setViewport(1440);
+  const view = renderBody(
+    issue([
+      {
+        ...task("t1", { parentLine: serves("r1", "") }),
+        alsoUnder: [alsoUnder(serves("r2", ""))],
+      },
+    ])
+  );
+  try {
+    await waitFor(() =>
+      expect(
+        [...rowOf(view, "t1").querySelectorAll("[data-plan-serve]")].map((one) => [
+          one.textContent,
+          one.querySelector("a")?.getAttribute("href"),
+        ])
+      ).toEqual([
+        [NODE_TYPE_NAMES.requirement, `/issues/${KEY}/spec#b-r1`],
+        [NODE_TYPE_NAMES.requirement, `/issues/${KEY}/spec#b-r2`],
       ])
     );
   } finally {

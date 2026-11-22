@@ -398,13 +398,14 @@ type linkRow struct {
 // tuples reach (graphstore.MovedTo), or, where a move ends at an ask, the document the ask's row
 // names, the document it was decided in. A retired document's address names its issue
 // (loadArtifactNodes), which Links lists in its place, so it is no member. Every statement it
-// sends, through q, starts with ClosureTag.
+// sends, through q, starts with ClosureTag. serverURL is the deployment whose dashboard URLs are
+// references, which a node's name is cut around (resolvedNode.name).
 //
 // It answers for who: a link whose source, or the block it is read at, who may not see is no
 // link of the read, and a node who may not see is neither listed nor named as a via, so a node
 // reserved for another author never shows in either list or among the members (VisibleKind,
 // VisibleEnd, resolveNodes).
-func Closure(ctx context.Context, q Queryer, who model.Actor, issueKey string) (References, error) {
+func Closure(ctx context.Context, q Queryer, who model.Actor, issueKey, serverURL string) (References, error) {
 	tagged := taggedQueryer{q}
 	seen := VisibilityArg(who)
 	out, err := readLinkRows(ctx, tagged, linksOutQuery(), issueKey, seen)
@@ -432,7 +433,11 @@ func Closure(ctx context.Context, q Queryer, who model.Actor, issueKey string) (
 		}
 	}
 	slices.SortFunc(members, func(left, right Member) int { return strings.Compare(left.RefKey, right.RefKey) })
-	return References{Members: members, Links: related(out, nodes), LinkedFrom: related(in, nodes)}, nil
+	return References{
+		Members:    members,
+		Links:      related(out, nodes, serverURL),
+		LinkedFrom: related(in, nodes, serverURL),
+	}, nil
 }
 
 // readLinkRows runs statement, the out or the in statement, for issueKey as the acting credential
@@ -449,16 +454,16 @@ func readLinkRows(ctx context.Context, q Queryer, statement, issueKey string, se
 	})
 }
 
-// related is each of rows whose node nodes names, in the order of the node's kind, then its id.
-// It is never nil.
-func related(rows []linkRow, nodes map[[2]string]resolvedNode) []model.ReferenceLink {
+// related is each of rows whose node nodes names, in the order of the node's kind, then its id,
+// each named as resolvedNode.name names it under serverURL. It is never nil.
+func related(rows []linkRow, nodes map[[2]string]resolvedNode, serverURL string) []model.ReferenceLink {
 	list := make([]model.ReferenceLink, 0, len(rows))
 	for _, row := range rows {
 		node, found := nodes[[2]string{row.kind, row.id}]
 		if !found {
 			continue
 		}
-		list = append(list, model.ReferenceLink{Node: node.GraphNode, Name: node.name(), Kinds: row.kinds, Via: row.via})
+		list = append(list, model.ReferenceLink{Node: node.GraphNode, Name: node.name(serverURL), Kinds: row.kinds, Via: row.via})
 	}
 	slices.SortFunc(list, func(left, right model.ReferenceLink) int {
 		return cmp.Or(strings.Compare(left.Node.Kind, right.Node.Kind), strings.Compare(left.Node.ID, right.Node.ID))

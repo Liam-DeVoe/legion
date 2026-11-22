@@ -50,7 +50,7 @@ func reserveForAuthor(t *testing.T, tx pgx.Tx, kind, id string) {
 // closureOf is the members of CORE-1's references as who reads them.
 func closureOf(t *testing.T, tx pgx.Tx, who model.Actor) []Member {
 	t.Helper()
-	references, err := Closure(context.Background(), tx, who, "CORE-1")
+	references, err := Closure(context.Background(), tx, who, "CORE-1", "")
 	if err != nil {
 		t.Fatalf("read the closure as %s: %v", who.ID, err)
 	}
@@ -87,7 +87,7 @@ func TestTheClosureAnswersANodeReservedForItsAuthorToThatAuthorAlone(t *testing.
 // referencesOf is CORE-1's references as who reads them.
 func referencesOf(t *testing.T, tx pgx.Tx, who model.Actor) References {
 	t.Helper()
-	references, err := Closure(context.Background(), tx, who, "CORE-1")
+	references, err := Closure(context.Background(), tx, who, "CORE-1", "")
 	if err != nil {
 		t.Fatalf("read the references as %s: %v", who.ID, err)
 	}

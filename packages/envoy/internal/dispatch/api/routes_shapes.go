@@ -721,8 +721,10 @@ var routeShapes = map[string]routeShape{
 		Refusals: []routeAnswer{{Status: http.StatusConflict, Body: issueClaimedError{}}},
 	},
 	"GET /api/v1/issues/{key}/events": {Status: http.StatusOK, Response: []model.Event{}, Params: eventListQuery{}},
+	// An issue's references read answers issueReferencesRead, whose rows carry their names'
+	// trees, so the row names that read for the reason the architecture row above gives.
 	"GET /api/v1/issues/{key}/references": {
-		Status: http.StatusOK, Response: model.IssueReferences{}, Params: issueReferencesQuery{},
+		Status: http.StatusOK, Response: issueReferencesRead{}, Params: issueReferencesQuery{},
 		// An If-None-Match that matches the answer's ETag is answered 304 and no body.
 		Also: []routeAnswer{{Status: http.StatusNotModified}},
 	},

@@ -21,6 +21,7 @@ import {
 import { ApprovalChip } from "../doc/ApprovalChip";
 import { AgentName } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
+import { PlainText } from "../refs/plain-text";
 import {
   buildIssuePath,
   buildProjectPath,
@@ -29,8 +30,10 @@ import {
   isAgentArtifact,
   parseIssuePath,
   parseNodeReference,
+  referenceHref,
 } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
+import { type TextSource, textSourceOf } from "../refs/text-references";
 import { artifactVersionUrl, formatArtifactBytes, versionsNewestFirst } from "./ArtifactHeader";
 import { ArtifactDropZone, ArtifactUploadRow, useArtifactUpload } from "./ArtifactUpload";
 import { CLOSED_ISSUE_DOCUMENT_REFUSAL, CreateDocument } from "./CreateDocument";
@@ -139,11 +142,55 @@ function ReferencesDisclosure({
   );
 }
 
+/** The record whose text a references row's name is the head of, against whose document a `#id`
+ *  in the name is read: the far node where it is a comment, an ask or a message. Any other node
+ *  is named by a document's name, an issue's title or a component's, which is the text of no
+ *  record a `#id` could name a question of. */
+function nameSource(node: ReferenceLink["node"]): TextSource | undefined {
+  return node.kind === "comment" || node.kind === "ask" || node.kind === "message"
+    ? textSourceOf(node.kind, node.id, node.issue_key)
+    : undefined;
+}
+
+/** Whether a references row's name is the head of a record's text, which a reader is shown as
+ *  its projection: a comment's, an ask's or a message's, or a block's excerpt, which the read
+ *  gives a node of the block's document with the block's id (`refs.resolvedNode.name`). */
+function namesByText(node: ReferenceLink["node"]): boolean {
+  return (
+    node.kind === "comment" ||
+    node.kind === "ask" ||
+    node.kind === "message" ||
+    node.block_id !== undefined
+  );
+}
+
+/** A references row's name, as the link to its node, or as words where the node opens no page. */
+function NodeName({ href, name }: { href: string | undefined; name: string }): ReactNode {
+  return href === undefined ? (
+    <span className="font-medium">{name}</span>
+  ) : (
+    <Link className={`font-medium underline ${linkText} ${linkHoverText}`} to={href}>
+      {name}
+    </Link>
+  );
+}
+
 /** One row of the references read: a link to the node at the far end through its own reference,
  *  named by the words the read gives for it, then the node's kind and the kind of the issue's node
  *  at the near end, which a row of `links` links from (`via`) and a row of `linked_from` links to
  *  (`to`). A document's row names its owner first, as a member's row does. A node with no
- *  reference (a session) has no page to open, so its row names it without a link. */
+ *  reference (a session) has no page to open, so its row names it without a link.
+ *
+ *  A name that is the head of a record's text - a comment's, an ask's or a message's, or a
+ *  block's excerpt (`namesByText`) - is drawn as its plain-text projection, the reading list's
+ *  `artifacts-reference-name`: a link's words hold no markup, so the formatting goes and a
+ *  reference in the name reads as its target's name, never its address. It is read from the tree
+ *  the server sent of it, and from a parse of the name where a Dispatch from before `name_tree`
+ *  sent none. The words are the whole name, as the server cut it, and none until the projection
+ *  has answered, which is one pre-paint commit on a page whose engine is loaded. Any other name -
+ *  a document's name, an issue's title, a component's - is drawn as the characters it is, as the
+ *  reference graph's excerpts draw those (`api/display_trees.go`'s `graphExcerptRead`), so a
+ *  document called `*draft*.md` keeps its asterisks. */
 function ReferenceLinkRow({
   alsoReferences,
   near,
@@ -155,17 +202,22 @@ function ReferenceLinkRow({
 }): ReactNode {
   const { node } = row;
   const route = node.ref === undefined ? undefined : parseNodeReference(node.ref);
+  // The path the reference opens, through the dashboard's one gate (`referenceHref`); a node with
+  // no reference, and a person, whom no page shows, open none.
+  const href = route === undefined ? undefined : referenceHref(route);
   return (
     <li className={`rounded-lg border p-3 text-sm ${borderDefault}`}>
-      {route === undefined ? (
-        <span className="font-medium">{row.name}</span>
-      ) : (
-        <Link
-          className={`font-medium underline ${linkText} ${linkHoverText}`}
-          to={buildReferencePath(route)}
+      {namesByText(node) ? (
+        <PlainText
+          markdown={row.name}
+          source={nameSource(node)}
+          surface="artifacts-reference-name"
+          tree={row.name_tree}
         >
-          {row.name}
-        </Link>
+          {(name) => <NodeName href={href} name={name ?? ""} />}
+        </PlainText>
+      ) : (
+        <NodeName href={href} name={row.name} />
       )}
       <p className={textMutedOnSurface}>
         {node.kind === "artifact" ? (

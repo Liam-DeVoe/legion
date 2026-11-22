@@ -214,7 +214,7 @@ func TestAnItemBlocksLinkReachesItsItem(t *testing.T) {
 	comment := insertIndexedItem(t, tx, ItemComment, "CORE-1", "Intro.\n\nSee dispatch://CORE/artifact/handbook-md.")
 	insertIndexedItem(t, tx, ItemComment, "CORE-1", "Cites dispatch://CORE-1/comment/"+comment+"#b-b2.")
 
-	references, err := Closure(ctx, tx, model.Actor{}, "CORE-1")
+	references, err := Closure(ctx, tx, model.Actor{}, "CORE-1", "")
 	if err != nil {
 		t.Fatalf("read closure: %v", err)
 	}
@@ -257,7 +257,7 @@ func TestAnAskOptionsLinkJoinsItsIssuesClosure(t *testing.T) {
 		t.Fatalf("the ask holds %d refs rows of its own; the link is meant to be its option's alone", own)
 	}
 
-	references, err := Closure(ctx, tx, model.Actor{}, "CORE-1")
+	references, err := Closure(ctx, tx, model.Actor{}, "CORE-1", "")
 	if err != nil {
 		t.Fatalf("read closure: %v", err)
 	}
