@@ -143,6 +143,16 @@
       "jj": true
     },
     {
+      "script": "unreachable-claim-texts.sh",
+      "go_version_file": "packages/daemon/go.mod",
+      "apt": [],
+      "bun": false,
+      "evidence_variable": "",
+      "timeout_minutes": 5,
+      "why_hosted": "Run it from a checkout with git and bash, as bash scripts/e2e/unreachable-claim-texts.sh [--rev <rev>] [--check w7|w11]; it reads files at a commit and starts nothing",
+      "jj": false
+    },
+    {
       "script": "verification-results.sh",
       "go_version_file": "packages/envoy/go.mod",
       "apt": ["postgresql-client"],

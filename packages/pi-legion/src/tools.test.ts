@@ -12,7 +12,6 @@ import {
 import { DispatchServiceError } from "@legion/envoy-client/dispatch-http";
 import {
   createLegionDaemonClient,
-  LegionDaemonApiError,
   type LegionDaemonClient,
 } from "@legion/pi-shared/daemon-client";
 import {
@@ -2059,7 +2058,9 @@ test("read_state's summary marks each claim Envoy cannot reach, and the controll
 
   expect(lines).toContain("controller unreachable 2026-11-12T18:20:00Z");
   expect(lines).toContain("  architect working 2026-11-12T15:45:39Z -");
-  expect(lines).toContain("  implementer working 2026-11-12T15:45:39Z - unreachable 2026-11-12T16:11:01Z");
+  expect(lines).toContain(
+    "  implementer working 2026-11-12T15:45:39Z - unreachable 2026-11-12T16:11:01Z"
+  );
 });
 
 // R6: a role reads which plugin build its own process runs. The build is the manifest of the
