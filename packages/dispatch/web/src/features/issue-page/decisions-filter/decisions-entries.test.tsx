@@ -271,6 +271,42 @@ test("a Change stands under the decision it was asked on, where another decision
   expect(parts.review[0]).not.toHaveProperty("change");
 });
 
+// A person's write-up of an answered question is no entry of its own: the question it restates
+// is the person's decision. A person's decision node that settles an answered ask of the issue
+// (its `asks`) is left out of every part, and an agent's decision that names no ask stays.
+test("a person's write-up of an answered question is left out of the parts, and an agent's decision stays", async () => {
+  const made = [
+    decision("writeup", {
+      decision: { asks: ["a-answered"], kind: "person", waiting_review: false },
+    }),
+    decision("minor"),
+  ];
+  const hook = await mountOver(
+    heldClient(
+      [closing("a-answered", { at: "2026-11-12T09:00:00Z", kind: "answered" })],
+      [],
+      treeAnswer(made)
+    ),
+    [
+      answeredAsk("a-answered", { at: "2026-11-12T09:00:00Z", text: "Mine." }),
+      decisionNode("writeup"),
+      decisionNode("minor"),
+    ],
+    treeAnswer(made)
+  );
+  const { parts, writeUps } = hook.result.current;
+  hook.unmount();
+  expect(idsOf(parts)).toEqual({
+    agents: [D("minor")],
+    named: [],
+    open_questions: [],
+    others: [],
+    review: [],
+    yours: ["a-answered"],
+  });
+  expect(writeUps).toEqual(new Map([[D("writeup"), new Set(["a-answered"])]]));
+});
+
 // R8: each read the seam watches takes the page's freshness: events refresh it, never its age.
 // The stage mounts the view again on every press of Decisions, so under the app's own defaults,
 // whose `staleTime` is 30 s (`main.tsx`), a press more than 30 s after the page loaded would

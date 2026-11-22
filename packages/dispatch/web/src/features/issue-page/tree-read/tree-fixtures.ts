@@ -234,6 +234,16 @@ export function treeAnswer(
   };
 }
 
+/** The tree read's stub for a case whose view is drawn off the whole tree, as before the page
+ *  holds its view read (`presets.ts`'s `presetView`): the whole tree answers `answer`, and each
+ *  view of it never answers. */
+export function wholeTreeOnly(
+  answer: TreeAnswer
+): (key: string, query?: { readonly view?: string }) => Promise<TreeAnswer> {
+  return (_key, query = {}) =>
+    query.view === undefined ? Promise.resolve(answer) : Promise.withResolvers<never>().promise;
+}
+
 /** The kind of a node a case names that the answer does not hold: an issue, by its key, else a
  *  block. */
 function kindOfUnheld(name: string): string {

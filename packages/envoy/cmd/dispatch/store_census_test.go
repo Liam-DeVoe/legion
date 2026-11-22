@@ -1638,8 +1638,9 @@ func compareTheOldReadWithTheNew(t *testing.T, ctx context.Context, older, datab
 	// what the read lists; a read that names none lists its own items, or is one object. added
 	// names the members this build adds to the read's answer, and unlisted the elements of its
 	// list answer that only this build writes and lists nowhere: the issue's needs, duplicate_of
-	// and filed_from, a document's room and fragment, and a reference member's kind and address,
-	// and the tree artifacts and decisions queries of the issues this build creates.
+	// and filed_from, a document's room and fragment, a reference member's kind and address, and the
+	// state and visibility of the node of each of an issue's links, and the tree artifacts and
+	// decisions queries of the issues this build creates.
 	reads := []struct {
 		path     string
 		lists    []string
@@ -1651,7 +1652,7 @@ func compareTheOldReadWithTheNew(t *testing.T, ctx context.Context, older, datab
 		}, censusArtifactMembers("artifacts[].")...)},
 		{path: "/api/v1/issues/" + seeded.issue + "/comments"},
 		{path: "/api/v1/issues/" + seeded.issue + "/references", lists: []string{"members"},
-			added: append(censusReferenceMembers("members[]."), censusArtifactMembers("members[].artifact.")...)},
+			added: slices.Concat(censusReferenceMembers("members[]."), censusArtifactMembers("members[].artifact."), censusNodeMembers("links[].node."))},
 		{path: "/api/v1/issues/" + seeded.issue + "/asks"},
 		{path: "/api/v1/issues?project=" + seeded.project, added: []censusAddedMember{censusNeeds("[].")}},
 		{path: "/api/v1/artifacts/" + seeded.artifact, added: censusArtifactMembers("")},
@@ -1746,6 +1747,16 @@ func censusReferenceMembers(at string) []censusAddedMember {
 			primary, _ := document["primary"].(bool)
 			return refs.ArtifactRef(optional("issue_key"), text("project"), optional("session_id"), text("slug"), text("kind"), primary)
 		}},
+	}
+}
+
+// censusNodeMembers are the members this build adds to a node of the graph at at (model.GraphNode's
+// State and Visibility): a node the older build wrote stands and everyone in its project reads it,
+// which the older build's answer implies by answering it at all.
+func censusNodeMembers(at string) []censusAddedMember {
+	return []censusAddedMember{
+		{path: at + "state", want: func(map[string]any) any { return graphstore.StateLive }},
+		{path: at + "visibility", want: func(map[string]any) any { return graphstore.VisibilityProject }},
 	}
 }
 

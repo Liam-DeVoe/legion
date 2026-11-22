@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"weak"
@@ -468,41 +469,43 @@ func renderFragment(part *pmdoc.Node) (string, []pmdoc.BlockOffset, error) {
 	return renderTreeWithOffsets(part)
 }
 
-// withoutSilentFragments is offsets, the block ranges of a rendering of an issue room's tree over
-// its fragments, without the blocks of each of parts, those fragments, that silent says renders as
-// no text (renderFragment): a document created empty, whose version holds no text, or the tree
-// artifact's own fragment before anything is written into the issue. Such a fragment holds the
-// empty paragraph an editor bound to it needs, which its own rendering gives no range, and which
-// the room's joined rendering, where other blocks stand beside it, would: a document that renders
-// as no text holds no block, in an issue room as in a room of its own. Every pass that indexes an
-// issue room takes its blocks through here (indexDocumentInRoom, indexOwedRoom,
-// settlement.commitRoomVersions), so no pass indexes a block another drops.
-func withoutSilentFragments(offsets []pmdoc.BlockOffset, parts []*pmdoc.Node, silent func(index int) bool) []pmdoc.BlockOffset {
-	var dropped map[string]struct{}
-	for index, part := range parts {
-		if part == nil || len(part.Children) == 0 || !silent(index) {
+// fragmentsText is the text an issue room's pass indexes (indexRoom) and the range of each of its
+// blocks in it: each fragment's own rendering (renderFragment), markdowns, laid end to end in the
+// room's order, with that fragment's block ranges, offsets, moved by the length of the renderings
+// before it. So a block's text value, its document_block_texts row, its text_sha256 and its excerpt
+// are its slice of its own fragment's rendering, the bytes its document's version stores, and not
+// its slice of the room's joined rendering, which differs at a fragment's edge: there a list after
+// the fragment before's list of the same kind takes the other marker, and a rule opening the
+// fragment is written `---` where the fragment's own rendering may write `***`. No block spans two
+// fragments, so the blocks still nest as in the joined rendering. A
+// fragment that renders as no text holds no block: a document created empty, whose version holds
+// no text, or the tree artifact's own fragment before anything is written into the issue, holds the
+// empty paragraph an editor bound to it needs, as a document that renders as no text holds no block
+// in a room of its own. Every pass that indexes an issue room takes its text through here
+// (indexDocumentInRoom, indexOwedRoom, settlement.commitRoomVersions), each from the renderings of
+// the fragments it already made, so no pass indexes a block another drops.
+func fragmentsText(markdowns []string, offsets [][]pmdoc.BlockOffset) (string, []pmdoc.BlockOffset) {
+	length, blocks := 0, 0
+	for index, markdown := range markdowns {
+		if markdown != "" {
+			length, blocks = length+len(markdown), blocks+len(offsets[index])
+		}
+	}
+	var text strings.Builder
+	text.Grow(length)
+	laid := make([]pmdoc.BlockOffset, 0, blocks)
+	for index, markdown := range markdowns {
+		if markdown == "" {
 			continue
 		}
-		if dropped == nil {
-			dropped = make(map[string]struct{})
-		}
-		pmdoc.Walk(part, func(node *pmdoc.Node) bool {
-			if id, _ := node.Attrs[pmdoc.BlockIDAttr].(string); id != "" {
-				dropped[id] = struct{}{}
-			}
-			return true
-		})
-	}
-	if len(dropped) == 0 {
-		return offsets
-	}
-	kept := make([]pmdoc.BlockOffset, 0, len(offsets))
-	for _, offset := range offsets {
-		if _, drop := dropped[offset.ID]; !drop {
-			kept = append(kept, offset)
+		start := text.Len()
+		text.WriteString(markdown)
+		for _, offset := range offsets[index] {
+			offset.From, offset.To = offset.From+start, offset.To+start
+			laid = append(laid, offset)
 		}
 	}
-	return kept
+	return text.String(), laid
 }
 
 // joinFragments is the one document the trees of a room's fragments render as, in order: a

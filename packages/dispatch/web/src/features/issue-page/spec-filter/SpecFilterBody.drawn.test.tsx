@@ -57,7 +57,13 @@ import { ProvidersSlot } from "../slots/providers";
 import { StageSlot, ViewStage } from "../slots/stage";
 import { nodeRowSelectorOf } from "../tree-focus";
 import { decisionBehind } from "../tree-keys";
-import { commentNode, treeAnswer, treeNode, treeTuple } from "../tree-read/tree-fixtures";
+import {
+  commentNode,
+  treeAnswer,
+  treeNode,
+  treeTuple,
+  wholeTreeOnly,
+} from "../tree-read/tree-fixtures";
 import {
   issueTreeQuery,
   type TreeAnswer,
@@ -208,18 +214,16 @@ beforeAll(async () => {
  *  answer's tuples, `asks` as the issue's asks read and `checks` as its results read.
  *  `asksRead`, `specView`, `results`, `coverage` and `blocks` (the tree read) each say how that
  *  read stands - answered, failed, or still out - and each is answered unless a case says so;
- *  the Spec view read is held as the page holds it (`HeldView`). `verification` and `plan`,
- *  where a case names them, give the issue that document, and the tree read stands as
- *  `verification` says where a case names it; the decisions document's blocks, as the plan's,
- *  are the tree read's and no read of their own, so `decisionBlocks` and `plan` refuse nothing;
- *  `names` is what the page's batched reference read named; `staleTime` is how long an answer
- *  stays fresh, which the shell sets to 30 s; `stage` draws the body inside the stage the page
- *  draws every view in (`ViewStage`), which places the focus on a view's load and moves it on as
- *  a failed read's line that held it leaves. The page's provider of the Contents list's requests
- *  stands above the body, so `request` is taken as the page takes it; `redraw(false)` takes the
- *  body off the page and `redraw(true)` draws a new one under the same provider and reads, as
- *  the view turned off and on again does, and `redraw(true, issue)` draws the body and the reads
- *  over `issue` from then on, as the page does once the issue read answers anew. */
+ *  the Spec view read is held as the page holds it (`HeldView`). `verification`, where a case
+ *  names it, gives the issue that document, and the tree read then stands as `verification`
+ *  says; `names` is what the page's batched reference read named; `staleTime` is how long an
+ *  answer stays fresh, which the shell sets to 30 s; `stage` draws the body inside the stage the
+ *  page draws every view in (`ViewStage`), which places the focus on a view's load and moves it
+ *  on as a failed read's line that held it leaves. The page's provider of the Contents list's
+ *  requests stands above the body, so `request` is taken as the page takes it; `redraw(false)`
+ *  takes the body off the page and `redraw(true)` draws a new one under the same provider and
+ *  reads, as the view turned off and on again does, and `redraw(true, issue)` draws the body and
+ *  the reads over `issue` from then on, as the page does once the issue read answers anew. */
 function drawBody(
   tree: TreeNode,
   made: readonly TreeAnswerNode[] = [],
@@ -232,7 +236,6 @@ function drawBody(
     coverage = "answered",
     named = [],
     names,
-    plan,
     reader = READER,
     request,
     results = "answered",
@@ -249,10 +252,8 @@ function drawBody(
     checks?: readonly CheckBlock[];
     context?: Set<string>;
     coverage?: ReadState;
-    decisionBlocks?: ReadState;
     named?: readonly string[];
     names?: ReadonlyMap<string, string>;
-    plan?: ReadState;
     reader?: string;
     request?: OutlineRequest;
     results?: ReadState;
@@ -273,11 +274,9 @@ function drawBody(
   const issue = {
     ...base,
     ...(verification === undefined ? {} : { verification_artifact_id: "artifact-ver" }),
-    ...(plan === undefined ? {} : { plan_artifact_id: "artifact-plan" }),
     artifacts: [
       ...base.artifacts,
       ...(verification === undefined ? [] : [artifact("artifact-ver", "verification-md")]),
-      ...(plan === undefined ? [] : [artifact("artifact-plan", "plan-md")]),
     ],
   };
   const client = new QueryClient({
@@ -1145,11 +1144,7 @@ function threadsTree(): TreeAnswer {
 /** Answers the tree read with `threadsTree`, and the Spec view's read of it never, so the view is
  *  drawn off the whole tree, as before the page holds its view read (`presets.ts`). */
 function answerThreadsTree() {
-  return spyOn(api, "getIssueTree").mockImplementation((_key, query = {}) =>
-    query.view === undefined
-      ? Promise.resolve(threadsTree())
-      : Promise.withResolvers<never>().promise
-  );
+  return spyOn(api, "getIssueTree").mockImplementation(wholeTreeOnly(threadsTree()));
 }
 
 // The Spec view's slot is filled (`SLOT_FILLED`), so an address that names an item beside the
@@ -2170,33 +2165,6 @@ test("the column says no decision shaped a statement only once the asks are read
         `the column says no decision shaped r1 while the asks read is ${asksRead}`
       ).toEqual([]);
       expect(view.container.querySelectorAll("[data-spec-statement]")).toHaveLength(1);
-    } finally {
-      view.unmount();
-      read.mockRestore();
-    }
-  }
-});
-
-// R5, R17 and R35: the view waits on the reads of what it draws and on no other. A refused read
-// of a document it draws nothing from - the plan, the decisions document's blocks - changes
-// nothing in it: every statement is drawn and marked, and no line says a read failed. Waiting on
-// every document's blocks, the view left every statement unmarked, with no empty line, no
-// sentences and nothing saying why, as two review findings and the tester saw.
-test("a refused read of a document the view draws nothing from leaves every statement drawn and marked", async () => {
-  const passed = check({ block_id: "c1", results: [result({ id: "p1" })] });
-  const tree = issueTree([statement("r1", { children: [checkNode(passed)] })]);
-  for (const [refused, document] of [
-    [{ plan: "failed" }, "artifact-plan"],
-    [{ decisionBlocks: "failed" }, issueDetails().decisions_artifact_id],
-  ] as const) {
-    const { client, read, view } = drawBody(tree, [], { checks: [passed], ...refused });
-    try {
-      // That document's blocks are the tree read's, which holds its answer.
-      await waitFor(() =>
-        expect(client.getQueryState(issueTreeQuery(KEY).queryKey)?.status).toBe("success")
-      );
-      expect(rowOf(view, "spec#b-r1").getAttribute("data-spec-mark"), document).toBe("met");
-      expect(view.container.querySelector('[role="alert"]'), document).toBeNull();
     } finally {
       view.unmount();
       read.mockRestore();

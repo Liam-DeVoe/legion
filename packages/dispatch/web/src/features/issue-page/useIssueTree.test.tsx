@@ -256,7 +256,12 @@ function stubTreeReads(
       await answered("results");
       return { checks: [], issue: KEY, verification_artifact_id: "" };
     }),
-    spyOn(api, "getIssueReferences").mockResolvedValue({ members: [], truncated: false }),
+    spyOn(api, "getIssueReferences").mockResolvedValue({
+      linked_from: [],
+      links: [],
+      members: [],
+      truncated: false,
+    }),
     spyOn(api, "listIssueAsks").mockImplementation(async () => {
       await answered("asks");
       return [];
@@ -331,10 +336,14 @@ test("the names already in hand stand while a tree that grew reads the new set",
     const view = renderHook(() => useIssueTree(issue).root, { wrapper });
     await waitFor(() => expect(neededName(view.result.current)).toBe("The needed issue"));
 
-    // A comment arrives with the tree read's next answer: the tree holds one address more, so
-    // the names read is a key nobody has answered, and it is still out when the page draws again.
+    // A comment citing another issue arrives with the tree read's next answer: the tree holds one
+    // address more, so the names read is a key nobody has answered, and it is still out when the
+    // page draws again.
     await act(async () => {
-      client.setQueryData(issueTreeKey(KEY), treeAnswer([comment], needs));
+      client.setQueryData(
+        issueTreeKey(KEY),
+        treeAnswer([{ ...comment, body: "Read dispatch://CORE-8 first." }], needs)
+      );
       await Promise.resolve();
     });
     await waitFor(() =>
@@ -394,10 +403,14 @@ test("a names read that fails for a tree that grew keeps the names in hand, and 
     expect(taskWords(view.result.current.tree.root)).toBe(TASK_WORDS);
     expect(view.result.current.tree.namesFailure).toBeUndefined();
 
-    // A second comment arrives with the tree read's next answer: the tree holds one address more,
-    // and the names read of that set fails.
+    // A second comment, citing another issue, arrives with the tree read's next answer: the tree
+    // holds one address more, and the names read of that set fails.
     failing = true;
-    const second: Comment = { ...comment, body: "A second turn.", id: "comment-2" };
+    const second: Comment = {
+      ...comment,
+      body: "A second turn, after dispatch://CORE-8.",
+      id: "comment-2",
+    };
     await act(async () => {
       client.setQueryData(issueTreeKey(KEY), treeAnswer([citing, second]));
       await Promise.resolve();
@@ -454,9 +467,14 @@ test("a names read moved to a set of addresses whose query already failed says i
   try {
     const view = renderHook(() => useIssueTree(issue).namesFailure, { wrapper });
     await waitFor(() => expect(view.result.current?.failure).toBe(1));
-    // A comment arrives with the tree read's next answer, and the names read of the tree's new
-    // set fails too.
-    await act(async () => client.setQueryData(issueTreeKey(KEY), treeAnswer([comment])));
+    // A comment citing another issue arrives with the tree read's next answer, and the names read
+    // of the tree's new set fails too.
+    await act(async () =>
+      client.setQueryData(
+        issueTreeKey(KEY),
+        treeAnswer([{ ...comment, body: "Read dispatch://CORE-8 first." }])
+      )
+    );
     await waitFor(() => expect(view.result.current?.failure).toBe(2));
     // The comment goes: the read moves back to the first set, whose query failed, and is out.
     out = held.promise;
@@ -517,10 +535,10 @@ const TREE_READS: readonly TreeRead[] = [
 
 // The names come last and all at once. While any one read of the tree is still out - the
 // comments, the asks, the coverage, the messages, the results, the tree read or the reader's
-// login - the addresses known so far are not read; once it answers, every address the tree
-// holds - a block's own, and one a comment's words cite - is read in one request, and the page
-// publishes the answer to every surface beside it (`reference-names.tsx`). The decisions are
-// nodes of the tree read, so no decisions read is made.
+// login - the addresses known so far are not read; once it answers, every address the tree's
+// words cite - here the plan's task and an issue, both of which a comment cites - is read in one
+// request, and the page publishes the answer to every surface beside it (`reference-names.tsx`).
+// The decisions are nodes of the tree read, so no decisions read is made.
 test("The names are read in one batched request, after every other read has answered", async () => {
   const cited = "dispatch://CORE-7";
   for (const read of TREE_READS) {
@@ -532,7 +550,7 @@ test("The names are read in one batched request, after every other read has answ
         return namedTargets(refs);
       },
       {
-        comments: [{ ...comment, body: `Read ${cited} first.` }],
+        comments: [{ ...comment, body: `Read ${cited} and ${TASK_REF} first.` }],
         held: { read, until: out.promise },
       }
     );
@@ -574,6 +592,48 @@ test("The names are read in one batched request, after every other read has answ
       out.resolve();
       for (const stub of stubs) stub.mockRestore();
     }
+  }
+});
+
+// The tree read holds every node's words, its stored source among them, so the batched names read
+// is given no node's own address for the node: neither a block of a document's, here the plan's
+// task, nor a comment's. It is still given the address of what a chip names outside the tree,
+// here the issue the task needs.
+test("the batched names read is given no node's own address, and a chip's address outside the tree", async () => {
+  const asked: string[][] = [];
+  const commentRef = `dispatch://${KEY}/comment/${comment.id}`;
+  const stubs = stubTreeReads(
+    async (refs) => {
+      asked.push([...refs]);
+      return namedTargets(refs);
+    },
+    {
+      comments: [comment],
+      tree: treeAnswer([comment], { tuples: [treeTuple("needs", "t1", NEEDED)] }),
+    }
+  );
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  );
+  try {
+    const view = renderHook(() => useIssueTree(issue), { wrapper });
+    await waitFor(() => expect(view.result.current.namesHeld).toBe(true));
+    const own = nodesInOrder(view.result.current.root).flatMap((node) =>
+      node.reference === undefined ? [] : [node.reference]
+    );
+    expect(own, "the tree holds the task and the comment by their own addresses").toEqual(
+      expect.arrayContaining([TASK_REF, commentRef])
+    );
+    expect(asked).toHaveLength(1);
+    expect(
+      asked[0]?.filter((reference) => own.includes(reference)),
+      "the names read was given a node's own address"
+    ).toEqual([]);
+    expect(asked[0]).toContain(NEEDED);
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
   }
 });
 
@@ -636,7 +696,7 @@ test("the page publishes an ambiguous reference a comment cites as ambiguous, a 
         return target.ref === gone ? { ...target, gone: true, kind: "comment", name: "" } : target;
       }),
     }),
-    { comments: [{ ...comment, body: `Read ${ambiguous} and ${gone} first.` }] }
+    { comments: [{ ...comment, body: `Read ${ambiguous} and ${gone} first, then ${TASK_REF}.` }] }
   );
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = ({ children }: { children: ReactNode }) => (
@@ -794,378 +854,8 @@ test("a published name of an ask is its question's plain words, never its markdo
   }
 });
 
-/** A document of the issue no word of the tree cites, which only the plan task's stored source
- *  does: the batched name read answers that source, so the address is known only once it has. */
+/** A document of the issue that plays no part. */
 const notes = issueDocument("artifact-notes", "notes-md");
-const NOTES_REF = `dispatch://${KEY}/artifact/notes-md`;
-
-/** The issue with its notes document, one value across renders as the page's issue read hands
- *  it: a fresh issue every render would build the tree and publish its names on every commit. */
-const withNotes: IssueDetails = { ...issue, artifacts: [plan, notes] };
-
-/** What the batched name read answers for `refs` where the plan task's stored source cites the
- *  notes document, which the read names as a document, gone where `gone` says so. */
-function citingTargets(refs: readonly string[], gone = false): { targets: ReferenceTarget[] } {
-  return {
-    targets: namedTargets(refs).targets.map((target) => {
-      if (target.ref === TASK_REF) {
-        return { ...target, name: `:::plan_task{#t1}\nThe words are in ${NOTES_REF}.\n:::` };
-      }
-      return target.ref === NOTES_REF
-        ? { ...target, gone, kind: "artifact", name: "notes.md" }
-        : target;
-    }),
-  };
-}
-
-// A plan task's stored source is what the names read answers for it, so a whole document of the
-// issue that source cites, which a chip on the task opens (`addDocumentChips`), is in no address
-// that read was given. One more read names that address alone, once the first has answered, and
-// the page publishes its answer too: the page's word for a document, never its file name.
-test("what a plan task's words cite is named by one more read", async () => {
-  const asked: string[][] = [];
-  const stubs = stubTreeReads(async (refs) => {
-    asked.push([...refs]);
-    return citingTargets(refs);
-  });
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const wrapper = ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>
-      <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
-    </QueryClientProvider>
-  );
-  try {
-    const view = renderHook(
-      () => {
-        useIssueTree(withNotes);
-        return useKnownReferenceName(NOTES_REF);
-      },
-      { wrapper }
-    );
-    await waitFor(() => expect(view.result.current).toBe(NODE_TYPE_NAMES.document));
-    expect(asked).toHaveLength(2);
-    expect(asked[0]).toContain(TASK_REF);
-    expect(asked[1]).toEqual([NOTES_REF]);
-    view.unmount();
-  } finally {
-    for (const stub of stubs) stub.mockRestore();
-  }
-});
-
-// Once nothing is left for the second read to name - an address only a plan task's stored source
-// cited is cited by a comment too, so the first read names it - the second read's query is
-// disabled, and it would hold its last answer as placeholder for good. The name the page
-// publishes for that address is the first read's newer one, never that older answer: here the
-// document is gone by the time the first read names it again, so no name is published for it.
-test("once the second read has nothing left to name, the first read's newer names stand", async () => {
-  let gone = false;
-  const asked: string[][] = [];
-  const stubs = stubTreeReads(async (refs) => {
-    asked.push([...refs]);
-    return citingTargets(refs, gone);
-  });
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const wrapper = ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>
-      <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
-    </QueryClientProvider>
-  );
-  try {
-    const view = renderHook(
-      () => {
-        useIssueTree(withNotes);
-        return useKnownReferenceName(NOTES_REF);
-      },
-      { wrapper }
-    );
-    // The first round: only the plan task's source cites the notes, so the second read names it.
-    await waitFor(() => expect(view.result.current).toBe(NODE_TYPE_NAMES.document));
-    expect(asked[1]).toEqual([NOTES_REF]);
-
-    // The notes are deleted, and a comment citing them arrives with the tree read's next answer:
-    // the tree's own addresses hold them now, so the first read names them and nothing is left
-    // for the second.
-    gone = true;
-    await act(async () => {
-      client.setQueryData(
-        issueTreeKey(KEY),
-        treeAnswer([{ ...comment, body: `Read ${NOTES_REF} again.` }])
-      );
-      await Promise.resolve();
-    });
-    await waitFor(() => expect(view.result.current).toBeUndefined());
-    expect(asked).toHaveLength(3);
-    expect(asked[2]).toContain(NOTES_REF);
-    view.unmount();
-  } finally {
-    for (const stub of stubs) stub.mockRestore();
-  }
-});
-
-// A published name stands in for the one a link beside the tree would read of its own
-// (`useKnownReferenceName`), and the feed refreshes only a names read whose key holds the address,
-// so the page publishes a name only for an address one of its reads asks for now. A plan task's
-// stored source cites a document, which the one more read names. The task is reworded to cite
-// nothing, and a comment arriving with the tree read's next answer reads the tree's new set:
-// nothing is left for the one more read to name, its query is disabled and never answers again,
-// and the name it gave goes.
-test("once a plan task's words stop citing an address, the page publishes no name for it", async () => {
-  let cites = true;
-  const asked: string[][] = [];
-  const stubs = stubTreeReads(async (refs) => {
-    asked.push([...refs]);
-    return cites ? citingTargets(refs) : namedTargets(refs);
-  });
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const wrapper = ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>
-      <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
-    </QueryClientProvider>
-  );
-  try {
-    const view = renderHook(
-      () => {
-        useIssueTree(withNotes);
-        return useKnownReferenceName(NOTES_REF);
-      },
-      { wrapper }
-    );
-    await waitFor(() => expect(view.result.current).toBe(NODE_TYPE_NAMES.document));
-    expect(asked[1]).toEqual([NOTES_REF]);
-
-    // The task is reworded to cite nothing, and a comment arrives with the tree read's next
-    // answer: the first read of the tree's new set answers the new source.
-    cites = false;
-    await act(async () => {
-      client.setQueryData(issueTreeKey(KEY), treeAnswer([comment]));
-      await Promise.resolve();
-    });
-    await waitFor(() => expect(view.result.current).toBeUndefined());
-    await waitFor(() => expect(client.isFetching()).toBe(0));
-    expect(asked).toHaveLength(3);
-    expect(asked[2]).toContain(TASK_REF);
-    view.unmount();
-  } finally {
-    for (const stub of stubs) stub.mockRestore();
-  }
-});
-
-/** A second document of the issue no word of the tree cites, which only the plan task's stored
- *  source may cite, as it may cite the notes. */
-const log = issueDocument("artifact-log", "log-md");
-const LOG_REF = `dispatch://${KEY}/artifact/log-md`;
-
-/** The issue with its notes and its log, one value across renders, as `withNotes` is. */
-const withNotesAndLog: IssueDetails = { ...issue, artifacts: [plan, notes, log] };
-
-/** What the batched name read answers for `refs` where the plan task's stored source is `source`:
- *  the notes and the log named as documents, the notes gone where `gone` says so. */
-function sourceTargets(
-  refs: readonly string[],
-  source: string,
-  gone = false
-): { targets: ReferenceTarget[] } {
-  return {
-    targets: namedTargets(refs).targets.map((target) => {
-      if (target.ref === TASK_REF) {
-        return { ...target, name: `:::plan_task{#t1}\n${source}\n:::` };
-      }
-      if (target.ref === NOTES_REF) return { ...target, gone, kind: "artifact", name: "notes.md" };
-      return target.ref === LOG_REF ? { ...target, kind: "artifact", name: "log.md" } : target;
-    }),
-  };
-}
-
-// The same for the one more read, of what a plan task's stored source cites: the source comes to
-// cite one document more, and the read of the two documents fails. The name that read gave before
-// stands, beside the first read's names, while the view says the read failed; a read under that
-// key that succeeds names the second document too, and nothing has failed any more.
-test("one more read that fails for words that cite more keeps the names it gave, and says it failed", async () => {
-  let source = `The words are in ${NOTES_REF}.`;
-  let failing = false;
-  const asked: string[][] = [];
-  const stubs = stubTreeReads(async (refs) => {
-    asked.push([...refs]);
-    // The one more read names only what the task's source cites, so it never names the task.
-    if (failing && !refs.includes(TASK_REF)) throw new Error("the names read failed");
-    return sourceTargets(refs, source);
-  });
-  // No retry: the read under the new key fails on its first attempt.
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const wrapper = ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>
-      <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
-    </QueryClientProvider>
-  );
-  try {
-    const view = renderHook(
-      () => {
-        const tree = useIssueTree(withNotesAndLog);
-        return { names: [useKnownReferenceName(NOTES_REF), useKnownReferenceName(LOG_REF)], tree };
-      },
-      { wrapper }
-    );
-    await waitFor(() =>
-      expect(view.result.current.names).toEqual([NODE_TYPE_NAMES.document, undefined])
-    );
-    expect(asked.at(-1)).toEqual([NOTES_REF]);
-    expect(view.result.current.tree.namesFailure).toBeUndefined();
-
-    // The task's source comes to cite the log too, which the first read of a tree that grew by a
-    // comment answers; the one more read, of both documents, fails.
-    source = `The words are in ${NOTES_REF} and ${LOG_REF}.`;
-    failing = true;
-    await act(async () => {
-      client.setQueryData(issueTreeKey(KEY), treeAnswer([comment]));
-      await Promise.resolve();
-    });
-    await waitFor(() => expect(view.result.current.tree.namesFailure).toBeDefined());
-    expect(asked.at(-1)).toEqual([LOG_REF, NOTES_REF]);
-    expect(view.result.current.names).toEqual([NODE_TYPE_NAMES.document, undefined]);
-
-    // The failed read is read again, and this time it answers.
-    failing = false;
-    await act(async () => {
-      await client.refetchQueries({ predicate: (query) => query.state.status === "error" });
-    });
-    await waitFor(() =>
-      expect(view.result.current.names).toEqual([
-        NODE_TYPE_NAMES.document,
-        NODE_TYPE_NAMES.document,
-      ])
-    );
-    expect(view.result.current.tree.namesFailure).toBeUndefined();
-    view.unmount();
-  } finally {
-    for (const stub of stubs) stub.mockRestore();
-  }
-});
-
-// The names' line stands for the one more read alone where that read fails and the first holds:
-// it counts that read's failures, says it runs again while it does, and its Retry asks that read
-// again and not the first. Once that read answers, nothing has failed any more.
-test("one more read that fails while the first holds says so, and its Retry asks that read again", async () => {
-  let failing = true;
-  // Where set, the one more read stays out until it settles.
-  let out: Promise<void> | undefined;
-  const asked: string[][] = [];
-  const stubs = stubTreeReads(async (refs) => {
-    asked.push([...refs]);
-    // The one more read names only what the task's source cites, so it never names the task.
-    if (!refs.includes(TASK_REF)) {
-      await out;
-      if (failing) throw new Error("the names read failed");
-    }
-    return sourceTargets(refs, `The words are in ${NOTES_REF}.`);
-  });
-  // No retry: the one more read fails on its first attempt.
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const wrapper = ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>
-      <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
-    </QueryClientProvider>
-  );
-  try {
-    const view = renderHook(
-      () => {
-        const tree = useIssueTree(withNotes);
-        return { name: useKnownReferenceName(NOTES_REF), tree };
-      },
-      { wrapper }
-    );
-    await waitFor(() => expect(view.result.current.tree.namesFailure).toBeDefined());
-    expect(asked, "the first read was not read once, and the one more read after it").toHaveLength(
-      2
-    );
-    expect(asked[1]).toEqual([NOTES_REF]);
-    expect(view.result.current.tree.namesFailure?.failure).toBe(1);
-    expect(view.result.current.tree.namesFailure?.retrying).toBe(false);
-    expect(view.result.current.name).toBeUndefined();
-
-    // Its Retry reads the one more read again, and the first not: while that read is out the
-    // names still stand failed, busy.
-    failing = false;
-    const again = Promise.withResolvers<void>();
-    out = again.promise;
-    await act(async () => view.result.current.tree.namesFailure?.retry());
-    await waitFor(() => expect(view.result.current.tree.namesFailure?.retrying).toBe(true));
-    expect(view.result.current.tree.namesFailure?.failure).toBe(1);
-    expect(asked, "the Retry read other than the one more read again").toEqual([
-      asked[0],
-      [NOTES_REF],
-      [NOTES_REF],
-    ]);
-    out = undefined;
-    await act(async () => again.resolve());
-    await waitFor(() => expect(view.result.current.tree.namesFailure).toBeUndefined());
-    expect(view.result.current.name).toBe(NODE_TYPE_NAMES.document);
-    expect(asked).toHaveLength(3);
-    view.unmount();
-  } finally {
-    for (const stub of stubs) stub.mockRestore();
-  }
-});
-
-// The one more read's kept answer stands only for what it is asked for now. A plan task's stored
-// source cites two documents, which the one more read names. Then the notes are deleted and a
-// comment cites them, so the first read names them now, gone; the one more read is asked for the
-// log alone, and that read fails. Its kept answer still holds the notes as they were, which must
-// not stand over the first read's newer answer.
-test("a failed one more read's kept answer stands over no name the first read now gives", async () => {
-  const source = `The words are in ${NOTES_REF} and ${LOG_REF}.`;
-  let gone = false;
-  let failing = false;
-  const asked: string[][] = [];
-  const stubs = stubTreeReads(async (refs) => {
-    asked.push([...refs]);
-    // The one more read names only what the task's source cites, so it never names the task.
-    if (failing && !refs.includes(TASK_REF)) throw new Error("the names read failed");
-    return sourceTargets(refs, source, gone);
-  });
-  // No retry: the one more read under its new key fails on its first attempt.
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const wrapper = ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>
-      <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
-    </QueryClientProvider>
-  );
-  try {
-    const view = renderHook(
-      () => {
-        const tree = useIssueTree(withNotesAndLog);
-        return { names: [useKnownReferenceName(NOTES_REF), useKnownReferenceName(LOG_REF)], tree };
-      },
-      { wrapper }
-    );
-    await waitFor(() =>
-      expect(view.result.current.names).toEqual([
-        NODE_TYPE_NAMES.document,
-        NODE_TYPE_NAMES.document,
-      ])
-    );
-    expect(asked.at(-1)).toEqual([LOG_REF, NOTES_REF]);
-
-    // The notes are deleted and a comment citing them arrives with the tree read's next answer:
-    // the first read names them now, and the one more read, of the log alone, fails.
-    gone = true;
-    failing = true;
-    await act(async () => {
-      client.setQueryData(
-        issueTreeKey(KEY),
-        treeAnswer([{ ...comment, body: `Read ${NOTES_REF} again.` }])
-      );
-      await Promise.resolve();
-    });
-    await waitFor(() => expect(view.result.current.tree.namesFailure).toBeDefined());
-    expect(asked.some((refs) => refs.length === 1 && refs[0] === LOG_REF)).toBe(true);
-    await waitFor(() =>
-      expect(view.result.current.names).toEqual([undefined, NODE_TYPE_NAMES.document])
-    );
-    view.unmount();
-  } finally {
-    for (const stub of stubs) stub.mockRestore();
-  }
-});
 
 // As the tester measured, one block read for every document of the issue was 25 of a first
 // load's 47 requests. The tree read answers every typed block of every role document, so the
@@ -1239,11 +929,11 @@ test("A plan with no role that the issue names by its id is named the plan, its 
   }
 });
 
-// The batched read names a typed block by its stored excerpt, which opens on the block's
-// directive line. Every link that reads the page's published names draws the name as it is, so
-// the page publishes the name a chip naming the block draws (`targetNaming`): the first line of
-// the server's reading where the read sends one, and the page's word for the block's kind where
-// it sends none - never the directive line.
+// The batched read names a typed block a comment cites by its stored excerpt, which opens on the
+// block's directive line. Every link that reads the page's published names draws the name as it
+// is, so the page publishes the name a chip naming the block draws (`targetNaming`): the first
+// line of the server's reading where the read sends one, and the page's word for the block's kind
+// where it sends none - never the directive line.
 test("A published name of a typed block is never its directive line", async () => {
   const opener = `:::plan_task{#t1 serves="dispatch://${KEY}/spec#b-r1"}`;
   const reading: DisplayTree = {
@@ -1259,11 +949,14 @@ test("A published name of a typed block is never its directive line", async () =
     ["a reading", { name: `${opener}\n**${TASK_WORDS}**\n:::`, text_tree: reading }, TASK_WORDS],
     ["no reading", { name: `${opener}\n${TASK_WORDS}\n:::` }, NODE_TYPE_NAMES.plan_task],
   ] as const) {
-    const stubs = stubTreeReads(async (refs) => ({
-      targets: namedTargets(refs).targets.map((target) =>
-        target.ref === TASK_REF ? { ...target, ...answer } : target
-      ),
-    }));
+    const stubs = stubTreeReads(
+      async (refs) => ({
+        targets: namedTargets(refs).targets.map((target) =>
+          target.ref === TASK_REF ? { ...target, ...answer } : target
+        ),
+      }),
+      { comments: [{ ...comment, body: `Start with ${TASK_REF}.` }] }
+    );
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const wrapper = ({ children }: { children: ReactNode }) => (
       <QueryClientProvider client={client}>
@@ -2791,9 +2484,15 @@ test("a read the reader did not ask for keeps the refused read's line and its fo
 // press of a view, and under the app's `staleTime` a read is stale 30 s after it answered
 // (`main.tsx`). The tree's reads are kept fresh by events instead: the slot mounted again more
 // than 30 s on draws from what the client holds and sends no read, and a comment's edit reads the
-// comments again and the names, and nothing else.
+// comments again and the names, whose read holds the comment's address another comment cites,
+// and nothing else.
 test("a tree mounted again past 30 s reads nothing, and a comment event reads the comments", async () => {
-  const stored: Comment[] = [comment];
+  const citing: Comment = {
+    ...comment,
+    body: `Read dispatch://${KEY}/comment/${comment.id} first.`,
+    id: "comment-2",
+  };
+  const stored: Comment[] = [comment, citing];
   const stubs = stubTreeReads(async (refs) => namedTargets(refs), { comments: stored });
   const requests = () => stubs.reduce((sent, stub) => sent + stub.mock.calls.length, 0);
   // The app's client's `staleTime` (`main.tsx`), which a read that sets none of its own takes.

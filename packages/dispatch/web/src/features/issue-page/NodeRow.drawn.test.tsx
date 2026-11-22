@@ -263,10 +263,10 @@ function TreeRow({ node: drawn }: { node: TreeNode }): ReactNode {
 // `decided_by` tuple names, which the tree read answers with that session or person as context,
 // since the node's `decision` names no decider. The session that wrote it is named by the title
 // the page's sessions read gives it, as any agent's is: its role's word on the row and its whole
-// title in the opened body (ruling 6). A session no registry lists any longer is named by the
-// title it stamped on what it wrote, in the same two places. A decision whose node names nobody
-// draws no author on its row, and its opened body says "Author unknown" (ruling 5). Each decision
-// is a node of the tree read, a `decision` block of the spec.
+// title in the opened body. A session no registry lists any longer is named by the title it
+// stamped on what it wrote, in the same two places. A decision whose node names nobody draws no
+// author on its row, and its opened body says "Author unknown". Each decision is a node of the
+// tree read, a `decision` block of the spec.
 // Red on purpose: the tree read answers no title a session stamped (a session's context node
 // carries none, and the names read and the agents registry name no session the registry has
 // let go), so the stamped title's clause fails until the model's tree route answers it.

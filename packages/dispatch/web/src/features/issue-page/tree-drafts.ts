@@ -129,12 +129,6 @@ export interface TreeContext {
    *  issue's own documents (`treeContext`): one chip per reference, the same value on every
    *  call. */
   readonly chipOf: (reference: string) => NodeChip;
-  /** The words of the stored excerpt the batched reference read names `reference`'s target by
-   *  (`ReferenceTarget.name`), with a typed block's directive left out (`blockWords`); `""` for
-   *  a target the read has not answered for and for one nothing answers to now. It is a block's
-   *  source, cut at 480 runes and unread, so no chip draws it: it is where a node's citations
-   *  are read from beside its words (`addDocumentChips`). */
-  readonly excerptOf: (reference: string) => string;
   readonly key: string;
   /** The node `reference` names, as this issue addresses it; undefined for anything else. */
   readonly nodeIdOf: (reference: string) => string | undefined;
@@ -321,10 +315,6 @@ export function treeContext(
       };
       chips.set(reference, chip);
       return chip;
-    },
-    excerptOf: (reference: string): string => {
-      const target = names.get(reference);
-      return target === undefined || target.gone ? "" : blockWords(target.name);
     },
     key,
     nodeIdOf: nodeIdOfReference,
@@ -516,13 +506,16 @@ function shortAddressesIn(node: DisplayTree, inCode: boolean): DisplayTree {
 /**
  * A chip that opens each document of the issue a node's own words cite (R3): a document is no
  * node of the outline, so a block that names one carries a chip of its own for it, which opens
- * the document at its own address in place of the outline (`NodeRow.tsx`'s `Chip`). The chip is
- * named by the page's word for the document, as every chip naming a whole document is
- * (`documentWord`): the filter's name for the spec and for the plan and Verification documents,
- * and "document" for any other, never the file name the issue's own read carries. It
- * addresses the document as `artifact/<slug>` - the spec too, whose `spec` reference is the Spec
- * filter's address. A citation of one block of a document names that block, which the text's
- * own link opens, and no chip.
+ * the document at its own address in place of the outline (`NodeRow.tsx`'s `Chip`). The words
+ * read are the draft's text: a node of the tree read is drafted with its words as that read
+ * answers them, a block's its stored source (`tree-read/tree-nodes.ts`' `draftOf`), and a
+ * decision of the decisions read with its block's words (`addDecisions`). The chip is named by
+ * the page's word for the document, as every chip naming a whole document is (`documentWord`):
+ * the filter's name for the spec and for the plan and Verification documents, and "document"
+ * for any other, never the file name the issue's own read carries. It addresses the document as
+ * `artifact/<slug>` - the spec too, whose `spec` reference is the Spec filter's address. A
+ * citation of one block of a document names that block, which the text's own link opens, and no
+ * chip.
  */
 export function addDocumentChips(
   drafts: Map<string, Draft>,
@@ -532,14 +525,7 @@ export function addDocumentChips(
   const bySlug = artifactsBySlug(reads.issue);
   if (bySlug.size === 0) return;
   for (const draft of drafts.values()) {
-    // The words a node is drawn by can leave a citation out - the coverage read drops every
-    // `://` word of a requirement (`api/results.go`'s `blockWords`) - so the node's own source,
-    // the excerpt the reference read names it by, is read as well.
-    const source = draft.reference === undefined ? "" : context.excerptOf(draft.reference);
-    for (const span of [
-      ...referenceSpans(draft.text, "dispatch://"),
-      ...referenceSpans(source, "dispatch://"),
-    ]) {
+    for (const span of referenceSpans(draft.text, "dispatch://")) {
       const route = parseNodeReference(span.value);
       if (route === undefined || !("key" in route) || route.key !== context.key) continue;
       if ("block" in route && route.block !== undefined) continue;

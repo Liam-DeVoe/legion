@@ -231,20 +231,7 @@ export function specDecidedBy({
 }): SpecReading {
   const nodes = nodesById(root);
   const asks = asksById(nodes);
-  // The asks the tree holds an answer for, by the id a decision names them with.
-  const answered = new Set(
-    [...asks].flatMap(([id, ask]) => (ask.answer === undefined ? [] : [id]))
-  );
-  const shaped = shapedBy({
-    answered,
-    asks,
-    asksHeld,
-    decisions,
-    nameOf,
-    nodeIdOf,
-    nodes,
-    reader,
-  });
+  const shaped = shapedBy({ asks, asksHeld, decisions, nameOf, nodeIdOf, nodes, reader });
   const standings = statementStandings(root, checks);
   const groups: {
     parent?: SpecParent;
@@ -344,7 +331,6 @@ function asksById(nodes: ReadonlyMap<string, TreeNode>): ReadonlyMap<string, Tre
  *  view read answers them: each drawn, but a person's while the asks read holds no answer
  *  (`specDecidedBy`'s `asksHeld`), which keeps its place as a tie with no decision drawn. */
 function shapedBy({
-  answered,
   asks,
   asksHeld,
   decisions,
@@ -353,7 +339,6 @@ function shapedBy({
   nodes,
   reader,
 }: {
-  answered: ReadonlySet<string>;
   asks: ReadonlyMap<string, TreeNode>;
   asksHeld: boolean;
   decisions: readonly DecisionNode[];
@@ -372,7 +357,7 @@ function shapedBy({
     const made: Tie =
       decision.kind === "person" && !asksHeld
         ? { key: decision.ref }
-        : tieOf(decisionOf(decision, { answered, asks, nameOf, nodeIdOf, nodes, reader }));
+        : tieOf(decisionOf(decision, { asks, nameOf, nodeIdOf, nodes, reader }));
     for (const link of links) {
       const id = link.to.ref === undefined ? undefined : nodeIdOf(link.to.ref);
       if (id === undefined) continue;
@@ -395,15 +380,12 @@ function tieOf(decision: SpecDecision): Tie {
 function decisionOf(
   decision: DecisionNode,
   {
-    answered,
     asks,
     nameOf,
     nodeIdOf,
     nodes,
     reader,
   }: {
-    /** The ids of the asks the tree holds an answer for. */
-    answered: ReadonlySet<string>;
     asks: ReadonlyMap<string, TreeNode>;
     nameOf: (reference: string) => string | undefined;
     nodeIdOf: (reference: string) => string | undefined;
@@ -416,7 +398,7 @@ function decisionOf(
   // answer's own and never the decision's restatement of them (R4): a person's decision that
   // names an answered ask of this issue is drawn by the first of its asks the tree holds an
   // answer for.
-  if (decision.kind === "person" && (decision.asks ?? []).some((ask) => answered.has(ask))) {
+  if (decision.kind === "person") {
     const ask = (decision.asks ?? [])
       .map((id) => asks.get(id))
       .find((one) => one?.answer !== undefined);
