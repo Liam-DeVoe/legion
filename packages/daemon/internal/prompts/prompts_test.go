@@ -1092,6 +1092,7 @@ func TestTheOwnersPromptGivesTheRoleBlockAndItsRefusals(t *testing.T) {
 				"one agent runs on one harness.",
 				"`held`",
 				"`worker-died`",
+				"which neither the deployment nor the plan defines.",
 			} {
 				if !strings.Contains(text, term) {
 					t.Errorf("the composed %s prompt omits %q", tc.name, term)
@@ -1106,6 +1107,9 @@ func TestTheOwnersPromptGivesTheRoleBlockAndItsRefusals(t *testing.T) {
 				{"adds a role of the deployment with the name of a role your plan defines", "keeps its plan's role", "refuses every later version that keeps a role of that name"},
 				// A version that renames the role is refused while a task that names it runs.
 				{"while such a task runs", "`stop_task` first", "a new name"},
+				// A version that takes away a role block a step still names names a role nobody
+				// defines, running or not, so a stop of the task does not let it through.
+				{"takes away a role block that a step still names", "neither the deployment nor the plan defines", "stopping the task does not help"},
 			} {
 				if !clauseHolds(composed, terms...) {
 					t.Errorf("no clause of the composed %s prompt holds %q, in that order", tc.name, terms)

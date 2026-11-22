@@ -868,7 +868,9 @@ test("the plan guide gives a role block, its refusals and a role under a running
       /the deployment does not list; it lists <m1>, <m2>/,
       /one agent runs on one model/,
       /one agent runs on one harness/,
-      /changes or takes away a role block that a step of the running task names/,
+      /changes the type, the model or the prompt of a role block that a step of the running task names/,
+      /takes away a role block that a step still names is refused whether the task runs or not/,
+      /which neither the deployment nor the plan defines/,
       /refuses every later version that keeps a role of that name/,
       /stop that task with `stop_task` first, then give a version whose role has a new name/,
     ])
