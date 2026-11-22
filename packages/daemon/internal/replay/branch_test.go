@@ -341,6 +341,125 @@ func TestTheFirstStartsKnobOrdersFirstStartsByTheRecordOrByRank(t *testing.T) {
 	}
 }
 
+// setBackRootWindow is a window from 10:00 to 12:45 under a cap of 1, its inputs reaching back to
+// the daemon's boot at 07:00. ACME-1, a root at the board's lowest rank (z1), runs from its filing
+// at 07:05 to its merge at 07:45, and a person sets it back to todo at 09:00, where it waits for the
+// slot ACME-4 (a4) has held since its promotion at 08:45 and gives back at its accepting at 10:15.
+// ACME-2 (a2) and ACME-3 (a3), handed to Legion at 09:10 and 09:20, wait with it: ACME-2 takes the
+// slot at 10:15 and works to its accepting at 11:30, where ACME-3 takes it and works to reviewing
+// at 12:30. The record never gives ACME-1 a slot in the window.
+func setBackRootWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(10, 0), clock(12, 45))
+	b.reaches(3 * time.Hour)
+	b.capped(1)
+	b.boot(clock(7, 0))
+	mergedRoot(b, "ACME-1", "z1", clock(7, 5))
+	b.file(clock(8, 45), "ACME-4", filing{Title: "Rotate the warehouse keys", Status: "todo", Rank: "a4", Labels: handedToLegion})
+	b.rootThroughReview(clock(8, 45), "ACME-4")
+	b.edit(clock(9, 0), "ACME-1", setStatus("todo"))
+	b.ownTree("ACME-1")
+	b.file(clock(9, 10), "ACME-2", filing{Title: "Count the widgets per shelf", Status: "todo", Rank: "a2", Labels: handedToLegion})
+	b.file(clock(9, 20), "ACME-3", filing{Title: "Keep the last search on the shelf screen", Status: "todo", Rank: "a3", Labels: handedToLegion})
+	b.segmentEnds(clock(10, 15), "ACME-4", phase.Reviewing, phase.Accepting, workflow.TriggerReviewApproved)
+	b.rootThroughReview(clock(10, 15), "ACME-2")
+	b.segmentEnds(clock(11, 30), "ACME-2", phase.Reviewing, phase.Accepting, workflow.TriggerReviewApproved)
+	b.rootThroughReview(clock(11, 30), "ACME-3")
+	return b.build()
+}
+
+// FirstStarts recorded orders the issues by their first slot in the window (design 10.7): a slot of
+// a run that ended before the window, or one held at its start from before it, is no first start.
+// The test reads setBackRootWindow, where ACME-1's first slot came in its earlier run at 07:05 and
+// ACME-4 holds its slot at the start from 08:45: the ranks show ACME-2 and ACME-3 alone, at 01 and
+// 02, and a replay under main gives the slot to ACME-2 at 10:15 and to ACME-3 at 11:30, as the
+// record did, and none to ACME-1. Ranked by its first slot anywhere, ACME-1 led the line at 10:15
+// and held the slot with no recorded work left to open, and neither ACME-2 nor ACME-3 started.
+func TestARootSetBackBeforeTheWindowWaitsBehindTheWindowsFirstStarts(t *testing.T) {
+	checkRecordedFirstStarts(t, setBackRootWindow(t), map[string]string{"ACME-2": "01", "ACME-3": "02"}, "ACME-2 at 10:15", "ACME-3 at 11:30")
+}
+
+// inFlightTreeWindow is a window from 10:00 to 13:00 under a cap of 1, its inputs reaching back to
+// the daemon's boot at 07:00. ACME-1, a root at rank a1, holds the slot from its promotion at 08:00
+// while its architect designs it. A person files its two children todo under it, ACME-2 (a2) at
+// 09:00 and ACME-3 (a3) at 09:05, ACME-3 blocked by ACME-4, an issue Legion is not given; ACME-5, a
+// second root at rank a5, is handed to Legion at 09:30 and waits for the slot. At 10:10 ACME-1's
+// design opens its gate: it waits for its open children and gives its slot back, and ACME-2 takes
+// it, ahead of ACME-5 by its tree's rank. ACME-2 reaches accepting at 11:10, while the link still
+// holds ACME-3, and ACME-5 takes the slot; a person closes ACME-4 at 11:20, and ACME-3 takes the
+// slot at ACME-5's accepting at 12:25.
+func inFlightTreeWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(10, 0), clock(13, 0))
+	b.reaches(3 * time.Hour)
+	b.capped(1)
+	b.boot(clock(7, 0))
+	b.file(clock(8, 0), "ACME-1", filing{Title: "Export the widget list", Status: "todo", Rank: "a1", Labels: handedToLegion})
+	b.rootPromoted(clock(8, 0), "ACME-1")
+	b.file(clock(8, 10), "ACME-4", filing{Title: "Agree the shelf names with the warehouse", Status: "backlog", Rank: "a9"})
+	b.file(clock(9, 0), "ACME-2", filing{Title: "Write the export's header row", Parent: "ACME-1", Tree: "ACME-1", Status: "todo", Rank: "a2"})
+	b.file(clock(9, 5), "ACME-3", filing{Title: "Name the header row's columns", Parent: "ACME-1", Tree: "ACME-1", Status: "todo", Rank: "a3",
+		BlockedBy: []string{"ACME-4"}})
+	b.file(clock(9, 30), "ACME-5", filing{Title: "Count the widgets per shelf", Status: "todo", Rank: "a5", Labels: handedToLegion})
+	b.turnEnds(clock(10, 10), "ACME-1", claim.RoleArchitect)
+	b.registered(clock(10, 10), "ACME-1", true)
+	b.info(clock(10, 10), "admission: an issue waits for the Dispatch children under it", "issue", "ACME-1", "tree", "ACME-1",
+		"generation", 1, "children", 2)
+	b.slotReleased(clock(10, 10), "ACME-1")
+	b.childStarts(clock(10, 10), "ACME-2")
+	b.segmentEnds(clock(10, 25), "ACME-2", phase.Planning, phase.Implementing, workflow.TriggerPlannerCompleted)
+	b.segmentEnds(clock(10, 40), "ACME-2", phase.Implementing, phase.Testing, workflow.TriggerImplementationReady)
+	b.segmentEnds(clock(10, 55), "ACME-2", phase.Testing, phase.Reviewing, workflow.TriggerTesterPassed)
+	b.segmentEnds(clock(11, 10), "ACME-2", phase.Reviewing, phase.Accepting, workflow.TriggerReviewApproved)
+	b.rootThroughReview(clock(11, 10), "ACME-5")
+	b.edit(clock(11, 20), "ACME-4", setStatus(record.DoneStatus))
+	b.segmentEnds(clock(12, 25), "ACME-5", phase.Reviewing, phase.Accepting, workflow.TriggerReviewApproved)
+	b.childStarts(clock(12, 25), "ACME-3", "ACME-4")
+	return b.build()
+}
+
+// FirstStarts recorded shows each tree's root at its tree's earliest first start in the window
+// (design 10.7), since the line orders the issues whose first phase can start by their tree root's
+// rank first. The test reads inFlightTreeWindow, where ACME-1 holds its slot from before the start
+// and takes none in the window: it ranks by ACME-2's start at 10:10, 01, above ACME-5's at 11:10,
+// 02, and a replay under main gives the slot to ACME-2 at 10:10, to ACME-5 at 11:10 and to ACME-3
+// at 12:25, as the record did. At its board rank ACME-1 ranked below every first start, and
+// ACME-5 took the slot at 10:10 ahead of ACME-2. Root-first ordering cannot keep the recorded order
+// where a later child of an earlier tree waits at the same pass as a later tree's first start: the
+// child goes first by its root's rank, though a record whose board ranked the later tree higher
+// started that tree first. The link keeps ACME-3 out of the line at 11:10, so this window has no
+// such pass.
+func TestATreeInFlightAtTheStartRanksByItsFirstChildsStart(t *testing.T) {
+	checkRecordedFirstStarts(t, inFlightTreeWindow(t), map[string]string{"ACME-1": "01", "ACME-2": "01", "ACME-5": "02", "ACME-3": "03"},
+		"ACME-2 at 10:10", "ACME-5 at 11:10", "ACME-3 at 12:25")
+}
+
+// checkRecordedFirstStarts reads window's trace, which must place every fact, and checks the ranks
+// firstStartRanks shows its issues at against ranks, and each slot a replay of it under main gives,
+// as the issue and the minute, against taken.
+func checkRecordedFirstStarts(t *testing.T, window Window, ranks map[string]string, taken ...string) {
+	t.Helper()
+	trace, err := BuildTrace(window)
+	if err != nil {
+		t.Fatalf("build the trace: %v", err)
+	}
+	if len(trace.Unplaced) != 0 {
+		t.Errorf("the trace could not place %+v", trace.Unplaced)
+	}
+	if got := firstStartRanks(trace); !reflect.DeepEqual(got, ranks) {
+		t.Errorf("the recorded first starts rank %v, want %v", got, ranks)
+	}
+
+	_, log := knobRun(t, window, mainRule(t), "main")
+	var given []string
+	for _, line := range log {
+		if line.Msg == "admission: slot taken" {
+			given = append(given, line.Issue+" at "+line.Time.UTC().Format("15:04"))
+		}
+	}
+	if !slices.Equal(given, taken) {
+		t.Errorf("the replay gave the slot to %v, want %v", given, taken)
+	}
+}
+
 // neverStartedWindow is a window recorded under keep-past-review with an issue the record never
 // started. The cap is 1. ACME-1, a root, holds the slot from 09:00 past its review to its merge at
 // 11:00, 15 minutes in each phase; ACME-2 then holds it from 11:00 with the same work, in

@@ -552,17 +552,28 @@ func withRanks(t Trace, ranks map[string]string) Trace {
 }
 
 // firstStartRanks is the input transform of the main branch's FirstStarts, recorded (design 10.7):
-// each issue of the project that the record started, by its first slot, is shown at a rank that
-// orders it by that first start, below every rank Dispatch gave any issue of the window, and every
-// issue the record never started keeps its own rank, after them. The line orders the issues whose
-// first phase can start by their tree root's rank and then their own (record.Waiting), so the
-// replay starts them in the recorded order where the rule lets it; the measures read the true
-// ranks from the trace. Nil where no issue started or no rank sorts below the window's lowest.
+// each issue of the project that the record started in the window, by its first slot that begins
+// at or after the window's start, is shown at a rank that orders it by that first start, below
+// every rank Dispatch gave any issue of the window. A slot the issue held at the start from before
+// it is no start in the window, nor is a slot of an earlier run. The line orders the issues whose
+// first phase can start by their tree root's rank and then their own (record.Waiting), so each
+// tree's root is shown at the earliest first start of its tree, its own or that of a member of the
+// tree its entry stood in at that start, where that comes before the root's own or the root has
+// none: a root in flight at the start ranks by its first child's start, and its children follow in
+// their recorded order. Every other issue keeps its own rank, after them: a root that left the
+// workflow before the window and was set back to todo waits at its own rank behind the issues the
+// record started, as it did in the record, rather than at the head of the line with no recorded
+// work left to open. So the replay starts the issues in the recorded order where the rule lets it,
+// but for the one case root-first ordering cannot keep: a later child of an earlier tree that waits
+// at the same pass as a later tree's first start goes first by its root's rank, though the record
+// started the later tree first where the board ranked that tree higher. The measures read the true
+// ranks from the trace. Nil where no issue started in the window or no rank sorts below the
+// window's lowest.
 func firstStartRanks(t Trace) map[string]string {
 	type first struct {
-		key  string
-		at   time.Time
-		rank string
+		key, tree string
+		at        time.Time
+		rank      string
 	}
 	var started []first
 	lowest, ranked := "", false
@@ -577,10 +588,18 @@ func firstStartRanks(t Trace) map[string]string {
 				}
 			}
 		}
-		if iss.Project != t.Project || len(iss.Slots) == 0 {
+		if iss.Project != t.Project {
 			continue
 		}
-		started = append(started, first{key: key, at: iss.Slots[0].Start, rank: rank})
+		at := slices.IndexFunc(iss.Slots, func(span SlotSpan) bool { return !span.Before && !span.Start.Before(t.From) })
+		if at < 0 {
+			continue
+		}
+		start, tree := iss.Slots[at].Start, key
+		if entry := iss.entryAt(start); entry != nil && entry.Tree != "" {
+			tree = entry.Tree
+		}
+		started = append(started, first{key: key, tree: tree, at: start, rank: rank})
 	}
 	if len(started) == 0 || lowest == "" || lowest[0] <= ' '+1 {
 		return nil
@@ -593,9 +612,19 @@ func firstStartRanks(t Trace) map[string]string {
 		return cmp.Or(x.at.Compare(y.at), cmp.Compare(x.rank, y.rank), cmp.Compare(x.key, y.key))
 	})
 	width := len(strconv.Itoa(len(started)))
+	// In the order of the first starts the first rank given a key is the earliest of its own and,
+	// for a tree's root, its members'.
 	ranks := make(map[string]string, len(started))
 	for i, issue := range started {
-		ranks[issue.key] = fmt.Sprintf("%s%0*d", prefix, width, i+1)
+		rank := fmt.Sprintf("%s%0*d", prefix, width, i+1)
+		if _, shown := ranks[issue.key]; !shown {
+			ranks[issue.key] = rank
+		}
+		if root, known := t.Issues[issue.tree]; known && root.Project == t.Project {
+			if _, shown := ranks[issue.tree]; !shown {
+				ranks[issue.tree] = rank
+			}
+		}
 	}
 	return ranks
 }

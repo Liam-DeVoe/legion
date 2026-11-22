@@ -667,7 +667,7 @@ A result that rests on a knob runs under each value of that knob, so that you re
 | `timing` | `offset`, `wall` | When a link's removal, a child's move out, a gate's closing and an outside blocker's close happen, at their recorded offset from the start of the wait that they end, or at their recorded time. | 4 |
 | `answer` | `offset`, `wall` | When a person answers an ask or reviews a spec version, at the recorded offset from the question, or at the recorded time. | 5 |
 | `afterSendBack` | `recorded`, `less-slot-wait` | How long the first work after a send-back takes, its recorded length, or that length less its recorded wait for a slot. | 13 |
-| `firstStarts` | `recorded`, `rank` | The order of first starts, the order in which the record started the issues, or the board's rank. | none |
+| `firstStarts` | `recorded`, `rank` | The order of first starts, the order in which the record started the issues in the window, or the board's rank. | none |
 | `neverStarted` | `none`, `drawn`, `drawn-done` | The work of an issue that never started, none, or the work of an issue drawn from those that the record started, or from those that it finished. | 8 |
 | `merges` | `fitted`, `zero` | The merges term of the conflict draw, as fitted on the window, or zero. | 3 |
 
@@ -677,6 +677,15 @@ Each other branch changes one knob, and takes the name `main+<knob>=<value>`, fo
 The tool offers the main branch and the 7 branches that change one knob, each at f = 1, 1.2 and 1.6, which makes 24 branches for each rule and window.
 A run's directory names its branch as `<branch>@<f>`, for example `main@1.2`.
 Under the rule that made the record, both values of `timing` and of `answer` give the record's times, because every anchor falls at its recorded time.
+
+Under `firstStarts=recorded`, the first start of an issue is the first slot that it took in the window.
+A slot that the issue held at the window's start, or a slot of an earlier run, is not a first start.
+Each issue that the record started in the window takes a rank in the order of these first starts.
+The line orders issues by the rank of their tree's root first.
+So the root of a tree takes the rank of the earliest first start in its tree, when that start comes before the root's own first start or the root has none.
+For example, a root that holds its slot at the window's start takes the rank of its first child that starts, and its children follow in their recorded order.
+Each other issue keeps its board rank, and waits after the ranked issues.
+One order stays out of reach: a later child of an earlier tree that waits at the same admission pass as the first start of a later tree starts first, even where the record started the later tree first.
 
 ## The states of a slot holder
 
