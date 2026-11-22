@@ -2608,6 +2608,22 @@ With no such row left, it writes the five checks again as the earlier release wr
 Run it with every project's daemon on that database stopped, before the earlier image is pinned: the checks are the database's, and so are the rows they read.
 The controller's claim and the release of an unowned pod, which names no role, pass the way back and stay.
 
+#### Rolling back the release that keys a phases row by its step
+
+This release's migration `20261122062637_phase_step_key.up.sql` makes the primary key of `phases` `(issue, role, step_task, step_place)`, so a role that stands at two steps of a task keeps a row for the run of each step, and an issue with no plan rows keeps one row for each role, as before.
+
+**Every daemon sharing the database moves together.**
+An earlier release writes a phases row with an upsert whose conflict target is `(issue, role)`, and PostgreSQL takes such a target only where a unique index of exactly those columns stands, so under the new key each such write fails with `there is no unique or exclusion constraint matching the ON CONFLICT specification` (SQLSTATE 42P10) and writes nothing.
+One project's daemon never runs two releases at once: its Deployment runs one replica with the `Recreate` strategy ([Configuration](#configuration)).
+Several projects' daemons can share one database, and this guide already moves them together, upgrade and rollback in the same change ([Rolling back the release whose cap counts issues](#rolling-back-the-release-whose-cap-counts-issues)).
+Within that one change, a project's daemon of the earlier release can still run for the seconds before its `Recreate` stops it while another project's daemon has migrated the database.
+In that window its transaction that writes a phases row fails and leaves the record as it was: the outbox row that made it is tried again on its backoff, the route that made it answers 500 `FACT_APPLY_FAILED` and its agent sends it again, and an event it took from the message stream is refused back to the stream (a nak with a delay), which delivers it again, so nothing is lost and its issues move again once its new pod runs.
+
+At the rollback, with every project's daemon on that database stopped and before the earlier image is pinned, run the way back in the migration's header (`migrations.WayBack`): it deletes each phases row of a role but the one with the highest entry, writes the key `(issue, role)` again and deletes the migration's version row, so the roll-forward's `Migrate` runs the migration again.
+The key is owed to the earlier release, whose every write of a phases row needs it.
+What the delete costs is the report of each earlier step of a role that stands at two steps of a running task: after the rollback, the task of a later step names the report of that role's latest step alone.
+A rollback past `20261117034837_issue_plans` runs this way back first, since that release's way back drops `step_task` and `step_place`, and this key with them.
+
 #### Rolling back the release whose update round ends at its bound
 
 This release's migration `20261113110610_drop_claim_update_answer_marks` takes two columns off `claims`: `update_answered_by_turn_end` and `update_reasked_for_push_check`, which the two `alter` statements below add back.
