@@ -233,14 +233,13 @@ func (s *server) specOpenQuestions(
 // one reader of the document as it stands for both the keeps and the links (markStaleLinks): each
 // decision is its cut that starts where its heading block does, named by that cut's key, the same
 // key a stored version's cut gives it. A decision whose heading stands in a list item, a quote or
-// a footnote definition has no cut, since the cut reads only the headings the parser places
-// outside every container but a typed block (pmdoc.RenderingOutline); its key names no cut of any
-// version (noCut), so it is never read as another decision of its heading. The cut parses the
-// whole document, so it is made only where a mark can change a decision - some decision links the
-// spec, or waits for review under a keep - and neither mark changes any other decision. It is
-// taken from the cuts the process keeps (documentCuts) under the document's live key, which names
-// no stored version, so a view of a markdown an earlier view cut parses none of it again. Each
-// stored version the marks read is cut by scanStoredDecisions.
+// a footnote definition has no cut, since such a heading opens none (decisionCuts); its key names
+// no cut of any version (noCut), so it is never read as another decision of its heading. The cut
+// parses the whole document, so it is made only where a mark can change a decision - some
+// decision links the spec, or waits for review under a keep - and neither mark changes any other
+// decision. It is taken from the cuts the process keeps (documentCuts) under the document's live
+// key, which names no stored version, so a view of a markdown an earlier view cut parses none of
+// it again. Each stored version the marks read is cut by scanStoredDecisions.
 //
 // reader is the answer's own, and each decision registers its text with it once the slice has
 // stopped growing, as the open questions beside them do (specOpenQuestions): a shaping registers
@@ -506,16 +505,11 @@ func (s *server) versionsAtTimes(
 
 // decisionCut is one decision as a document's markdown holds it: the text the decisions view shows
 // for it (decisionSections), that text's sum (decisionTextSum), where its heading's line starts in
-// the markdown, and whether it stands alone. A keep holds the sum of the text the view showed the
-// person who kept the decision, and a keep carries across a renderer change only where the cut of
-// the version it names has that sum (markKeptAcrossRenderers), so the cut must be exactly the
-// view's text. A text read alone loses every container it was cut from. A typed block writes its
-// lines with no prefix, so a text cut from wholly inside one reads alone as the blocks it holds
-// there, as a text that holds each typed block it touches whole does. A text that runs past the
-// closing line of a typed block that holds its heading holds that closing line without the
-// block's opening line, a fence its text read alone does not read as that block's. So a cut stands
-// alone unless it runs past such a closing line (decisionCuts), only a cut that stands alone is
-// read alone (pmdoc.FragmentReadsAs), and any other is compared by its sum alone.
+// the markdown, and whether it stands alone (decisionCuts): only a cut that stands alone is read
+// alone (pmdoc.FragmentReadsAs), and any other is compared by its sum alone. A keep holds the sum
+// of the text the view showed the person who kept the decision, and a keep carries across a
+// renderer change only where the cut of the version it names has that sum
+// (markKeptAcrossRenderers), so the cut must be exactly the view's text.
 type decisionCut struct {
 	text  string
 	sum   string
@@ -524,12 +518,12 @@ type decisionCut struct {
 }
 
 // decisionCuts is a document's markdown cut into its decisions, each one's text and the sum of
-// that text. Each cut is the text the decisions view shows for its decision (decisionSections): a
-// keep holds the sum of that text, and it carries across a renderer change only where the version
-// it names cuts the decision to that sum (markKeptAcrossRenderers). It cuts by the rule the view's
-// block walk cuts the document that stands by: a `##` heading outside `## Replaced` and a `###`
-// heading under it opens a decision, and a heading of its own level or higher closes it wherever
-// it stands - `#` included, which opens none, and a heading inside a typed block included - and a
+// that text. Each cut is the text the decisions view shows for its decision (decisionSections),
+// and a decision the view reads whose heading a list item, a quote or a footnote definition holds
+// has none. It cuts by the rule the view's block walk cuts the document that stands by: a `##`
+// heading outside `## Replaced` and a `###` heading under it opens a decision, and a heading of
+// its own level or higher closes it wherever it stands - `#` included, which opens none, and a
+// heading inside a typed block, a list item, a quote or a footnote definition included - and a
 // deeper heading is text of the decision it stands in.
 //
 // A stored version holds no block id, so a decision is keyed by its heading and by how many
@@ -541,34 +535,44 @@ type decisionCut struct {
 //
 // The cut takes the document's headings and typed blocks from pmdoc's parse of the markdown as a
 // stored rendering (pmdoc.RenderingOutline), not from its lines, so it places each where the
-// parser does: a heading inside fenced code, a list item, a quote or a footnote definition opens
-// no decision and closes none, and a list item's fenced code or typed block, whose closing line
-// carries the item's indentation, opens no code and closes no typed block of the document's. A
-// heading inside a typed block can open a decision. Each heading's level and title are read from
-// its line (markdownHeading), as headingOf reads a heading block's.
+// parser does: a heading inside fenced code is no heading, and a list item's fenced code or typed
+// block, whose closing line carries the item's indentation, opens no code and closes no typed
+// block of the document's. A heading inside a typed block can open a decision. A heading inside a
+// list item, a quote or a footnote definition opens none, so the decision the view opens there
+// has no cut, but it closes the open one and sets whether the headings after it stand under
+// `## Replaced`, as the view's walk reads it. Each heading's level and title are read from its
+// line, from where the heading starts (markdownHeading), as headingOf reads a heading block's.
 //
 // The view's text of a decision runs from its heading to the end of the furthest block between
-// that heading and the heading that closes it, the blocks inside typed blocks included. So a cut's
-// text runs from its heading's line to the line of the heading that closes it, or to the
-// markdown's end, with the line feeds at its end removed. Where that text then ends with the
-// closing line of a typed block that holds its heading, the section's last block stands inside
-// that typed block before its closing line, so the text ends before that line, again with the line
-// feeds at its end removed; the typed blocks that hold the heading are read so from the outermost
-// in, since the outermost one's closing line comes last. Each typed block that opens inside the
-// cut, before the line of the heading that closes it, is a block of the section, so the text runs
-// at least to the end of that block's closing line: a section that a heading inside a typed block
-// closes holds that typed block whole. The outline gives where each typed block's closing line
-// ends (pmdoc.OutlineTypedBlock.End) and the innermost typed block that holds each heading
-// (pmdoc.OutlineHeading.Within), and the typed block that holds each typed block is read once from
-// the outline's order, which lists a typed block ahead of the blocks it holds.
+// that heading and the heading that closes it, the blocks inside typed blocks and every other
+// container included. So a cut's text runs from its heading's line to the line of the heading
+// that closes it, or to the markdown's end, with the line feeds at its end removed. Where that
+// text then ends with the closing line of a typed block that holds its heading, the section's
+// last block stands inside that typed block before its closing line, so the text ends before that
+// line, again with the line feeds at its end removed; the typed blocks that hold the heading are
+// read so from the outermost in, since the outermost one's closing line comes last. Each typed
+// block that opens inside the cut, before the line of the heading that closes it, is a block of
+// the section, so the text runs at least to the end of that block's closing line: a section that
+// a heading inside a typed block closes holds that typed block whole. The outermost list, quote or
+// footnote definition that holds the heading that closes the decision opens inside the cut too,
+// before that heading, so it is a block of the section and the text runs at least to its end: a
+// section that a heading inside a list item, a quote or a footnote definition closes holds that
+// whole list, quote or footnote definition. The outline gives where each typed block's closing
+// line ends (pmdoc.OutlineTypedBlock.End), where the outermost list, quote or footnote definition
+// that holds each heading ends (pmdoc.OutlineHeading.ContainerEnd), the innermost typed block
+// that holds each heading (pmdoc.OutlineHeading.Within), and the innermost one that holds each
+// typed block (pmdoc.OutlineTypedBlock.Within).
 //
 // A cut stands alone (decisionCut.alone) unless it runs past the closing line of a typed block
-// that holds its heading. Typed blocks nest, so the innermost one decides: a cut that ends at or
+// that holds its heading. A text read alone loses every container it was cut from, and such a
+// cut holds that closing line without the block's opening line, a fence its text read alone does
+// not read as that block's. Typed blocks nest, so the innermost one decides: a cut that ends at or
 // before that block's closing line ends before the closing line of every typed block that holds
 // it. Such a cut, as a cut whose heading no typed block holds, lies wholly inside each typed block
 // that holds its heading and holds whole each typed block that opens inside it, so it holds no
-// typed block's opening or closing line without the other. A typed block writes its lines with no
-// prefix, so such a cut reads alone as it stands.
+// typed block's opening or closing line without the other, and it holds whole each list, quote or
+// footnote definition it touches, so it loses none of their markers. A typed block writes its
+// lines with no prefix, so such a cut reads alone as it stands.
 //
 // A document the parser refuses gives no cuts, and read false: as the document that stands, every
 // decision then has no cut, and as a stored version, it is one the view could not read
@@ -588,22 +592,6 @@ func decisionCuts(markdown string) (cuts map[sectionKey]decisionCut, read bool) 
 		return map[sectionKey]decisionCut{}, false
 	}
 	typed := outline.TypedBlocks
-	// holder is the index of the typed block that holds each typed block, or -1 where none does.
-	// The outline lists a typed block ahead of the blocks it holds, and typed blocks nest, so the
-	// typed blocks still open where one starts are a stack, once each that ended before that start
-	// is taken off it.
-	holder := make([]int, len(typed))
-	var opened []int
-	for index, block := range typed {
-		for len(opened) > 0 && typed[opened[len(opened)-1]].End < block.Start {
-			opened = opened[:len(opened)-1]
-		}
-		holder[index] = -1
-		if len(opened) > 0 {
-			holder[index] = opened[len(opened)-1]
-		}
-		opened = append(opened, index)
-	}
 	cuts = map[sectionKey]decisionCut{}
 	seen := map[string]int{}
 	type section struct {
@@ -628,14 +616,16 @@ func decisionCuts(markdown string) (cuts map[sectionKey]decisionCut, read bool) 
 		return open.start + len(strings.TrimRight(markdown[open.start:end], "\n"))
 	}
 	// closeAt closes the open decision at closing: the start of the line of the heading that
-	// closes it, or the markdown's end.
-	closeAt := func(closing int) {
+	// closes it, or the markdown's end. held is where the outermost list, quote or footnote
+	// definition that holds that heading ends (pmdoc.OutlineHeading.ContainerEnd), or -1 where
+	// none does.
+	closeAt := func(closing, held int) {
 		if open == nil {
 			return
 		}
 		end := trimmed(closing)
 		holders = holders[:0]
-		for index := open.within; index >= 0; index = holder[index] {
+		for index := open.within; index >= 0; index = typed[index].Within {
 			holders = append(holders, index)
 		}
 		// The section's last block stands before the closing line of each typed block that holds
@@ -645,7 +635,9 @@ func decisionCuts(markdown string) (cuts map[sectionKey]decisionCut, read bool) 
 				end = trimmed(strings.LastIndexByte(markdown[:end], '\n') + 1)
 			}
 		}
-		// Each typed block that opens inside the cut is a block of the section, held whole.
+		// A list, quote or footnote definition that holds the heading that closes the decision is
+		// a block of the section, held whole, and so is each typed block that opens inside the cut.
+		end = max(end, held)
 		for next < len(typed) && typed[next].Start <= open.start {
 			next++
 		}
@@ -668,12 +660,13 @@ func decisionCuts(markdown string) (cuts map[sectionKey]decisionCut, read bool) 
 			continue
 		}
 		if open != nil && level <= open.level {
-			closeAt(at.Start)
+			closeAt(strings.LastIndexByte(markdown[:at.Start], '\n')+1, at.ContainerEnd)
 		}
 		if level <= 2 {
 			inReplaced = level == 2 && heading == replacedHeading
 		}
-		if open == nil && isDecisionHeading(level, inReplaced) {
+		// A heading inside a list item, a quote or a footnote definition opens no decision.
+		if open == nil && at.ContainerEnd < 0 && isDecisionHeading(level, inReplaced) {
 			occurrence := seen[heading]
 			seen[heading] = occurrence + 1
 			open = &section{
@@ -684,7 +677,7 @@ func decisionCuts(markdown string) (cuts map[sectionKey]decisionCut, read bool) 
 			}
 		}
 	}
-	closeAt(len(markdown))
+	closeAt(len(markdown), -1)
 	return cuts, true
 }
 

@@ -735,51 +735,77 @@ func TestParseWithSourceStartsPlacesEveryTopLevelBlock(t *testing.T) {
 // RenderingOutline places each heading and typed block where the parser does: an ATX heading the
 // document holds, or a typed block holds at the document's level, from the start of its line,
 // naming the innermost typed block that holds it by its index among the typed blocks, and a typed
-// block from its opening line to the end of its closing line, past front matter. A heading in a
-// quote, a list item, fenced code or a footnote definition is none, nor is a setext heading, and a
-// typed block in a list item is none. A list item that opens with fenced code ends its code at its
-// own indented closing line, so the callout after it, and a heading in the callout and after it,
-// are the document's. A typed block no line of its own closes ends where the typed block holding
-// it ends, and holds the heading after its opening line.
+// block from its opening line to the end of its closing line, past front matter, naming the
+// innermost typed block that holds it so too. A heading in fenced code is none, nor is a setext
+// heading, and a typed block in a list item is none. A heading that a quote, a list or a footnote
+// definition holds at either level, a list in a quote and a typed block in a list item included,
+// is placed from where it starts on its line and names where the outermost of them ends; no other
+// heading names one. A list item that opens with fenced code ends its code at its own indented
+// closing line, so the callout after it, and a heading in the callout and after it, are the
+// document's. A typed block no line of its own closes ends where the typed block holding it ends,
+// and holds the heading after its opening line.
 func TestRenderingOutlinePlacesHeadingsAndTypedBlocksAsTheParserDoes(t *testing.T) {
+	// heading is a heading as the test writes it: its line from its Start, the markdown from its
+	// Start to its ContainerEnd, "" where that is -1, and its Within.
 	type heading struct {
-		line   string
+		line, container string
+		within          int
+	}
+	type typedBlock struct {
+		text   string
 		within int
 	}
 	for _, test := range []struct {
 		name, markdown string
 		headings       []heading
-		typedBlocks    []string
+		typedBlocks    []typedBlock
 	}{
 		{
 			name: "headings and typed blocks at the document's level",
 			markdown: "---\ntitle: x\n---\n\n# Top\n\n::::callout{#outer kind=\"note\" title=\"\"}\n## Inside\n\n" +
 				":::callout{#nested kind=\"note\" title=\"\"}\n### Nested\n:::\n::::\n\n## After\n",
-			headings: []heading{{"# Top", -1}, {"## Inside", 0}, {"### Nested", 1}, {"## After", -1}},
-			typedBlocks: []string{
-				"::::callout{#outer kind=\"note\" title=\"\"}\n## Inside\n\n:::callout{#nested kind=\"note\" title=\"\"}\n### Nested\n:::\n::::",
-				":::callout{#nested kind=\"note\" title=\"\"}\n### Nested\n:::",
+			headings: []heading{{"# Top", "", -1}, {"## Inside", "", 0}, {"### Nested", "", 1}, {"## After", "", -1}},
+			typedBlocks: []typedBlock{
+				{"::::callout{#outer kind=\"note\" title=\"\"}\n## Inside\n\n:::callout{#nested kind=\"note\" title=\"\"}\n### Nested\n:::\n::::", -1},
+				{":::callout{#nested kind=\"note\" title=\"\"}\n### Nested\n:::", 0},
 			},
 		},
 		{
 			name: "headings and typed blocks in other containers",
 			markdown: "> ## Quoted\n\n- ## Listed\n\n```\n## In code\n```\n\nSetext\n------\n\nSee [^1].\n\n[^1]: ## Defined\n\n" +
 				"- :::callout{#item kind=\"note\" title=\"\"}\n  ## In the item's block\n  :::\n",
+			headings: []heading{
+				{"mid-line ## Quoted", "## Quoted", -1},
+				{"mid-line ## Listed", "## Listed", -1},
+				{"mid-line ## Defined", "## Defined", -1},
+				{"mid-line ## In the item's block", "## In the item's block\n  :::", -1},
+			},
+		},
+		{
+			name: "headings in a list in a quote and in a list in a typed block",
+			markdown: "> - An item.\n>\n>   ## In a quoted item\n>\n> More of the quote.\n\n" +
+				":::callout{#aside kind=\"note\" title=\"\"}\n## Direct\n\n- Item.\n\n  ## In the list\n\n- Other.\n:::\n",
+			headings: []heading{
+				{"mid-line ## In a quoted item", "## In a quoted item\n>\n> More of the quote.", -1},
+				{"## Direct", "", 0},
+				{"mid-line ## In the list", "## In the list\n\n- Other.", 0},
+			},
+			typedBlocks: []typedBlock{{":::callout{#aside kind=\"note\" title=\"\"}\n## Direct\n\n- Item.\n\n  ## In the list\n\n- Other.\n:::", -1}},
 		},
 		{
 			name: "list items that open with fenced code",
 			markdown: "- ```\n  code\n  ```\n\n:::callout{#aside kind=\"note\" title=\"\"}\n- ```\n  code\n  ```\n\n## D\n:::\n\n" +
 				"1. ```\n   code\n   ```\n\n## E\n",
-			headings:    []heading{{"## D", 0}, {"## E", -1}},
-			typedBlocks: []string{":::callout{#aside kind=\"note\" title=\"\"}\n- ```\n  code\n  ```\n\n## D\n:::"},
+			headings:    []heading{{"## D", "", 0}, {"## E", "", -1}},
+			typedBlocks: []typedBlock{{":::callout{#aside kind=\"note\" title=\"\"}\n- ```\n  code\n  ```\n\n## D\n:::", -1}},
 		},
 		{
 			name:     "a typed block no line of its own closes",
 			markdown: "::::callout{#outer kind=\"note\" title=\"\"}\n:::callout{#inner kind=\"note\" title=\"\"}\n## Inner\n::::\n\n## After\n",
-			headings: []heading{{"## Inner", 1}, {"## After", -1}},
-			typedBlocks: []string{
-				"::::callout{#outer kind=\"note\" title=\"\"}\n:::callout{#inner kind=\"note\" title=\"\"}\n## Inner\n::::",
-				":::callout{#inner kind=\"note\" title=\"\"}\n## Inner\n::::",
+			headings: []heading{{"## Inner", "", 1}, {"## After", "", -1}},
+			typedBlocks: []typedBlock{
+				{"::::callout{#outer kind=\"note\" title=\"\"}\n:::callout{#inner kind=\"note\" title=\"\"}\n## Inner\n::::", -1},
+				{":::callout{#inner kind=\"note\" title=\"\"}\n## Inner\n::::", 0},
 			},
 		},
 	} {
@@ -794,14 +820,18 @@ func TestRenderingOutlinePlacesHeadingsAndTypedBlocksAsTheParserDoes(t *testing.
 				if at.Start > 0 && test.markdown[at.Start-1] != '\n' {
 					line = "mid-line " + line
 				}
-				headings = append(headings, heading{line, at.Within})
+				container := ""
+				if at.ContainerEnd >= 0 {
+					container = test.markdown[at.Start:at.ContainerEnd]
+				}
+				headings = append(headings, heading{line, container, at.Within})
 			}
-			typedBlocks := []string{}
+			typedBlocks := []typedBlock{}
 			for _, block := range outline.TypedBlocks {
-				typedBlocks = append(typedBlocks, test.markdown[block.Start:block.End])
+				typedBlocks = append(typedBlocks, typedBlock{test.markdown[block.Start:block.End], block.Within})
 			}
 			if !slices.Equal(headings, test.headings) || !slices.Equal(typedBlocks, test.typedBlocks) {
-				t.Fatalf("RenderingOutline(%q) places headings %+v and typed blocks %q, want %+v and %q",
+				t.Fatalf("RenderingOutline(%q) places headings %+v and typed blocks %+v, want %+v and %+v",
 					test.markdown, headings, typedBlocks, test.headings, test.typedBlocks)
 			}
 		})

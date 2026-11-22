@@ -203,7 +203,7 @@ const respellSpec = "# Plan\n\nThe service ships behind a flag.\n\n- first\n\n- 
 // version's loose list, "- first" and "- second", taken out, which leaves the list loose and the
 // tree as it was in a spelling no renderer version writes, and the version stamped stamp
 // (renderer_version, nil for none). It fails t unless this build reads that text and renders it
-// again as the version held it, and returns the text it stored.
+// again as the version held it (storeRespelled), and returns the text it stored.
 func respellVersion(t *testing.T, database *store.Store, artifactID string, number int, stamp *int) string {
 	t.Helper()
 	ctx := context.Background()
@@ -218,10 +218,7 @@ func respellVersion(t *testing.T, database *store.Store, artifactID string, numb
 		t.Fatalf("version %d = %q, want a list whose first two items are first and second", number, written)
 	}
 	respelled := written[:first] + "- first\n" + written[second:]
-	if again, _, err := pmdoc.RenderingOf(respelled); err != nil || again != written || respelled == written {
-		t.Fatalf("the respelled version %d %q renders %q (%v), want another spelling of %q", number, respelled, again, err, written)
-	}
-	storeVersionAs(t, database, artifactID, number, respelled, stamp)
+	storeRespelled(t, database, artifactID, number, written, respelled, stamp)
 	return respelled
 }
 
@@ -234,6 +231,18 @@ func storeVersionAs(t *testing.T, database *store.Store, artifactID string, numb
 	`, artifactID, number, markdown, stamp); err != nil {
 		t.Fatalf("store version %d's markdown and renderer version: %v", number, err)
 	}
+}
+
+// storeRespelled stores respelled as version number of artifactID, stamped stamp (storeVersionAs),
+// where written is the markdown that version holds and respelled another spelling of its tree, as
+// a build of another renderer version could have stored it. It fails t unless this build reads
+// respelled and renders it again as written, and respelled is not written itself.
+func storeRespelled(t *testing.T, database *store.Store, artifactID string, number int, written, respelled string, stamp *int) {
+	t.Helper()
+	if again, _, err := pmdoc.RenderingOf(respelled); err != nil || again != written || respelled == written {
+		t.Fatalf("the respelled version %d %q renders %q (%v), want another spelling of %q", number, respelled, again, err, written)
+	}
+	storeVersionAs(t, database, artifactID, number, respelled, stamp)
 }
 
 // A renderer change (pmdoc.RendererVersion) leaves every version stored before it in its

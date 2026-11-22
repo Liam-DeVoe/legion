@@ -125,11 +125,12 @@ func ParseWithSourceStarts(markdown string) (*Node, []int, error) {
 	return doc, starts, nil
 }
 
-// Outline is where a rendering's ATX headings and typed blocks stand at the document's level:
-// each one the document holds, or a typed block holds at that level, with no list item, quote,
-// footnote definition, table or other container between them and the document
-// (RenderingOutline). Each offset counts markdown's own bytes, the U+0000 the parse reads as
-// U+FFFD included (startsInMarkdown), as ParseWithSourceStarts' do.
+// Outline is where a rendering's typed blocks and ATX headings stand (RenderingOutline). Each
+// typed block is one the document holds, or a typed block holds at that level, with no list item,
+// quote, footnote definition, table or other container between them and the document. Each
+// heading is one the document or such a typed block holds, directly or inside a list, a quote or
+// a footnote definition (OutlineHeading.ContainerEnd). Each offset counts markdown's own bytes,
+// the U+0000 the parse reads as U+FFFD included (startsInMarkdown), as ParseWithSourceStarts' do.
 type Outline struct {
 	// Headings is each ATX heading, in document order.
 	Headings []OutlineHeading
@@ -137,28 +138,35 @@ type Outline struct {
 	TypedBlocks []OutlineTypedBlock
 }
 
-// OutlineHeading is one heading of an Outline: Start is where its line starts in the markdown,
-// and Within is the index in the Outline's TypedBlocks of the innermost typed block that holds
-// it, or -1 where none does.
+// OutlineHeading is one heading of an Outline. Start is where its line starts in the markdown,
+// or, for a heading a list, a quote or a footnote definition holds, where the heading starts on
+// that line, past their markers. Within is the index in the Outline's TypedBlocks of the innermost
+// of them that holds it, or -1 where none does. ContainerEnd is where the outermost list, quote or
+// footnote definition that holds it ends, its last line's end before the line feed, or -1 where
+// none does: that container is a block of the document or of the typed block that holds it.
 type OutlineHeading struct {
-	Start  int
-	Within int
+	Start        int
+	Within       int
+	ContainerEnd int
 }
 
 // OutlineTypedBlock is one typed block of an Outline: Start is where its opening line starts in
-// the markdown, and End where its closing line ends, before its line feed. A typed block no line
-// of its own closes ends where the typed block holding it ends, since that block's closing line
-// closes both; the parser refuses one at the document's level.
+// the markdown, End where its closing line ends, before its line feed, and Within is the index in
+// the Outline's TypedBlocks of the innermost typed block that holds it, or -1 where none does. A
+// typed block no line of its own closes ends where the typed block holding it ends, since that
+// block's closing line closes both; the parser refuses one at the document's level.
 type OutlineTypedBlock struct {
 	Start, End int
+	Within     int
 }
 
 // RenderingOutline reads markdown the renderer wrote, a stored rendering, with the parse
 // ParseRendering makes of it, its tables' padding spending the read-back's budget, and answers
 // its Outline: its headings and typed blocks as the parser places them. A list item's fenced code
-// or typed block, whose closing line carries the item's indentation, so holds no heading of the
-// document's and closes none of its typed blocks. A caller reads a heading's level and title from
-// its line. Markdown the parser refuses answers that refusal and no outline.
+// or typed block, whose closing line carries the item's indentation, so holds no heading after the
+// item and closes none of the document's typed blocks. A caller reads a heading's level and title
+// from its line, from its Start on. Markdown the parser refuses answers that refusal and no
+// outline.
 func RenderingOutline(markdown string) (Outline, error) {
 	var outline Outline
 	_, err := parseMarkdown(markdown, fromStart, true, readBackBudget(), func(_ *Node, root ast.Node, source []byte, rest int) {
@@ -420,14 +428,32 @@ func sourceStarts(doc *Node, root ast.Node, offset int) []int {
 }
 
 // outlineOf is the Outline of root, the goldmark tree of source, which rest bytes of front matter
-// stood ahead of in markdown's parse: each ATX heading and typed block root holds through typed
-// blocks alone, at offsets mapped back to markdown's bytes (startsInMarkdown).
+// stood ahead of in markdown's parse: each typed block root holds through typed blocks alone, and
+// each ATX heading those blocks hold, directly or inside a list, a quote or a footnote definition,
+// at offsets mapped back to markdown's bytes (startsInMarkdown).
 func outlineOf(root ast.Node, source []byte, rest int, markdown string) Outline {
 	var outline Outline
+	// held adds each ATX heading node holds, at any depth, which the typed block at index within
+	// of outline.TypedBlocks holds, or none where within is -1, and which a list, a quote or a
+	// footnote definition that ends at ends holds. A block whose first child is no block holds
+	// text alone, so it is not read further.
+	var held func(node ast.Node, within, ends int)
+	held = func(node ast.Node, within, ends int) {
+		for child := node.FirstChild(); child != nil; child = child.NextSibling() {
+			if _, heading := child.(*ast.Heading); heading {
+				if start := sourceStart(child); start >= 0 && opensATXHeading(source[start:]) {
+					outline.Headings = append(outline.Headings, OutlineHeading{Start: rest + start, Within: within, ContainerEnd: rest + ends})
+				}
+			} else if first := child.FirstChild(); first != nil && first.Type() == ast.TypeBlock {
+				held(child, within, ends)
+			}
+		}
+	}
 	// walk reads parent's blocks, which the typed block at index within of outline.TypedBlocks
-	// holds, or none where within is -1, and which end by end.
-	var walk func(parent ast.Node, within, end int)
-	walk = func(parent ast.Node, within, end int) {
+	// holds, or none where within is -1, and which end by end. Parent's lines end where last
+	// starts: the line of its closing fence, or the source's end.
+	var walk func(parent ast.Node, within, end, last int)
+	walk = func(parent ast.Node, within, end, last int) {
 		for child := parent.FirstChild(); child != nil; child = child.NextSibling() {
 			start := sourceStart(child)
 			if start < 0 {
@@ -436,37 +462,51 @@ func outlineOf(root ast.Node, source []byte, rest int, markdown string) Outline 
 			switch block := child.(type) {
 			case *ast.Heading:
 				if opensATXHeading(source[start:]) {
-					outline.Headings = append(outline.Headings, OutlineHeading{Start: rest + lineStart(source, start), Within: within})
+					outline.Headings = append(outline.Headings, OutlineHeading{Start: rest + lineStart(source, start), Within: within, ContainerEnd: -1})
 				}
 			case *typedDirective:
-				closed := end
+				closed, closer := end, last
 				if block.Closed {
 					line, _, _ := bytes.Cut(source[block.closer:], []byte("\n"))
-					closed = block.closer + len(line)
+					closed, closer = block.closer+len(line), block.closer
 				}
-				outline.TypedBlocks = append(outline.TypedBlocks, OutlineTypedBlock{Start: rest + lineStart(source, start), End: rest + closed})
-				walk(block, len(outline.TypedBlocks)-1, closed)
+				outline.TypedBlocks = append(outline.TypedBlocks, OutlineTypedBlock{Start: rest + lineStart(source, start), End: rest + closed, Within: within})
+				walk(block, len(outline.TypedBlocks)-1, closed, closer)
+			case *ast.List, *ast.Blockquote, *extensionast.Footnote:
+				// Its lines run up to the line the next block starts on, or to the end of
+				// parent's lines, less the line feeds of the blank lines between.
+				ends := last
+				for next := child.NextSibling(); next != nil; next = next.NextSibling() {
+					if at := sourceStart(next); at >= 0 {
+						ends = lineStart(source, at)
+						break
+					}
+				}
+				for ends > start && source[ends-1] == '\n' {
+					ends--
+				}
+				held(child, within, ends)
 			}
 		}
 	}
-	walk(root, -1, len(source))
+	walk(root, -1, len(source), len(source))
 	if strings.IndexByte(markdown, 0) < 0 {
 		return outline
 	}
-	offsets := make([]int, 0, len(outline.Headings)+2*len(outline.TypedBlocks))
+	offsets := make([]int, 0, 2*len(outline.Headings)+2*len(outline.TypedBlocks))
 	for _, heading := range outline.Headings {
-		offsets = append(offsets, heading.Start)
+		offsets = append(offsets, heading.Start, heading.ContainerEnd)
 	}
 	for _, block := range outline.TypedBlocks {
 		offsets = append(offsets, block.Start, block.End)
 	}
 	offsets = startsInMarkdown(offsets, markdown)
 	for index := range outline.Headings {
-		outline.Headings[index].Start = offsets[index]
+		outline.Headings[index].Start, outline.Headings[index].ContainerEnd = offsets[2*index], offsets[2*index+1]
 	}
 	for index := range outline.TypedBlocks {
-		at := len(outline.Headings) + 2*index
-		outline.TypedBlocks[index] = OutlineTypedBlock{Start: offsets[at], End: offsets[at+1]}
+		at := 2*len(outline.Headings) + 2*index
+		outline.TypedBlocks[index].Start, outline.TypedBlocks[index].End = offsets[at], offsets[at+1]
 	}
 	return outline
 }

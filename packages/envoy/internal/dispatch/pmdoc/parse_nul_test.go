@@ -75,22 +75,25 @@ func TestParseWithSourceStartsCountsTheCallersBytes(t *testing.T) {
 // RenderingOutline answers offsets into the markdown its caller wrote too, as
 // ParseWithSourceStarts does: a heading's and a typed block's offsets after a U+0000 are not two
 // bytes late for each one before them, so a caller cutting the markdown at them cuts whole lines,
-// and each heading still names the typed block that holds it.
+// each heading still names the typed block that holds it, and where the list holding a heading
+// ends counts each U+0000 in that list as the one byte it is.
 func TestRenderingOutlineCountsTheCallersBytes(t *testing.T) {
 	const callout = ":::callout{#c kind=\"note\" title=\"\"}\n\x00 in the callout.\n\n## B\n:::"
-	markdown := "\x00\x00 first.\n\n# A \x00\n\n" + callout + "\n\n## C\n"
+	const list = "- \x00 item.\n\n  ## D\n\n- Other \x00."
+	markdown := "\x00\x00 first.\n\n# A \x00\n\n" + callout + "\n\n## C\n\n" + list + "\n"
 	outline, err := RenderingOutline(markdown)
 	if err != nil {
 		t.Fatalf("RenderingOutline(%q): %v", markdown, err)
 	}
 	want := []OutlineHeading{
-		{Start: strings.Index(markdown, "# A"), Within: -1},
-		{Start: strings.Index(markdown, "## B"), Within: 0},
-		{Start: strings.Index(markdown, "## C"), Within: -1},
+		{Start: strings.Index(markdown, "# A"), Within: -1, ContainerEnd: -1},
+		{Start: strings.Index(markdown, "## B"), Within: 0, ContainerEnd: -1},
+		{Start: strings.Index(markdown, "## C"), Within: -1, ContainerEnd: -1},
+		{Start: strings.Index(markdown, "## D"), Within: -1, ContainerEnd: strings.Index(markdown, list) + len(list)},
 	}
 	start := strings.Index(markdown, callout)
 	if !slices.Equal(outline.Headings, want) ||
-		!slices.Equal(outline.TypedBlocks, []OutlineTypedBlock{{Start: start, End: start + len(callout)}}) {
+		!slices.Equal(outline.TypedBlocks, []OutlineTypedBlock{{Start: start, End: start + len(callout), Within: -1}}) {
 		t.Fatalf("RenderingOutline(%q) = %+v, want headings %+v and the callout from %d to %d",
 			markdown, outline, want, start, start+len(callout))
 	}

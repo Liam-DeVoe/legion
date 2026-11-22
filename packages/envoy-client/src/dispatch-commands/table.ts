@@ -66,9 +66,9 @@ export type DispatchDryRunStep = (context: DryRunContext) => Promise<DryRunVerdi
  * that answers on the session's context alone, so no subprocess runs for it; every other command
  * is handed the context `commandContext` builds. `dryRun` is the command's dry-run step, when it
  * has one. `fileBytesRefusal` is the command's own refusal of bytes that are not UTF-8, read from
- * a file or stdin for the flag of `field`, when it has one: `dispatch artifact` refuses its
- * content in its upload's order, the size first. `runDispatchCli` refuses such bytes with it, and,
- * for a command that has none, at their first U+0000 or byte that is not UTF-8 (`unstorableBytes`).
+ * a file or stdin for the flag of `field`, when it has one. `runDispatchCli` refuses such bytes
+ * with it, and, for a command that has none, at their first U+0000 or byte that is not UTF-8
+ * (`unstorableBytes`).
  */
 export type DispatchCommand = (
   | {

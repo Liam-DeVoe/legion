@@ -956,7 +956,7 @@ export async function artifactDryRun(context: DryRunContext): Promise<DryRunVerd
  * document, so its bytes are refused as a `--path` file of the same bytes is, in the upload's
  * order: the size first, then the first U+0000 or byte that is not UTF-8
  * (`documentBytesRefusal`). Any other field is refused at its first U+0000 or byte that is not
- * UTF-8, as every command's is (`unstorableBytes`).
+ * UTF-8, as every other command's field is (`unstorableBytes`).
  */
 export function artifactFileBytesRefusal(field: string, bytes: Uint8Array): Error | undefined {
   return field === "content" ? documentBytesRefusal(field, bytes) : unstorableBytes(field, bytes);
