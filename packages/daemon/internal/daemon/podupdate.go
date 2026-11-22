@@ -3517,8 +3517,8 @@ func awaitsAnswer(c supervise.Claim, round string, clock roundClock) bool {
 //     them (reconcilePodUpdates, roundGroup). The predicate leaves them out too, so it holds for
 //     any group it is given.
 //   - A failed claim's launches or prompts ran out, so it runs no process and no turn of it runs
-//     on the pod. Its machine ignores the round's post, and only a retry of it brings it back
-//     (supervise's onRetry and onAskedRetry rows), which the round does not make. Holding the
+//     on the pod. Its machine ignores the round's post, and only a retry of its agent brings that
+//     agent back (supervise's onRetry and onAskedRetry rows), which the round does not make. Holding the
 //     round for its answer held the pod, and every answered worker's next task with it, for an
 //     answer it can never give: on the first contract-46 roll a planner that had failed at
 //     contract 41 recorded no round at all, and held its issue's round open behind the three

@@ -208,8 +208,8 @@ func TestAForgetOfASessionTheClaimDoesNotHoldWaitsForItsRole(t *testing.T) {
 // Claim.ResumeRefusal) admit it: refused as a wait, the session kept, while the Envoy listener
 // names that session as the role's live holder, and admitted once no claim names the role, the
 // claim then recording that the controller asked (forgottenBy). The rig is
-// TestAForgetOfASessionTheClaimDoesNotHoldWaitsForItsRole's processless claim, stopped by the
-// controller rather than the operator.
+// TestAForgetOfASessionTheClaimDoesNotHoldWaitsForItsRole's processless claim, its agent stopped
+// by the controller rather than the operator.
 //
 // The control: forgetSession with no mayForget: the controller's forget clears the session while
 // the listener names it as the role's holder.
@@ -246,7 +246,7 @@ func TestAControllersForgetOfASessionTheClaimDoesNotHoldWaitsForItsRole(t *testi
 		t.Errorf("the listener was asked %d times, want once", asked)
 	}
 	if c := h.claim(); c.Session != session || c.SessionFile != sessionFile {
-		t.Fatalf("the refused forget left the claim recording %q at %q, want %s kept", c.Session, c.SessionFile, session)
+		t.Fatalf("after the refused forget the claim records %q at %q, want %s kept", c.Session, c.SessionFile, session)
 	}
 
 	// Once no claim names the role, the controller's forget clears the session.

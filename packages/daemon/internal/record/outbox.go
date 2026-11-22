@@ -722,8 +722,8 @@ type UpdateStalled struct {
 }
 
 // UpdateWaiting is one claim the notice lists (UpdateStalled.Waiting): its token, the role it
-// holds, the state it is in (supervise.ClaimState — a claim under a suspension that holds waits
-// for a resume by whoever may lift that suspension, which the notice's Reason names, and the round
+// holds, the state it is in (supervise.ClaimState — the agent of a claim under a suspension that
+// holds waits for a resume by whoever may lift that suspension, which the notice's Reason names, and the round
 // waits for no other suspended claim but one whose agent a project's pause stopped while the pause still owes
 // that role a launch, internal/daemon's podHolds.owes; a pod round lists no `failed` claim, whose
 // machine records no round), and Answered for a claim that has already answered this round.

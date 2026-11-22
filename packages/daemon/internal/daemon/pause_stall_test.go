@@ -16,8 +16,8 @@ import (
 // Two guards keep it so: the sweep posts the backstop only over a claim in StateWorking
 // (backstopStalledTurns), and the machine's table ignores the backstop over a suspended claim
 // (supervise's onStallBackstop rows). The negative control undoes both: the backstop then ends
-// the stopped claim's "turn", brings its session back and tells its owner a worker-stalled notice.
-func TestTheStallBackstopTellsNobodyOfAClaimThePauseStopped(t *testing.T) {
+// the stopped agent's "turn", brings its session back and tells its owner a worker-stalled notice.
+func TestTheStallBackstopTellsNobodyOfAnAgentThePauseStopped(t *testing.T) {
 	rig := newBackstopRig(t)
 	stopped := rig.claim(claim.RoleImplementer, "LEGION-218", backstopBound+time.Hour, true)
 	stopped.State, stopped.SuspendedBy, stopped.Locator = supervise.StateSuspended, supervise.SuspendedByReleased, nil
@@ -27,13 +27,13 @@ func TestTheStallBackstopTellsNobodyOfAClaimThePauseStopped(t *testing.T) {
 	rig.settled(stopped)
 
 	if told := rig.reported(); told != 0 {
-		t.Fatalf("the machines' reports = %d, want none: a claim the pause stopped is in no turn, so no owner is told of a stall", told)
+		t.Fatalf("the machines' reports = %d, want none: an agent the pause stopped is in no turn, so no owner is told of a stall", told)
 	}
 	if notices := rig.notices(stopped.Issue); len(notices) != 0 {
 		t.Fatalf("notices = %+v, want nobody told of a stall", notices)
 	}
 	if resumes := rig.resumes(stopped.Token); len(resumes) != 0 {
-		t.Fatalf("resumes = %d, want the claim the pause stopped left alone", len(resumes))
+		t.Fatalf("resumes = %d, want the agent the pause stopped left alone", len(resumes))
 	}
 }
 

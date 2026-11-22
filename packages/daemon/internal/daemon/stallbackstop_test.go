@@ -649,7 +649,7 @@ func failedArchitectStall(t *testing.T, unconfirmed bool) (record.Notice, []reco
 func TestATreeArchitectsFailedStallOverAnUnconfirmedStopIsCopiedToTheController(t *testing.T) {
 	notice, rows := failedArchitectStall(t, true)
 	if len(rows) != 2 {
-		t.Fatalf("rows = %+v, want two: the architect's notice and the controller's copy of a failed claim whose stop the runtime did not confirm", rows)
+		t.Fatalf("rows = %+v, want two: the architect's notice and the controller's copy of a claim that failed over a stop the runtime did not confirm", rows)
 	}
 	if controllers, isController := rows[1].(record.ControllerNotice); !isController || !reflect.DeepEqual(record.Notice(controllers), notice) {
 		t.Fatalf("rows = %+v, want the controller's copy of the architect's notice second", rows)
@@ -662,7 +662,7 @@ func TestATreeArchitectsFailedStallOverAnUnconfirmedStopIsCopiedToTheController(
 // nothing on the stall's copy, so the copy would wake it for nothing (enqueueStallNotice).
 func TestATreeArchitectsFailedStallOverAConfirmedStopIsNotCopiedToTheController(t *testing.T) {
 	if _, rows := failedArchitectStall(t, false); len(rows) != 1 {
-		t.Fatalf("rows = %+v, want the architect's notice alone: the controller answers the worker-died of a failed claim whose stop the runtime confirmed", rows)
+		t.Fatalf("rows = %+v, want the architect's notice alone: the controller answers the worker-died of a claim that failed over a stop the runtime confirmed", rows)
 	}
 }
 

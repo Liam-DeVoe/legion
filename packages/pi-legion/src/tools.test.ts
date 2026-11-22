@@ -2088,8 +2088,8 @@ test("the controller reads the state without a grant and sets an issue's status 
 
 test("the controller stops, retries, suspends and resumes an agent it names by issue and role", async () => {
   const minted: string[] = [];
-  // What the daemon answers each action (agent-*.json): the claim as it left it, and who
-  // holds a suspension over it.
+  // What the daemon answers each action (agent-*.json): the claim's state after it, and who
+  // holds a suspension over the agent.
   const answers = {
     stopAgent: { state: "retired" },
     retryAgent: { state: "launching" },
@@ -2278,9 +2278,9 @@ test("an architect's operation set is the tree's operations and the six agent ac
 
 // An architect's agent actions name the claim by issue and role, as the controller's do, and
 // mint the architect's own claim grant rather than a controller grant: the daemon reads the tree
-// and the issue from that grant and refuses every claim of an issue it does not own. Each returns
+// and the issue from that grant and refuses every agent of an issue it does not own. Each returns
 // the daemon's answer whole.
-test("an architect acts on a claim of an issue it owns with its own grant", async () => {
+test("an architect acts on an agent of an issue it owns with its own grant", async () => {
   const answers = {
     freshSession: {},
     compact: { compacted: true },

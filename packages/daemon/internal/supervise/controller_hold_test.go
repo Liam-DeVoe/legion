@@ -7,7 +7,7 @@ import (
 
 // The controller's suspension holds as the operator's does: the rule resumes it no more, the
 // workflow's task waits it out (ErrHeldByController), and the phase's task goes through it kept,
-// since a resume puts the claim back on the phase it was suspended in.
+// since a resume starts the agent again on the phase its claim was suspended in.
 func TestTheControllersSuspensionHoldsAsTheOperatorsDoes(t *testing.T) {
 	if !SuspendedByController.Holds() || SuspendedByController.RetiresPhaseTask() || SuspendedByController.ByRule() {
 		t.Fatalf("the controller's source holds %t, retires the phase's task %t, is the rule's %t; want true, false, false",
@@ -86,7 +86,7 @@ func TestTheOperatorsSuspensionOutranksTheControllers(t *testing.T) {
 		h := newHarness(t)
 		h.reach(StateWorking)
 		if err := h.handle(RequestSuspend{Claim: testToken, Reason: "the operator suspended it", By: SuspendedByOperator}); !errors.Is(err, ErrSuspendHeld) {
-			t.Fatalf("the operator's suspend of a claim in a turn returned %v, want it held", err)
+			t.Fatalf("the operator's suspend of an agent in a turn returned %v, want it held", err)
 		}
 		err := h.handle(RequestSuspend{Claim: testToken, Reason: "the controller suspended it", By: SuspendedByController})
 		if !errors.Is(err, ErrOperatorHolds) {
@@ -114,10 +114,10 @@ func TestTheOperatorsSuspensionOutranksTheControllers(t *testing.T) {
 		h := newHarness(t)
 		h.reach(StateWorking)
 		if err := h.handle(RequestSuspend{Claim: testToken, Reason: "the controller suspended it", By: SuspendedByController}); !errors.Is(err, ErrSuspendHeld) {
-			t.Fatalf("the controller's suspend of a claim in a turn returned %v, want it held", err)
+			t.Fatalf("the controller's suspend of an agent in a turn returned %v, want it held", err)
 		}
 		if err := h.handle(RequestSuspend{Claim: testToken, Reason: "the operator suspended it", By: SuspendedByOperator}); !errors.Is(err, ErrSuspendHeld) {
-			t.Fatalf("the operator's suspend of a claim in a turn returned %v, want it held", err)
+			t.Fatalf("the operator's suspend of an agent in a turn returned %v, want it held", err)
 		}
 		if c := h.claim(); !c.SuspensionHeld || c.SuspensionHeldBy != SuspendedByOperator {
 			t.Fatalf("the claim holds a suspension %t by %q, want the operator's", c.SuspensionHeld, c.SuspensionHeldBy)
@@ -128,10 +128,10 @@ func TestTheOperatorsSuspensionOutranksTheControllers(t *testing.T) {
 		h := newHarness(t)
 		h.reach(StateWorking)
 		if err := h.handle(RequestSuspend{Claim: testToken, Reason: "the controller suspended it", By: SuspendedByController}); !errors.Is(err, ErrSuspendHeld) {
-			t.Fatalf("the controller's suspend of a claim in a turn returned %v, want it held", err)
+			t.Fatalf("the controller's suspend of an agent in a turn returned %v, want it held", err)
 		}
 		if err := h.handle(RequestSuspend{Claim: testToken, Reason: "the tree lingers", By: SuspendedByDaemon}); !errors.Is(err, ErrSuspendHeld) {
-			t.Fatalf("the daemon's suspend of a claim in a turn returned %v, want it held", err)
+			t.Fatalf("the daemon's suspend of an agent in a turn returned %v, want it held", err)
 		}
 		if c := h.claim(); !c.SuspensionHeld || c.SuspensionHeldBy != SuspendedByController {
 			t.Fatalf("the claim holds a suspension %t by %q, want the controller's still", c.SuspensionHeld, c.SuspensionHeldBy)
@@ -157,7 +157,7 @@ func TestTheControllersStopOfAnAgentTheOperatorHoldsIsRefused(t *testing.T) {
 		h := newHarness(t)
 		h.reach(StateWorking)
 		if err := h.handle(RequestSuspend{Claim: testToken, Reason: "the operator suspended it", By: SuspendedByOperator}); !errors.Is(err, ErrSuspendHeld) {
-			t.Fatalf("the operator's suspend of a claim in a turn returned %v, want it held", err)
+			t.Fatalf("the operator's suspend of an agent in a turn returned %v, want it held", err)
 		}
 		if err := h.handle(RequestStop{Claim: testToken, By: SuspendedByController}); !errors.Is(err, ErrOperatorHolds) {
 			t.Fatalf("the controller's stop returned %v, want ErrOperatorHolds", err)
@@ -186,7 +186,7 @@ func TestTheControllersStopOfAnAgentTheOperatorHoldsIsRefused(t *testing.T) {
 // RequestForgetSession.By, Claim.ResumeRefusal): the asker's resume would be refused that hold,
 // so a forget let through would drop the session of an agent the asker could then not start. The
 // holder's own forget drops it.
-func TestAForgetIsRefusedForAClaimASuspensionAboveTheAskerTookOver(t *testing.T) {
+func TestAForgetIsRefusedForAnAgentASuspensionAboveTheAskerTookOver(t *testing.T) {
 	for _, tc := range []struct {
 		asker, holder SuspendSource
 		want          error
@@ -249,7 +249,7 @@ func TestTheControllersRefusedSuspensionCancelsNoStartInFlight(t *testing.T) {
 		{"the operator's held suspension", func(h *harness) {
 			h.reach(StateWorking)
 			if err := h.handle(RequestSuspend{Claim: testToken, Reason: "the operator suspended it", By: SuspendedByOperator}); !errors.Is(err, ErrSuspendHeld) {
-				h.t.Fatalf("the operator's suspend of a claim in a turn returned %v, want it held", err)
+				h.t.Fatalf("the operator's suspend of an agent in a turn returned %v, want it held", err)
 			}
 		}},
 	} {

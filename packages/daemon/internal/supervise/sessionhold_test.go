@@ -959,8 +959,8 @@ func TestAHoldsLinesNameTheClaimOnce(t *testing.T) {
 // An operator's resume of a claim recording a session it does not hold is refused before
 // anything of the claim changes (resumeRefusal): a RefusedError, which the operator's route answers
 // 409 with its sentence, naming the operator's forget-session and the controller's or an
-// architect's fresh_session, either of which gives the claim a new session, and the claim stays
-// suspended with nothing launched and nothing charged. Relaunched, its every launch would be
+// architect's fresh_session, either of which starts the agent in a new session, and the claim
+// stays suspended with nothing launched and nothing charged. Relaunched, its every launch would be
 // refused by the hold at start and the claim would fail within its launch budget
 // (acceptance of #4220). A rule's resume leaves it suspended the same way. A claim holding its
 // session resumes as before (R9).
@@ -1007,12 +1007,12 @@ func TestAResumeOfASessionTheClaimDoesNotHoldIsRefused(t *testing.T) {
 // The controller's resume of an agent it suspended, whose claim records a session another claim holds, is
 // refused by the same check as the operator's (resumeRefusal), which runs after the controller's
 // own checks (askedBy, Claim.ResumeRefusal) admit it: a RefusedError naming the operator's
-// forget-session and the controller's own fresh_session, either of which gives the claim a new
-// session, the claim still suspended by the controller, nothing launched and nothing charged.
-// Once the claim holds its session, the controller's resume relaunches it.
+// forget-session and the controller's own fresh_session, either of which starts the agent in a
+// new session, the claim still suspended by the controller, nothing launched and nothing charged.
+// Once the claim holds its session, the controller's resume starts the agent again on it.
 //
 // The control: resume with no resumeRefusal: the controller's resume answers no refusal and the
-// claim is launched into the hold's refusal.
+// agent is launched into the hold's refusal.
 func TestAControllersResumeOfASessionTheClaimDoesNotHoldIsRefused(t *testing.T) {
 	const other = claim.Token("legion-legion-LEGION-209-tester")
 	h := newHarness(t)
@@ -1026,7 +1026,7 @@ func TestAControllersResumeOfASessionTheClaimDoesNotHoldIsRefused(t *testing.T) 
 	err := h.handle(RequestResume{Claim: h.token, By: SuspendedByController})
 	var refused *RefusedError
 	if !errors.As(err, &refused) {
-		t.Fatalf("the controller's resume of a claim recording %s, which %s holds = %v, want a refusal", session, other, err)
+		t.Fatalf("the controller's resume of an agent whose claim records %s, which %s holds = %v, want a refusal", session, other, err)
 	}
 	for _, want := range []string{"legion claims forget-session --claim " + string(h.token), freshSessionTool} {
 		if !strings.Contains(err.Error(), want) {
@@ -1034,7 +1034,7 @@ func TestAControllersResumeOfASessionTheClaimDoesNotHoldIsRefused(t *testing.T) 
 		}
 	}
 	if c := h.claim(); c.State != StateSuspended || c.SuspendedBy != SuspendedByController || c.Budgets.LaunchFailures != 0 || c.Session != session {
-		t.Fatalf("the refused resume left the claim %s by %q with %d launch failures recording %q, want it suspended by the controller with none and %s",
+		t.Fatalf("after the refused resume the claim is %s by %q with %d launch failures recording %q, want it suspended by the controller with none and %s",
 			c.State, c.SuspendedBy, c.Budgets.LaunchFailures, c.Session, session)
 	}
 	if calls := h.calls("Resume")[resumes:]; len(calls) != 0 {
@@ -1045,7 +1045,7 @@ func TestAControllersResumeOfASessionTheClaimDoesNotHoldIsRefused(t *testing.T) 
 	h.store.setHold(sessionID(session), h.token)
 	h.must(RequestResume{Claim: h.token, By: SuspendedByController})
 	if calls := h.calls("Resume")[resumes:]; len(calls) != 1 {
-		t.Fatalf("the controller's resume of a claim holding its session asked the runtime %d times, want once", len(calls))
+		t.Fatalf("the controller's resume of an agent whose claim holds its session asked the runtime %d times, want once", len(calls))
 	}
 }
 
@@ -1078,7 +1078,7 @@ func TestAReleaseReportsNoAbandonedSessionTheClaimRecordsAgain(t *testing.T) {
 
 // freshSessionTool is the remedy a refusal of a session the claim does not hold names for the
 // controller and an architect (resumeRefusal), beside the operator's forget-session: neither holds
-// an operator's token, and their `legion` tool's fresh_session gives the claim a new session.
+// an operator's token, and their `legion` tool's fresh_session starts the agent in a new session.
 const freshSessionTool = "the `fresh_session` of the controller's or an architect's `legion` tool"
 
 // wantRefusedResume is the outcome of an operator's resume of a claim recording a session it does

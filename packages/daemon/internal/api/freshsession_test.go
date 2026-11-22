@@ -89,8 +89,8 @@ func freshSessionDoors() []freshSessionDoor {
 	}
 }
 
-// wantHeldRefusal holds the answer this door gave the fresh session of token, a claim a
-// suspension by heldBy is held over, to the refusal it gives such a claim: the held suspension's
+// wantHeldRefusal holds the answer this door gave the fresh session of token's agent, over which
+// a suspension by heldBy is held, to the refusal it gives such an agent: the held suspension's
 // own, code and message (refuseHeldSuspension), except where the suspension outranks the door's
 // caller. The agent door refuses the controller the operator's suspension, held or landed,
 // before the fresh session reads anything of the claim (agentDoor, SUSPENDED_BY_OPERATOR), and
@@ -503,7 +503,7 @@ func TestAFreshSessionStartsTheClaimWhenThePhaseRestartIsRefused(t *testing.T) {
 			name  string
 			start func(t *testing.T, h *harness) claim.Token
 		}{
-			{"a claim the controller suspended", controllerSuspendedImplementer},
+			{"an agent the controller suspended", controllerSuspendedImplementer},
 			{"a claim the daemon suspended", func(t *testing.T, h *harness) claim.Token {
 				t.Helper()
 				return suspendedImplementer(t, h, supervise.SuspendedByDaemon)
@@ -868,9 +868,9 @@ func TestTheControllersFreshSessionNeedsAControllerGrantAndAClaim(t *testing.T) 
 // hold again in its own decision (supervise.RequestForgetSession.By) and is refused, so the
 // claim keeps the session it recorded under the holder's suspension, nothing is started, and the
 // caller is answered that hold's refusal, which says whether its own suspension ran. Let
-// through, the forget would drop the session of a claim whose resume the machine then refuses,
+// through, the forget would drop the session of an agent whose resume the machine then refuses,
 // and the caller would read a 200 for an agent only the holder can start.
-func TestAFreshSessionKeepsTheSessionOfAClaimASuspensionAboveTheCallerTookOver(t *testing.T) {
+func TestAFreshSessionKeepsTheSessionOfAnAgentASuspensionAboveTheCallerTookOver(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		start  func(t *testing.T, h *harness) claim.Token
@@ -900,7 +900,7 @@ func TestAFreshSessionKeepsTheSessionOfAClaimASuspensionAboveTheCallerTookOver(t
 			},
 		},
 		{
-			name: "the operator's over a claim the controller suspended before the request", start: controllerSuspendedImplementer,
+			name: "the operator's over an agent the controller suspended before the request", start: controllerSuspendedImplementer,
 			by: supervise.SuspendedByController, holder: supervise.SuspendedByOperator, code: suspendedByOperator,
 			want: func(token claim.Token) string {
 				return operatorHoldRefusal(token, "a fresh session", "the controller")
@@ -927,7 +927,7 @@ func TestAFreshSessionKeepsTheSessionOfAClaimASuspensionAboveTheCallerTookOver(t
 			_, _, _, ok := s.freshSession(recorder, httptest.NewRequest(http.MethodPost, "/", nil), m, token, tc.by)
 
 			if !tookOver {
-				t.Fatalf("the fresh session reached no forget, so nothing took the claim over before one; body %s", recorder.Body)
+				t.Fatalf("the fresh session reached no forget, so nothing took the agent over before one; body %s", recorder.Body)
 			}
 			if ok {
 				t.Fatalf("the fresh session reported success; body %s", recorder.Body)
@@ -948,7 +948,7 @@ func TestAFreshSessionKeepsTheSessionOfAClaimASuspensionAboveTheCallerTookOver(t
 // the session it recorded and before its resume: the resume is refused that hold, and the
 // refusal says the session was left behind, since the holder's resume starts the agent in a new
 // session rather than the one the request found. Said "nothing of the claim changed", the caller
-// would read the claim as resumable on the session it can no longer reach.
+// would read the agent as resumable on the session it can no longer reach.
 func TestAFreshSessionWhoseResumeAHoldRefusesAfterTheForgetSaysTheSessionWasLeftBehind(t *testing.T) {
 	h := freshSessionHarness(t, &phaseRestarter{})
 	token := controllerSuspendedImplementer(t, h)
@@ -969,7 +969,7 @@ func TestAFreshSessionWhoseResumeAHoldRefusesAfterTheForgetSaysTheSessionWasLeft
 	_, _, _, ok := s.freshSession(recorder, httptest.NewRequest(http.MethodPost, "/", nil), m, token, supervise.SuspendedByController)
 
 	if !tookOver {
-		t.Fatalf("the fresh session reached no resume, so nothing took the claim over before one; body %s", recorder.Body)
+		t.Fatalf("the fresh session reached no resume, so nothing took the agent over before one; body %s", recorder.Body)
 	}
 	if ok {
 		t.Fatalf("the fresh session reported success; body %s", recorder.Body)

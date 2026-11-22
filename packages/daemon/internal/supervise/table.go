@@ -1223,7 +1223,7 @@ func fillTable(t *builder) {
 
 	t.row(onResume, "resume the same session", resume, []ClaimState{StateLaunching, StateFailed}, StateSuspended)
 	t.ignore(onResume, "the claim is not suspended", live...)
-	t.ignore(onResume, "a queued claim is spawned, not resumed", StateQueued)
+	t.ignore(onResume, "an agent whose claim is queued is spawned, not resumed", StateQueued)
 	t.ignore(onResume, "the previous launch's pane is still uncertain", StateLaunchUncertain)
 	t.ignore(onResume, failedClaim, StateFailed)
 	t.ignore(onResume, retiredClaim, StateRetired)

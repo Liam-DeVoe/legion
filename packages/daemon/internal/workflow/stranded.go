@@ -208,9 +208,9 @@ func Stranded(ctx context.Context, tx pgx.Tx, s record.Store, project string, st
 		// to the architect above it (Engine.claimFailed), and the daemon starts it again at its
 		// child's next phase start (Engine.reviveArchitect). A stranded claim goes to the
 		// controller, whose remedy is an operator's retry, which a claim the daemon starts again
-		// does not need. One the operator, the controller or an architect above it stopped or
-		// suspended is that caller's own move: a retry undoes the stop, and the suspension waits
-		// for its holder's resume or one that outranks it (supervise.Claim.ResumeRefusal). One the
+		// does not need. A claim whose agent the operator, the controller or an architect above that
+		// agent stopped or suspended is that caller's own move: a retry undoes the stop, and the suspension
+		// waits for its holder's resume or one that outranks it (supervise.Claim.ResumeRefusal). One the
 		// child's leave suspended or retired comes back at the child's next first phase start. One
 		// that its own exit retired is reported nowhere, as Stranded's comment says.
 		var current phase.Phase

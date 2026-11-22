@@ -86,7 +86,7 @@ func TestAResumeAStopAndAForgetNamingNoAskerAreRefused(t *testing.T) {
 			}
 			h.wantState(StateSuspended)
 			if got := h.store.load(testToken); got.SuspendedBy != SuspendedByOperator || got.Session != before.Session {
-				t.Fatalf("the refused requests left the claim suspended by %q on session %q, want the operator's on %q",
+				t.Fatalf("after the refused requests the claim is suspended by %q on session %q, want the operator's on %q",
 					got.SuspendedBy, got.Session, before.Session)
 			}
 			h.wantCalls("Resume", 0)

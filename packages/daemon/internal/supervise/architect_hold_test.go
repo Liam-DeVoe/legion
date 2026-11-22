@@ -156,7 +156,7 @@ func TestTheControllersSuspensionOutranksAnArchitects(t *testing.T) {
 			h := newHarness(t)
 			h.reach(StateWorking)
 			if err := h.handle(RequestSuspend{Claim: testToken, Reason: "held first", By: tc.holder}); !errors.Is(err, ErrSuspendHeld) {
-				t.Fatalf("the %s's suspend of a claim in a turn returned %v, want it held", tc.holder, err)
+				t.Fatalf("the %s's suspend of an agent in a turn returned %v, want it held", tc.holder, err)
 			}
 			err := h.handle(RequestSuspend{Claim: testToken, Reason: "an architect suspended it", By: SuspendedByArchitect})
 			if !errors.Is(err, tc.want) {
@@ -185,10 +185,10 @@ func TestTheControllersSuspensionOutranksAnArchitects(t *testing.T) {
 		h := newHarness(t)
 		h.reach(StateWorking)
 		if err := h.handle(RequestSuspend{Claim: testToken, Reason: "an architect suspended it", By: SuspendedByArchitect}); !errors.Is(err, ErrSuspendHeld) {
-			t.Fatalf("the architect's suspend of a claim in a turn returned %v, want it held", err)
+			t.Fatalf("the architect's suspend of an agent in a turn returned %v, want it held", err)
 		}
 		if err := h.handle(RequestSuspend{Claim: testToken, Reason: "the controller suspended it", By: SuspendedByController}); !errors.Is(err, ErrSuspendHeld) {
-			t.Fatalf("the controller's suspend of a claim in a turn returned %v, want it held", err)
+			t.Fatalf("the controller's suspend of an agent in a turn returned %v, want it held", err)
 		}
 		if c := h.claim(); !c.SuspensionHeld || c.SuspensionHeldBy != SuspendedByController {
 			t.Fatalf("the claim holds a suspension %t by %q, want the controller's", c.SuspensionHeld, c.SuspensionHeldBy)
@@ -199,17 +199,17 @@ func TestTheControllersSuspensionOutranksAnArchitects(t *testing.T) {
 		h := newHarness(t)
 		h.reach(StateWorking)
 		if err := h.handle(RequestSuspend{Claim: testToken, Reason: "an architect suspended it", By: SuspendedByArchitect}); !errors.Is(err, ErrSuspendHeld) {
-			t.Fatalf("the architect's suspend of a claim in a turn returned %v, want it held", err)
+			t.Fatalf("the architect's suspend of an agent in a turn returned %v, want it held", err)
 		}
 		if err := h.handle(RequestSuspend{Claim: testToken, Reason: "the tree lingers", By: SuspendedByDaemon}); !errors.Is(err, ErrSuspendHeld) {
-			t.Fatalf("the daemon's suspend of a claim in a turn returned %v, want it held", err)
+			t.Fatalf("the daemon's suspend of an agent in a turn returned %v, want it held", err)
 		}
 		if c := h.claim(); !c.SuspensionHeld || c.SuspensionHeldBy != SuspendedByDaemon {
 			t.Fatalf("the claim holds a suspension %t by %q, want the daemon's, which took the architect's over", c.SuspensionHeld, c.SuspensionHeldBy)
 		}
 	})
 
-	t.Run("an architect's suspend of a released claim", func(t *testing.T) {
+	t.Run("an architect's suspend of a released agent", func(t *testing.T) {
 		h := newHarness(t)
 		suspendedBy(h, SuspendedByReleased)
 		h.must(RequestSuspend{Claim: testToken, Reason: "an architect suspended it", By: SuspendedByArchitect})
@@ -288,7 +288,7 @@ func TestAnArchitectDoesNotTakeOverTheDaemonsSuspension(t *testing.T) {
 		h := newHarness(t)
 		h.reach(StateWorking)
 		if err := h.handle(RequestSuspend{Claim: testToken, Reason: "the tree lingers", By: SuspendedByDaemon}); !errors.Is(err, ErrSuspendHeld) {
-			t.Fatalf("the daemon's suspend of a claim in a turn returned %v, want it held", err)
+			t.Fatalf("the daemon's suspend of an agent in a turn returned %v, want it held", err)
 		}
 		err := h.handle(RequestSuspend{Claim: testToken, Reason: "an architect suspended it", By: SuspendedByArchitect})
 		if !errors.Is(err, ErrNotTheArchitectsSuspension) {
@@ -309,9 +309,9 @@ func TestAnArchitectDoesNotTakeOverTheDaemonsSuspension(t *testing.T) {
 // every rule that keeps an architect off the daemon's suspension applies, on each path that would
 // start the worker on the parked issue: the architect's resume is refused, and so is its stop,
 // which its retry would follow; the retry then finds the claim still suspended, or still in its
-// turn, and is refused as the retry of any claim that has not failed or retired is. The claim is
-// left suspended by the daemon with no session resumed, and the daemon's own rules start it
-// again, as they start any worker the workflow stopped (RequestRuleResume).
+// turn, and is refused as the retry of any agent whose claim has not failed or retired is. The
+// claim's record still reads suspended by the daemon, with no session resumed, and the daemon's
+// own rules start its agent again, as they start any worker the workflow stopped (RequestRuleResume).
 //
 // The negative control is suspensionRank with the architect above the daemon, as it stood, and
 // holdSuspension's takeover with the daemon left out: the claim then stays the architect's, whose
@@ -331,7 +331,7 @@ func TestTheDaemonsSuspensionTakesOverAnArchitectsPlacedBeforeIt(t *testing.T) {
 			h.t.Errorf("the architect's stop after the park returned %v, want a refusal naming ErrNotTheArchitectsSuspension", err)
 		}
 		if err := h.handle(RequestAskedRetry{Claim: testToken, By: SuspendedByArchitect}); !errors.As(err, &refused) {
-			h.t.Errorf("the architect's retry after its stop returned %v, want the refusal of a retry of a claim that has not failed or retired", err)
+			h.t.Errorf("the architect's retry after its stop returned %v, want the refusal of a retry of an agent whose claim has not failed or retired", err)
 		}
 	}
 	for _, tc := range []struct {
@@ -352,10 +352,10 @@ func TestTheDaemonsSuspensionTakesOverAnArchitectsPlacedBeforeIt(t *testing.T) {
 			if tc.inATurn {
 				h.reach(StateWorking)
 				if err := h.handle(RequestSuspend{Claim: testToken, Reason: "an architect suspended it", By: SuspendedByArchitect}); !errors.Is(err, ErrSuspendHeld) {
-					t.Fatalf("the architect's suspend of a claim in a turn returned %v, want it held", err)
+					t.Fatalf("the architect's suspend of an agent in a turn returned %v, want it held", err)
 				}
 				if err := h.handle(RequestSuspend{Claim: testToken, Reason: "LEGION-209 is parked", By: SuspendedByDaemon}); !errors.Is(err, ErrSuspendHeld) {
-					t.Fatalf("the park's suspend of a claim in a turn returned %v, want it held", err)
+					t.Fatalf("the park's suspend of an agent in a turn returned %v, want it held", err)
 				}
 				if c := h.claim(); !c.SuspensionHeld || c.SuspensionHeldBy != SuspendedByDaemon {
 					t.Errorf("after the park the claim holds a suspension %t by %q, want the daemon's", c.SuspensionHeld, c.SuspensionHeldBy)
@@ -412,10 +412,10 @@ func TestASuspensionThatKeepsHoldsTakesOverNoSourceThatHolds(t *testing.T) {
 		h := newHarness(t)
 		h.reach(StateWorking)
 		if err := h.handle(RequestSuspend{Claim: testToken, Reason: "an architect suspended it", By: SuspendedByArchitect}); !errors.Is(err, ErrSuspendHeld) {
-			t.Fatalf("the architect's suspend of a claim in a turn returned %v, want it held", err)
+			t.Fatalf("the architect's suspend of an agent in a turn returned %v, want it held", err)
 		}
 		if err := h.handle(keep); !errors.Is(err, ErrSuspendHeld) {
-			t.Fatalf("the suspend that keeps holds of a claim in a turn returned %v, want it held", err)
+			t.Fatalf("the suspend that keeps holds of an agent in a turn returned %v, want it held", err)
 		}
 		if c := h.claim(); !c.SuspensionHeld || c.SuspensionHeldBy != SuspendedByArchitect {
 			t.Fatalf("the claim holds a suspension %t by %q, want the architect's", c.SuspensionHeld, c.SuspensionHeldBy)
@@ -460,7 +460,7 @@ func TestAnArchitectsStopOfAnAgentAHoldAboveItHoldsIsRefused(t *testing.T) {
 			h := newHarness(t)
 			h.reach(StateWorking)
 			if err := h.handle(RequestSuspend{Claim: testToken, Reason: "held first", By: tc.holder}); !errors.Is(err, ErrSuspendHeld) {
-				t.Fatalf("the %s's suspend of a claim in a turn returned %v, want it held", tc.holder, err)
+				t.Fatalf("the %s's suspend of an agent in a turn returned %v, want it held", tc.holder, err)
 			}
 			if err := h.handle(RequestStop{Claim: testToken, By: SuspendedByArchitect}); !errors.Is(err, tc.want) {
 				t.Fatalf("the architect's stop returned %v, want %v", err, tc.want)
@@ -486,7 +486,7 @@ func TestAnArchitectsRefusedSuspensionCancelsNoStartInFlight(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateWorking)
 	if err := h.handle(RequestSuspend{Claim: testToken, Reason: "the controller suspended it", By: SuspendedByController}); !errors.Is(err, ErrSuspendHeld) {
-		t.Fatalf("the controller's suspend of a claim in a turn returned %v, want it held", err)
+		t.Fatalf("the controller's suspend of an agent in a turn returned %v, want it held", err)
 	}
 	cancelled := startInFlight(t, h)
 

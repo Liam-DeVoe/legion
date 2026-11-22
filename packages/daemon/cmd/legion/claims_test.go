@@ -1125,7 +1125,7 @@ func TestClaimsForgetSessionRequiresTheRecordedSession(t *testing.T) {
 // operator reading `legion claims list` does not read it as a suspension someone must lift. A
 // claim of an agent the project's controller suspended says so too (#4065), so the operator
 // tells it from its own suspension: the controller's resume_agent lifts it, where the operator's
-// own is the operator's alone to lift. So does the claim of an agent an architect suspended, which an
+// own is the operator's alone to lift. So does the claim of an agent an architect suspended, whose suspension an
 // architect's resume_agent lifts as well as the controller's and the operator's resume. Every other claim prints the state
 // it is in, suspended by an operator among them. None of the five is in an update round, in a tool
 // call or refused by the leak check, so each line ends in the round, head, call and leak-check

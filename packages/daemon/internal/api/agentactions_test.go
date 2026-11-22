@@ -127,7 +127,7 @@ func TestTheControllersAgentActionsNeedAControllerGrantAClaimRoleAndAClaimOfItsP
 				http.StatusNotFound, "NO_CLAIM")
 
 			if after := h.stored(token); after.State != before.State || after.Session != before.Session {
-				t.Errorf("the refused requests left the claim %s on session %q, want it %s on %q as they found it",
+				t.Errorf("after the refused requests the claim is %s on session %q, want it %s on %q as before",
 					after.State, after.Session, before.State, before.Session)
 			}
 		})
@@ -135,7 +135,7 @@ func TestTheControllersAgentActionsNeedAControllerGrantAClaimRoleAndAClaimOfItsP
 }
 
 // The controller's suspend runs the operator's effect and records the suspension as its own:
-// the claim's process stops, its session is kept, and the answer and the store name the
+// the agent's process stops, its session is kept, and the answer and the store name the
 // controller. Its own resume lifts it, and starts the agent again in that session.
 func TestTheControllerSuspendsAnAgentAsItsOwnAndResumesIt(t *testing.T) {
 	h := freshSessionHarness(t, &phaseRestarter{})
@@ -176,9 +176,9 @@ func TestTheControllersSuspensionOfAnAgentInATurnIsHeldForTheTurn(t *testing.T) 
 	}
 }
 
-// The controller's stop runs the operator's: the claim is released and retired. The
-// controller's plain retry then starts a stopped phase worker through its issue's phase, as the
-// operator's retry does, and asks for no fresh session.
+// The controller's stop runs the operator's: the agent is stopped, and its claim released and
+// retired. The controller's plain retry then starts a stopped phase worker through its issue's
+// phase, as the operator's retry does, and asks for no fresh session.
 func TestTheControllerStopsAnAgentAndRetriesIt(t *testing.T) {
 	facts := &phaseRestarter{}
 	h := freshSessionHarness(t, facts)
@@ -187,7 +187,7 @@ func TestTheControllerStopsAnAgentAndRetriesIt(t *testing.T) {
 	wantAgentActionAnswer(t, askAgentAction(t, h, "/legion/v1/agents/stop", "LEGION-209", claim.RoleImplementer),
 		http.StatusOK, AgentActionResponse{State: "retired"})
 	if got := h.stored(token); got.State != supervise.StateRetired || got.Session != "ses_implementer" {
-		t.Fatalf("the stopped claim is %s on session %q, want it retired with its session kept", got.State, got.Session)
+		t.Fatalf("the stopped agent's claim is %s on session %q, want it retired with its session kept", got.State, got.Session)
 	}
 
 	wantAgentActionAnswer(t, askAgentAction(t, h, "/legion/v1/agents/retry", "LEGION-209", claim.RoleImplementer),
@@ -201,7 +201,7 @@ func TestTheControllerStopsAnAgentAndRetriesIt(t *testing.T) {
 		t.Fatalf("the retry applied %#v, want LEGION-209's implementing restarted with no fresh session", applied[0])
 	}
 	if got := h.stored(token).Session; got != "ses_implementer" {
-		t.Errorf("the retry left the claim recording session %q, want the session it had: a plain retry keeps it", got)
+		t.Errorf("after the retry the claim records session %q, want the session it had: a plain retry keeps it", got)
 	}
 }
 
@@ -225,7 +225,7 @@ func TestTheControllersRetryAndResumeRefuseAnAgentInATurn(t *testing.T) {
 				string(token)+" is stored working, and "+op.op.name+" reaches no agent in a turn. "+op.op.reaches+". "+wantAskAgainLater)
 			m, _ := h.supervisor.Machine(token)
 			if view := m.View(); view.State != supervise.StateWorking || view.SuspensionHeld {
-				t.Fatalf("the refused claim is %s with a suspension held %t, want it working with none", view.State, view.SuspensionHeld)
+				t.Fatalf("after the refusal the claim is %s with a suspension held %t, want it working with none", view.State, view.SuspensionHeld)
 			}
 		})
 	}
@@ -264,7 +264,7 @@ func operatorHeldCompactionRefusal(token claim.Token) string {
 
 // The operator's own suspension is the operator's decision, and only the operator undoes it: the
 // controller's resume would lift it, its suspend would take it over, its stop would retire the
-// claim for its retry to relaunch, its retry would start it, and its fresh session would resume
+// agent for its retry to relaunch, its retry would start it, and its fresh session would resume
 // it. Each of the five is refused SUSPENDED_BY_OPERATOR with nothing of the claim changed, and the
 // operator's own resume then lifts the suspension as before.
 func TestTheControllerCannotGetPastTheOperatorsSuspension(t *testing.T) {
@@ -278,7 +278,7 @@ func TestTheControllerCannotGetPastTheOperatorsSuspension(t *testing.T) {
 				http.StatusConflict, suspendedByOperator, operatorHoldRefusal(token, op.as.name, "the controller"))
 			after := h.stored(token)
 			if after.State != supervise.StateSuspended || after.SuspendedBy != supervise.SuspendedByOperator || after.Session != before.Session {
-				t.Fatalf("the refused claim is %s suspended by %q on session %q, want it suspended by the operator on %q",
+				t.Fatalf("after the refusal the claim is %s suspended by %q on session %q, want it suspended by the operator on %q",
 					after.State, after.SuspendedBy, after.Session, before.Session)
 			}
 			if resumes := h.runtime.CallsOf("Resume"); len(resumes) != 0 {
@@ -299,8 +299,8 @@ func TestTheControllerCannotGetPastTheOperatorsSuspension(t *testing.T) {
 // controller's door refuses it as it refuses the landed one: each of the five is refused
 // SUSPENDED_BY_OPERATOR in the same words, and the claim is left working under the hold with the
 // session it had. Left to each operation, the hold would take the code of the claim's state at
-// three of them — the resume's and the retry's claim in a turn, and the fresh session's held
-// suspension — so the controller would read a claim it may ask again for where only the operator
+// three of them — the resume's and the retry's CLAIM_IN_A_TURN, and the fresh session's held
+// suspension — so the controller would read an agent it may ask again for where only the operator
 // can act (agentDoor).
 func TestTheControllerCannotGetPastTheOperatorsHeldSuspension(t *testing.T) {
 	for _, op := range controllerHoldActions {
@@ -308,7 +308,7 @@ func TestTheControllerCannotGetPastTheOperatorsHeldSuspension(t *testing.T) {
 			h := freshSessionHarness(t, &phaseRestarter{})
 			token := workingImplementer(t, h)
 			if recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/suspend", nil); recorder.Code != http.StatusAccepted {
-				t.Fatalf("the operator's suspend of a claim in a turn = %d, want 202; body %s", recorder.Code, recorder.Body)
+				t.Fatalf("the operator's suspend of an agent in a turn = %d, want 202; body %s", recorder.Code, recorder.Body)
 			}
 			calls := len(h.runtime.Calls())
 
@@ -328,12 +328,13 @@ func TestTheControllerCannotGetPastTheOperatorsHeldSuspension(t *testing.T) {
 }
 
 // The controller's compaction is the one operation of its door the operator's suspension does not
-// refuse (compactOp.controllerPassesHold): a compaction stops, takes over and lifts nothing, so a
-// claim that suspension holds is answered in the compaction's own words and left as it was — a
-// landed one runs no session to compact, and a held one is the held suspension's refusal. What
-// either names as starting the agent is the operator's resume, since the controller's
-// fresh_session of that agent is refused SUSPENDED_BY_OPERATOR at the door: the answer sends the
-// controller to the operator rather than to a door that refuses it (api's holdSentences).
+// refuse (compactOp.controllerPassesHold): a compaction stops, takes over and lifts nothing, so the
+// compaction of an agent that suspension holds is answered in its own words with nothing of the
+// claim changed — under a landed suspension the agent runs no session to compact, and under a held
+// one the answer is the held suspension's refusal. What either names as starting the agent is the
+// operator's resume, since the controller's fresh_session of that agent is refused
+// SUSPENDED_BY_OPERATOR at the door: the answer sends the controller to the operator rather than to
+// a door that refuses it (api's holdSentences).
 //
 // The negative control is refuseState with no hold read (a nil hold for refuseNotRunning and
 // refuseHeldSuspension): both rows then name fresh_session as what starts the agent again.
@@ -358,7 +359,7 @@ func TestTheControllersCompactionIsNotRefusedTheOperatorsSuspension(t *testing.T
 		h := freshSessionHarness(t, &phaseRestarter{})
 		token := workingImplementer(t, h)
 		if recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/suspend", nil); recorder.Code != http.StatusAccepted {
-			t.Fatalf("the operator's suspend of a claim in a turn = %d, want 202; body %s", recorder.Code, recorder.Body)
+			t.Fatalf("the operator's suspend of an agent in a turn = %d, want 202; body %s", recorder.Code, recorder.Body)
 		}
 
 		recorder := askAgentAction(t, h, "/legion/v1/claims/compact", "LEGION-209", claim.RoleImplementer)
@@ -427,7 +428,7 @@ type agentDoorAction struct {
 }
 
 // agentDoorActions is the six agent actions: the four the operator's `legion
-// claims` gives the controller, and the two recoveries. An architect takes all six for the claims
+// claims` gives the controller, and the two recoveries. An architect takes all six for the agents
 // of the issues it owns.
 var agentDoorActions = []agentDoorAction{
 	{"stop", "/legion/v1/agents/stop", stopOp},
@@ -467,7 +468,7 @@ func architectSuspendedImplementer(t *testing.T, h *harness, architect liveClaim
 	return token
 }
 
-// An architect's grant opens each of the six on a claim of an issue it owns, and each runs the
+// An architect's grant opens each of the six on an agent of an issue it owns, and each runs the
 // effect the controller's runs: the stop retires the worker, the retry starts the stopped worker
 // through its issue's phase, the suspension is recorded as the architect's and holds against the
 // daemon's rules, the architect's resume lifts its own suspension, the compaction compacts the
@@ -481,7 +482,7 @@ func TestAnArchitectsAgentActionsServeAnAgentOfItsOwnTree(t *testing.T) {
 		wantAgentActionAnswer(t, askAsArchitect(t, h, architect, "/legion/v1/agents/stop", "LEGION-209", claim.RoleImplementer),
 			http.StatusOK, AgentActionResponse{State: "retired"})
 		if got := h.stored(token); got.State != supervise.StateRetired || got.Session != "ses_implementer" {
-			t.Fatalf("the stopped claim is %s on session %q, want it retired with its session kept", got.State, got.Session)
+			t.Fatalf("the stopped agent's claim is %s on session %q, want it retired with its session kept", got.State, got.Session)
 		}
 	})
 
@@ -543,7 +544,7 @@ func TestAnArchitectsAgentActionsServeAnAgentOfItsOwnTree(t *testing.T) {
 			t.Fatalf("Oh My Pi was asked for %d compactions, want one", got)
 		}
 		if got := h.stored(token); got.State != supervise.StateReady || got.Session != "ses_implementer" {
-			t.Fatalf("the compacted claim is %s on session %q, want it ready again on ses_implementer", got.State, got.Session)
+			t.Fatalf("the compacted agent's claim is %s on session %q, want it ready again on ses_implementer", got.State, got.Session)
 		}
 	})
 
@@ -580,7 +581,7 @@ func TestAnArchitectsAgentActionsRefuseAnotherTreesAgent(t *testing.T) {
 				http.StatusForbidden, "ISSUE_OUTSIDE_TREE")
 
 			if after := h.stored(token); after.State != before.State || after.Session != before.Session || after.SuspendedBy != before.SuspendedBy {
-				t.Fatalf("the refused request left the other tree's claim %s on %q suspended by %q, want it %s on %q as it found it",
+				t.Fatalf("after the refused request the other tree's claim is %s on %q suspended by %q, want it %s on %q as before",
 					after.State, after.Session, after.SuspendedBy, before.State, before.Session)
 			}
 		})
@@ -589,7 +590,7 @@ func TestAnArchitectsAgentActionsRefuseAnotherTreesAgent(t *testing.T) {
 
 // A sub-architect owns its own issue and the issues under it, never its tree's root or a
 // sibling's subtree (owns), though its grant names the whole tree, and the agent door holds it
-// to what it owns as sign_off and retry_or_escalate do: its stop of the root architect's claim,
+// to what it owns as sign_off and retry_or_escalate do: its stop of the root architect's agent,
 // and of the worker of a sibling issue, is refused 403 ISSUE_NOT_OWNED with nothing of either
 // claim changed, and its stop of the worker of its own issue retires that worker.
 func TestASubArchitectsAgentActionsReachTheIssuesItOwnsAlone(t *testing.T) {
@@ -618,7 +619,7 @@ func TestASubArchitectsAgentActionsReachTheIssuesItOwnsAlone(t *testing.T) {
 			http.StatusForbidden, "ISSUE_NOT_OWNED",
 			"a stop of "+refused.issue+" belongs to its own architect or one above it in the tree, not the architect of LEGION-209")
 		if after := h.stored(refused.token); after.State != before.State || after.Session != before.Session {
-			t.Fatalf("the refused stop left %s %s on session %q, want it %s on %q as it found it",
+			t.Fatalf("after the refused stop %s is %s on session %q, want it %s on %q as before",
 				refused.token, after.State, after.Session, before.State, before.Session)
 		}
 	}
@@ -691,7 +692,7 @@ func TestAnArchitectCannotGetPastTheOperatorsSuspension(t *testing.T) {
 				http.StatusConflict, suspendedByOperator, operatorHoldRefusal(token, op.as.name, "the architect"))
 			after := h.stored(token)
 			if after.State != supervise.StateSuspended || after.SuspendedBy != supervise.SuspendedByOperator || after.Session != before.Session {
-				t.Fatalf("the refused claim is %s suspended by %q on session %q, want it suspended by the operator on %q",
+				t.Fatalf("after the refusal the claim is %s suspended by %q on session %q, want it suspended by the operator on %q",
 					after.State, after.SuspendedBy, after.Session, before.Session)
 			}
 			if resumes := h.runtime.CallsOf("Resume"); len(resumes) != 0 {
@@ -720,7 +721,7 @@ func TestAnArchitectCannotGetPastTheControllersSuspension(t *testing.T) {
 					" by the architect is refused and nothing of the claim changed. Ask the controller: its `resume_agent` is its own to run")
 			after := h.stored(token)
 			if after.State != supervise.StateSuspended || after.SuspendedBy != supervise.SuspendedByController || after.Session != before.Session {
-				t.Fatalf("the refused claim is %s suspended by %q on session %q, want it suspended by the controller on %q",
+				t.Fatalf("after the refusal the claim is %s suspended by %q on session %q, want it suspended by the controller on %q",
 					after.State, after.SuspendedBy, after.Session, before.Session)
 			}
 			if resumes := h.runtime.CallsOf("Resume"); len(resumes) != 0 {
@@ -784,14 +785,14 @@ func TestTheControllersResumeLiftsAnArchitectsSuspension(t *testing.T) {
 	})
 }
 
-// An architect neither lifts, takes over nor ends a claim under a suspension the daemon placed: its
-// resume of it, its fresh session, which would resume it, its suspend, which would take it over
-// for that resume to undo, and its stop, which would retire it for a retry to relaunch, are
-// refused SUSPENDED_BY_DAEMON before anything changes. Its retry is refused too, by the machine
-// itself, which retries a failed or retired claim and never a suspended one: a 409 carrying the
-// machine's words and no code of its own, as the operator's and the controller's retry of a
-// suspended claim are answered. The claim is left suspended by the daemon on its session after
-// each of the five.
+// An architect neither lifts nor takes over a suspension the daemon placed, nor ends the agent under
+// it: its resume of that agent, its fresh session, which would resume it, its suspend, which would
+// take the suspension over for that resume to undo, and its stop, which would retire the agent for
+// a retry to relaunch, are refused SUSPENDED_BY_DAEMON before anything changes. Its retry is refused
+// too, by the machine itself, which retries an agent whose claim failed or retired and never a
+// suspended one: a 409 carrying the machine's words and no code of its own, as the operator's and
+// the controller's retry of a suspended agent are answered. The claim's record still reads
+// suspended by the daemon, on its session, after each of the five.
 func TestAnArchitectsResumeSuspendStopRetryAndFreshSessionRefuseAnAgentTheDaemonSuspended(t *testing.T) {
 	for _, op := range []struct {
 		route string
@@ -816,7 +817,7 @@ func TestAnArchitectsResumeSuspendStopRetryAndFreshSessionRefuseAnAgentTheDaemon
 				var failure Failure
 				decodeInto(t, recorder, &failure)
 				if failure.Code != "" || !strings.HasPrefix(failure.Error, "retry refused: the claim is suspended") {
-					t.Fatalf("refusal = %+v, want the machine's own refusal of a retry of a suspended claim, with no code", failure)
+					t.Fatalf("refusal = %+v, want the machine's own refusal of a retry of a suspended agent, with no code", failure)
 				}
 			} else {
 				refusedSaying(t, recorder, http.StatusConflict, suspendedByDaemon,
@@ -826,7 +827,7 @@ func TestAnArchitectsResumeSuspendStopRetryAndFreshSessionRefuseAnAgentTheDaemon
 						"its issue's phase, or its role's next wake — and so do the controller's `resume_agent` and the operator's `legion claims resume`")
 			}
 			if got := h.stored(token); got.State != supervise.StateSuspended || got.SuspendedBy != supervise.SuspendedByDaemon || got.Session != "ses_implementer" {
-				t.Fatalf("the refused claim is %s suspended by %q on session %q, want it suspended by the daemon on ses_implementer",
+				t.Fatalf("after the refusal the claim is %s suspended by %q on session %q, want it suspended by the daemon on ses_implementer",
 					got.State, got.SuspendedBy, got.Session)
 			}
 			if resumes := h.runtime.CallsOf("Resume"); len(resumes) != 0 {
@@ -838,7 +839,7 @@ func TestAnArchitectsResumeSuspendStopRetryAndFreshSessionRefuseAnAgentTheDaemon
 
 // An architect's stop retires its worker, and then the daemon stops the issue's work: the child is
 // parked or closed, or its tree's root is closed and its tree lingers. A park suspends no retired
-// claim, so no suspension of the daemon's stands over the worker, and the agent door reads the
+// agent, so no suspension of the daemon's stands over the worker, and the agent door reads the
 // issue's record and its root's itself: the architect's retry and its fresh session, either of
 // which would start the worker on that stopped work, are refused ISSUE_OUT_OF_WORKFLOW with
 // nothing of the claim changed — it stays retired on its session, no session is resumed or
@@ -897,7 +898,7 @@ func TestAnArchitectsStartOfAStoppedWorkerIsRefusedOnceItsIssuesWorkStopped(t *t
 						"The daemon's own rules start the issue's roles again once the issue and its tree are back in the workflow, and "+
 						op.as.name+" by the controller or the operator reaches the agent meanwhile")
 				if got := h.stored(token); got.State != supervise.StateRetired || got.Session != "ses_implementer" {
-					t.Fatalf("the refused claim is %s on session %q, want it retired on ses_implementer", got.State, got.Session)
+					t.Fatalf("after the refusal the claim is %s on session %q, want it retired on ses_implementer", got.State, got.Session)
 				}
 				if got := len(h.runtime.CallsOf("Resume")) + len(h.runtime.CallsOf("Spawn")); got != starts {
 					t.Fatalf("the refused request started the worker %d times, want none", got-starts)
@@ -919,9 +920,9 @@ func TestAnArchitectsStartOfAStoppedWorkerIsRefusedOnceItsIssuesWorkStopped(t *t
 	})
 }
 
-// A released claim is no claim the daemon's own rules hold, since any wake brings it back: an
-// architect's stop of it retires it, as the operator's and the controller's do.
-func TestAnArchitectsStopRetiresAReleasedClaim(t *testing.T) {
+// A released claim is no claim the daemon's own rules hold, since any wake brings its agent back:
+// an architect's stop of that agent retires it, as the operator's and the controller's do.
+func TestAnArchitectsStopRetiresAReleasedAgent(t *testing.T) {
 	h := freshSessionHarness(t, &phaseRestarter{})
 	architect := treeArchitect(t, h)
 	token := suspendedImplementer(t, h, supervise.SuspendedByReleased)
@@ -929,14 +930,14 @@ func TestAnArchitectsStopRetiresAReleasedClaim(t *testing.T) {
 	wantAgentActionAnswer(t, askAsArchitect(t, h, architect, "/legion/v1/agents/stop", "LEGION-209", claim.RoleImplementer),
 		http.StatusOK, AgentActionResponse{State: "retired"})
 	if got := h.stored(token); got.State != supervise.StateRetired || got.Session != "ses_implementer" {
-		t.Fatalf("the stopped claim is %s on session %q, want it retired with its session kept", got.State, got.Session)
+		t.Fatalf("the stopped agent's claim is %s on session %q, want it retired with its session kept", got.State, got.Session)
 	}
 }
 
-// A released claim is no suspension of the daemon's own rules: any wake brings it back, so an
-// architect's suspend takes it over and records it as the architect's, and the architect's
-// resume then lifts it.
-func TestAnArchitectsSuspendTakesOverAReleasedClaim(t *testing.T) {
+// A released claim is no suspension of the daemon's own rules: any wake brings its agent back, so
+// an architect's suspend of that agent takes the release over and records the suspension as the
+// architect's, and the architect's resume then lifts it.
+func TestAnArchitectsSuspendTakesOverAReleasedAgent(t *testing.T) {
 	h := freshSessionHarness(t, &phaseRestarter{})
 	architect := treeArchitect(t, h)
 	token := suspendedImplementer(t, h, supervise.SuspendedByReleased)

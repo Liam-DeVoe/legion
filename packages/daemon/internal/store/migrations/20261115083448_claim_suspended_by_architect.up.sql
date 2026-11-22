@@ -1,5 +1,5 @@
 -- 20261115083448_claim_suspended_by_architect.up.sql — 'architect' joins the sources of
--- supervise.Claim.SuspendedBy: an architect suspended a claim of its own tree through its own
+-- supervise.Claim.SuspendedBy: an architect suspended an agent of its own tree through its own
 -- `legion` tool (api's suspendAgent). The daemon holds it as it holds the controller's
 -- suspension: no rule resumes it, it keeps the claim's phase and its pending delivery, and only a
 -- resume by an architect, the controller or the operator lifts it. The check 20261115060739 wrote
