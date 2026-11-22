@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { apiErrorMessage } from "../../api/client";
 import { legionDaemonQuery, userStateQuery, whoAmIQuery } from "../../api/queries";
 import { ColumnsMenu } from "../../components/ColumnsMenu";
@@ -7,12 +7,17 @@ import type { FilterChip } from "../../components/filter-chips";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { QueryError } from "../../components/QueryError";
 import {
+  addressPath,
   copyAddress,
+  useAddressNavigate,
   useAddressParams,
   useAddressUpdate,
+  useNavigationState,
+  usePageAddress,
   useTableAddress,
 } from "../../lib/page-address";
 import { useKeymap } from "../shell/keymap";
+import { focusOnDocument } from "../shell/roving";
 import { useUserPreference } from "../shell/userPreference";
 import {
   DaemonHint,
@@ -20,6 +25,7 @@ import {
   LayoutSwitch,
   type ReadFailure,
   ViewControls,
+  viewTabButtonId,
 } from "./IssueViewTabs";
 import { useIssueFilters } from "./issue-filters";
 import { type BoardToggles, IssuesTabBoard } from "./issues-tab-board";
@@ -84,6 +90,17 @@ function readFailure(query: Rereadable): ReadFailure {
   };
 }
 
+/** What a history entry of the Issues tab carries beside its address: the name of the saved view
+ *  open on it (`savedViewOf`). */
+const SAVED_VIEW_STATE = "savedView";
+
+/** The saved view a history entry names as the one open on it, or none. */
+function savedViewOf(state: unknown): string | undefined {
+  if (typeof state !== "object" || state === null) return undefined;
+  const name = Reflect.get(state, SAVED_VIEW_STATE);
+  return typeof name === "string" ? name : undefined;
+}
+
 /** The Issues tab's table in the address: the project table's own spelling, with the view it
  *  names between that spelling and the address (`viewsGrammar`). A module constant, since
  *  `useTableAddress` memoizes what it reads on the grammar's identity. */
@@ -107,8 +124,10 @@ interface IssuesTabPlace {
   /** The address the open view opens at: its built-in address, or its saved query. */
   readonly ownAddress: URLSearchParams;
   readonly saved: SavedViews;
-  /** Marks a saved view as the one the reader opened, or none. */
-  readonly choose: (name: string | undefined) => void;
+  /** Opens the view at `address`, with `name` the saved view open on it, or none. A press on a
+   *  tab pushes a history entry (`push`), so Back gives the view before it; a save or a delete
+   *  writes over the entry. */
+  readonly openView: (address: URLSearchParams, name: string | undefined, push: boolean) => void;
   readonly layout: ViewLayout;
   readonly setLayout: (layout: ViewLayout) => void;
   readonly toggles: BoardToggles;
@@ -129,7 +148,9 @@ interface IssuesTabPlace {
 export function IssuesTable({ project }: { project: string }): ReactNode {
   const daemon = useQuery(legionDaemonQuery(project));
   const params = useAddressParams();
+  const here = usePageAddress();
   const update = useAddressUpdate();
+  const navigate = useAddressNavigate();
   // An older address in today's spelling, written over the address the page opened on, so the
   // tab shows its mark and Clear filters takes what it added away.
   const rewritten = currentAddress(params)?.toString();
@@ -138,21 +159,39 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
   }, [rewritten, update]);
   const saved = useSavedViews(project);
   // The saved view the reader opened, which stays the open tab while they change it: by its tab,
-  // or by an address that is its query, which opens it as a press on its tab does. An address
-  // that is another saved view's query, while the open one is changed, opens that one instead.
-  // An address that names nothing is the page as it opens (`page-address.ts`), Open unchanged,
-  // so no saved view stays open over it: the project's link in the page's header lands there
-  // with the tab still drawn. A change of a saved view never empties the address, since the
-  // view's query holds its columns and its layout (`savedViewQuery`).
-  const [chosen, setChosen] = useState<string | undefined>(undefined);
+  // or by an address that is its query, which opens it as a press on its tab does. Its name goes
+  // with the history entry (`savedViewOf`), which every write of the address keeps, so Back to a
+  // saved view the reader changed marks its tab again. An address that is another saved view's
+  // query, while the open one is changed, opens that one instead. An address that names nothing
+  // is the page as it opens (`page-address.ts`), Open unchanged, so no saved view stays open over
+  // it: the project's link in the page's header lands there with the tab still drawn. A change of
+  // a saved view never empties the address, since the view's query holds its columns and its
+  // layout (`savedViewQuery`).
+  const chosen = savedViewOf(useNavigationState());
   const matched = matchSavedView(saved.views, params);
   const bare = params.toString() === "" && matched === undefined;
-  if (bare && chosen !== undefined) setChosen(undefined);
   const chosenView = bare ? undefined : saved.views.find((view) => view.name === chosen);
   const opened =
     matched !== undefined && (chosenView === undefined || isSavedViewChanged(params, chosenView));
-  if (opened) setChosen(matched.name);
   const savedView = opened ? matched : chosenView;
+  // A saved view its address opened is named in the history entry too, so it stays the open tab
+  // as the reader changes it.
+  const openedName = opened ? matched.name : undefined;
+  useEffect(() => {
+    if (openedName !== undefined)
+      navigate(addressPath(here.pathname, params, here.hash), {
+        state: { [SAVED_VIEW_STATE]: openedName },
+      });
+  }, [here.hash, here.pathname, navigate, openedName, params]);
+  // Whether the last move was a press on a view tab, which `openView` pushes.
+  const tabPressed = useRef(false);
+  const openView = (address: URLSearchParams, name: string | undefined, push: boolean) => {
+    tabPressed.current = push;
+    navigate(addressPath(here.pathname, address), {
+      replace: !push,
+      state: name === undefined ? undefined : { [SAVED_VIEW_STATE]: name },
+    });
+  };
   const base = viewFor(expandView(params).get("view"));
   // One object while the open view stays, so the tab counts, which read it, are worked out again
   // only when it changes.
@@ -164,6 +203,14 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
         : { kind: "saved", name: savedName },
     [savedName, base.id]
   );
+  // A press on a tab that opens another built-in view draws new tabs in place of the pressed one
+  // (the view's key below), and the focus goes with it: the open view's new tab takes it, so the
+  // keyboard stays on the tabs.
+  useLayoutEffect(() => {
+    if (!tabPressed.current) return;
+    tabPressed.current = false;
+    if (focusOnDocument()) document.getElementById(viewTabButtonId(active))?.focus();
+  });
   const tableKey = tableStorageKey(project);
   const [layout, setLayout] = useViewLayout(tableKey, active);
   const [showIcebox, setShowIcebox] = useUserPreference(
@@ -202,7 +249,7 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
       savedView === undefined ? isViewChanged(params) : isSavedViewChanged(params, savedView),
     ownAddress: savedView === undefined ? builtInAddress(base.id) : copyAddress(savedView.query),
     saved,
-    choose: setChosen,
+    openView,
     layout,
     setLayout,
     toggles: { showIcebox, setShowIcebox, lanes, setLanes },
@@ -326,17 +373,12 @@ function IssuesTabView({
       factsFailure={hasLegion && factsRead.isError ? readFailure(factsRead) : undefined}
       onDelete={(saved) => {
         tab.saved.remove(saved);
-        tab.choose(undefined);
+        tab.openView(params, undefined, false);
       }}
-      onSelect={(id) => {
-        tab.choose(undefined);
-        update(() => builtInAddress(id));
-      }}
+      onSelect={(id) => tab.openView(builtInAddress(id), undefined, true)}
       onSelectSaved={(saved) => {
         const entry = tab.saved.views.find((one) => one.name === saved);
-        if (entry === undefined) return;
-        tab.choose(entry.name);
-        update(() => copyAddress(entry.query));
+        if (entry !== undefined) tab.openView(copyAddress(entry.query), entry.name, true);
       }}
       saved={tab.saved.views}
       savedCounts={counts.saved}
@@ -359,8 +401,7 @@ function IssuesTabView({
         });
         const answer = tab.saved.save(saving, query);
         if (answer.kind === "problem") return;
-        tab.choose(answer.name);
-        update(() => copyAddress(query));
+        tab.openView(copyAddress(query), answer.name, false);
       }}
     >
       {hasLegion ? <DaemonHint header={header} reading={board.isPending} /> : null}

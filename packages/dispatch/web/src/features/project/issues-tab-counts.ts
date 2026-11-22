@@ -185,13 +185,14 @@ export function useTabCounts({
           : { kind: "all" }
       );
   }, [onDone, done, holdDone]);
-  // Done's own read, held: leaving Done reads it no more until a live event does.
-  const donePageCount = useQuery({
+  // Done's own read, held: leaving Done reads it no more until a live event does. Its count is
+  // read off the page here, not by a `select`: TanStack hands what `select` gives to the query's
+  // `structuralSharing` too, and the page's (`sharePageByKey`) keeps the first number it is given.
+  const donePage = useQuery({
     ...projectDonePageQuery(project, {
       offset: heldDone?.kind === "page" ? heldDone.offset : 0,
       size: heldDone?.kind === "page" ? heldDone.size : 0,
     }),
-    select: (page) => page.total,
     refetchOnMount: false,
     enabled: heldDone?.kind === "page" && !onDone,
   });
@@ -201,7 +202,7 @@ export function useTabCounts({
     enabled: heldDone?.kind === "all" && !onDone,
   });
   let doneKept: number | undefined;
-  if (heldDone?.kind === "page") doneKept = donePageCount.data;
+  if (heldDone?.kind === "page") doneKept = donePage.data?.total;
   else if (heldDone?.kind === "all") doneKept = doneAllCount.data?.length;
   const openTotal = readsOpen ? undefined : openCount.data;
   // Every tab's count but the open one's, worked out again only when what they count from

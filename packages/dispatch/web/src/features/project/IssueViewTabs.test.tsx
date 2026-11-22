@@ -116,18 +116,6 @@ test("only the open saved tab has a delete button, which deletes that view", asy
   expect(onDelete).toHaveBeenCalledWith("Mine");
 });
 
-// On a phone a tab stacks its count under its name, so the tabs keep their row whatever their
-// counts; from `md` up the count follows the name on its line.
-test("on a phone a tab's count stands under its name, and beside it from md up", () => {
-  tabs();
-  const open = screen.getByRole("tab", { name: "Open, 3 issues" });
-  expect(open).toHaveClass("flex-col");
-  expect(open).toHaveClass("md:flex-row");
-  const [name, count] = [...open.children];
-  expect(name?.textContent).toBe("Open");
-  expect(count?.textContent).toBe("3");
-});
-
 // A speech user says the words a tab shows. So its name starts with them, in their order (WCAG
 // 2.5.3, axe's label-content-name-mismatch): "Open 3" in "Open, 3 issues", never "Open3".
 test("each tab's name starts with the words the tab shows, in their order", () => {
@@ -173,7 +161,6 @@ test("a failed daemon read names its whole error on a line of its own", () => {
   tabs({ daemonReadError: error });
   const alert = screen.getByRole("alert");
   expect(alert.textContent).toBe(`The last read of the Legion daemon failed: ${error}`);
-  expect(alert).toHaveClass("break-words");
   expect(within(alert).queryByRole("button")).toBeNull();
   cleanup();
   // The daemon gave no words for it.

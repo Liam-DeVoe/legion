@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
-import { MemoryRouter, useLocation } from "react-router-dom";
+import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { afterRescue, RescuedMain } from "../../__tests__/focus-rescue";
 import { answerBoard, liveSockets, waitMs } from "../../__tests__/live-socket-harness";
@@ -88,9 +88,13 @@ function savedIssue(key: string): Issue {
     verification_artifact_id: "",
   };
 }
+/** Steps the router's history back one entry, as the browser's Back does: `Route` sets it. */
+let back: () => void = () => {};
 function Route(): ReactNode {
   useKeymapScope("project");
   const location = useLocation();
+  const navigate = useNavigate();
+  back = () => navigate(-1);
   return (
     <>
       <output data-testid="route">{location.pathname}</output>
@@ -2440,6 +2444,31 @@ test("the tabs count Open, Done once opened, and the saved views the open listin
   );
 });
 
+// R11: Done's tab counts by Done's own page read, held while another view is open, and a live
+// change reaches it there: an issue closed elsewhere raises Done's count on Open.
+test("on Open, an issue closed elsewhere raises the count of Done's tab", async () => {
+  const user = userEvent.setup();
+  const rows = VIEW_ROWS();
+  const { client } = table(rows);
+  await user.click(await screen.findByRole("tab", { name: "Done" }));
+  expect(await screen.findByRole("tab", { name: "Done, 2 issues" })).toHaveAttribute(
+    "aria-selected",
+    "true"
+  );
+  await user.click(screen.getByRole("tab", { name: /^Open/ }));
+  expect(await screen.findByRole("tab", { name: "Open, 2 issues" })).toHaveAttribute(
+    "aria-selected",
+    "true"
+  );
+  expect(screen.getByRole("tab", { name: "Done, 2 issues" })).toBeDefined();
+  // CORE-1 closes elsewhere. What the event feed refreshes for it reads Done's held page again,
+  // whose `total` is one more.
+  rows[0] = issue("CORE-1", { status: "done", closed_at: "2026-11-12T10:00:00Z" });
+  await act(() => client.invalidateQueries({ queryKey: ["issues", "project", "CORE"] }));
+  expect(await screen.findByRole("tab", { name: "Open, 1 issue" })).toBeDefined();
+  expect(await screen.findByRole("tab", { name: "Done, 3 issues" })).toBeDefined();
+});
+
 // An older link in today's spelling: `view=queue` opens Open with the Queue filter, written over
 // the address the page opened on, and the tab marks the change Clear filters takes back.
 test("an older view address is written over in today's spelling, and Clear filters takes its narrowing off", async () => {
@@ -2461,6 +2490,88 @@ test("a press on the changed tab gives the view back", async () => {
   await user.click(changed);
   await waitFor(() => expect(routeSearch()).toBe(""));
   expect(await screen.findByRole("tab", { name: "Open, 2 issues" })).toBeDefined();
+});
+
+// A view is an address, and a press on a view tab leaves a history entry, as the page's other
+// tabs do: Back opens the view before it, with its tab selected and its rows listed.
+test("a press on a view tab leaves a history entry, and Back opens the view before it", async () => {
+  const user = userEvent.setup();
+  table(VIEW_ROWS());
+  await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
+  await user.click(screen.getByRole("tab", { name: "Done" }));
+  await screen.findByRole("row", { name: "CORE-5 Work CORE-5" });
+  expect(routeSearch()).toBe("?view=done");
+  act(() => back());
+  await waitFor(() => expect(routeSearch()).toBe(""));
+  expect(await screen.findByRole("tab", { name: "Open, 2 issues" })).toHaveAttribute(
+    "aria-selected",
+    "true"
+  );
+  await waitFor(() => expect(listedKeys().sort()).toEqual(["CORE-1", "CORE-2"]));
+});
+
+// The open saved view's name goes with its history entry, so Back to a saved view the reader
+// changed selects its tab again, with its mark, and not the built-in view it narrows.
+test("Back to a saved view the reader changed selects its tab again", async () => {
+  const user = userEvent.setup();
+  keepSavedViews([{ name: "Todo", query: "status=todo&cols=key,title,status&layout=table" }]);
+  table(VIEW_ROWS());
+  await user.click(await screen.findByRole("tab", { name: "Todo, 1 issue" }));
+  expect(await screen.findByRole("tab", { name: "Todo, 1 issue" })).toHaveAttribute(
+    "aria-selected",
+    "true"
+  );
+  await user.type(screen.getByRole("searchbox", { name: "Search issues" }), "CORE-1");
+  expect(await screen.findByRole("tab", { name: "Todo, 1 issue, changed" })).toHaveAttribute(
+    "aria-selected",
+    "true"
+  );
+  await user.click(screen.getByRole("tab", { name: /^Open/ }));
+  await waitFor(() => expect(routeSearch()).toBe(""));
+  act(() => back());
+  expect(await screen.findByRole("tab", { name: "Todo, 1 issue, changed" })).toHaveAttribute(
+    "aria-selected",
+    "true"
+  );
+  expect(screen.getByRole("tab", { name: /^Open/ })).toHaveAttribute("aria-selected", "false");
+  expect(new URLSearchParams(routeSearch()).get("q")).toBe("CORE-1");
+});
+
+// The view tabs are a tablist with its keyboard: the arrow keys, Home and End move the focus and
+// open the view they reach, and only the open view's tab is in the Tab order.
+test("the arrow keys, Home and End move the focus and the open view along the view tabs", async () => {
+  const user = userEvent.setup();
+  keepSavedViews([{ name: "Todo", query: "status=todo&cols=key,title,status&layout=table" }]);
+  table(VIEW_ROWS());
+  await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
+  const views = () => within(screen.getByRole("tablist", { name: "Views" }));
+  expect(
+    views()
+      .getAllByRole("tab")
+      .map((tab) => tab.tabIndex)
+  ).toEqual([0, -1, -1]);
+
+  views().getByRole("tab", { name: /^Open/ }).focus();
+  await user.keyboard("{ArrowRight}");
+  await waitFor(() => expect(views().getByRole("tab", { name: /^Done/ })).toHaveFocus());
+  expect(views().getByRole("tab", { name: /^Done/ })).toHaveAttribute("aria-selected", "true");
+  expect(routeSearch()).toBe("?view=done");
+
+  await user.keyboard("{End}");
+  await waitFor(() => expect(views().getByRole("tab", { name: /^Todo/ })).toHaveFocus());
+  expect(views().getByRole("tab", { name: /^Todo/ })).toHaveAttribute("aria-selected", "true");
+  expect(new URLSearchParams(routeSearch()).get("status")).toBe("todo");
+
+  await user.keyboard("{Home}");
+  await waitFor(() => expect(views().getByRole("tab", { name: /^Open/ })).toHaveFocus());
+  expect(views().getByRole("tab", { name: /^Open/ })).toHaveAttribute("aria-selected", "true");
+  expect(routeSearch()).toBe("");
+  // Only the open view's tab is a Tab stop: the arrow keys reach the others.
+  expect(
+    views()
+      .getAllByRole("tab")
+      .map((tab) => tab.tabIndex)
+  ).toEqual([0, -1, -1]);
 });
 
 // Clear filters shows while the narrowings differ from the view's own and takes them back to
@@ -2695,8 +2806,8 @@ test("a failed daemon setting read names its error with Retry, and the project i
     {},
     Promise.reject(new ApiError(503, { code: "UNAVAILABLE", error: "The store did not answer." }))
   );
-  const alert = await screen.findByText(/^Could not read the Legion daemon setting/);
-  expect(alert.textContent).toBe(
+  await screen.findByText(/^Could not read the Legion daemon setting/);
+  expect(screen.getByRole("alert").textContent).toBe(
     "Could not read the Legion daemon setting: The store did not answer. Retry"
   );
   expect(listedKeys()).toEqual(["CORE-1"]);

@@ -37,11 +37,14 @@ import { Navigate, useLocation, useNavigate, useSearchParams } from "react-route
  * - **A write replaces the history entry.** Trying filters out must not fill the Back button:
  *   a reader who picks four facets and then presses Back expects to leave the page, not to walk
  *   back through four picks, and a reader typing in a search box would otherwise push one entry
- *   per letter. Every write below passes `{ replace: true }`. The one way to push an entry is
+ *   per letter. Every write below passes `{ replace: true }`, and keeps what the navigation to
+ *   the entry carried (`useNavigationState`): the write changes the entry's address, and the
+ *   entry stays the one the reader opened. The one way to push an entry is
  *   `useAddressNavigate`'s explicit `{ replace: false }`, for a move that has always pushed:
  *   picking an artifact's version, so Back returns to the version the reader came from, the
- *   move off a document the reader has just removed, and taking off the List's chip of the
- *   issues a link names (`only=`), so Back gives that narrowing back.
+ *   move off a document the reader has just removed, taking off the List's chip of the issues a
+ *   link names (`only=`), so Back gives that narrowing back, and a press on a view tab of the
+ *   Issues tab, so Back gives the view before it.
  * - **A parameter is absent until the reader sets it.** A control at its default writes nothing,
  *   so a shared link carries only what was changed and an address that arrives naming nothing is
  *   the page as it opens.
@@ -73,8 +76,8 @@ export function usePageAddress(): PageAddress {
 
 /** What the navigation that opened this page carried with it, which travels on the router's
  *  location rather than in the address: the broadcast page's list of the recipients a send
- *  left out, which no address holds because nobody may link to it. Read here with the address
- *  so that no page binds the router for itself. */
+ *  left out, which no address holds because nobody may link to it, and the Issues tab's open
+ *  saved view. Read here with the address so that no page binds the router for itself. */
 export function useNavigationState(): unknown {
   return useLocation().state;
 }
@@ -87,16 +90,25 @@ export type AddressUpdate = (rewrite: (params: URLSearchParams) => URLSearchPara
  * The one write of the page address, always `{ replace: true }` (see this module's head: a
  * filter the reader is trying out must not fill the browser's history). The pathname is left as
  * it is and only the query changes; the hash goes, since React Router's `setSearchParams`
- * navigates to the new query alone.
+ * navigates to the new query alone. What the navigation to the entry carried
+ * (`useNavigationState`) stays with it.
  */
 export function useAddressUpdate(): AddressUpdate {
   const [, setSearchParams] = useSearchParams();
+  const state = useNavigationState();
   return useCallback(
     (rewrite: (params: URLSearchParams) => URLSearchParams) => {
-      setSearchParams((current) => rewrite(copyAddress(current)), { replace: true });
+      setSearchParams((current) => rewrite(copyAddress(current)), { replace: true, state });
     },
-    [setSearchParams]
+    [setSearchParams, state]
   );
+}
+
+/** How `useAddressNavigate` moves: whether it pushes a history entry (`replace: false`), and what
+ *  the move carries beside the address (`state`, read back by `useNavigationState`). */
+export interface AddressNavigateOptions {
+  readonly replace?: boolean;
+  readonly state?: unknown;
 }
 
 /**
@@ -105,11 +117,11 @@ export function useAddressUpdate(): AddressUpdate {
  * router itself, so `replace` stays this module's decision: `replace` is the default here, as
  * it is for every other write, and a caller that means to leave a history entry behind says so.
  */
-export function useAddressNavigate(): (path: string, options?: { replace?: boolean }) => void {
+export function useAddressNavigate(): (path: string, options?: AddressNavigateOptions) => void {
   const navigate = useNavigate();
   return useCallback(
-    (path: string, options?: { replace?: boolean }) => {
-      navigate(path, { replace: options?.replace ?? true });
+    (path: string, options?: AddressNavigateOptions) => {
+      navigate(path, { replace: options?.replace ?? true, state: options?.state });
     },
     [navigate]
   );

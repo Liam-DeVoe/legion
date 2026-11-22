@@ -1,11 +1,10 @@
 import { type ReactNode, useId, useState } from "react";
 import type { LegionBoardHeader } from "../../api/types";
+import { QueryError } from "../../components/QueryError";
+import { type TabDefinition, Tabs, tabButtonId } from "../../components/Tabs";
 import { ViewPanel } from "../../components/ViewPanel";
 import {
-  activeTabIndicatorBorder,
-  activeTabIndicatorText,
   borderDefault,
-  borderTransparent,
   dangerText,
   focusVisibleRing,
   surfaceBg,
@@ -13,7 +12,6 @@ import {
   surfaceMutedHoverBg,
   surfaceMutedStrongBg,
   textMutedOnCanvas,
-  textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
@@ -25,7 +23,21 @@ import type { ActiveView, BuiltInView, SavedView, ViewLayout, ViewNameCheck } fr
  * the Table and Board switch, the Board's toggles). None of them narrows the rows.
  */
 
-const countClass = `rounded-full px-1 text-[11px] font-medium tabular-nums md:py-0.5 ${surfaceMutedBg} ${textSecondaryOnCanvas}`;
+/** What the view tabs' ids start with, so a view tab's button is found by its view
+ *  (`viewTabButtonId`). */
+const VIEW_TABS = "views";
+
+/** A view tab's id among the view tabs: a built-in view's own id, or a saved view's name after
+ *  `saved-`, written so that it holds no space. */
+function viewTabId(view: ActiveView): string {
+  return view.kind === "built-in" ? view.id : `saved-${encodeURIComponent(view.name)}`;
+}
+
+/** The DOM id of the view tab of `view`, which takes the focus where a press draws new tabs in
+ *  place of the one it pressed. */
+export function viewTabButtonId(view: ActiveView): string {
+  return tabButtonId(VIEW_TABS, viewTabId(view));
+}
 
 /** The face of the layout switch's options and of a Board toggle: filled while pressed. */
 const toggleFace = (pressed: boolean) =>
@@ -37,60 +49,6 @@ const TOGGLE_BOX = `inline-flex shrink-0 rounded-lg border p-0.5 ${borderDefault
 
 const panelButton = `inline-flex min-h-11 shrink-0 items-center rounded-md border px-2 text-xs font-medium md:min-h-8 ${borderDefault} ${surfaceMutedHoverBg} ${textSecondaryOnCanvas} ${focusVisibleRing}`;
 
-/** One tab: the view's name with the dot of a changed view on its line, and its count. */
-function ViewTab({
-  active,
-  changed,
-  count,
-  name,
-  onSelect,
-}: {
-  active: boolean;
-  changed: boolean;
-  count: number | undefined;
-  name: string;
-  onSelect: () => void;
-}): ReactNode {
-  const counted = count === undefined ? "" : `, ${count} ${count === 1 ? "issue" : "issues"}`;
-  return (
-    <button
-      // Its view's name, its count where it shows one, and its mark.
-      aria-label={`${name}${counted}${changed ? ", changed" : ""}`}
-      aria-selected={active}
-      // On a phone a tab's count stands under its name, so the tabs keep their row whatever
-      // their counts; from `md` up the count follows the name on its line, and the open tab's
-      // name is bold.
-      className={`inline-flex min-h-11 shrink-0 flex-col items-center justify-center border-b-2 px-1.5 py-1 text-[13px] leading-tight whitespace-nowrap md:min-h-9 md:flex-row md:gap-1 md:px-1 md:py-2 ${focusVisibleRing} ${
-        active
-          ? `md:font-semibold ${activeTabIndicatorBorder} ${activeTabIndicatorText}`
-          : `${borderTransparent} ${textSecondaryOnCanvas}`
-      }`}
-      onClick={onSelect}
-      role="tab"
-      type="button"
-    >
-      <span className="inline-flex items-center gap-1">
-        {name}
-        {changed ? (
-          <span
-            aria-hidden
-            className={`size-1.5 rounded-full bg-current ${textPrimaryOnCanvas}`}
-            data-view-changed=""
-          />
-        ) : null}
-      </span>
-      {count === undefined ? null : (
-        // The space makes the tab's text read "Open 6", the words its name starts with, as a
-        // speech user says them (WCAG 2.5.3). A flex box draws no space between its items.
-        <>
-          {" "}
-          <span className={countClass}>{count}</span>
-        </>
-      )}
-    </button>
-  );
-}
-
 /** A failed read the alert line names: its whole error, and the way to read it again. */
 export interface ReadFailure {
   readonly message: string;
@@ -98,44 +56,14 @@ export interface ReadFailure {
   readonly retrying: boolean;
 }
 
-/** One alert of the line under the tabs: its words, then Retry where the read can be made again. */
-function Alert({
-  failure,
-  retryName,
-  text,
-}: {
-  failure?: ReadFailure;
-  retryName?: string;
-  text: string;
-}): ReactNode {
-  return (
-    <p className="break-words" role="alert">
-      {text}
-      {failure === undefined ? null : (
-        <>
-          {" "}
-          <button
-            aria-label={retryName}
-            className="font-semibold underline disabled:opacity-50"
-            disabled={failure.retrying}
-            onClick={failure.retry}
-            type="button"
-          >
-            Retry
-          </button>
-        </>
-      )}
-    </p>
-  );
-}
-
 /**
- * The row of view tabs: Open and Done, then each saved view, each with its count where the page
- * can count it and the dot of the view the reader changed, then the open saved view's delete
- * button after the tabs, since the tablist holds tabs alone. A press on a tab opens its view as
- * it was saved, so a press on the changed tab gives its view back. Under the row, the alert
- * line: a failed read of the daemon setting, the daemon's last read failed, or a failed read of
- * the board or of the closed rows' facts, each on a line of its own with its whole error.
+ * The row of view tabs (`Tabs`, with its keyboard: the arrow keys, Home and End): Open and Done,
+ * then each saved view, each with its count where the page can count it and the dot of the view
+ * the reader changed, then the open saved view's delete button after the tabs, since the
+ * tablist holds tabs alone. A press on a tab opens its view as it was saved, so a press on the
+ * changed tab gives its view back. Under the row, the alert line: a failed read of the daemon
+ * setting, the daemon's last read failed, or a failed read of the board or of the closed rows'
+ * facts, each on a line of its own with its whole error (`QueryError`).
  */
 export function IssueViewTabs({
   active,
@@ -182,67 +110,76 @@ export function IssueViewTabs({
   // The open saved view, whose delete button follows the tabs: a tablist holds tabs alone.
   const openSaved =
     active.kind === "saved" ? saved.find((view) => view.name === active.name) : undefined;
+  const activeId = viewTabId(active);
+  // Each tab, and what a press on it opens.
+  const entries: { readonly tab: TabDefinition<string>; readonly open: () => void }[] = [
+    ...views.map((view) => ({
+      count: counts.get(view.id),
+      id: viewTabId({ kind: "built-in", id: view.id }),
+      name: view.name,
+      open: () => onSelect(view.id),
+    })),
+    ...saved.map((view) => ({
+      count: savedCounts.get(view.name),
+      id: viewTabId({ kind: "saved", name: view.name }),
+      name: view.name,
+      open: () => onSelectSaved(view.name),
+    })),
+  ].map(({ count, id, name, open }) => {
+    // Only the open tab is marked: another view is not changed by the reader's changes.
+    const marked = changed && id === activeId;
+    const counted = count === undefined ? "" : `, ${count} ${count === 1 ? "issue" : "issues"}`;
+    return {
+      open,
+      // Its view's name, its count where it shows one, and its mark.
+      tab: {
+        changed: marked,
+        count,
+        id,
+        label: name,
+        name: `${name}${counted}${marked ? ", changed" : ""}`,
+      },
+    };
+  });
   return (
     <div className="flex flex-col gap-1">
-      <div
-        className={`flex flex-wrap items-center border-b md:flex-nowrap md:overflow-x-auto ${borderDefault}`}
-      >
-        <div
-          aria-label="Views"
-          className="flex flex-wrap items-center md:flex-nowrap"
-          role="tablist"
-        >
-          {views.map((view) => {
-            const on = active.kind === "built-in" && active.id === view.id;
-            return (
-              <ViewTab
-                active={on}
-                changed={on && changed}
-                count={counts.get(view.id)}
-                key={view.id}
-                name={view.name}
-                onSelect={() => onSelect(view.id)}
-              />
-            );
-          })}
-          {saved.map((view) => {
-            const on = active.kind === "saved" && active.name === view.name;
-            return (
-              <ViewTab
-                active={on}
-                changed={on && changed}
-                count={savedCounts.get(view.name)}
-                key={view.name}
-                name={view.name}
-                onSelect={() => onSelectSaved(view.name)}
-              />
-            );
-          })}
-        </div>
-        {openSaved === undefined ? null : (
-          <button
-            aria-label={`Delete saved view ${openSaved.name}`}
-            className={`inline-flex min-h-11 min-w-11 items-center justify-center rounded text-xs md:min-h-8 md:min-w-8 ${textMutedOnCanvas} ${surfaceMutedHoverBg} ${focusVisibleRing}`}
-            onClick={() => onDelete(openSaved.name)}
-            title="Delete this saved view"
-            type="button"
-          >
-            <span aria-hidden>✕</span>
-          </button>
-        )}
-      </div>
+      <Tabs
+        activeTab={activeId}
+        ariaLabel="Views"
+        idPrefix={VIEW_TABS}
+        onSelect={(id) => entries.find((entry) => entry.tab.id === id)?.open()}
+        panels={false}
+        stacked
+        tabs={entries.map((entry) => entry.tab)}
+        trailing={
+          openSaved === undefined ? null : (
+            <button
+              aria-label={`Delete saved view ${openSaved.name}`}
+              className={`inline-flex min-h-11 min-w-11 items-center justify-center rounded text-xs md:min-h-8 md:min-w-8 ${textMutedOnCanvas} ${surfaceMutedHoverBg} ${focusVisibleRing}`}
+              onClick={() => onDelete(openSaved.name)}
+              title="Delete this saved view"
+              type="button"
+            >
+              <span aria-hidden>✕</span>
+            </button>
+          )
+        }
+      />
       {alerts ? (
-        <div className={`flex flex-col gap-0.5 text-xs ${dangerText}`}>
+        <div className="flex flex-col gap-0.5">
           {daemonFailure === undefined ? null : (
-            <Alert
-              failure={daemonFailure}
-              retryName="Retry reading the Legion daemon setting"
-              text={`Could not read the Legion daemon setting: ${daemonFailure.message}`}
+            <QueryError
+              compact
+              message={`Could not read the Legion daemon setting: ${daemonFailure.message}`}
+              onRetry={daemonFailure.retry}
+              retryLabel="Retry reading the Legion daemon setting"
+              retrying={daemonFailure.retrying}
             />
           )}
           {daemonReadError === undefined ? null : (
-            <Alert
-              text={
+            <QueryError
+              compact
+              message={
                 daemonReadError === ""
                   ? "The last read of the Legion daemon failed."
                   : `The last read of the Legion daemon failed: ${daemonReadError}`
@@ -250,17 +187,21 @@ export function IssueViewTabs({
             />
           )}
           {boardFailure === undefined ? null : (
-            <Alert
-              failure={boardFailure}
-              retryName="Retry reading the Legion board"
-              text={`Could not read the Legion board: ${boardFailure.message}`}
+            <QueryError
+              compact
+              message={`Could not read the Legion board: ${boardFailure.message}`}
+              onRetry={boardFailure.retry}
+              retryLabel="Retry reading the Legion board"
+              retrying={boardFailure.retrying}
             />
           )}
           {factsFailure === undefined ? null : (
-            <Alert
-              failure={factsFailure}
-              retryName="Retry reading the Legion columns"
-              text={`Could not read the Legion columns of the closed issues: ${factsFailure.message}`}
+            <QueryError
+              compact
+              message={`Could not read the Legion columns of the closed issues: ${factsFailure.message}`}
+              onRetry={factsFailure.retry}
+              retryLabel="Retry reading the Legion columns"
+              retrying={factsFailure.retrying}
             />
           )}
         </div>

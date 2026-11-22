@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryObserver, replaceEqualDeep } from "@tanstack/react-query";
+import { QueryClient, QueryObserver } from "@tanstack/react-query";
 import { http } from "msw";
 
 import { answerRequests } from "../__tests__/network";
@@ -86,13 +86,6 @@ async function expectSharedByKey(read: () => Promise<readonly IssueSummary[] | u
   // A read that changed nothing keeps the cached list itself.
   expect(await read()).toBe(after);
 }
-
-test("TanStack Query's own sharing pairs by place, so an issue that moves up renews those it passed", () => {
-  const before = firstRead();
-  const shared = replaceEqualDeep(before, movedRead());
-  expect(shared[1]).not.toBe(before[0]);
-  expect(shared[2]).not.toBe(before[1]);
-});
 
 test("the project listing keeps the object of every issue a read did not change", async () => {
   const listIssues = spyOn(api, "listIssues")
