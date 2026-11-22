@@ -222,18 +222,19 @@ function focusName(): string {
   return entry === null ? name : `${name} in ${entry}`;
 }
 
-/** How the reader acts on the control a case gives the focus before it changes the box: Enter
+/** How the reader acts on the control a case gives the focus before it changes the box: a key
  *  pressed on it, a click of the pointer, which gives it the focus as it presses it, or nothing. */
 type Press = "key" | "none" | "pointer";
 
-/** Gives `control` the focus with the reader's `press` of it. */
-async function take(control: HTMLElement, press: Press): Promise<void> {
+/** Gives `control` the focus with the reader's `press` of it; a press by `key` is made with
+ *  `key`, Enter where the case names none. */
+async function take(control: HTMLElement, press: Press, key = "{Enter}"): Promise<void> {
   if (press === "pointer") {
     await userEvent.click(control);
     return;
   }
   control.focus();
-  if (press === "key") await userEvent.keyboard("{Enter}");
+  if (press === "key") await userEvent.keyboard(key);
 }
 
 /** Save, which turns disabled while its write is out. Discard, below it, stands nearer, but under
@@ -368,11 +369,12 @@ function CopyLinkTakesFocusAfter({ loading }: { loading: boolean }): ReactNode {
   );
 }
 
-/** Show more given the focus with the reader's `press`, and then replaced by its loading line. */
-async function showMoreLoading(active: boolean, press: Press): Promise<string> {
+/** Show more given the focus with the reader's `press`, made with `key` where it is a key's, and
+ *  then replaced by its loading line. */
+async function showMoreLoading(active: boolean, press: Press, key = "{Enter}"): Promise<string> {
   const box = drawBox(active, false, (loading) => showMore(loading));
   try {
-    await take(screen.getByRole("button", { name: "Show more" }), press);
+    await take(screen.getByRole("button", { name: "Show more" }), press, key);
     await box.change(true);
     return focusName();
   } finally {
@@ -412,25 +414,16 @@ test("a control removed with no press of the reader's leaves the focus on the pa
   }
 });
 
-/** Show more given the focus and `key` pressed on it, and then Show more replaced by its loading
- *  line in a change the reader did not make. */
-async function keyThenLoading(key: string): Promise<string> {
-  const box = drawBox(true, false, (loading) => showMore(loading));
-  try {
-    screen.getByRole("button", { name: "Show more" }).focus();
-    await userEvent.keyboard(key);
-    await box.change(true);
-    return focusName();
-  } finally {
-    box.unmount();
-  }
-}
-
 test("a key that acts on nothing is no press: the control taken away after it leaves the focus on the page's body", async () => {
   const restore = chromiumLayout();
   try {
-    expect(await keyThenLoading("{ArrowDown}"), "ArrowDown pressed on Show more").toBe(PAGE);
-    expect(await keyThenLoading("{PageDown}"), "PageDown pressed on Show more").toBe(PAGE);
+    expect(
+      await showMoreLoading(true, "key", "{ArrowDown}"),
+      "ArrowDown pressed on Show more"
+    ).toBe(PAGE);
+    expect(await showMoreLoading(true, "key", "{PageDown}"), "PageDown pressed on Show more").toBe(
+      PAGE
+    );
   } finally {
     restore();
   }

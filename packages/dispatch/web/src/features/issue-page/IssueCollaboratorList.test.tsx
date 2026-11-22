@@ -6,7 +6,6 @@ import userEvent from "@testing-library/user-event";
 import { createRef } from "react";
 import { MemoryRouter } from "react-router-dom";
 
-import { failRefreshOverHeld } from "../../__tests__/refresh-over-held";
 import { api } from "../../api/client";
 import type { Agent, IssueCollaboratorAgent, IssueCollaborators } from "../../api/types";
 import { collaboratorSections } from "../issue/CollaboratorsTab";
@@ -14,6 +13,7 @@ import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import { IssueCollaboratorList } from "./IssueCollaboratorList";
 import { PROPERTY_LABELS } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS, EMPTY_STATE_LINES, STATE_LINES } from "./page-words";
+import { failRefreshOverHeld } from "./refresh-over-held-fixture";
 
 // The list says how long ago each one last wrote here and when each Legion agent started, and a
 // live agent's last heartbeat is dated now (`live` below). Each case runs at one fixed midday, so
@@ -222,29 +222,10 @@ test("the collaborators say when Legion's record could not be read, and when nob
     ).toEqual(["writer"]);
 
     // A read that fails once the list holds an answer keeps that answer and says no failure over
-    // it: neither a line nor a Retry stands above the list it held.
-    const key = ["issue", "CORE-1", "collaborators"];
-    unavailable.read.mockRejectedValueOnce(new Error("the collaborators' read failed"));
-    await act(() => unavailable.client.invalidateQueries({ queryKey: key }));
-    expect(unavailable.client.getQueryState(key)?.status, "the refresh did not fail").toBe("error");
-    expect(
-      screen.queryByRole("alert"),
-      "a failed refresh said a failure over the list it held"
-    ).toBeNull();
-    expect(
-      screen.queryByRole("button", { name: CONTROL_LABELS.retry }),
-      "a failed refresh offered a Retry over the list it held"
-    ).toBeNull();
-    const held = screen.queryByRole("region", { name: CONTROL_LABELS.collaborators_others });
-    expect(
-      held === null ? [] : sessionsIn(held),
-      "a failed refetch blanked the held collaborators"
-    ).toEqual(["writer"]);
-    // A read that holds no answer and failed - the list taken back to holding none, as before its
-    // first read, which then fails - says so with its Retry. That Retry goes with its line once the
-    // read lands, and the focus goes to the control that opens the list rather than to the page.
-    unavailable.read.mockRejectedValueOnce(new Error("the collaborators' read failed"));
-    await act(() => unavailable.client.resetQueries({ queryKey: key }));
+    // it, and a read that holds no answer and failed says so with its Retry.
+    await failRefreshThenFirstRead(unavailable);
+    // That Retry goes with its line once the read lands, and the focus goes to the control that
+    // opens the list rather than to the page.
     expect((await screen.findByRole("alert")).textContent).toBe(
       ANSWER_LINES.collaborators_unreadable
     );

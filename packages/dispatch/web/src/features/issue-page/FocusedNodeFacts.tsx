@@ -239,8 +239,8 @@ function ItemControls({
   ];
   const pinControl = useRef<HTMLButtonElement>(null);
   const threadControl = useRef<HTMLButtonElement>(null);
-  // The control of these the focus is on (`onFocus` below), with the watch of the reader's presses
-  // on it (`watchPresses`, the rule of which loss is theirs). Accept and Reject go once the
+  // The watch of the reader's presses (`watchPresses`, the rule of which loss is theirs) on the
+  // control of these the focus is on (`onFocus` below). Accept and Reject go once the
   // suggestion is decided, a delivery's Retry once a Retry could deliver it twice, and a failure's
   // Retry once what it sent again is out. Where the reader's own press of one takes it away, the
   // focus would fall to the page with it: it goes to the thread's Resolve or Reopen instead, else
@@ -249,15 +249,15 @@ function ItemControls({
   // press of the reader's on it stands - the suggestion decided in another session, a delivery's
   // Retry whose time ran out, the question answered elsewhere - leaves the focus on the page's
   // body, as on every page of Dispatch, and nothing here takes it.
-  const held = useRef<{ readonly control: Element; readonly press: PressWatch } | null>(null);
-  const hear = (event: SyntheticEvent) => held.current?.press.hear(event.nativeEvent);
-  useEffect(() => () => held.current?.press.stop(), []);
+  const held = useRef<PressWatch | null>(null);
+  const hear = (event: SyntheticEvent) => held.current?.hear(event.nativeEvent);
+  useEffect(() => () => held.current?.stop(), []);
   useLayoutEffect(() => {
     const lost = held.current;
     if (lost === null || lost.control.isConnected) return;
     held.current = null;
-    const caused = lost.press.stands();
-    lost.press.stop();
+    const caused = lost.stands();
+    lost.stop();
     if (caused && (document.activeElement === null || document.activeElement === document.body)) {
       (threadControl.current ?? pinControl.current)?.focus();
     }
@@ -271,8 +271,8 @@ function ItemControls({
         // The focus come back to the control it was on, as the window is focused again, keeps the
         // reader's press of it.
         if (held.current?.control === event.target) return;
-        held.current?.press.stop();
-        held.current = { control: event.target, press: watchPresses(event.target) };
+        held.current?.stop();
+        held.current = watchPresses(event.target);
       }}
       onKeyDown={hear}
     >

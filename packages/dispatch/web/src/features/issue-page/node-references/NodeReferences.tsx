@@ -140,7 +140,7 @@ export function NodeReferences({
   // read joins that read rather than ending it and sending another (`retryRead`).
   const retry = useRetryHandOff(() => toggle.current);
   // The failure line stands in place of the loading line while the read stands failed
-  // (`standsFailed`), and its Retry hands the focus on to the list's own control.
+  // (`standsFailed`).
   const failed = standsFailed(query);
   if (addressed === undefined) {
     return null;

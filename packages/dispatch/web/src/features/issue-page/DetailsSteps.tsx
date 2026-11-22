@@ -185,7 +185,7 @@ export function DetailsSteps({ issueKey, open }: { issueKey: string; open: boole
   const heading = useRef<HTMLHeadingElement>(null);
   const retry = useRetryHandOff(() => heading.current);
   // The failure line stands under the heading, in place of the loading line, while the read
-  // stands failed (`standsFailed`), and its Retry hands the focus on to the heading.
+  // stands failed (`standsFailed`).
   const failed = standsFailed(query);
   const tasks = query.data === undefined ? undefined : stepTasks(query.data);
   const runs = tasks?.reduce((count, task) => count + task.rows.length, 0);

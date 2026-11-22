@@ -8,7 +8,6 @@ import { MemoryRouter, type NavigateFunction, useNavigate } from "react-router-d
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { nextFrame } from "../../__tests__/frames";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { failRefreshOverHeld } from "../../__tests__/refresh-over-held";
 import { ApiError, api } from "../../api/client";
 import { prependEventToLog } from "../../api/event-feed";
 import { issueResultsQuery, issueStepsQuery, userStateQuery } from "../../api/queries";
@@ -46,6 +45,7 @@ import {
   STATE_LINES,
   sentenceCase,
 } from "./page-words";
+import { failRefreshOverHeld } from "./refresh-over-held-fixture";
 
 const KEY = "CORE-1";
 
@@ -1007,10 +1007,11 @@ test("a keyboard Resolve keeps the focus on its control while its write is out a
   }
 });
 
-// Accept and Reject go once the suggestion is decided. The reader's own Accept hands the focus on
-// to the thread's control; a decision made in another session is no press of the reader's, so the
-// focus Accept held stays on the page's body, as on every page of Dispatch.
-test("a suggestion decided in another session leaves the focus Accept held on the page's body", async () => {
+/** Draws Details on a suggestion of bob's that waits for its decision, gives Accept the focus,
+ *  takes the case's own step `before` where it has one, and then has another session accept the
+ *  suggestion. Asserts that Accept went and Reopen was drawn, and that the focus Accept held
+ *  stayed on the page's body; `when` says when the suggestion was decided, for the failure. */
+async function decidedElsewhere(when: string, before?: () => Promise<unknown>): Promise<void> {
   const suggested = bobsComment("comment-6", {
     suggestion: { accepted: null, replace_with: "the drafts store" },
   });
@@ -1029,6 +1030,7 @@ test("a suggestion decided in another session leaves the focus Accept held on th
   try {
     const accept = await screen.findByRole("button", { name: CONTROL_LABELS.accept });
     act(() => accept.focus());
+    await before?.();
 
     act(() =>
       client.setQueryData(
@@ -1046,64 +1048,25 @@ test("a suggestion decided in another session leaves the focus Accept held on th
     expect(screen.getByRole("button", { name: CONTROL_LABELS.reopen_thread })).toBeDefined();
     expect(
       document.activeElement,
-      "another session decided the suggestion while the focus was on Accept, and the focus left the page's body"
+      `another session decided the suggestion ${when}, and the focus left the page's body`
     ).toBe(document.body);
   } finally {
     view.unmount();
   }
+}
+
+// Accept and Reject go once the suggestion is decided. The reader's own Accept hands the focus on
+// to the thread's control; a decision made in another session is no press of the reader's, so the
+// focus Accept held stays on the page's body, as on every page of Dispatch.
+test("a suggestion decided in another session leaves the focus Accept held on the page's body", async () => {
+  await decidedElsewhere("while the focus was on Accept");
 });
 
 // ArrowDown on Accept scrolls Details and acts on nothing, so it is no press of Accept: a
 // suggestion decided in another session after it still leaves the focus Accept held on the page's
-// body, and Details' box stays where the reader scrolled it.
-test("a suggestion decided in another session after ArrowDown on Accept leaves the focus on the page's body and Details where the reader scrolled it", async () => {
-  const suggested = bobsComment("comment-7", {
-    suggestion: { accepted: null, replace_with: "the drafts store" },
-  });
-  const client = readsHeld();
-  client.setQueryData(["comments", KEY], [suggested]);
-  const view = render(
-    <MemoryRouter>
-      <QueryClientProvider client={client}>
-        <FocusedNodeProvider>
-          <Focus node={commentNode(suggested)} />
-          <div data-testid="details-box" style={{ overflowY: "auto" }}>
-            <DetailsFocusedNode issue={issue} state={undefined} />
-          </div>
-        </FocusedNodeProvider>
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
-  try {
-    const accept = await screen.findByRole("button", { name: CONTROL_LABELS.accept });
-    act(() => accept.focus());
-    await userEvent.keyboard("{ArrowDown}");
-    // happy-dom scrolls nothing for the key, so the box is put where the key scrolled it.
-    const box = screen.getByTestId("details-box");
-    box.scrollTop = 40;
-
-    act(() =>
-      client.setQueryData(
-        ["comments", KEY],
-        [
-          {
-            ...suggested,
-            resolved: true,
-            suggestion: { accepted: true, replace_with: "the drafts store" },
-          },
-        ]
-      )
-    );
-    expect(accept.isConnected, "Accept stayed once the suggestion was decided").toBe(false);
-    expect(screen.getByRole("button", { name: CONTROL_LABELS.reopen_thread })).toBeDefined();
-    expect(
-      document.activeElement,
-      "another session decided the suggestion after ArrowDown on Accept, and the focus left the page's body"
-    ).toBe(document.body);
-    expect(box.scrollTop, "Details scrolled as the suggestion was decided").toBe(40);
-  } finally {
-    view.unmount();
-  }
+// body.
+test("a suggestion decided in another session after ArrowDown on Accept leaves the focus on the page's body", async () => {
+  await decidedElsewhere("after ArrowDown on Accept", () => userEvent.keyboard("{ArrowDown}"));
 });
 
 /** One attempt to deliver `comment-2`'s mention to `target`. */

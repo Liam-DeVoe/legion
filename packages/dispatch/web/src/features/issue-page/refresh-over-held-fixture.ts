@@ -2,7 +2,7 @@ import { expect } from "bun:test";
 import type { QueryClient, QueryKey } from "@tanstack/react-query";
 import { act, screen } from "@testing-library/react";
 
-import { CONTROL_LABELS } from "../features/issue-page/page-words";
+import { CONTROL_LABELS } from "./page-words";
 
 /** The read `failRefreshOverHeld` refreshes over the rows it holds, how it fails, and what the
  *  case checks of it. */
@@ -42,7 +42,6 @@ export async function failRefreshOverHeld(read: RefreshOverHeld): Promise<void> 
   ).toBeNull();
   expect(screen.queryByRole("button", { name: CONTROL_LABELS.retry })).toBeNull();
   read.stillDrawn();
-  // The read taken back to holding nothing, as before its first read, which then fails.
   read.failNextFetch?.();
   await act(async () => {
     await read.client.resetQueries({ queryKey: read.queryKey });

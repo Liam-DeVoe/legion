@@ -5,7 +5,6 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
-import { failRefreshOverHeld } from "../../__tests__/refresh-over-held";
 import { api } from "../../api/client";
 import { prependEventToLog } from "../../api/event-feed";
 import type { Artifact, DispatchEvent, Handoff, IssueDetails, MessageRead } from "../../api/types";
@@ -17,6 +16,7 @@ import { HistoryHandoff } from "./HistoryHandoff";
 import { IssueHistory } from "./IssueHistory";
 import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
+import { failRefreshOverHeld } from "./refresh-over-held-fixture";
 
 const KEY = "CORE-1";
 

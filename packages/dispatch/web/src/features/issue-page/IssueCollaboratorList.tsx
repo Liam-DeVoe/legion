@@ -101,7 +101,7 @@ export function IssueCollaboratorList({
   // that read rather than ending it and sending another (`retryRead`).
   const retry = useRetryHandOff(() => owner.current);
   // The failure line stands in place of the loading line while the read stands failed
-  // (`standsFailed`), and its Retry hands the focus on to the control that opens the list.
+  // (`standsFailed`).
   const failure = standsFailed(query) ? (
     <DetailsErrorLine
       failure={query.errorUpdateCount}

@@ -127,14 +127,16 @@ export function useDetailsFocusKeeper(box: RefObject<HTMLElement | null>, active
 }
 
 /** The watch of the reader's presses on one control (`watchPresses`). */
-export interface PressWatch {
+export interface PressWatch<C extends Element = Element> {
+  /** The control the watch hears: the one it was made on, or the one it follows since. */
+  readonly control: C;
   /** Hears `event`, a click or a keydown, where it was made on the control or inside it while
    *  the control holds the focus. Any other event is no press of the control. */
   hear(event: Event): void;
   /** Whether a press of the reader's on the control stands, so that its loss now is theirs. */
   stands(): boolean;
   /** Moves the watch, and a press that stands, to `control`: the same control drawn anew. */
-  follow(control: Element): void;
+  follow(control: C): void;
   /** Ends the watch and forgets the press. */
   stop(): void;
 }
@@ -165,22 +167,24 @@ export interface PressWatch {
  * on, and the holder of the watch stops it, forgetting the press, once the focus moves to another
  * control.
  */
-export function watchPresses(control: Element): PressWatch {
+export function watchPresses<C extends Element>(control: C): PressWatch<C> {
   let watched = control;
   // A click heard, or a key a handler took, that no answer has met yet.
   let acted = false;
   // The last key heard, an act only where a handler took it. It is read once its dispatch is
-  // over: by the next press, or by `drawn`, and until then by `stands`.
+  // over: by the next press, or by `framesDrawn`, and until then by `stands`.
   let key: Event | null = null;
   // Whether the control has been busy or disabled since the press, so that its standing idle
   // again answers the press.
   let tookBusy = false;
   // The animation frame the last press waits for.
   let frame: number | null = null;
+  // Whether `observer` watches the control: from a press heard until a press is answered. A
+  // control busy as it was pressed is noted by `hear` itself.
+  let observing = false;
   const observer = new MutationObserver(() => {
     if (stands() && (tookBusy || busy(watched))) answerIfIdle();
   });
-  observer.observe(watched, BUSY);
 
   function stands(): boolean {
     return acted || key?.defaultPrevented === true;
@@ -197,6 +201,8 @@ export function watchPresses(control: Element): PressWatch {
     tookBusy = false;
     if (frame !== null) window.cancelAnimationFrame(frame);
     frame = null;
+    observer.disconnect();
+    observing = false;
   }
 
   // Answers the press where the control stands idle where the reader pressed it, on the page and
@@ -208,27 +214,36 @@ export function watchPresses(control: Element): PressWatch {
 
   // Runs two frames after the last press, when the commit its act made - in the press's own event
   // or in a task that event queued - has drawn.
-  function drawn(): void {
+  function framesDrawn(): void {
     frame = null;
     settleKey();
     if (acted) answerIfIdle();
   }
 
   return {
+    get control() {
+      return watched;
+    },
     follow(next) {
-      observer.disconnect();
       watched = next;
-      observer.observe(watched, BUSY);
+      if (observing) {
+        observer.disconnect();
+        observer.observe(watched, BUSY);
+      }
     },
     hear(event) {
       const { target, type } = event;
       if (
-        (type !== "click" && type !== "keydown") ||
+        !(PRESSES as readonly string[]).includes(type) ||
         document.activeElement !== watched ||
         !(target instanceof Node) ||
         !watched.contains(target)
       ) {
         return;
+      }
+      if (!observing) {
+        observer.observe(watched, BUSY);
+        observing = true;
       }
       settleKey();
       if (!acted) tookBusy = false;
@@ -237,14 +252,11 @@ export function watchPresses(control: Element): PressWatch {
       if (busy(watched)) tookBusy = true;
       if (frame !== null) window.cancelAnimationFrame(frame);
       frame = window.requestAnimationFrame(() => {
-        frame = window.requestAnimationFrame(drawn);
+        frame = window.requestAnimationFrame(framesDrawn);
       });
     },
     stands,
-    stop() {
-      answer();
-      observer.disconnect();
-    },
+    stop: answer,
   };
 }
 
@@ -259,14 +271,11 @@ function busy(control: Element): boolean {
 
 /** Keeps the focus inside `root` (`useDetailsFocusKeeper`) until the returned function is called. */
 function keepFocusIn(root: HTMLElement): () => void {
-  // The control inside the box that holds the focus, with its identity as it was when it took it,
-  // and the watch of the reader's presses on it: its loss while a press stands is theirs, and the
-  // keeper hands the focus on.
-  let held: {
-    readonly control: HTMLElement;
-    readonly identity: ControlIdentity;
-    readonly press: PressWatch;
-  } | null = null;
+  // The watch of the reader's presses on the control inside the box that holds the focus, which
+  // names that control, with the control's identity as it was when it took the focus: its loss
+  // while a press stands is theirs, and the keeper hands the focus on.
+  let held: { readonly identity: ControlIdentity; readonly press: PressWatch<HTMLElement> } | null =
+    null;
   // The move the keeper makes a task after the held control was lost: every record heard since,
   // and the timer that makes it.
   let pending: { readonly records: MutationRecord[]; readonly timer: number } | null = null;
@@ -283,11 +292,11 @@ function keepFocusIn(root: HTMLElement): () => void {
     // The focus come back to the control that held it, as the window is focused again or as the
     // keeper gives the control drawn anew the focus (`move`), has not moved to another control,
     // so the reader's press on it still stands.
-    if (held?.control === target) {
+    if (held?.press.control === target) {
       held = { ...held, identity: identityOf(target) };
     } else {
       held?.press.stop();
-      held = { control: target, identity: identityOf(target), press: watchPresses(target) };
+      held = { identity: identityOf(target), press: watchPresses(target) };
     }
     observer.observe(root, WATCHED);
   }
@@ -319,7 +328,7 @@ function keepFocusIn(root: HTMLElement): () => void {
       return;
     }
     if (held === null) return;
-    const { control } = held;
+    const { control } = held.press;
     const loss = lossOf(
       control,
       root,
@@ -351,7 +360,8 @@ function keepFocusIn(root: HTMLElement): () => void {
     if (pending === null || held === null) return;
     const { records } = pending;
     pending = null;
-    const { control, identity, press } = held;
+    const { identity, press } = held;
+    const { control } = press;
     // A focus a site's passive effect or the reader put somewhere since stays where they put it,
     // and so does one still on the lost control once it stands again.
     const focus = document.activeElement;
@@ -383,7 +393,6 @@ function keepFocusIn(root: HTMLElement): () => void {
       // made on the lost one stands on it, and the focus it is given comes back to the control
       // the keeper holds (`note`).
       press.follow(replacement);
-      held = { control: replacement, identity, press };
     }
     target.focus({ preventScroll: true });
   }

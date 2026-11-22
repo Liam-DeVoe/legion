@@ -89,8 +89,7 @@ function HandoffFields({ handoffId, id }: { handoffId: string; id: string }): Re
     [handoff.data]
   );
   // The failure line stands in the fields' place, and in place of the loading line, while the
-  // read stands failed (`standsFailed`), and its Retry hands the focus on to the fields once the
-  // read lands (`handOffTo`).
+  // read stands failed (`standsFailed`).
   if (standsFailed(handoff)) {
     return (
       <span className="mt-1 block" id={id} ref={failure}>

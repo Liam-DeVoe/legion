@@ -6,12 +6,12 @@ import { MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../../__tests__/comment-fixture";
 import { graphNode } from "../../../__tests__/graph-fixture";
-import { failRefreshOverHeld } from "../../../__tests__/refresh-over-held";
 import { api } from "../../../api/client";
 import type { CommentWithTrees, GraphEdge, GraphReferences } from "../../../api/types";
 import { emulateChromiumFocusFixup } from "../chromium-focus-fixup";
 import { MarginSlotProvider } from "../margin-slot";
 import { ANSWER_LINES, CONTROL_LABELS, NODE_REFERENCES_WORDS } from "../page-words";
+import { failRefreshOverHeld } from "../refresh-over-held-fixture";
 import { NodeReferences } from "./NodeReferences";
 
 const STATEMENT = "dispatch://LAY-2/spec#b-r1";
