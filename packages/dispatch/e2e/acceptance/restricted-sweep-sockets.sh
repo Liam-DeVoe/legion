@@ -74,7 +74,7 @@ live_writes() {
     live_result="the full member's comment on $write_issue answered $status: $(head_of "$work/body")"
     return
   fi
-  post_message "$full_browser" "$dm_session"
+  post_message full "$dm_session"
   written_message=$posted
   [ -n "$written_message" ] ||
     live_result="the full member's direct message to $dm_session answered $status: $(head_of "$work/body")"
@@ -290,9 +290,13 @@ own_unsent() {
   fi
 }
 
-# own_message_read ID: the member's own direct message, or message on SWEEP_MEMBER_ISSUE, read by
-# GET /api/v1/messages/{id} as the member: the control of the rows that read the direct message
-# of the project's session, which must answer that one as missing.
+# own_message_read ID: the member's own message, read by GET /api/v1/messages/{id} as the member:
+# the control that the route answers the member a message they may read, beside the rows that must
+# answer the project's session's direct message as missing. Those rows are held to a direct
+# conversation's rule, its parties (access.PartyClause), which reads the member's own direct
+# message to SWEEP_MEMBER_SESSION too; a message on SWEEP_MEMBER_ISSUE is read by its issue's
+# project rule (access.MessageClause) instead, so in that mode the read shows that the route
+# answers the member, and not that the party rule does.
 own_message_read() {
   local what='own direct message'
   [ -z "$member_issue" ] || what="own message on $member_issue"

@@ -162,10 +162,14 @@ The tailnet leg does these steps, in this order:
    this checkout's `routes.txt`, the workflow sets no shorter window, and the leg starts the public
    leg right after the fills.
    Each refusal is the runner's UNKNOWN, and the sweep row's. The runner's own control of the
-   member's feed is the member's direct message to `SWEEP_MEMBER_SESSION`, their own session in the
-   scratch project. The runner is the workflow's sweep step, not a leg, so the workflow sets it, to the
-   session its driver registered at the edge as the test person; it needs no input from this leg.
-   Without it the runner reads UNKNOWN, and so does the sweep row. A runner's
+   member's feed takes one of two forms, and the workflow gives exactly one: with
+   `SWEEP_MEMBER_SESSION`, the member's direct message to their own session in the scratch project,
+   which the workflow sets to the session its driver registered at the edge as the test person (the
+   agents leg); with `SWEEP_MEMBER_ISSUE`, the member's own comment and message on the scratch
+   issue, which the workflow sets from its `sweep_member_issue` input (the browser leg, where the
+   person holds no session). The member's feed must be sent each write, and the message must read
+   200 by `GET /api/v1/messages/{id}`. It needs no input from this leg. Without either, or with
+   both, the runner reads UNKNOWN, and so does the sweep row. A runner's
    UNKNOWN, such as a GET route the deployment's own index lists and `routes.txt` lacks, keeps the
    sweep row UNKNOWN. Then the sweep's proxy control. The fills must hold a `can_fail` line, the
    full member's answer that can fail, for each GitHub proxy read the runner makes:

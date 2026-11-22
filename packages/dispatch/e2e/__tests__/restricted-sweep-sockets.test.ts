@@ -365,6 +365,21 @@ describe.skipIf(withoutTools)(
       rowLimit("short")
     );
 
+    // The other half: a feed sent the message and not the comment holds no more either.
+    test(
+      "where the member's feed is sent their own message but not their comment, is UNKNOWN, naming the comment",
+      async () => {
+        const { code, stdout } = await issueSweep({ ownIssueLost: ["comment"] });
+        expect(stdout).toContain(
+          `\nUNKNOWN /ws/live: the control did not hold: the member was not sent their own comment on ${ownIssue}\n`
+        );
+        expect(stdout).not.toMatch(/^ok {6}\/ws\/live:/m);
+        expect(verdictOf(stdout)).toStartWith("UNKNOWN: ");
+        expect(code).toBe(2);
+      },
+      rowLimit("short")
+    );
+
     // A member who cannot write there: an issue of a project that does not list them, which the
     // server answers as an issue they do not see. The comment's refusal ends the check, and no
     // message is written after it.
@@ -413,6 +428,75 @@ describe.skipIf(withoutTools)(
           )
         );
         expect(code).toBe(1);
+      },
+      rowLimit("short")
+    );
+  }
+);
+
+describe.skipIf(withoutTools)(
+  "the full member's direct message and agent view, as their token",
+  () => {
+    // The full member's cookie is the GitHub proxy's alone: with it given, the direct message is
+    // still written, and the agent view still watched, as the full member's token.
+    test(
+      "with the full member's cookie given, the direct message and the agent view are the token's, and the run passes",
+      async () => {
+        const { code, directBy, stdout } = await sweep([], { ...served, rows: ["/api/v1/whoami"] });
+        expect(directBy).toEqual(["token"]);
+        expect(stdout).toContain(
+          "\nok      /ws/live agent view of {session_id}: no one answers for it (can fail)\n"
+        );
+        expect(verdictOf(stdout)).toBe(passed);
+        expect(code, stdout).toBe(0);
+      },
+      rowLimit("short")
+    );
+
+    // A token without the person scope, as the shared agent token: the server refuses it the direct
+    // message (403) and the agent view (an `error` frame), so neither control holds, though the
+    // cookie that would have been answered is given.
+    test(
+      "a full member's token without the person scope leaves the direct message's and the agent view's controls unread: UNKNOWN",
+      async () => {
+        const { code, stdout } = await sweep([], {
+          ...served,
+          rows: ["/api/v1/whoami"],
+          tokenScope: "none",
+        });
+        expect(failures(stdout)).toEqual([]);
+        expect(stdout).toMatch(
+          /^UNKNOWN \/ws\/live: the full member's direct message to ses-tgt-worker answered 403: /m
+        );
+        expect(stdout).toContain(
+          "\nUNKNOWN /ws/live agent view of {session_id}: the full member's view was answered error, closed refused, so its control was not read\n"
+        );
+        expect(stdout).not.toContain("PASS");
+        expect(code).toBe(2);
+      },
+      rowLimit("short")
+    );
+
+    // A restricted member's token in the full member's place: the server answers it the session as
+    // one nobody holds (404 SESSION_NOT_FOUND) and the agent view as no one answers, so the direct
+    // message's control does not hold and the agent view cannot fail.
+    test(
+      "a restricted member's token in the full member's place: the direct message is answered 404 and the agent view is blind, UNKNOWN",
+      async () => {
+        const { code, stdout } = await sweep([], {
+          ...served,
+          rows: ["/api/v1/whoami"],
+          tokenScope: "restricted",
+        });
+        expect(failures(stdout)).toEqual([]);
+        expect(stdout).toMatch(
+          /^UNKNOWN \/ws\/live: the full member's direct message to ses-tgt-worker answered 404: /m
+        );
+        expect(stdout).toContain(
+          "\nok      /ws/live agent view of {session_id}: no one answers for it (blind)\n"
+        );
+        expect(stdout).not.toContain("PASS");
+        expect(code).toBe(2);
       },
       rowLimit("short")
     );
