@@ -577,6 +577,9 @@ describe("AskGate at the dispatch CLI", () => {
 
   test("help, a dry run and every ungated command need no marker under a live record", async () => {
     writeFileSync(join(stateDir, "shot.png"), "image bytes");
+    // A name with an extension decides the kind whatever the path (uploadTypeFrom): cases.txt
+    // sent from cases.md is a file of its bytes, which AskGate does not review.
+    writeFileSync(join(stateDir, "cases.md"), "# Cases\n");
     writeRecord();
     expect((await run(["message", "--help"])).code).toBe(0);
     expect((await run(["--help"])).code).toBe(0);
@@ -586,6 +589,7 @@ describe("AskGate at the dispatch CLI", () => {
       ["issue-update", "--issue", "DSP-1", "--status", "in_progress"],
       ["issue", "--project", "DSP", "--title", "No spec"],
       ["artifact", "--issue", "DSP-1", "--name", "shot.png", "--path", "shot.png"],
+      ["artifact", "--issue", "DSP-1", "--name", "cases.txt", "--path", "cases.md"],
     ]) {
       posts.length = 0;
       const { stdout } = await run(argv);
@@ -594,12 +598,17 @@ describe("AskGate at the dispatch CLI", () => {
     }
   });
 
+  // An upload is a document when its name says so whatever the path (x.markdown sent from x.txt),
+  // or when its name has no extension and the path ends in .md or .markdown: Plan v1.2's last part
+  // is digits alone, which is no extension (uploadTypeFrom).
   test("an issue with a spec and a markdown upload are gated", async () => {
     writeRecord();
     for (const [argv, command] of [
       [["issue", "--project", "DSP", "--title", "t", "--spec", "# Spec"], "issue"],
       [["artifact", "--issue", "DSP-1", "--name", "brief.md", "--content", "# Brief"], "artifact"],
       [["artifact", "--issue", "DSP-1", "--name", "notes", "--path", "notes.markdown"], "artifact"],
+      [["artifact", "--issue", "DSP-1", "--name", "x.markdown", "--path", "x.txt"], "artifact"],
+      [["artifact", "--issue", "DSP-1", "--name", "Plan v1.2", "--path", "plan.md"], "artifact"],
     ] as const) {
       const { code, stdout } = await run(argv);
       expect(code).toBe(1);

@@ -11502,12 +11502,13 @@ describe("executeDispatchTool", () => {
 
   // INFRA-4071 R15: Dispatch stores an upload as the kind its declared type makes (text/markdown is
   // a document), so the command's type decides the kind, and the name says it wherever it has an
-  // extension (uploadTypeFrom). A name that ends in .md or .markdown goes up as text/markdown
-  // whatever its path; a name with any other extension goes up as that extension's type whatever
-  // its path, so cases.txt sent from cases.md is a file of the bytes as written; only a name with
-  // no extension keeps the path's type, so a Markdown path under a plain title is still a
-  // document. The stub stores each upload as the server's artifactKind does, and the answer names
-  // the kind it stored.
+  // extension (uploadTypeFrom). A name whose extension is .md or .markdown goes up as
+  // text/markdown whatever its path; a name with any other extension goes up as that extension's
+  // type whatever its path, so cases.txt sent from cases.md is a file of the bytes as written; only
+  // a name with no extension keeps the path's type, so a Markdown path under a plain title is still
+  // a document. A trailing extension of digits alone is a version or a date, not a type:
+  // rows.jsonl.1 reads as .jsonl, and Plan v1.2 has no extension. The stub stores each upload as
+  // the server's artifactKind does, and the answer names the kind it stored.
   describe("the kind an upload is stored as", () => {
     const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d]);
     const sha256 = (bytes: ArrayBuffer | Uint8Array) =>
@@ -11590,6 +11591,14 @@ describe("executeDispatchTool", () => {
             "Uploaded plan.md as version 1, a document " +
             "(kind doc; artifact slug plan-md; dispatch://DSP-42/artifact/plan-md)",
         });
+        const draft = text("# Draft\n\n* one\n");
+        expect(await upload("x.markdown", "x.txt", draft, gated)).toEqual({
+          declared: ["text/markdown"],
+          sent: [sha256(draft)],
+          text:
+            "Uploaded x.markdown as version 1, a document " +
+            "(kind doc; artifact slug x-markdown; dispatch://DSP-42/artifact/x-markdown)",
+        });
       });
 
       test(`a name of another extension goes up as its own type from a .md path, ${read}`, async () => {
@@ -11603,6 +11612,14 @@ describe("executeDispatchTool", () => {
           text:
             "Uploaded cases.txt as version 1, a file " +
             "(kind file; artifact slug cases-txt; dispatch://DSP-42/artifact/cases-txt)",
+        });
+        const rows = text('{"row_id": 1}\n{"row_id": 2}\n');
+        expect(await upload("rows.jsonl", "rows.md", rows, gated)).toEqual({
+          declared: ["application/octet-stream"],
+          sent: [sha256(rows)],
+          text:
+            "Uploaded rows.jsonl as version 1, a file " +
+            "(kind file; artifact slug rows-jsonl; dispatch://DSP-42/artifact/rows-jsonl)",
         });
       });
 
@@ -11629,6 +11646,25 @@ describe("executeDispatchTool", () => {
           text:
             "Uploaded chart.png as version 1, a picture " +
             "(kind image; artifact slug chart-png; dispatch://DSP-42/artifact/chart-png)",
+        });
+      });
+
+      test(`a trailing extension of digits alone is no extension, ${read}`, async () => {
+        const rows = text('{"row_id": 1}\n{"row_id": 2}\n');
+        expect(await upload("rows.jsonl.1", "rows.md", rows, gated)).toEqual({
+          declared: ["application/octet-stream"],
+          sent: [sha256(rows)],
+          text:
+            "Uploaded rows.jsonl.1 as version 1, a file " +
+            "(kind file; artifact slug rows-jsonl-1; dispatch://DSP-42/artifact/rows-jsonl-1)",
+        });
+        const plan = text("# Plan\n\n- [ ] Task one\n");
+        expect(await upload("Plan v1.2", "plan.md", plan, gated)).toEqual({
+          declared: ["text/markdown"],
+          sent: [sha256(plan)],
+          text:
+            "Uploaded Plan v1.2 as version 1, a document " +
+            "(kind doc; artifact slug plan-v1-2; dispatch://DSP-42/artifact/plan-v1-2)",
         });
       });
     }
@@ -11887,9 +11923,7 @@ describe("executeDispatchTool", () => {
     "rows.jsonl ",
     "отчёт.данные",
     "rows.jsonl.1",
-    "tool.1",
     "row data.jsonl.1",
-    "plan v1.2",
   ])("refuses inline content named %j before it sends anything, naming --path", async (name) => {
     const requests: string[] = [];
     await expect(
@@ -11907,7 +11941,7 @@ describe("executeDispatchTool", () => {
         }) as unknown as typeof fetch,
       })
     ).rejects.toThrow(
-      `${JSON.stringify(name)} is not a Markdown name. Upload the file under the same name with path (--path <file>), which stores the file as its bytes, unchanged, under a name whose extension is not .md or .markdown, whatever the path, and under a name with no extension when the path does not end in .md or .markdown (a name that ends in .md or .markdown makes the upload Markdown whatever its path)`
+      `${JSON.stringify(name)} is not a Markdown name. Upload the file under the same name with path (--path <file>), which stores the file as its bytes, unchanged, under a name whose extension is not .md or .markdown, whatever the path, and under a name with no extension when the path does not end in .md or .markdown (a name whose extension is .md or .markdown makes the upload Markdown whatever its path; trailing extensions of digits alone do not count, so rows.jsonl.1 reads as .jsonl and Plan v1.2 as no extension); a document takes a name whose extension is .md or .markdown, or one with no extension.`
     );
     expect(requests).toEqual([]);
   });
@@ -11918,6 +11952,9 @@ describe("executeDispatchTool", () => {
     "notes.markdown",
     "Design notes",
     "plan v1.2.md",
+    "plan v1.2",
+    "tool.1",
+    "Notes 2026.11",
     "notes v2. draft",
     "Dr. Smith's notes",
   ])("sends inline content named %j as a Markdown document", async (name) => {
@@ -12249,8 +12286,9 @@ describe("executeDispatchTool", () => {
         " To keep the text as you wrote it, send it as a file with path (--path <file>), which" +
         " stores the file as its bytes, unchanged, under a name whose extension is not .md or" +
         " .markdown, whatever the path, and under a name with no extension when the path does not" +
-        " end in .md or .markdown (a name that ends in .md or .markdown makes the upload Markdown" +
-        " whatever its path)." +
+        " end in .md or .markdown (a name whose extension is .md or .markdown makes the upload" +
+        " Markdown whatever its path; trailing extensions of digits alone do not count, so" +
+        " rows.jsonl.1 reads as .jsonl and Plan v1.2 as no extension)." +
         "\n--- the text Dispatch stores ---\n- one\n" +
         "--- end of the text Dispatch stores ---",
     ]);

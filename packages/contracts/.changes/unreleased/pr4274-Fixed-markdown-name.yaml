@@ -6,4 +6,6 @@ body: |-
   name ending in `.md` or `.markdown` makes a `--path` upload Markdown whatever the path, that a
   name with any other extension stores the file as its bytes whatever the path, and that under a
   name with no extension a path that does not end in `.md` or `.markdown` is stored as its bytes.
-  `uploadTypeFrom` says which of the three a name is.
+  `uploadTypeFrom` says which of the three a name is. It skips a name's trailing extensions of
+  digits alone (`rows.jsonl.1` is a `.jsonl` name, `Plan v1.2` has none), and the inline-content
+  rule reads a name the same way.

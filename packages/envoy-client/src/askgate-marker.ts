@@ -15,6 +15,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
+import { uploadTypeFrom } from "@legion/contracts";
 import { hasErrnoCode, messageFor } from "./errors";
 
 /**
@@ -99,20 +100,23 @@ const ALWAYS_GATED: Record<string, true> = {
   dispatch_doc_edit: true,
   dispatch_request_approval: true,
 };
-const MARKDOWN_NAME = /\.md$/i;
 const MARKDOWN_PATH = /\.(md|markdown)$/i;
 
 /**
- * Whether an upload's arguments make a markdown document: inline text, or a name (as Dispatch
- * trims it) ending in `.md`, or a path ending in `.md` or `.markdown`, whose type Bun takes from it.
+ * Whether an upload's arguments make a markdown document: inline text, or a file the CLI sends as
+ * `text/markdown`, which its name decides as `uploadTypeFrom` reads it (trimmed as Dispatch trims
+ * it, its trailing extensions of digits alone dropped). A name whose extension is .md or .markdown
+ * makes one whatever the path (`x.markdown` sent from x.txt), a name with any other extension
+ * makes a file whatever the path (`cases.txt` sent from cases.md), and a name with no extension
+ * (`Plan v1.2`) makes one when the path, whose type Bun then reads, ends in .md or .markdown. With
+ * no name, the path alone decides.
  */
 export function uploadIsDocument(args: Readonly<Record<string, unknown>>): boolean {
   const { content, name, path } = args;
-  return (
-    typeof content === "string" ||
-    (typeof name === "string" && MARKDOWN_NAME.test(name.trim())) ||
-    (typeof path === "string" && MARKDOWN_PATH.test(path))
-  );
+  if (typeof content === "string") return true;
+  const from = typeof name === "string" ? uploadTypeFrom(name) : "path";
+  if (from !== "path") return from === "markdown";
+  return typeof path === "string" && MARKDOWN_PATH.test(path);
 }
 
 /**

@@ -504,18 +504,20 @@ EOF
 ```
 
 Inline content is stored as a Markdown document, so `--content`, `--content-file` and a call with
-neither flag take only a `--name` that ends in `.md` or `.markdown` or has no extension. The
-command refuses any other name (`rows.jsonl`, `sizes.tsv`, `rows.jsonl.1`, `plan v1.2`) before it
-sends anything and names `--path`, which stores the file as its bytes, unchanged, under that name,
-whatever its path. A document title with a dot near its end takes `--content` once it ends in `.md`.
+neither flag take only a `--name` whose extension is `.md` or `.markdown`, or one with no
+extension. The command refuses any other name (`rows.jsonl`, `sizes.tsv`, `rows.jsonl.1`) before
+it sends anything and names `--path`, which stores the file as its bytes, unchanged, under that
+name, whatever its path. A document title with a dot near its end takes `--content` once it ends
+in `.md`.
 
-A `--path` upload is sent as the type its `--name` says. A name that ends in `.md` or `.markdown`
-is sent as Markdown whatever the path's extension, so `--name plan.md --path plan.txt` stores a
-document. A name with any other extension is sent as that extension's type whatever the path, so
-`--name cases.txt --path cases.md` stores a file whose bytes are the file's. Only a name with no
-extension is sent as the path's type, so `--name 'Design notes' --path notes.md` stores a
-document. The answer names the kind Dispatch stored: `a document (kind doc; …)`,
-`a file (kind file; …)` or `a picture (kind image; …)`.
+A `--path` upload is sent as the type its `--name` says. A name whose extension is `.md` or
+`.markdown` is sent as Markdown whatever the path's extension, so `--name plan.md --path plan.txt`
+stores a document. A name with any other extension is sent as that extension's type whatever the
+path, so `--name cases.txt --path cases.md` stores a file whose bytes are the file's. Only a name
+with no extension is sent as the path's type, so `--name 'Design notes' --path notes.md` stores a
+document. A trailing extension of digits alone does not count, so `Plan v1.2` has no extension
+and `rows.jsonl.1` has `.jsonl`. The answer names the kind Dispatch stored:
+`a document (kind doc; …)`, `a file (kind file; …)` or `a picture (kind image; …)`.
 
 An upload over a document the owner already holds under that name replaces every word of it, so it names the token of the version it replaces.
 That token is the one `dispatch doc-read` prints as `Document token: sha256:…`, and it travels in `--precondition-json '{"document":"sha256:…"}'`, beside the `--force` that asks the command for the document's next version.
@@ -546,8 +548,9 @@ reviews these calls:
   and `dispatch request-approval`
 - `dispatch issue` with `--spec` or `--spec-file`
 - `dispatch artifact` when it uploads a markdown document: inline text (`--content`,
-  `--content-file`), a `--path` file whose name ends in `.md` or `.markdown`, or a `--name` that
-  ends in `.md`
+  `--content-file`), or a `--path` file the command sends as Markdown, which its `--name` decides
+  as above: a name whose extension is `.md` or `.markdown`, or a name with no extension and a path
+  that ends in `.md` or `.markdown`
 
 Every other Dispatch command is outside the gate, and its text posts unreviewed: among them
 `dispatch issue-update --reason`, `dispatch resolve-ask --reason` and `dispatch suggest`.

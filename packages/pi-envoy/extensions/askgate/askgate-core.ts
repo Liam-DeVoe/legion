@@ -48,7 +48,7 @@
 //     assignment, other statement, other pipe, `;`, `||`, `&`, other redirect or other comment.
 //     The subcommand is `ask`, `message`, `edit-ask`, `comment`, `doc-edit`, `request-approval` (its
 //     `summary` is what the person approves), `issue` with `--spec` or `--spec-file`, or
-//     `artifact` unless its literal `--name` and literal `--path` both show it is no markdown
+//     `artifact` unless its literal `--name` and literal `--path` together show it is no markdown
 //     document (`uploadMayBeDocument`): its dry run then decides, from the name and path it
 //     prints, and an upload that is no markdown document runs with no entry. The gate learns
 //     the exact arguments by running that command with `--dry-run` after the command name, in the
@@ -311,9 +311,10 @@ const SPEC_FLAGS = ["--spec", "--spec-file"];
 /**
  * `dispatch artifact` is reviewed only as an upload of a markdown document. Dispatch stores an
  * upload as one when the CLI sends it as text/markdown: inline text (`--content`, `--content-file`),
- * which the CLI takes only under a name ending in `.md` or `.markdown` or with no extension, or a
- * `--path` file whose own name ends in `.md` or `.markdown`, since Bun takes a file's type from its
- * path. The gate also reviews an upload whose `--name` ends in `.md`.
+ * which the CLI takes only under a name whose extension is `.md` or `.markdown` or with none, or a
+ * `--path` file its name makes Markdown (`uploadTypeFrom`): under a name whose extension is `.md`
+ * or `.markdown`, whatever the path, or under a name with no extension and a path ending in `.md`
+ * or `.markdown`, whose type Bun reads from the path.
  */
 const UPLOAD_COMMAND = "artifact";
 /** The upload flags whose text is the document itself. */
@@ -1361,10 +1362,13 @@ const flagName = (flag: Word) => flag.value.split("=", 1)[0];
 
 /**
  * Whether an upload's words leave it possibly a markdown document: inline text, a name or path read
- * from a file, or a name or path that is not literal (an expansion, a glob), or whose literal value
- * makes one by the CLI's own predicate (`uploadIsDocument`, which trims the name as Dispatch does).
- * Only an upload whose literal name and literal path are both no markdown's is not one. An upload
- * with no `--name` or no `--path` and no inline text is one the CLI refuses before it sends.
+ * from a file, or a name or path that is not literal (an expansion, a glob), or a literal name and
+ * path that make one by the CLI's own predicate (`uploadIsDocument`, which reads the name as
+ * `uploadTypeFrom` does, trimmed as Dispatch trims it). Only literal words that predicate answers
+ * no to are not one: a name with an extension other than .md or .markdown, whatever the path
+ * (`--name cases.txt --path cases.md`), or a name with no extension and a path that does not end
+ * in .md or .markdown. An upload with no `--name` or no `--path` and no inline text is one the CLI
+ * refuses before it sends.
  */
 function uploadMayBeDocument(flags: readonly Word[]): boolean {
   if (flags.some((flag) => [...INLINE_FLAGS, ...INDIRECT_FLAGS].includes(flagName(flag))))

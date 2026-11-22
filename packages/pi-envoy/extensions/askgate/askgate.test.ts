@@ -4406,9 +4406,9 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
       await expectUnread("dispatch artifact --issue DSP-1 --name brief.md --path brief.md | cat");
     });
     // What Dispatch stores as a markdown document: an upload of inline text (`--content`,
-    // `--content-file`), which the CLI takes only under a name ending in .md or .markdown or with
-    // no extension, or a `--path` file the CLI sends as text/markdown (its name ends in .md or
-    // .markdown); and the gate also reviews any upload whose name ends in .md.
+    // `--content-file`), which the CLI takes only under a name whose extension is .md or .markdown
+    // or with none, or a `--path` file the CLI sends as text/markdown (uploadTypeFrom: its name's
+    // extension is .md or .markdown, or it has none and its path ends in .md or .markdown).
     beforeAll(() => {
       fs.writeFileSync(path.join(work, "notes.txt"), "The person said: ship it on Friday.\n");
       fs.writeFileSync(path.join(work, "name-md.txt"), "brief.md\n");
@@ -4455,6 +4455,33 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
         ["dispatch_artifact", "verdict"],
         ["dispatch_artifact", "verdict"],
       ]);
+    });
+    // The name says the kind wherever it has an extension, whatever the path, and a last part of
+    // digits alone is no extension (uploadTypeFrom): x.markdown sent from x.txt is a document, Plan
+    // v1.2 has no extension so its .md path makes it one, and cases.txt sent from cases.md is a file.
+    test("(m) x.markdown sent from x.txt and Plan v1.2 sent from plan.md are reviewed and marked", async () => {
+      fs.writeFileSync(path.join(work, "x.txt"), BRIEF);
+      fs.writeFileSync(path.join(work, "plan.md"), BRIEF);
+      const g = bind({ env: STUB, cwd: work });
+      await g.bash("m1", "dispatch artifact --issue DSP-1 --name x.markdown --path x.txt");
+      await g.bash("m2", "dispatch artifact --issue DSP-1 --name 'Plan v1.2' --path plan.md");
+      expect(g.calls).toHaveLength(2);
+      for (const call of g.calls) expect(call.user).toContain(uploadRule);
+      expect(g.entries.map((e) => [e.tool, e.outcome])).toEqual([
+        ["dispatch_artifact", "verdict"],
+        ["dispatch_artifact", "verdict"],
+      ]);
+      expect(markersIn(g.store)).toMatchObject([{ outcome: "verdict" }, { outcome: "verdict" }]);
+    });
+    test("(n) cases.txt sent from cases.md stays unreviewed and unrecorded", async () => {
+      fs.writeFileSync(path.join(work, "cases.md"), BRIEF);
+      const g = bind({ env: { ...STUB, OMP_ASKGATE: "block" }, cwd: work });
+      expect(
+        await g.bash("n1", "dispatch artifact --issue DSP-1 --name cases.txt --path cases.md")
+      ).toBeUndefined();
+      expect(g.dryRuns).toHaveLength(0);
+      expect(g.calls).toHaveLength(0);
+      expect(g.entries).toHaveLength(0);
     });
     // The attack on the marker design at cf3f1e021, N7: the CLI's predicate trims the name, as
     // Dispatch does, and the gate's did not, so the gate let `brief.md ` through unread and the CLI

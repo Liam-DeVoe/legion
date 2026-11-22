@@ -131,16 +131,17 @@ const DOCUMENT_IS_MARKDOWN =
 
 /**
  * `--path` and what it stores, written to follow "with" in a rule or a refusal that offers it.
- * `dispatch artifact` sends a file as the type its name says (uploadTypeFrom): under a name that
- * ends in .md or .markdown as Markdown, under a name with any other extension as that
+ * `dispatch artifact` sends a file as the type its name says (uploadTypeFrom): under a name whose
+ * extension is .md or .markdown as Markdown, under a name with any other extension as that
  * extension's own type, each whatever its path, and under a name with no extension as its path's
- * type, which only a path ending in .md or .markdown makes Markdown. Dispatch stores a Markdown
- * upload as a document, which it parses and renders, and any other upload as its bytes.
+ * type, which only a path ending in .md or .markdown makes Markdown. A name's trailing extensions
+ * of digits alone do not count. Dispatch stores a Markdown upload as a document, which it parses
+ * and renders, and any other upload as its bytes.
  */
 export const PATH_KEEPS_BYTES =
-  "path (--path <file>), which stores the file as its bytes, unchanged, under a name whose extension is not .md or .markdown, whatever the path, and under a name with no extension when the path does not end in .md or .markdown (a name that ends in .md or .markdown makes the upload Markdown whatever its path)";
+  "path (--path <file>), which stores the file as its bytes, unchanged, under a name whose extension is not .md or .markdown, whatever the path, and under a name with no extension when the path does not end in .md or .markdown (a name whose extension is .md or .markdown makes the upload Markdown whatever its path; trailing extensions of digits alone do not count, so rows.jsonl.1 reads as .jsonl and Plan v1.2 as no extension)";
 
-const ARTIFACT_CONTENT_NAME_RULE = `${CONTENT_IS_MARKDOWN}, so a document's name ends in .md or .markdown or has no extension, under content and under neither flag alike; upload any other file (.jsonl, .tsv, .json, .txt) with ${PATH_KEEPS_BYTES}.`;
+const ARTIFACT_CONTENT_NAME_RULE = `${CONTENT_IS_MARKDOWN}, so a document's name has the extension .md or .markdown or none, under content and under neither flag alike; upload any other file (.jsonl, .tsv, .json, .txt) with ${PATH_KEEPS_BYTES}.`;
 
 /**
  * What `dispatch artifact` says of a name the owner already holds. The command refuses it before
@@ -162,12 +163,16 @@ export const ARTIFACT_NAME_EXISTS_RULE =
  * kinds of name: `--path` keeps the bytes of a name that is not Markdown, and a Markdown name is
  * parsed and rendered whichever flag sends it, so its one way out is to send the stored text.
  */
-export const ARTIFACT_STORED_TEXT_RULE = `content and content-file hold text Dispatch stores as Markdown, and a text the store would write under another spelling is refused. The refusal prints the text Dispatch stores: send that text. A name that does not end in .md or .markdown has a second way out, which keeps the text as it was written: send it as a file with ${PATH_KEEPS_BYTES}.`;
+export const ARTIFACT_STORED_TEXT_RULE = `content and content-file hold text Dispatch stores as Markdown, and a text the store would write under another spelling is refused. The refusal prints the text Dispatch stores: send that text. A name without the extension .md or .markdown has a second way out, which keeps the text as it was written: send it as a file with ${PATH_KEEPS_BYTES}.`;
 
 /** A name's extension, or undefined for a name with none: what follows its last dot when that
- *  holds no blank. Digits count, so "rows.jsonl.1" has one, and so does a title such as
- *  "plan v1.2", which takes content once it ends in .md. */
+ *  holds no blank. uploadTypeFrom reads it once TRAILING_DIGIT_EXTENSIONS are dropped. */
 const NAME_EXTENSION = /\.([^\s.]+)$/u;
+
+/** A name's trailing extensions of digits alone, a version or a date rather than a type:
+ *  "rows.jsonl.1" reads as rows.jsonl, and a title such as "Plan v1.2" as Plan v1, which has no
+ *  extension. */
+const TRAILING_DIGIT_EXTENSIONS = /(?:\.\d+)+$/u;
 
 const MARKDOWN_EXTENSION = /^(md|markdown)$/i;
 
@@ -218,28 +223,32 @@ function uploadPreconditionArgument<E extends SchemaNode<E>>(z: SchemaApi<E>): E
 
 /**
  * What decides the type `dispatch artifact --path` sends a file under, from the name it is sent
- * as: `markdown` for a name that ends in .md or .markdown, sent as `text/markdown` whatever the
- * path; `name` for a name with any other extension, sent as that extension's own type (an
- * extension with none known is `application/octet-stream`) whatever the path; and `path` for a
- * name with no extension, sent as the path's type. Dispatch stores a `text/markdown` upload as a
+ * as, trimmed and with its trailing extensions of digits alone dropped (`rows.jsonl.1` reads as
+ * `rows.jsonl`, `Plan v1.2` as `Plan v1`): `markdown` for a name whose extension is then .md or
+ * .markdown, sent as `text/markdown` whatever the path; `name` for a name with any other
+ * extension, sent as the type Bun reads from the whole name (`application/octet-stream` for an
+ * extension it does not know, as `.1` in app.log.1) whatever the path; and `path` for a name with
+ * no extension left, sent as the path's type. Dispatch stores a `text/markdown` upload as a
  * document and any other as its bytes, so the name says the kind wherever it has an extension:
- * `--name cases.txt --path cases.md` stores a file (INFRA-4071 R15).
+ * `--name cases.txt --path cases.md` stores a file (INFRA-4071 R15). Inline content goes only
+ * under a `markdown` or a `path` name (artifactProblem), and AskGate reviews an upload by the same
+ * reading (`uploadIsDocument`, packages/envoy-client/src/askgate-marker.ts).
  */
 export function uploadTypeFrom(name: string): "markdown" | "name" | "path" {
-  const extension = NAME_EXTENSION.exec(name.trim())?.[1];
+  const extension = NAME_EXTENSION.exec(name.trim().replace(TRAILING_DIGIT_EXTENSIONS, ""))?.[1];
   if (extension === undefined) return "path";
   return MARKDOWN_EXTENSION.test(extension) ? "markdown" : "name";
 }
 
 /**
  * Whether `--path` can store a file under this name as the bytes it was written as: true for
- * every name that does not end in .md or .markdown. Under a name with any other extension the
- * upload keeps its bytes whatever its path, and under a name with no extension it keeps them when
- * the path does not end in .md or .markdown (uploadTypeFrom, `PATH_KEEPS_BYTES`). A name that
- * ends in .md or .markdown makes the upload Markdown whatever its path, and Dispatch stores a
- * `text/markdown` upload as a document, which it parses and renders. A refusal of inline text the
- * store would change names `--path` for a name this answers true, and never for a Markdown one,
- * which `--path` would change the same way.
+ * every name whose extension, read as uploadTypeFrom reads it, is not .md or .markdown. Under a
+ * name with any other extension the upload keeps its bytes whatever its path, and under a name
+ * with no extension it keeps them when the path does not end in .md or .markdown
+ * (`PATH_KEEPS_BYTES`). A name whose extension is .md or .markdown makes the upload Markdown
+ * whatever its path, and Dispatch stores a `text/markdown` upload as a document, which it parses
+ * and renders. A refusal of inline text the store would change names `--path` for a name this
+ * answers true, and never for a Markdown one, which `--path` would change the same way.
  */
 export function pathKeepsBytesOf(name: string): boolean {
   return uploadTypeFrom(name) !== "markdown";
@@ -249,9 +258,10 @@ const artifactOwner = documentOwnerValidation(false);
 
 /** The refusal of the part of dispatch_artifact's rule `value` breaks, or undefined when it keeps
  *  the rule. A call without path writes a document, whose text is always Markdown, so it goes
- *  only under a name that says Markdown or says nothing: a .jsonl stored that way reads back with
- *  its lines joined. The name alone makes an empty document and is held to the same rule, since
- *  what the writer types into it afterwards is Markdown too. */
+ *  only under a name that says Markdown or says nothing (uploadTypeFrom answers `markdown` or
+ *  `path`): a .jsonl stored that way reads back with its lines joined. The name alone makes an
+ *  empty document and is held to the same rule, since what the writer types into it afterwards is
+ *  Markdown too. */
 function artifactProblem(value: unknown): string | undefined {
   const input = value as {
     readonly name?: unknown;
@@ -264,9 +274,8 @@ function artifactProblem(value: unknown): string | undefined {
   ]);
   if (ownerOrSourceProblem !== undefined) return ownerOrSourceProblem;
   if (typeof input.path === "string" || typeof input.name !== "string") return undefined;
-  const extension = NAME_EXTENSION.exec(input.name.trim())?.[1];
-  if (extension === undefined || MARKDOWN_EXTENSION.test(extension)) return undefined;
-  return `${DOCUMENT_IS_MARKDOWN}, and ${JSON.stringify(input.name)} is not a Markdown name. Upload the file under the same name with ${PATH_KEEPS_BYTES}; a document takes a name ending in .md or .markdown or with no extension.`;
+  if (uploadTypeFrom(input.name) !== "name") return undefined;
+  return `${DOCUMENT_IS_MARKDOWN}, and ${JSON.stringify(input.name)} is not a Markdown name. Upload the file under the same name with ${PATH_KEEPS_BYTES}; a document takes a name whose extension is .md or .markdown, or one with no extension.`;
 }
 
 const documentEditOwner = documentOwnerValidation(true);
@@ -2027,7 +2036,7 @@ export const dispatchToolSpecs = [
       content: z
         .string()
         .describe(
-          "Inline text to store as a Markdown document, under a name ending in .md or .markdown or with no extension. The command refuses a text the store would write under another spelling, a CR LF or a lone carriage return among them, which Dispatch stores as a line feed. A missing line feed at the end is not such a text: Dispatch adds one, and the upload goes on. The refusal prints the text Dispatch stores, which is the text to send."
+          "Inline text to store as a Markdown document, under a name whose extension is .md or .markdown or with none (trailing extensions of digits alone do not count). The command refuses a text the store would write under another spelling, a CR LF or a lone carriage return among them, which Dispatch stores as a line feed. A missing line feed at the end is not such a text: Dispatch adds one, and the upload goes on. The refusal prints the text Dispatch stores, which is the text to send."
         )
         .optional(),
       force: z

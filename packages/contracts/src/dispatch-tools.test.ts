@@ -13,6 +13,7 @@ import {
   PROJECT_KEY_RULE,
   pathKeepsBytesOf,
   SEARCH_QUERY_MAX,
+  uploadTypeFrom,
 } from "./dispatch-tools";
 import { type SchemaApi, type SchemaNode, zodSchemaApi } from "./tool-schema";
 
@@ -1315,12 +1316,28 @@ describe("dispatchToolSpecs", () => {
     }
   });
 
+  // INFRA-4071 R15: the name decides the type an upload goes up as. A trailing extension of
+  // digits alone is a version or a date, not a type, so the extension before it decides, and a
+  // name with none left takes the path's type.
+  test("reads an upload's type from its name, past trailing extensions of digits alone", () => {
+    const rows: Array<[string, "markdown" | "name" | "path"]> = [
+      ["Plan v1.2", "path"],
+      ["Notes 2026.11", "path"],
+      ["rows.jsonl.1", "name"],
+      ["cases.txt", "name"],
+      ["v1.2.md", "markdown"],
+      ["x.MARKDOWN", "markdown"],
+      ["Design notes", "path"],
+    ];
+    expect(rows.map(([name]) => [name, uploadTypeFrom(name)])).toEqual(rows);
+  });
+
   // The rule is what --help prints, so it holds for both kinds of name: the stored text for any
   // name, and --path for a name that is not Markdown.
   test("the stored-text rule names a way out for both kinds of name", () => {
     expect(ARTIFACT_STORED_TEXT_RULE).toContain("The refusal prints the text Dispatch stores");
     expect(ARTIFACT_STORED_TEXT_RULE).toContain(
-      "A name that does not end in .md or .markdown has a second way out"
+      "A name without the extension .md or .markdown has a second way out"
     );
     const artifact = dispatchToolSpecs.find((spec) => spec.name === "dispatch_artifact");
     expect(artifact?.description).toContain(ARTIFACT_STORED_TEXT_RULE);

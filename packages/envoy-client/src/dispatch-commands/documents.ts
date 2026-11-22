@@ -612,13 +612,15 @@ export async function planApproveCommand(context: CommandContext): Promise<Dispa
  * The file `dispatch artifact --path` sends, under the type Dispatch stores it by: an upload
  * declared `text/markdown` is a document, and any other is a picture or a file
  * (`artifactKind`, packages/envoy/internal/dispatch/api/artifacts.go). The name says the type
- * wherever it has an extension (uploadTypeFrom, INFRA-4071 R15): a name that ends in .md or
- * .markdown declares `text/markdown` whatever the path, so a plan written to plan.txt and sent as
- * plan.md is a document, as the plan the issue reads must be, and a name with any other extension
- * declares the type Bun reads from the name, whatever the path, so cases.txt sent from cases.md is
- * a file of the bytes as written. Only a name with no extension declares the type Bun reads from
- * the path, so a Markdown file sent under a title (`Design notes`) is still a document. `bytes`
- * are the bytes AskGate's check read, when it read them.
+ * wherever it has an extension once its trailing extensions of digits alone are dropped
+ * (uploadTypeFrom, INFRA-4071 R15): a name whose extension is .md or .markdown declares
+ * `text/markdown` whatever the path, so a plan written to plan.txt and sent as plan.md is a
+ * document, as the plan the issue reads must be, and a name with any other extension declares the
+ * type Bun reads from the whole name, whatever the path, so cases.txt sent from cases.md is a file
+ * of the bytes as written, and so is rows.jsonl.1 (`application/octet-stream`). Only a name with
+ * no extension left declares the type Bun reads from the path, so a Markdown file sent under a
+ * title (`Design notes`, `Plan v1.2`) is still a document. `bytes` are the bytes AskGate's check
+ * read, when it read them.
  */
 function uploadedFile(local: string, name: string, bytes: Uint8Array | undefined): Blob {
   const from = uploadTypeFrom(name);
