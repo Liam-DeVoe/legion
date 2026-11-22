@@ -17,21 +17,27 @@ const user = nkeys.createUser();
 const seed = { value: new TextDecoder().decode(user.getSeed()), source: "test" };
 
 describe("natsConnectionOptions without a credential the auth service decides (R12)", () => {
+  // Each keeps nats.js's own redials too: its default handler, 2 s apart, not the broker token's
+  // backoff (`brokerRedialDelays`).
   test("a seeded connection gives up on a repeated refusal, as at the merge base", () => {
     const options = natsConnectionOptions({
       servers: ["nats://127.0.0.1:4222"],
       name: "test",
-      seed,
+      credential: { kind: "seed", seed },
     });
     expect(options.ignoreAuthErrorAbort).not.toBe(true);
+    expect(options.reconnectDelayHandler).toBeUndefined();
+    expect(options.reconnectTimeWait).toBe(2_000);
   });
 
   test("a connection with no credential gives up on a repeated refusal, as at the merge base", () => {
     const options = natsConnectionOptions({
       servers: ["nats://127.0.0.1:4222"],
       name: "test",
-      seed: undefined,
+      credential: { kind: "none" },
     });
     expect(options.ignoreAuthErrorAbort).not.toBe(true);
+    expect(options.reconnectDelayHandler).toBeUndefined();
+    expect(options.reconnectTimeWait).toBe(2_000);
   });
 });

@@ -20,6 +20,7 @@ func TestIssueOfAnswersEachFactThatNamesOneIssue(t *testing.T) {
 		"DispatchClaim":           DispatchClaim{Key: issue},
 		"Handover":                Handover{Issue: issue},
 		"MergeQueueReadDone":      MergeQueueReadDone{Issue: issue},
+		"ConflictConfirmDone":     ConflictConfirmDone{Issue: issue},
 		"PullRequestMissing":      PullRequestMissing{Issue: issue},
 		"HandoffComplete":         HandoffComplete{Issue: issue},
 		"BackwardMove":            BackwardMove{Issue: issue},
@@ -48,10 +49,10 @@ func TestIssueOfAnswersEachFactThatNamesOneIssue(t *testing.T) {
 	}
 	namesNone := map[string]Fact{
 		"ChildAdoption":            ChildAdoption{Tree: issue, Children: []AdoptedChild{{Issue: issue}}},
-		"RepoMappingChanged":       RepoMappingChanged{},
 		"DispatchConsumerPosition": DispatchConsumerPosition{},
 		"ControllerTick":           ControllerTick{},
 		"EntrySweep":               EntrySweep{},
+		"ProjectResumed":           ProjectResumed{},
 		"PullRequestOpened":        PullRequestOpened{Branch: "legion/" + issue},
 		"PullRequestSynchronized":  PullRequestSynchronized{Branch: "legion/" + issue},
 		"PullRequestReview":        PullRequestReview{},

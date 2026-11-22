@@ -228,7 +228,7 @@ func stopRun(t *testing.T, cancel context.CancelFunc, done <-chan error, logs *s
 // stopWithin is stopRun for a daemon startDaemonLogging started.
 func stopWithin(t *testing.T, d *daemon, logs *syncBuffer, bound time.Duration) (time.Duration, string) {
 	t.Helper()
-	d.stopped = true
+	d.stopped.Store(true)
 	d.transport.CloseIdleConnections()
 	return stopRun(t, d.cancel, d.done, logs, bound)
 }
@@ -660,7 +660,7 @@ func TestRunRecordsAnOperatorSuspensionWhoseProcessExitsWithinTheDrain(t *testin
 	}
 
 	bootSwept(t, logs)
-	d.stopped = true
+	d.stopped.Store(true)
 	d.transport.CloseIdleConnections()
 	mark := len(logs.String())
 	d.cancel()
@@ -713,9 +713,9 @@ func TestRunWaitsForTheCleanStopOfASuspensionDecidedBeforeTheHalt(t *testing.T) 
 	machines := make(chan context.Context, 1)
 	build := o.runtime
 	o.runtime = func(ctx context.Context, listener *stream.Listener, address string, tokens appauth.Source,
-		repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository) (runtime.Runtime, error) {
+		repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, cached func() []ghrepo.Repository) (runtime.Runtime, error) {
 		machines <- ctx
-		return build(ctx, listener, address, tokens, repository, st, mapped)
+		return build(ctx, listener, address, tokens, repository, st, cached)
 	}
 	logs := &syncBuffer{}
 	d := startDaemonLogging(t, cfg, o, slog.New(slog.NewJSONHandler(logs, nil)))
@@ -734,7 +734,7 @@ func TestRunWaitsForTheCleanStopOfASuspensionDecidedBeforeTheHalt(t *testing.T) 
 		t.Fatalf("the suspension's clean stop never reached the listener; log:\n%s", logs)
 	}
 
-	d.stopped = true
+	d.stopped.Store(true)
 	d.transport.CloseIdleConnections()
 	mark := len(logs.String())
 	d.cancel()
@@ -856,7 +856,7 @@ func TestAFrameAShimWritesDuringTheDrainWaitsInItsBacklogForTheNextDaemon(t *tes
 	}
 
 	bootSwept(t, logs)
-	d.stopped = true
+	d.stopped.Store(true)
 	d.transport.CloseIdleConnections()
 	mark := len(logs.String())
 	d.cancel()
@@ -995,7 +995,7 @@ func TestAnOperatorsTreeCloseInFlightAtTheStopStopsTheTreesClaimsOverTheirConnec
 	}
 
 	bootSwept(t, logs)
-	d.stopped = true
+	d.stopped.Store(true)
 	d.transport.CloseIdleConnections()
 	mark := len(logs.String())
 	d.cancel()

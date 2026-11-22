@@ -12,12 +12,15 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/steprecord"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -31,8 +34,9 @@ type Fact interface{ namedIssue() (string, bool) }
 
 // DispatchIssue records Dispatch's complete issue observation. Rank is Dispatch's fractional key,
 // compared as bytes — the order rank.Between generates. HandedOver is resolved once at decode
-// (decodeDispatchFact), from the event's own raw labels: every reader acts on this bool, never on
-// a label list of its own.
+// (decodeDispatchFact), from the event's own raw labels, and every decision acts on this bool;
+// the raw list rides on the fact as well (Labels), for the copy of Dispatch's issues, which is
+// its one reader (blockers.Mirror).
 type DispatchIssue struct {
 	Key    string
 	Seq    int64
@@ -43,6 +47,10 @@ type DispatchIssue struct {
 	Rank   string
 	// HandedOver is whether the event's own labels carried dispatch.LegionLabel.
 	HandedOver bool
+	// Labels is the issue's labels as the observation showed them, in Dispatch's order. The copy
+	// of Dispatch's issues writes them with the rest of the observation (blockers.Mirror), and
+	// nothing else reads them: a decision reads HandedOver.
+	Labels []string
 	// ActorSession is the id of a non-daemon session that wrote the event. DaemonActor tells its
 	// own status write from a user or an untyped actor: a pending hand-over fence is consumed only
 	// by its daemon-authored todo event.
@@ -62,13 +70,13 @@ type DispatchIssue struct {
 	// not yet recorded, and clears this; the workflow fills a recorded issue's from its record, and
 	// never records an issue from a fact still missing it.
 	ResolvedRepoMissing bool
-	// RepositoryRefusal is why the GitHub reads this event's preparation made for a repository no
-	// repository mapping names record the issue on no repository: the role App that is not
-	// installed on it, a repository GitHub does not have, or a name that is no <owner>/<name> at
-	// all. It is read where the fact is applied, in place of what the daemon holds in memory
-	// (workflow.Engine.ResolveIssueRepository), because nothing of such a refusal is kept: the
-	// next preparation of the issue reads GitHub again, so an operator who installs the App is
-	// taken at that preparation with no wait, no restart and no mapping change. Empty for every
+	// RepositoryRefusal is why the GitHub reads this event's preparation made for the repository
+	// the issue resolves to record the issue on no repository: the role App that is not installed
+	// on it, a repository GitHub does not have, or a name that is no <owner>/<name> at all. It is
+	// read where the fact is applied, in place of what the daemon holds in memory
+	// (workflow.Engine.ResolveIssueRepository), because no such refusal decides a later
+	// preparation: the next preparation of the issue reads GitHub again, so an operator who
+	// installs the App is taken at that preparation with no wait and no restart. Empty for every
 	// other fact, the decode's own among them: only a preparation sets it.
 	RepositoryRefusal string
 	// Ancestry is the keys of the issue's Dispatch parent chain, from its parent upward to the top,
@@ -141,16 +149,16 @@ func (i DispatchIssue) LabelSetByPerson() bool {
 }
 
 // ObservedIssue is issue as Dispatch's detail shows it now, as an Observed fact at the sequence
-// Dispatch has run to: its status, title, parent, rank, hand-over and repository, with no event's
-// type or actor, since no one event wrote that state. release_children's todo child and an
-// unrecorded issue's admission event are applied from it.
+// Dispatch has run to: its status, title, parent, rank, labels, hand-over, blockers and
+// repository, with no event's type or actor, since no one event wrote that state.
+// release_children's todo child and an unrecorded issue's admission event are applied from it.
 func ObservedIssue(issue dispatch.Issue) DispatchIssue {
 	parent := ""
 	if issue.Parent != nil {
 		parent = *issue.Parent
 	}
 	return DispatchIssue{Key: issue.Key, Seq: issue.LastSeq, Status: issue.Status, Title: issue.Title, Parent: parent,
-		Rank: issue.Rank, HandedOver: issue.HandedOver, ResolvedRepo: issue.ResolvedRepo, Blockers: issue.BlockedBy,
+		Rank: issue.Rank, HandedOver: issue.HandedOver, Labels: issue.Labels, ResolvedRepo: issue.ResolvedRepo, Blockers: issue.BlockedBy,
 		ClaimedBy: issue.Claim.Holder(), ClaimKnown: !issue.ClaimUnread, Observed: true}
 }
 
@@ -203,12 +211,14 @@ type ChildAdoption struct {
 
 // AdoptedChild is one child a ChildAdoption moves into its tree, as the release's own Dispatch
 // read showed it: its Dispatch parent, the status and the keys it waits on, and the sequence
-// Dispatch had run to at that read. The daemon's mirror of those links can be older than the read
+// Dispatch had run to at that read. The daemon's copy of those links can be older than the read
 // — a person's re-parent and link are one edit of Dispatch, whose event the consumer may not have
 // delivered — and an adopted root is already recorded, so no observation of it applies to correct
-// the mirror (settleObserved). The read therefore travels with the fact: the mirror takes it
-// (blockers.Mirror), behind the sequence fence every mirror write has, before the adoption judges
-// the child, and the workflow holds the child on it as well as on the mirror's row (workflow's
+// the copy (settleObserved). The read therefore travels with the fact: the mirror takes it
+// (blockers.Mirror) before the adoption judges the child, as a reading of the parent, the status
+// and the blockers at Seq, each of which it changes only where the copy holds it from an older
+// reading or from none, leaving the labels and the rank, which the read does not carry, as the
+// copy holds them; and the workflow holds the child on it as well as on the copy's row (workflow's
 // enterChild).
 type AdoptedChild struct {
 	Issue     string
@@ -221,16 +231,6 @@ type AdoptedChild struct {
 func (ChildAdoption) namedIssue() (string, bool) { return "", false }
 
 func (f DispatchIssue) namedIssue() (string, bool) { return f.Key, true }
-
-// RepoMappingChanged is Dispatch's settings.repo_project.updated on the daemon's own project: a
-// repository was mapped to the project, unmapped, moved or made its default. It is no workflow
-// fact: the consumer has the daemon read the mapping again (ConsumerSpec.RepositoryMapping) and
-// applies nothing.
-type RepoMappingChanged struct {
-	Project string
-}
-
-func (RepoMappingChanged) namedIssue() (string, bool) { return "", false }
 
 // DispatchArtifactKind identifies the three Dispatch artifact observations that affect a gate.
 type DispatchArtifactKind string
@@ -449,14 +449,14 @@ func (p DispatchConsumerPosition) Reached(target int64) bool {
 }
 
 // IssueStatus is one issue as Dispatch shows it now: its key, the project that key names, its
-// status, the keys it says it is blocked by, its Dispatch parent, and the Dispatch sequence that
-// view stands at. The periodic turn's re-read carries them on its ControllerTick, and
-// blockers.Mirror writes each through the same sequence-fenced write an event's own row takes, so
-// a view older than an event already applied changes nothing — except the parent, which
-// record.PutDispatchIssue also writes for a view at the row's own sequence, the listing that is
-// the only thing to carry the parent of an issue the daemon has never recorded. ClaimedBy and
-// ClaimKnown are DispatchIssue's: the issue read behind this view shows the claim unless it names
-// no actor.
+// status, the keys it says it is blocked by, its Dispatch parent, its labels, its board rank and
+// the Dispatch sequence that view stands at. The periodic turn's re-read carries them on its
+// ControllerTick, as a listing does (blockers.Observed), and blockers.Mirror writes each as one
+// reading of all five values: each value keeps the sequence of the reading that wrote it, and a
+// reading changes it only at a higher sequence or where no reading wrote it
+// (record.PutDispatchIssue), so a view older than an event already applied changes nothing that
+// event wrote. ClaimedBy and ClaimKnown are DispatchIssue's: the issue read behind this view shows
+// the claim unless it names no actor.
 type IssueStatus struct {
 	Key string
 	// Project is the Dispatch project of Key, as the read that saw the issue reports it, since a
@@ -469,11 +469,15 @@ type IssueStatus struct {
 	ClaimedBy  string
 	ClaimKnown bool
 	// Parent is the key of the issue's Dispatch parent, empty for an issue Dispatch shows under
-	// none. The children-first rule reads the mirror's parent column to find what hangs under an
+	// none. The children-first rule reads the copy's parent column to find what hangs under an
 	// issue (record.ChildWaits), so every observation carries the parent it saw, and empty is
-	// the observation that the issue has no parent: it clears the one the mirror holds
-	// (record.PutDispatchIssue).
+	// the observation that the issue has no parent: it takes the child out from under the parent
+	// the copy holds wherever it is the newer reading of the parent (record.PutDispatchIssue).
 	Parent string
+	// Labels and Rank are the issue's labels, in Dispatch's order, and its board rank as the view
+	// showed them. The copy of Dispatch's issues is their one reader.
+	Labels []string
+	Rank   string
 }
 
 // ControllerTick is the daemon's periodic wake for the project's controller, applied as a
@@ -512,6 +516,23 @@ func (ControllerTick) namedIssue() (string, bool) { return "", false }
 type EntrySweep struct{}
 
 func (EntrySweep) namedIssue() (string, bool) { return "", false }
+
+// ProjectResumed is the resume of the daemon's project's pause, applied as a synthetic fact once
+// the resume has committed and never decoded from an event (internal/daemon's
+// projectPause.Resumed, decision 22 of dispatch://INFRA-3759). It is the resume's one admission
+// pass: the pause held every promotion, and the pass runs now rather than at the next fact or
+// tick. Admission promotes on it as on every fact that is not a Dispatch issue
+// (admit.Admission.applyFact); the workflow engine and the blockers mirror do nothing for it.
+// Unlike the controller's tick, which queues a tick notice, it queues none: a slot its pass leaves
+// free wakes the controller as any fact's pass does (admit.Admission.wakeForFreeSlot), and
+// nothing else.
+//
+// It carries nothing, as EntrySweep carries nothing: the pass reads the whole project. Its event
+// is keyed on the pause the resume ended (internal/daemon's applyResumePass), so a resume applies
+// its pass once.
+type ProjectResumed struct{}
+
+func (ProjectResumed) namedIssue() (string, bool) { return "", false }
 
 // PullRequestOpened registers a pull request whose branch or body identifies a Dispatch issue.
 type PullRequestOpened struct {
@@ -631,8 +652,8 @@ func (r PullRequestReview) Decides() bool {
 
 // legionFooterMarker opens the Legion footer every Legion role appends to a pull-request review:
 // a JSON object naming the session and phase that wrote it and the head it read, and in the
-// reviewer's review the entry of the round it is of (skills/legion-worker/SKILL.md, the reviewer
-// template prompts/roles/reviewer.md).
+// reviewer's review the entry of the round it is of (the reviewer template and its footer,
+// prompts/roles/reviewer.md).
 const legionFooterMarker = "<!-- legion:"
 
 // legionFooter is what the daemon reads out of that JSON object: the session that submitted the
@@ -670,9 +691,11 @@ func (r PullRequestReview) lastLegionFooter() legionFooter {
 
 // LegionSession is the session named in the last Legion footer in the review's body
 // (lastLegionFooter). It is "" when the body carries no such footer, the last one's JSON cannot
-// be parsed, or its session is empty.
+// be parsed, or its session is empty. The footer is JSON, whose \u0000 escape decodes to a NUL
+// that the body as stored never shows, so the session is given as the store would keep it
+// (storetext.Text): the workflow compares it with the reviewer claim's stored session.
 func (r PullRequestReview) LegionSession() string {
-	return r.lastLegionFooter().Session
+	return storetext.Text(r.lastLegionFooter().Session)
 }
 
 // LegionHead is the head the review says it read: the head field of the last Legion footer in the
@@ -803,9 +826,20 @@ func (PullRequestChecks) namedIssue() (string, bool) { return "", false }
 // deterministic because every time they record is one their own fact named. It is what
 // record.PullRequest.StateReadAt is written from, and a confirming read moves it exactly as a read
 // that changes something does, since it is the age of the knowledge and not the age of the last
-// change to it. A fact minted by anything that did not read GitHub - every test that states a
-// verdict rather than reading one - leaves it zero, and the engine then writes no stamp and erases
-// none.
+// change to it. A read whose ReadAt is before the stamp the record holds is dropped whole, as one
+// of another head is: GitHub answered the recorded read later, so the older answer can be one it
+// has since changed. A fact minted by anything that did not read GitHub - every test that states
+// a verdict rather than reading one - leaves it zero, and the engine then writes no stamp, erases
+// none and drops nothing for it.
+//
+// Rules is what the daemon read of the base branch's rules for its required status checks
+// (record.BaseRules), which a confirmed conflict is decided on (workflow's mergeability,
+// classify.ConflictNeedsMerge). It is set only on a read whose Mergeable is
+// record.MergeabilityConflicting, since a head that merges cleanly needs no decision of that kind,
+// and nil on every other read; the reader that fills it is the daemon's, which reads the base's
+// rulesets and its classic protection beside the pull request. A CONFLICTING read that carries
+// none is a read whose rules the daemon does not know, and it is decided as rules it could not
+// read are.
 type PullRequestMergeability struct {
 	Repo       string
 	Number     int
@@ -814,6 +848,7 @@ type PullRequestMergeability struct {
 	Mergeable  record.Mergeability
 	MergeState record.MergeState
 	ReadAt     time.Time
+	Rules      *record.BaseRules
 }
 
 func (PullRequestMergeability) namedIssue() (string, bool) { return "", false }
@@ -867,6 +902,26 @@ type MergeQueueReadDone struct {
 }
 
 func (f MergeQueueReadDone) namedIssue() (string, bool) { return f.Issue, true }
+
+// ConflictConfirmDone is the outbox's second read of a conflicting head (record.ConflictConfirm)
+// finishing with no answer that decides: never decoded from an event. GitHub answered UNKNOWN for
+// pull request Number of Issue at the row's last attempt, or, with Unread, no read of it
+// succeeded, so no second read confirmed the first read's conflict at Head, made at FirstReadAt
+// (record.ConflictConfirm.FirstReadAt), and none released it. The workflow then clears the first
+// read while the record still holds that one, of Head and made at FirstReadAt (workflow's
+// conflictConfirmDone), so the next read that finds the head conflicting is a first read again. A
+// first read of Head made at another time is one a later read made after this row's was released,
+// with a row of its own, and it is left standing. A CONFLICTING or MERGEABLE answer applies
+// PullRequestMergeability instead, as every read of the pull request does.
+type ConflictConfirmDone struct {
+	Issue       string
+	Number      int
+	Head        string
+	FirstReadAt time.Time
+	Unread      bool
+}
+
+func (f ConflictConfirmDone) namedIssue() (string, bool) { return f.Issue, true }
 
 // PullRequestMissing is the daemon's per-issue read of GitHub finding no open pull request on
 // Branch, the branch of Issue, whose implementer recorded its handoff at HandoffCommit while Issue
@@ -943,6 +998,18 @@ type HandoffComplete struct {
 	// Empty and zero for a phase that writes none.
 	HandoffRecord  string
 	HandoffVersion int
+	// PlanRating is the rating of the plan the issue ran, as the completion named it: the route held
+	// it to the scale and to a reason (api's planRatingOf, its one producer), and nil is a
+	// completion that named none. Only the completion that ends the retro carries one, and which
+	// completion that is the workflow judges where it ends the retro, on the issue as the fact's
+	// own transaction reads it (workflow's planRatingRefusal); it writes the rating onto the
+	// retro's record as it stands.
+	PlanRating *record.PlanRating
+	// MustRate is whether the completion that ends the retro must carry PlanRating: the claim's
+	// plugin declared the contract that added the rating (api.PlanRatingContract) or a later one,
+	// whose tool takes it. The route reads it from the claim, which no state of the issue changes;
+	// a plugin before that contract sends no rating, and its retro ends with none.
+	MustRate bool
 }
 
 func (f HandoffComplete) namedIssue() (string, bool) { return f.Issue, true }
@@ -1099,14 +1166,20 @@ type ClaimFailed struct {
 
 func (f ClaimFailed) namedIssue() (string, bool) { return f.Issue, true }
 
-// SessionLost is a claim whose recorded session no session store holds any more: its worker now
-// runs a fresh agent that has read none of its own earlier work (supervise's startFresh). Detail
-// is why, as the runtime said it. It is told on the issue, to its architect and to the controller,
-// because a worker that silently lost its memory looks like one that is merely slow.
+// SessionLost is a claim that forgot its recorded session: its worker now runs a fresh agent that
+// has read none of its own earlier work (supervise's startFresh). Detail is why, as the supervisor
+// said it. It is told on the issue, to its architect and to the controller, because a worker that
+// silently lost its memory looks like one that is merely slow.
+//
+// Cause is why the claim forgot the session; empty reads as gone (supervise.SessionLossGone).
+// Session is the session the claim forgot (supervise.AbandonedSession.Session), which the
+// workflow names in the words of a cause whose message does not quote Detail.
 type SessionLost struct {
-	Issue  string
-	Role   claim.Role
-	Detail string
+	Issue   string
+	Role    claim.Role
+	Detail  string
+	Cause   supervise.SessionLoss
+	Session string
 }
 
 func (f SessionLost) namedIssue() (string, bool) { return f.Issue, true }
@@ -1485,6 +1558,25 @@ func NotCurrentPhase(role claim.Role, p phase.Phase, issue string) *Refusal {
 	return &Refusal{Status: 409, Code: "HANDOFF_NOT_CURRENT_PHASE", Message: fmt.Sprintf("the %s does not run phase %s of %s; this completion changed nothing", role, p, issue)}
 }
 
+// PlanRatingRequired is the 400 PLAN_RATING_REQUIRED refusal of what, the completion that ends the
+// retro, which carries no rating of the plan though its caller must rate (HandoffComplete.MustRate).
+// The workflow answers it where it ends the retro (its planRatingRefusal), and records nothing.
+func PlanRatingRequired(what string) *Refusal {
+	return &Refusal{Status: 400, Code: "PLAN_RATING_REQUIRED", Message: fmt.Sprintf(
+		"%s carries no rating of the plan, and the completion that ends the retro rates it: rate the plan the issue ran from %d (the plan cost the work) to %d (the plan fit the work) in planRating, say why in planReason, and send it again; nothing was recorded", what, steprecord.RatingLeast, steprecord.RatingMost)}
+}
+
+// PlanRatingUnexpected is the 400 PLAN_RATING_UNEXPECTED refusal of what, a completion or a report
+// that names planRating or planReason and does not end the retro, which alone rates the plan.
+// Dropping them unread would let an agent believe it had rated the plan. The workflow answers it
+// for a completion that does not end the retro on the issue it reads (its planRatingRefusal), and
+// the completion route for a report on a look of a production check, which ends no phase (api's
+// checkReport), so an agent reads the same words from either. Neither records anything.
+func PlanRatingUnexpected(what string) *Refusal {
+	return &Refusal{Status: 400, Code: "PLAN_RATING_UNEXPECTED", Message: fmt.Sprintf(
+		"%s names planRating or planReason, and only the completion that ends the retro rates the plan; send it again without both, and nothing was recorded", what)}
+}
+
 // Pool is the Postgres connection pool the intake applies its facts on, keeps its consumers'
 // positions in and reads what it has already applied from. In the daemon it is always the store's
 // guarded pool (store.Pool), and that is the point of the hand-over: a handler that asks the pool
@@ -1522,7 +1614,19 @@ type Pool interface {
 // Making per-tree locking correct means promotion taking the candidate tree's lock as well, which
 // is cross-tree lock ordering, which is a deadlock a daemon supervising long-lived agents would
 // hold until a human noticed. Serial facts are a throughput cost; that is the trade being made.
+//
+// Before anything else, source, eventID and every string fact carries are given through the
+// store's own rule (storetext.Text, storetext.Strings), so MarkProcessed, settleObserved and every
+// handler see the fact as the store keeps it. A handler compares what the fact says with what the
+// store holds of it — a title, a check run's name, a head, a changes request's reason — and the
+// store keeps each text as the rule makes it: compared as it arrived, a fact holding a text the
+// rule changes would differ from its own stored copy every time it was delivered again, and be
+// written again, or become another step of a pull request's head run. Every fact of GitHub,
+// Dispatch, Envoy, the API and supervision passes here, so the rule is given to facts here once;
+// the boot's Dispatch listing, which admission applies outside ApplyFact, takes it in admission's
+// Reconcile.
 func ApplyFact(ctx context.Context, pool Pool, source, eventID string, fact Fact, handlers ...Handler) (Result, error) {
+	source, eventID, fact = storetext.Text(source), storetext.Text(eventID), storetext.Strings(fact)
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return Result{}, err
@@ -1604,12 +1708,17 @@ func ApplyFact(ctx context.Context, pool Pool, source, eventID string, fact Fact
 // replays many facts it has most likely applied before (the boot's terminal replay) applies only
 // the rest: the duplicates cost one read between them, not a transaction each queued on the lock
 // behind every live fact.
+//
+// ApplyFact records each id as the store keeps it (storetext.Text), so the ids are looked up as
+// the store keeps them, and each one found is answered under the id the caller gave: a caller that
+// looks up its own id finds it, whatever the rule made of it.
 func Applied(ctx context.Context, pool Pool, source string, eventIDs []string) (map[string]bool, error) {
 	applied := make(map[string]bool, len(eventIDs))
 	if len(eventIDs) == 0 {
 		return applied, nil
 	}
-	rows, err := pool.Query(ctx, `select event_id from processed_events where source = $1 and event_id = any($2::text[])`, source, eventIDs)
+	stored := storetext.Strings(eventIDs)
+	rows, err := pool.Query(ctx, `select event_id from processed_events where source = $1 and event_id = any($2::text[])`, storetext.Text(source), stored)
 	if err != nil {
 		return nil, fmt.Errorf("read which %s facts are applied: %w", source, err)
 	}
@@ -1617,8 +1726,14 @@ func Applied(ctx context.Context, pool Pool, source string, eventIDs []string) (
 	if err != nil {
 		return nil, fmt.Errorf("read which %s facts are applied: %w", source, err)
 	}
+	found := make(map[string]bool, len(ids))
 	for _, id := range ids {
-		applied[id] = true
+		found[id] = true
+	}
+	for i, id := range eventIDs {
+		if found[stored[i]] {
+			applied[id] = true
+		}
 	}
 	return applied, nil
 }
@@ -1666,15 +1781,17 @@ func settleObserved(ctx context.Context, tx pgx.Tx, fact Fact) (Fact, bool, erro
 
 // SerializeFacts takes, for tx's life, the lock every fact applies under (ApplyFact): until tx
 // commits or rolls back, no fact resolves a repository and commits an issue recorded on it. The
-// boot's reconcile, which records issues in its own transaction, takes it, as does a refresh of
-// the repository mapping across its live-record snapshot and its publication, so a repository an
-// admission is recording an issue on is never unsubscribed under it. The subscription update
-// itself is outside this lock and outside any transaction of that pool: a stream call made under
-// either left every connection of the pool idle in a transaction waiting on JetStream
-// (cybermonklabs/legion#3786, dispatch://INFRA-3169), so the mapping's refresh publishes its
-// superset before it takes this lock and narrows after it has let it go, and a recording's own
-// update runs in the commit hook, after the transaction returned its connection and Postgres
-// released this lock (internal/daemon's hearRecorded).
+// boot's reconcile, which records issues in its own transaction, takes it, as do the daemon's
+// read of the live records for its repository caches, across that read and its publication, and
+// its backfill of a record's repository columns (internal/daemon's refreshLive and
+// backfillLater), so no read of the records is published over an issue an admission recorded
+// meanwhile. The subscription update itself is outside this lock and outside any transaction of
+// that pool: a stream call made under either left every connection of the pool idle in a
+// transaction waiting on JetStream (cybermonklabs/legion#3786, dispatch://INFRA-3169), so the
+// daemon's publication of the whole heard set reads the records in a transaction of its own and
+// calls JetStream after it, and a recording's own update runs in the commit hook, after the
+// transaction returned its connection and Postgres released this lock (internal/daemon's
+// hearRecorded).
 func SerializeFacts(ctx context.Context, tx pgx.Tx) error {
 	_, err := tx.Exec(ctx, "select pg_advisory_xact_lock(hashtext('legion.apply_fact'))")
 	return err

@@ -10,9 +10,9 @@
 // database of its own on LEGION_TEST_PG_DSN's server, with NATS off and the agent token the daemon
 // and the CLI present; it stops it and starts it again on the same database and port for A10. The
 // daemon is the whole daemon (run, the function `legion start` calls, through startDaemonWithin),
-// booted with dispatch_url at that server, so every Dispatch read and write it makes - the
-// repository mapping, the issue list, its status writes and messages, and the read of the record a
-// completion names - goes to the real routes. The worker side is the real `dispatch` CLI
+// booted with dispatch_url at that server, so every Dispatch read and write it makes - the issue
+// list, its status writes and messages, and the read of the record a completion names - goes to
+// the real routes. The worker side is the real `dispatch` CLI
 // (packages/envoy-client/bin/dispatch.ts under bun) run as each claim's registered session, and
 // the daemon's own routes: registration, grants and POST /legion/v1/handoff/complete. The plugin
 // side a completion's commit comes from is the real `findHandoffReport`
@@ -70,8 +70,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
-// handoffRecordsUser is the person the driver sets Dispatch up as: the project, its repository
-// mapping and the issues, through the trusted identity header the scratch server takes.
+// handoffRecordsUser is the person the driver sets Dispatch up as: the project, its default
+// repository and the issues, through the trusted identity header the scratch server takes.
 const handoffRecordsUser = "legion-e2e"
 
 // handoffBodyMax is Dispatch's handoff body cap (contracts DISPATCH_HANDOFF_BODY_MAX).
@@ -115,8 +115,8 @@ func TestHandoffRecordsLive(t *testing.T) {
 	r.step("a10-dispatch-restarted-the-retried-write-and-the-completion-land", r.a10Restarted)
 }
 
-// newHandoffRecordsLive starts Dispatch, sets up its project, mapping and issues, seeds the
-// daemon's store with those issues where each step starts them, and boots the daemon at Dispatch.
+// newHandoffRecordsLive starts Dispatch, sets up its project, default repository and issues, seeds
+// the daemon's store with those issues where each step starts them, and boots the daemon at Dispatch.
 func newHandoffRecordsLive(t *testing.T) *handoffRecordsLive {
 	t.Helper()
 	r := startOnDispatch(t, "scripts/e2e/handoff-records.sh", "HR", "Handoff records live proof")
@@ -129,9 +129,9 @@ func newHandoffRecordsLive(t *testing.T) *handoffRecordsLive {
 // startOnDispatch readies a whole-daemon proof over the real Dispatch, for this driver and for
 // review_range_live_test.go's, which embeds what it returns. It starts Dispatch, writes its agent
 // token where the daemon reads it and names it the daemon's dispatch_url, and creates the run's
-// project, prefix and six characters of the run's own, titled name, with liveRepo mapped to it as
-// its default. The caller creates its issues (createIssue), seeds them (seedIssues), sets github
-// and boots the daemon (boot).
+// project, prefix and six characters of the run's own, titled name, with liveRepo set as its
+// default repository in Dispatch. The caller creates its issues (createIssue), seeds them
+// (seedIssues), sets github and boots the daemon (boot).
 func startOnDispatch(t *testing.T, script, prefix, name string) *handoffRecordsLive {
 	t.Helper()
 	proof := newLiveProof(t, script)
@@ -167,7 +167,7 @@ func (r *handoffRecordsLive) boot() {
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = r.github
 	r.d = startDaemonWithin(r.t, r.cfg, o, r.log(), 2*time.Minute)
-	r.note("Dispatch %s (database of its own, NATS off), project %s mapped to %s; daemon at dispatch_url %s",
+	r.note("Dispatch %s (database of its own, NATS off), project %s with default repository %s; daemon at dispatch_url %s",
 		r.dispatch.base, r.cfg.Project, liveRepo, r.cfg.DispatchURL)
 }
 
@@ -773,11 +773,19 @@ type cliShell struct {
 // answers both streams and the exit code.
 func (s cliShell) bun(extra []string, program string, args ...string) (cliOutput, int) {
 	s.t.Helper()
+	return s.run(extra, "bun", append([]string{program}, args...)...)
+}
+
+// run runs `name args...` in the shell, with extra after the shell's own variables, where a
+// variable extra names again replaces the shell's (os/exec keeps the last), and answers both
+// streams and the exit code.
+func (s cliShell) run(extra []string, name string, args ...string) (cliOutput, int) {
+	s.t.Helper()
 	home := filepath.Join(s.dir, "home")
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		s.t.Fatal(err)
 	}
-	command := exec.Command("bun", append([]string{program}, args...)...)
+	command := exec.Command(name, args...)
 	command.Dir = s.dir
 	command.Env = []string{
 		"PATH=" + os.Getenv("PATH"),
@@ -801,7 +809,7 @@ func (s cliShell) bun(extra []string, program string, args ...string) (cliOutput
 	if err != nil {
 		exit, ok := err.(*exec.ExitError)
 		if !ok {
-			s.t.Fatalf("run %s under bun: %v", program, err)
+			s.t.Fatalf("run %s %s: %v", name, strings.Join(args, " "), err)
 		}
 		code = exit.ExitCode()
 	}
@@ -933,7 +941,7 @@ func (r *handoffRecordsLive) claimant(role claim.Role, issue, session string) *h
 		t.Fatalf("decode the registration of %s: %v", token, err)
 	}
 	c.secret = registered.Secret
-	go c.serve()
+	c.sh.serve(c.serve)
 	if status, body := r.d.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
 		ClaimToken: token, SessionID: session, Secret: registered.Secret, Generation: launch.Generation,
 	}, false); status != http.StatusNoContent {
@@ -944,13 +952,13 @@ func (r *handoffRecordsLive) claimant(role claim.Role, issue, session string) *h
 	return c
 }
 
-// serve reads every frame the daemon sends the shim until the connection closes: it answers the
-// protocol negotiation and the state probe (idle, or streaming while a turn runs), and takes each
-// prompt - answering it and starting the turn, as Oh My Pi does - for the step to read.
+// serve reads every frame the daemon sends the shim until the connection closes or the test ends
+// it (shim.serve): it answers the protocol negotiation and the state probe (idle, or streaming
+// while a turn runs), and takes each prompt - answering it and starting the turn, as Oh My Pi
+// does - for the step to read.
 func (c *handoffClaimant) serve() {
 	// The reader dialShim read the hello_ack through, which may already hold the frames after it.
 	reader := c.sh.lines
-	_ = c.sh.conn.SetReadDeadline(time.Time{})
 	for {
 		line, err := reader.ReadBytes('\n')
 		if err != nil {
@@ -975,7 +983,11 @@ func (c *handoffClaimant) serve() {
 			c.turn = true
 			c.mu.Unlock()
 			c.send(shimwire.AgentStart{DeliveryID: f.DeliveryID})
-			c.prompts <- f
+			select {
+			case c.prompts <- f:
+			case <-c.sh.stopping:
+				return
+			}
 		}
 	}
 }

@@ -116,7 +116,10 @@ func (check *Check) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// Suite is the last-known state of one GitHub check suite for a commit.
+// Suite is the last-known state of one GitHub check suite for a commit. A record written before
+// the listener stopped taking a suite before it completes (contracts.GithubCIObservations) may
+// hold a run_count field of its suites, which this release no longer reads and the next write of
+// the record drops.
 type Suite struct {
 	ID         string `json:"id"`
 	AppID      string `json:"app_id"`
@@ -801,7 +804,8 @@ func (s *Store) RecordSuite(ctx context.Context, observation contracts.CIObserva
 }
 
 // recordSuite is the one body both forms of RecordSuite share, and reports whether the
-// observation changed the head's record.
+// observation changed the head's record: an observation that repeats the stored suite changes
+// nothing.
 func (s *Store) recordSuite(ctx context.Context, observation contracts.CIObservation) (bool, error) {
 	return s.update(ctx, observation.Owner, observation.Repo, observation.Number, observation.SHA, "", func(st *State) bool {
 		if st.Suites == nil {
@@ -1096,29 +1100,63 @@ func (s *Store) markOverflowed(key string) error {
 	return err
 }
 
-// settlementReady reports whether st can settle: every check and suite it holds is terminal, one
-// check has a run id, and the record holds every check of its commit, which an overflowed one does
-// not.
+// githubActionsAppID is the id of the GitHub App GitHub Actions runs as (15368), the same on every
+// repository. An Actions suite that is not completed holds the head, run or none (suiteHolds). No
+// path records such a suite, before or after this change: a repository or organization webhook
+// receives only completed check suites, a check_run delivery records its run and not its suite,
+// and Dispatch's CI reconcile skips every suite that is not completed. So the rule guards only a
+// record written before this change, should one hold such a suite. Keeping a head from settling
+// before its workflow's first run is a separate change.
+const githubActionsAppID = "15368"
+
+// settlementReady reports whether st can settle: every check it holds is terminal, one check has
+// a run id, no suite holds it (suiteHolds), and the record holds every check of its commit, which
+// an overflowed one does not.
 func settlementReady(st State) bool {
 	if st.Overflowed || !terminal(st) {
 		return false
 	}
-	hasCheckRunID := false
-	for _, check := range st.Checks {
-		if check.CheckRunID > 0 {
-			hasCheckRunID = true
-			break
-		}
-	}
-	if !hasCheckRunID {
+	if !hasCheckRunID(st) {
 		return false
 	}
 	for _, suite := range st.Suites {
-		if suite.Status != "completed" {
+		if suiteHolds(suite) {
 			return false
 		}
 	}
 	return true
+}
+
+// suiteHolds reports whether suite holds its head from settling: it is not completed, and it is
+// GitHub Actions' (githubActionsAppID) or the record names no App for it, which fails safe, since
+// such a suite may be Actions'; no writer records one today. Every recorded run holds the head
+// until it finishes, whatever its suite (terminal). Another App's suite that is not completed
+// holds nothing: GitHub creates a suite for each App that may write checks, on every push,
+// whether or not the App ever adds a run, and a suite completes only through its runs, so the
+// suite of an App that adds none stays queued for ever.
+//
+// No new suite that is not completed enters a record: the webhook route takes no requested or
+// rerequested check_suite delivery (contracts.GithubCIObservations), which is the only delivery
+// that carries one, and Dispatch's CI reconcile records only completed suites. So this rule
+// governs the records written before that, for their seven-day life (WithTTL). A head such a
+// suite held settles at the first summary pass that finds its record in the store's copy
+// (attachSummary, StartSummaryLoop), with no new webhook.
+func suiteHolds(suite Suite) bool {
+	if suite.Status == "completed" {
+		return false
+	}
+	return suite.AppID == "" || suite.AppID == githubActionsAppID
+}
+
+// hasCheckRunID reports whether one of st's checks has a run id; a record whose checks have none
+// does not settle (settlementReady), and its held line names it (logHeldLocked).
+func hasCheckRunID(st State) bool {
+	for _, check := range st.Checks {
+		if check.CheckRunID > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func terminal(st State) bool {
