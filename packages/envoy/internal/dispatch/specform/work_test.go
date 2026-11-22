@@ -150,7 +150,7 @@ func workRows(race bool) []workRow {
 // the machine of 288 cores at a load average of 750 to 1,340: with the charge taken out, each row
 // first passed the bound at the least n whose windows cputest reads (8: 65.9 and 68.4 times), so
 // its n is 16, where the smaller window with the charge in place lasts 123 ms and 150 ms. At 16,
-// with the charge taken out, each row failed in 5 of 5 runs, 102.9 and 98.6 times or more. The
+// with the charge taken out, each row failed in 5 of 5 runs, 106.6 and 93.6 times or more. The
 // judge's look for the sentences where a finding's words stand (wholeText.holding) and its walk of
 // the sentences that a piece of ste-lint runs through between two that a way out changes
 // (wholeText.changedRuns) have three rows, each n found in the same way, on the machine of 288
@@ -163,6 +163,9 @@ func workRows(race bool) []workRow {
 // of open quoted sentences joins, whose walk, each sentence between read with no charge, first
 // passed it at 64 (32.7; 29.2 at 45), so its n is 128. The types hold the third walk's charge (no
 // code of the judge reads a sentence but through charge.Texts.Read), so its break loosens them.
+// At those n each of the three walks, broken in turn, failed its row in 5 of 5 runs, 38.3, 83.7
+// and 40.9 times or more; the second also fails the first row (119.9 times), and the first and
+// the third fail no other of the three rows.
 func workTable() []workRow {
 	context := planted("ada.lovelace@example.com")
 	const id = "0195f3c2-7b1d-7c3e-9a4f-2b6d8e1f0a37"
