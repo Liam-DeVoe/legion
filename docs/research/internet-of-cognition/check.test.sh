@@ -6367,6 +6367,57 @@ for form in honest line name; do
     esac
 done
 
+# 204. A pattern written as a glob of names holds only where a name it covers stands (test
+# round 49, judged against the symbol grammar, form 8). The grammar's own example of a
+# pattern, `GEN_AI_*`, and the live rows m-tel-semconv-module's `GEN_AI_*` and r-21's
+# `gen_ai.*`, each name a set of names by a glob: the names that start with GEN_AI_, the
+# attributes under gen_ai. The gate reads a pattern as an extended regular expression a line
+# matches, as written, so at eb8cf706 `GEN_AI_*` (GEN_AI, then any number of `_`) held in a
+# file whose only such text is GEN_AIRPORT, and `gen_ai.*` (gen_ai, then anything) in one
+# whose only such text is gen_aix_total: in each the file holds no name the glob covers, and
+# --citations passed. The case commits packages/daemon/internal/api/x.go into the fixture,
+# names that commit as our repository's in sources.json, and writes the fixture's row
+# f-our-1 as citing that file with each pattern, over a file that holds only the longer word
+# and over one that holds a name the glob covers: the first two must fail citation-our-code,
+# naming the part; the last two pass it.
+for form in gen-ai-other gen-ai-dot-other gen-ai-honest gen-ai-dot-honest; do
+    case "$form" in
+    gen-ai-other) symbol='GEN_AI_*' body='package x\n\nconst GEN_AIRPORT = 1\n' ;;
+    gen-ai-dot-other) symbol='gen_ai.*' body='package x\n\nconst metric = "gen_aix_total"\n' ;;
+    gen-ai-honest) symbol='GEN_AI_*' body='package x\n\nconst GEN_AI_MODEL = 1\n' ;;
+    gen-ai-dot-honest) symbol='gen_ai.*' body='package x\n\nconst attribute = "gen_ai.request.model"\n' ;;
+    esac
+    dir="$(fresh "symbol-glob-$form")"
+    evidence_copy="$dir/repo/docs/research/internet-of-cognition"
+    printf "$body" >"$dir/repo/packages/daemon/internal/api/x.go"
+    named="$(
+        cd "$dir/repo" &&
+            git add packages/daemon/internal/api/x.go &&
+            git commit --quiet -m "a file for a glob" &&
+            git rev-parse HEAD
+    )"
+    jq --arg c "$named" '.our_repository.commit = $c' "$evidence_copy/sources.json" >"$dir/sources.json" &&
+        mv "$dir/sources.json" "$evidence_copy/sources.json"
+    jq -c --arg s "$symbol" 'if .id == "f-our-1" then .evidence.file = "packages/daemon/internal/api/x.go" | .evidence.symbol = $s else . end' \
+        "$evidence_copy/claims.jsonl" >"$dir/claims.jsonl" && mv "$dir/claims.jsonl" "$evidence_copy/claims.jsonl"
+    [ -n "$named" ] && jq -e --arg s "$symbol" 'select(.id == "f-our-1") | .evidence.symbol == $s and .evidence.file == "packages/daemon/internal/api/x.go"' "$evidence_copy/claims.jsonl" >/dev/null || {
+        printf 'FAIL the pattern %s and its file could not be planted in the fixture row f-our-1\n' "$symbol"
+        exit 1
+    }
+    out="$(fixture_run "$dir" --citations)"
+    case "$form" in
+    gen-ai-other)
+        case_result "a glob GEN_AI_* cited in a file whose only such text is GEN_AIRPORT fails --citations, naming the part" \
+            "citation-our-code: f-our-1 cites .*GEN_AI_\\*" "$out"
+        ;;
+    gen-ai-dot-other)
+        case_result "a glob gen_ai.* cited in a file whose only such text is gen_aix_total fails --citations, naming the part" \
+            "citation-our-code: f-our-1 cites .*gen_ai\\.\\*" "$out"
+        ;;
+    *) honest_result "a glob $symbol cited in a file that holds a name it covers passes citation-our-code" citation-our-code "$out" ;;
+    esac
+done
+
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending
 # reads every case this file counted, the ones that could not run among them, and this
