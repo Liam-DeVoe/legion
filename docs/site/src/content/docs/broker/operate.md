@@ -1335,31 +1335,38 @@ never answered, is served, with one WARN line a minute for each person and
 Dispatch.
 
 **The member kind and the project answers, kept.** The same broker process keeps the member kind of
-each person answer it reads (`member_kind`, migration `0046`), written with that answer under the
-same rule, whichever read asked: the hold's check, a request's, an enrollment's or an approver's.
-While Dispatch does not answer at all (a timeout, a failed connection, a gateway's `502`, `503` or
-`504`, Dispatch's own `DATABASE_UNAVAILABLE` or `OIDC_ISSUER_UNAVAILABLE`, or a `500` naming no
-code or `INTERNAL`), a person last answered a full member is served as one at every enrollment,
-secret request, release, airlock call and approver route, with one WARN line a minute for each
-person and `broker_member_kind_unchecked_total{kept="full"}`. A person last answered a restricted
-member, one of whom no kind is kept (never read since migration `0046`, or never read at all), and
-one whose kept kind cannot be read stay refused `503 MEMBER_KIND_UNCHECKABLE`, counted
-`restricted`, `none` or `unreadable`. A demotion Dispatch answers during an outage is written and
-refuses from then on; one it never answered takes effect when it answers again. A refused account,
-a kind this broker does not know and a caller that hung up are refused as before, whatever is
-kept. The project answers of the request machine's person rule (whether a person may see each
-project a request's reason or credentials name) are kept the same way, by person and project, in
-`project_standing` (migration `0047`), each written unless the row holds one the broker asked
-later, since Dispatch's project answer names no time of its own. While Dispatch does not answer, a
-request whose project Dispatch last answered public or visible to the reader is listed and decided
-as before, and a key it last answered no project for (the `SHA` of `SHA-256`, the `GPT` of
-`GPT-5`) is no project again, as Dispatch's own answer is, so it hides nothing; each is counted in
-`broker_project_visibility_unchecked_total` and logged once a minute for each person and project.
-A project last answered hidden from the reader, one never answered for them, and one whose kept
-answer cannot be read leave the row out and refuse its decision as before. A change of a project's
-list or visibility made during an outage takes effect when Dispatch answers again. Watch both
-counters during an outage of Dispatch: any count names people served on an answer Dispatch gave
-earlier.
+each person answer it reads in `person_member_kind` (migration `0046`), whichever read asked (the
+hold's check, a request's, an enrollment's or an approver's) and whether or not the answer says if
+the person is held: Dispatch leaves `held` out while its own read of the hold fails, and still names
+the kind. Each kind is written unless the row holds one Dispatch gave later, by the answer's
+`as_of`, apart from the hold's answer. While Dispatch does not answer at all (a timeout, a failed
+connection, a gateway's `502`, `503` or `504`, Dispatch's own `DATABASE_UNAVAILABLE` or
+`OIDC_ISSUER_UNAVAILABLE`, or a `500` naming no code or `INTERNAL`), a person last answered a full
+member is served as one at every enrollment, secret request, release, airlock call and approver
+route, with one WARN line a minute for each person and
+`broker_member_kind_unchecked_total{kept="full"}`. A person last answered a restricted member, one
+of whom no kind is kept (never read since migration `0046`, or never read at all), one whose kept
+kind is older than the hold's answer kept for them, and one whose kept kind cannot be read are
+refused `503 MEMBER_KIND_UNCHECKABLE`, counted `restricted`, `none` or `unreadable`. The hold's
+answer is newer than the kind only where a broker release that keeps no kind wrote it, as one does
+while this release rolls out: that answer may have been a demotion. A demotion Dispatch answers, on
+any broker process, is written and refuses from then on at every process; one it never answered
+takes effect when it answers again. A refused account, a kind this broker does not know and a
+caller that hung up are refused as before, whatever is kept. The project answers of the request
+machine's person rule (whether a person may see each project a request's reason or credentials
+name) are kept the same way, by person and project, in `project_standing` (migration `0047`), each
+written unless the row holds one the broker asked later, since Dispatch's project answer names no
+time of its own. While Dispatch does not answer, a request whose project Dispatch last answered
+public or visible to the reader is listed and decided as before, and a key it last answered no
+project for (the `SHA` of `SHA-256`, the `GPT` of `GPT-5`) is no project again, as Dispatch's own
+answer is, so it hides nothing; each is counted in `broker_project_visibility_unchecked_total` and
+logged once a minute for each person and project. A no-project answer stands only until the broker
+keeps an answer, for anyone, that the project exists, asked at or after it: the project was made
+since, and a reader with no answer of their own since then counts as never answered. A project
+last answered hidden from the reader, one never answered for them, and one whose kept answer cannot
+be read leave the row out and refuse its decision as before. A change of a project's list or
+visibility made during an outage takes effect when Dispatch answers again. Watch both counters
+during an outage of Dispatch: any count names people served on an answer Dispatch gave earlier.
 
 **When it cannot decide.** Three failures refuse every new call of the person, at every place
 above, with `503 HOLD_UNCHECKABLE` (`server_error` at the token endpoint, a `503` page on the
@@ -2021,8 +2028,8 @@ severity it is written at (WARN is written `WARNING`). The lines worth alerting 
 | `broker: Dispatch could not be asked whether a person is held; serving on its last answer person=… last_answer=<not_held or none> error=…` | At WARN, at most once a minute for each person: Dispatch gave no answer, and the broker served the person on the last answer Dispatch gave (`not_held`) or with none kept (`none`). Each line counts once in `broker_hold_unchecked_total`. A person last answered held is refused instead, and logs nothing. |
 | `broker: Dispatch's answer that a person is not held could not be kept; serving on it person=… error=…` | At WARN: the write of a not-held answer to `person_standing` failed. The person is served, and until the next answer is written an outage of Dispatch answers them from the older kept answer. |
 | `broker: Dispatch could not be asked what kind of member a person is; serving them as the full member Dispatch last answered person=… as_of=… error=…` | At WARN, at most once a minute for each person: Dispatch gave no answer, and the broker served the person as the full member Dispatch last answered (`as_of` is that answer's time). Each line counts once in `broker_member_kind_unchecked_total{kept="full"}`. A person kept restricted, or with no kind kept, is refused `503 MEMBER_KIND_UNCHECKABLE` instead, and logs nothing here. |
-| `broker: Dispatch's answer of what kind of member a person is could not be kept; while Dispatch cannot be asked they are answered from the answer kept before it, and refused where this one is not full person=… member_kind=… as_of=… error=…` | At WARN: the write of a person answer to `person_standing` failed. The person is answered as Dispatch answered; until a later answer is written, an outage of Dispatch answers them from the older kept answer, and refuses them where this answer names a kind other than full. |
-| `broker: Dispatch could not be asked whether a person may see a project; serving on the answer it last gave person=… project=… kept=<public, visible or missing> asked_at=… error=…` | At WARN, at most once a minute for each person and project: Dispatch gave no answer, and the request machine's person rule showed the person a request naming the project on the answer the broker kept: `public`, `visible` (a private project whose list names them) or `missing` (a key Dispatch holds no project for). Each line counts once in `broker_project_visibility_unchecked_total`. |
+| `broker: Dispatch's answer of what kind of member a person is could not be kept; while Dispatch cannot be asked they are answered from the answer kept before it, and refused where this one is not full person=… member_kind=… as_of=… error=…` | At WARN: the write of a person answer's member kind to `person_member_kind` failed. The person is answered as Dispatch answered; until a later answer is written, an outage of Dispatch answers them from the older kept answer, and this broker process refuses them where this answer names a kind other than full. |
+| `broker: Dispatch could not be asked whether a person may see a project; serving on the answer it last gave person=… project=… kept=<public, visible or missing> asked_at=… error=…` | At WARN, at most once a minute for each person and project: Dispatch gave no answer, and the request machine's person rule showed the person a request naming the project on the answer the broker kept: `public`, `visible` (a private project whose list names them) or `missing` (a key Dispatch holds no project for, with no answer kept since that it exists). Each line counts once in `broker_project_visibility_unchecked_total`. |
 | `broker: Dispatch's answer of whether a person may see a project could not be kept; while Dispatch cannot be asked it is answered from the answer kept before it, and refused where this one hides the project person=… project=… visible=… asked_at=… error=…` | At WARN: the write of a project answer to `project_standing` failed. Until a later answer is written, an outage of Dispatch answers the person and project from the older kept answer, and refuses them where this answer hides the project. |
 | `broker: Dispatch refused the broker's own account, so whether a person is held cannot be read person=… error=…` | At ERROR, at most once a minute for everyone together: Dispatch answered 401 or 403 to the broker's account, or the broker could not read `BROKER_PROJECT_ACCESS_TOKEN_FILE`. Every credential that names a person is refused `503 HOLD_UNCHECKABLE` until it is fixed: list the account in Dispatch's `DISPATCH_ACCESS_ACCOUNTS`, or mend the token file. |
 | `broker: whether Dispatch holds a person cannot be read, so their credential is refused person=… error=…`, `airlock proxy: whether Dispatch holds a person could not be read person=… error=…`, `approval page: whether Dispatch holds the approver cannot be read, so nothing was decided login=… error=…` and `broker: introspect token failed: whether Dispatch holds its person cannot be read person=… error=…` | At ERROR, for each check the hold could not decide, at the API's routes, the airlock's proxy port (a call it carries included), the approval page and introspection. Introspection writes none for a person whose not-held answer has passed its deadline: it answers their token active and not held with a `not_held_until` already past, which Dispatch, the Envoy listener and the NATS auth service each refuse as a deadline passed. `error` is the gate's own, which can name the database's user and address; the refused caller is told only one of the fixed reasons ([A person Dispatch holds](#a-person-dispatch-holds)). |
@@ -2407,7 +2414,7 @@ own listing.
 | `broker_nats_callout_seconds` | histogram | | How long the auth service took to answer one connection, from the request reaching the replica. Its buckets straddle the decision's 1.5-second budget and the two seconds the hub waits for an answer. |
 | `broker_nats_callout_dropped_total` | counter | `reason` | Each authorization request the auth service answered not at all; the hub refuses that client at its own timeout. `reason` is `past_bounds` (the replica already held 1024 requests waiting and 1024 being refused), `hub_gave_up` (the hub had stopped waiting for the answer, read from the hub's own clock, so no skew between the broker's clock and the hub's counts here), `unopened` (not sealed to the service's curve key), `not_a_request`, or `pending_limit` (dropped by the NATS client on arrival, past the subscription's pending limits). The count moves every second whether or not the log takes writes. The broker logs the first drop in a minute, at WARN, `natscallout: dropped authorization requests unanswered` with each reason's count since the last such line and each reason's first drop (`<reason>_first`); a replica that stops logs what it counted since its last line. |
 | `broker_hold_unchecked_total` | counter | `last_answer` | Each time the broker served a person while Dispatch could not be asked whether it holds them, at most once a minute for each person: `not_held` when it served on the last answer Dispatch gave, `none` when it keeps no answer for them ([A person Dispatch holds](#a-person-dispatch-holds)). Any count means an outage of Dispatch served people unchecked. |
-| `broker_member_kind_unchecked_total` | counter | `kept` | Each member-kind read the broker answered from the kind it kept because Dispatch could not be asked, at most once a minute for each person: `full`, served as a full member; `restricted`, `none` (nothing kept, or a kind of none) and `unreadable` (the kept answer could not be read, or names a kind this broker does not know), each refused `503 MEMBER_KIND_UNCHECKABLE` ([the member kind and the project answers, kept](#a-person-dispatch-holds)). A `full` count means an outage of Dispatch served people on an earlier answer. |
+| `broker_member_kind_unchecked_total` | counter | `kept` | Each member-kind read the broker answered from the kind it kept because Dispatch could not be asked, at most once a minute for each person: `full`, served as a full member; `restricted`, `none` (nothing kept, a kind of none, or a kind older than the hold's answer kept for the person) and `unreadable` (the kept answer could not be read, or names a kind this broker does not know), each refused `503 MEMBER_KIND_UNCHECKABLE` ([the member kind and the project answers, kept](#a-person-dispatch-holds)). A `full` count means an outage of Dispatch served people on an earlier answer. |
 | `broker_project_visibility_unchecked_total` | counter | `kept` | Each project read of the request machine's person rule the broker answered from the answer it kept because Dispatch could not be asked, at most once a minute for each person and project: `public`, `visible` and `missing`, served; `not_visible`, `none` and `unreadable`, refused as before. |
 
 Each pod counts its own answers, attempts, reads and approves, from zero at its start.

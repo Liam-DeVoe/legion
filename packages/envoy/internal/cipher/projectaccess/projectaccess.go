@@ -25,17 +25,20 @@
 // each person one call at a time, not one per caller. A read under Fresh takes neither: it asks
 // Dispatch itself.
 //
-// A broker keeps each answer of the person route it fetches in its database (Keep, the hold's
-// person_standing), whichever read fetched it, under the later-as_of rule, so that while Dispatch
-// cannot be asked (Unanswered) MemberKind answers from the member kind Dispatch last gave: a person
-// last kept as a full member is served as one, and every other person, one kept restricted, one of
-// whom no kind is kept, and one whose kept kind cannot be read, is refused as before. A demotion
-// that Dispatch answers during an outage is written and refuses from then on; one it never
-// answered takes effect when it answers again. An answer Dispatch gives always wins. It keeps each
-// answer of the project route the same way (project_standing, later by the time it was asked), and
-// a read under OrKept, the request machine's person rule's, answers from it while Dispatch cannot
-// be asked: a project last answered public or visible to the person shows it to them, a key last
-// answered no project is no project again, and every other read is refused as before.
+// A broker keeps the member kind of each answer of the person route it fetches in its database
+// (Keep, person_member_kind), whichever read fetched it and whether or not the answer names held,
+// under the later-as_of rule, so that while Dispatch cannot be asked (Unanswered) MemberKind
+// answers from the member kind Dispatch last gave: a person last kept as a full member is served as
+// one, and every other person, one kept restricted, one of whom no kind is kept, one whose kept
+// kind is older than the hold the hold gate keeps for them, and one whose kept kind cannot be read,
+// is refused as before. A demotion that Dispatch answers, during an outage or before it, is written
+// and refuses from then on; one it never answered takes effect when it answers again. An answer
+// Dispatch gives always wins. It keeps each answer of the project route the same way
+// (project_standing, later by the time it was asked), and a read under OrKept, the request
+// machine's person rule's, answers from it while Dispatch cannot be asked: a project last answered
+// public or visible to the person shows it to them, a key last answered no project is no project
+// again until an answer that it exists is kept for anyone, and every other read is refused as
+// before.
 package projectaccess
 
 import (
