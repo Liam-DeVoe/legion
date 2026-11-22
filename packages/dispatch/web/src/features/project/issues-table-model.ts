@@ -298,8 +298,9 @@ const phoneMin = (id: ColumnId): number => COMPACT_COLUMN_MIN[id] ?? COLUMN_MIN[
  * width and never below its minimum, with Updated hidden until a reader shows it. Select,
  * Priority, Key and Title stay pinned within 60% of a box 640 px wide or wider, Title narrowing
  * first; on a phone, where the key and the title are what identify a row, Select, Key and Title
- * stay pinned within 85% of the box, Key at its phone width and Title taking what is left down
- * to its phone minimum, so an edge of the next column shows the table scrolls sideways. Every
+ * stay pinned within 85% of the box, Key as wide as the widest key the rows draw and never
+ * narrower than its phone width, and Title taking what is left down to its phone minimum, so an
+ * edge of the next column shows the table scrolls sideways. Every
  * saved `dispatch.project-table.<key>` record was written for these columns, whether its key is
  * a project or the one key every table scoped to a priority shares (`IssuesTable`).
  */
@@ -315,6 +316,8 @@ export const ISSUE_TABLE_COLUMNS: LayoutColumns = {
       share: 0.85,
       widths: { key: phoneMin("key") },
       flexibleMin: phoneMin("title"),
+      // A key is as long as its number: the column is as wide as the widest key the rows draw.
+      measured: "key" satisfies ColumnId,
     },
     flexible: "title" satisfies ColumnId,
   },

@@ -256,6 +256,11 @@ export function useDataTable<Row>({
     scrollRef: layout.scrollRef,
     scrollToIndex: (index) => virtualizer.scrollToIndex(index, { align: "auto" }),
   });
+  // The rows drawn decide a measured column's width (`useTableLayout`), so a page of other rows
+  // is measured again, though the box keeps its size.
+  const drawnRows = displayRows.map(({ row }) => row.id).join(" ");
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `drawnRows` stands for the rows it joins.
+  useLayoutEffect(() => layout.measure(), [drawnRows, layout.measure]);
   const previousView = useRef(viewKey);
   useLayoutEffect(() => {
     if (previousView.current !== viewKey) layout.scrollRef.current?.scrollTo({ top: 0 });

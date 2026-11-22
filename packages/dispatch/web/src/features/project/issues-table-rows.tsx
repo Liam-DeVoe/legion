@@ -58,6 +58,7 @@ export function IssueRow({
         return (
           <td
             className={`overflow-hidden border-b px-2 py-2 ${borderDefault} ${pinned ? `sticky z-10 ${changed ? selectedCardBg : surfaceBg}` : ""} ${pinned && cell.column.getIsLastColumn("left") ? "border-r" : ""} ${row.depth > 0 && cell.column.id === "select" ? "pl-6" : ""}`}
+            data-column={cell.column.id}
             key={cell.id}
             style={{
               width: cell.column.getSize(),
