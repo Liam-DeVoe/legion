@@ -5,6 +5,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
@@ -66,5 +67,51 @@ func TestAPlansRoleIsStoredWithItsTypeAndAChangedRoleIsAChangedTask(t *testing.T
 	after := planStandingOf(t, pool, engine, key, gen)
 	if want := prober(3, "Probe again."); !reflect.DeepEqual(after.plan.Roles, want) {
 		t.Fatalf("the roles of version 3 = %+v, want %+v", after.plan.Roles, want)
+	}
+}
+
+// A step whose role the owner's plan defines is no step of a role the deployment lost: the plan in
+// force keeps the role with the version that defines it, so the deployment, which defines no
+// prober, stops nothing. In `implementer prober` the implementer's pass starts the prober and the
+// task runs on at step 2, with no task-stopped notice; a boot of the daemon then leaves the task
+// running and stops no claim.
+func TestAStepOfARoleOfAPlanIsNoLostRole(t *testing.T) {
+	pool := migratedPool(t)
+	engine := returnEngine()
+	if _, defined := engine.cfg.Deployment.Roles["prober"]; defined {
+		t.Fatal("the engine's deployment defines prober, want it a role of the plan alone")
+	}
+	root := stepRoot(t, pool, phase.Admitted)
+	key, gen := root.Key, root.Generation
+	given := ownersPlan(t, key, gen, 1, givenTask(t, "Build the widget, then probe it.", "implementer", "prober"))
+	given.Plan.Roles = []plan.PlanRole{{Name: "prober", Type: plan.TypeTesting, Prompt: "# Prober\n\nProbe the change."}}
+	mustTake(t, "the plan that defines prober", applyFacts(t, pool, engine)(planID(key, gen, 1), given))
+	seedTreeLifecycle(t, pool, key)
+	move(t, pool, engine, key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+
+	// The implementer's completion carries its real claim token, so a stop of the task, whose
+	// step_stop row names that claim, would be written and read below rather than refused.
+	pass := intake.HandoffComplete{Generation: gen, Issue: key, Role: claim.RoleImplementer, Claim: claim.Token(treeRoleToken(t, key, claim.RoleImplementer)),
+		Summary: "built", Commit: stepCommitW, HandoffRecord: "impl-1", HandoffVersion: 1}
+	if result := applyFacts(t, pool, engine)("impl-1", pass); result.Refusal != nil {
+		t.Fatalf("the implementer's pass was refused: %+v", result.Refusal)
+	}
+	if starts := roleStartsOf(t, pool, key, "prober"); len(starts) != 1 {
+		t.Fatalf("the prober's starts after the implementer's pass = %+v, want one", starts)
+	}
+	at := record.TaskPlace{Kind: record.PlaceStep, Position: 2}
+	if task := taskOf(t, pool, engine, key); task.State != record.TaskRunning || task.Place != at {
+		t.Fatalf("task a after the implementer's pass = %s at %+v (%q), want running at step 2", task.State, task.Place, task.StoppedReason)
+	}
+	if stopped := noticesOf(t, pool, key, "task-stopped"); len(stopped) != 0 {
+		t.Fatalf("the task-stopped notices = %+v, want none: the plan defines the prober", stopped)
+	}
+
+	applyRefusingNothing(t, pool, engine, intake.DaemonBooted{Boot: 1})
+	if task := taskOf(t, pool, engine, key); task.State != record.TaskRunning || task.Place != at {
+		t.Fatalf("task a after the boot = %s at %+v (%q), want running at step 2", task.State, task.Place, task.StoppedReason)
+	}
+	if stops := superviseRequests(t, pool, "step_stop"); len(stops) != 0 {
+		t.Fatalf("step_stop rows after the boot = %v, want none", stops)
 	}
 }

@@ -48,6 +48,9 @@ type Walk struct {
 	// from, its document and its number, which the run's plan node names (planNode); zero where
 	// the run has no plan rows.
 	Version record.PlanVersion
+	// Roles are the roles the plan in force defines (record.StoredPlan.Roles), which a step of its
+	// task may name beside the deployment's; none where the run has no plan rows.
+	Roles []record.PlanRole
 }
 
 // todaysSteps is the steps of the task default of a run with no plan rows, which walks today's
@@ -77,7 +80,7 @@ func (e *Engine) walk(ctx context.Context, tx pgx.Tx, issue record.Issue) (Walk,
 	}
 	steps := stored.Steps[task.Task]
 	return Walk{Stored: true, Task: task.Task, Text: task.BlockText, Steps: steps, Line: plan.Line(namedSteps(steps)), State: task.State,
-		Place: task.Place, StoppedReason: task.StoppedReason, Version: stored.Version}, nil
+		Place: task.Place, StoppedReason: task.StoppedReason, Version: stored.Version, Roles: stored.Roles}, nil
 }
 
 // namedSteps is steps as a plan names them (plan.Step), each its role and the key of the agent it
@@ -402,16 +405,17 @@ func returnStep(issue record.Issue, w Walk, from stepSite, n int, act returnAct)
 	return record.TaskPlace{Kind: record.PlaceStep, Position: n}, ""
 }
 
-// lostAt says whether place is a step of w's task whose role d does not define: a role the
-// deployment lost, whose step no role may start (stopLostRole). Legion's own roles are in every
-// deployment (config.Config.Deployment, and New's default), so only a role of a deployment's own
+// lostAt says whether place is a step of w's task whose role neither d nor the plan in force
+// (Roles) defines: a role the deployment lost, whose step no role may start (stopLostRole).
+// Legion's own roles are in every deployment (config.Config.Deployment, and New's default), and a
+// role of the plan is kept with the version that defines it, so only a role of a deployment's own
 // can be lost.
 func (w Walk) lostAt(place record.TaskPlace, d plan.Deployment) (record.TaskPlace, bool) {
 	step, ok := w.planStepAt(place)
 	if !w.Stored || !ok {
 		return record.TaskPlace{}, false
 	}
-	if _, defined := d.Roles[step.Role]; defined {
+	if _, defined := d.Roles[step.Role]; defined || slices.ContainsFunc(w.Roles, func(role record.PlanRole) bool { return role.Role == step.Role }) {
 		return record.TaskPlace{}, false
 	}
 	return place, true
