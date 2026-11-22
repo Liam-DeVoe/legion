@@ -160,8 +160,8 @@ func sessionConsumerCalls() []string {
 
 // Listener is the grant envoy-listener needs as machine machineID: the listener grant
 // (listenerGrant), then the session consumers' calls (sessionConsumerCalls), which only this set
-// and ListenerHost hold, and the reads and writes of the session consumers' selection bucket
-// (KVWriteExisting of consumernames.SessionBucket), which the fresh consumer naming mode keeps and
+// and ListenerHost hold, and the session consumers' selection bucket's leader read and key writes
+// (KVRecordStore of consumernames.SessionBucket), which the fresh consumer naming mode keeps and
 // the operator alone creates. A hub that renders this set for its own listener gives that listener
 // consumer delivery; a listener connecting as a host or Dispatch user does not have it, and has no
 // session of its own registered at all: every registration it cannot give a consumer is refused by
@@ -169,7 +169,7 @@ func sessionConsumerCalls() []string {
 func Listener(machineID string) Permissions {
 	grant := listenerGrant(machineID)
 	grant.Publish = append(grant.Publish, sessionConsumerCalls()...)
-	grant.Publish = append(grant.Publish, KVWriteExisting(consumernames.SessionBucket)...)
+	grant.Publish = append(grant.Publish, KVRecordStore(consumernames.SessionBucket)...)
 	return grant
 }
 
@@ -281,8 +281,10 @@ func EdgeRelayReplyPrefix(machineID string) string {
 // ensureSpentProofBucket), so a full listener starts before an edge listener. The rest of
 // Listener's publish list stays as it is: the stream's info and stored-message get, its durable's
 // calls, JetStream's account info, the KV calls of every bucket of bus.ListenerBuckets but its
-// stream's create, its update and its direct get, the interest bucket's purge and the session
-// consumers' calls.
+// stream's create, its update and its direct get, the interest bucket's purge, the session
+// consumers' calls, and the session consumers' selection bucket's leader read and key writes
+// (KVRecordStore of consumernames.SessionBucket), which the fixed naming mode's read of the cutover
+// marker and the fresh mode's selection records take, and which hold no direct get.
 //
 // Subscribe: its own machine's inbox prefix (EdgeInboxPrefix) in place of every reply inbox, so
 // the server delivers it no other client's replies; every session's relay subject
@@ -344,7 +346,10 @@ func EdgeRelayReplyPrefix(machineID string) string {
 //   - Today's agent, relay and resume subjects name no project, so it can publish on any
 //     session's, and a consumer on any filter reads any stored message.
 //   - Its KV calls write every record of the seven buckets of bus.ListenerBuckets: interests,
-//     roles, sessions, known sessions, Legion agents, CI state and DPoP proofs.
+//     roles, sessions, known sessions, Legion agents, CI state and DPoP proofs. Its selection
+//     bucket calls (KVRecordStore) write every session's selection record, which names the
+//     consumer a session's messages come from in the fresh naming mode: no reach past the
+//     consumer calls above, which already create, update and delete any session's consumer.
 func Edge(machineID string, projects []string) (Permissions, error) {
 	if !SessionToken(machineID) {
 		return Permissions{}, fmt.Errorf("natsgrant: the edge's machine id %q is not one subject token", machineID)
@@ -409,16 +414,18 @@ func KVWrite(bucket string) []string {
 	}
 }
 
-// KVWriteExisting is KVWrite without the bucket stream's create and update: the reads and writes
-// of a bucket another holder made, which its holder can neither make nor reconfigure. The listener
-// holds it for the session consumers' selection bucket (Listener), which the operator's
-// create-bucket alone creates, so a bucket lost under a running listener is never made again
-// empty by it: every session-consumer call refuses until the operator's recovery.
-func KVWriteExisting(bucket string) []string {
-	stream := kvStream + bucket
-	return slices.DeleteFunc(KVWrite(bucket), func(entry string) bool {
-		return entry == jsAPI+"STREAM.CREATE."+stream || entry == jsAPI+"STREAM.UPDATE."+stream
-	})
+// KVRecordStore is the two calls consumernames.KVStore makes on bucket, and nothing else: the
+// leader read of a key's last message (STREAM.MSG.GET) and the writes to its keys. It holds no
+// create or update of the bucket's stream, so its holder never makes a bucket another made, nor
+// makes it again empty after a loss, and none of nats.go's KV calls (the stream's info, a direct
+// get, a watcher's consumer and its flow control) that the store does not make. The listener holds
+// it for the session consumers' selection bucket (Listener), which the operator's create-bucket
+// alone creates: every session-consumer call refuses until the operator's recovery.
+func KVRecordStore(bucket string) []string {
+	return []string{
+		jsAPI + "STREAM.MSG.GET." + kvStream + bucket,
+		kvSubjects + bucket + ".>",
+	}
 }
 
 // KVRead are the calls a reader of one bucket makes and nothing that writes it: the bucket's

@@ -310,7 +310,7 @@ func (r *relaySessions) writeFrames(dir string, ids []string, lg *log.Logger) {
 // pullSpy counts the pull requests on the stream's consumers: on a connection of its own it
 // subscribes the subject a pull request is published on, $JS.API.CONSUMER.MSG.NEXT.<stream>.<consumer>,
 // and gets a copy of each. Session consumers are those named s-<session id> in the fixed naming
-// mode (bus.SessionConsumerName) and session~<nuid> in the fresh one (bus.SessionConsumerNamePrefix).
+// mode (bus.SessionConsumerName) and session~<random> in the fresh one (bus.SessionConsumerNamePrefix).
 type pullSpy struct {
 	nc              *nats.Conn
 	total, sessions atomic.Int64
@@ -350,7 +350,7 @@ func (p *pullSpy) close() { p.nc.Close() }
 
 // streamConsumers is ENVOY_NOTIFICATIONS's own consumer_count, read from the stream's info at the
 // step's start and at its end. It counts the consumers of that stream alone: the sessions'
-// consumers (s-<session id>, or session~<nuid> in the fresh naming mode), the listener's durable
+// consumers (s-<session id>, or session~<random> in the fresh naming mode), the listener's durable
 // and Dispatch's. The sampler's server-wide /jsz count (resources.js_consumers_max,
 // js_consumers_last) counts every consumer the server holds, the KV buckets' watchers among them,
 // so the two numbers answer different questions and the run's report keeps them apart.

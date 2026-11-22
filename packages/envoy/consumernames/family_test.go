@@ -149,9 +149,10 @@ func TestOwnsFamilyServesOnlyTheKeysOwnConsumers(t *testing.T) {
 			t.Fatal(err)
 		}
 		hand := New(Config{
-			Prefix:   func(string) string { return "other" },
-			Fixed:    func(string) string { return "other" },
-			Metadata: naming.Metadata,
+			Prefix:      func(string) string { return "other" },
+			Fixed:       func(string) string { return "other" },
+			Metadata:    naming.Metadata,
+			CreateBound: testCreateBound,
 		})
 		for _, c := range []struct {
 			name  string

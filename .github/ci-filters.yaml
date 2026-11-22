@@ -1239,7 +1239,6 @@ go_notices:
   - 'packages/envoy/cmd/cipher-helper/*'
   - *listener_command
   - 'packages/envoy/consumernames/*'
-  - 'packages/envoy/natsgrant/*'
   - 'packages/envoy/infra/go.mod'
   - 'packages/envoy/infra/go.sum'
   - 'packages/envoy/infra/go.work'
@@ -2837,7 +2836,9 @@ envoy_go_race:
   - '!packages/envoy/internal/testnats/callout_image_test.go'
   - '!packages/envoy/internal/testnats/callout_test.go'
   - '!packages/envoy/internal/testnats/cluster_test.go'
+  - '!packages/envoy/internal/testnats/handshake_hold_test.go'
   - '!packages/envoy/internal/testnats/image_test.go'
+  - '!packages/envoy/internal/testnats/image_url_test.go'
   - '!packages/envoy/internal/testnats/loopback_test.go'
   - '!packages/envoy/internal/testnats/nats_test.go'
   - '!packages/envoy/internal/testnats/proxy_test.go'

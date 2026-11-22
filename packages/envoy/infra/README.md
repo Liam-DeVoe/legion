@@ -4038,7 +4038,7 @@ to.
 
 After those entries, and in `ListenerPermissions` and `ListenerHostPermissions` alone, come the
 calls of the session consumers, one durable pull consumer per session named `s-<session id>` in the
-default fixed naming mode and `session~<nuid>` in the fresh one (`bus.SessionConsumers`), on any
+default fixed naming mode and `session~<random>` in the fresh one (`bus.SessionConsumers`), on any
 consumer of the stream: `$JS.API.CONSUMER.CREATE` (with and
 without a filter subject in its subject), `INFO`, `DELETE` and `MSG.NEXT` on
 `ENVOY_NOTIFICATIONS.*`, the acknowledgements `$JS.ACK.ENVOY_NOTIFICATIONS.*.>`, and the stream's
@@ -4054,16 +4054,16 @@ asks for consumer delivery `503 no_grant` (one probe and one refusal per ten-min
 episode), writing nothing, and a session registering through it is not registered at all and
 receives nothing until that user's grant carries the session consumers.
 
-Last in those two sets come the reads and writes of the session consumers' selection bucket,
+Last in those two sets come the session consumers' selection bucket's calls,
 `envoy_session_consumers`, which a listener in the fresh consumer naming mode
 (`ENVOY_CONSUMER_NAMES=fresh`) keeps each session's current consumer name in, and which a listener
 in the default fixed mode reads at its start and on every new connection, making no consumer call
-on that connection until the read says the cutover has not converted the bucket: the
-stream info, direct and stream message gets of `KV_envoy_session_consumers`, writes to
-`$KV.envoy_session_consumers.>`, its watchers' consumer create and delete, and their flow-control
-replies (`natsgrant.KVWriteExisting`). They hold no create or update of the bucket's stream, so no
-listener makes the bucket, or makes it again empty after a loss: the operator's create-bucket does,
-and every session-consumer call of the fresh mode refuses until it has. `HostPermissions` holds
+on that connection until the read says the cutover has not converted the bucket: the leader read
+of a key's last message, `$JS.API.STREAM.MSG.GET.KV_envoy_session_consumers`, and the writes to
+`$KV.envoy_session_consumers.>` (`natsgrant.KVRecordStore`), the two calls the selection store
+makes. They hold no create or update of the bucket's stream, so no listener makes the bucket, or
+makes it again empty after a loss: the operator's create-bucket does, and every session-consumer
+call of the fresh mode refuses until it has. `HostPermissions` holds
 none of them, and a host's listener (`ENVOY_LISTENER_ROLE=host`, which `host:Listener` renders under `hostUser: true`)
 reads no marker at all: it runs fixed names for good. `HostPermissions` is retiring, no
 production connection holds it, and the cutover's window requires that no host listener runs at
@@ -4248,6 +4248,11 @@ What the lists do not hold back:
   takeover subjects wherever a client subscribes them: the cycle refusal above holds only for the
   notification stream's own consumers. No row creates such a consumer: this one is read from the
   server's rule above.
+- Its selection bucket calls (`$JS.API.STREAM.MSG.GET.KV_envoy_session_consumers` and
+  `$KV.envoy_session_consumers.>`, as `ListenerPermissions` holds them) write every session's
+  selection record, which names the consumer a session's messages come from in the fresh naming
+  mode. That is no reach past the consumer calls above, which already create, update and delete
+  any session's consumer.
 
 Its read is the whole bus until subjects and keys name their project, and its writes through the
 consumer calls are as wide until something other than the edge creates its consumers. The auth

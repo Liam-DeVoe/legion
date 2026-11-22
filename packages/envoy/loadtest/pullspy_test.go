@@ -7,7 +7,7 @@ import (
 )
 
 // The pull spy counts a session's pull requests in either naming mode: on s-<session id> in the
-// fixed mode and on the session's session~<nuid> in the fresh mode (bus.SessionConsumerNamePrefix).
+// fixed mode and on the session's session~<random> in the fresh mode (bus.SessionConsumerNamePrefix).
 // The listener's durable and Dispatch's consumers count toward the total alone. The control is the
 // fixed name, which the spy counted before the fresh mode existed.
 func TestThePullSpyCountsASessionsPullsInEitherNamingMode(t *testing.T) {

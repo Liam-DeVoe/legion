@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/nats-io/nats.go"
@@ -164,6 +165,9 @@ func newDurableNames(own jetstream.JetStream, pool Pool, spec ConsumerSpec) (*du
 		NoDelete: true,
 		Owner:    fmt.Sprintf("legion daemon %s, pid %d", spec.Project, os.Getpid()),
 		Now:      spec.Now,
+		// One create runs at most as long as the boot attempt that sends it (the daemon's
+		// bootTimeout, 30 s), so the record names its candidate until no create can land.
+		CreateBound: createBound,
 		Reserved: func(ctx context.Context, _ string, op consumernames.Op) error {
 			_, err := d.on(ctx, op.Candidate)
 			return err
@@ -171,6 +175,12 @@ func newDurableNames(own jetstream.JetStream, pool Pool, spec ConsumerSpec) (*du
 	})
 	return d, nil
 }
+
+// createBound is the longest one create of a fresh name can run (consumernames.Config.CreateBound):
+// the daemon's boot attempt, bootTimeout in internal/daemon, 30 s, which bounds every open's
+// create today, so the create wait does not change. A shorter bound would end creates a loaded
+// server answers late, which the rig already sees take 10 s.
+const createBound = 30 * time.Second
 
 // on is JetStream on physical's connection, opened now if it is not open. The dial runs outside
 // the lock, so a reader of another name never waits on it; of two dials of one name at once, the

@@ -117,10 +117,11 @@ func inProcessJetStream(t *testing.T, url string) jetstream.JetStream {
 }
 
 // ackThrough fetches name's next messages up to stream sequence through, acknowledging each and
-// waiting for the server to take each acknowledgement.
+// waiting for the server to take each acknowledgement. Its bind waits out a cluster's 10008 for up
+// to bindBound (bindConsumer).
 func ackThrough(t *testing.T, stream jetstream.Stream, name string, through uint64) {
 	t.Helper()
-	consumer, err := stream.Consumer(context.Background(), name)
+	consumer, err := bindConsumer(context.Background(), stream, name, bindBound(t))
 	if err != nil {
 		t.Fatalf("bind %s: %v", name, err)
 	}
