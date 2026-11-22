@@ -138,6 +138,30 @@ export const PUBLIC_REQUEST_NAMES: readonly PublicRequestName[] = [
   },
   {
     place: "field",
+    name: "message",
+    source:
+      "POST /v1/messages/send and /v1/messages/publish (the Envoy listener, listenerwire.MessageBody): the message text the listener delivers to its recipient",
+  },
+  {
+    place: "field",
+    name: "payload",
+    source:
+      "POST /v1/messages/send and /v1/messages/publish (the Envoy listener, listenerwire.MessageBody): the event frame, a string, the listener delivers beside the message; it carries the message's text again",
+  },
+  {
+    place: "field",
+    name: "target_session",
+    source:
+      "POST /v1/messages/send (the Envoy listener, listenerwire.SendRequest): the session id the message is sent to, which the listener names in its answer (\"no live session <id>\")",
+  },
+  {
+    place: "field",
+    name: "expects_reply",
+    source:
+      "POST /v1/messages/send and /v1/messages/publish (the Envoy listener, listenerwire.MessageBody): what the message wants back, false, \"optional\" or \"required\"",
+  },
+  {
+    place: "field",
     name: "role",
     source:
       "POST /legion/v1/operator/claims/* (the Legion daemon's operator claim routes): the role a claim is spawned or read for",

@@ -3980,6 +3980,13 @@
       "production": "redact.requestTokens with the public-name table: GitHub's page and per_page print as they came, and a value under an undeclared query name is still redacted"
     },
     {
+      "id": "redact-listener-send-names-public",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestAListenerSendsWordsPrintAndAnUndeclaredFieldDoesNot",
+      "production": "redact.requestTokens with the public-name table: a listener send's target_session, expects_reply, message and payload print as they came, and a string under an undeclared body name is still redacted"
+    },
+    {
       "id": "library-error-needs-its-record",
       "requirement": "r4-unchanged",
       "package": "./internal/redact",
@@ -8856,6 +8863,11 @@
       "site": "GitHub's page and per_page redacted as credentials from GitHub's words, which broke the rate-limit message main's CI test reads (installation ID [redacted])",
       "source": "the merge of main into the pull request",
       "guard": "redact-pagination-names-public"
+    },
+    {
+      "site": "a listener send's target_session, expects_reply, message and payload redacted as credentials from the listener's words (no live session [redacted], message is [redacted], and every run of eight characters the reason shares with the message), which broke five of main's delivery tests",
+      "source": "the merge of main into the pull request",
+      "guard": "redact-listener-send-names-public"
     }
   ]
 }
