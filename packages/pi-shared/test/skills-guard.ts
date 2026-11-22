@@ -1172,6 +1172,16 @@ const NO_RED_IS_READ_AT_ONCE =
   "A read made seconds after a push never shows that the head has no red: a check the role was told of that no `pull_request` run of the head holds is waited for once, as *The act and the wait* says.";
 
 /**
+ * The first of `## Which red is the change's` readings, as the architect narrowed it after the
+ * rate-limit red at d16b295a (2026-11-22, 02:33Z): a check that judges the pull request itself is
+ * the change's only when its own output names the pull request's own field. The reading before
+ * said such a check "is the change's, and it gets no re-run" whatever failed it, so a title check
+ * that GitHub's API limit failed was read as the change's red, which costs the lap this page saves.
+ */
+const A_PULL_REQUEST_CHECK_IS_THE_CHANGES_ON_ITS_FIELD =
+  "is the change's when its own output names the pull request's own field (its title, body or labels) as the cause, and it gets no re-run; a failure at a fetch, a limit or a runner in that check is read by the fourth reading, like any other failure in no test.";
+
+/**
  * The sentence of `## One re-run belongs to the head` that keeps `--required` off the counted set,
  * pinned whole and literally (the architect's gap review of 2026-11-20, item 7). `gh pr checks
  * --required` prints the checks the base requires and no other (the docs page
@@ -1420,6 +1430,11 @@ export function redAtTheHeadFaults(pages: {
           sentence: NO_RED_IS_READ_AT_ONCE,
           because:
             "a role that reads the checks seconds after a push takes a check GitHub has not started yet for a head with no red",
+        },
+        {
+          sentence: A_PULL_REQUEST_CHECK_IS_THE_CHANGES_ON_ITS_FIELD,
+          because:
+            "a role that reads every red of the title check as the change's leaves a red a limit or a runner made, and the tree pays the lap this page saves",
         },
         {
           sentence: COUNTED_SET_IS_NEVER_REQUIRED,

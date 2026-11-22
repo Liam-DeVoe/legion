@@ -71,10 +71,12 @@ the reviewer read it.
 
 Four readings decide it:
 
-1. A check that judges the pull request itself rather than its code, such as the title check, is
-   the change's, and it gets no re-run. The one exception is a check whose own output names a
-   comment or a review as the cause. No role may edit a comment or a review, so the role tells
-   the architect, and that red is re-run by nobody.
+1. A check that judges the pull request itself rather than its code, such as the title check, is the
+   change's when its own output names the pull request's own field (its title, body or labels) as
+   the cause, and it gets no re-run; a failure at a fetch, a limit or a runner in that check is read
+   by the fourth reading, like any other failure in no test. The one exception is a check whose own
+   output names a comment or a review as the cause. No role may edit a comment or a review, so the
+   role tells the architect, and that red is re-run by nobody.
 2. An aggregate check is resolved to the lane that failed it. That lane is judged in its place.
 3. A failing test is the change's when its own package is one the pull request changes: the Go
    package for a Go test, the directory of the test file for a Bun or a Playwright suite. A run of
@@ -238,16 +240,14 @@ red is the change's* says, and most clear there. This section takes over in two 
 came back red at a step that ran **before any test of the change** — a setup or install step, a
 toolchain, a runner, a registry — or the lane's own output already shows the defect is in a file
 another tree owns. A failing test is never the second case, whatever package holds it: one that is
-not the change's takes the one re-run on its first red, and on its second red it is handled as
-*Red again* above says, never as an external cause.
-
-In both cases a further run of the lane meets the same defect, so no re-run ends it. The role
-records the external cause in the same record this page already asks for — the lane, the error,
-the head, and the change it waits on — tells the architect, and ends its round where it stands: a
-reviewer submits the `REQUEST_CHANGES` naming the red, since that is how a reviewer's round ends.
-It waits for nothing here. The fix is another tree's: it reaches this head only through a forward
-merge. A role that waits holds its phase and its pod for that, and the architect, who arranges it,
-has not seen the record.
+not the change's takes the one re-run on its first red, and on its second red it is handled as *Red
+again* above says, never as an external cause. In both cases a further run of the lane meets the
+same defect, so no re-run ends it. The role records the external cause in the same record this page
+already asks for — the lane, the error, the head, and the change it waits on — tells the architect,
+and ends its round where it stands: a reviewer submits the `REQUEST_CHANGES` naming the red, since
+that is how a reviewer's round ends. It waits for nothing here. The fix is another tree's: it
+reaches this head only through a forward merge. A role that waits holds its phase and its pod for
+that, and the architect, who arranges it, has not seen the record.
 
 No role pushes a commit to make a new head for its own sake, and no role patches another tree's
 file to clear its own lane. The work waits until the repository's default branch carries the
