@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/grapherase"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -494,6 +495,11 @@ func TestTheCommentEraseTakesAnEditedReplyOutOfItsRootsMargin(t *testing.T) {
 // erased text - here a comment on another line whose body repeats it - is that comment's text,
 // which stands in the document's history after the run. The listing names that record as left,
 // by its document and its comment, so it says which bytes of the replaced history the run keeps.
+//
+// The test reads its listing only once the window arm and the keyword fill have written what they
+// owe the document and the comment (waitForWindowsAndKeywordVersion), since those windows and that
+// keyword version hold the erased text, and one written between the listing and the confirmed run
+// would give that run a listing of another digest, which it refuses.
 func TestTheBlockEraseListsAMarginRecordThatQuotesItAsLeft(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -514,6 +520,7 @@ func TestTheBlockEraseListsAMarginRecordThatQuotesItAsLeft(t *testing.T) {
 	// the live text the erase left - a version holding the marker, with its event - so the erase is
 	// read against the settled document, which nothing writes to again.
 	waitForSettlementOwed(t, database, document, false)
+	waitForWindowsAndKeywordVersion(t, database, quoting)
 
 	listing, err := grapherase.Erase(ctx, databaseURL, "block", block, "", 0)
 	if err != nil {
@@ -532,5 +539,48 @@ func TestTheBlockEraseListsAMarginRecordThatQuotesItAsLeft(t *testing.T) {
 	waitForSettlementOwed(t, database, document, false)
 	if held := updatesHolding(t, database, document, quote); held == 0 {
 		t.Errorf("after the erase no stored update of the document holds the quoting comment's body, which the listing said stays")
+	}
+}
+
+// waitForWindowsAndKeywordVersion waits until the server's background writers have written every
+// row they owe comment and the documents of the test's database: the block index's window arm
+// owes comment no windows (comment_block_state.windows_owed_at) and no document any
+// (document_block_versions.windows_owed_at), and the keyword fill holds a version of comment
+// (search_text_versions, keyed by the kind comment and its id). Each such row holds the text it
+// stands for, so an erase listing of that text names it as a row the run leaves, and a run that
+// reads it after an earlier run did not reads another listing. The arm runs at least every
+// docs.BlockIndexReconcileInterval and the fill within seconds of the comment's event, so the wait
+// gives up after three of the arm's intervals, naming what is still owed.
+func waitForWindowsAndKeywordVersion(t *testing.T, database *store.Store, comment string) {
+	t.Helper()
+	bound := 3 * docs.BlockIndexReconcileInterval
+	deadline := time.Now().Add(bound)
+	for {
+		var commentWindows, keywordVersion bool
+		var documentWindows []string
+		if err := database.Pool.QueryRow(context.Background(), `
+			select exists (select 1 from comment_block_state where comment_id = $1::text::uuid and windows_owed_at is not null),
+			       coalesce((select array_agg(artifact_id::text order by artifact_id) from document_block_versions where windows_owed_at is not null), '{}'),
+			       exists (select 1 from search_text_versions where kind = 'comment' and id = $1::text)`,
+			comment).Scan(&commentWindows, &documentWindows, &keywordVersion); err != nil {
+			t.Fatalf("read what the window arm and the keyword fill owe comment %s: %v", comment, err)
+		}
+		if !commentWindows && len(documentWindows) == 0 && keywordVersion {
+			return
+		}
+		if time.Now().After(deadline) {
+			var owed []string
+			if commentWindows {
+				owed = append(owed, "the window arm owes comment "+comment+" its windows")
+			}
+			if len(documentWindows) > 0 {
+				owed = append(owed, "the window arm owes document(s) "+strings.Join(documentWindows, ", ")+" their windows")
+			}
+			if !keywordVersion {
+				owed = append(owed, "the keyword fill has written no version of comment "+comment)
+			}
+			t.Fatalf("after %s %s", bound, strings.Join(owed, "; "))
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 }
