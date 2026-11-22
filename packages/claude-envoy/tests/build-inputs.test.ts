@@ -27,7 +27,9 @@ const ROW_LIMIT_MS = 300_000
 const REPORT_MS = 10_000
 
 /** `command` run in `cwd`; its stdout, or an error naming the command and its stderr when it fails,
- *  or naming it, killed, when it has not exited by `deadline` (epoch ms), the row's own. */
+ *  or naming it, killed, when it has not exited by `deadline` (epoch ms), the row's own. It runs in
+ *  a process group of its own, and the kill takes the whole group: a child of the command that
+ *  holds its output pipes open would otherwise keep the read waiting past the kill, to Bun's timer. */
 async function run(
   command: string[],
   cwd: string,
@@ -37,14 +39,20 @@ async function run(
   const child = Bun.spawn(command, {
     cwd,
     ...(env === undefined ? {} : { env }),
+    stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
+    detached: true,
   })
   let killed = false
   const guard = setTimeout(
     () => {
       killed = true
-      child.kill("SIGKILL")
+      try {
+        process.kill(-child.pid, "SIGKILL")
+      } catch {
+        // The group already exited.
+      }
     },
     Math.max(0, deadline - Date.now()),
   )
