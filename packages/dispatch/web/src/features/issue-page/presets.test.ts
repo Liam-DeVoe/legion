@@ -672,6 +672,171 @@ test("a node the address names with no row above it keeps the tree's order among
   );
 });
 
+/** Each top row `preset` draws with the address naming `id`, nested: its id, the id of its
+ *  parent's line, and the rows under it. */
+type Shape = [string, string | undefined, Shape[]];
+function shapeOf(root: TreeNode, preset: Preset, id: string): Shape[] {
+  const shape = (row: TreeNode): Shape => [row.id, row.parentLine?.id, row.children.map(shape)];
+  return presetView(root, preset, "", new Set([id])).root.children.map(shape);
+}
+
+// Verification draws a node at every placement the tree has, so a node the address names that
+// the tree places under two statements, the second a transclusion, stands under both whichever
+// read lands first: the view read must not drop its second placement.
+test("under Verification a node the address names stands under each statement the tree places it under, whether its view read is held or not", () => {
+  const verification: TreeAnswer = treeAnswer(
+    [
+      viewNode("r1", "requirement", "context", { in: "spec" }),
+      viewNode("r2", "requirement", "context", { in: "spec" }),
+      viewNode("c1", "check", "query", { in: "verification" }),
+    ],
+    [treeTuple("serves", "c1", "r1"), treeTuple("serves", "c1", "r2")],
+    { view: "verification" }
+  );
+  const check = (transcluded: boolean) =>
+    node("verification#b-c1", "check", [], {
+      readId: "CORE-1/verification#c1",
+      state: "failed",
+      transcluded,
+    });
+  const task = (transcluded: boolean) =>
+    node("plan#b-t1", "plan_task", [], { readId: "CORE-1/plan#t1", transcluded });
+  const tree = (views: TreeNode["views"]) =>
+    node(
+      "CORE-1",
+      "issue",
+      [
+        statement("spec#b-r1", [check(false), task(false)], { readId: "CORE-1/spec#r1" }),
+        statement("spec#b-r2", [check(true), task(true)], { readId: "CORE-1/spec#r2" }),
+      ],
+      views === undefined ? {} : { views }
+    );
+
+  expect(shapeOf(tree(undefined), "verification", "plan#b-t1")).toEqual([
+    [
+      "spec#b-r1",
+      undefined,
+      [
+        ["verification#b-c1", undefined, []],
+        ["plan#b-t1", undefined, []],
+      ],
+    ],
+    [
+      "spec#b-r2",
+      undefined,
+      [
+        ["verification#b-c1", undefined, []],
+        ["plan#b-t1", undefined, []],
+      ],
+    ],
+  ]);
+  expect(
+    shapeOf(tree({ verification }), "verification", "plan#b-t1"),
+    "the named task's places once the Verification view read is held"
+  ).toEqual(shapeOf(tree(undefined), "verification", "plan#b-t1"));
+});
+
+// A node the address names stands at each place the tree has it, whichever read lands first.
+// Here the tree places the plan task t1 first under a comment, with no row above it, and again
+// under the statement r2: Verification draws it at the top with the comment as its line, and
+// under r2 after r2's check.
+test("a node the address names stands at each place the tree has it, the first with no row above it, whether its filter's view read is held or not", () => {
+  const verification: TreeAnswer = treeAnswer(
+    [
+      viewNode("r2", "requirement", "context", { in: "spec" }),
+      viewNode("c1", "check", "query", { in: "verification" }),
+    ],
+    [treeTuple("serves", "c1", "r2")],
+    { view: "verification" }
+  );
+  const tree = (views: TreeNode["views"]) =>
+    node(
+      "CORE-1",
+      "issue",
+      [
+        node("comment-1", "comment", [
+          node("plan#b-t1", "plan_task", [], { readId: "CORE-1/plan#t1" }),
+        ]),
+        statement(
+          "spec#b-r2",
+          [
+            node("verification#b-c1", "check", [], {
+              readId: "CORE-1/verification#c1",
+              state: "failed",
+            }),
+            node("plan#b-t1", "plan_task", [], { readId: "CORE-1/plan#t1", transcluded: true }),
+          ],
+          { readId: "CORE-1/spec#r2" }
+        ),
+      ],
+      views === undefined ? {} : { views }
+    );
+
+  expect(shapeOf(tree(undefined), "verification", "plan#b-t1")).toEqual([
+    ["plan#b-t1", "comment-1", []],
+    [
+      "spec#b-r2",
+      undefined,
+      [
+        ["verification#b-c1", undefined, []],
+        ["plan#b-t1", undefined, []],
+      ],
+    ],
+  ]);
+  expect(
+    shapeOf(tree({ verification }), "verification", "plan#b-t1"),
+    "the named task's places once the Verification view read is held"
+  ).toEqual(shapeOf(tree(undefined), "verification", "plan#b-t1"));
+});
+
+// Under a row, a node the address names keeps the tree's order among that row's rows, whichever
+// read lands first. Here the tree walks the plan task t1 before the check c1 under the statement
+// r1, so Verification draws t1 before c1, not after the rows the view read places there.
+test("a node the address names under a row keeps the tree's order among that row's rows, whether its filter's view read is held or not", () => {
+  const verification: TreeAnswer = treeAnswer(
+    [
+      viewNode("r1", "requirement", "context", { in: "spec" }),
+      viewNode("c1", "check", "query", { in: "verification" }),
+    ],
+    [treeTuple("serves", "c1", "r1")],
+    { view: "verification" }
+  );
+  const tree = (views: TreeNode["views"]) =>
+    node(
+      "CORE-1",
+      "issue",
+      [
+        statement(
+          "spec#b-r1",
+          [
+            node("plan#b-t1", "plan_task", [], { readId: "CORE-1/plan#t1" }),
+            node("verification#b-c1", "check", [], {
+              readId: "CORE-1/verification#c1",
+              state: "failed",
+            }),
+          ],
+          { readId: "CORE-1/spec#r1" }
+        ),
+      ],
+      views === undefined ? {} : { views }
+    );
+
+  expect(shapeOf(tree(undefined), "verification", "plan#b-t1")).toEqual([
+    [
+      "spec#b-r1",
+      undefined,
+      [
+        ["plan#b-t1", undefined, []],
+        ["verification#b-c1", undefined, []],
+      ],
+    ],
+  ]);
+  expect(
+    shapeOf(tree({ verification }), "verification", "plan#b-t1"),
+    "the named task's place once the Verification view read is held"
+  ).toEqual(shapeOf(tree(undefined), "verification", "plan#b-t1"));
+});
+
 // Another part draws the Decisions filter's rows itself and reads its kinds from here.
 test("the Decisions filter's row kinds are the asks and the decisions", () => {
   expect(rowKindsOf("decisions")).toEqual(["ask", "decision"]);
