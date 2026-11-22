@@ -469,6 +469,63 @@ const legionMergeWaitView = z.object({
   toldState: legionMergeState.optional(),
 });
 
+/** `api.AgentStepView` — the agent a task's step waits for, and the running step that agent works
+ * (contract 224): that step's task and its place from 1. `task` and `position` are absent where
+ * the agent works no delivered step, as when a step of another task has waited for it longer, and
+ * `position` alone is absent where the agent works a retro. No plugin code reads it
+ * (LEGION_ANSWER_READS), so every field is optional. */
+const legionAgentStepView = z.object({
+  agent: nonEmptyString.optional(),
+  task: nonEmptyString.optional(),
+  position: z.number().int().positive().optional(),
+});
+
+/** `api.TaskView` — one task of an issue's plan (contract 224): where it stands, the act at its
+ * place, what the step there waits for, its own pull request and its own counts of returns.
+ * `state` is `waiting`, `running`, `held`, `done`, `stopped` or `left`; `needs` the ids of the
+ * tasks it needs, empty for none; `kind` and `position` its place (`step` with the step's place
+ * from 1, `retro` or `merge`), both absent at no act, for a task that has not started; `phase`
+ * the phase of that act, `done` for a task that is done or left, absent at no act; `branch` the
+ * GitHub branch it works on, absent until its first start gives it one; `role` and `agent` the
+ * role and the agent that work its act, for a task that is running, held or stopped, `agent`
+ * absent for a step of the key owner; `holdReason` why a held task is held, absent for a failed
+ * claim its owner has not decided, and `stoppedReason` why a stopped task was stopped, which a task
+ * that left stopped keeps; `wait` what the step at a running task's place waits for before its
+ * start is delivered, `join` or `agent`, absent where it was delivered, with `waitsFor` naming
+ * the agent of a step that waits for its agent. `pullRequest` and `mergeWait` are the task's own,
+ * built as the issue's are, and the issue's own are its merge's; they reuse the issue's views
+ * with each enumeration read as a plain string. Every word of a task is a plain string, so a value
+ * a later daemon adds is read rather than refused and no field here is one the daemon's table of
+ * enumerated fields must declare. The daemon always writes `id`, `state`, `needs` and `counts`;
+ * no plugin code reads any field (LEGION_ANSWER_READS), so every field is optional. */
+const legionTaskView = z.object({
+  id: nonEmptyString.optional(),
+  state: nonEmptyString.optional(),
+  needs: z.array(nonEmptyString).optional(),
+  kind: nonEmptyString.optional(),
+  phase: nonEmptyString.optional(),
+  branch: nonEmptyString.optional(),
+  position: z.number().int().positive().optional(),
+  role: stepRole.optional(),
+  agent: nonEmptyString.optional(),
+  holdReason: nonEmptyString.optional(),
+  stoppedReason: nonEmptyString.optional(),
+  wait: nonEmptyString.optional(),
+  waitsFor: legionAgentStepView.optional(),
+  pullRequest: legionPullRequestView
+    .extend({ state: nonEmptyString.optional(), mergeState: nonEmptyString.optional() })
+    .optional(),
+  mergeWait: legionMergeWaitView
+    .extend({ mergeState: nonEmptyString.optional(), toldState: nonEmptyString.optional() })
+    .optional(),
+  counts: z
+    .object({
+      pass: z.number().int().nonnegative().optional(),
+      rounds: z.number().int().nonnegative().optional(),
+    })
+    .optional(),
+});
+
 /** `api.GateView` — the design gate; `approvedVersion` is null until a human approves one, and
  * the gate is open exactly when it equals `currentVersion`. */
 const legionGateView = z.object({
@@ -921,6 +978,11 @@ const legionIssue = z.object({
   /** The roles whose start waits for the issue's pod, which runs no process of theirs yet
    * (`api.Issue.StartWaitsForPod`): absent for an issue no start waits on. */
   startWaitsForPod: z.array(nonEmptyString).optional(),
+  /** Each task of the issue's plan, in task id order (`legionTaskView`, contract 224): one for each
+   * task of the plan of its generation, a plan of one task among them. Absent for an issue with no
+   * plan rows, and from every issue of the body the route serves a caller before 224
+   * (`api.shapeIssue`, `withoutTasks`), which is why a reader takes it as optional. */
+  tasks: z.array(legionTaskView).optional(),
 });
 
 /** `api.DaemonInfo` — the running daemon: its project, its store's schema, and its boot history.

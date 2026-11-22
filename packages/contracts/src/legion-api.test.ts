@@ -1736,9 +1736,13 @@ test("a claim and an issue carry the fields the record decides they serve", () =
   expect(parsed.issues["LEGION-207"]?.lingerUntil).toBe("2026-09-22T10:10:12Z");
   expect(parsed.issues["LEGION-211"]?.ancestry).toEqual(["LEGION-209", "LEGION-208"]);
   // The pending task is the five facts and the text is not one of them, here or anywhere in the
-  // body: the operator routes are the only surface that serves it.
+  // body: the operator routes are the only surface that serves it. Each issue's served `tasks`
+  // are read past: a task's `waitsFor.task` is the id of another task of the plan (contract 224),
+  // and no task view carries a pending task.
   expect(Object.keys(parsedWorking?.pendingTask ?? {}).sort()).toEqual(["phase", "queuedAt"]);
-  expect(JSON.stringify(parsed)).not.toContain('"task"');
+  expect(
+    JSON.stringify(parsed, (key, value: unknown) => (key === "tasks" ? undefined : value))
+  ).not.toContain('"task"');
 
   // A cause outside the seven words, a linger that is no instant and an empty key in the chain
   // are each refused rather than read.
@@ -2777,12 +2781,13 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // aside: the mark names the contract the caller is served at, 199, the recorded contract below
   // the 201 the caller states (`recordedContractAtOrBelow`), INFRA-4605's, which moved no answer's
   // shape, and the lowest plugin contract reports the claims of the snapshot the route projected
-  // the body from, a pod at 201, which `state.json`'s own fixture does not hold. Three bands stand
+  // the body from, a pod at 201, which `state.json`'s own fixture does not hold. Four bands stand
   // above 199: the repositories block's, the roles of a deployment's (contract 221), which serves
   // the state golden's issues at step and its claims of a role of the deployment as a caller below
-  // 221 reads them (`belowDeploymentRoles`), and the stranded claims' token's (contract 222), which
-  // serves each claim nothing will wake without its `token` (`withoutStrandedTokens`). So the
-  // narrowing changes this one block and, beside it, only what those two bands change.
+  // 221 reads them (`belowDeploymentRoles`), the stranded claims' token's (contract 222), which
+  // serves each claim nothing will wake without its `token` (`withoutStrandedTokens`), and the
+  // issues' tasks' (contract 224), which serves each issue without its `tasks` (`withoutTasks`).
+  // So the narrowing changes this one block and, beside it, only what those three bands change.
   const { daemonApiVersion } = z
     .object({ daemonApiVersion: z.number() })
     .parse(fixture("version.json"));
@@ -2801,8 +2806,12 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   } = fixtureBody("state.json");
   const below = belowDeploymentRoles(rest) as Record<string, unknown>;
   const stranded = below.strandedClaims as Record<string, unknown>[] | undefined;
+  const issues = below.issues as Record<string, Record<string, unknown>>;
   expect(narrowedRest).toEqual({
     ...below,
+    issues: Object.fromEntries(
+      Object.entries(issues).map(([key, { tasks: _tasks, ...issue }]) => [key, issue])
+    ),
     ...(stranded === undefined
       ? {}
       : { strandedClaims: stranded.map(({ token: _token, ...kept }) => kept) }),
