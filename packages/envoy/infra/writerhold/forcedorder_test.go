@@ -110,8 +110,8 @@ func (f *forcedHub) consumerNames(t *testing.T, stream, holdID string) []string 
 	barrier := MetaBarrier{Hub: f.hub, Declared: f.declared, HoldID: holdID}
 	require.NoError(t, barrier.Run(rowContext(t), f.operator, func(ctx context.Context) error {
 		var err error
-		names, err = listAll(ctx, f.operator, StepBarrier, fmt.Sprintf(natsserver.JSApiConsumersT, stream),
-			func(page *listPage[string]) []string { return page.Consumers }, func(name string) string { return name })
+		names, _, err = listAll(ctx, f.operator, StepBarrier, fmt.Sprintf(natsserver.JSApiConsumersT, stream),
+			func(page *listPage[string]) []string { return page.Consumers }, func(name string) string { return name }, nil)
 		return err
 	}))
 	return names

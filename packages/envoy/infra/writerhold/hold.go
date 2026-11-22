@@ -84,6 +84,19 @@ func expectedAbsent(w holdrecord.Workflow, extra []string) []string {
 	return out
 }
 
+// MissingAccepted are the streams whose `missing` entry in STREAM.LIST the writer census of a hold
+// of workflow w accepts (TakeCensus), each only while STREAM.INFO answers it absent: the
+// selection-recovery workflow's selection bucket, which a `create-bucket --after-loss` that died
+// during its snapshot restore leaves as a stream assignment the server keeps for explicit cleanup
+// (nats-server jetstream_cluster.go:9277-9278), and which that command's rerun deletes under the
+// hold. Every other workflow accepts none.
+func MissingAccepted(w holdrecord.Workflow) []string {
+	if w == holdrecord.WorkflowSelectionRecovery {
+		return []string{kvStreamPrefix + bus.SessionConsumersBucket}
+	}
+	return nil
+}
+
 // startHold moves a released row to prepare under a new hold id and inserts the hold's journal
 // (its done record) for workflow, with the step-1 map: for hub-restore, each claim's disk id and
 // volume, read before the row turns held, so every later comparison with a target's step-1 disk
@@ -753,14 +766,14 @@ func Set(ctx context.Context, records *holdrecord.Client, op *Operator, holdID, 
 	if err := probeRefused(ctx, op, strings.Join(op.URLs, ","), "the hub"); err != nil {
 		return nil, stop(err)
 	}
-	if err := op.wholeCensus(ctx, nc, present); err != nil {
+	if err := op.wholeCensus(ctx, nc, present, MissingAccepted(d.Workflow)); err != nil {
 		return nil, stop(err)
 	}
 
 	// Steps 3 to 5: every declared server restarted and proved, one at a time, then the meta
 	// barrier, with the writer census again inside it, since the restart.
 	restarted, err := restartProveAndBarrier(ctx, op, nc, render, declared, holdID, claims, func(ctx context.Context) error {
-		return op.wholeCensus(ctx, nc, present)
+		return op.wholeCensus(ctx, nc, present, MissingAccepted(d.Workflow))
 	})
 	if err != nil {
 		return nil, stop(err)
@@ -804,8 +817,8 @@ const (
 
 // wholeCensus is the hold's writer census, read until one answer is whole (wholeCensusIn, step
 // StepCensus), pausing through op's wait.
-func (op *Operator) wholeCensus(ctx context.Context, nc *nats.Conn, present []string) error {
-	return wholeCensusIn(ctx, nc, StepCensus, present, op.wait)
+func (op *Operator) wholeCensus(ctx context.Context, nc *nats.Conn, present, missingAccepted []string) error {
+	return wholeCensusIn(ctx, nc, StepCensus, present, missingAccepted, op.wait)
 }
 
 // wholeCensusIn is the writer census in step (takeCensus) read until one answer is whole: a server
@@ -813,10 +826,10 @@ func (op *Operator) wholeCensus(ctx context.Context, nc *nats.Conn, present []st
 // right after a command recreated a stream can still lack it while its STREAM.INFO finds it; each
 // is a reading that is not whole, never a clean one, so it is read again after censusPause (wait),
 // censusReadings times at most, after which the step is UNKNOWN. A finding stops it at once.
-func wholeCensusIn(ctx context.Context, nc *nats.Conn, step string, present []string, wait func(context.Context, time.Duration) error) error {
+func wholeCensusIn(ctx context.Context, nc *nats.Conn, step string, present, missingAccepted []string, wait func(context.Context, time.Duration) error) error {
 	var err error
 	for range censusReadings {
-		if _, err = takeCensus(ctx, nc, step, present); err == nil {
+		if _, err = takeCensus(ctx, nc, step, present, missingAccepted); err == nil {
 			return nil
 		}
 		var unknown *Unknown

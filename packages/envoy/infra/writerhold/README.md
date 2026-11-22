@@ -91,7 +91,11 @@ again, verify-only, and run the restore again.
    token as read from the probe's credential file (never the token) with its expiry.
 2. The row moves to `held`; the probe is refused.
 3. The writer census: complete listings, literal destinations, push consumers, sources and message
-   schedules.
+   schedules. A listing that is not whole is UNKNOWN, with one exception: in a `selection-recovery`
+   hold, a `STREAM.LIST` that answers `KV_envoy_session_consumers` missing while its STREAM.INFO
+   answers it absent. That is the stream assignment a `create-bucket --after-loss` that died during
+   its restore leaves, which the server keeps for explicit cleanup and that command's rerun
+   deletes. Any other `missing` entry, in any workflow, stays UNKNOWN.
 4. The restart of every declared server, one eviction at a time under the disruption budget. Each
    restarted server is proved by its new server id, the pinned image's digest and tag version, its
    revision, and the claim on its recorded disk. The next eviction waits until each present

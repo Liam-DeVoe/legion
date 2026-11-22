@@ -217,7 +217,7 @@ func redTeamSchedule(t *testing.T, s *holdtest.Stack, holdID string, wrap func(h
 		return false
 	})
 	require.Equal(t, string(natsgrant.OperatorPhaseHeld), lastReading(t, b).Phase, "B's reading under held")
-	_, err = TakeCensus(ctx, census.Conn, nil)
+	_, err = TakeCensus(ctx, census.Conn, nil, nil)
 	require.NoError(t, err, "the writer census under the held grant")
 	b.Close()
 

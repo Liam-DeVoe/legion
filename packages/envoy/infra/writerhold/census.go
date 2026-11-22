@@ -29,7 +29,12 @@ type Census struct {
 // `missing` or `offline`, a page that adds no entry before offset+len reaches total, or a total
 // that changes between pages is UNKNOWN, and so is a stream of present, the protected streams the
 // step's own STREAM.INFO reads found, that STREAM.LIST does not hold, so a listing that saw nothing
-// cannot read as clean.
+// cannot read as clean. The one `missing` entry it accepts is a stream of missingAccepted, the
+// streams the hold's workflow declares absent (MissingAccepted), while its own STREAM.INFO answers
+// that stream absent: a stream assignment the server keeps with no stream running, which a
+// restore that died leaves (STREAM.LIST counts it in its total, names it missing, and STREAM.NAMES
+// lists it). Such a stream runs no consumer, so the census lists none of it. Any other `missing`
+// entry is UNKNOWN.
 //
 // The protected subjects are $KV.>, every KV bucket's, and the subjects of every protected stream
 // as its listed configuration holds them (ENVOY_NOTIFICATIONS' among them); the protected streams
@@ -41,22 +46,25 @@ type Census struct {
 // with sources or a mirror; and a protected stream with allow_msg_schedules, since a persisted
 // schedule's target must be one of its own stream's subjects (nats-server stream.go:6874-6906),
 // so a schedule writes a protected subject only from a protected stream.
-func TakeCensus(ctx context.Context, nc *nats.Conn, present []string) (*Census, error) {
-	return takeCensus(ctx, nc, StepCensus, present)
+func TakeCensus(ctx context.Context, nc *nats.Conn, present, missingAccepted []string) (*Census, error) {
+	return takeCensus(ctx, nc, StepCensus, present, missingAccepted)
 }
 
 // takeCensus is the census in step: StepCensus for the hold's census, StepPostcheck for the
 // postcheck's.
-func takeCensus(ctx context.Context, nc *nats.Conn, step string, present []string) (*Census, error) {
-	streams, err := listAll(ctx, nc, step, natsserver.JSApiStreamList,
+func takeCensus(ctx context.Context, nc *nats.Conn, step string, present, missingAccepted []string) (*Census, error) {
+	accept := func(ctx context.Context, missing []string) error {
+		return absentAssignments(ctx, nc, step, missing, missingAccepted)
+	}
+	streams, missing, err := listAll(ctx, nc, step, natsserver.JSApiStreamList,
 		func(page *listPage[jetstream.StreamInfo]) []jetstream.StreamInfo { return page.Streams },
-		func(info jetstream.StreamInfo) string { return info.Config.Name })
+		func(info jetstream.StreamInfo) string { return info.Config.Name }, accept)
 	if err != nil {
 		return nil, err
 	}
-	names, err := listAll(ctx, nc, step, natsserver.JSApiStreams,
+	names, _, err := listAll(ctx, nc, step, natsserver.JSApiStreams,
 		func(page *listPage[string]) []string { return page.Streams },
-		func(name string) string { return name })
+		func(name string) string { return name }, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -64,7 +72,7 @@ func takeCensus(ctx context.Context, nc *nats.Conn, step string, present []strin
 	for _, info := range streams {
 		listed = append(listed, info.Config.Name)
 	}
-	if err := sameStreams(step, listed, names); err != nil {
+	if err := sameStreams(step, append(slices.Clone(listed), missing...), names); err != nil {
 		return nil, err
 	}
 	for _, name := range present {
@@ -74,9 +82,9 @@ func takeCensus(ctx context.Context, nc *nats.Conn, step string, present []strin
 	}
 	census := &Census{Streams: streams, Consumers: make(map[string][]jetstream.ConsumerInfo, len(streams))}
 	for _, name := range listed {
-		consumers, err := listAll(ctx, nc, step, fmt.Sprintf(natsserver.JSApiConsumerListT, name),
+		consumers, _, err := listAll(ctx, nc, step, fmt.Sprintf(natsserver.JSApiConsumerListT, name),
 			func(page *listPage[jetstream.ConsumerInfo]) []jetstream.ConsumerInfo { return page.Consumers },
-			func(info jetstream.ConsumerInfo) string { return info.Name })
+			func(info jetstream.ConsumerInfo) string { return info.Name }, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -86,6 +94,26 @@ func takeCensus(ctx context.Context, nc *nats.Conn, step string, present []strin
 		return nil, err
 	}
 	return census, nil
+}
+
+// absentAssignments accepts missing, the names one STREAM.LIST page answered `missing`, only when
+// each is a stream of accepted that its STREAM.INFO answers absent, in step: a name outside
+// accepted is UNKNOWN as any list that is not whole, and so is one whose STREAM.INFO finds it or
+// does not answer.
+func absentAssignments(ctx context.Context, nc *nats.Conn, step string, missing, accepted []string) error {
+	for _, name := range missing {
+		if !slices.Contains(accepted, name) {
+			return unknownf(step, nil, "%s answered missing %v: the list is not complete", natsserver.JSApiStreamList, missing)
+		}
+		_, found, err := streamInfoOnce(ctx, nc, name)
+		if err != nil {
+			return unknownf(step, err, "%s answered %s missing, and its STREAM.INFO did not answer", natsserver.JSApiStreamList, name)
+		}
+		if found {
+			return unknownf(step, nil, "%s answered %s missing, and its STREAM.INFO answers it present: the list is not complete", natsserver.JSApiStreamList, name)
+		}
+	}
+	return nil
 }
 
 // sameStreams is UNKNOWN, in step, unless STREAM.LIST's streams, listed, and STREAM.NAMES's,
@@ -133,49 +161,66 @@ type pageRequest struct {
 // UNKNOWN in step: an error, a `missing` list (clustered CONSUMER.LIST answers success with one
 // for a consumer it could not read, jetstream_cluster.go:12003-12180), an `offline` list, an
 // offset other than the one asked for, a total that changes between pages, an entry listed twice,
-// more entries than the total, and a page that adds no entry before the total is reached.
-func listAll[T any](ctx context.Context, nc *nats.Conn, step, subject string, entries func(*listPage[T]) []T, key func(T) string) ([]T, error) {
+// more entries than the total, and a page that adds no entry before the total is reached. The one
+// exception is a `missing` list that accept answers nil for (nil accept accepts none): its names
+// are returned beside the entries and count toward the total and the next page's offset, since
+// the server counts them so (STREAM.LIST's total is its stream assignments,
+// jetstream_cluster.go:11994), and a name listed as an entry too is UNKNOWN.
+func listAll[T any](ctx context.Context, nc *nats.Conn, step, subject string, entries func(*listPage[T]) []T, key func(T) string, accept func(context.Context, []string) error) ([]T, []string, error) {
 	var all []T
+	var missing []string
 	seen := map[string]bool{}
 	total := -1
 	for {
-		offset := len(all)
+		offset := len(all) + len(missing)
 		var page listPage[T]
 		if err := apiRequest(ctx, nc, subject, pageRequest{Offset: offset}, &page); err != nil {
-			return nil, unknownf(step, err, "%s at offset %d", subject, offset)
+			return nil, nil, unknownf(step, err, "%s at offset %d", subject, offset)
 		}
 		if page.Error != nil {
-			return nil, unknownf(step, page.Error, "%s at offset %d", subject, offset)
+			return nil, nil, unknownf(step, page.Error, "%s at offset %d", subject, offset)
 		}
 		if len(page.Missing) > 0 {
-			return nil, unknownf(step, nil, "%s at offset %d answered missing %v: the list is not complete", subject, offset, page.Missing)
+			if accept == nil {
+				return nil, nil, unknownf(step, nil, "%s at offset %d answered missing %v: the list is not complete", subject, offset, page.Missing)
+			}
+			if err := accept(ctx, page.Missing); err != nil {
+				return nil, nil, err
+			}
 		}
 		if len(page.Offline) > 0 {
-			return nil, unknownf(step, nil, "%s at offset %d answered offline %v: the list is not complete", subject, offset, page.Offline)
+			return nil, nil, unknownf(step, nil, "%s at offset %d answered offline %v: the list is not complete", subject, offset, page.Offline)
 		}
 		if page.Offset != offset {
-			return nil, unknownf(step, nil, "%s answered offset %d to a request at offset %d", subject, page.Offset, offset)
+			return nil, nil, unknownf(step, nil, "%s answered offset %d to a request at offset %d", subject, page.Offset, offset)
 		}
 		if total >= 0 && page.Total != total {
-			return nil, unknownf(step, nil, "%s's total changed from %d to %d between pages", subject, total, page.Total)
+			return nil, nil, unknownf(step, nil, "%s's total changed from %d to %d between pages", subject, total, page.Total)
 		}
 		total = page.Total
 		added := entries(&page)
 		for _, entry := range added {
 			name := key(entry)
 			if seen[name] {
-				return nil, unknownf(step, nil, "%s listed %q twice", subject, name)
+				return nil, nil, unknownf(step, nil, "%s listed %q twice", subject, name)
 			}
 			seen[name] = true
 			all = append(all, entry)
 		}
-		switch {
-		case len(all) == total:
-			return all, nil
-		case len(all) > total:
-			return nil, unknownf(step, nil, "%s listed %d entries of a total of %d", subject, len(all), total)
-		case len(added) == 0:
-			return nil, unknownf(step, nil, "%s at offset %d added no entry, with %d of a total of %d listed: the list is not complete", subject, offset, len(all), total)
+		for _, name := range page.Missing {
+			if seen[name] {
+				return nil, nil, unknownf(step, nil, "%s listed %q twice", subject, name)
+			}
+			seen[name] = true
+			missing = append(missing, name)
+		}
+		switch counted := len(all) + len(missing); {
+		case counted == total:
+			return all, missing, nil
+		case counted > total:
+			return nil, nil, unknownf(step, nil, "%s listed %d entries of a total of %d", subject, counted, total)
+		case len(added) == 0 && len(page.Missing) == 0:
+			return nil, nil, unknownf(step, nil, "%s at offset %d added no entry, with %d of a total of %d listed: the list is not complete", subject, offset, counted, total)
 		}
 	}
 }

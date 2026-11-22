@@ -457,7 +457,7 @@ func TestHoldMessageSchedules(t *testing.T) {
 	_, err = ReadProtectedStreams(ctx, prepare, nil)
 	requireRefusal(t, err, StepPreflight, sessions, "allow_msg_schedules")
 	held := hub.operator(t, natsgrant.OperatorPhaseHeld)
-	_, err = TakeCensus(ctx, held, nil)
+	_, err = TakeCensus(ctx, held, nil, nil)
 	requireRefusal(t, err, StepCensus, sessions, "allow_msg_schedules")
 	t.Logf("with the check, the preflight and the census each refuse: %v", err)
 

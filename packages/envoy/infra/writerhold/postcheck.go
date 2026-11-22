@@ -116,7 +116,7 @@ func Postcheck(ctx context.Context, nc *nats.Conn, step1 []StreamReading, change
 		readings = append(readings, now)
 		present = append(present, name)
 	}
-	if err := wholeCensusIn(ctx, nc, StepPostcheck, present, pause); err != nil {
+	if err := wholeCensusIn(ctx, nc, StepPostcheck, present, nil, pause); err != nil {
 		return nil, err
 	}
 	return readings, nil

@@ -194,8 +194,8 @@ func (b MetaBarrier) barrier(ctx context.Context, nc *nats.Conn, js jetstream.Je
 	listed, cancel := context.WithTimeout(ctx, barrierWithin)
 	defer cancel()
 	for {
-		names, err := listAll(listed, nc, StepBarrier, natsserver.JSApiStreams,
-			func(page *listPage[string]) []string { return page.Streams }, func(name string) string { return name })
+		names, _, err := listAll(listed, nc, StepBarrier, natsserver.JSApiStreams,
+			func(page *listPage[string]) []string { return page.Streams }, func(name string) string { return name }, nil)
 		if err != nil {
 			return err
 		}

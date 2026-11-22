@@ -49,7 +49,7 @@ func TestHoldWritersInsideTheServer(t *testing.T) {
 
 	// Control: a republish onto an unrelated literal subject passes, and the census read it.
 	audit("audit-copy.k")
-	census, err := TakeCensus(ctx, held, ProtectedStreams())
+	census, err := TakeCensus(ctx, held, ProtectedStreams(), nil)
 	require.NoError(t, err)
 	listed := false
 	for _, info := range census.Streams {
@@ -59,7 +59,7 @@ func TestHoldWritersInsideTheServer(t *testing.T) {
 
 	// The republish onto K's record stops the hold, naming the stream.
 	audit(recordK)
-	_, err = TakeCensus(ctx, held, ProtectedStreams())
+	_, err = TakeCensus(ctx, held, ProtectedStreams(), nil)
 	requireRefusal(t, err, StepCensus, "AUDIT", recordK, "$KV.>")
 	t.Logf("with the check: %v", err)
 
@@ -79,7 +79,7 @@ func TestHoldWritersInsideTheServer(t *testing.T) {
 
 	// A republish onto a subject of ENVOY_NOTIFICATIONS, as its listed configuration holds them.
 	audit("notifications.agent.x")
-	_, err = TakeCensus(ctx, held, ProtectedStreams())
+	_, err = TakeCensus(ctx, held, ProtectedStreams(), nil)
 	requireRefusal(t, err, StepCensus, "AUDIT", "notifications.agent.x", "notifications.agent.>")
 	t.Logf("with the check: %v", err)
 
@@ -87,7 +87,7 @@ func TestHoldWritersInsideTheServer(t *testing.T) {
 	audit("")
 	_, err = legacy.AddConsumer("AUDIT", &nats.ConsumerConfig{Durable: "relay", DeliverSubject: "$KV." + bus.SessionConsumersBucket + ".x", AckPolicy: nats.AckNonePolicy})
 	require.NoError(t, err)
-	_, err = TakeCensus(ctx, held, ProtectedStreams())
+	_, err = TakeCensus(ctx, held, ProtectedStreams(), nil)
 	requireRefusal(t, err, StepCensus, "push consumer relay of stream AUDIT", "$KV."+bus.SessionConsumersBucket+".x")
 	t.Logf("with the check: %v", err)
 	require.NoError(t, js.DeleteConsumer(ctx, "AUDIT", "relay"))
@@ -97,7 +97,7 @@ func TestHoldWritersInsideTheServer(t *testing.T) {
 	updateStream(t, js, sessions, func(config *jetstream.StreamConfig) {
 		config.Sources = []*jetstream.StreamSource{{Name: "AUDIT"}}
 	})
-	_, err = TakeCensus(ctx, held, ProtectedStreams())
+	_, err = TakeCensus(ctx, held, ProtectedStreams(), nil)
 	requireRefusal(t, err, StepCensus, sessions, "sources from AUDIT")
 	t.Logf("with the check: %v", err)
 }
@@ -126,7 +126,7 @@ func TestHoldASubstitutionIsNotLiteral(t *testing.T) {
 
 	for _, dest := range []string{"{{wildcard(1)}}.{{wildcard(2)}}.{{wildcard(3)}}", "$1.$2.$3"} {
 		in(dest)
-		_, err := TakeCensus(ctx, held, ProtectedStreams())
+		_, err := TakeCensus(ctx, held, ProtectedStreams(), nil)
 		requireRefusal(t, err, StepCensus, "IN", dest, "not a literal subject")
 		t.Logf("with the check: %v", err)
 	}
@@ -263,7 +263,7 @@ func TestHoldIncompleteLists(t *testing.T) {
 	lists.mu.Unlock()
 
 	// Control: the complete answer passes, and the census asked for every page.
-	listing, err := TakeCensus(ctx, census, nil)
+	listing, err := TakeCensus(ctx, census, nil, nil)
 	require.NoError(t, err)
 	require.Len(t, listing.Streams, 2)
 	require.Len(t, listing.Consumers["WORK"], 2)
@@ -276,14 +276,14 @@ func TestHoldIncompleteLists(t *testing.T) {
 	// A complete answer that lacks a stream the caller's own STREAM.INFO read found present is
 	// UNKNOWN: a listing blind to it cannot read as clean.
 	dpop := kvStreamPrefix + bus.DPoPProofBucket
-	_, err = TakeCensus(ctx, census, []string{sessions, dpop})
+	_, err = TakeCensus(ctx, census, []string{sessions, dpop}, nil)
 	requireUnknown(t, err, StepCensus, "STREAM.LIST does not hold "+dpop)
 
 	// The second consumer is a writer: its complete answer stops the hold naming it.
 	lists.mu.Lock()
 	lists.consumers["WORK"][1].Config.DeliverSubject = "$KV." + bus.SessionBucket + ".x"
 	lists.mu.Unlock()
-	_, err = TakeCensus(ctx, census, nil)
+	_, err = TakeCensus(ctx, census, nil, nil)
 	requireRefusal(t, err, StepCensus, "push consumer push of stream WORK", "$KV."+bus.SessionBucket+".x")
 	t.Logf("the complete answer shows the writer: %v", err)
 
@@ -364,7 +364,7 @@ func TestHoldIncompleteLists(t *testing.T) {
 	}
 	for _, answer := range incomplete {
 		lists.set(answer.edit)
-		_, incompleteErr := TakeCensus(ctx, census, nil)
+		_, incompleteErr := TakeCensus(ctx, census, nil, nil)
 		requireUnknown(t, incompleteErr, StepCensus, answer.want...)
 		t.Logf("%s: %v", answer.name, incompleteErr)
 		if answer.hidesWriter {
