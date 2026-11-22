@@ -893,3 +893,29 @@ func sha256sumLineDigest(t *testing.T, dir string, files []string) string {
 	sum := sha256.Sum256([]byte(lines.String()))
 	return fmt.Sprintf("%x", sum)
 }
+
+// A refusal written to a log or a terminal writes no control byte of a path raw: a path is the
+// push author's choice, and an escape sequence in it would act on the terminal that shows the
+// refusal, erasing the line that names the file, or a line break would start a line the guard did
+// not write. The report's lines keep the path as it is; Error writes each such byte as \x and two
+// hex digits.
+func TestARefusalWritesNoControlByteOfAPathRaw(t *testing.T) {
+	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+	err := guard.Rules(bound(t),
+		Record{Label: "a b\x1b[2Kx.md", Text: "the runner answers at " + theHost},
+		Record{Label: "c\nLEAK CHECK: clean\x7f.md", Text: "the runner answers at " + theHost},
+	)
+	refused := refusal(t, err)
+	if want := []string{"a b\x1b[2Kx.md: " + theClass, "c\nLEAK CHECK: clean\x7f.md: " + theClass}; !slices.Equal(refused.Lines, want) {
+		t.Fatalf("the report is %q, want %q", refused.Lines, want)
+	}
+	written := refused.Error()
+	for _, want := range []string{"\n  a b\\x1b[2Kx.md: " + theClass, "\n  c\\x0aLEAK CHECK: clean\\x7f.md: " + theClass} {
+		if !strings.Contains(written, want) {
+			t.Errorf("the refusal is %q, want it to hold %q", written, want)
+		}
+	}
+	if strings.ContainsAny(written, "\x1b\x7f") || strings.Count(written, "\n") != len(refused.Lines) {
+		t.Errorf("the refusal writes a control byte raw: %q", written)
+	}
+}

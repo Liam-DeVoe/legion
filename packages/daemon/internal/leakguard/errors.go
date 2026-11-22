@@ -30,6 +30,10 @@ type Refusal struct {
 	Lines []string
 }
 
+// Error is the refusal as a log or a terminal shows it. Each line of the report has every byte
+// below 0x20 and the byte 0x7f written as \x and two hex digits (writeTerminalSafe): a line names a
+// path, which the push's author chose, and a path's control bytes written raw could move the
+// cursor, erase the line that names the file, or start a line of their own.
 func (r *Refusal) Error() string {
 	var b strings.Builder
 	b.WriteString("LEAK CHECK: refusing ")
@@ -38,9 +42,26 @@ func (r *Refusal) Error() string {
 	b.WriteString(string(r.By))
 	for _, line := range r.Lines {
 		b.WriteString("\n  ")
-		b.WriteString(line)
+		writeTerminalSafe(&b, line)
 	}
 	return b.String()
+}
+
+// writeTerminalSafe writes s to b with every byte below 0x20 and the byte 0x7f, the control
+// bytes a terminal acts on, written as \x and two lower-case hex digits; every other byte as it
+// is.
+func writeTerminalSafe(b *strings.Builder, s string) {
+	const hex = "0123456789abcdef"
+	for i := range len(s) {
+		c := s[i]
+		if c >= 0x20 && c != 0x7f {
+			b.WriteByte(c)
+			continue
+		}
+		b.WriteString(`\x`)
+		b.WriteByte(hex[c>>4])
+		b.WriteByte(hex[c&0xf])
+	}
 }
 
 // SetupFailure is a write refused because a check could not be made to run: no shared check

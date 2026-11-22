@@ -1,8 +1,10 @@
 package leakguard
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -199,10 +201,10 @@ func TestAReadEndsAfterGitExitsThoughAProcessKeepsWritingToThePipe(t *testing.T)
 // exec.ErrWaitDelay: the read of the standard output then ends at once, its own wait having run
 // out with exec's, rather than one WaitDelay after Wait. The process is started by the diff's git
 // alone, so the push takes one WaitDelay and some, as on main, where exec copies both outputs; a
-// read that waited a second WaitDelay after Wait would take two. The WaitDelay here is 8 s, so
+// read that waited a second WaitDelay after Wait would take two. The WaitDelay here is 10 s, so
 // the two stand apart however slow the machine.
 func TestAReadEndsOneWaitDelayAfterGitExitsThoughAProcessHoldsBothOutputs(t *testing.T) {
-	const delay = 8 * time.Second
+	const delay = 10 * time.Second
 	push := aPushOf(t, map[string]string{"notes.md": "a line of nothing\nthe runner answers at " + theHost + "\n"})
 	want := refusal(t, push.through(guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public))).Lines
 	git := fixturegit.CompiledGit(t)
@@ -217,6 +219,63 @@ func TestAReadEndsOneWaitDelayAfterGitExitsThoughAProcessHoldsBothOutputs(t *tes
 	}
 	if got := refusal(t, err).Lines; !slices.Equal(got, want) {
 		t.Fatalf("the report is %q, want the one with no holding process, %q", got, want)
+	}
+}
+
+// Where git fails and a process it started holds both its outputs, Wait answers git's
+// *exec.ExitError, not exec.ErrWaitDelay, though exec waited one WaitDelay for the standard error
+// it copies: the read of the standard output still ends at once, so the diff's git takes one
+// WaitDelay, as on main, and not two. The push is refused for git's status. The WaitDelay here is
+// 10 s, so one and two stand apart however slow the machine.
+func TestAReadEndsOneWaitDelayAfterAFailedGitExitsThoughAProcessHoldsBothOutputs(t *testing.T) {
+	const delay = 10 * time.Second
+	push := aPushOf(t, map[string]string{"notes.md": "a line of nothing in particular\n"})
+	git := fixturegit.CompiledGit(t)
+	guard := gitFirst(t, "case \" $* \" in\n"+
+		"*\" --unified=0 \"*) sleep 40 &\n  '"+git+"' \"$@\"\n  exit 3 ;;\n"+
+		"*) exec '"+git+"' \"$@\" ;;\nesac\n")
+	guard.waitDelay = delay
+	started := time.Now()
+	err := guard.Push(context.Background(), push.req)
+	if took := time.Since(started); took >= delay*3/2 {
+		t.Errorf("the push was answered after %s, past one and a half WaitDelays of %s: the read waited a second one", took.Round(time.Second), delay)
+	}
+	says(t, setupFailure(t, err), "the push's commits could not be read: git diff-tree exited 3")
+}
+
+// Once the child has exited and its wait has run out, a read takes what the pipe held at that
+// first read and no more, though the pipe's write end is still open and more is written to it
+// after: 1000 bytes of A are in the pipe when the reader is marked past the child's exit, one
+// read takes some of them, 1000 bytes of B follow, and the reader answers the rest of the A and
+// then the end of its output. A pipe the test owns stands for the child's output and the process
+// that outlived the child, so nothing here depends on how fast either runs.
+func TestAReadAfterTheChildExitedTakesWhatThePipeHeldAndNoMore(t *testing.T) {
+	out, in, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+	defer in.Close()
+	if _, err := in.Write(bytes.Repeat([]byte("A"), 1000)); err != nil {
+		t.Fatal(err)
+	}
+	reader := &pipeReader{ctx: context.Background(), file: out}
+	reader.exited.Store(true)
+	first := make([]byte, 100)
+	n, err := reader.Read(first)
+	if err != nil {
+		t.Fatalf("the first read: %v", err)
+	}
+	if _, err := in.Write(bytes.Repeat([]byte("B"), 1000)); err != nil {
+		t.Fatal(err)
+	}
+	rest, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("the rest of the read: %v", err)
+	}
+	got := string(append(first[:n], rest...))
+	if got != strings.Repeat("A", 1000) {
+		t.Fatalf("read %d bytes (%d of them B), want the 1000 of A alone", len(got), strings.Count(got, "B"))
 	}
 }
 

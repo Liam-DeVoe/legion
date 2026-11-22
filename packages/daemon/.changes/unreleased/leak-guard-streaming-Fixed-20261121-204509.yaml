@@ -11,12 +11,16 @@ body: |-
   even when a process git started holds the pipe open or keeps writing to it, as exec's own copy
   of a child's output does.
 
-  A path that holds a space is now read as itself. Before, git's `+++` line for it, which ends in
-  a tab, was read whole: the report named the path with the tab after it, and where the path also
-  held a byte git quotes (a tab, a newline, a double quote or a backslash), with git's C-quoting
-  and `b/` prefix too, and the rules matched the path
-  rules and the path-scoped allowlist against that quoted form. They now match the real path,
-  as for a path with no space.
+  A path that holds a space is now read as itself. git ends the `+++` line that names such a path
+  with a tab, and the guard read that line whole: its report named the path with the tab after
+  it, and where the path also held a control byte, a double quote or a backslash, which git
+  quotes, it named git's C-quoted form with the `b/` prefix inside the quotes. The path rules and
+  the path-scoped allowlist matched against those forms; they now match the real path, as for a
+  path with no space.
+
+  A refusal written to a log or a terminal now writes each byte below 0x20 and the byte 0x7f of
+  its lines as `\x` and two hex digits, so a file name built with an escape sequence or a line
+  break cannot act on the terminal that shows the refusal or start a line of its own.
 time: 2026-11-21T20:45:09Z
 custom:
     Issue: leak-guard-streaming

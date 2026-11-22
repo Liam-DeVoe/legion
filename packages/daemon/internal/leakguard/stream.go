@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io"
 	"os"
-	"os/exec"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -56,11 +55,15 @@ func (g *Guard) readOutput(ctx context.Context, c child, read func(io.Reader) er
 	reader := &pipeReader{ctx: ctx, file: out}
 	stop := context.AfterFunc(ctx, func() { _ = out.SetReadDeadline(time.Now()) })
 	finished := make(chan struct{})
-	// Wait answers exec.ErrWaitDelay where it waited exitDelay for the standard error a process
-	// the child started still held: that wait began at the child's exit, so the output's own has
-	// run out too, and the read ends at once rather than after a second one.
+	// Where Wait answers an error, the read ends at once rather than exitDelay after it. One kind
+	// is a wait for the standard error a process the child started still held, which began at
+	// the child's exit, so the output's own has run out too: exec.ErrWaitDelay for a child that
+	// exited 0, and the *exec.ExitError a child that exited otherwise answers whether or not exec
+	// waited. The rest are a child that failed, whose output cannot change the answer: the one
+	// caller, Guard.gitWith, refuses any status but 0. Either way the read still takes everything
+	// the child left in the pipe (pipeReader.drain).
 	go reader.endAfterExit(waited, finished, func() time.Duration {
-		if errors.Is(waitErr, exec.ErrWaitDelay) {
+		if waitErr != nil {
 			return 0
 		}
 		return g.exitDelay()
