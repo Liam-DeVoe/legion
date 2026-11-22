@@ -225,12 +225,16 @@ func TestAReviewCloneStandsOnTheHeadTheDaemonGives(t *testing.T) {
 }
 
 // Where the shared clone does not hold the head the daemon gives, the provision fetches that
-// commit into the shared clone from the shared clone's origin first, with the credential the
-// request names — the tmux daemon's read lease, asked only when that fetch runs and removed after
-// it, or a pod reviewer's own GitHub credential helper — and the reviewer starts on it, on a clone
-// already there and on a fresh one. Only a head origin does not hold either is refused, naming it
-// and the commit the shared clone records for the issue's branch; and an origin that is neither
-// GitHub over https nor a local repository is never fetched from.
+// commit from origin — the URL the request names, the issue's recorded repository — straight into
+// a review clone it has just made, with the credential the request names: the tmux daemon's read
+// lease, asked only when that fetch runs and removed after it, or a pod reviewer's own GitHub
+// credential helper. A clone already there is made again for it, with a log line, so the fetch
+// reads only a configuration the provision has just made, and the reviewer starts on the head. The
+// fetch reads nothing of the shared clone: its url.<base>.insteadOf (for GitHub, and for this
+// test's local origin), its http.proxy and its remote.origin.url, each another role's plant,
+// change nothing, and the shared clone is not written. Only a head origin does not hold either is
+// refused, naming it and the commit the shared clone records for the issue's branch; and an
+// origin URL that is neither GitHub over https nor a local repository is never fetched from.
 func TestAReviewCloneFetchesAHeadTheSharedCloneLacksFromOrigin(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -241,10 +245,12 @@ func TestAReviewCloneFetchesAHeadTheSharedCloneLacksFromOrigin(t *testing.T) {
 			run := NewRunner(testTimeout, map[string]string{"git": f.git, "jj": f.jj})
 			credentials := t.TempDir()
 			minted := 0
-			f.request.Origin = OriginWithHelper()
+			f.request.Origin = OriginWithHelper(f.origin)
 			if tc.lease {
-				f.request.Origin = OriginWithToken(func() (string, error) { minted++; return "read-lease", nil }, credentials)
+				f.request.Origin = OriginWithToken(f.origin, func() (string, error) { minted++; return "read-lease", nil }, credentials)
 			}
+			var logged []string
+			f.request.Log = func(line string) { logged = append(logged, line) }
 			if err := ProvisionReviewClone(context.Background(), run, f.request); err != nil {
 				t.Fatalf("a provision at %s, which the shared clone holds: %v", f.first, err)
 			}
@@ -256,6 +262,18 @@ func TestAReviewCloneFetchesAHeadTheSharedCloneLacksFromOrigin(t *testing.T) {
 				return err == nil
 			}
 
+			// Another role plants configuration in the shared clone that would send a fetch, and
+			// the credential it carries, elsewhere: GitHub, and this test's origin, rewritten to a
+			// port nothing serves, a proxy there, and its origin pointed there too.
+			for _, setting := range [][2]string{
+				{"url.https://127.0.0.1:1/.insteadOf", "https://github.com/"},
+				{"url.https://127.0.0.1:1/origin.insteadOf", f.origin},
+				{"http.proxy", "http://127.0.0.1:1"},
+			} {
+				f.setup.Run(f.request.Clone, f.git, "config", "--add", setting[0], setting[1])
+			}
+			f.setup.Run(f.request.Clone, f.git, "remote", "set-url", "origin", "https://127.0.0.1:1/planted")
+
 			// The branch moves at origin, and the shared clone does not fetch it.
 			second := f.commit(t, "base\nfirst\nsecond\n")
 			f.request.Head = second
@@ -265,8 +283,13 @@ func TestAReviewCloneFetchesAHeadTheSharedCloneLacksFromOrigin(t *testing.T) {
 			if at := f.setup.Run(f.request.Dir, f.git, "rev-parse", "HEAD"); at != second {
 				t.Fatalf("the review clone stands on %s, want the head given %s", at, second)
 			}
-			if !holds(second) {
-				t.Errorf("the shared clone does not hold %s after the provision fetched it from origin", second)
+			if holds(second) {
+				t.Errorf("the shared clone holds %s, want it untouched: the fetch from origin goes into the review clone", second)
+			}
+			if !slices.ContainsFunc(logged, func(line string) bool {
+				return strings.Contains(line, "made again") && strings.Contains(line, f.origin)
+			}) {
+				t.Errorf("the provision logged %q, want a line saying the clone is made again to fetch from %s", logged, f.origin)
 			}
 			if tc.lease && minted != 1 {
 				t.Errorf("the fetch from origin asked for the read lease %d times, want once", minted)
@@ -294,18 +317,38 @@ func TestAReviewCloneFetchesAHeadTheSharedCloneLacksFromOrigin(t *testing.T) {
 				t.Fatalf("a provision at %s, which origin does not hold either (the shared clone's branch at %s) = %v, want a refusal naming both", nowhere, f.first, err)
 			}
 
-			// Another role points the shared clone's origin at a command.
+			// An origin URL that names a command.
 			marker := filepath.Join(t.TempDir(), "ran")
-			f.setup.Run(f.request.Clone, f.git, "remote", "set-url", "origin", "ext::sh -c touch% "+marker)
+			command := "ext::sh -c touch% " + marker
 			fourth := f.commit(t, "base\nfirst\nsecond\nthird\nfourth\n")
-			f.request.Head = fourth
-			if err := ProvisionReviewClone(context.Background(), run, f.request); err == nil || !strings.Contains(err.Error(), fourth) || !strings.Contains(err.Error(), "ext::") {
-				t.Fatalf("a provision at %s with the shared clone's origin at a command = %v, want a refusal naming the head and that origin", fourth, err)
+			named := f.request
+			named.Head = fourth
+			named.Origin = OriginWithHelper(command)
+			if err := ProvisionReviewClone(context.Background(), run, named); err == nil || !strings.Contains(err.Error(), fourth) || !strings.Contains(err.Error(), "ext::") {
+				t.Fatalf("a provision at %s from origin %q = %v, want a refusal naming the head and that origin", fourth, command, err)
 			}
 			if _, err := os.Lstat(marker); !os.IsNotExist(err) {
 				t.Fatalf("the origin's command ran: %s exists (%v)", marker, err)
 			}
 		})
+	}
+}
+
+// The request a pod reviewer's role-init makes fetches a head the shared clone lacks from GitHub
+// at the repository the layout names, the issue's recorded repository, with the reviewer's own
+// credential helper, and never from a URL the shared clone's configuration names.
+func TestAPodReviewersRequestFetchesFromTheRecordedRepository(t *testing.T) {
+	repo := ghrepo.MustParse("acme/widgets")
+	review, err := ReviewLocation("/legion", repo, "ACME-3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := ReviewRequestFor(review, "ACME-3", "main", strings.Repeat("ab", 20))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.Origin.IsZero() || request.Origin.URL != GitHubURL(repo) {
+		t.Fatalf("the pod reviewer's request fetches from %q (zero: %v), want %s", request.Origin.URL, request.Origin.IsZero(), GitHubURL(repo))
 	}
 }
 

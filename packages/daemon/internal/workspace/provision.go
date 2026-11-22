@@ -381,9 +381,10 @@ const ReviewHeadEnv = "LEGION_REVIEW_HEAD"
 // (internal/launcher): dir, its LEGION_WORKSPACE, must be the ReviewLocation of issue's workspace in
 // a state directory's layout, and that workspace's shared clone is what it is cloned from; head is
 // the head the daemon gives the reviewer (ReviewHeadEnv), "" from a daemon that gives none. A head
-// the shared clone lacks is fetched into it from its origin with the reviewer's own GitHub
-// credential helper (OriginWithHelper), the one its gh bundle answers. Any other dir is refused,
-// naming it.
+// the shared clone lacks is fetched into the review clone from GitHub, at the repository the
+// layout names (the issue's recorded repository, which the runtime built the layout from), with
+// the reviewer's own GitHub credential helper (OriginWithHelper), the one its gh bundle answers.
+// Any other dir is refused, naming it.
 func ReviewRequestFor(dir, issue, defaultBranch, head string) (ReviewRequest, error) {
 	shared := IssueWorkspace(dir)
 	located, err := locationOf(shared)
@@ -394,26 +395,29 @@ func ReviewRequestFor(dir, issue, defaultBranch, head string) (ReviewRequest, er
 		return ReviewRequest{}, fmt.Errorf("%s is not the reviewer's clone of %s", dir, issue)
 	}
 	return ReviewRequest{Clone: located.Clone, Dir: dir, Repo: located.Repo, Issue: issue, DefaultBranch: defaultBranch, Head: head,
-		Origin: OriginWithHelper()}, nil
+		Origin: OriginWithHelper(GitHubURL(located.Repo))}, nil
 }
 
-// ReviewOrigin is how a review provision fetches the head under review into the shared clone from
-// the shared clone's origin, where the shared clone does not hold it (reviewHead): the credential
-// that fetch reads GitHub with, made when the fetch runs and removed after it. The zero
-// ReviewOrigin names none, and its provision fetches nothing from origin.
+// ReviewOrigin is where and how a review provision fetches the head under review straight into a
+// review clone it has just made, where the shared clone does not hold that head (reviewHead): URL,
+// the issue's recorded repository on GitHub (GitHubURL) and never a URL the shared clone's
+// configuration names, and the credential that fetch reads it with, made when the fetch runs and
+// removed after it. The zero ReviewOrigin names none, and its provision fetches nothing from
+// origin.
 type ReviewOrigin struct {
+	URL        string
 	credential func() (remote, error)
 }
 
 // IsZero is whether o names no way to origin.
 func (o ReviewOrigin) IsZero() bool { return o.credential == nil }
 
-// OriginWithToken is the tmux daemon's way to origin: token, the repository owner's read lease,
+// OriginWithToken is the tmux daemon's way to url: token, the repository owner's read lease,
 // asked when the fetch runs, under the shared clone's store lock as FromGitHub asks it, and handed
 // to git as the one-shot credential under credentialDir (newProvisioningCredential), removed once
 // the fetch is done.
-func OriginWithToken(token func() (string, error), credentialDir string) ReviewOrigin {
-	return ReviewOrigin{credential: func() (remote, error) {
+func OriginWithToken(url string, token func() (string, error), credentialDir string) ReviewOrigin {
+	return ReviewOrigin{URL: url, credential: func() (remote, error) {
 		value, err := token()
 		if err != nil {
 			return remote{}, err
@@ -422,13 +426,12 @@ func OriginWithToken(token func() (string, error), credentialDir string) ReviewO
 	}}
 }
 
-// OriginWithHelper is a pod reviewer's way to origin: its own GitHub credential helper
+// OriginWithHelper is a pod reviewer's way to url: its own GitHub credential helper
 // (GitHubCredentialHelper), which answers from the reviewer's gh bundle (LEGION_GH_OWNERS_DIR,
 // GH_CONFIG_DIR) the role-init's environment names, for https://github.com alone and after a reset
-// of every helper the shared clone's configuration names, so no helper another role planted there
-// runs under the reviewer's credentials.
-func OriginWithHelper() ReviewOrigin {
-	return ReviewOrigin{credential: func() (remote, error) {
+// of every helper configured before it.
+func OriginWithHelper(url string) ReviewOrigin {
+	return ReviewOrigin{URL: url, credential: func() (remote, error) {
 		return remote{env: []string{
 			"GIT_ASKPASS=",
 			"GIT_TERMINAL_PROMPT=0",
@@ -495,8 +498,11 @@ const reviewStagingSuffix = ".review-"
 // clone, and no objects/info/alternates the shared clone holds names a store it reads; a new clone
 // that holds one all the same is refused (refuseAlternates). Then origin's
 // branches as the shared clone records them (its refs/remotes/origin, which the clone alone does
-// not copy), origin set to GitHub with the shared clone's credential helper and gh's default
-// repository, then a checkout of the head (reviewHead), detached, and jj colocated with it, since
+// not copy), and the head (reviewHead): a head the shared clone does not hold is fetched from
+// request.Origin straight into the new clone, whose configuration only this provision has written
+// so far, reading nothing of the shared clone (fetchFromOrigin). Then origin set to GitHub with the
+// shared clone's credential helper and gh's default repository, a checkout of the head, detached,
+// and jj colocated with it, since
 // the shim's adoption of the working copy and every role's prompt run jj in the workspace. It is
 // made under a temporary sibling and renamed into place only once whole, so a clone that stands at
 // Dir is a finished one, and one that stands there without its .jj is no clone of this function's,
@@ -508,13 +514,16 @@ const reviewStagingSuffix = ".review-"
 // git killed mid-write left in it are removed, since its only writer is the reviewer, which is not
 // running while its next launch provisions; origin's branches are fetched again from the shared
 // clone's objects, by its path and with no network; and `jj new <head>` puts the working copy on
-// the head, leaving what the reviewer wrote there before in a change of its own. A clone already
-// there whose object store names another (objects/info/alternates, which on the tmux runtime any
-// pane can write, every pane running as one user) is removed and made again instead, with a line
-// to request.Log naming the file and the store it names (remakeNamingAnotherStore), so it neither
-// reaches the reviewer nor stops every start of it after. Either way the clone's HEAD is then
-// read, and a clone that stands anywhere but the head is refused, naming both commits
-// (requireReviewHead).
+// the head, leaving what the reviewer wrote there before in a change of its own. Two such clones
+// are made again instead, each with a line to request.Log. One whose object store names another
+// (objects/info/alternates, which on the tmux runtime any pane can write, every pane running as
+// one user; remakeNamingAnotherStore) is removed first, so it neither reaches the reviewer nor
+// stops every start of it after. One whose head the shared clone does not hold, where
+// request.Origin is to fetch it (errHeadOnlyAtOrigin), is made again beside it and replaces it once
+// whole (makeReviewClone), so that fetch, which carries a credential, reads only a configuration
+// this provision has just made, and a head that still cannot be had leaves the clone there as it
+// was. Either way the clone's HEAD is then read, and a clone that stands anywhere but the head is
+// refused, naming both commits (requireReviewHead).
 //
 // No other role's run writes it: a clone copies neither the shared clone's configuration nor its
 // hooks, and no normal git operation rewrites an object file another clone links to. Its clone,
@@ -559,8 +568,23 @@ func ProvisionReviewClone(ctx context.Context, run Runner, request ReviewRequest
 		complete = !remade
 	}
 	if complete {
-		return refreshReviewClone(ctx, run, request)
+		err := refreshReviewClone(ctx, run, request)
+		if !errors.Is(err, errHeadOnlyAtOrigin) {
+			return err
+		}
+		if request.Log != nil {
+			request.Log(fmt.Sprintf("review clone %s: %v; a clone is made again beside it, whose fetch from %s reads only a configuration made now, and replaces it once whole", request.Dir, err, request.Origin.URL))
+		}
+		return makeReviewClone(ctx, run, request, true)
 	}
+	return makeReviewClone(ctx, run, request, false)
+}
+
+// makeReviewClone makes a new review clone (ProvisionReviewClone) under a temporary sibling of
+// request.Dir and renames it into place once whole. With replace, the clone already at Dir is
+// removed (RemoveReviewClone) only then, once the new one stands on the head, so a new clone that
+// cannot be made leaves the one there as it was.
+func makeReviewClone(ctx context.Context, run Runner, request ReviewRequest, replace bool) error {
 	parent := filepath.Dir(request.Dir)
 	if err := os.MkdirAll(parent, 0o700); err != nil {
 		return fmt.Errorf("make the review clone's parent: %w", err)
@@ -594,7 +618,7 @@ func ProvisionReviewClone(ctx context.Context, run Runner, request ReviewRequest
 		if err := fetchForReview(ctx, run, temporary, "origin"); err != nil {
 			return "", err
 		}
-		return reviewHead(ctx, run, request, temporary, "origin")
+		return reviewHead(ctx, run, request, temporary, "origin", true)
 	}()
 	if err != nil {
 		return err
@@ -632,6 +656,11 @@ func ProvisionReviewClone(ctx context.Context, run Runner, request ReviewRequest
 	if err := requireReviewHead(ctx, run, temporary, head); err != nil {
 		return err
 	}
+	if replace {
+		if err := RemoveReviewClone(request.Dir); err != nil {
+			return fmt.Errorf("remove review clone %s for the one made again: %w", request.Dir, err)
+		}
+	}
 	if err := os.Rename(temporary, request.Dir); err != nil {
 		if complete, statErr := pathExists(filepath.Join(request.Dir, ".jj")); cloneCollision(err) && statErr == nil && complete {
 			return nil
@@ -661,7 +690,7 @@ func refreshReviewClone(ctx context.Context, run Runner, request ReviewRequest) 
 		if err := fetchForReview(ctx, run, request.Dir, request.Clone); err != nil {
 			return "", err
 		}
-		return reviewHead(ctx, run, request, request.Dir, request.Clone)
+		return reviewHead(ctx, run, request, request.Dir, request.Clone, false)
 	}()
 	if err != nil {
 		return err
@@ -794,18 +823,24 @@ func fetchForReview(ctx context.Context, run Runner, dir, from string) error {
 // through a ref it imports, and a head fetched by its id has no other.
 const reviewHeadRef = "refs/remotes/legion/head-under-review"
 
+// errHeadOnlyAtOrigin is a refresh's answer where the shared clone does not hold the head under
+// review and request.Origin is to fetch it: the clone already there is made again
+// (ProvisionReviewClone), and the new one fetches it from origin.
+var errHeadOnlyAtOrigin = errors.New("the head under review is no commit of the shared clone")
+
 // reviewHead is the head the review clone at dir is to stand on, read under the shared clone's
 // store lock once origin's branches are fetched (fetchForReview). Where the daemon gives a head
 // (request.Head), it is that commit: fetched by its id from from — the clone's own origin while it
 // still names the shared clone, else the shared clone's path — where the branches did not bring
-// it; where the shared clone does not hold it either, fetched into the shared clone from the
-// shared clone's origin first (fetchHeadFromOrigin, with request.Origin's credential) and then by
-// its id again; and refused only where it still cannot be had, naming it and the commit the shared
-// clone records for Issue's branch, with what each fetch answered, since what the shared clone's
-// refs say is no part of what the reviewer reads. The clone's reviewHeadRef is then set to it.
-// Where the daemon gives no head, it is Issue's branch at origin, else DefaultBranch's, as the
-// fetch recorded them.
-func reviewHead(ctx context.Context, run Runner, request ReviewRequest, dir, from string) (string, error) {
+// it. Where the shared clone does not hold it either and request.Origin names a way to it, a fresh
+// clone (fresh: dir was made by this provision, so its configuration is this provision's alone)
+// fetches it straight from origin (fetchFromOrigin), and a clone already there answers
+// errHeadOnlyAtOrigin, so it is made again first. It is refused only where it still cannot be had,
+// naming it and the commit the shared clone records for Issue's branch, with what each fetch
+// answered, since what the shared clone's refs say is no part of what the reviewer reads. The
+// clone's reviewHeadRef is then set to it. Where the daemon gives no head, it is Issue's branch at
+// origin, else DefaultBranch's, as the fetch recorded them.
+func reviewHead(ctx context.Context, run Runner, request ReviewRequest, dir, from string, fresh bool) (string, error) {
 	if request.Head == "" {
 		for _, branch := range []string{Bookmark(request.Issue), request.DefaultBranch} {
 			if branch == "" {
@@ -823,38 +858,28 @@ func reviewHead(ctx context.Context, run Runner, request ReviewRequest, dir, fro
 		return "", err
 	}
 	if !held {
-		fetchByID := func() (string, error) {
-			argv := []string{"git", gitDir, "fetch", "--quiet", "--no-tags", from, request.Head}
-			fetched, err := runCommand(ctx, run, argv, reviewProvisionEnv, dir)
-			if err := answered(argv, fetched, err); err != nil {
-				return "", err
-			}
-			return strings.TrimSpace(fetched.Stderr), nil
-		}
-		answers := []string{}
-		answer, err := fetchByID()
-		if err != nil {
+		argv := []string{"git", gitDir, "fetch", "--quiet", "--no-tags", from, request.Head}
+		fetched, err := runCommand(ctx, run, argv, reviewProvisionEnv, dir)
+		if err := answered(argv, fetched, err); err != nil {
 			return "", err
 		}
 		if held, err = holdsCommit(ctx, run, dir, request.Head); err != nil {
 			return "", err
 		}
-		if !held {
-			answers = append(answers, "the shared clone answered: "+answer)
-			if request.Origin.IsZero() {
-				answers = append(answers, "no origin is given to fetch it from")
-			} else if failed := fetchHeadFromOrigin(ctx, run, request); failed != "" {
+		answers := []string{"the shared clone answered: " + strings.TrimSpace(fetched.Stderr)}
+		switch {
+		case held:
+		case request.Origin.IsZero():
+			answers = append(answers, "no origin is given to fetch it from")
+		case !fresh:
+			return "", fmt.Errorf("%w: %s holds no %s", errHeadOnlyAtOrigin, request.Clone, request.Head)
+		default:
+			if failed := fetchFromOrigin(ctx, run, request, dir); failed != "" {
 				answers = append(answers, failed)
-			} else {
-				if answer, err = fetchByID(); err != nil {
-					return "", err
-				}
-				if held, err = holdsCommit(ctx, run, dir, request.Head); err != nil {
-					return "", err
-				}
-				if !held {
-					answers = append(answers, "fetched from origin into the shared clone, which then answered: "+answer)
-				}
+			} else if held, err = holdsCommit(ctx, run, dir, request.Head); err != nil {
+				return "", err
+			} else if !held {
+				answers = append(answers, fmt.Sprintf("origin %s answered its fetch and gave no such commit", request.Origin.URL))
 			}
 		}
 		if !held {
@@ -875,27 +900,19 @@ func reviewHead(ctx context.Context, run Runner, request ReviewRequest, dir, fro
 	return request.Head, nil
 }
 
-// fetchHeadFromOrigin fetches request.Head into the shared clone from the shared clone's origin,
-// with request.Origin's credential, made for this fetch and removed after it, and answers why it
-// could not, "" where git fetched it. The fetch reaches origin by the URL the shared clone's
-// remote.origin.url names, read with no global or system configuration, and over that URL's one
-// transport alone: https for GitHub, the file transport for a local repository, and nothing else,
-// so an origin another role pointed at a command (ext::) or any other transport is never fetched
-// from. A commit is its id's content, so a fetch from any repository can only bring the head
-// itself. The fetch reads the shared clone's own configuration, as every fetch of the shared clone
-// does, but no global or system configuration, with the fsmonitor off, no hook (the runner's
-// pins), and every credential helper the shared clone names reset before request.Origin's, which
-// answers https://github.com alone; it writes no FETCH_HEAD, which the shared clone's other users
-// read, and starts no gc there. It moves no ref of the shared clone: the head's objects are kept,
-// and the review clone fetches them by their id.
-func fetchHeadFromOrigin(ctx context.Context, run Runner, request ReviewRequest) string {
-	gitDir := "--git-dir=" + filepath.Join(request.Clone, ".git")
-	argv := []string{"git", gitDir, "config", "--get", "remote.origin.url"}
-	read, err := runCommand(ctx, run, argv, reviewProvisionEnv, request.Clone)
-	if err := answered(argv, read, err); err != nil {
-		return fmt.Sprintf("its origin could not be read: %v", err)
-	}
-	url := strings.TrimSpace(read.Stdout)
+// fetchFromOrigin fetches request.Head straight into the review clone at dir, one this provision
+// has just made, from request.Origin.URL, the issue's recorded repository, with request.Origin's
+// credential, made for this fetch and removed after it, and answers why it could not, "" where git
+// fetched it. Nothing of the shared clone is read: neither the URL its configuration names nor any
+// other key of it, so no url.<base>.insteadOf, http.proxy or credential helper another role
+// planted there sees the fetch or its credential. The fetch reads the new clone's configuration
+// alone, which this provision made and nothing else has written, and no global or system
+// configuration, with the fsmonitor off and no hook (the runner's pins), every credential helper
+// configured before request.Origin's reset, and that URL's one transport alone: https for GitHub,
+// the file transport for a local repository, and nothing else, so a URL that names a command
+// (ext::) or any other transport is never fetched from. It writes no FETCH_HEAD and starts no gc.
+func fetchFromOrigin(ctx context.Context, run Runner, request ReviewRequest, dir string) string {
+	url := request.Origin.URL
 	protocol := ""
 	switch {
 	case strings.HasPrefix(url, "https://"):
@@ -903,16 +920,17 @@ func fetchHeadFromOrigin(ctx context.Context, run Runner, request ReviewRequest)
 	case filepath.IsAbs(url):
 		protocol = "file"
 	default:
-		return fmt.Sprintf("the shared clone's origin is %q, neither GitHub over https nor a local repository, so nothing was fetched from it", url)
+		return fmt.Sprintf("origin %q is neither GitHub over https nor a local repository, so nothing was fetched from it", url)
 	}
 	credential, err := request.Origin.credential()
 	if err != nil {
 		return fmt.Sprintf("no credential to fetch it from origin %s: %v", url, err)
 	}
 	defer func() { _ = credential.remove() }()
-	argv = []string{"git", "-c", "core.fsmonitor=false", gitDir, "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "--no-auto-gc", url, request.Head}
+	argv := []string{"git", "-c", "core.fsmonitor=false", "--git-dir=" + filepath.Join(dir, ".git"), "fetch", "--quiet", "--no-tags",
+		"--no-write-fetch-head", "--no-auto-gc", url, request.Head}
 	env := slices.Concat(isolatedGitConfig, []string{"GIT_ALLOW_PROTOCOL=" + protocol}, credential.env)
-	result, err := runCommandTimeout(ctx, run, argv, env, request.Clone, CloneTimeout)
+	result, err := runCommandTimeout(ctx, run, argv, env, dir, CloneTimeout)
 	result.Stderr = credential.scrub(result.Stderr)
 	if err := answered(argv, result, err); err != nil {
 		return credential.scrub(fmt.Sprintf("its fetch from origin %s did not answer: %v", url, err))

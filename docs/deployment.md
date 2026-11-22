@@ -879,14 +879,17 @@ through git's transport rather than as copies of the shared clone's files, so no
 `objects/info/alternates` the shared clone holds reaches it, with origin's branches as the shared
 clone records them, the head fetched from the shared clone by its id where no branch brings it,
 origin set to GitHub, and a detached checkout of the head, with jj colocated in it. Where the
-shared clone does not hold the head, the daemon first fetches that commit into the shared clone
-from its origin with the repository owner's read lease. A clone that is already there gets those
-branches and the head fetched again from the shared clone, and a `jj new` on the head. Its stale
-git locks are removed first, and the reviewer's earlier writes stay in a change of their own; a
-clone that holds an `objects/info/alternates` file is removed and made again instead, and the
-daemon logs a warning naming the file and the store it names. The launch is refused, naming both
-commits, when neither the shared clone nor its origin holds the head, or the clone's `HEAD` is not
-that head afterwards. The shared clone's store lock is
+shared clone does not hold the head, the daemon fetches that commit from GitHub, at the issue's
+recorded repository, straight into the new clone, with the repository owner's read lease, and
+reads nothing of the shared clone's configuration for it. A clone that is already there gets
+those branches and the head fetched again from the shared clone, and a `jj new` on the head. Its
+stale git locks are removed first, and the reviewer's earlier writes stay in a change of their
+own. Two clones are made again instead, and the daemon logs a warning for each: one that holds an
+`objects/info/alternates` file, which is removed first, and one whose head the shared clone does
+not hold, which a new clone fetching that head from GitHub replaces once whole. The launch is
+refused, naming both commits, when neither the shared clone nor GitHub gives the head, leaving the
+clone there as it was, or when the clone's `HEAD` is not that head afterwards. The shared clone's
+store lock is
 held only while the clone or its fetch reads the shared clone, and the checkout takes one of the 16
 places. The clone is removed with the issue's workspace. It costs the disk one more copy of the
 repository's objects and one checkout.

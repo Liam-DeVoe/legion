@@ -3668,10 +3668,11 @@ func (r *outbox) ensureWorkspace(ctx context.Context, key string, repo ghrepo.Re
 // cloned from. It takes the issue's turn, as a provision of the issue's workspace does, so it
 // never reads a shared clone that the issue's own provision is still making, and hands the clone
 // the repository's store lock and the checkout places a provision takes (provisionIn). A head the
-// shared clone lacks is fetched into it from origin first, with the read lease of the owner GitHub
-// holds the repository under now, minted only when that fetch runs, under the store lock, as
-// provisionIn mints its own (workspace.OriginWithToken). What the clone logs, a stale lock it
-// removed or a clone it made again because it named another object store, is a warning.
+// shared clone lacks is fetched from GitHub, at the repository the issue's record names, straight
+// into a review clone made for it, with the read lease of the owner GitHub holds the repository
+// under now, minted only when that fetch runs, under the store lock, as provisionIn mints its own
+// (workspace.OriginWithToken); nothing of the shared clone's configuration is read by that fetch.
+// What the clone logs, a stale lock it removed or a clone it made again, is a warning.
 func (r *outbox) ensureReviewClone(ctx context.Context, key string, repo ghrepo.Repository, defaultBranch, head string) error {
 	if r.podsProvision() {
 		return nil
@@ -3703,7 +3704,7 @@ func (r *outbox) ensureReviewClone(ctx context.Context, key string, repo ghrepo.
 	defer releaseStore()
 	if err := r.provisionReview(ctx, workspace.ReviewRequest{
 		Clone: located.Clone, Dir: dir, Repo: repo, Issue: key, DefaultBranch: defaultBranch, Head: head,
-		Origin:    workspace.OriginWithToken(mint, r.stateDir),
+		Origin:    workspace.OriginWithToken(workspace.GitHubURL(repo), mint, r.stateDir),
 		StoreLock: store, CheckoutSlot: r.provisions.slot,
 		Log: func(line string) { r.log.Warn("review clone: "+line, "issue", key) },
 	}); err != nil {
