@@ -528,7 +528,9 @@ func (d *heldDurable) adopt(ctx context.Context, _ string, candidate *jetstream.
 // setting an update changes (bus.CorrectedConfig) -- its filter, ack wait and pending bound among
 // them -- on client, the connection its generation is granted its create on, before the intake
 // binds it. The update goes out as the create does, with the filter after the name, which the
-// generation's grant holds.
+// generation's grant holds. The create is read as the server stores it: an unset max deliver is
+// the server's -1 (nats-server consumer.go setConsumerConfigDefaults, :612-613), so a candidate
+// made by this durable's own create is already as it creates it and takes no update.
 func (d *heldDurable) correctAdopted(ctx context.Context, client *bus.Client, current string) error {
 	held, err := client.ConsumerInfo(ctx, current)
 	if err != nil {
@@ -537,6 +539,9 @@ func (d *heldDurable) correctAdopted(ctx context.Context, client *bus.Client, cu
 	create, err := d.adoptionCreate(held)
 	if err != nil {
 		return err
+	}
+	if create.MaxDeliver == 0 {
+		create.MaxDeliver = -1
 	}
 	next, changed := bus.CorrectedConfig(held.Config, create)
 	if !changed {
