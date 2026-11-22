@@ -2,6 +2,8 @@ package leakguard
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -373,6 +375,36 @@ func says(t *testing.T, failed *SetupFailure, wants ...string) {
 	}
 }
 
+// stopSaid is the sentence the stop beneath err says of program, in the whole seconds the guard
+// counted, once that stop is held to the deadline of ctx, the caller's context. The guard counts
+// from the moment it started program (Guard.run), so the start it counted from is the deadline
+// less the bound, and the moment of the stop is that start plus the run. The start must come no
+// earlier than called, when the test made the call, and the stop no earlier than the deadline,
+// which is what ended program, and no later than now, after the call answered. No comparison of
+// the three rounds to a second, so however long the guard took before it started program, the
+// verdict is the same.
+func stopSaid(t *testing.T, ctx context.Context, err error, program string, called time.Time) string {
+	t.Helper()
+	answered := time.Now()
+	var stopped *stoppedError
+	if !errors.As(err, &stopped) {
+		t.Fatalf("%v carries no stop of %s beneath it", err, program)
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		t.Fatal("the caller's context has no deadline to hold the stop to")
+	}
+	began := deadline.Add(-stopped.bound)
+	ended := began.Add(stopped.ran)
+	if stopped.program != program || stopped.cancelled || began.Before(called) || ended.Before(deadline) || ended.After(answered) {
+		t.Fatalf("the stop beneath %q is of %s (by a cancel: %v), begun %s after the call, ended %s after the deadline and %s before the call answered; "+
+			"want a stop of %s by the deadline, begun after the call, ended at or after the deadline and before the call answered",
+			err, stopped.program, stopped.cancelled, began.Sub(called), ended.Sub(deadline), answered.Sub(ended), program)
+	}
+	return fmt.Sprintf("%s ran %d s and was stopped by its bound of %d s",
+		program, int64(stopped.ran.Round(time.Second)/time.Second), int64(stopped.bound.Round(time.Second)/time.Second))
+}
+
 // A shared check its bound stops is a setup failure that names the check, the time it ran and
 // the bound it had, once, so a person reading the line can tell a check given too little time
 // from one that hung. The time it ran also shows that the kill reached the sleep, which bash
@@ -466,6 +498,10 @@ func TestAReadASignalEndedKeepsWhatItPrinted(t *testing.T) {
 
 // The gh visibility read and the git reads of a push's records keep the setup failure of their
 // own, and the stop is the error beneath it, naming the program, the time it ran and its bound.
+// Its seconds are the guard's count from the moment it started the program (Guard.run), and the
+// shared check runs before that, so the bound is what the check left of the caller's two seconds:
+// on a loaded machine the check takes longer and the bound is less. The line is held to the stop
+// beneath it, and the stop to the caller's deadline (stopSaid), never to the two seconds whole.
 func TestAReadStoppedByItsBoundNamesItsProgramItsTimeAndItsBound(t *testing.T) {
 	// sleeps is the PATH entry of a directory whose one program is name, which sleeps far past
 	// the bound, in front of the test's own PATH: the guard's lookup finds it before the real
@@ -487,7 +523,7 @@ func TestAReadStoppedByItsBoundNamesItsProgramItsTimeAndItsBound(t *testing.T) {
 		started := time.Now()
 		err := guard.Text(ctx, TextRequest{Repo: "invented-org/invented-repo", Text: "a clean title\n"})
 		answeredWithin10s(t, started)
-		says(t, setupFailure(t, err), "could not be read: gh ran 2 s and was stopped by its bound of 2 s")
+		says(t, setupFailure(t, err), "could not be read: "+stopSaid(t, ctx, err, "gh", started))
 	})
 	t.Run("a git read of the push's records", func(t *testing.T) {
 		guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, sleeps(t, "git"))
@@ -503,6 +539,6 @@ func TestAReadStoppedByItsBoundNamesItsProgramItsTimeAndItsBound(t *testing.T) {
 			Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: strings.Repeat("1", 40), RemoteRef: "refs/heads/main", RemoteSHA: noSHA}},
 		})
 		answeredWithin10s(t, started)
-		says(t, setupFailure(t, err), "the push's commits could not be read: git ran 2 s and was stopped by its bound of 2 s")
+		says(t, setupFailure(t, err), "the push's commits could not be read: "+stopSaid(t, ctx, err, "git", started))
 	})
 }
