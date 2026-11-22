@@ -7,8 +7,8 @@ export interface AnchorRow {
   /** How the row was chosen: keyboard focus within it, the pointer resting on it, the place kept
    *  (`kept`: the host's, `keepRow`, or, where the host takes its box over, the one the reader's
    *  last act recorded), or, failing all three, the row nearest the list's visible centre. Where
-   *  the focus, or the place kept for the reader, is in a row wholly outside the view of the box
-   *  the host named, the first row in view stands in for that row (`view`, `rowToKeep`). */
+   *  the row so chosen lies wholly outside the view of the box the host named, the row the rule
+   *  of `rowToKeep` gives stands in for it (`view`). */
   via: "center" | "focus" | "kept" | "pointer" | "view";
 }
 
@@ -28,6 +28,15 @@ interface HeldPlace {
   id: string;
   scrollTop: number;
   top: number;
+}
+
+/** What names a place for `keepPlace` to keep: the row the reader's hand, the host or the place
+ *  kept until now is at; the control that holds the focus in that row, where one does; and
+ *  whether the place is the host's (`keepRow`). */
+interface NamedPlace {
+  control: Element | null;
+  host: boolean;
+  row: HTMLElement;
 }
 
 export interface ViewportAnchorProps {
@@ -51,8 +60,9 @@ export interface ViewportAnchorProps {
    *  (`watchedIn`), and makes good a change no observation has reported yet before it reads a
    *  pointer, focus or scroll event (`contentResized`). The place kept then changes only at an
    *  act of the reader's: a scroll that a wheel, a key or a press made (`readerScrolls`), the
-   *  pointer moving to a new point (`handMoved`, `pointerMoved`), the focus moving into the rows.
-   *  What the browser raises for a change of the page records nothing: a row moving under a
+   *  pointer moving to a new point (`handMoved`, `pointerMoved`), the focus moving into the rows;
+   *  and where a scroll of the page's leaves it out of the view, as the rule `rowToKeep` states.
+   *  What the browser raises for a change of the page records nothing else: a row moving under a
    *  pointer that did not move, a pull-back of the box to its end, the browser's own anchoring,
    *  another script's scroll (`rebaseHeld`), the focus lost with a node that went (`readerKept`).
    *  Off by default, and of no effect where the rows scroll in the document. Left off, the
@@ -133,8 +143,20 @@ function rowWithin(root: HTMLElement, selector: string, node: Element | null): H
 
 /** True where `rect` and `box` share some height: what `rect` bounds lies in the view `box`
  *  bounds, wholly or in part. */
-function overlaps(rect: DOMRect, box: DOMRect): boolean {
+function overlaps(rect: Pick<DOMRect, "bottom" | "top">, box: DOMRect): boolean {
   return rect.bottom > box.top && rect.top < box.bottom;
+}
+
+/** True where `control`, an element inside `row` other than the row itself, holds the focus: a
+ *  control the place can be kept at (`held`). The row itself holding the focus says no more than
+ *  the row's own top. */
+function focusedIn(control: Element | null, row: HTMLElement): control is Element {
+  return (
+    control !== null &&
+    control !== row &&
+    control === document.activeElement &&
+    row.contains(control)
+  );
 }
 
 /** How far the box that scrolls the rows is scrolled: `scroller`'s offset, or the window's. */
@@ -249,13 +271,10 @@ export function rewatch(
  * row opened keeps that row the current one while the card is open: the card is the row's own
  * doing and sits outside the list only because it is `fixed`.
  *
- * The anchor keeps what the reader can see. Where the rows scroll in a box the host names, a
- * focused row that lies wholly outside that box's view is not the row kept: the first row wholly
- * in view is (`rowToKeep`), as a place of the reader's with no focused control, and a focused
- * control's own place is kept only while that control is in the view. A cut of a row wholly
- * outside the view, or a row drawn between such a row and the view, then moves nothing on
- * screen, where keeping the focused row's place, or its control's, moved every row in view by
- * as much. Where the rows scroll in the document the focused row is kept wherever it is.
+ * The anchor keeps only a place the reader can see, by the one rule `rowToKeep` states: where the
+ * rows scroll in a box the host names, every place it keeps and every row a commit keeps go
+ * through that rule, whatever named the row. Where the rows scroll in the document the row named
+ * is kept wherever it is.
  *
  * A host can keep a row's place itself while no act of the reader's names one (`keepRow`): a
  * control of the host's outside the list holds the focus, and what it starts changes the list
@@ -276,9 +295,10 @@ export function rewatch(
  * scroll event of the same change is read, since Chromium raises the boundary events of a row
  * moved from under a resting pointer at the start of the frame, before its resize observations.
  * Only the reader's own act records another place: a scroll their wheel, key or press made, the
- * pointer moving to a new point, the focus moving into the rows. The events the browser raises
- * for a change of the page record nothing, and while no act of the reader's names a row, the
- * place kept is the one a commit keeps too.
+ * pointer moving to a new point, the focus moving into the rows. A place a scroll of the page's
+ * leaves out of the view is kept as the rule `rowToKeep` states. The events the browser raises
+ * for a change of the page record nothing else, and while no act of the reader's names a row,
+ * the place kept is the one a commit keeps too.
  *
  * Rows are the elements matching `[item]`, identified by that attribute's value, and must keep
  * their identity across the commit (a remounted row is a new node and cannot be found again).
@@ -308,16 +328,15 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
    *  that card is open - once the pointer leaves it the card closes itself
    *  (`REF_PREVIEW_CLOSE_DELAY_MS`) and `interacted` lets the row go. */
   private onOwnCard = false;
-  /** The row the reader's hand is on, or, where the focus is in a row wholly outside the view,
-   *  the first row in view (`rowToKeep`); the viewport top they last saw it at; and the two
-   *  things that keep that top true: the offset the box was at when it was saved, and the group
-   *  the row was in. The top is read rather than re-measured because the view can be wrong when
-   *  a commit arrives: a change this component's own commits never see has already moved the
-   *  row. A card below the hand answering itself, a thread body arriving, Markdown finishing -
-   *  each is a child's own commit, which re-renders the child alone, so
-   *  `getSnapshotBeforeUpdate` is never called for it. Measured in the Inbox drawer: the
-   *  answered row's card shrinks by a card's height one commit before the list drops the row,
-   *  and the reader's row ended exactly that far out.
+  /** The row the reader's hand is on, as the rule `rowToKeep` states keeps it (`keepPlace`); the
+   *  viewport top they last saw it at; and the two things that keep that top true: the offset the
+   *  box was at when it was saved, and the group the row was in. The top is read rather than
+   *  re-measured because the view can be wrong when a commit arrives: a change this component's
+   *  own commits never see has already moved the row. A card below the hand answering itself, a
+   *  thread body arriving, Markdown finishing - each is a child's own commit, which re-renders
+   *  the child alone, so `getSnapshotBeforeUpdate` is never called for it. Measured in the Inbox
+   *  drawer: the answered row's card shrinks by a card's height one commit before the list drops
+   *  the row, and the reader's row ended exactly that far out.
    *
    *  Kept only where the host names a `scroller`. Where the rows scroll in the document the
    *  browser's own scroll anchoring covers that drift, and a cached place there would only undo
@@ -325,9 +344,8 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
    *  beside the browser's own anchoring there, which keeps a node of its own choosing rather than
    *  the reader's row, or alone where the host takes the box over (`ownsScrollAnchoring`).
    *
-   *  A place the host keeps (`keepRow`) is kept the same way, at the row the host named, and
-   *  is marked as the host's (`hostRow`), so letting it go leaves a place of the reader's
-   *  alone.
+   *  A place the host keeps (`keepRow`) is kept the same way, by the same rule, and is marked as
+   *  the host's (`hostRow`), so letting it go leaves a place of the reader's alone.
    *
    *  Where the focus is on a control inside the row and that control lies in the view as the
    *  place is recorded, the place is that control's own (`focus`): the control and its viewport
@@ -335,19 +353,19 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
    *  above the control can change height, which moves the control and leaves the row's top
    *  where it was. `top` is then the row's top that puts the control back at its own
    *  (`contentResized` keeps the two together), so a commit, which measures the row, moves the
-   *  control back with it. A control outside the view is no place the reader sees: keeping it
-   *  there would move what is in view by as much as its row's words above it changed. A press
-   *  of the reader's inside the root, a key or the pointer, lets the control go
-   *  (`readerPressed`): what the press opens in the row opens below the row's top, which is
-   *  what holds then.
+   *  control back with it. A control outside the view is kept no more than a row outside it is
+   *  (`rowToKeep`). A press of the reader's inside the root, a key or the pointer, lets the
+   *  control go (`readerPressed`): what the press opens in the row opens below the row's top,
+   *  which is what holds then.
    *
    *  A different `scrollTop` means the view moved without this component hearing of it, unless
    *  the box sits at its end below the offset kept, where the browser pulled it back as its
    *  content shrank and the reader did not move the view (`pulledBack`). A different `group`
    *  means the row was relocated rather than shifted. On either the top no longer says where the
    *  place is, and the commit measures the row instead. Where the host takes its box over, a
-   *  scroll that is not the reader's leaves the place kept and moves its top to where that scroll
-   *  left it (`rebaseHeld`), so the place holds at the box's new offset. */
+   *  scroll that is not the reader's leaves the place kept, moves its top to where that scroll
+   *  left it, and keeps it again by the rule (`rebaseHeld`), so the place holds at the box's new
+   *  offset as far as the reader can still see it. */
   private held: HeldPlace | null = null;
   /** The box whose own scroll anchoring this anchor turned off while it keeps a place there, for
    *  a host that takes the box over (`ownsScrollAnchoring`, `keepPlace`), the `overflow-anchor`
@@ -444,29 +462,31 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
    *  the row, keeps no place of its own. */
   private keptControl(held: HeldPlace, row: HTMLElement): HeldPlace["focus"] {
     const control = held.focus;
-    const holds =
-      control !== null &&
-      control.element === document.activeElement &&
-      row.contains(control.element);
-    return holds ? control : null;
+    return control !== null && focusedIn(control.element, row) ? control : null;
   }
 
-  /** Keeps `place`, the reader's or the host's (`keepRow`), as `held`, or none. Where the host
-   *  takes the box it named over (`ownsScrollAnchoring`), this anchor alone anchors that box
-   *  while a place is kept there, and the browser's own scroll anchoring is turned off there
-   *  (`overflow-anchor: none`) until none is kept. The browser anchors on a node of its own
-   *  choosing near the top of the view, not on the kept row, so content between the two that
-   *  changes height moves the row all the same, and the browser's move of the box for that node
-   *  reads as a scroll this anchor did not make: where the frame observes the change after that
-   *  move, the place no longer holds and nothing is put back, and where the move's scroll event
-   *  comes first, the place is recorded where the change left the row. Measured in Details: the
-   *  page's typeface arriving after Load older landed moved the box 39,180 px, and the control
-   *  the page had handed the focus to 1,492 px up, out of the view. Since the browser then keeps
-   *  the view for no change in that box, this anchor watches the box's content around the place
-   *  kept for one, at every depth, as it watches its own root (`watchedIn`). Any other host keeps
-   *  the browser's anchoring, which holds the rows in view as content above the view changes
-   *  height, as the Inbox's columns do. */
-  private keepPlace(place: HeldPlace | null): void {
+  /** Keeps the place `named` names, the reader's or the host's (`keepRow`), as `held`, or none:
+   *  every place kept goes through here, and the place kept is the one the rule `rowToKeep`
+   *  states, measured as it stands now: the row's top, the box's offset, the row's group, and the
+   *  control named while it holds the focus inside that row and lies in the view. Where the rule
+   *  puts another row in the named one's stead, the place a host kept stays the host's, at that
+   *  row (`hostRow`). Where no row is in view, and where the rows scroll in the document, nothing
+   *  is kept. Where the host takes the box it named over (`ownsScrollAnchoring`), this anchor
+   *  alone anchors that box while a place is kept there, and the browser's own scroll anchoring
+   *  is turned off there (`overflow-anchor: none`) until none is kept. The browser anchors on a
+   *  node of its own choosing near the top of the view, not on the kept row, so content between
+   *  the two that changes height moves the row all the same, and the browser's move of the box
+   *  for that node reads as a scroll this anchor did not make: where the frame observes the
+   *  change after that move, the place no longer holds and nothing is put back, and where the
+   *  move's scroll event comes first, the place is recorded where the change left the row.
+   *  Measured in Details: the page's typeface arriving after Load older landed moved the box
+   *  39,180 px, and the control the page had handed the focus to 1,492 px up, out of the view.
+   *  Since the browser then keeps the view for no change in that box, this anchor watches the
+   *  box's content around the place kept for one, at every depth, as it watches its own root
+   *  (`watchedIn`). Any other host keeps the browser's anchoring, which holds the rows in view as
+   *  content above the view changes height, as the Inbox's columns do. */
+  private keepPlace(named: NamedPlace | null): void {
+    const place = named === null ? null : this.placeToKeep(named);
     this.held = place;
     const box = this.props.ownsScrollAnchoring === true ? this.scrollerElement() : null;
     if (place === null || box === null) {
@@ -509,16 +529,46 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     owned.watched = now;
   }
 
-  /** The row to keep for `place`, the row of the reader's place, where the rows scroll in a box
-   *  whose view `box` bounds: the row the focus is in (`rememberHeld`, `rebaseHeld`,
-   *  `current()`), or the row of the place the reader's last act recorded, which can be the
-   *  pointer's (`readerKept`). That row while any of it lies in the view; else the first row
-   *  wholly in view, or, where none is, the first in view in part; null where no row is in view.
-   *  The anchor keeps what the reader can see. A row wholly outside the view is one they cannot,
-   *  and so is a cut of it, or a row drawn between it and the view: keeping the first row in view
-   *  then moves nothing on screen, where keeping that row, or a control in it, moved every row in
-   *  view by the change. Layout reads: `interacted()`, which a parent may call on every render,
-   *  leaves this to its callers. */
+  /** The place `keepPlace` keeps for `named`, by the rule `rowToKeep` states, measured as it
+   *  stands now. Null where no row is in view, and where the rows scroll in the document. */
+  private placeToKeep({ control, host, row: named }: NamedPlace): HeldPlace | null {
+    const scroller = this.scrollerElement();
+    if (scroller === null) return null;
+    const box = scroller.getBoundingClientRect();
+    const row = this.rowToKeep(named, box);
+    if (row === null) return null;
+    let focus: HeldPlace["focus"] = null;
+    if (focusedIn(control, row)) {
+      const at = control.getBoundingClientRect();
+      if (overlaps(at, box)) focus = { element: control, top: at.top };
+    }
+    return {
+      focus,
+      group: this.groupOf(row),
+      hostRow: host ? row : null,
+      id: this.idOf(row),
+      scrollTop: scroller.scrollTop,
+      top: row.getBoundingClientRect().top,
+    };
+  }
+
+  /**
+   * The row to keep where a place is named at `place`, a row of this list, and the rows scroll in
+   * a box whose view `box` bounds. This is the one rule every place is kept by: the anchor keeps
+   * only a place the reader can see, whatever named it, the focus in a row, the focus outside
+   * the list, the pointer, the host (`keepRow`) or the place kept until now. The row is `place`
+   * while any of it lies in the view; else the first row wholly in view, or, where none is, the
+   * first in view in part; null where no row is in view, and then no place is kept. A control
+   * that holds the focus is kept with the place only while it is inside the row kept and any of
+   * it lies in the view; the place replaced by another row keeps no control.
+   *
+   * A row wholly outside the view is one the reader cannot see, and so is a cut of it, or a row
+   * drawn between it and the view: keeping the first row in view then moves nothing on screen,
+   * where keeping that row, or a control in it, moved every row in view by the change. Every
+   * place kept goes through it (`keepPlace`), and so does every row a commit keeps (`current()`).
+   * It reads the layout, so `interacted()`, which a parent may call on every render, leaves it to
+   * its callers.
+   */
   private rowToKeep(place: HTMLElement, box: DOMRect): HTMLElement | null {
     if (overlaps(place.getBoundingClientRect(), box)) return place;
     let inPart: HTMLElement | null = null;
@@ -532,84 +582,37 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     return inPart;
   }
 
-  /** Records where the hand's row sits now as the place to keep it, with the box offset and the
-   *  group that place belongs to, and, where a control inside the row holds the focus and lies in
-   *  the view, that control and where it sits. Where the focus is in a row wholly outside the
-   *  view, the place is the first row in view instead (`rowToKeep`), with no focused control: that
-   *  row is what the reader sees. Called where the view is the reader's own: the pointer moving
-   *  onto a row or off one, a scroll they made, the focus moving into the root, whoever moved
-   *  it, and, where the host leaves the box's anchoring on, any other scroll of the box, the
+  /** Records the hand's row, and, where a control inside it holds the focus, that control, as
+   *  the place to keep, with the box offset and the group that place belongs to (`keepPlace`,
+   *  by the rule `rowToKeep` states). Called where the view is the reader's own: the pointer
+   *  moving onto a row or off one, a scroll they made, the focus moving into the root, whoever
+   *  moved it, and, where the host leaves the box's anchoring on, any other scroll of the box, the
    *  browser pulling it back to its end under a place of theirs included (`viewScrolled`). What
    *  it records, or nothing where the hand is on no row, takes the place of one the host kept
    *  (`keepRow`): the reader's own act says where they are now. A host whose rows scroll in the
    *  document keeps nothing. */
   private readonly rememberHeld = (): void => {
-    const scroller = this.scrollerElement();
-    const current = scroller === null ? null : this.interacted();
-    let row = current?.row ?? null;
-    let focus: HeldPlace["focus"] = null;
-    if (scroller !== null && current?.via === "focus") {
-      const box = scroller.getBoundingClientRect();
-      row = this.rowToKeep(current.row, box);
-      // The row itself holding the focus says no more than the row's own top, and a control
-      // outside the view is no place the reader sees.
-      const active = row === current.row ? document.activeElement : null;
-      const at = active === null || active === row ? null : active.getBoundingClientRect();
-      if (active !== null && at !== null && overlaps(at, box)) {
-        focus = { element: active, top: at.top };
-      }
-    }
-    if (scroller === null || row === null) {
-      this.keepPlace(null);
-      return;
-    }
-    this.keepPlace({
-      focus,
-      group: this.groupOf(row),
-      hostRow: null,
-      id: this.idOf(row),
-      scrollTop: scroller.scrollTop,
-      top: row.getBoundingClientRect().top,
-    });
+    const current = this.interacted();
+    const control = current?.via === "focus" ? document.activeElement : null;
+    this.keepPlace(current === null ? null : { control, host: false, row: current.row });
   };
 
-  /** Where the host takes its box over, a scroll of the box that no act of the reader's made,
-   *  another script's or the browser's pulling it back to its end, has moved the view without
-   *  the reader choosing another place: the place kept stays, and only its top moves to where the
-   *  scroll left it, so the place holds at the box's new offset. The row is the one kept, the
-   *  host's or the reader's, whatever the pointer rests on now. Only where the focus is in a row
-   *  of the list does the place follow the rule it was recorded by: the focused row while any of
-   *  it is in view, else the first row in view (`rowToKeep`), and a focused control kept with
-   *  it only while it holds the focus in the view. A control the reader's press let go stays let
-   *  go (`readerPressed`). A row that has left the list takes the place with it. What this anchor
-   *  watches in the box then follows the place (`watchOwnedBox`). */
+  /** Keeps the place kept again where the box now stands (`keepPlace`): its top moves to where
+   *  the box's move left it, and a place the reader can no longer see is kept as the rule
+   *  `rowToKeep` states. Called where the host takes its box over and a scroll of the box that no
+   *  act of the reader's made, another script's or the browser's pulling it back to its end, has
+   *  moved the view without the reader choosing another place (`ownedScrolled`), and where a box
+   *  at its end or its top could not follow a put-back the whole way (`contentResized`). The row
+   *  is the one kept, the host's or the reader's, whatever the pointer rests on now, and a host's
+   *  place stays the host's. A focused control kept with it stays only while the rule keeps it,
+   *  and one the reader's press let go stays let go (`readerPressed`). A row that has left the
+   *  list takes the place with it. */
   private rebaseHeld(): void {
     const held = this.held;
-    const scroller = this.scrollerElement();
-    if (held === null || this.root === null || scroller === null) return;
-    const box = scroller.getBoundingClientRect();
-    let row = this.heldRow(held);
-    const current = held.hostRow === null ? this.interacted() : null;
-    if (current !== null && current.via === "focus") {
-      const keep = this.rowToKeep(current.row, box);
-      if (keep !== row) {
-        row = keep;
-        held.focus = null;
-      }
-    }
-    if (row === null) {
-      this.keepPlace(null);
-      return;
-    }
-    held.group = this.groupOf(row);
-    held.id = this.idOf(row);
-    held.scrollTop = scroller.scrollTop;
-    held.top = row.getBoundingClientRect().top;
-    const control = this.keptControl(held, row);
-    const at = control === null ? null : control.element.getBoundingClientRect();
-    if (control !== null && at !== null && overlaps(at, box)) control.top = at.top;
-    else held.focus = null;
-    this.watchOwnedBox(held.focus?.element ?? row);
+    if (held === null) return;
+    const row = this.heldRow(held);
+    const control = held.focus?.element ?? null;
+    this.keepPlace(row === null ? null : { control, host: held.hostRow !== null, row });
   }
 
   /** The kept top of the row `id` (with a focused control kept in it, the row's top that puts
@@ -778,9 +781,10 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
    *  (`readerScrolls`), at the row the pointer rests on now and the focus. A scroll that left the
    *  box where the place holds moved nothing. A pull-back of the box to its end, the browser's
    *  own anchoring and another script's scroll record nothing: the place kept stays where the
-   *  scroll left it (`rebaseHeld`). Details' hold of the place a key landed the focus at scrolls
-   *  the box in its own resize observation (`details-more.tsx`), and recording the place at that
-   *  scroll's event took the row the pointer rested on then, or none, for the reader's. */
+   *  scroll left it, as far as the reader can still see it (`rebaseHeld`). Details' hold of the
+   *  place a key landed the focus at scrolls the box in its own resize observation
+   *  (`details-more.tsx`), and recording the place at that scroll's event took the row the
+   *  pointer rested on then, or none, for the reader's. */
   private ownedScrolled(scroller: HTMLElement): void {
     const reader = this.readerScrolls();
     this.contentResized();
@@ -798,20 +802,24 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
    *  takes the box over (`ownsScrollAnchoring`), the box's content around the place kept did
    *  while one is kept there (`keepPlace`, `watchedIn`), or an event of the page is about to be
    *  read there, or the browser pulled the box back to its end for such a change
-   *  (`viewScrolled`). Puts the hand's row, or the first row in view kept for a focused row
-   *  wholly outside it (`rowToKeep`), back where the reader last saw it, or, where a control
-   *  inside it is kept with the place, that control (`held`), or the row the host keeps
-   *  (`keepRow`), in the box the host named; with no such box the document's own scroll
-   *  anchoring owns this and nothing here runs. The kept place is used under the same conditions
-   *  a commit uses it under, the row's group included, and goes once its row has left the root.
+   *  (`viewScrolled`). Puts the place kept back where the reader last saw it, in the box the host
+   *  named: the row kept for the reader's hand or for the host (`keepRow`), or, where a control
+   *  inside it is kept with the place, that control (`held`). With no such box the document's own
+   *  scroll anchoring owns this and nothing here runs. The kept place is used under the same
+   *  conditions a commit uses it under, the row's group included, and goes once its row has left
+   *  the root.
    *
    *  Where a scroll whose event has not run yet moved the box off the offset the place was kept
    *  at, a host that leaves the box's anchoring on lets that event record the place again. One
    *  that takes the box over keeps it as the browser's anchoring would: a scroll that alone
-   *  moved the place is left for its event to read (`ownedScrolled`); one that put the place
-   *  back where it was kept, as Details' hold does in a resize observation ahead of this one,
-   *  leaves it holding at the new offset; and a change of height on top of the scroll is made
-   *  good by as far as the change moved the place, the scroll kept. */
+   *  moved the place, or that left the place wholly outside the view, is left for its event to
+   *  read (`ownedScrolled`), which keeps the place again by the rule `rowToKeep` states; one that
+   *  put the place back where it was kept, as Details' hold does in a resize observation ahead
+   *  of this one, leaves it holding at the new offset; and a change of height on top of the
+   *  scroll is made good by as far as the change moved the place, the scroll kept. A put-back
+   *  that a box at its end or its top could not follow the whole way leaves the place where the
+   *  change left it, kept again by that rule where its row is then wholly outside the view
+   *  (`rebaseHeld`). */
   private readonly contentResized = (): void => {
     const held = this.held;
     if (held === null || this.root === null) return;
@@ -826,26 +834,32 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     // top where it was.
     const control = this.keptControl(held, element);
     this.watchOwnedBox(control?.element ?? element);
-    // Nothing is ever held without a box (`rememberHeld`, `keepRow`), and a row in another group
-    // than the one it was kept in was relocated rather than shifted.
+    // Nothing is ever held without a box (`keepPlace`), and a row in another group than the one
+    // it was kept in was relocated rather than shifted.
     const scroller = this.scrollerElement();
     if (scroller === null || this.groupOf(element) !== held.group) return;
     const offset = scroller.scrollTop;
     const holds = held.scrollTop === offset || this.pulledBack(held.scrollTop, scroller);
     if (!holds && this.props.ownsScrollAnchoring !== true) return;
-    const at = element.getBoundingClientRect().top;
-    let drift =
-      control === null ? at - held.top : control.element.getBoundingClientRect().top - control.top;
+    const at = element.getBoundingClientRect();
+    const own = control === null ? at : control.element.getBoundingClientRect();
+    const keptAt = control === null ? held.top : control.top;
+    let drift = own.top - keptAt;
     if (!holds) {
       const scrolled = offset - held.scrollTop;
-      if (drift !== 0 && drift === -scrolled) return;
       if (drift !== 0) {
+        // The scroll alone moved the place, or left it wholly outside the view, where the reader
+        // no longer sees it (`rowToKeep`): nothing moves here, and the scroll's own event keeps
+        // the place again (`ownedScrolled`).
+        const left = keptAt - scrolled;
+        const box = scroller.getBoundingClientRect();
+        if (drift === -scrolled || !overlaps({ bottom: left + own.height, top: left }, box)) return;
         drift += scrolled;
         if (control !== null) control.top -= scrolled;
       }
       held.scrollTop = offset;
     }
-    held.top = at - drift;
+    held.top = at.top - drift;
     if (drift === 0) return;
     this.scrollBy(drift);
     this.restampHeld(held.id, held.top);
@@ -857,6 +871,11 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     if (short === 0 || this.props.ownsScrollAnchoring !== true) return;
     held.top += short;
     if (control !== null) control.top += short;
+    // A row the change left wholly outside the view is no place the reader sees: the place is
+    // kept again by the rule `rowToKeep` states.
+    if (!overlaps(element.getBoundingClientRect(), scroller.getBoundingClientRect())) {
+      this.rebaseHeld();
+    }
   };
 
   componentDidMount(): void {
@@ -1052,28 +1071,31 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     return chosen === null ? null : { ...chosen, id: this.idOf(chosen.row) };
   }
 
-  /** `interacted()`, else the place kept (`kept`): the row the host keeps the place of
+  /** The row a commit will anchor to: the row `named()` gives, put through the rule `rowToKeep`
+   *  states where the rows scroll in the box the host named (`view` where the rule put another row
+   *  in its stead, and null where no row is in view), so a commit never moves the box for a row
+   *  the reader cannot see. Layout reads. The box that scrolls is `scroller`'s element while the
+   *  host gave one and it holds one, else the window, and `componentDidUpdate` moves whichever
+   *  this read. */
+  current(): (AnchorRow & { row: HTMLElement }) | null {
+    const named = this.named();
+    const box = this.scrollerElement();
+    if (named === null || box === null) return named;
+    const row = this.rowToKeep(named.row, box.getBoundingClientRect());
+    if (row === named.row) return named;
+    return row === null ? null : { id: this.idOf(row), row, via: "view" };
+  }
+
+  /** The row the reader's place is named at, before `current()` puts it through the rule:
+   *  `interacted()`, else the place kept (`kept`): the row the host keeps the place of
    *  (`keepRow`), or, where the host takes its box over, the row of the reader's last recorded
    *  place (`readerKept`); else - only once the reader has scrolled - the row nearest the list's
-   *  visible centre (a hit-test probe: layout reads). The row a commit will anchor to. Where the
-   *  focus is in a row wholly outside the view of the box the host named, that is the first row
-   *  in view instead (`rowToKeep`, `view`), or none where no row is in view: a row the commit
-   *  draws between the focused row and the view then moves no row the reader sees. The box that
-   *  scrolls is `scroller`'s element while the host gave one and it holds one, else the window,
-   *  and `componentDidUpdate` moves whichever this read. */
-  current(): (AnchorRow & { row: HTMLElement }) | null {
+   *  visible centre (a hit-test probe: layout reads). */
+  private named(): (AnchorRow & { row: HTMLElement }) | null {
     const interacted = this.interacted();
-    if (interacted !== null) {
-      const box = this.scrollerElement();
-      if (interacted.via !== "focus" || box === null) return interacted;
-      const row = this.rowToKeep(interacted.row, box.getBoundingClientRect());
-      if (row === interacted.row) return interacted;
-      return row === null ? null : { id: this.idOf(row), row, via: "view" };
-    }
-    const kept = this.hostKept();
+    if (interacted !== null) return interacted;
+    const kept = this.hostKept() ?? this.readerKept();
     if (kept !== null) return { id: this.idOf(kept), row: kept, via: "kept" };
-    const reader = this.readerKept();
-    if (reader !== undefined) return reader;
     const root = this.root;
     if (root === null) return null;
     const scroller = this.scrollerElement();
@@ -1084,33 +1106,28 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
 
   /** Where the host takes its box over and no act of the reader's names a row now, the row of the
    *  place their last act recorded, which the events the page raises since have not changed: the
-   *  pointer's row moved from under it, the focused control gone with the node that held it. The
-   *  first row in view stands in for it while it lies wholly outside the view (`rowToKeep`), and
-   *  null answers that no row is in view. Undefined where no such place is kept, and for any other
-   *  host, whose commits keep the centre then. */
-  private readerKept(): (AnchorRow & { row: HTMLElement }) | null | undefined {
+   *  pointer's row moved from under it, the focused control gone with the node that held it.
+   *  Null where no such place is kept, and for any other host, whose commits keep the centre
+   *  then. */
+  private readerKept(): HTMLElement | null {
     const held = this.held;
-    const box = this.scrollerElement();
     if (this.props.ownsScrollAnchoring !== true || held === null || held.hostRow !== null) {
-      return undefined;
+      return null;
     }
-    if (box === null) return undefined;
-    const row = this.rowById(held.id);
-    if (row === null) return undefined;
-    const keep = this.rowToKeep(row, box.getBoundingClientRect());
-    if (keep === null) return null;
-    return { id: this.idOf(keep), row: keep, via: keep === row ? "kept" : "view" };
+    return this.scrollerElement() === null ? null : this.rowById(held.id);
   }
 
   /** Keeps the place of `row`, a row of this list, for the host, while no act of the reader's
    *  names a place: a control of the host's outside the list holds the focus, and what it
    *  starts changes the list around it, as a page of older rows read in under the list does.
-   *  The row's place is recorded as a reader's would be (`held`), with the box's own scroll
-   *  anchoring off meanwhile where the host takes the box over (`keepPlace`), and `current()`
-   *  chooses the row after the reader's focus and pointer and before the centre. The place goes
-   *  at `keepRow(null)`, which leaves a place the reader's own act recorded alone; when an act of
-   *  the reader's records another place (`rememberHeld`): the focus moving into the root, the
-   *  pointer moving onto a row or off one, a scroll they made; and when the row leaves the root.
+   *  The row's place is recorded as a reader's would be (`held`), by the rule `rowToKeep`
+   *  states: where that rule puts another row in its stead, the place kept is that row's, and
+   *  still the host's (`hostRow`). The box's own scroll anchoring is off meanwhile where the host
+   *  takes the box over (`keepPlace`), and `current()` chooses the row after the reader's focus
+   *  and pointer and before the centre. The place goes at `keepRow(null)`, which leaves a place
+   *  the reader's own act recorded alone; when an act of the reader's records another place
+   *  (`rememberHeld`): the focus moving into the root, the pointer moving onto a row or off one, a
+   *  scroll they made; when the row leaves the root; and when no row is in view (`rowToKeep`).
    *  The browser pulling the box back to its end is no act of the reader's, and the place stays
    *  the host's, recorded again where the pull-back left the box (`viewScrolled`); where the host
    *  takes its box over, so does any scroll that is not the reader's (`rebaseHeld`). While the
@@ -1132,14 +1149,7 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
       return;
     }
     if (this.interacted() !== null) return;
-    this.keepPlace({
-      focus: null,
-      group: this.groupOf(row),
-      hostRow: row,
-      id: this.idOf(row),
-      scrollTop: scroller.scrollTop,
-      top: row.getBoundingClientRect().top,
-    });
+    this.keepPlace({ control: null, host: true, row });
   }
 
   /** The row the host keeps the place of (`keepRow`), while that place is kept and the row is
