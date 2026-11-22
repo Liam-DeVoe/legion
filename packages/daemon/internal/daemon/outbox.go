@@ -2557,11 +2557,12 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		}
 		// A start whose claim's slot or step's role the issue's live pod was built before waits on
 		// this row, before it creates, retrees or hands anything to a claim: a launch into that pod
-		// would replace it with the issue's disk, and only the pod's update round or its release may
-		// (ruling 18). The claim runs in the slot of its agent, which the runtime picks from its
-		// token: the role's own for a claim named by its role, a keyed agent's first role's for a
-		// step of another role, whose own resources the launch needs too, and a name of its own for
-		// a second agent of one role (`implementer-2`).
+		// would replace it with the issue's disk, and only the pod's update round or its release
+		// may. The claim runs in the slot of its agent, which the runtime picks from its token: the
+		// role's own for a claim named by its role, a keyed agent's first role's for a step of
+		// another role, whose own resources the launch needs too, and a name of its own for a
+		// second agent of one role (`implementer-2`). A start with no task of an agent the plan in
+		// force no longer names finishes without a wait (roleWaitsForItsPod).
 		if err := r.roleWaitsForItsPod(ctx, row, issue, token, payload.Role, payload.Task); err != nil {
 			if errors.Is(err, errAgentLeftItsPlan) {
 				r.log.Info("outbox start with no task of an agent the plan in force names at no step, whose slot the issue's pod lacks; finished without acting",
