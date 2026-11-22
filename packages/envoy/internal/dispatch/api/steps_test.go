@@ -598,6 +598,41 @@ func TestTheExperimentRouteWritesTheVariantOfARun(t *testing.T) {
 	}
 }
 
+// Only the daemon of the issue's project writes the experiment and the variant of a run, as only
+// it writes the run's record: the route checks its writer in its own handler, as the step route and
+// the rating route do. A person, an agent's session and the daemon of another project, each
+// sending the pair the daemon's own write lands with, are refused 403 STEP_WRITER, whether the
+// run's record exists or not, and the run the daemon recorded names no variant; the daemon's write
+// of the pair lands, which is the control.
+func TestAVariantIsTheDaemonsAlone(t *testing.T) {
+	handler := newTestHandler(t)
+	issue := createTestIssue(t, handler, "LEG", "A run of an experiment")
+	run := uuid.NewString()
+	putStepOK(t, handler, issue, run, implementerStart(daemonSessionOf("LEG")))
+	pair := map[string]any{"experiment": "planning", "variant": "b"}
+
+	for _, id := range []string{run, uuid.NewString()} {
+		path := "/api/v1/issues/" + issue + "/steps/" + id + "/experiment"
+		person := dispatchRequest(t, handler, http.MethodPut, path, withFields(stepIdentity(nil), pair), "alice")
+		expectRefusal(t, "a person's variant of "+id, person, http.StatusForbidden, codeStepWriter, "legion-daemon:LEG", issue)
+		for _, session := range []string{legionDaemonSessionPrefix + "OTHER", "ses_agent"} {
+			refused := putExperiment(t, handler, issue, id, withFields(stepIdentity(map[string]any{"kind": "session", "id": session}), pair))
+			expectRefusal(t, "a variant of "+id+" as "+session, refused, http.StatusForbidden, codeStepWriter, "legion-daemon:LEG", issue)
+		}
+	}
+	if steps := stepsOf(t, handler, issue); len(steps) != 1 || steps[0].ID != run || steps[0].Experiment != nil || steps[0].Variant != nil {
+		t.Fatalf("the refused variants left %s, want the one run %s, with no variant", asJSON(t, steps), run)
+	}
+
+	written := putExperiment(t, handler, issue, run, withFields(stepIdentity(daemonSessionOf("LEG")), pair))
+	if written.Code != http.StatusOK {
+		t.Fatalf("the daemon's variant of %s: status=%d body=%s, want 200", run, written.Code, written.Body.String())
+	}
+	if step := stepOf(t, handler, issue, run); step.Experiment == nil || *step.Experiment != "planning" || step.Variant == nil || *step.Variant != "b" {
+		t.Fatalf("after the daemon's write the read lists %s, want the run with the variant planning/b", asJSON(t, step))
+	}
+}
+
 // A backward move to the retro returns to place 0, not to no place. Both delivery orders and a
 // later end keep that first return destination in the write's answer and in the issue's read.
 func TestAStepReturnedToRetroKeepsPlaceZero(t *testing.T) {

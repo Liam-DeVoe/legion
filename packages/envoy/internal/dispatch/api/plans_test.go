@@ -363,19 +363,23 @@ func (exactLogin) Login(r *http.Request) (string, error) {
 }
 
 // The writer of an issue's records is the daemon's session, kind and id both: a signed-in person
-// whose login is legion-daemon:LEG is refused the plan write and the rating write 403 STEP_WRITER
-// with nothing written, where the session of that id writes both, which is the control.
+// whose login is legion-daemon:LEG is refused the plan write, the rating write and the experiment
+// write 403 STEP_WRITER with nothing written, where the session of that id writes all three, which
+// is the control.
 func TestTheDaemonsIDIsNoWriterButAsASession(t *testing.T) {
 	handler, _, _ := newTestServer(t, testServerOptions{identity: exactLogin{}})
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	writer := legionDaemonSessionPrefix + "LEG"
-	plan, retro := uuid.NewString(), uuid.NewString()
+	plan, retro, run := uuid.NewString(), uuid.NewString(), uuid.NewString()
 	rating := withFields(retroIdentity(nil, 1), map[string]any{"rating": 2, "rating_reason": "The plan was thin."})
+	variant := withFields(stepIdentity(nil), map[string]any{"experiment": "planning", "variant": "b"})
 
 	planned := dispatchRequest(t, handler, http.MethodPut, "/api/v1/issues/"+issue+"/plans/"+plan, defaultPlanBody(nil, 1), writer)
 	expectRefusal(t, "a plan of a person named "+writer, planned, http.StatusForbidden, codeStepWriter, writer, issue)
 	rated := dispatchRequest(t, handler, http.MethodPut, "/api/v1/issues/"+issue+"/steps/"+retro+"/rating", rating, writer)
 	expectRefusal(t, "a rating of a person named "+writer, rated, http.StatusForbidden, codeStepWriter, writer, issue)
+	drawn := dispatchRequest(t, handler, http.MethodPut, "/api/v1/issues/"+issue+"/steps/"+run+"/experiment", variant, writer)
+	expectRefusal(t, "a variant of a person named "+writer, drawn, http.StatusForbidden, codeStepWriter, writer, issue)
 	if steps := stepsOf(t, handler, issue); len(steps) != 0 {
 		t.Fatalf("the refused writes left %d records, want none", len(steps))
 	}
@@ -385,6 +389,9 @@ func TestTheDaemonsIDIsNoWriterButAsASession(t *testing.T) {
 
 	putPlanRecordOK(t, handler, issue, plan, defaultPlanBody(daemonSessionOf("LEG"), 1))
 	putRatingOK(t, handler, issue, retro, withFields(rating, map[string]any{"actor": daemonSessionOf("LEG")}))
+	if written := putExperiment(t, handler, issue, run, withFields(variant, map[string]any{"actor": daemonSessionOf("LEG")})); written.Code != http.StatusOK {
+		t.Fatalf("the daemon's variant of %s: status=%d body=%s, want 200", run, written.Code, written.Body.String())
+	}
 }
 
 // workflowRows counts the rows of the workflow store's two tables, which every plan write and
