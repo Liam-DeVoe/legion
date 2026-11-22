@@ -696,6 +696,49 @@ test("a bounded export reached through import() or require is read as an importe
   }
 });
 
+// A function of the file's own handed by name to a call is called there, so the scan reads the
+// reference as a call of it, as `web/src/__tests__/real-clock-waits.test.ts` finds a wait handed
+// on: `runStandIns` of `outside-agent-acceptance.test.ts` hands `runStandIn` to `map`. This plants
+// a helper whose child runs under the `listing` bound, handed to `map` inside another helper and
+// to `then` in a row's body. The two rows under `rowLimit("short")` fall short of that bound and
+// are refused, and the row under `rowLimit("listing")` passes. Read as no wait, the reference
+// left both short rows waiting for nothing, and nothing was refused.
+test("a function of the file's own handed on by name is read as a call of it", () => {
+  const root = mkdtempSync(join(tmpdir(), "row-limits-handed-"));
+  try {
+    const file = "__tests__/handed.test.ts";
+    mkdirSync(join(root, "__tests__"));
+    writeFileSync(
+      join(root, file),
+      [
+        'import { test } from "bun:test";',
+        'import { rowLimit, runBounded } from "./bounded-subprocess";',
+        'const leg = (argv: string[]) => runBounded({ argv, bound: "listing", from: "" });',
+        "const legs = (argvs: string[][]) => Promise.all(argvs.map(leg));",
+        'test("mapped", () => legs([["true"]]), rowLimit("short"));',
+        'test("then", () => Promise.resolve(["true"]).then(leg), rowLimit("short"));',
+        'test("covered", () => legs([["true"]]), rowLimit("listing"));',
+        "",
+      ].join("\n")
+    );
+    const limits = limitsOfFiles(root, [file]);
+    expect(limits.map((limit) => [limit.line, limit.waitsFor, limit.bound])).toEqual([
+      [5, ["`legs` (which waits for `runBounded`)"], "listing"],
+      [6, ["`leg` (which waits for `runBounded`)"], "listing"],
+      [7, ["`legs` (which waits for `runBounded`)"], "listing"],
+    ]);
+    const refused = refusedLimits(limits);
+    expect(refused.map((refusal) => refusal.limit.line)).toEqual([5, 6]);
+    expect(refused[0].why).toStartWith(
+      `${file}:5 the row "mapped" stops at rowLimit("short"), 90000 ms, and waits for \`legs\` ` +
+        "(which waits for `runBounded`), under the `listing` bound of 360000 ms: the row needs " +
+        '`rowLimit("listing")`, 390000 ms, at the least.'
+    );
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
 // The evidence a reader of CI records for this check. It prints the result the rule's own test
 // asserts, so the line is there only when the rule held in this run.
 test("the directory's limits are reported for the record", () => {
