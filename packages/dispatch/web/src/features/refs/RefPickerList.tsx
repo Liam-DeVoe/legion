@@ -212,13 +212,32 @@ export function RefPickerList({
     const insertion = picker.take(id);
     if (insertion !== undefined) onTake(insertion);
   };
+  // A session's row on a surface with no tooltips is described by a line the list draws off
+  // screen beside it, outside the row so its words are no part of the row's name. The line's id
+  // is the list's own prefix and the row's id. A listbox owns only options and groups, so the
+  // line is presentational, as a group's heading is, and is read only as the row's description.
+  const sessionLineId = (one: RefPickerRow) =>
+    !tooltips && one.kind === "agent" && one.agent !== undefined
+      ? `${headingPrefix}-${one.id}`
+      : undefined;
+  const sessionLine = (one: RefPickerRow) => {
+    const id = sessionLineId(one);
+    return id === undefined ? null : (
+      <span className="sr-only" id={id} key={one.id} role="presentation">
+        {one.agent?.sessionId}
+      </span>
+    );
+  };
   const row = (one: RefPickerRow) => (
     // A row is a `div`, not a `button`: a row that holds parts carries the control that lists
-    // them, and a button inside a button is no button at all. A session's row has the session's
-    // full id as its title, which is its tooltip and, beside the words that name the row, its
-    // accessible description: its name can be the short form `session:<8>…`, which two sessions
-    // may share.
+    // them, and a button inside a button is no button at all. A session's row gives the session's
+    // full id beside the words that name it, since its name can be the short form `session:<8>…`,
+    // which two sessions may share. Where the surface draws tooltips, the id is the row's title,
+    // which is its tooltip and its accessible description. Where it draws none (the issue page),
+    // the row carries no title, and its description is the line the list draws off screen for it
+    // (`sessionLine`).
     <div
+      aria-describedby={sessionLineId(one)}
       aria-selected={one.id === picker.activeId}
       className={`flex min-h-11 w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm ${surfaceMutedHoverBg} ${
         one.id === picker.activeId ? selectedCardBg : ""
@@ -235,7 +254,7 @@ export function RefPickerList({
       onMouseEnter={() => picker.highlight(one.id)}
       role="option"
       tabIndex={-1}
-      title={one.kind === "agent" ? one.agent?.sessionId : undefined}
+      title={tooltips && one.kind === "agent" ? one.agent?.sessionId : undefined}
     >
       <RefKindIcon kind={one.kind} />
       <span className="flex min-w-0 flex-1 flex-col">
@@ -274,6 +293,7 @@ export function RefPickerList({
             {group.heading}
           </div>
           {group.rows.map(row)}
+          {group.rows.map(sessionLine)}
         </div>
       ))}
       <RefPickerNotes picker={picker} />

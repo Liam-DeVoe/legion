@@ -1186,7 +1186,9 @@ test("an edit saves the comment's words", async () => {
 
 // R7: with the look, the hint under the field and the list of mention targets are off screen and
 // still read out - the hint as the field's description, the list by its name - and a row of the
-// reference picker carries no `title`, the page drawing no tooltips (`NoTooltips`).
+// reference picker carries no `title`, the page drawing no tooltips (`NoTooltips`). A session's
+// row, whose name two sessions can share, gives the session's full id as its description instead,
+// in a line drawn off screen.
 test("the look keeps the hint and the targets off screen, and a picker row has no title", async () => {
   const user = userEvent.setup();
   const hit: SearchResult = {
@@ -1226,6 +1228,14 @@ test("the look keeps the hint and the targets off screen, and a picker row has n
   // The row draws its detail line, and nothing in the list carries a title for it.
   expect(within(row).getByText(shortForm(route))).toBeInTheDocument();
   expect(list.querySelectorAll("[title]")).toHaveLength(0);
+
+  // The space closes the `#` door, and an `@` query lists the planner's session row.
+  await user.keyboard(" @Plan");
+  const parties = await within(composerBox()).findByRole("listbox", { name: "References" });
+  const session = await within(parties).findByRole("option", { name: /^Planner/ });
+  expect(parties.querySelectorAll("[title]")).toHaveLength(0);
+  expect(session).toHaveAccessibleDescription("planner-session");
+  expect(within(parties).getByText("planner-session")).toHaveClass("sr-only");
 });
 
 // The Design's "focused row": the box publishes how far up from the screen's foot it reaches
