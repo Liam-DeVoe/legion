@@ -5,12 +5,15 @@
  *  PostgreSQL's answer (`awaitPostgres`), the spec's decision block (`awaitDecisionBlock`) and the
  *  Inbox rows the seed declares (`awaitSeededInbox`), each a read repeated until a deadline
  *  (`awaitFact`), and the live view's first frame (`agentViewRefusal`). Nothing here runs on
- *  import, and of the other e2e modules only e2e/pg-url.ts is imported, which imports nothing and
- *  opens nothing, so `e2e/__tests__/local-instance-support.test.ts` drives it without a server. */
+ *  import, and of the other e2e modules only e2e/pg-url.ts, which opens nothing, and
+ *  e2e/harness-reaper.ts, which starts its reaper at the first process a `Supervisor` starts and
+ *  not before, are imported, so `e2e/__tests__/local-instance-support.test.ts` drives it without
+ *  a server. */
 import { type ChildProcess, spawn } from "node:child_process";
 import type { Readable } from "node:stream";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Ask, InboxRow } from "../web/src/api/types";
+import { groupKey, reapIfAbandoned, stopReaping } from "./harness-reaper";
 import { splitDatabaseUrl } from "./pg-url";
 
 export class Interrupted extends Error {}
@@ -44,7 +47,9 @@ export interface PipedRunning extends Running {
 }
 
 /** Every process the command starts, as the leader of a process group of its own, and the one
- *  signal that a stop is under way: a Ctrl-C (`interrupt`) or the end of the run (`stop`). */
+ *  signal that a stop is under way: a Ctrl-C (`interrupt`) or the end of the run (`stop`). Each
+ *  group is the reaper's from its spawn until a stop has seen its leader exit
+ *  (e2e/harness-reaper.ts), so a command killed before it could stop them leaves none running. */
 export class Supervisor {
   readonly #children: Running[] = [];
   readonly #stopping = new AbortController();
@@ -112,6 +117,8 @@ export class Supervisor {
     // unhandled before then.
     child.once("error", (error) => ended.reject(error));
     ended.promise.catch(() => {});
+    // The group goes to the reaper the moment it exists: the command could be killed now.
+    if (child.pid !== undefined) reapIfAbandoned(groupKey(child.pid), { group: child.pid });
     const running = { child, exited: ended.promise, name };
     this.#children.push(running);
     return running;
@@ -123,6 +130,7 @@ export class Supervisor {
     const step = this.start(argv.join(" "), argv, cwd);
     const code = await this.untilInterrupted(step.exited);
     this.#children.splice(this.#children.indexOf(step), 1);
+    if (step.child.pid !== undefined) stopReaping(groupKey(step.child.pid));
     if (code !== 0) throw new Error(`${step.name} exited ${code}`);
   }
 
@@ -162,6 +170,9 @@ export class Supervisor {
     }, forceAfterMs);
     await Promise.allSettled(running.map(({ exited }) => exited));
     clearTimeout(forceKill);
+    for (const { child } of running) {
+      if (child.pid !== undefined) stopReaping(groupKey(child.pid));
+    }
     return forced;
   }
 }
