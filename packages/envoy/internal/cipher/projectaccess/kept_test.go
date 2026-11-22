@@ -69,9 +69,15 @@ func keepingClientOf(server *projectaccesstest.Server, keeper projectaccess.Keep
 // unchecked is the broker_member_kind_unchecked_total sample labelled kept, 0 when there is none.
 func (r *keptRig) unchecked(t *testing.T, kept string) int {
 	t.Helper()
+	return r.sample(t, "broker_member_kind_unchecked_total", kept)
+}
+
+// sample is metric's sample labelled kept on r's registry, 0 when there is none.
+func (r *keptRig) sample(t *testing.T, metric, kept string) int {
+	t.Helper()
 	recorder := httptest.NewRecorder()
 	r.registry.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/metrics", nil))
-	series := `broker_member_kind_unchecked_total{kept="` + kept + `"} `
+	series := metric + `{kept="` + kept + `"} `
 	for sample := range strings.Lines(recorder.Body.String()) {
 		if value, ok := strings.CutPrefix(strings.TrimSpace(sample), series); ok {
 			n, err := strconv.Atoi(value)
