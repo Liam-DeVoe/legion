@@ -27,7 +27,6 @@ import (
 	"maps"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -334,74 +333,25 @@ func literalsWithin(expression ast.Expr) string {
 	return strings.Join(parts, " ")
 }
 
-// sqlTemplate is one SQL value a source passes to a database sink. statement is the text the
-// parser reads, with each run-time fragment standing as `null` so the statement keeps its shape;
-// fragments is every string literal inside those fragments, which a reader scans for the words a
-// draw needs and which the value's digest covers, so an edit to a fragment moves that digest.
-// complete reports whether every byte came from a literal or a package-level constant;
-// unresolved reports a sink whose SQL the scan could not read at all.
+// sqlTemplate is one string value a source writes: every maximal string expression of a function
+// body or a package-level value, whether or not the scan can follow it to a database sink.
+// statement is the text the parser reads, with each run-time fragment standing as `null` so the
+// statement keeps its shape; fragments is every string literal inside those fragments, which a
+// reader scans for the words a draw needs and which the value's digest covers, so an edit to a
+// fragment moves that digest. complete reports whether every byte came from a literal or a
+// package-level constant.
 type sqlTemplate struct {
 	locatedStatement
-	fragments  string
-	complete   bool
-	unresolved bool
+	fragments string
+	complete  bool
 }
 
-// sqlTemplatesByFunction reads every value a function hands to a pgx or write-batch sink: the
-// query of Exec, Query, QueryRow and Prepare, and both argument shapes of Queue, since
-// pgx.Batch.Queue takes its SQL first and store.WriteBatch.Queue takes a description first. A
-// value bound once to a local is followed to that binding, whatever the local is called; a value
-// the scan cannot read at all is reported unresolved rather than dropped.
-// sqlSinkParameters names every function whose parameter reaches a database sink as its SQL, with
-// the positions of those parameters. A function that hands its caller's string to pgx is a sink
-// of its own, so the caller's call of it is read where the caller stands. A name is matched
-// without its package, which can only widen what is read.
-func sqlSinkParameters(files []*ast.File) map[string][]int {
-	forwarded := map[string][]int{}
-	for _, file := range files {
-		for _, declared := range file.Decls {
-			function, ok := declared.(*ast.FuncDecl)
-			if !ok || function.Body == nil || function.Type.Params == nil {
-				continue
-			}
-			positions := map[string]int{}
-			position := 0
-			for _, field := range function.Type.Params.List {
-				for _, name := range field.Names {
-					positions[name.Name] = position
-					position++
-				}
-			}
-			ast.Inspect(function.Body, func(node ast.Node) bool {
-				call, ok := node.(*ast.CallExpr)
-				if !ok {
-					return true
-				}
-				for _, candidate := range queryArguments(call) {
-					identifier, ok := candidate.(*ast.Ident)
-					if !ok {
-						continue
-					}
-					index, ok := positions[identifier.Name]
-					if !ok || slices.Contains(forwarded[function.Name.Name], index) {
-						continue
-					}
-					forwarded[function.Name.Name] = append(forwarded[function.Name.Name], index)
-				}
-				return true
-			})
-		}
-	}
-	return forwarded
-}
-
+// sqlTemplatesByFunction reads every string value a file writes, in each function body and each
+// package-level value: a statement this scan cannot follow to its sink - one held in a struct
+// field, a map, another function's return or a builder - is still written somewhere as a string,
+// and is read where it is written. A value bound once to a local is followed to that binding,
+// whatever the local is called.
 func sqlTemplatesByFunction(file *ast.File, constants map[string]string) []sqlTemplate {
-	return sqlTemplatesReaching(file, constants, nil)
-}
-
-// sqlTemplatesReaching is sqlTemplatesByFunction with the module's forwarding functions, so a
-// string a caller hands to such a function is read at the call.
-func sqlTemplatesReaching(file *ast.File, constants map[string]string, forwarded map[string][]int) []sqlTemplate {
 	var statements []sqlTemplate
 	readAt := func(expression ast.Expr, name string, bindings map[string][]ast.Expr) (sqlTemplate, bool) {
 		text, fragments, found, complete := sqlTemplateText(expression, file.Name.Name, constants, bindings, map[string]bool{})
@@ -414,113 +364,43 @@ func sqlTemplatesReaching(file *ast.File, constants map[string]string, forwarded
 			complete:         complete,
 		}, true
 	}
-	// A package-level constant or variable holds SQL as often as a function body does, and the
-	// two id guards read the same module, so both are walked.
-	for _, declared := range file.Decls {
-		general, ok := declared.(*ast.GenDecl)
-		if !ok {
-			continue
-		}
-		for _, spec := range general.Specs {
-			values, ok := spec.(*ast.ValueSpec)
-			if !ok {
-				continue
-			}
-			for index, value := range values.Values {
-				name := "<package>"
-				if index < len(values.Names) {
-					name = values.Names[index].Name
-				}
-				ast.Inspect(value, func(node ast.Node) bool {
-					expression, ok := node.(ast.Expr)
-					if !ok {
-						return true
-					}
-					template, ok := readAt(expression, name, nil)
-					if !ok {
-						return true
-					}
-					statements = append(statements, template)
-					return false
-				})
-			}
-		}
-	}
-	for _, declared := range file.Decls {
-		function, ok := declared.(*ast.FuncDecl)
-		if !ok || function.Body == nil {
-			continue
-		}
-		bindings := localBindings(function.Body)
-		readTemplate := func(expression ast.Expr) (sqlTemplate, bool) {
-			text, fragments, found, complete := sqlTemplateText(expression, file.Name.Name, constants, bindings, map[string]bool{})
-			if !found {
-				return sqlTemplate{}, false
-			}
-			return sqlTemplate{
-				locatedStatement: locatedStatement{function: function.Name.Name, statement: strings.TrimSpace(text)},
-				fragments:        strings.TrimSpace(fragments),
-				complete:         complete,
-			}, true
-		}
-		// Every expression of the body, not only the argument of a database sink: a statement
-		// this scan cannot follow to its sink, one held in a struct field, a map or another
-		// function's return, is still written here, and is read where it is written. The
-		// arguments a forwarding function hands on to a sink are read for the same reason.
-		ast.Inspect(function.Body, func(node ast.Node) bool {
+	collect := func(node ast.Node, name string, bindings map[string][]ast.Expr) {
+		ast.Inspect(node, func(node ast.Node) bool {
 			expression, ok := node.(ast.Expr)
 			if !ok {
 				return true
 			}
-			template, ok := readTemplate(expression)
+			template, ok := readAt(expression, name, bindings)
 			if !ok {
 				return true
 			}
 			statements = append(statements, template)
 			return false
 		})
-		for _, candidate := range forwardedSinkArguments(function.Body, forwarded) {
-			if template, ok := readTemplate(candidate); ok {
-				statements = append(statements, template)
+	}
+	for _, declared := range file.Decls {
+		switch declared := declared.(type) {
+		case *ast.GenDecl:
+			for _, spec := range declared.Specs {
+				values, ok := spec.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				for index, value := range values.Values {
+					name := "<package>"
+					if index < len(values.Names) {
+						name = values.Names[index].Name
+					}
+					collect(value, name, nil)
+				}
+			}
+		case *ast.FuncDecl:
+			if declared.Body != nil {
+				collect(declared.Body, declared.Name.Name, localBindings(declared.Body))
 			}
 		}
 	}
 	return statements
-}
-
-// forwardedSinkArguments is every argument a body hands to a function that passes it on to a
-// database sink, so a string built at such a call is read as SQL.
-func forwardedSinkArguments(body *ast.BlockStmt, forwarded map[string][]int) []ast.Expr {
-	var arguments []ast.Expr
-	ast.Inspect(body, func(node ast.Node) bool {
-		call, ok := node.(*ast.CallExpr)
-		if !ok {
-			return true
-		}
-		arguments = append(arguments, forwardedArguments(call, forwarded)...)
-		return true
-	})
-	return arguments
-}
-
-// forwardedArguments is every argument of call that a forwarding function hands to a sink.
-func forwardedArguments(call *ast.CallExpr, forwarded map[string][]int) []ast.Expr {
-	var name string
-	switch function := call.Fun.(type) {
-	case *ast.Ident:
-		name = function.Name
-	case *ast.SelectorExpr:
-		name = function.Sel.Name
-	default:
-		return nil
-	}
-	var arguments []ast.Expr
-	for _, index := range forwarded[name] {
-		if index < len(call.Args) {
-			arguments = append(arguments, call.Args[index])
-		}
-	}
-	return arguments
 }
 
 // localBindings is every expression each local name of the function body is bound to. A name
@@ -556,37 +436,6 @@ func localBindings(body *ast.BlockStmt) map[string][]ast.Expr {
 		return true
 	})
 	return bindings
-}
-
-// queryArguments is every argument of call that carries SQL. pgx.Batch.Queue's SQL is its first
-// argument and store.WriteBatch.Queue's is its second, and the two cannot be told apart without
-// types, so a Queue of two arguments or more gives both: a description reads as SQL that parses
-// as nothing and holds no event-id construct.
-func queryArguments(call *ast.CallExpr) []ast.Expr {
-	selector, ok := call.Fun.(*ast.SelectorExpr)
-	if !ok {
-		return nil
-	}
-	switch selector.Sel.Name {
-	case "Exec", "Query", "QueryRow":
-		if len(call.Args) > 1 {
-			return []ast.Expr{call.Args[1]}
-		}
-	case "Prepare":
-		if len(call.Args) > 2 {
-			return []ast.Expr{call.Args[2]}
-		}
-	case "Queue":
-		switch len(call.Args) {
-		case 0:
-			return nil
-		case 1:
-			return []ast.Expr{call.Args[0]}
-		default:
-			return []ast.Expr{call.Args[0], call.Args[1]}
-		}
-	}
-	return nil
 }
 
 // sqlTemplateText renders a SQL value two ways: text, the statement with each run-time fragment

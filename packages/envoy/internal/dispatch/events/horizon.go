@@ -37,11 +37,14 @@
 // names events_id_seq but to read with pg_catalog.currval the id its own insert's default just
 // drew (store.LatestEventID), which draws none, or in the offline seed tool's setval; a bare or
 // otherwise qualified currval could resolve to a function of another schema that draws, so it is
-// refused, and so is every nextval or setval but a call of one string literal of a sequence's name
-// (one of digits alone is an OID), and their C code under any name, since each can draw from
-// events_id_seq without spelling it. No Go source or migration runs SQL a text guard cannot read
-// (execute of a built string, query_to_xml, cursor_to_xml), since such a query can draw the
-// sequence without naming it. No insert lists an explicit id, no source but that tool
+// refused, and so is every nextval or setval but a call of Postgres's own of one plain string
+// literal naming another sequence (one of digits alone is an OID, and a cast, an expression or a
+// parameter is not read), and their C code under any name, since each can draw from
+// events_id_seq without spelling it. No Go source or migration runs SQL text the guards cannot
+// read (an EXECUTE of a built string, query_to_xml, cursor_to_xml, ts_stat, ts_rewrite), since such
+// a query can draw the sequence without naming it, and none alters events_id_seq or events.id's
+// default, since a restart or a negative increment hands out ids a horizon has already passed.
+// No insert lists an explicit id, no source but that tool
 // copies or merges rows into events, no statement makes a table from events, no migration the
 // server runs names the sequence, in a function, view, trigger or default, or draws from a
 // sequence it does not spell, and the schema they build gives no other table events' id default,
