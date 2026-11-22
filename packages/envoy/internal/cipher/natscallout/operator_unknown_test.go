@@ -42,16 +42,17 @@ func TestTheOperatorIsAdmittedWhenTheHoldCannotBeRead(t *testing.T) {
 	})
 }
 
-// While the row holds held, only the operator entry is answered with the operator's grant: a
-// listener and a session are each decided with their own grant, and the listener's delete of
-// KV_envoy_sessions gets a permissions violation and no answer.
+// While a hold is set, only the operator entry is answered with the operator's grant: under
+// prepare, a listener and a session are each decided with their own grant, and the listener's
+// delete of KV_envoy_sessions gets a permissions violation and no answer. (Under held the writer
+// hold refuses both, outsideTheHold.)
 //
 // Run by hand, the control decides every service entry as the operator: the listener's delete is
 // answered, and the test fails naming its account.
 func TestNoOneButTheOperatorGetsTheOperatorGrant(t *testing.T) {
 	a := newSession(t, "ses_a", 15*time.Minute)
 	r := newOperatorRig(t, nil, a)
-	r.setPhase(t, natsgrant.OperatorPhaseHeld)
+	r.setPhase(t, natsgrant.OperatorPhasePrepare)
 	r.makeStreams(t, 1, 16, 0)
 	listener := connectService(t, r.cluster.URL(), hourLong(listenerAccount), "")
 	decided := r.decisions.after(t, listenerName, 0)
@@ -167,8 +168,10 @@ func TestTheHoldRuleIsInertWithoutItsSetting(t *testing.T) {
 }
 
 // With no operator entry nothing changes: every decision of t-e-3's decision tests is answered as
-// before, with no hold view, which reads nothing, and with a view whose row reads held, which no
-// listed entry's grant follows.
+// before, with no hold view, which reads nothing, and with a view whose row reads prepare, which no
+// listed entry's grant follows. (Under held every client but the operator is refused,
+// outsideTheHold, whether or not an operator entry is listed: a broker reads the row only with
+// one listed.)
 //
 // Run by hand, the control is a decision path that decides a listed daemon entry as the operator:
 // the daemon row fails, naming it.
@@ -179,10 +182,10 @@ func TestWithNoOperatorEntryNothingChanges(t *testing.T) {
 	requireAsBefore(t, tE3Deps(now, a), exampleServices, rows)
 	signer := newHoldSigner(t)
 	stub := &holdStub{}
-	stub.set(rowOf(signer.reading(t, 3, natsgrant.OperatorPhaseHeld, "hold-1")))
-	held := tE3Deps(now, a)
-	held.Hold = NewHoldView(stub.read, signer.HoldKeys, nil, nil)
-	requireAsBefore(t, held, exampleServices, rows)
+	stub.set(rowOf(signer.reading(t, 3, natsgrant.OperatorPhasePrepare, "hold-1")))
+	prepared := tE3Deps(now, a)
+	prepared.Hold = NewHoldView(stub.read, signer.HoldKeys, nil, nil)
+	requireAsBefore(t, prepared, exampleServices, rows)
 }
 
 // outcomes counts connections the storm made, refused and admitted, from a moment the test marks.
@@ -317,11 +320,12 @@ func connectSessionOnce(url string, s *session) (*nats.Conn, error) {
 		nats.Timeout(5*time.Second), nats.NoReconnect())
 }
 
-// The operator sets held; the test's admin deletes the row: a listener is then refused
-// hold_unknown, and the operator is admitted with released's grant. The operator restores the row
-// as held, at a gen above every logged one: the row is known again, and the operator is answered
-// with held's grant. The operator writes released, after which the listener is admitted. The
-// operator's writes are the signed rows the broker's routes store, written here by SQL.
+// The operator sets held, which refuses a listener held; the test's admin deletes the row: a
+// listener is then refused hold_unknown, and the operator is admitted with released's grant. The
+// operator restores the row as held, at a gen above every logged one: the row is known again, and
+// the operator is answered with held's grant. The operator writes released, after which the
+// listener is admitted. The operator's writes are the signed rows the broker's routes store,
+// written here by SQL.
 //
 // Run by hand, the control reads a missing row as released: the listener is admitted after the
 // delete, and the test fails naming it.
@@ -334,7 +338,8 @@ func TestAMissingHoldRowFailsClosed(t *testing.T) {
 	table.write(t, 2, natsgrant.OperatorPhasePrepare, "hold-1")
 	table.write(t, 3, natsgrant.OperatorPhaseHeld, "hold-1")
 	listen := r.listen
-	require.NoError(t, listen(), "a listener was refused under held, which refuses no other client in this task")
+	require.ErrorIs(t, listen(), nats.ErrAuthorization, "a listener was admitted under held")
+	require.Equal(t, 1, refusedFor(t, r.registry, labelHeld))
 
 	table.admin(t, `delete from nats_hold`)
 	require.ErrorIs(t, listen(), nats.ErrAuthorization, "the listener %s was admitted after the row was deleted", listenerAccount)

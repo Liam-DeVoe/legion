@@ -252,7 +252,8 @@ func TestAServiceAnswerIsItsScopedGrantLessStreamCalls(t *testing.T) {
 
 // The operator is the one service whose answer keeps its stream calls: under a held row its entry
 // is answered with natsgrant.Operator(held) whole, ENVOY_MEASURE's create and update among them,
-// while a listener listed beside it is answered without any (TestNoAnswerCreatesOrChangesAStream).
+// while a listener listed beside it is refused (the writer hold's held refusal, outsideTheHold)
+// and, under prepare, answered without any stream call (TestNoAnswerCreatesOrChangesAStream).
 // Outside a hold the operator's grant holds no stream create or update at all.
 func TestOnlyTheOperatorsAnswerKeepsItsStreamCalls(t *testing.T) {
 	const operatorAccount = "system:serviceaccount:envoy-operator:envoy-operator"
@@ -271,6 +272,11 @@ func TestOnlyTheOperatorsAnswerKeepsItsStreamCalls(t *testing.T) {
 	require.Equal(t, natsgrant.Operator(natsgrant.OperatorPhaseHeld), operator.Grant, "the operator's answer was narrowed")
 	require.Contains(t, operator.Grant.Publish, "$JS.API.STREAM.CREATE.ENVOY_MEASURE")
 	require.Contains(t, operator.Grant.Publish, "$JS.API.STREAM.UPDATE.ENVOY_MEASURE")
+	_, err = Decide(t.Context(), deps, services, serviceRequest("listener-token"))
+	var refused *Refusal
+	require.True(t, errors.As(err, &refused), "the listener was admitted under held")
+	require.Equal(t, labelHeld, refused.Label)
+	stub.set(rowOf(signer.reading(t, 4, natsgrant.OperatorPhasePrepare, "h-1")))
 	listener, err := Decide(t.Context(), deps, services, serviceRequest("listener-token"))
 	require.NoError(t, err)
 	require.Equal(t, natsgrant.ForCallout(natsgrant.Listener("example-hub")), listener.Grant)

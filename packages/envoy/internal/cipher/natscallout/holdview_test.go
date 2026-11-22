@@ -171,10 +171,10 @@ func TestTheHoldViewMapsEveryReading(t *testing.T) {
 }
 
 // Every decision made through one Deps reads one HoldView, so they share its floor: a listener
-// admitted under the operator's signed held at gen 3 is refused hold_unknown, as a replay, once a
-// database writer puts the operator's older signed released at gen 2 back, though the two Decide
-// calls share nothing but deps. A caller that started no replica (Start) reads the same floor as
-// one that did.
+// admitted under the operator's signed prepare at gen 3 (under held the writer hold refuses it,
+// outsideTheHold) is refused hold_unknown, as a replay, once a database writer puts the operator's
+// older signed released at gen 2 back, though the two Decide calls share nothing but deps. A caller
+// that started no replica (Start) reads the same floor as one that did.
 //
 // Run by hand, the control is a Decide that makes a view of its own for each decision, as Deps
 // did while it held the read and the keys and Start made the replica's view: the second decision
@@ -187,9 +187,9 @@ func TestDecisionsThroughOneDepsShareTheHoldFloor(t *testing.T) {
 		ServiceToken: serviceTokens(map[string]platformToken{"listener-token": {account: listenerAccount, issued: now, expiry: now.Add(time.Hour)}}),
 		Hold:         NewHoldView(stub.read, signer.HoldKeys, nil, nil),
 	}
-	stub.set(rowOf(signer.reading(t, 3, natsgrant.OperatorPhaseHeld, "hold-1")))
+	stub.set(rowOf(signer.reading(t, 3, natsgrant.OperatorPhasePrepare, "hold-1")))
 	_, err := Decide(t.Context(), deps, holdServices, serviceRequest("listener-token"))
-	require.NoError(t, err, "the listener was refused under the operator's signed held")
+	require.NoError(t, err, "the listener was refused under the operator's signed prepare")
 	stub.set(rowOf(signer.reading(t, 2, natsgrant.OperatorPhaseReleased, "hold-1")))
 	decision, err := Decide(t.Context(), deps, holdServices, serviceRequest("listener-token"))
 	var refused *Refusal
@@ -336,9 +336,10 @@ func (h holdTable) admin(t *testing.T, statement string, args ...any) {
 }
 
 // A row the operator did not sign, or an older row it signed, reads unknown to a running broker,
-// on the broker's Postgres: after the operator's signed held at gen 3, a database admin's direct
-// update of the phase to released, a row signed by another key, and the operator's own older
-// released at gen 2 written back each read unknown, and each refuses a listener hold_unknown. A
+// on the broker's Postgres: after the operator's signed held at gen 3, which refuses a listener held
+// (outsideTheHold), a database admin's direct update of the phase to released, a row signed by
+// another key, and the operator's own older released at gen 2 written back each read unknown, and
+// each refuses a listener hold_unknown. A
 // new view, as after the broker's restart, has no floor and accepts the older released: the
 // residual the hold's design states. (That the routes refuse an unsigned PUT with 400 is the
 // routes' own test.)
@@ -375,7 +376,10 @@ func TestAnUnsignedOrReplayedHoldRowReadsUnknown(t *testing.T) {
 	phase, known := running.Hold.State(t.Context())
 	require.True(t, known)
 	require.Equal(t, natsgrant.OperatorPhaseHeld, phase)
-	require.NoError(t, listener(running), "a listener was refused under the operator's signed held")
+	err := listener(running)
+	var refused *Refusal
+	require.True(t, errors.As(err, &refused), "a listener was admitted under the operator's signed held")
+	require.Equal(t, labelHeld, refused.Label)
 
 	table.admin(t, `update nats_hold set phase = 'released' where id = 1`)
 	requireUnknown("the admin's update of the phase to released", signedrecord.ErrBadSignature)
