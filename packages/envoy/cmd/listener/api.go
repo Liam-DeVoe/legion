@@ -1248,16 +1248,23 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		if lane, ok := strings.CutPrefix(request.Topic, contracts.RoleTopicPrefix); ok {
 			// The lane names its role in either form while every reader takes both: its project
 			// and then the role, or the role alone. The claim this send resolves is the one that
-			// name is keyed by (store.RoleClaimKeyOf): the bare name, or <project>.<role> for a
-			// free-form role under a project, never the lane's tokens as they stand.
-			role := store.RoleClaimKeyOf(lane)
+			// name is keyed by (store.RoleClaimKeyOf, which store.Registry.ReadRole answers): the
+			// bare name, or <project>.<role> for a free-form role under a project, never the
+			// lane's tokens as they stand. A lane naming a valid role in the old form is counted
+			// and named back in the answer's warnings with its new form (store.Registry.ReadRole):
+			// this publisher is one the old form's refusal would stop.
+			role, roleWarning := d.registry.ReadRole(lane, roles.Valid)
+			var warnings []string
+			if roleWarning != "" {
+				warnings = []string{roleWarning}
+			}
 			ctx, cancel := context.WithDeadline(r.Context(), arrived.Add(publishDeliveryWindow))
 			defer cancel()
 			// The request's keep flag is read here and nowhere else: it belongs to this route's
 			// give-up (roleSend.noHolder) rather than to the envelope, which travels on to the
 			// holder and back in this route's own answer. No flag at all means keep, so every
 			// publisher that sets none is unchanged.
-			sendToRole(ctx, w, edgeScopeOf(r, nil), record, d, item, expectsReply, role, request.Keep == nil || *request.Keep, arrived)
+			sendToRole(ctx, w, edgeScopeOf(r, nil), record, d, item, expectsReply, role, request.Keep == nil || *request.Keep, arrived, warnings)
 			return
 		}
 		// The counts are of the moment the message is published, and are read from memory alone
@@ -2378,12 +2385,15 @@ func roleGetHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			return
 		}
 		// The path names the role in either form, its project first or its name alone, and the
-		// holder is read under the key a claim of that name is keyed by (store.RoleClaimKeyOf).
-		role := store.RoleClaimKeyOf(name)
+		// holder is read under the key a claim of that name is keyed by (store.RoleClaimKeyOf,
+		// which store.Registry.ReadRole answers). A path naming a valid role in the old form is
+		// counted (store.Registry.ReadRole): a caller that looks a role up by its name alone is
+		// still on the old form, though this answer, a holder's record, carries no warning of it.
 		if refusal := edgeRoleRefusal(r, name); refusal != nil {
 			refusal.write(w)
 			return
 		}
+		role, _ := d.registry.ReadRole(name, roles.Valid)
 		ctx, cancel := context.WithTimeout(r.Context(), sendRequestBudget)
 		defer cancel()
 		scope := edgeScopeOf(r, nil)

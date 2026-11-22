@@ -168,7 +168,10 @@ type roleSend struct {
 	// 200 and the 202 of a holder that is not live can say it (GET /v1/roles/<role> says it the
 	// same way): a 200 is answered only for a holder a resolution read live, and a 202 kept for a
 	// lapsed holder carries unresponsive or gone (kept).
-	shown    roles.Resolution
+	shown roles.Resolution
+	// warnings is what the route's answers name of the topic's old form (store.Registry.ReadRole):
+	// the 200 and the 202 carry it, as the subscribe and claim routes' answers carry theirs.
+	warnings []string
 	attempts int
 }
 
@@ -199,7 +202,7 @@ func (s *roleSend) settle(outcome sendOutcome) {
 // holder's record put it in, which GET /v1/roles/<role> names the same way (shown).
 func (s *roleSend) delivered(outcome sendOutcome) {
 	s.record.holder = s.holder
-	s.record.accept(s.w, listenerwire.PublishResponse{Envelope: s.item, ExpectsReply: s.expectsReply, Holder: s.shown.Holder, HolderState: s.shown.HolderState})
+	s.record.accept(s.w, listenerwire.PublishResponse{Envelope: s.item, ExpectsReply: s.expectsReply, Holder: s.shown.Holder, HolderState: s.shown.HolderState, Warnings: s.warnings})
 	s.settle(outcome)
 }
 
@@ -285,6 +288,7 @@ func (s *roleSend) kept(result roles.Resolution, kept keptRoleCopy) {
 		Kept:         true,
 		KeptReason:   s.shown.State,
 		KeptUntil:    kept.until,
+		Warnings:     s.warnings,
 	}
 	if s.shown.LastSeen != 0 {
 		answer.LastSeen = &s.shown.LastSeen
@@ -412,9 +416,10 @@ func (s *roleSend) settledBeforeForward(entry session.SessionEntry) bool {
 // its answers write (expectsReplyAnswer, api.go), the request's own dialect; the envelope this
 // send forwards and keeps carries the envelope's own value. scope is the edge's scope of the
 // request, nil on every other listener: an answer names only a holder it shows (edgeScope.holder),
-// and the send forwards to the holder whatever it names.
-func sendToRole(ctx context.Context, w http.ResponseWriter, scope *edgeScope, record *requestRecord, d *listenerDeps, item contracts.Envelope, expectsReply json.RawMessage, role string, keep bool, arrived time.Time) {
-	send := &roleSend{w: w, record: record, d: d, scope: scope, item: item, expectsReply: expectsReply, role: role, keep: keep, arrived: arrived}
+// and the send forwards to the holder whatever it names. warnings is what its 200 and 202 name of
+// the topic's old form.
+func sendToRole(ctx context.Context, w http.ResponseWriter, scope *edgeScope, record *requestRecord, d *listenerDeps, item contracts.Envelope, expectsReply json.RawMessage, role string, keep bool, arrived time.Time, warnings []string) {
+	send := &roleSend{w: w, record: record, d: d, scope: scope, item: item, expectsReply: expectsReply, role: role, keep: keep, arrived: arrived, warnings: warnings}
 	// The sender is stamped before the holder is resolved, so the copy a keep stores carries the
 	// sender's title, roles and directory exactly as the forward of a live delivery does: the
 	// envelope is kept as it is here (keepRoleMessage), and the holder that is handed it later
