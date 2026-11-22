@@ -80,12 +80,13 @@ type redactedEvent struct {
 // Neither `about` predicate has an index, so a read of them alone reads every row of the event
 // log. A confirmed run makes that read in its search before its locks (searchLeft), and under its
 // locks reads only the events about the node among the ids that search found and the events of
-// the owners it holds (eventsUnderLocks), each through an index of its own. That loses no event:
-// every event this predicate reads is written under the owner of the node it names - a comment's
-// under the comment's issue or unlinked document, a document's under its issue or itself - with
-// that owner's lock taken before the insert (events' lockEventOwner), so one written after the
-// search waits for the run's locks and is read under them.
-func (e *Erasure) readEvents(ctx context.Context, tx pgx.Tx, read *erasedRead) error {
+// the owners it holds, each through an index of its own: bound names those ids and owners
+// (eventsUnderLocks), and is nil for every other read, which reads every event. That loses no
+// event: every event this predicate reads is written under the owner of the node it names - a
+// comment's under the comment's issue or unlinked document, a document's under its issue or
+// itself - with that owner's lock taken before the insert (events' lockEventOwner), so one
+// written after the search waits for the run's locks and is read under them.
+func (e *Erasure) readEvents(ctx context.Context, tx pgx.Tx, read *erasedRead, bound *eventsUnderLocks) error {
 	if len(read.texts) == 0 {
 		return nil
 	}
@@ -115,7 +116,7 @@ func (e *Erasure) readEvents(ctx context.Context, tx pgx.Tx, read *erasedRead) e
 	default:
 		return nil
 	}
-	if bound := e.underLocks; bound != nil {
+	if bound != nil {
 		issues, artifacts := bound.owners.Owners()
 		next := len(args)
 		about = fmt.Sprintf(`(id = any($%d::bigint[]) or issue_key = any($%d::text[]) or artifact_id = any($%d::uuid[])) and (%s)`,

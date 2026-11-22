@@ -411,6 +411,18 @@ func (e *Erasure) forgetTrees(ctx context.Context, tx pgx.Tx, sums [][]byte) err
 	return nil
 }
 
+// treesToSweep is what the sweep after the commit deletes by (sweepTrees), which apply answers:
+// the keys of the display trees the run deleted in its transaction - those of its texts
+// (treeSums) and those the search before the locks found holding a text node of the node's
+// (erasedRead.heldTrees) - and the text nodes of the erased texts as a stored display tree spells
+// them, by which the sweep deletes trees where an event of the node carried a body it cut
+// (treeNeedles). They are held in the run's memory and nowhere else - no row, no record, no log -
+// since each is the digest or a part of an erased text, and they go with the process once the
+// sweep has read them.
+type treesToSweep struct {
+	sums, needles [][]byte
+}
+
 // sweepTrees deletes once more, after the commit, the display trees forgetTrees deleted inside
 // it, and every tree that holds a text node of the node's where the run cut a body (treeNeedles),
 // which a tree stored after the search before the locks may be. A read that began before the
@@ -420,11 +432,11 @@ func (e *Erasure) forgetTrees(ctx context.Context, tx pgx.Tx, sums [][]byte) err
 // in statements of its own, and counts what it found, so an operator reads whether the window was
 // ever used.
 //
-// The keys and needles it deletes by are the ones the run held in memory (Erasure.sums and
-// Erasure.needles): no digest or text node of an erased text is written anywhere to remember
-// them, so a sweep that fails cannot be run again, and its error says so.
-func (e *Erasure) sweepTrees(ctx context.Context, conn *pgx.Conn, bound time.Duration) error {
-	if len(e.sums) == 0 && len(e.needles) == 0 {
+// The keys and needles it deletes by are the ones the run held in memory (treesToSweep): no
+// digest or text node of an erased text is written anywhere to remember them, so a sweep that
+// fails cannot be run again, and its error says so.
+func (e *Erasure) sweepTrees(ctx context.Context, conn *pgx.Conn, bound time.Duration, trees treesToSweep) error {
+	if len(trees.sums) == 0 && len(trees.needles) == 0 {
 		return nil
 	}
 	wait := time.NewTimer(bound)
@@ -437,15 +449,15 @@ func (e *Erasure) sweepTrees(ctx context.Context, conn *pgx.Conn, bound time.Dur
 			"no record keeps their keys, so the sweep cannot be run again): %w", ctx.Err())
 	}
 	var swept int64
-	if len(e.sums) > 0 {
-		tag, err := conn.Exec(ctx, deleteTreesBySumQuery, e.sums)
+	if len(trees.sums) > 0 {
+		tag, err := conn.Exec(ctx, deleteTreesBySumQuery, trees.sums)
 		if err != nil {
 			return sweepFailed(err)
 		}
 		swept += tag.RowsAffected()
 	}
-	if len(e.needles) > 0 {
-		tag, err := conn.Exec(ctx, deleteTreesHoldingQuery, e.needles)
+	if len(trees.needles) > 0 {
+		tag, err := conn.Exec(ctx, deleteTreesHoldingQuery, trees.needles)
 		if err != nil {
 			return sweepFailed(err)
 		}

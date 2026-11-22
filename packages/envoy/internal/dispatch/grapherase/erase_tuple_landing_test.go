@@ -100,7 +100,7 @@ func TestTheEraseRefusesATupleThatLandedAfterItsListing(t *testing.T) {
 	}
 	landed := citeTheBlock(t, database, seeded.inner)
 
-	err = erasure.apply(ctx, tx, read)
+	_, err = erasure.apply(ctx, tx, read)
 	if err == nil {
 		t.Fatalf("the erase of %s applied with a tuple that landed after its listing", seeded.inner)
 	}

@@ -52,21 +52,30 @@ const eraseOwnerAttempts = 3
 //     them through (ownerProjects), in project key order, its snapshot cleared
 //     (api.TakeErasedTermTotalsTx). A refresh pass of a project holds that row for its whole
 //     transaction, which production's logs show reaching 18.5 s. Under the locks
-//     api.ForgetErasedTermsTx waits on none of those rows, and on the row of any other project for
-//     100 ms at most;
+//     api.ForgetErasedTermsTx takes the row of every project whose items the run changed, each
+//     waiting 100 ms at most, and finds each of these rows held by this transaction already;
 //   - then the keyword fill's cursor row `for share` (textversions.HoldFillBack). A batch of the
 //     fill in flight, which may have read the node's text before the run took its locks and which
 //     runs 0.6 to 1.3 s when full, commits first, so the read under the locks lists every keyword
 //     row a batch wrote, and no batch writes until the run ends. The totals rows come first so
 //     that the run does not hold the fill back while it waits for a pass.
 //
-// The store's lock order allows both before the owners because no writer that holds an owner lock
-// takes either, so no wait for one can close a cycle through an owner. The other takers of a
-// totals row are refresh passes (api's refreshSearchTermStats: the leased pass, the related-item
-// check's ensureSearchTermStats and the erase's own count after its commit), and the other takers
-// of the cursor row are the fill's batches, each of which takes it first and alone; none of them
-// takes an owner lock or waits on anything an owner's writer holds. Two runs take the totals rows
-// in one order, and the cursor row in share mode, which the two hold together.
+// The store's lock order allows both before the owners because no writer but the erase takes
+// either while it holds an owner lock, so a wait for one closes no cycle through an owner but one
+// between two runs (below). The other takers of a totals row are refresh passes (api's
+// refreshSearchTermStats: the leased pass, the related-item check's ensureSearchTermStats and the
+// erase's own count after its commit), and the other takers of the cursor row are the fill's
+// batches, each of which takes it first and alone; none of them takes an owner lock or waits on
+// anything an owner's writer holds. Two runs hold the cursor row together, in share mode.
+//
+// A run does take a totals row under its owner locks: api.ForgetErasedTermsTx takes the row of
+// each project its items name, after the rows the run took before those locks, and a project that
+// is none of its owners' can be one of another run's, whose row that run took before its own owner
+// locks. Two runs whose projects overlap can therefore wait on each other, each holding a totals
+// row or an owner lock the other waits for, and the bound on that take (api's
+// erasedTermTotalsWait, 100 ms) is what ends such a cycle: the run whose wait runs out rolls back
+// having removed nothing, and can be run again. A take of a totals row under the owner locks
+// therefore waits that bound at most, and never without one.
 //
 // Which owners the run writes under is read before they are locked, so it is read again under
 // them with the rest of the listing (readDerived), and the run goes on with that second read. A
@@ -144,7 +153,7 @@ func searchLeft(ctx context.Context, conn *pgx.Conn, kind, id string) (searchedB
 	}
 	defer tx.Rollback(context.Background())
 	searched := &Erasure{Kind: kind, ID: id}
-	read, err := searched.readDerived(ctx, tx)
+	read, err := searched.readDerived(ctx, tx, nil)
 	if err != nil {
 		return searchedBeforeLocks{}, err
 	}
@@ -228,13 +237,11 @@ func (e *Erasure) lockOwnersThenNode(ctx context.Context, tx pgx.Tx, found searc
 	if err := lockProjectionRows(ctx, tx, e.Kind, e.ID); err != nil {
 		return erasedRead{}, nil, err
 	}
-	e.underLocks = &eventsUnderLocks{owners: before, ids: found.events}
-	locked, err := e.readDerived(ctx, tx)
+	locked, err := e.readDerived(ctx, tx, &eventsUnderLocks{owners: before, ids: found.events})
 	if err != nil {
 		return erasedRead{}, nil, err
 	}
 	locked.listing.left = found.left
-	locked.termTotals = projects
 	e.list(&locked)
 	var untaken []string
 	for _, key := range slices.Sorted(maps.Keys(locked.owners)) {
