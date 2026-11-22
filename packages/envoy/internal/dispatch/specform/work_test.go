@@ -165,7 +165,13 @@ func workRows(race bool) []workRow {
 // code of the judge reads a sentence but through charge.Texts.Read), so its break loosens them.
 // At those n each of the three walks, broken in turn, failed its row in 5 of 5 runs, 38.3, 83.7
 // and 40.9 times or more; the second also fails the first row (119.9 times), and the first and
-// the third fail no other of the three rows.
+// the third fail no other of the three rows. A walk that the types cannot hold, a look at each
+// sentence of the text through its charge for each finding that holding looks for, costs a step for
+// each sentence also after the charge refuses it, a few nanoseconds, so its row needs many
+// sentences that cost little else: many findings, each beside ten sentences that hold none. Its n
+// was found in the same way, on the machine of 288 cores at a load average of about 1,000: that
+// walk, written into holding, first passed the bound at 1,024 (33.5; 24.8 at 512), so its n is
+// 1,448, where the smaller window lasts about 10 s unbroken, the longest of the table.
 func workTable() []workRow {
 	context := planted("ada.lovelace@example.com")
 	const id = "0195f3c2-7b1d-7c3e-9a4f-2b6d8e1f0a37"
@@ -401,6 +407,10 @@ func workTable() []workRow {
 					fmt.Fprintf(&text, ` He said "b%d.C now."`, index)
 				}
 				return text.String() + " It ends."
+			})},
+		{"many findings, each beside ten sentences that hold none", ruleStopNoSpace, 1_448,
+			built(KindClaim, func(n int) string {
+				return strings.TrimSpace(units("", "It reads a%d.B now."+strings.Repeat(" It.", 10)+" ", "")(n))
 			})},
 	}
 }
