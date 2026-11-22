@@ -322,14 +322,21 @@ func serves(bound waitEnd, conn *natsgo.Conn, stream, subject string) (leader, w
 	return leader, "", nil
 }
 
-// unprobeable is why a stream with config takes no probe, nil when it takes one: a stream that
-// sends no acknowledgement answers nothing (jetstream_cluster.go:13081), and one whose largest
-// message is smaller than the probe refuses it for its size before it reads the expected stream
-// (jetstream_cluster.go:13163-13173, stream.go:6666-6676).
+// unprobeable is why a stream with config takes no probe, nil when it takes one:
+//   - a stream that sends no acknowledgement answers nothing (jetstream_cluster.go:13081);
+//   - a mirror takes no publish, since it subscribes to no subject of its own;
+//   - a sealed stream refuses every publish before it reads the expected stream
+//     (jetstream_cluster.go:13125-13130);
+//   - one whose largest message is smaller than the probe refuses it for its size before it reads
+//     the expected stream (jetstream_cluster.go:13163-13173, stream.go:6666-6676).
 func unprobeable(config natsgo.StreamConfig) error {
 	switch {
 	case config.NoAck:
 		return errors.New("the stream sends no acknowledgement, so no probe of it is answered")
+	case config.Mirror != nil:
+		return errors.New("the stream is a mirror, which takes no publish, so no probe of it is answered")
+	case config.Sealed:
+		return errors.New("the stream is sealed, which refuses every publish before the probe's expected stream is read")
 	case config.MaxMsgSize > 0 && int(config.MaxMsgSize) < probeHeaderBytes:
 		return fmt.Errorf("the stream's largest message, %d bytes, is smaller than the %d-byte probe", config.MaxMsgSize, probeHeaderBytes)
 	}

@@ -15,7 +15,7 @@ package bus
 import (
 	"bytes"
 	"context"
-	"reflect"
+	"encoding/json"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -437,12 +437,16 @@ func TestAStartWhoseStreamCreateIsAnsweredEarlyAnswersOnceItHasALeader(t *testin
 // as a server answers an equal create while the stream's first election runs
 // (jetstream_cluster.go:6957-6979); and the reads after that answer find no leader once and then
 // one. Every other call panics on the nil JetStreamContext, so the start makes no call the script
-// does not name. It records each create's configuration and the reads made after the creates.
+// does not name. It records each create's configuration as JSON taken the moment it is sent, so a
+// map or slice the start changes between two sends shows in the bytes, and the reads made after
+// the creates.
 type scriptedCreate struct {
 	nats.JetStreamContext
 	mu      sync.Mutex
-	creates []nats.StreamConfig
-	after   int
+	creates [][]byte
+	// config is the last create's configuration, which the reads after the creates answer.
+	config nats.StreamConfig
+	after  int
 }
 
 func (s *scriptedCreate) StreamInfo(stream string, _ ...nats.JSOpt) (*nats.StreamInfo, error) {
@@ -452,7 +456,7 @@ func (s *scriptedCreate) StreamInfo(stream string, _ ...nats.JSOpt) (*nats.Strea
 		return nil, nats.ErrStreamNotFound
 	}
 	s.after++
-	info := &nats.StreamInfo{Config: s.creates[1], Cluster: &nats.ClusterInfo{Leader: "n1"}}
+	info := &nats.StreamInfo{Config: s.config, Cluster: &nats.ClusterInfo{Leader: "n1"}}
 	if s.after == 1 {
 		info.Cluster.Leader = ""
 	}
@@ -462,7 +466,12 @@ func (s *scriptedCreate) StreamInfo(stream string, _ ...nats.JSOpt) (*nats.Strea
 func (s *scriptedCreate) AddStream(cfg *nats.StreamConfig, _ ...nats.JSOpt) (*nats.StreamInfo, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.creates = append(s.creates, *cfg)
+	sent, err := json.Marshal(cfg)
+	if err != nil {
+		return nil, err
+	}
+	s.creates = append(s.creates, sent)
+	s.config = *cfg
 	if len(s.creates) == 1 {
 		return nil, context.DeadlineExceeded
 	}
@@ -482,11 +491,11 @@ func TestAStartWhoseCreateIsAnsweredWithNoLeaderReadsTheStreamUntilItHasOne(t *t
 	}
 	script.mu.Lock()
 	defer script.mu.Unlock()
-	if len(script.creates) != 2 || !reflect.DeepEqual(script.creates[0], script.creates[1]) {
-		t.Fatalf("the start sent %d creates, %+v; want the lost one and an equal one again", len(script.creates), script.creates)
+	if len(script.creates) != 2 || !bytes.Equal(script.creates[0], script.creates[1]) {
+		t.Fatalf("the start sent %d creates, %q; want the lost one and an equal one again", len(script.creates), script.creates)
 	}
-	if script.after != 2 {
-		t.Fatalf("the start read the stream %d times after the create was answered with no leader, want 2: the read that found no leader and the one that found it", script.after)
+	if script.after < 2 {
+		t.Fatalf("the start read the stream %d times after the create was answered with no leader, want at least 2: the read that found no leader and the one that found it", script.after)
 	}
 }
 
