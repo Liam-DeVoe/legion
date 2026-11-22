@@ -2,7 +2,6 @@
 
 Read it when you review or approve, or work a look of a closed issue's production check.
 Your role prompt gives the review submission, its footer, the thread rule, the CI read and the forward-merge confirmation; this page gives the rest.
-The merger's steps are all in its role prompt.
 
 ## The reviewer
 
@@ -74,7 +73,7 @@ Cases 2, 3, 4 and 6 end: tell the architect, do not approve, and wait with a `WA
 
 - Approval is gated by the issue's own `before_merge` checks, as your role prompt says;
   a `ci_check` check as `skill://legion-worker/references/ci-checks.md` says.
-  With no tester step, the implementer's evidence for each is what you read.
+  With no tester step, the implementer's evidence for each, if any, is what you read.
   A check whose `run` is a whole test suite with no pass standing is a finding for the architect: wait for its rewrite, and request no changes for it.
 
 ### A merge of the base is reviewed for what it changed
@@ -88,7 +87,7 @@ gh api --paginate repos/<o>/<r>/pulls/<n>/reviews --jq '.[] | {id, state, submit
 
 ## The production check after the close
 
-- `projects.<KEY>.production_check` in `legion.yaml` is `tester` (the default) or `off`, under which the close opens no check.
+- `projects.<KEY>.production_check` in `legion.yaml` is `tester` (the default) or `off`, under which the close opens no check; nor does an issue with no pull request.
   A check keeps the role it opened with, and only that role may report on it (`CHECK_ROLE_MISMATCH`).
 
 - Reach the deploy as the deployment instructions say.

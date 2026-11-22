@@ -875,7 +875,7 @@ test("a run still going at retro is named in its message and as a risk", () => {
     /At your retro, answer the bot threads you find[^.]*each run still going[^.]*may open more/
   );
   expect(collapsed(path.join(prompts, "roles", "core", "implementer.md"))).toMatch(
-    /at your retro too, the threads you find there, naming in its message each run still going/
+    /at your retro too where the retro is yours, the threads you find there, naming in its message each run still going/
   );
 });
 

@@ -91,6 +91,7 @@ Who does the retro, a retro that reports a defect or cannot write the body, and 
 
 ## 6. Acceptance and the merge
 
+A step `acceptance` with no key is a fresh agent's, which works `accepting` like any step and ends it by its verdict; you sign off nothing for it.
 At a step `acceptance:owner`, in `accepting`, no worker runs:
 read, against the goal, every check and requirement in `skill://legion-architect/references/acceptance.md`, "Accepting".
 
