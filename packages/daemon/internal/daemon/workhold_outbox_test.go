@@ -128,32 +128,39 @@ func newWorkHoldRig(t *testing.T, tree holdTree) *workHoldRig {
 	if _, err := trees.OpenTreeLifecycle(ctx, tokenProject, tree.key, treelifecycle.AuthorityWorkflow); err != nil {
 		t.Fatalf("admit the tree of %s: %v", tree.key, err)
 	}
-	podRecords, err := trees.PodRecordsOf(tree.project)
-	if err != nil {
-		t.Fatalf("read the pod records: %v", err)
-	}
 	clock := &heldClock{at: time.Now().UTC().Truncate(time.Second)}
-	// The engine reads the rig's clock, as the runner does, so the clock a restart puts in its
-	// place (restart) is the one every later fact reads.
-	var r *workHoldRig
-	engine := workflow.New(records, workflow.Config{Project: tree.project, Repositories: testRepositories,
-		Steps: config.DesignGateRootIssues.Steps(), Hold: tree.hold, Pods: podRecords, Linger: time.Hour, Clock: func() time.Time { return r.clock.Now() },
-		Hooks: []workflow.Hook{{Name: "back-to-implementing", On: workflow.HookEventWorkBack, Every: 1, Roles: []claim.Role{claim.RoleImplementer},
-			Prompt: "Read the tester's report before you write anything."}}}, quietLogger())
-	admission := admit.New(records, engine, 2, tree.project, quietLogger())
-	r = &workHoldRig{t: t, ctx: ctx, tree: tree, tokenProject: tokenProject, pool: pool, records: records, trees: trees,
-		engine: engine, admission: admission, publisher: &holderPublisher{}, conns: map[claim.Role]*fake.Conn{}}
+	r := &workHoldRig{t: t, ctx: ctx, tree: tree, tokenProject: tokenProject, pool: pool, records: records, trees: trees,
+		publisher: &holderPublisher{}, conns: map[claim.Role]*fake.Conn{}}
 	r.supervise(clock)
 	r.runner = &outbox{
 		dispatchProject: tree.project, pool: pool, records: records, supervisor: r.sup, trees: trees, tokens: outboxTokens{},
 		project: tokenProject, stateDir: t.TempDir(), notices: r.publisher, dispatch: &outboxDispatch{},
-		handlers: []intake.Handler{engine, admission}, gatedSteps: config.DesignGateRootIssues.Steps(), hold: tree.hold,
-		now: func() time.Time { return r.clock.Now() }, log: quietLogger(),
+		gatedSteps: config.DesignGateRootIssues.Steps(), now: func() time.Time { return r.clock.Now() }, log: quietLogger(),
 		provision: func(context.Context, workspace.Request) (workspace.Workspace, error) {
 			return workspace.Workspace{Dir: t.TempDir(), Bookmark: "legion/" + tree.key}, nil
 		},
 	}
+	r.deploy(tree.hold)
 	return r
+}
+
+// deploy builds the rig's engine and admission under hold, as a boot builds them from the
+// deployment's config, and has the outbox run under hold with them. The engine reads the rig's
+// clock, as the runner does, so the clock a restart puts in its place (restart) is the one every
+// later fact reads.
+func (r *workHoldRig) deploy(hold config.Hold) {
+	r.t.Helper()
+	podRecords, err := r.trees.PodRecordsOf(r.tree.project)
+	if err != nil {
+		r.t.Fatalf("read the pod records: %v", err)
+	}
+	r.tree.hold = hold
+	r.engine = workflow.New(r.records, workflow.Config{Project: r.tree.project, Repositories: testRepositories,
+		Steps: config.DesignGateRootIssues.Steps(), Hold: hold, Pods: podRecords, Linger: time.Hour, Clock: func() time.Time { return r.clock.Now() },
+		Hooks: []workflow.Hook{{Name: "back-to-implementing", On: workflow.HookEventWorkBack, Every: 1, Roles: []claim.Role{claim.RoleImplementer},
+			Prompt: "Read the tester's report before you write anything."}}}, quietLogger())
+	r.admission = admit.New(r.records, r.engine, 2, r.tree.project, quietLogger())
+	r.runner.handlers, r.runner.hold = []intake.Handler{r.engine, r.admission}, hold
 }
 
 // supervise gives the rig a supervisor over the rig's store, on clock, as a daemon's boot builds
@@ -1242,12 +1249,12 @@ func TestWorkHoldMakesNoStopWhenTheTurnEndsWhileTheOpeningCommits(t *testing.T) 
 }
 
 // Spec step 3 ("A stop that the daemon has not made when the gate opens again is not made"), H33,
-// for a stop the outbox makes at once. The released tester's stop row reads the gate while it
-// holds work, and the opening's transaction holds the tree's work hold row: it read the tester
-// released and deleted the row, and it has not committed. The stop's decision waits for the row
-// until the opening commits, and then reads no row, so it makes no stop. The tester stays
-// released, nothing starts it, and the row finishes with one line that names the tester and the
-// version that closed the gate.
+// for a stop the outbox makes at once. The released tester's stop row posts the stop under `work`,
+// and the opening's transaction holds the tree's work hold row: it read the tester released and
+// deleted the row, and it has not committed. The stop's decision waits for the row until the
+// opening commits, and then reads no row, so it makes no stop. The tester stays released, nothing
+// starts it, and the row finishes with one line that names the tester and the version that closed
+// the gate.
 func TestWorkHoldMakesNoStopOfAReleasedWorkerWhileTheOpeningCommits(t *testing.T) {
 	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
 	logs := &testlog.Buffer{}
@@ -1531,17 +1538,18 @@ func (s refusedHoldRead) WorkHoldStands(ctx context.Context, tree string) (bool,
 	return s.Store.WorkHoldStands(ctx, tree)
 }
 
-// Spec step 7, the backstop of a stop made with no read of the tree's work hold row
-// (holdStopUnmade's stopped case). The close's stop is held for the implementer's turn, and the
-// opening commits while the turn runs, so it reads the implementer working and starts nothing of
-// it. The turn's end is refused its read of the row, so it makes the held stop on no read, after
-// the opening. The read of the row after that stop is refused too (supervise's holdReadAfterStop), so
-// the turn's end answers that read's error and the daemon is not told. The stop's row then meets
-// the open gate and finds the implementer stopped by the hold: it logs that the stop was made
-// after the gate opened again, naming the implementer and the version that closed the gate, and
-// the fact of the hold's end (intake.WorkHoldOpened) starts the implementer once, with the
-// opening's task: the close message's sentences naming version 4, that the hold stopped the turn,
-// today's open message naming the person's approval of version 4, and the check of the turn.
+// Spec step 7, the backstop of a stop made with no read of the tree's work hold row (the stop
+// asked again, supervise's readHoldForStop). The close's stop is held for the implementer's turn,
+// and the opening commits while the turn runs, so it reads the implementer working and starts
+// nothing of it. The turn's end is refused its read of the row, so it makes the held stop on no
+// read, after the opening. The read of the row after that stop is refused too (supervise's
+// holdReadAfterStop), so the turn's end answers that read's error and the daemon is not told. The
+// stop's row then posts the stop again. Its decision reads no row and finds the implementer
+// stopped by the hold, so the daemon applies the fact of the hold's end (intake.WorkHoldOpened).
+// The row logs that the stop was made after the gate opened again, naming the implementer and the
+// version that closed the gate. The fact starts the implementer once, with the opening's task:
+// the close message's sentences naming version 4, that the hold stopped the turn, today's open
+// message naming the person's approval of version 4, and the check of the turn.
 func TestWorkHoldStartsAStopMadeWithoutTheLockAfterTheOpening(t *testing.T) {
 	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
 	logs := &testlog.Buffer{}
@@ -1897,6 +1905,14 @@ func TestWorkHoldLeavesEveryHeldClaimStopped(t *testing.T) {
 // on a clock of its own at the same moment, the outbox runs on it, and the boot's fact is applied.
 func (r *workHoldRig) restart() {
 	r.t.Helper()
+	r.restartBeforeTheBoot()
+	r.apply("boot", intake.DaemonBooted{})
+}
+
+// restartBeforeTheBoot is restart without the boot's fact. The daemon applies that fact beside the
+// outbox (serve, workflowRuntime.runBooted), so an outbox row can run before it.
+func (r *workHoldRig) restartBeforeTheBoot() {
+	r.t.Helper()
 	claims, err := r.trees.Claims(r.ctx)
 	if err != nil {
 		r.t.Fatalf("read the stored claims: %v", err)
@@ -1907,7 +1923,55 @@ func (r *workHoldRig) restart() {
 		r.t.Fatalf("restore the claims: %v", err)
 	}
 	r.runner.supervisor = r.sup
+}
+
+// A restart into `merge` while the close's stop of a released tester is still queued. The daemon
+// applies the boot's fact beside the outbox, so the stop's row runs before the boot ends the tree's
+// hold, and the tree's work hold row still stands. Under `merge` the hold holds no running work,
+// so the row makes no stop (holdStop) and finishes with one line that names the tester and the
+// version. The boot then ends the hold and finds no claim that the hold stopped. The tester stays
+// released, and no start tells it that the deployment no longer holds the tree's work.
+func TestWorkHoldMakesNoStopAfterARestartIntoMergeBeforeTheBoot(t *testing.T) {
+	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
+	logs := &testlog.Buffer{}
+	r.runner.log = slog.New(slog.NewJSONHandler(logs, nil))
+	r.released(claim.RoleTester)
+	r.close(4)
+	if stops := r.holdStops(claim.RoleTester); len(stops) != 1 {
+		t.Fatalf("after the close the tester's stops are %+v, want its one row", stops)
+	}
+
+	r.restartBeforeTheBoot()
+	r.deploy(config.HoldMerge)
+	r.runOnce()
+
+	if c := r.machine(claim.RoleTester).Claim(); !c.Released() {
+		t.Errorf("before the boot the tester is %s by %q, want it still released: `merge` holds no running work", c.State, c.SuspendedBy)
+	}
+	if stops := r.holdStops(claim.RoleTester); len(stops) != 0 {
+		t.Errorf("the tester's stops are %+v, want the row finished", stops)
+	}
+	unmade := loggedMessages(t, logs.String(), "outbox: the deployment's hold is no longer `work`, which holds no running work; the work hold's stop is not made")
+	if len(unmade) != 1 || unmade[0]["role"] != string(claim.RoleTester) || unmade[0]["version"] != float64(4) {
+		t.Errorf("the stop row logged %v, want one line naming the tester and version 4", unmade)
+	}
+
 	r.apply("boot", intake.DaemonBooted{})
+	for _, start := range startRequestsOf(t, r.pool, r.tree.key, "start") {
+		if start.Role == claim.RoleTester {
+			t.Errorf("the boot queued a start of the tester with the task %q, want none: the hold never stopped it", start.Task)
+		}
+	}
+	r.drain()
+	if got := r.launches(claim.RoleTester); got != 0 {
+		t.Errorf("the runtime started the tester %d times, want none", got)
+	}
+	if c := r.machine(claim.RoleTester).Claim(); !c.Released() {
+		t.Errorf("after the boot the tester is %s by %q, want it still released", c.State, c.SuspendedBy)
+	}
+	if state, by := r.stored(claim.RoleTester); state != supervise.StateSuspended || by != supervise.SuspendedByReleased {
+		t.Errorf("the tester is stored %s by %q, want it still released", state, by)
+	}
 }
 
 // Spec step 7, H10, H11, H17, decision 18, check a3d61f8e: the opening — a person's approval, or

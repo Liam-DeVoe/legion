@@ -572,15 +572,16 @@ func (e *Engine) workHoldBooted(ctx context.Context, tx pgx.Tx, owners phaseOwne
 // (tellAndEndWorkHold, supervise's readHoldForStop). A held stop made after a read that failed can
 // follow the opening too. Once the stop is written, the claim's machine reads the row again, and
 // where it finds the row gone, the daemon applies this fact at once (supervise's
-// holdReadAfterStop, the daemon's workHoldEndedUnderStop). The stop's outbox row applies it too
-// where it meets the open gate and the claim stopped (the outbox's holdStopUnmade). The claim is
-// started now with the task the opening gave, as the boot starts a claim the hold stopped in a
-// tree that holds no work (openStoppedClaims). The log line of its start names the version the
-// record of the opening names, else the version the hold's stop named
-// (intake.WorkHoldOpened.Version). A claim an opening start covers is not started again, so an
-// opening that read the claim stopped and this fact never start it twice. A tree that lingers and
-// a root the record does not hold are left alone, and so is a tree whose record shows a hold that
-// stands again (openStoppedClaims), which reads that record in this transaction and no gate.
+// holdReadAfterStop, the daemon's workHoldEndedUnderStop). The daemon applies it at once too where
+// the stop's outbox row asks again and its decision finds the row gone and the claim stopped
+// (supervise's readHoldForStop). The claim is started now with the task the opening gave, as the
+// boot starts a claim the hold stopped in a tree that holds no work (openStoppedClaims). The log
+// line of its start names the version the record of the opening names, else the version the
+// hold's stop named (intake.WorkHoldOpened.Version). A claim an opening start covers is not
+// started again, so an opening that read the claim stopped and this fact never start it twice. A
+// tree that lingers and a root the record does not hold are left alone, and so is a tree whose
+// record shows a hold that stands again (openStoppedClaims), which reads that record in this
+// transaction and no gate.
 func (e *Engine) workHoldOpened(ctx context.Context, tx pgx.Tx, fact intake.WorkHoldOpened) (intake.Result, error) {
 	root, err := e.store.Issue(ctx, tx, fact.Tree)
 	if err != nil || root == nil || !claim.IsTreeRoot(root.Key, root.Tree) || root.Lingers() {

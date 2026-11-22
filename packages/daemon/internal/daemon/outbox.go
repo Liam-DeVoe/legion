@@ -4043,10 +4043,10 @@ func (r *outbox) holdIsWork() bool { return r.hold == config.HoldWork }
 // configured order). A tree with no row for a step — nothing registered one, or the project's
 // design gate is off, which registers it approved — holds nothing on that step: nobody can be
 // waiting on a document the record does not know. It is the one predicate every fence of the
-// hold reads (startWaitsForTheHold, holdStop, deliverHeld, wakeReleasedFor,
-// closeOutrun), read just before the row acts, as every other fence of a row is, in a transaction
-// of its own; a row that writes what the gate decides reads it in its own transaction instead
-// (treeGateTx).
+// hold reads (startWaitsForTheHold, deliverHeld, wakeReleasedFor, closeOutrun), read just before
+// the row acts, as every other fence of a row is, in a transaction of its own; a row that writes
+// what the gate decides reads it in its own transaction instead (treeGateTx). The hold's stop
+// reads no gate: its decision reads whether the tree's work hold row stands (holdStop).
 func (r *outbox) treeGate(ctx context.Context, tree string) (record.TreeGate, error) {
 	var gate record.TreeGate
 	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
@@ -4233,27 +4233,32 @@ func (r *outbox) heldStartRead(ctx context.Context, payload record.SuperviseRequ
 // holdStop runs the work hold's stop of a claim (a suspend row of the source hold): the close's
 // stop of a released worker that is not a merger, which no message reaches, and the stop a close
 // message carries, which the outbox queued with its deadline once the message reached the claim
-// (postHoldStop). Each attempt reads the standing gate first (record.TreeGate.Standing, read under
-// `work` alone, since under `merge` the hold holds no running work): a gate that opened again
-// since makes no stop (holdStopUnmade). While the gate stands closed, the row posts the stop
-// (supervise.RequestSuspend, By hold) with the deadline and the moment of the message the row
-// stored, and the version that closed the gate:
+// (postHoldStop). Under any hold but `work`, the hold holds no running work: the row makes no
+// stop and finishes with one line, as postHoldStop does. This check reads the deployment's word
+// alone, no gate and no hold row. After a restart into `merge`, the boot ends the tree's hold
+// beside the outbox (workflow's workHoldBooted), so the row can run while the tree's work hold row
+// still stands. Under `work`, each attempt posts the stop (supervise.RequestSuspend, By hold)
+// with the deadline and the moment of the message the row stored, and the version that closed
+// the gate. The row reads no gate of its own: the claim's decision reads whether the hold stands
+// (supervise's readHoldForStop), and the opening's lock orders that read.
 //
 //   - The claim's decision reads whether the tree's work hold row stands, in a transaction of its
-//     own (supervise.Store.WorkHoldStands). A decision that waited for the opening's commit reads
-//     no row and answers supervise.ErrWorkHoldEnded: the gate opened again after this row read it,
-//     the stop is not made, and the row finishes with one log line. Where an earlier attempt of
-//     the row stopped the claim already, that decision has the daemon start the claim
-//     (supervise.Deps.WorkHoldEndedUnderStop), and the line says the stop was made and the
-//     opening starts the claim. Where that earlier stop's claim write is still owed, the decision
-//     answers an error instead, and the row is asked again.
+//     own (supervise.Store.WorkHoldStands). Where the opening deleted the row, the decision
+//     answers supervise.ErrWorkHoldEnded: the stop is not made, and the row finishes with one log
+//     line. The decision drops a stop held over the claim. Where the claim does not stand stopped
+//     by the hold, the line says that the stop is not made (logHoldStopUnmade). Where an earlier
+//     attempt of the row stopped the claim already, the decision has the daemon start the claim
+//     (supervise.Deps.WorkHoldEndedUnderStop), and the line says that the stop was made and the
+//     opening starts the claim (logHoldStopMadeAfterTheOpening). Where the claim write of that
+//     earlier stop is still owed, the decision answers an error instead, and the row is asked
+//     again. The next decision makes the owed write first (supervise.Machine.Handle).
 //   - The decision holds no lock on the row after its read, so the opening can commit after that
 //     read, while the process stops, and read the claim live. Once the stop is written, the
 //     decision reads the row again in a transaction of its own. Where the row stands, a later
 //     opening reads the stop and starts the claim. Where the row is gone, the daemon applies the
 //     fact of the hold's end at once (workflowRuntime.workHoldEndedUnderStop), which starts the
-//     claim. A read that fails is the decision's error, so the row is asked again, and its next
-//     attempt meets the open gate (holdStopUnmade) or posts the stop again.
+//     claim. A read that fails is the decision's error, so the row is asked again and posts the
+//     stop again, and that decision reads the row as the first item says.
 //   - The claim holds the stop for the agent's turn — the one in flight, or the one the message
 //     starts in a ready or idle claim — and cuts it at the deadline. It answers
 //     supervise.ErrSuspendHeld meanwhile, a wait, so the row is asked again on its backoff, and a
@@ -4273,16 +4278,10 @@ func (r *outbox) heldStartRead(ctx context.Context, payload record.SuperviseRequ
 // (takeOverRelease).
 func (r *outbox) holdStop(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest, issue record.Issue,
 	token claim.Token, machine *supervise.Machine) error {
-	holds := false
-	if r.holdIsWork() {
-		gate, err := r.treeGate(ctx, issue.Tree)
-		if err != nil {
-			return err
-		}
-		_, holds = gate.Standing()
-	}
-	if !holds {
-		return r.holdStopUnmade(ctx, row, payload, issue, token, machine)
+	if !r.holdIsWork() {
+		r.log.Info("outbox: the deployment's hold is no longer `work`, which holds no running work; the work hold's stop is not made",
+			"row", row.ID, "issue", issue.Key, "role", payload.Role, "version", payload.HoldVersion)
+		return nil
 	}
 	err := machine.Handle(ctx, supervise.RequestSuspend{Claim: token, Reason: payload.Reason, By: supervise.SuspendedByHold,
 		Deadline: payload.Deadline, TurnAfter: payload.TurnAfter, HoldVersion: payload.HoldVersion})
@@ -4311,65 +4310,20 @@ func (r *outbox) holdStop(ctx context.Context, row record.OutboxRow, payload rec
 
 // logHoldStopUnmade is the one line of the work hold's stop not made because the design gate
 // opened again before it was made, naming the issue, the role and the version that closed the
-// gate (holdStop, holdStopUnmade).
+// gate (holdStop).
 func (r *outbox) logHoldStopUnmade(row record.OutboxRow, payload record.SuperviseRequest, issue record.Issue) {
 	r.log.Info("outbox: the design gate opened again before the work hold's stop was made; the stop is not made",
 		"row", row.ID, "issue", issue.Key, "role", payload.Role, "version", payload.HoldVersion)
 }
 
-// logHoldStopMadeAfterTheOpening is the one line of a work hold's stop that was made already when
-// its row meets the open gate: the hold's opening starts the claim, by the stop row's fact
-// (holdStopUnmade) or by the machine's (holdStop, supervise.Deps.WorkHoldEndedUnderStop). It
-// names the issue, the role, the tree and the version that closed the gate.
+// logHoldStopMadeAfterTheOpening is the one line of a work hold's stop that an earlier attempt of
+// its row made, where the decision of the row's next attempt finds the hold ended
+// (supervise.ErrWorkHoldEnded): the claim's machine has the daemon start the claim with the
+// opening's task (holdStop, supervise.Deps.WorkHoldEndedUnderStop). It names the issue, the role,
+// the tree and the version that closed the gate.
 func (r *outbox) logHoldStopMadeAfterTheOpening(row record.OutboxRow, payload record.SuperviseRequest, issue record.Issue) {
 	r.log.Info("outbox: the work hold's stop was made after the design gate opened again; the hold's opening starts the claim",
 		"row", row.ID, "issue", issue.Key, "role", payload.Role, "tree", issue.Tree, "version", payload.HoldVersion)
-}
-
-// holdStopUnmade is the work hold's stop meeting a tree that no longer holds work: the gate opened
-// again before the stop was made, so it is not made, and the row finishes. The claim's machine
-// drops such a stop itself at its first decision after the opening committed, whose read of the
-// tree's work hold row finds no row (supervise.Machine.Handle); this row drops one that no
-// decision has met yet. What the claim is, the claim's machine decides in one call
-// (supervise.Machine.DropHoldStop), so a turn that ends while this row runs is read as it ended:
-//
-//   - A stop the claim holds for its agent's turn is dropped, and the turn goes on.
-//   - A claim the stop already stopped is started with the opening's task: the fact of the hold's
-//     end (intake.WorkHoldOpened), which names the version the stop names, has the workflow start
-//     each claim of the tree the hold stopped that no opening start covers. The opening may have
-//     read the claim before the stop's write: the decision lets its lock on the tree's work hold
-//     row go as soon as it has read the row, and a read may fail. The machine reads the row again
-//     once the stop is written, and where the opening has deleted it, the daemon starts the claim
-//     at once (workflowRuntime.workHoldEndedUnderStop). So this case is the backstop for a read
-//     after the stop that failed or missed its deadline, and for a stop whose own claim write
-//     failed: DropHoldStop makes the write the machine owes first, so the fact reads the claim
-//     stopped.
-//     The fact never starts a claim twice: a claim an opening start covers is not started again.
-//   - Any other claim — a released one the stop never took over, one another source took over —
-//     is left as it is.
-//
-// A claim write the machine still owes after DropHoldStop's repair is an error, and the row asks
-// again on its backoff rather than act on a claim the store does not hold yet.
-func (r *outbox) holdStopUnmade(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest, issue record.Issue,
-	token claim.Token, machine *supervise.Machine) error {
-	dropped, stopped, err := machine.DropHoldStop(ctx)
-	switch {
-	case err != nil:
-		return fmt.Errorf("drop the work hold's stop of claim %s: %w", token, err)
-	case dropped:
-		r.logHoldStopUnmade(row, payload, issue)
-	case stopped:
-		r.logHoldStopMadeAfterTheOpening(row, payload, issue)
-		if _, err := intake.ApplyFact(ctx, r.pool, "outbox", fmt.Sprintf("work-hold-opened:%s:%d", token, row.ID),
-			intake.WorkHoldOpened{Tree: issue.Tree, Version: payload.HoldVersion}, r.handlers...); err != nil {
-			return fmt.Errorf("start the claims the work hold of %s stopped after its opening: %w", issue.Tree, err)
-		}
-	default:
-		held := machine.Claim()
-		r.log.Info("outbox: the work hold's stop meets a tree that no longer holds work; finished without acting",
-			"row", row.ID, "issue", issue.Key, "role", payload.Role, "state", held.State, "suspendedBy", held.SuspendedBy)
-	}
-	return nil
 }
 
 // postHoldStop queues the work hold's stop a close message carries (record.RoleMessage.Stop) once

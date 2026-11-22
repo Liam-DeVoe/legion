@@ -1451,11 +1451,11 @@ func (f PodBackstopDue) namedIssue() (string, bool) { return f.Issue, true }
 // too. Once the stop is written, the claim's machine reads the row again, and where
 // the row is gone, the daemon applies this fact at once (supervise.Deps.WorkHoldEndedUnderStop),
 // under an event that names the claim, its generation and the version. The stop's outbox row
-// applies it as well where it meets the open gate and the claim stopped, under the row's id, so a
-// retried row applies it once. The workflow starts each claim of the tree the hold stopped that no
-// opening start covers, with the opening's task, which it builds from the record of the tree's
-// last opening (record.Store.TreeWorkHold). It is never decoded from an event. It names the whole
-// tree rather than one issue.
+// asked again does the same where its decision finds the row gone and the claim stopped. The
+// workflow starts each claim of the tree the hold stopped that no opening start covers, with the
+// opening's task, which it builds from the record of the tree's last opening
+// (record.Store.TreeWorkHold). It is never decoded from an event. It names the whole tree rather
+// than one issue.
 type WorkHoldOpened struct {
 	Tree string
 	// Version is the version of the gated document that closed the gate, as the hold's stop named

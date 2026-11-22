@@ -1074,59 +1074,6 @@ func TestWorkHoldEndRefusesAClaimRecordingASessionItDoesNotHold(t *testing.T) {
 	h.wantPendingTask(holdOpening + "\n\n" + laterTask)
 }
 
-// The hold's stop meeting a tree that no longer holds work is decided in one call of the claim's
-// machine (DropHoldStop), so the outbox acts on what the claim is when it asks: a stop held for the
-// agent's turn is dropped and the turn goes on; a claim the stop already stopped — its turn ended
-// before the outbox's row asked — is left stopped, with the task it kept and nothing launched, for
-// the hold's opening to start with the opening's sentences; and a claim the hold never reached is
-// left as it is.
-func TestWorkHoldStopDropLeavesAStoppedClaimForTheOpening(t *testing.T) {
-	t.Run("a stop held for the turn", func(t *testing.T) {
-		h := newHarness(t)
-		h.inPhaseTurn()
-		if err := h.handle(holdStop(h, h.clock.Now())); !errors.Is(err, ErrSuspendHeld) {
-			t.Fatalf("the hold's stop answered %v, want it held", err)
-		}
-
-		if dropped, stopped, err := h.m.DropHoldStop(h.ctx); !dropped || stopped || err != nil {
-			t.Fatalf("the stop's drop = dropped %v, stopped %v, %v; want the held stop dropped", dropped, stopped, err)
-		}
-
-		if c := h.claim(); c.WorkHeld() || c.SuspensionHeld {
-			t.Fatalf("the claim reads WorkHeld %v, a stop held %v; want the stop dropped", c.WorkHeld(), c.SuspensionHeld)
-		}
-		h.must(StreamTurnEnd{Claim: h.token})
-		h.advance(holdGrace)
-		h.wantState(StateIdle)
-		h.wantCalls("Suspend", 0)
-	})
-	t.Run("a claim the stop already stopped", func(t *testing.T) {
-		h := newHarness(t)
-		h.stoppedByTheHold()
-		resumes := len(h.calls("Resume"))
-
-		if dropped, stopped, err := h.m.DropHoldStop(h.ctx); dropped || !stopped || err != nil {
-			t.Fatalf("the stop's drop = dropped %v, stopped %v, %v; want the stopped claim reported and left", dropped, stopped, err)
-		}
-
-		h.wantHeld()
-		h.wantPendingTask(laterTask)
-		if calls := h.calls("Resume")[resumes:]; len(calls) != 0 {
-			t.Fatalf("the runtime was asked to resume %d times, want none: the opening starts the claim with its sentences", len(calls))
-		}
-	})
-	t.Run("a claim the hold never reached", func(t *testing.T) {
-		h := newHarness(t)
-		h.reach(StateIdle)
-
-		if dropped, stopped, err := h.m.DropHoldStop(h.ctx); dropped || stopped || err != nil {
-			t.Fatalf("the stop's drop = dropped %v, stopped %v, %v; want nothing", dropped, stopped, err)
-		}
-
-		h.wantState(StateIdle)
-	})
-}
-
 // Spec step 3: a stop the daemon has not made when the gate opens again is not made. The opening
 // deletes the tree's work hold row in its own transaction, and each decision of a claim the hold's
 // stop is held over reads whether that row stands (Store.WorkHoldStands, readHoldForStop). The
@@ -1135,7 +1082,8 @@ func TestWorkHoldStopDropLeavesAStoppedClaimForTheOpening(t *testing.T) {
 // stop held back, and the hold's deadline cuts no turn. The hold's stop asked of an opened tree is
 // answered ErrWorkHoldEnded and makes no stop. A read that fails keeps the stop held, so the turn's
 // end makes it; the read of the row after that stop fails as well, so the turn's end answers its
-// error, and the stop's row is left to drop it.
+// error. The stop's row then asks again, and its decision has the daemon start the claim
+// (TestWorkHoldStopAskedAgainOfAClaimItStopped).
 func TestWorkHoldDropsItsStopAtTheFirstDecisionAfterTheOpening(t *testing.T) {
 	const dropped = `msg="supervise: the work hold ended before its stop was made; the stop is not made"`
 	heldInTurn := func(t *testing.T) *harness {
@@ -1576,48 +1524,6 @@ func TestWorkHoldStopAskedAgainOfAClaimItStopped(t *testing.T) {
 		h.wantHeld()
 		h.wantCalls("Suspend", 1)
 		told.wantOnce(h)
-	})
-}
-
-// The hold's stop whose own claim write the database did not take, met by its row after the
-// opening. The stop is made and its write is owed, so the read of the row after it never runs,
-// and the opening read the claim live in the store. DropHoldStop takes the machine's lock outside
-// Handle, so it makes the owed write first, as Handle does at the head of every decision
-// (repairBeforeTheHold): when it reports the claim stopped, the store holds the claim stopped by
-// the hold, and the fact the outbox then applies reads it stopped and starts it. Where the repair
-// fails too, DropHoldStop answers the error and reports nothing, and the row's next attempt, once
-// the store takes the write, reports the claim stopped.
-func TestWorkHoldStopDropMakesTheStopsOwedWriteFirst(t *testing.T) {
-	away := errors.New("the database did not answer")
-	t.Run("the repair lands before the claim is reported stopped", func(t *testing.T) {
-		h := newHarness(t)
-		h.stoppedWithItsWriteOwed(away)
-		h.store.fail("PutClaim", nil)
-
-		dropped, stopped, err := h.m.DropHoldStop(h.ctx)
-
-		if dropped || !stopped || err != nil {
-			t.Fatalf("the stop's drop = dropped %v, stopped %v, %v; want the stopped claim reported", dropped, stopped, err)
-		}
-		h.wantHeld()
-	})
-	t.Run("a repair that fails reports nothing", func(t *testing.T) {
-		h := newHarness(t)
-		h.stoppedWithItsWriteOwed(away)
-
-		dropped, stopped, err := h.m.DropHoldStop(h.ctx)
-
-		if dropped || stopped || !errors.Is(err, errClaimWriteOwed) {
-			t.Fatalf("the stop's drop = dropped %v, stopped %v, %v; want nothing reported and the owed write's error", dropped, stopped, err)
-		}
-		if stored := h.store.load(h.token); stored.State == StateSuspended {
-			t.Fatalf("the store holds the claim %s by %q, want it still behind memory", stored.State, stored.SuspendedBy)
-		}
-		h.store.fail("PutClaim", nil)
-		if dropped, stopped, err := h.m.DropHoldStop(h.ctx); dropped || !stopped || err != nil {
-			t.Fatalf("the row's next attempt = dropped %v, stopped %v, %v; want the stopped claim reported", dropped, stopped, err)
-		}
-		h.wantHeld()
 	})
 }
 
