@@ -125,10 +125,13 @@ The broker needs its result-workflow entry, the existing airlock proxy and certi
 {
   "secrets": [
     {"name": "DISPATCH_RESULTS_TOKEN", "kind": "dpop", "hosts": ["dispatch.example.com"],
-     "headers": ["Authorization"], "allow": [{"method": "POST", "pathPrefix": "/api/v1/projects/"}]}
+     "headers": ["Authorization"], "allow": [{"method": "POST", "pathPrefix": "/api/v1/projects/"},
+                                            {"method": "POST", "pathPrefix": "/api/v1/issues/"}]}
   ]
 }
 ```
+
+The allow list names a `POST` under `/api/v1/projects/` and one under `/api/v1/issues/`, as the local stack's entry (`test/ci-results-stack.ts`) and the broker's tests do. Dispatch's results list names one route, `POST /api/v1/projects/{key}/results`, and a prefix covers other routes too (`POST /api/v1/projects/{key}/artifacts` matches); Dispatch answers a results token `403 RESULTS_ONLY_TOKEN` on every route its results list does not name (`resultsScopeRoutes`, `routes_table.go`), so the allow list bounds where the placeholder goes and Dispatch's list bounds what it may do there.
 
 The rule carries the placeholder only in `Authorization`, and the proxy sends only the requests its allow list names. Every broker with a rules file checks the rule at start, whether or not it has result-workflow entries, since every broker with an airlock port serves every result grant of its database: of kind `dpop`, binding one exact host (Dispatch's, with no `*.` name, since the run's token and a proof of the pod's key go to every host the rule binds) that is the host `BROKER_AIRLOCK_PRIVATE_UPSTREAM` names, with a non-empty allow list and `Authorization` as its one header, and no other rule of kind `dpop` or binding that host. A broker with a result-workflow entry and no such rule refuses to start too. The rule does not grant a project or choose a run: the broker derives those from the verified GitHub identity and its result-workflow entry. A workflow authorized only for ordinary credentials cannot obtain a placeholder through this endpoint. Use HTTPS outside the isolated loopback test environment.
 
