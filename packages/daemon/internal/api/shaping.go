@@ -602,6 +602,7 @@ var stateNarrowings = []stateNarrowing{
 		dropped: "the phase step (served as implementing), the issues' stepRole and startWaitsForPod, and the " +
 			"stranded claims, waiting wakes and pause stops of a deployment's roles"},
 	{contract: strandedTokenContract, state: withoutStrandedTokens, dropped: "the stranded claims' token"},
+	{contract: tasksContract, issue: withoutTasks, dropped: "the issues' tasks"},
 }
 
 // valueStrip is one strip of a value from the state: what it takes off the state's own values,
@@ -1063,6 +1064,15 @@ const deploymentRolesContract = 221
 // rather than its number for that reason.
 const strandedTokenContract = 222
 
+// tasksContract is the daemon contract that added each issue's tasks to the state (version.go's
+// 224, `issues.<key>.tasks`): each task of the issue's plan with where it stands, the act at its
+// place, what the step there waits for, its own pull request and its own counts (TaskView).
+//
+// It is a literal of its own and never DaemonAPIVersion, for the reason deploymentRolesContract
+// gives, and it is the last number of answers.go's SupportedContracts, which names the constant
+// rather than its number for that reason.
+const tasksContract = 224
+
 // withoutDeploymentRoles is the issue as a caller below deploymentRolesContract reads it: an issue
 // at step is at work, so it is served as implementing — its Dispatch status is in_progress, as
 // step's is; it keeps its slot and is at work, as step does; none of the phases an older
@@ -1515,6 +1525,17 @@ func withoutStrandedTokens(state State) (State, bool) {
 	}
 	state.StrandedClaims = stranded
 	return state, true
+}
+
+// withoutTasks is the issue with no `tasks`, the one field tasksContract added to an issue: a
+// plugin built before the reader that drops a key it does not know reads an issue as a strict
+// object and refuses the whole state over the key, and a later plugin below the contract strips
+// it. The field is `omitempty` and absent from an issue with no plan rows, so the band reports a
+// move only for an issue that carries a task.
+func withoutTasks(issue Issue) (Issue, bool) {
+	moved := len(issue.Tasks) > 0
+	issue.Tasks = nil
+	return issue, moved
 }
 
 // withoutUnadmittedWaitAnswer is the issue whose wait carries no `answeredAt` and no

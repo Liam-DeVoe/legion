@@ -2312,6 +2312,10 @@ type Store interface {
 	// StoppedStep is the step the stop of issue's task ended while its stop holds the issue, read
 	// from its plan rows as a running step is read; ok is false for any other issue.
 	StoppedStep(ctx context.Context, tx pgx.Tx, issue Issue) (step RunningStep, ok bool, err error)
+	// TaskActs is the act each task of issue's run stands at, in task id order, read from its plan
+	// rows as a running step is read, whatever the task's state and whatever its step waits for;
+	// none for a task at no act, and none for an issue with no plan rows.
+	TaskActs(ctx context.Context, tx pgx.Tx, issue Issue) ([]RunningStep, error)
 	// MoveTask writes where task stands and its state, which is not stopped (StopTask) or held
 	// (HoldTask), clears a stop's reason, and ends the task's hold reason and its step's wait.
 	MoveTask(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, place TaskPlace, state TaskState) error

@@ -179,6 +179,13 @@ func StoppedColumn(key, generation string) string {
 	return stepsColumn(key, generation, `t.state = 'stopped'`, `t.task`)
 }
 
+// ActsColumn is RunningColumn's read of every task of the run that stands at an act instead,
+// whatever its state and whatever its step waits for: the step, the retro or the merge each stands
+// at (record.Store.TaskActs). A task at no act is in no row, as in each read of this kind.
+func ActsColumn(key, generation string) string {
+	return stepsColumn(key, generation, `true`, `t.task`)
+}
+
 // AgentWaitersColumn is RunningColumn's read of the tasks of the run in the state running whose
 // step waits for its agent (plan_tasks.step_wait is agent) instead, the step that has waited
 // longest first: by the moment its wait began (plan_tasks.step_wait_since), then by task id
@@ -187,8 +194,8 @@ func AgentWaitersColumn(key, generation string) string {
 	return stepsColumn(key, generation, `t.state = 'running' and t.step_wait = 'agent'`, `t.step_wait_since, t.task`)
 }
 
-// stepsColumn is the read RunningColumn, StoppedColumn and AgentWaitersColumn make, of the tasks
-// the SQL condition which names, over their alias t, in the SQL order order names.
+// stepsColumn is the read RunningColumn, StoppedColumn, ActsColumn and AgentWaitersColumn make, of
+// the tasks the SQL condition which names, over their alias t, in the SQL order order names.
 func stepsColumn(key, generation, which, order string) string {
 	return `case when exists (select 1 from issue_plans p where p.issue = ` + key + ` and p.generation = ` + generation + `) then ` +
 		`coalesce((select json_agg(json_build_object('task', t.task, 'held', t.state = 'held', 'kind', t.running_kind, ` +

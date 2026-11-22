@@ -49,8 +49,10 @@ type projectionStore struct {
 	// in experiment order, as record.Store.Assignments answers them.
 	assignments map[string][]record.Assignment
 	// planTasks is the task of each issue that has plan rows at its generation, as
-	// record.Store.PlanTasksOf answers them.
+	// record.Store.PlanTasksOf answers them; acts is the act each of an issue's tasks stands at,
+	// by key, as record.Store.TaskActs answers it.
 	planTasks []record.PlanTask
+	acts      map[string][]record.RunningStep
 	// stopped is the step the stop of each issue's task ended, by key, as record.Store.StoppedStep
 	// answers it for an issue its stopped task holds.
 	stopped map[string]record.RunningStep
@@ -63,6 +65,10 @@ func (s projectionStore) PlanTasksOf(context.Context, pgx.Tx, string) ([]record.
 func (s projectionStore) StoppedStep(_ context.Context, _ pgx.Tx, issue record.Issue) (record.RunningStep, bool, error) {
 	step, ok := s.stopped[issue.Key]
 	return step, ok && record.HeldFor(issue, record.HoldTaskStopped), nil
+}
+
+func (s projectionStore) TaskActs(_ context.Context, _ pgx.Tx, issue record.Issue) ([]record.RunningStep, error) {
+	return s.acts[issue.Key], nil
 }
 
 func (s projectionStore) Assignments(context.Context, pgx.Tx, string) (map[string][]record.Assignment, error) {
@@ -109,8 +115,17 @@ func (s projectionStore) StartsWaitingForPod(context.Context, pgx.Tx, string) (m
 func (s projectionStore) Phases(_ context.Context, _ pgx.Tx, issue string) ([]record.PhaseRow, error) {
 	return s.phases[issue], nil
 }
-func (s projectionStore) PullRequest(_ context.Context, _ pgx.Tx, issue string) (*record.PullRequest, error) {
+
+// MergePullRequest is each issue's one pull request the fake holds, which is its merge's, and
+// TaskPullRequests that same row as the issue's only one.
+func (s projectionStore) MergePullRequest(_ context.Context, _ pgx.Tx, issue string) (*record.PullRequest, error) {
 	return s.pullRequests[issue], nil
+}
+func (s projectionStore) TaskPullRequests(_ context.Context, _ pgx.Tx, issue string) ([]record.PullRequest, error) {
+	if pr := s.pullRequests[issue]; pr != nil {
+		return []record.PullRequest{*pr}, nil
+	}
+	return nil, nil
 }
 func (s projectionStore) GatesOf(_ context.Context, _ pgx.Tx, issue string) (map[record.DesignStep]record.DesignGate, error) {
 	return s.gates[issue], nil

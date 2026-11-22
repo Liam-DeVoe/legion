@@ -3177,7 +3177,7 @@ package api
 // (`shimwire.WorkspaceBundle`) gain `workingCopies`, the working-copy commit of each task's
 // working copy by its branch, which the launcher of the pod that replaces a released one puts
 // back beside the issue's own; a bundle without it restores the issue's working copy alone. No
-// answer a plugin parses changes, so no record of an earlier contract and no serving-down changes.
+// answer a plugin parses changes with these frames.
 // `POST /legion/v1/phase/retry` (`api.PhaseRetryRequest`, `retry_or_escalate`) takes an optional
 // `task`, the held task of the issue's plan the decision is of: a failed claim holds the task of
 // its agent's step, and the issue only where no other task runs. A request that names none is of
@@ -3194,6 +3194,19 @@ package api
 // one (`400 TASK_NOT_GRANTS`). A completion of a plan of several tasks is of the task of the step
 // its claim's agent runs, keyed by that task's phase, and one of an agent that runs no step of it
 // is answered `409 HANDOFF_NOT_CURRENT_PHASE`; no request or answer shape of it changes.
+// `GET /legion/v1/state` serves each task of an issue's plan in a new key,
+// `issues.<key>.tasks`, in task id order (`api.TaskView`): its `id`, its `state`, the tasks it
+// `needs`, the `kind` and the `position` of the act it stands at and that act's `phase`, its
+// `branch`, the `role` and the `agent` that work it, why it is held (`holdReason`) or stopped
+// (`stoppedReason`), what the step at its place waits for (`wait`, `join` or `agent`) with the
+// agent it waits for and the running step that agent works (`waitsFor`), its own `pullRequest`
+// with what its review round waits on from GitHub (`mergeWait`), and its own `counts`; the key is
+// absent for an issue with no plan rows. The issue's own `pullRequest` and `mergeWait` are its
+// merge's, the pull request of the task that merges. A caller whose contract is below 224 is
+// served each issue without `tasks` (one band of shaping.go at `tasksContract`): a plugin built
+// before the reader that drops a key it does not know reads an issue as a strict object and
+// would refuse the whole state over it. From this entry the last number of answers.go's
+// SupportedContracts is `api.tasksContract`.
 // (224 is a working number, above every number this tree's entries hold and every number the
 // changes this one is built on hold. No reading of the open pull requests chose it: the pull
 // request that carries this entry reads `const DaemonAPIVersion` at each open pull request's head

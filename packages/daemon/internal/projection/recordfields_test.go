@@ -291,9 +291,15 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		},
 	}
 
+	// The issue's plan holds one task, a, held where its running step stands, so the view serves
+	// the task with the act of that step (api.Issue.Tasks), the running step the table serves
+	// under `tasks`.
 	store := projectionStore{
 		issues:      []record.Issue{tree, issue},
 		assignments: map[string][]record.Assignment{root: {drawn}},
+		planTasks: []record.PlanTask{{Issue: held, Generation: 3, Task: "a", State: record.TaskHeld,
+			Place: issue.Running[0].Place, HoldReason: record.HoldEscalated}},
+		acts: map[string][]record.RunningStep{held: issue.Running},
 	}
 	state, err := Project(context.Background(), Inputs{
 		Store: store, Project: "LEGION",
@@ -379,7 +385,8 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		// phases and the claims rather than from the issue record. `assignments` and the three
 		// memory fields are built from the assignment record, which has a table of its own
 		// (api.AssignmentRecordFields, the subtest below). `stepRole` is a reading of the running
-		// steps, the role of the first at step, which the table withholds whole (Running).
+		// steps beside `tasks`, the key the table serves them under (Running): the role of the
+		// first at step.
 		servedKeys(t, "record.Issue", document, api.IssueRecordFields,
 			[]string{"workers", "assignments", "memoryGroup", "memoryDrawMode", "memoryDrawnAt", "stepRole"})
 
@@ -401,6 +408,12 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			"assignments": []map[string]any{{
 				"experiment": drawn.Experiment, "variant": drawn.Variant,
 				"mode": drawn.Mode, "drawnAt": drawn.DrawnAt,
+			}},
+			"tasks": []map[string]any{{
+				"id": "a", "state": record.TaskHeld, "needs": []string{}, "kind": issue.Running[0].Place.Kind,
+				"phase": issue.Running[0].Phase, "branch": claim.IssueBranch(held), "position": issue.Running[0].Place.Position,
+				"role": issue.Running[0].Role, "agent": issue.Running[0].Agent, "holdReason": record.HoldEscalated,
+				"counts": map[string]any{"pass": 0, "rounds": 0},
 			}},
 		})
 		if got, wanted := canonical(t, document), canonical(t, want); got != wanted {

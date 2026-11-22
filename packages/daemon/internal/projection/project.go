@@ -100,19 +100,20 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	if err != nil {
 		return api.State{}, err
 	}
-	// The task of each issue that has plan rows at its generation, in one statement for the whole
-	// state (record.Store.PlanTasksOf), joined to the issue records of project as the answers
-	// above are. Such an issue counts its returns on its task (record.ReturnCounts), so its
-	// implementer's view shows the task's counts; an issue with no plan rows shows its
-	// implementer's phases row, where the counts lived before plans. A plan this release takes
-	// holds one task (plan.Supported).
+	// The tasks of each issue that has plan rows at its generation, by issue and in task id order,
+	// in one statement for the whole state (record.Store.PlanTasksOf), joined to the issue records
+	// of project as the answers above are. Each is served on its issue (api.Issue.Tasks, taskViews)
+	// with its own counts of returns, which such an issue keeps on each task (record.ReturnCounts):
+	// its implementer's view shows the counts of the task its implementer's row runs
+	// (countedTask), where an issue with no plan rows shows its implementer's phases row, where
+	// the counts lived before plans.
 	planTasks, err := in.Store.PlanTasksOf(ctx, in.Tx, in.Project)
 	if err != nil {
 		return api.State{}, err
 	}
-	taskCounts := make(map[string]record.ReturnCounts, len(planTasks))
+	tasksOf := make(map[string][]record.PlanTask)
 	for _, task := range planTasks {
-		taskCounts[task.Issue] = task.Counts
+		tasksOf[task.Issue] = append(tasksOf[task.Issue], task)
 	}
 	place := declaredPlaces(in.Experiments)
 	slots, err := in.Store.Slots(ctx, in.Tx)
@@ -268,7 +269,8 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		}
 		// The reviewer's own row, the single row of its role (the phases table is keyed by issue
 		// and role): the round's decision is read from it, and so is what the round waits on from
-		// GitHub (mergeWaitView). The zero row is an issue whose reviewer has never had one.
+		// GitHub (mergeWaitView), for the pull request of the task whose step it runs
+		// (reviewerOf). The zero row is an issue whose reviewer has never had one.
 		var reviewer record.PhaseRow
 		for _, item := range phases {
 			if item.Role == claim.RoleReviewer {
@@ -289,10 +291,11 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 			// The worker's view exists only while its claim is live, so its counts of the moves
 			// back ride with the claim exactly as `rounds` does: a role whose process has gone
 			// shows neither, and the record keeps both for the role's next claim. The counts are
-			// the implementer's row's, or its issue's task's where the issue has plan rows.
+			// the implementer's row's, or the task's whose step that row runs where the issue has
+			// plan rows (countedTask).
 			counts := record.ReturnCounts{Pass: item.Pass, Rounds: item.Rounds, BackwardMoves: item.BackwardMoves}
-			if planned, ok := taskCounts[issue.Key]; ok && item.Role == claim.RoleImplementer {
-				counts = planned
+			if task, ok := countedTask(tasksOf[issue.Key], item.StepTask); ok && item.Role == claim.RoleImplementer {
+				counts = task.Counts
 			}
 			worker := api.PhaseView{
 				Claim:         claimView,
@@ -346,25 +349,22 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 				handshakeTimes(entries[issueRole{issue: issue.Key, role: handshakeRole}].handshake, issue.Generation)
 		}
 
-		pr, err := in.Store.PullRequest(ctx, in.Tx, issue.Key)
+		// The issue's own pull request is its merge's, the row of the task whose work merges
+		// (record.Store.MergePullRequest), and so is what its review round waits on from GitHub.
+		// Each task's own pull request is served on that task (taskViews), so the review round of
+		// a task that does not merge keeps its served pull request there.
+		pr, err := in.Store.MergePullRequest(ctx, in.Tx, issue.Key)
 		if err != nil {
 			return api.State{}, err
 		}
-		if pr != nil {
-			reviewDecision := ""
-			if reviewer.Decision != nil {
-				reviewDecision = reviewer.Decision.State
-			}
-			view.PullRequest = &api.PullRequestView{
-				Repo:           pr.Repo,
-				Number:         pr.Number,
-				Head:           pr.HeadSHA,
-				State:          string(pr.State),
-				MergeState:     string(pr.MergeState),
-				ReviewDecision: reviewDecision,
+		merges := reviewerOf(reviewer, pr)
+		view.PullRequest = pullRequestView(pr, merges)
+		view.MergeWait = mergeWaitView(issue, merges, pr)
+		if tasks := tasksOf[issue.Key]; len(tasks) > 0 {
+			if view.Tasks, err = taskViews(ctx, in, issue, tasks, reviewer); err != nil {
+				return api.State{}, err
 			}
 		}
-		view.MergeWait = mergeWaitView(issue, reviewer, pr)
 
 		gates, err := in.Store.GatesOf(ctx, in.Tx, issue.Key)
 		if err != nil {
@@ -819,6 +819,144 @@ func mergeWaitView(issue record.Issue, reviewer record.PhaseRow, pr *record.Pull
 	view.CheckRuns = len(classify.HeadRuns(*pr))
 	if reviewer.Decision != nil {
 		view.ToldHead, view.ToldState = reviewer.Decision.ToldStuckHead, string(reviewer.Decision.ToldStuckState)
+	}
+	return view
+}
+
+// pullRequestView is pr as the state serves it (api.PullRequestView), nil for none: the issue's
+// own pull request and each task's are built here alike. reviewer is the reviewer's row as it
+// bears on pr (reviewerOf), whose decision is the latest review round's.
+func pullRequestView(pr *record.PullRequest, reviewer record.PhaseRow) *api.PullRequestView {
+	if pr == nil {
+		return nil
+	}
+	view := &api.PullRequestView{
+		Repo:       pr.Repo,
+		Number:     pr.Number,
+		Head:       pr.HeadSHA,
+		State:      string(pr.State),
+		MergeState: string(pr.MergeState),
+	}
+	if reviewer.Decision != nil {
+		view.ReviewDecision = reviewer.Decision.State
+	}
+	return view
+}
+
+// reviewerOf is the reviewer's row as it bears on pr: the row itself where it runs the step of
+// pr's task, or no step of a plan (an issue with no plan rows, and a row no entry of this run
+// raised: record.PhaseRow.StepTask), and the zero row where it runs a step of another task, whose
+// decision and round are of another pull request.
+func reviewerOf(reviewer record.PhaseRow, pr *record.PullRequest) record.PhaseRow {
+	if pr != nil && reviewer.StepTask != "" && reviewer.StepTask != pr.Task {
+		return record.PhaseRow{}
+	}
+	return reviewer
+}
+
+// countedTask is the task of tasks, the tasks of an issue's plan, whose counts of returns the
+// issue's implementer's view shows: the task whose step the implementer's row runs (running,
+// record.PhaseRow.StepTask), or the plan's one task where the row runs none of them, as a row no
+// entry of this run raised does. It is false for an issue with no plan rows, and for a row that
+// runs none of several tasks.
+func countedTask(tasks []record.PlanTask, running string) (record.PlanTask, bool) {
+	if at := slices.IndexFunc(tasks, func(task record.PlanTask) bool { return task.Task == running }); at >= 0 {
+		return tasks[at], true
+	}
+	if len(tasks) == 1 {
+		return tasks[0], true
+	}
+	return record.PlanTask{}, false
+}
+
+// taskViews is tasks, the tasks of issue's plan in task id order, as the state serves them
+// (api.TaskView), from two reads of the issue: the act each task stands at
+// (record.Store.TaskActs) and each task's own pull request (record.Store.TaskPullRequests).
+// reviewer is the issue's reviewer's row, which bears on the pull request of the task whose step
+// it runs (reviewerOf).
+func taskViews(ctx context.Context, in Inputs, issue record.Issue, tasks []record.PlanTask, reviewer record.PhaseRow) ([]api.TaskView, error) {
+	acts, err := in.Store.TaskActs(ctx, in.Tx, issue)
+	if err != nil {
+		return nil, err
+	}
+	prs, err := in.Store.TaskPullRequests(ctx, in.Tx, issue.Key)
+	if err != nil {
+		return nil, err
+	}
+	views := make([]api.TaskView, len(tasks))
+	for i, task := range tasks {
+		var act *record.RunningStep
+		if at := slices.IndexFunc(acts, func(step record.RunningStep) bool { return step.Task == task.Task }); at >= 0 {
+			act = &acts[at]
+		}
+		var pr *record.PullRequest
+		if at := slices.IndexFunc(prs, func(row record.PullRequest) bool { return row.Task == task.Task }); at >= 0 {
+			pr = &prs[at]
+		}
+		views[i] = taskView(issue, task, act, pr, reviewer)
+	}
+	return views, nil
+}
+
+// taskView is task of issue's plan as the state serves it (api.TaskView, whose doc says what each
+// field holds): act is the act it stands at (record.Store.TaskActs), nil at no act, and pr its own
+// pull request, nil for none.
+//
+// Its phase is the one an issue of that one task stands in (workflow's issuePhaseOf): done for a
+// task that is done or left, whatever its place, and otherwise the phase of its act; none at no
+// act. Its branch is served once it has started (record.TaskPlace.Started) or holds one: a task
+// that has not started holds none until its first start gives it one, and BranchOf would name
+// the issue's own branch for it. A step waits only at a running task's place, so a wait is read
+// there alone, as record.Store.AgentWaiter reads it, whatever the row of a task that no longer
+// runs still holds. The round of its own review is judged on the issue as a copy read for the
+// task stands (workflow's view): at the phase of a running task's act, and at no phase
+// otherwise, so that a running task at its review step alone can wait on GitHub, as an issue in
+// reviewing alone does.
+func taskView(issue record.Issue, task record.PlanTask, act *record.RunningStep, pr *record.PullRequest, reviewer record.PhaseRow) api.TaskView {
+	view := api.TaskView{
+		ID: task.Task, State: string(task.State), Needs: task.Needs, Kind: task.Place.Kind, Position: task.Place.Position,
+		StoppedReason: task.StoppedReason, Counts: api.TaskCountsView{Pass: task.Counts.Pass, Rounds: task.Counts.Rounds},
+	}
+	if view.Needs == nil {
+		view.Needs = []string{}
+	}
+	if task.Place.Started() || task.Branch != "" {
+		view.Branch = task.BranchOf(issue.Key)
+	}
+	switch {
+	case !task.Place.Started():
+	case task.State == record.TaskDone || task.State == record.TaskLeft:
+		view.Phase = string(phase.Done)
+	case act != nil:
+		view.Phase = string(act.Phase)
+	}
+	switch task.State {
+	case record.TaskRunning, record.TaskHeld, record.TaskStopped:
+		if act != nil {
+			view.Role, view.Agent = string(act.Role), string(act.Agent)
+		}
+	}
+	if task.State == record.TaskHeld {
+		view.HoldReason = string(task.HoldReason)
+	}
+	read := issue
+	read.Phase = ""
+	if task.State == record.TaskRunning {
+		view.Wait = string(task.StepWait)
+		if task.StepWait == record.StepWaitAgent && view.Agent != "" {
+			view.WaitsFor = &api.AgentStepView{Agent: view.Agent}
+			if step, ok := issue.StepOfAgent(act.Agent); ok {
+				view.WaitsFor.Task, view.WaitsFor.Position = step.Task, step.Place.Position
+			}
+		}
+		if act != nil {
+			read.Phase = act.Phase
+		}
+	}
+	if pr != nil {
+		bearing := reviewerOf(reviewer, pr)
+		view.PullRequest = pullRequestView(pr, bearing)
+		view.MergeWait = mergeWaitView(read, bearing, pr)
 	}
 	return view
 }

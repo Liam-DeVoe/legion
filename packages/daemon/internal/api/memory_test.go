@@ -478,6 +478,11 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 			if tc.contract < strandedTokenContract {
 				strandedWithoutTokens(want)
 			}
+			// A pod below tasksContract is served each issue without its `tasks`, the key contract
+			// 224 added (api's withoutTasks).
+			if tc.contract < tasksContract {
+				issuesWithoutTasks(want)
+			}
 			// A pod below treeContract is served neither `admission.trees` nor the issues'
 			// `tree`, the two keys contract 51 added (api's withoutTrees), which is every pod
 			// below memoryContract and every pod of the band above it as well.

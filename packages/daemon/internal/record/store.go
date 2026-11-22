@@ -598,6 +598,25 @@ func (s *Postgres) StoppedStep(ctx context.Context, tx pgx.Tx, issue Issue) (ste
 	return RunningStep{}, false, nil
 }
 
+// TaskActs is the act each task of issue's run stands at, read in tx from the plan rows of its
+// generation as a running step is read (pods.ActsColumn, RunningOf): the step at its place, its
+// retro or its merge, with the role, the phase and the agent of that place, held where the task
+// is held, for every task that stands at an act whatever its state and whatever its step waits
+// for, in task id order. A task at no act has none, and so does an issue with no plan rows at its
+// generation. It is what the served state names each task's act by (api.TaskView), where the
+// issue's running steps (Issue.Running) hold only the steps whose start was delivered.
+func (s *Postgres) TaskActs(ctx context.Context, tx pgx.Tx, issue Issue) ([]RunningStep, error) {
+	var acts []byte
+	if err := tx.QueryRow(ctx, "select "+pods.ActsColumn("$1::text", "$2::bigint"), issue.Key, int64(issue.Generation)).Scan(&acts); err != nil {
+		return nil, fmt.Errorf("read the act of each task of %s at generation %d: %w", issue.Key, issue.Generation, err)
+	}
+	rows, planned, err := pods.DecodeRunning(acts)
+	if err != nil || !planned {
+		return nil, err
+	}
+	return RunningOf(Issue{}, true, rows), nil
+}
+
 func (s *Postgres) Phases(ctx context.Context, tx pgx.Tx, issue string) ([]PhaseRow, error) {
 	rows, err := tx.Query(ctx, `select issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff, decision, completed_at, entry, entry_task, entry_verbatim, entry_raised_at, entry_moved_back, reviewed_head, step_task, step_place from phases
 		where issue = $1 order by role`, issue)

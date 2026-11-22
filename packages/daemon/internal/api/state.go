@@ -893,6 +893,71 @@ type Issue struct {
 	// holds an answer for, so the wire never carries an empty list, and absent from every issue of
 	// the body the route serves a caller below 141 (shapeIssue, withoutAssignments).
 	Assignments []AssignmentView `json:"assignments,omitempty"`
+	// Tasks is each task of the issue's plan, in task id order (TaskView): one for each row of the
+	// plan of the issue's generation, a plan of one task among them. Absent for an issue with no
+	// plan rows at its generation, which walks today's line as one task no plan names, and absent
+	// from every issue of the body the route serves a caller below tasksContract (shapeIssue,
+	// withoutTasks).
+	Tasks []TaskView `json:"tasks,omitempty"`
+}
+
+// TaskView is one task of an issue's plan as the state shows it: where the task stands
+// (record.PlanTask), the act at its place, what the step there waits for, its own pull request and
+// its own counts of returns.
+//
+// State is the task's state (record.TaskState). Needs is the ids of the tasks it needs, `[]` for
+// none. Kind and Position are its place (record.TaskPlace): `step` with the step's place from 1,
+// `retro` or `merge`, and both absent for a task at no act, which has not started. Phase is the
+// phase of that place, the phase an issue of that one task stands in (workflow's issuePhaseOf):
+// the phase the step's role runs as, `retro` or `merging`, and `done` for a task that is done or
+// left the workflow; absent at no act. Branch is the GitHub branch the task works on
+// (record.PlanTask.BranchOf), absent for a task that has not started, whose first start gives it
+// one. Role and Agent are the role and the agent that work the act at its place
+// (record.RunningStep's), for a task that is running, held or stopped; absent for a task that is
+// waiting, done or left, which no one works, and Agent absent for a step of the key owner, whose
+// claim names no agent of the issue. HoldReason is why a held task is held, absent for a failed
+// claim its owner has not decided (record.PlanTask.HoldReason), and StoppedReason why a stopped
+// task was stopped, which a task that left the workflow stopped keeps. Wait is what the step at a
+// running task's place waits for before its start is delivered, `join` or `agent`
+// (record.StepWait), absent where its start was delivered; WaitsFor names, for a step that waits
+// for its agent, that agent and the step it runs (AgentStepView). PullRequest and MergeWait are the
+// task's own pull request and what its review round waits on from GitHub, built as the issue's own
+// are, from the task's row (record.Store.TaskPullRequests). Counts are the task's own counts of
+// returns (record.PlanTask.Counts).
+type TaskView struct {
+	ID            string           `json:"id"`
+	State         string           `json:"state"`
+	Needs         []string         `json:"needs"`
+	Kind          string           `json:"kind,omitempty"`
+	Phase         string           `json:"phase,omitempty"`
+	Branch        string           `json:"branch,omitempty"`
+	Position      int              `json:"position,omitempty"`
+	Role          string           `json:"role,omitempty"`
+	Agent         string           `json:"agent,omitempty"`
+	HoldReason    string           `json:"holdReason,omitempty"`
+	StoppedReason string           `json:"stoppedReason,omitempty"`
+	Wait          string           `json:"wait,omitempty"`
+	WaitsFor      *AgentStepView   `json:"waitsFor,omitempty"`
+	PullRequest   *PullRequestView `json:"pullRequest,omitempty"`
+	MergeWait     *MergeWaitView   `json:"mergeWait,omitempty"`
+	Counts        TaskCountsView   `json:"counts"`
+}
+
+// AgentStepView is the agent a step waits for and the running step that agent works
+// (record.Issue.StepOfAgent): its task and the step's place from 1. Task and Position are absent
+// where the agent works no delivered step, as when a step of another task has waited for it
+// longer; Position alone is absent where the agent works a retro.
+type AgentStepView struct {
+	Agent    string `json:"agent"`
+	Task     string `json:"task,omitempty"`
+	Position int    `json:"position,omitempty"`
+}
+
+// TaskCountsView is a task's own counts of returns (record.ReturnCounts): the passes it has made
+// through its steps and its review rounds.
+type TaskCountsView struct {
+	Pass   int `json:"pass"`
+	Rounds int `json:"rounds"`
 }
 
 // AssignmentView is one experiment's answer for an issue as the state shows it
@@ -1290,9 +1355,11 @@ type HandoffRecordView struct {
 	Version int    `json:"version"`
 }
 
-// PullRequestView is the issue's pull request as the daemon observes it from GitHub.
-// ReviewDecision is the latest review round's decision (changes_requested or approved), the one
-// the workflow ends the round on when the reviewer completes. It shows from the review that
+// PullRequestView is a pull request of the issue as the daemon observes it from GitHub: on the
+// issue its merge's, the pull request of the task that merges, and on each task (TaskView) that
+// task's own. ReviewDecision is the latest review round's decision (changes_requested or
+// approved), the one the workflow ends the round on when the reviewer completes, and only where
+// the reviewer's round was of this pull request's task. It shows from the review that
 // decided it until the next round opens or a new generation clears it, so a request for changes
 // stays through implementing and testing, and an approval through retro and every phase after
 // it; absent until a review in a round decides.

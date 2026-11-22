@@ -527,6 +527,37 @@ func populatedState(t *testing.T) State {
 					Index:      0,
 					AdmittedAt: time.Date(2026, 9, 21, 18, 42, 11, 0, time.UTC),
 				},
+				// The tasks of this root's plan, each with every key a task can carry between
+				// them (internal/projection's taskView). a is the task that merges: its owner
+				// stopped it to add the tasks it now needs, so it keeps its place and its pull
+				// request, which is the issue's own, the merge's. b's reviewer approved b's own
+				// pull request, whose round waits on GitHub. c's step waits for its agent k, which
+				// runs d's first step. e is held, its owner having escalated a failed claim. The
+				// issue stands at implementing, the first phase of a running task in today's order.
+				Tasks: []TaskView{
+					{ID: "a", State: string(record.TaskStopped), Needs: []string{"b", "c", "d", "e"}, Kind: record.PlaceStep,
+						Phase: string(phase.Implementing), Branch: "legion/LEGION-208", Position: 1, Role: string(claim.RoleImplementer),
+						Agent: "implementer", StoppedReason: "its owner stopped it to add the tasks it needs",
+						PullRequest: &PullRequestView{Repo: "acme/widgets", Number: 1247, Head: "5b3d9e2c8f1a47d06b2e5c9f3a8d1e4b7c0f6a29",
+							State: "open", MergeState: "blocked", ReviewDecision: "changes_requested"},
+						Counts: TaskCountsView{Pass: 3, Rounds: 2}},
+					{ID: "b", State: string(record.TaskRunning), Needs: []string{}, Kind: record.PlaceStep, Phase: string(phase.Reviewing),
+						Branch: "legion/LEGION-208.b", Position: 2, Role: string(claim.RoleReviewer), Agent: "reviewer",
+						PullRequest: &PullRequestView{Repo: "acme/widgets", Number: 1251, Head: "8e1f4c7a2d9b63e05f1a8c4d7b2e9f6a3c0d5b18",
+							State: "open", MergeState: "blocked", ReviewDecision: "approved"},
+						MergeWait: &MergeWaitView{WaitsOn: "8e1f4c7a2d9b63e05f1a8c4d7b2e9f6a3c0d5b18", MergeState: "blocked",
+							StateReadAt: &stuckStateReadAt, HeadUpdatedAt: &waitingHeadUpdatedAt, CheckRuns: 2},
+						Counts: TaskCountsView{Pass: 1}},
+					{ID: "c", State: string(record.TaskRunning), Needs: []string{}, Kind: record.PlaceStep, Phase: string(phase.Implementing),
+						Branch: "legion/LEGION-208.c", Position: 1, Role: string(claim.RoleImplementer), Agent: "k",
+						Wait: string(record.StepWaitAgent), WaitsFor: &AgentStepView{Agent: "k", Task: "d", Position: 1}},
+					{ID: "d", State: string(record.TaskRunning), Needs: []string{}, Kind: record.PlaceStep, Phase: string(phase.Implementing),
+						Branch: "legion/LEGION-208.d", Position: 1, Role: string(claim.RoleImplementer), Agent: "k",
+						Counts: TaskCountsView{Pass: 1}},
+					{ID: "e", State: string(record.TaskHeld), Needs: []string{}, Kind: record.PlaceStep, Phase: string(phase.Implementing),
+						Branch: "legion/LEGION-208.e", Position: 1, Role: string(claim.RoleImplementer), Agent: "implementer-2",
+						HoldReason: string(record.HoldEscalated), Counts: TaskCountsView{Pass: 1}},
+				},
 			},
 			"LEGION-210": {
 				Key:           "LEGION-210",
