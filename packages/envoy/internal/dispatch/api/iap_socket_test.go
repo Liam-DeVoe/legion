@@ -224,7 +224,9 @@ func TestALiveSocketBehindIAPClosesWhenItsExpiredAssertionIsAlsoWrong(t *testing
 			socket := rig.dial(t, expiring)
 			judged.Set(iap.pastExpiry(t, expiring))
 			switched.swap(change.apply(t, iap))
-			// The socket's one heartbeat on the server's clock; the socket it closes arms no other.
+			// The socket's first heartbeat on the server's clock, whose check closes it:
+			// whileCallerResolves re-arms the heartbeat as it takes this one, and stops it once the
+			// check has refused, so no later heartbeat checks the socket.
 			first := opened.Add(heartbeat)
 			awaitArmedAt(t, fake, "the socket's first heartbeat", first)
 			fake.Set(first)
@@ -374,7 +376,9 @@ func TestADocumentSocketBehindIAPClosesWhenItsExpiredAssertionIsAlsoWrong(t *tes
 			peer := rig.openDocument(t, expiring)
 			judged.Set(rig.iap.pastExpiry(t, expiring))
 			rig.switched.swap(change.apply(t, rig.iap))
-			// The socket's one heartbeat on the server's clock; the socket it ends arms no other.
+			// The socket's first heartbeat on the server's clock, whose check ends it:
+			// whileCallerResolves re-arms the heartbeat as it takes this one, and stops it once the
+			// check has refused, so no later heartbeat checks the socket.
 			first := opened.Add(heartbeat)
 			awaitArmedAt(t, fake, "the document socket's first heartbeat", first)
 			fake.Set(first)

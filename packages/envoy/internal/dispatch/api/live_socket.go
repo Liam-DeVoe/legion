@@ -111,12 +111,15 @@ type liveSocket struct {
 	// writer sets once it has closed, or the drain of a frame past the read limit (drainReads);
 	// closing stops further extensions. readsEnd is that deadline: a timer on clock
 	// (Deps.LiveSocketClock, clock.Real() where that is nil) that ends the page's reads once it
-	// fires, as a read deadline on the connection does once it passes (endReadsNow), and each
+	// fires, as a read deadline on the connection does once it passes (readsEndPassed), and each
 	// awaitPong, endReads and drainReads moves it, as each SetReadDeadline replaces the one before.
-	deadline sync.Mutex
-	closing  bool
-	clock    clock.Clock
-	readsEnd clock.Timer
+	// readsEndAt is the moment it is set for, on clock, which the timer's firing reads under
+	// deadline, so a firing that a later move overtook ends no reads.
+	deadline   sync.Mutex
+	closing    bool
+	clock      clock.Clock
+	readsEnd   clock.Timer
+	readsEndAt time.Time
 	// subs is every subscription the socket holds, by sub. Only the handler's goroutine touches it:
 	// the read loop, then the cleanup once the loop has ended.
 	subs map[string]*liveSub
@@ -226,8 +229,10 @@ func (socket *liveSocket) endReads(wait time.Duration) {
 }
 
 // endReadsInLocked moves the read deadline to wait from now on the socket's clock, in place of
-// the one before; a wait of zero or less ends the reads here.
+// the one before; a wait of zero or less ends the reads here. readsEndAt is read off the clock
+// before the timer is armed, so the timer never fires before that moment.
 func (socket *liveSocket) endReadsInLocked(wait time.Duration) {
+	socket.readsEndAt = socket.clock.Now().Add(wait)
 	switch {
 	case wait <= 0:
 		if socket.readsEnd != nil {
@@ -235,10 +240,24 @@ func (socket *liveSocket) endReadsInLocked(wait time.Duration) {
 		}
 		socket.endReadsNow()
 	case socket.readsEnd == nil:
-		socket.readsEnd = socket.clock.AfterFunc(wait, socket.endReadsNow)
+		socket.readsEnd = socket.clock.AfterFunc(wait, socket.readsEndPassed)
 	default:
 		socket.readsEnd.Reset(wait)
 	}
+}
+
+// readsEndPassed is the read-deadline timer's firing. Its function runs on a goroutine of its own
+// that starts once the timer has fired, so an awaitPong, endReads or drainReads can take deadline
+// between the two and move the deadline on, and its Reset or Stop then stops no firing already
+// made. The firing therefore takes deadline and ends the page's reads only once the deadline the
+// socket holds now, readsEndAt, has come.
+func (socket *liveSocket) readsEndPassed() {
+	socket.deadline.Lock()
+	defer socket.deadline.Unlock()
+	if socket.clock.Now().Before(socket.readsEndAt) {
+		return
+	}
+	socket.endReadsNow()
 }
 
 // endReadsNow is the read deadline passing: a read in progress returns a timeout at once, and so
@@ -259,8 +278,10 @@ func (socket *liveSocket) stopReadDeadline() {
 
 // drainReads gives the rest of a frame past the read limit wait from now to arrive, on the
 // socket's clock: the drain's deadline replaces the pong deadline, as a SetReadDeadline replaces
-// the one before, so a pong deadline that falls due inside the drain does not cut it short. A read
-// deadline the pong deadline already set, had it passed before the drain began, is lifted with it.
+// the one before, so a pong deadline that falls due inside the drain does not cut it short, and
+// neither does one whose timer fired before the drain took deadline and whose firing had not yet
+// taken it (readsEndPassed). A read deadline the pong deadline already set, had it passed before
+// the drain began, is lifted with it.
 func (socket *liveSocket) drainReads(wait time.Duration) {
 	socket.deadline.Lock()
 	defer socket.deadline.Unlock()
