@@ -7,6 +7,8 @@ package api
 
 import (
 	"context"
+	"fmt"
+	"maps"
 	"net/http"
 	"testing"
 
@@ -138,6 +140,71 @@ func TestAFormerHeadTheInstallSeededWaitsForAReadOfItsPullRequestThatFailed(t *t
 	if got := candidatesOf(t, rig); len(got) != 2 || !got[eachHeadH1] || got[eachHeadH3] {
 		t.Fatalf("#70 holds the former heads %v after GitHub answered 404 for its commits, want H1 verified and H3 still unverified: a 404 is no commit list", got)
 	}
+}
+
+// TestAFormerHeadPastTheCommitsGitHubListsIsKeptByItsComparisons: #70 holds 252 commits and is at
+// the last of them, H2; GitHub lists the first 250 of a pull request's commits and no more. The
+// install seeded H1, the 251st, where the tester recorded k1 passing; a commit of the base branch,
+// which the head holds too; a commit the head does not hold; a commit the repository does not
+// hold; and a commit whose comparison GitHub fails. The list leaves out what it cannot hold, so
+// what it does not list is decided by comparisons with the head and the base branch #70's own read
+// names: H1 is kept and k1 is published yes there, the three commits outside #70 are dropped, and
+// the one GitHub did not answer for stays a candidate, unverified, with a mark that reads it again
+// after the backoff.
+func TestAFormerHeadPastTheCommitsGitHubListsIsKeptByItsComparisons(t *testing.T) {
+	rig := newCheckStatesRig(t, checkStatesTwoChecks)
+	commits := make([]string, 252)
+	for index := range commits {
+		commits[index] = fmt.Sprintf("%040x", 0xc0000+index)
+	}
+	h1, h2 := commits[250], commits[251]
+	onBase, apart, absent, unanswered := fmt.Sprintf("%040x", 0xb0001), fmt.Sprintf("%040x", 0xa0001),
+		fmt.Sprintf("%040x", 0xd0001), fmt.Sprintf("%040x", 0xe0001)
+	eachHeadResult(t, rig.handler, rig.issue, "k1", "tester", "pass", h1)
+	upsertHead(t, rig, 70, h2, rig.issue, "A change")
+	settleOwed(t, rig)
+	rig.github.setPullCommits(70, commits...)
+	rig.github.setPull(70, h2, "main")
+	rig.github.setCompare(h2, h1, ciJobCompare{status: "behind"})
+	rig.github.setCompare("main", h1, ciJobCompare{status: "ahead"})
+	rig.github.setCompare(h2, onBase, ciJobCompare{status: "behind"})
+	rig.github.setCompare("main", onBase, ciJobCompare{status: "behind"})
+	rig.github.setCompare(h2, absent, ciJobCompare{failed: http.StatusNotFound})
+	rig.github.setAbsentCommit(absent)
+	rig.github.setCompare(h2, unanswered, ciJobCompare{failed: http.StatusBadGateway})
+	seedInstallCandidates(t, rig, h1, onBase, apart, absent, unanswered)
+
+	settleOwed(t, rig)
+	if got, want := candidatesOf(t, rig), map[string]bool{h1: true, unanswered: false}; !maps.Equal(got, want) {
+		t.Fatalf("#70 holds the former heads %v after the settle, want %v: H1, the 251st of its 252 commits, kept though GitHub's list of 250 leaves it out; the commits of the base branch, apart from the head and absent from the repository dropped; the one GitHub did not answer for still a candidate", got, want)
+	}
+	if row, held := publishedRow(t, rig.database, rig.issue, ciJobRepository, h1, "k1"); !held || row.state == nil ||
+		*row.state != model.PassStandsYes {
+		t.Fatalf("k1 at H1, a head #70 left past the commits GitHub lists, is published as %s, want yes", publishedLine(row))
+	}
+	pages, pulls := rig.github.pullCommitReadsOf(70), rig.github.pullReadsOf(70)
+	if pages != 3 || pulls != 1 {
+		t.Fatalf("the settle read %d pages of #70's commits and #70 itself %d times, want 3 pages (100, 100 and 50) and #70 once", pages, pulls)
+	}
+	for _, pair := range [][2]string{{h2, h1}, {"main", h1}, {h2, onBase}, {"main", onBase}, {h2, apart}, {h2, absent}, {h2, unanswered}} {
+		if reads := rig.github.compareReadsOf(pair[0], pair[1]); reads != 1 {
+			t.Fatalf("the comparison %s...%s was read %d times, want once", pair[0][:6], pair[1][:6], reads)
+		}
+	}
+	for _, pair := range [][2]string{{"main", apart}, {"main", absent}, {"main", unanswered}} {
+		if reads := rig.github.compareReadsOf(pair[0], pair[1]); reads != 0 {
+			t.Fatalf("the comparison %s...%s was read %d times, want none: the head's comparison already decided it", pair[0], pair[1][:6], reads)
+		}
+	}
+	var later int
+	if err := rig.database.Pool.QueryRow(context.Background(), `
+		select count(*) from check_states_owed where issue_key = $1 and due_at > now() + interval '10 seconds'`, rig.issue).Scan(&later); err != nil {
+		t.Fatalf("read the marks of %s: %v", rig.issue, err)
+	}
+	if later != 1 {
+		t.Fatalf("%s holds %d marks due after the backoff, want one: the candidate GitHub did not answer for owes another settle", rig.issue, later)
+	}
+	t.Logf("the settle read 3 pages of #70's commits, #70 itself once and 7 comparisons")
 }
 
 // TestAResultAfterTheInstallAtAHeadLeftBeforeItIsPublishedOnceItsPullRequestListsIt: #70 left H1

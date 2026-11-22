@@ -359,18 +359,19 @@ func formerHeadsOf(ctx context.Context, pool *store.Pool, issue string, heads []
 // false, migration 20261122071001): the commits of results the settle of an open pull request's
 // issue reads, recorded on any issue against a check of its Verification document, which the
 // install seeded, or a result recorded since left at a commit that is no head of the pull request
-// Dispatch knows, and which may or may not have been heads of that pull request. For
-// each open pull request of heads holding one, it reads the pull request's commits from GitHub
-// once (delivery.PullRequestCommits, a page of 100 commits per read, and GitHub lists 250 at
-// most), keeps each candidate among them as a former head and deletes the rest, in one statement.
-// So the read happens once per such pull request and candidate set, in the first settle of its
-// issue after the install or the result, which the mark of either owes. Only a commit list GitHub
-// answered deletes a candidate.
-// Every other outcome, a deployment with no App key, a repository the App cannot read, a 404, a
-// 5xx or a bound that ended, says nothing about the commits: the candidates stay as they are,
-// unverified answers true, and the settle keeps a mark that reads them again after the backoff, so
-// the read comes again once access or configuration returns. Until then a candidate is no former
-// head. Only a failed read of Dispatch's own database is an error.
+// Dispatch knows, and which may or may not have been heads of that pull request. For each open
+// pull request of heads holding one, it asks GitHub which of them are the pull request's own
+// commits, once (delivery.PullRequestMembership: the pull request's list of commits, and where
+// GitHub's cap of 250 leaves that list short, a comparison of each commit it does not name with
+// the head and the base branch), marks each member verified and deletes each commit GitHub showed
+// is not one, by those lists, in one statement. So the read happens once per such pull request and
+// candidate set, in the first settle of its issue after the install or the result, which the mark
+// of either owes. Only an answer GitHub gave about a commit decides it: a commit no read answered
+// for, whether a deployment with no App key, a repository the App cannot read, a 404 that says
+// nothing alone, a 5xx or a bound that ended withheld the answer, stays as it is, unverified
+// answers true, and the settle keeps a mark that reads it again after the backoff, so the read
+// comes again once access or configuration returns. Until then a candidate is no former head.
+// Only a failed read of Dispatch's own database is an error.
 func (c *checkStatesSettler) verifyFormerHeads(ctx context.Context, issue string, heads []delivery.AttributedHead) (unverified bool, err error) {
 	pool := c.server.deps.Store.Pool
 	var repos []string
@@ -384,57 +385,55 @@ func (c *checkStatesSettler) verifyFormerHeads(ctx context.Context, issue string
 		return false, nil
 	}
 	rows, err := pool.Query(ctx, `
-		select distinct former.repo, former.number
+		select former.repo, former.number, array_agg(former.head_sha order by former.head_sha)
 		from pull_request_former_heads former
 		join unnest($1::text[], $2::integer[]) as held (repo, number) on held.repo = former.repo and held.number = former.number
 		where not former.verified
+		group by former.repo, former.number
 		order by former.repo, former.number`, repos, numbers)
 	if err != nil {
 		return false, fmt.Errorf("read the unverified former heads of %s: %w", issue, err)
 	}
 	type pullRequest struct {
-		repo   string
-		number int
+		repo       string
+		number     int
+		candidates []string
 	}
-	candidates, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (pullRequest, error) {
+	pulls, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (pullRequest, error) {
 		var held pullRequest
-		return held, row.Scan(&held.repo, &held.number)
+		return held, row.Scan(&held.repo, &held.number, &held.candidates)
 	})
 	if err != nil {
 		return false, fmt.Errorf("read the unverified former heads of %s: %w", issue, err)
 	}
-	for _, held := range candidates {
+	for _, held := range pulls {
 		readCtx, cancel := ciReadBound(ctx)
-		commits, pages, readErr := delivery.PullRequestCommits(readCtx, c.server.deps.GitHub, held.repo, held.number)
+		membership, readErr := delivery.PullRequestMembership(readCtx, c.server.deps.GitHub, held.repo, held.number, held.candidates)
 		cancel()
-		if readErr != nil {
-			slog.Warn("dispatch: read the commits of a pull request whose former heads the install seeded",
-				"issue", issue, "repo", held.repo, "number", held.number, "pages", pages, "error", readErr)
-			unverified = true
-			continue
-		}
 		var kept, dropped int
 		if err := pool.QueryRow(ctx, `
-			with checked as (
-				select head_sha, head_sha = any($3) as listed from pull_request_former_heads
-				where repo = $1 and number = $2 and not verified
-			), kept as (
-				update pull_request_former_heads former set verified = true
-				from checked where checked.listed and former.repo = $1 and former.number = $2
-					and former.head_sha = checked.head_sha and not former.verified
+			with kept as (
+				update pull_request_former_heads set verified = true
+				where repo = $1 and number = $2 and head_sha = any($3) and not verified
 				returning 1
 			), dropped as (
-				delete from pull_request_former_heads former
-				using checked where not checked.listed and former.repo = $1 and former.number = $2
-					and former.head_sha = checked.head_sha and not former.verified
+				delete from pull_request_former_heads
+				where repo = $1 and number = $2 and head_sha = any($4) and not verified
 				returning 1
 			)
 			select (select count(*) from kept), (select count(*) from dropped)`,
-			held.repo, held.number, commits).Scan(&kept, &dropped); err != nil {
+			held.repo, held.number, nonNilStrings(membership.Members), nonNilStrings(membership.Outside)).Scan(&kept, &dropped); err != nil {
 			return false, fmt.Errorf("verify the former heads of %s#%d: %w", held.repo, held.number, err)
 		}
-		slog.Info("dispatch: check states verified the former heads the install seeded",
-			"issue", issue, "repo", held.repo, "number", held.number, "pages", pages, "kept", kept, "dropped", dropped)
+		attrs := []any{"issue", issue, "repo", held.repo, "number", held.number, "kept", kept, "dropped", dropped,
+			"unknown", len(membership.Unknown), "complete", membership.Complete, "pages", membership.Pages,
+			"pull_reads", membership.PullReads, "compares", membership.Compares, "commit_reads", membership.CommitReads}
+		if len(membership.Unknown) > 0 {
+			unverified = true
+			slog.Warn("dispatch: read which candidate former heads are a pull request's commits", append(attrs, "error", readErr)...)
+			continue
+		}
+		slog.Info("dispatch: check states verified the candidate former heads of a pull request", attrs...)
 	}
 	return unverified, nil
 }

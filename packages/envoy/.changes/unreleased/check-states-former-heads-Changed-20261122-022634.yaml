@@ -13,9 +13,11 @@ body: |-
     whether or not a settle ran while the pull request was there. The install seeds, as
     unverified candidates, the commits of the results the settle of each open pull request's issue
     reads, recorded on any issue against a check of that issue's Verification document, other than
-    its head, and marks those issues owed; the settler reads each such pull request's commits
-    from GitHub once and keeps the candidates they list (only an answered list drops one; any other
-    outcome keeps them and a mark after the backoff), so a head left before the release where a
+    its head, and marks those issues owed; the settler asks GitHub once which candidates are each
+    such pull request's own commits and keeps those: a commit its list of commits names, and where
+    GitHub's cap of 250 leaves that list short, a commit the head holds and the base branch does not,
+    by two comparisons (only an answer about a commit drops it; any failed read keeps the commits it
+    would have decided and a mark after the backoff), so a head left before the release where a
     result was recorded publishes its states,
     and one with no result is not known and needs none. A result recorded later at a commit that is
     no head of such a pull request and no head it is known to have left is a candidate too, left by

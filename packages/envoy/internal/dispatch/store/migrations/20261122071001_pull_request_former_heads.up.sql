@@ -71,8 +71,8 @@
 -- request's head, as a candidate: verified false, since a result there does not show that the
 -- commit was ever this pull request's. The Verification document is the issue's document of that
 -- role, by the predicate the server reads it by (api/artifacts.go, documentRolePredicate), which
--- check_states_owe_check_block (20261121000327) states too. The settler reads each such pull
--- request's commits once and keeps the candidates among them (api/check_states.go,
+-- check_states_owe_check_block (20261121000327) states too. The settler asks GitHub once which of
+-- each such pull request's candidates are its own commits and keeps those (api/check_states.go,
 -- verifyFormerHeads), and each issue holding a candidate is marked owed here, so that read comes
 -- at the settler's first pass. A head left before this release with no result at it is not known,
 -- and needs no state.
