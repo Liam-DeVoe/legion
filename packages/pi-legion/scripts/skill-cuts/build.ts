@@ -251,7 +251,11 @@
  *   share (common.ts's `GhRetries`: after 5, 15, 45 and 135 s, each retry said on standard error;
  *   a batch of more than one blob that GitHub answers as a batch too large is not sent again, and
  *   its blobs are read alone), and a read that failed so on every try is not kept, so the next
- *   case reads it again.
+ *   case reads it again. The npm registry's tarball read (`GithubReads.tarball`, one fetch) gives
+ *   up a try after 60 s (NPM_TIMEOUT_MS), its body included, and a try that failed for a
+ *   transient reason (that limit, a connection refused or reset, a name not resolved, an HTTP 429
+ *   or 5xx) is sent again by the same rule, counted with the GitHub reads' (`githubRetries`); a
+ *   404 is no tarball, and any other failure fails at once.
  * - Skills: what each unit ships at that commit, not what installers.tsv lists, which is what it
  *   ships at the later commit the copies output read. Each repository of a unit (its manifest's,
  *   and those of the copies installers.tsv lists for it) is read at its commit as copies.ts reads
@@ -483,12 +487,17 @@ import {
 } from "./cases";
 import {
   configFrom,
+  eachChunk,
+  firstLine,
   GhRetries,
   json,
   parse,
   Refused,
   required,
+  STORE_QUIET_MS,
   schemaFaults,
+  textOf,
+  timeLimit,
   transientReason,
   writeWhole,
 } from "./common";
@@ -750,10 +759,11 @@ export interface BuildIo {
   /** Milliseconds on a clock that only goes forward (`performance.now()` in a real run): what
    *  build-tasks' candidate search measures its own time by. */
   now(): number;
-  /** Waits `ms` before a GitHub read that failed for a transient reason is sent again
+  /** Waits `ms` before a GitHub or registry read that failed for a transient reason is sent again
    *  (`Bun.sleep` when absent). */
   sleep?(ms: number): Promise<void>;
-  /** Reads the registry's tarball of a package version (`registryTarball` when absent). */
+  /** One try of a read of the registry's tarball of a package version (`registryTarball` when
+   *  absent); `GithubReads.tarball` sends a try that failed for a transient reason again. */
   readonly npm?: NpmTarball;
 }
 
@@ -913,23 +923,40 @@ async function storeRows(command: string, db: string, query: string): Promise<un
 /**
  * Runs `query` by the store command `command` on the database `db` and gives each row to `visit`
  * as the command prints it, read by psql-rows.ts's `PsqlTable`, so no more than one row's text is
- * held. A command that fails is reported first, with its first error line; then a fault of its
- * output; then a throw of `visit`, after which no row is given. Returns the rows the table holds.
+ * held. A command that prints nothing for `quietMs` is ended and reported first, naming the
+ * command and the limit; then a command that fails, with its first error line; then a fault of
+ * its output; then a throw of `visit`, after which no row is given. Returns the rows the table
+ * holds.
  */
 async function eachStoreRow(
   command: string,
   db: string,
   query: string,
-  visit: (row: unknown) => void
+  visit: (row: unknown) => void,
+  quietMs = STORE_QUIET_MS
 ): Promise<number> {
   const child = Bun.spawn([command, db], {
     stdin: new Blob([query]),
     stdout: "pipe",
     stderr: "pipe",
   });
-  const stderr = new Response(child.stderr).text();
+  // Ended once it prints nothing for `quietMs` (STORE_QUIET_MS): each chunk starts the time again.
+  const limit = timeLimit(child, quietMs);
+  const stderr = textOf(child.stderr, limit);
   const table = new PsqlTable(visit);
-  for await (const chunk of child.stdout) table.write(chunk);
+  try {
+    await eachChunk(child.stdout, limit, (chunk) => {
+      limit.touch();
+      table.write(chunk);
+    });
+  } finally {
+    limit.clear();
+  }
+  if (limit.timedOut()) {
+    throw new Error(
+      `the store command ${command} printed nothing for ${quietMs} ms on ${db}, so it was ended (STORE_QUIET_MS)`
+    );
+  }
   const code = await child.exited;
   if (code !== 0) {
     const first = (await stderr).split("\n").find((each) => each.trim() !== "") ?? "";
@@ -941,12 +968,14 @@ async function eachStoreRow(
 /** Pulls the file `filePath` of the store `db` into the file `spool`, PULL_PAGE rows a call, each
  *  row checked by psql-rows.ts's `PullCheck` and its bytes written as it comes (`eachStoreRow`),
  *  so one row (a slice of 1 MiB and at most 3 bytes more) is held at a time however long the
- *  file. Returns the bytes it wrote and the calls it took. */
+ *  file; a call that prints nothing for `quietMs` is ended and fails the pull. Returns the bytes
+ *  it wrote and the calls it took. */
 export async function pullTranscript(
   command: string,
   db: string,
   filePath: string,
-  spool: string
+  spool: string,
+  quietMs = STORE_QUIET_MS
 ): Promise<{ bytes: number; calls: number }> {
   const fd = openSync(spool, "w");
   try {
@@ -956,7 +985,7 @@ export async function pullTranscript(
       for (let at = 0; at < text.length; ) at += writeSync(fd, text, at);
     };
     for (let calls = 1; ; calls += 1) {
-      const page = await eachStoreRow(command, db, pullSql(filePath, check.last), write);
+      const page = await eachStoreRow(command, db, pullSql(filePath, check.last), write, quietMs);
       if (page < PULL_PAGE) return { bytes: check.bytes, calls };
     }
   } finally {
@@ -1950,22 +1979,71 @@ function ghAnswer(args: readonly string[], result: GhResult): string {
   return result.stdout;
 }
 
-/** A read of the npm registry's tarball of `version` of the package `name`: its bytes, or
- *  undefined when the registry has none. */
+/** One try of a read of the npm registry's tarball of `version` of the package `name`: its bytes,
+ *  or undefined when the registry has none. A try that failed throws: an NpmFailed for a failure
+ *  `GithubReads.tarball` may send again. */
 export type NpmTarball = (name: string, version: string) => Promise<Uint8Array | undefined>;
 
 /** The registry's tarball URL of `version` of the package `name` (`@scope/name` too). */
 export const tarballUrl = (name: string, version: string) =>
   `https://registry.npmjs.org/${name}/-/${name.split("/").pop()}-${version}.tgz`;
 
-/** The registry's tarball of a package version, one GET: undefined for a 404, a throw for any
- *  other failure. */
-export const registryTarball: NpmTarball = async (name, version) => {
-  const response = await fetch(tarballUrl(name, version));
-  if (response.status === 404) return undefined;
-  if (!response.ok) throw new Error(`${tarballUrl(name, version)}: HTTP ${response.status}`);
-  return new Uint8Array(await response.arrayBuffer());
+// A fetch waits for ever by itself, and one did: a screen sat 15 minutes in a registry read after
+// the pod's network faulted. A try still running at this limit is given up and sent again.
+const NPM_TIMEOUT_MS = 60_000;
+
+/** The reason, in the words of common.ts's TRANSIENT_FAILURES, of each error code with which Bun's
+ *  fetch fails a connection that a later try may make (Bun 1.4.4: a connection refused, or reset
+ *  or closed before the answer ended; a name getaddrinfo did not resolve, or did not resolve yet),
+ *  so a registry read that fails so is sent again as a gh read that fails so is. */
+const CONNECTION_FAILURES: Readonly<Record<string, string>> = {
+  ECONNREFUSED: "connection refused",
+  ECONNRESET: "connection reset",
+  ENOTFOUND: "no such host",
+  EAI_AGAIN: "temporary failure",
 };
+
+/** A registry read that failed: the message names the URL and the failure; `failure` is the
+ *  failure alone, in the words of common.ts's TRANSIENT_FAILURES when it is transient, so that it
+ *  is read from those words alone (a package named connect-timeout makes no failure transient). */
+class NpmFailed extends Error {
+  constructor(
+    url: string,
+    readonly failure: string
+  ) {
+    super(`${url}: ${failure}`);
+  }
+}
+
+/** The registry's tarball of a package version, one GET (`get`: fetch, or a test's stand-in) given
+ *  up after `timeoutMs`, its body included: undefined for a 404. It throws an NpmFailed for an
+ *  answer that is not OK, for a try past the limit and for a connection that failed
+ *  (CONNECTION_FAILURES), and any other failure as fetch threw it. A 429, the registry's "too many
+ *  requests", is sent again as a 5xx is (TRANSIENT_FAILURES' `HTTP 429`). */
+export async function registryTarball(
+  name: string,
+  version: string,
+  timeoutMs = NPM_TIMEOUT_MS,
+  get: (url: string, init: { readonly signal: AbortSignal }) => Promise<Response> = fetch
+): Promise<Uint8Array | undefined> {
+  const url = tarballUrl(name, version);
+  const signal = AbortSignal.timeout(timeoutMs);
+  try {
+    const response = await get(url, { signal });
+    if (response.status === 404) return undefined;
+    if (response.status === 429) {
+      throw new NpmFailed(url, "HTTP 429 (too many requests)");
+    }
+    if (!response.ok) throw new NpmFailed(url, `HTTP ${response.status}`);
+    return new Uint8Array(await response.arrayBuffer());
+  } catch (error) {
+    if (error instanceof NpmFailed) throw error;
+    if (signal.aborted) throw new NpmFailed(url, `timed out after ${timeoutMs} ms`);
+    const code = error instanceof Error && "code" in error ? error.code : undefined;
+    if (typeof code !== "string" || !Object.hasOwn(CONNECTION_FAILURES, code)) throw error;
+    throw new NpmFailed(url, `${CONNECTION_FAILURES[code]} (${messageFor(error)})`);
+  }
+}
 
 /** The files of a gzipped tar (an npm tarball), by path less its first part (`package/`), each
  *  as UTF-8 text: a regular file's entry only, its name the ustar prefix and name joined. */
@@ -1992,8 +2070,9 @@ export function tarballFiles(gzipped: Uint8Array): Map<string, string> {
 
 /** The GitHub reads the profile makes, each made once, and each sent again after a transient
  *  failure as common.ts's `GhRetries` says (`retries`, which counts them): a read that failed so
- *  on every try is not kept, so a later caller reads it again. Exported for copies.test.ts, which
- *  checks that it reads a repository's files as copies.ts does. */
+ *  on every try is not kept, so a later caller reads it again. The registry's tarball read
+ *  (`tarball`) is sent again by the same rule, and is never kept. Exported for copies.test.ts,
+ *  which checks that it reads a repository's files as copies.ts does. */
 export class GithubReads {
   private readonly made = new Map<string, Promise<GhResult>>();
   private readonly held = new Map<string, Promise<RepositoryAt>>();
@@ -2004,9 +2083,31 @@ export class GithubReads {
     private readonly gh: Gh,
     private readonly branches: ReadonlyMap<string, string>,
     readonly retries: GhRetries,
-    /** The registry's tarball of a package version (`registryTarball` in a real run). */
-    readonly tarball: NpmTarball = registryTarball
+    /** One try of a read of the registry's tarball of a package version (`registryTarball` in a
+     *  real run). */
+    private readonly npm: NpmTarball = registryTarball
   ) {}
+
+  /** The registry's tarball of `version` of the package `name`, undefined when it has none. A try
+   *  that failed for a transient reason (an NpmFailed whose `failure` names one) is sent again as
+   *  `retries` says, as a gh read is, and the read fails after its last try naming each try's
+   *  failure; any other failure fails it at once. Nothing is kept: each call reads the registry. */
+  async tarball(name: string, version: string): Promise<Uint8Array | undefined> {
+    // A try is one `GhRetries.send` reads by its code and its error text, the bytes beside them.
+    const read = await this.retries.send(
+      async () => {
+        try {
+          return { code: 0, stderr: "", bytes: await this.npm(name, version) };
+        } catch (error) {
+          if (!(error instanceof NpmFailed)) throw error;
+          return { code: 1, stderr: error.failure, bytes: undefined };
+        }
+      },
+      { read: `the registry read of ${tarballUrl(name, version)}` }
+    );
+    if (read.code !== 0) throw new NpmFailed(tarballUrl(name, version), firstLine(read.stderr));
+    return read.bytes;
+  }
 
   /** Whether GitHub lists the tag `tag` of `repo`: one read of its tags that start so. */
   async hasTag(repo: string, tag: string): Promise<boolean> {

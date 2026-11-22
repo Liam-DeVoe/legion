@@ -100,7 +100,15 @@ import { messageFor } from "@legion/envoy-client/errors";
 import { mapLimit } from "../skill-scenarios/production-dispatch";
 import { type Arm, legionStore } from "./arms";
 import { type Case, listedName, testedCopy } from "./cases";
-import { firstLine, GhRetries, ghLimiter } from "./common";
+import {
+  eachChunk,
+  firstLine,
+  GhRetries,
+  ghLimiter,
+  rateLimitWait,
+  textOf,
+  timeLimit,
+} from "./common";
 import {
   BlobBatch,
   blobBatches,
@@ -468,35 +476,21 @@ async function run(
     stdout: "pipe",
     stderr: "pipe",
   });
+  // Ended at its limit (common.ts's `timeLimit`), its output let go then (`eachChunk`, `textOf`):
+  // a process it started can hold the pipes open after it is gone.
   const limit = timeLimit(child, options.timeoutMs);
-  const [stdout, stderr, code] = await Promise.all([
-    new Response(child.stdout).arrayBuffer(),
-    new Response(child.stderr).text(),
+  const chunks: Uint8Array[] = [];
+  const [, stderr, code] = await Promise.all([
+    eachChunk(child.stdout, limit, (chunk) => chunks.push(chunk)),
+    textOf(child.stderr, limit),
     child.exited,
   ]);
   limit.clear();
   return {
     code,
-    stdout: new Uint8Array(stdout),
+    stdout: new Uint8Array(Buffer.concat(chunks)),
     stderr: limit.timedOut() ? `${stderr}\ntimed out after ${options.timeoutMs} ms` : stderr,
   };
-}
-
-/** Ends `child` (SIGTERM) once `ms` have passed, if `ms` is given. `timedOut()` says whether that
- *  ended it, so a child a signal from elsewhere ended is not reported as out of time. */
-function timeLimit(
-  child: { kill(): void },
-  ms: number | undefined
-): { timedOut(): boolean; clear(): void } {
-  let timedOut = false;
-  const timer =
-    ms === undefined
-      ? undefined
-      : setTimeout(() => {
-          timedOut = true;
-          child.kill();
-        }, ms);
-  return { timedOut: () => timedOut, clear: () => clearTimeout(timer) };
 }
 
 /** Runs `argv` and throws, naming it and its last error lines, when it fails. */
@@ -635,10 +629,11 @@ export function ghSource(
       return undefined;
     }
   };
-  // The milliseconds to wait before a call GitHub refused for the rate limit of `resource` is sent
-  // again: to the limit's reset (gh prints no `retry-after` header on stderr), at most
-  // GH_MAX_RATE_WAIT_MS; a minute when the reset cannot be read or is past.
-  const rateWait = async (resource: "core" | "graphql"): Promise<number> => {
+  // The milliseconds to the reset of the rate limit of `resource` (gh prints no `retry-after`
+  // header on stderr), at most GH_MAX_RATE_WAIT_MS; a minute when the reset cannot be read or is
+  // past. A refusal for the secondary limit, which has no reset, does not wait for it
+  // (common.ts's `rateLimitWait`).
+  const untilReset = async (resource: "core" | "graphql"): Promise<number> => {
     const reset = await rateReset(resource);
     const until = reset === undefined ? 0 : reset * 1000 + 1_000 - Date.now();
     return until > 0 ? Math.min(until, GH_MAX_RATE_WAIT_MS) : 60_000;
@@ -652,7 +647,10 @@ export function ghSource(
     resource: "core" | "graphql",
     splits = false
   ): Promise<T> => {
-    const ran = await retries.send(attempt, { splits, rateWait: () => rateWait(resource) });
+    const ran = await retries.send(attempt, {
+      splits,
+      rateWait: (stderr, refused) => rateLimitWait(stderr, refused, () => untilReset(resource)),
+    });
     if (ran.code !== 0) {
       throw new Error(`\`${command}\` failed: ${firstLine(ran.stderr) || `gh exited ${ran.code}`}`);
     }
@@ -679,10 +677,7 @@ export function ghSource(
                 stderr: "pipe",
               });
               const limit = timeLimit(child, GH_TARBALL_TIMEOUT_MS);
-              const [stderr, code] = await Promise.all([
-                new Response(child.stderr).text(),
-                child.exited,
-              ]);
+              const [stderr, code] = await Promise.all([textOf(child.stderr, limit), child.exited]);
               limit.clear();
               return {
                 code,

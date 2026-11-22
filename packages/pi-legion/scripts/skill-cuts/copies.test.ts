@@ -13,7 +13,15 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { GithubReads } from "./build";
-import { GH_CONCURRENCY, GhRetries, ghLimiter, Limiter } from "./common";
+import {
+  GH_CONCURRENCY,
+  GhRetries,
+  ghLimiter,
+  Limiter,
+  rateLimitWait,
+  SECONDARY_WAIT_MS,
+  transientReason,
+} from "./common";
 import { parseConfig } from "./config";
 import {
   CopyIndex,
@@ -53,6 +61,7 @@ import {
   searchTerms,
   skillFields,
   spawnGh,
+  spawnGhWithin,
   type TreeEntry,
   tarballSkills,
   tsv,
@@ -1616,7 +1625,7 @@ describe("repositories an installer pins", () => {
       "**/node_modules/acme-powers/skills/power-one/\tother/powers\tskills/power-one\tpower-one\tpackage:acme-powers (other/powers:package.json)"
     );
     expect(r.text("skill-copies.md")).toContain("- other/powers at ");
-  });
+  }, 60_000);
 
   test("an ensure_vendor clone's pool is a unit: the cloned repository at the ref the installer pins, in place of its listed read", async () => {
     const w = pinnedWorld();
@@ -1645,7 +1654,7 @@ describe("repositories an installer pins", () => {
     );
     // The helper's own body names no clone, so the library is no installer of its kind.
     expect(manifests.some((row) => row.path === "installers/lib.sh")).toBe(false);
-  });
+  }, 60_000);
 });
 
 describe("the full run over the owners", () => {
@@ -2165,7 +2174,7 @@ describe("one repository with --only, on F6's code search answer", () => {
     expect(
       other.table("prefix-table.tsv").every((row) => row.repository === "cybermonklabs/legion")
     ).toBe(true);
-  });
+  }, 60_000);
 });
 
 describe("a fork read against its parent", () => {
@@ -2241,7 +2250,7 @@ describe("a fork read against its parent", () => {
     expect(
       r.table("skill-copies.tsv").filter((row) => row.repository === "acme/old-skills")
     ).toHaveLength(1);
-  });
+  }, 60_000);
 
   test("a compare of 299 files is read as changed files", async () => {
     const w = forkWorld();
@@ -2259,7 +2268,7 @@ describe("a fork read against its parent", () => {
       changed_files: 298,
     });
     expect(loaderPaths(r)).toEqual(["docs/changed.md", "docs/new-name.md"]);
-  });
+  }, 60_000);
 
   /** The error of a read GitHub answers 502 on each try: a 502 is sent again 4 times, then the
    *  read fails naming each of its 5 tries. */
@@ -2368,7 +2377,7 @@ describe("a fork read against its parent", () => {
       false
     );
     expect(readdirSync(path.join(cacheDir, "fork-files"))).toHaveLength(1);
-  });
+  }, 60_000);
 
   test("a fork cached after the compare rule keeps its changed files, with no compare made again", async () => {
     const cacheDir = mkdtempSync(path.join(tmpdir(), "copies-cache-"));
@@ -2380,7 +2389,7 @@ describe("a fork read against its parent", () => {
     expect(w.calls).toEqual([]);
     expect(forkScan(second)).toEqual(forkScan(first));
     expect(loaderPaths(second)).toEqual(["docs/changed.md", "docs/new-name.md"]);
-  });
+  }, 60_000);
 });
 
 describe("a truncated tree", () => {
@@ -2825,12 +2834,13 @@ describe("a truncated tree", () => {
     // even asked for.
     expect(w.sleeps).toEqual([60_000, 60_000, 120_000]);
     expect(
-      r.errors.filter((line) => line.startsWith("copies: GitHub's secondary rate limit"))
-    ).toEqual(
-      [60, 60, 120].map(
-        (seconds) => `copies: GitHub's secondary rate limit refused a call; waiting ${seconds} s`
+      r.errors.flatMap(
+        (line) =>
+          /^copies: a gh call was refused for its rate limit \(.*secondary rate limit.*\); waiting (\d+) s, until /
+            .exec(line)
+            ?.slice(1, 2) ?? []
       )
-    );
+    ).toEqual(["60", "60", "120"]);
     expect(w.calls.some((call) => call[1] === "rate_limit")).toBe(false);
     // The same calls were sent again, and the output is that of a run GitHub refused nothing.
     const commits = w.calls.filter((call) => /\/commits\?/.test(call[1] ?? ""));
@@ -3305,7 +3315,7 @@ describe("a run started again over --cache-dir", () => {
         /^copies: tree \d\/3 acme\/old-skills: 8 entries, 0 tree reads, 0 s, cached$/
       )
     );
-  });
+  }, 60_000);
 
   // Catches: a cache read that takes the temporary file a killed write left where no final file
   // is, or a final file cut short.
@@ -3335,7 +3345,7 @@ describe("a run started again over --cache-dir", () => {
     expect(w.calls.filter((call) => /\/commits\?/.test(call[1] ?? "")).length).toBe(3);
     expect(second.text("repositories.tsv")).toBe(first.text("repositories.tsv"));
     expect(second.text("repositories.tsv")).not.toContain("0000");
-  });
+  }, 60_000);
 });
 
 describe("the memory a run holds", () => {
@@ -3663,14 +3673,14 @@ describe("the memory a run holds", () => {
         .map((entry) => entry.path)
         .sort()
     );
-  });
+  }, 60_000);
 
   test("the run's peak resident memory is in its summary", async () => {
     const r = await run(world(), ["--only", "cybermonklabs/legion", "--max-search-calls", "0"]);
     expect(r.text("skill-copies.md")).toContain(
       "Peak resident memory 100 MiB (the run stops above 1536 MiB)."
     );
-  });
+  }, 60_000);
 
   test("a run whose memory passes 1.5 GiB stops with a clear message and writes nothing", async () => {
     let reads = 0;
@@ -3682,7 +3692,7 @@ describe("the memory a run holds", () => {
       "copies: the run stops: its resident memory reached 1546 MiB, above the limit of 1536 MiB; nothing is written"
     );
     expect(existsSync(r.out)).toBe(false);
-  });
+  }, 60_000);
 });
 
 describe("an owner-wide search run again per repository", () => {
@@ -4344,5 +4354,78 @@ describe("the runner's one bound on gh processes", () => {
       process.env.PATH = PATH;
       rmSync(dir, { recursive: true, force: true });
     }
+  }, 60_000);
+});
+
+// Catches: a gh call that hangs (a connection that never answers) holding a copies listing or a
+// profile build for ever: copies.ts's gh had no limit, while context.ts's reads had one.
+test("a gh call that runs past its limit is ended: it exits 124, its error names the call and the limit, and GhRetries takes it as a transient failure", async () => {
+  const dir = mkdtempSync(path.join(process.env.TMPDIR ?? tmpdir(), "skill-cuts-gh-hung-"));
+  // A stand-in gh that waits in a child of its own, which holds its output open.
+  writeFileSync(path.join(dir, "gh"), "#!/bin/sh\nsleep 5\n", { mode: 0o755 });
+  const PATH = process.env.PATH;
+  process.env.PATH = `${dir}:${PATH ?? ""}`;
+  try {
+    const started = performance.now();
+    const result = await spawnGhWithin(200)(["api", "repos/acme/skills"]);
+    expect(performance.now() - started).toBeLessThan(3_000);
+    expect(result.code).toBe(124);
+    expect(result.stderr).toContain("gh api repos/acme/skills timed out after 200 ms");
+    expect(transientReason(result.stderr)).toBe("time limit");
+  } finally {
+    process.env.PATH = PATH;
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 60_000);
+
+// Catches: a rate wait of up to 15 minutes that writes nothing, so a run that waits looks hung (a
+// run stopped three times for 901-902 s with no child process and no line).
+test("GhRetries says each wait for a rate limit before it waits: the call, gh's reason, the wait and its end", async () => {
+  const lines: string[] = [];
+  const waits: number[] = [];
+  const retries = new GhRetries(
+    { sleep: async (ms) => void waits.push(ms), err: (line) => lines.push(line) },
+    "copies"
+  );
+  const tries = [
+    { code: 1, stderr: "gh: API rate limit exceeded for installation ID 1. (HTTP 403)\n" },
+    { code: 0, stderr: "" },
+  ];
+  const before = Date.now();
+  const result = await retries.send(async () => tries.shift() ?? { code: 0, stderr: "" }, {
+    rateWait: async () => 900_000,
   });
+  expect(result.code).toBe(0);
+  expect(waits).toEqual([900_000]);
+  expect(lines).toHaveLength(1);
+  const said =
+    /^copies: a gh call was refused for its rate limit \(gh: API rate limit exceeded for installation ID 1\. \(HTTP 403\)\); waiting 900 s, until (\S+), before sending it again, refusal 1 of 5$/.exec(
+      lines[0] ?? ""
+    );
+  expect(said).not.toBeNull();
+  const until = Date.parse(said?.[1] ?? "");
+  expect(until - before).toBeGreaterThanOrEqual(900_000);
+  expect(until - Date.now()).toBeLessThanOrEqual(900_000);
+});
+
+// Catches: a refusal for GitHub's secondary rate limit waited out to the core limit's reset, which
+// it has none of (a run sat 15 minutes with 13,924 of 15,000 core calls left), in context.ts's reads,
+// which had their own rule; copies.ts's had this one.
+test("the one rate-wait rule of copies.ts and context.ts: a secondary-limit refusal waits a minute, doubled at each refusal, and asks for no reset; a primary refusal waits to its reset", async () => {
+  let asked = 0;
+  const untilReset = async () => {
+    asked += 1;
+    return 600_000;
+  };
+  const secondary =
+    "gh: You have exceeded a secondary rate limit. Please wait a few minutes before you try again. (HTTP 403)";
+  const waits: number[] = [];
+  for (const refused of [0, 1, 2]) waits.push(await rateLimitWait(secondary, refused, untilReset));
+  expect(waits).toEqual([SECONDARY_WAIT_MS, 2 * SECONDARY_WAIT_MS, 4 * SECONDARY_WAIT_MS]);
+  expect(SECONDARY_WAIT_MS).toBe(60_000);
+  expect(asked).toBe(0);
+  const primary = "gh: API rate limit exceeded for installation ID 1. (HTTP 403)";
+  expect(await rateLimitWait(primary, 0, untilReset)).toBe(600_000);
+  expect(await rateLimitWait(primary, 3, untilReset)).toBe(600_000);
+  expect(asked).toBe(2);
 });

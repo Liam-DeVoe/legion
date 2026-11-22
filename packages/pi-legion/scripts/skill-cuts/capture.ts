@@ -132,7 +132,7 @@ import {
   InjectionRefused,
 } from "./arms";
 import type { Case } from "./cases";
-import { json, writeWhole } from "./common";
+import { eachChunk, json, STORE_QUIET_MS, textOf, timeLimit, writeWhole } from "./common";
 import { buildContext, type ContextRecord, cacheKey, legionRole, type RepoSource } from "./context";
 import { sessionHeadSql } from "./countsql";
 import { type Gateway, isResponsesBody, type MessagesBody, type RequestBody } from "./gateway";
@@ -727,13 +727,15 @@ export function sessionHeadFile(dir: string, store: string, pathHash: string): s
  * before it is given. A head an earlier run saved under its path hash alone (`<pathHash>.json`) is
  * read back too when it is this store's head; another store's is not this one's, so this store
  * reads its own. A hash the store holds no file of gets a head with `held: false`. Throws when the
- * command fails, or a row or a file saved under this store's name is no head.
+ * command prints nothing for `quietMs` (it is then ended, and the error names it and the limit),
+ * when it fails, or when a row or a file saved under this store's name is no head.
  */
 export async function sessionHeads(
   command: string,
   store: string,
   pathHashes: readonly string[],
-  dir: string
+  dir: string,
+  quietMs = STORE_QUIET_MS
 ): Promise<Map<string, SavedHead>> {
   const heads = new Map<string, SavedHead>();
   const missing: string[] = [];
@@ -763,11 +765,25 @@ export async function sessionHeads(
     stdout: "pipe",
     stderr: "pipe",
   });
-  const [stdout, stderr, code] = await Promise.all([
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-    child.exited,
+  // Ended once it prints nothing for `quietMs` (common.ts's STORE_QUIET_MS): each chunk of its
+  // answer starts the time again.
+  const limit = timeLimit(child, quietMs);
+  const chunks: Uint8Array[] = [];
+  const [, stderr] = await Promise.all([
+    eachChunk(child.stdout, limit, (chunk) => {
+      limit.touch();
+      chunks.push(chunk);
+    }),
+    textOf(child.stderr, limit),
   ]);
+  limit.clear();
+  if (limit.timedOut()) {
+    throw new Error(
+      `the store command ${command}'s read of the session heads printed nothing for ${quietMs} ms on ${store}, so it was ended (STORE_QUIET_MS)`
+    );
+  }
+  const stdout = Buffer.concat(chunks).toString("utf8");
+  const code = await child.exited;
   if (code !== 0) {
     const first = stderr.split("\n").find((line) => line.trim() !== "") ?? "";
     throw new Error(
