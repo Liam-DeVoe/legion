@@ -38,13 +38,13 @@ func newCodeFlowFor(t *testing.T) (*oidctest.Issuer, *CodeFlow) {
 
 // newCodeFlowForDomain starts a code-flow issuer for flowClientID and a code flow for it for the
 // hosted domain, empty for group mode. The flow discovers the issuer on its first call, and waits
-// for its issuer until the test's end (untilTheTestEnds).
+// for its issuer until the bound end of each of the flow's own bounds (armBoundEnds).
 func newCodeFlowForDomain(t *testing.T, domain string) (*oidctest.Issuer, *CodeFlow) {
 	t.Helper()
 	issuer := oidctest.New(t)
 	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), flowClientID, flowClientSecret)
 	flow := NewCodeFlow(issuer.URL(), flowClientID, flowClientSecret, domain)
-	untilTheTestEnds(t, flow)
+	armBoundEnds(t, flow)
 	return issuer, flow
 }
 

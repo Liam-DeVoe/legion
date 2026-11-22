@@ -21,8 +21,10 @@ func recordWaitObservation(sha string) contracts.CIObservation {
 }
 
 // A store no test armed gives up a Record whose KV read never answers at recordWait, on its own:
-// the caller names no deadline, so only the store's wait ends the call. A store that lost
-// recordWait would hold the call until the test's end, which fails the row by name.
+// the caller names no deadline, so only the store's wait ends the call. The row waits for that
+// answer until the bound end of twice recordWait (testwait.UntilBoundEnd), so a short -timeout still
+// leaves the store its wait; a store that lost recordWait holds the call past it, which fails the
+// row by name.
 func TestARecordOfAStoreNoTestArmedGivesUpAtRecordWait(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
@@ -37,7 +39,14 @@ func TestARecordOfAStoreNoTestArmedGivesUpAtRecordWait(t *testing.T) {
 	go func() {
 		answered <- s.Record(context.Background(), recordWaitObservation("1111111111111111111111111111111111111111"))
 	}()
-	err := testwait.Receive(t, "the Record whose KV read never answers to give up at recordWait", answered)
+	err := testwait.UntilBoundEnd(t, 2*recordWait, "the Record whose KV read never answers to give up at recordWait", func() (error, bool) {
+		select {
+		case err := <-answered:
+			return err, true
+		default:
+			return nil, false
+		}
+	})
 	if !errors.Is(err, errKVUnanswered) || !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("the Record answered %v, want the KV call given up at the record's wait (%v, %v)", err, errKVUnanswered, context.DeadlineExceeded)
 	}

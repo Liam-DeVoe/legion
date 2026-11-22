@@ -69,10 +69,10 @@ type CodeFlow struct {
 	// group mode, a Cognito sign-in pool's.
 	hostedDomain string
 	// http is the client of every call to the issuer's token and revocation endpoints, bounded by
-	// its Timeout, TokenTimeout (tokenClient). Only a test replaces that bound, with the test's own
-	// end (issuer_bounds_test.go's untilTheTestEnds): TokenTimeout is for an issuer that accepts a
-	// call and never answers, and on a loaded machine the time a test's call to its own issuer
-	// takes is the machine's.
+	// its Timeout, TokenTimeout (tokenClient). Only a test replaces that bound, with the bound end
+	// of TokenTimeout (issuer_bounds_test.go's armBoundEnds, testwait.BoundEndAt): TokenTimeout is
+	// for an issuer that accepts a call and never answers, and on a loaded machine the time a
+	// test's call to its own issuer takes is the machine's.
 	http *http.Client
 }
 

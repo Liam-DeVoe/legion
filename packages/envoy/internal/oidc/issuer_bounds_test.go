@@ -12,14 +12,14 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// untilTheTestEnds makes flow wait for its issuer until the bound end of the product's own bounds
+// armBoundEnds makes flow wait for its issuer until the bound end of the product's own bounds
 // (testwait.BoundEndAt of the test's deadline, read when each read or call starts): of
 // discoveryAttemptTimeout for each read of the discovery document, and of TokenTimeout for each
 // call to the token or revocation endpoint. Those bounds are for an issuer that accepts a call and
 // never answers. The test's own issuer answers in the machine's time, which on a loaded machine can
 // be longer, and a test of how a call fails then reads the bound's timeout as the issuer's answer.
 // Under -timeout 0, which sets no deadline, only the issuer's answer ends a read or a call.
-func untilTheTestEnds(t *testing.T, flow *CodeFlow) {
+func armBoundEnds(t *testing.T, flow *CodeFlow) {
 	t.Helper()
 	flow.http.Timeout = 0
 	deadline, bounded := t.Deadline()
@@ -119,7 +119,7 @@ func (c capturedDeadline) RoundTrip(request *http.Request) (*http.Response, erro
 }
 
 // A code flow waits for its issuer under the product's bounds, discoveryAttemptTimeout and
-// TokenTimeout, until a test moves each to its bound end (untilTheTestEnds). The row reads the
+// TokenTimeout, until a test moves each to its bound end (armBoundEnds). The row reads the
 // deadline the flow's own read of its discovery document (Discover) and a call through the flow's
 // own client carry, and wants each at testwait.BoundEndAt of the test's deadline and its bound.
 func TestACodeFlowWaitsForItsIssuerUnderTheProductsBoundsUntilATestMovesThem(t *testing.T) {
@@ -138,9 +138,9 @@ func TestACodeFlowWaitsForItsIssuerUnderTheProductsBoundsUntilATestMovesThem(t *
 		return nil, errors.New("the read is not answered here")
 	}
 	flow.http.Transport = capturedDeadline{deadline: &callEnd, bounded: &callBounded}
-	untilTheTestEnds(t, flow)
+	armBoundEnds(t, flow)
 	if got := flow.http.Timeout; got != 0 {
-		t.Fatalf("after untilTheTestEnds the token client's Timeout is %s, want none: the bound end bounds each call", got)
+		t.Fatalf("after armBoundEnds the token client's Timeout is %s, want none: the bound end bounds each call", got)
 	}
 	before := time.Now()
 	if err := flow.Discover(context.Background()); !errors.Is(err, ErrIssuerUnavailable) {
@@ -175,7 +175,7 @@ func TestACodeFlowWaitsForItsIssuerUnderTheProductsBoundsUntilATestMovesThem(t *
 	}
 }
 
-// A call through the transport untilTheTestEnds installs ends at the transport's end when its
+// A call through the transport armBoundEnds installs ends at the transport's end when its
 // issuer never answers, and a call its issuer answers reads the whole answer.
 func TestACallThroughTheTestsTransportEndsAtItsEnd(t *testing.T) {
 	release := make(chan struct{})

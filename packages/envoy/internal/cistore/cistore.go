@@ -362,8 +362,9 @@ type Store struct {
 
 	// armRecordWait, when set, arms the wait of one Record or RecordSuite (recordWaitContext) in
 	// place of recordWait. Only a test sets it: recordWait bounds each record a webhook delivery
-	// makes, and a test whose records set up what it tests gives the store the test's own end
-	// instead (openStore), since on a loaded machine the time a KV call takes is the machine's.
+	// makes, and a test whose records set up what it tests arms the bound end of recordWait instead
+	// (openStore, testwait.BoundEndAt), since on a loaded machine the time a KV call takes is the
+	// machine's.
 	armRecordWait func(context.Context) (context.Context, context.CancelFunc)
 
 	// logger writes the store's JSON lines, which an alarm can count (write).

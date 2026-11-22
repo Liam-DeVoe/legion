@@ -19,7 +19,7 @@ import (
 // run its cleanups in and its line reaches stderr before Go's alarm; but never sooner than bound
 // after now, so the wait has at least the time the product gave it, and never later than the
 // deadline. Under a short -timeout it is therefore bound after now, or the deadline itself when
-// less than bound is left, and a run that passed at main passes here too.
+// less than bound is left.
 func BoundEndAt(deadline, now time.Time, bound time.Duration) time.Time {
 	end := deadline.Add(-margin)
 	if floor := now.Add(bound); end.Before(floor) {

@@ -49,10 +49,10 @@ type discovery[T any] struct {
 	now    func() time.Time
 	flight singleflight.Group
 	// armAttempt, when set, arms the bound of one read of the discovery document (attemptContext)
-	// in place of discoveryAttemptTimeout. Only a test sets it, to the test's own end
-	// (issuer_bounds_test.go's untilTheTestEnds): the product's bound is for an issuer that accepts
-	// a read and never answers, and on a loaded machine the time a test's read of its own issuer
-	// takes is the machine's.
+	// in place of discoveryAttemptTimeout. Only a test sets it, to the bound end of
+	// discoveryAttemptTimeout (issuer_bounds_test.go's armBoundEnds, testwait.BoundEndAt): the
+	// product's bound is for an issuer that accepts a read and never answers, and on a loaded
+	// machine the time a test's read of its own issuer takes is the machine's.
 	armAttempt func(context.Context) (context.Context, context.CancelFunc)
 
 	mu         sync.Mutex
