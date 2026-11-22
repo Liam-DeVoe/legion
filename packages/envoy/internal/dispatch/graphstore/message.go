@@ -127,3 +127,9 @@ func routeNode(target string) (model.Route, bool) {
 	}
 	return route, true
 }
+
+// RouteSQL is model.ParseRoute in SQL, over the text expression route: the role a `role:<topic>`
+// route names and the session a `session:<id>` route names, each null for any other route.
+func RouteSQL(route string) (role, session string) {
+	return `substring(` + route + ` from '^role:([a-z0-9-]+)$')`, `substring(` + route + ` from '^session:([A-Za-z0-9_-]+)$')`
+}

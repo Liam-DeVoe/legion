@@ -401,7 +401,7 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 		// node written after it would be too late. The seed appends no event of its own, so
 		// all of it takes the sentinel. Each row then says in its own insert whether its
 		// pointers are stated (tuples_stored), as the server's comment write does.
-		nodes, tuples, pointersStored := r.commentStoreWrite(from, to, hasAnswers)
+		nodes, tuples, pointersOf, pointersStored := r.commentStoreWrite(from, to, hasAnswers)
 		if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
 			return fmt.Errorf("write the comment nodes of %d to %d: %w", from, to, err)
 		}
@@ -430,7 +430,7 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 				value := anchorJSON(document.ID, block, document.Versions, r.plan.vocabulary.phrase(r.random, 4))
 				anchor = &value
 			}
-			pointers := r.commentPointers(comment, hasAnswers)
+			pointers := pointersOf[index-from]
 			if comment.Edited {
 				editedAt = comment.CreatedAt.Add(time.Hour)
 			}
@@ -509,8 +509,8 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 // (graphstore.CommentPointerFacts, over the pointers its row holds, commentPointers), and who
 // wrote the comment. The node write states the two base attributes every node carries
 // (graphstore.Write). All of it is drawn from the plan alone, so the batch can state it before it
-// writes a row. pointersStored says, for each comment from from on, whether its pointers are
-// stated, which is what its row's tuples_stored holds.
+// writes a row. pointers are, for each comment from from on, the pointers its row holds, and
+// pointersStored whether they are stated, which is what its row's tuples_stored holds.
 //
 // Who wrote a comment is what graphstore.AuthorFacts states of it, which is what
 // graphstore.QueueAuthored writes for a comment of the server's: the comment's authored_by tuple
@@ -523,9 +523,10 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 // first batch makes the author's node, at the time of the first comment the seed writes, as
 // QueueAuthored makes it at the first comment that names it. writeComments refused an author that
 // names nobody before its first batch, so every comment here names one.
-func (r *seedRun) commentStoreWrite(from, to int, hasAnswers bool) (nodes []graphstore.Node, tuples []graphstore.Tuple, pointersStored []bool) {
+func (r *seedRun) commentStoreWrite(from, to int, hasAnswers bool) (nodes []graphstore.Node, tuples []graphstore.Tuple, pointers []graphstore.CommentPointers, pointersStored []bool) {
 	nodes = make([]graphstore.Node, 0, to-from+1)
 	tuples = make([]graphstore.Tuple, 0, 7*(to-from))
+	pointers = make([]graphstore.CommentPointers, 0, to-from)
 	pointersStored = make([]bool, 0, to-from)
 	var authors []graphstore.Node
 	for index := from; index < to; index++ {
@@ -543,9 +544,10 @@ func (r *seedRun) commentStoreWrite(from, to int, hasAnswers bool) (nodes []grap
 		node, tuples = graphstore.CommentFacts(tuples, comment.ID, seedAuthor, comment.CreatedAt, graphstore.NoEvent, anchor, owner,
 			r.itemProject(comment.Issue, comment.Document), nil)
 		nodes = append(nodes, node)
+		held := r.commentPointers(comment, hasAnswers)
 		var stored bool
-		tuples, stored = graphstore.CommentPointerFacts(tuples, comment.ID, r.commentPointers(comment, hasAnswers),
-			seedAuthor, comment.CreatedAt, graphstore.NoEvent)
+		tuples, stored = graphstore.CommentPointerFacts(tuples, comment.ID, held, seedAuthor, comment.CreatedAt, graphstore.NoEvent)
+		pointers = append(pointers, held)
 		pointersStored = append(pointersStored, stored)
 		made, facts, _ := graphstore.AuthorFacts(graphstore.KindComment, comment.ID, seedAuthor, comment.CreatedAt, graphstore.NoEvent)
 		if index == from {
@@ -553,11 +555,18 @@ func (r *seedRun) commentStoreWrite(from, to int, hasAnswers bool) (nodes []grap
 		}
 		tuples = append(tuples, facts...)
 	}
-	for index := range authors {
-		authors[index].Restates = true
+	nodes = append(nodes, restated(authors)...)
+	return nodes, tuples, pointers, pointersStored
+}
+
+// restated marks each of nodes as restated (graphstore.Node's Restates) and answers them: the
+// author's node, which every batch of the seed writes again, and whose state and visibility no
+// item it wrote owns, so a later batch keeps the ones the store holds.
+func restated(nodes []graphstore.Node) []graphstore.Node {
+	for index := range nodes {
+		nodes[index].Restates = true
 	}
-	nodes = append(nodes, authors...)
-	return nodes, tuples, pointersStored
+	return nodes
 }
 
 // commentPointers is what comment's row holds of what it answers, as writeComments writes it: the
@@ -589,8 +598,8 @@ func (r *seedRun) commentPointers(comment commentPlan, hasAnswers bool) graphsto
 	return pointers
 }
 
-// textOrNull is value as a nullable column takes it: null for "", which is how CommentPointers
-// spells a column the row holds null in.
+// textOrNull is value as a nullable column takes it: null for "", which is how
+// graphstore.CommentPointers and graphstore.MessageRow spell a column the row holds null in.
 func textOrNull(value string) *string {
 	if value == "" {
 		return nil
@@ -609,9 +618,9 @@ func (r *seedRun) writeMessages(ctx context.Context) error {
 		// server's message create writes it; every seeded message is on an issue. Beside it go
 		// its pointers (graphstore.MessageFacts) and who wrote it, which graphstore.AuthorFacts
 		// states as graphstore.Authored does for a message of the server's, the author's node
-		// once, as commentStoreWrite gives a batch of comments theirs. Each row then names its
-		// node in its insert, as the server's does. The issues' owner locks come first, as for
-		// the asks (writeAsks): the window write takes them.
+		// once and restated, as commentStoreWrite gives a batch of comments theirs. Each row then
+		// names its node in its insert, as the server's does. The issues' owner locks come first,
+		// as for the asks (writeAsks): the window write takes them.
 		nodes := make([]graphstore.Node, 0, to-from+1)
 		tuples := make([]graphstore.Tuple, 0, 3*(to-from))
 		var authors []graphstore.Node
@@ -644,20 +653,14 @@ func (r *seedRun) writeMessages(ctx context.Context) error {
 		if err := store.LockOwners(ctx, tx, owners...); err != nil {
 			return fmt.Errorf("the messages' owners: %w", err)
 		}
-		if err := graphstore.Write(ctx, tx, append(nodes, authors...), tuples); err != nil {
+		if err := graphstore.Write(ctx, tx, append(nodes, restated(authors)...), tuples); err != nil {
 			return fmt.Errorf("the messages' nodes: %w", err)
 		}
 		for index := from; index < to; index++ {
 			message := r.plan.messages[index]
 			row := rows[index-from]
 			body := r.plan.itemBody(r.random, message.Blocks, r.plan.messageMention(index), itemBodyBytes)
-			var inReplyTo, repliesTo, nodeKind, nodeAddress *string
-			if row.InReplyTo != "" {
-				inReplyTo = &row.InReplyTo
-			}
-			if row.RepliesToBlock != "" {
-				repliesTo = &row.RepliesToBlock
-			}
+			var nodeKind, nodeAddress *string
 			if projected[index-from] {
 				kind := graphstore.KindMessage
 				nodeKind, nodeAddress = &kind, &row.ID
@@ -666,7 +669,7 @@ func (r *seedRun) writeMessages(ctx context.Context) error {
 				insert into messages (id, issue_key, author, body, created_at, in_reply_to, replies_to_block, node_kind, node_address, threads_recorded)
 				values ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, true)
 			`, message.ID, row.IssueKey, seedActor, body, message.CreatedAt,
-				inReplyTo, repliesTo, nodeKind, nodeAddress); err != nil {
+				textOrNull(row.InReplyTo), textOrNull(row.RepliesToBlock), nodeKind, nodeAddress); err != nil {
 				return fmt.Errorf("message %s: %w", message.ID, err)
 			}
 			if message.Reindexed {
@@ -734,23 +737,20 @@ func newMentionRows(kind string) *mentionRows {
 // the body is scanned once.
 func (m *mentionRows) add(id string, mentioned []text.Ref, at time.Time) {
 	for _, ref := range mentioned {
-		if target, ok := refs.TargetOf(ref); ok {
-			m.addTarget(id, target, at)
+		target, ok := refs.TargetOf(ref)
+		if !ok {
+			continue
 		}
+		key := [3]string{id, target.Kind, target.ID}
+		if _, held := m.seen[key]; held {
+			continue
+		}
+		m.seen[key] = struct{}{}
+		m.ids = append(m.ids, id)
+		m.kinds = append(m.kinds, target.Kind)
+		m.targets = append(m.targets, target.ID)
+		m.times = append(m.times, at)
 	}
-}
-
-// addTarget collects the one row of the item id that names target, once.
-func (m *mentionRows) addTarget(id string, target refs.Target, at time.Time) {
-	key := [3]string{id, target.Kind, target.ID}
-	if _, held := m.seen[key]; held {
-		return
-	}
-	m.seen[key] = struct{}{}
-	m.ids = append(m.ids, id)
-	m.kinds = append(m.kinds, target.Kind)
-	m.targets = append(m.targets, target.ID)
-	m.times = append(m.times, at)
 }
 
 // write inserts the rows and answers the citation the server's own writer of an item's refs rows
@@ -784,7 +784,7 @@ func (m *mentionRows) write(ctx context.Context, tx pgx.Tx) ([]graphstore.Uncaus
 		if !stored {
 			continue
 		}
-		tuple.FromKind, tuple.Who, tuple.SourceEvent, tuple.Asserted = m.kind, seedAuthor, graphstore.NoEvent, true
+		tuple.FromKind, tuple.Who, tuple.Asserted = m.kind, seedAuthor, true
 		cited = append(cited, graphstore.UncausedTuple{Tuple: tuple})
 	}
 	rows.Close()

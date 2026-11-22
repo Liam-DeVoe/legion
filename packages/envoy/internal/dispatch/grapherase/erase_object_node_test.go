@@ -122,7 +122,7 @@ func TestTheEraseRefusesAnIssueADocumentAndAnAskWhileTheirRowStandsAndTakesAMess
 		if rows != 0 {
 			t.Errorf("after the erase %d messages row(s) are the message's or hold its body, want none", rows)
 		}
-		marker := "[erased by envoy-dispatch erase message:" + seeded.message + ", recorded in graph_erasures]"
+		marker := fmt.Sprintf(eraseMarker, graphstore.KindMessage, seeded.message)
 		for _, event := range append([]int64{own}, quoting...) {
 			payload, raw := eventPayload(t, database, event)
 			if strings.Contains(raw, head) || !strings.Contains(raw, marker) {

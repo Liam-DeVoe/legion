@@ -3421,6 +3421,7 @@ An argument `envoy-dispatch` does not know is refused with exit 2, never served,
 `envoy-dispatch census --store` is the other census: the node and tuple store (`store/migrations/20261109013400_graph_store.up.sql`) held against the tables that project it (`20261109022248_graph_projections.up.sql`), rather than the pending migrations held against the database.
 It reads `DATABASE_URL` like every other subcommand, migrates nothing, writes nothing, and keeps the same exit convention: 0 when nothing refuses, 1 when the report refuses, 2 when the census could not be taken.
 It is one `repeatable read, read only` transaction on a connection of its own, so everything it reports is one snapshot.
+`--deadline <duration>` bounds that snapshot, on the census's context and as the transaction's `statement_timeout`, and the decisions census's snapshot on the same context; it is 30 minutes unless given (`graphcensus.DefaultStoreCensusDeadline`), it takes a positive duration, and without `--store` it is a usage error, as `--both-releases` is.
 
 For each projected kind it counts the nodes the store holds at any state but `gone` against the projection rows, in both directions, and reports each difference by its cause and by the row it was found at:
 a row naming no node, a row naming a node the store does not hold, a row naming one the store holds `gone` — which is the separate assertion that no gone node holds a projection row — a row whose shared fields disagree with its node's, and a node no row projects, named with the state it is at (`a live node no row projects`).
@@ -3500,6 +3501,7 @@ The kinds are:
 - The kinds of the one inbox, the projections its one read uses, each held triple by triple but the two attempt tables, which are held digest against digest over the values and relations their `delivery_attempt` node states:
   `message` against `messages` (its pointers, its placement, who it was addressed to, who wrote it and its broadcast);
   `comment_pointers` against `comments.reply_to`, `ask_id`, `answers` and `replies_to_block`;
+  `comment_mentions`, each row whose `tuples_stored` is set as its comment's `mentions` of the session or the role its target routes to and of the session `resolved_session_id` names, and its `delivery` value, against the `mentions` a live comment node states under the event that caused it and its newest `delivery`;
   `comment_block`, `message_block` and `ask_block` against the item block tables, and `comment_block_ref`, `message_block_ref` and `ask_block_ref` against their link tables;
   `comment_deliveries` and `message_deliveries`;
   `published_destinations`, the session and role topics of each event's `events.published_destinations` against the `delivered_to` tuples the outbox appended under that event;
@@ -3517,8 +3519,6 @@ The kinds are:
     for `published_destinations`, an owner's topic, which names no node, the topics of an event about no comment or message the store holds, the topics of events appended before the store existed, the delivery of a mention attempt the listener took and a fallback copy, each projected by a row of its own.
     A mark whose row a build of the release before deleted - an unsnooze, a prune of a reply read, a restore of an Agent dismissal - is one such figure too (`left_by_an_older_delete`), told apart by the evidence that release leaves: the person's log holds the event that release's deleting route appends, after the event that stated the mark, with no tuple of this release under it, as the node store's backfill tells a document an older build re-indexed by two versions and no row.
     A mark with no row and no such event stays a difference, since no writer of this release can clear one: a writer that read the store's mark to retract it would be a reconcile, which R9 rules out.
-
-  - `comment_mentions` is no kind of this census yet: the `mentions` tuples it projects are written from the one inbox's mention writer on, which needs the person address of the identity-address grammar, and an entry before them would read every `comment_mentions` row as a row no tuple states.
 
 It passes only when it checked more than zero rows of every kind it covers and found zero differences in both directions, and every store-only far end resolves.
 A total over the kinds is no such proof: two empty sides of one kind agree, so a kind that checked no row prints `census: store kind=<kind> checked no row` and the verdict refuses naming it, but for a tie kind of decisions, readings and asks or a kind of the one inbox that holds no row, no node and no unmarked row.
@@ -3627,6 +3627,8 @@ The passes, each with its `kind=` line:
 
 - `comment_pointers`: each comment whose `tuples_stored` is false takes `replies_to`, `answers` and its `part_of`, and what it owed its thread, then `tuples_stored`.
 
+- `comments_past_bound` and `messages_past_bound`: each row no pass above takes because the store keys no tuple of it - a comment left whole out of the store, or a comment or a message whose `replies_to_block` is past the store's address bound - states nothing, as this release's writer states nothing of one, and takes `threads_recorded` after its batch's owner rows, so the triggers' marker test passes it by.
+
 - `comment_blocks`, `message_blocks` and `ask_blocks`, then `comment_block_refs`, `message_block_refs` and `ask_block_refs`, then `comment_refs`, `message_refs` and `ask_refs`: each block row naming no node takes its block node, live or `gone` as the item still holds it or not, and its `part_of` to the item where the store does not place it there now; each link row its tuple out of the block's node; each item's `refs` row its `mentions` tuple and `tuples_stored`.
 
 - `comment_deliveries` and `message_deliveries`: each attempt row naming no node takes its `delivery_attempt` node and what the row holds, as the attempt's own writer states it.
@@ -3722,7 +3724,7 @@ It migrates the database first, as the other backfills do, and exits 1 when it s
 
 `envoy-dispatch erase --node <kind>:<id>` is the one path in Dispatch that deletes a tuple row or a node row; everything else the store does is an append.
 It is reached by the command and the database credential alone: no HTTP route serves it, no agent bearer and no session reaches it, and it migrates nothing.
-It reads the dashboard origin (`DISPATCH_SERVER_URL`, or `dispatch.serverUrl` from `envoy.json`) as the server does, since a block's excerpt it redacts is cut around that origin's dashboard URLs, as the server's writers cut it, and it refuses an empty one, as `rebuild-refs` does.
+It reads the dashboard origin (`DISPATCH_SERVER_URL`, or `dispatch.serverUrl` from `envoy.json`) as the server does, since a block's excerpt it redacts is cut around that origin's dashboard URLs, as the server's writers cut it, and it refuses an empty one, as `rebuild-refs` does; an `envoy.json` it cannot load is exit 2, before it reads its flags.
 It refuses a type node, a `supertag` or an `attribute`, before it opens a connection: a type is data the block schema seeds, and no route and no command deletes one.
 It refuses a `role`, a `page` and a `session` the same way: a node of that kind holds no text anybody wrote, so no erasure is owed for it, and the event log keeps addressing it, so deleting it leaves the census a difference no erase can close.
 It refuses an `issue`, an `artifact` and an `ask` while its row stands, read under the node's lock: a node of that kind holds its text in its own row - the issue's title, the document's name and versions, the ask's question - and in the events about it, which the erase does not reach, so erasing the node would report an erasure that left the text in place.

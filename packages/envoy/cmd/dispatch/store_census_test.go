@@ -63,13 +63,14 @@ const censusSigningKey = "store-census-signing-key"
 var censusKinds = []string{"comment", "block", "block_ref", "person", "session", "role", "page"}
 
 // inboxCensusKinds are the kinds of the one inbox, which `census --store` prints a line
-// for beside the kinds above: the nine projections the one inbox read uses, the messages node, the
-// comment pointers and the item block and link tables (graphcensus's inboxProjections). This run's
-// corpus is the node store's, so it writes rows of some of them and none of others; what
+// for beside the kinds above (graphcensus's inboxProjections): the messages node, the comment
+// pointers, the comment mentions, the item block and link tables, the two attempt tables, the
+// published destinations, user_threads and its version, and the five other read-state tables. This
+// run's corpus is the node store's, so it writes rows of some of them and none of others; what
 // holds each of them to a population of both releases is c-census, whose corpus seeds every arm.
 // Here a difference in either direction fails, as it does for the decision kinds.
 var inboxCensusKinds = []string{
-	"messages", "message", "comment_pointers",
+	"message", "comment_pointers", "comment_mentions",
 	"comment_block", "message_block", "ask_block",
 	"comment_block_ref", "message_block_ref", "ask_block_ref",
 	"comment_deliveries", "message_deliveries", "published_destinations",

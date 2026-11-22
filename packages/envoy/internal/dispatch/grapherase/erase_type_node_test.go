@@ -130,8 +130,8 @@ func TestTheEraseRefusesAnEmptyServerURLBeforeAnyConnection(t *testing.T) {
 	for _, serverURL := range []string{"", "  "} {
 		erasure, err := Erase(context.Background(), "postgres://nobody@127.0.0.1:1/nothing?connect_timeout=1", serverURL,
 			commentNodeKind, "00000000-0000-4000-8000-000000000001", "", 0)
-		if erasure != nil || err == nil || !strings.Contains(err.Error(), "dispatch.server_url is required") {
-			t.Errorf("erase with the server URL %q answered %+v, %v; want the refusal naming dispatch.server_url and no erasure", serverURL, erasure, err)
+		if erasure != nil || err == nil || !strings.Contains(err.Error(), "DISPATCH_SERVER_URL (or dispatch.serverUrl in envoy.json) is required") {
+			t.Errorf("erase with the server URL %q answered %+v, %v; want the refusal naming DISPATCH_SERVER_URL and no erasure", serverURL, erasure, err)
 		}
 	}
 }

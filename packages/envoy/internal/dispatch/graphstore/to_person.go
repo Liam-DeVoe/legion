@@ -121,10 +121,7 @@ func QueueToPerson(b *store.WriteBatch, tuples []Tuple) {
 				if kind, id, named := AuthorOf(author); named && kind == KindPerson && id == reach.person {
 					continue
 				}
-				tuple := stated[index]
-				return fmt.Errorf("%s %s/%s -> %s/%s names person %s, and %s/%s is visible to its author alone (visibility %s): %w",
-					tuple.Kind, tuple.FromKind, tuple.FromID, tuple.ToKind, tuple.ToID, reach.person, reach.end[0], reach.end[1],
-					VisibilityAuthor, ErrReservedForAuthor)
+				return reservedRefusal(stated[index], reach.person, reach.end)
 			}
 			return nil
 		}))
@@ -159,11 +156,10 @@ func ToPersonArms(first int, rows string, at time.Time, who model.Actor, event i
 	param := func(offset int) string { return "$" + strconv.Itoa(first+offset) }
 	at0, who1, event2 := param(0)+`::timestamptz`, param(1)+`::jsonb`, param(2)+`::bigint`
 	person := `(case when stated.kind = '` + TupleParticipatesIn + `' then stated.from_id else stated.to_id end)`
-	fits := `octet_length(stated.from_id) <= ` + strconv.Itoa(MaxAddressBytes) + ` and octet_length(stated.to_id) <= ` + strconv.Itoa(MaxAddressBytes)
 	return `graph_people_stated as (
 	select ` + ToPersonRows + `, ` + person + ` as person
 	from ` + rows + ` stated
-	where ` + fits + `
+	where ` + AddressFitsSQL(`stated.from_id`) + ` and ` + AddressFitsSQL(`stated.to_id`) + `
 ),
 graph_nodes_written as (
 	insert into graph_nodes (` + nodeColumns + `)
@@ -173,20 +169,9 @@ graph_nodes_written as (
 	where people.asserted
 	order by 2
 	on conflict (kind, id) do nothing
-	returning kind, id, visibility, state, project_key, parties, made_at, made_by, source_event
+	returning ` + nodeWrittenColumns + `
 ),
-graph_node_attributes as (
-	insert into graph_tuples (` + tupleWriteColumns + `)
-	select written.kind, written.id, attribute.kind, '` + KindValue + `', attribute.value,
-	       written.made_at, written.made_by, written.source_event, null, true
-	from graph_nodes_written written
-	cross join lateral (values
-		('` + AttributeVisibility + `', written.visibility), ('` + AttributeState + `', written.state),
-		('` + AttributeProject + `', written.project_key), ('` + AttributeParties + `', array_to_string(written.parties, ' ')))
-		as attribute(kind, value)
-	where attribute.value is not null
-	order by written.kind, written.id, attribute.kind` + valueRepeatKey + `
-),
+` + nodeAttributesArm + `,
 graph_relations_appended as (
 	insert into graph_tuples (` + tupleWriteColumns + `)
 	select people.from_kind, people.from_id, people.kind, people.to_kind, people.to_id,
@@ -215,12 +200,19 @@ func ReservedForAuthorRead(rows string) string {
 		                           case when stated.kind = '` + TupleParticipatesIn + `' then stated.to_id else stated.from_id end as id) other
 		join graph_nodes n on n.kind = other.kind and n.id = other.id
 		where n.visibility = '` + VisibilityAuthor + `'
-		  and person.login is distinct from (case
-		      when n.made_by->>'kind' = 'user' and coalesce(n.made_by->>'id', '') <> '' then user_threads_login(n.made_by->>'id')
-		      when n.made_by->>'kind' = 'session' and coalesce(n.made_by->>'id', '') <> '' then null
-		      when coalesce(n.made_by->>'owner', '') <> '' then user_threads_login(n.made_by->>'owner')
-		  end)
+		  and person.login is distinct from ` + PersonOfSQL(`n.made_by`) + `
 		limit 1`
+}
+
+// PersonOfSQL is the person AuthorOf reads off an actor, in SQL, over an actor stored as jsonb at
+// column: the canonical login of the user it names, or of a personal token's owner, through
+// user_threads_login (model.CanonicalLogin in SQL), and null for a session or nobody.
+func PersonOfSQL(column string) string {
+	return `(case
+		      when ` + column + `->>'kind' = 'user' and coalesce(` + column + `->>'id', '') <> '' then user_threads_login(` + column + `->>'id')
+		      when ` + column + `->>'kind' = 'session' and coalesce(` + column + `->>'id', '') <> '' then null
+		      when coalesce(` + column + `->>'owner', '') <> '' then user_threads_login(` + column + `->>'owner')
+		  end)`
 }
 
 // RefuseReservedForAuthor is the callback of ReservedForAuthorRead: the refusal ToPerson answers
@@ -238,8 +230,14 @@ func RefuseReservedForAuthor(row pgx.Row) error {
 	if kind == TupleParticipatesIn {
 		end = [2]string{toKind, toID}
 	}
+	return reservedRefusal(Tuple{Kind: kind, FromKind: fromKind, FromID: fromID, ToKind: toKind, ToID: toID}, person, end)
+}
+
+// reservedRefusal is ToPerson's refusal of tuple, which names person and whose other end, end, is
+// a node the store holds visible to its author alone (ErrReservedForAuthor).
+func reservedRefusal(tuple Tuple, person string, end [2]string) error {
 	return fmt.Errorf("%s %s/%s -> %s/%s names person %s, and %s/%s is visible to its author alone (visibility %s): %w",
-		kind, fromKind, fromID, toKind, toID, person, end[0], end[1], VisibilityAuthor, ErrReservedForAuthor)
+		tuple.Kind, tuple.FromKind, tuple.FromID, tuple.ToKind, tuple.ToID, person, end[0], end[1], VisibilityAuthor, ErrReservedForAuthor)
 }
 
 // personReach is what one tuple ToPerson appends ties: the person, by their canonical login, and

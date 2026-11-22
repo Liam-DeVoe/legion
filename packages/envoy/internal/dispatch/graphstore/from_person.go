@@ -80,6 +80,7 @@ func QueueFromPerson(b *store.WriteBatch, made time.Time, tuples []Tuple) {
 	}
 	stated := make([]Tuple, 0, len(tuples))
 	var persons []Node
+	written := make(map[string]struct{}, len(tuples))
 	for _, tuple := range tuples {
 		if tuple.FromKind != KindPerson || !isMark(tuple.Kind) || tuple.ToKind == KindValue {
 			queueRefused(b, fmt.Errorf("FromPerson appends %s from a person to a node, not %s %s/%s -> %s/%s",
@@ -95,7 +96,8 @@ func QueueFromPerson(b *store.WriteBatch, made time.Time, tuples []Tuple) {
 			continue
 		}
 		stated = append(stated, tuple)
-		if !slices.ContainsFunc(persons, func(person Node) bool { return person.ID == tuple.FromID }) {
+		if _, held := written[tuple.FromID]; !held {
+			written[tuple.FromID] = struct{}{}
 			persons = append(persons, PersonNode(tuple.FromID, tuple.Who, made, tuple.SourceEvent))
 		}
 	}
@@ -158,10 +160,17 @@ func QueueMarksEnded(b *store.WriteBatch, kind, toKind, toID string, people Mark
 		persons, named, arg = `any(array(`+people.query+`))`, "the persons its statement reads", people.arg
 	} else {
 		logins := make([]string, 0, len(people.logins))
+		seen := make(map[string]struct{}, len(people.logins))
 		for _, login := range people.logins {
-			if person := model.CanonicalLogin(login); person != "" && AddressFits(person) && !slices.Contains(logins, person) {
-				logins = append(logins, person)
+			person := model.CanonicalLogin(login)
+			if person == "" || !AddressFits(person) {
+				continue
 			}
+			if _, held := seen[person]; held {
+				continue
+			}
+			seen[person] = struct{}{}
+			logins = append(logins, person)
 		}
 		if len(logins) == 0 {
 			return
@@ -212,7 +221,7 @@ func MarkArm(first int, rows, kind, toKind, toID string, who model.Actor, event 
 	insert into graph_tuples (` + tupleWriteColumns + `)
 	select '` + KindPerson + `', marked.login, ` + param(0) + `::text, ` + param(1) + `::text, ` + param(2) + `::text, marked.at, ` + param(3) + `::jsonb, ` + causeOf(param(4)+`::bigint`) + `, null, true
 	from ` + rows + ` marked
-	where octet_length(marked.login) <= ` + strconv.Itoa(MaxAddressBytes) + `
+	where ` + AddressFitsSQL(`marked.login`) + `
 	order by marked.login` + relationRepeatKey + `
 )`, []any{kind, toKind, toID, writer, event}, nil
 }

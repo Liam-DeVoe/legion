@@ -17,8 +17,11 @@ import (
 )
 
 // writeAsThisBuild runs write in a transaction of its own, as this release's writers run theirs,
-// and appends what it held for its cause at the sentinel, then commits.
-func writeAsThisBuild(t *testing.T, database *store.Store, what string, write func(tx pgx.Tx) (graphstore.Uncaused, error)) {
+// and appends each write it held for its cause at the sentinel, then commits. Each is caused on
+// its own, as each of its writers causes it: an Uncaused carries the mark its own node write left
+// (graphstore.QueueCaused), so two of them appended into one would state the base attributes of
+// the first one's nodes alone.
+func writeAsThisBuild(t *testing.T, database *store.Store, what string, write func(tx pgx.Tx) ([]graphstore.Uncaused, error)) {
 	t.Helper()
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -26,12 +29,14 @@ func writeAsThisBuild(t *testing.T, database *store.Store, what string, write fu
 		t.Fatalf("begin %s: %v", what, err)
 	}
 	defer tx.Rollback(ctx)
-	held, err := write(tx)
+	writes, err := write(tx)
 	if err != nil {
 		t.Fatalf("%s: %v", what, err)
 	}
-	if err := graphstore.Caused(ctx, tx, held, graphstore.NoEvent); err != nil {
-		t.Fatalf("state %s: %v", what, err)
+	for _, held := range writes {
+		if err := graphstore.Caused(ctx, tx, held, graphstore.NoEvent); err != nil {
+			t.Fatalf("state %s: %v", what, err)
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit %s: %v", what, err)
@@ -121,20 +126,18 @@ func TestTheEraseOfACommentTakesItsAttemptsAndItsBlocks(t *testing.T) {
 	ctx := context.Background()
 	seeded := seedAgreeingStore(t, database)
 	key := graphstore.CommentAttempt(seeded.comment, "session:s1", 1)
-	writeAsThisBuild(t, database, "the comment's blocks and its mention's attempt", func(tx pgx.Tx) (graphstore.Uncaused, error) {
+	writeAsThisBuild(t, database, "the comment's blocks and its mention's attempt", func(tx pgx.Tx) ([]graphstore.Uncaused, error) {
 		indexed, err := indexItem(ctx, tx, refs.ItemComment, seeded.comment, "A remark on the spec.", time.Now().UTC())
 		if err != nil {
-			return graphstore.Uncaused{}, err
+			return nil, err
 		}
 		opened, err := openAttempt(ctx, tx, key, `
 			insert into comment_deliveries (comment_id, target, attempt, delivery, session_id, state, node_kind, node_address)
 			values ($1::uuid, $2, 1, 'steer', 's1', 'pending', $3, $4)`, seeded.comment, "session:s1")
 		if err != nil {
-			return graphstore.Uncaused{}, err
+			return nil, err
 		}
-		indexed.Nodes = append(indexed.Nodes, opened.Nodes...)
-		indexed.Tuples = append(indexed.Tuples, opened.Tuples...)
-		return indexed, nil
+		return []graphstore.Uncaused{indexed, opened}, nil
 	})
 	blocks := seeded.comment + "#"
 	if heldOfParts(t, database, graphstore.KindDeliveryAttempt, key.ID()) == 0 || heldOfParts(t, database, graphstore.KindBlock, "comment/"+blocks) == 0 {
@@ -168,50 +171,30 @@ func TestTheEraseOfAMessageTakesItsRowAndItsParts(t *testing.T) {
 	author := model.Actor{Kind: "user", ID: writer}
 	message := "00000000-0000-4000-8000-000000001152"
 	key := graphstore.MessageAttempt(message, 1)
-	writeAsThisBuild(t, database, "the message", func(tx pgx.Tx) (graphstore.Uncaused, error) {
+	// The message's own event carries its body (model.MessageEventPayload), and so does another
+	// message's that says the same words, which is that message's text.
+	const body = "A message nobody may keep."
+	writeAsThisBuild(t, database, "the message", func(tx pgx.Tx) ([]graphstore.Uncaused, error) {
 		at := time.Now().UTC()
-		row := graphstore.MessageRow{ID: message, IssueKey: "CORE-1", Target: "session:s1"}
-		nodes, tuples, _ := graphstore.MessageFacts([]graphstore.Node{graphstore.MessageNode(message, "CORE", nil, author, at)}, nil, row, author, at, graphstore.NoEvent)
-		held := graphstore.PlanUncaused(nodes, tuples)
-		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
-			graphstore.QueueNodes(b, held)
-			return nil
-		}); err != nil {
-			return graphstore.Uncaused{}, err
-		}
-		if _, err := tx.Exec(ctx, `
-			insert into messages (id, issue_key, author, body, target, created_at, node_kind, node_address)
-			values ($1::uuid, 'CORE-1', $2, 'A message nobody may keep.', 'session:s1', $3, 'message', $1)
-		`, message, `{"kind":"user","id":"`+writer+`"}`, at); err != nil {
-			return graphstore.Uncaused{}, err
-		}
-		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
-			return graphstore.QueueAuthored(b, graphstore.KindMessage, message, author, at, graphstore.NoEvent)
-		}); err != nil {
-			return graphstore.Uncaused{}, err
-		}
-		indexed, err := indexItem(ctx, tx, refs.ItemMessage, message, "A message nobody may keep.", at)
+		held, err := writeMessage(ctx, tx, message, "", "session:s1", body, author, at)
 		if err != nil {
-			return graphstore.Uncaused{}, err
+			return nil, err
+		}
+		indexed, err := indexItem(ctx, tx, refs.ItemMessage, message, body, at)
+		if err != nil {
+			return nil, err
 		}
 		opened, err := openAttempt(ctx, tx, key, `
 			insert into message_deliveries (message_id, attempt, delivery, session_id, state, node_kind, node_address)
 			values ($1::uuid, 1, 'steer', 's1', 'pending', $2, $3)`, message)
 		if err != nil {
-			return graphstore.Uncaused{}, err
+			return nil, err
 		}
-		for _, part := range []graphstore.Uncaused{indexed, opened} {
-			held.Nodes = append(held.Nodes, part.Nodes...)
-			held.Tuples = append(held.Tuples, part.Tuples...)
-		}
-		return held, nil
+		return []graphstore.Uncaused{held, indexed, opened}, nil
 	})
 	if heldOfParts(t, database, graphstore.KindDeliveryAttempt, key.ID()) == 0 || heldOfParts(t, database, graphstore.KindBlock, "message/"+message+"#") == 0 {
 		t.Fatalf("the store holds no attempt or no block node of message %s, so this test would prove nothing", message)
 	}
-	// The message's own event carries its body (model.MessageEventPayload), and so does another
-	// message's that says the same words, which is that message's text.
-	const body = "A message nobody may keep."
 	own := appendEvent(t, database, "CORE-1", "message.created",
 		`{"id":"`+message+`","issue_key":"CORE-1","body":"`+body+`","target":"session:s1"}`)
 	other := appendEvent(t, database, "CORE-1", "message.created",
@@ -260,8 +243,9 @@ func TestTheEraseRefusesABlockAnItemsBlockCites(t *testing.T) {
 	if _, err := database.Pool.Exec(ctx, `update comments set body = $2 where id = $1::uuid`, seeded.comment, body); err != nil {
 		t.Fatalf("write the comment's body: %v", err)
 	}
-	writeAsThisBuild(t, database, "the comment's citing body", func(tx pgx.Tx) (graphstore.Uncaused, error) {
-		return indexItem(ctx, tx, refs.ItemComment, seeded.comment, body, time.Now().UTC())
+	writeAsThisBuild(t, database, "the comment's citing body", func(tx pgx.Tx) ([]graphstore.Uncaused, error) {
+		indexed, err := indexItem(ctx, tx, refs.ItemComment, seeded.comment, body, time.Now().UTC())
+		return []graphstore.Uncaused{indexed}, err
 	})
 	var links int
 	if err := database.Pool.QueryRow(ctx, `

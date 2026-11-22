@@ -318,17 +318,8 @@ func attemptMoved(keys []AttemptKey, moment string) (string, []any) {
 	if len(arms) == 0 {
 		return "", nil
 	}
-	fits := func(expr string) string {
-		return `octet_length(` + expr + `) <= ` + strconv.Itoa(MaxAddressBytes)
-	}
 	pending := `r.state = '` + model.DeliveryStatePending + `'`
-	carried := make([]string, len(attemptValues))
-	valueKinds := make([]string, len(attemptValues))
-	for index, value := range attemptValues {
-		carried[index] = `(` + strconv.Itoa(index) + `, '` + value.kind + `', ` + value.value + `)`
-		valueKinds[index] = `'` + value.kind + `'`
-	}
-	relationKinds := `'` + strings.Join(attemptRelationKinds, `', '`) + `'`
+	role, session := RouteSQL(`r.route`)
 	named := `t.from_kind = '` + KindDeliveryAttempt + `' and t.from_id = any(array(select id from attempt_rows))`
 	return `attempt_rows (id, at, attempt, state, envelope_id, error, resolve_error, duplicate, claimed_at,
 			accepted_at, accepted_as, route, resolved, reply_kind, reply) as (` + strings.Join(arms, `
@@ -337,27 +328,27 @@ func attemptMoved(keys []AttemptKey, moment string) (string, []any) {
 		attempt_ends as (
 			select r.id, r.at, r.attempt, r.state, r.envelope_id, r.error, r.resolve_error, r.duplicate,
 			       r.claimed_at, r.accepted_at, r.accepted_as, r.reply_kind, r.reply,
-			       case when ` + pending + ` and ` + fits(`route.role_id`) + ` then '` + KindRole + `'
-			            when ` + pending + ` and ` + fits(`route.session_id`) + ` then '` + KindSession + `' end as owed_kind,
-			       case when ` + pending + ` and ` + fits(`route.role_id`) + ` then route.role_id
-			            when ` + pending + ` and ` + fits(`route.session_id`) + ` then route.session_id end as owed_id,
+			       case when ` + pending + ` and ` + AddressFitsSQL(`route.role_id`) + ` then '` + KindRole + `'
+			            when ` + pending + ` and ` + AddressFitsSQL(`route.session_id`) + ` then '` + KindSession + `' end as owed_kind,
+			       case when ` + pending + ` and ` + AddressFitsSQL(`route.role_id`) + ` then route.role_id
+			            when ` + pending + ` and ` + AddressFitsSQL(`route.session_id`) + ` then route.session_id end as owed_id,
 			       case when r.state in ` + model.DeliveryTakenStatesSQL + ` and coalesce(r.resolved, '') <> ''
-			             and ` + fits(`r.resolved`) + ` then r.resolved end as delivered_id
+			             and ` + AddressFitsSQL(`r.resolved`) + ` then r.resolved end as delivered_id
 			from attempt_rows r
 			cross join lateral (
-				select substring(r.route from '^role:([a-z0-9-]+)$') as role_id,
-				       substring(r.route from '^session:([A-Za-z0-9_-]+)$') as session_id
+				select ` + role + ` as role_id,
+				       ` + session + ` as session_id
 			) route
 		),
 		held_values as (
 			` + CurrentTupleRead(`t.from_id, t.kind`, `t.from_id, t.kind, t.to_id, t.asserted`,
-		named+` and t.to_kind = '`+KindValue+`' and t.kind in (`+strings.Join(valueKinds, `, `)+`)`) + `
+		named+` and t.to_kind = '`+KindValue+`' and t.kind in (`+attemptValueKinds+`)`) + `
 		),
 		held_relations as (
 			select current.from_id, current.kind, current.to_kind, current.to_id
 			from (
 				` + CurrentTupleRead(`t.from_id, t.kind, t.to_kind, t.to_id`, `t.from_id, t.kind, t.to_kind, t.to_id, t.asserted`,
-		named+` and t.to_kind <> '`+KindValue+`' and t.kind in (`+relationKinds+`)`) + `
+		named+` and t.to_kind <> '`+KindValue+`' and t.kind in (`+attemptRelationKindList+`)`) + `
 			) current
 			where current.asserted
 		),
@@ -365,7 +356,7 @@ func attemptMoved(keys []AttemptKey, moment string) (string, []any) {
 			select r.id, r.at, carried.kind, '` + KindValue + `'::text, coalesce(carried.value, held.to_id),
 			       carried.value is not null, 1, carried.ordinal
 			from attempt_ends r
-			cross join lateral (values ` + strings.Join(carried, `, `) + `) as carried (ordinal, kind, value)
+			cross join lateral (values ` + attemptCarried + `) as carried (ordinal, kind, value)
 			left join held_values held on held.from_id = r.id and held.kind = carried.kind
 			where (carried.value is not null and (held.asserted is not true or held.to_id <> carried.value))
 			   or (carried.value is null and held.asserted)
@@ -389,3 +380,17 @@ func attemptMoved(keys []AttemptKey, moment string) (string, []any) {
 			)
 		)`, args
 }
+
+// attemptCarried, attemptValueKinds and attemptRelationKindList are attemptMoved's fixed lists,
+// built once: attemptValues as the values list attempt_moved reads them from, each with its
+// ordinal, and as the kinds held_values reads, and attemptRelationKinds as the kinds held_relations
+// reads.
+var attemptCarried, attemptValueKinds, attemptRelationKindList = func() (string, string, string) {
+	carried := make([]string, len(attemptValues))
+	valueKinds := make([]string, len(attemptValues))
+	for index, value := range attemptValues {
+		carried[index] = `(` + strconv.Itoa(index) + `, '` + value.kind + `', ` + value.value + `)`
+		valueKinds[index] = `'` + value.kind + `'`
+	}
+	return strings.Join(carried, `, `), strings.Join(valueKinds, `, `), `'` + strings.Join(attemptRelationKinds, `', '`) + `'`
+}()

@@ -16,11 +16,12 @@ import (
 //
 // It is reached by the command and the database credential alone: no HTTP route serves it, no
 // agent bearer and no session reaches it, and it reads DATABASE_URL as every other database
-// subcommand does, and the dashboard origin as the server does (loadServerURL), which it cuts a
+// subcommand does, and the dashboard origin as the server does (resolveServerURL), which it cuts a
 // redacted excerpt around as the server's writers cut one, refusing an empty one as rebuild-refs
-// does. It migrates nothing - the schema it works on is the deployment's own - and it holds the
-// documents it reads to the block schema the store's type nodes build, as the server does
-// (grapherase.Erase installs it before it reads).
+// does; an envoy config it cannot load is exit 2, before it reads its flags. It migrates nothing -
+// the schema it works on is the deployment's own - and it holds the documents it reads to the
+// block schema the store's type nodes build, as the server does (grapherase.Erase installs it
+// before it reads).
 //
 // It removes nothing until an operator has read what it would. Run with --node alone it reads,
 // in a read-only transaction that takes no write lock, every row it would delete, rewrite or

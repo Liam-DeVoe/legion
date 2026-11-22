@@ -111,11 +111,13 @@ type Erasure struct {
 	Inbound int64 `json:"inbound_tuples"`
 	// Rows are the rows the run deleted, by table.
 	Rows []ErasedRows `json:"rows"`
-	// RedactedRows are the rows that derive from the node and that the run rewrote where it may
-	// take no row away: an excerpt of a block holding it, the append-only event log, the one
+	// RedactedRows are the rows the run rewrote where it may take no row away: the rows that
+	// derive from the node - an excerpt of a block holding it, the append-only event log, the one
 	// stored update its document's replaced history is seeded with, and the search vectors and
-	// embedding rows written again from the latest version left. Each that held the bytes holds
-	// the marker where they were.
+	// embedding rows written again from the latest version left - each of which, where it held the
+	// bytes, holds the marker where they were; and the user_threads rows of the thread a reply the
+	// run removed was written in that named or counted it, whose version, last reply and reply time
+	// it wrote again without that reply (rewriteRepliedRows), which hold no marker.
 	RedactedRows []ErasedRows `json:"redacted"`
 	// Versions and Reviews are the versions of the node's own document whose markdown holds the
 	// erased text and the approvals whose digest covered those bytes.

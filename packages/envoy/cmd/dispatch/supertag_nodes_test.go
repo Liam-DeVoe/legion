@@ -33,12 +33,13 @@ import (
 // runner applies every file: it writes graph_tuples above the census limit, so it may write only
 // bounded writes under the migration census's bounded-write rule (typeMigrationShape), and the
 // seed tuples it inserts at source_event 0 fall under no unique key, so a second run would append
-// them again. Such a migration is listed in literalTypeMigrations instead.
+// them again. Such a migration that moves a node the second run puts back is listed in
+// literalTypeMigrations instead.
 //
-// The runner applies each migration once (schema_migrations), so a type migration written after
-// the backfill writes literal rows under the census's bounded-write rule and is not run a second
-// time: 20261116102759 is one, and is left out of both lists. The second run holds for
-// the node store's own type migrations only.
+// A type migration written after the backfill that only adds nodes and tuples moves nothing the
+// second run puts back, and is left out of both lists: 20261116102759 (the delivery_attempt
+// attributes) and 20261120090002 (the comment's delivery attribute) are two. The second run holds
+// for the node store's own type migrations only.
 var typeMigrations = []string{
 	"../../internal/dispatch/store/migrations/20261109051232_graph_supertags.up.sql",
 	"../../internal/dispatch/store/migrations/20261113230000_graph_supertags_check_ci_check.up.sql",
@@ -295,69 +296,57 @@ func requireAttributeNodesMatchTheFile(t *testing.T, ctx context.Context, pool *
 	}
 	wanted := map[string]struct{}{}
 	for _, typ := range file.Types {
-		tied := map[string]struct{}{}
-		tuples, err := graphstore.CurrentIn(ctx, pool, schemanodes.KindSupertag, typ.Name, []string{schemanodes.TupleAttributeOf})
-		if err != nil {
-			t.Fatalf("read the attributes tied to %q: %v", typ.Name, err)
-		}
-		for _, tuple := range tuples {
-			tied[tuple.FromID] = struct{}{}
-		}
-		for position, declared := range typ.Attributes {
-			id := typ.Name + "/" + schemanodes.StoreName(typ.Name, declared.Name)
-			wanted[id] = struct{}{}
-			if _, tiedToType := tied[id]; !tiedToType {
-				t.Errorf("no %s tuple ties attribute node %q to supertag %q", schemanodes.TupleAttributeOf, id, typ.Name)
-				drift.add(id)
-			}
-			node, inStore := held[id]
-			if !inStore {
-				t.Errorf("%s declares attribute %q of %q, which the store holds no node for", blockSchemaFile, declared.Name, typ.Name)
-				drift.add(id)
-				continue
-			}
-			requireAttributeNodeCarries(t, node, typ.Name, position, declared, "the file's", drift)
-		}
-		if len(tied) != len(typ.Attributes) {
-			t.Errorf("supertag %q is tied to %d attribute nodes, want the %d its type declares", typ.Name, len(tied), len(typ.Attributes))
-			drift.add(typ.Name)
-		}
+		requireTypeAttributes(t, ctx, pool, held, wanted, typ.Name, typ.Attributes, blockSchemaFile, drift)
 	}
 	// The attributes of the supertags the block schema declares no type for, held to the test's
 	// own copy of them. A difference there is no drift of the file, so it is not recorded in drift:
 	// the migration that writes those nodes is the type migration of the kind they belong to.
 	for _, typ := range storeTypeAttributes {
 		t.Logf("the store holds the attributes of %q, a supertag the block schema declares no type for, created by %s", typ.name, typ.document)
-		tied := map[string]struct{}{}
-		tuples, err := graphstore.CurrentIn(ctx, pool, schemanodes.KindSupertag, typ.name, []string{schemanodes.TupleAttributeOf})
-		if err != nil {
-			t.Fatalf("read the attributes tied to %q: %v", typ.name, err)
-		}
-		for _, tuple := range tuples {
-			tied[tuple.FromID] = struct{}{}
-		}
-		for position, declared := range typ.attributes {
-			id := typ.name + "/" + schemanodes.StoreName(typ.name, declared.Name)
-			wanted[id] = struct{}{}
-			if _, tiedToType := tied[id]; !tiedToType {
-				t.Errorf("no %s tuple ties attribute node %q to supertag %q", schemanodes.TupleAttributeOf, id, typ.name)
-			}
-			node, inStore := held[id]
-			if !inStore {
-				t.Errorf("storeTypeAttributes lists attribute %q of %q, which the store holds no node for", declared.Name, typ.name)
-				continue
-			}
-			requireAttributeNodeCarries(t, node, typ.name, position, declared, "storeTypeAttributes'", nil)
-		}
-		if len(tied) != len(typ.attributes) {
-			t.Errorf("supertag %q is tied to %d attribute nodes, want the %d storeTypeAttributes lists", typ.name, len(tied), len(typ.attributes))
-		}
+		requireTypeAttributes(t, ctx, pool, held, wanted, typ.name, typ.attributes, "storeTypeAttributes", nil)
 	}
 	for id := range held {
 		if _, declared := wanted[id]; !declared {
 			t.Errorf("the store holds attribute node %q, which %s declares nowhere and storeTypeAttributes does not list", id, blockSchemaFile)
 			drift.add(id)
 		}
+	}
+}
+
+// requireTypeAttributes holds the attribute nodes of supertag name, of held, to attributes as
+// source lists them: each tied to the supertag by its attribute_of, held by the store and carrying
+// what source says of it (requireAttributeNodeCarries), and as many tied to it as source lists.
+// Each attribute's node id goes into wanted, and each type and attribute it fails on is recorded in
+// drift, where the caller keeps one.
+func requireTypeAttributes(t *testing.T, ctx context.Context, pool *store.Pool, held map[string]graphstore.Node, wanted map[string]struct{},
+	name string, attributes []pmdoc.BlockAttribute, source string, drift *schemaDrift) {
+	t.Helper()
+	tied := map[string]struct{}{}
+	tuples, err := graphstore.CurrentIn(ctx, pool, schemanodes.KindSupertag, name, []string{schemanodes.TupleAttributeOf})
+	if err != nil {
+		t.Fatalf("read the attributes tied to %q: %v", name, err)
+	}
+	for _, tuple := range tuples {
+		tied[tuple.FromID] = struct{}{}
+	}
+	for position, declared := range attributes {
+		id := name + "/" + schemanodes.StoreName(name, declared.Name)
+		wanted[id] = struct{}{}
+		if _, tiedToType := tied[id]; !tiedToType {
+			t.Errorf("no %s tuple ties attribute node %q to supertag %q", schemanodes.TupleAttributeOf, id, name)
+			drift.add(id)
+		}
+		node, inStore := held[id]
+		if !inStore {
+			t.Errorf("%s lists attribute %q of %q, which the store holds no node for", source, declared.Name, name)
+			drift.add(id)
+			continue
+		}
+		requireAttributeNodeCarries(t, node, name, position, declared, source+"'s", drift)
+	}
+	if len(tied) != len(attributes) {
+		t.Errorf("supertag %q is tied to %d attribute nodes, want the %d %s lists", name, len(tied), len(attributes), source)
+		drift.add(name)
 	}
 }
 

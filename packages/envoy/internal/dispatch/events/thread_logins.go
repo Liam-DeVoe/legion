@@ -28,14 +28,20 @@ func ThreadLogins(ctx context.Context, q Queryer, threadID string) ([]string, er
 	return logins, nil
 }
 
+// threadLoginsFrom is the user_threads rows of the thread the parameter param names, which
+// threadLoginsQuery aggregates and threadLoginsRows answers.
+func threadLoginsFrom(param string) string {
+	return `from user_threads where thread_id = ` + param + `::uuid`
+}
+
 // threadLoginsQuery is ThreadLogins' query, its thread id the parameter param.
 func threadLoginsQuery(param string) string {
-	return `select coalesce(array_agg(login order by login), '{}') from user_threads where thread_id = ` + param + `::uuid`
+	return `select coalesce(array_agg(login order by login), '{}') ` + threadLoginsFrom(param)
 }
 
 // threadLoginsRows is the rows threadLoginsQuery aggregates, one login each.
 func threadLoginsRows(param string) string {
-	return `select login from user_threads where thread_id = ` + param + `::uuid`
+	return `select login ` + threadLoginsFrom(param)
 }
 
 // issueLoginsQuery is the status half of an issue event's thread_logins, for an event that
@@ -57,16 +63,18 @@ func threadLoginsRows(param string) string {
 // wherever its issue goes, so no assignee move touches its row; the hand-on itself names the two
 // people instead (api/ask_asked_of.go, over api/thread_logins.go's movedLogins).
 func issueLoginsQuery(param string) string {
-	return `
-		select coalesce(array_agg(distinct u.login order by u.login), '{}')
-		from user_threads u
-		where u.thread_id in (select a.id from asks a where a.issue_key = ` + param + ` and a.state = 'open')
-	`
+	return `select coalesce(array_agg(distinct u.login order by u.login), '{}') ` + issueLoginsFrom(param)
 }
 
 // issueLoginsRows is the rows issueLoginsQuery aggregates, a login once for each of its rows.
 func issueLoginsRows(param string) string {
-	return `select u.login from user_threads u
+	return `select u.login ` + issueLoginsFrom(param)
+}
+
+// issueLoginsFrom is the user_threads rows of the open asks of the issue the parameter param
+// names, which issueLoginsQuery aggregates and issueLoginsRows answers.
+func issueLoginsFrom(param string) string {
+	return `from user_threads u
 		where u.thread_id in (select a.id from asks a where a.issue_key = ` + param + ` and a.state = 'open')`
 }
 
