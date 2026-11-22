@@ -116,6 +116,10 @@ export interface CommandFlagRow {
 }
 
 const STDIN = "-";
+/** What every `--<field>-file` and `--<field>-json-file` flag's help says of its bytes
+ *  (`readFileText`, `parseCommand`'s `unstorable` parse). */
+const FILE_BYTES_RULE =
+  "Bytes that are not UTF-8 are refused in Dispatch's own words, and nothing is sent.";
 const BARE_WORD = /^[A-Za-z0-9_./:@%+=,-]+$/;
 const OPTION_SEPARATOR = ": ";
 
@@ -334,7 +338,7 @@ function flagTable(
         field,
         action: "file",
         value: "<path>",
-        text: `--${name} read from a file; - reads stdin. Read as bytes: bytes that are not UTF-8 are refused in Dispatch's own words, and nothing is sent.`,
+        text: `--${name} read from a file; - reads stdin. ${FILE_BYTES_RULE}`,
       });
     } else if (kind === "number") {
       add(`--${name}`, { field, action: "set", value: "<n>", text: about });
@@ -367,7 +371,7 @@ function flagTable(
         field,
         action: "json-file",
         value: "<path>",
-        text: `--${name}-json read from a file; - reads stdin. Read as bytes: bytes that are not UTF-8 are refused in Dispatch's own words, and nothing is sent.`,
+        text: `--${name}-json read from a file; - reads stdin. ${FILE_BYTES_RULE}`,
       });
     } else {
       const none = kind.array === "number-or-null" ? " none is null." : "";
