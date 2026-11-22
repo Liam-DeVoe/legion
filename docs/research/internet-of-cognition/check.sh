@@ -90,10 +90,15 @@
 # stop, the run itself when what it declares was not read whole, and the stop's line is its
 # last, a record whose own write a signal ended written again by printf alone. SIGPIPE alone
 # is outside it, since a reader that stopped reading, as head does, sends it; a child it
-# ends, and every other status, keep the meaning their caller gives them. The bounds, each at
-# least three times the slowest measured run of what it bounds, with where and when that
-# was measured, are written beside BOUND_PROGRAM below; IOC_CHILD_BOUND, a
-# whole number of seconds, lowers each bound of a child above it to it, and no bound of a
+# ends, and every other status, keep the meaning their caller gives them. git's 129, which
+# git exits with on a usage error, as `git --no-such-option` does, is no signal either,
+# though 128 and SIGHUP's number make it (GIT_USAGE): a git the gate runs, or a row runs,
+# that exits 129 exited by itself, and its status is read as any other is, so a row whose
+# git was given an option it does not know fails on that status; every other program's
+# status above 128 keeps the signal reading. The bounds, each at least three times the
+# slowest measured run of what it bounds, with where and when that was measured, are
+# written beside BOUND_PROGRAM below; IOC_CHILD_BOUND, a whole number of seconds, lowers
+# each bound of a child above it to it, and no bound of a
 # mode, so that a case of check.test.sh ends a run in seconds. A loop over every row reads
 # the rows from a file, since a program feeding the loop through a pipe would run as long
 # as the loop does. A mode whose input is a terminal reads /dev/null in its place, since a
@@ -234,7 +239,11 @@
 # --landed, since it runs each of them; check.test.sh checks the lines of --self-test alone
 # before its first case, since each run a case makes checks its own mode's. Before any of
 # them, every run checks the tools its ending is written with ("The run's own scratch and
-# record" above), which --help prints first.
+# record" above), which --help prints first. GNU timeout is the one line read before the
+# mode starts, since the mode itself runs under it (run_mode): a run with no timeout on PATH
+# ends exit 2 there, of the kind prerequisite, every assertion the mode declares unrun,
+# naming timeout and what provides it by the mode's own line of the table, never the 127 of
+# a program that is not there.
 #
 # --landed runs the committed proof of each landed step, the command sources.json commits
 # for it, from the root of this tree, and a proof that exits non-zero is the step failing, a
@@ -253,10 +262,12 @@
 # it nowhere, read as GitHub names it: GitHub reads an owner and a name without case, and
 # the rows compare the name with what GitHub and the repository write, so the value a reader
 # gives, in whatever case, is read once, before env.sh or any row, as GitHub's own full_name
-# for it, which IOC_DEPLOYMENT_REPO then holds for env.sh and every row; no stop of a run
-# and no refusal of env.sh names the value: each writes the input, $IOC_DEPLOYMENT_REPO,
-# in its place and in place of its address, in a line of git's or curl's it quotes too
-# (deployment_repository_read, deployment_hidden, env.sh's ioc_env_hidden); env.sh fetches
+# for it, which IOC_DEPLOYMENT_REPO then holds for env.sh and every row; no line the gate
+# prints names the value, a stop of a run, a PASS or a FAIL line, which can quote a row's
+# command, the URL it read and what it printed, and a refusal of env.sh alike: each writes
+# the input, $IOC_DEPLOYMENT_REPO, in its place and in place of its address, in a line of
+# git's or curl's it quotes too (deployment_repository_read, deployment_hidden, pass and
+# fail, env.sh's ioc_env_hidden); env.sh fetches
 # that repository blobless through the
 # machine's git credential helper
 # (env.sh's ioc_env_clone_private). What only the REST API answers, a pull request's reviews,
@@ -701,6 +712,12 @@ unset IOC_MODE_INNER
 # PATH does not hold is left as it is, so a tool that is missing is still missing.
 BOUND_PROGRAMS="bash curl dispatch git python3 uv"
 BOUND_TOOLS="awk cat chmod cmp comm cp cut date diff dirname env find grep head jq mkdir mktemp mv paste rm sed seq sha256sum sort stat tail tar touch tr uniq wc"
+# GIT_USAGE is the status git exits with on a usage error, as `git --no-such-option` does,
+# 129, which is also 128 and the number of SIGHUP: a git's 129 is git's own exit and no
+# signal, read as any other status a program exits with, wherever the gate reads one by
+# its program (bounded_run, run_recorded); every other program's status above 128 keeps
+# the signal reading (the header's "Every child the gate waits on ends").
+GIT_USAGE=129
 # The run's own scratch and record (the header's "The run's own scratch and record"): what
 # the ending of a run needs is checked here, before anything else runs, and a run that
 # lacks it ends at early_end, which needs none of it. ENDING_GIVEN is the record the
@@ -1036,11 +1053,13 @@ pcre_refusal() {
     return 0
 }
 
-# prerequisites_missing <mode>; prints each prerequisite of the mode that is missing, each
-# followed by what provides it, and returns 0 when one is missing and 1 when none is.
+# prerequisites_missing <mode> [<kind>|<name>]; prints each prerequisite of the mode that is
+# missing, each followed by what provides it, and returns 0 when one is missing and 1 when
+# none is; given a kind and a name, as tool|timeout, it reads that line of the mode alone.
 prerequisites_missing() {
     local kind name _why provides detail missing=""
     while IFS='|' read -r kind name _why provides; do
+        [ -z "${2:-}" ] || [ "$kind|$name" = "$2" ] || continue
         detail="$(prerequisite_missing "$kind" "$name")" || continue
         missing="$missing; $detail; provided by: $provides"
     done < <(prerequisite_rows "$1")
@@ -1093,14 +1112,18 @@ caches_report() {
     done < <(ioc_env_cache_table)
 }
 
+# pass <family> <text>; fail <family> <text>; an assertion's verdict, written for finish and
+# printed. The text can carry what a row ran, the URL it read and what it printed, as a
+# FAIL of replay-command quotes a row's curl of the deployment repository's REST API, so it
+# is printed by deployment_hidden, as every stop of a run is.
 pass() {
     printf 'PASS %s\n' "$1" >>"$REPORTED"
-    printf 'PASS %s: %s\n' "$1" "$2"
+    printf 'PASS %s: %s\n' "$1" "$(deployment_hidden "$2")"
 }
 
 fail() {
     printf 'FAIL %s\n' "$1" >>"$REPORTED"
-    printf 'FAIL %s: %s\n' "$1" "$2"
+    printf 'FAIL %s: %s\n' "$1" "$(deployment_hidden "$2")"
 }
 
 # finish <mode>; the verdict of the mode over the assertions it declares, by the three
@@ -1176,8 +1199,9 @@ finish() {
 # that can carry the deployment repository's name writes the input, $IOC_DEPLOYMENT_REPO,
 # in place of its value and of its address, in whatever case, a line of git's or curl's a
 # stop quotes among them. It loads env.sh's functions when they are not loaded, and prints
-# <text> as it stands where env.sh cannot load. Each stop of a run is written through it:
-# cannot_run, evidence_stops, bound_stop and ending_stop.
+# <text> as it stands where env.sh cannot load. Each stop of a run is written through it,
+# cannot_run, evidence_stops, bound_stop and ending_stop, and so is each PASS and FAIL line
+# (pass, fail), which can quote a row's command, its URL and its output.
 deployment_hidden() {
     if declare -F ioc_env_hidden >/dev/null || { env_functions && declare -F ioc_env_hidden >/dev/null; }; then
         ioc_env_hidden "$1"
@@ -1222,9 +1246,10 @@ evidence_stops() {
 # When the program has ended, whatever is left of its group is killed, so that nothing it
 # started holds a pipe this shell reads to its end. It returns the program's status, sets
 # BOUND_TOOK to the seconds it ran, and sets BOUND_ENDED to what ended it, "signal N
-# (SIGNAME)" for a status of 128 and a signal's number but SIGPIPE's, or "its bound of N
-# s" for timeout's own status, 124, or KILL's, at or past the bound, and to nothing for
-# every other status, which keeps the meaning its caller gives it.
+# (SIGNAME)" for a status of 128 and a signal's number but SIGPIPE's, and but git's 129,
+# which git exits with on a usage error, as `git --no-such-option` does (GIT_USAGE), or
+# "its bound of N s" for timeout's own status, 124, or KILL's, at or past the bound, and to
+# nothing for every other status, which keeps the meaning its caller gives it.
 bounded_run() {
     local bound="$1" start="$EPOCHSECONDS" status name
     shift
@@ -1247,7 +1272,8 @@ bounded_run() {
     BOUND_TOOK=$((EPOCHSECONDS - start))
     if { [ "$status" = 124 ] || [ "$status" = 137 ]; } && [ "$BOUND_TOOK" -ge "$bound" ]; then
         BOUND_ENDED="its bound of $bound s"
-    elif [ "$status" -gt 128 ] && [ "$status" != 141 ] && name="$(kill -l $((status - 128)) 2>/dev/null)"; then
+    elif [ "$status" -gt 128 ] && [ "$status" != 141 ] && ! { [ "$status" = "$GIT_USAGE" ] && [ "${1##*/}" = git ]; } &&
+        name="$(kill -l $((status - 128)) 2>/dev/null)"; then
         BOUND_ENDED="signal $((status - 128)) (SIG$name)"
     fi
     return "$status"
@@ -1400,14 +1426,29 @@ bound_record() {
 # by bounded_run, with no IOC_CHILD_BOUND lowering it, and ends with that run's status; when
 # a signal or the bound ended it, that end is the stop of this run's ending (ending_stop),
 # and run_ending writes the record, every assertion the mode declares unrun, of the kind
-# environment, and prints the line. The run it makes runs the mode in a subshell, after the
+# environment, and prints the line. bounded_run runs the mode under GNU timeout, so the
+# mode's line of prerequisite_table for timeout is read first, and a run without it cannot
+# run, every assertion the mode declares unrun, of the kind prerequisite, its last line the
+# one prerequisites would print. The run it makes runs the mode in a subshell, after the
 # one check of its prerequisites and bound_mode, so that however its code ends the verdict
 # still reads what it reported, then ends the run by finish's verdict: exit 0, 1 or 2.
 run_mode() {
-    local status declared family
+    local status declared family missing line
     MODE="$1"
     if [ -z "$MODE_INNER" ]; then
         [ ! -t 0 ] || exec </dev/null
+        if missing="$(prerequisites_missing "$1" 'tool|timeout')"; then
+            ending_mode
+            line="check.sh cannot run --$1: $missing"
+            printf '%s\n' "$line"
+            declared="$(set -o pipefail && declared_assertions "$1")" && [ -n "$declared" ] || declared="$RUN_WHAT"
+            while IFS= read -r family; do
+                ending_add declared "$family"
+                ending_add unrun "$family" prerequisite "$line"
+            done <<<"$declared"
+            run_ending assertions
+            return
+        fi
         CHILD_BOUND_CAP="" IOC_MODE_INNER=1 IOC_ENDING="$ENDING" bounded_run "$(mode_bound "$1")" bash "${BASH_SOURCE[0]}" "--$1"
         status=$?
         [ -n "$BOUND_ENDED" ] || return "$status"
@@ -2588,7 +2629,11 @@ run_recorded() {
     # ended by its own status 125, so xargs's function recording 125, at a status the row did
     # not declare, ends the mode the same way, naming the row and saying so; every other
     # status of xargs, 123 for a program that exited 1 to 125 among them, keeps its meaning.
-    local command="$1" out="$2" row="$3" script name names names_status ended took
+    # git exits GIT_USAGE, 129, on a usage error, which is no signal: a git's 129 is read as
+    # git's own exit, the row then failing on it as on any other status (failed_read), and
+    # so is the script's own 129 when it reached its exit with a git's 129 last, which
+    # bounded_run, reading bash's status, would read as signal 1.
+    local command="$1" out="$2" row="$3" script name names names_status ended took row_status
     local failed_status failed_declared failed_command _failed_said signal_name
     script="$out.sh"
     : >"$out.failed"
@@ -2632,15 +2677,24 @@ run_recorded() {
         printf '%s|%s\n' "$BOUND_TOOK" "$BOUND_ENDED" >"$out.ended"
         exit "$status"
     ) >"$out" 2>&1
-    printf '%s' "$?" >"$out.status"
+    row_status=$?
+    printf '%s' "$row_status" >"$out.status"
     ended="" took=""
     IFS='|' read -r took ended 2>/dev/null <"$out.ended"
+    # The script writes its stages just before it exits with the last one's status, so a
+    # script that wrote them reached its own exit, and its GIT_USAGE beside a git of the row
+    # that recorded GIT_USAGE is that git's exit, and no signal ended bash.
+    if [ "$row_status" = "$GIT_USAGE" ] && [ -s "$out.pipe" ] &&
+        grep -q -- "^$GIT_USAGE"$'\t[^\t]*\t'"git " "$out.failed"; then
+        ended=""
+    fi
     [ -z "$ended" ] || bound_stop "the recorded command of the row $row was ended by $ended, $took s after it started"
     while IFS=$'\t' read -r failed_status failed_declared failed_command _failed_said; do
         declared_status_holds "$failed_status" "$failed_declared" && continue
         [ "$failed_status" = 125 ] && [ "${failed_command%% *}" = xargs ] &&
             bound_stop "the program '${failed_command% }' the row $row ran exited 125, which xargs exits with when a program it ran was ended by a signal, and the row ran $took s"
         [ "$failed_status" -gt 128 ] 2>/dev/null && [ "$failed_status" != 141 ] || continue
+        [ "$failed_status" = "$GIT_USAGE" ] && [ "${failed_command%% *}" = git ] && continue
         signal_name="$(kill -l $((failed_status - 128)) 2>/dev/null)" || continue
         bound_stop "the program '${failed_command% }' the row $row ran was ended by signal $((failed_status - 128)) (SIG$signal_name), and the row ran $took s"
     done <"$out.failed"
@@ -5983,16 +6037,24 @@ prefix_held() {
 # reads the part whole, its local part after its last colon or its last dot, each component
 # of a qualified name's prefix (prefix_held) and a name before a line's colon; a regular
 # expression is read as its author wrote it, since it says itself what it matches. A
-# prefixed or a dotted name, a qualified name, that its file holds only by its local part,
-# the text after its last colon or its last dot, resolves only when each component of its
-# prefix stands in the file too, as a whole token, each component a word of letters, digits,
-# `_` and `-` that `.`, `[]`, `:`, `;`, a space, a quote or a bracket parts from the next
-# (prefix_held); a component the file does not hold fails the citation, naming the row, the
-# part and the component, so `Engin.match` fails in a file of `class Engine` and `def
-# match`, where `Engine.match` resolves, and `Engine.matc`, whose local part that file holds
-# only inside `match`, is held by no search and fails. A part that starts with a digit and
-# holds no space, and is neither text the file holds nor a line or a line range, fails by
-# name. A part written in words that none of those finds names a part of the file a reader
+# prefixed or a dotted name that its file does not hold whole, whose prefix, the text before
+# its last colon or its last dot, names a file beside the paths the citation names (found
+# by symbol_file), as `spendattrs.go:SpendRoleAttribute` or `count.py:quote_matches` does,
+# is read as that file and a name it holds, as a line after a file's name and a colon is
+# read against that file: its local part, the text after that colon or dot, resolves only
+# when that file holds it as a whole token (token_held), the parts after it are read
+# against that file, and nothing of the prefix is read as a namespace, since it is a file's
+# name; a local part that file does not hold fails the citation, naming the row, the part
+# and the file. Any other prefixed or dotted name, a qualified name, that its file holds only
+# by its local part resolves only when each component of its prefix stands in the file too,
+# as a whole token, each component a word of letters, digits, `_` and `-` that `.`, `[]`,
+# `:`, `;`, a space, a quote or a bracket parts from the next (prefix_held); a component the
+# file does not hold fails the citation, naming the row, the part and the component, so
+# `Engin.match` fails in a file of `class Engine` and `def match`, where `Engine.match`
+# resolves, and `Engine.matc`, whose local part that file holds only inside `match`, is held
+# by no search and fails. A part that starts with a digit and holds no space, and is
+# neither text the file holds nor a line or a line range, fails by name. A part written in
+# words that none of those finds names a part of the file a reader
 # judges, and this gate does not read it; nor does it read any part of a symbol whose
 # citation writes its file in words. Each such part is written to
 # $RUN_SCRATCH/unchecked-parts, which --citations prints, one line per part with its row, so
@@ -6100,12 +6162,22 @@ resolve_symbol() {
                 grep -qE "(^|/)$(printf '%s' "$part" | sed 's/[^a-zA-Z0-9_/-]/\\&/g')$" && continue
             ;;
         esac
-        # A prefixed name, such as a Turtle term `mas:sessionId`, resolves on its local
-        # part too: the prefix names a namespace and the file declares the local name. Each
+        # A prefixed name whose prefix names a file, as `spendattrs.go:SpendRoleAttribute`,
+        # is that file and a name it holds, as a line after a file's name and a colon is
+        # read: the file is the one the parts after it are read against, and the prefix
+        # is a file's name and no namespace, so prefix_held reads nothing of it. Any other
+        # prefixed name, such as a Turtle term `mas:sessionId`, resolves on its local part
+        # too: the prefix names a namespace and the file declares the local name. Each
         # component of the prefix stands in the file too (prefix_held), so a prefix with a
         # mistyped component fails rather than resolving on its local part alone.
         case "$part" in
         *:*)
+            if path="$(symbol_file "$root" "$commit" "${part%:*}" "${pathspec[@]}")"; then
+                here=("$path") here_name="$path"
+                token_held "$root" "$commit" "${part##*:}" "$path" && continue
+                fail "$family" "$id cites the symbol $part, whose prefix names the file $path, and $path does not hold its local part '${part##*:}' as a word at $commit"
+                return 1
+            fi
             if token_held "$root" "$commit" "${part##*:}" "${here[@]}"; then
                 prefix_held "$family" "$id" "$part" : "$here_name" "$root" "$commit" "${here[@]}" || return 1
                 continue
@@ -6131,12 +6203,19 @@ resolve_symbol() {
             continue
             ;;
         esac
-        # A dotted name is read by its last element too, since a citation writes
-        # `Envelope.Validate` where the file declares `Validate` on a receiver, and each
-        # component of what stands before that element stands in the file too
-        # (prefix_held), as `Envelope` does there.
+        # A dotted name whose prefix names a file, as `config.yaml.key`, is that file and a
+        # name it holds, as a prefixed name's is above. Any other dotted name is read by its
+        # last element too, since a citation writes `Envelope.Validate` where the file
+        # declares `Validate` on a receiver, and each component of what stands before that
+        # element stands in the file too (prefix_held), as `Envelope` does there.
         case "$part" in
         *.*)
+            if path="$(symbol_file "$root" "$commit" "${part%.*}" "${pathspec[@]}")"; then
+                here=("$path") here_name="$path"
+                token_held "$root" "$commit" "${part##*.}" "$path" && continue
+                fail "$family" "$id cites the symbol $part, whose prefix names the file $path, and $path does not hold its local part '${part##*.}' as a word at $commit"
+                return 1
+            fi
             if token_held "$root" "$commit" "${part##*.}" "${here[@]}"; then
                 prefix_held "$family" "$id" "$part" . "$here_name" "$root" "$commit" "${here[@]}" || return 1
                 continue

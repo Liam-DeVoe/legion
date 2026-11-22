@@ -177,6 +177,24 @@ one_failure_result() {
     fi
 }
 
+# path_without <tool>; makes $WORK/path-without-<tool>, a directory to set PATH to that
+# holds a link to each program of this PATH, the first of each name, but <tool>, so that a
+# run with it lacks that one tool. It stops when the tool is still found there.
+path_without() {
+    local bin="$WORK/path-without-$1" d
+    if [ ! -d "$bin" ]; then
+        mkdir -p "$bin"
+        while IFS= read -r d; do
+            [ -d "$d" ] && ln -s "$d"/* "$bin/" 2>/dev/null
+        done < <(printf '%s\n' "$PATH" | tr ':' '\n')
+        rm -f "$bin/$1"
+    fi
+    if (PATH="$bin" && command -v "$1" >/dev/null 2>&1); then
+        printf 'FAIL %s could not be taken off PATH\n' "$1"
+        exit 1
+    fi
+}
+
 # The run's own ending (check.sh's header, "The run's own scratch and record"). check.sh,
 # when this file sourced it, made and checked this run's scratch, and this file checks what
 # its fixture builder needs before its first case, the lines of --self-test alone
@@ -1477,23 +1495,6 @@ ending_result "--landed on a checkout with no node_modules passes, its proofs in
 # its last line names what is missing and ends with what provides it.
 missing_result() {
     ending_result "$1" 2 "^check\\.sh cannot run --$2: $3; provided by: $4\$" "$5"
-}
-# path_without <tool>; makes $WORK/path-without-<tool>, a directory to set PATH to that
-# holds a link to each program of this PATH, the first of each name, but <tool>, so that a
-# run with it lacks that one tool. It stops when the tool is still found there.
-path_without() {
-    local bin="$WORK/path-without-$1" d
-    if [ ! -d "$bin" ]; then
-        mkdir -p "$bin"
-        while IFS= read -r d; do
-            [ -d "$d" ] && ln -s "$d"/* "$bin/" 2>/dev/null
-        done < <(printf '%s\n' "$PATH" | tr ':' '\n')
-        rm -f "$bin/$1"
-    fi
-    if (PATH="$bin" && command -v "$1" >/dev/null 2>&1); then
-        printf 'FAIL %s could not be taken off PATH\n' "$1"
-        exit 1
-    fi
 }
 
 # 78. A tool missing from PATH. At 533506542a --replay, --shape and --landed read no tool
@@ -4772,58 +4773,65 @@ else
     case_failed "$reader_case" "exit $RUN_STATUS, kinds $(printf '%s' "$RUN_UNRUN" | cut -f2 | sort -u | tr '\n' ' ')last line: $RUN_LINE"
 fi
 
-# 159. A child that leaves its pipe held ends the replay within its bound (the architect's
-# class of round 46, after test round 45). The tester's --replay of e7518312 slept 2 h 58 min
-# in run_recorded's `names="$(printf '%s' "$command" | python3 "$READER" names)"` with no
-# child left: a substitution reads its pipe to its end before it waits for anything, so a
-# process that still holds the pipe's write end, as one a reader started before the machine
-# killed it does, keeps the replay waiting with nothing it waits for. The case puts a
-# python3 first on PATH whose first call of reader.py with the word names starts a sleep of
-# 240 s that keeps the pipe and then kills its own process with SIGKILL, and runs --replay,
-# which must end exit 2 in less than 150 s, cannot run, every assertion it leaves of the
-# kind environment, its last line naming the reader and signal 9. At 78256590 the replay
-# waited the 240 s and then passed.
-# bound_case <name> <last line, an extended regular expression> <run> <seconds it took>
-# <the most it may take>; passes when the run's record holds exit 2 and that last line,
-# which is the case's own plant, every assertion it leaves could not run, of the kind
-# environment, and the run ended in less than the most it may take. Cases 160 to 162 read
-# their runs by it too.
+# 159. A process a bounded child leaves holding the pipe the gate reads is ended with the
+# child (the architect's class of round 46, after test round 45, and his fifth note of round
+# 48). The tester's --replay of e7518312 slept 2 h 58 min in run_recorded's
+# `names="$(printf '%s' "$command" | python3 "$READER" names)"` with no child left: a
+# substitution reads its pipe to its end before it waits for anything, so a process that
+# still holds the pipe's write end keeps the gate waiting with nothing it waits for, and
+# reads whatever that process writes there. bounded_run kills what is left of the group of
+# the program it ran once the program has ended. Until round 48 this case planted the held
+# pipe in the names step, which has written into a file since round 46, so with that kill
+# taken out the case still passed: it drove nothing. It now plants it where a substitution
+# still reads a bounded child to its end, unpinned_installs, `claims | python3 "$READER"
+# installs` read by `unpinned="$(unpinned_installs ...)"`: the case puts a python3 first on
+# PATH whose call of reader.py with the word installs leaves a process holding its output,
+# which waits until that python3 has ended, then 5 s more, and writes there a line of its
+# own, an install no row runs, and runs --replay, which must pass every assertion, that line
+# never read. With the kill taken out of bounded_run the substitution waits for the process,
+# reads its line, and --replay fails install-pinned naming it.
+# bound_case <name> <last line, an extended regular expression> <run> [<seconds> <limit>];
+# passes when the run's record holds exit 2 and that last line, which is the case's own
+# plant, and every assertion it leaves could not run, of the kind environment. It holds the
+# run to no time: each run a case makes ends at its own bound at the latest, BOUND_RUN, or
+# BOUND_CASES for a run of a check.test.sh, and each plant ends before that, so no case
+# waits forever and the last line alone decides, on a machine of any speed. A caller that
+# still passes the seconds its run took and a limit, as the tester's case 176 does as it was
+# committed, has both read and ignored, so that case stands unchanged. Cases 160 to 164,
+# 176, 179 and 182 read their runs by it.
 bound_case() {
     if ! case_read "$1" "$3" "$2"; then
         :
     elif [ "$RUN_STATUS" = 2 ] && printf '%s\n' "$RUN_LINE" | grep -qE -- "$2" &&
-        [ -n "$RUN_UNRUN" ] && ! printf '%s' "$RUN_UNRUN" | cut -f2 | grep -qvx environment && [ "$4" -lt "$5" ]; then
+        [ -n "$RUN_UNRUN" ] && ! printf '%s' "$RUN_UNRUN" | cut -f2 | grep -qvx environment; then
         case_passed "$1"
     else
-        case_failed "$1" "exit $RUN_STATUS after $4 s, kinds $(printf '%s' "$RUN_UNRUN" | cut -f2 | sort -u | tr '\n' ' ')last line: $RUN_LINE"
+        case_failed "$1" "exit $RUN_STATUS, kinds $(printf '%s' "$RUN_UNRUN" | cut -f2 | sort -u | tr '\n' ' ')last line: $RUN_LINE"
     fi
 }
-dir="$(fresh reader-held)"
-mkdir -p "$dir/reader-held-bin"
-cat >"$dir/reader-held-bin/python3" <<SH
+dir="$(fresh installs-held)"
+mkdir -p "$dir/installs-held-bin"
+cat >"$dir/installs-held-bin/python3" <<SH
 #!/usr/bin/env bash
-# A python3 whose first call of reader.py names leaves a process holding its output and
-# then ends by SIGKILL, as a reader the machine kills after it started one.
+# A python3 whose reader.py installs leaves a process holding its output, which writes a
+# line of its own there 5 s after this python3 has ended, unless something ends it first.
 for ((i = 1; i < \$#; i++)); do
     j=\$((i + 1))
-    case "\${!i}" in */reader.py) [ "\${!j}" = names ] && mkdir "$dir/reader-held-bin/fired" 2>/dev/null && { sleep 240 & kill -9 \$\$; } ;; esac
+    case "\${!i}" in */reader.py) [ "\${!j}" = installs ] && { (while kill -0 \$\$ 2>/dev/null; do sleep 0.2; done; sleep 5; printf 'f-held-pipe\tan install a process the reader left wrote into its pipe\n') & } ;; esac
 done
 exec $(command -v python3) "\$@"
 SH
-chmod +x "$dir/reader-held-bin/python3"
-held_start="$EPOCHSECONDS"
-out="$(PATH="$dir/reader-held-bin:$PATH" fixture_run "$dir" --replay)"
-bound_case "a reader.py that leaves a process holding its pipe and ends by SIGKILL makes --replay cannot run within its bound, of the kind environment, naming the reader and the signal" \
-    "^check\\.sh cannot run --replay: the install reader's reading of the programs of the row [^ ]+ was ended by signal 9 \\(SIGKILL\\), [0-9]+ s after it started\$" \
-    "$out" "$((EPOCHSECONDS - held_start))" 150
+chmod +x "$dir/installs-held-bin/python3"
+out="$(PATH="$dir/installs-held-bin:$PATH" fixture_run "$dir" --replay)"
+passed_result "a reader.py installs that leaves a process holding its pipe, which writes a line there after the reader has ended, leaves --replay passing every assertion, the process ended with the reader and its line never read" "$out"
 
 # 160. A child that never ends ends the replay at its bound (the architect's class of round
 # 46). The case puts a python3 first on PATH whose first call of reader.py with the word
 # names sleeps 300 s and prints nothing, and runs --replay with IOC_CHILD_BOUND=20, which
-# lowers every bound of a child to 20 s; it must end exit 2 in less than 200 s, cannot run,
-# every assertion it leaves of the kind environment, its last line naming the reader and
-# its bound of 20 s. At 78256590 the replay waited the whole sleep, ran the row with no function
-# recording its programs' statuses and passed.
+# lowers every bound of a child to 20 s; it must end exit 2, cannot run, every assertion it
+# leaves of the kind environment, its last line naming the reader and its bound of 20 s,
+# which only a run its bound ended prints. At 78256590 the replay waited the whole sleep, ran
+# the row with no function recording its programs' statuses and passed.
 dir="$(fresh reader-endless)"
 mkdir -p "$dir/reader-endless-bin"
 cat >"$dir/reader-endless-bin/python3" <<SH
@@ -4836,11 +4844,10 @@ done
 exec $(command -v python3) "\$@"
 SH
 chmod +x "$dir/reader-endless-bin/python3"
-endless_start="$EPOCHSECONDS"
 out="$(PATH="$dir/reader-endless-bin:$PATH" IOC_CHILD_BOUND=20 fixture_run "$dir" --replay)"
 bound_case "a reader.py that does not end makes --replay cannot run at its bound, of the kind environment, naming the reader and the bound" \
     "^check\\.sh cannot run --replay: the install reader's reading of the programs of the row [^ ]+ was ended by its bound of 20 s, [0-9]+ s after it started\$" \
-    "$out" "$((EPOCHSECONDS - endless_start))" 200
+    "$out"
 
 # 161. A row's recorded command the machine ends by SIGKILL is no row that failed (the
 # architect's rule of round 46: a row's command that a signal ends ends the run cannot run,
@@ -4852,25 +4859,23 @@ bound_case "a reader.py that does not end makes --replay cannot run at its bound
 dir="$(fresh row-killed)"
 jq -cn '{id: "f-killed-row", requirement: "r7", source: "this tree'"'"'s measurement", kind: "behaviour", claim: "The script prints ran once.", mark: "verified", evidence: {surface: "cli"}, command: "python3 -c '"'"'import os, signal; os.kill(os.getpid(), signal.SIGKILL)'"'"'", expect: {equals: "ran once"}, output: "ran once", note: "a row the machine ends by SIGKILL"}' \
     >>"$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
-killed_row_start="$EPOCHSECONDS"
 out="$(fixture_run "$dir" --replay)"
 bound_case "a row whose command the machine ends by SIGKILL makes --replay cannot run, of the kind environment, naming the row and the signal" \
     "^check\\.sh cannot run --replay: the recorded command of the row f-killed-row was ended by signal 9 \\(SIGKILL\\), [0-9]+ s after it started\$" \
-    "$out" "$((EPOCHSECONDS - killed_row_start))" 150
+    "$out"
 
 # 162. A row's recorded command that runs past its bound is ended there (the architect's
 # rule of round 46). The case adds a row whose python3 sleeps 300 s and runs --replay with
-# IOC_CHILD_BOUND=20, which must end exit 2 in less than 200 s, cannot run, every assertion it
-# leaves of the kind environment, its last line naming the row and its bound of 20 s. At
-# 78256590 the row ran its whole sleep and failed replay-command, its output empty, exit 1.
+# IOC_CHILD_BOUND=20, which must end exit 2, cannot run, every assertion it leaves of the
+# kind environment, its last line naming the row and its bound of 20 s. At 78256590 the row
+# ran its whole sleep and failed replay-command, its output empty, exit 1.
 dir="$(fresh row-endless)"
 jq -cn '{id: "f-endless-row", requirement: "r7", source: "this tree'"'"'s measurement", kind: "behaviour", claim: "The script prints ran once.", mark: "verified", evidence: {surface: "cli"}, command: "python3 -c '"'"'import time; time.sleep(300)'"'"'", expect: {equals: "ran once"}, output: "ran once", note: "a row that runs past its bound"}' \
     >>"$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
-endless_row_start="$EPOCHSECONDS"
 out="$(IOC_CHILD_BOUND=20 fixture_run "$dir" --replay)"
 bound_case "a row whose command runs past its bound makes --replay cannot run at the bound, of the kind environment, naming the row and the bound" \
     "^check\\.sh cannot run --replay: the recorded command of the row f-endless-row was ended by its bound of 20 s, [0-9]+ s after it started\$" \
-    "$out" "$((EPOCHSECONDS - endless_row_start))" 200
+    "$out"
 
 # 163. A local text tool the machine ends by a signal is never read as an empty value (the
 # architect's form of round 46: a tool runs with no bound of its own, and its status is read
@@ -4892,11 +4897,10 @@ exec REAL_JQ "$@"
 SH
 sed -i "s|REAL_JQ|'$(command -v jq)'|" "$dir/jq-killed-bin/jq"
 chmod +x "$dir/jq-killed-bin/jq"
-jq_predicate_start="$EPOCHSECONDS"
 out="$(PATH="$dir/jq-killed-bin:$PATH" fixture_run "$dir" --replay)"
 bound_case "a jq the machine ends by SIGKILL while it reads a row's predicate makes --replay cannot run, of the kind environment, naming jq and the step" \
     "^check\\.sh cannot run --replay: the program 'jq .*', which evaluate ran, was ended by signal 9 \\(SIGKILL\\)\$" \
-    "$out" "$((EPOCHSECONDS - jq_predicate_start))" 150
+    "$out"
 
 # 164. A local text tool the machine ends by a signal in a list that feeds a loop is never
 # read as a short list (the architect's form of round 46). --citations reads the
@@ -4917,11 +4921,10 @@ exec REAL_JQ "$@"
 SH
 sed -i "s|REAL_JQ|'$(command -v jq)'|" "$dir/jq-killed-bin/jq"
 chmod +x "$dir/jq-killed-bin/jq"
-jq_list_start="$EPOCHSECONDS"
 out="$(PATH="$dir/jq-killed-bin:$PATH" fixture_run "$dir" --citations)"
 bound_case "a jq the machine ends by SIGKILL while it lists what a loop reads makes --citations cannot run, of the kind environment, naming jq and the step" \
     "^check\\.sh cannot run --citations: the program 'jq .*project-code.*', which mode_citations ran, was ended by signal 9 \\(SIGKILL\\)\$" \
-    "$out" "$((EPOCHSECONDS - jq_list_start))" 150
+    "$out"
 
 # 165. The commit a Landed line names is the whole word after its label, and a word the
 # reader cannot read fails (the architect's class of round 46: a reader of what an author
@@ -5370,18 +5373,15 @@ mkdir -p "$ending_bin/mv" "$ending_bin/mode"
 chmod +x "$ending_bin/mv/mv" "$ending_bin/mode/jq" "$ending_bin/mode/awk"
 mkdir -p "$WORK/ending-summary"
 printf '. %q && ending_add declared %q && ending_add passed %q && run_ending cases\n' "$HERE/check.sh" 'a case that passed' 'a case that passed' >"$WORK/ending-summary/check.test.sh"
-ending_start="$EPOCHSECONDS"
 dir="$(fresh ending-write-killed)"
 out="$(PATH="$ending_bin/mv:$PATH" fixture_run "$dir" --citations)"
 bound_case "the mv of run_ending, ended by SIGKILL as it renames the record of an honest --citations into place, makes it cannot run, of the kind environment, its record written again" \
     "^check\\.sh cannot run --citations: the program 'mv -f -- .*', which run_ending ran, was ended by signal 9 \\(SIGKILL\\)\$" \
-    "$out" "$((EPOCHSECONDS - ending_start))" 150
-ending_start="$EPOCHSECONDS"
+    "$out"
 out="$(PATH="$ending_bin/mv:$PATH" gate_run "$WORK/ending-summary/check.test.sh")"
 bound_case "the mv of check.test.sh's summary, ended by SIGKILL as it renames the record into place, makes it cannot run, of the kind environment, its record written again" \
     "^check\\.sh cannot run check\\.test\\.sh: the program 'mv -f -- .*', which run_ending ran, was ended by signal 9 \\(SIGKILL\\)\$" \
-    "$out" "$((EPOCHSECONDS - ending_start))" 150
-ending_start="$EPOCHSECONDS"
+    "$out"
 dir="$(fresh ending-mode-killed)"
 out="$(PATH="$ending_bin/mode:$PATH" fixture_run "$dir" --citations)"
 mode_case="a mode a signal ended, whose declared list run_mode's awk cannot read, makes --citations cannot run, of the kind environment, the run itself the one unit"
@@ -5389,7 +5389,7 @@ ending_read "$out"
 if [ "$(printf '%s' "$RUN_UNRUN" | cut -f1)" = --citations ]; then
     bound_case "$mode_case" \
         "^check\\.sh cannot run --citations: the mode was ended by signal 9 \\(SIGKILL\\), [0-9]+ s after it started\$" \
-        "$out" "$((EPOCHSECONDS - ending_start))" 150
+        "$out"
 else
     case_failed "$mode_case" "exit $RUN_STATUS, the units that could not run: $(printf '%s' "$RUN_UNRUN" | cut -f1 | tr '\n' ' ')last line: $RUN_LINE"
 fi
@@ -5573,11 +5573,185 @@ grep -qF '"id":"f-xargs-killed"' "$dir/repo/docs/research/internet-of-cognition/
     printf 'FAIL the row whose xargs runs a killed program could not be planted in the fixture\n'
     exit 1
 }
-xargs_start="$EPOCHSECONDS"
 out="$(fixture_run "$dir" --replay)"
 bound_case "a row whose xargs runs a program the machine ends by SIGKILL makes --replay cannot run, of the kind environment, naming the row and xargs's status 125" \
     "^check\\.sh cannot run --replay: the program 'xargs python3 -c .*' the row f-xargs-killed ran exited 125, which xargs exits with when a program it ran was ended by a signal, and the row ran [0-9]+ s\$" \
-    "$out" "$((EPOCHSECONDS - xargs_start))" 150
+    "$out"
+
+# 183. A symbol part written as a file's name and a name it holds, `file.go:Symbol`, is read
+# as that file and that name (review 6011626086, its thread at check.sh's resolve_symbol). A
+# part its file does not hold whole reaches the reading of a prefixed name, which held the
+# local part to the paths the citation names and read the prefix as a namespace, each
+# component of it a word the file must hold (prefix_held), so at cf2e23db
+# `spendattrs.go:SpendRoleAttribute` failed because that file's text writes neither
+# spendattrs nor go as a word, and `count.py:quote_matches` held only because count.py's
+# text says count and py; a line after a file's name, `name.py:88-97`, was already read
+# against that file. The case commits two files into the fixture,
+# packages/daemon/internal/api/a.go and b.go, declaring the functions Alpha and Beta, neither
+# writing a, b or go as a word, names that commit as our repository's in sources.json, and
+# writes the fixture's row f-our-1 as citing both files, with the symbol
+# 'a.go:Alpha, b.go:Beta', then its dotted form 'a.go.Alpha, b.go.Beta', and then
+# 'a.go:Beta', running --citations over each: the first two must pass citation-our-code, and
+# the third, whose local part a.go does not hold though b.go does, must fail it, naming the
+# part and a.go. At cf2e23db the first two failed, each naming the component 'a' of the
+# prefix 'a.go'.
+for form in colon dot other; do
+    case "$form" in
+    colon) symbol='a.go:Alpha, b.go:Beta' ;;
+    dot) symbol='a.go.Alpha, b.go.Beta' ;;
+    other) symbol='a.go:Beta' ;;
+    esac
+    dir="$(fresh "symbol-file-prefix-$form")"
+    evidence_copy="$dir/repo/docs/research/internet-of-cognition"
+    api="$dir/repo/packages/daemon/internal/api"
+    printf 'package alphapkg\n\nfunc Alpha() int {\n\treturn 1\n}\n' >"$api/a.go"
+    printf 'package betapkg\n\nfunc Beta() int {\n\treturn 2\n}\n' >"$api/b.go"
+    named="$(
+        cd "$dir/repo" &&
+            git add packages/daemon/internal/api/a.go packages/daemon/internal/api/b.go &&
+            git commit --quiet -m "two files of one function each" &&
+            git rev-parse HEAD
+    )"
+    jq --arg c "$named" '.our_repository.commit = $c' "$evidence_copy/sources.json" >"$dir/sources.json" &&
+        mv "$dir/sources.json" "$evidence_copy/sources.json"
+    sed -i "/\"id\":\"f-our-1\"/s#\"file\":\"packages/daemon/internal/api/handoff.go\",\"symbol\":\"TesterVerdictRequired\"#\"file\":\"packages/daemon/internal/api/a.go, packages/daemon/internal/api/b.go\",\"symbol\":\"$symbol\"#" \
+        "$evidence_copy/claims.jsonl"
+    [ -n "$named" ] && [ "$(jq -r '.our_repository.commit' "$evidence_copy/sources.json")" = "$named" ] &&
+        grep -F '"id":"f-our-1"' "$evidence_copy/claims.jsonl" | grep -qF "\"file\":\"packages/daemon/internal/api/a.go, packages/daemon/internal/api/b.go\",\"symbol\":\"$symbol\"" &&
+        ! grep -qwE 'a|b|go' "$api/a.go" "$api/b.go" || {
+        printf 'FAIL the symbol %s and its two files could not be planted in the fixture row f-our-1\n' "$symbol"
+        exit 1
+    }
+    out="$(fixture_run "$dir" --citations)"
+    case "$form" in
+    other)
+        case_result "a symbol part a.go:Beta, whose prefix names a.go and whose local part only b.go holds, fails --citations, naming the part and a.go" \
+            "citation-our-code: f-our-1 cites the symbol a\\.go:Beta, whose prefix names the file packages/daemon/internal/api/a\\.go, and packages/daemon/internal/api/a\\.go does not hold its local part 'Beta'" "$out"
+        ;;
+    *) honest_result "symbol parts each written as a file and a name that file holds, $symbol, in files that write neither a, b nor go as a word, pass citation-our-code" citation-our-code "$out" ;;
+    esac
+done
+
+# 184. No PASS or FAIL line names the deployment repository (the architect's second note of
+# round 48). A row's command, the URL its curl read among it, reached fail() as it stood: a
+# deployment REST row, a curl of https://api.github.com/repos/$IOC_DEPLOYMENT_REPO/..., whose
+# read GitHub answered 404 failed replay-command quoting that curl with the value in its URL,
+# though every stop of a run wrote $IOC_DEPLOYMENT_REPO in its place (deployment_hidden).
+# Each PASS and FAIL line is now printed by deployment_hidden too. The case plants into the
+# fixture a row that reads a pull request of the deployment repository through that URL,
+# with a curl of its own first on PATH that answers every read of api.github.com 404 Not
+# Found as GitHub does: to the row, the body on stdout, curl's line on stderr and exit 22,
+# and to the gate's read again with -o, the body and the headers into the files it names
+# and the status. It runs --replay, whose IOC_DEPLOYMENT_REPO fixture_run sets to the
+# placeholder FIXTURE_DEPLOYMENT_REPO: no line of the run's text may hold the placeholder,
+# in any case, and the run must fail replay-command, naming the row, its curl with
+# $IOC_DEPLOYMENT_REPO in the URL, its exit 22 and GitHub's 404. At cf2e23db the FAIL line
+# held the placeholder.
+deployment_404="$WORK/deployment-404"
+mkdir -p "$deployment_404/bin"
+cat >"$deployment_404/bin/curl" <<'STUB'
+#!/bin/sh
+case " $* " in
+*" https://api.github.com/"*) ;;
+*) exec REAL_CURL "$@" ;;
+esac
+body='' dump='' format='' previous=''
+for word in "$@"; do
+    case "$previous" in
+    -o) body=$word ;;
+    -D) dump=$word ;;
+    -w) format=$word ;;
+    esac
+    previous=$word
+done
+answer='{"message": "Not Found", "documentation_url": "https://docs.github.com/rest/pulls/pulls#get-a-pull-request", "status": "404"}'
+if [ -n "$body" ]; then
+    printf '%s\n' "$answer" >"$body"
+    [ -z "$dump" ] || printf 'HTTP/2 404\r\ncontent-type: application/json; charset=utf-8\r\n\r\n' >"$dump"
+    [ -z "$format" ] || printf '404'
+    exit 0
+fi
+printf '%s\n' "$answer"
+printf 'curl: (22) The requested URL returned error: 404\n' >&2
+exit 22
+STUB
+sed -i "s|REAL_CURL|'$(command -v curl)'|" "$deployment_404/bin/curl"
+chmod +x "$deployment_404/bin/curl"
+dir="$(fresh deployment-read-404)"
+claims_copy="$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+jq -cn '{id: "f-deployment-read", requirement: "r7", source: "the case", kind: "behaviour", claim: "The deployment repository holds pull request 1.", mark: "verified", evidence: {surface: "cli"}, command: "curl -sS --fail-with-body https://api.github.com/repos/$IOC_DEPLOYMENT_REPO/pulls/1 | jq -r .title", expect: {equals: "the first pull request"}, output: "the first pull request", note: "planted by case 184"}' \
+    >>"$claims_copy"
+grep -F '"id":"f-deployment-read"' "$claims_copy" | grep -qF 'https://api.github.com/repos/$IOC_DEPLOYMENT_REPO/pulls/1' || {
+    printf 'FAIL the row that reads the deployment repository could not be planted in the fixture\n'
+    exit 1
+}
+out="$(PATH="$deployment_404/bin:$PATH" fixture_run "$dir" --replay)"
+hidden_case="a deployment REST row whose read GitHub answers 404 fails replay-command, naming the row, its curl with \$IOC_DEPLOYMENT_REPO in the URL and the 404, and no line of the run names the value"
+if grep -qiF -- "$FIXTURE_DEPLOYMENT_REPO" "$out/text"; then
+    case_failed "$hidden_case" "its text names the value: $(grep -ciF -- "$FIXTURE_DEPLOYMENT_REPO" "$out/text") lines"
+else
+    case_result "$hidden_case" \
+        'replay-command: f-deployment-read ran its command and a read inside it failed: .curl -sS --fail-with-body https://api\.github\.com/repos/\$IOC_DEPLOYMENT_REPO/pulls/1 ?. exited 22, and GitHub answered 404: Not Found' "$out"
+fi
+
+# 185. git's 129 is git's own exit and no signal (the architect's third note of round 48).
+# git exits 129 on a usage error, and 129 is 128 and SIGHUP's number too, so bounded_run,
+# reading the status of a row's script, and run_recorded, reading the status a row's git
+# recorded, each took a git given an option it does not know for a program signal 1 ended:
+# at cf2e23db such a row ended --replay cannot run, of the kind environment, naming signal 1
+# (SIGHUP), where any other program's failure fails the row. A git's 129 is now read as
+# git's own exit (GIT_USAGE), wherever it stands. The case plants into the fixture a row
+# whose command is `git --no-such-option`, its git the last command, so the row's script
+# exits 129 too, and then one whose command is `git --no-such-option; printf 'ran once\n'`,
+# its git's 129 recorded before a command that exits 0, and runs --replay over each, which
+# must fail replay-command, naming the row and git's exit 129, and not end cannot run.
+for form in last first; do
+    case "$form" in
+    last) command='git --no-such-option' ;;
+    first) command="git --no-such-option; printf 'ran once\\n'" ;;
+    esac
+    dir="$(fresh "git-usage-$form")"
+    claims_copy="$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+    jq -cn --arg id "f-git-usage-$form" --arg c "$command" '{id: $id, requirement: "r7", source: "this tree'"'"'s measurement", kind: "behaviour", claim: "The script prints ran once.", mark: "verified", evidence: {surface: "cli"}, command: $c, expect: {equals: "ran once"}, output: "ran once", note: "a row whose git is given an option it does not know"}' \
+        >>"$claims_copy"
+    grep -qF "\"id\":\"f-git-usage-$form\"" "$claims_copy" || {
+        printf 'FAIL the row whose git is given an option it does not know could not be planted in the fixture\n'
+        exit 1
+    }
+    out="$(fixture_run "$dir" --replay)"
+    git_case="a row whose git is given an option it does not know, git standing $form in its command, fails replay-command on git's exit 129 and does not end --replay cannot run"
+    if ! case_read "$git_case" "$out" 'signal 1 \(SIGHUP\)'; then
+        :
+    elif [ "$RUN_ENDING" = cannot-run ]; then
+        case_failed "$git_case" "the gate read git's 129 as signal 1: $RUN_LINE"
+    else
+        case_result "$git_case" "replay-command: f-git-usage-$form ran its command and a read inside it failed: 'git --no-such-option ?' exited 129" "$out"
+    fi
+done
+
+# 186. A machine with no timeout lacks a prerequisite, named, and never ends 127 (the
+# architect's fourth note of round 48). run_mode runs the mode under GNU timeout by
+# bounded_run before the mode's prerequisites, timeout's line of prerequisite_table among
+# them, are read, so at cf2e23db a PATH with no timeout ended every mode exit 127, with no
+# ending record and no line naming what was missing. The mode's line for timeout is now read
+# before that run. The case runs --citations and --shape over the fixture with a PATH that
+# holds every program of this one but timeout (path_without), and each must end exit 2,
+# cannot run, every assertion it declares of the kind prerequisite and none failed, its last
+# line naming timeout and, as the table's line does, what provides it.
+path_without timeout
+for mode in citations shape; do
+    dir="$(fresh "missing-timeout-$mode")"
+    out="$(PATH="$WORK/path-without-timeout" fixture_run "$dir" "--$mode")"
+    timeout_case="--$mode with no timeout on PATH cannot run, exit 2, of the kind prerequisite, naming timeout and what provides it"
+    ending_read "$out"
+    if [ "$RUN_CRASH" != 1 ] && [ "$RUN_STATUS" = 2 ] && [ -z "$RUN_FAILED" ] &&
+        printf '%s\n' "$RUN_LINE" | grep -qxF -- "check.sh cannot run --$mode: the tool timeout is not on PATH; provided by: apt-get install coreutils" &&
+        [ "$(printf '%s' "$RUN_UNRUN" | cut -f2 | sort -u)" = prerequisite ]; then
+        case_passed "$timeout_case"
+    else
+        case_failed "$timeout_case" "exit $RUN_STATUS, last line: $RUN_LINE; could not run, by kind: $(printf '%s' "$RUN_UNRUN" | cut -f2 | sort | uniq -c | tr -s ' \n' ' ')"
+    fi
+done
 
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending
