@@ -15,7 +15,7 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
-import { spawnWithin } from "@legion/test-fixtures/row-clock";
+import { fileLimit, spawnWithin } from "@legion/test-fixtures/row-clock";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { argMaxForceHolds } from "../../../../scripts/e2e/lib/arg-max-force";
 import { ownGroup, untilRunning } from "../../../../scripts/e2e/lib/own-group";
@@ -23,7 +23,15 @@ import { procRootOf } from "../../../../scripts/e2e/lib/proc-root";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
 import { DAEMON_MODULE, workerPane } from "./daemon-pane";
 import { RIG_WORLD } from "./rig-world";
-import { fileRowLimit, RIG_STEP, SCRIPT_RUN, VCS_COMMAND } from "./test-limit";
+import {
+  JUDGE_OMP,
+  JUDGE_OMP_ENVIRONMENT,
+  JUDGE_PULLS,
+  RIG_STEP,
+  rowLimit,
+  SCRIPT_RUN,
+  VCS_COMMAND,
+} from "./test-limit";
 
 /** rig.sh's world variables as its header sets them from rig-world.json, for a row that runs one
  * of its functions alone, and `here`, the directory whose rig-world.json they come from. */
@@ -31,8 +39,13 @@ const WORLD_VARS = `here=${import.meta.dir} worker_repo=${RIG_WORLD.repository} 
 
 // Every test here runs rig.sh and its stand-ins as real processes, which a loaded machine
 // stretches with no bound, so each test gets the limit test-limit.ts computes from the bounds of
-// what they wait for.
-setDefaultTimeout(fileRowLimit(RIG_STEP, RIG_STEP, RIG_STEP, RIG_STEP));
+// what they wait for: the most of two runs of rig.sh judge-omp (a row of judge-omp's describe
+// starts two judges) and four rig.sh steps, the limit of every other row.
+setDefaultTimeout(
+  fileLimit(
+    Math.max(rowLimit(RIG_STEP, RIG_STEP, RIG_STEP, RIG_STEP), rowLimit(JUDGE_OMP, JUDGE_OMP))
+  )
+);
 
 // The judge runs in a Docker container; every other row here needs no container. Read once, so
 // one warning names docker for the whole file.
@@ -1003,6 +1016,9 @@ exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
       { mode: 0o755 }
     );
   });
+  // Each judge waits for the bounds rig.sh judge-omp runs under (JUDGE_OMP), which the row hands it
+  // (JUDGE_OMP_ENVIRONMENT): a Docker daemon that stalls less than a call's bound costs the row
+  // time, and one that stalls longer ends the judge with the rig's refusal naming the call.
   const judge = (
     kind: string,
     dir: string,
@@ -1010,11 +1026,12 @@ exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
     env: Record<string, string> = {}
   ) =>
     spawnWithin(
-      { ...RIG_STEP, part: `rig.sh judge-omp ${kind}` },
+      { ...JUDGE_OMP, part: `rig.sh judge-omp ${kind}` },
       ["bash", path.join(import.meta.dir, "rig.sh"), "judge-omp", kind, dir, output],
       {
         env: {
           ...childEnv,
+          ...JUDGE_OMP_ENVIRONMENT,
           USER: "rig",
           SKILL_SCENARIOS_WORK: work,
           SKILL_SCENARIOS_JUDGE_OMP: omp,
@@ -1170,6 +1187,110 @@ exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
     }
   });
 
+  /**
+   * A `docker` first on PATH for a daemon that never answers one kind of call, `hang` (it sleeps
+   * far past any bound, as a stalled daemon's client waits on), answers an image's inspect with
+   * `inspect` (1: the daemon lacks the image), fails each pull, and answers a run at once. It
+   * writes each call's first two words to calls.txt beside it. No row of it needs Docker itself.
+   */
+  function stalledDocker(hang: "image" | "pull" | "run", inspect = 0) {
+    const bin = freshDir("judge-stalled-docker");
+    const calls = path.join(bin, "calls.txt");
+    writeFileSync(
+      path.join(bin, "docker"),
+      `#!/bin/bash\nprintf '%s %s\\n' "$1" "$2" >>${JSON.stringify(calls)}\n[ "$1" != ${hang} ] || exec sleep 600\ncase $1 in image) exit ${inspect} ;; pull) exit 1 ;; esac\n`,
+      { mode: 0o755 }
+    );
+    return {
+      PATH: `${bin}:${childEnv.PATH}`,
+      calls: () => readFileSync(calls, "utf8").split("\n").filter(Boolean),
+    };
+  }
+  /** Bounds that end a stalled call in seconds: the daemon's 2 s, and omp's own 1 s. */
+  const SHORT = { SKILL_SCENARIOS_DOCKER_TIMEOUT: "2", SKILL_SCENARIOS_TIMEOUT: "1" };
+  /** The rig's refusal lines in a judge's stderr. */
+  const refusals = (result: { stderr: Buffer }) =>
+    result.stderr
+      .toString()
+      .split("\n")
+      .filter((line) => line.startsWith("skill-scenarios: "));
+
+  // Catches: a Docker call that waits on a stalled daemon with no bound of its own, so only the
+  // row's clock ends it and nothing names the call (on 20 November the seven judge rows failed so,
+  // at a bound measured on another step), and an inspect the daemon never answered taken for a missing
+  // image, which then pulls.
+  test("an inspect the daemon does not answer within its bound ends the judge, naming the call", () => {
+    const docker = stalledDocker("image");
+    const dir = judgeDir();
+    const result = judge("bare", dir, "answer.json", { ...SHORT, PATH: docker.PATH });
+    expect({ code: result.exitCode, refusals: refusals(result) }).toEqual({
+      code: 1,
+      refusals: [
+        expect.stringMatching(
+          /^skill-scenarios: judge-omp: docker image inspect \S+ did not end within its bound of 2 s \(SKILL_SCENARIOS_DOCKER_TIMEOUT\)$/
+        ),
+      ],
+    });
+    expect(docker.calls()).toEqual(["image inspect"]);
+    expect(existsSync(`${dir}.key`)).toBe(false);
+  });
+
+  // Catches: a pull that waits on a stalled daemon with no bound, and a refusal that names no call.
+  test("each pull the daemon does not answer within its bound fails, and the judge is refused after the last", () => {
+    const docker = stalledDocker("pull", 1);
+    const result = judge("bare", judgeDir(), "answer.json", { ...SHORT, PATH: docker.PATH });
+    expect({ code: result.exitCode, refusals: refusals(result) }).toEqual({
+      code: 1,
+      refusals: [
+        expect.stringMatching(
+          new RegExp(
+            `^skill-scenarios: judge-omp: docker could not pull \\S+ in ${JUDGE_PULLS} attempts: docker pull did not end within its bound of 2 s \\(SKILL_SCENARIOS_DOCKER_TIMEOUT\\)$`
+          )
+        ),
+      ],
+    });
+    expect(docker.calls()).toEqual([
+      "image inspect",
+      ...Array.from({ length: JUDGE_PULLS }, () => "pull --quiet"),
+    ]);
+  });
+
+  // Catches: a judge's run that waits on a stalled daemon past omp's own bound, and one whose
+  // refusal leaves its key directory behind or no exit line in out.txt.
+  test("a run that does not end within the daemon's bound and omp's own ends the judge, naming both", () => {
+    const docker = stalledDocker("run");
+    const dir = judgeDir();
+    const result = judge("bare", dir, "answer.json", { ...SHORT, PATH: docker.PATH });
+    expect({ code: result.exitCode, refusals: refusals(result) }).toEqual({
+      code: 1,
+      refusals: [
+        "skill-scenarios: judge-omp: docker run of the judge did not end within its bound of 3 s: the daemon's 2 s (SKILL_SCENARIOS_DOCKER_TIMEOUT) and omp's own 1 s (SKILL_SCENARIOS_TIMEOUT)",
+      ],
+    });
+    expect(docker.calls()).toEqual(["image inspect", "run --rm"]);
+    expect(readFileSync(path.join(dir, "out.txt"), "utf8")).toBe("exit=137\n");
+    expect(existsSync(`${dir}.key`)).toBe(false);
+  });
+
+  // Catches: a bound that is no whole number of seconds handed to `timeout` as it stands.
+  test("refuses a Docker bound or an omp bound that is no whole number of seconds", () => {
+    for (const [name, value] of [
+      ["SKILL_SCENARIOS_DOCKER_TIMEOUT", "5s"],
+      ["SKILL_SCENARIOS_DOCKER_TIMEOUT", "0"],
+      ["SKILL_SCENARIOS_TIMEOUT", "1e3"],
+    ] as const) {
+      const result = judge("bare", judgeDir(), "answer.json", { [name]: value });
+      expect({ name, value, code: result.exitCode, refusals: refusals(result) }).toEqual({
+        name,
+        value,
+        code: 1,
+        refusals: [
+          `skill-scenarios: judge-omp: ${name} is '${value}', not a whole number of seconds`,
+        ],
+      });
+    }
+  });
+
   // The gateway route with the real installer and key command, and a stand-in hawk-token first on
   // PATH that mints a JWT and counts each mint. The key command needs the operator's home and
   // session bus, so it runs on the host; the container gets only the token it printed.
@@ -1313,11 +1434,12 @@ printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
     });
     const rootWork = freshDir("judge-root-work");
     const result = spawnWithin(
-      { ...RIG_STEP, part: "rig.sh judge-omp ste" },
+      { ...JUDGE_OMP, part: "rig.sh judge-omp ste" },
       ["bash", path.join(scripts, "rig.sh"), "judge-omp", "ste", judgeDir(), "answer.json"],
       {
         env: {
           ...childEnv,
+          ...JUDGE_OMP_ENVIRONMENT,
           USER: "rig",
           SKILL_SCENARIOS_WORK: rootWork,
           SKILL_SCENARIOS_JUDGE_OMP: omp,

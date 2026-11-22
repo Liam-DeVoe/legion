@@ -38,6 +38,55 @@ export function fileRowLimit(...waits: readonly Wait[]): number {
 export const RIG_STEP: Wait = { part: "a rig.sh step", boundMs: 240_000 };
 
 /**
+ * One Docker call of `rig.sh judge-omp`: the judge image's inspect, one pull of it, or the daemon's
+ * part of the judge's run, its container's start and end around omp. rig.sh kills each at
+ * SKILL_SCENARIOS_DOCKER_TIMEOUT, which JUDGE_OMP_ENVIRONMENT gives it from this, and then refuses
+ * the judge, naming the call. The box's Docker restarts at 06:45Z, and a call fails for 1 to 2
+ * minutes around it; as the daemon's stall of 20 November ended, `docker version` took 81 s; a pull
+ * moves the image, 115 MB as `docker image inspect` sizes it, which 300 s carries at 0.4 MB/s. 300 s
+ * is past each: a stall shorter than it costs the row time, not a fail, and a stall as long as that
+ * one of 20 November, about 52 minutes, still ends the row, with the rig's refusal naming the call.
+ */
+export const JUDGE_DOCKER_CALL: Wait = {
+  part: "a Docker call of rig.sh judge-omp",
+  boundMs: 300_000,
+};
+
+/**
+ * omp's own run in a judge of rig.test.ts: the stand-in omp the rows mount, a bash script that
+ * writes the judge's answer file and exits. On 20 November the nine rows of judge-omp's describe,
+ * Docker included, took 47 s together. JUDGE_OMP_ENVIRONMENT gives it to rig.sh as
+ * SKILL_SCENARIOS_TIMEOUT, which bounds omp inside the container.
+ */
+export const JUDGE_STANDIN_OMP: Wait = { part: "the judge's stand-in omp", boundMs: 120_000 };
+
+/** The pulls of the judge's image rig.sh judge-omp asks for at most, a pause of 2 s between two. */
+export const JUDGE_PULLS = 3;
+
+/**
+ * One `rig.sh judge-omp` of rig.test.ts, the sum of the bounds it runs under, one after another:
+ * its own work on the host (RIG_STEP: the first call builds both judge profiles), the image's
+ * inspect, at most JUDGE_PULLS pulls and the pauses between them, and the judge's run, which is
+ * the daemon's part (JUDGE_DOCKER_CALL) and omp's own (JUDGE_STANDIN_OMP).
+ */
+export const JUDGE_OMP: Wait = {
+  part: "rig.sh judge-omp",
+  boundMs:
+    RIG_STEP.boundMs +
+    JUDGE_DOCKER_CALL.boundMs +
+    JUDGE_PULLS * JUDGE_DOCKER_CALL.boundMs +
+    (JUDGE_PULLS - 1) * 2_000 +
+    JUDGE_DOCKER_CALL.boundMs +
+    JUDGE_STANDIN_OMP.boundMs,
+};
+
+/** The environment that gives `rig.sh judge-omp` the bounds JUDGE_OMP counts, in seconds. */
+export const JUDGE_OMP_ENVIRONMENT: Readonly<Record<string, string>> = {
+  SKILL_SCENARIOS_DOCKER_TIMEOUT: String(JUDGE_DOCKER_CALL.boundMs / 1000),
+  SKILL_SCENARIOS_TIMEOUT: String(JUDGE_STANDIN_OMP.boundMs / 1000),
+};
+
+/**
  * One git or jj command. In the heads fixture's build at a 1-minute load of 830 the slowest was
  * `jj git clone`, 7.5 s, and a `git commit` took up to 4.6 s.
  */

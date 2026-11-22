@@ -220,6 +220,11 @@
 #                             any directory above it (default ${TMPDIR:-/tmp}/skill-scenarios)
 #   SKILL_SCENARIOS_PARALLEL  concurrent runs in a batch (default 5)
 #   SKILL_SCENARIOS_TIMEOUT   seconds one run, or one turn of a spec run, may take (default 1500)
+#   SKILL_SCENARIOS_DOCKER_TIMEOUT  seconds one Docker call of judge-omp may wait on the daemon
+#                             (default 300): the image's inspect, each pull, and the judge's
+#                             container around its omp, whose run is bounded at this plus
+#                             SKILL_SCENARIOS_TIMEOUT; a call past it ends the judge with a refusal
+#                             that names the call (cmd_judge_omp)
 #   SKILL_SCENARIOS_MEMORY_MAX  the memory an agent's own systemd user scope may hold, with no
 #                             swap (default 8G): an agent past it is killed alone (launch)
 #   SKILL_SCENARIOS_ASKGATE_CASE  askgate: facts, link, upload, nochange, nochange-rebuttal,
@@ -1591,9 +1596,34 @@ judge_keys() {
 # The network is Docker's default bridge, for the model's endpoint. The container gets 2 CPUs and
 # 4 GiB, so the judges of a busy batch cannot take the machine. SKILL_SCENARIOS_JUDGE_ENV adds
 # `NAME=value` words to the container's environment, for tests.
+#
+# Each Docker call waits on the daemon, which a loaded box stalls (on 20 November the seven rows of
+# a test run that start a judge failed inside one stall of the daemon), so each has a bound of its
+# own (judge_docker):
+# SKILL_SCENARIOS_DOCKER_TIMEOUT for the image's inspect and for each pull, and that plus omp's own
+# SKILL_SCENARIOS_TIMEOUT for the run. A call past its bound ends the judge with a refusal that
+# names the call and its bound. A stall shorter than the bound costs only time.
+#
+# judge_docker SECONDS DOCKER-ARG... runs `docker DOCKER-ARG...` and kills it at SECONDS: the
+# client of a stalled daemon may ignore a TERM (`docker run` hands it to its container and waits on).
+# The kill reaches the client alone (`--foreground`): a timeout that kills its own process group
+# kills itself too, and bash then writes a `Killed` line into the judge's out.txt. It returns
+# docker's status, and sets docker_late to 1 when the bound ended the call (killed, and SECONDS
+# gone), else to nothing. The run's `--rm` is the daemon's own, so a container whose client was
+# killed is removed once it ends, and the omp in it ends at its own bound.
+judge_docker() {
+  local seconds=$1 started=$EPOCHSECONDS code=0
+  shift
+  timeout --foreground -s KILL "$seconds" docker "$@" || code=$?
+  docker_late=
+  [ "$code" != 137 ] || [ $((EPOCHSECONDS - started)) -lt "$seconds" ] || docker_late=1
+  return "$code"
+}
+
 cmd_judge_omp() {
   [ $# = 3 ] || fail "usage: rig.sh judge-omp <ste|bare> <dir> <output file name>"
-  local kind=$1 dir output=$3 skills status=0 omp P agent keys key_file h=/home/judge
+  local kind=$1 dir output=$3 skills status=0 omp P agent keys key_file h=/home/judge docker_late=''
+  local docker_timeout=${SKILL_SCENARIOS_DOCKER_TIMEOUT:-300} omp_timeout=${SKILL_SCENARIOS_TIMEOUT:-1500}
   case $kind in ste) skills=(--skills asd-ste100) ;; bare) skills=(--no-skills) ;; *) fail "judge-omp: '$kind' is ste or bare" ;; esac
   dir=$(cd "$2" && pwd -P) || fail "judge-omp: $2 is not a directory"
   [ -f "$dir/prompt.txt" ] || fail "judge-omp: $dir has no prompt.txt"
@@ -1602,6 +1632,9 @@ cmd_judge_omp() {
   esac
   case "$(omp_ancestor "$dir" || true)" in "") ;; *) fail "judge-omp: $dir is under $(omp_ancestor "$dir"), whose plugins Oh My Pi would load" ;; esac
   case ${LEGION_E2E_MODEL_ROUTE:-gateway} in gateway | key-file | provider) ;; *) fail "judge-omp: LEGION_E2E_MODEL_ROUTE is '$LEGION_E2E_MODEL_ROUTE': it is gateway, key-file or provider" ;; esac
+  [[ $docker_timeout =~ ^[1-9][0-9]*$ ]] ||
+    fail "judge-omp: SKILL_SCENARIOS_DOCKER_TIMEOUT is '$docker_timeout', not a whole number of seconds"
+  [[ $omp_timeout =~ ^[1-9][0-9]*$ ]] || fail "judge-omp: SKILL_SCENARIOS_TIMEOUT is '$omp_timeout', not a whole number of seconds"
   command -v docker >/dev/null || fail "judge-omp: docker is not on PATH; each judge runs in a container"
   judge_profiles
   P=$work/judge-profiles/$kind
@@ -1632,11 +1665,20 @@ cmd_judge_omp() {
   # failed pull names itself. The registry answers one request of a batch badly now and then (a
   # token it refuses to mint, a manifest GET it drops) and serves the next, so the pull is asked
   # three times a couple of seconds apart before the rig refuses. Only the last attempt's own
-  # words are kept, and only for the refusal: an attempt the next one makes good says nothing.
-  if ! docker image inspect "$judge_image" >/dev/null 2>&1; then
+  # words are kept, and only for the refusal: an attempt the next one makes good says nothing. An
+  # inspect the daemon does not answer is no missing image: it refuses the judge, naming the call.
+  local inspected=0
+  judge_docker "$docker_timeout" image inspect "$judge_image" >/dev/null 2>&1 || inspected=$?
+  [ -z "$docker_late" ] ||
+    fail "judge-omp: docker image inspect $judge_image did not end within its bound of $docker_timeout s (SKILL_SCENARIOS_DOCKER_TIMEOUT)"
+  if [ "$inspected" != 0 ]; then
     local pulled='' pull_error='' attempt
     for attempt in 1 2 3; do
-      pull_error=$(docker pull --quiet "$judge_image" 2>&1 >/dev/null) && {
+      pull_error=$(judge_docker "$docker_timeout" pull --quiet "$judge_image" 2>&1 >/dev/null || {
+        code=$?
+        [ -z "$docker_late" ] || echo "docker pull did not end within its bound of $docker_timeout s (SKILL_SCENARIOS_DOCKER_TIMEOUT)"
+        exit "$code"
+      }) && {
         pulled=1
         break
       }
@@ -1644,7 +1686,8 @@ cmd_judge_omp() {
     done
     [ -n "$pulled" ] || fail "judge-omp: docker could not pull $judge_image in 3 attempts: $pull_error"
   fi
-  docker run --rm --init --cpus 2 --memory 4g --user "$(id -u):$(id -g)" --read-only \
+  # shellcheck disable=SC2016 # the container's own bash expands the script's words
+  judge_docker "$((docker_timeout + omp_timeout))" run --rm --init --cpus 2 --memory 4g --user "$(id -u):$(id -g)" --read-only \
     --tmpfs /tmp:exec,mode=1777 --tmpfs "$h:exec,uid=$(id -u),gid=$(id -g)" \
     -v "$(dirname "$omp"):/opt/omp:ro" -v "$agent:/opt/profile:ro" \
     "${route[@]}" \
@@ -1656,11 +1699,13 @@ cmd_judge_omp() {
       mkdir -p "$a" && cp /opt/profile/config.yml "$a"/ || exit 125
       cp /opt/key/models.yml "$a"/ || exit 125
       if [ -d /opt/profile/skills ]; then cp -r /opt/profile/skills "$a"/ || exit 125; fi
-      exec timeout "$1" "$2" "${@:3}"' - "${SKILL_SCENARIOS_TIMEOUT:-1500}" "/opt/omp/$(basename "$omp")" \
+      exec timeout "$1" "$2" "${@:3}"' - "$omp_timeout" "/opt/omp/$(basename "$omp")" \
     -p "$(<"$dir/prompt.txt")" --no-extensions "${skills[@]}" \
     --model "$judge_model" --thinking "$judge_thinking" --session-dir "$dir/sessions" </dev/null >"$dir/out.txt" 2>&1 || status=$?
   echo "exit=$status" >>"$dir/out.txt"
   rm -rf -- "$keys"
+  [ -z "$docker_late" ] ||
+    fail "judge-omp: docker run of the judge did not end within its bound of $((docker_timeout + omp_timeout)) s: the daemon's $docker_timeout s (SKILL_SCENARIOS_DOCKER_TIMEOUT) and omp's own $omp_timeout s (SKILL_SCENARIOS_TIMEOUT)"
   return "$status"
 }
 
