@@ -16,6 +16,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 	"weak"
 
@@ -23,8 +24,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/reearth/ygo/crdt"
 	ygws "github.com/reearth/ygo/provider/websocket"
-	"github.com/sjawhar/envoy/internal/clock"
-	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -338,74 +337,25 @@ func TestAWriteInsideApplyOutlivesTheRoomsLastPeer(t *testing.T) {
 // A document only the API touches - a read outside any transaction - has no browser to leave its
 // room. ygo stamps such a room idle when the Server.Apply that touched it returns, and its idle
 // sweep evicts the room once it has been idle for the timeout the service hands it
-// (roomIdleTimeout), as it evicts a room its last browser left; nothing of the service's closes it
-// sooner, and the document reads back what the API wrote once it has gone. An agent's edit of a
-// document no room holds loads none at all (publishLiveWrite).
+// (roomIdleTimeout), as it evicts a room its last browser left, and not before; the document reads
+// back what the API wrote. An agent's edit of a document no room holds loads none at all
+// (publishLiveWrite).
 //
-// ygo's sweeper ticks on time.NewTicker and judges time.Now (sjawhar/ygo
-// provider/websocket/idle_sweep.go) and takes no clock, so neither Deps.Clock nor a fake reaches
-// it; and the service reads Postgres, which keeps the row out of a synctest bubble, whose clock
-// moves only once every goroutine in it is durably blocked, as one waiting on a socket never is.
-// So the timeout is read where the service sets it, ygo's own ticks do the evicting at windows the
-// row hands the service (Deps.RoomIdleTimeout), and the service's own timers run on its clock
-// (Deps.Clock), a fake the row moves:
-//   - a service built from production's deps hands ygo its own roomIdleTimeout;
-//   - a room the API touched on a service whose window never ends (roomsNeverIdleOut), on a fake,
-//     is still resident and loaded once when the fake stands a nanosecond short of roomIdleTimeout
-//     after the touch: nothing the service arms on its clock closes the room before ygo would;
-//   - a room the API touched on a service whose window is a nanosecond is evicted by ygo's next
-//     sweep, which the row waits for, and the document reads back the agent's edit; and the room
-//     whose window never ends is still the one its read loaded once that eviction has come.
+// The row runs in a synctest bubble, at production's timeout. ygo's sweeper ticks on
+// time.NewTicker and judges time.Now (sjawhar/ygo provider/websocket/idle_sweep.go), both the
+// bubble's clock, every half timeout from the room's load. The service's own timers, its
+// settlement's among them, run on its clock (Deps.Clock), the real clock here, which inside the
+// bubble is the bubble's clock too. The bubble's fake clock moves only when every goroutine of the
+// bubble is durably blocked, and one waiting on a Postgres read is not (it waits on a socket), so
+// the clock stands still through the load and the load's moment is the API's touch: the sweep's
+// second tick, the timeout after the touch, is the one that evicts the room, and the row reads the
+// room resident a nanosecond before it and gone at it, each after synctest.Wait, which likewise
+// waits a statement in flight out. The service's pool is opened inside the bubble and closed before
+// the bubble ends: a connection a bubbled goroutine dials holds channels of the bubble, which a
+// pool opened outside it could not touch again (its Close panics, "close of synctest channel from
+// outside bubble"). The row opens that pool itself and closes it directly: storetest's pools close
+// through the shared wait, which reads the test's deadline, and t.Deadline panics inside a bubble.
 func TestARoomOnlyTheAPITouchesLeavesWithinTheIdleTimeout(t *testing.T) {
-	keptClock := clocktest.New(time.Now())
-	kept, seed := touchByTheAPI(t, roomsNeverIdleOut, keptClock)
-	if timeout := seed.srv.RoomIdleTimeout; timeout != roomIdleTimeout {
-		t.Fatalf("the service hands ygo an idle timeout of %v, want its own roomIdleTimeout, %v", timeout, roomIdleTimeout)
-	}
-	// The fake has not moved since the service started, so its present is the touch's moment.
-	keptClock.Set(keptClock.Now().Add(roomIdleTimeout - time.Nanosecond))
-	if loads, resident := kept.loads.Load(), kept.resident(); loads != 1 || !resident {
-		t.Fatalf("the room of a document only the API touched is resident %t after %d loads a nanosecond short of roomIdleTimeout (%v) after the touch on the service's clock, want resident after its read's one load: the service closed it on its own clock before ygo's idle sweep could", resident, loads, roomIdleTimeout)
-	}
-	evicted, _ := touchByTheAPI(t, time.Nanosecond, nil)
-	waitFor(t, "ygo's idle sweep to evict the room of a document only the API touched, idle past its window of a nanosecond", func() bool {
-		return !evicted.resident()
-	})
-	if text, err := evicted.service.Text(context.Background(), evicted.artifactID); err != nil || text != evicted.written {
-		t.Errorf("the document after its room was evicted = %q (%v), want the agent's edit, %q", text, err, evicted.written)
-	}
-	if loads, resident := kept.loads.Load(), kept.resident(); loads != 1 || !resident {
-		t.Fatalf("the room of a document only the API touched, whose window never ends, is resident %t after %d loads once the other room was evicted, want resident after its read's one load: something but ygo's sweep closed it", resident, loads)
-	}
-}
-
-// roomsNeverIdleOut is a room idle window (Deps.RoomIdleTimeout) that never ends: the longest
-// duration there is, which ygo's idle sweeper, comparing a room's idle time with it on the real
-// clock, never reaches.
-const roomsNeverIdleOut = time.Duration(1<<63 - 1)
-
-// apiTouchedRoom is a document an agent edited and the API then read outside any transaction, on
-// a service whose rooms idle out after a window of the test's (Deps.RoomIdleTimeout).
-type apiTouchedRoom struct {
-	service    *Service
-	artifactID string
-	// written is what the agent's edit wrote.
-	written string
-	// loads counts the loads of the document's room since the service started.
-	loads *atomic.Int64
-}
-
-func (r apiTouchedRoom) resident() bool {
-	return slices.Contains(r.service.srv.Rooms(), r.artifactID)
-}
-
-// touchByTheAPI seeds a document on a database of its own through a service built from
-// production's deps (testServiceDeps), which it shuts down and returns, so that no room of the
-// document is loaded; then, on a service whose rooms idle out after window and whose clock is
-// serviceClock (the real clock when nil), an agent edits the document, which loads no room, and the
-// API reads it outside any transaction, which loads it.
-func touchByTheAPI(t *testing.T, window time.Duration, serviceClock clock.Clock) (apiTouchedRoom, *Service) {
-	t.Helper()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
 	seed := New(testServiceDeps(database))
@@ -413,31 +363,66 @@ func touchByTheAPI(t *testing.T, window time.Duration, serviceClock clock.Clock)
 	if err := seed.Shutdown(context.Background()); err != nil {
 		t.Fatalf("shut the seeding service down: %v", err)
 	}
-	deps := testServiceDeps(database)
-	deps.Settle, deps.RoomIdleTimeout, deps.Clock = time.Hour, window, serviceClock
-	room := apiTouchedRoom{service: newTestServiceWith(t, deps), artifactID: artifactID, loads: new(atomic.Int64)}
-	load := room.service.srv.OnLoadDocument
-	room.service.srv.OnLoadDocument = func(ctx context.Context, name string, doc *crdt.Doc) error {
-		if name == artifactID {
-			room.loads.Add(1)
+	synctest.Test(t, func(t *testing.T) {
+		opened, err := pgxpool.NewWithConfig(context.Background(), database.Pool.Config())
+		if err != nil {
+			t.Fatalf("open the service's pool inside the bubble: %v", err)
 		}
-		return load(ctx, name, doc)
-	}
-	written, err := joinedReplaceText(room.service, artifactID, "Edited by an agent.\n", model.Actor{Kind: "session", ID: "session-0123456789abcdef"})
-	if err != nil {
-		t.Fatalf("agent edit: %v", err)
-	}
-	if room.loads.Load() != 0 || room.resident() {
-		t.Fatal("the agent's edit of a document no room held loaded its room")
-	}
-	room.written = written
-	if _, err := room.service.currentToken(context.Background(), artifactID); err != nil {
-		t.Fatalf("read outside any transaction: %v", err)
-	}
-	if room.loads.Load() == 0 {
-		t.Fatal("the read outside any transaction did not load the document's room")
-	}
-	return room, seed
+		bubbled := &store.Store{Pool: store.NewPool(opened)}
+		t.Cleanup(bubbled.Pool.Close)
+		service := New(testServiceDeps(bubbled))
+		t.Cleanup(func() {
+			if err := service.Shutdown(context.Background()); err != nil {
+				t.Errorf("shutdown document service: %v", err)
+			}
+		})
+		service.settle = time.Hour
+		timeout := service.srv.RoomIdleTimeout
+		if timeout != roomIdleTimeout {
+			t.Fatalf("the service hands ygo an idle timeout of %v, want its own roomIdleTimeout, %v", timeout, roomIdleTimeout)
+		}
+		ctx := context.Background()
+		agent := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
+		var loads atomic.Int64
+		load := service.srv.OnLoadDocument
+		service.srv.OnLoadDocument = func(ctx context.Context, room string, doc *crdt.Doc) error {
+			if room == artifactID {
+				loads.Add(1)
+			}
+			return load(ctx, room, doc)
+		}
+		resident := func() bool { return slices.Contains(service.srv.Rooms(), artifactID) }
+
+		written, err := joinedReplaceText(service, artifactID, "Edited by an agent.\n", agent)
+		if err != nil {
+			t.Fatalf("agent edit: %v", err)
+		}
+		if loads.Load() != 0 || resident() {
+			t.Fatal("the agent's edit of a document no room held loaded its room")
+		}
+
+		if _, err := service.currentToken(ctx, artifactID); err != nil {
+			t.Fatalf("read outside any transaction: %v", err)
+		}
+		touched := time.Now()
+		if loads.Load() == 0 || !resident() {
+			t.Fatal("the read outside any transaction did not load the document's room")
+		}
+		time.Sleep(timeout - time.Nanosecond)
+		synctest.Wait()
+		if !resident() {
+			t.Fatalf("ygo's idle sweep evicted the document's room %v after the API's last touch, before its idle timeout %v", time.Since(touched), timeout)
+		}
+		time.Sleep(time.Nanosecond)
+		synctest.Wait()
+		if resident() {
+			t.Fatalf("the document's room is still resident %v after the API's last touch, its idle timeout", time.Since(touched))
+		}
+
+		if text, err := service.Text(ctx, artifactID); err != nil || text != written {
+			t.Errorf("the document after its room was evicted = %q (%v), want the agent's edit, %q", text, err, written)
+		}
+	})
 }
 
 // roomLoads checks every load of one room's document against the writes its earlier instances

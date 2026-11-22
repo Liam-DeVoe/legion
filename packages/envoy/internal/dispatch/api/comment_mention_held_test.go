@@ -32,9 +32,10 @@ func scrape(t *testing.T, registry *metrics.Registry) string {
 // last publish error. The cause is logged too: the outbox's own ERROR for the earlier event's
 // failed topic send names that event and its topic. While it waits, each try of the parked lane
 // reads the rule alone: no claim, resolution or settle of the attempt is written (a traced pool
-// counts the server's statements), and each park waits at least its mentionOrderRetry. Once the
-// topic family is captured again the send lands, the gauges read none and no second WARN comes.
-// The controls are the scrape before the comment and the one after the send landed.
+// counts the server's statements), and each park after the first waits exactly its
+// mentionOrderRetry on the fake. Once the topic family is captured again the send lands, the
+// gauges read none and no second WARN comes. The controls are the scrape before the comment and
+// the one after the send landed.
 //
 // The sender's parks, and the moments it stamps and judges a held send with (sendClock), run on a
 // fake that stands at its start until the test moves it: a park's timer fires only when the test

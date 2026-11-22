@@ -653,10 +653,18 @@ func TestAnOutboxWhoseNATSGoesSilentGivesThePublisherToTheOther(t *testing.T) {
 // A holder that stops renewing without a release - a killed process - leaves its row live until
 // the row lapses on the database's clock, TTL after its last renewal (publisherHoldOptions), and
 // a standby takes the hold when it lapses: a process that is killed is replaced within TTL of
-// its last renewal. The standby arms its timer to that lapse on a fake (Outbox.clock), no later
-// than the lapse the row reads past its present, and takes the hold only once the fake reaches
-// that timer: the row lapses the hold on the database's clock itself, so the timer is what brings
-// the take.
+// its last renewal. The standby reads what is left of the hold's row on the database's clock
+// (duty.Expiry) and arms its timer that far past its present on a fake (Outbox.clock), and takes
+// the hold only once the fake reaches that timer: the row lapses the hold on the database's clock
+// itself, so the timer is what brings the take.
+//
+// The row ties the wait the standby armed, its timer less the fake's present, to the hold's row
+// on both sides. Once the timer is armed, the row reads what is left of the hold's row on the
+// database's clock, in microseconds as duty.Expiry reads it. The standby read it earlier on that
+// clock, so its wait is no shorter than what is left, and no longer than killedHoldLapse, all the
+// hold's row had when it was written. A standby that arms a fixed wait, the hold's TTL or half an
+// hour, arms short of what is left; one that arms past the lapse arms beyond killedHoldLapse. The
+// wait the standby arms and both bounds are whole microseconds, so they are compared exactly.
 //
 // The killed holder's row is written to lapse killedHoldLapse past the database's now(), so it
 // stays live past anything the standby's start waits for, however slow, until the row lapses it
@@ -678,9 +686,17 @@ func TestAStandbyTakesTheHoldOfAHolderThatStoppedRenewingOnceItsRowLapses(t *tes
 	timers := clocktest.New(start)
 	standby := startProcessOn(t, "standby", database, url, &sendCounter{}, timers)
 	armed := timers.AwaitArmed(t, "the standby's timer to the killed holder's lapse", 1)
-	if len(armed) != 1 || !armed[0].After(start) || armed[0].After(start.Add(killedHoldLapse)) {
-		t.Fatalf("the standby armed %v for a hold whose row lapses at most %s after it was written, want one timer past %s and no later than %s: the standby's timer is the row's lapse",
-			armed, killedHoldLapse, start, start.Add(killedHoldLapse))
+	// What is left of the killed holder's row on the database's clock now, in microseconds as
+	// duty.Expiry reads it: the standby read it before it armed, so the wait it armed is no shorter.
+	var leftMicros int64
+	if err := database.Pool.QueryRow(context.Background(),
+		`select (extract(epoch from expires_at - now())*1000000)::bigint from duty_holds where name = $1`, publisherHold).Scan(&leftMicros); err != nil {
+		t.Fatalf("read what is left of the killed holder's row: %v", err)
+	}
+	left := time.Duration(leftMicros) * time.Microsecond
+	if wait := armed[0].Sub(start); len(armed) != 1 || wait < left || wait > killedHoldLapse {
+		t.Fatalf("the standby armed %v, %s past the fake's present %s, for a hold whose row had %s left on the database's clock once that timer was armed and %s when it was written: want one timer no less than what was left and no more than %s past the fake's present, the lapse the standby read before it armed",
+			armed, wait, start, left, killedHoldLapse, killedHoldLapse)
 	}
 	// The killed holder's row lapses on the database's clock, which notifies no one.
 	if _, err := database.Pool.Exec(context.Background(), `update duty_holds set expires_at = now() where name = $1`, publisherHold); err != nil {
