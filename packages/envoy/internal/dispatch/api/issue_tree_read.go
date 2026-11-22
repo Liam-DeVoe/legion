@@ -776,7 +776,11 @@ func (b *issueTreeBuilder) readContext() error {
 // viewContext is the fixed context of the view beyond what its query takes: on a child issue's
 // spec view, each requirement of an issue above that one of the child's checks serves and the
 // child's own design blocks, the blocks of its tree's own fragment that are no typed block; on
-// the verification view, each requirement a check of the answer serves.
+// the verification view, every requirement node of the issue, served or not, so a requirement no
+// check serves is in the answer, and each other requirement a check of the answer serves - one of
+// an issue above on a child, one of an issue under the issue read on a parent. The walk holds the
+// issue's own requirements and the design blocks, which ordered marks as context (inView); this
+// adds the requirements no walk holds, each once.
 func (b *issueTreeBuilder) viewContext() []refs.Target {
 	var wanted []refs.Target
 	switch b.view {
@@ -1051,11 +1055,11 @@ func (b *issueTreeBuilder) answered() []refs.Target {
 	return slices.Concat(b.order, b.contextOrder())
 }
 
-// queryTakes is each node of the walk the view's query takes, by its definition (docs'
+// queryTakes is each node of the walk the query takes, by its definition (docs'
 // IssueTree.Takes).
-func (b *issueTreeBuilder) queryTakes() map[refs.Target]bool {
+func (b *issueTreeBuilder) queryTakes(query string) map[refs.Target]bool {
 	taken := map[refs.Target]bool{}
-	indexes, _ := b.tree.Takes(b.view)
+	indexes, _ := b.tree.Takes(query)
 	for _, index := range indexes {
 		node := b.tree.Nodes[index]
 		taken[refs.Target{Kind: node.Kind, ID: node.ID}] = true
@@ -1065,9 +1069,9 @@ func (b *issueTreeBuilder) queryTakes() map[refs.Target]bool {
 
 // inView reports whether the view answers the node a walk or a read of the others took: a node of
 // its query, or of the view's fixed context, each of an issue under the issue read included where
-// the view carries one (readServing, readPlanOrder), and on a child issue's spec view its design
-// blocks.
-func (b *issueTreeBuilder) inView(target refs.Target, taken, served map[refs.Target]bool) (string, bool) {
+// the view carries one (readServing, readPlanOrder), on a child issue's spec view its design
+// blocks, and on the verification view the requirements it carries (verificationRequirements).
+func (b *issueTreeBuilder) inView(target refs.Target, taken, requirements map[refs.Target]bool) (string, bool) {
 	entry := b.entries[target]
 	if taken[target] {
 		return treeRoleQuery, true
@@ -1079,7 +1083,7 @@ func (b *issueTreeBuilder) inView(target refs.Target, taken, served map[refs.Tar
 			return treeRoleContext, true
 		}
 	case graphstore.QueryVerification:
-		if entry.walk < 0 && (entry.typ == graphstore.BlockTypeCheck || target.Kind == graphstore.KindResult) || served[target] {
+		if entry.walk < 0 && (entry.typ == graphstore.BlockTypeCheck || target.Kind == graphstore.KindResult) || requirements[target] {
 			return treeRoleContext, true
 		}
 	case graphstore.QueryPlan:
@@ -1090,21 +1094,28 @@ func (b *issueTreeBuilder) inView(target refs.Target, taken, served map[refs.Tar
 	return "", false
 }
 
-// servedRequirements is each requirement of the walk that a check the answer holds serves, which
-// the verification view carries as context.
-func (b *issueTreeBuilder) servedRequirements() map[refs.Target]bool {
-	served := map[refs.Target]bool{}
+// verificationRequirements is each requirement the verification view carries as context among the
+// nodes the walk and the read of the others took: every requirement node of the issue, each one
+// its spec query takes, found as the spec view finds them (queryTakes), and each requirement a
+// check the answer holds serves.
+func (b *issueTreeBuilder) verificationRequirements() map[refs.Target]bool {
+	carried := map[refs.Target]bool{}
+	for target := range b.queryTakes(graphstore.QuerySpec) {
+		if b.entries[target].typ == requirementBlockType {
+			carried[target] = true
+		}
+	}
 	for _, target := range b.candidates() {
 		if b.entries[target].typ != graphstore.BlockTypeCheck || !b.kept[target] {
 			continue
 		}
 		for _, relation := range b.facts[target].Relations {
 			if relation.Kind == servesTupleKind {
-				served[relation.To] = true
+				carried[relation.To] = true
 			}
 		}
 	}
-	return served
+	return carried
 }
 
 // siblingClass is where a child stands among its siblings in the walk's order: a conversation
@@ -1208,13 +1219,13 @@ func (b *issueTreeBuilder) ordered() []refs.Target {
 	if b.view == "" {
 		return order
 	}
-	queryTaken, served := b.queryTakes(), map[refs.Target]bool{}
+	queryTaken, requirements := b.queryTakes(b.view), map[refs.Target]bool{}
 	if b.view == graphstore.QueryVerification {
-		served = b.servedRequirements()
+		requirements = b.verificationRequirements()
 	}
 	var viewed []refs.Target
 	for _, target := range order {
-		if role, in := b.inView(target, queryTaken, served); in {
+		if role, in := b.inView(target, queryTaken, requirements); in {
 			b.entries[target].role = role
 			viewed = append(viewed, target)
 		}

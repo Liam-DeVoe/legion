@@ -851,3 +851,79 @@ func TestAFileNamedLikeARoleDocumentPlaysNoRole(t *testing.T) {
 		}
 	}
 }
+
+// TestTheVerificationViewAnswersEveryRequirementOfTheIssue: an issue born converted holds two
+// requirements, r1 served by its check c1, which holds one result, and r2 served by no check. Its
+// ?view=verification answers c1 and the result as the query's and both requirements as context,
+// each once, with its supertag and its parent named, so the requirement no check serves is in that
+// one read. A parent holding the same two requirements and no check of its own takes a child, a
+// view of it, whose check serves the parent's r1: the parent's ?view=verification answers both of
+// its requirements as context and the child's check, marked with the child, and the child's own
+// ?view=verification answers the parent's r1, which its check serves, and not r2.
+func TestTheVerificationViewAnswersEveryRequirementOfTheIssue(t *testing.T) {
+	handler, database, _ := newTestServer(t, testServerOptions{})
+	createReferenceAPIProject(t, handler, "GAPS")
+	answered := func(read treeAnswer, kind, id string) (model.IssueTreeNode, bool) {
+		t.Helper()
+		held := read.nodesNamed(kind, id)
+		if len(held) != 1 {
+			t.Errorf("?view=verification of %s answers %s:%s %d times, want it once", read.Issue, kind, id, len(held))
+			return model.IssueTreeNode{}, false
+		}
+		return held[0], true
+	}
+	requireRequirements := func(read treeAnswer, owner string, blocks ...string) {
+		t.Helper()
+		spec := readDecisionDocument(t, database, owner, "spec")
+		for _, block := range blocks {
+			held := read.nodesNamed(refs.BlockNodeKind, spec.address(block))
+			if len(held) != 1 {
+				t.Errorf("?view=verification of %s answers the requirement %s of %s (%s) %d times, want it once, as context: %v",
+					read.Issue, block, owner, spec.address(block), len(held), read.addresses())
+				continue
+			}
+			node := held[0]
+			if node.Role != treeRoleContext || node.Supertag != requirementBlockType {
+				t.Errorf("?view=verification of %s answers the requirement %s as role %q and supertag %q, want context and %s",
+					read.Issue, block, node.Role, node.Supertag, requirementBlockType)
+			}
+			if node.Parent == nil || node.Parent.Kind == "" || node.Parent.ID == "" || node.Parent.Supertag == "" || node.Parent.FirstLine == "" {
+				t.Errorf("?view=verification of %s names the parent of the requirement %s as %+v, want its kind, id, supertag and first line",
+					read.Issue, block, node.Parent)
+			}
+		}
+	}
+
+	issue := createDigestIssue(t, handler, database, "GAPS", "Two requirements", twoRequirements, false)
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", checkServing("c1", "dispatch://"+issue.Key+"/spec#b-r1"))
+	recorded := recordResult(t, handler, issue.Key, resultBody("c1", "pass", headCommit, nil))
+	if recorded.Code != http.StatusCreated {
+		t.Fatalf("record a result of c1: status=%d body=%s", recorded.Code, recorded.Body.String())
+	}
+	result := decodeBody[recordedResult](t, recorded).Result
+	read := treeRead(t, handler, issue.Key, "?view=verification", "alice", false)
+	check := readDecisionDocument(t, database, issue.Key, "verification-md").address("c1")
+	if node, held := answered(read, refs.BlockNodeKind, check); held && node.Role != treeRoleQuery {
+		t.Errorf("?view=verification of %s answers the check c1 as %q, want the query's", issue.Key, node.Role)
+	}
+	if node, held := answered(read, graphstore.KindResult, result.ID); held && node.Role != treeRoleQuery {
+		t.Errorf("?view=verification of %s answers c1's result as %q, want the query's", issue.Key, node.Role)
+	}
+	requireRequirements(read, issue.Key, "r1", "r2")
+
+	parent := createDigestIssue(t, handler, database, "GAPS", "The parent", twoRequirements, false)
+	child := createDigestChild(t, handler, database, "GAPS", "The child", "The child's design.\n", parent.Key, false)
+	uploadDocument(t, handler, "/api/v1/issues/"+child.Key, "verification.md", checkServing("cc1", "dispatch://"+parent.Key+"/spec#b-r1"))
+	childCheck := readDecisionDocument(t, database, child.Key, "verification-md").address("cc1")
+	parentRead := treeRead(t, handler, parent.Key, "?view=verification", "alice", false)
+	if node, held := answered(parentRead, refs.BlockNodeKind, childCheck); held && (node.Role != treeRoleContext || node.Issue != child.Key) {
+		t.Errorf("?view=verification of %s answers the child's check cc1 as %q of %q, want context of %s", parent.Key, node.Role, node.Issue, child.Key)
+	}
+	requireRequirements(parentRead, parent.Key, "r1", "r2")
+
+	childRead := treeRead(t, handler, child.Key, "?view=verification", "alice", false)
+	requireRequirements(childRead, parent.Key, "r1")
+	if unserved := readDecisionDocument(t, database, parent.Key, "spec").address("r2"); childRead.index(refs.BlockNodeKind, unserved) >= 0 {
+		t.Errorf("?view=verification of the child %s answers the parent's r2 (%s), which no check of the child serves", child.Key, unserved)
+	}
+}
