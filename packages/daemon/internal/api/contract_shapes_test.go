@@ -397,9 +397,9 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 	groupWords := []string{config.MemoryVariantMemory, config.MemoryVariantNone}
 	modeWords := []config.ExperimentMode{config.ExperimentOff, config.ExperimentOn, config.ExperimentRandom}
 	heldWords := []record.HeldReason{record.HeldChainUnknown, record.HeldTreeClosed, record.HeldTreeParked, record.HeldLabelOff,
-		record.HeldAncestry, record.HeldRootAwaitingPerson, record.HeldAwaitingChildren, record.HeldDesignGate,
-		record.HeldDispatchBlocker, record.HeldChildrenFirst, record.HeldAcceptedAncestor, record.HeldAtWork,
-		record.HeldUnclassified}
+		record.HeldAncestry, record.HeldRootAwaitingPerson, record.HeldAwaitingChildren, record.HeldAwaitingTodo,
+		record.HeldDesignGate, record.HeldDispatchBlocker, record.HeldChildrenFirst, record.HeldAcceptedAncestor,
+		record.HeldAtWork, record.HeldUnclassified}
 	roleWords := []claim.Role{claim.RoleArchitect, claim.RolePlanner, claim.RoleImplementer, claim.RoleTester,
 		claim.RoleReviewer, claim.RoleMerger}
 	stallWords := []record.ArchitectStallArm{record.ArchitectTookNothing, record.ArchitectClaimUnreachable,
@@ -492,9 +492,13 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 		Key: "VALUES-AWAITING", Generation: 1, Phase: phase.AwaitingChildren, Status: "in_progress",
 		Tree: "VALUES-AWAITING", Repo: "acme/widgets", DefaultBranch: "main", Workers: map[claim.Role]PhaseView{},
 	}
+	// One held row for each held word, the nth word naming VALUES-<n>. The words are one more than
+	// the thirteen issues the loop above builds, so the last names VALUES-14, which the body's
+	// issues do not hold: a held row may name a key the state's `issues` does not, and no record
+	// reads which key a row names.
 	held := make([]HeldIssue, 0, len(heldWords))
 	for i, reason := range heldWords {
-		held = append(held, HeldIssue{Issue: keys[i], Reason: reason})
+		held = append(held, HeldIssue{Issue: fmt.Sprintf("VALUES-%d", i+1), Reason: reason})
 	}
 	both := AppInstallationsView{Implement: true, Review: true}
 	live := make([]LiveRepositoryView, 0, len(cacheWords))

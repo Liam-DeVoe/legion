@@ -2,6 +2,7 @@ package admit
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -178,6 +179,48 @@ func TestAMergeClosedIssueReopenedOpensANewRun(t *testing.T) {
 			t.Fatalf("the reopened issue = %#v, want it left at phase done at generation 1", again)
 		}
 	})
+}
+
+// A root whose merge closed it, reopened by a person straight to in_progress rather than to todo,
+// opens its new run (R20 of dispatch://INFRA-3320) and waits for a person's todo, since a root's
+// run starts only on the handover a todo makes (R19): the state lists it in admission.held as
+// awaiting_todo, held by no issue and in neither active nor waiting (R21), and no architect of it
+// starts. The person's todo then queues the run, and its promotion starts the root's architect at
+// the new generation with the new run's task, and the root stands in active.
+func TestAMergeClosedRootReopenedPastTodoWaitsForAPersonsTodo(t *testing.T) {
+	const key = "LEGION-540"
+	pool := migratedPool(t)
+	admission := quiet(t, 2)
+	putIssue(t, pool, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject,
+		Title: key, Tree: key, Phase: phase.Done, Generation: 1, Status: "done", DispatchStatus: "done", Rank: key, HandedOver: true,
+		LastDispatchSeq: 1, HoldsGate: true, TakenBack: true})
+	pwPullRequest(t, pool, key, record.PullRequestMerged)
+
+	apply(t, pool, admission, "reopened", srMove(key, "in_progress", 2), admission.engine)
+
+	if got := issue(t, pool, key); got.Generation != 2 || got.Phase != phase.Admitted || got.Status != "in_progress" {
+		t.Fatalf("the reopened root = %#v, want a new run at generation 2, admitted at in_progress", got)
+	}
+	if starts := architectStarts(t, pool, key); starts != 0 {
+		t.Fatalf("the reopen started %d architects of %s, want none before a person's todo", starts, key)
+	}
+	state := pnState(t, pool, admission)
+	pnInNeitherList(t, state, key)
+	if row, listed := pnHeldRow(state, key); !listed || row.Reason != record.HeldAwaitingTodo || row.HeldBy != nil {
+		t.Fatalf("admission.held names %s as %+v (listed %t), want awaiting_todo held by no issue", key, row, listed)
+	}
+
+	apply(t, pool, admission, "person-todo", srMove(key, "todo", 3), admission.engine)
+
+	starts := roleStarts(t, pool, key, claim.RoleArchitect)
+	if want := architectStart(t, pool, admission, key, ""); len(starts) != 1 || starts[0].Generation != 2 || starts[0].Task != want {
+		t.Fatalf("architect starts of %s = %+v, want one at generation 2 whose task is the new run's %q", key, starts, want)
+	}
+	state = pnState(t, pool, admission)
+	if row, listed := pnHeldRow(state, key); listed || !slices.Contains(state.Admission.Active, key) {
+		t.Fatalf("after the todo admission.active = %v and %s's held row = %+v (listed %t), want it in active and in no held row",
+			state.Admission.Active, key, row, listed)
+	}
 }
 
 // An issue the release before left at phase done when it moved out of the workflow returns only on

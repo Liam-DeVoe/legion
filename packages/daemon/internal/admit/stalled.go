@@ -494,11 +494,12 @@ func (a *Admission) workingTrees(ctx context.Context, tx pgx.Tx, issues []record
 // chain the copy cannot show to its top waits for the daemon to read Dispatch again, and a chain
 // that stays unknown is a fault a controller must hear of (chain_unknown); a tree closed or parked
 // waited for a re-admission (tree_closed, tree_parked, which the ladder no longer answers); a root
-// whose label is off waits for a person to hand it over (label_off), an issue under a parent out of
-// work waits for the architect above it to release that parent (ancestry), an issue under an
-// accepted issue waits for that issue to close (accepted_ancestor), and an issue past its review
-// is at work on no slot, whose stillness is the stall itself (at_work). None of them is the daemon
-// holding work it means to start, which is what a wait by design is.
+// whose label is off waits for a person to hand it over (label_off), and a new run that starts as a
+// root's does waits for a person's todo, the other half of that handover (awaiting_todo); an issue
+// under a parent out of work waits for the architect above it to release that parent (ancestry),
+// an issue under an accepted issue waits for that issue to close (accepted_ancestor), and an issue
+// past its review is at work on no slot, whose stillness is the stall itself (at_work). None of
+// them is the daemon holding work it means to start, which is what a wait by design is.
 //
 // A word with no row here fails admit's TestTheMeasureAnswersEveryHeldReason, which reads the
 // words from the record package's own source: a word added to the vocabulary and left out of
@@ -509,6 +510,7 @@ var silencedTree = map[record.HeldReason]bool{
 	record.HeldTreeClosed:         false,
 	record.HeldTreeParked:         false,
 	record.HeldLabelOff:           false,
+	record.HeldAwaitingTodo:       false,
 	record.HeldAncestry:           false,
 	record.HeldRootAwaitingPerson: true,
 	record.HeldDesignGate:         true,

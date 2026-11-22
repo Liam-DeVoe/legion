@@ -1004,13 +1004,16 @@ const legionBlockedIssue = z.object({
 });
 
 /**
- * `record.HeldReason` — the thirteen words of `admission.held`, in `record.HeldReasons`' order.
+ * `record.HeldReason` — the fourteen words of `admission.held`, in `record.HeldReasons`' order.
  * `chain_unknown` (contract 215) names an issue not at work whose Dispatch chain the daemon's copy
  * cannot show to its top (a row the copy lacks, a loop, more than 32 links), on which the daemon
- * starts nothing until the chain is read right; a caller below 215 is served it as `unclassified`.
- * `tree_closed` and `tree_parked` keep their place though a daemon at 215 answers neither, since
- * no tree lingers or parks there. `at_work` names an issue past its review, which keeps no
- * admission slot; `record.HeldAtWork` says which issues read it.
+ * starts nothing until the chain is read right. `awaiting_todo` (contract 215) names a new run that
+ * starts as a root's does and that Dispatch shows in work at a status other than `todo`, as a root
+ * whose merge closed it and that a person reopened straight to `in_progress` is: it waits for a
+ * person's `todo`, and no issue holds it. A caller below 215 is served either word as
+ * `unclassified`. `tree_closed` and `tree_parked` keep their place though a daemon at 215 answers
+ * neither, since no tree lingers or parks there. `at_work` names an issue past its review, which
+ * keeps no admission slot; `record.HeldAtWork` says which issues read it.
  */
 export const LEGION_HELD_REASONS = [
   "chain_unknown",
@@ -1020,6 +1023,7 @@ export const LEGION_HELD_REASONS = [
   "ancestry",
   "root_awaiting_person",
   "awaiting_children",
+  "awaiting_todo",
   "design_gate",
   "dispatch_blocker",
   "children_first",
@@ -1035,9 +1039,9 @@ export const LEGION_HELD_REASONS = [
  * of `active` or `waiting`: the three lists are one partition of the issues the record holds in
  * the workflow, so a reader with all three has every issue and what each is doing. `heldBy` is
  * absent, never empty, where no issue holds the one that waits — a root whose Legion label is
- * off, or an issue none of the other words is true of — and a key it names may be one the state's
- * `issues` does not hold, as `blockedBy` may today, since an issue the daemon has not observed
- * holds work all the same. */
+ * off, a new run that waits for a person's `todo`, or an issue none of the other words is true
+ * of — and a key it names may be one the state's `issues` does not hold, as `blockedBy` may
+ * today, since an issue the daemon has not observed holds work all the same. */
 const legionHeldIssue = z.object({
   issue: issueKey.optional(),
   reason: z.enum(LEGION_HELD_REASONS).optional(),

@@ -3247,15 +3247,17 @@ package api
 // this contract) and release_children's answer gains the key; a reader below this contract is
 // served each answer without it (shaping.go's shapeAnswer).
 // `GET /legion/v1/state` gains `daemon.convertedAt`, the time the project's first boot on this
-// release finished converting the store, and `admission.held[].reason` takes a word,
-// `chain_unknown`, an issue not at work on a chain the copy cannot read to its top. A caller below
+// release finished converting the store, and `admission.held[].reason` takes two words,
+// `chain_unknown`, an issue not at work on a chain the copy cannot read to its top, and
+// `awaiting_todo`, a new run that starts as a root's does and waits for a person's todo, as a root
+// whose merge closed it and that a person reopened straight to `in_progress` does. A caller below
 // 215 is served the state without `daemon.convertedAt` (`withoutConvertedAt`, the row of
-// `chainContract` in shaping.go's `stateNarrowings`) and each `chain_unknown` row as `unclassified`
-// (the value strip `withoutUnadmittedHeldReasons`, which reads the word's arrival from answers.go's
-// `heldReasons`), each following the contract the caller states, else its pod's. Each issue's
-// `tree` is its gate root on the chain and `admission.trees` the roots in Legion's work, with their
-// keys as they were; `lingerUntil` and `ancestry`, optional to every reader, are written no more,
-// and `settings.linger_hours` reads 0.
+// `chainContract` in shaping.go's `stateNarrowings`) and each `chain_unknown` or `awaiting_todo`
+// row as `unclassified` (the value strip `withoutUnadmittedHeldReasons`, which reads each word's
+// arrival from answers.go's `heldReasons`), each following the contract the caller states, else
+// its pod's. Each issue's `tree` is its gate root on the chain and `admission.trees` the roots in
+// Legion's work, with their keys as they were; `lingerUntil` and `ancestry`, optional to every
+// reader, are written no more, and `settings.linger_hours` reads 0.
 // The registration (`POST /legion/v1/claims/register`) answers as `tree` the issue's gate root at
 // the claim's last launch, and `POST /legion/v1/grants` takes any `tree`: a grant acts only as the
 // chain allows. Neither answer's shape moves.

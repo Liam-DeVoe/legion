@@ -422,8 +422,9 @@ var stateEnumeratedFields = []EnumeratedField{
 	// issue runs (api.HeldIssue, record.HeldReason). It arrived with `admission.held`, which is
 	// served down below that contract whole (shaping.go's withoutHeld), so no body below 98
 	// carries a value of it. Its list grew: `awaiting_children` arrived at gateBasisContract, and a
-	// row of it is served as `children_first` below that contract (shaping.go's
-	// withoutUnadmittedHeldReasons).
+	// row of it is served as `children_first` below that contract, and `chain_unknown` and
+	// `awaiting_todo` arrived at chainContract, and a row of either is served as `unclassified`
+	// below that contract (shaping.go's withoutUnadmittedHeldReasons).
 	{Answer: AnswerState, KeyPath: "admission.held.*.reason", Values: heldReasons},
 }
 
@@ -565,16 +566,18 @@ var lineKinds = []EnumeratedValue{
 // heldReasons is every word of a held row's `reason`. It names each constant rather than reading
 // record.HeldReasons, because a word added to the ladder later arrives at its own contract and
 // not at the field's. Eleven words arrived with `admission.held` at heldContract, and the list
-// grew twice: `awaiting_children`, a parent waiting on its open children, arrived at
-// gateBasisContract (version.go's entry of dispatch://INFRA-3320, record.HeldAwaitingChildren),
-// and `chain_unknown`, an issue on a Dispatch chain the copy cannot read to its top, arrived at
-// chainContract (version.go's 215, record.HeldChainUnknown). So it is written out value by value,
-// sorted by value, as waitAnswers is.
+// grew at two later contracts: `awaiting_children`, a parent waiting on its open children, arrived
+// at gateBasisContract (version.go's entry of dispatch://INFRA-3320, record.HeldAwaitingChildren),
+// and two words arrived at chainContract (version.go's 215): `chain_unknown`, an issue on a
+// Dispatch chain the copy cannot read to its top (record.HeldChainUnknown), and `awaiting_todo`,
+// a new run that waits for a person's todo (record.HeldAwaitingTodo). So it is written out value
+// by value, sorted by value, as waitAnswers is.
 var heldReasons = []EnumeratedValue{
 	{Value: string(record.HeldAcceptedAncestor), Since: heldContract},
 	{Value: string(record.HeldAncestry), Since: heldContract},
 	{Value: string(record.HeldAtWork), Since: heldContract},
 	{Value: string(record.HeldAwaitingChildren), Since: gateBasisContract},
+	{Value: string(record.HeldAwaitingTodo), Since: chainContract},
 	{Value: string(record.HeldChainUnknown), Since: chainContract},
 	{Value: string(record.HeldChildrenFirst), Since: heldContract},
 	{Value: string(record.HeldDesignGate), Since: heldContract},

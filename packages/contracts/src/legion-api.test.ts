@@ -943,9 +943,11 @@ test("the phase lists are the daemon's, with awaiting_person after admitted and 
 
 // The held words are the daemon's `record.HeldReasons`, in its order: dispatch://INFRA-3320 added
 // `awaiting_children`, a parent waiting on its open children, between `root_awaiting_person` and
-// `design_gate`, and dispatch://INFRA-4730 `chain_unknown`, an issue on a Dispatch chain the
-// daemon's copy cannot show to its top, at the head of the ladder (contract 215).
-test("the held words are the daemon's, with chain_unknown first and awaiting_children before design_gate", () => {
+// `design_gate`, and dispatch://INFRA-4730 added two at contract 215: `chain_unknown`, an issue on
+// a Dispatch chain the daemon's copy cannot show to its top, at the head of the ladder, and
+// `awaiting_todo`, a new run that waits for a person's todo, between `awaiting_children` and
+// `design_gate`.
+test("the held words are the daemon's, with chain_unknown first and awaiting_children and awaiting_todo before design_gate", () => {
   expect(LEGION_HELD_REASONS).toEqual([
     "chain_unknown",
     "tree_closed",
@@ -954,6 +956,7 @@ test("the held words are the daemon's, with chain_unknown first and awaiting_chi
     "ancestry",
     "root_awaiting_person",
     "awaiting_children",
+    "awaiting_todo",
     "design_gate",
     "dispatch_blocker",
     "children_first",
@@ -2829,8 +2832,8 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // the two bands above 202 are contract 214's, which takes every root's `treeRuns` and the
   // `gatedSteps` of each issue with a step on an ancestor's basis (`api`'s `withoutGateBasis`), and
   // contract 215's, which takes `daemon.convertedAt` (`withoutConvertedAt`) and reads a
-  // `chain_unknown` hold as `unclassified`, of which the golden holds none, so the narrowing
-  // changes this one block and those keys and nothing beside them.
+  // `chain_unknown` or `awaiting_todo` hold as `unclassified`, of which the golden holds none, so
+  // the narrowing changes this one block and those keys and nothing beside them.
   const { daemonApiVersion } = z
     .object({ daemonApiVersion: z.number() })
     .parse(fixture("version.json"));

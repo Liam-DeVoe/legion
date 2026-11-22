@@ -577,7 +577,8 @@ func valueStripCases() map[string]valueStripCase {
 		},
 		// A held row of `awaiting_children`, which a reader from 98 up to the contract below
 		// gateBasisContract refuses the whole body for: the pod is served it as `children_first`,
-		// and every other row as it is.
+		// a row of `chain_unknown` or `awaiting_todo`, which chainContract added, as
+		// `unclassified`, and every other row as it is.
 		droppedHeldReason: {
 			state: stateCarryingEveryDeclaredValue, low: pauseContract, high: gateBasisContract,
 			carries: func(t *testing.T, body []byte) bool {
@@ -596,7 +597,7 @@ func valueStripCases() map[string]valueStripCase {
 					switch reason {
 					case string(record.HeldAwaitingChildren):
 						reason = string(record.HeldChildrenFirst)
-					case string(record.HeldChainUnknown):
+					case string(record.HeldChainUnknown), string(record.HeldAwaitingTodo):
 						reason = string(record.HeldUnclassified)
 					}
 					if served[issue] != reason {

@@ -132,11 +132,11 @@ func TestTheAwaitingChildrenWordNamesTheStartedParentsOpenChildren(t *testing.T)
 	open := map[string]ChildWait{waiting.Key: {Parent: waiting.Key, Open: []OpenChild{
 		{Key: "LEGION-802", Status: "todo"}, {Key: "LEGION-803", Status: "backlog"}}}}
 
-	word, by := HeldReasonOf(waiting, LineFacts{Chains: chains, StartedParentWaits: open})
+	word, by := HeldReasonOf(waiting, false, LineFacts{Chains: chains, StartedParentWaits: open})
 	if word != HeldAwaitingChildren || !slices.Equal(by, []string{"LEGION-802", "LEGION-803"}) {
 		t.Fatalf("the held word = %s held by %v, want awaiting_children held by both open children", word, by)
 	}
-	word, by = HeldReasonOf(waiting, LineFacts{Chains: chains, ChildWaits: open})
+	word, by = HeldReasonOf(waiting, false, LineFacts{Chains: chains, ChildWaits: open})
 	if word != HeldAwaitingChildren || len(by) != 0 {
 		t.Fatalf("the held word over the children-first waits alone = %s held by %v, want awaiting_children held by nobody", word, by)
 	}

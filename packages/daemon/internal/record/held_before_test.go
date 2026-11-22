@@ -5,15 +5,16 @@ import (
 	"testing"
 )
 
-// HeldBefore reads eight words before dispatch_blocker, in the ladder's order, and no other:
+// HeldBefore reads nine words before dispatch_blocker, in the ladder's order, and no other:
 // dispatch_blocker itself, the words after it and a word the ladder does not name — the zero
 // row's empty word among them — stand before it nowhere. A reorder of HeldReasons moves that
-// answer, so it fails here rather than passing silently. What `why` does with those eight is
+// answer, so it fails here rather than passing silently. What `why` does with those nine is
 // stated by its sentence table (the projection's heldSentences), whose own test holds the table
 // to this answer. chain_unknown stands first, since the ladder reads it before every other word
-// (R16 of dispatch://INFRA-3320), and awaiting_children stands between root_awaiting_person and
-// design_gate.
-func TestTheHeldWordsThatTakeTheBlockedArmAreTheEightTheLadderReadsBeforeTheLinks(t *testing.T) {
+// (R16 of dispatch://INFRA-3320), awaiting_children stands between root_awaiting_person and
+// design_gate, and awaiting_todo, a new run waiting for a person's todo (R20), stands between
+// awaiting_children and design_gate.
+func TestTheHeldWordsThatTakeTheBlockedArmAreTheNineTheLadderReadsBeforeTheLinks(t *testing.T) {
 	var before []HeldReason
 	for _, word := range HeldReasons {
 		if HeldBefore(word, HeldDispatchBlocker) {
@@ -21,7 +22,7 @@ func TestTheHeldWordsThatTakeTheBlockedArmAreTheEightTheLadderReadsBeforeTheLink
 		}
 	}
 	want := []HeldReason{HeldChainUnknown, HeldTreeClosed, HeldTreeParked, HeldLabelOff, HeldAncestry, HeldRootAwaitingPerson,
-		HeldAwaitingChildren, HeldDesignGate}
+		HeldAwaitingChildren, HeldAwaitingTodo, HeldDesignGate}
 	if !slices.Equal(before, want) {
 		t.Errorf("the words HeldBefore reads before dispatch_blocker = %v, want %v", before, want)
 	}

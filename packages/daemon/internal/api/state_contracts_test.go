@@ -105,23 +105,26 @@ func parsesWith(keys stateKeys, body []byte) []string {
 	return broken
 }
 
-// stateWithAChainUnknownHold is the populated state with one more held row, of the reason this
-// change adds: an issue the daemon holds on a chain the copy cannot show to its top.
-func stateWithAChainUnknownHold(t *testing.T) State {
+// stateWithTheHoldsThisChangeAdds is the populated state with two more held rows, one of each
+// reason this change adds: an issue the daemon holds on a chain the copy cannot show to its top,
+// and a new run that waits for a person's todo, which no issue holds.
+func stateWithTheHoldsThisChangeAdds(t *testing.T) State {
 	t.Helper()
 	state := populatedState(t)
-	state.Admission.Held = append(state.Admission.Held, HeldIssue{Issue: "LEGION-299", Reason: record.HeldChainUnknown, HeldBy: []string{"LEGION-298"}})
+	state.Admission.Held = append(state.Admission.Held,
+		HeldIssue{Issue: "LEGION-299", Reason: record.HeldChainUnknown, HeldBy: []string{"LEGION-298"}},
+		HeldIssue{Issue: "LEGION-300", Reason: record.HeldAwaitingTodo})
 	return state
 }
 
 // For each daemon API contract a plugin in the fleet reads, and the oldest the state narrows for,
 // the whole state the daemon serves a caller stating that contract parses with that contract's
 // own schema, as testdata holds it (stateKeys): no key a strict object does not know, every
-// required key, and every enumerated value one that contract knows, a held reason this change
+// required key, and every enumerated value one that contract knows, each held reason this change
 // adds included. Where that contract reads `tree` on an issue and `admission.trees`, the state
 // carries them (R22 of dispatch://INFRA-3320).
 func TestEachOlderContractKeepsItsNarrowing(t *testing.T) {
-	state := stateWithAChainUnknownHold(t)
+	state := stateWithTheHoldsThisChangeAdds(t)
 	handler := stateServer(t, state, nil)
 	for _, contract := range fleetStateContracts {
 		t.Run(fmt.Sprint(contract), func(t *testing.T) {
@@ -153,32 +156,40 @@ func TestEachOlderContractKeepsItsNarrowing(t *testing.T) {
 	}
 }
 
-// A held reason this change adds, chain_unknown, reads as unclassified to a caller below the
-// contract it arrived at (chainContract), whose own enumeration of the held reasons does not hold
-// it and would refuse the state, and as itself at and above that contract.
+// Each held reason this change adds, chain_unknown and awaiting_todo, reads as unclassified to a
+// caller below the contract it arrived at (chainContract), whose own enumeration of the held
+// reasons does not hold it and would refuse the state, and as itself at and above that contract.
 func TestANewHeldReasonReadsUnclassifiedToAnOlderContract(t *testing.T) {
-	handler := stateServer(t, stateWithAChainUnknownHold(t), nil)
-	for _, tc := range []struct {
-		contract int
-		want     record.HeldReason
+	handler := stateServer(t, stateWithTheHoldsThisChangeAdds(t), nil)
+	for _, added := range []struct {
+		issue  string
+		reason record.HeldReason
 	}{
-		{144, record.HeldUnclassified},
-		{152, record.HeldUnclassified},
-		{chainContract - 1, record.HeldUnclassified},
-		{chainContract, record.HeldChainUnknown},
-		{DaemonAPIVersion, record.HeldChainUnknown},
+		{"LEGION-299", record.HeldChainUnknown},
+		{"LEGION-300", record.HeldAwaitingTodo},
 	} {
-		var served struct {
-			Admission struct {
-				Held []HeldIssue `json:"held"`
-			} `json:"admission"`
-		}
-		if err := json.Unmarshal(stateStating(t, handler, "192.0.2.77:41000", tc.contract), &served); err != nil {
-			t.Fatal(err)
-		}
-		i := slices.IndexFunc(served.Admission.Held, func(held HeldIssue) bool { return held.Issue == "LEGION-299" })
-		if i < 0 || served.Admission.Held[i].Reason != tc.want {
-			t.Errorf("the state at contract %d holds %+v, want LEGION-299 held %s", tc.contract, served.Admission.Held, tc.want)
+		for _, tc := range []struct {
+			contract int
+			want     record.HeldReason
+		}{
+			{144, record.HeldUnclassified},
+			{152, record.HeldUnclassified},
+			{chainContract - 1, record.HeldUnclassified},
+			{chainContract, added.reason},
+			{DaemonAPIVersion, added.reason},
+		} {
+			var served struct {
+				Admission struct {
+					Held []HeldIssue `json:"held"`
+				} `json:"admission"`
+			}
+			if err := json.Unmarshal(stateStating(t, handler, "192.0.2.77:41000", tc.contract), &served); err != nil {
+				t.Fatal(err)
+			}
+			i := slices.IndexFunc(served.Admission.Held, func(held HeldIssue) bool { return held.Issue == added.issue })
+			if i < 0 || served.Admission.Held[i].Reason != tc.want {
+				t.Errorf("the state at contract %d holds %+v, want %s held %s", tc.contract, served.Admission.Held, added.issue, tc.want)
+			}
 		}
 	}
 }

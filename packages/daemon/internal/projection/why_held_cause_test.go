@@ -137,6 +137,27 @@ func TestEveryEntryOfTheHeldSentenceTableIsServedThroughTheWholePass(t *testing.
 	childrenFinished := awaitingChildren
 	childrenFinished.mirror = []record.DispatchIssueRow{{Key: "LEGION-102", Project: "LEGION", Status: "done", Parent: "LEGION-101"}}
 
+	// A root on a new run, generation 2, that a person moved to in_progress: the merge of its pull
+	// request closed it, the reopen opened the run at admitted with its gate cleared, and only a
+	// person's todo queues it (record.LineFacts.AwaitsTodo). The blocked fixture is a child that
+	// held its own gate as a root, on its new run at in_progress under a root at admitted that
+	// holds its slot under a shut gate, which an unfinished Dispatch link holds where it stands:
+	// its run starts as a root's does (record.Chains.StartsAsRoot), so it waits for its todo too.
+	newRunRoot := treeRoot("LEGION-100", "in_progress", phase.Admitted)
+	newRunRoot.Generation = 2
+	awaitingTodo := projectionStore{issues: []record.Issue{newRunRoot}}
+	newRunChild := treeMember("LEGION-101", "LEGION-101", "LEGION-100", "in_progress", phase.Admitted)
+	newRunChild.Generation, newRunChild.HoldsGate = 2, true
+	awaitingTodoLinked := projectionStore{
+		issues: []record.Issue{treeRoot("LEGION-100", "todo", phase.Admitted), newRunChild},
+		slots:  []record.Slot{{Issue: "LEGION-100", Index: 0, AdmittedAt: projectedAt}},
+		gates:  map[string]map[record.DesignStep]record.DesignGate{"LEGION-100": shutGate("LEGION-100")},
+		mirror: []record.DispatchIssueRow{
+			{Key: "LEGION-101", Project: "LEGION", Status: "in_progress", Blockers: []string{"LEGION-900"}, Parent: "LEGION-100"},
+			{Key: "LEGION-900", Project: "LEGION", Status: "todo"},
+		},
+	}
+
 	byRoot := []string{"LEGION-100"}
 	const (
 		unknownSentence = "Its Dispatch chain is unknown: the daemon's copy of Dispatch's issues cannot show it to its top at LEGION-99 " +
@@ -146,6 +167,8 @@ func TestEveryEntryOfTheHeldSentenceTableIsServedThroughTheWholePass(t *testing.
 		awaitingSentence = "Its top issue, LEGION-100, has handed work to a person, and the daemon starts nothing under it before that issue resumes."
 		gateSentence     = "A design gate it waits for stands shut: LEGION-100 waits for a person's approval of each gated step's document " +
 			"at its current version, and the daemon starts nothing under it until it opens."
+		todoSentence = "Its new run waits for a person's todo: Dispatch shows it in work at a status other than todo, " +
+			"and the daemon starts no architect for a new run before Dispatch shows the issue at todo."
 	)
 	fixtures := map[heldEntry]heldFixture{
 		{record.HeldChainUnknown, api.WhyBlocked}: {linked(unknownChain, "LEGION-100"),
@@ -168,6 +191,10 @@ func TestEveryEntryOfTheHeldSentenceTableIsServedThroughTheWholePass(t *testing.
 			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldDesignGate, HeldBy: byRoot}, gateSentence},
 		{record.HeldDesignGate, api.WhyUnlisted}: {shutTree,
 			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldDesignGate, HeldBy: byRoot}, gateSentence},
+		{record.HeldAwaitingTodo, api.WhyBlocked}: {awaitingTodoLinked,
+			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldAwaitingTodo}, todoSentence},
+		{record.HeldAwaitingTodo, api.WhyUnlisted}: {awaitingTodo,
+			api.HeldIssue{Issue: "LEGION-100", Reason: record.HeldAwaitingTodo}, todoSentence},
 		{record.HeldAcceptedAncestor, api.WhyUnlisted}: {acceptedAncestor,
 			api.HeldIssue{Issue: "LEGION-102", Reason: record.HeldAcceptedAncestor, HeldBy: []string{"LEGION-101"}},
 			"The daemon has accepted the reviewed head of LEGION-101, which stands above it, and nothing of its own work starts before that issue closes."},

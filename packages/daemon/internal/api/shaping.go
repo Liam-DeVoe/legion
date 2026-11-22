@@ -1058,13 +1058,13 @@ const gateBasisContract = 214
 // and child question from its copy of Dispatch's links (version.go's 215, dispatch://INFRA-4730).
 // It added one key a plugin parses to the state, `daemon.convertedAt`, the time the project's first
 // boot on this release finished its conversion, which a plugin below it is served without
-// (withoutConvertedAt, its row of stateNarrowings); one held word, `chain_unknown`, which a value
-// strip serves to a reader below it as `unclassified` (answers.go's heldReasons,
-// withoutUnadmittedHeldReasons); and `queued`, the status writes a status call queued, to the
-// answers of set_status, rerun_child and release_children, which a reader below it is served
-// without (shapeAnswer). The state's `tree` and `admission.trees` keep their keys and read the
-// chain (R22 of dispatch://INFRA-3320), so no band is owed for them. The rest of the contract is
-// requests and refusal codes, which no reader enumerates.
+// (withoutConvertedAt, its row of stateNarrowings); two held words, `chain_unknown` and
+// `awaiting_todo`, which a value strip serves to a reader below it as `unclassified` (answers.go's
+// heldReasons, withoutUnadmittedHeldReasons); and `queued`, the status writes a status call
+// queued, to the answers of set_status, rerun_child and release_children, which a reader below it
+// is served without (shapeAnswer). The state's `tree` and `admission.trees` keep their keys and
+// read the chain (R22 of dispatch://INFRA-3320), so no band is owed for them. The rest of the
+// contract is requests and refusal codes, which no reader enumerates.
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract these keys and values arrived at stays where it is.
@@ -1154,14 +1154,15 @@ func withoutUnadmittedPhases(issue Issue, restore int) (Issue, bool) {
 
 // withoutUnadmittedHeldReasons is state whose held rows name no word restore's reader does not
 // admit: a word the declared table holds back from restore (answers.go's heldReasons;
-// fieldArrivals.heldBack says which values and why). Today that is the `awaiting_children` of
-// gateBasisContract, and tomorrow any word the table gives a later arrival. The row stays, since
-// the held list is one partition of the issues the record holds in the workflow and a row left
-// out would drop its issue from that partition, and its `reason`, which every row writes, is
-// served as the word heldReasonStandIn names. A caller whose strip is below heldContract has lost
-// the list with its band already, so this finds nothing to take there. The list is copied before
-// a row of it is written, so the state the source answered is left as it was. It reports whether
-// it took a word, which is what the log line of this strip is written from (tookOff).
+// fieldArrivals.heldBack says which values and why). Today those are the `awaiting_children` of
+// gateBasisContract and the `chain_unknown` and `awaiting_todo` of chainContract, and tomorrow any
+// word the table gives a later arrival. The row stays, since the held list is one partition of the
+// issues the record holds in the workflow and a row left out would drop its issue from that
+// partition, and its `reason`, which every row writes, is served as the word heldReasonStandIn
+// names. A caller whose strip is below heldContract has lost the list with its band already, so
+// this finds nothing to take there. The list is copied before a row of it is written, so the state
+// the source answered is left as it was. It reports whether it took a word, which is what the log
+// line of this strip is written from (tookOff).
 func withoutUnadmittedHeldReasons(state State, restore int) (State, bool) {
 	unadmitted := func(row HeldIssue) bool {
 		return row.Reason != "" && heldReasonArrivals.heldBack(string(row.Reason), restore)

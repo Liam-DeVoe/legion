@@ -712,6 +712,24 @@ func (f LineFacts) Queued(issue Issue) bool {
 	return QueuedRoot(issue, f.Gates[issue.Key]) && f.Chains.StartsAsRoot(issue.Key)
 }
 
+// AwaitsTodo says whether issue is a new run that waits for a person's todo to start it (R19 and
+// R20 of dispatch://INFRA-3320): it stands at admitted in Legion's work on a run past its first,
+// holds no slot row (holds false), and Dispatch shows it at a status in work other than todo,
+// which is all that keeps it out of the line: at todo it would be a queued root (Queued) that
+// holds no row, which the promotion starts with its architect (AwaitsPromotion). R20 opens such a
+// run at the status a person moved the issue to (workflow's NewRun), as when a person reopens an
+// issue the merge of its pull request closed straight to in_progress, and a run that starts as a
+// root's starts only on the handover a todo makes. The queued rule is read as it stands, over the
+// issue at todo, and is not stated a second time here.
+func (f LineFacts) AwaitsTodo(issue Issue, holds bool) bool {
+	if holds || issue.Phase != phase.Admitted || issue.Generation < 2 || issue.Status == "todo" || !InLegionsWork(issue) {
+		return false
+	}
+	atTodo := issue
+	atTodo.Status = "todo"
+	return f.Queued(atTodo)
+}
+
 // AtWork is AtWork for an issue of the pass: whether it holds its own gate is the pass's chains'
 // answer (Chains.HoldsOwnGate) and its gate is its own (Gates).
 func (f LineFacts) AtWork(issue Issue) bool {
@@ -1094,11 +1112,13 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 	}
 	chains := facts.Chains
 	// Every drop site reports what it left behind through one ladder, read over the facts the
-	// line itself is judged on, so that the word an issue reads here and the word the assembly
-	// reads for an issue no site saw are read from one set of facts (HeldList).
+	// line itself is judged on and the slot rows it is judged with, so that the word an issue
+	// reads here and the word the assembly reads for an issue no site saw are read from one set of
+	// facts (HeldList).
 	var heldRows []HeldIssue
 	hold := func(issue Issue) {
-		reason, heldBy := HeldReasonOf(issue, facts)
+		_, holds := slotted[issue.Key]
+		reason, heldBy := HeldReasonOf(issue, holds, facts)
 		heldRows = append(heldRows, HeldIssue{Issue: issue.Key, Reason: reason, HeldBy: heldBy})
 	}
 	queued := make(map[string]struct{}, len(issues))

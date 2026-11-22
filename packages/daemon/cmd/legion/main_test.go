@@ -2745,11 +2745,12 @@ func TestLegionStatePrintsTheHeldIssues(t *testing.T) {
 		name, held, want string
 	}{
 		{
-			name: "two words, counted in the ladder's order",
+			name: "three words, counted in the ladder's order",
 			held: `[{"issue":"LEGION-209","reason":"design_gate","heldBy":["LEGION-208"]},` +
 				`{"issue":"LEGION-210","reason":"chain_unknown"},` +
-				`{"issue":"LEGION-213","reason":"design_gate","heldBy":["LEGION-208"]}]`,
-			want: "admission.held: 3 issues — chain_unknown 1, design_gate 2\n",
+				`{"issue":"LEGION-213","reason":"design_gate","heldBy":["LEGION-208"]},` +
+				`{"issue":"LEGION-214","reason":"awaiting_todo"}]`,
+			want: "admission.held: 4 issues — chain_unknown 1, awaiting_todo 1, design_gate 2\n",
 		},
 		{
 			name: "one issue no word is true of",

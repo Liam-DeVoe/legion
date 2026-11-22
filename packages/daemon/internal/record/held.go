@@ -15,8 +15,8 @@ import (
 // whichever hold it noticed first.
 type HeldReason string
 
-// The thirteen words of C1 and R16. The order they are read in is the order of the ladder's own
-// body and is written there alone; this block is the vocabulary, one constant per word.
+// The fourteen words of C1, R16 and R20. The order they are read in is the order of the ladder's
+// own body and is written there alone; this block is the vocabulary, one constant per word.
 const (
 	// HeldChainUnknown is an issue whose Dispatch chain the daemon's copy cannot show to its top
 	// (Chain.Known: a row the copy lacks, a loop, more than 32 links): the daemon starts nothing
@@ -44,6 +44,13 @@ const (
 	// still open (Issue.Phase awaiting_children): the daemon runs no phase of the parent's own
 	// work and holds the start it had while a child of it is open.
 	HeldAwaitingChildren HeldReason = "awaiting_children"
+	// HeldAwaitingTodo is an issue on a new run, a generation past its first, that starts as a
+	// root's run does (Chains.StartsAsRoot), standing at admitted while Dispatch shows it in work
+	// at a status other than todo (LineFacts.AwaitsTodo): R20 of dispatch://INFRA-3320 opens such a
+	// run at the status a person moved the issue to, as when a person reopens an issue the merge
+	// of its pull request closed straight to in_progress, and only a person's todo queues the run
+	// whose promotion starts its architect (R19's handover). No issue holds it.
+	HeldAwaitingTodo HeldReason = "awaiting_todo"
 	// HeldDesignGate is an issue a design gate it waits for holds where it stands: the gate of an
 	// issue at or above it in Legion's work that holds its own gate, or a gate step it holds
 	// itself, stands shut at a step the deployment gates (LineFacts.ShutGates).
@@ -69,13 +76,13 @@ const (
 	// serves this word's sentence only to an issue past its review whose gate root runs nothing.
 	// This is the one statement of that; every other reader points here.
 	HeldAtWork HeldReason = "at_work"
-	// HeldUnclassified is an issue none of the twelve words above is true of (C2). The record
+	// HeldUnclassified is an issue none of the thirteen words above is true of (C2). The record
 	// holds it in the workflow and no rule here says what it waits for, which is a gap in the
 	// words and not in the list: the issue has a place, and a reader can see that it needs one.
 	HeldUnclassified HeldReason = "unclassified"
 )
 
-// HeldReasons is the thirteen words in the order HeldReasonOf reads them, named once for a reader
+// HeldReasons is the fourteen words in the order HeldReasonOf reads them, named once for a reader
 // that must print or walk them in that order rather than keep an order of its own. Two read it:
 // the operator's `admission.held` line (`legion state`), which counts each word and prints the
 // counts in this order, so two readings of one state print one line; and HeldBefore, which the
@@ -94,6 +101,7 @@ var HeldReasons = []HeldReason{
 	HeldAncestry,
 	HeldRootAwaitingPerson,
 	HeldAwaitingChildren,
+	HeldAwaitingTodo,
 	HeldDesignGate,
 	HeldDispatchBlocker,
 	HeldChildrenFirst,
@@ -103,7 +111,7 @@ var HeldReasons = []HeldReason{
 }
 
 // HeldBefore reports whether the ladder reads word before other (HeldReasons, HeldReasonOf). It
-// is false where either is not one of the thirteen words, so the zero row's empty word stands
+// is false where either is not one of the fourteen words, so the zero row's empty word stands
 // before nothing. The test of `why`'s sentence table (the projection's heldSentences) requires
 // the table to serve under `blocked` exactly the words HeldBefore reads before dispatch_blocker;
 // the table states the rule that serves them.
@@ -118,11 +126,12 @@ func HeldBefore(word, other HeldReason) bool {
 // the state's admission.held and the controller's tick notice carry one shape rather than two
 // that could drift.
 //
-// heldBy is absent where no issue holds the one that waits — a root whose label is off, or an
-// issue none of the other words is true of — so the field carries omitempty and this row gets no
-// MarshalJSON writing an empty array for it. That is the one way the row differs from
-// BlockedIssue, whose MarshalJSON writes [] for blockedBy because every row of that list names at
-// least one blocker and a reader of it would have to answer for a null.
+// heldBy is absent where no issue holds the one that waits — a root whose label is off, a new run
+// that waits for a person's todo, or an issue none of the other words is true of — so the field
+// carries omitempty and this row gets no MarshalJSON writing an empty array for it. That is the
+// one way the row differs from BlockedIssue, whose MarshalJSON writes [] for blockedBy because
+// every row of that list names at least one blocker and a reader of it would have to answer for
+// a null.
 type HeldIssue struct {
 	Issue  string     `json:"issue"`
 	Reason HeldReason `json:"reason"`
@@ -161,7 +170,10 @@ func openChildren(wait ChildWait) []string {
 // in merging as held accepted_ancestor (INFRA-500 under INFRA-430) and one under a done parent
 // under an issue at work as held ancestry (INFRA-1238 under INFRA-7), so the ancestry word stands
 // aside for the stronger hold and the words keep their order.
-func HeldReasonOf(issue Issue, facts LineFacts) (HeldReason, []string) {
+//
+// holds says whether the issue holds a slot row of the pass, which only awaiting_todo reads: a new
+// run whose promotion has started its architect holds its row, and waits for no todo.
+func HeldReasonOf(issue Issue, holds bool, facts LineFacts) (HeldReason, []string) {
 	chains := facts.Chains
 	chain := chains.Chain(issue.Key)
 	if !chain.Known() {
@@ -193,6 +205,16 @@ func HeldReasonOf(issue Issue, facts LineFacts) (HeldReason, []string) {
 	// takes it back to the start it held.
 	if issue.Phase == phase.AwaitingChildren {
 		return HeldAwaitingChildren, openChildren(facts.StartedParentWaits[issue.Key])
+	}
+	// A new run that starts as a root's run does waits for a person's todo (LineFacts.AwaitsTodo)
+	// before its gate: its own design gate stands shut, since the new run cleared it, and the
+	// architect that designs it again starts only once a todo queues the run, so the todo is read
+	// before design_gate and before the links and children read after it. The words read before
+	// it stay before it: an unknown chain, which every word after it reads; a root whose label is
+	// off, which a todo does not hand over; and R19's holds of an issue under a parent. It stands
+	// after awaiting_children, which no issue at admitted reads.
+	if facts.AwaitsTodo(issue, holds) {
+		return HeldAwaitingTodo, nil
 	}
 	// The gates above an issue and its own hold its first start (R19 of dispatch://INFRA-3320), so
 	// they hold an issue at admitted alone: an issue already at work started past them, and a gate
@@ -239,8 +261,9 @@ func HeldReasonOf(issue Issue, facts LineFacts) (HeldReason, []string) {
 // line already hold them, and a deferral the other loop went on to place is dropped here. The
 // first row dropped holds for a key is the one kept, so an issue two loops passed over keeps the
 // word of the first site that left it behind. A candidate dropped names nowhere reads the ladder
-// here (HeldReasonOf) over the same facts the drop sites read, which is what gives an issue the
-// pass never saw as a candidate its place, the unclassified row of C2 among them.
+// here (HeldReasonOf) over the same facts the drop sites read, holding no slot row since a slot
+// holder takes no row, which is what gives an issue the pass never saw as a candidate its place,
+// the unclassified row of C2 among them.
 //
 // An issue the daemon records nothing of, which the copy shows todo on a chain that is unknown,
 // takes a row too, with chain_unknown and the link the chain stopped at (R16 of
@@ -275,7 +298,7 @@ func HeldList(issues []Issue, slots []Slot, line []LineEntry, dropped []HeldIssu
 		}
 		row, named := reported[issue.Key]
 		if !named {
-			reason, heldBy := HeldReasonOf(issue, facts)
+			reason, heldBy := HeldReasonOf(issue, false, facts)
 			row = HeldIssue{Issue: issue.Key, Reason: reason, HeldBy: heldBy}
 		}
 		rows = append(rows, row)

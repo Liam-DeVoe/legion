@@ -53,7 +53,8 @@ func shutGate(root string) map[record.DesignStep]record.DesignGate {
 // one issue for each word of the ladder the chain still gives but awaiting_children — an issue
 // whose chain the copy cannot show (its parent has no row), a root whose label is off, an issue
 // whose parent is on the backlog under a root at work, an issue under a root that waits on a
-// person, an issue under a shut design gate, a child an unfinished Dispatch link holds, a parent
+// person, a root on a new run that Dispatch shows in_progress and that waits for a person's todo
+// (R20), an issue under a shut design gate, a child an unfinished Dispatch link holds, a parent
 // whose own children are still open, an issue beneath an accepted ancestor, an issue past its
 // review that nothing holds, which reads at_work (record.HeldAtWork), and an issue none of the
 // others is true of — and the rows are read from the projected state, which is where a reader
@@ -62,16 +63,17 @@ func shutGate(root string) map[record.DesignStep]record.DesignGate {
 // parent that holds a phase start while a child of it is open (record.HeldAwaitingChildren);
 // this fixture builds none.
 //
-// Five controls stand beside them, each an issue that must take no held row. Two are the shapes
+// Six controls stand beside them, each an issue that must take no held row. Two are the shapes
 // the requirement names: a slot holder, and a root a person answered, which stands in active and
-// in waiting at once, the one overlap the contract states. Three more are the running tree's
+// in waiting at once, the one overlap the contract states. Four more are the running tree's
 // ordinary shapes, and they are what the disjointness of the lists turns on, each in the state
 // the admission pass leaves it in: a root whose design gate is shut holds its slot and stands in
-// active, and a root whose children go first and one an unfinished link holds have each given
-// their slot back for that wait (admit.releaseSlotsForWaits) and stand in waiting, with no word
-// against any of them. A held list built from the ladder alone, rather than from the issues the
-// slots and the line leave behind, would give all three a word and claim the daemon runs nothing
-// of a tree it is running.
+// active, and so does a root on a new run whose promotion started its architect, which holds its
+// slot at in_progress as the root waiting for its todo does not; and a root whose children go
+// first and one an unfinished link holds have each given their slot back for that wait
+// (admit.releaseSlotsForWaits) and stand in waiting, with no word against any of them. A held
+// list built from the ladder alone, rather than from the issues the slots and the line leave
+// behind, would give all four a word and claim the daemon runs nothing of a tree it is running.
 //
 // admission.blocked is read as well: it keeps its own rows and its overlaps with the lists, so
 // the child a link holds keeps its row there while it stands in held, and the two roots that gave
@@ -93,6 +95,15 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 	unlabelled.HandedOver = false
 	// A root waiting for its first start, which an unfinished Dispatch link names.
 	queuedRoot := treeRoot("LEGION-130", "todo", phase.Admitted)
+	// A root on a new run, generation 2: the merge of its pull request closed it and a person
+	// reopened it straight to in_progress, so R20 opened the run at admitted with its design gate
+	// cleared, and only a person's todo queues it (record.LineFacts.AwaitsTodo). Nothing holds
+	// it. Beside it the control: the same new run once a todo queued it and its promotion
+	// started its architect, holding its slot at the in_progress the promotion wrote.
+	waitsForTodo := treeRoot("LEGION-140", "in_progress", phase.Admitted)
+	waitsForTodo.Generation = 2
+	promotedNewRun := treeRoot("LEGION-141", "in_progress", phase.Admitted)
+	promotedNewRun.Generation = 2
 	// A root that handed work to a person, holding the slot its wait keeps, and a member of its
 	// tree: the daemon starts no issue of the tree before that root resumes. The root's gate
 	// stands open, so the word its member reads is the wait and nothing else.
@@ -131,16 +142,17 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 		Since: record.EventMark{Seq: 5}}
 
 	store := projectionStore{
-		issues: []record.Issue{unknownChain, onBacklog, underBacklog, unlabelled, queuedRoot,
+		issues: []record.Issue{unknownChain, onBacklog, underBacklog, unlabelled, queuedRoot, waitsForTodo, promotedNewRun,
 			askingRoot, askingMember, gatedRoot, gatedMember, openRoot, blockedChild, merging, beneathMerging, unplaced,
 			slotHolder, linkedRoot, parentOfOpen, answeredRoot},
 		slots: []record.Slot{
 			{Issue: "LEGION-150", Index: 0, AdmittedAt: projectedAt},
 			{Issue: "LEGION-160", Index: 1, AdmittedAt: projectedAt},
+			{Issue: "LEGION-141", Index: 2, AdmittedAt: projectedAt},
 			{Issue: "LEGION-175", Index: 3, AdmittedAt: projectedAt},
 			{Issue: "LEGION-190", Index: 5, AdmittedAt: projectedAt},
 		},
-		lifecycles: []string{"LEGION-150", "LEGION-160", "LEGION-170", "LEGION-180", "LEGION-190"},
+		lifecycles: []string{"LEGION-141", "LEGION-150", "LEGION-160", "LEGION-170", "LEGION-180", "LEGION-190"},
 		gates: map[string]map[record.DesignStep]record.DesignGate{
 			"LEGION-150": openGate("LEGION-150", opened),
 			"LEGION-160": shutGate("LEGION-160"),
@@ -170,6 +182,7 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 		{Issue: "LEGION-101", Reason: record.HeldChainUnknown, HeldBy: []string{"LEGION-100"}},
 		{Issue: "LEGION-111", Reason: record.HeldAncestry, HeldBy: []string{"LEGION-160"}},
 		{Issue: "LEGION-120", Reason: record.HeldLabelOff},
+		{Issue: "LEGION-140", Reason: record.HeldAwaitingTodo},
 		{Issue: "LEGION-151", Reason: record.HeldRootAwaitingPerson, HeldBy: []string{"LEGION-150"}},
 		{Issue: "LEGION-161", Reason: record.HeldDesignGate, HeldBy: []string{"LEGION-160"}},
 		{Issue: "LEGION-171", Reason: record.HeldDispatchBlocker, HeldBy: []string{"LEGION-900"}},
@@ -183,8 +196,9 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 	}
 
 	// LEGION-172, the accepted ancestor in merging, holds no slot row: its work is past its review
-	// (record.KeepsSlot), so it stands in held as at_work rather than in active.
-	wantActive := []string{"LEGION-150", "LEGION-160", "LEGION-175", "LEGION-190"}
+	// (record.KeepsSlot), so it stands in held as at_work rather than in active. LEGION-141, the new
+	// run its promotion started, stands here in the order of its slot row and in no held row.
+	wantActive := []string{"LEGION-150", "LEGION-160", "LEGION-141", "LEGION-175", "LEGION-190"}
 	if !reflect.DeepEqual(got.Admission.Active, wantActive) {
 		t.Fatalf("admission.active = %#v, want %#v: every issue holding a slot row, the roots a hold keeps out of the line among them, and neither root that gave its slot back for a wait",
 			got.Admission.Active, wantActive)
@@ -225,16 +239,17 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 			both, want)
 	}
 
-	// heldBy is absent where no issue holds the one that waits — a root whose label is off, an
-	// issue the pass names nowhere — which is a nil slice the wire form then omits, and not an
-	// empty array. at_work is beside them: the accepted ancestor in merging reads it, and nothing
-	// holds it (record.HeldAtWork).
+	// heldBy is absent where no issue holds the one that waits — a root whose label is off, a new
+	// run that waits for a person's todo, an issue the pass names nowhere — which is a nil slice
+	// the wire form then omits, and not an empty array. at_work is beside them: the accepted
+	// ancestor in merging reads it, and nothing holds it (record.HeldAtWork).
 	for _, row := range got.Admission.Held {
 		wire, err := json.Marshal(row)
 		if err != nil {
 			t.Fatalf("marshal the held row of %s: %v", row.Issue, err)
 		}
-		holds := !slices.Contains([]record.HeldReason{record.HeldLabelOff, record.HeldAtWork, record.HeldUnclassified}, row.Reason)
+		holds := !slices.Contains([]record.HeldReason{record.HeldLabelOff, record.HeldAwaitingTodo, record.HeldAtWork,
+			record.HeldUnclassified}, row.Reason)
 		if (row.HeldBy != nil) != holds || strings.Contains(string(wire), `"heldBy"`) != holds {
 			t.Errorf("the held row of %s reads %s, want heldBy carried %t under the word %s", row.Issue, wire, holds, row.Reason)
 		}
@@ -284,16 +299,24 @@ func heldRow(t *testing.T, state api.State, key string) api.HeldIssue {
 }
 
 // The word one issue reads is the first of the ladder that is true of it, and not whichever hold
-// a reader noticed first (C1 of dispatch://INFRA-3107), read over Dispatch's chain (R16, R19 and
-// R21 of dispatch://INFRA-3320). Each case below makes two of the words true of one issue at once
-// and requires the earlier one, so the order itself is what is proved rather than the clauses one
-// at a time; one case is the one exception the ladder states, accepted_ancestor taking the place
-// of ancestry, and the last case is the control, an issue one word only is true of, which must
-// read that word whatever the order says.
+// a reader noticed first (C1 of dispatch://INFRA-3107), read over Dispatch's chain (R16, R19, R20
+// and R21 of dispatch://INFRA-3320). Each case below makes two of the words true of one issue at
+// once and requires the earlier one, so the order itself is what is proved rather than the clauses
+// one at a time; one case is the one exception the ladder states, accepted_ancestor taking the
+// place of ancestry, and the last case is the control, an issue one word only is true of, which
+// must read that word whatever the order says.
 func TestTheHeldReasonIsTheFirstThatIsTrue(t *testing.T) {
 	opened := projectedAt.Add(-time.Hour)
 	openRoot := treeRoot("LEGION-1", "todo", phase.Admitted)
 	slotted := []record.Slot{{Issue: "LEGION-1", Index: 0, AdmittedAt: projectedAt}}
+	// LEGION-2 on a new run under parent, generation 2, at in_progress at admitted: it held its own
+	// gate as a root (record.Issue.HoldsGate), so its new run starts as a root's does
+	// (record.Chains.StartsAsRoot), and its gate holds no step, since the new run cleared it.
+	newRunUnder := func(parent string) record.Issue {
+		issue := treeMember("LEGION-2", "LEGION-2", parent, "in_progress", phase.Admitted)
+		issue.Generation, issue.HoldsGate = 2, true
+		return issue
+	}
 
 	for _, tc := range []struct {
 		name  string
@@ -370,6 +393,51 @@ func TestTheHeldReasonIsTheFirstThatIsTrue(t *testing.T) {
 			},
 			issue: "LEGION-2",
 			want:  api.HeldIssue{Issue: "LEGION-2", Reason: record.HeldRootAwaitingPerson, HeldBy: []string{"LEGION-1"}},
+		},
+		{
+			// root_awaiting_person before awaiting_todo: R19's holds of an issue under a parent
+			// are read before a new run's wait for its todo.
+			name: "a new run under a root that waits on a person",
+			store: projectionStore{
+				issues: []record.Issue{func() record.Issue {
+					root := treeRoot("LEGION-1", "in_progress", phase.AwaitingPerson)
+					root.Awaiting = &record.Awaiting{Ask: "ask-q", Since: record.EventMark{Seq: 5}}
+					return root
+				}(), newRunUnder("LEGION-1")},
+				gates: map[string]map[record.DesignStep]record.DesignGate{"LEGION-1": openGate("LEGION-1", opened)},
+			},
+			issue: "LEGION-2",
+			want:  api.HeldIssue{Issue: "LEGION-2", Reason: record.HeldRootAwaitingPerson, HeldBy: []string{"LEGION-1"}},
+		},
+		{
+			// awaiting_todo before design_gate: the new run's own gate stands shut, since the run
+			// cleared it, and the architect that designs it again starts only once a todo queues
+			// the run.
+			name: "a root on a new run at in_progress, its own gate shut",
+			store: projectionStore{issues: []record.Issue{func() record.Issue {
+				root := treeRoot("LEGION-1", "in_progress", phase.Admitted)
+				root.Generation = 2
+				return root
+			}()}},
+			issue: "LEGION-1",
+			want:  api.HeldIssue{Issue: "LEGION-1", Reason: record.HeldAwaitingTodo},
+		},
+		{
+			// awaiting_todo before dispatch_blocker: an unfinished link holds the new run where it
+			// stands as well, and the todo it waits for is read first, as its gate is.
+			name: "a new run a link holds under a running root",
+			store: projectionStore{
+				issues:     []record.Issue{openRoot, newRunUnder("LEGION-1")},
+				slots:      slotted,
+				lifecycles: []string{"LEGION-1"},
+				gates:      map[string]map[record.DesignStep]record.DesignGate{"LEGION-1": openGate("LEGION-1", opened)},
+				mirror: []record.DispatchIssueRow{
+					{Key: "LEGION-2", Project: "LEGION", Status: "in_progress", Blockers: []string{"LEGION-900"}, Parent: "LEGION-1"},
+					{Key: "LEGION-900", Project: "LEGION", Status: "todo"},
+				},
+			},
+			issue: "LEGION-2",
+			want:  api.HeldIssue{Issue: "LEGION-2", Reason: record.HeldAwaitingTodo},
 		},
 		{
 			// dispatch_blocker before accepted_ancestor: both hold the child at admitted, and the
