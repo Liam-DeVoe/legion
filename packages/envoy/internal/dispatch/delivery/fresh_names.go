@@ -297,8 +297,12 @@ func (d *heldDurable) nameFreshly(store consumernames.Store, connect func(string
 		Fixed:    naming.Fixed,
 		Metadata: naming.Metadata,
 		CheckKey: naming.CheckKey,
-		Floor:    func(info *jetstream.ConsumerInfo) uint64 { return info.AckFloor.Stream },
-		StreamID: fresh.streamID,
+		// Every create runs on the take-over's context (takeOverFresh), which ends at
+		// takeOverFinishWithin or the hold's loss deadline: the bound a create's candidate is kept
+		// named for once retired.
+		CreateBound: takeOverFinishWithin,
+		Floor:       func(info *jetstream.ConsumerInfo) uint64 { return info.AckFloor.Stream },
+		StreamID:    fresh.streamID,
 		MissingRecord: func(_ context.Context, logical string) error {
 			return fmt.Errorf("%w: Dispatch's durable %s has no selection row", consumernames.ErrNoRecord, logical)
 		},
