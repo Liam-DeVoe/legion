@@ -65,9 +65,11 @@ the same `apply.sh` command; nothing in this repository changes. Pods started af
 new file. A running pod keeps the files it started with until it restarts, because `pod.yml` mounts
 both by `subPath`, which the kubelet never refreshes.
 
-`modelRoles.default` is the model every role's session runs on, a resumed session included: each
-launch names `--model @default`, Oh My Pi's own name for that role, so a role takes the model this
-file gives it now rather than the one its session saved when it started.
+`modelRoles.default` is the model of every role's session that names no model of its own, a resumed
+session included: such a launch names `--model @default`, Oh My Pi's own name for that role, so the
+role takes the model this file gives it now rather than the one its session saved when it started.
+A role whose `legion.yaml` settings name a model (`roles.<name>.model`), and a role an issue's plan
+defines with a `model`, start on that model instead (`--model <model>`).
 A settings set without that key is not refused anywhere: Oh My Pi reads `@default` as its own
 built-in chat role and the session starts, silently, on a model that is no model of this
 directory's and reachable from no pod.
