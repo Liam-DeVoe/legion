@@ -368,9 +368,6 @@ func (i Issue) Behind(seq int64) bool { return seq > i.LastDispatchSeq }
 // RepositoryCorrection is what a correction of an issue's repository left on its record: the
 // repository the record held before it (Before) and the moment the daemon applied it (At). The
 // two are one value because neither says anything alone, so a record holds a correction or nil.
-// A row that records a correction off no repository reads as none: nothing was ever worked or
-// saved under a repository the issue left. The daemon writes no such row, since it corrects no
-// record that holds no repository (Issue.Unfilled).
 type RepositoryCorrection struct {
 	Before string
 	At     time.Time
@@ -1962,7 +1959,8 @@ type Store interface {
 	// keeping the repository the record held and at as Issue.RepoCorrection, and clearing
 	// whatever change NoteIssueRepositoryChange noted. It answers whether it wrote the
 	// record: false, and nothing written, for a record already on repo, so a pass that reads one
-	// correction twice corrects once and the repository the issue left is kept as it was. It
+	// correction twice corrects once and the repository the issue left is kept as it was, and for
+	// a record that holds no repository (Issue.Unfilled), which FillIssueRepository fills. It
 	// refuses an empty repository, default branch or GitHub spelling, and a GitHub spelling that
 	// names another repository, as FillIssueRepository does. Those two are a different act:
 	// FillIssueRepository and NameIssueRepository fill in what an older record never carried, and

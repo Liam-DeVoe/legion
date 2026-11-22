@@ -165,10 +165,9 @@ func (e *Engine) RefuseRecording(ctx context.Context, tx pgx.Tx, key, resolved s
 // inside the transaction that pass applies in: a live Dispatch event (Engine.dispatchIssue), the
 // listing admission reconciles at boot (its applySummary; the recovery listing takes no recorded
 // issue), admission's outbox hand-over (its consumeHandover), and the daemon's follow over
-// Dispatch's listing (its followRecorded), which it makes once a boot is over for the recorded
-// issues that boot's listing found resolved to another repository, for each issue whose event's
-// or hand-over's reads GitHub did not answer, until GitHub answers, and for each issue whose fact
-// this skipped because its record moved (below). The correction is one statement in that
+// Dispatch's listing (its followRecorded), which reads an issue again wherever a pass can leave
+// its record on another repository than Dispatch resolves (its requestFollow and requestFollowOf
+// say who asks for one; this asks for one below). The correction is one statement in that
 // transaction (record.Store.CorrectIssueRepository, whose one caller this is): no park, no rerun
 // and no new generation, so an issue keeps its phase, its generation and whatever is running for
 // it while its repository moves.
@@ -219,8 +218,9 @@ func (e *Engine) RefuseRecording(ctx context.Context, tx pgx.Tx, key, resolved s
 // writes nothing on it and says nothing: a correction would fill it without the checks the
 // backfill makes, and the stamp of the record a fact was prepared against could fence nothing,
 // since a preparation against such a record stamps it empty (PreparedAgainst). The preparations
-// read GitHub for no such record (the daemon's prepareRecorded and prepareHandover), and the
-// follow takes none (followListing).
+// read GitHub for no such record (the daemon's correctionMoves), and what Dispatch resolves the
+// issue to is read again once the backfill has filled it, so a change this leaves unwritten is not
+// lost (the daemon's backfillRepositories and backfillLater say how).
 func (e *Engine) ApplyRepositoryChange(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) error {
 	if issue.Unfilled() {
 		return nil

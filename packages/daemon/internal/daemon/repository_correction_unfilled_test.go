@@ -4,12 +4,15 @@ package daemon
 // The backfill fills it (fillRepositories), with checks a correction makes none of. So no pass
 // over a recorded issue's resolution corrects such a record or reads GitHub for it: a live event's
 // preparation (prepareIssue), a hand-over's (prepareHandover), the follow (followListing) and the
-// boot's listing, which asks for no follow of it (prepareRecorded). These tests run the daemon's
-// own preparations and its one writer (workflow.Engine.ApplyRepositoryChange) over a real
-// PostgreSQL and NATS, with a GitHub that names strangerRepo as strangerNamed.
+// boot's listing, which asks for no follow of it (prepareRecorded). The refresher's backfill,
+// which fills it while intake is live, asks for its follow once the fill commits (backfillLater).
+// These tests run the daemon's own preparations, backfill and one writer
+// (workflow.Engine.ApplyRepositoryChange) over a real PostgreSQL and NATS, with a GitHub that
+// names strangerRepo as strangerNamed.
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -124,7 +127,7 @@ func TestNoPassCorrectsARecordWithNoRepositoryAndTheBackfillFillsIt(t *testing.T
 				t.Fatalf("notes on %s = %q, want none", unfilledKey, notes)
 			}
 
-			if _, left, err := backfillRepositories(ctx, w.pool, w.records, client, "LEGION", t.TempDir(), w.defaultBranches, ghrepo.Renames{}, quietLogger()); err != nil || left {
+			if _, _, left, err := backfillRepositories(ctx, w.pool, w.records, client, "LEGION", t.TempDir(), w.defaultBranches, ghrepo.Renames{}, quietLogger()); err != nil || left {
 				t.Fatalf("the backfill left a record = %t (%v), want every record filled", left, err)
 			}
 			got = recordedIssue(t, w, unfilledKey)
@@ -132,5 +135,73 @@ func TestNoPassCorrectsARecordWithNoRepositoryAndTheBackfillFillsIt(t *testing.T
 				t.Fatalf("%s after the backfill = %+v, want it filled onto %s at trunk, GitHub's spelling and default branch", unfilledKey, got, strangerNamed)
 			}
 		})
+	}
+}
+
+// hookedListing is repositoryDispatch whose project listing, once onList is set, runs onList the
+// next time it is listed, after the listing is read and before it is answered: a change Dispatch
+// makes after a pass has read its listing.
+type hookedListing struct {
+	*repositoryDispatch
+	onList atomic.Pointer[func()]
+}
+
+func (d *hookedListing) ListIssues(ctx context.Context, project string, statuses []string) ([]dispatch.IssueSummary, error) {
+	listed, err := d.repositoryDispatch.ListIssues(ctx, project, statuses)
+	if hook := d.onList.Swap(nil); hook != nil {
+		(*hook)()
+	}
+	return listed, err
+}
+
+// The refresher's backfill (backfillLater) runs while intake is live, and it lists Dispatch and
+// reads GitHub before it writes. Here the listing resolves the issue to strangerRepo, and before
+// the fill writes, a person moves the issue onto answeredRepo: the event is prepared against a
+// record that holds no repository, so its preparation reads nothing and owes no follow
+// (correctionMoves). The fill then writes strangerRepo, and the event applies after it with no
+// read of GitHub, which writes nothing (workflow.Engine.ApplyRepositoryChange). With no further
+// event and no boot, the follow the backfill asks for once its fill has committed
+// (requestFollowOf) reads Dispatch again and corrects the record onto answeredRepo, off the
+// strangerRepo the fill wrote. Control: with no follow asked after the fill, the record stays on
+// strangerRepo while Dispatch resolves answeredRepo, and the issue's next pod is built there until
+// its next event or the next boot.
+func TestAMoveDuringTheRefreshersBackfillIsFollowedOnceTheFillCommits(t *testing.T) {
+	const key = "LEGION-1122"
+	var hooked *hookedListing
+	w, client, _ := changingRig(t, &installations{}, func(w *workflowRuntime) {
+		hooked = &hookedListing{repositoryDispatch: w.dispatch.(*repositoryDispatch)}
+		w.dispatch, w.stateDir = hooked, t.TempDir()
+	})
+	recordUnfilled(t, w, key)
+	client.show(issue(key, strangerRepo, "in_progress", true, "", 1))
+
+	moved := issue(key, answeredRepo, "in_progress", true, "", 2)
+	var prepared *intake.DispatchIssue
+	move := func() {
+		client.show(moved)
+		asked := w.followRequested.Load()
+		fact, err := prepareAsDelivered(t, w, intake.DispatchIssue{Key: key, Seq: moved.LastSeq, Type: "issue.updated", Status: moved.Status,
+			Title: moved.Title, Rank: moved.Rank, HandedOver: true, ResolvedRepo: answeredRepo})
+		if err != nil {
+			t.Fatalf("prepare the move: %v", err)
+		}
+		if follows := w.followRequested.Load() - asked; fact.RepositoryRead != nil || fact.PreparedAgainst != "" || follows != 0 {
+			t.Fatalf("the prepared move = %+v, asking %d follows; want no read of GitHub, no repository stamped and no follow: its record holds none",
+				fact, follows)
+		}
+		prepared = &fact
+	}
+	hooked.onList.Store(&move)
+	w.backfillLater(context.Background())
+	if prepared == nil {
+		t.Fatal("the backfill listed no Dispatch issue, want the move prepared after its listing")
+	}
+	if _, err := intake.ApplyFact(context.Background(), w.pool, "dispatch", key+"-moved", *prepared, w.handlers...); err != nil {
+		t.Fatalf("apply the move: %v", err)
+	}
+
+	followsSettled(t, w)
+	if got := onRepository(t, w, key, answeredNamed, strangerNamed); got.LastDispatchSeq != 2 {
+		t.Fatalf("%s is at Dispatch sequence %d, want the move's 2: the move applies though its correction writes nothing", key, got.LastDispatchSeq)
 	}
 }

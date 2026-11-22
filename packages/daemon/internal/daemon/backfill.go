@@ -20,8 +20,13 @@ import (
 // and GitHub's spelling of the repository, reading GitHub and Dispatch outside every fact
 // transaction: fillRepositories fills the records written before the record carried its
 // repository, and nameRepositories the records written before it carried GitHub's spelling. The
-// boot runs it before it subscribes to any repository's events, and the refresher runs it again
-// while a record is left (backfillLater).
+// boot runs it (openWorkflow) before it opens the consumers (connect), and the refresher runs it
+// again while a record is left, with intake live (backfillLater), which is why that run asks for
+// a follow of each record it filled. The boot's run needs none: no fact is prepared or applied
+// before the consumers open, so no change Dispatch makes meanwhile is read against a record that
+// holds no repository yet, and the boot's listing (reconcile) reads Dispatch after the fill has
+// committed and follows each recorded issue it finds resolved to another repository
+// (prepareRecorded).
 //
 // A record whose repository the backfill cannot settle — Dispatch resolving none for it, a read of
 // GitHub that fails, a shared clone or a pull request that names another repository — is left as
@@ -32,15 +37,16 @@ import (
 // issue refuses, naming the cause (record.Issue.Repository). It answers GitHub's spelling of the
 // repository of each record it filled or named, as the record now keeps it
 // (record.Issue.GitHubRepo, what heardRepositories hears), once per record written, those of the
-// first step included where the second failed (filled); whether a record is left (left); and an
-// error only where a read or a write of the store, or Dispatch's listing, failed.
-func backfillRepositories(ctx context.Context, pool *store.Pool, records record.Store, client dispatch.Client, project, stateDir string, named *defaultBranches, renames ghrepo.Renames, log *slog.Logger) (filled []ghrepo.Repository, left bool, err error) {
-	filled, left, err = fillRepositories(ctx, pool, records, client, project, stateDir, named, renames, log)
+// first step included where the second failed (filled); the key of each record it filled (keys);
+// whether a record is left (left); and an error only where a read or a write of the store, or
+// Dispatch's listing, failed.
+func backfillRepositories(ctx context.Context, pool *store.Pool, records record.Store, client dispatch.Client, project, stateDir string, named *defaultBranches, renames ghrepo.Renames, log *slog.Logger) (filled []ghrepo.Repository, keys []string, left bool, err error) {
+	filled, keys, left, err = fillRepositories(ctx, pool, records, client, project, stateDir, named, renames, log)
 	if err != nil {
-		return filled, left, err
+		return filled, keys, left, err
 	}
 	wrote, unnamed, err := nameRepositories(ctx, pool, records, project, named, renames, log)
-	return append(filled, wrote...), left || unnamed, err
+	return append(filled, wrote...), keys, left || unnamed, err
 }
 
 // leaveUnfilled says that key's record is left without its repository columns, naming the
@@ -88,7 +94,7 @@ func leaveUnnamed(log *slog.Logger, key, repo, why string) {
 // until this release's one-time rename pass writes the pair's `to` over it (renamePass), and
 // heardRepositories hears the pair's other name too, so the events GitHub now publishes under the
 // name it moved to reach it before that pass as after it.
-func fillRepositories(ctx context.Context, pool *store.Pool, records record.Store, client dispatch.Client, project, stateDir string, named *defaultBranches, renames ghrepo.Renames, log *slog.Logger) (filled []ghrepo.Repository, left bool, err error) {
+func fillRepositories(ctx context.Context, pool *store.Pool, records record.Store, client dispatch.Client, project, stateDir string, named *defaultBranches, renames ghrepo.Renames, log *slog.Logger) (filled []ghrepo.Repository, keys []string, left bool, err error) {
 	var unfilled []record.Issue
 	pulls := map[string]record.PullRequest{}
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
@@ -107,14 +113,14 @@ func fillRepositories(ctx context.Context, pool *store.Pool, records record.Stor
 		}
 		return nil
 	}); err != nil {
-		return nil, false, fmt.Errorf("read the records with no repository: %w", err)
+		return nil, nil, false, fmt.Errorf("read the records with no repository: %w", err)
 	}
 	if len(unfilled) == 0 {
-		return nil, false, nil
+		return nil, nil, false, nil
 	}
 	listed, err := client.ListIssues(ctx, project, nil)
 	if err != nil {
-		return nil, true, fmt.Errorf("list Dispatch issues to fill the records with no repository: %w", err)
+		return nil, nil, true, fmt.Errorf("list Dispatch issues to fill the records with no repository: %w", err)
 	}
 	resolved := make(map[string]string, len(listed))
 	for _, summary := range listed {
@@ -122,7 +128,7 @@ func fillRepositories(ctx context.Context, pool *store.Pool, records record.Stor
 	}
 	clones, err := sharedClones(stateDir)
 	if err != nil {
-		return nil, true, err
+		return nil, nil, true, err
 	}
 	type fill struct {
 		key string
@@ -150,7 +156,7 @@ func fillRepositories(ctx context.Context, pool *store.Pool, records record.Stor
 		fills = append(fills, fill{issue.Key, values})
 	}
 	if len(fills) == 0 {
-		return nil, left, nil
+		return nil, nil, left, nil
 	}
 	if err := serializedTx(ctx, pool, "serialize the backfill with every fact", func(tx pgx.Tx) error {
 		for _, fill := range fills {
@@ -160,15 +166,15 @@ func fillRepositories(ctx context.Context, pool *store.Pool, records record.Stor
 		}
 		return nil
 	}); err != nil {
-		return nil, true, err
+		return nil, nil, true, err
 	}
-	filled = make([]ghrepo.Repository, 0, len(fills))
+	filled, keys = make([]ghrepo.Repository, 0, len(fills)), make([]string, 0, len(fills))
 	for _, fill := range fills {
 		log.Info("legion workflow backfill filled "+fill.key+" with "+fill.repo+"@"+fill.branch, "issue", fill.key, "repo", fill.repo,
 			"defaultBranch", fill.branch, "githubRepo", fill.github.String())
-		filled = append(filled, fill.github)
+		filled, keys = append(filled, fill.github), append(keys, fill.key)
 	}
-	return filled, left, nil
+	return filled, keys, left, nil
 }
 
 // filling is what fillRepositories writes into one record: its repository, as the shared clone or
@@ -224,10 +230,24 @@ func fillOf(ctx context.Context, issue record.Issue, repo ghrepo.Repository, pul
 // the heard set pending only where JetStream refuses the update; the other name of a configured
 // pair that holds it is heard as well, as heardRepositories hears it beside a record's own. It
 // asks the refresher to read the live records again (refreshLive), so a live record it filled
-// joins the live set and the cache set. A failure of the store or of Dispatch's listing is logged
-// and tried again on the job's backoff; a record written before the failure is heard all the same.
+// joins the live set and the cache set.
+//
+// What the fill writes is not final. Intake is live while this runs, and the fill writes what
+// Dispatch's listing resolved before the fill read GitHub and took the lock. An event that moves
+// the issue in between is prepared against a record that holds no repository, so its
+// preparation reads nothing and owes no follow (correctionMoves), and once the fill has committed
+// it applies with no read of GitHub to correct the record from, which writes nothing
+// (workflow.Engine.ApplyRepositoryChange). The fill then leaves the record on the listing's
+// repository while Dispatch resolves another, and nothing would read the issue again before its
+// next event or the next boot. So this asks for a follow of each record it filled once the fill
+// has committed (requestFollowOf), which reads Dispatch's listing after that commit and corrects
+// the record as every follow does. A process that stops between the commit and the ask loses
+// only the ask: the next boot's listing follows each recorded issue it finds resolved to another
+// repository (prepareRecorded). A failure of the store or of Dispatch's listing is logged and
+// tried again on the job's backoff; a record written before the failure is heard and followed all
+// the same.
 func (w *workflowRuntime) backfillLater(ctx context.Context) {
-	filled, left, err := backfillRepositories(ctx, w.pool, w.records, w.dispatch, w.dispatchProject, w.stateDir, w.defaultBranches, w.repositories.renames, w.log)
+	filled, keys, left, err := backfillRepositories(ctx, w.pool, w.records, w.dispatch, w.dispatchProject, w.stateDir, w.defaultBranches, w.repositories.renames, w.log)
 	if len(filled) != 0 {
 		for _, repo := range filled {
 			w.hearOrPend(ctx, repo)
@@ -236,6 +256,9 @@ func (w *workflowRuntime) backfillLater(ctx context.Context) {
 			}
 		}
 		w.wakeLive()
+	}
+	for _, key := range keys {
+		w.requestFollowOf(key)
 	}
 	if err != nil {
 		if ctx.Err() == nil {

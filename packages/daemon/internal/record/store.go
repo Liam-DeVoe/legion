@@ -455,7 +455,9 @@ func (s *Postgres) NameIssueRepository(ctx context.Context, tx pgx.Tx, key, repo
 // pass that reads the same correction twice writes nothing the second time: the repository the
 // record held is kept once, as repo_before, rather than being overwritten with the new one by a
 // repeat. The row's current repo is read into repo_before in the same statement that writes the
-// new one, because every expression of an update reads the row as it stands.
+// new one, because every expression of an update reads the row as it stands. Nor does it match a
+// row that holds no repository (Issue.Unfilled): that row is the backfill's to fill, and a
+// correction of it would record the issue leaving a repository it never held.
 func (s *Postgres) CorrectIssueRepository(ctx context.Context, tx pgx.Tx, key, repo, defaultBranch, githubRepo string, at time.Time) (bool, error) {
 	if repo == "" || defaultBranch == "" || githubRepo == "" {
 		return false, fmt.Errorf("correct the repository of %s: the repository, its default branch and GitHub's spelling of it are required", key)
@@ -465,7 +467,7 @@ func (s *Postgres) CorrectIssueRepository(ctx context.Context, tx pgx.Tx, key, r
 	}
 	tag, err := tx.Exec(ctx, `update issues set repo = $2, default_branch = $3, github_repo = $4,
 		repo_before = repo, repo_corrected_at = $5, repo_change_pending = '', repo_change_reason = ''
-		where key = $1 and repo <> $2`, key, repo, defaultBranch, githubRepo, at)
+		where key = $1 and repo <> $2 and repo <> ''`, key, repo, defaultBranch, githubRepo, at)
 	if err != nil {
 		return false, fmt.Errorf("correct the repository of %s: %w", key, err)
 	}
@@ -550,10 +552,9 @@ func scanIssue(row scanner) (*Issue, error) {
 	if declaredAt != nil {
 		issue.DeclaredAt = declaredAt.UTC()
 	}
-	// A correction is the repository it moved the record off and its moment, and a correction
-	// off no repository moved the issue off nothing (RepositoryCorrection). A change is the
+	// A correction is the repository it moved the record off and its moment. A change is the
 	// repository still to be changed to, with its reason, and no repository is nothing waiting.
-	if repoCorrectedAt != nil && repoBefore != "" {
+	if repoCorrectedAt != nil {
 		issue.RepoCorrection = &RepositoryCorrection{Before: repoBefore, At: repoCorrectedAt.UTC()}
 	}
 	if repoChangePending != "" {

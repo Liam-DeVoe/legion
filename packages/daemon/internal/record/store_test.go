@@ -238,28 +238,32 @@ func TestCorrectIssueRepositoryWritesTheCorrectionAndKeepsTheRepositoryTheIssueL
 	}
 }
 
-// A row that records a correction off no repository reads as holding no correction: there is no
-// repository the issue left for a launch to name, and none whose work it saved. The daemon writes
-// no such row (Issue.Unfilled), so the statement is driven here by hand over a record emptied.
-func TestACorrectionOffNoRepositoryReadsAsNone(t *testing.T) {
+// A record that holds no repository (Issue.Unfilled) is the backfill's to fill, and the
+// correction's statement writes nothing on it: it answers false, and the record stands as it was,
+// with no repository, no repository it left, no moment of a correction and nothing waiting. The
+// daemon asks for no such correction, so the statement is driven here by hand over a record
+// emptied as the migration that added the repository columns left every earlier row.
+func TestCorrectIssueRepositoryWritesNothingOnARecordWithNoRepository(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
 	records := NewStore()
 	at := time.Date(2026, 11, 12, 1, 21, 23, 0, time.UTC)
 	inTx(t, st, func(tx pgx.Tx) { must(t, records.PutIssue(ctx, tx, issueFixture("LEGION-605"))) })
 	inTx(t, st, func(tx pgx.Tx) {
-		if _, err := tx.Exec(ctx, "update issues set repo = '', github_repo = '' where key = $1", "LEGION-605"); err != nil {
+		if _, err := tx.Exec(ctx, "update issues set repo = '', default_branch = '', github_repo = '' where key = $1", "LEGION-605"); err != nil {
 			t.Fatal(err)
 		}
+		unfilled, err := records.Issue(ctx, tx, "LEGION-605")
+		must(t, err)
 		corrected, err := records.CorrectIssueRepository(ctx, tx, "LEGION-605", "zeta/tools", "main", "Zeta/Tools", at)
 		must(t, err)
-		if !corrected {
-			t.Fatal("CorrectIssueRepository = false, want true: the record was on no repository")
+		if corrected {
+			t.Fatal("CorrectIssueRepository = true, want false: a record with no repository is the backfill's to fill")
 		}
 		got, err := records.Issue(ctx, tx, "LEGION-605")
 		must(t, err)
-		if got.Repo != "zeta/tools" || got.RepoCorrection != nil {
-			t.Fatalf("the record is on %s, corrected %+v; want zeta/tools with no correction: it left no repository", got.Repo, got.RepoCorrection)
+		if got.Repo != "" || got.RepoCorrection != nil || !reflect.DeepEqual(got, unfilled) {
+			t.Fatalf("the record after the correction = %#v, want it as it was, with no repository and no correction: %#v", got, unfilled)
 		}
 	})
 }
