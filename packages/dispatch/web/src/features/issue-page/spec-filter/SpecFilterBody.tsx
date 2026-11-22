@@ -203,13 +203,15 @@ export function SpecFilterBody({
   const asks = asksRead.data;
   // The decisions are the decision nodes of the Spec view read (`?view=spec`), which the page
   // holds on the issue's node (`TreeNode.views`), so the body costs no request of its own
-  // to draw them: each decision the view holds, and each question a person answered that carries
-  // `shaped` ties, which the asks read says is answered (`decisionNodes`). The view read is
-  // watched under the key the page reads it by (`ViewReadProvider`). A change of the issue marks
-  // the view stale and reads it again with its answer kept (`subscribeTreeFreshness`); a new
-  // load, a Keep and a Change drop it (`dropViews`), and the column then draws the answer it last
-  // held (`useLastAnswer`) until the next one lands. A read again that fails keeps its answer,
-  // which leaves the body an answer to draw too.
+  // to draw them: each decision the view holds, and each question a person answered that shaped
+  // something. The decision the read carries on the ask decides that, by its `links`; the asks
+  // read is only the fallback where the read carries none, an ask it says is answered that
+  // carries `shaped` ties (`decisionNodes`). The view read is watched under the key the page
+  // reads it by (`ViewReadProvider`). A change of the issue marks the view stale and reads it
+  // again with its answer kept (`subscribeTreeFreshness`); a new load, a Keep and a Change drop
+  // it (`dropViews`), and the column then draws the answer it last held (`useLastAnswer`) until
+  // the next one lands. A read again that fails keeps its answer, which leaves the body an
+  // answer to draw too.
   const specRead = useQuery(treeRead(specQuery));
   const held = useLastAnswer(root.views?.spec);
   const decisions = useMemo(

@@ -159,8 +159,9 @@ export function useDecisionsEntries({
   // The decisions view read, watched the same way for how it stands: the page reads it
   // (`ViewReadProvider`) and holds its answer on the issue's node (`TreeNode.views`).
   const viewRead = useQuery(treeRead(viewQuery(issue.key, "decisions")));
-  // The issue's asks, which say which answered question is a person's decision
-  // (`decisionNodes`), watched the same way: the page's tree reads them under this key.
+  // The issue's asks, watched the same way: the page's tree reads them under this key. The
+  // decision the read carries on an answered ask, by its `links`, makes it a person's decision;
+  // the asks read is only the fallback where the read carries none (`decisionNodes`).
   const asksRead = useQuery(treeRead(issueAsksQuery(issue.key)));
   const asks = asksRead.data;
   // The decisions view the page holds, and the tree read wherever the view holds no answer.

@@ -417,6 +417,33 @@ test("Change anchors to the node's document and block", async () => {
   }
 });
 
+// A Change quotes the decision's heading, the words of its first paragraph, and Dispatch refuses
+// an anchor whose quote is empty (`api/anchors.go`: "anchor quote must not be empty"). A decision
+// whose first paragraph holds no words - here an image alone - still waits for review, so it
+// draws Keep, and it draws no Change, which no reader could ever send.
+test("a decision whose first paragraph holds no words draws Keep but no Change", async () => {
+  const words = "The presets are queries over the one tree.";
+  const pictured = decisionNode("d1", `![The five presets](presets.png)\n\n${words}`, {
+    text_tree: {
+      content: [
+        { content: [{ type: "image" }], type: "paragraph" },
+        { content: [{ text: words, type: "text" }], type: "paragraph" },
+      ],
+      type: "doc",
+    },
+  });
+  const { unmount } = renderActions([pictured]);
+  try {
+    await screen.findByRole("button", { name: CONTROL_LABELS.keep_decision });
+    expect(
+      screen.queryByRole("button", { name: CONTROL_LABELS.change_decision }),
+      "a decision with no words to quote drew a Change whose empty quote Dispatch refuses"
+    ).toBeNull();
+  } finally {
+    unmount();
+  }
+});
+
 // Keep is written against the decision node's own
 // document, block and sum, as the tree read answers them on the node, whatever document the row
 // that draws it stands in. Kept, the tree is read again.

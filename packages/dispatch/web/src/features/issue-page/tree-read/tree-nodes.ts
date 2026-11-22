@@ -457,11 +457,8 @@ function walkOf(answer: TreeAnswer, key: string): TreeAnswerNode[] {
  *  the outline's one rule (`requirementGaps`), which draws its two edges disagreeing too: the
  *  node its `from` attribute names (`originOf`) against each decision a `shaped` tuple that ends
  *  at it starts from, each read as the id the tree draws that node by. Which of those nodes is a
- *  decision is read by the one rule every other reader of a decision reads (`decisionNodes`,
- *  held as `TreeDraftContext.decisions`): a decision node that carries the model's decision and
- *  stands in a document, of whatever kind, and an ask a person answered, where the read carries
- *  that person's decision on it or the asks read says it is answered. An open or a declined ask
- *  decided nothing, and a decision node with no `decision` or no document is no decision. */
+ *  decision is read by the one rule every reader of a decision reads (`decisionNodes`, held as
+ *  `TreeDraftContext.decisions`). */
 function draftRequirement(
   node: TreeAnswerNode,
   _answer: TreeAnswer,
