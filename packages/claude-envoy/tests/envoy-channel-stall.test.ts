@@ -8,11 +8,7 @@ import {
   useEnvoyStackDirectory,
 } from "@legion/envoy-client/test/envoy-stack"
 import { type StallProxy, startStallProxy } from "@legion/envoy-client/test/stall-proxy"
-import {
-  FREEZE_WAIT_DEADLINES_MS,
-  RECOVERY_BOUND_MS,
-  runFreezeScenario,
-} from "@legion/envoy-client/test/stall-scenario"
+import { RECOVERY_BOUND_MS, runFreezeScenario } from "@legion/envoy-client/test/stall-scenario"
 import type { Subprocess } from "bun"
 import { type ModCallArguments, modSocketPath } from "../hooks/mod-protocol"
 import { startFakeMod } from "./fake-mod"
@@ -128,7 +124,9 @@ async function startChannelServer(
     home,
     channel,
     // The server runs on nats.js's real ping and dial timers and a real listener, so each wait
-    // polls the real clock until its condition holds or its deadline passes.
+    // polls the real clock until its condition holds. Only a wait whose time the row asserts has a
+    // deadline (`RECOVERY_BOUND_MS`). A wait given none ends at the row's limit, which names the
+    // row, or when the server exits.
     async waitFor(condition, deadline, what) {
       while (!(await condition())) {
         if (server.exitCode !== null) {
@@ -167,9 +165,21 @@ describe.skipIf(!envoyStackEnabled)(
     let stack: EnvoyStack | undefined
     beforeAll(async () => {
       stack = await startEnvoyStack({ work: stackDirectory })
-    }, 120_000)
+      // A hang guard: what can hang is the stack's start, which builds natsd and the listener with
+      // `go build` and waits for each to serve. It is the start pi-envoy's live describe makes
+      // (`startEnvoyStack`). Worst measured cost of that start: 249 197.32 ms over 20 runs at the
+      // 96 rung in the Job infra-1580-krows-kfh-tgvmp of the cluster's `builds` namespace, two
+      // CPUs and 8 GiB (218 busy loops, at which row A's runs took 33.5 s against the
+      // calibration's 31.2 s), 2026-11-22T08:32Z to 09:41Z. Six times the worst is 1 495 s. That
+      // is past the 700 s one hang leaves this step of the `envoy-session-stall` job
+      // (`.github/workflows/ci-job-envoy-session-stall.yaml`): its `timeout-minutes: 20` less its
+      // other steps' 500 s at d7aa4f9b, run 44984499551, where this step took 72 s of the 572 s.
+      // So that ceiling decides 600_000, which is 2.4 times the worst.
+    }, 600_000)
     afterAll(async () => {
       await stack?.stop()
+      // A hang guard: what can hang is the stop of natsd or the listener. Worst measured cost:
+      // 4 703.96 ms over the same 20 runs, so 60_000 is 12.8 times the worst.
     }, 60_000)
 
     test("a session whose NATS path freezes subscribes its relay subject again on the new connection within 60 s, registers a new epoch, and shows each message once", async () => {
@@ -180,10 +190,9 @@ describe.skipIf(!envoyStackEnabled)(
         "ses_stall",
       )
       try {
-        const started = Date.now()
         await waitFor(
           async () => (await fetch(`${envoyUrl}/v1/registry/${sessionID}`)).ok,
-          started + 30_000,
+          undefined,
           "the session's registration",
         )
         // The bundle runs from this checkout, outside Claude Code's plugin cache.
@@ -205,11 +214,13 @@ describe.skipIf(!envoyStackEnabled)(
           proxy,
           shown: (marker) => channel.filter((content) => content.includes(marker)),
           waitFor,
-          waitDeadlinesMs: FREEZE_WAIT_DEADLINES_MS,
         })
       } finally {
         await stop()
       }
+      // A hang guard, not a bound on work: what can hang is a wait for the registration or a
+      // message that never comes. Its 120_000 is still to be measured.
+      // MEASUREMENT-PROVISIONAL
     }, 120_000)
 
     test("a session whose redial once hung still exits on SIGTERM", async () => {
@@ -220,12 +231,11 @@ describe.skipIf(!envoyStackEnabled)(
         "ses_stall_exit",
       )
       try {
-        const started = Date.now()
         await waitFor(
           async () =>
             (await fetch(`${envoyUrl}/v1/registry/${sessionID}`)).ok &&
             proxy.connections[0]?.subscribedAt !== undefined,
-          started + 30_000,
+          undefined,
           "the session's registration and first subscription",
         )
         // The first redial after the freeze hangs (accepted, never answered); the next forwards.
@@ -241,17 +251,23 @@ describe.skipIf(!envoyStackEnabled)(
         )
         const signalledAt = Date.now()
         server.kill("SIGTERM")
-        const outcome = await Promise.race([
-          server.exited.then(() => "exited"),
-          Bun.sleep(15_000).then(() => "running"),
-        ])
-        console.log(
-          `claude-envoy stall exit: SIGTERM -> ${outcome} after ${((Date.now() - signalledAt) / 1000).toFixed(1)} s`,
-        )
-        expect(outcome).toBe("exited")
+        // No timer bounds the exit. A server that never exits holds the row to its limit, which
+        // fails the row by name. Bun's runner then sends SIGTERM to every process the file's rows
+        // started that still runs. This server handles SIGTERM once (`process.once` in
+        // `../src/envoy-channel-server.ts`), so that second signal ends it, and the `finally`
+        // stops the rest.
+        await server.exited
+        const exitSeconds = ((Date.now() - signalledAt) / 1000).toFixed(1)
+        console.log(`claude-envoy stall exit: SIGTERM -> exited after ${exitSeconds} s`)
+        // It exited of itself, through its SIGTERM handler. A process a signal ended has that
+        // signal here, and no exit code.
+        expect(server.signalCode).toBeNull()
       } finally {
         await stop()
       }
+      // A hang guard, not a bound on work: what can hang is a wait for the registration or an
+      // exit that never comes. Its 120_000 is still to be measured.
+      // MEASUREMENT-PROVISIONAL
     }, 120_000)
   },
 )

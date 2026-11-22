@@ -25679,11 +25679,11 @@ describe.skipIf(!envoyStackEnabled)("against a real natsd and Envoy listener", (
   // The session runs on nats.js's real ping and dial timers and a real listener, so each wait
   // polls the real clock until its condition holds. A deadline is passed only where the time it
   // bounds is what the row asserts: the freeze scenario's recovery within `RECOVERY_BOUND_MS`
-  // (`stall-scenario.ts`). A wait given none, such as the registration's below and the scenario's
-  // others (this host passes no `waitDeadlinesMs`), ends at the row's limit, its hang guard, which
-  // names the row; and every wait throws once its row has ended (`stillOn`), as `until` does,
-  // rather than poll the live listener on into the rows after it. These rows run only under
-  // `LEGION_E2E_ENVOY_STACK=1`, which CI's `envoy-session-stall` job sets.
+  // (`stall-scenario.ts`). The scenario passes no deadline but the recovery's. A wait given none,
+  // such as the registration's below and the scenario's others, ends at the row's limit, its hang
+  // guard, which names the row; and every wait throws once its row has ended (`stillOn`), as
+  // `until` does, rather than poll the live listener on into the rows after it. These rows run
+  // only under `LEGION_E2E_ENVOY_STACK=1`, which CI's `envoy-session-stall` job sets.
   async function waitFor(
     condition: () => boolean | Promise<boolean>,
     deadline: number | undefined,

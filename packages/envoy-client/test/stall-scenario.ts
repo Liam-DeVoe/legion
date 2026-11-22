@@ -28,27 +28,7 @@ export interface FreezeScenarioHost {
     deadline: number | undefined,
     what: string
   ): Promise<void>;
-  /** Deadlines for the waits whose time the scenario does not assert: the first registration
-   *  (`registered`), the live message before the freeze (`live`) and the message after the
-   *  reconnect (`after`), each from the wait's start. A host that passes none waits each out to
-   *  its row's limit. The recovery within `RECOVERY_BOUND_MS` is asserted, so it always has its
-   *  deadline. */
-  readonly waitDeadlinesMs?: FreezeWaitDeadlines;
 }
-
-/** {@link FreezeScenarioHost.waitDeadlinesMs}. */
-export interface FreezeWaitDeadlines {
-  readonly registered: number;
-  readonly live: number;
-  readonly after: number;
-}
-
-/** The deadlines the scenario's waits had before a host could leave them out. */
-export const FREEZE_WAIT_DEADLINES_MS: FreezeWaitDeadlines = {
-  registered: 30_000,
-  live: 10_000,
-  after: 10_000,
-};
 
 /** The fields of the listener's session entry (`envoy_sessions`) the scenario reads. */
 const SessionEntrySchema = z.object({
@@ -104,13 +84,13 @@ async function subscribedSince(monitorUrl: string, subject: string, since: numbe
  * session was told it had been away for: the relay delivers all three.
  *
  * The host runs on nats.js's real ping and dial timers against a real listener, so each wait is
- * real time.
+ * real time. Only the recovery's wait has a deadline: the message sent while the path was frozen
+ * must be shown within `RECOVERY_BOUND_MS` of the freeze, which the scenario asserts. Every other
+ * wait passes the host's `waitFor` no deadline, so it ends at the row's own limit, which names
+ * the row.
  */
 export async function runFreezeScenario(host: FreezeScenarioHost): Promise<void> {
-  const { label, stack, sessionID, proxy, shown, waitFor, waitDeadlinesMs } = host;
-  /** `now` plus the wait's deadline when the host gave one; otherwise none. */
-  const deadline = (now: number, wait: keyof FreezeWaitDeadlines): number | undefined =>
-    waitDeadlinesMs === undefined ? undefined : now + waitDeadlinesMs[wait];
+  const { label, stack, sessionID, proxy, shown, waitFor } = host;
   // The subject the session's own connection takes every message on.
   const sessionSubject = deliverSubject(sessionID);
   const send = async (marker: string) => {
@@ -126,7 +106,6 @@ export async function runFreezeScenario(host: FreezeScenarioHost): Promise<void>
   const observer = await connect({ servers: [stack.natsUrl], name: `stall-observer-${run}` });
   try {
     const sessions = await observer.jetstream().views.kv("envoy_sessions", { bindOnly: true });
-    const started = Date.now();
     let firstEpoch: string | undefined;
     await waitFor(
       async () => {
@@ -136,13 +115,13 @@ export async function runFreezeScenario(host: FreezeScenarioHost): Promise<void>
         if (firstEpoch === undefined) return false;
         return await subscribedSince(stack.monitorUrl, sessionSubject, 0);
       },
-      deadline(started, "registered"),
+      undefined,
       "the session's registration answered consumer, with its relay subject subscribed"
     );
 
     const live = `stall-live-before-${run}`;
     await send(live);
-    await waitFor(() => shown(live).length > 0, deadline(Date.now(), "live"), "the live message");
+    await waitFor(() => shown(live).length > 0, undefined, "the live message");
 
     const frozenAt = proxy.freeze();
     const missed = `stall-missed-${run}`;
@@ -175,11 +154,7 @@ export async function runFreezeScenario(host: FreezeScenarioHost): Promise<void>
 
     const after = `stall-live-after-${run}`;
     await send(after);
-    await waitFor(
-      () => shown(after).length > 0,
-      deadline(Date.now(), "after"),
-      "the message after the reconnect"
-    );
+    await waitFor(() => shown(after).length > 0, undefined, "the message after the reconnect");
 
     // Each shown once, and the relay delivered all three, so none carries the line a frame stored
     // while the session was away would carry.
