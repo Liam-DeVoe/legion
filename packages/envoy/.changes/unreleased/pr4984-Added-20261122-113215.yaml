@@ -9,5 +9,6 @@ body: |-
   child issue of the level repairs the holds. The import answers 409 REPAIR_ISSUE_RACED when, three
   times in a row, another import names a repair issue on one of its holds, or an approval clears
   one, while it opens its own.
+time: 2026-11-22T11:32:15Z
 custom:
-    Issue: 4984
+    Issue: pr4984
