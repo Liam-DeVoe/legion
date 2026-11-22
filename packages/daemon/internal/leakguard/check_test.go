@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -508,12 +509,17 @@ func stopSaid(t *testing.T, ctx context.Context, err error, program string, call
 // wrote its sleep's process id before the bound ended, the bound also has a floor: the check
 // started before that file was written, so the bound is no shorter than what was left of the
 // deadline when the file was written, less 50 ms for the file's coarser clock. Rounding to whole
-// seconds keeps that order, so the floor needs no more slack. On a machine slow enough that the
-// bound ends first there is no file, and no floor to read, and the test does not ask for one. The
+// seconds keeps that order, so the floor needs no more slack. The floor is what a wrong bound
+// fails, so the caller's bound is 10 s, long enough that the stand-in has written its process id
+// before it ends: at a load average of 1,500, a bound of 2 s left the file unwritten in some runs.
+// Where there is no file there is no floor to read; a file written after the deadline, before the
+// stop reached the stand-in, gives a floor of 0 s or less, which any bound meets, so the test asks
+// for no floor either way. A run with no file says in its log that it read no floor, and any other
+// failure to read the file fails the test, since it says nothing of when the stand-in wrote. The
 // kill reaches the sleep bash started in the check's own process group (stoppedPush): a sleep the
 // kill missed would hold the output pipe open, and exec would wait its WaitDelay for it.
 func TestASharedCheckStoppedByItsBoundNamesTheCheckItsTimeAndItsBound(t *testing.T) {
-	const theBound = 2 * time.Second
+	const theBound = 10 * time.Second
 	ctx, cancel := context.WithTimeout(context.Background(), theBound)
 	defer cancel()
 	failed, _, pids := stoppedPush(t, ctx, nil)
@@ -521,7 +527,13 @@ func TestASharedCheckStoppedByItsBoundNamesTheCheckItsTimeAndItsBound(t *testing
 		t.Fatalf("the push answered %q inside the caller's %s: the caller's deadline did not stop the check", failed.Error(), theBound)
 	}
 	stoppedByItsBound(t, failed, theBound)
-	if written, err := os.Stat(pids); err == nil {
+	written, err := os.Stat(pids)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		t.Logf("the stand-in wrote no process id before its bound ended: no floor read")
+	case err != nil:
+		t.Fatal(err)
+	default:
 		deadline, _ := ctx.Deadline()
 		floor := wholeSeconds(deadline.Sub(written.ModTime()) - 50*time.Millisecond)
 		if _, bound, _ := sharedStop(t, failed); bound < floor {
