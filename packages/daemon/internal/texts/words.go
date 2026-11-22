@@ -209,8 +209,7 @@ func InFront(parts []string, text string) string {
 	// The text outside the blocks: ahead of the first, between one record's run and the next (the
 	// next record's fields), and after the last. Two blocks of one run stand a new line apart,
 	// which holds no tag.
-	before := make([]string, 0, len(parts)+2)
-	before = append(before, parts...)
+	before := append([]string(nil), parts...)
 	blocks := make([]block, len(found))
 	from := 0
 	for i, d := range found {
