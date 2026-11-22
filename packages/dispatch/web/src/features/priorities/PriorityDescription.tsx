@@ -16,7 +16,7 @@ import { createDoc, type EditorHandle } from "../doc/editor";
 import { DocumentRuntime } from "../doc/runtime";
 import { compiledBlockSchema } from "../doc/schema";
 import { watchPicturePath } from "../refs/reference-target";
-import { arrival, NOTHING_KEPT } from "./field-arrival";
+import { answered, arrival, NOTHING_KEPT, type SentText } from "./field-arrival";
 import { ChangedMeanwhile, SAVE_AFTER_MS } from "./InPlaceField";
 
 const NONE_WRITTEN = "No description is written.";
@@ -34,16 +34,18 @@ interface Held {
    *  the editor reads a text back in its own form (`* ` for `- `, a soft break as a space, a
    *  closing newline), and that is no change the reader made. */
   base: string;
-  /** The server's text `base` stands for, as the server holds it rather than as the editor reads
-   *  it back: the text the editor took in or was last drawn to, or the last text it wrote. It is
-   *  the text the reader's edit started from, which each write hands on with what it writes
-   *  (`save`), for the write to name as the text it goes over (`expected`). So a write made after
-   *  the page drew another person's text, and before the editor took that text in, names the
-   *  text the reader edited, never theirs, and Dispatch refuses it rather than writing over it. */
+  /** The server's text the editor last took in, as the server holds it rather than as the editor
+   *  reads it back: the text it opened on (`take`), was drawn to (`redraw`), or saw arrive
+   *  (`arrival`). A read is all that moves it, never a write, which may not land. Each write
+   *  hands it on with what it writes (`save`), for the write to name as the text it goes over
+   *  (`expected`). So a write made after the page drew another person's text, and before the
+   *  editor took that text in, names the text the reader edited, never theirs, and Dispatch
+   *  refuses it rather than writing over it. */
   from: string;
   /** The texts written that the server has not answered with yet, oldest first: its answer
-   *  with one of them is the reader's own write coming back, not another person's text. */
-  sent: readonly string[];
+   *  with one of them is the reader's own write coming back, not another person's text. The
+   *  page's answer marks one that landed, and takes out one that did not (`answered`). */
+  sent: readonly SentText[];
   /** The write waiting for the typing to rest. */
   timer: number | undefined;
   /** Whether the editor drew its text from the server's reading of it (`draw`), rather than
@@ -59,7 +61,10 @@ interface Held {
  *  markdown in), and where a write goes. */
 interface Latest {
   readonly description: string;
-  readonly onSave: (next: string, from: string) => void;
+  /** Sends the write `held` counted out as `entry` (`sent`), over the server's text the editor
+   *  last took in (`PriorityDescription`'s `onSave`), and follows what the page answers of that
+   *  very write. */
+  readonly send: (held: Held, entry: SentText) => void;
   readonly reading: DisplayTree | undefined;
 }
 
@@ -81,17 +86,17 @@ function heldText(held: Held): string {
 }
 
 /** Writes what the editor holds, at once, where it differs from the server's text, with the text
- *  the edit started from (`from`). An editor that holds the server's reading of the text
- *  (`fromTree`) writes nothing, ever: a reading is a thing to draw, never a text to store. */
-function save(held: Held, onSave: Latest["onSave"]): void {
+ *  the editor last took in from it (`from`); Use my text's write (`use`) writes it whatever it
+ *  is. An editor that holds the server's reading of the text (`fromTree`) writes nothing, ever: a
+ *  reading is a thing to draw, never a text to store. */
+function save(held: Held, send: Latest["send"], use?: true): void {
   stop(held);
   const markdown = heldText(held);
-  if (markdown === held.base) return;
-  const from = held.from;
+  if (markdown === held.base && use === undefined) return;
   held.base = markdown;
-  held.from = markdown;
-  held.sent = [...held.sent, markdown];
-  onSave(markdown, from);
+  const entry = { landed: false, text: markdown };
+  held.sent = [...held.sent, entry];
+  send(held, entry);
 }
 
 /** Draws a text in the editor: from the tree the server read it into where one is given
@@ -114,7 +119,7 @@ function take(held: Held, markdown: string, tree: DisplayTree | undefined): void
 }
 
 /** Draws the server's text in an editor already open (`draw`), held then as the text the editor
- *  matches, and as the text the reader's edit starts from (`from`). A text it cannot take in
+ *  matches, and as the server's text the editor last took in (`from`). A text it cannot take in
  *  leaves what the editor holds in it, held all the same as the text it matches, so that is not
  *  written over the text it could not draw as the editor closes, and `fail` is told why. Either
  *  way it stops the write waiting for the typing to rest, which would write over the server's
@@ -142,8 +147,8 @@ function redraw(
  *  write of theirs comes back to the markdown it was written from, never to a reading drawn over
  *  it, and a reading is drawn over nothing they typed that is not written. The editor asks it
  *  again whenever one of those may have changed - the server's text or the form it is drawn in,
- *  the typing at rest, and the editor or the page left - so a move held back is made once the
- *  writer is settled. */
+ *  the typing at rest, the editor or the page left, and a write of theirs ending without landing
+ *  - so a move held back is made once the writer is settled. */
 function follow(held: Held, latest: Latest, fail: (failure: Failure) => void): void {
   if (held.fromTree === (latest.reading !== undefined) || held.sent.length > 0) return;
   if (heldText(held) !== held.base) return;
@@ -154,7 +159,7 @@ function follow(held: Held, latest: Latest, fail: (failure: Failure) => void): v
  *  and then moves it to the form the server's text is drawn in now, where that waited on the
  *  typing (`follow`). */
 function rest(held: Held, latest: Latest, fail: (failure: Failure) => void): void {
-  save(held, latest.onSave);
+  save(held, latest.send);
   follow(held, latest, fail);
 }
 
@@ -181,12 +186,14 @@ function rest(held: Held, latest: Latest, fail: (failure: Failure) => void): voi
  * reload: a row of the table scrolled away, or the page left, and an editor drawn again shows
  * them again, and the page draws the editor while it holds any, a closed disclosure included.
  * Else the editor holds them itself, and they go with it.
- * Each write hands on, with the text written, the server's text the reader's edit started from
- * (`onSave`'s `from`), which the page names as the text the write goes over (`expected`), and
- * never the page's own read of the text: the page draws another person's text before the editor
- * takes it in, and a write made in between - the typing at rest, the editor left as it turns
- * read-only, the page going - names the text the reader edited, so Dispatch refuses it, and the
- * reader's text is kept beside the other person's as it is where that text arrives first.
+ * Each write hands on, with the text written, the server's text the editor last took in
+ * (`onSave`'s `from`), which the page names as the text the write goes over (`expected`) unless a
+ * write of the page's own goes before it. Only a read moves it, never a write, which may not land,
+ * and never the page's own read of the text: the page draws another person's text before the
+ * editor takes it in, and a write made in between - the typing at rest, the editor left as it
+ * turns read-only, the page going - names the text the reader edited, so Dispatch refuses it, and
+ * the reader's text is kept beside the other person's as it is where that text arrives first. Use
+ * my text writes the kept text at once, whatever the editor held before.
  * A reader who may not write reads it in the same editor, read-only; with none written, they
  * read that none is, and a writer reads it above the empty editor.
  *
@@ -221,8 +228,9 @@ function rest(held: Held, latest: Latest, fail: (failure: Failure) => void): voi
  * parser does not take whole is shown the server's reading. A writer's editor moves once they are
  * settled (`follow`): with a write of theirs out, its answer would come back to a reading drawn
  * over the markdown it was written from, and a reading would draw over typing not yet written.
- * So the typing is written, as typed, and the editor moves once the answer is in. An editor drawn
- * from a reading holds nothing of the reader's: no text of it is kept beside the editor as
+ * So the typing is written, as typed, and the editor moves once the answer is in, or once the page
+ * says the write ended without landing (`onSave`'s answer), when no answer is coming. An editor
+ * drawn from a reading holds nothing of the reader's: no text of it is kept beside the editor as
  * theirs, and none is written.
  */
 export function PriorityDescription({
@@ -258,13 +266,16 @@ export function PriorityDescription({
    *  #3". The editor carries it as its accessible name. */
   label: string;
   onKeptChange?: (kept: readonly string[]) => void;
-  /** Writes `next`, the reader's text, over `from`, the server's text their edit started from,
-   *  which the write names as the text it goes over (`expected`). */
-  onSave: (next: string, from: string) => void;
+  /** Writes `next`, the reader's text, over `from`, the server's text the editor last took in,
+   *  which the write names as the text it goes over (`expected`) unless a write of the page's own
+   *  goes before it. Answers, where the page tells, whether the write landed. */
+  // biome-ignore lint/suspicious/noConfusingVoidType: a page that does not say whether its write landed hands any callback, as a void callback takes one
+  onSave: (next: string, from: string) => Promise<boolean> | void;
 }): ReactNode {
   const root = useRef<HTMLDivElement>(null);
   const held = useRef<Held | undefined>(undefined);
-  // The server's text the editor last took in, or saw arrive.
+  // The server's text the editor last took in, or saw arrive, whether an editor was drawn for it
+  // or not: Use my text with no editor drawn writes over it (`putBack`).
   const seen = useRef(description);
   // The reader's own texts, kept beside the editor while it shows another person's, where the
   // page does not hold them.
@@ -283,13 +294,23 @@ export function PriorityDescription({
   // Whether the editor takes the text in as its markdown rather than as a reading, which an
   // editor drawn already comes to follow (the effects below).
   const fromMarkdown = reading === undefined;
-  const latest = useRef({ description, kept, onSave, reading, setKept, writes });
-  latest.current = { description, kept, onSave, reading, setKept, writes };
   // The handle once the editor holds the description: its name, its access and the references
   // drawn over its text follow it.
   const [editor, setEditor] = useState<EditorHandle | undefined>(undefined);
   // A text the editor could not take in, with the reason, until the server's text changes.
   const [failure, setFailure] = useState<Failure>();
+  // Each write the editor makes goes through the page (`onSave`), which answers whether that very
+  // write landed (`answered`): one that did not never comes back, so the editor waits for no
+  // answer with it, and moves to the form the server's text is drawn in where that waited on it
+  // (`follow`), while it is still the editor drawn.
+  const send = (current: Held, entry: SentText) => {
+    void onSave(entry.text, current.from)?.then((landed) => {
+      current.sent = answered(current.sent, entry, landed);
+      if (!landed && held.current === current) follow(current, latest.current, setFailure);
+    });
+  };
+  const latest = useRef({ description, kept, reading, send, setKept, writes });
+  latest.current = { description, kept, reading, send, setKept, writes };
   const { createEditor } = useContext(DocumentRuntime);
   const login = useQuery(whoAmIQuery()).data?.login;
   const queryClient = useQueryClient();
@@ -376,7 +397,7 @@ export function PriorityDescription({
       // is written now rather than lost with the timer.
       const current = held.current;
       held.current = undefined;
-      if (current !== undefined) save(current, latest.current.onSave);
+      if (current !== undefined) save(current, latest.current.send);
       ydoc?.off("update", onUpdate);
       void handle?.destroy();
       ydoc?.destroy();
@@ -403,11 +424,14 @@ export function PriorityDescription({
   // The server's text, as it changes under the editor (`arrival`, and the component's own doc).
   // An editor drawn from a reading holds nothing of the reader's - what it holds is the
   // server's reading, never a text of theirs to keep beside it - so it is compared as the text
-  // it last matched (`heldText`).
+  // it last matched (`heldText`). With no editor drawn - one that could not draw a text, or one
+  // still opening - the text is seen all the same, and an editor drawn later takes it in as it
+  // opens (`take`).
   useEffect(() => {
-    const current = held.current;
-    if (current === undefined || description === seen.current) return;
+    if (description === seen.current) return;
     seen.current = description;
+    const current = held.current;
+    if (current === undefined) return;
     const { kept: mine, setKept: keep } = latest.current;
     const next = arrival(description, heldText(current), {
       base: current.base,
@@ -415,10 +439,10 @@ export function PriorityDescription({
       sent: current.sent,
     });
     current.sent = next.sent;
-    // Each text `arrival` leaves as the edit's start is one the server holds, or will once the
-    // write of it still out lands, as the server holds it: the text a write names from here.
     current.base = next.base;
-    current.from = next.base;
+    // The server holds this text, whatever the editor made of it: the text a write names from
+    // here, until the next read.
+    current.from = description;
     if (next.kept !== mine) keep(next.kept);
     if (next.take) redraw(current, description, latest.current.reading, setFailure);
   }, [description]);
@@ -445,19 +469,20 @@ export function PriorityDescription({
   }, []);
 
   // One of the reader's kept texts, put back in the editor from its markdown, since the server
-  // holds no reading of it, and written at once, over the text the editor shows: the reader chose
-  // it over that. With no editor the reader writes in - another person's text it could not draw,
-  // or one the server cannot read as markdown, drawn read-only - it is written as it is, over the
-  // text the editor last took in, and the server's text stays drawn until the answer replaces it.
+  // holds no reading of it, and written at once, even where the editor holds it already: the
+  // reader chose it over the other person's text. With no editor the reader writes in - another
+  // person's text it could not draw, or one the server cannot read as markdown, drawn read-only -
+  // it is written as it is, over the server's text the editor last took in, or with no editor
+  // drawn, the last that arrived, and the server's text stays drawn until the answer replaces it.
   const putBack = (text: string) => {
     setKept(NOTHING_KEPT);
     const current = held.current;
     if (current === undefined || !writes) {
-      onSave(text, current?.from ?? seen.current);
+      void onSave(text, current?.from ?? seen.current);
       return;
     }
     draw(current, text, undefined);
-    save(current, onSave);
+    save(current, send, true);
   };
 
   return (

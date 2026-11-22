@@ -561,8 +561,10 @@ export function issuePatchRequest(key: string, input: Body<"/api/v1/issues/{key}
 /** `PATCH /api/v1/priorities/{id}`: the priority's title, description or owner, and its place in
  *  the one order (`rank: {before, after}`, the priorities it lands between, as the issue board's
  *  own drag names them). Each field left out is left alone. `expected` names the title or
- *  description the writer's edit started from; one the priority no longer stores refuses the
- *  write `409 PRIORITY_CHANGED`, and nothing is written. */
+ *  description the write goes over: the newest of the page's own writes of it still out or not
+ *  yet drawn by a read, and else the text the field took in from a read (`usePriorityWrites`).
+ *  One the priority no longer stores refuses the write `409 PRIORITY_CHANGED`, and nothing is
+ *  written. */
 export function priorityPatchRequest(id: string, input: Body<"/api/v1/priorities/{id}", "patch">) {
   return writeRequest("patch", "/api/v1/priorities/{id}", { id }, input);
 }

@@ -187,8 +187,8 @@ function PriorityShown({
         <header className={`min-w-0 rounded-xl border p-3 ${card}`} data-testid="priority-header">
           {/* The title's notice of the reader's kept texts stands under the heading, outside it:
               drawn in it, it would be read as part of the heading's name. Each field's write
-              names the text the field's edit started from (`from`), never the page's read, which
-              may hold another person's text the field has not taken in yet. */}
+              names the server's text the field last took in (`from`), never the page's read,
+              which may hold another person's text the field has not taken in yet. */}
           {canWrite ? (
             <InPlaceField
               closed="heading"

@@ -25,7 +25,7 @@ import {
   textSecondaryHoverToPrimary,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import { arrival, NOTHING_KEPT } from "./field-arrival";
+import { answered, arrival, NOTHING_KEPT, type SentText } from "./field-arrival";
 
 /** How long the reader may stop typing before what they wrote is saved. Nothing else in
  *  Dispatch asks a person to press Save, so a priority's fields are saved as they are written:
@@ -116,7 +116,7 @@ function stopTimer(timer: { current: number | undefined }): void {
 }
 
 /** What a field holds, as it is compared and written: trimmed, and in a `required` field the
- *  reader emptied, the text the edit started from, since an empty one is never written. */
+ *  reader emptied, the text it compares with (`base`), since an empty one is never written. */
 function heldText(draft: string, base: string, required: boolean): string {
   const typed = draft.trim();
   return required && typed === "" ? base : typed;
@@ -142,11 +142,11 @@ export const FIELD_CHIP = `inline-flex min-h-11 max-w-full items-center gap-1 ro
  * is kept here until it rests, then written once; leaving the field writes it immediately, and
  * Enter does both, as does the field leaving the page. The page going (`pagehide`) makes the
  * write at once too, and `api/client.ts`'s `pageGoing` says what of it is let finish then. Only
- * a text that differs from the one the edit started from is written, so leaving a field the
- * reader typed nothing into writes nothing. The texts compared are trimmed, since every field
+ * a text that differs from the last one the field wrote or took in is written, so leaving a field
+ * the reader typed nothing into writes nothing. The texts compared are trimmed, since every field
  * drawn here is stored trimmed (`internal/dispatch/api/priorities.go`), and what is written is
- * trimmed. A `required` field never writes an empty text: left empty, it shows the text it
- * started from again.
+ * trimmed. A `required` field never writes an empty text: left empty, it shows that last text
+ * again.
  *
  * A change of `value` is the server's text moving under the field, which it reads as the
  * description's editor does (`arrival`). The round trip of one of its own writes changes nothing
@@ -159,12 +159,19 @@ export const FIELD_CHIP = `inline-flex min-h-11 max-w-full items-center gap-1 ro
  * those texts (`kept`, `onKeptChange`) - a priority's title, whose texts the write store holds
  * (`usePriorityWrites`) - they outlive the field, the page and a reload, and a field drawn again
  * shows them again. Else the field holds them itself, and they go with it: the owner's field.
- * Each write hands on, with the text written, the text the reader's edit started from (`onSave`'s
- * `from`), which a title's write names as the text it goes over (`expected`), and never the
- * page's own read of the text: the page draws another person's text before the field takes it
- * in, and a write made in between - the typing at rest, the field left, Enter, the page going -
- * names the text the reader edited, so Dispatch refuses it, and the reader's text is kept beside
- * the other person's as it is where that text arrives first.
+ * Each write hands on, with the text written, the server's text the field last took in (`onSave`'s
+ * `from`): the text it was drawn with, or the last that arrived. A title's write names it as the
+ * text it goes over (`expected`), unless a write of the page's own goes before it. Only a read
+ * moves it, never a write, which may not land, and never the page's own read of the text: the page
+ * draws another person's text before the field takes it in, and a write made in between - the
+ * typing at rest, the field left, Enter, the page going - names the text the reader edited, so
+ * Dispatch refuses it, and the reader's text is kept beside the other person's as it is where that
+ * text arrives first. Use my text writes the kept text at once, whatever the field held before,
+ * unless the field's newest write is that very text and still out. The page answers each write
+ * with whether it landed: one that did is no write of the reader's still out when another person's
+ * text arrives, and one that did not is no write whose answer the field waits for (`sent`), and no
+ * text the field writes again on its own once the write before it comes back: the reader discarded
+ * it, or the shell's line holds it, with its Retry.
  *
  * Drawn `closed`, the field reads as its text until the reader opens it, and closes as they leave
  * it; what it writes, and when, is the same. A heading (`closed="heading"`) is the page's heading,
@@ -205,9 +212,11 @@ export function InPlaceField({
    *  field, after a heading's heading. */
   noticeAt?: HTMLElement | null;
   onKeptChange?: (kept: readonly string[]) => void;
-  /** Writes `next`, the reader's text, over `from`, the text their edit started from, which a
-   *  title's write names as the text it goes over (`expected`); the owner's names none. */
-  onSave: (next: string, from: string) => void;
+  /** Writes `next`, the reader's text, over `from`, the server's text the field last took in,
+   *  which a title's write names as the text it goes over (`expected`); the owner's names none.
+   *  Answers, where the page tells, whether the write landed. */
+  // biome-ignore lint/suspicious/noConfusingVoidType: a page that does not say whether its write landed - the owner's - hands any callback, as a void callback takes one
+  onSave: (next: string, from: string) => Promise<boolean> | void;
   /** What other rows already hold, offered beside the field: a reader picks one of the owners
    *  the deployment uses, or writes a new one, since nothing bounds what an owner may be. */
   options?: readonly string[];
@@ -229,19 +238,25 @@ export function InPlaceField({
   // Whether the reader has opened a field drawn `closed`; any other is always open.
   const [opened, setOpened] = useState(false);
   const box = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null);
-  // Where the field stands against the server's text (`FieldStand`): what the edit started from,
-  // and the texts written that the server has not answered with yet, oldest first.
+  // Where the field stands against the server's text (`FieldStand`): what the reader's text is
+  // compared with, and the texts written that the server has not answered with yet, oldest first.
   const base = useRef(value);
-  const sent = useRef<readonly string[]>([]);
+  const sent = useRef<readonly SentText[]>([]);
+  // The server's text the field last took in: the text it was drawn with, and then each that
+  // arrived (`arrival`). A read is all that moves it; each write hands it on (`onSave`'s `from`).
   const seen = useRef(value);
   const latest = useRef({ draft, kept, onSave, required, setKept });
   latest.current = { draft, kept, onSave, required, setKept };
 
+  // Writes `text`. The page's answer is that write's own (`answered`): one that landed is no write
+  // still out, and one that did not never comes back, so the field waits for no answer with it.
   const write = (text: string) => {
-    const from = base.current;
     base.current = text;
-    sent.current = [...sent.current, text];
-    latest.current.onSave(text, from);
+    const entry = { landed: false, text };
+    sent.current = [...sent.current, entry];
+    void latest.current.onSave(text, seen.current)?.then((landed) => {
+      sent.current = answered(sent.current, entry, landed);
+    });
   };
   const save = () => {
     stopTimer(timer);
@@ -300,12 +315,17 @@ export function InPlaceField({
     node.style.height = `${node.scrollHeight + node.offsetHeight - node.clientHeight}px`;
   }, [closed, draft, opened]);
 
-  // One of the reader's kept texts, put back in the field and written at once.
+  // One of the reader's kept texts, put back in the field and written at once, even where the
+  // field holds it already: the page offered it beside the other person's text, which it goes over.
+  // Not where the field's newest write is that very text and still out: it is on its way, and a
+  // second write of it would leave an entry in `sent` that no answer clears where the page answers
+  // none (the owner's), since a read of that text answers the first of them alone (`arrival`).
   const putBack = (text: string) => {
     stopTimer(timer);
     setKept(NOTHING_KEPT);
     setDraft(text);
-    if (text !== base.current) write(text);
+    const newest = sent.current.at(-1);
+    if (newest?.text !== text || newest.landed) write(text);
   };
   // The notice of the reader's kept texts: in the place the page gives it once that place is
   // drawn, else beside the field, and named by the field as what describes it wherever it is.

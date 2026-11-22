@@ -1,182 +1,89 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
+import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
-import { onFakeClock, settle, tick } from "../../__tests__/fake-clock";
+import { jump, onFakeClock, settle, tick } from "../../__tests__/fake-clock";
 import { answerPriorityPatches, PRIORITY_TITLE_CHANGED } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import { prioritiesQuery } from "../../api/queries";
+import { DispatchQueryClient } from "../../api/query-client";
 import type { Priorities, Priority } from "../../api/types";
-import { SEND_DEADLINE_MS } from "../writes/keyed-write";
+import { FIRST_BACKOFF_MS, SEND_DEADLINE_MS } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
 import {
+  aheadOf,
   expectedText,
-  landedText,
   pressedText,
   settledText,
   type TextChain,
   usePriorityWrites,
 } from "./priority-writes";
 
-/** The id the next chain a test starts is given. */
+/** The id the next press a test makes is given. */
 let fresh = 0;
 
-/** A press as the hook makes it, its edit started from `from`, as the field hands it: what the
- *  write names as `expected`, and the chain after it. */
-function press(chain: TextChain | undefined, text: string, from: string) {
+/** A press as the hook makes it, where the field last took `from` in from the server and the page
+ *  draws the read of the priorities that was the `drawn`th to answer: what the write names as
+ *  `expected`, the press, and the chain after it. */
+function press(chain: TextChain | undefined, text: string, from: string, drawn = 0) {
   fresh += 1;
-  return { chain: pressedText(chain, text, from, fresh), expected: expectedText(chain, from) };
+  const ahead = aheadOf(chain, from, drawn);
+  const expected = expectedText(ahead, from);
+  return { chain: pressedText(ahead, fresh, text, expected), expected, press: fresh };
 }
 
-/** The chain once its write of `text`, which named `expected`, landed, as the hook hears it: the
- *  store tells of the landing (`landedText`), and then the press settles (`settledText`). */
-function landed(chain: TextChain, text: string, expected: string): TextChain {
-  return settledText(landedText(chain, text, expected), text, "landed");
-}
-
-test("the first write names the text its edit started from", () => {
+test("the first write names the text the field last took in", () => {
   expect(press(undefined, "One", "Old").expected).toBe("Old");
 });
 
-// A field drawn again while writes of the page are out takes in the text the page reads, which
-// has not caught up with them: its edit starts from a text before them.
+// A field takes no text in as it writes: while its writes go on it still holds the text before
+// them all, and the server holds the newest of them by the next one's turn.
 test("a write pressed while one is out names the text of the one out, which the server holds by its turn", () => {
   const first = press(undefined, "One", "Old");
   const second = press(first.chain, "Two", "Old");
   expect(second.expected).toBe("One");
   // And a third, the second still out after the first landed, names the second's.
-  expect(press(landed(second.chain, "One", "Old"), "Three", "Old").expected).toBe("Two");
+  expect(press(settledText(second.chain, first.press, 0), "Three", "Old").expected).toBe("Two");
 });
 
-test("once the write lands, an edit started from the text before it names the text written", () => {
+// A write that landed is the server's text until a read that answered after it is drawn: the
+// field then took that read's text in, which is the write's own or a later one.
+test("once a write lands, the next names its text until a read answered since is drawn, and then the text the field took in from it", () => {
   const first = press(undefined, "One", "Old");
-  expect(press(landed(first.chain, "One", "Old"), "Two", "Old").expected).toBe("One");
-});
-
-test("an edit started from a text part way along the writes names the last text, and one started from the last ends the chain", () => {
-  const first = press(undefined, "One", "Old");
-  const second = press(first.chain, "Two", "Old");
-  const both = landed(landed(second.chain, "One", "Old"), "Two", "One");
-  // The edit started from the first write's text, the second's not: the server holds the second.
-  const partWay = press(both, "Three", "One");
-  expect(partWay.expected).toBe("Two");
-  expect(partWay.chain.id).toBe(both.id);
-  // The edit started from the second's text: the next write starts a chain from it.
-  const caughtUp = press(both, "Three", "Two");
-  expect(caughtUp.expected).toBe("Two");
-  expect(caughtUp.chain.id).not.toBe(both.id);
-  expect(caughtUp.chain.known).toEqual(["Two", "Three"]);
+  const landed = settledText(first.chain, first.press, 1);
+  expect(press(landed, "Two", "Old", 1).expected).toBe("One");
+  expect(press(landed, "Two", "One", 2).expected).toBe("One");
+  // Another person set it back after it landed, and the read showed that.
+  expect(press(landed, "Two", "Old", 2).expected).toBe("Old");
 });
 
 test("once an edit starts from another person's text, its write names that text", () => {
   const first = press(undefined, "One", "Old");
-  expect(press(landed(first.chain, "One", "Old"), "Two", "Written elsewhere").expected).toBe(
-    "Written elsewhere"
-  );
+  const landed = settledText(first.chain, first.press, 1);
+  expect(press(landed, "Two", "Written elsewhere", 1).expected).toBe("Written elsewhere");
 });
 
-test("an edit started from another person's text while a write is out starts a chain from that text", () => {
+// Another person's text reached the field, which took it in, while "One" was out: the server
+// holds it once "One" is answered, whichever came first, so a write naming "One" would be refused.
+test("an edit started from another person's text while a write is out names that text, and the next goes after it", () => {
   const first = press(undefined, "One", "Old");
-  // Another person's text reached the field, which took it in, before "One" was answered: the
-  // server holds it, and "One", which names "Old", is refused. A write naming "One" would be
-  // refused as well.
   const over = press(first.chain, "Mine", "Written elsewhere");
   expect(over.expected).toBe("Written elsewhere");
-  expect(over.chain.id).not.toBe(first.chain.id);
-  expect(over.chain.known).toEqual(["Written elsewhere", "Mine"]);
+  expect(press(over.chain, "Mine, again", "Written elsewhere").expected).toBe("Mine");
 });
 
-test("an edit started from the last text written, with none out, ends the chain: a text before it is then another person's", () => {
+// A write that ends any way but landing is never named, whether or not it landed: where it did,
+// a read brings its text to the field.
+test("a write that ends any way but landing leaves the chain", () => {
   const first = press(undefined, "One", "Old");
-  // The first write landed before the second was pressed, its edit started from it.
-  const second = press(landed(first.chain, "One", "Old"), "Two", "One");
-  expect(second.expected).toBe("One");
-  // Another person writes "Old" again once the second landed, and the field takes it in: the
-  // server holds it, and a write naming "Two" would be refused each time it was pressed.
-  expect(press(landed(second.chain, "Two", "One"), "Three", "Old").expected).toBe("Old");
-});
-
-test("a refused write breaks the chain: the next write names what the server holds as the chain left it, whether or not one is out", () => {
-  const first = press(undefined, "One", "Old");
+  const ended = settledText(first.chain, first.press);
+  expect(ended).toEqual([]);
+  expect(press(ended, "Two", "Old").expected).toBe("Old");
+  // A write after it, pressed while it was out, went over its text, which the server never took:
+  // it goes behind the field's text too.
   const second = press(first.chain, "Two", "Old");
-  // Dispatch refuses the first while the second is out. The second names "One", which the server
-  // does not hold, so it is refused too: the next write starts a chain of its own from the text
-  // the server holds - "Old", where the edit started from a text of the chain's, and another
-  // person's, where it started from theirs.
-  const refused = settledText(second.chain, "One", "nothing");
-  expect(press(refused, "Three", "Written elsewhere").expected).toBe("Written elsewhere");
-  expect(press(refused, "Three", "Old").expected).toBe("Old");
-  expect(press(refused, "Three", "Two").expected).toBe("Old");
-  expect(press(refused, "Three", "Two").chain.id).not.toBe(refused.id);
-  // Once the second is refused too, the chain stays, for the next press to start from.
-  const done = settledText(refused, "Two", "nothing");
-  expect(done).toMatchObject({ holds: "Old", out: 0, refused: true });
-  expect(press(done, "Three", "Two").expected).toBe("Old");
-  expect(press(done, "Three", "Written elsewhere").expected).toBe("Written elsewhere");
-  // And so does one refused with nothing else out.
-  expect(settledText(first.chain, "One", "nothing")).toMatchObject({
-    holds: "Old",
-    out: 0,
-    refused: true,
-  });
-});
-
-// A write refused for a reason that is no other person's text - a 400, a 403 - wrote nothing,
-// and the field's edit goes on from the text it wrote, which the server never held. A write from
-// that text names the text the server holds as the chain left it, and starts a chain from that,
-// so it is not refused as though another person had changed the text.
-test("a write from a refused text names the text the server holds as its chain left it, and starts a chain from that", () => {
-  const first = press(undefined, "Mine", "Old");
-  const next = press(settledText(first.chain, "Mine", "nothing"), "Mine, again", "Mine");
-  expect(next.expected).toBe("Old");
-  expect(next.chain.known).toEqual(["Old", "Mine, again"]);
-});
-
-// The server holds what the chain's writes that landed wrote: one refused after another landed
-// leaves the text that landed.
-test("a write from a text refused after a write of its chain landed names the text that landed", () => {
-  const first = press(undefined, "A", "Old");
-  const second = press(first.chain, "B", "A");
-  const next = press(settledText(landed(second.chain, "A", "Old"), "B", "nothing"), "C", "B");
-  expect(next.expected).toBe("A");
-  expect(next.chain.known).toEqual(["A", "C"]);
-});
-
-// The chain's start and each text of it that landed were the server's: an edit started from one
-// of them - another person set it back - names it, and is no conflict. Only a text the server
-// never took names what it holds instead.
-test("a write from the chain's start, once a later write of it landed and the next was refused, names the start", () => {
-  const first = press(undefined, "A", "Old");
-  const second = press(first.chain, "B", "A");
-  const after = settledText(landed(second.chain, "A", "Old"), "B", "nothing");
-  expect(press(after, "C", "Old").expected).toBe("Old");
-  expect(press(after, "C", "A").expected).toBe("A");
-  expect(press(after, "C", "B").expected).toBe("A");
-});
-
-// A write that ended with no verdict - the reader stopped it, or its key ran out - may have
-// landed: the chain does not know what the server holds, so a write names the text its edit
-// started from, which the field took as the server's. Once the store says the shell's Retry of it
-// landed, the server holds it.
-test("a write from a text whose write ended with no verdict names that text, and the server holds it once the store says it landed", () => {
-  const first = press(undefined, "Mine", "Old");
-  const stopped = settledText(first.chain, "Mine", "unknown");
-  expect(press(stopped, "Mine, more", "Mine").expected).toBe("Mine");
-  const retried = landedText(stopped, "Mine", "Old");
-  expect(retried).toMatchObject({ holds: "Mine", taken: 2, unsure: [] });
-  expect(press(retried, "Mine, more", "Mine").expected).toBe("Mine");
-});
-
-// A write of a chain a press replaced may land late: "Use my text" pressed the reader's text
-// again over another person's, on a chain of its own, before the first write of it answered. The
-// late landing is the old chain's - it names the text the old chain started from - and says
-// nothing of the chain that replaced it, whose own write has not gone out.
-test("a late landing of a replaced chain's write leaves the chain that replaced it as it was", () => {
-  const first = press(undefined, "Mine", "Old");
-  const used = press(first.chain, "Mine", "Theirs");
-  expect(used.expected).toBe("Theirs");
-  expect(landedText(used.chain, "Mine", "Old")).toMatchObject({ holds: "Theirs", taken: 1 });
-  expect(landedText(used.chain, "Mine", "Theirs")).toMatchObject({ holds: "Mine", taken: 2 });
+  expect(press(settledText(second.chain, first.press), "Three", "Old").expected).toBe("Old");
 });
 
 const BODY: Priorities = {
@@ -196,6 +103,18 @@ const SAVED: Priority = {
   made_by: { kind: "user", id: "alice" },
 };
 
+/** A read of the priorities where the server holds `title` as `p1`'s title. */
+function showing(title: string): Priorities {
+  const work = {
+    by_status: null,
+    claimed: 0,
+    closed_last_7_days: 0,
+    newest_event_at: null,
+    open_asks: 0,
+  };
+  return { ...BODY, priorities: [{ ...SAVED, title, work }] };
+}
+
 const restores: (() => void)[] = [];
 afterEach(() => {
   for (const restore of restores.splice(0)) restore();
@@ -208,9 +127,11 @@ afterEach(() => {
  * each write that went out changed. The page shows the priorities `shown` names: the conflicts of
  * those are its to settle with the reader. A read is fresh until something reads the priorities
  * again, so a page drawn later reads nothing on its own, and every read counted is one a write
- * or a claim started.
+ * or a claim started. The page's client is `Client`: TanStack's own, which cancels a read still
+ * out for one a later refresh starts, or the app's (`DispatchQueryClient`), which lets that read
+ * answer and then reads again.
  */
-function pageWrites(shown: readonly string[] = []) {
+function pageWrites(shown: readonly string[] = [], Client: typeof QueryClient = QueryClient) {
   const whoami = { event_head: "0", kind: "user" as const, login: "alice" };
   const viewer = spyOn(api, "whoAmI").mockResolvedValue(whoami);
   const reads: { resolve: (body: Priorities) => void }[] = [];
@@ -225,7 +146,7 @@ function pageWrites(shown: readonly string[] = []) {
     answers.push(answer);
     return answer.promise;
   });
-  const client = new QueryClient({
+  const client = new Client({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
   client.setQueryData(["whoami"], whoami);
@@ -250,7 +171,7 @@ function pageWrites(shown: readonly string[] = []) {
     for (const spy of [viewer, listing, patches]) spy.mockRestore();
   });
   const sent = () => patches.mock.calls.map(([, input]) => input);
-  /** Lands the write that went out `index`th, or refuses it: `true` as another person's text
+  /** Lands the attempt that went out `index`th, or refuses it: `true` as another person's text
    *  refuses it (`409 PRIORITY_CHANGED`), and an error as that error does. */
   const answer = async (index: number, refused: boolean | ApiError) => {
     await waitFor(() => expect(answers.length).toBeGreaterThan(index));
@@ -296,18 +217,21 @@ function pageWrites(shown: readonly string[] = []) {
       expect(stopped?.status).toBe("refused");
       return stopped;
     },
-    /** Answers the page's `index`th read of the priorities, its first being the page's own. */
-    read: async (index: number) => {
+    /** Answers the page's `index`th read of the priorities, its first being the page's own: with
+     *  `title` as the title of `p1`, where given, and else with no priority at all. */
+    read: async (index: number, title?: string) => {
       await waitFor(() => expect(reads.length).toBeGreaterThan(index));
       await act(async () => {
-        reads[index]?.resolve(BODY);
+        reads[index]?.resolve(title === undefined ? BODY : showing(title));
         await settle();
       });
     },
-    /** The reader writes `title` as priority `id`'s, over `from`, the text the title's edit
-     *  started from as its field hands it. */
+    /** The reader writes `title` as priority `id`'s, where its field last took `from` in from the
+     *  server: the text it was drawn with, or the last a read brought it. */
     rename: (title: string, from: string, id = "p1") =>
-      act(() => hook.result.current.rename(id, title, from, "Rename the priority")),
+      act(() => {
+        void hook.result.current.rename(id, title, from, "Rename the priority");
+      }),
     /** What the `index`th write to go out changed, once it went. */
     sentAt: async (index: number) => {
       await waitFor(() => expect(sent().length).toBeGreaterThan(index));
@@ -318,7 +242,7 @@ function pageWrites(shown: readonly string[] = []) {
   };
 }
 
-test("a write pressed over another person's text starts a chain of its own, which a write still out on the old one leaves alone", async () => {
+test("a write pressed over another person's text names it, and a write still out before it is no write it goes after", async () => {
   const { answer, read, rename, sentAt } = pageWrites();
   await read(0);
   rename("One", "Old");
@@ -329,13 +253,15 @@ test("a write pressed over another person's text starts a chain of its own, whic
   // "One" is refused, since the server holds "Bob": that is what "Mine" names.
   await answer(0, true);
   expect(await sentAt(1)).toEqual({ expected: { title: "Bob" }, title: "Mine" });
-  // The refusal was the old chain's: the next write goes after "Mine", and names it.
+  // The next write goes after "Mine", and names it.
   rename("Mine, again", "Bob");
   await answer(1, false);
   expect(await sentAt(2)).toEqual({ expected: { title: "Mine" }, title: "Mine, again" });
 });
 
-test("a chain whose writes all landed ends once the page has read them: an edit started from a text before them is then from another person's", async () => {
+// The read the landing started answers with the priorities the page draws already - it showed
+// neither - which draws nothing again: the page has read past the landing all the same.
+test("a write that landed is named no more once a read answered after it: an edit started from a text before it then names that text", async () => {
   const { answer, read, rename, sentAt } = pageWrites();
   await read(0);
   rename("One", "Old");
@@ -348,98 +274,274 @@ test("a chain whose writes all landed ends once the page has read them: an edit 
   expect(await sentAt(1)).toEqual({ expected: { title: "Old" }, title: "Two" });
 });
 
-test("a write pressed before the page read what landed goes on the chain, and that read leaves it there", async () => {
+test("a write pressed before the page read what landed goes after it, and that read leaves the write still out to go after", async () => {
   const { answer, read, rename, sentAt } = pageWrites();
-  await read(0);
+  await read(0, "Old");
   rename("One", "Old");
   await answer(0, false);
-  // The page has not read "One" yet, and a field drawn from its read starts from "Old": the next
-  // write names "One".
+  // The page has not read "One" yet, and the field still holds "Old": the next write names "One".
   rename("Two", "Old");
   expect(await sentAt(1)).toEqual({ expected: { title: "One" }, title: "Two" });
-  // The refresh "One" started answers while "Two" is out: the chain is "Two"'s now, and goes on.
-  await read(1);
-  rename("Three", "Old");
+  // The refresh "One" started answers while "Two" is out, and the field takes "One" in: the
+  // next write goes after "Two".
+  await read(1, "One");
+  rename("Three", "One");
   await answer(1, false);
   expect(await sentAt(2)).toEqual({ expected: { title: "Two" }, title: "Three" });
 });
 
-/** A refusal for a reason that is no other person's text: Dispatch refuses the body itself. */
-const INPUT_REFUSED = new ApiError(400, {
-  code: "PRIORITY_INPUT",
-  error: "the title is longer than a title may be",
+// The app's client lets a read already out answer rather than cancel it (`DispatchQueryClient`),
+// so a read that left before a write committed can answer after the write landed, with the text
+// before it. "A" lands, and the refresh it started is still out when "AB", pressed over it, lands
+// too; that refresh then answers showing "A". It does not show "AB", which the next write names.
+test("a write that landed while a read was out is named still once that read answers with the text before it", async () => {
+  const { answer, read, rename, sentAt } = pageWrites([], DispatchQueryClient);
+  await read(0, "Old");
+  rename("A", "Old");
+  await answer(0, false);
+  rename("AB", "Old");
+  expect(await sentAt(1)).toEqual({ expected: { title: "A" }, title: "AB" });
+  await answer(1, false);
+  await read(1, "A");
+  rename("ABC", "A");
+  expect(await sentAt(2)).toEqual({ expected: { title: "AB" }, title: "ABC" });
 });
 
-// A write Dispatch refuses for its body wrote nothing, and nobody changed the title: the field
-// goes on from the text it wrote, and its next write names the title the server holds, so it is
-// not refused as though another person had written over it.
-test("a write from a title Dispatch refused for its body names the title the server holds", async () => {
-  const { answer, read, rename, sentAt } = pageWrites();
-  await read(0);
-  rename("Mine", "Old");
-  expect(await sentAt(0)).toEqual({ expected: { title: "Old" }, title: "Mine" });
-  await answer(0, INPUT_REFUSED);
-  rename("Mine, again", "Mine");
-  expect(await sentAt(1)).toEqual({ expected: { title: "Old" }, title: "Mine, again" });
+// The same where the read out at the landing is no write's: the event feed's, for another event,
+// sent before "A" committed.
+test("a write that landed while the event feed's read was out is named once that read answers with the text before it", async () => {
+  const { answer, client, read, rename, sentAt } = pageWrites([], DispatchQueryClient);
+  await read(0, "Old");
+  rename("A", "Old");
+  await sentAt(0);
+  act(() => {
+    void client.invalidateQueries({ queryKey: ["priorities"] });
+  });
+  await answer(0, false);
+  await read(1, "Old");
+  rename("B", "Old");
+  expect(await sentAt(1)).toEqual({ expected: { title: "A" }, title: "B" });
 });
+
+/** A refusal for a reason that is no other person's text: Dispatch refuses the body itself. A
+ *  refusal of its own for each write, since the write path marks the one that follows an attempt
+ *  that went unanswered (`refusedByDispatch`). */
+const inputRefused = () =>
+  new ApiError(400, { code: "PRIORITY_INPUT", error: "the title is longer than a title may be" });
+
+/** A refusal of who wrote it: Dispatch refuses the writer. */
+const writerRefused = () =>
+  new ApiError(403, { code: "FORBIDDEN", error: "this credential may not write priorities" });
 
 /** An answer that is no verdict: the attempt failed, and the write tries again later. */
 const UNAVAILABLE = new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" });
 
-// A write the reader stopped is no verdict: it may have reached Dispatch. The shell's Retry
-// makes it again under its key and it lands, though no press of the page awaits it: the server
-// holds the text, the field takes it back as its own answer, and the next write names it.
-test("a write the reader stopped and the shell's Retry landed is the text the next write names", async () => {
-  const { answer, client, read, rename, sentAt, stopLate } = pageWrites();
-  await read(0);
-  const writes = writesOf(client);
-  await onFakeClock(async () => {
-    rename("Mine", "Old");
-    expect(await sentAt(0)).toEqual({ expected: { title: "Old" }, title: "Mine" });
-    const stopped = await stopLate(0);
-    act(() => writes.retry(stopped?.id ?? 0));
-    await answer(1, false);
-    expect(writes.rows()).toEqual([]);
-  });
+// How a write ends, and what the next write of the same text names. The field takes the server's
+// text in only from a read, so the reader's next edit starts from what the read after the ending
+// shows: with nobody else writing, the next write names the text the server holds, and lands.
+// One row for each way a write ends.
+
+test("a write that landed: the next, pressed once the read shows it, names it", async () => {
+  const { answer, read, rename, sentAt } = pageWrites();
+  await read(0, "Old");
+  rename("Mine", "Old");
+  await answer(0, false);
+  await read(1, "Mine");
   rename("Mine, more", "Mine");
-  expect(await sentAt(2)).toEqual({ expected: { title: "Mine" }, title: "Mine, more" });
+  expect(await sentAt(1)).toEqual({ expected: { title: "Mine" }, title: "Mine, more" });
 });
 
-// A Discard on the shell's line drops the store's record of a stopped write and sends nothing:
-// the write may still have reached Dispatch, and the field takes its text back as its own answer
-// where it did. The chain goes on not knowing, so the next write names the text the field
-// started from, never the text before the stopped one.
-test("a write the reader stopped and then discarded leaves the next write naming the text its edit started from", async () => {
-  const { client, read, rename, sentAt, stopLate } = pageWrites();
-  await read(0);
+// Another person's "Bob" stood when "Mine" reached Dispatch: the page takes the refusal and reads
+// the priorities, and the field takes "Bob" in from that read.
+test("a write another person's text refused: the next, pressed once the read shows theirs, names it", async () => {
+  const { answer, read, rename, sentAt } = pageWrites(SHOWS_P1);
+  await read(0, "Old");
+  rename("Mine", "Old");
+  await answer(0, true);
+  await read(1, "Bob");
+  rename("Mine, again", "Bob");
+  expect(await sentAt(1)).toEqual({ expected: { title: "Bob" }, title: "Mine, again" });
+});
+
+// Dispatch refused the body or the writer and wrote nothing: the read shows the text before it,
+// which the field holds still as the text it took in.
+test.each([
+  ["its body", inputRefused],
+  ["its writer", writerRefused],
+] as const)("a write Dispatch refused for %s: the next names the text the field took in", async (_why, refusal) => {
+  const { answer, read, rename, sentAt } = pageWrites();
+  await read(0, "Old");
+  rename("Mine", "Old");
+  await answer(0, refusal());
+  await read(1, "Old");
+  rename("Mine, again", "Old");
+  expect(await sentAt(1)).toEqual({ expected: { title: "Old" }, title: "Mine, again" });
+});
+
+// Stopped, its key spent, or refused after an attempt that went unanswered, a write ended with no
+// verdict, and here it never reached Dispatch. The page reads nothing for it - a landing would
+// bring its own event's read - so the field holds the text before it.
+test("a write the reader stopped: the next names the text the field took in", async () => {
+  const { read, readCount, rename, sentAt, stopLate } = pageWrites();
+  await read(0, "Old");
+  await onFakeClock(async () => {
+    rename("Mine", "Old");
+    await stopLate(0);
+    rename("Mine, more", "Old");
+    expect(await sentAt(1)).toEqual({ expected: { title: "Old" }, title: "Mine, more" });
+  });
+  expect(readCount()).toBe(1);
+});
+
+test("a write whose key Dispatch no longer holds: the next names the text the field took in", async () => {
+  const { answer, client, read, readCount, rename, sentAt } = pageWrites();
+  await read(0, "Old");
+  await onFakeClock(async () => {
+    rename("Mine", "Old");
+    await answer(0, UNAVAILABLE);
+    // The attempt after the wait would go under a key Dispatch has forgotten.
+    await jump(IDEMPOTENCY_KEY_TTL_MS);
+    expect(writesOf(client).rows()).toMatchObject([
+      { refusal: { name: "SendExpiredError" }, status: "refused" },
+    ]);
+    rename("Mine, more", "Old");
+    expect(await sentAt(1)).toEqual({ expected: { title: "Old" }, title: "Mine, more" });
+  });
+  expect(readCount()).toBe(1);
+});
+
+test("a write refused after an attempt of it went unanswered: the next names the text the field took in", async () => {
+  const { answer, read, readCount, rename, sentAt } = pageWrites();
+  await read(0, "Old");
+  await onFakeClock(async () => {
+    rename("Mine", "Old");
+    await answer(0, UNAVAILABLE);
+    await tick(FIRST_BACKOFF_MS);
+    await answer(1, inputRefused());
+    rename("Mine, more", "Old");
+    expect(await sentAt(2)).toEqual({ expected: { title: "Old" }, title: "Mine, more" });
+  });
+  expect(readCount()).toBe(1);
+});
+
+// "B" waited its turn behind "A", and the reader discarded it before it went. "A" lands, and an
+// edit made before the page read it - the field still holds "Old" - names "A", which the server
+// holds.
+test("a write discarded before it went: the next names the write before it that landed", async () => {
+  const { answer, client, read, rename, sentAt } = pageWrites();
+  await read(0, "Old");
+  rename("A", "Old");
+  rename("B", "Old");
+  expect(await sentAt(0)).toEqual({ expected: { title: "Old" }, title: "A" });
+  const writes = writesOf(client);
+  const [, waiting] = writes.rows();
+  expect(waiting?.status).toBe("queued");
+  act(() => {
+    writes.discard(waiting?.id ?? 0);
+  });
+  await answer(0, false);
+  rename("C", "Old");
+  expect(await sentAt(1)).toEqual({ expected: { title: "A" }, title: "C" });
+});
+
+// A write stopped and then discarded on the shell's line, and four renames, each from the text
+// the read before it showed. Each names the text the server holds, so each lands.
+test("a write stopped and then discarded: each of four renames after it names the text the server holds", async () => {
+  const { answer, client, read, rename, sentAt, stopLate } = pageWrites();
+  await read(0, "Old");
   const writes = writesOf(client);
   await onFakeClock(async () => {
     rename("Mine", "Old");
-    expect(await sentAt(0)).toEqual({ expected: { title: "Old" }, title: "Mine" });
     const stopped = await stopLate(0);
     act(() => {
       writes.discard(stopped?.id ?? 0);
     });
     expect(writes.rows()).toEqual([]);
+    let held = "Old";
+    for (const [at, title] of ["One", "Two", "Three", "Four"].entries()) {
+      rename(title, held);
+      expect(await sentAt(at + 1)).toEqual({ expected: { title: held }, title });
+      await answer(at + 1, false);
+      held = title;
+      await read(at + 1, held);
+    }
   });
-  rename("Mine, more", "Mine");
-  expect(await sentAt(1)).toEqual({ expected: { title: "Mine" }, title: "Mine, more" });
 });
 
-// A chain's start and each text of it that landed are texts the server took: an edit started
-// from one of them later - another person set it back - names it, whatever became of the
-// chain's other writes.
-test("a write from a text the chain's start held, once a later write of it was refused, names that text", async () => {
+// The landing changing what the next write names. "B" went over "A", which landed, and Dispatch
+// refused "B" for its body: the server holds "A".
+test("A over Old, B over A, A landed and B refused: C, pressed once the read shows A, names A", async () => {
   const { answer, read, rename, sentAt } = pageWrites();
-  await read(0);
+  await read(0, "Old");
   rename("A", "Old");
-  rename("B", "A");
+  rename("B", "Old");
+  expect(await sentAt(0)).toEqual({ expected: { title: "Old" }, title: "A" });
+  await answer(0, false);
+  expect(await sentAt(1)).toEqual({ expected: { title: "A" }, title: "B" });
+  await answer(1, inputRefused());
+  await read(1, "A");
+  await read(2, "A");
+  rename("C", "A");
+  expect(await sentAt(2)).toEqual({ expected: { title: "A" }, title: "C" });
+});
+
+// The same, where "A" was stopped late: "B" is refused for its body, and the shell's Retry makes
+// "A" again under its key, which lands. No press awaits that landing: the store reads the
+// priorities again, and that read brings "A" to the field, which takes it in (`arrival`) as no
+// change where it still holds "A", and else as another person's.
+test("A over Old, B over A, A stopped late and B refused, the shell's Retry lands A: C, pressed once the read shows A, names A", async () => {
+  const { answer, client, read, rename, sentAt, stopLate } = pageWrites();
+  await read(0, "Old");
+  const writes = writesOf(client);
+  await onFakeClock(async () => {
+    rename("A", "Old");
+    rename("B", "Old");
+    expect(await sentAt(0)).toEqual({ expected: { title: "Old" }, title: "A" });
+    const stopped = await stopLate(0);
+    expect(await sentAt(1)).toEqual({ expected: { title: "A" }, title: "B" });
+    await answer(1, inputRefused());
+    act(() => writes.retry(stopped?.id ?? 0));
+    await answer(2, false);
+    expect(writes.rows()).toMatchObject([{ status: "refused" }]);
+  });
+  await read(1, "A");
+  await read(2, "A");
+  rename("C", "A");
+  expect(await sentAt(3)).toEqual({ expected: { title: "A" }, title: "C" });
+});
+
+// A chain's start is a text the server took: an edit started from it after a read showed it -
+// another person set it back - names it, whatever became of the chain's own writes.
+test("a write from the text another person set back, once the read shows it, names that text", async () => {
+  const { answer, read, rename, sentAt } = pageWrites();
+  await read(0, "Old");
+  rename("A", "Old");
+  rename("B", "Old");
   expect(await sentAt(0)).toEqual({ expected: { title: "Old" }, title: "A" });
   await answer(0, false);
   expect(await sentAt(1)).toEqual({ expected: { title: "A" }, title: "B" });
   await answer(1, true);
+  await read(1, "Old");
   rename("C", "Old");
   expect(await sentAt(2)).toEqual({ expected: { title: "Old" }, title: "C" });
+});
+
+// The chains are the app's, not the page's: the reader leaves the page while "A" over "Old" is out
+// and comes back, and the page drawn again still reads "Old" when "A" lands. An edit made there
+// before a read shows "A" names "A", which the server holds, so it lands, and is not refused
+// against the reader's own write.
+test("a page drawn again while a write is out goes after it: an edit before a read shows its landing names its text", async () => {
+  const { answer, drawAnother, read, rename, sentAt, undraw } = pageWrites(SHOWS_P1);
+  await read(0, "Old");
+  rename("A", "Old");
+  expect(await sentAt(0)).toEqual({ expected: { title: "Old" }, title: "A" });
+  undraw();
+  const again = drawAnother(SHOWS_P1);
+  await answer(0, false);
+  act(() => {
+    void again.result.current.rename("p1", "AB", "Old", "Rename the priority");
+  });
+  expect(await sentAt(1)).toEqual({ expected: { title: "A" }, title: "AB" });
 });
 
 /** A page that shows `p1`, as its own page does. */
@@ -503,11 +605,12 @@ test("a refused title is offered once the read answers, though the text it went 
   expect(await sentAt(1)).toEqual({ expected: { title: "Old" }, title: "Mine" });
 });
 
-// A write from the text another person's change refused names the title the chain started from,
-// as a write from a text refused for its body does. The server holds the other person's title,
-// so it is refused again, and the page keeps the reader's text beside the title as it keeps the
-// first: the conflict path, not a write over their title.
-test("a write from a title another person's change refused names the title its chain started from, and is refused again into the page's keeping", async () => {
+// The reader edits on in a field that has not taken the other person's title in: its start is
+// still the title the refused write went over, which a write names, and never the reader's text
+// the server never took. The server holds the other person's title, so it is refused again, and
+// the page keeps the reader's text beside the title as it keeps the first: the conflict path, not
+// a write over their title.
+test("a write from a field that has not taken in the title another person's change put there names the title the field holds, and is refused again into the page's keeping", async () => {
   const { answer, kept, read, rename, sentAt } = pageWrites(SHOWS_P1);
   await read(0);
   rename("Mine", "Old");
@@ -515,7 +618,7 @@ test("a write from a title another person's change refused names the title its c
   await answer(0, true);
   await read(1);
   await waitFor(() => expect(kept("Bob")).toEqual(["Mine"]));
-  rename("Mine, again", "Mine");
+  rename("Mine, again", "Old");
   expect(await sentAt(1)).toEqual({ expected: { title: "Old" }, title: "Mine, again" });
   await answer(1, true);
   await read(2);
@@ -750,4 +853,33 @@ test.each([
   expect(writes.rows()).toMatchObject([
     { claimed: false, detail: { text: "Mine" }, sent: true, status: "refused" },
   ]);
+});
+
+// "Mine" over "Old" is out when the event feed brings another person's "Bob": the field takes it
+// in and keeps "Mine" beside it, and the reader uses it, which writes "Mine" over "Bob". Then the
+// first "Mine" is refused. The reader chose that text already, and its write is out: the refusal
+// is settled at once and offered no second time, whatever the reads answer, and the reader's
+// write lands.
+test("a conflict refusal whose text a later write of the field carries is settled at once, and offered no second time", async () => {
+  const { answer, client, keep, kept, read, readCount, rename, sentAt } = pageWrites(SHOWS_P1);
+  await read(0, "Old");
+  rename("Mine", "Old");
+  expect(await sentAt(0)).toEqual({ expected: { title: "Old" }, title: "Mine" });
+  act(() => {
+    void client.invalidateQueries({ queryKey: ["priorities"] });
+  });
+  await read(1, "Bob");
+  keep(["Mine"]);
+  expect(kept("Bob")).toEqual(["Mine"]);
+  keep([]);
+  rename("Mine", "Bob");
+  await answer(0, true);
+  await turns();
+  for (let at = 2; at < readCount(); at += 1) await read(at, "Bob");
+  expect(kept("Bob")).toEqual([]);
+  const writes = writesOf(client);
+  expect(writes.rows()).toMatchObject([{ detail: { expected: "Bob", text: "Mine" } }]);
+  expect(await sentAt(1)).toEqual({ expected: { title: "Bob" }, title: "Mine" });
+  await answer(1, false);
+  expect(writes.rows()).toEqual([]);
 });

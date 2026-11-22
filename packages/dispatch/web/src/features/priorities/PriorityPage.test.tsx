@@ -6,6 +6,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { Link, MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { BeforeEffectsOfRead, stepBeforeEffects } from "../../__tests__/before-effects";
+import { displayTree } from "../../__tests__/display-trees";
 import { onFakeClock, settle } from "../../__tests__/fake-clock";
 import { keptWrites } from "../../__tests__/kept-sends-harness";
 import { recordedEditors, selectText, writeAtEnd } from "../../__tests__/recorded-editors";
@@ -18,6 +19,7 @@ import { ApiError, api, priorityPatchRequest } from "../../api/client";
 import { prioritiesQuery } from "../../api/queries";
 import type { IssueSummary, Priorities, Priority, PriorityRow } from "../../api/types";
 import { DocumentRuntime } from "../doc/runtime";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { PendingWritesIndicator } from "../writes/PendingWritesIndicator";
 import { writesOf } from "../writes/write-store";
@@ -951,5 +953,135 @@ test("a description written once the page read another person's, before the edit
     within(notices[0] as HTMLElement).getAllByText(/Speedruns run again\. Mine\./)
   ).toHaveLength(1);
   expect(box.textContent).toBe("Written elsewhere.");
+  expect(patch).toHaveBeenCalledTimes(1);
+});
+
+// Another person's title stood when the reader's rename reached Dispatch, and they set it back
+// before the page read it again: the page reads the title the field took in already, so the field
+// takes nothing in and still holds the reader's text, which the page offers beside it. Use my text
+// writes it all the same, over the title the field took in, and it lands.
+test("Use my text writes the title the field holds already, over the title it took in, and it lands", async () => {
+  const user = userEvent.setup({ delay: null });
+  const { client, patch } = page();
+  const title = await openTitle(user);
+  patch.mockRejectedValueOnce(PRIORITY_TITLE_CHANGED);
+  await onFakeClock(async () => {
+    await user.type(title, ", mine");
+  });
+  await user.tab();
+  const mine = `${ROWS[1]?.title}, mine`;
+  const notice = await screen.findByRole("alert", { name: "Title, changed by another person" });
+  expect(within(notice).getByText(mine)).toBeDefined();
+  expect(titleHeading().textContent).toBe(mine);
+  await user.click(within(notice).getByRole("button", { name: "Use my text" }));
+  await waitFor(() => expect(patch).toHaveBeenCalledTimes(2));
+  expect(patch.mock.calls[1]?.slice(0, 2)).toEqual([
+    "rocq-lean",
+    { expected: { title: ROWS[1]?.title }, title: mine },
+  ]);
+  await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
+  expect(screen.queryByRole("alert", { name: /changed by another person/ })).toBeNull();
+});
+
+// The reader types over the other person's title while the notice shows, and presses Use my text:
+// the click leaves the field, whose write of that typing goes first. Use my text's write goes after
+// it and names its text, which the server holds by then, so it lands, and no second notice comes.
+// The server here takes a title written over the one it holds, and refuses any other.
+test("Use my text pressed as the field's own write leaves names that write's title, and lands", async () => {
+  const user = userEvent.setup({ delay: null });
+  const { client, patch, priorities, writtenElsewhere } = page();
+  let stored = ROWS[1]?.title ?? "";
+  const title = await openTitle(user);
+  await onFakeClock(async () => {
+    await user.type(title, ", mine");
+    stored = "Written elsewhere";
+    writtenElsewhere({ title: stored });
+    await user.type(title, ", more");
+  });
+  patch.mockImplementation(async (id, input) => {
+    if (input.expected?.title !== stored) throw PRIORITY_TITLE_CHANGED;
+    stored = input.title ?? stored;
+    return { ...saved(id), title: stored };
+  });
+  priorities.mockImplementation(async () => writtenOver("rocq-lean", { title: stored }));
+  const notice = screen.getByRole("alert", { name: "Title, changed by another person" });
+  await user.click(within(notice).getByRole("button", { name: "Use my text" }));
+  const mine = `${ROWS[1]?.title}, mine`;
+  await waitFor(() => expect(patch).toHaveBeenCalledTimes(2));
+  expect(patch.mock.calls.map(([, input]) => input)).toEqual([
+    { expected: { title: "Written elsewhere" }, title: "Written elsewhere, more" },
+    { expected: { title: "Written elsewhere, more" }, title: mine },
+  ]);
+  await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
+  expect(stored).toBe(mine);
+  expect(titleHeading().textContent).toBe(mine);
+  expect(screen.queryByRole("alert", { name: /changed by another person/ })).toBeNull();
+});
+
+// The same for the description: the editor holds the reader's text still, and Use my text writes
+// it over the description the editor took in.
+test("Use my text writes the description the editor holds already, over the description it took in, and it lands", async () => {
+  const { client, editors, patch } = page();
+  const { box, handle } = await editors.named("Description");
+  handle.view.focus();
+  patch.mockRejectedValueOnce(PRIORITY_DESCRIPTION_CHANGED);
+  writeAtEnd(handle, " Mine.");
+  act(() => handle.view.dom.blur());
+  const notice = await screen.findByRole("alert", {
+    name: "Description, changed by another person",
+  });
+  expect(within(notice).getByText(/Speedruns run again\. Mine\./)).toBeDefined();
+  expect(box.textContent).toContain("Speedruns run again. Mine.");
+  await userEvent.setup().click(within(notice).getByRole("button", { name: "Use my text" }));
+  await waitFor(() => expect(patch).toHaveBeenCalledTimes(2));
+  expect(patch.mock.calls[1]?.slice(0, 2)).toEqual([
+    "rocq-lean",
+    {
+      description: "# Rocq and Lean speed work restarted\n\nSpeedruns run again. Mine.\n",
+      expected: { description: ROWS[1]?.description },
+    },
+  ]);
+  await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
+  expect(screen.queryByRole("alert", { name: /changed by another person/ })).toBeNull();
+});
+
+/** Dispatch's refusal of a description it will not take: its body, not another person's text. */
+const DESCRIPTION_REFUSED = new ApiError(400, {
+  code: "PRIORITY_INPUT",
+  error: "the description is longer than a description may be",
+});
+
+// A description write Dispatch refused never comes back, and the page tells the editor so: the
+// editor waits for no answer with it. Once the server says it cannot read the stored text as
+// markdown, the editor draws the server's reading of it, read-only, though the text did not
+// change - whichever of the refusal and that word came first - rather than keep the markdown the
+// reader wrote under the line that says Dispatch cannot read it.
+test.each([
+  ["the refusal", true],
+  ["the server's word", false],
+] as const)("after a description write Dispatch refused, the editor draws the server's reading once the server cannot read the text as markdown, %s first", async (_first, refusedFirst) => {
+  // The server's reading of the stored text is read with the page's own engine (`displayTree`).
+  await warmMarkdownRenderer();
+  const { editors, patch, writtenElsewhere } = page();
+  const { box, handle } = await editors.named("Description");
+  handle.view.focus();
+  const refusal = Promise.withResolvers<Priority>();
+  patch.mockImplementationOnce(() => refusal.promise);
+  writeAtEnd(handle, " Mine.");
+  act(() => handle.view.dom.blur());
+  await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
+  const refuse = () =>
+    act(async () => {
+      refusal.reject(DESCRIPTION_REFUSED);
+      await settle();
+    });
+  const stored = ROWS[1]?.description ?? "";
+  if (refusedFirst) await refuse();
+  writtenElsewhere({ description_tree: displayTree(stored), description_tree_exact: false });
+  if (!refusedFirst) await refuse();
+  await waitFor(() => expect(box.textContent).not.toContain("Mine."));
+  expect(box.textContent).toBe("Rocq and Lean speed work restartedSpeedruns run again.");
+  expect(box.getAttribute("contenteditable")).toBe("false");
+  expect(screen.getByText(/^Dispatch cannot read this description as markdown/)).toBeDefined();
   expect(patch).toHaveBeenCalledTimes(1);
 });

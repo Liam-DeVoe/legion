@@ -72,7 +72,7 @@ test("a text written when the typing rested is not written again when the field 
     const user = userOnFakeClock();
     const writes: string[] = [];
     const view = render(
-      <InPlaceField label="Title" onSave={(next) => writes.push(next)} value="Old name" />
+      <InPlaceField label="Title" onSave={(next) => void writes.push(next)} value="Old name" />
     );
     const field = within(view.container).getByRole("textbox", { name: "Title" });
     await user.clear(field);
@@ -91,7 +91,7 @@ test("a text changed after the typing rested is written when the field is left",
     const user = userOnFakeClock();
     const writes: string[] = [];
     const view = render(
-      <InPlaceField label="Title" onSave={(next) => writes.push(next)} value="Old name" />
+      <InPlaceField label="Title" onSave={(next) => void writes.push(next)} value="Old name" />
     );
     const field = within(view.container).getByRole("textbox", { name: "Title" });
     await user.clear(field);
@@ -105,25 +105,31 @@ test("a text changed after the typing rested is written when the field is left",
 });
 
 /** The field as a page holds it while another person's write lands: every write the field sends
- *  is kept in `writes`, and in `froms`, where given, the text its edit started from, which a
- *  priority's page names to Dispatch (`expected`). `land.write` stands for the server's answer
- *  moving `value` under the field, as a refresh of the row does, without taking the focus from
- *  it; `step`, where given, runs in the commit that draws it, after the field's render and before
- *  its effects (`BeforeEffects`). */
+ *  is kept in `writes`, and in `froms`, where given, the server's text the field last took in,
+ *  which a priority's page names to Dispatch (`expected`). Where `answers` is given, the page
+ *  answers each write with whether it landed, as a title's page does, once the test calls that
+ *  write's answer there; else it answers none, as the owner's page does. The field is drawn with
+ *  `start`, and `land.write` stands for the server's answer moving `value` under the field, as a
+ *  refresh of the row does, without taking the focus from it; `step`, where given, runs in the
+ *  commit that draws it, after the field's render and before its effects (`BeforeEffects`). */
 function HeldField({
+  answers,
   froms,
   land,
   required,
+  start = "Old name",
   step,
   writes,
 }: {
+  answers?: ((landed: boolean) => void)[];
   froms?: string[];
   land: { write?: (text: string) => void };
   required?: boolean;
+  start?: string;
   step?: StepBeforeEffects;
   writes: string[];
 }): ReactNode {
-  const [value, setValue] = useState("Old name");
+  const [value, setValue] = useState(start);
   land.write = setValue;
   return (
     <>
@@ -132,6 +138,10 @@ function HeldField({
         onSave={(next, from) => {
           writes.push(next);
           froms?.push(from);
+          if (answers === undefined) return;
+          const answer = Promise.withResolvers<boolean>();
+          answers.push(answer.resolve);
+          return answer.promise;
         }}
         required={required}
         value={value}
@@ -430,7 +440,7 @@ function PageHeldField({
           kept={kept}
           label="Title"
           onKeptChange={setKept}
-          onSave={(next) => writes.push(next)}
+          onSave={(next) => void writes.push(next)}
           value={value}
         />
       ) : null}
@@ -590,4 +600,109 @@ test("a write made once the page drew another person's title, and before the fie
   view.unmount();
   expect(writes).toEqual(["Old name, mine"]);
   expect(froms).toEqual(["Old name"]);
+});
+
+// The page's answer to a write is that write's own, never another write's of the same text. The
+// reader's "Old name, mine" is out when another person's title arrives; Use my text writes it
+// again, and the reader types on and rests, which writes once more. Then the first write is
+// refused, as another person's title stood: Use my text's write is still out, and its landing is
+// the reader's own text coming back, with no notice and their typing left alone.
+test("the answer to an earlier write of the same text leaves Use my text's write out, and that write's landing is the reader's own", async () => {
+  const user = userEvent.setup({ delay: null });
+  const writes: string[] = [];
+  const answers: ((landed: boolean) => void)[] = [];
+  const land: { write?: (text: string) => void } = {};
+  const view = render(<HeldField answers={answers} land={land} writes={writes} />);
+  const page = within(view.container);
+  const field = page.getByRole("textbox", { name: "Title" }) as HTMLInputElement;
+  const notice = () => page.queryByRole("alert", { name: "Title, changed by another person" });
+  await onFakeClock(async () => {
+    await user.type(field, ", mine");
+    await jump(SAVE_AFTER_MS);
+    act(() => land.write?.("Written elsewhere"));
+  });
+  const kept = notice();
+  if (kept === null) throw new Error("no notice beside the field");
+  await user.click(within(kept).getByRole("button", { name: "Use my text" }));
+  await onFakeClock(async () => {
+    await user.type(field, ", more");
+    await jump(SAVE_AFTER_MS);
+  });
+  expect(writes).toEqual(["Old name, mine", "Old name, mine", "Old name, mine, more"]);
+  await act(async () => {
+    answers[0]?.(false);
+    await settle();
+  });
+  act(() => land.write?.("Old name, mine"));
+  expect(notice()).toBeNull();
+  expect(field.value).toBe("Old name, mine, more");
+  view.unmount();
+});
+
+// A page that answers no write - the owner's - never says that one of the field's writes ended.
+// The reader writes "Carol" over "Alice", and another person's "Bob" arrives; they write "Carol"
+// again, and while that write is out, use the "Carol" kept beside the field. That write is on its
+// way, so nothing more is sent. It lands, and then another person's "Dave" arrives: nothing of the
+// reader's is out, so their text is not kept beside it.
+test("Use my text where the field's own write of that text is still out sends nothing more, and a later text arrives with no notice", async () => {
+  const user = userEvent.setup({ delay: null });
+  const writes: string[] = [];
+  const land: { write?: (text: string) => void } = {};
+  const view = render(<HeldField land={land} start="Alice" writes={writes} />);
+  const page = within(view.container);
+  const field = page.getByRole("textbox", { name: "Title" }) as HTMLInputElement;
+  const notice = () => page.queryByRole("alert", { name: "Title, changed by another person" });
+  await onFakeClock(async () => {
+    await user.clear(field);
+    await user.type(field, "Carol");
+    await jump(SAVE_AFTER_MS);
+    act(() => land.write?.("Bob"));
+    await user.clear(field);
+    await user.type(field, "Carol");
+    await jump(SAVE_AFTER_MS);
+  });
+  const kept = notice();
+  if (kept === null) throw new Error("no notice beside the field");
+  await user.click(within(kept).getByRole("button", { name: "Use my text" }));
+  expect(notice()).toBeNull();
+  act(() => land.write?.("Carol"));
+  act(() => land.write?.("Dave"));
+  expect(notice()).toBeNull();
+  expect(field.value).toBe("Dave");
+  view.unmount();
+  expect(writes).toEqual(["Carol", "Carol"]);
+});
+
+// "A" over "Old" is out and "AB" over "A" waits behind it. The reader discards "AB" on the shell's
+// line, and the page answers that it did not land; "A" lands, and a read shows it. The field still
+// holds "AB", which the reader discarded: leaving the field, or the field leaving the page, writes
+// nothing.
+test("a write that ended without landing is not written again once a read shows the write before it", async () => {
+  const user = userEvent.setup({ delay: null });
+  const writes: string[] = [];
+  const answers: ((landed: boolean) => void)[] = [];
+  const land: { write?: (text: string) => void } = {};
+  const view = render(<HeldField answers={answers} land={land} start="Old" writes={writes} />);
+  const page = within(view.container);
+  const field = page.getByRole("textbox", { name: "Title" }) as HTMLInputElement;
+  await onFakeClock(async () => {
+    await user.clear(field);
+    await user.type(field, "A");
+    await jump(SAVE_AFTER_MS);
+    await user.type(field, "B");
+    await jump(SAVE_AFTER_MS);
+  });
+  expect(writes).toEqual(["A", "AB"]);
+  await act(async () => {
+    answers[1]?.(false);
+    answers[0]?.(true);
+    await settle();
+  });
+  act(() => land.write?.("A"));
+  await user.tab();
+  expect(writes).toEqual(["A", "AB"]);
+  expect(field.value).toBe("AB");
+  expect(page.queryByRole("alert", { name: "Title, changed by another person" })).toBeNull();
+  view.unmount();
+  expect(writes).toEqual(["A", "AB"]);
 });

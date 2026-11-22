@@ -35,9 +35,10 @@ export interface PriorityRowActions {
   /** The priority whose row is open, which shows its whole description. */
   readonly openId: string | undefined;
   readonly onOpen: (item: PriorityItem) => void;
-  /** Writes `description` as the priority's description, over `from`, the text the description's
-   *  edit started from, which the write names as the text it goes over (`describe`). */
-  readonly onDescribe: (item: PriorityItem, description: string, from: string) => void;
+  /** Writes `description` as the priority's description, over `from`, the server's text the
+   *  description's editor last took in, which the write names as the text it goes over unless a
+   *  write of the page's own goes before it (`describe`). Answers whether it landed. */
+  readonly onDescribe: (item: PriorityItem, description: string, from: string) => Promise<boolean>;
   /** The reader's texts kept beside a priority's description while it shows another person's,
    *  where the page reads `held`, and the change of them: held in the write store
    *  (`usePriorityWrites`) rather than by the editor, which a row scrolling away takes with it.

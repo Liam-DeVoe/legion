@@ -1,11 +1,16 @@
 import { expect, test } from "bun:test";
-import { arrival, type FieldStand, NOTHING_KEPT } from "./field-arrival";
+import { answered, arrival, type FieldStand, NOTHING_KEPT, type SentText } from "./field-arrival";
 
 /** A field that took "Old" in and holds nothing of the reader's: nothing out, nothing kept. */
 const SETTLED: FieldStand = { base: "Old", kept: NOTHING_KEPT, sent: [] };
 
+/** Texts the field wrote, in order, whose writes the page has not answered. */
+function out(...texts: string[]): readonly SentText[] {
+  return texts.map((text) => ({ landed: false, text }));
+}
+
 test("the text the field holds is no change: nothing is left to write, and nothing is taken in", () => {
-  expect(arrival("One", "One", { base: "Old", kept: NOTHING_KEPT, sent: ["One"] })).toEqual({
+  expect(arrival("One", "One", { base: "Old", kept: NOTHING_KEPT, sent: out("One") })).toEqual({
     base: "One",
     kept: [],
     sent: [],
@@ -16,10 +21,12 @@ test("the text the field holds is no change: nothing is left to write, and nothi
 });
 
 test("the answer to a write with a later one still out answers that write alone", () => {
-  expect(arrival("One", "Two", { base: "Two", kept: NOTHING_KEPT, sent: ["One", "Two"] })).toEqual({
+  expect(
+    arrival("One", "Two", { base: "Two", kept: NOTHING_KEPT, sent: out("One", "Two") })
+  ).toEqual({
     base: "Two",
     kept: [],
-    sent: ["Two"],
+    sent: out("Two"),
     take: false,
   });
 });
@@ -29,16 +36,32 @@ test("the answer to an earlier write the reader typed back to leaves the later o
   const next = arrival("Old A", "Old A", {
     base: "Old AB",
     kept: NOTHING_KEPT,
-    sent: ["Old A", "Old AB"],
+    sent: out("Old A", "Old AB"),
   });
-  // "Old AB" is still out, and the server holds it once it lands: the edit starts from it, so
+  // "Old AB" is still out, and the server holds it once it lands: the field compares with it, so
   // the reader's "Old A" differs from it, and the write waiting for the typing to rest goes.
-  expect(next).toEqual({ base: "Old AB", kept: [], sent: ["Old AB"], take: false });
+  expect(next).toEqual({ base: "Old AB", kept: [], sent: out("Old AB"), take: false });
   // That later answer is the reader's own write coming back, and is not taken in over "Old A".
   expect(arrival("Old AB", "Old A", next).take).toBe(false);
 });
 
-test("the text the edit started from, with no write over it out, takes nothing of the reader's typing", () => {
+// "A" over "Old" is out and "AB" over "A" waits behind it. "AB" ends without landing - discarded
+// on the shell's line, or refused for its body - and then "A" lands and a read shows it. The field
+// still holds "AB": it compares with "AB", so no save writes it again on its own; the reader
+// discarded it, or the shell's line holds it, with its Retry. Typing since is theirs to write.
+test("the answer to a write after the later one ended without landing leaves the reader's stopped text unwritten", () => {
+  const [a, ab] = out("A", "AB") as [SentText, SentText];
+  const sent = answered(answered([a, ab], ab, false), a, true);
+  expect(arrival("A", "AB", { base: "AB", kept: NOTHING_KEPT, sent })).toEqual({
+    base: "AB",
+    kept: [],
+    sent: [],
+    take: false,
+  });
+  expect(arrival("A", "ABC", { base: "AB", kept: NOTHING_KEPT, sent }).base).toBe("A");
+});
+
+test("the text the field compares with, with no write over it out, takes nothing of the reader's typing", () => {
   expect(arrival("Old", "Old, mine", SETTLED)).toEqual({ ...SETTLED, take: false });
 });
 
@@ -62,8 +85,21 @@ test("another person's text over the reader's typing is taken in, and their text
 
 test("another person's text over a write still out is taken in, and the text written kept beside it", () => {
   expect(
-    arrival("Written elsewhere", "One", { base: "One", kept: NOTHING_KEPT, sent: ["One"] })
+    arrival("Written elsewhere", "One", { base: "One", kept: NOTHING_KEPT, sent: out("One") })
   ).toEqual({ base: "Written elsewhere", kept: ["One"], sent: [], take: true });
+});
+
+// The page said "One" landed before any read showed it, and another person's text replaced it: it
+// was the server's text until theirs came, as one a read had shown would have been.
+test("another person's text over a write that landed, unseen, is taken in, and nothing kept", () => {
+  const one = out("One");
+  const sent = answered(one, one[0] as SentText, true);
+  expect(arrival("Written elsewhere", "One", { base: "One", kept: NOTHING_KEPT, sent })).toEqual({
+    base: "Written elsewhere",
+    kept: [],
+    sent: [],
+    take: true,
+  });
 });
 
 test("a second change while a notice shows keeps both of the reader's texts, newest first", () => {
@@ -82,4 +118,25 @@ test("a second change while a notice shows keeps both of the reader's texts, new
   expect(arrival("Dan's", "Old, mine", second).kept).toEqual(["Old, mine", "Bob's, mine"]);
   // And a kept text the server now holds goes, whatever arrived it.
   expect(arrival("Old, mine", "Carol's", second).kept).toEqual(["Bob's, mine"]);
+});
+
+// The page answers each write of the field's text: one that landed stays until a read shows it,
+// and one that did not goes, since no answer of the server's brings it back. The answer is the
+// very write's: of a text written twice, the other write of it stays as it was.
+test("the page's answer marks a write that landed, and takes out one that did not", () => {
+  const [one, two] = out("One", "Two") as [SentText, SentText];
+  expect(answered([one, two], one, false)).toEqual([two]);
+  expect(answered([one, two], one, true)).toEqual([{ landed: true, text: "One" }, two]);
+  const again: SentText = { landed: false, text: "One" };
+  expect(answered([one, two, again], again, false)).toEqual([one, two]);
+  const landed = answered([one, two, again], one, true);
+  expect(landed).toEqual([{ landed: true, text: "One" }, two, again]);
+  expect(answered(landed, again, true)).toEqual([
+    { landed: true, text: "One" },
+    two,
+    { landed: true, text: "One" },
+  ]);
+  // A write no entry stands for any longer - a read answered it - changes nothing.
+  const none = [two];
+  expect(answered(none, one, false)).toBe(none);
 });
