@@ -43,9 +43,9 @@ func TestSpawnSpecCarriesTheRoleAppIdentity(t *testing.T) {
 		repository: func(context.Context, string) (ghrepo.Repository, string, error) {
 			return ghrepo.MustParse("zeta/tools"), "main", nil
 		},
-		identity: func(_ context.Context, role claim.Role, repository ghrepo.Repository) (runtime.GitIdentity, error) {
-			if role != claim.RoleImplementer {
-				t.Errorf("identity asked for %s, want the claim's role", role)
+		identity: func(_ context.Context, issue string, role claim.Role, repository ghrepo.Repository) (runtime.GitIdentity, error) {
+			if issue != "S1-1" || role != claim.RoleImplementer {
+				t.Errorf("identity asked for %s on %s, want the claim's role on its issue, whose plan can define the role", role, issue)
 			}
 			asked = append(asked, repository.String())
 			return bot, nil
@@ -66,7 +66,7 @@ func TestSpawnSpecCarriesTheRoleAppIdentity(t *testing.T) {
 		t.Errorf("the launch's Env = %v, want the six git identity variables alone", spec.Env)
 	}
 
-	s.identity = func(context.Context, claim.Role, ghrepo.Repository) (runtime.GitIdentity, error) {
+	s.identity = func(context.Context, string, claim.Role, ghrepo.Repository) (runtime.GitIdentity, error) {
 		return runtime.GitIdentity{}, errors.New("github_app_not_installed")
 	}
 	if _, err := s.SpawnSpec(context.Background(), c); err == nil || !strings.Contains(err.Error(), "github_app_not_installed") {

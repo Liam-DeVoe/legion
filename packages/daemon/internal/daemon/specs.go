@@ -73,11 +73,11 @@ type specs struct {
 	// nil only in a test whose specs literal leaves it out, and such a specs stamps no issue key
 	// at all, as variants' nil leaves every launch in no experiment.
 	same func(a, b string) bool
-	// identity is the role's App bot identity every pane commits as, minted for the owner whose
+	// identity is the role's App bot identity every pane commits as, for the claim's issue, whose
+	// plan can define the role (workflowRuntime.identity), minted for the owner whose
 	// installation holds the repository the launch works — the record's name over a transfer, the
-	// mint's owner its serving one (workflowRuntime.identity); nil for a daemon with no GitHub
-	// Apps.
-	identity func(ctx context.Context, role claim.Role, repository ghrepo.Repository) (runtime.GitIdentity, error)
+	// mint's owner its serving one; nil for a daemon with no GitHub Apps.
+	identity func(ctx context.Context, issue string, role claim.Role, repository ghrepo.Repository) (runtime.GitIdentity, error)
 	// repository is the repository an issue works and its default branch, as every launch reads it
 	// (workflowRuntime.launchRepository: its record's, or, for an issue the workflow does not
 	// record, the one Dispatch resolves it to, read and prepared at its first launch and kept while
@@ -263,7 +263,7 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 		spec.Variants, spec.Prompt.VariantInstructionsPaths = arms.Variants, arms.Instructions
 	}
 	if s.identity != nil {
-		id, err := s.identity(ctx, c.Role, spec.Repository)
+		id, err := s.identity(ctx, c.Issue, c.Role, spec.Repository)
 		if err != nil {
 			return runtime.SpawnSpec{}, fmt.Errorf("the git identity of %s: %w", c.Token, err)
 		}

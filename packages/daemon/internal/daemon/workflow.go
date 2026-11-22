@@ -71,9 +71,10 @@ type workflowRuntime struct {
 	// so its own code and its tests hold the narrower type.
 	tokens appauth.Tokens
 	apps   appauth.Source
-	// deployed is each role the deployment defines with the App it acts as (deploymentApps),
-	// which identity reads through appauth.AppRoleFor.
-	deployed appauth.DeploymentApps
+	// roleApps is the App of each role for a claim of an issue (roleApps: each role the
+	// deployment defines, and the daemon's one reader of a role of an issue's plan), which
+	// identity reads through appauth.RoleApps.Of.
+	roleApps appauth.RoleApps
 	// forget drops the token source's cached leases for an App and owner, a token GitHub refused
 	// (tokenRefused).
 	forget          appauth.Forgetter
@@ -656,7 +657,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 		return nil, fmt.Errorf("the GitHub App token source cannot drop a token GitHub refused, which a review's reads mint again")
 	}
 	w := &workflowRuntime{
-		tokens: tokens, apps: tokens, deployed: deploymentApps(cfg.Roles), forget: forget, installs: installs, dispatch: dispatch.New(cfg.DispatchURL, dispatchToken), repositories: repos,
+		tokens: tokens, apps: tokens, roleApps: roleApps(deploymentApps(cfg.Roles), planRoleOf(st)), forget: forget, installs: installs, dispatch: dispatch.New(cfg.DispatchURL, dispatchToken), repositories: repos,
 		grants: credential.New(nil), projectID: projectID, dispatchProject: cfg.Project, stateDir: cfg.StateDir, log: log,
 		failed:     make(chan error, 1),
 		rereadWake: make(chan struct{}, 1), recoverWake: make(chan struct{}, 1), heardWake: make(chan struct{}, 1),
@@ -1502,11 +1503,11 @@ func deploymentApps(roles []config.Role) appauth.DeploymentApps {
 	return apps
 }
 
-// identity is the bot a role's commits are authored by: its App's (appauth.AppRoleFor, over the
-// deployment's roles), from the lease the token source mints for the owner whose installation
-// holds the repository the role works (the identity is fetched once per App and cached). A role
-// that neither Legion nor the deployment defines is given no App by AppRoleFor, and its identity
-// is that error.
+// identity is the bot a role's commits are authored by on issue: its App's (appauth.RoleApps.Of:
+// Legion's roles, the deployment's, and a role of the issue's plan by its type), from the lease
+// the token source mints for the owner whose installation holds the repository the role works
+// (the identity is fetched once per App and cached). A role that none of Legion, the deployment
+// and the issue's plan defines is given no App, and its identity is that error.
 //
 // recorded is the repository the issue's record names, and the mint is made for the owner GitHub
 // serves it under now (repositories.serving): the record keeps the name it was written under
@@ -1516,8 +1517,8 @@ func deploymentApps(roles []config.Role) appauth.DeploymentApps {
 // the one place both callers reach — a launch's spec (specs.SpawnSpec) and a working copy's
 // adoption (adoptIdentity) — so neither can mint on an owner the repository has left and fail
 // every launch of a tree open at the transfer.
-func (w *workflowRuntime) identity(ctx context.Context, role claim.Role, recorded ghrepo.Repository) (runtime.GitIdentity, error) {
-	app, err := appauth.AppRoleFor(role, w.deployed, appauth.Planned{})
+func (w *workflowRuntime) identity(ctx context.Context, issue string, role claim.Role, recorded ghrepo.Repository) (runtime.GitIdentity, error) {
+	app, err := w.roleApps.Of(ctx, issue, role)
 	if err != nil {
 		return runtime.GitIdentity{}, err
 	}
