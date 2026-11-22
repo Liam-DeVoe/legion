@@ -242,6 +242,10 @@ func TestSearchCoverageRefusesAtItsBound(t *testing.T) {
 	if count := blocked(); count != 0 {
 		t.Fatalf("%d backends of the test's database wait on a lock before the request, want none", count)
 	}
+	// The pool's acquired connections before the control: the cancelled control's connection is
+	// released, or destroyed, after its Exec returns, so a count read after the control can still
+	// hold it and would wait for a connection that never comes back.
+	acquired := database.Pool.Stat().AcquiredConns()
 
 	// The control: the read counts a statement of the test's own blocked behind the lock, and
 	// counts none once that statement is cancelled.
@@ -263,7 +267,6 @@ func TestSearchCoverageRefusesAtItsBound(t *testing.T) {
 		count := blocked()
 		return count, count == 0
 	})
-	acquired := database.Pool.Stat().AcquiredConns()
 
 	type answer struct {
 		response *httptest.ResponseRecorder
