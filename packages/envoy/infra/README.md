@@ -4080,6 +4080,18 @@ grant adds that one fresh name's filtered create, info, pull and acknowledgement
 of 22 letters and digits of a project the scope holds; any other name adds nothing.
 `natsgrant/daemon_generation_live_test.go` checks it on the hub's image behind a stand-in callout.
 
+The grant bounds a generation's connection to one consumer, not a daemon to a number of them. One
+held daemon token can create one durable for each connection it names for a new generation, the
+durables outlive their connections, and every tenant shares ENVOY_NOTIFICATIONS's `max_consumers`
+of 24000 (`streamMaxConsumers`): at the cap the listener refuses every new session with 503
+`consumer_limit`. The auth service sets no count of its own on this. A daemon working normally keeps
+one generation of each durable, and the protocol's Step 0 retires the others it makes; filling the
+cap takes a held daemon's own token. A deployment watches it instead, with an alert below the cap on
+the hub exporter's `nats_stream_consumer_count` (prometheus-nats-exporter's `-jsz=all`, "Metrics and
+alerts" in `docs/nats-hub.md`): the reference deployment's `envoy-cluster/hubalerts.go` declares the
+policy `hub-stream-consumers`, which opens when the stream's fullest copy holds more than 19200
+consumers, 80 % of the cap.
+
 `DispatchPermissions(machineID)` is the grant of Dispatch's one NATS user, shared by
 `envoy-dispatch` and the listener beside it. It adds to the base entries of
 `ListenerPermissions(machineID)`, the session consumers' left out, the info, filtered create,
