@@ -13,6 +13,8 @@ import { readFileSync } from "node:fs";
 
 import { PRIORITY_ID_MAX } from "@legion/contracts";
 
+import { SEND_DEADLINE_MS } from "../web/src/features/writes/keyed-write";
+
 import {
   claimIssue,
   createIssue,
@@ -27,6 +29,7 @@ import {
   patchPriority,
 } from "./api";
 import { actionBar } from "./editor";
+import { pendingWrites } from "./keyed-writes";
 import { pauseClock } from "./page-clock";
 import { settledValue } from "./settled";
 import { expect, type Locator, type Page, test } from "./test";
@@ -3419,3 +3422,639 @@ test("a priority's page offers no versions and no delete, and carries no line ab
     await context.close();
   }
 });
+
+// INFRA-2947 check 3bca8d03: the state table of a priority's title and description writes. Each
+// row below is one cell: the field in one state - nothing out, typing unwritten, a write out, the
+// last write landed, refused and kept, or ended with no answer - and one event - the reader types
+// and rests or leaves, another person's text arrives, read exactly or not, or renames the title,
+// the reader presses Use my text, or a write of hers that ended with no answer lands late. Every
+// cell reads the five rules its outcome must keep, rather than the one a finding named:
+//   1. No write of hers replaces a text the server holds that is not one of the field's own - its
+//      start, her landed texts, her texts whose end is unknown - except Use my text, naming it.
+//   2. Her text is never lost: it is on the server, in the field, or kept with the notice, after
+//      a reload as before it.
+//   3. When nobody else wrote, every edit of hers lands, with no 409 and no notice, whatever her
+//      earlier writes ended as.
+//   4. One conflict gives one notice, and Use my text lands or meets a newer conflict.
+//   5. Nothing is written from a reading of the server's that is not exact.
+// A key that expired is no cell here: the page cannot make the server forget a write's key inside
+// a run (the keys are the server's, kept past any row's length), so that ending is reached only as
+// the Stop trying the cells below press.
+
+/** The description a cell starts from, and another person's texts: one the server reads exactly,
+ *  and one holding an HTML block, which it does not. */
+const TABLE_START = "## Plan\n\n- first host\n- second host";
+const BOB_EXACT = "## Bob's plan\n\n- third host";
+const BOB_HTML = "## Plan\n\n<div>bob's block</div>\n\n- first host";
+const TITLE_START = "Raced title";
+const BOB_TITLE = "Bob's rename";
+
+type TableField = "description" | "title";
+
+/** One write of the field the page sent, with its answer once it came. */
+interface LoggedWrite {
+  readonly expected: string | undefined;
+  readonly text: string | undefined;
+  /** Whether the reader's press of Use my text made it. */
+  readonly use: boolean;
+  status?: number;
+}
+
+/** A cell's page, field and records: every write of the priority the page sent, the texts other
+ *  people wrote, and the reader's own suffixes, each a text no other cell types. */
+interface TableCell {
+  readonly id: string;
+  readonly field: TableField;
+  readonly page: Page;
+  readonly writes: LoggedWrite[];
+  readonly others: string[];
+  /** Another person's texts the field took as its own start: drawn in it while nothing of hers
+   *  was unwritten or out, so an edit of hers afterwards is made on them. */
+  readonly taken: string[];
+  /** Set while the reader presses Use my text, so the write it makes is told from the others. */
+  using: boolean;
+}
+
+async function tableCell(page: Page, field: TableField, title: string): Promise<TableCell> {
+  const made = await createPriority({
+    description: TABLE_START,
+    owner: "alice",
+    title: field === "title" ? TITLE_START : title,
+  });
+  const cell: TableCell = {
+    field,
+    id: made.id,
+    others: [],
+    page,
+    taken: [],
+    using: false,
+    writes: [],
+  };
+  const sent = new Map<object, LoggedWrite>();
+  page.on("request", (request) => {
+    if (request.method() !== "PATCH" || !request.url().endsWith(`/api/v1/priorities/${made.id}`))
+      return;
+    const body = request.postDataJSON() as Record<string, unknown>;
+    const expected = (body.expected as Record<string, string> | undefined)?.[field];
+    const write: LoggedWrite = {
+      expected,
+      text: body[field] as string | undefined,
+      use: cell.using,
+    };
+    cell.writes.push(write);
+    sent.set(request, write);
+  });
+  page.on("response", (response) => {
+    const write = sent.get(response.request());
+    if (write !== undefined) write.status = response.status();
+  });
+  await page.goto(`/priorities/${made.id}`);
+  await expect(page.getByText("second host").first()).toBeVisible();
+  return cell;
+}
+
+/** The field's own control: the description's editor, or the title's box, opened from its
+ *  heading as a reader opens it. */
+async function openTableField(cell: TableCell): Promise<Locator> {
+  if (cell.field === "description") {
+    const editor = cell.page.getByRole("textbox", { exact: true, name: "Description" });
+    await editor.click();
+    await cell.page.keyboard.press("ControlOrMeta+End");
+    return editor;
+  }
+  await titleHeading(cell.page).click();
+  const box = cell.page.getByRole("textbox", { name: "Title" });
+  await expect(box).toBeFocused();
+  await cell.page.keyboard.press("End");
+  return box;
+}
+
+/** Her suffix typed at the end of the field, which she then leaves. */
+async function typeAndLeave(cell: TableCell, suffix: string): Promise<void> {
+  const field = await openTableField(cell);
+  await cell.page.keyboard.type(suffix);
+  await field.blur();
+}
+
+async function tableStored(cell: TableCell): Promise<string> {
+  const row = (await listPriorities()).priorities?.find((one) => one.id === cell.id);
+  return (cell.field === "title" ? row?.title : row?.description) ?? "";
+}
+
+/** Another person's text of the field, written through the API as bob. */
+async function otherWrites(cell: TableCell, text: string): Promise<void> {
+  cell.others.push(text);
+  await patchPriority(cell.id, cell.field === "title" ? { title: text } : { description: text }, {
+    login: "bob",
+  });
+}
+
+function tableNotice(cell: TableCell): Locator {
+  const name = cell.field === "title" ? "Title" : "Description";
+  return cell.page.getByRole("alert", { name: `${name}, changed by another person` });
+}
+
+/** Her press of Use my text on the field's notice. */
+async function useMyText(cell: TableCell): Promise<void> {
+  cell.using = true;
+  await tableNotice(cell)
+    .getByRole("button", { name: /^Use (my|this) text$/ })
+    .first()
+    .click();
+}
+
+/** Rule 1 and rule 5 over every write the page sent: a write the server took that named another
+ *  person's text as the one it replaced was Use my text's, or named a text the field had taken as
+ *  its start, and no write carries the escapes a reading written back as markdown leaves. */
+function checkWrites(cell: TableCell): void {
+  const soft = expect.configure({ soft: true });
+  const overwrote = cell.writes.filter(
+    (write) =>
+      write.status === 200 &&
+      !write.use &&
+      write.expected !== undefined &&
+      cell.others.includes(write.expected) &&
+      !cell.taken.includes(write.expected)
+  );
+  soft(overwrote, "no write of hers but Use my text replaced another person's text").toEqual([]);
+  soft(
+    cell.writes.filter((write) => /\\[<#*-]/.test(write.text ?? "")),
+    "no write carries a reading's escapes"
+  ).toEqual([]);
+}
+
+/** Rule 3: nobody else wrote, so her last text landed, with no 409 and no notice. */
+async function checkClean(cell: TableCell, suffix: string): Promise<void> {
+  const soft = expect.configure({ soft: true });
+  await soft
+    .poll(() => tableStored(cell), { message: "her last text landed", timeout: 15_000 })
+    .toContain(suffix);
+  soft(
+    cell.writes.filter((write) => write.status === 409).length,
+    "no write of hers was refused"
+  ).toBe(0);
+  await soft(tableNotice(cell), "no notice of another person's text").toHaveCount(0);
+  checkWrites(cell);
+}
+
+/** Rules 1, 2 and 4 after another person's text met hers: one notice holds her text, the server
+ *  holds his, and after a reload her text is still kept with the notice. */
+async function checkKept(cell: TableCell, suffix: string, theirs: string): Promise<void> {
+  const soft = expect.configure({ soft: true });
+  await expect(tableNotice(cell)).toHaveCount(1);
+  await expect(tableNotice(cell)).toContainText(suffix.trim());
+  soft(await tableStored(cell), "the server holds the other person's text").toBe(theirs);
+  checkWrites(cell);
+  await cell.page.reload();
+  await soft(
+    tableNotice(cell),
+    "after a reload her text is still kept with the notice"
+  ).toContainText(suffix.trim());
+}
+
+/** Rule 2 where her text was neither refused nor landed for certain: after a reload it is on the
+ *  server, in the field, or kept with the notice. */
+async function checkNotLost(cell: TableCell, suffix: string): Promise<void> {
+  // A stopped write is kept across a reload as refused (`KeptRefusal` "stopped"), and the shell
+  // offers its Retry. Without that Retry her text must be stored.
+  await cell.page.reload();
+  const retry = pendingWrites(cell.page).getByRole("button", { exact: true, name: "Retry" });
+  await expect
+    .poll(async () => (await tableStored(cell)).includes(suffix) || (await retry.count()) > 0, {
+      message: "her text is stored, or the shell offers its Retry, after a reload",
+      timeout: 15_000,
+    })
+    .toBe(true);
+  if (!(await tableStored(cell)).includes(suffix)) await retry.first().click();
+  // The Retry lands her text, or, where another person's text came meanwhile, is refused and
+  // her text is kept beside it on the page.
+  await expect
+    .poll(
+      async () =>
+        (await tableStored(cell)).includes(suffix) ||
+        (await cell.page.getByText(suffix.trim(), { exact: false }).count()) > 0,
+      { message: "her text landed, or is kept on the page", timeout: 15_000 }
+    )
+    .toBe(true);
+}
+
+/** Holds each write of the field the page sends until `release`, then passes it on. */
+async function holdTableWrites(cell: TableCell) {
+  const release = Promise.withResolvers<void>();
+  let held = 0;
+  await cell.page.route(`**/api/v1/priorities/${cell.id}`, async (route) => {
+    if (route.request().method() !== "PATCH") return route.fallback();
+    held += 1;
+    await release.promise;
+    await route.fallback();
+  });
+  return { held: () => held, release: () => release.resolve() };
+}
+
+/** Answers each write of the field 503, with a second's Retry-After, until `stop` presses the
+ *  shell's Stop trying for it: the write ends with no answer. Where `reaches` is set, the first
+ *  try reaches the server, which takes it, and only its answer is lost. Set before she types. */
+async function refuseTableWrites(cell: TableCell, reaches: boolean) {
+  let first = true;
+  let tried = 0;
+  await cell.page.route(`**/api/v1/priorities/${cell.id}`, async (route) => {
+    if (route.request().method() !== "PATCH") return route.fallback();
+    tried += 1;
+    if (first && reaches) {
+      first = false;
+      await route.fetch();
+    }
+    return route.fulfill({
+      headers: { "Retry-After": "1" },
+      json: { code: "DATABASE_BUSY", error: "the database is too busy to take this request" },
+      status: 503,
+    });
+  });
+  return {
+    stop: async () => {
+      await lateThenStop(cell, () => tried);
+      await cell.page.unroute(`**/api/v1/priorities/${cell.id}`);
+    },
+  };
+}
+
+/** Once the store has tried the write, the page's clock jumps past its send deadline
+ *  (`SEND_DEADLINE_MS`), the shell offers Stop trying for it, and the reader presses it. */
+async function lateThenStop(cell: TableCell, tried: () => number): Promise<void> {
+  await expect.poll(tried, { message: "the store tried the write" }).toBeGreaterThan(0);
+  await cell.page.clock.fastForward(SEND_DEADLINE_MS + 1);
+  const stop = pendingWrites(cell.page).getByRole("button", { exact: true, name: "Stop trying" });
+  await expect(stop.first()).toBeVisible();
+  await stop.first().click();
+}
+
+const tableCells: {
+  readonly name: string;
+  readonly field: TableField;
+  readonly slow?: boolean;
+  readonly run: (cell: TableCell) => Promise<void>;
+}[] = [
+  // Nothing out.
+  {
+    field: "description",
+    name: "nothing out, another person's exact text arrives, then she edits",
+    run: async (cell) => {
+      await otherWrites(cell, BOB_EXACT);
+      await expect(cell.page.getByText("third host").first()).toBeVisible();
+      cell.taken.push(BOB_EXACT);
+      await typeAndLeave(cell, " zero-a");
+      await checkClean(cell, " zero-a");
+    },
+  },
+  {
+    field: "description",
+    name: "nothing out, another person's inexact text arrives, then she presses a key",
+    run: async (cell) => {
+      await otherWrites(cell, BOB_HTML);
+      await expect(cell.page.getByText("bob's block").first()).toBeVisible();
+      await cell.page.getByText("first host").first().click();
+      await cell.page.keyboard.type("x");
+      await cell.page.keyboard.press("Tab");
+      // A write starts on the leave at once and lands within a second here; five seconds after
+      // it, a write that was coming has landed, so its absence is read once the wait is over.
+      await cell.page.waitForTimeout(5_000);
+      expect(await tableStored(cell)).toBe(BOB_HTML);
+      expect(cell.writes).toEqual([]);
+    },
+  },
+  {
+    field: "title",
+    name: "nothing out, another person renames the title, then she edits it",
+    run: async (cell) => {
+      await otherWrites(cell, BOB_TITLE);
+      await expect(titleHeading(cell.page)).toHaveText(BOB_TITLE);
+      cell.taken.push(BOB_TITLE);
+      await typeAndLeave(cell, " zero-t");
+      await checkClean(cell, " zero-t");
+    },
+  },
+  // Typing unwritten.
+  {
+    field: "description",
+    name: "typing unwritten, she rests",
+    run: async (cell) => {
+      await openTableField(cell);
+      await cell.page.keyboard.type(" one-a");
+      await checkClean(cell, " one-a");
+    },
+  },
+  {
+    field: "description",
+    name: "typing unwritten, another person's exact text arrives",
+    run: async (cell) => {
+      await pauseClock(cell.page);
+      await openTableField(cell);
+      await cell.page.keyboard.type(" one-b");
+      await otherWrites(cell, BOB_EXACT);
+      await cell.page.clock.resume();
+      await checkKept(cell, " one-b", BOB_EXACT);
+    },
+  },
+  {
+    field: "description",
+    name: "typing unwritten, another person's inexact text arrives",
+    run: async (cell) => {
+      await pauseClock(cell.page);
+      await openTableField(cell);
+      await cell.page.keyboard.type(" one-c");
+      await otherWrites(cell, BOB_HTML);
+      await cell.page.clock.resume();
+      await checkKept(cell, " one-c", BOB_HTML);
+    },
+  },
+  {
+    field: "title",
+    name: "typing unwritten, another person renames the title",
+    run: async (cell) => {
+      await pauseClock(cell.page);
+      await openTableField(cell);
+      await cell.page.keyboard.type(" one-t");
+      await otherWrites(cell, BOB_TITLE);
+      await cell.page.clock.resume();
+      await checkKept(cell, " one-t", BOB_TITLE);
+    },
+  },
+  // A write out.
+  {
+    field: "description",
+    name: "a write out, she types again and rests",
+    run: async (cell) => {
+      const held = await holdTableWrites(cell);
+      await typeAndLeave(cell, " two-a");
+      await expect.poll(held.held).toBe(1);
+      const field = await openTableField(cell);
+      await cell.page.keyboard.type(" two-b");
+      await field.blur();
+      held.release();
+      await checkClean(cell, " two-a two-b");
+    },
+  },
+  {
+    field: "description",
+    name: "a write out, another person's exact text lands before it",
+    run: async (cell) => {
+      const held = await holdTableWrites(cell);
+      await typeAndLeave(cell, " two-c");
+      await expect.poll(held.held).toBe(1);
+      await otherWrites(cell, BOB_EXACT);
+      held.release();
+      await checkKept(cell, " two-c", BOB_EXACT);
+    },
+  },
+  {
+    field: "description",
+    name: "a write out, another person's inexact text lands before it",
+    run: async (cell) => {
+      const held = await holdTableWrites(cell);
+      await typeAndLeave(cell, " two-d");
+      await expect.poll(held.held).toBe(1);
+      await otherWrites(cell, BOB_HTML);
+      held.release();
+      await checkKept(cell, " two-d", BOB_HTML);
+    },
+  },
+  {
+    field: "title",
+    name: "a write out, another person's rename lands before it",
+    run: async (cell) => {
+      const held = await holdTableWrites(cell);
+      await typeAndLeave(cell, " two-t");
+      await expect.poll(held.held).toBe(1);
+      await otherWrites(cell, BOB_TITLE);
+      held.release();
+      await checkKept(cell, " two-t", BOB_TITLE);
+    },
+  },
+  // The last write landed.
+  {
+    field: "description",
+    name: "the last write landed, she edits again",
+    run: async (cell) => {
+      await typeAndLeave(cell, " three-a");
+      await expect.poll(() => tableStored(cell)).toContain(" three-a");
+      await typeAndLeave(cell, " three-b");
+      await checkClean(cell, " three-a three-b");
+    },
+  },
+  {
+    field: "description",
+    name: "the last write landed, another person's exact text arrives, then she edits",
+    run: async (cell) => {
+      await typeAndLeave(cell, " three-c");
+      await expect.poll(() => tableStored(cell)).toContain(" three-c");
+      await otherWrites(cell, BOB_EXACT);
+      await expect(cell.page.getByText("third host").first()).toBeVisible();
+      cell.taken.push(BOB_EXACT);
+      await typeAndLeave(cell, " three-d");
+      await checkClean(cell, " three-d");
+    },
+  },
+  {
+    field: "description",
+    name: "the last write landed, another person's inexact text arrives, then she presses a key",
+    run: async (cell) => {
+      await typeAndLeave(cell, " three-e");
+      await expect.poll(() => tableStored(cell)).toContain(" three-e");
+      await otherWrites(cell, BOB_HTML);
+      await expect(cell.page.getByText("bob's block").first()).toBeVisible();
+      const before = cell.writes.length;
+      await cell.page.getByText("first host").first().click();
+      await cell.page.keyboard.type("x");
+      await cell.page.keyboard.press("Tab");
+      // A write starts on the leave at once and lands within a second here; five seconds after
+      // it, a write that was coming has landed, so its absence is read once the wait is over.
+      await cell.page.waitForTimeout(5_000);
+      expect(await tableStored(cell)).toBe(BOB_HTML);
+      expect(cell.writes.length).toBe(before);
+    },
+  },
+  // Refused and kept.
+  {
+    field: "description",
+    name: "refused and kept, she presses Use my text",
+    run: async (cell) => {
+      await pauseClock(cell.page);
+      await openTableField(cell);
+      await cell.page.keyboard.type(" four-a");
+      await otherWrites(cell, BOB_EXACT);
+      await cell.page.clock.resume();
+      await expect(tableNotice(cell)).toContainText("four-a");
+      await useMyText(cell);
+      await expect.poll(() => tableStored(cell), { timeout: 15_000 }).toContain(" four-a");
+      await expect(tableNotice(cell)).toHaveCount(0);
+      checkWrites(cell);
+    },
+  },
+  {
+    field: "description",
+    name: "refused and kept over an inexact text, she presses Use my text",
+    run: async (cell) => {
+      await pauseClock(cell.page);
+      await openTableField(cell);
+      await cell.page.keyboard.type(" four-b");
+      await otherWrites(cell, BOB_HTML);
+      await cell.page.clock.resume();
+      await expect(tableNotice(cell)).toContainText("four-b");
+      await useMyText(cell);
+      await expect.poll(() => tableStored(cell), { timeout: 15_000 }).toContain(" four-b");
+      expect(await tableStored(cell)).not.toContain("bob's block");
+      checkWrites(cell);
+    },
+  },
+  {
+    field: "description",
+    name: "refused and kept, another person writes again, then she presses Use my text",
+    run: async (cell) => {
+      await pauseClock(cell.page);
+      await openTableField(cell);
+      await cell.page.keyboard.type(" four-c");
+      await otherWrites(cell, BOB_EXACT);
+      await cell.page.clock.resume();
+      await expect(tableNotice(cell)).toContainText("four-c");
+      await otherWrites(cell, `${BOB_EXACT}\n- fourth host`);
+      await useMyText(cell);
+      // Use my text lands, or meets the newer text and keeps hers with one notice again.
+      await expect
+        .poll(
+          async () =>
+            (await tableStored(cell)).includes(" four-c") ||
+            ((await tableNotice(cell).count()) === 1 &&
+              (await tableNotice(cell).innerText()).includes("four-c")),
+          { timeout: 15_000 }
+        )
+        .toBe(true);
+      checkWrites(cell);
+    },
+  },
+  {
+    field: "title",
+    name: "refused and kept, she presses Use my text on the title",
+    run: async (cell) => {
+      await pauseClock(cell.page);
+      await openTableField(cell);
+      await cell.page.keyboard.type(" four-t");
+      await otherWrites(cell, BOB_TITLE);
+      await cell.page.clock.resume();
+      await expect(tableNotice(cell)).toContainText("four-t");
+      await useMyText(cell);
+      await expect.poll(() => tableStored(cell), { timeout: 15_000 }).toContain(" four-t");
+      checkWrites(cell);
+    },
+  },
+  // Ended with no answer.
+  {
+    field: "description",
+    name: "a write that never reached the server stopped, she edits again",
+    slow: true,
+    run: async (cell) => {
+      const busy = await refuseTableWrites(cell, false);
+      await typeAndLeave(cell, " five-a");
+      await busy.stop();
+      await typeAndLeave(cell, " five-b");
+      await checkClean(cell, " five-a five-b");
+    },
+  },
+  {
+    field: "description",
+    name: "a write whose answer was lost stopped, she edits again",
+    slow: true,
+    run: async (cell) => {
+      const busy = await refuseTableWrites(cell, true);
+      await typeAndLeave(cell, " five-c");
+      await busy.stop();
+      await typeAndLeave(cell, " five-d");
+      await checkClean(cell, " five-c five-d");
+    },
+  },
+  {
+    field: "title",
+    name: "a title write that never reached the server stopped, she edits again",
+    slow: true,
+    run: async (cell) => {
+      const busy = await refuseTableWrites(cell, false);
+      await typeAndLeave(cell, " five-t");
+      await busy.stop();
+      await typeAndLeave(cell, " five-u");
+      await checkClean(cell, " five-t five-u");
+    },
+  },
+  {
+    field: "description",
+    name: "a write that never reached the server stopped, she reloads",
+    slow: true,
+    run: async (cell) => {
+      const busy = await refuseTableWrites(cell, false);
+      await typeAndLeave(cell, " five-e");
+      await busy.stop();
+      await checkNotLost(cell, " five-e");
+    },
+  },
+  {
+    field: "description",
+    name: "a write that never reached the server stopped, another person's exact text arrives",
+    slow: true,
+    run: async (cell) => {
+      const busy = await refuseTableWrites(cell, false);
+      await typeAndLeave(cell, " five-f");
+      await busy.stop();
+      await otherWrites(cell, BOB_EXACT);
+      await expect(cell.page.getByText("third host").first()).toBeVisible();
+      checkWrites(cell);
+      await checkNotLost(cell, " five-f");
+    },
+  },
+  {
+    field: "description",
+    name: "a write stopped while out lands late, then she edits again",
+    slow: true,
+    run: async (cell) => {
+      const late = Promise.withResolvers<void>();
+      let tried = 0;
+      await cell.page.route(`**/api/v1/priorities/${cell.id}`, async (route) => {
+        if (route.request().method() !== "PATCH") return route.fallback();
+        tried += 1;
+        await late.promise;
+        // The page gave the write up; it reaches the server all the same, as a slow network's
+        // would, and its answer goes nowhere.
+        await route.fetch().catch(() => undefined);
+        await route.abort().catch(() => undefined);
+      });
+      await typeAndLeave(cell, " five-g");
+      await lateThenStop(cell, () => tried);
+      late.resolve();
+      await expect.poll(() => tableStored(cell), { timeout: 15_000 }).toContain(" five-g");
+      await cell.page.unroute(`**/api/v1/priorities/${cell.id}`);
+      await typeAndLeave(cell, " five-h");
+      await checkClean(cell, " five-g five-h");
+    },
+  },
+];
+
+for (const { field, name, run, slow } of tableCells) {
+  // SLOW(>=2s): a priority written, a page read, and the cell's writes and reads awaited.
+  test(`state table, ${field}: ${name}`, async ({ browser }) => {
+    test.setTimeout(slow === true ? 150_000 : 60_000);
+    const context = await asUser(browser, "alice");
+    try {
+      const page = await context.newPage();
+      await page.clock.install();
+      const cell = await tableCell(page, field, `Table ${name}`.slice(0, 120));
+      try {
+        await run(cell);
+      } finally {
+        // Every write the page sent and its answer, for the reader of a failed cell.
+        await test.info().attach("writes", {
+          body: JSON.stringify(cell.writes, null, 1),
+          contentType: "application/json",
+        });
+      }
+    } finally {
+      await context.close();
+    }
+  });
+}
