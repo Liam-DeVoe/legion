@@ -150,6 +150,61 @@ func TestAKeyTakenBeforeAReadsStreamReadIsNoEvidenceForIt(t *testing.T) {
 	}
 }
 
+// Two watches that overlap and install in order, the earlier one first: a key written through
+// after the later watch's stream read, and before either read began, survives the later read. The
+// later watch's snapshot does not hold it, so only the later read's marks keep it, and the earlier
+// read's BeginRead must leave its take for the later one, which the earlier read's stream read came
+// before. A copy that dropped every take at each BeginRead would sweep it at the later read's end.
+func TestAWriteInTheLaterOfTwoOverlappingWatchesGapSurvivesWhenTheyInstallInOrder(t *testing.T) {
+	uri := testnats.URL(t)
+	_, kv := bucket(t, uri)
+	w := kvwatch.New("test cache", kv, newSeen())
+	copied := kvwatch.NewCopy(kvwatch.Rows[bool]{Decode: func(kvwatch.Entry) (bool, bool, error) { return true, true, nil }})
+	kvwatch.SetStreamReads(w, 1)
+	copied.BeginRead(kvwatch.Read{LastSeq: 10, StreamRead: 1})
+	copied.CompleteRead()
+	// Two watches read the stream, the earlier at 20 (stream read 2) and the later at 30 (stream
+	// read 3), and the write lands after both, at 40.
+	kvwatch.SetStreamReads(w, 3)
+	if outcome := copied.Put(w, w.Epoch(), "K", true, 40); outcome != kvwatch.Applied {
+		t.Fatalf("the write at 40 came to outcome %d, want Applied (%d)", outcome, kvwatch.Applied)
+	}
+	copied.BeginRead(kvwatch.Read{LastSeq: 20, StreamRead: 2})
+	copied.BeginRead(kvwatch.Read{LastSeq: 30, StreamRead: 3})
+	copied.CompleteRead()
+	if _, kept := copied.Get("K"); !kept {
+		t.Fatal("the write at 40, after the later watch's stream read, was swept by the later read")
+	}
+}
+
+// A take after the stream read of a watch that never installs is evidence for the read that does,
+// whose stream read came before it: the watch that installs read the stream (stream read 1), a
+// second watch read it too (stream read 2) and was discarded, and a key written through then, at
+// 40, past the installed read's last sequence, is a record the installed read's snapshot does not
+// hold. A copy that kept only takes stamped with the installing read's own count would sweep it.
+// The next read, whose stream read comes after the take, finds no evidence in it.
+func TestATakeAfterADiscardedWatchsStreamReadIsEvidenceForTheReadThatInstalls(t *testing.T) {
+	uri := testnats.URL(t)
+	_, kv := bucket(t, uri)
+	w := kvwatch.New("test cache", kv, newSeen())
+	copied := kvwatch.NewCopy(kvwatch.Rows[bool]{Decode: func(kvwatch.Entry) (bool, bool, error) { return true, true, nil }})
+	kvwatch.SetStreamReads(w, 2)
+	if outcome := copied.Put(w, w.Epoch(), "K", true, 40); outcome != kvwatch.Applied {
+		t.Fatalf("the write at 40 came to outcome %d, want Applied (%d)", outcome, kvwatch.Applied)
+	}
+	copied.BeginRead(kvwatch.Read{LastSeq: 30, StreamRead: 1})
+	copied.CompleteRead()
+	if _, kept := copied.Get("K"); !kept {
+		t.Fatal("the write at 40, after the installed read's stream read, was swept by that read")
+	}
+	kvwatch.SetStreamReads(w, 3)
+	copied.BeginRead(kvwatch.Read{LastSeq: 35, StreamRead: 3})
+	copied.CompleteRead()
+	if _, kept := copied.Get("K"); kept {
+		t.Fatal("the write at 40 was kept by a read whose stream read came after it, with no delivery of it")
+	}
+}
+
 // A write the fence drops is no evidence for a read, through each write site: a write-through
 // (Put), a record read back (Apply) and a delete whose record the cache could not read back
 // (Evict). After a restore that keeps the stream's creation time and moves its sequence back to
