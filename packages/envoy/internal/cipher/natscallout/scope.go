@@ -69,9 +69,18 @@ import (
 //	`GATE OPEN` for that commit), so no static-grant daemon can widen one again; a failed read
 //	prints UNKNOWN and holds the step.
 //
+// One more condition, ours, since the connection's name decides the fresh name the held grant adds:
+// a held daemon's token can create one durable for each connection it names for a new generation,
+// with no bound here, and every tenant shares ENVOY_NOTIFICATIONS's max_consumers of 24000, at
+// which the listener refuses every new session. So the step also waits until the deployment's
+// alert below that cap, the reference deployment's hub-stream-consumers policy (its pull request
+// 5890, open now; infra/README.md, the generation grant), is applied, with its read quoted where
+// this step is turned on.
+//
 // daemon-release-gate.sh is in packages/envoy/scripts; daemon-running-gate.sh comes with the
 // change that lands the daemon that opens its consumers per project. The change that lists daemon
-// entries with "-" waits on that precondition, with those readings quoted in its pull request.
+// entries with "-" waits on that precondition and that alert, with those readings quoted in its
+// pull request.
 func scopeGrant(deps Deps, entry config.NATSService, grant natsgrant.Permissions, connection string) (natsgrant.Permissions, error) {
 	if entry.Kind == config.NATSEdgeListener {
 		return natsgrant.Permissions{}, refuse(labelHeldToProjects, "held to the projects its entry lists, for which this broker has no edge listener's grant: service "+entry.Name())
