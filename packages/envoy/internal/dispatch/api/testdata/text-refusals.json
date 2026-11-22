@@ -55,7 +55,7 @@
     "sent": ["inline", "file"],
     "status": 400,
     "code": "NUL_CHARACTER",
-    "words": "holds a NUL character (U+0000) at character 11",
+    "words": "holds a NUL character (U+0000) at character 11, which Dispatch cannot store",
     "scope": "upload"
   },
   {

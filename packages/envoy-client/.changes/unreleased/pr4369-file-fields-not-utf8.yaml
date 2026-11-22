@@ -15,4 +15,5 @@ body: |-
   `--path` file of the same bytes, in that upload's order: text past 1 MiB with `CAP_EXCEEDED`
   first, then the first U+0000 or byte that is not UTF-8. A Markdown `--path` file whose bytes hold
   a U+0000 or a byte that is not UTF-8 is now refused before anything is asked, in the same words
-  under `file`. A byte order mark is kept as U+FEFF, as before.
+  under `file`. A byte order mark is kept as U+FEFF, as before. Each `--<field>-file` and
+  `--<field>-json-file` flag's help says so.

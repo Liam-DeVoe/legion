@@ -334,7 +334,7 @@ function flagTable(
         field,
         action: "file",
         value: "<path>",
-        text: `--${name} read from a file; - reads stdin.`,
+        text: `--${name} read from a file; - reads stdin. Read as bytes: bytes that are not UTF-8 are refused in Dispatch's own words, and nothing is sent.`,
       });
     } else if (kind === "number") {
       add(`--${name}`, { field, action: "set", value: "<n>", text: about });
@@ -367,7 +367,7 @@ function flagTable(
         field,
         action: "json-file",
         value: "<path>",
-        text: `--${name}-json read from a file; - reads stdin.`,
+        text: `--${name}-json read from a file; - reads stdin. Read as bytes: bytes that are not UTF-8 are refused in Dispatch's own words, and nothing is sent.`,
       });
     } else {
       const none = kind.array === "number-or-null" ? " none is null." : "";
