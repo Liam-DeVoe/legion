@@ -59,6 +59,14 @@ const (
 	admissionIssuesCheck = "ci"
 	// admissionIssuesHead is that pull request's head, the commit the red settles on.
 	admissionIssuesHead = "head-accepting"
+	// admissionIssuesSeq is the Dispatch sequence every issue of the run stands at when the proof
+	// begins: the seeded records and rows of the copy of Dispatch's issues are at it, and so is every
+	// answer of the Dispatch stand-in (liveDispatch's issueBody), the release's read of each child
+	// among them. Dispatch gives each write a sequence above every reading before it, so each event
+	// this run publishes is numbered above it (publishStatus): the echo of the release's todo then
+	// moves the record's view of Dispatch on, as a reading at a higher sequence does (R16 of
+	// dispatch://INFRA-3320), and the architect's backlog after it is a move from todo.
+	admissionIssuesSeq = 1
 )
 
 // admissionIssuesLive is one run of the proof: the booted daemon, the keys of the two trees it
@@ -77,7 +85,8 @@ type admissionIssuesLive struct {
 	acceptingPR int
 	// architect is the root's architect session, registered once over the daemon's own routes.
 	architect *admissionIssuesArchitect
-	// seq numbers the check settlements this run publishes, so each carries a snapshot of its own.
+	// seq is the Dispatch sequence of the last event this run published, from admissionIssuesSeq up,
+	// so each event carries a sequence of its own above the readings before it.
 	seq int
 }
 
@@ -121,7 +130,7 @@ func newAdmissionIssuesLive(t *testing.T) *admissionIssuesLive {
 	r := &admissionIssuesLive{
 		liveProof: proof, rt: rt, built: &built{},
 		root: proof.cfg.Project + "-1", childOne: proof.cfg.Project + "-2", childTwo: proof.cfg.Project + "-3",
-		accepting: proof.cfg.Project + "-4", acceptingPR: int(number) + 1,
+		accepting: proof.cfg.Project + "-4", acceptingPR: int(number) + 1, seq: admissionIssuesSeq,
 	}
 	r.seedTrees()
 	o := fakeRuntime(r.rt, r.built)
@@ -181,7 +190,7 @@ func (r *admissionIssuesLive) seedTrees() {
 		if err := r.records.PutIssue(ctx, tx, record.Issue{
 			Key: r.root, Repo: liveRepo, DefaultBranch: "main", GitHubRepo: liveRepo, Tree: r.root, Project: r.cfg.Project,
 			Title: "the parent whose children go first", Phase: phase.Admitted, Generation: 1, Status: "in_progress",
-			DispatchStatus: "in_progress", Rank: "A1", LastDispatchSeq: 1, HandedOver: true,
+			DispatchStatus: "in_progress", Rank: "A1", LastDispatchSeq: admissionIssuesSeq, HandedOver: true,
 		}); err != nil {
 			return err
 		}
@@ -195,7 +204,7 @@ func (r *admissionIssuesLive) seedTrees() {
 		if err := r.records.PutIssue(ctx, tx, record.Issue{
 			Key: r.accepting, Repo: liveRepo, DefaultBranch: "main", GitHubRepo: liveRepo, Tree: r.accepting, Project: r.cfg.Project,
 			Title: "the second tree, accepting", Phase: phase.Accepting, Generation: 1, Status: "needs_review",
-			DispatchStatus: "needs_review", Rank: "A2", LastDispatchSeq: 1, HandedOver: true,
+			DispatchStatus: "needs_review", Rank: "A2", LastDispatchSeq: admissionIssuesSeq, HandedOver: true,
 		}); err != nil {
 			return err
 		}
@@ -221,13 +230,13 @@ func (r *admissionIssuesLive) seedTrees() {
 	// children have a row each naming the parent whose first phase they hold.
 	r.write("the Dispatch mirror of the board", func(tx pgx.Tx) error {
 		for _, reading := range []record.DispatchReading{
-			{Key: r.root, Project: r.cfg.Project, Seq: 1,
+			{Key: r.root, Project: r.cfg.Project, Seq: admissionIssuesSeq,
 				Status: record.Carry("in_progress"), Parent: record.Carry(""), Blockers: record.Carry[[]string](nil)},
-			{Key: r.accepting, Project: r.cfg.Project, Seq: 1,
+			{Key: r.accepting, Project: r.cfg.Project, Seq: admissionIssuesSeq,
 				Status: record.Carry("needs_review"), Parent: record.Carry(""), Blockers: record.Carry[[]string](nil)},
-			{Key: r.childOne, Project: r.cfg.Project, Seq: 1,
+			{Key: r.childOne, Project: r.cfg.Project, Seq: admissionIssuesSeq,
 				Status: record.Carry("backlog"), Parent: record.Carry(r.root), Blockers: record.Carry[[]string](nil)},
-			{Key: r.childTwo, Project: r.cfg.Project, Seq: 1,
+			{Key: r.childTwo, Project: r.cfg.Project, Seq: admissionIssuesSeq,
 				Status: record.Carry("backlog"), Parent: record.Carry(r.root), Blockers: record.Carry[[]string](nil)},
 		} {
 			if err := r.records.PutDispatchIssue(ctx, tx, reading); err != nil {
