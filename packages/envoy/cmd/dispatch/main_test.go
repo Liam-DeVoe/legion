@@ -640,11 +640,12 @@ func TestDispatchsURLRefusalsPrintNoCredential(t *testing.T) {
 	}
 }
 
-// ENVOY_URL and the three model endpoints refuse a user name, a password, an "@" past the host, a
-// query and a fragment, each by the setting alone, as DISPATCH_AGENT_SECRETS_URL does
-// (credentialURLRefusal): each URL booted with any of them, and Dispatch's clients printed it in
-// their transport errors, which net/http quotes with only a password masked, and which reach the
-// API's 503 and 502 answers from the Envoy listener's client. A made-up token stands in each.
+// ENVOY_URL, the three model endpoints and DISPATCH_GITHUB_API_BASE refuse a user name, a
+// password, an "@" past the host, a query and a fragment, each by the setting alone, as
+// DISPATCH_AGENT_SECRETS_URL does (credentialURLRefusal): each URL booted with any of them, and
+// Dispatch's clients printed it in their errors, which reach the API's answers (the listener
+// client's 503 and 502, the GitHub App client's 502) and, for the GitHub base, the GitHub read
+// record /healthz serves. A made-up token stands in each.
 func TestDispatchsURLSettingsRefuseACredentialByTheSettingAlone(t *testing.T) {
 	const token = "madeUpURLToken0123"
 	at := "@"
@@ -668,6 +669,9 @@ func TestDispatchsURLSettingsRefuseACredentialByTheSettingAlone(t *testing.T) {
 		"DISPATCH_CHAT_ENDPOINT": func(value string) map[string]string {
 			return endpointChatEnvironment(map[string]string{"DISPATCH_CHAT_ENDPOINT": value})
 		},
+		"DISPATCH_GITHUB_API_BASE": func(value string) map[string]string {
+			return signInEnvironment(map[string]string{"DISPATCH_GITHUB_API_BASE": value})
+		},
 	}
 	for setting, environment := range settings {
 		for shape, row := range shapes {
@@ -681,6 +685,33 @@ func TestDispatchsURLSettingsRefuseACredentialByTheSettingAlone(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// redeliver-webhooks reads DISPATCH_GITHUB_API_BASE too, and refuses a credential in it by the
+// setting alone before it opens the database or connects to NATS: the DATABASE_URL here names a
+// database that does not exist, which the run never reaches. A made-up token stands in the base.
+func TestRedeliverWebhooksRefusesACredentialInTheGitHubAPIBase(t *testing.T) {
+	const token = "madeUpGitHubToken0123"
+	at := "@"
+	for name, base := range map[string]string{
+		"a user name and a token":  "https://ghuser:" + token + at + "ghe.invalid/api/v3",
+		"a token as the user name": "https://" + token + at + "ghe.invalid/api/v3",
+		"a token in the query":     "https://ghe.invalid/api/v3?access_token=" + token,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var out bytes.Buffer
+			code := redeliverWebhooks(t.Context(), []string{"--since", "1h"}, envGetter(map[string]string{
+				"DATABASE_URL":             "postgres://dispatch@127.0.0.1:1/nonexistent",
+				"DISPATCH_GITHUB_API_BASE": base,
+			}), &out)
+			if code != 2 || !strings.HasPrefix(out.String(), "redeliver-webhooks: DISPATCH_GITHUB_API_BASE cannot be read: ") {
+				t.Fatalf("redeliverWebhooks = %d, %q; want 2 and the refusal by DISPATCH_GITHUB_API_BASE", code, out.String())
+			}
+			if strings.Contains(out.String(), token[:10]) {
+				t.Errorf("the output %q holds part of the token", out.String())
+			}
+		})
 	}
 }
 
@@ -1957,21 +1988,20 @@ const devSignInOrigin = "http://127.0.0.1:8799"
 // With the flag a loopback client acts as any person it names, and a person can have the App probe
 // and import any repository it is installed on, so an App private key from the environment may
 // sign calls only to a loopback host. The refusal quotes the base through redact.URL: a plain
-// http(s) URL as written, and anything else, a URL with user info included, as redact.NotPrinted,
-// so a made-up token written into the base prints in no refusal.
+// http(s) URL as written, and anything else as redact.NotPrinted. A base with user info, a query
+// or a fragment never reaches it: boot refuses those by the setting alone
+// (TestDispatchsURLSettingsRefuseACredentialByTheSettingAlone). One that does not parse does, and
+// a made-up token written into it prints in no refusal.
 func TestDevSignInRefusesAnAppKeyThatReachesGitHub(t *testing.T) {
 	withKey := &auth.AppConfig{ClientID: "Iv1.app", PEM: "app private key"}
 	fromEnv := appCredentialSource{}
 	const token = "madeUpGitHubToken0123"
-	at := "@"
 	// Unset, the App calls https://api.github.com.
 	for base, shown := range map[string]string{
-		"":                       "",
-		"https://api.github.com": "https://api.github.com",
-		"http://10.0.0.5:9022":   "http://10.0.0.5:9022",
-		"http://127.0.0.1" + at + "api.github.com":                           redact.NotPrinted,
-		"https://ghuser:" + token + at + "ghe.invalid/api/v3":                redact.NotPrinted,
-		"https://" + token + at + "ghe.invalid/api/v3?access_token=" + token: redact.NotPrinted,
+		"":                                    "",
+		"https://api.github.com":              "https://api.github.com",
+		"http://10.0.0.5:9022":                "http://10.0.0.5:9022",
+		"https://ghe invalid/api/v3/" + token: redact.NotPrinted,
 	} {
 		err := devSignInLoadedFence(devSignInBoot(t, map[string]string{"DISPATCH_GITHUB_API_BASE": base}), devSignInOrigin, withKey, fromEnv)
 		if err == nil || !strings.Contains(err.Error(), "DISPATCH_GITHUB_API_BASE="+strconv.Quote(shown)) || !strings.Contains(err.Error(), "DISPATCH_APP_PEM_B64") {

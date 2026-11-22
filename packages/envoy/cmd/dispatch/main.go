@@ -1400,6 +1400,15 @@ func agentSecretsURLRefusal(raw string) error {
 	return nil
 }
 
+// gitHubAPIBaseRefusal is why raw, DISPATCH_GITHUB_API_BASE's value, is refused, or nil: one
+// credentialURLRefusal refuses. The GitHub App client builds every request on it and names the
+// request's URL in its own words on a failed call (githubapp's `<method> <target>: …`), password
+// and all, which reaches the 502 of the App installation route, a CI check's detail and the
+// GitHub read record /healthz serves. The server and redeliver-webhooks each read it.
+func gitHubAPIBaseRefusal(raw string) error {
+	return credentialURLRefusal("DISPATCH_GITHUB_API_BASE", "the GitHub API's base URL", raw)
+}
+
 // resolveBootConfig is the server's configuration from what the settings table read (env),
 // checked before anything connects. It holds the settings main hands on as values; three groups
 // reach their readers from env instead, through the table's lookup: the GitHub App credentials
@@ -1439,6 +1448,11 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	// password a refused DSN leaves in its host or in pgx's quote of it.
 	if err := pgdsn.Refusal(store.DSNSetting, boot.DatabaseURL); err != nil {
 		return bootConfig{}, err
+	}
+	if boot.GitHubAPIBase != "" {
+		if err := gitHubAPIBaseRefusal(boot.GitHubAPIBase); err != nil {
+			return bootConfig{}, err
+		}
 	}
 	if boot.EnvoyAccountTokenFile != "" && boot.EnvoyGoogleAudience != "" {
 		return bootConfig{}, errors.New("ENVOY_ACCOUNT_TOKEN_FILE and ENVOY_ACCOUNT_GOOGLE_AUDIENCE each name Dispatch's identity at the Envoy listener; set one of them")
