@@ -266,7 +266,7 @@ func requireNamesNone(t *testing.T, asked, body string, names ...string) {
 }
 
 // The edge names a role's holder only when that holder is a session of the reader's projects
-// (edgeScope.holder): a role of the reader's project can be claimed by any session, and its claim
+// (edgeScope.holderConfirmed): a role of the reader's project can be claimed by any session, and its claim
 // record can be written by any writer of the role bucket, so a holder outside the reader's
 // projects is no holder the edge names, in a role read or in the answers of a role send. A PRIV
 // role's claim names S_pub, a live in-house session of PUB, under a distinctive process, and
@@ -430,17 +430,17 @@ func TestAnEdgeReleasesTheRoleClaimsOfOtherProjects(t *testing.T) {
 }
 
 // A role message the role lane forwarded to a session's own agent subject before its edge
-// registration still reaches the session after that registration released the role: an edge
-// listener runs with its grant, which turns the frame takeover off (takeOverFrame), and nothing
-// else at the edge holds a frame already forwarded. This row states that gap, as the edge section
-// of packages/envoy/README.md does: the relay's check of each frame's topic, which #4730 adds,
-// withholds the frame, and once it is in, this row fails and is turned to require the frame
-// withheld. Here the session holds INFRA's role through another listener, the shared listener's
-// role lane forwards a message of that role to it, and the session then registers at the edge
-// under a PRIV token. Controls: with edge mode off, the role is not released and the row fails;
-// with the rig's listener running without the edge's grant, the takeover copies the frame to the
-// role's kept lane, the session's first frame is the PRIV event, and the row fails.
-func TestAnEdgeRelaysARoleMessageForwardedBeforeItsRegistration(t *testing.T) {
+// registration is withheld after that registration: its topic is of INFRA, a project the session's
+// PRIV token does not list, so the edge's relay check of each frame's topic withholds it
+// (edgeFrameVerdict), a frame already forwarded to the session's own subject held by it like any
+// other. An edge listener runs with its grant, which turns the frame takeover off (takeOverFrame),
+// so nothing copies the forward to the role's kept lane; the relay holds it in place. Here the
+// session holds INFRA's role through another listener, the shared listener's role lane forwards a
+// message of that role to it, and the session then registers at the edge under a PRIV token, which
+// releases the INFRA claim. Its first frame is the PRIV sentinel, not the INFRA forward. Live
+// control: the frame rule off at the relay (edgeWithholds back to the base's GitHub-only verdict)
+// lets the INFRA forward through, and the row fails naming it.
+func TestAnEdgeWithholdsARoleMessageForwardedBeforeItsRegistration(t *testing.T) {
 	rig := newEdgeRig(t)
 	const sessionID, infraRole = "ses_edge_forwarded_before", "legion-infra-infra-5-tester"
 	rig.placeElsewhere(t, sessionID, "INFRA")
@@ -467,12 +467,9 @@ func TestAnEdgeRelaysARoleMessageForwardedBeforeItsRegistration(t *testing.T) {
 		t.Fatalf("after the registration at the edge %s's claim reads %+v (%v): the role was not released, so a frame of it is not one the release left", infraRole, claim, err)
 	}
 	sentinel, _ := rig.storeEvent(t, "notifications.dispatch.issue.PRIV.PRIV-1.comment.created")
-	// The relay sends in stream order, so the forward, stored first, is the first frame unless the
-	// relay holds it.
-	if first := standIn.collect(t, 1, 10*time.Second)[0].item; first.EventID != item.EventID {
-		t.Fatalf("the session's first frame at the edge is %s on %s, not INFRA's %s message forwarded before the registration: the relay held that frame, "+
-			"as #4730's check of each frame's topic does; turn this row to require it withheld", first.EventID, first.Topic, infraRole)
-	}
+	// The relay sends in stream order, so the forward, stored first, would be the first frame were
+	// it not withheld. Its role topic is of INFRA, a project the session's PRIV token does not list,
+	// so the edge withholds it (edgeFrameVerdict): the session's first frame is the PRIV sentinel.
 	requireFrames(t, standIn.collect(t, 1, 10*time.Second), sentinel)
 }
 

@@ -21,7 +21,7 @@ package main
 //     {"op":"err","code":"publish_not_granted"};
 //   - the server's {"op":"msg","sid":…,"subject":…,"reply":…,"headers":{…},"data":<base64>} is
 //     one relay frame, its headers always present as nats.Header in JSON (each name as NATS carries
-//     it, case kept, to every one of its values in order; {} when there are none);
+//     it, case kept, to every one of its values in order), the relay's Envoy-Subject among them;
 //   - {"op":"err","code":"bad_frame"}, then a close 1008 with reason bad_frame, answers a frame the
 //     socket cannot read at all: not JSON, an unknown op, a sub or unsub naming no sid, or a sub
 //     of a sid already held.
@@ -40,7 +40,14 @@ package main
 // here. The connection probe (connection_probe.go) is never forwarded and never answered: the
 // subscription itself is what keeps the session connected, and a probe costs its sender at most its
 // one second. A message on the relay subject that is no relay frame of the session (its reply no
-// receipt naming the session) is not forwarded either.
+// receipt naming the session) is not forwarded either, and neither is a frame the edge's rule
+// withholds (edgeFrameVerdict, edge_frames.go): one the relay's Envoy-Subject header and its
+// envelope give no project of the token the socket was opened with, whatever published it. Such
+// a frame is answered done on its receipt subject, so the relay that sent it acknowledges its
+// message undelivered, and counted in envoy_edge_github_withheld_total{reason="project_not_held"}.
+// A GitHub frame this replica has no fresh repository answer to judge by is answered nak instead,
+// so the relay sends it again after the nak delay and, when its own answer is no fresher, withholds
+// it itself with the gap mark (sessionRelays.edgeWithholds).
 //
 // While a socket is open it asks the broker again every relaySocketCheckEvery, on its ping tick,
 // and once at its token's expiry (watch), and closes with the code its client reopens by
@@ -200,10 +207,15 @@ func relaySocketCheckInterval() time.Duration {
 // sockets' own, so a socket's slow consumer, which nats.go records as its connection's last error,
 // never reaches the listener's main connection, whose publishes read that error.
 type relaySockets struct {
-	client   *bus.Client
-	brokers  *brokerTokens
-	logger   *logging.Logger
-	upgrader websocket.Upgrader
+	client  *bus.Client
+	brokers *brokerTokens
+	logger  *logging.Logger
+	// repositories is the edge listener's repository reader (edge_repositories.go), which the
+	// GitHub frames a socket forwards are held to (relaySocket.forward); main sets it where it
+	// sets the relay's, one reader for the whole listener, and it is nil until then and on every
+	// other listener.
+	repositories *edgeRepositories
+	upgrader     websocket.Upgrader
 	// relaySocketCheckEvery is how often an open socket pings its client and asks the broker
 	// about its token: relaySocketCheckDefault, which only a test lowers.
 	relaySocketCheckEvery time.Duration
@@ -259,7 +271,9 @@ func newRelaySockets(client *bus.Client, brokers *brokerTokens, logger *logging.
 }
 
 // relaySocketRoute is the handler of relaySocketPattern: the sockets' own on an edge listener, and
-// on every other listener the 404 /v1 answers a path it serves nothing at.
+// on every other listener the 404 /v1 answers a path it serves nothing at. The GitHub frames a
+// socket forwards are held to the listener's repository reader (relaySockets.repositories), set
+// once where main builds both.
 func relaySocketRoute(sockets *relaySockets) http.Handler {
 	if sockets == nil {
 		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -307,16 +321,17 @@ func (s *relaySockets) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	socket := &relaySocket{
-		sockets:  s,
-		session:  session,
-		admitted: caller,
-		expires:  expires,
-		check:    r.Clone(context.Background()),
-		subs:     map[int64]*nats.Subscription{},
-		replies:  map[string]time.Time{},
-		done:     make(chan struct{}),
-		pumped:   make(chan struct{}),
-		wake:     make(chan struct{}, 1),
+		sockets:      s,
+		session:      session,
+		admitted:     caller,
+		expires:      expires,
+		check:        r.Clone(context.Background()),
+		repositories: s.repositories,
+		subs:         map[int64]*nats.Subscription{},
+		replies:      map[string]time.Time{},
+		done:         make(chan struct{}),
+		pumped:       make(chan struct{}),
+		wake:         make(chan struct{}, 1),
 	}
 	if status, refusal := s.admit(socket); status != 0 {
 		writeJSONError(w, status, refusal)
@@ -395,6 +410,9 @@ type relaySocket struct {
 	// check is a detached copy of the upgrade's request, which every later ask of the broker
 	// presents: its token, and no proof checked again, since that proof is spent.
 	check *http.Request
+	// repositories is the listener's repository reader, which the socket's GitHub frames are held
+	// to (edgeFrameVerdict), and whose withheld counter counts each frame it withholds.
+	repositories *edgeRepositories
 
 	// writeMu orders the data frames written to the client, which gorilla/websocket takes from
 	// one writer at a time: the reader's err frames and the pump's msg frames. ended is
@@ -661,7 +679,40 @@ func (socket *relaySocket) forward(sid int64, msg *nats.Msg) {
 		socket.stray(msg)
 		return
 	}
+	// Whoever published it, a frame reaches the client only for a project of the token the
+	// socket was opened with, which edgeFrameVerdict holds to the broker's live answer.
+	subject := msg.Header.Get(relayHeaderSubject)
+	if verdict := edgeFrameVerdict(socket.repositories, socket.session, socket.admitted.Projects, subject, msg.Data); verdict.action != framePass {
+		socket.withhold(msg, subject, verdict)
+		return
+	}
 	socket.enqueue(sid, msg)
+}
+
+// withhold answers a frame the edge's rule withholds on its receipt subject, and logs it. A frame
+// withheld for want of a fresh repository answer (withheldAnswerUnknown), and any frame that carries
+// a repository gap mark (relayHeaderGap), is answered nak, so the relay that sent it delivers it
+// again after the nak delay, when this replica may have the answer, and re-marks the session's gap
+// itself (onReply); neither is counted, since it is not yet withheld for good, and a done would clear
+// a gap mark on a frame that never reached the client. Every other is answered done, so the relay
+// acknowledges its message undelivered, and counted under reason. A frame no relay sent has a receipt
+// no relay awaits, and that answer reaches nobody.
+func (socket *relaySocket) withhold(msg *nats.Msg, subject string, verdict frameVerdict) {
+	answer := relayReplyDone
+	switch {
+	case verdict.action == frameAnswerUnknown, msg.Header.Get(relayHeaderGap) == "true":
+		answer = relayReplyNak
+	default:
+		if socket.repositories != nil {
+			socket.repositories.withheld.Inc([2]string{"reason", verdict.reason})
+		}
+	}
+	socket.sockets.logger.Info("listener: the relay socket withheld a frame from its session",
+		slog.String("session_id", socket.session), slog.String("subject", subject), slog.String("reason", verdict.reason), slog.String("answer", answer))
+	if err := socket.sockets.client.Connection().Publish(msg.Reply, []byte(answer)); err != nil {
+		socket.sockets.logger.Warn("listener: the relay socket could not answer a frame it withheld; the relay sends it again",
+			slog.String("session_id", socket.session), slog.String("error", err.Error()))
+	}
 }
 
 // relayReceiptOf reports whether reply is the receipt subject of a relay frame of session: under
