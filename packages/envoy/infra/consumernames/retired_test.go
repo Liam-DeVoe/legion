@@ -257,7 +257,7 @@ func TestEnrollRefusesAStoreAddressARetiredProjectNames(t *testing.T) {
 	database := db.Config().ConnConfig.Database
 	h.censusDeploy(censusDeploymentOf(project, db))
 	h.retire(retiredEntry(retired, database, censusInstance))
-	h.enrollRequireStopped(project, enrollStore(t, project, db), daemonFamily(project)+"'s store address is shared",
+	h.enrollRequireStopped(project, enrollStore(t, project, db), daemonFamily(project)+"'s store is unreconciled, so enroll marks nothing",
 		"Deployment legion/legion-daemon-enrlive (project ENRLIVE)", retiredSource+" (project ENRRETIRED)",
 		fmt.Sprintf("each name database %q on instance %q", database, censusInstance))
 

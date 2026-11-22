@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -16,6 +18,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/require"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	selection "github.com/sjawhar/envoy/consumernames"
@@ -267,11 +270,39 @@ func (h *stack) enrollWindow() {
 	require.NoError(h.t, h.release(window))
 }
 
-// enrollRun runs enroll of project under hold id, with the store flag the command requires (the
-// stack's env hands over the test's database whatever file it names).
+// enrollRun runs enroll of project under hold id, with the store flag the command requires: the
+// file of project's store, rendered with its Deployment (enrollDeployed).
 func (h *stack) enrollRun(id, project string) (int, string, string) {
 	h.t.Helper()
-	return h.run(actionEnroll, "--hold", id, "--daemon", project, "--daemon-database", project+"=/dev/null")
+	return h.run(actionEnroll, "--hold", id, "--daemon", project, "--daemon-database", project+"="+h.enrollDeployed(project))
+}
+
+// enrollFile writes the file of the store on pool as --daemon-database names one: its URL, and
+// censusInstance on its second line.
+func (h *stack) enrollFile(pool *pgxpool.Pool) string {
+	h.t.Helper()
+	file := filepath.Join(h.t.TempDir(), "store.url")
+	require.NoError(h.t, os.WriteFile(file, []byte(pool.Config().ConnString()+"\n"+censusInstance+"\n"), 0o600))
+	return file
+}
+
+// enrollDeployed answers the file of project's store, the test's database of daemon/<project>
+// (enrollFile), and renders project's Deployment naming that store (censusDeploymentOf) unless one
+// of its name is there already: enroll reads the store only at the address its one source names.
+func (h *stack) enrollDeployed(project string) string {
+	h.t.Helper()
+	h.mu.Lock()
+	pool := h.dbs[daemonFamily(project)]
+	h.mu.Unlock()
+	require.NotNil(h.t, pool, "the test made no database for %s", daemonFamily(project))
+	d := censusDeploymentOf(project, pool)
+	_, err := h.s.Kube.Client.AppsV1().Deployments(writerhold.DaemonNamespace).Get(h.t.Context(), d.Name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		h.censusDeploy(d)
+	} else {
+		require.NoError(h.t, err)
+	}
+	return h.enrollFile(pool)
 }
 
 // enrollRequireStopped asserts that enroll of project under a hold of its own wrote a stop entry
@@ -592,7 +623,7 @@ func TestEnrollStopsOnWhatItFinds(t *testing.T) {
 	t.Run("a store with no intake_consumers table", func(t *testing.T) {
 		const project = "ENRNOTAB"
 		db := h.database(daemonFamily(project), daemonMigrations[0])
-		h.enrollRequireStopped(project, enrollStore(t, project, db), "the store has no intake_consumers table")
+		h.enrollRequireStopped(project, enrollStore(t, project, db), daemonFamily(project)+"'s store is unreconciled, so enroll marks nothing: it has no intake_consumers table")
 	})
 	t.Run("a stream that carries no identity", func(t *testing.T) {
 		const project = "ENRNOID"
@@ -751,7 +782,7 @@ func TestEnrollRefusesAStoreAddressTwoDeploymentsName(t *testing.T) {
 	h.censusDeploy(censusDeploymentOf(project, db))
 	sharer := censusDeployment(other, database, censusInstance)
 	h.censusDeploy(sharer)
-	h.enrollRequireStopped(project, enrollStore(t, project, db), daemonFamily(project)+"'s store address is shared",
+	h.enrollRequireStopped(project, enrollStore(t, project, db), daemonFamily(project)+"'s store is unreconciled, so enroll marks nothing",
 		"legion/legion-daemon-enrshare (project ENRSHARE)", "legion/legion-daemon-enrother (project ENROTHER)",
 		fmt.Sprintf("each name database %q on instance %q", database, censusInstance))
 
@@ -766,6 +797,63 @@ func TestEnrollRefusesAStoreAddressTwoDeploymentsName(t *testing.T) {
 	code, stdout, stderr := h.enrollRun(id, project)
 	require.Equal(t, 0, code, "control: enroll beside a Deployment at another address: %s%s", stdout, stderr)
 	state, err := enrollStore(t, project, db).State(ctx)
+	require.NoError(t, err)
+	require.Equal(t, id, state.Hold, "control: the enroll marked the store")
+	require.NoError(t, h.release(id))
+}
+
+// enroll reads the daemon store by the census's rule for the daemon stores, at exactly the address
+// the project's one source names, before it reads or writes anything else, and marks no other
+// store: a project no source names (no Deployment and no retired entry), one whose Deployment names
+// another database than its file reaches, and one whose store is gone at its Deployment's address
+// each make enroll stop, naming the project and the source, with no marker and no broker cutover
+// record written and the stop recording unchanged, and each hold is released. Control, in the same
+// stack: a project whose Deployment names its store is enrolled. And 3f1eb2b20c's enroll, which
+// opens the file's URL with no rule, marks the first two stores done and writes their cutover
+// records, which no command removes.
+func TestEnrollReadsItsStoreByTheAddressRule(t *testing.T) {
+	h := newStack(t)
+	ctx := context.Background()
+	h.replaceNotificationStream()
+	h.enrollWindow()
+	const ghost, wrong, gone, right = "ENRGHOST", "ENRWRONG", "ENRGONE", "ENRRIGHT"
+	pools := map[string]*pgxpool.Pool{}
+	for _, project := range []string{ghost, wrong, right} {
+		pools[project] = h.database(daemonFamily(project), daemonMigrations...)
+	}
+	h.censusDeploy(censusDeployment(wrong, "daemon_elsewhere", censusInstance))
+	dropped := censusDroppedDatabase()
+	h.censusDeploy(censusDeployment(gone, dropped, censusInstance))
+	files := map[string]string{
+		ghost: ghost + "=" + h.enrollFile(pools[ghost]),
+		wrong: wrong + "=" + h.enrollFile(pools[wrong]),
+		gone:  censusStoreFileFor(t, gone, pools[right], dropped, censusInstance),
+	}
+	for _, c := range []struct{ project, why string }{
+		{ghost, "0 Deployments of namespace legion name project ENRGHOST"},
+		{wrong, fmt.Sprintf("reaches database %q, and Deployment legion/legion-daemon-enrwrong names database %q", pools[wrong].Config().ConnConfig.Database, "daemon_elsewhere")},
+		{gone, daemonFamily(gone) + "'s store is gone at the address its Deployment names, so enroll marks nothing: database " + dropped},
+	} {
+		id := h.heldHold(holdrecord.WorkflowEnroll)
+		code, stdout, stderr := h.run(actionEnroll, "--hold", id, "--daemon", c.project, "--daemon-database", files[c.project])
+		require.Equal(t, 1, code, "enroll of %s: %s%s", c.project, stdout, stderr)
+		require.Contains(t, stderr, c.why)
+		stop := h.lastEntry(id, "")
+		require.Equal(t, enrollCommand+" stop", stop.Command+" "+stop.State)
+		require.Equal(t, holdrecord.LeftUnchanged, stop.Outputs[stopLeftKey], "the stop of enroll of %s", c.project)
+		if pool, ok := pools[c.project]; ok {
+			_, err := enrollStore(t, c.project, pool).State(ctx)
+			require.ErrorIs(t, err, selection.ErrNoSentinel, "enroll of %s wrote the store's marker", c.project)
+		}
+		_, ok := h.cutoverRow(daemonFamily(c.project))
+		require.False(t, ok, "enroll of %s wrote the broker's cutover record", c.project)
+		require.NoError(t, h.release(id))
+	}
+
+	id := h.heldHold(holdrecord.WorkflowEnroll)
+	code, stdout, stderr := h.enrollRun(id, right)
+	require.Equal(t, 0, code, "control: enroll of a store its Deployment names: %s%s", stdout, stderr)
+	state, err := enrollStore(t, right, pools[right]).State(ctx)
 	require.NoError(t, err)
 	require.Equal(t, id, state.Hold, "control: the enroll marked the store")
 	require.NoError(t, h.release(id))
@@ -811,7 +899,7 @@ func TestEnrollStopsOnAnUnknownRead(t *testing.T) {
 	require.Equal(t, "stop", stop.State, "the UNKNOWN after enroll's intent ends in its stop entry")
 	left := stop.Outputs[stopLeftKey]
 	require.True(t, strings.HasPrefix(left, leftUnknownPrefix), "the stop records %q", left)
-	require.Contains(t, left, leftUnknownPrefix+"read "+family+"'s marker, the broker's cutover records, the consumers of "+notifications+
+	require.Contains(t, left, leftUnknownPrefix+"read "+family+"'s marker, at the address its Deployment names, the broker's cutover records, the consumers of "+notifications+
 		"; unread "+family+"'s checkpoints: ", "the stop names what enroll read and what it could not read")
 	require.Contains(t, left, "no run of enroll in this hold wrote this hold's store marker or the family's broker cutover record")
 	require.Contains(t, left, "earlier runs of "+enrollCommand+" in this hold: run 1 ended with no entry", "the stop names the run the control left pending")

@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	selection "github.com/sjawhar/envoy/consumernames"
-	"github.com/sjawhar/envoy/infra/writerhold"
 	"github.com/sjawhar/envoy/internal/holdrecord"
 )
 
@@ -22,17 +21,23 @@ const enrollCommand = "consumer-names enroll"
 // fresh mode serves (selection.Admit) and every census reads its family as it reads the others.
 // Dispatch has one store, which the window converts, so the command takes a daemon's store alone.
 //
-// Under its intent it reads, before it writes anything: the store's marker (intake_consumers'
-// sentinel row), the broker's cutover records, every consumer of the notification stream, the
-// store's checkpoints (consumer_positions) and its selection rows. It stops, naming what it found,
-// when the stream lists a consumer of one of the store's logical names (legion-go-<project>-<kind>)
-// in any form, fixed or fresh (a fresh name, retired or not, is <logical>~<nuid>); the store holds
-// a checkpoint or a selection row, or lacks either table; the store's marker reads done or
-// rolled_back from another hold; or the broker holds a cutover record for the family from another
-// hold. So a store whose selection state was lost is never taken for a new one, and fails closed.
-// It stops too when an address the project's Deployment names, its store's database on its
-// instance, is one another daemon's Deployment names (enrollSharedAddress): a store two daemons
-// share is no one daemon's, and marking it would mark it for both.
+// Under its intent it reads the store first by the census's rule for the daemon stores
+// (daemonStoreByRule), at exactly the address the project's one source names, its Deployment or its
+// entry of the retired projects' ConfigMap, and marks no other store: a store the rule leaves
+// unreconciled (no one source names the project, the file reaches another database or states
+// another instance than that source names, another source names the same address, which no one
+// daemon's store is, or the store has no intake_consumers table or a sentinel this build does not
+// read whole) or finds gone stops it, naming why and the source, before it reads or writes anything
+// else. It reads and writes the store through the pool the rule opened at that address. Then,
+// before it writes anything: the store's marker (intake_consumers' sentinel row, as the rule read
+// it), the broker's cutover records, every consumer of the notification stream, the store's
+// checkpoints (consumer_positions) and its selection rows. It stops, naming what it found, when the
+// stream lists a consumer of one of the store's logical names (legion-go-<project>-<kind>) in any
+// form, fixed or fresh (a fresh name, retired or not, is <logical>~<nuid>); the store holds a
+// checkpoint or a selection row, or lacks its consumer_positions table; the store's marker reads
+// done or rolled_back from another hold; or the broker holds a cutover record for the family from
+// another hold. So a store whose selection state was lost is never taken for a new one, and fails
+// closed.
 // Otherwise it writes the store's marker in one conditional write that keeps a done this hold
 // wrote: cutover=done naming this hold, the boundary (the stream's last sequence + 1 at the
 // enrolment, where a key with no record starts no later: selection.Names' first-create rule) and
@@ -100,6 +105,20 @@ func (p enrollProgress) account(family, holdID string) (bool, string) {
 func (r *run) enrollHeld(ctx context.Context, a *admission, project string, p *enrollProgress) error {
 	family := daemonFamily(project)
 	logicals := enrollLogicalNames(project)
+	// The store, by the census's rule, at the address its one source names: enroll marks that store
+	// alone, through the pool the rule opened there (daemonStoresByRule).
+	daemon, err := r.daemonStoreByRule(ctx, project)
+	switch {
+	case err != nil:
+		return err
+	case daemon.unreconciled != "":
+		return a.stop(ctx, fmt.Sprintf("%s's store is unreconciled, so enroll marks nothing: %s", family, daemon.unreconciled),
+			enrollLeft(family, r.o.holdID, p.marker, p.broker))
+	case daemon.gone != nil:
+		return a.stop(ctx, fmt.Sprintf("%s's store is gone at the address %s names, so enroll marks nothing: %s", family, daemon.addressSource(), daemonGoneText(*daemon.gone)),
+			enrollLeft(family, r.o.holdID, p.marker, p.broker))
+	}
+	r.read(family + "'s marker, at the address " + daemon.addressSource() + " names")
 	db, err := r.database(ctx, family)
 	if err != nil {
 		return err
@@ -115,16 +134,7 @@ func (r *run) enrollHeld(ctx context.Context, a *admission, project string, p *e
 
 	// The readings, all before any write.
 	var findings []string
-	noTable := false
-	marker, revision, markerFound, err := enrollReadMarker(ctx, store)
-	switch {
-	case errors.Is(err, selection.ErrNoStore):
-		noTable = true
-		findings = append(findings, "the store has no "+selection.IntakeConsumersTable+" table, so its daemon has not migrated it")
-	case err != nil:
-		return unknownf(err, "%s's marker", family)
-	}
-	r.read(family + "'s marker")
+	marker, revision, markerFound := daemon.state, daemon.revision, daemon.found
 	p.marker = markerFound && marker.Cutover == selection.CutoverDone && marker.Hold == r.o.holdID
 	if markerFound && !p.marker && (marker.Cutover == selection.CutoverDone || marker.Cutover == selection.CutoverRolledBack) {
 		findings = append(findings, fmt.Sprintf("the store's marker reads %s from %s", marker.Cutover, enrollHoldName(marker.Hold)))
@@ -163,31 +173,21 @@ func (r *run) enrollHeld(ctx context.Context, a *admission, project string, p *e
 	}
 	r.read(family + "'s checkpoints")
 	findings = append(findings, checkpoints...)
-	if !noTable {
-		rows, err := enrollSelectionRows(ctx, store)
-		if err != nil {
-			return unknownf(err, "%s's selection rows", family)
-		}
-		r.read(family + "'s selection rows")
-		findings = append(findings, rows...)
+	rows, err := enrollSelectionRows(ctx, store)
+	if err != nil {
+		return unknownf(err, "%s's selection rows", family)
 	}
+	r.read(family + "'s selection rows")
+	findings = append(findings, rows...)
 	stream, err := streamInfo(ctx, nc, notifications)
 	if err != nil {
 		return unknownf(err, "the info of %s", notifications)
 	}
 	r.read("the info of " + notifications)
 	streamID := selection.StreamIdentity(stream)
-	shared, err := r.enrollSharedAddress(ctx, project)
-	if err != nil {
-		return err
-	}
-	r.read("the daemon stores' addresses (the daemons' Deployments and the retired projects' entries)")
 	var problems []string
 	if len(findings) > 0 {
 		problems = append(problems, fmt.Sprintf("%s's store is not new: %s", family, strings.Join(findings, "; ")))
-	}
-	if shared != "" {
-		problems = append(problems, fmt.Sprintf("%s's store address is shared: %s", family, shared))
 	}
 	switch {
 	case streamID == "":
@@ -242,35 +242,6 @@ func (r *run) enrollHeld(ctx context.Context, a *admission, project string, p *e
 	fmt.Fprintf(r.stdout, "enroll: %s: the store's marker and the broker's cutover record read %s under hold %s; boundary %s, stream identity %s\n",
 		family, selection.CutoverDone, r.o.holdID, formatSeq(boundary), streamID)
 	return nil
-}
-
-// enrollSharedAddress is why project's store is no one daemon's, "" when nothing says so: each
-// address a source of project names (a Deployment by writerhold.DaemonProjectAnnotation, or a
-// retired project's entry, with its store's database and instance) that another source names too
-// (daemonAddressSharers), naming each source and its project, as the census's rule for the daemon
-// stores refuses such an address (censusReadDaemonStore). The sources, the daemons' Deployments and
-// the retired projects' entries, are read with the hold's own Kubernetes client
-// (writerhold.KubeDaemonDeployments); a listing it cannot read is UNKNOWN.
-func (r *run) enrollSharedAddress(ctx context.Context, project string) (string, error) {
-	op, err := r.operatorHub(ctx)
-	if err != nil {
-		return "", unknownf(err, "the daemon stores' addresses")
-	}
-	listed, err := writerhold.KubeDaemonDeployments(op.Hub.Client)(ctx)
-	if err != nil {
-		return "", unknownf(err, "the daemon stores' addresses (the daemons' Deployments and the retired projects' entries), against which %s's store address is checked", daemonFamily(project))
-	}
-	var shared []string
-	for _, d := range listed {
-		database, instance := d.Annotations[writerhold.DaemonStoreDatabaseAnnotation], d.Annotations[writerhold.DaemonStoreInstanceAnnotation]
-		if d.Annotations[writerhold.DaemonProjectAnnotation] != project || database == "" || instance == "" {
-			continue
-		}
-		if sharers := daemonAddressSharers(listed, d, database, instance); len(sharers) > 0 {
-			shared = append(shared, daemonSharedAddress(project, d, database, instance, sharers))
-		}
-	}
-	return strings.Join(shared, "; "), nil
 }
 
 // enrollLeft is what every run of enroll in this hold left outside the journal, which its stop

@@ -75,9 +75,9 @@ store whose database answers that it does not exist.
 
 Each line is read with its surrounding white space cut. A file whose first line is empty is
 refused, naming the flag; the URL is never echoed. Every command opens the URL on the first line.
-Only `envoy-infra streams census`, `cleanup` and `cleanup --gone` read the second line of a
-daemon's file, to check the store against the one source of its address (below), so a file of one
-line serves every other command.
+Only `envoy-infra streams census`, `cleanup`, `cleanup --gone` and `enroll` read the second line of
+a daemon's file, to check the store against the one source of its address (below), so a file of
+one line serves every other command.
 Below, `<store flags>` stands for `--dispatch-database-file` and one `--daemon-database` for each
 daemon:
 
@@ -109,10 +109,10 @@ A key of neither form makes every reading of the addresses fail, naming the key,
 read of the ConfigMap that Kubernetes refuses. A ConfigMap that does not exist holds no retired
 project.
 
-`envoy-infra streams census`, `cleanup` and `cleanup --gone` read a daemon's store only at the
-address its one source names, and `status` calls a store gone only at that address: the address
-rule. The store is unreconciled, and none of them reads it, unless exactly one source names the
-project, a Deployment or a retired project's entry and never both, that source names both the
+`envoy-infra streams census`, `cleanup`, `cleanup --gone` and `enroll` read a daemon's store only
+at the address its one source names, and `status` calls a store gone only at that address: the
+address rule. The store is unreconciled, and none of them reads it, unless exactly one source names
+the project, a Deployment or a retired project's entry and never both, that source names both the
 database and the instance, no other source names the same database on the same instance, the
 `--daemon-database` file's URL names that database, and the file's second line is that instance.
 Each refusal names the project and the source: `Deployment legion/<name>` or `ConfigMap
@@ -120,8 +120,7 @@ envoy-operator/envoy-operator-retired-stores`. At that address, a server that an
 3D000 (the database does not exist) makes the store gone. Every other answer leaves it
 unreconciled: a server that does not answer, any other SQLSTATE (57P01 and 57P03, which a dying
 server answers in the seconds after its instance is deleted, among them), and a database with no
-`intake_consumers` table. `enroll` reads the sources only to refuse a store whose database and
-instance another source names too.
+`intake_consumers` table.
 
 ### Output and exit codes
 
@@ -641,14 +640,17 @@ durable as [the deployment's README](../../deploy/README.md#recreating-a-listene
 ### `enroll`
 
 `enroll --daemon P --daemon-database P=F --hold ID <hold flags>`, in an `enroll` hold, marks a
-daemon store made after the cutover converted. It stops, naming what it found, when:
+daemon store made after the cutover converted. It reads P's store first by the address rule, and
+marks that store alone, through the connection the rule opened at that address: a store the rule
+leaves unreconciled (among them a source of P that names a database and instance another source
+names too, and a store with no `intake_consumers` table) or finds gone stops it, naming why and the
+source, before it reads or writes anything else. It stops, naming what it found, when:
 
 - the stream lists a consumer of one of P's logical names, fixed or fresh;
-- the store holds a checkpoint (`consumer_positions`) or a selection row, or lacks either table;
+- the store holds a checkpoint (`consumer_positions`) or a selection row, or lacks its
+  `consumer_positions` table;
 - the store's marker reads `done` or `rolled_back` from another hold, or the broker holds a cutover
   row for `daemon/P` from another hold;
-- a source of P (its Deployment, or its retired entry) names a database and instance that another
-  source names too;
 - the stream carries no identity, or this hold's marker records another one.
 
 Otherwise, after the held re-read again, it writes the store's marker `cutover` `done` with the hold,
