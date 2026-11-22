@@ -105,7 +105,7 @@ same step before and after its change, and compares the two rows.
 | `run-step.test.sh` | The test of the run lock, and of the refusals a step makes before its build: a `--replay` step's flags, CPU lists that overlap or that `taskset` refuses, a generator list too wide for the pod's CPU quota, and a `LOADTEST_GOMAXPROCS` (`--gomaxprocs`) other than the server list's CPU count; on a faked `stack.sh`, that a step beside the server list under a CPU quota runs `loadgen run` on the generator list `auto` gives, its list unset or `auto`, and on none without a quota; that a step `loadgen run` refused for a `GOMAXPROCS` other than that count closes on that refusal; that a step refused at a flag, at the lock another run holds, in its build, by its setup, at that refusal, or whose `loadgen run` ended before its window, leaves its not-run record, which never makes a later run of the step refuse it; that `wait_for_window` gives the start of the window a step opens, or the record within a second of the end of a step that opens none; and that the quiet-box gate, its readings faked through the faked `stack.sh`'s `loadgen box-busy`, starts a step on a quiet box at once, waits for a busy one and starts naming its readings, refuses one still busy past `LOADTEST_QUIET_WAIT` with every reading, the bar and the wait in its not-run record, and follows `LOADTEST_MAX_BUSY_BEFORE` and `LOADTEST_QUIET_WAIT`. It fakes `go` and `uv` and needs no stack: `cd packages/envoy && bash loadtest/run-step.test.sh` |
 | `common.test.sh` | The test of `lock_root`: a series step keeps the lock after its parent dies, a refusal names the live holder, a token without the holder's descriptor is refused, a lock held by a process that this PID namespace cannot see is refused as held (never as free), a caller takes the lock once its holder has ended, two callers waiting at once never name each other as the holder, and a record of another PID namespace whose pid runs here is refused without naming that pid. Also of the ports, the CPU lists' checks, the pod's CPU quota from cgroup v2, cgroup v1 or neither (`cpu_quota`, `quota_cpus`) and the generator's list it sizes (`generator_cpus`: `auto` and an unset list beside the server list under a quota, a list too wide for the quota refused, and no quota changing nothing), the decision whether a CPU pin binds (`affinity_verdict`, driven with given times) and the check around it (`check_cpu_affinity`, its timings faked: three tries, and the verdict kept for its boot alone and never when refused), Dispatch's `GOMAXPROCS`: its default, the refusal of one that is not the server list's CPU count, and the refusal of a step whose `meta.json` records one (`gomaxprocs`, `gomaxprocs_refusal`), `wait_for_window`: the window start, never an earlier run's, and the not-run record within a second of the end of a step that opens no window, and the quiet-box gate (`wait_for_quiet_box`, its readings and pauses faked): a start at once on a reading at or under the bar, pauses of 30 s while the box is busier, the refusal past `LOADTEST_QUIET_WAIT` naming every reading, and both variables followed. It needs no stack: `cd packages/envoy && bash loadtest/common.test.sh` |
 | `cluster/cluster.sh` | The load test on a full-size copy in a Kubernetes namespace (Running on a cluster copy, below) |
-| `cluster/manifests/` | The copy's templates: `postgres.yaml`, `dispatch.yaml`, `listener.yaml`, `runner.yaml`, `secrets.yaml.tmpl`, and `nats.yaml`, the committed render of chart `nats/nats` 2.15.1 |
+| `cluster/manifests/` | The copy's templates: `postgres.yaml`, `dispatch.yaml`, `listener.yaml`, `oidc-issuer.yaml` (the copy's own token issuer, Dispatch's identity at the copy's listener, below), `runner.yaml`, `secrets.yaml.tmpl`, and `nats.yaml`, the committed render of chart `nats/nats` 2.15.1 |
 | `cluster/render-nats.sh`, `cluster/nats-values.yaml`, `cluster/nats-2.15.1.tgz` | The render of `manifests/nats.yaml` from the chart's archive, vendored here so that no render downloads it and checked against its published sha256 before helm reads it, and from its values, with every image pinned by digest |
 | `cluster/replay-residual.md` | What the replay on the copy does not reproduce: `loadgen codepaths -residual-notes` lists it under each replay's residual |
 | `cluster/cluster.test.sh` | The test of `cluster.sh`. It fakes `kubectl`, `gh`, `curl`, `go`, `git`, `uv`, `dispatch`, `hostname` and `sleep` and needs no cluster: `cd packages/envoy && bash loadtest/cluster/cluster.test.sh`. When `go` is on PATH, its section (h) also renders `manifests/nats.yaml` again with that `go`, which runs helm v3.20.2 through `go run` and so needs go's module proxy. With no network the test fails at (h); when helm is in your module cache, run it with `GOPROXY=file://$(go env GOMODCACHE)/cache/download` |
@@ -3233,26 +3233,17 @@ and those columns stay empty for its steps.
 
 - **A namespace.** `--namespace` names it on every subcommand. There is no default: a Legion pod's
   own namespace is `builds`. Every `kubectl` call names the namespace.
-- **The cluster's token issuer, reachable from the namespace, or `up --listener-without-oidc`.**
-  The copy's listener verifies Dispatch's projected token against the cluster's issuer
-  (`ENVOY_OIDC_ISSUER`), so it does not start where its pod cannot reach that issuer. `loadtest`'s
-  NetworkPolicy lets its pods reach only each other and DNS. `up --listener-without-oidc`, off by
-  default, renders the listener without `ENVOY_OIDC_ISSUER`, `ENVOY_OIDC_AUDIENCE`,
-  `ENVOY_OIDC_ACCOUNTS` and `ENVOY_DISPATCH_PRINCIPAL`, and Dispatch without
-  `ENVOY_ACCOUNT_TOKEN_FILE`, and records `listener_without_oidc: true` in `state.json`. Dispatch
-  then makes no send for a role route. The synthetic steps make none, and the replay's
-  role-routed issues need them, so `replay-prepare` and `replay` refuse such a run.
 - **These rights in the namespace.** Check each row with `kubectl -n <ns> auth can-i <verb>
   <resource>`:
 
   | Resource | Verbs | What `cluster.sh` does with it |
   | --- | --- | --- |
-  | `configmaps` | `create`, `get`, `list`, `watch`, `patch`, `delete` | The lock, and NATS's configuration |
-  | `secrets`, `services` | `create`, `get`, `list`, `watch`, `patch`, `delete` | The run's random credentials, and the copy's Services (all ClusterIP) |
-  | `deployments.apps`, `statefulsets.apps` | `create`, `get`, `list`, `watch`, `patch`, `delete` | Dispatch, the listener and nats-box; Postgres and NATS. `kubectl rollout status` watches them. |
+  | `configmaps` | `create`, `get`, `list`, `watch`, `patch`, `delete` | The lock, NATS's configuration, and the copy's token issuer's documents |
+  | `secrets`, `services` | `create`, `get`, `list`, `watch`, `patch`, `delete` | The run's random credentials and Dispatch's minted identity token, and the copy's Services (all ClusterIP) |
+  | `deployments.apps`, `statefulsets.apps` | `create`, `get`, `list`, `watch`, `patch`, `delete` | Dispatch, the listener, the token issuer and nats-box; Postgres and NATS. `kubectl rollout status` watches them. |
   | `deployments.apps/scale` | `patch` | `kubectl scale` in each reset |
   | `pods` | `create`, `get`, `list`, `watch`, `delete` | The runner pod; `kubectl wait`; the pod lookups of the sampler and the crash check |
-  | `pods/exec` | `create` | `psql` and `pg_restore` in Postgres (and the replay's dump streamed into it), the `nats` CLI in nats-box, Dispatch's `/healthz` and `cpu.max`, the sampler's cgroup reads, `kubectl cp` and the replay's bundle into the runner, and `loadgen`, `envoy-dispatch stored-order` and `browsertype` in the runner |
+  | `pods/exec` | `create` | `psql` and `pg_restore` in Postgres (and the replay's dump streamed into it), the `nats` CLI in nats-box, Dispatch's `/healthz`, `cpu.max` and its identity check at the listener, the sampler's cgroup reads, `kubectl cp` and the replay's bundle into the runner, and `loadgen`, `envoy-dispatch stored-order` and `browsertype` in the runner |
   | `pods/log` | `get` | Each step's container logs |
   | `persistentvolumeclaims`, `jobs.batch` | `get`, `list`, `delete` | `down` |
   | `replicasets.apps` | `get`, `list` | `down`'s listing of what is left |
@@ -3289,8 +3280,8 @@ and those columns stay empty for its steps.
   run's objects and the lock; it says that it cannot stop daemons it cannot see, which stop on
   their own (the heartbeat once the lock is gone, the sampler once that heartbeat is). A
   `state.json` from before `pid_ns` is not checked.
-- **The quota.** The copy at the 16-vCPU tier requests 47.2 CPUs, 121.25Gi of memory, 14.25Gi of
-  ephemeral storage, 8 pods, 7 Services, and 4 claims on `--storage-class`: NATS's three of 20Gi
+- **The quota.** The copy at the 16-vCPU tier requests 47.25 CPUs, 121.31Gi of memory, 14.5Gi of
+  ephemeral storage, 9 pods, 8 Services, and 4 claims on `--storage-class`: NATS's three of 20Gi
   (60Gi) and Postgres's data volume, `up --pg-volume` (default `100Gi`), 160Gi in all. The
   namespace's quota allows `requests.storage` 300Gi over 10 claims, so `up` refuses a
   `--pg-volume` above 240Gi. At the
@@ -3317,12 +3308,60 @@ and those columns stay empty for its steps.
   the stored-order checker (a static `envoy-dispatch`) with `go` on the worker unless
   `LOADTEST_CLUSTER_LOADGEN` and `LOADTEST_CLUSTER_CHECKER` name static binaries built elsewhere,
   such as a cluster Job. Each names one file, which `up` copies in place of that build, and `up`
-  refuses, before it creates anything, a variable that names no executable file.
+  refuses, before it creates anything, a variable that names no executable file, and a
+  `LOADTEST_CLUSTER_LOADGEN` whose `oidc-mint -h` lists no `-sub <subject>=<file>`, as it refuses
+  a built one (Dispatch's identity at the copy's listener, below).
   `LOADTEST_CLUSTER_CHECKER` must be built from the tree the checker would be built from (The
   stored-order check, below); `state.json`'s `stored_order` records `prebuilt: true`, since the
   caller vouches for that tree. `redeploy` with `LOADTEST_CLUSTER_CHECKER` set installs that file
   as the checker of the commit it deploys, so the steps after it check with that commit's
   renderer (`renderer_matches` true).
+
+### Dispatch's identity at the copy's listener
+
+The listener takes a send's role mark from Dispatch's verified principal alone
+(`ENVOY_DISPATCH_PRINCIPAL`), and the replay's role-routed issues need that mark. It verifies
+Dispatch's identity token against the issuer it discovers (`ENVOY_OIDC_ISSUER`). A listener that
+cannot read that issuer's discovery document takes no mark from Dispatch: an older one exits, and
+a newer one starts and answers that issuer's tokens 503 until it can read it. The
+namespace's NetworkPolicy lets the copy's pods reach each other and DNS and nothing else, so the
+cluster's own token issuer is out of their reach. The copy has an issuer of its own instead:
+
+- `loadgen oidc-mint -issuer <url> -audience <aud> -lifetime <duration> -sub <subject>=<file>
+  [-sub <subject>=<file>]...` generates one P-256 key, writes one ES256 token of it for each
+  `-sub` to that `-sub`'s file (mode 600), and prints the key's public half, `{"kid", "x", "y"}`.
+  A subject is `system:serviceaccount:<namespace>:<name>`, the shape the listener's
+  `ENVOY_OIDC_ACCOUNTS` lists. The private key stays in that process's memory and is never
+  written, so one call mints every token a run needs. `up` names one subject, Dispatch's: `iss`
+  `http://oidc-issuer.<namespace>.svc:8080`, `sub` `system:serviceaccount:<namespace>:default`
+  (the listener's `ENVOY_DISPATCH_PRINCIPAL` and `ENVOY_OIDC_ACCOUNTS`), `aud`
+  `envoy-listener-loadtest` (`ENVOY_OIDC_AUDIENCE`), living 168 h, longer than any run (the runner
+  pod ends 12 h after `up` creates it). `state.json` keeps the issuer (`oidc_issuer`), the key's
+  public half (`oidc_key`) and the token (`secrets.account_token`). The mint runs once the lock is
+  taken, so `up` builds loadgen (or copies `LOADTEST_CLUSTER_LOADGEN`) before it takes the lock and
+  refuses, with nothing created, one whose `oidc-mint -h` lists no `-sub <subject>=<file>` (a
+  loadgen from before `oidc-mint`).
+- `manifests/oidc-issuer.yaml` serves the discovery document and the key set inside the
+  namespace: a ConfigMap of the two documents, served by socat (the pprof sidecar's image) through
+  a short script, behind the Service `oidc-issuer`. `up` starts it before the listener. A render
+  takes this namespace's exact issuer URL alone, so no other namespace's issuer is ever rendered.
+- `manifests/dispatch.yaml` mounts the token from the run's Secret as Dispatch's
+  `ENVOY_ACCOUNT_TOKEN_FILE`, where production's Dispatch has the kubelet's projected token.
+- Once Dispatch is up, `up` checks the whole chain from Dispatch's container. On the token's file it
+  sends a send that names no target and is marked with the role `-identity-probe`, which no claim
+  can name, so every answer is a refusal and nothing is written. A listener that reads role marks
+  (from #4387 on) answers 400 naming the role only after it takes the mark from Dispatch's verified
+  principal. A build from before role marks answers 400 naming the missing target: it admitted the
+  token, and the replay's role-routed sends reach their targets unmarked. A 503 is a listener still
+  starting (its readiness passes on `/healthz`'s `starting`, before `/v1` serves) or one that cannot
+  read its issuer, so `up` sends again every 3 s for 120 s, and a 503 that lasts the 120 s stops it.
+  A send that did not run (an API server error, kubectl's own time-out, curl's exit 7 or 28) is made
+  again the same way. Any other answer stops `up` and names it: 401 is a token the listener did not
+  verify, 403 is another principal. A listener whose Deployment names no
+  `ENVOY_DISPATCH_PRINCIPAL` takes no mark from anyone, and `up` says it checks nothing.
+- A run that a `cluster.sh` from before this issuer started keeps the cluster's https issuer in its
+  `state.json`, and no `oidc_key` or account token, so its manifests no longer render. `db-size` and
+  `redeploy` refuse it before they change anything; take it `down` and start it `up` again.
 
 ### The one command
 
@@ -3894,6 +3933,10 @@ its cores and working set from `cgroup.json`. It also holds:
 - Dispatch reaches NATS directly, not through the tailnet SOCKS5 proxy.
 - NATS has no auth, and runs on three pods, not on one e2-small VM.
 - Header identity, not cookies. No tailnet front door.
+- Dispatch's identity at the listener is a token `up` mints for the copy's own issuer, served inside
+  the namespace, not the kubelet's projected token of the cluster's issuer. The listener
+  verifies it with the same code; it reads the key set from inside the namespace (Dispatch's
+  identity at the copy's listener, above).
 - `meta.json`'s `pg_clock` gives the copy's Postgres round trip, not that of production's proxy
   path.
 - The node CPU model is read in the containers. Production's machine type is not readable by the

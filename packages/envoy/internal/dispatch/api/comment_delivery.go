@@ -1348,8 +1348,13 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	// (lookUpRoleHolderReply). The mention is the one the request names, else the comment's
 	// first, which is its only one wherever the transaction below takes a reply naming none. A
 	// read that finds nothing asks nothing: the transaction below answers that comment, mention
-	// or attempt as it always has. A read that fails is the route's 500.
-	roleReply, err := s.roleHolderReplyOf(r.Context(), actor, r.PathValue("id"), `
+	// or attempt as it always has. A read that fails is the route's 500. An attempt past
+	// comment_deliveries.attempt's range names no delivery, so no read is made with it: the bound
+	// below (fitsIntegerColumn) answers it, where it always has.
+	var roleReply roleHolderReply
+	var err error
+	if fitsIntegerColumn(input.Attempt) {
+		roleReply, err = s.roleHolderReplyOf(r.Context(), actor, r.PathValue("id"), `
 		select m.target, d.session_id
 		from comment_mentions m
 		left join comment_deliveries d on d.comment_id = m.comment_id and d.target = m.target and d.attempt = $3
@@ -1357,9 +1362,10 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		order by m.target
 		limit 1
 	`, input.Target, input.Attempt)
-	if err != nil {
-		s.writeHandlerError(w, r, err)
-		return
+		if err != nil {
+			s.writeHandlerError(w, r, err)
+			return
+		}
 	}
 
 	tx, err := s.begin(r.Context())
@@ -1440,6 +1446,13 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The attempt is a number comment_deliveries keeps in an integer column, so one past that
+	// column (fitsIntegerColumn) is a delivery no comment has, answered as the read below answers
+	// one, before any query is made with it.
+	if !fitsIntegerColumn(input.Attempt) {
+		writeError(w, "COMMENT_NOT_FOUND", http.StatusNotFound, "comment delivery not found")
+		return
+	}
 	// The attempt row is taken in a bounded wait and read behind it in the same batch: the mention
 	// sender writes its claims on it without the owner lock this transaction holds
 	// (claimCommentDeliveryAttempt). The lock's failure is the handler's to answer; the read's is a
