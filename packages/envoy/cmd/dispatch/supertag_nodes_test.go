@@ -564,10 +564,13 @@ func (d *schemaDrift) report(t *testing.T) {
 // by requireStoreOnlyAttributesMatchTheirMigrations. 20261116123355_lens_catalogue_further_kinds
 // writes no type node, but it signs its catalogue nodes with 20261116123354's writer, so the
 // second run, which takes rows out by their writer, takes out its rows too and runs it again.
+// 20261122230406_interaction_source writes one more attribute node of the interaction type,
+// `source`, held to its file the same way.
 var literalTypeMigrations = []struct{ file, writer string }{
 	{"../../internal/dispatch/store/migrations/20261116082319_graph_supertags_decision_reading.up.sql", `{"kind": "system", "id": "block-schema-decision-reading"}`},
 	{"../../internal/dispatch/store/migrations/20261116123354_lens_catalogue.up.sql", `{"kind": "system", "id": "lens-catalogue"}`},
 	{"../../internal/dispatch/store/migrations/20261116123355_lens_catalogue_further_kinds.up.sql", `{"kind": "system", "id": "lens-catalogue"}`},
+	{"../../internal/dispatch/store/migrations/20261122230406_interaction_source.up.sql", `{"kind": "system", "id": "interaction-source"}`},
 }
 
 // requireASecondRunOfTheTypeMigrationsLeavesTheSameNodes runs the type migrations written before

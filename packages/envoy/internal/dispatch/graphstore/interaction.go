@@ -21,13 +21,20 @@ import (
 // (WriteRun), which the frame path and the backfill share.
 
 // The attributes of an interaction beside its words (AttributeWords), as the tuple that states
-// each value spells it and as migration 20261116123354 declares them on the interaction type: the
-// moment the run is over, and each frame of its stream. Its project is the base attribute
-// project, which no attribute node declares.
+// each value spells it and as migrations 20261116123354 and 20261122230406 declare them on the
+// interaction type: the moment the run is over, each frame of its stream, and the table that
+// projects the node. Its project is the base attribute project, which no attribute node declares.
 const (
 	AttributeEndsAt = "ends_at"
 	AttributeFrame  = "frame"
+	AttributeSource = "source"
 )
+
+// SourceGoingRequests is the source every interaction node this build writes holds: a run of the
+// command bar, which going_requests projects. The sweep states such a node gone once its run is
+// more than an hour old (api's sweepGoingRequests), and reads the value to leave alone an
+// interaction node of any other source, which a later release writes.
+const SourceGoingRequests = "going_requests"
 
 // Interaction is one run of the command bar as the store holds it: ID, the run's own uuid in the
 // lowercase form Postgres writes it; Author, the whole credential the POST proved, recorded
@@ -47,10 +54,11 @@ type Interaction struct {
 // own nodes, and its tuples. The node is live and reserved for its author whoever that is, since
 // a run is read by the credential that asked it and by nobody else, and a run whose author names
 // no credential (NamesCredential) - the shared bearer's empty author - is read by nobody, as the
-// stream reads it (api's goingRunIsTheCallers). It carries its words and the moment it ends, each
-// also stated as a value tuple, and the run's project where it names one. Where AuthorOf names
-// somebody of the author, the run also states its authored_by tuple, with that author's own person
-// or session node and the aliases the server proved of them (AuthorFacts).
+// stream reads it (api's goingRunIsTheCallers). It carries its words, the moment it ends and its
+// source, SourceGoingRequests, each also stated as a value tuple, and the run's project where it
+// names one. Where AuthorOf names somebody of the author, the run also states its authored_by
+// tuple, with that author's own person or session node and the aliases the server proved of them
+// (AuthorFacts).
 //
 // ends_at is written in UTC as RFC 3339 with its fraction of a second, a timestamp attribute's
 // text, so the node's attribute and its value tuple read the same instant the run's row holds.
@@ -61,10 +69,14 @@ func InteractionFacts(run Interaction) ([]Node, []Tuple) {
 	node := Node{
 		Kind: KindInteraction, ID: run.ID, Supertag: KindInteraction,
 		Visibility: VisibilityAuthor, State: StateLive, Project: run.Project,
-		Attributes: map[string]any{AttributeWords: run.Words, AttributeEndsAt: run.EndsAt.UTC().Format(time.RFC3339Nano)},
-		MadeAt:     run.At, MadeBy: run.Author, SourceEvent: NoEvent,
+		Attributes: map[string]any{
+			AttributeWords: run.Words, AttributeEndsAt: run.EndsAt.UTC().Format(time.RFC3339Nano),
+			AttributeSource: SourceGoingRequests,
+		},
+		MadeAt: run.At, MadeBy: run.Author, SourceEvent: NoEvent,
 	}
-	return append([]Node{node}, authors...), append(AttributeTuples(node, AttributeWords, AttributeEndsAt), authored...)
+	return append([]Node{node}, authors...),
+		append(AttributeTuples(node, AttributeWords, AttributeEndsAt, AttributeSource), authored...)
 }
 
 // FrameWriter is who every frame value tuple is stated by: the server answering the run - the
@@ -76,14 +88,15 @@ var FrameWriter = model.Actor{Kind: "system", ID: "going"}
 // NodeRowLockSQL takes one node's graph_nodes row `for no key update`, $1 its kind and $2 its id:
 // the lock a writer takes of the one node whose own facts it reads and then appends to, so two
 // such writes of one node queue at its row and the second reads what the first appended. Every
-// frame of a run takes its interaction's row so first, as does every backfill pass that writes a
-// run's node (LockInteraction), and Retarget takes the row of the node whose pointer it moves.
+// frame of a run takes its interaction's row so first, as do the sweep that states a run gone an
+// hour on and every backfill pass that writes a run's node (LockInteraction), and Retarget takes
+// the row of the node whose pointer it moves.
 const NodeRowLockSQL = `select 1 from graph_nodes where kind = $1 and id = $2 for no key update`
 
 // LockInteraction takes the interaction node row of the run whose id is run (NodeRowLockSQL), and
 // answers whether the store held that row to take: the first lock of every frame's transaction
-// (api's lockGoingRun) and of every backfill pass that writes a run's node (graphcensus), so a
-// frame and a pass of one run queue there.
+// and of the sweep's of a run an hour old (api's lockGoingRun), and of every backfill pass that
+// writes a run's node (graphcensus), so frames, the sweep and a pass of one run queue there.
 func LockInteraction(ctx context.Context, tx pgx.Tx, run string) (bool, error) {
 	tag, err := tx.Exec(ctx, NodeRowLockSQL, KindInteraction, run)
 	if err != nil {
@@ -159,13 +172,14 @@ type RunWritten struct {
 // transaction, the run a going_requests row holds where the store holds no interaction node of it,
 // which a pod of the release before writes during a roll, recording a run with no node and
 // appending its frames with no frame value. The frame path calls it for the first frame this build
-// writes of such a run (api's lockGoingRun), and the backfill for each such run it finds
-// (graphcensus' backfillRuns, backfillRunFrames). It writes, from the row and the run's
-// going_events rows, exactly what the going POST and the frame path write of a run
-// (InteractionFacts, FrameTuple): the interaction node, its words and its ends_at, its authored_by
-// tuple with its author's own node where the row's author names somebody, and one frame value for
-// each going_events row of the run, in sequence, in one Write. A row whose author names nobody gets
-// a node reserved for an author nobody proves, which nobody reads, as the stream reads that row.
+// writes of such a run (api's lockGoingRun), as does the sweep for such a run an hour old, whose
+// node it then states gone, and the backfill for each such run it finds (graphcensus' backfillRuns,
+// backfillRunFrames). It writes, from the row and the run's going_events rows, exactly what the
+// going POST and the frame path write of a run (InteractionFacts, FrameTuple): the interaction
+// node, its words, its ends_at and its source, its authored_by tuple with its author's own node
+// where the row's author names somebody, and one frame value for each going_events row of the run,
+// in sequence, in one Write. A row whose author names nobody gets a node reserved for an author
+// nobody proves, which nobody reads, as the stream reads that row.
 //
 // id names the run as going_requests.id reads it; the node is keyed by the row's own id::text, the
 // lowercase form the POST writes. It answers what it wrote (RunWritten): Held is false where the

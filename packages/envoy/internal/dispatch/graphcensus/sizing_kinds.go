@@ -459,23 +459,25 @@ func storeKinds() []StoreKind {
 	}, {
 		// Counted off graphstore.InteractionFacts, which the going POST (api's recordGoingRequest), the
 		// frame path and the backfill (graphstore.WriteRun) write a run through, the backfill each run
-		// recorded before this release: the words and ends_at values, and graphstore.AuthorFacts'
-		// authored_by with its author's aliases (an alias_of and a recorded_as at most);
-		// graphstore.Write's base attributes of the node it makes, the visibility, the state and the
-		// project where the run names one; and the changed_by_run a write made for the run appends out
-		// of a node it changed (store.WithRun).
-		Name: "interaction", MovedBy: movedWithLenses, Nodes: 1, Tuples: 9, Assumed: 10 * sizingWindowDays,
+		// recorded before this release: the words, ends_at and source values, and
+		// graphstore.AuthorFacts' authored_by with its author's aliases (an alias_of and a recorded_as
+		// at most); graphstore.Write's base attributes of the node it makes, the visibility, the state
+		// and the project where the run names one; the changed_by_run a write made for the run appends
+		// out of a node it changed (store.WithRun); and the state the sweep states the run's node gone
+		// at, an hour after it was asked (api's goRunGone, through graphstore.WriteState).
+		Name: "interaction", MovedBy: movedWithLenses, Nodes: 1, Tuples: 11, Assumed: 10 * sizingWindowDays,
 		Driver: "assumed at 10 runs a day, since production writes no interaction before this release and" +
-			" the release before it deletes a run from going_requests an hour old (contracts.GoingRequestTTL), so no" +
-			" table of the database the sizing reads holds the window's runs: its node, its visibility and state, at" +
-			" most its project, its words and ends_at values, its authored_by, at most two aliases of its author and" +
-			" one changed_by_run into it",
+			" going_requests holds a run for an hour alone (contracts.GoingRequestTTL): the release before" +
+			" deletes it then, and this release's sweep states its node gone and removes its row, so no table" +
+			" of the database the sizing reads holds the window's runs: its node, its visibility and state, at" +
+			" most its project, its words, ends_at and source values, its authored_by, at most two aliases of" +
+			" its author, one changed_by_run into it and its state gone an hour on",
 	}, {
 		// Counted off graphstore.FrameTuple, the one value tuple the frame path (api's
 		// appendGoingEvent) and the backfill (graphstore.ReadRunFrames) write of each frame.
 		Name: "frame", MovedBy: movedWithLenses, Tuples: 1, Assumed: 500 * sizingWindowDays,
-		Driver: "assumed at 50 for each assumed run, 500 a day, since the release before this one" +
-			" deletes a run's going_events rows with its going_requests row: one frame value each",
+		Driver: "assumed at 50 for each assumed run, 500 a day, since a run's going_events rows go with its" +
+			" going_requests row an hour after it was asked: one frame value each",
 	}, {
 		// Counted off api's invokeLens and writeReasoningNodes: graphstore.Write's visibility, state
 		// and project, the issue's; the part_of, the has_kind and, where the body names them, the

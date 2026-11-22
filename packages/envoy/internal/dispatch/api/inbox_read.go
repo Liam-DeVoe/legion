@@ -557,10 +557,16 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 // another write committed the node in between and another transaction holds it, the frame takes
 // that row without waiting, finds it held, lets its transaction go and begins again once, taking
 // the node's row first (lockGoingRun, errGoingRunNodeHeld), so no frame waits on a node's row
-// while it holds the run's; no writer holding a node's row waits on that hold of the run's row, so
-// this costs such a frame one more transaction and avoids no deadlock. Then the frame takes the
-// run's going_requests row `for key share`, the lock the going_events foreign key takes, appends
-// the frame value tuple and writes the going_events row. No frame takes the revision fence.
+// while it holds the run's: the sweep holds a run's node row and then deletes the run's row, which
+// waits on that hold, so a frame that waited for the node there would wait on the sweep as the
+// sweep waits on it. Then the frame takes the run's going_requests row `for key share`, the lock
+// the going_events foreign key takes, appends the frame value tuple and writes the going_events
+// row. No frame takes the revision fence. A run is readable for one hour; then the sweep states it
+// gone in a transaction of its own (goRunGone), in the frame's order: the run's interaction node
+// row `for no key update` (lockGoingRun, which writes the node of a run with no node first, as a
+// frame does), one graphstore.WriteState of that node, and then the delete of the run's
+// going_requests row, whose foreign key cascades to its going_events rows. It deletes no row of
+// graph_nodes or graph_tuples.
 //
 // A write made for a run (store.WithRun, which withinGoingRun puts on a request that names its
 // run, and which every write phase built for that request carries) adds no statement and no

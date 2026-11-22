@@ -289,6 +289,7 @@ func runAndCatalogueDrives(t *testing.T) []StoreDrive {
 			{graphstore.KindInteraction, graphstore.AttributeProject}:    {graphstore.KindInteraction},
 			{graphstore.KindInteraction, graphstore.AttributeWords}:      {graphstore.KindInteraction},
 			{graphstore.KindInteraction, graphstore.AttributeEndsAt}:     {graphstore.KindInteraction},
+			{graphstore.KindInteraction, graphstore.AttributeSource}:     {graphstore.KindInteraction},
 			{graphstore.KindInteraction, graphstore.TupleAuthoredBy}:     {graphstore.KindInteraction},
 			{graphstore.KindInteraction, graphstore.AttributeFrame}:      {graphstore.AttributeFrame},
 			{graphstore.KindPerson, graphstore.AttributeVisibility}:      {graphstore.KindPerson},

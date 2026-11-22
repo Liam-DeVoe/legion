@@ -28,7 +28,7 @@ const storeStepWait = 20 * time.Second
 
 // TestEveryApiStoreWriterTakesTheStoreLockOrder is this package's half of the check
 // c-lock-order. graphstore's TestEveryStoreWriteCallSiteIsListed lists every call site of the node
-// and tuple store's writers, beside the test that drives each site's lock steps. Twenty of them
+// and tuple store's writers, beside the test that drives each site's lock steps. Twenty-one of them
 // live here, and this test drives them all:
 //
 //   - the comment path (createCommentFor, with the node it queues through graphstore.QueueNodes
@@ -56,7 +56,9 @@ const storeStepWait = 20 * time.Second
 //     (appendGoingEvent), which takes no owner lock, and a frame of a run a pod of the release
 //     before recorded with no node, which writes that node from the run's row first
 //     (lockGoingRun, through graphstore.WriteRun), each in a transaction of its own that writes
-//     through graphstore.Write;
+//     through graphstore.Write; and the sweep's end of a run an hour after it was asked
+//     (goRunGone), which takes the frame's order and states the run's node gone through
+//     graphstore.WriteState before it deletes the run's rows;
 //   - an issue's own field write made for a run (patchIssue), and an edit of an ask's words and of
 //     a comment's words made for a run (editAsk, editComment), each of which plans the node of
 //     what it changed in its read phase (graphstore.PlanChangedForRun) and queues that node's write
@@ -104,7 +106,7 @@ func TestEveryApiStoreWriterTakesTheStoreLockOrder(t *testing.T) {
 		rig.commentCreate("createCommentFor on a project document", "/api/v1/artifacts/"+rig.document+"/comments",
 			ownerLockStep(store.ArtifactOwner(rig.document))),
 		rig.mentionReply(), rig.commentDeliverySettle(), rig.messageDeliverySettle(),
-		rig.goingRecord(), rig.goingFrame(), rig.goingFrameOfARunWithNoNode(),
+		rig.goingRecord(), rig.goingFrame(), rig.goingFrameOfARunWithNoNode(), rig.goingRunGone(),
 		rig.issuePatchForRun(), rig.askEditForRun(), rig.commentEditForRun(),
 		rig.askFollow(), rig.askCreate(), rig.approvalRetry(), rig.approvalFollowerRetry(), rig.approvalHandBack(),
 		rig.documentUpload(), rig.documentEdit(), rig.issueCreate(),
@@ -253,6 +255,9 @@ const (
 	goingRequestInsertStatement = "insert into going_requests ("
 	goingEventInsertStatement   = "insert into going_events ("
 	runRowReadStatement         = "select id::text, author, project, words, created_at, ends_at from going_requests"
+	// goingRunDeleteStatement is the sweep's delete of a run's going_requests row an hour after it
+	// was asked (goRunGone), whose foreign key cascades inside it to the run's going_events rows.
+	goingRunDeleteStatement = "delete from going_requests where id = $1::uuid"
 	// patchRowStatement is a PATCH's one update of the issue's row (patchIssue), askWordsStatement
 	// an edit's update of the ask's row (editAsk), and commentWordsStatement an edit's update of
 	// the comment's row (editComment).
@@ -623,6 +628,85 @@ func (r *storeWriterRig) goingFrameOfARunWithNoNode() storeWriter {
 					sequence, err := appendGoingEvent(ctx, r.callStore.Pool, id, going.Text("A frame of the older pod's run."))
 					if err == nil && sequence != 2 {
 						return fmt.Errorf("the frame took sequence %d, want 2, after the older pod's", sequence)
+					}
+					return err
+				},
+			}
+		},
+	}
+}
+
+// goingRunGone is the sweep's end of one run an hour after it was asked (goRunGone), in a
+// transaction of its own and in the frame's order. Its first lock is the run's interaction node
+// row `for no key update` (lockGoingRun); then, in one batch of its own (graphstore.WriteState),
+// it writes the node again at gone and, in the node move that keeps the node's cause, appends its
+// state tuple (keptCauseMoveStatement); then it deletes the run's going_requests row, whose foreign
+// key cascades inside that statement to the run's going_events rows. It appends no event. The node,
+// the run's row and its frame exist before the run starts, so the node is held as its row at the
+// level the sweep takes it, the node's write and the state tuple as their tables - the batch parses
+// its statements before it runs them - and the run's row and its frame's row `for update`, the
+// level the delete and its cascade take. Each run is recorded, given one frame and dated an hour
+// and a minute back.
+func (r *storeWriterRig) goingRunGone() storeWriter {
+	return storeWriter{
+		name: "goRunGone",
+		steps: []storeStep{
+			{
+				name: "the run's interaction node", order: nodeStep,
+				hold: func(t *testing.T, ctx context.Context, holder pgx.Tx, run storeWriterRun) {
+					holdRow(t, ctx, holder, `select 1 from graph_nodes where kind = 'interaction' and id = $1 for no key update`, run.made.ID)
+				},
+				at:    graphstore.NodeRowLockSQL,
+				takes: []tableLock{{"graph_nodes", rowShareMode}},
+			},
+			{
+				name: "the run's interaction node, written gone", order: nodeStep,
+				hold: holdTableWrites("graph_nodes"), at: nodeWriteStatement,
+				takes: []tableLock{{"graph_nodes", rowExclusiveMode}},
+			},
+			{
+				name: "the node's state tuple", order: tupleStep,
+				hold: holdTableWrites("graph_tuples"), at: keptCauseMoveStatement,
+				takes: []tableLock{{"graph_tuples", rowExclusiveMode}},
+			},
+			{
+				name: "the run's row", order: projectionStep,
+				hold: func(t *testing.T, ctx context.Context, holder pgx.Tx, run storeWriterRun) {
+					holdRow(t, ctx, holder, `select 1 from going_requests where id = $1::uuid for update`, run.made.ID)
+				},
+				at:    goingRunDeleteStatement,
+				takes: []tableLock{{"going_requests", rowExclusiveMode}},
+			},
+			{
+				name: "the run's frame's row", order: projectionStep,
+				hold: func(t *testing.T, ctx context.Context, holder pgx.Tx, run storeWriterRun) {
+					holdRow(t, ctx, holder, `select 1 from going_events where request_id = $1::uuid and sequence = 1 for update`, run.made.ID)
+				},
+				at:    goingRunDeleteStatement,
+				takes: []tableLock{{"going_events", rowExclusiveMode}},
+			},
+		},
+		ready: func(t *testing.T, ctx context.Context) storeWriterRun {
+			run, err := r.direct.recordGoingRequest(ctx, model.Actor{Kind: "user", ID: r.fresh("lock-steps-swept-asker")}, "LOCK",
+				"Which run do the lock steps state gone?")
+			if err != nil {
+				t.Fatalf("record the run the sweep states gone: %v", err)
+			}
+			if _, err := appendGoingEvent(ctx, r.database.Pool, run.ID, going.Text("A frame the sweep's cascade takes.")); err != nil {
+				t.Fatalf("append the frame of run %s: %v", run.ID, err)
+			}
+			if _, err := r.database.Pool.Exec(ctx, `
+				update going_requests set created_at = now() - interval '61 minutes', ends_at = now() - interval '60 minutes'
+				where id = $1::uuid
+			`, run.ID); err != nil {
+				t.Fatalf("date run %s an hour and a minute back: %v", run.ID, err)
+			}
+			return storeWriterRun{
+				made: graphstore.Node{Kind: graphstore.KindInteraction, ID: run.ID},
+				write: func() error {
+					done, err := goRunGone(ctx, r.callStore.Pool, run.ID)
+					if err == nil && (!done.stated || !done.removed) {
+						return fmt.Errorf("the sweep stated run %s gone %t and removed its rows %t, want both", run.ID, done.stated, done.removed)
 					}
 					return err
 				},

@@ -1185,7 +1185,7 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 		"reading":  {tuples: 1, writes: 10 * sizingWindowDays, assumed: true},
 		// No table holds a kind of the lenses child's yet, so each term reads the writes it
 		// is assumed at, and the tuples its writer appends (storeKinds names each writer).
-		"interaction":   {tuples: 9, writes: 10 * sizingWindowDays, assumed: true},
+		"interaction":   {tuples: 11, writes: 10 * sizingWindowDays, assumed: true},
 		"frame":         {tuples: 1, writes: 500 * sizingWindowDays, assumed: true},
 		"lens":          {tuples: 11, writes: 2 * sizingWindowDays, assumed: true},
 		"document_move": {tuples: 1, writes: 1 * sizingWindowDays, assumed: true},

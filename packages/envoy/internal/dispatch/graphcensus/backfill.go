@@ -293,13 +293,14 @@ func recordBackfillHorizon(ctx context.Context, database *store.Store, rule int)
 // The backfill's three passes over the runs of the command bar. A process
 // of the release before this one, during a roll or after a rollback, records a run with no
 // interaction node, appends a frame with no frame value, and deletes a run an hour old, row and
-// frames, leaving its node standing. Each pass finds what it owes by an anti-join of one side
+// frames, leaving its node live. This build's sweep removes a run's rows an hour after it was
+// asked too, and states its node gone in the same transaction (api's goRunGone), so a run it
+// removed owes the third pass nothing. Each pass finds what it owes by an anti-join of one side
 // against the other, row by row, and not by a marker: going_requests and going_events carry no
-// column naming a node, and a run is history, so nothing about a row says whether its node was
-// written. Each writes in a transaction of its own per run, under the lock order the frame path
-// takes (api's appendGoingEvent), and reads again under its locks whether the run still owes it,
-// so a pass beside a live server, and a second run of the backfill, writes nothing it does not
-// owe.
+// column naming a node, so nothing about a row says whether its node was written. Each writes in
+// a transaction of its own per run, under the lock order the frame path takes (api's
+// appendGoingEvent), and reads again under its locks whether the run still owes it, so a pass
+// beside a live server, and a second run of the backfill, writes nothing it does not owe.
 //
 // Its input is each row's own content - a run's row and its frames - or, for the third, the
 // absence of the row a node projects, which an older process's delete leaves: the store is never
@@ -318,12 +319,16 @@ const runOwed = `
 		from going_requests r
 		where not exists (select 1 from graph_nodes n where n.kind = $1 and n.id = r.id::text)`
 
-// runRowless is the from and the where of the interaction nodes, not gone, whose row is gone
-// (runRowHeld), which backfillGoneRuns reads in batches and counts once it is done, $1 the
-// interaction kind and $2 the gone state.
+// runRowless is the from and the where of the interaction nodes of the source going_requests
+// (graphstore.SourceGoingRequests), not gone, whose row is gone (runRowHeld), which
+// backfillGoneRuns reads in batches and counts once it is done, $1 the interaction kind and $2 the
+// gone state. A node of another source - a turn of a History conversation, whose row is in another
+// table - is no run of the command bar, and neither this pass nor the sweep states it gone.
 var runRowless = `
 		from graph_nodes n
-		where n.kind = $1 and n.state <> $2 and not ` + runRowHeld
+		where n.kind = $1 and n.state <> $2
+		  and n.attributes->>'` + graphstore.AttributeSource + `' = '` + graphstore.SourceGoingRequests + `'
+		  and not ` + runRowHeld
 
 // backfillRuns gives every run going_requests holds and the store holds no interaction node of its
 // node, through the one writer of such a node from its row (graphstore.WriteRun): the node, its
@@ -497,9 +502,10 @@ func writeRunFrames(ctx context.Context, database *store.Store, run string) (int
 	return int64(len(frames)), graphstore.RunWritten{}, nil
 }
 
-// backfillGoneRuns states gone every interaction node, not gone already, whose going_requests row
-// is gone (runRowHeld): a run a process of the release before deleted an hour old, frames with it,
-// whose node it left standing. The store keeps the node, and the census reads a gone node with no
+// backfillGoneRuns states gone every interaction node of the source going_requests, not gone
+// already, whose going_requests row is gone (runRowless): a run a process of the release before
+// deleted an hour old, frames with it, whose node it left live, as the sweep does once the node is
+// an hour old (api's goRunGone). The store keeps the node, and the census reads a gone node with no
 // row as no difference.
 func backfillGoneRuns(ctx context.Context, database *store.Store) (KindBackfill, error) {
 	done := KindBackfill{Kind: "interaction_gone"}

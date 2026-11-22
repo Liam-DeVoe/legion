@@ -618,6 +618,11 @@ var indexPasses = map[string]string{
 	// already written it leaves alone rather than mending.
 	"api/going.go#lockGoingRun":            "one going_requests row an earlier build recorded with no node, and that run's going_events rows",
 	"graphcensus/backfill.go#writeOwedRun": "one going_requests row an earlier build recorded with no node, and that run's going_events rows",
+	// The sweep of a run an hour after it was asked (goRunGone): it moves the state of the run's
+	// interaction node alone, from the node as the store holds it, to gone, and then deletes the
+	// run's rows. Its input is the run's age, which its row or its node gives, and the node itself;
+	// it reads no row of either side to decide what the other should say, and mends neither.
+	"api/going.go#goRunGone": "the interaction node of a run more than an hour old, as the store holds it, and the run's going_requests row",
 	// The backfill's passes over what a process of the release before writes of a run during a
 	// roll: the frames it appended with no value, whose input is each going_events row's own
 	// content, found by an anti-join with the run's frame values and stated from the row, never

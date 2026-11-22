@@ -1,13 +1,14 @@
 -- pgmigrate:non-transactional
 -- 20261116232634_going_requests_ends_at_index.up.sql — the index the sweep of overdue runs reads.
 --
--- This release keeps every run of the command bar, its going_requests row, its frames and its
--- interaction node, and no command removes one, where the release before deleted a run an hour
--- old. So going_requests grows with every question asked, and the maintenance pass reads it once a
--- minute for the runs past their ends_at that hold no terminal frame (api/going.go,
--- sweepGoingRequests). That read takes only the runs whose ends_at passed within a day of now
--- (api.goingSweepWindow, goingOverdueRuns), and this index is what makes that bound a bound:
--- without it the read is a scan of every run ever kept, each minute. Keyed on ends_at alone, it
+-- A run of the command bar is readable for one hour; then the sweep states its interaction node
+-- gone and removes its going_requests row and its frames, and the node, its words and its frames
+-- stay in the store (api/going.go, sweepGoingRequests). The maintenance pass reads going_requests
+-- once a minute for the runs past their ends_at that hold no terminal frame. That read takes only
+-- the runs whose ends_at passed within a day of now (api.goingSweepWindow, goingOverdueRuns), and
+-- this index is what makes that bound a bound where the table holds more than its hour of runs -
+-- after every process of the deployment was down, or every pass failed, for longer: without it
+-- the read is a scan of every run the table holds, each minute. Keyed on ends_at alone, it
 -- serves the range both bounds give and the read's order by ends_at.
 --
 -- It is a performance index: no constraint and no later migration depends on it, and a build of

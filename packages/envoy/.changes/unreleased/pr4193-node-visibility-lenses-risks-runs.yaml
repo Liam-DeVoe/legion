@@ -66,8 +66,9 @@ body: |-
   `GET /api/v1/issues/{key}/decisions` lists a decision, an ask and a reading at every state but
   gone, and each entry and each reading carries its node's `state`.
 
-  A run of the command bar is now an interaction node, kept with its frames past its deadline and
-  read only by the credential that asked it, where the release before deleted a run after one hour.
+  A run of the command bar is now an interaction node, read only by the credential that asked it,
+  and readable for one hour, as in the release before. Then the sweep states its node gone and
+  removes its rows, and the node, its words and its frames stay in the store.
   A write sent with the `Dispatch-Going-Run` header adds one `changed_by_run` tuple from each node
   that it created or changed to that run: an issue PATCH, an ask's answer, resolution or decline, a
   follow or an unfollow of an ask, and an edit of an ask's or a comment's words included. A write
@@ -76,7 +77,8 @@ body: |-
   node is marked gone and keeps no `changed_by_run` tuple, so a document made again under the same
   title is not listed under the old run. The sweep ends the overdue runs whose
   deadline passed in the last day, and one pass at each boot ends every older overdue run.
-  A run is kept, with its frames and its node, and no command removes one. After the rollout, run
+  A gone run reads as one nobody asked at its address and through its stream, and no edge names
+  it. The node of a run holds its `source`, `going_requests`. After the rollout, run
   `envoy-dispatch backfill-graph-store`, which gives each run recorded before this release its node.
 
   `envoy-dispatch premortem-convert` and

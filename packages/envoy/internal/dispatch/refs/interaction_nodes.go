@@ -29,8 +29,10 @@ import (
 //
 // The loader reads no frame of a run: an edge whose far end is a run - the authored_by of every
 // run a person asked, the changed_by_run of every node a run changed - carries the run's excerpt
-// and no frames, since a run is kept for ever and a read of edges has no paging. Only a read of
-// the run's own address answers them (Node, interactionFrames).
+// and no frames, since a run holds as many frames as its answer wrote and a read of edges has no
+// paging. Only a read of the run's own address answers them (Node, interactionFrames). A run is
+// readable for one hour; then the sweep states its node gone (api's sweepGoingRequests), and every
+// read here answers it as absent.
 func loadInteractionNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
 	rows, err := q.Query(ctx, `
 		select id, made_by, made_at, state, visibility, project_key, coalesce(attributes->>'`+graphstore.AttributeWords+`', '')

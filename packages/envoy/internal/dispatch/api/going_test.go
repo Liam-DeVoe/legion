@@ -276,76 +276,24 @@ func TestTheGoingSweepEndsARunPastItsWindowOnce(t *testing.T) {
 	}
 }
 
-// TestARunAndItsFramesAreKeptPastTheHour is c-run-kept: a run and its frames are kept past the hour
-// after which the release before deleted them (contracts.GoingRequestTTL, which this build reads
-// nowhere). It records two runs of one person, appends one frame to each and ends neither, dates
-// the first two hours back, and sweeps once. The first run's row, its frame and its interaction
-// node all stand, the node at no state gone, and the run now holds a terminal frame, because the
-// sweep still ends each overdue run. The second run is not overdue and holds no terminal frame.
-func TestARunAndItsFramesAreKeptPastTheHour(t *testing.T) {
-	rig := newGoingRig(t)
-	ctx := context.Background()
-	dated := rig.record(t, "asked two hours ago")
-	recent := rig.record(t, "asked just now")
-	for _, run := range []goingRequest{dated, recent} {
-		if _, err := appendGoingEvent(ctx, rig.database.Pool, run.ID, going.Text("Half an ")); err != nil {
-			t.Fatalf("append a frame of run %s: %v", run.ID, err)
-		}
-	}
-	if _, err := rig.database.Pool.Exec(ctx, `
-		update going_requests set created_at = now() - interval '2 hours', ends_at = now() - interval '2 hours'
-		where id = $1::uuid
-	`, dated.ID); err != nil {
-		t.Fatalf("date run %s two hours back: %v", dated.ID, err)
-	}
-	datedFrames, recentFrames := rig.frames(t, dated.ID), rig.frames(t, recent.ID)
-	if len(datedFrames) != 1 || len(recentFrames) != 1 {
-		t.Fatalf("the two runs hold %v and %v before the sweep, want one frame each", datedFrames, recentFrames)
-	}
-
-	if err := sweepGoingRequests(ctx, rig.database.Pool); err != nil {
-		t.Fatalf("sweep: %v", err)
-	}
-
-	if _, err := rig.server.readGoingRequest(ctx, dated.ID); err != nil {
-		t.Fatalf("run %s, dated two hours back, reads %v after the sweep: want its row kept", dated.ID, err)
-	}
-	deadline := fmt.Sprintf(`2 %s {"code":%q}`, contracts.GoingEventError, contracts.GoingErrorAnswerDidNotArrive)
-	if frames := rig.frames(t, dated.ID); len(frames) != 2 || frames[0] != datedFrames[0] || frames[1] != deadline {
-		t.Fatalf("run %s holds %v after the sweep, want its own frame %s kept and the deadline's ending %s",
-			dated.ID, frames, datedFrames[0], deadline)
-	}
-	node, held, err := graphstore.ReadNode(ctx, rig.database.Pool, graphstore.KindInteraction, dated.ID)
-	if err != nil || !held || node.State == graphstore.StateGone {
-		t.Fatalf("the interaction node of run %s reads held %t at state %q (%v) after the sweep, want it standing and not gone",
-			dated.ID, held, node.State, err)
-	}
-	requireFramesHeldAsValues(t, rig.database, dated.ID, 2)
-
-	if frames := rig.frames(t, recent.ID); !equalStrings(frames, recentFrames) {
-		t.Fatalf("run %s, not overdue, holds %v after the sweep, want its one frame %v and no ending", recent.ID, frames, recentFrames)
-	}
-	if _, state, err := rig.server.readGoingStream(ctx, recent.ID, 0); err != nil || state.Terminal != 0 {
-		t.Fatalf("run %s, not overdue, reads %+v (%v) after the sweep, want no terminal frame", recent.ID, state, err)
-	}
-}
-
 // The sweep reads back goingSweepWindow from now and no further. A run whose ends_at passed inside
 // that window, an hour short of its far end, with no ending stored is ended by one pass with the
 // deadline's error, as every overdue run the sweep reads is. A run whose ends_at passed an hour
 // before the window opens is not read by the sweep: it holds no frame after the pass, still past
 // its deadline with no ending stored, and its reader ends it, since the stream ends a run past its
 // ends_at with no terminal frame stored (streamGoingAnswer) with that same error, and stores it.
-// A run inside its own window is left to run.
+// A run inside its own window is left to run. Each run is dated by its ends_at, its created_at
+// kept inside the hour: the sweep's second step removes a run an hour after its created_at
+// (goRunsPastTheHour), and what this holds is the first step's window, which bounds ends_at alone.
 func TestTheGoingSweepEndsTheRunsOfItsWindowAndLeavesAnOlderOneToItsReader(t *testing.T) {
 	routes := newGoingRoutesRig(t, nil)
 	rig := goingRig{server: routes.server, database: routes.database}
 	ctx := context.Background()
 	insideBy, outsideBy := goingSweepWindow-time.Hour, goingSweepWindow+time.Hour
 	inside := rig.record(t, "asked most of a day ago")
-	rig.age(t, inside.ID, insideBy+time.Minute, insideBy)
+	rig.age(t, inside.ID, 30*time.Minute, insideBy)
 	older := rig.record(t, "asked more than a day ago")
-	rig.age(t, older.ID, outsideBy+time.Minute, outsideBy)
+	rig.age(t, older.ID, 30*time.Minute, outsideBy)
 	live := rig.record(t, "asked just now")
 
 	if err := sweepGoingRequests(ctx, rig.database.Pool); err != nil {
@@ -385,8 +333,9 @@ func TestTheGoingSweepEndsTheRunsOfItsWindowAndLeavesAnOlderOneToItsReader(t *te
 // going_requests through that index alone, never a scan of the table, with its bounds in the
 // index condition. The sweep's read (goingOverdueRuns) carries both bounds of its window - ends_at
 // at or before now, and after now less the window - so it is that index's range for the last day
-// and not every run ever kept: a condition holding the upper bound alone would read the index from
-// its first entry, every run kept, which is the cost the window is there to bound. The boot pass's
+// and not every run the table holds: a condition holding the upper bound alone would read the index
+// from its first entry, every run the table holds, which is the cost the window is there to bound
+// where a deployment down for longer than the hour holds more than an hour of runs. The boot pass's
 // read (goingEveryOverdueRun) carries that upper bound alone, every run whose deadline has passed,
 // which is why the pass runs once a boot and not once a maintenance pass.
 func TestTheOverdueReadsGoThroughTheEndsAtIndex(t *testing.T) {
@@ -493,7 +442,9 @@ func TestTheNextFrameReadsTwoIndexProbes(t *testing.T) {
 // day ago with no terminal frame stored - one whose window passed while every process was down for
 // longer than goingSweepWindow - is read by no periodic pass,
 // and the boot pass ends it with the deadline's error, once. The run holds one frame of its own
-// and is dated an hour past the window. A periodic pass (sweepGoingRequests, which each tick of
+// and is dated by its ends_at an hour past the window, its created_at kept inside the hour, so the
+// periodic pass's second step, which removes a run an hour after its created_at
+// (goRunsPastTheHour), leaves its rows. A periodic pass (sweepGoingRequests, which each tick of
 // RunMaintenanceSweep calls) leaves it holding that frame alone; the boot pass
 // (EndGoingRunsOverdueAtBoot, the function cmd/dispatch calls once at boot before that loop's
 // first tick) stores the deadline's error after it and logs that it ended one run, with how long
@@ -508,7 +459,7 @@ func TestABootEndsARunOverdueByMoreThanADay(t *testing.T) {
 	if _, err := appendGoingEvent(ctx, rig.database.Pool, run.ID, going.Text("Half an ")); err != nil {
 		t.Fatalf("append the run's own frame: %v", err)
 	}
-	rig.age(t, run.ID, overdueBy+time.Minute, overdueBy)
+	rig.age(t, run.ID, 30*time.Minute, overdueBy)
 	held := rig.frames(t, run.ID)
 	if len(held) != 1 {
 		t.Fatalf("the run holds %v before any pass, want its one frame", held)
@@ -579,10 +530,11 @@ func TestTheMaintenancePassEndsAGoingRunNobodyReads(t *testing.T) {
 // that run's ending, and the run's interaction node still stands then. The sweep ends each run in
 // a transaction of its own, so that write stores nothing - no frame value and no row
 // (errGoingRunGone) - and the pass goes on: the run read after it keeps its ending, and a run two
-// hours old is ended and kept, as this build deletes no run. The delete here is held uncommitted
-// until the sweep's write of that run waits on the run's row, which the write takes before it
-// reads the next sequence (goingNextFrame), so the run is gone exactly between the read and the
-// write. A frame of a run nobody recorded stores nothing either, and writes no node for it.
+// hours old is ended and then, past the hour, stated gone with its rows removed, its ending kept
+// as a frame value of its node. The delete here is held uncommitted until the sweep's write of
+// that run waits on the run's row, which the write takes before it reads the next sequence
+// (goingNextFrame), so the run is gone exactly between the read and the write. A frame of a run
+// nobody recorded stores nothing either, and writes no node for it.
 func TestAGoingTerminalWriteForAMissingRunFailsNoSweep(t *testing.T) {
 	rig := newGoingRig(t)
 	ctx := context.Background()
@@ -636,8 +588,17 @@ func TestAGoingTerminalWriteForAMissingRunFailsNoSweep(t *testing.T) {
 	if _, held, err := graphstore.ReadNode(ctx, rig.database.Pool, graphstore.KindInteraction, deleted.ID); err != nil || !held {
 		t.Fatalf("the deleted run's interaction node reads held %t (%v), want it standing: the delete removes the row alone", held, err)
 	}
-	if frames := rig.frames(t, stale.ID); len(frames) != 1 || frames[0] != ending {
-		t.Fatalf("the run two hours old holds %v, want it kept and ended %s: this build deletes no run", frames, ending)
+	staleNode, held, err := graphstore.ReadNode(ctx, rig.database.Pool, graphstore.KindInteraction, stale.ID)
+	if err != nil || !held || staleNode.State != graphstore.StateGone {
+		t.Fatalf("the node of run %s, two hours old, reads held %t at state %q (%v) after the sweep, want it standing and gone",
+			stale.ID, held, staleNode.State, err)
+	}
+	if _, err := rig.server.readGoingRequest(ctx, stale.ID); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("run %s, two hours old, reads its row (%v) after the sweep, want it removed", stale.ID, err)
+	}
+	if values := runFrameValues(t, rig.database, stale.ID); len(values) != 1 || values[0].Sequence != 1 ||
+		values[0].Name != contracts.GoingEventError {
+		t.Fatalf("run %s, two hours old, holds the frame values %+v after the sweep, want its ending at sequence 1 kept", stale.ID, values)
 	}
 
 	// A run nobody recorded: neither path stores a frame, and neither writes it a node.

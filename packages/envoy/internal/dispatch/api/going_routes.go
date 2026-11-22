@@ -325,8 +325,8 @@ func (s *server) streamGoingAnswer(w http.ResponseWriter, r *http.Request) {
 	for {
 		frames, state, err := s.readGoingStream(ctx, id, after)
 		if err != nil {
-			// pgx.ErrNoRows is the run deleted under this reader by a process of the release
-			// before during a roll; there is nothing left to read.
+			// pgx.ErrNoRows is the run's rows removed under this reader an hour after it was
+			// asked, by the sweep or by a process of the release before; there is nothing left to read.
 			return
 		}
 		for _, frame := range frames {

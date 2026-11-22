@@ -302,9 +302,9 @@ func (r *writersRig) settledAttempts(t *testing.T, comment, state string) {
 //
 // The drives of a run's writes and of the reasoning kinds run right after the tick's, in this
 // order: a run of the command bar alice asks, a run an older pod recorded that the boot pass ends,
-// the issue's title, the question of an ask alice opens and a comment of alice's each written for
-// a run she asked, a lens with a finding, a finding, a risk and a constraint, a pointer appended
-// and one retargeted, and the lens's state.
+// a run an hour old the maintenance sweep states gone, the issue's title, the question of an ask
+// alice opens and a comment of alice's each written for a run she asked, a lens with a finding, a
+// finding, a risk and a constraint, a pointer appended and one retargeted, and the lens's state.
 func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 	t.Helper()
 	r := newWritersRig(t)
@@ -313,10 +313,10 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		return append([]string{name, "graphstore/people.go#QueueAuthored"}, sites...)
 	}
 	// What the drives of a run's writes and of the reasoning kinds leave for the drives after them:
-	// the run a write is made for, the ask and the comment the run rewords, the trade-off lens on the
-	// spec, the pre-mortem a risk stands under, the issue whose spec holds a requirement, and the
-	// constraint under that issue.
-	var run, reworded, edited, lens, premortem, requiring, constraint string
+	// the run the sweep states gone, the run a write is made for, the ask and the comment the run
+	// rewords, the trade-off lens on the spec, the pre-mortem a risk stands under, the issue whose
+	// spec holds a requirement, and the constraint under that issue.
+	var swept, run, reworded, edited, lens, premortem, requiring, constraint string
 	nodeRoute := func(issue, address, route string) string {
 		return "/api/v1/issues/" + issue + "/nodes/" + url.PathEscape(address) + "/" + route
 	}
@@ -663,6 +663,39 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		},
 		Counts: runNodeCounted,
 	}, {
+		// A run alice asked an hour and a minute ago, ended with the no-model error: a pass of the
+		// maintenance sweep states its interaction node gone and removes its rows (goRunGone, under
+		// its node's row, which lockGoingRun takes), which appends the node's state tuple alone.
+		Name: "api/going.go#goRunGone, a run an hour old", Database: r.database,
+		Sites: []string{"api/going.go#goRunGone", "api/going.go#lockGoingRun"},
+		Ready: func(t *testing.T) {
+			swept = r.askRun(t, "Which run goes after an hour?")
+			if _, err := r.database.Pool.Exec(ctx, `
+				update going_requests set created_at = now() - interval '61 minutes', ends_at = now() - interval '60 minutes'
+				where id = $1::uuid
+			`, swept); err != nil {
+				t.Fatalf("date run %s an hour and a minute back: %v", swept, err)
+			}
+		},
+		Drive: func(t *testing.T) {
+			leases := storetest.Leases(t, r.database.Pool)
+			sweeping, stop := context.WithCancel(ctx)
+			stopped := make(chan struct{})
+			go func() {
+				defer close(stopped)
+				api.RunMaintenanceSweep(sweeping, r.database.Pool, 50*time.Millisecond, leases, nil)
+			}()
+			defer func() {
+				stop()
+				<-stopped
+			}()
+			r.awaitTrue(t, "the maintenance sweep stating run "+swept+" gone and removing its rows", `
+				select exists (select 1 from graph_nodes where kind = $1 and id = $2 and state = $3)
+				   and not exists (select 1 from going_requests where id = $2::uuid)
+			`, graphstore.KindInteraction, swept, graphstore.StateGone)
+		},
+		Counts: map[graphcensus.StoredKind][]string{{graphstore.KindInteraction, graphstore.AttributeState}: {graphstore.KindInteraction}},
+	}, {
 		// An issue's title written for a run alice asked: the issue's node named changed by it.
 		Name: "api/issue_patch.go#patchIssue, made for a run", Database: r.database,
 		Sites: []string{"api/issue_patch.go#patchIssue"},
@@ -827,9 +860,9 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 // The terms that count what several drives here append: a block a version states afresh, with its
 // two base attributes, its in_document and its part_of, which the term block counts; a session's
 // node with its two base attributes, made by the first write that records the session, which the
-// term session counts; a run's interaction node, with its base attributes, its words and ends_at
-// values and its authored_by, which the term interaction counts, and the one frame value of the
-// run's terminal frame, which the term frame counts; a lens of alice's with its verdict and a
+// term session counts; a run's interaction node, with its base attributes, its words, ends_at and
+// source values and its authored_by, which the term interaction counts, and the one frame value of
+// the run's terminal frame, which the term frame counts; a lens of alice's with its verdict and a
 // finding under it, which the terms lens and lens_finding count; who asked an ask, which the term
 // ask_opened counts beside the ask's other facts its create states; and a session's follow of an
 // ask, which the term ask_follower counts.
@@ -851,6 +884,7 @@ var (
 		{graphstore.KindInteraction, graphstore.AttributeProject}:    {graphstore.KindInteraction},
 		{graphstore.KindInteraction, graphstore.AttributeWords}:      {graphstore.KindInteraction},
 		{graphstore.KindInteraction, graphstore.AttributeEndsAt}:     {graphstore.KindInteraction},
+		{graphstore.KindInteraction, graphstore.AttributeSource}:     {graphstore.KindInteraction},
 		{graphstore.KindInteraction, graphstore.TupleAuthoredBy}:     {graphstore.KindInteraction},
 		{graphstore.KindInteraction, graphstore.AttributeFrame}:      {graphstore.AttributeFrame},
 	}

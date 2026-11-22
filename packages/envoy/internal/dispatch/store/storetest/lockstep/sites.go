@@ -110,7 +110,13 @@ var storeWriteCallSites = map[string]string{
 	// writes that node first through the one writer of a run's node from its row, which the
 	// backfill shares (lockGoingRun): it takes the run's going_requests row `for no key update` and
 	// then writes in one Write, which the same test holds a frame of such a run to, step by step.
+	// The sweep states a run gone an hour after it was asked, in a transaction of its own and in
+	// the frame's order (goRunGone): the run's interaction node row `for no key update`, one
+	// WriteState of that node, its state tuple at the sentinel, then the delete of the run's
+	// going_requests row, whose foreign key cascades to its going_events rows; the same test holds
+	// it to those steps.
 	"api/going.go#appendGoingEvent":      "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	"api/going.go#goRunGone":             "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"api/going.go#lockGoingRun":          "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"api/going.go#recordGoingRequest":    "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"graphstore/interaction.go#WriteRun": "graphstore#TestEveryStoreWriteTakesOneLockOrder",
